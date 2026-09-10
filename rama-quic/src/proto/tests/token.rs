@@ -687,3 +687,94 @@ fn validation_token_lifetime_boundary_is_inclusive() {
         );
     }
 }
+
+/// A Retry token is sealed with the server's address token key. A server holding the same
+/// material reads the token another sealed and the connection completes, carrying a payload; a
+/// server holding other material cannot read it, counts it as no token and asks for validation
+/// again. The two configurations are built separately from the same seed, which is the case a
+/// service run as several servers depends on.
+#[test]
+fn a_retry_token_is_read_only_under_the_key_that_sealed_it() {
+    const SEED: [u8; KEY_MATERIAL_SIZE] = [0x27; KEY_MATERIAL_SIZE];
+    const OTHER_SEED: [u8; KEY_MATERIAL_SIZE] = [0x74; KEY_MATERIAL_SIZE];
+    const MESSAGE: &[u8] = b"through the second server";
+
+    // The same material, configured twice: the token crosses from one server to the other.
+    let (mut pair, client_ch) = retry_across_keys(SEED, SEED);
+    assert_eq!(
+        pair.server.retries_sent, 1,
+        "the token was read, so no second validation was asked for"
+    );
+    let server_ch = pair.server.assert_accept();
+
+    // Established, not merely alive: a stream opened now arrives with its payload.
+    let stream = pair
+        .client_streams(client_ch)
+        .open(Dir::Bi)
+        .expect("a stream opens");
+    pair.client_send(client_ch, stream)
+        .write(MESSAGE)
+        .expect("the write is queued");
+    pair.drive();
+    assert_eq!(
+        pair.server_streams(server_ch).accept(Dir::Bi),
+        Some(stream),
+        "the server sees the stream"
+    );
+    let mut received = pair.server_recv(server_ch, stream);
+    let mut chunks = received.read(true).expect("the stream is readable");
+    let chunk = chunks
+        .next(MESSAGE.len())
+        .expect("a chunk arrives")
+        .expect("with the payload");
+    assert_eq!(&chunk.bytes[..], MESSAGE, "the payload arrives as sent");
+    let _ = chunks.finalize();
+
+    // Other material: the token is unreadable, so it counts as no token (RFC 9000 §8.1.3) and
+    // the server asks for validation again. The client discards a Retry once it has accepted
+    // one (§17.2.5.2), so within the exchange this drives no connection is established and the
+    // client is still trying rather than refused.
+    let (mut pair, client_ch) = retry_across_keys(SEED, OTHER_SEED);
+    assert!(
+        pair.server.retries_sent > 1,
+        "the token was not read, so validation was asked for again: {} retries",
+        pair.server.retries_sent
+    );
+    assert_eq!(
+        pair.server.known_connections(),
+        0,
+        "and no connection is established under a key that cannot read the token"
+    );
+    assert!(
+        !pair.client_conn_mut(client_ch).is_closed(),
+        "the client was not refused; its attempt simply never validated"
+    );
+}
+
+/// Issue a Retry under `issuing`, then hand the client's token-bearing Initial to a server
+/// configured separately from `reading`, and drive that one packet exchange.
+fn retry_across_keys(
+    issuing: [u8; KEY_MATERIAL_SIZE],
+    reading: [u8; KEY_MATERIAL_SIZE],
+) -> (Pair, ConnectionHandle) {
+    let _guard = subscribe();
+    let mut pair = Pair::default();
+    pair.server.handle_incoming = Box::new(validate_incoming);
+
+    let mut issuing_config = server_config();
+    issuing_config.set_address_token_key(AddressTokenKey::from_seed(&issuing));
+    pair.server
+        .set_server_config(Some(Arc::new(issuing_config)));
+
+    let client_ch = pair.begin_connect(client_config());
+    pair.drive_client();
+    pair.drive_server();
+    pair.drive_client();
+
+    let mut reading_config = server_config();
+    reading_config.set_address_token_key(AddressTokenKey::from_seed(&reading));
+    pair.server
+        .set_server_config(Some(Arc::new(reading_config)));
+    pair.drive();
+    (pair, client_ch)
+}

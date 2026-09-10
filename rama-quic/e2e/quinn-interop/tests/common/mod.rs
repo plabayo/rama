@@ -101,8 +101,8 @@ pub fn identity() -> ServerAuthData {
         .expect("an identity is generated")
 }
 
-/// An identity issued by a certificate authority of its own name, so a peer that trusts another
-/// anchor finds no issuer for it rather than one whose name happens to match.
+/// Identity issued by a certificate authority with a distinct name, so a peer trusting another
+/// anchor finds no issuer for it.
 pub fn identity_from_a_stranger(issuer: &str) -> ServerAuthData {
     ServerAuthData::new_generated(GeneratedServerAuthConfig::GeneratedCa {
         ca: SelfSignedCaConfig {

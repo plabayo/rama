@@ -42,7 +42,8 @@ pub struct FrameStats {
     pub data_blocked: u64,
     /// DATAGRAM frames, from the unreliable-datagram extension (RFC 9221).
     pub datagram: u64,
-    /// HANDSHAKE_DONE frames (§19.20). At most one is ever sent or received.
+    /// HANDSHAKE_DONE frames counted as they pass, retransmissions included (§19.20).
+    /// Saturates at [`u8::MAX`].
     pub handshake_done: u8,
     /// IMMEDIATE_ACK frames, from the ack-frequency extension.
     pub immediate_ack: u64,

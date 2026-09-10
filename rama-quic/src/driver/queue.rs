@@ -36,8 +36,9 @@ pub(crate) const INCOMING_OVERHEAD: usize = 2048;
 pub struct PacketQueueStats {
     /// Datagrams waiting to be taken.
     pub queued_datagrams: usize,
-    /// Bytes charged for them: each datagram's payload plus an estimated per-datagram
-    /// overhead, not measured allocation.
+    /// Bytes charged for them: each datagram's payload plus a fixed per-datagram overhead
+    /// standing for the capacity a queued datagram retains beyond its payload. That overhead is
+    /// an estimate, so the charge tracks what the queue retains rather than measuring it.
     pub queued_bytes: usize,
     /// The most datagrams that have waited at once.
     pub peak_datagrams: usize,

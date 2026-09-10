@@ -376,6 +376,9 @@ pub(super) struct TestEndpoint {
     /// the route its identifier needs. It is kept exactly as it is, as the driver keeps its
     /// buffered transmit, so nothing is rebuilt and no protocol counter advances twice.
     pending_transmit: HashMap<ConnectionHandle, (Transmit, Vec<u8>)>,
+    /// Retries this endpoint has sent, so a test can tell a token that was read from one that
+    /// was not.
+    pub(super) retries_sent: u32,
     pub(super) captured_packets: Vec<Vec<u8>>,
     pub(super) capture_inbound_packets: bool,
     pub(super) handle_incoming: Box<dyn FnMut(&Incoming) -> IncomingConnectionBehavior>,
@@ -476,6 +479,7 @@ impl TestEndpoint {
             conn_events: HashMap::default(),
             pending_transmit: HashMap::default(),
             waiting_drives: HashMap::default(),
+            retries_sent: 0,
             captured_packets: Vec::new(),
             capture_inbound_packets: false,
             handle_incoming: Box::new(|_| IncomingConnectionBehavior::Accept),
@@ -800,6 +804,7 @@ impl TestEndpoint {
     }
 
     pub(super) fn retry(&mut self, incoming: Incoming) {
+        self.retries_sent += 1;
         let mut buf = Vec::new();
         let transmit = self.endpoint.retry(incoming, &mut buf).unwrap();
         let size = transmit.size;

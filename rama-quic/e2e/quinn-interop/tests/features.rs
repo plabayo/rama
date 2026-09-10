@@ -4,13 +4,17 @@
 
 mod common;
 
+use std::time::Duration;
+
 use common::*;
 use rama::{
     net::tls::ApplicationProtocol,
     quic::{
-        ConnectionStats, DriverStats, Endpoint, EndpointStats, FrameStats, PacketQueueStats,
-        SendDatagramError,
+        AddressTokenKey, ConnectionStats, DriverStats, Endpoint, EndpointConfig, EndpointStats,
+        FrameStats, KEY_MATERIAL_SIZE, PacketQueueStats, ReceiveQueueLimits, SendDatagramError,
+        ServerConfig, StatelessResetKey, ValidationTokenConfig,
     },
+    udp::UdpSocketConfig,
     utils::octets,
 };
 
@@ -559,4 +563,104 @@ async fn a_consumer_reads_the_counters_through_their_public_types() {
     conn.close(0u32.into(), b"done");
     step("rama's shutdown", client.wait_idle()).await;
     peer.join("the quinn peer").await;
+}
+
+/// The configuration a consumer of the crate reaches for when it runs more than one endpoint:
+/// the two key types, the validation-token settings and the receive-queue bounds, all named
+/// from outside and all installed through the public setters before a peer connects.
+#[tokio::test]
+async fn a_consumer_configures_keys_and_budgets_by_name() {
+    let auth = identity();
+    let anchor = auth.cert_chain.last().expect("a chain").clone();
+
+    let reset_key: StatelessResetKey = StatelessResetKey::from_seed(&[0x31; KEY_MATERIAL_SIZE]);
+    let token_key: AddressTokenKey =
+        AddressTokenKey::try_from_bytes(&[0x62; KEY_MATERIAL_SIZE * 2])
+            .expect("material of two seeds is long enough");
+    assert_eq!(
+        format!("{reset_key:?}"),
+        "StatelessResetKey",
+        "the material is not in the debug output"
+    );
+    assert!(
+        StatelessResetKey::try_from_bytes(&[0x31; KEY_MATERIAL_SIZE - 1]).is_err(),
+        "material shorter than a seed is refused"
+    );
+
+    let validation: ValidationTokenConfig = ValidationTokenConfig::default()
+        .with_lifetime(Duration::from_secs(600))
+        .with_sent(3);
+    let per_connection = ReceiveQueueLimits::new(64, octets::mib(1)).expect("both are nonzero");
+    let per_endpoint = ReceiveQueueLimits::new(1024, octets::mib(8)).expect("both are nonzero");
+
+    let endpoint_config: EndpointConfig = EndpointConfig::default()
+        .with_stateless_reset_key(reset_key)
+        .with_receive_queue_limits(per_connection, per_endpoint);
+    let server_config: ServerConfig = rama_server_config(&auth)
+        .with_address_token_key(token_key)
+        .with_validation_token_config(validation)
+        .with_incoming_buffer_size_total(u64::try_from(octets::mib(32)).expect("it fits"));
+
+    let server = step(
+        "the rama server binds with the configuration",
+        Endpoint::bind(
+            endpoint_config,
+            Some(server_config),
+            localhost(),
+            UdpSocketConfig::default(),
+        ),
+    )
+    .await
+    .expect("it binds");
+    let server_addr = server.local_addr().expect("its address");
+
+    let payload = payload(0x9c, octets::kib(8));
+    let hash = digest(&payload);
+    let (read_it, was_read) = tokio::sync::oneshot::channel::<()>();
+    let served = Peer::spawn({
+        let server = server.clone();
+        async move {
+            let conn = step("the rama server accepts", server.accept())
+                .await
+                .expect("an attempt arrives")
+                .accept()
+                .expect("it is accepted")
+                .await
+                .expect("the handshake completes");
+            let mut uni = step("the stream arrives", conn.accept_uni())
+                .await
+                .expect("it opens");
+            let received = step("the payload", uni.read_to_end(octets::mib(1)))
+                .await
+                .expect("it is read whole");
+            assert_eq!(digest(&received), hash, "every byte, unchanged");
+            let _ = read_it.send(());
+            step("the connection closes", conn.closed()).await;
+        }
+    });
+
+    let mut client = quinn::Endpoint::client(localhost()).expect("quinn binds");
+    client.set_default_client_config(quinn_client_config(anchor));
+    let conn = step(
+        "the quinn client connects",
+        client
+            .connect(server_addr, "localhost")
+            .expect("the attempt starts"),
+    )
+    .await
+    .expect("the handshake completes");
+    let mut stream = step("the stream opens", conn.open_uni())
+        .await
+        .expect("it opens");
+    step("the payload is written", stream.write_all(&payload))
+        .await
+        .expect("it is written");
+    stream.finish().expect("the stream is finished");
+    step("the peer read it", was_read)
+        .await
+        .expect("the peer reported");
+    conn.close(0u32.into(), b"done");
+    step("quinn's shutdown", client.wait_idle()).await;
+    served.join("the rama peer").await;
+    step("rama's shutdown", server.shutdown()).await;
 }

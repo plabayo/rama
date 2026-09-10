@@ -46,6 +46,8 @@ pub use config::{
     PreferredAddressPolicy, ReceiveQueueLimits, ServerConfig, StdSystemTime, TimeSource,
     TransportConfig, ValidationTokenConfig,
 };
+#[cfg(any(feature = "aws-lc", feature = "ring"))]
+pub use config::{AddressTokenKey, KEY_MATERIAL_SIZE, StatelessResetKey};
 
 pub(crate) mod crypto;
 

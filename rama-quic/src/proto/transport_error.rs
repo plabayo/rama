@@ -70,7 +70,7 @@ impl Error {
         &self.reason
     }
 
-    /// What went wrong locally, when this error came from something that did. It stays local:
+    /// The local underlying error, when this one came from another. It stays local:
     /// CONNECTION_CLOSE carries [`Self::code`], [`Self::frame_type`] and [`Self::reason`], and
     /// nothing of this.
     #[must_use]
@@ -260,7 +260,7 @@ mod tests {
     }
 
     /// A failure that names a frame reports it through the public accessors, and the frame
-    /// goes to the peer with the close.
+    /// carries into the close object built from it. This is the field, not the encoding.
     #[test]
     fn a_frame_typed_error_names_the_frame() {
         let mut error = Error::FRAME_ENCODING_ERROR("an ack frame with no ranges");

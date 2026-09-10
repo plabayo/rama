@@ -206,9 +206,8 @@ pub struct Identity {
 }
 
 impl Identity {
-    /// An identity for `name`, signed by an issuer of its own name. A client that trusts one of
-    /// these and meets another does not recognise the issuer, which is what an untrusted server
-    /// looks like.
+    /// Self-signed identity for `name` with a distinct issuer name, so a client trusting
+    /// another anchor finds no issuer for it.
     pub fn generate_from_a_stranger(name: &str, issuer: &str) -> Self {
         let mut params = rcgen::CertificateParams::new([name.to_owned()])
             .expect("the name is usable in a certificate");

@@ -546,8 +546,8 @@ enum Switch {
     Never,
 }
 
-/// What the driver around the protocol engine has counted for one connection: its sockets and
-/// its packet queue. What the protocol engine counts is [`ConnectionStats`].
+/// Socket and receive-queue statistics for one connection, counted by the driver around the
+/// protocol engine. What the engine itself counts is [`ConnectionStats`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct DriverStats {
@@ -1223,7 +1223,7 @@ impl Connection {
             .export_keying_material(output, label, context)
     }
 
-    /// What the driver has counted for this connection: its sockets and its packet queue.
+    /// Socket and receive-queue statistics counted by the driver for this connection.
     ///
     /// What the protocol engine counts is [`Connection::stats`].
     #[must_use]

@@ -397,6 +397,96 @@ fn stateless_reset_with_a_foreign_key_is_ignored() {
     assert!(lost, "the genuine token is recognised as a reset");
 }
 
+/// The key configured on an endpoint is the key its stateless reset tokens are derived from.
+/// The client here holds a token the server issued, so a reset carrying the token that same
+/// material gives for that connection ID is recognised, and one from other material is not.
+/// That is the case of a second endpoint of the same service, or the same one after a restart,
+/// resetting a connection it has no state for.
+#[test]
+fn a_configured_stateless_reset_key_is_what_the_issued_tokens_come_from() {
+    let _guard = subscribe();
+    const SEED: [u8; KEY_MATERIAL_SIZE] = [0x5c; KEY_MATERIAL_SIZE];
+    const OTHER_SEED: [u8; KEY_MATERIAL_SIZE] = [0xa3; KEY_MATERIAL_SIZE];
+
+    // Only the server's endpoint is given the key: it is the side whose tokens the client
+    // learns and later recognises resets by.
+    let cid_generator =
+        || Box::new(HashedConnectionIdGenerator::from_key(0)) as Box<dyn ConnectionIdGenerator>;
+    let mut issuing = EndpointConfig::default();
+    issuing
+        .set_stateless_reset_key(StatelessResetKey::from_seed(&SEED))
+        .cid_generator(cid_generator);
+    let server = Endpoint::new(
+        Arc::new(issuing),
+        Some(Arc::new(server_config())),
+        true,
+        None,
+    );
+    let client = Endpoint::new(Arc::new(EndpointConfig::default()), None, true, None);
+    let mut pair = Pair::new_from_endpoint(client, server);
+    let (client_ch, _server_ch) = pair.connect();
+    pair.drive();
+
+    // The connection ID the client sends to, which is the one the server issued a token for.
+    pair.client_conn_mut(client_ch).ping();
+    pair.client.drive(pair.time, pair.server.addr);
+    let packet = pair
+        .client
+        .outbound
+        .front()
+        .map(|(_, buffer)| buffer.clone())
+        .expect("the ping produced a packet");
+    let cid_len = HashedConnectionIdGenerator::from_key(0).cid_len();
+    let dst_cid = ConnectionId::new(&packet[1..1 + cid_len]);
+    pair.drive_client();
+    pair.drive();
+
+    let build_reset = |token: ResetToken| {
+        let mut reset = vec![0x40; 1];
+        reset.extend_from_slice(&[0xab; 40]);
+        reset.extend_from_slice(&token);
+        reset
+    };
+    let elsewhere = hmac::Key::new(hmac::HMAC_SHA256, &OTHER_SEED);
+    let configured = hmac::Key::new(hmac::HMAC_SHA256, &SEED);
+
+    // Other material gives a token the client was never handed.
+    pair.client.inbound.push_back(Inbound::plain(
+        pair.time,
+        None,
+        build_reset(ResetToken::new(&elsewhere, dst_cid))
+            .as_slice()
+            .into(),
+    ));
+    pair.drive();
+    assert!(
+        !pair.client_conn_mut(client_ch).is_closed(),
+        "a token from other material is not the one the client holds"
+    );
+
+    // The configured material gives the token the client holds.
+    pair.client.inbound.push_back(Inbound::plain(
+        pair.time,
+        None,
+        build_reset(ResetToken::new(&configured, dst_cid))
+            .as_slice()
+            .into(),
+    ));
+    pair.drive();
+    let mut lost = false;
+    while let Some(event) = pair.client_conn_mut(client_ch).poll() {
+        if matches!(
+            event,
+            Event::ConnectionLost {
+                reason: ConnectionError::Reset
+            }
+        ) {
+            lost = true;
+        }
+    }
+    assert!(lost, "the token the configured key gives is recognised");
+}
+
 /// Verify that stateless resets are rate-limited
 #[test]
 fn stateless_reset_limit() {
@@ -1098,7 +1188,7 @@ fn zero_rtt_incoming_buffer_size() {
 #[test]
 fn zero_rtt_incoming_buffer_size_total() {
     test_zero_rtt_incoming_limit(|config| {
-        config.incoming_buffer_size_total(4000);
+        config.set_incoming_buffer_size_total(4000);
     });
 }
 

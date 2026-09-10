@@ -21,6 +21,11 @@ use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer};
 #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 use rama_tls_rustls::dep::rustls::client::WebPkiServerVerifier;
 
+#[cfg(any(feature = "aws-lc", feature = "ring"))]
+mod keys;
+#[cfg(any(feature = "aws-lc", feature = "ring"))]
+pub use keys::{AddressTokenKey, KEY_MATERIAL_SIZE, StatelessResetKey};
+
 mod transport;
 #[cfg(feature = "qlog")]
 pub(crate) use transport::QlogConfig;
@@ -129,7 +134,7 @@ impl EndpointConfig {
         /// per-message overhead. A saturated queue drops and counts further packets; protocol
         /// stream buffers and pending-handshake buffers have their own limits. The endpoint
         /// checks at construction that one maximum-size datagram fits each limit.
-        pub(crate) fn receive_queue_limits(
+        pub fn receive_queue_limits(
             mut self,
             connection: ReceiveQueueLimits,
             endpoint: ReceiveQueueLimits,
@@ -163,6 +168,19 @@ impl EndpointConfig {
     pub(crate) fn reset_key(&mut self, key: Arc<dyn HmacKey>) -> &mut Self {
         self.reset_key = key;
         self
+    }
+
+    #[cfg(any(feature = "aws-lc", feature = "ring"))]
+    rama_utils::macros::generate_set_and_with! {
+        /// The key this endpoint derives the stateless reset tokens it issues from.
+        ///
+        /// Endpoints given the same key derive the same token for the same connection ID, so a
+        /// peer of one recognises a reset from another. Defaults to material from the
+        /// operating system's random source, generated per endpoint.
+        pub fn stateless_reset_key(mut self, key: StatelessResetKey) -> Self {
+            self.reset_key = key.into_key();
+            self
+        }
     }
 
     /// Maximum UDP payload size accepted from peers (excluding UDP and IP overhead).
@@ -351,19 +369,32 @@ impl ServerConfig {
         }
     }
 
-    /// Set a custom [`ValidationTokenConfig`]
-    pub(crate) fn validation_token_config(
-        &mut self,
-        validation_token: ValidationTokenConfig,
-    ) -> &mut Self {
-        self.validation_token = validation_token;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set a custom [`ValidationTokenConfig`], which governs the tokens this server sends
+        /// in NEW_TOKEN frames and how long it accepts them for.
+        pub fn validation_token_config(mut self, validation_token: ValidationTokenConfig) -> Self {
+            self.validation_token = validation_token;
+            self
+        }
     }
 
     /// Private key used to authenticate data included in handshake tokens
     pub(crate) fn token_key(&mut self, value: Arc<dyn HandshakeTokenKey>) -> &mut Self {
         self.token_key = value;
         self
+    }
+
+    #[cfg(any(feature = "aws-lc", feature = "ring"))]
+    rama_utils::macros::generate_set_and_with! {
+        /// The key this server seals address-validation tokens with.
+        ///
+        /// Servers given the same key can read one another's Retry and NEW_TOKEN tokens; the
+        /// address, lifetime and reuse checks still decide whether one is accepted. Defaults
+        /// to material from the operating system's random source, generated per configuration.
+        pub fn address_token_key(mut self, key: AddressTokenKey) -> Self {
+            self.token_key = key.into_key();
+            self
+        }
     }
 
     rama_utils::macros::generate_set_and_with! {
@@ -443,23 +474,22 @@ impl ServerConfig {
         }
     }
 
-    /// Maximum number of received bytes to buffer for all [`Incoming`][crate::proto::Incoming]
-    /// collectively
-    ///
-    /// An [`Incoming`][crate::proto::Incoming] comes into existence when an incoming connection attempt
-    /// is received and stops existing when the application either accepts it or otherwise disposes
-    /// of it. This limit governs only packets received within that period, and does not include
-    /// the first packet. Packets received in excess of this limit are dropped, which may cause
-    /// 0-RTT or handshake data to have to be retransmitted.
-    ///
-    /// The default value is set to 100 MiB--a generous amount that still prevents memory
-    /// exhaustion in most contexts.
-    pub(crate) fn incoming_buffer_size_total(
-        &mut self,
-        incoming_buffer_size_total: u64,
-    ) -> &mut Self {
-        self.incoming_buffer_size_total = incoming_buffer_size_total;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Maximum number of received bytes to buffer for all [`Incoming`][crate::proto::Incoming]
+        /// collectively
+        ///
+        /// An [`Incoming`][crate::proto::Incoming] comes into existence when an incoming connection attempt
+        /// is received and stops existing when the application either accepts it or otherwise disposes
+        /// of it. This limit governs only packets received within that period, and does not include
+        /// the first packet. Packets received in excess of this limit are dropped, which may cause
+        /// 0-RTT or handshake data to have to be retransmitted.
+        ///
+        /// The default value is set to 100 MiB--a generous amount that still prevents memory
+        /// exhaustion in most contexts.
+        pub fn incoming_buffer_size_total(mut self, incoming_buffer_size_total: u64) -> Self {
+            self.incoming_buffer_size_total = incoming_buffer_size_total;
+            self
+        }
     }
 
     rama_utils::macros::generate_set_and_with! {
@@ -812,12 +842,17 @@ impl fmt::Debug for ClientConfig {
 pub enum ConfigError {
     /// Value exceeds supported bounds
     OutOfBounds,
+    /// Key material is shorter than the minimum this crate keys with
+    KeyMaterialTooShort,
 }
 
 impl core::fmt::Display for ConfigError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::OutOfBounds => f.write_str("value exceeds supported bounds"),
+            Self::KeyMaterialTooShort => {
+                f.write_str("key material is shorter than the minimum accepted")
+            }
         }
     }
 }

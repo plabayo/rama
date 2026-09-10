@@ -39,6 +39,8 @@ pub use proto::{
     TokenMemoryCache, TokenReuseError, TokenStore, TransportConfig, TransportError,
     TransportErrorCode, UdpStats, ValidationTokenConfig, VarInt, VarIntBoundsExceeded, Written,
 };
+#[cfg(any(feature = "aws-lc", feature = "ring"))]
+pub use proto::{AddressTokenKey, KEY_MATERIAL_SIZE, StatelessResetKey};
 
 /// TLS for QUIC: how a connection's identity and application protocol are configured.
 ///
