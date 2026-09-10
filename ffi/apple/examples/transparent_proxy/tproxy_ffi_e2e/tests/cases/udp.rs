@@ -196,10 +196,10 @@ async fn ffi_contract_udp_global_budget_probe_ack_and_cleanup() {
     // Behavioral leak and exact-ACK check on the same engine generation.
     // Refill the entire 64-flow boundary. If retained bytes survived the first
     // teardown, a refill flow rejected earlier becomes a FIFO waiter and is
-    // observed below. Six new waiters also let four leases consume the complete
-    // coordinator batch, making downstream progress an exact ACK witness.
+    // observed below. First fill all four lease slots, then register two more
+    // waiters whose downstream progress will be an exact ACK witness.
     let mut refill = fill_default_global_budget(&engine, remote);
-    let mut verifiers = (0..6)
+    let mut verifiers = (0..4)
         .map(|_| {
             let session = UdpFfiSession::new(engine.clone(), remote);
             session.stage_client_datagram_before_activation(&blocked_payload, Some(remote));
@@ -213,6 +213,16 @@ async fn ffi_contract_udp_global_budget_probe_ack_and_cleanup() {
         initial_probes.push(verifier.wait_for_probe_read_demand_observed().await);
     }
     assert!(initial_probes.iter().all(|(probe_id, _)| *probe_id != 0));
+
+    // Closing a fill flow releases its datagrams individually. The coordinator
+    // may rotate nonfitting waiters between those releases, so creation order
+    // alone cannot identify which four of six waiters would get leases. Wait
+    // for these four callbacks before adding the downstream ACK witnesses.
+    for _ in 0..2 {
+        let session = UdpFfiSession::new(engine.clone(), remote);
+        session.stage_client_datagram_before_activation(&blocked_payload, Some(remote));
+        verifiers.push(session);
+    }
 
     // All four probe slots are leased. ACKing verifier 1's live ID through
     // verifier 0 is a wrong-session ACK and must not advance verifier 4.
@@ -308,7 +318,7 @@ async fn ffi_contract_udp_rejects_owner_payload_before_exact_ack() {
     let remote = localhost(env.ports.udp);
     let mut fillers = fill_default_global_budget(&engine, remote);
     let blocked_payload = vec![b'p'; MAX_UDP_DATAGRAM];
-    let mut verifiers = (0..5)
+    let mut verifiers = (0..4)
         .map(|_| {
             let session = UdpFfiSession::new(engine.clone(), remote);
             session.stage_client_datagram_before_activation(&blocked_payload, Some(remote));
@@ -322,6 +332,12 @@ async fn ffi_contract_udp_rejects_owner_payload_before_exact_ack() {
         initial_probes.push(verifier.wait_for_probe_read_demand_observed().await);
     }
     assert!(initial_probes.iter().all(|(probe_id, _)| *probe_id != 0));
+
+    // Establish the four lease owners before registering the downstream
+    // witness, as in the ACK/cleanup test above.
+    let downstream = UdpFfiSession::new(engine.clone(), remote);
+    downstream.stage_client_datagram_before_activation(&blocked_payload, Some(remote));
+    verifiers.push(downstream);
 
     verifiers[0].activate();
     assert_eq!(

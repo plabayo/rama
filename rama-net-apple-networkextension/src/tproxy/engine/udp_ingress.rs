@@ -4418,8 +4418,8 @@ mod tests {
         assert_eq!(global.snapshot().charged_bytes, 0);
     }
 
-    #[test]
-    fn acknowledged_probe_keeps_credit_until_bounded_delivery_grace() {
+    #[tokio::test(start_paused = true)]
+    async fn acknowledged_probe_keeps_credit_until_bounded_delivery_grace() {
         const FLOW_COUNT: usize = GLOBAL_WAKE_BATCH * 2;
         let global = Arc::new(UdpIngressBudget::new(GLOBAL_WAKE_BATCH));
         let holder =
@@ -4446,6 +4446,8 @@ mod tests {
         let now = tokio::time::Instant::now();
         assert_eq!(global.wake_fitting_batch(now), GLOBAL_WAKE_BATCH);
         assert_eq!(callbacks.load(Ordering::Relaxed), GLOBAL_WAKE_BATCH);
+        // ACK reads Tokio's clock internally. Keep it on the same paused
+        // timeline as lease issuance and the explicit expiry checks below.
         for flow in &flows {
             flow.acknowledge_probe(flow.global_probe_id.load(Ordering::Acquire));
         }
