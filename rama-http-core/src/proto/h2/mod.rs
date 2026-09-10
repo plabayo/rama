@@ -6,7 +6,7 @@ use crate::h2::SendStream;
 use pin_project_lite::pin_project;
 use rama_core::bytes::Buf;
 use rama_core::error::BoxError;
-use rama_core::telemetry::tracing::{debug, trace};
+use rama_core::telemetry::tracing::{debug, trace, warn};
 use rama_http::StreamingBody;
 use rama_http_types::header::{
     CONNECTION, KEEP_ALIVE, PROXY_CONNECTION, TE, TRANSFER_ENCODING, UPGRADE,
@@ -293,7 +293,7 @@ impl<B: Buf> SendStreamExt for SendStream<SendBuf<B>> {
         E: Into<BoxError>,
     {
         let err = crate::Error::new_user_body(err);
-        debug!("send body user stream error: {:?}", err);
+        warn!("send body user stream error: {:?}", err);
         self.send_reset(err.h2_reason());
         err
     }
