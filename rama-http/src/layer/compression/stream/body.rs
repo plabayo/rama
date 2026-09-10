@@ -505,7 +505,7 @@ mod tests {
                             "zstd" => {
                                 StreamCompressionBody::zstd(inner, Default::default(), always_flush)
                             }
-                            _ => unreachable!(),
+                            _ => panic!("unexpected test encoding: {encoding}"),
                         };
                         let mut compressed = Vec::new();
                         let mut received_trailers = None;
@@ -554,7 +554,7 @@ mod tests {
                             "zstd" => {
                                 Box::new(zstd::stream::read::Decoder::new(&compressed[..]).unwrap())
                             }
-                            _ => unreachable!(),
+                            _ => panic!("unexpected test encoding: {encoding}"),
                         };
                         let mut decoded = Vec::new();
                         decoder.read_to_end(&mut decoded).unwrap();
