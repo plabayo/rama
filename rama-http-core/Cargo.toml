@@ -60,7 +60,7 @@ rama-http = { workspace = true, features = ["compression"] }
 rama-tls = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "net"] }
 tokio-rustls = { workspace = true }
-tracing-test = { workspace = true, features = ["no-env-filter"] }
+tracing-test = { workspace = true }
 webpki-roots = { workspace = true }
 
 [lints]

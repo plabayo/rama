@@ -12,7 +12,7 @@ mod body_fixture;
 
 use body_fixture::{EndStreamFraming, Frames};
 use parking_lot::Mutex;
-use rama_core::telemetry::tracing::{self, Instrument as _};
+use rama_core::telemetry::tracing::Instrument as _;
 use rama_core::{Service, ServiceInput, bytes::Bytes, rt::Executor, service::service_fn};
 use rama_http::{
     Body, Request, Response,
@@ -514,8 +514,7 @@ async fn request_decompression_empty_frames_transport_matrix() {
 }
 
 #[tokio::test]
-#[tracing_test::traced_test]
-async fn mid_body_failure_warns_before_reset() {
+async fn mid_body_failure_resets_stream() {
     use rama_core::futures::{StreamExt, stream};
 
     tokio::time::timeout(Duration::from_secs(5), async {
@@ -535,7 +534,7 @@ async fn mid_body_failure_warns_before_reset() {
             let body = body.lock().take().unwrap();
             async { Ok::<_, Infallible>(response(body, "identity")) }
         });
-        let (mut response, _) = exchange(
+        let (mut response, wire) = exchange(
             Protocol::H2,
             service,
             request(None, Body::empty()),
@@ -547,21 +546,27 @@ async fn mid_body_failure_warns_before_reset() {
         assert_eq!(first.into_data().unwrap(), PAYLOAD);
         fail.notify_one();
         response.into_body().collect().await.unwrap_err();
+        let written = wire.lock();
+        let mut bytes = written.as_slice();
+        let mut resets = 0;
+        while bytes.len() >= 9 {
+            let len = (usize::from(bytes[0]) << 16)
+                | (usize::from(bytes[1]) << 8)
+                | usize::from(bytes[2]);
+            assert!(bytes.len() >= 9 + len, "incomplete frame");
+            if bytes[3] == 3 {
+                assert_eq!(len, 4, "invalid RST_STREAM payload length");
+                let stream_id = u32::from_be_bytes(bytes[5..9].try_into().unwrap()) & 0x7fff_ffff;
+                assert_eq!(stream_id, 1, "reset must target the response stream");
+                let reason = u32::from_be_bytes(bytes[9..13].try_into().unwrap());
+                assert_eq!(reason, u32::from(h2::Reason::INTERNAL_ERROR));
+                resets += 1;
+            }
+            bytes = &bytes[9 + len..];
+        }
+        assert!(bytes.is_empty());
+        assert_eq!(resets, 1, "missing reset for the failed response body");
     })
     .await
     .expect("mid-body error was not delivered");
-    // HTTP request spans are roots, so select the library target instead of
-    // the test span and match this test's unique error message.
-    tracing_test::internal::logs_assert("rama_http_core::proto::h2", |lines| {
-        if lines.iter().any(|line| {
-            line.contains("WARN")
-                && line.contains("send body user stream error")
-                && line.contains("deliberate mid-body failure")
-        }) {
-            Ok(())
-        } else {
-            Err("missing warning for the body error that resets the stream".into())
-        }
-    })
-    .unwrap();
 }
