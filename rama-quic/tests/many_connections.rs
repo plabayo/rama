@@ -20,13 +20,14 @@ use std::{
 use rama_crypto::dep::aws_lc_rs::digest;
 #[cfg(feature = "ring")]
 use rama_crypto::dep::ring::digest;
+use rama_net::tls::ApplicationProtocol;
 use rama_quic::tls::TlsOptions;
 use rama_quic::{ClientConfig, Endpoint, ServerConfig, TransportConfig};
 use rama_tls::{
     client::TlsClientConfig,
     server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
 };
-use rama_utils::octets;
+use rama_utils::{collections::smallvec::smallvec, octets};
 use tokio::runtime::Builder;
 
 const ALPN: &[u8] = b"many-connections";
@@ -132,14 +133,14 @@ async fn run() {
     endpoint.shutdown().await;
 }
 
-fn alpn() -> [rama_net::tls::ApplicationProtocol; 1] {
-    [rama_net::tls::ApplicationProtocol::from(ALPN)]
+fn alpn() -> ApplicationProtocol {
+    ApplicationProtocol::from(ALPN)
 }
 
 /// Client configuration trusting the listener's identity, and nothing else.
 fn connector_config(anchor: rama_crypto::pki_types::CertificateDer<'static>) -> ClientConfig {
     let tls = TlsClientConfig::new()
-        .with_alpn(alpn().into_iter().collect())
+        .with_alpn(smallvec![alpn()])
         .try_with_server_trust_anchors([anchor])
         .unwrap();
     let mut config = ClientConfig::try_from_rama_tls(&tls, TlsOptions::default()).unwrap();
@@ -150,7 +151,7 @@ fn connector_config(anchor: rama_crypto::pki_types::CertificateDer<'static>) -> 
 /// Listener configuration presenting the generated identity.
 fn listener_config(auth: &ServerAuthData) -> ServerConfig {
     let tls = TlsServerConfig::new()
-        .with_alpn(alpn().into_iter().collect())
+        .with_alpn(smallvec![alpn()])
         .with_server_auth(auth.clone());
     let mut config = ServerConfig::try_from_rama_tls(&tls, TlsOptions::default()).unwrap();
     config.set_transport_config(Arc::new(transport()));

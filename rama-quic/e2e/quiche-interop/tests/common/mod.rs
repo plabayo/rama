@@ -82,6 +82,31 @@ impl Identity {
         )
     }
 
+    /// The identity a name case needs: one for the name the client will ask for, or one
+    /// carrying the loopback address when it will send no name at all.
+    pub fn generate_for(name: Option<&str>) -> Self {
+        match name {
+            Some(name) => Self::generate(name),
+            None => Self::generate_for_loopback(),
+        }
+    }
+
+    /// An identity valid for the loopback address, for a client that names an address rather
+    /// than a host. The address goes in the subject alternative name as an address, not as a
+    /// DNS name, which is what a verifier looks for when the client named an address.
+    pub fn generate_for_loopback() -> Self {
+        let mut params = rcgen::CertificateParams::default();
+        params.subject_alt_names = vec![rcgen::SanType::IpAddress(Ipv4Addr::LOCALHOST.into())];
+        let key = rcgen::KeyPair::generate().expect("a key pair");
+        let certificate = params.self_signed(&key).expect("an identity is generated");
+        Self::written(
+            &certificate.pem(),
+            &key.serialize_pem(),
+            certificate.der().clone(),
+            &key,
+        )
+    }
+
     pub fn generate(name: &str) -> Self {
         let generated = rcgen::generate_simple_self_signed(vec![name.to_owned()])
             .expect("an identity is generated");

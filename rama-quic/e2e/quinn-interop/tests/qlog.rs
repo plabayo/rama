@@ -3,13 +3,10 @@
 
 mod common;
 
-use std::{
-    io,
-    net::SocketAddr,
-    sync::{Arc, Mutex},
-};
+use std::{io, net::SocketAddr, sync::Arc};
 
 use common::*;
+use parking_lot::Mutex;
 use rama::{
     quic::{ClientConfig, Endpoint, QlogConfig, TransportConfig},
     utils::octets,
@@ -23,16 +20,13 @@ struct Trace(Arc<Mutex<Vec<u8>>>);
 
 impl Trace {
     fn written(&self) -> Vec<u8> {
-        self.0.lock().expect("the buffer is not poisoned").clone()
+        self.0.lock().clone()
     }
 }
 
 impl io::Write for Trace {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-        self.0
-            .lock()
-            .expect("the buffer is not poisoned")
-            .extend_from_slice(buffer);
+        self.0.lock().extend_from_slice(buffer);
         Ok(buffer.len())
     }
 

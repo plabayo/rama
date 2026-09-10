@@ -166,9 +166,11 @@ async fn quinn_refuses(
     let quinn::ConnectionError::TransportError(error) = &refused else {
         panic!("{what}: a transport error was due: {detail}");
     };
+    // A TLS alert reaches QUIC as CRYPTO_ERROR plus the alert's own number (RFC 9001 §4.8), so
+    // unknown_ca (48) is 0x130.
     assert_eq!(
-        format!("{:?}", error.code),
-        format!("Code::crypto({:x})", u8::from(AlertDescription::UnknownCA)),
+        u64::from(error.code),
+        0x100 + u64::from(u8::from(AlertDescription::UnknownCA)),
         "{what}: the alert is unknown_ca: {detail}"
     );
     assert!(

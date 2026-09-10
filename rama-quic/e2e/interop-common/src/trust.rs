@@ -171,7 +171,9 @@ pub async fn rama_client_accepts(run: &CaseRun<TrustScenario>, peer_addr: Socket
 pub enum ServerOutcome {
     /// The peer completed the handshake and its probe came back.
     Probed,
-    /// The peer's handshake failed, which is what a refused identity gives.
+    /// No connection was established. A refused identity gives this, and so would an
+    /// endpoint closed before any attempt arrived, so it is not on its own proof that an
+    /// attempt was made.
     Refused,
     /// Nothing happened before the case ran out of time. Never what a case expects.
     TimedOut,

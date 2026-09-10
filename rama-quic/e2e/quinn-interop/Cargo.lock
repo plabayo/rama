@@ -1651,6 +1651,7 @@ dependencies = [
 name = "rama-quic-quinn-interop"
 version = "0.0.0"
 dependencies = [
+ "parking_lot",
  "quinn",
  "rama",
  "rama-quic-interop-common",
