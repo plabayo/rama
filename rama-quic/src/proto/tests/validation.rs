@@ -132,8 +132,8 @@ fn an_undersized_challenge_is_followed_by_an_expanded_one() {
             > challenges_before,
         "a challenge went out in this pass"
     );
-    // While a validation is outstanding the challenge rides in every packet on that path, so
-    // every datagram measured here carries this token.
+    // The challenge counter rose in this pass and every datagram to that address in it
+    // reached the minimum size, which bounds the one that carried the token.
     assert!(
         sizes.iter().all(|&it| it >= usize::from(MIN_INITIAL_SIZE)),
         "and each was expanded to {MIN_INITIAL_SIZE} or more: {sizes:?}"
@@ -180,7 +180,8 @@ fn an_expanded_challenge_settles_the_path_in_one_validation() {
     );
     let sizes = server_datagrams(&pair, before, moved_to);
     assert!(!sizes.is_empty(), "the server answered the move");
-    // Every packet on the path carries the outstanding challenge, so this is that datagram.
+    // The counter rose in this pass and every datagram to that address in it reached the
+    // minimum size, which bounds the one that carried the token.
     assert!(
         sizes.iter().all(|&it| it >= usize::from(MIN_INITIAL_SIZE)),
         "and it went out expanded: {sizes:?}"
@@ -265,7 +266,8 @@ fn ordinary_traffic_crosses_while_the_minimum_mtu_is_unproven() {
         pair.time += Duration::from_millis(10);
         pair.drive_server();
         pair.drive_client();
-        // The client's answer is withheld; everything else it sends still reaches the server.
+        // Nothing the client sends in this window reaches the server, so its answer to the
+        // challenge cannot; the data being checked is what the server already put on the wire.
         pair.server.inbound.clear();
         let mut recv = pair.client_recv(client_ch, stream);
         if let Ok(mut chunks) = recv.read(true) {
@@ -286,11 +288,10 @@ fn ordinary_traffic_crosses_while_the_minimum_mtu_is_unproven() {
         !pair.server_conn_mut(server_ch).mtu_validated(),
         "and the expanded response never arrived"
     );
-    // No probe went out in this window either. That is a weaker observation than it looks:
-    // a probe is written only when a pass produced nothing else, and while this validation
-    // is outstanding the connection is either carrying the challenge or running out of
-    // attempts, so the `mtu_validated` gate is not what this pins. Faulting the gate does
-    // not fail this case, and the report says so.
+    // No probe went out here either, which is a weaker observation than it looks: a probe is
+    // written only when a pass produced nothing else, and while this validation is
+    // outstanding the connection is either carrying the challenge or running out of attempts.
+    // This does not pin the `mtu_validated` gate.
     assert_eq!(
         pair.server_conn_mut(server_ch)
             .stats()

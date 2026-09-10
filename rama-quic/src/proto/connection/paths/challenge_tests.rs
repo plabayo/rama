@@ -58,9 +58,3 @@ fn a_token_answers_only_once_it_has_gone_out_on_this_path() {
     assert!(!challenge.is_answered_by(0x9abc, 8), "another generation");
     assert!(!challenge.is_answered_by(0x9abd, 7), "another token");
 }
-
-use super::*;
-
-fn addr(port: u16) -> SocketAddr {
-    SocketAddr::new(std::net::Ipv4Addr::LOCALHOST.into(), port)
-}

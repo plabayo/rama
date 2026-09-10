@@ -278,7 +278,6 @@ impl PathData {
         }
     }
 
-    /// A path validation this side is waiting on (RFC 9000 §8.2).
     /// Resets RTT, congestion control and MTU states.
     ///
     /// This is useful when it is known the underlying path has changed.

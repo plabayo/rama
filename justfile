@@ -280,6 +280,40 @@ qa-dial9:
     cargo clippy -p rama-quic --features dial9,rustls,ring --lib
     cargo nextest run -p rama-quic --features dial9,rustls,ring --lib
 
+# The QUIC interoperability peers: three upstream implementations, each its own cargo
+# project with its own lockfile so nothing about them reaches the workspace, plus the
+# sibling library holding the scenarios all three run.
+#
+# Each peer needs its own toolchain: quiche vendors and builds BoringSSL (cmake and a C++
+# compiler), and aioquic runs as a real Python process from a uv-locked environment.
+quic-interop-dirs := "rama-quic/e2e/interop-common rama-quic/e2e/quinn-interop rama-quic/e2e/quiche-interop rama-quic/e2e/aioquic-interop"
+
+# Formatting and lints for the shared scenarios and all three peer projects.
+qa-quic-interop-lint:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for dir in {{quic-interop-dirs}}; do
+        echo "== $dir"
+        (cd "$dir" && cargo fmt --all --check)
+        (cd "$dir" && cargo clippy --all-targets --locked -- -D warnings)
+    done
+
+# The locked Python environment the aioquic peer runs from.
+quic-interop-aioquic-env:
+    cd rama-quic/e2e/aioquic-interop && uv sync --frozen
+
+test-quic-interop-quinn:
+    cd rama-quic/e2e/quinn-interop && cargo test --locked --tests
+
+test-quic-interop-quiche:
+    cd rama-quic/e2e/quiche-interop && cargo test --locked --tests
+
+test-quic-interop-aioquic: quic-interop-aioquic-env
+    cd rama-quic/e2e/aioquic-interop && cargo test --locked --tests
+
+# Everything the CI job runs, in the same order.
+test-quic-interop: qa-quic-interop-lint test-quic-interop-quinn test-quic-interop-quiche test-quic-interop-aioquic
+
 # `qa-dial9` under `--cfg tokio_unstable`, where dial9 gets its full task coverage.
 qa-dial9-tokio-unstable:
     TOKIO_UNSTABLE=true just qa-dial9

@@ -22,9 +22,10 @@ data is opt-in in this crate, so the second is the default behaviour rather than
 
 `tests/keys.rs` has key updates, asked for from each side in turn, with the peer's key phase
 read back so the counter is not the only witness, and a control where no update is asked for.
-All three have Rama as the client: neither peer covers Rama as the server asking for or
-following an update, and quiche exposes no key update at all. Neither peer exposes a TLS
-keying-material exporter either, so exporters stay covered against Quinn.
+Those three have Rama as the client. `tests/key_cases.rs` runs the shared key family in **both**
+roles, so Rama as the server asking for an update, following one, and neither, is covered here;
+quiche still exposes no key update at all. Neither peer exposes a TLS keying-material exporter,
+so exporters stay covered against Quinn.
 
 ## Prerequisites
 
@@ -58,8 +59,9 @@ requires them to be the pinned ones, so an environment left from an older lockfi
 what it actually is. Nothing is skipped when a prerequisite is absent: a missing `uv` fails the
 run with the command to fix it.
 
-These are the commands CI should invoke from this directory. No CI job is wired up yet. The
-project is not part of the workspace, so `cargo test` at the repository root does not reach it.
+CI runs exactly these through `just test-quic-interop-aioquic`, in the
+`test-quic-interop-peers` job. The project is not part of the workspace, so `cargo test` at the
+repository root does not reach it.
 
 The controlled-child tests around the setup runner use `kill -0` and are compiled on Unix
 hosts only.
