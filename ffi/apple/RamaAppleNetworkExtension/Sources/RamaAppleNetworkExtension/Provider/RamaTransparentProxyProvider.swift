@@ -242,17 +242,16 @@ private let transientWriteBackpressurePosixCodes: Set<Int32> = [
 /// Returns true when `error` should make a writer pump retry the same chunk
 /// after a short backoff instead of tearing the flow down.
 func isTransientWriteBackpressure(_ error: Error) -> Bool {
-    let nsError = error as NSError
-    if nsError.domain == NSPOSIXErrorDomain,
-        transientWriteBackpressurePosixCodes.contains(Int32(nsError.code))
-    {
-        return true
+    // NWError bridges to domain "Network.NWError", not NSPOSIXErrorDomain.
+    // Inspect its typed case first so DNS/TLS errors with matching numeric
+    // codes cannot accidentally enter the TCP backpressure retry loop.
+    if let networkError = error as? NWError {
+        guard case .posix(let code) = networkError else { return false }
+        return transientWriteBackpressurePosixCodes.contains(code.rawValue)
     }
-    // `NWError` from `NWConnection.send` bridges to `NSError` with a `.posix`
-    // domain only when the underlying cause is a POSIX errno; the bridged
-    // domain in that case is also `NSPOSIXErrorDomain`, so the check above
-    // covers both `NEAppProxyFlow` and `NWConnection` write paths.
-    return false
+    let nsError = error as NSError
+    return nsError.domain == NSPOSIXErrorDomain
+        && transientWriteBackpressurePosixCodes.contains(Int32(clamping: nsError.code))
 }
 
 /// Initial / capped backoff delays (ms) for transient-error retry. Capped so
@@ -260,16 +259,6 @@ func isTransientWriteBackpressure(_ error: Error) -> Bool {
 /// is sub-second on a working flow, so 200 ms is plenty.
 let writeRetryInitialDelayMs: Int = 5
 let writeRetryMaxDelayMs: Int = 200
-
-/// Wall-clock cap on the transient-error retry loop. The retry `asyncAfter`
-/// is `[weak self]`, so a deallocated pump stops itself — but a flow still
-/// held by its registered ctx would re-arm forever, waiting on a
-/// non-transient error a dead app may never send. This bounds that; 5 s
-/// rides out a real h2 stall.
-///
-/// `var` for tests that need a short deadline to keep runtime bounded
-/// — same pattern as `defaultLingerCloseMs` / `defaultEgressWaitingToleranceMs`.
-nonisolated(unsafe) var writeRetryHardDeadlineMs: Int = 5_000
 
 /// Memory budget (in bytes) each writer pump (TCP response and TCP egress)
 /// keeps queued before it tells the Rust bridge to pause.
@@ -320,11 +309,13 @@ nonisolated(unsafe) var writePumpHwmLogThresholdBytes: Int = writePumpMaxPending
 /// log — same 50 % heuristic as the TCP byte threshold.
 let udpWritePumpHwmLogThreshold: Int = udpWritePumpMaxPending / 2
 
-/// Default wall-clock grace after a promoted flow reaches terminal before
+/// Base grace after a flow reaches terminal before
 /// Swift force-cancels its egress NWConnection. Applied when
 /// `RamaTcpEgressConnectOptions.has_linger_close_ms`
 /// is `false`; an explicit Rust-side `NwTcpConnectOptions.linger_close_timeout`
-/// overrides. A successful local FIN does not start this grace because the
+/// overrides this base. Session drain grace is at least the writer stall
+/// allowance on both Rust-mediated and promoted paths. A local FIN does not
+/// start this grace because the
 /// opposite response half may remain quiet and legally resume later.
 ///
 /// `var` for tests that need a short linger to keep ARC-leak-check
@@ -647,18 +638,6 @@ enum WritePumpLifecycle {
     /// `closeWhenDrained()` called; pump drains the queue then signals
     /// the FIN / `onDrainedClose` completion.
     case draining
-}
-
-/// Exponential-backoff retry state for write pumps.  `nil` means no
-/// retry sequence is active; the two scalar fields `retryDelayMs` /
-/// `retryDeadlineAt` live here so "am I retrying?" is a single
-/// nil-check rather than a dual-field read.
-struct WriteRetry {
-    /// Delay to use for the *next* scheduled retry (ms); doubles each
-    /// round up to `writeRetryMaxDelayMs`.
-    var delayMs: Int
-    /// Hard wall-clock deadline for the whole retry sequence.
-    var deadline: DispatchTime
 }
 
 func blockedFlowError() -> NSError {
@@ -1732,18 +1711,15 @@ func makeTcpNwParameters(_ opts: RamaTcpEgressConnectOptions?) -> NWParameters {
     return params
 }
 
-// Keepalive defaults: detection ≈ idle + interval*count = 30 s — under the
-// 60 s watchdog, above a sub-second Wi-Fi blip. Overridable per flow.
+// NOTE: Longer keepalive budgets also retain silent dead peers; validate paused-reader recovery and sleep/VPN cleanup before increasing this default.
 let defaultTcpKeepaliveIdleSec: Int = 15
 let defaultTcpKeepaliveIntervalSec: Int = 5
 let defaultTcpKeepaliveCount: Int = 3
 
 /// Apply TCP keepalive to the egress connection's `NWProtocolTCP.Options`.
-/// On by default (nil opts, or `tcp_keepalive_enabled`). Self-heals a
-/// silently-dead egress: after sleep / VPN reset / NAT rebind a connection
-/// can sit `.ready` over a black-holed path (NW fires neither `.waiting` nor
-/// `.failed`, viability stays true) and wedge until the 60 s watchdog;
-/// keepalive probes fail it → `.failed` → existing reaper → app reconnects.
+/// On by default (nil opts, or `tcp_keepalive_enabled`). Keeps idle NAT mappings
+/// alive and fails silent peers even when no writer has outstanding work.
+/// Explicit per-flow timing overrides are honored independently.
 /// Opt out with `tcp_keepalive_enabled = false`.
 private func applyTcpKeepalive(_ opts: RamaTcpEgressConnectOptions?, to tcp: NWProtocolTCP.Options)
 {

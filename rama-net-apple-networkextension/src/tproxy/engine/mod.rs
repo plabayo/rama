@@ -3,7 +3,7 @@ use std::{
     future::Future,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -197,8 +197,10 @@ const DEFAULT_UDP_CHANNEL_CAPACITY: usize = 32;
 /// bug clearing `pausedSignaled` without firing `onDrained`) so the
 /// bridge can't wedge waiting for a notification that never arrives.
 /// The flow closes with [`BridgeCloseReason::PausedTimeout`] on
-/// expiry.
-pub const DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT: Duration = Duration::from_mins(1);
+/// expiry. Keep this default aligned with Swift's
+/// `TcpWritePumpPolicy.defaultStallTimeoutMs`: intercepted and promoted
+/// writers must allow the same no-progress window.
+pub const DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT: Duration = Duration::from_mins(6);
 
 /// TCP response / upstream-write sink. Returns a [`TcpDeliverStatus`] so the
 /// stream's write side can pause when Swift's pending queue is full and
@@ -979,6 +981,13 @@ impl TransparentProxyTcpSession {
     pub fn on_egress_error(&mut self) {
         self.egress_read_failed.store(true, Ordering::Release);
         *self.egress_tx.lock() = None;
+    }
+
+    /// First abnormal stream terminal as a POSIX error code, or zero while no
+    /// stream error is recorded. Published before stream-close callbacks and
+    /// retained until session release, including after a preceding clean EOF.
+    pub fn terminal_error_code(&self) -> i32 {
+        self.signals.terminal_error_code()
     }
 
     /// Return the handler-supplied egress connect options, if any.
@@ -2679,6 +2688,7 @@ impl std::fmt::Display for BridgeDirection {
 /// write side can distinguish a fresh pause episode from a continuously-parked
 /// one (see `FfiBridgeStream::poll_write`).
 pub(crate) struct TcpPerFlowSignals {
+    terminal_error: AtomicI32,
     ingress_paused: AtomicBool,
     ingress_pause_gate: parking_lot::Mutex<()>,
     ingress_drain: AtomicWaker,
@@ -2692,6 +2702,7 @@ pub(crate) struct TcpPerFlowSignals {
 impl TcpPerFlowSignals {
     pub(crate) fn new() -> Self {
         Self {
+            terminal_error: AtomicI32::new(0),
             ingress_paused: AtomicBool::new(false),
             ingress_pause_gate: parking_lot::Mutex::new(()),
             ingress_drain: AtomicWaker::new(),
@@ -2701,6 +2712,34 @@ impl TcpPerFlowSignals {
             egress_drain: AtomicWaker::new(),
             egress_drain_gen: AtomicU64::new(0),
         }
+    }
+
+    pub(crate) fn terminal_error_code(&self) -> i32 {
+        self.terminal_error.load(Ordering::Acquire)
+    }
+
+    /// Unlike diagnostic first-reason cells, a clean half-close must not mask a
+    /// later write failure. Keep the first abnormal reason across both halves.
+    fn record_terminal_error(&self, reason: BridgeCloseReason) {
+        let code = match reason {
+            BridgeCloseReason::PeerEofLeft | BridgeCloseReason::PeerEofRight => return,
+            BridgeCloseReason::PausedTimeout
+            | BridgeCloseReason::IdleTimeout
+            | BridgeCloseReason::PeekTimeout
+            | BridgeCloseReason::HandlerDeadline
+            | BridgeCloseReason::FirstByteTimeout
+            | BridgeCloseReason::MaxLifetime => libc::ETIMEDOUT,
+            BridgeCloseReason::ReadErrorLeft | BridgeCloseReason::ReadErrorRight => {
+                libc::ECONNRESET
+            }
+            BridgeCloseReason::WriteErrorLeft | BridgeCloseReason::WriteErrorRight => libc::EPIPE,
+            BridgeCloseReason::Shutdown => libc::ECANCELED,
+            // Service panics and future abnormal reasons fail closed.
+            _ => libc::EIO,
+        };
+        let _previous =
+            self.terminal_error
+                .compare_exchange(0, code, Ordering::Release, Ordering::Relaxed);
     }
 
     fn paused(&self, dir: BridgeDirection) -> &AtomicBool {

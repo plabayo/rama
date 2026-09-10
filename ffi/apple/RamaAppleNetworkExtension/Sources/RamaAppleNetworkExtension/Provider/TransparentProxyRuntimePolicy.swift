@@ -25,6 +25,13 @@ enum FlowRefusalPolicy: Sendable, Equatable {
 /// provider replaces its engine while that pump is retiring.
 struct TcpWritePumpPolicy: Sendable, Equatable {
     let maxPendingBytes: Int
+    /// No successful transport write for this long while work is outstanding.
+    /// NE acceptance is observable; application consumption is not. Six minutes
+    /// deliberately tolerates a five-minute paused reader. Each direction owns
+    /// its own deadline, so an upload cannot hide a wedged download.
+    // Aligned with Rust's DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT.
+    static let defaultStallTimeoutMs: Int = 360_000
+    var stallTimeoutMs: Int = Self.defaultStallTimeoutMs
 
     var hwmLogThresholdBytes: Int { maxPendingBytes / 2 }
 }

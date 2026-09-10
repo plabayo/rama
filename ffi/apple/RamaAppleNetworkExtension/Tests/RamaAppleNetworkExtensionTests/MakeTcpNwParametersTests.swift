@@ -154,6 +154,17 @@ final class MakeTcpNwParametersTests: XCTestCase {
         XCTAssertEqual(tcp?.keepaliveCount, defaultTcpKeepaliveCount)
     }
 
+    /// Keep writer stall tolerance independent from the existing silent-peer
+    /// detection policy. A writer with no outstanding payload has no watchdog.
+    func testKeepalivePreservesSilentPeerDetectionDefaults() throws {
+        for opts in [nil, makeOpts(keepaliveEnabled: true)] {
+            let tcp = try XCTUnwrap(tcpOptions(makeTcpNwParameters(opts)))
+            XCTAssertEqual(tcp.keepaliveIdle, 15)
+            XCTAssertEqual(tcp.keepaliveInterval, 5)
+            XCTAssertEqual(tcp.keepaliveCount, 3)
+        }
+    }
+
     // MARK: - TCP tuning
 
     /// nil opts (handler supplied none) → noDelay ON. This is the

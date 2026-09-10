@@ -909,6 +909,14 @@ void rama_transparent_proxy_tcp_session_on_egress_error(
     RamaTransparentProxyTcpSession* session
 );
 
+/// First recorded abnormal Rust stream terminal as a POSIX error code, or zero.
+/// Published before the corresponding close callback, retained until session
+/// release, and not cleared by a clean EOF on either half. Query only while the
+/// session is alive; serialize with other session operations and release.
+int32_t rama_transparent_proxy_tcp_session_terminal_error_code(
+    const RamaTransparentProxyTcpSession* session
+);
+
 /// Swift → Rust: signal that the response writer pump (`TcpClientWritePump`)
 /// has drained capacity after `on_server_bytes` returned `RAMA_TCP_DELIVER_PAUSED`.
 ///

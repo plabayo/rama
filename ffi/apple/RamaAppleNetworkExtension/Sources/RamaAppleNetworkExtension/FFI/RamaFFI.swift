@@ -1156,6 +1156,17 @@ final class RamaTcpSessionHandle: @unchecked Sendable {
         rama_transparent_proxy_tcp_session_on_egress_error(s)
     }
 
+    /// First abnormal Rust stream close, including a paused-drain deadline.
+    /// Query on the flow queue before treating a Rust close as a clean FIN.
+    func terminalError() -> Error? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let s = sessionPtr else { return nil }
+        let code = rama_transparent_proxy_tcp_session_terminal_error_code(s)
+        guard code != 0 else { return nil }
+        return NSError(domain: NSPOSIXErrorDomain, code: Int(code))
+    }
+
     /// Wake the Rust bridge after our `TcpClientWritePump` drains capacity
     /// following a `.paused` return from `onServerBytes`. Idempotent —
     /// redundant calls collapse to a single permit on the Rust side.

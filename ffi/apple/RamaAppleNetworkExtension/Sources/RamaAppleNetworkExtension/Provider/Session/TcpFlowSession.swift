@@ -1,6 +1,7 @@
 import Foundation
 import Network
 import NetworkExtension
+import RamaAppleNEFFI
 
 /// Type-erased anchor `TransparentProxyCore` retains for each intercepted
 /// TCP flow. Mirror of `UdpFlowSessionAnchor`: lets the core own the
@@ -42,6 +43,8 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
     var timeoutWork: DispatchWorkItem?
     var waitingWork: DispatchWorkItem?
     var terminalDrainBackstop: DispatchWorkItem?
+    private let now: @Sendable () -> DispatchTime
+    private let drainBackstopScheduler: (@Sendable (DispatchQueue, Int, DispatchWorkItem) -> Void)?
     /// Rust can close both bridge directions in the same unwind. Keep each
     /// writer drain represented until its own completion; otherwise a fast
     /// egress FIN can disarm the backstop protecting a stuck client write.
@@ -88,7 +91,14 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
     var lingerCloseMs: UInt32 = defaultLingerCloseMs
     var egressEofGraceMs: UInt32 = defaultEgressEofGraceMs
 
-    init(core: TransparentProxyCore, flow: F, meta: RamaTransparentProxyFlowMetaBridge) {
+    init(
+        core: TransparentProxyCore, flow: F, meta: RamaTransparentProxyFlowMetaBridge,
+        now: @escaping @Sendable () -> DispatchTime = { .now() },
+        drainBackstopScheduler:
+            (@Sendable (DispatchQueue, Int, DispatchWorkItem) -> Void)? = nil
+    ) {
+        self.now = now
+        self.drainBackstopScheduler = drainBackstopScheduler
         self.core = core
         self.flow = flow
         self.meta = meta
@@ -368,12 +378,8 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
             core?.tcpConnectTimeoutMs(
                 base: requestedConnectTimeoutMs,
                 engineGeneration: engineGeneration) ?? requestedConnectTimeoutMs
-        lingerCloseMs = egressOpts?.lingerCloseMs ?? defaultLingerCloseMs
+        configureDrainPolicy(egressOpts)
         egressEofGraceMs = egressOpts?.egressEofGraceMs ?? defaultEgressEofGraceMs
-        // Mirror the linger budget onto the ctx so a later promote
-        // cutover can size the forwarder's drain backstop identically
-        // to this flow's `armTerminalDrainBackstop`.
-        ctx.lingerCloseMs = lingerCloseMs
         let nwParams = makeTcpNwParameters(egressOpts)
 
         if egressOpts?.parameters.preserve_original_meta_data ?? true {
@@ -395,6 +401,16 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
         installEgressStateHandler(connection: connection)
         connection.start(queue: flowQueue)
         return true
+    }
+
+    /// Both Rust-mediated and promoted tails receive the writer's no-progress
+    /// allowance. A shorter linger must not turn source EOF into truncation;
+    /// explicit longer linger values still apply to the terminal fallback.
+    func configureDrainPolicy(_ opts: RamaTcpEgressConnectOptions?) {
+        lingerCloseMs = max(
+            opts?.lingerCloseMs ?? defaultLingerCloseMs,
+            UInt32(clamping: effectiveRuntimePolicy.tcpWritePump.stallTimeoutMs))
+        ctx.lingerCloseMs = lingerCloseMs
     }
 
     func installConnectTimeout(connectTimeoutMs: UInt32, remoteHost: String) {
@@ -453,7 +469,7 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
             guard let self, self.ctx.isDone == false,
                 self.ctx.drainClosePending
             else { return }
-            let idleMs = self.ctx.idleMs()
+            let idleMs = self.ctx.idleMs(nowNs: self.now().uptimeNanoseconds)
             if idleMs < UInt64(self.lingerCloseMs) {
                 // Still moving bytes (live half-close) — check again once the
                 // current linger window could have elapsed quietly.
@@ -466,7 +482,11 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
             self.ctx.applyDrainBackstop()
         }
         terminalDrainBackstop = work
-        flowQueue.asyncAfter(deadline: .now() + .milliseconds(Int(afterMs)), execute: work)
+        if let drainBackstopScheduler {
+            drainBackstopScheduler(flowQueue, Int(afterMs), work)
+        } else {
+            flowQueue.asyncAfter(deadline: .now() + .milliseconds(Int(afterMs)), execute: work)
+        }
     }
 
     private func beginTerminalDrain(_ drain: TerminalDrain) -> Bool {
@@ -480,19 +500,21 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
     }
 
     private func finishTerminalDrain(_ drain: TerminalDrain) {
+        guard !closeForRustTerminalError() else { return }
         guard !ctx.isDone else { return }
         pendingTerminalDrains.remove(drain)
         completedTerminalDrains.insert(drain)
 
         if drain == .clientWriter, let close = pendingClientDrainClose {
-            if !close.wasOpened || close.error != nil {
+            let error = close.error ?? sessionHandle?.terminalError()
+            if !close.wasOpened || error != nil {
                 pendingClientDrainClose = nil
                 terminalDrainBackstop?.cancel()
                 terminalDrainBackstop = nil
                 ctx.drainClosePending = false
                 ctx.applyDrainedClose(
                     wasOpened: close.wasOpened,
-                    error: close.error)
+                    error: error)
                 return
             }
             ctx.applyClientWriteHalfClose()
@@ -519,13 +541,32 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
         ctx.applyFullyDrainedClose()
     }
 
+    /// Rust publishes abnormal bridge termination before its close callback.
+    /// Read it again after draining: timeout and write completion can race.
+    /// A timed-out Rust write may still own bytes never admitted by Swift.
+    private func closeForRustTerminalError() -> Bool {
+        guard !ctx.isDone else { return true }
+        guard let error = sessionHandle?.terminalError() else { return false }
+        // Rust read errors can follow an accepted response tail. Preserve that
+        // tail and report its error from the client-writer drain completion.
+        // A write timeout/error can leave bytes unaccepted in Rust and must
+        // instead abort, even if Swift's own queue has already become empty.
+        let posix = error as NSError
+        if posix.domain == NSPOSIXErrorDomain && posix.code == Int(ECONNRESET) {
+            return false
+        }
+        ctx.applyWriterTerminal(ctx.egressReadError ?? error)
+        return true
+    }
+
     func closeClientAfterRustDrain() {
+        guard !closeForRustTerminalError() else { return }
         guard beginTerminalDrain(.clientWriter) else { return }
         ctx.clientWritePump?.closeWhenDrained { [weak self] wasOpened in
             guard let self else { return }
             self.pendingClientDrainClose = ClientDrainClose(
                 wasOpened: wasOpened,
-                error: self.ctx.egressReadError)
+                error: self.ctx.egressReadError ?? self.sessionHandle?.terminalError())
             self.finishTerminalDrain(.clientWriter)
         }
         armTerminalDrainBackstop()
@@ -675,6 +716,7 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
     }
 
     func closeEgressAfterRustDrain() {
+        guard !closeForRustTerminalError() else { return }
         guard beginTerminalDrain(.egressWriter) else { return }
         ctx.egressWritePump?.closeWhenDrained { [weak self] in
             self?.finishTerminalDrain(.egressWriter)
@@ -850,6 +892,12 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
                     return
                 }
                 ctx.applyReadHardError(error)
+            },
+            shouldDeferAbnormalStop: { [weak ctx] in
+                // The writer owns a progress-aware deadline while draining an
+                // accepted response tail. Keep the short orphan fallback only
+                // when there is no writer work left to protect.
+                ctx?.clientWritePump?.hasOutstandingWork == true
             },
             onActivity: { [weak ctx] in
                 _ = ctx?.recordActivityUnlessPressureEvicted()

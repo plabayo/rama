@@ -43,6 +43,9 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
     /// Owner-level teardown after an abnormal stop's grace expires. When nil,
     /// retain the historical connection-only fallback for standalone users.
     private let onAbnormalStop: (@Sendable (Error) -> Void)?
+    private let shouldDeferAbnormalStop: @Sendable () -> Bool
+    private let abnormalStopScheduler:
+        (@Sendable (DispatchQueue, DispatchTimeInterval, DispatchWorkItem) -> Void)?
     private let onActivity: @Sendable () -> Void
     /// Scheduled abnormal-stop work, retained so the clean teardown or
     /// promotion path can invalidate it before its deadline.
@@ -73,6 +76,9 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
         onTerminalObserved: @escaping @Sendable () -> Void = {},
         onReadError: @escaping @Sendable (Error) -> Void = { _ in },
         onAbnormalStop: (@Sendable (Error) -> Void)? = nil,
+        shouldDeferAbnormalStop: @escaping @Sendable () -> Bool = { false },
+        abnormalStopScheduler:
+            (@Sendable (DispatchQueue, DispatchTimeInterval, DispatchWorkItem) -> Void)? = nil,
         onActivity: @escaping @Sendable () -> Void = {},
         writerMemoryBudget: WriterMemoryBudget = WriterMemoryBudget()
     ) {
@@ -83,6 +89,8 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
         self.onTerminalObserved = onTerminalObserved
         self.onReadError = onReadError
         self.onAbnormalStop = onAbnormalStop
+        self.shouldDeferAbnormalStop = shouldDeferAbnormalStop
+        self.abnormalStopScheduler = abnormalStopScheduler
         self.onActivity = onActivity
         self.writerMemoryBudget = writerMemoryBudget
         queue.setSpecific(key: queueKey, value: 1)
@@ -405,11 +413,19 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
     /// later. Rust's `on_server_closed` callback owns its eventual drain path.
     /// Both the callback and `connection` are captured strongly so an outer
     /// drop after a hard stop cannot lose the scheduled release action.
-    private func scheduleEgressReleaseLocked(_ error: Error) {
+    private func scheduleEgressReleaseLocked(
+        _ error: Error, after delay: DispatchTimeInterval? = nil
+    ) {
         guard eofWork == nil else { return }
         let conn = self.connection
         let teardown = self.onAbnormalStop
         let work = DispatchWorkItem { [weak self] in
+            if let self, self.shouldDeferAbnormalStop() {
+                self.eofWork = nil
+                // Never spin on an explicit zero grace while a writer drains.
+                self.scheduleEgressReleaseLocked(error, after: .milliseconds(1_000))
+                return
+            }
             if let teardown {
                 teardown(error)
             } else {
@@ -418,7 +434,11 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
             self?.eofWork = nil
         }
         eofWork = work
-        queue.asyncAfter(deadline: .now() + eofGraceDeadline, execute: work)
+        if let abnormalStopScheduler {
+            abnormalStopScheduler(queue, delay ?? eofGraceDeadline, work)
+        } else {
+            queue.asyncAfter(deadline: .now() + (delay ?? eofGraceDeadline), execute: work)
+        }
     }
 
     func cancel() {
