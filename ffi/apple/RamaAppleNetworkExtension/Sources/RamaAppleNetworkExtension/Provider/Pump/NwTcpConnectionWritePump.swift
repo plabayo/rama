@@ -4,6 +4,7 @@ import NetworkExtension
 import RamaAppleNEFFI
 
 final class NwTcpConnectionWritePump: @unchecked Sendable {
+    var stallTimeoutMs: Int { core.writePolicy.stallTimeoutMs }
     private let connection: any NwConnectionLike
     private let core: TcpWritePumpCore
     private let callbackQueue: DispatchQueue
@@ -44,6 +45,9 @@ final class NwTcpConnectionWritePump: @unchecked Sendable {
         onTerminal: @escaping @Sendable (Error) -> Void = { _ in },
         onFinComplete: @escaping @Sendable (Error?) -> Void = { _ in },
         onActivity: @escaping @Sendable () -> Bool = { true },
+        retryScheduler: TcpWritePumpRetryScheduler? = nil,
+        stallScheduler: TcpWritePumpRetryScheduler? = nil,
+        now: @escaping @Sendable () -> DispatchTime = { .now() },
         writerMemoryBudget: WriterMemoryBudget = WriterMemoryBudget(),
         writePolicy: TcpWritePumpPolicy =
             TcpWritePumpPolicy(maxPendingBytes: writePumpMaxPendingBytes)
@@ -75,6 +79,9 @@ final class NwTcpConnectionWritePump: @unchecked Sendable {
             },
             inlineWriteCompletionWhenOnQueue: true,
             onActivity: onActivity,
+            retryScheduler: retryScheduler,
+            stallScheduler: stallScheduler,
+            now: now,
             writerMemoryBudget: writerMemoryBudget,
             writePolicy: writePolicy
         )

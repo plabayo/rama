@@ -51,10 +51,11 @@ struct TcpFlowMaintenanceState {
 /// by maintenance scans are mirrored through one locked snapshot.
 final class TcpFlowContext: @unchecked Sendable {
     enum DiagnosticEvent: UInt8 {
-        case kernelOpen, clientEof, rustServerClosed, kernelWriteClose, egressFin
+        case kernelOpen, clientEof, rustServerClosed, kernelWriteClose, egressFin, forcedTeardown
 
         var name: String {
             switch self {
+            case .forcedTeardown: return "forced_teardown"
             case .kernelOpen: return "kernel_open_result"
             case .clientEof: return "client_read_eof"
             case .rustServerClosed: return "rust_server_closed"
@@ -284,7 +285,8 @@ final class TcpFlowContext: @unchecked Sendable {
     /// Each event appears at most once, including a duplicate terminal callback.
     func logDiagnostic(_ event: DiagnosticEvent, error: Error? = nil) {
         if let record = diagnosticRecord(for: event, error: error) {
-            RamaLog.debugPublic(record)
+            if error != nil { RamaLog.noticePublic(record) }
+            else { RamaLog.debugPublic(record) }
         }
     }
 
@@ -307,6 +309,12 @@ final class TcpFlowContext: @unchecked Sendable {
             case NSPOSIXErrorDomain: errorKind = "posix"
             case NSURLErrorDomain: errorKind = "url"
             case NEAppProxyErrorDomain: errorKind = "app_proxy"
+            case "rama.tproxy.engine-detached": errorKind = "engine_detached"
+            case "rama.tproxy.drain-backstop": errorKind = "drain_backstop"
+            case "rama.tproxy.idle-timeout": errorKind = "idle_timeout"
+            case "rama.tproxy.pressure-evicted": errorKind = "pressure_evicted"
+            case "rama.tproxy.wake-dead-path": errorKind = "dead_path"
+            case "rama.tproxy.writer-memory": errorKind = "writer_memory"
             default: errorKind = "other"
             }
             errorCode = value.code
@@ -616,6 +624,7 @@ final class TcpFlowContext: @unchecked Sendable {
     /// for writes" libnetworkextension errors under stress.
     private func applyFullTeardown(error: Error, driveForwarder: Bool) {
         guard !isDone else { return }
+        logDiagnostic(.forcedTeardown, error: error)
         isDone = true
         if let token = admissionToken {
             core?.finishTcpStart(token, outcome: .failed)

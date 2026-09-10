@@ -18,6 +18,9 @@ final class TcpClientWritePump: @unchecked Sendable {
         onTerminalError: @escaping @Sendable (Error) -> Void,
         onDrained: @escaping @Sendable () -> Void,
         onActivity: @escaping @Sendable () -> Bool = { true },
+        retryScheduler: TcpWritePumpRetryScheduler? = nil,
+        stallScheduler: TcpWritePumpRetryScheduler? = nil,
+        now: @escaping @Sendable () -> DispatchTime = { .now() },
         writerMemoryBudget: WriterMemoryBudget = WriterMemoryBudget(),
         writePolicy: TcpWritePumpPolicy =
             TcpWritePumpPolicy(maxPendingBytes: writePumpMaxPendingBytes)
@@ -36,6 +39,9 @@ final class TcpClientWritePump: @unchecked Sendable {
                 ))
             },
             onActivity: onActivity,
+            retryScheduler: retryScheduler,
+            stallScheduler: stallScheduler,
+            now: now,
             writerMemoryBudget: writerMemoryBudget,
             writePolicy: writePolicy
         )
@@ -80,6 +86,7 @@ final class TcpClientWritePump: @unchecked Sendable {
         core.enqueuePrecharged(payload)
     }
 
+    var stallTimeoutMs: Int { core.writePolicy.stallTimeoutMs }
     var maxPendingBytes: Int { core.writePolicy.maxPendingBytes }
     var aggregateBudget: WriterMemoryBudget { core.aggregateBudget }
 

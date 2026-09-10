@@ -185,6 +185,8 @@ final class TcpDirectForwarder: @unchecked Sendable {
     private var c2sWritePaused: Bool = false
     /// S→C counterpart for the client write pump.
     private var s2cWritePaused: Bool = false
+    private let pauseScheduler: TcpWritePumpRetryScheduler
+    private var pauseCheckArmed = false
 
     /// `true` once `cancel()` has been called externally. All
     /// further state transitions are dropped — `onTerminal`
@@ -228,12 +230,16 @@ final class TcpDirectForwarder: @unchecked Sendable {
         writeChunkLimit: Int =
             writePumpMaxPendingBytes,
         closeClientWrite: @escaping (Error?) -> Void = { _ in },
+        pauseScheduler: TcpWritePumpRetryScheduler? = nil,
         onTerminal: @escaping () -> Void
     ) {
         precondition(
             clientWritePump.aggregateBudget === writerMemoryBudget
                 && egressWritePump.aggregateBudget === writerMemoryBudget,
             "direct forwarder and both TCP writers must share one memory envelope")
+        self.pauseScheduler = pauseScheduler ?? { [queue] delayMs, work in
+            queue.asyncAfter(deadline: .now() + .milliseconds(delayMs), execute: work)
+        }
         self.flow = flow
         self.connection = connection
         self.clientWritePump = clientWritePump
@@ -521,13 +527,12 @@ final class TcpDirectForwarder: @unchecked Sendable {
                 // Head stays in buffer. Pump's drain edge will
                 // re-enter via `onEgressPumpDrained`.
                 c2sWritePaused = true
+                armPauseCheckLocked()
                 return
             case .closed:
-                // Downstream gone — direction is effectively
-                // dead. Skip the read loop, transition straight
-                // to finishing → finished.
-                releaseBufferLocked(&c2sBuffer)
-                finishC2SLocked()
+                // A closed destination with a retained source tail is loss,
+                // never a successful drain/FIN.
+                failReadLocked(Self.closedWriterError())
                 return
             }
         }
@@ -561,10 +566,10 @@ final class TcpDirectForwarder: @unchecked Sendable {
                 if !payload.isEmpty { s2cBuffer.pushFront(payload) }
             case .paused:
                 s2cWritePaused = true
+                armPauseCheckLocked()
                 return
             case .closed:
-                releaseBufferLocked(&s2cBuffer)
-                finishS2CLocked()
+                failReadLocked(Self.closedWriterError())
                 return
             }
         }
@@ -576,6 +581,34 @@ final class TcpDirectForwarder: @unchecked Sendable {
         if s2cReadDrained && !inFlightReceive {
             scheduleServerReadLocked()
         }
+    }
+
+    /// Drain notifications are an optimization, not the sole liveness edge.
+    /// Retrying the retained head is idempotent: only `.accepted` advances it.
+    /// One weak, self-quiescing timer services either paused direction. The
+    /// destination pump independently bounds no-progress time, including a
+    /// callback that never arrives and aggregate-budget waits.
+    private func armPauseCheckLocked() {
+        guard !cancelled, !terminalFired, !pauseCheckArmed,
+            c2sWritePaused || s2cWritePaused else { return }
+        pauseCheckArmed = true
+        pauseScheduler(1_000) { [weak self] in
+            guard let self else { return }
+            self.queue.async { [weak self] in
+                guard let self else { return }
+                self.pauseCheckArmed = false
+                guard !self.cancelled, !self.terminalFired else { return }
+                if self.c2sWritePaused { self.flushC2SBufferLocked() }
+                if self.s2cWritePaused { self.flushS2CBufferLocked() }
+                self.armPauseCheckLocked()
+            }
+        }
+    }
+
+    private static func closedWriterError() -> Error {
+        NSError(domain: NSPOSIXErrorDomain, code: Int(EPIPE), userInfo: [
+            NSLocalizedDescriptionKey: "TCP destination closed with unforwarded source bytes"
+        ])
     }
 
     // ── Pump drain hooks ─────────────────────────────────────────
