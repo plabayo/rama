@@ -80,14 +80,28 @@ impl BandwidthEstimation {
         self.max_filter.get()
     }
 
+    /// Tests: the estimate a measurement would leave, without driving one.
+    #[cfg(test)]
+    pub(super) fn update_max_for_test(&mut self, bandwidth: u64) {
+        self.max_filter.update_max(0, bandwidth);
+    }
+
+    /// Bytes per second from bytes over a span, `None` for a span of no time.
+    ///
+    /// The multiplication and the span are both wider than the rate, so a whole window's worth
+    /// of bytes over a nanosecond gives the largest rate a `u64` holds rather than wrapping,
+    /// and a span longer than a `u64` of nanoseconds is used as it is rather than truncated.
     pub(crate) const fn bw_from_delta(bytes: u64, delta: Duration) -> Option<u64> {
         let window_duration_ns = delta.as_nanos();
         if window_duration_ns == 0 {
             return None;
         }
-        let b_ns = bytes * 1_000_000_000;
-        let bytes_per_second = b_ns / (window_duration_ns as u64);
-        Some(bytes_per_second)
+        let per_second = (bytes as u128 * 1_000_000_000) / window_duration_ns;
+        Some(if per_second > u64::MAX as u128 {
+            u64::MAX
+        } else {
+            per_second as u64
+        })
     }
 }
 
@@ -98,5 +112,55 @@ impl Display for BandwidthEstimation {
             "{:.3} MB/s",
             self.get_estimate() as f32 / octets::mib(1) as f32
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Bytes over a span, at the edges of the range the public configuration accepts.
+    #[test]
+    fn a_rate_holds_its_units_across_the_range() {
+        assert_eq!(
+            BandwidthEstimation::bw_from_delta(1200, Duration::from_millis(1)),
+            Some(1_200_000),
+            "1200 bytes in a millisecond is 1.2 MB/s"
+        );
+        assert_eq!(
+            BandwidthEstimation::bw_from_delta(0, Duration::from_secs(1)),
+            Some(0)
+        );
+        assert_eq!(
+            BandwidthEstimation::bw_from_delta(1200, Duration::ZERO),
+            None,
+            "no time is no rate, not a division"
+        );
+        assert_eq!(
+            BandwidthEstimation::bw_from_delta(u64::MAX, Duration::from_nanos(1)),
+            Some(u64::MAX),
+            "the largest window over the shortest span saturates rather than wrapping"
+        );
+        assert_eq!(
+            BandwidthEstimation::bw_from_delta(u64::MAX, Duration::from_secs(1)),
+            Some(u64::MAX)
+        );
+        // Exactly 2^64 nanoseconds, the span that a narrowing denominator turns into zero.
+        let overflowing_denominator = Duration::new(18_446_744_073, 709_551_616);
+        assert_eq!(overflowing_denominator.as_nanos(), 1u128 << 64);
+        assert_eq!(
+            BandwidthEstimation::bw_from_delta(1200, overflowing_denominator),
+            Some(0),
+            "a span that does not fit a u64 of nanoseconds is a span, not a division by zero"
+        );
+
+        // A span longer than a u64 of nanoseconds: 600 years is about 1.9e19 ns.
+        let ancient = Duration::from_secs(600 * 365 * 24 * 60 * 60);
+        assert!(ancient.as_nanos() > u128::from(u64::MAX));
+        assert_eq!(
+            BandwidthEstimation::bw_from_delta(u64::MAX, ancient),
+            Some(974_904_028),
+            "and the span is used as it is rather than truncated into the rate"
+        );
     }
 }

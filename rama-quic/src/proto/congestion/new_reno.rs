@@ -1,4 +1,3 @@
-use std::any::Any;
 use std::sync::Arc;
 
 use super::{BASE_DATAGRAM_SIZE, Controller, ControllerFactory};
@@ -55,7 +54,7 @@ impl Controller for NewReno {
 
         if self.window < self.ssthresh {
             // Slow start
-            self.window += bytes;
+            self.window = self.window.saturating_add(bytes);
 
             if self.window >= self.ssthresh {
                 // Exiting slow start
@@ -73,11 +72,11 @@ impl Controller for NewReno {
             // for every round trip.
             // This mechanism is called Appropriate Byte Counting in
             // https://tools.ietf.org/html/rfc3465
-            self.bytes_acked += bytes;
+            self.bytes_acked = self.bytes_acked.saturating_add(bytes);
 
             if self.bytes_acked >= self.window {
                 self.bytes_acked -= self.window;
-                self.window += self.current_mtu;
+                self.window = self.window.saturating_add(self.current_mtu);
             }
         }
     }
@@ -127,10 +126,6 @@ impl Controller for NewReno {
     fn initial_window(&self) -> u64 {
         self.config.initial_window
     }
-
-    fn into_any(self: Box<Self>) -> Box<dyn Any> {
-        self
-    }
 }
 
 /// Configuration for the `NewReno` congestion controller
@@ -146,12 +141,6 @@ impl NewRenoConfig {
     /// Recommended value: `min(10 * max_datagram_size, max(2 * max_datagram_size, 14720))`
     pub(crate) fn initial_window(&mut self, value: u64) -> &mut Self {
         self.initial_window = value;
-        self
-    }
-
-    /// Reduction in congestion window when a new loss event is detected.
-    pub(crate) fn loss_reduction_factor(&mut self, value: f32) -> &mut Self {
-        self.loss_reduction_factor = value;
         self
     }
 }

@@ -10,6 +10,7 @@
 #[cfg(feature = "qlog")]
 use std::sync::Arc;
 
+#[cfg(feature = "qlog")]
 use parking_lot::Mutex;
 use std::time::Duration;
 

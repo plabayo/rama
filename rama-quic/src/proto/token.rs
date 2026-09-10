@@ -39,9 +39,9 @@ pub trait TokenLog: Send + Sync {
     /// - `nonce`: A server-generated random unique value for the token.
     /// - `issued`: The time the server issued the token.
     /// - `lifetime`: The expiration time of address validation tokens sent via NEW_TOKEN frames,
-    ///   as configured by [`ServerValidationTokenConfig::lifetime`][1].
+    ///   as configured by [`ValidationTokenConfig::set_lifetime`][1].
     ///
-    /// [1]: crate::proto::ValidationTokenConfig::lifetime
+    /// [1]: crate::proto::ValidationTokenConfig::set_lifetime
     ///
     /// ## Security & Performance
     ///

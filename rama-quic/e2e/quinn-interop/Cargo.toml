@@ -11,8 +11,9 @@ publish = false
 [dependencies]
 
 [dev-dependencies]
-rama = { path = "../../..", features = ["quic", "rustls", "ring"] }
+rama = { path = "../../..", features = ["quic", "quic-qlog", "rustls", "ring"] }
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 sha2 = "0.10"
+serde_json = "1"

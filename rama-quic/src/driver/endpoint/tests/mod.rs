@@ -419,7 +419,7 @@ fn a_wildcard_socket_covers_a_tuple_only_with_source_selection() {
     let concrete = ([127, 0, 0, 1], 4433).into();
     let other_port = ([127, 0, 0, 1], 4434).into();
 
-    let mut registry =
+    let registry =
         crate::driver::sockets::SocketRegistry::new(Socket::new(wildcard(true)).unwrap());
     let id = registry.active_id();
     assert!(
@@ -431,7 +431,7 @@ fn a_wildcard_socket_covers_a_tuple_only_with_source_selection() {
         "another port is a different path"
     );
 
-    let mut registry =
+    let registry =
         crate::driver::sockets::SocketRegistry::new(Socket::new(wildcard(false)).unwrap());
     let id = registry.active_id();
     assert!(
@@ -473,6 +473,7 @@ fn response_queued_between_polls_wakes_the_endpoint() {
     assert_eq!(captured.lock().len(), 1);
 }
 
+#[cfg(feature = "rustls")]
 pub(super) fn version_negotiation_probe() -> Vec<u8> {
     let mut packet = vec![
         0x80, 0x0a, 0x1a, 0x2a, 0x3a, 4, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0,

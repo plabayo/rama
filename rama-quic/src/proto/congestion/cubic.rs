@@ -1,4 +1,3 @@
-use std::any::Any;
 use std::cmp;
 use std::sync::Arc;
 
@@ -110,7 +109,7 @@ impl Controller for Cubic {
 
         if self.window < self.ssthresh {
             // Slow start
-            self.window += bytes;
+            self.window = self.window.saturating_add(bytes);
         } else {
             // Congestion avoidance.
             let ca_start_time;
@@ -164,7 +163,7 @@ impl Controller for Cubic {
             // Keep the excess credit for later ACKs instead of discarding it.
             // https://www.rfc-editor.org/rfc/rfc9002.html#section-7.3.3
             if self.cubic_state.cwnd_inc >= self.current_mtu {
-                self.window += self.current_mtu;
+                self.window = self.window.saturating_add(self.current_mtu);
                 self.cubic_state.cwnd_inc -= self.current_mtu;
             }
         }
@@ -243,10 +242,6 @@ impl Controller for Cubic {
 
     fn initial_window(&self) -> u64 {
         self.config.initial_window
-    }
-
-    fn into_any(self: Box<Self>) -> Box<dyn Any> {
-        self
     }
 }
 

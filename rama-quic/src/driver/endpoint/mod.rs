@@ -29,9 +29,11 @@ use crate::driver::{
     Instant, now,
     udp::{Sender, Socket, proto_ecn},
 };
+#[cfg(all(test, any(feature = "aws-lc", feature = "ring")))]
+use crate::proto::{self as proto};
 use crate::proto::{
-    self as proto, ClientConfig, ConnectError, ConnectionError, ConnectionHandle, DatagramEvent,
-    EndpointEvent, ReceiveQueueLimits, ServerConfig,
+    ClientConfig, ConnectError, ConnectionError, ConnectionHandle, DatagramEvent, EndpointEvent,
+    ReceiveQueueLimits, ServerConfig,
 };
 use parking_lot::Mutex;
 use pin_project_lite::pin_project;
@@ -39,8 +41,6 @@ use rama_core::bytes::{Bytes, BytesMut};
 use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{Instrument, Span};
 use rama_net::address::{SocketAddress, ip::IntoCanonicalIpAddr as _};
-#[cfg(any(feature = "aws-lc", feature = "ring"))]
-use rama_net::socket::core::{Domain, Protocol, Socket as CoreSocket, Type};
 use rama_udp::{
     DatagramError, DatagramMetadata, UdpPacketSocket, UdpSocketConfig, UdpSocketFactory,
 };
@@ -173,7 +173,7 @@ impl Endpoint {
     }
 
     /// Tests: the addresses this endpoint still advertises as preferred.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
     pub(crate) fn advertised_preferred(&self) -> Vec<SocketAddr> {
         self.inner.state.lock().inner.advertised_preferred()
     }
@@ -515,30 +515,6 @@ impl Endpoint {
 
     /// Bind a new socket through Rama's shared UDP construction and switch to it.
     ///
-    /// See [`Endpoint::rebind_abstract()`] for what the switch means for existing connections. On
-    /// error nothing changes and the previous socket stays active.
-    pub async fn rebind(
-        &self,
-        address: impl Into<SocketAddress>,
-        socket: UdpSocketConfig,
-    ) -> Result<(), DatagramError> {
-        let socket = UdpSocketFactory::new(socket).bind(address.into()).await?;
-        self.rebind_packet_socket(socket)
-            .map_err(DatagramError::from)
-    }
-
-    /// Switch to a packet socket the caller prepared.
-    pub fn rebind_packet_socket(&self, socket: UdpPacketSocket) -> io::Result<()> {
-        self.rebind_abstract(Socket::new(socket)?)
-    }
-
-    /// Switch to a bound standard socket.
-    pub fn rebind_std_socket(&self, socket: std::net::UdpSocket) -> io::Result<()> {
-        self.rebind_abstract(Socket::from_std(socket)?)
-    }
-
-    /// Switch to a new UDP socket
-    ///
     /// New connections and attempts use the new socket at once. Each existing connection moves
     /// to it only when QUIC allows the address change (RFC 9000 §9): a socket bound to the same
     /// address is adopted right away; a client whose handshake is confirmed, whose peer allows
@@ -550,6 +526,29 @@ impl Endpoint {
     /// recent Retry depend on it, up to a bounded number of retained sockets.
     ///
     /// On error, nothing changes and the previous socket stays active.
+    pub async fn rebind(
+        &self,
+        address: impl Into<SocketAddress>,
+        socket: UdpSocketConfig,
+    ) -> Result<(), DatagramError> {
+        let socket = UdpSocketFactory::new(socket).bind(address.into()).await?;
+        self.rebind_packet_socket(socket)
+            .map_err(DatagramError::from)
+    }
+
+    /// Switch to a packet socket the caller prepared. [`Endpoint::rebind`] describes what the
+    /// switch means for existing connections.
+    pub fn rebind_packet_socket(&self, socket: UdpPacketSocket) -> io::Result<()> {
+        self.rebind_abstract(Socket::new(socket)?)
+    }
+
+    /// Switch to a bound standard socket. [`Endpoint::rebind`] describes what the switch means
+    /// for existing connections.
+    pub fn rebind_std_socket(&self, socket: std::net::UdpSocket) -> io::Result<()> {
+        self.rebind_abstract(Socket::from_std(socket)?)
+    }
+
+    /// Switch to a new UDP socket, as [`Endpoint::rebind`] describes.
     pub(crate) fn rebind_abstract(&self, socket: Socket) -> io::Result<()> {
         let addr = socket.local_addr();
         let mut inner = self.inner.state.lock();
@@ -639,6 +638,18 @@ impl Endpoint {
                     .filter_map(|id| sockets.local_addr(id))
                     .collect()
             })
+            .unwrap_or_default()
+    }
+
+    /// Local addresses this endpoint advertises as its preferred ones (RFC 9000 §9.6), in the
+    /// order they were bound. Empty unless [`advertise_socket`](Self::advertise_socket) was
+    /// used.
+    pub fn advertised_addrs(&self) -> Vec<SocketAddr> {
+        let state = self.inner.state.lock();
+        state
+            .sockets
+            .live()
+            .map(|sockets| sockets.advertised_addrs().collect())
             .unwrap_or_default()
     }
 
@@ -902,6 +913,7 @@ async fn bind_advertised(
 /// The socket configuration a client binds with: Rama's UDP defaults, plus a request for a
 /// dual-stack socket on an IPv6 address that the platform may refuse. A refusal leaves the
 /// platform's own `IPV6_V6ONLY` default in place and the socket bound.
+#[cfg(any(feature = "aws-lc", feature = "ring"))]
 fn client_socket_config(address: SocketAddress) -> UdpSocketConfig {
     let mut config = UdpSocketConfig::default();
     if address.ip_addr.is_ipv6() {
@@ -998,14 +1010,14 @@ impl EndpointInner {
 impl EndpointRef {
     /// Tests: stop applying route installations, so a datagram that needs one can be observed
     /// waiting instead of leaving.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
     pub(crate) fn hold_route_installs(&self) {
         self.0.state.lock().hold_route_installs = true;
     }
 
     /// Tests: answer the route installations put aside with a refusal, as a full routing table
     /// does, so the connection fails rather than waiting for a route that cannot exist.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
     pub(crate) fn refuse_route_installs(&self) {
         let mut state = self.0.state.lock();
         state.hold_route_installs = false;
@@ -1022,7 +1034,7 @@ impl EndpointRef {
 
     /// Tests: apply the route installations put aside, and hand each connection the
     /// acknowledgement the endpoint answers with, as it would have received it otherwise.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
     pub(crate) fn release_route_installs(&self) {
         let mut state = self.0.state.lock();
         state.hold_route_installs = false;
@@ -1374,7 +1386,7 @@ impl State {
     }
 
     /// Queue a stateless response on the active socket (tests).
-    #[cfg(test)]
+    #[cfg(all(test, any(feature = "aws-lc", feature = "ring")))]
     fn respond_active(&mut self, transmit: proto::Transmit, response_buffer: &[u8]) {
         let Some(id) = self.sockets.live().map(SocketRegistry::active_id) else {
             return;
@@ -1382,6 +1394,7 @@ impl State {
         self.respond(id, transmit, response_buffer);
     }
 
+    #[cfg(all(test, any(feature = "aws-lc", feature = "ring")))]
     /// Queue a stateless response on socket `on` and wake the driver to send it.
     fn respond(&mut self, on: SocketId, transmit: proto::Transmit, response_buffer: &[u8]) {
         self.sockets.respond(on, transmit, response_buffer);
@@ -1904,7 +1917,7 @@ struct PollProgress {
     error: Option<io::Error>,
 }
 
-#[cfg(test)]
+#[cfg(all(test, any(feature = "aws-lc", feature = "ring")))]
 impl PollProgress {
     /// Tests: the poll as a result, discarding progress when the socket failed.
     fn into_result(self) -> io::Result<Self> {

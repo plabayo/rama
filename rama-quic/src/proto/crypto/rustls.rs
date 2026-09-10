@@ -6,12 +6,16 @@ use rama_crypto::dep::aws_lc_rs::aead;
 #[cfg(feature = "ring")]
 use rama_crypto::dep::ring::aead;
 use rama_net::{address::Domain, tls::ApplicationProtocol};
-pub(crate) use rama_tls_rustls::dep::rustls::Error;
 use rama_tls_rustls::dep::rustls::{
-    self, CipherSuite,
-    client::danger::ServerCertVerifier,
-    pki_types::{CertificateDer, PrivateKeyDer, ServerName},
+    self,
+    pki_types::ServerName,
     quic::{Connection, HeaderProtectionKey, KeyChange, PacketKey, Secrets, Suite, Version},
+};
+#[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+use rama_tls_rustls::dep::rustls::{
+    CipherSuite,
+    client::danger::ServerCertVerifier,
+    pki_types::{CertificateDer, PrivateKeyDer},
 };
 
 use crate::proto::{
@@ -298,18 +302,6 @@ impl crypto::HeaderKey for Box<dyn HeaderProtectionKey> {
     }
 }
 
-/// Authentication data for (rustls) TLS session
-pub(crate) struct HandshakeData {
-    /// The negotiated application protocol, if ALPN is in use
-    ///
-    /// Guaranteed to be set if a nonempty list of protocols was specified for this connection.
-    pub(crate) protocol: Option<Vec<u8>>,
-    /// The server name specified by the client, if any
-    ///
-    /// Always `None` for outgoing connections
-    pub(crate) server_name: Option<String>,
-}
-
 /// A QUIC-compatible TLS client configuration
 ///
 /// A `QuicClientConfig` with reasonable defaults is constructed implicitly within
@@ -334,6 +326,7 @@ pub(crate) struct QuicClientConfig {
 }
 
 impl QuicClientConfig {
+    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
     /// Initialize a sane QUIC-compatible TLS client configuration
     ///
     /// QUIC requires that TLS 1.3 be enabled. Advanced users can use any [`rama_tls_rustls::dep::rustls::ClientConfig`] that
@@ -353,6 +346,7 @@ impl QuicClientConfig {
         }
     }
 
+    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
     /// Initialize a QUIC-compatible TLS client configuration with a separate initial cipher suite
     ///
     /// This is useful if you want to avoid the initial cipher suite for traffic encryption.
@@ -370,6 +364,7 @@ impl QuicClientConfig {
         }
     }
 
+    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
     pub(crate) fn inner(
         verifier: Arc<dyn ServerCertVerifier>,
     ) -> rama_tls_rustls::dep::rustls::ClientConfig {
@@ -446,8 +441,8 @@ impl TryFrom<Arc<rama_tls_rustls::dep::rustls::ClientConfig>> for QuicClientConf
 
 /// The initial cipher suite (AES-128-GCM-SHA256) is not available
 ///
-/// When the cipher suite is supplied `with_initial()`, it must be
-/// [`CipherSuite::TLS13_AES_128_GCM_SHA256`]. When the cipher suite is derived from a config's
+/// A configuration built with its own initial cipher suite must use
+/// `TLS13_AES_128_GCM_SHA256`. When the cipher suite is derived from a config's
 /// [`CryptoProvider`][provider], that provider must reference a cipher suite with the same ID.
 ///
 /// [provider]: rama_tls_rustls::dep::rustls::crypto::CryptoProvider
@@ -487,6 +482,7 @@ pub(crate) struct QuicServerConfig {
 }
 
 impl QuicServerConfig {
+    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
     #[expect(
         clippy::expect_used,
         reason = "`inner` is built on `configured_provider()`, whose ring and aws-lc defaults include TLS13_AES_128_GCM_SHA256"
@@ -505,6 +501,7 @@ impl QuicServerConfig {
         })
     }
 
+    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
     /// Initialize a QUIC-compatible TLS client configuration with a separate initial cipher suite
     ///
     /// This is useful if you want to avoid the initial cipher suite for traffic encryption.
@@ -522,6 +519,7 @@ impl QuicServerConfig {
         }
     }
 
+    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
     /// Initialize a sane QUIC-compatible TLS server configuration
     ///
     /// QUIC requires that TLS 1.3 be enabled, and that the maximum early data size is either 0 or

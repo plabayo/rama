@@ -167,7 +167,7 @@ impl core::fmt::Display for RetryError {
                 f.write_str("retry requires an active incoming attempt without a previous Retry")
             }
             RetryRefused::NoServerConfig => f.write_str("retry requires a server configuration"),
-            RetryRefused::TokenSealing(_) => f.write_str("the retry token could not be sealed"),
+            RetryRefused::TokenSealing => f.write_str("the retry token could not be sealed"),
             RetryRefused::LifetimeUnrepresentable => f.write_str(
                 "the configured retry token lifetime cannot be represented on the clock",
             ),
@@ -179,12 +179,14 @@ impl std::error::Error for RetryError {}
 
 impl RetryError {
     /// Why the Retry was not sent
-    pub(crate) fn reason(&self) -> RetryRefused {
+    #[must_use]
+    pub fn reason(&self) -> RetryRefused {
         self.reason
     }
 
-    /// Get the [`Incoming`]
-    pub(crate) fn into_incoming(self) -> Incoming {
+    /// Take the [`Incoming`] back, to accept, refuse or ignore it instead.
+    #[must_use]
+    pub fn into_incoming(self) -> Incoming {
         *self.incoming
     }
 }

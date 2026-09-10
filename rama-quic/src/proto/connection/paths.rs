@@ -74,8 +74,7 @@ impl PathData {
         config: &TransportConfig,
     ) -> Self {
         let congestion = config
-            .congestion_controller_factory
-            .clone()
+            .congestion_factory()
             .build(now, config.get_initial_mtu());
         Self {
             remote,
@@ -157,8 +156,7 @@ impl PathData {
     pub(super) fn reset(&mut self, now: Instant, config: &TransportConfig) {
         self.rtt = RttEstimator::new(config.initial_rtt);
         self.congestion = config
-            .congestion_controller_factory
-            .clone()
+            .congestion_factory()
             .build(now, config.get_initial_mtu());
         self.mtud.reset(config.get_initial_mtu(), config.min_mtu);
     }

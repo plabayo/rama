@@ -14,6 +14,7 @@ impl crypto::HmacKey for hmac::Key {
         32
     }
 
+    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
     fn verify(&self, data: &[u8], signature: &[u8]) -> Result<(), CryptoError> {
         Ok(hmac::verify(self, data, signature)?)
     }

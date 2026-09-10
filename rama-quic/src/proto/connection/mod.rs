@@ -85,8 +85,7 @@ pub use streams::StreamsState;
 #[cfg(not(fuzzing))]
 use streams::StreamsState;
 pub(crate) use streams::{
-    Chunks, FinishError, ReadError, ReadableError, RecvStream, ShouldTransmit, StreamEvent,
-    WriteError,
+    Chunks, FinishError, ReadError, ReadableError, RecvStream, StreamEvent, WriteError,
 };
 pub use streams::{ClosedStream, Written};
 #[cfg(fuzzing)]
@@ -95,7 +94,6 @@ pub use streams::{SendStream, Streams};
 pub(crate) use streams::{SendStream, Streams};
 
 mod timer;
-use crate::proto::congestion::Controller;
 use timer::{Timer, TimerTable};
 
 /// Protocol state and logic for a single QUIC connection
@@ -217,7 +215,6 @@ struct PathCid {
     local: Option<SocketAddr>,
     id: ConnectionId,
     seq: u64,
-    reset_token: Option<ResetToken>,
 }
 
 /// A client's attempt at the server's preferred address (RFC 9000 §9.6.2): a path of its own,
@@ -226,10 +223,9 @@ struct PreferredCandidate {
     remote: SocketAddr,
     /// The identifier reserved for this path.
     cid: ConnectionId,
-    /// Its sequence number and stateless reset token: once a probe has been transmitted, that
-    /// token can reset this connection from this path (RFC 9000 §10.3.1).
+    /// Its sequence number. The token that resets this connection from this path once a probe
+    /// has been transmitted (RFC 9000 §10.3.1) is kept with the identifier itself.
     seq: u64,
-    reset_token: Option<ResetToken>,
     /// Challenge data of the probes the network has taken, and how many that is.
     sent: [u64; MAX_PREFERRED_PROBES],
     transmitted: usize,
@@ -1388,7 +1384,6 @@ impl Connection {
             local,
             id: cid.id,
             seq: cid.seq,
-            reset_token: cid.reset_token,
         });
         trace!(%remote, ?local, seq = cid.seq, "bound a connection ID to that path");
         Some((cid.id, cid.seq))
@@ -1643,7 +1638,10 @@ impl Connection {
         let mut stats = self.stats;
         stats.path.rtt = self.path.rtt.get();
         stats.path.min_rtt = self.path.rtt.min();
-        stats.path.cwnd = self.path.congestion.window();
+        let congestion = self.path.congestion.metrics();
+        stats.path.cwnd = congestion.congestion_window;
+        stats.path.ssthresh = congestion.ssthresh;
+        stats.path.pacing_rate = congestion.pacing_rate;
         stats.path.current_mtu = self.path.mtud.current_mtu();
 
         stats
@@ -1765,11 +1763,6 @@ impl Connection {
         self.zero_rtt_enabled
     }
 
-    /// Whether there are any pending retransmits
-    pub(crate) fn has_pending_retransmits(&self) -> bool {
-        !self.spaces[SpaceId::Data].pending.is_empty(&self.streams)
-    }
-
     /// Look up whether we're the client or server of this Connection
     pub(crate) fn side(&self) -> Side {
         self.side.side()
@@ -1818,11 +1811,6 @@ impl Connection {
     /// Minimum RTT seen on this path, ignoring ack delay
     pub(crate) fn min_rtt(&self) -> Duration {
         self.path.rtt.min()
-    }
-
-    /// Current state of this connection's congestion controller, for debugging purposes
-    pub(crate) fn congestion_state(&self) -> &dyn Controller {
-        self.path.congestion.as_ref()
     }
 
     /// Resets path-specific settings.
@@ -3891,7 +3879,6 @@ impl Connection {
             remote,
             cid: cid.id,
             seq: cid.seq,
-            reset_token: cid.reset_token,
             sent: [0; MAX_PREFERRED_PROBES],
             transmitted: 0,
             pending: Some(self.rng.random()),
@@ -5421,8 +5408,8 @@ pub enum ConnectionError {
     ///
     /// The local handshake deadline also applies when idle timeout is disabled.
     /// After connecting, a long enough idle period can time out even if the peer is
-    /// still reachable. See [`TransportConfig::max_idle_timeout()`] and
-    /// [`TransportConfig::keep_alive_interval()`].
+    /// still reachable. See [`TransportConfig::set_max_idle_timeout`] and
+    /// [`TransportConfig::set_keep_alive_interval`].
     TimedOut,
     /// The local application closed the connection
     LocallyClosed,

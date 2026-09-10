@@ -1,4 +1,9 @@
 #![cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+#![expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "an integration test's fixtures fail the test by panicking; the workspace allows this inside test functions and this file is one, but its helpers are not #[test] themselves"
+)]
 //! Fifty connections at once, each carrying a megabyte, through the public API. Every payload is
 //! named by its connection and checked by digest on arrival, every task is joined, and the whole
 //! run is bounded: a transfer that is lost, corrupted or reset fails this test rather than

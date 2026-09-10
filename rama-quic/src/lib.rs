@@ -28,16 +28,20 @@ mod proto;
 
 // Engine types that are part of the public transport API. The runtime facade
 // (endpoints, connections, streams) is Rama-owned and lives in `driver`.
+#[cfg(feature = "qlog")]
+#[cfg_attr(docsrs, doc(cfg(feature = "qlog")))]
+pub use proto::QlogConfig;
 pub use proto::{
     AckFrequencyConfig, ApplicationClose, BloomTokenLog, Chunk, ClientConfig, ClosedStream,
-    ConfigError, ConnectError, ConnectionClose, ConnectionError, ConnectionId,
+    ConfigError, CongestionControl, ConnectError, ConnectionClose, ConnectionError, ConnectionId,
     ConnectionIdGenerator, ConnectionStats, DEFAULT_SUPPORTED_VERSIONS, Dir, EcnCodepoint,
     EndpointConfig, ExportKeyingMaterialError, FrameStats, FrameType, HandshakeSummary,
-    HashedConnectionIdGenerator, IdleTimeout, InvalidCid, MtuDiscoveryConfig, NoneTokenLog,
-    NoneTokenStore, PathStats, PreferredAddressPolicy, RandomConnectionIdGenerator,
-    ReceiveQueueLimits, ServerConfig, Side, StdSystemTime, StreamId, TimeSource, TokenLog,
-    TokenMemoryCache, TokenReuseError, TokenStore, TransportConfig, TransportError,
-    TransportErrorCode, UdpStats, ValidationTokenConfig, VarInt, VarIntBoundsExceeded, Written,
+    HashedConnectionIdGenerator, IdleTimeout, InvalidCid, MIN_INITIAL_CONGESTION_WINDOW,
+    MtuDiscoveryConfig, NoneTokenLog, NoneTokenStore, PathStats, PreferredAddressPolicy,
+    RandomConnectionIdGenerator, ReceiveQueueLimits, RetryRefused, ServerConfig, Side,
+    StdSystemTime, StreamId, TimeSource, TokenLog, TokenMemoryCache, TokenReuseError, TokenStore,
+    TransportConfig, TransportError, TransportErrorCode, UdpStats, ValidationTokenConfig, VarInt,
+    VarIntBoundsExceeded, Written,
 };
 #[cfg(any(feature = "aws-lc", feature = "ring"))]
 pub use proto::{AddressTokenKey, KEY_MATERIAL_SIZE, StatelessResetKey};

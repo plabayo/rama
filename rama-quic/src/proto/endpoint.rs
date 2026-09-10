@@ -28,7 +28,7 @@ use crate::proto::{
     coding::BufMutExt,
     config::{ClientConfig, EndpointConfig, ServerConfig},
     connection::{Connection, ConnectionError, SideArgs},
-    crypto::{self, CryptoError, Keys, UnsupportedVersion},
+    crypto::{self, Keys, UnsupportedVersion},
     frame,
     packet::{
         FixedLengthConnectionIdParser, Header, InitialHeader, InitialPacket, PacketDecodeError,
@@ -953,7 +953,7 @@ impl Endpoint {
             Ok(token) => token,
             Err(error) => {
                 warn!(%error, "retry token could not be sealed; the attempt is left to the application");
-                return Err(RetryError::new(incoming, RetryRefused::TokenSealing(error)));
+                return Err(RetryError::new(incoming, RetryRefused::TokenSealing));
             }
         };
 
@@ -1195,6 +1195,7 @@ impl Endpoint {
         self.connections.len()
     }
 
+    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
     /// Counter for the number of bytes currently used
     /// in the buffers for Initial and 0-RTT messages for pending incoming connections
     pub(crate) fn incoming_buffer_bytes(&self) -> u64 {
@@ -1915,15 +1916,16 @@ pub(crate) struct RetryError {
     reason: RetryRefused,
 }
 
-/// Why [`Endpoint::retry`] did not send a Retry
+/// Why a Retry was not sent
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RetryRefused {
+#[non_exhaustive]
+pub enum RetryRefused {
     /// The attempt already bears a token from a previous Retry
     AlreadyRetried,
     /// The endpoint has no server configuration
     NoServerConfig,
     /// The token key's provider failed to seal the retry token
-    TokenSealing(CryptoError),
+    TokenSealing,
     /// The configured retry token lifetime cannot be represented on the clock that would bound
     /// the return route, so no Retry is issued and the attempt is kept
     LifetimeUnrepresentable,
@@ -1934,7 +1936,7 @@ impl core::fmt::Display for RetryError {
         match self.reason {
             RetryRefused::AlreadyRetried => f.write_str("retry() with validated Incoming"),
             RetryRefused::NoServerConfig => f.write_str("retry() without a server config"),
-            RetryRefused::TokenSealing(_) => f.write_str("retry token could not be sealed"),
+            RetryRefused::TokenSealing => f.write_str("retry token could not be sealed"),
             RetryRefused::LifetimeUnrepresentable => {
                 f.write_str("retry token lifetime exceeds the clock")
             }

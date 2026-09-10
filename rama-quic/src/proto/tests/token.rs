@@ -422,11 +422,7 @@ fn retry_with_failing_key(failure: ProviderFailure) {
         .endpoint
         .retry(incoming, &mut buf)
         .expect_err("a provider that cannot seal must not produce a Retry");
-    assert_eq!(
-        error.reason(),
-        RetryRefused::TokenSealing(CryptoError),
-        "{failure:?}"
-    );
+    assert_eq!(error.reason(), RetryRefused::TokenSealing, "{failure:?}");
     assert_eq!(
         buf, b"caller-owned",
         "{failure:?}: nothing was written for the failed Retry"

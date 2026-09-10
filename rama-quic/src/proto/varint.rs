@@ -18,8 +18,6 @@ pub struct VarInt(pub(crate) u64);
 impl VarInt {
     /// The largest representable value
     pub(crate) const MAX: Self = Self((1 << 62) - 1);
-    /// The largest encoded value length
-    pub(crate) const MAX_SIZE: usize = 8;
 
     /// Construct a `VarInt` infallibly
     pub(crate) const fn from_u32(x: u32) -> Self {

@@ -397,6 +397,147 @@ fn stateless_reset_with_a_foreign_key_is_ignored() {
     assert!(lost, "the genuine token is recognised as a reset");
 }
 
+/// The congestion controller a connection uses, and the window it starts from, are what the
+/// transport configuration says. The window is read back through the public statistics, so the
+/// choice is observable rather than merely stored: BBR starts from more than CUBIC's default,
+/// and an explicit window overrides whichever controller is chosen.
+#[test]
+fn the_configured_congestion_controller_is_the_one_the_path_starts_with() {
+    let _guard = subscribe();
+
+    let configured = |control: CongestionControl, window: Option<u64>| {
+        let mut transport = TransportConfig::default();
+        transport.set_congestion_control(control);
+        transport.try_maybe_set_initial_congestion_window(window)?;
+        Ok::<_, ConfigError>(transport)
+    };
+    let started_with = |control: CongestionControl, window: Option<u64>| {
+        let transport = configured(control, window).expect("the window is accepted");
+        let mut config = client_config();
+        config.transport = Arc::new(transport);
+        let mut pair = Pair::default();
+        let client_ch = pair.begin_connect(config);
+        pair.drive();
+        pair.client_conn_mut(client_ch).stats().path.cwnd
+    };
+
+    let cubic = started_with(CongestionControl::Cubic, None);
+    let new_reno = started_with(CongestionControl::NewReno, None);
+    let bbr = started_with(CongestionControl::Bbr, None);
+    assert_eq!(
+        cubic, new_reno,
+        "CUBIC and NewReno start from the window RFC 9002 §7.2 recommends"
+    );
+    assert!(
+        bbr > cubic,
+        "BBR starts from more than that: {bbr} against {cubic}"
+    );
+
+    // An explicit window, which every controller starts from. BBR has already adjusted its
+    // window by the time the handshake completes, so the assertion is a floor; the defaults
+    // above are two orders of magnitude below it, so it still tells the settings apart.
+    let window = octets::mib_u64(1);
+    for control in CONTROLLERS {
+        let started = started_with(control, Some(window));
+        assert!(
+            started >= window,
+            "{control:?} starts from the configured window: {started} against {window}"
+        );
+    }
+}
+
+/// The window a connection may be configured with, at its edges: below the floor it is
+/// refused, and at the floor, a mebibyte and the top of the range it connects, carries data,
+/// and starts a fresh path from the same window.
+#[test]
+fn the_initial_congestion_window_is_refused_below_two_datagrams() {
+    let _guard = subscribe();
+
+    for control in CONTROLLERS {
+        for refused in [0, 1, MIN_INITIAL_CONGESTION_WINDOW - 1] {
+            let mut transport = TransportConfig::default();
+            transport.set_congestion_control(control);
+            assert_eq!(
+                transport.try_set_initial_congestion_window(refused).err(),
+                Some(ConfigError::OutOfBounds),
+                "{control:?} refuses a window of {refused} bytes"
+            );
+        }
+
+        for accepted in [MIN_INITIAL_CONGESTION_WINDOW, octets::mib_u64(1), u64::MAX] {
+            let mut transport = TransportConfig::default();
+            transport.set_congestion_control(control);
+            transport
+                .try_set_initial_congestion_window(accepted)
+                .expect("the window is at or above the minimum");
+            let mut config = client_config();
+            config.transport = Arc::new(transport);
+
+            // It connects and carries data, on the path it starts with and on a path that
+            // starts again from the same configuration.
+            let mut pair = Pair::default();
+            let client_ch = pair.begin_connect(config);
+            pair.drive();
+            let server_ch = pair.server.assert_accept();
+            let started = pair.client_conn_mut(client_ch).stats().path.cwnd;
+            assert!(
+                started >= accepted,
+                "{control:?} starts from {accepted}: {started}"
+            );
+            exchange_on_a_stream(&mut pair, client_ch, server_ch, b"under this window");
+
+            let now = pair.time;
+            pair.client_conn_mut(client_ch).path_changed(now);
+            let after = pair.client_conn_mut(client_ch).stats().path.cwnd;
+            assert!(
+                after >= accepted,
+                "{control:?} starts a fresh path from {accepted} again: {after}"
+            );
+            exchange_on_a_stream(&mut pair, client_ch, server_ch, b"after the path reset");
+        }
+    }
+}
+
+/// Open a stream, write `message`, and read it on the other side.
+fn exchange_on_a_stream(
+    pair: &mut Pair,
+    client_ch: ConnectionHandle,
+    server_ch: ConnectionHandle,
+    message: &[u8],
+) {
+    let stream = pair
+        .client_streams(client_ch)
+        .open(Dir::Uni)
+        .expect("a stream opens");
+    pair.client_send(client_ch, stream)
+        .write(message)
+        .expect("the write is queued");
+    pair.client_send(client_ch, stream)
+        .finish()
+        .expect("the stream finishes");
+    pair.drive();
+    assert_eq!(
+        pair.server_streams(server_ch).accept(Dir::Uni),
+        Some(stream),
+        "the peer sees the stream"
+    );
+    let mut received = pair.server_recv(server_ch, stream);
+    let mut chunks = received.read(true).expect("the stream is readable");
+    let chunk = chunks
+        .next(message.len())
+        .expect("a chunk arrives")
+        .expect("with the payload");
+    assert_eq!(&chunk.bytes[..], message, "the payload arrives as sent");
+    let _ = chunks.finalize();
+}
+
+/// The controllers a connection may be configured with.
+const CONTROLLERS: [CongestionControl; 3] = [
+    CongestionControl::Cubic,
+    CongestionControl::NewReno,
+    CongestionControl::Bbr,
+];
+
 /// The key configured on an endpoint is the key its stateless reset tokens are derived from.
 /// The client here holds a token the server issued, so a reset carrying the token that same
 /// material gives for that connection ID is recognised, and one from other material is not.

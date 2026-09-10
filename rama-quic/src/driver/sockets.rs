@@ -61,15 +61,6 @@ impl Lease {
     pub(crate) fn id(&self) -> SocketId {
         self.id
     }
-
-    /// A lease on no socket (send handles created outside a registry in tests).
-    #[cfg(test)]
-    pub(crate) fn detached() -> Self {
-        Self {
-            id: SocketId::RESPONSE,
-            kind: Dependent::Connection,
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -1148,7 +1139,11 @@ mod tests {
         );
         assert!(
             registry
-                .expire_routes(start + Duration::from_secs(1) - Duration::from_nanos(1))
+                .expire_routes(
+                    (start + Duration::from_secs(1))
+                        .checked_sub(Duration::from_nanos(1))
+                        .expect("a second past the start is past the epoch"),
+                )
                 .is_empty(),
             "the hold lasts until its instant"
         );

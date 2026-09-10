@@ -2,11 +2,12 @@
 
 use super::super::*;
 use super::lifecycle::{
-    SegmentLog, SentDatagram, block_segments_for, breakable_socket, close_receive, configs,
-    endpoint_with, exchange, fail_receiver, handshake, open_receive, open_segment_hold,
-    recording_socket, segmenting_socket, unblock_segments, uncredit_segments, wait_for,
+    SegmentLog, block_segments_for, breakable_socket, close_receive, configs, endpoint_with,
+    exchange, fail_receiver, handshake, open_receive, open_segment_hold, recording_socket,
+    segmenting_socket, unblock_segments, uncredit_segments, wait_for,
 };
 use super::{DropObserver, TestSocket, probe_socket};
+use crate::driver::connection::Outcome;
 use rama_udp::UdpSocketConfig;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::sync::atomic::Ordering;
@@ -954,4 +955,91 @@ async fn a_path_that_takes_nothing_does_not_starve_the_one_that_does() {
     })
     .await
     .expect("shutdown does not wait for the stuck candidate");
+}
+
+/// A descriptor whose bytes are gone from the send buffer is retired, never offered: one left
+/// pointing at that buffer would carry the next descriptor's bytes to the address the old one
+/// named. One ownership attempt is made to find nothing, and the descriptor is given up once,
+/// never sent, while the connection goes on.
+#[tokio::test]
+async fn a_descriptor_whose_bytes_are_gone_is_retired_rather_than_carried() {
+    let (client_config, mut server_config) = configs();
+    let (listener, _listener_log) = recording_socket();
+    let (advertised, advertised_log) = recording_socket();
+    let advertised_addr = advertised.local_addr();
+    let SocketAddr::V4(advertised_v4) = advertised_addr else {
+        panic!("the fixture binds an IPv4 loopback socket");
+    };
+    server_config.set_preferred_address_v4(advertised_v4);
+    let server = endpoint_with(EndpointConfig::default(), Some(server_config), listener);
+    let initial = server.local_addr().unwrap();
+    server
+        .advertise_abstract(advertised)
+        .expect("the endpoint takes the advertised socket");
+
+    let client = Endpoint::client(localhost_v4())
+        .await
+        .expect("the client binds");
+    let client_addr = client.local_addr().unwrap();
+    // The advertised socket takes nothing, so the candidate path's datagram is kept across
+    // passes: it is the descriptor that has to own its bytes.
+    block_segments_for(&advertised_log, SocketAddress::from(client_addr));
+
+    let (c, s) = connect_through(&client, &server, client_config, initial).await;
+
+    // From here, the next attempt to take a descriptor's bytes finds nothing where they were.
+    s.fail_next_ownership();
+
+    // Traffic on the path in use, so the engine keeps writing into the same buffer.
+    let mut round = 0u8;
+    while s.stale_transmits() == 0 && round < 40 {
+        exchange(&c, &s, b"while a descriptor loses its bytes").await;
+        exchange(&s, &c, b"and the engine writes more").await;
+        round += 1;
+    }
+    assert_eq!(
+        s.stale_transmits(),
+        1,
+        "exactly the descriptor whose bytes were gone is given up"
+    );
+
+    let offered = s.descriptors();
+    let retired = offered
+        .iter()
+        .find(|descriptor| descriptor.outcome == Outcome::Obsolete)
+        .expect("the retirement is recorded");
+    assert!(
+        !offered.iter().any(|descriptor| {
+            descriptor.id == retired.id && descriptor.outcome == Outcome::Sent
+        }),
+        "and it is never offered as sent"
+    );
+    assert!(
+        !offered
+            .iter()
+            .any(|descriptor| descriptor.id == retired.id && descriptor.bytes != retired.bytes),
+        "nor with any bytes other than the ones it was retired with"
+    );
+    assert_eq!(
+        sent_to(&advertised_log, client_addr),
+        0,
+        "nothing left by the socket that takes nothing"
+    );
+
+    // The connection goes on, and the candidate path is probed again.
+    exchange(&c, &s, b"after the retirement").await;
+    assert_ne!(c.remote_address(), advertised_addr, "the path is unchanged");
+    wait_for(
+        "the candidate path is probed again",
+        Duration::from_secs(10),
+        || s.aside_transmit().is_some(),
+    )
+    .await;
+
+    drop((c, s));
+    tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::join!(client.shutdown(), server.shutdown())
+    })
+    .await
+    .expect("shutdown stays bounded");
 }

@@ -1,4 +1,3 @@
-use std::any::Any;
 use std::fmt::Debug;
 use std::sync::Arc;
 
@@ -241,7 +240,8 @@ impl Bbr {
                     // ProbeRtt.  The CWND during ProbeRtt is
                     // kMinimumCongestionWindow, but we allow an extra packet since QUIC
                     // checks CWND before sending a packet.
-                    if bytes_in_flight < self.get_probe_rtt_cwnd() + self.current_mtu {
+                    if bytes_in_flight < self.get_probe_rtt_cwnd().saturating_add(self.current_mtu)
+                    {
                         const K_PROBE_RTT_TIME: Duration = Duration::from_millis(200);
                         self.exit_probe_rtt_at = Some(now + K_PROBE_RTT_TIME);
                     }
@@ -260,11 +260,13 @@ impl Bbr {
         self.exiting_quiescence = false;
     }
 
+    /// The window this bandwidth and round trip call for, at the given gain. The
+    /// bandwidth-delay product is computed wide and saturated, so a round trip of many seconds
+    /// at the largest rate gives the largest window rather than wrapping to a small one.
     fn get_target_cwnd(&self, gain: f32) -> u64 {
         let bw = self.max_bandwidth.get_estimate();
-        let bdp = self.min_rtt.as_micros() as u64 * bw;
-        let bdpf = bdp as f64;
-        let cwnd = ((gain as f64 * bdpf) / 1_000_000f64) as u64;
+        let bdp = self.min_rtt.as_micros().saturating_mul(u128::from(bw));
+        let cwnd = ((gain as f64 * bdp as f64) / 1_000_000f64) as u64;
         // BDP estimate will be zero if no bandwidth samples are available yet.
         if cwnd == 0 {
             return self.init_cwnd;
@@ -280,10 +282,6 @@ impl Bbr {
         self.min_cwnd
     }
 
-    #[expect(
-        clippy::unwrap_used,
-        reason = "`bw_from_delta` is only `None` for a zero RTT, excluded by the `min_rtt.as_nanos() != 0` guard of the enclosing `if`"
-    )]
     fn calculate_pacing_rate(&mut self) {
         let bw = self.max_bandwidth.get_estimate();
         if bw == 0 {
@@ -296,10 +294,12 @@ impl Bbr {
         }
 
         // Pace at the rate of initial_window / RTT as soon as RTT measurements are
-        // available.
-        if self.pacing_rate == 0 && self.min_rtt.as_nanos() != 0 {
-            self.pacing_rate =
-                BandwidthEstimation::bw_from_delta(self.init_cwnd, self.min_rtt).unwrap();
+        // available. A round trip of no time gives no rate, and the pacing rate waits for one
+        // that does.
+        if self.pacing_rate == 0 {
+            if let Some(rate) = BandwidthEstimation::bw_from_delta(self.init_cwnd, self.min_rtt) {
+                self.pacing_rate = rate;
+            }
             return;
         }
 
@@ -316,21 +316,21 @@ impl Bbr {
         let mut target_window = self.get_target_cwnd(self.cwnd_gain);
         if self.is_at_full_bandwidth {
             // Add the max recently measured ack aggregation to CWND.
-            target_window += self.ack_aggregation.max_ack_height.get();
+            target_window = target_window.saturating_add(self.ack_aggregation.max_ack_height.get());
         } else {
             // Add the most recent excess acked.  Because CWND never decreases in
             // STARTUP, this will automatically create a very localized max filter.
-            target_window += excess_acked;
+            target_window = target_window.saturating_add(excess_acked);
         }
         // Instead of immediately setting the target CWND as the new one, BBR grows
         // the CWND towards |target_window| by only increasing it |bytes_acked| at a
         // time.
         if self.is_at_full_bandwidth {
-            self.cwnd = target_window.min(self.cwnd + bytes_acked);
+            self.cwnd = target_window.min(self.cwnd.saturating_add(bytes_acked));
         } else if (self.cwnd_gain < target_window as f32) || (self.acked_bytes < self.init_cwnd) {
             // If the connection is not yet out of startup phase, do not decrease
             // the window.
-            self.cwnd += bytes_acked;
+            self.cwnd = self.cwnd.saturating_add(bytes_acked);
         }
 
         // Enforce the limits on the congestion window.
@@ -498,7 +498,7 @@ impl Controller for Bbr {
         ControllerMetrics {
             congestion_window: self.window(),
             ssthresh: None,
-            pacing_rate: Some(self.pacing_rate * 8),
+            pacing_rate: Some(self.pacing_rate.saturating_mul(8)),
         }
     }
 
@@ -508,10 +508,6 @@ impl Controller for Bbr {
 
     fn initial_window(&self) -> u64 {
         self.config.initial_window
-    }
-
-    fn into_any(self: Box<Self>) -> Box<dyn Any> {
-        self
     }
 }
 
@@ -560,13 +556,14 @@ impl AckAggregationState {
         round: u64,
         max_bandwidth: u64,
     ) -> u64 {
-        // Compute how many bytes are expected to be delivered, assuming max
-        // bandwidth is correct.
-        let expected_bytes_acked = max_bandwidth
-            * now
-                .saturating_duration_since(self.aggregation_epoch_start_time.unwrap_or(now))
-                .as_micros() as u64
-            / 1_000_000;
+        // Compute how many bytes are expected to be delivered, assuming max bandwidth is
+        // correct. Rate times span is wider than either, so it is computed wide and saturated.
+        let epoch = now
+            .saturating_duration_since(self.aggregation_epoch_start_time.unwrap_or(now))
+            .as_micros();
+        let expected_bytes_acked =
+            u64::try_from(u128::from(max_bandwidth).saturating_mul(epoch) / 1_000_000)
+                .unwrap_or(u64::MAX);
 
         // Reset the current aggregation epoch as soon as the ack arrival rate is
         // less than or equal to the max bandwidth.
@@ -652,3 +649,57 @@ const K_MAX_INITIAL_CONGESTION_WINDOW: u64 = 200;
 
 const PROBE_RTT_BASED_ON_BDP: bool = true;
 const DRAIN_TO_TARGET: bool = true;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::proto::connection::RttEstimator;
+
+    /// BBR at the top of the accepted window range: the bandwidth-delay product and the rate
+    /// it reports saturate instead of wrapping, and the sequence a connection drives runs
+    /// through. The window it settles on is the product it measured, which is what BBR does.
+    #[test]
+    fn the_largest_window_and_rate_saturate_rather_than_wrapping() {
+        let now = Instant::now();
+        let mut bbr = Bbr::new(
+            Arc::new(BbrConfig {
+                initial_window: u64::MAX - 1,
+            }),
+            BASE_DATAGRAM_SIZE as u16,
+        );
+
+        // A round trip of a second at the largest rate the estimator reports: the product of
+        // the two is far past a u64 and must come back as the largest window, not a wrap.
+        bbr.min_rtt = Duration::from_secs(1);
+        bbr.max_bandwidth.update_max_for_test(u64::MAX);
+        let target = bbr.get_target_cwnd(K_DEFAULT_HIGH_GAIN);
+        assert_eq!(
+            target,
+            u64::MAX,
+            "the bandwidth-delay product saturates at the top of the range"
+        );
+
+        // The rate the metrics report is eight times the pacing rate, in bits per second.
+        bbr.pacing_rate = u64::MAX / 4;
+        assert_eq!(
+            bbr.metrics().pacing_rate,
+            Some(u64::MAX),
+            "and the conversion to bits saturates rather than wrapping"
+        );
+
+        // The sequence a connection drives, at the top of the range, runs through.
+        let rtt = RttEstimator::new(Duration::from_millis(10));
+        for round in 1..=8u64 {
+            let sent = now + Duration::from_millis(round * 10);
+            let acked = sent + Duration::from_millis(10);
+            bbr.on_sent(sent, BASE_DATAGRAM_SIZE, round);
+            bbr.on_ack(acked, sent, BASE_DATAGRAM_SIZE, false, &rtt);
+            bbr.on_end_acks(acked, BASE_DATAGRAM_SIZE, false, Some(round));
+        }
+        assert!(
+            bbr.window() >= calculate_min_window(BASE_DATAGRAM_SIZE),
+            "the window it settles on is a real one: {}",
+            bbr.window()
+        );
+    }
+}

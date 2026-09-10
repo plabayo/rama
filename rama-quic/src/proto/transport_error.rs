@@ -161,6 +161,10 @@ impl From<Code> for u64 {
 macro_rules! errors {
     {$($name:ident($val:expr) $desc:expr;)*} => {
         #[expect(non_snake_case, reason = "constructors are named after the RFC 9000 error codes")]
+        #[expect(
+            dead_code,
+            reason = "the whole RFC 9000 §20 code set is generated; this endpoint does not raise every one of them itself"
+        )]
         impl Error {
             $(
             pub(crate) fn $name<T>(reason: T) -> Self where T: Into<Cow<'static, str>> {
@@ -175,7 +179,7 @@ macro_rules! errors {
         }
 
         impl Code {
-            $(#[doc = $desc] pub(crate) const $name: Self = Code($val);)*
+            $(#[doc = $desc] pub const $name: Self = Code($val);)*
         }
 
         impl fmt::Debug for Code {

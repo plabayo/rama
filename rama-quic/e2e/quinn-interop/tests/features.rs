@@ -4,15 +4,16 @@
 
 mod common;
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use common::*;
 use rama::{
     net::tls::ApplicationProtocol,
     quic::{
-        AddressTokenKey, ConnectionStats, DriverStats, Endpoint, EndpointConfig, EndpointStats,
-        FrameStats, KEY_MATERIAL_SIZE, PacketQueueStats, ReceiveQueueLimits, SendDatagramError,
-        ServerConfig, StatelessResetKey, ValidationTokenConfig,
+        AddressTokenKey, CongestionControl, ConnectionStats, DriverStats, Endpoint, EndpointConfig,
+        EndpointStats, FrameStats, KEY_MATERIAL_SIZE, MIN_INITIAL_CONGESTION_WINDOW,
+        PacketQueueStats, ReceiveQueueLimits, RetryRefused, SendDatagramError, ServerConfig, Side,
+        StatelessResetKey, TransportConfig, ValidationTokenConfig,
     },
     udp::UdpSocketConfig,
     utils::octets,
@@ -659,6 +660,144 @@ async fn a_consumer_configures_keys_and_budgets_by_name() {
     step("the peer read it", was_read)
         .await
         .expect("the peer reported");
+    conn.close(0u32.into(), b"done");
+    step("quinn's shutdown", client.wait_idle()).await;
+    served.join("the rama peer").await;
+    step("rama's shutdown", server.shutdown()).await;
+}
+
+/// The transport settings and connection facts a consumer reaches for by name: which congestion
+/// controller a connection starts with, which side it is, and what the path has measured.
+#[tokio::test]
+async fn a_consumer_chooses_congestion_control_and_reads_connection_facts() {
+    let auth = identity();
+    let anchor = auth.cert_chain.last().expect("a chain").clone();
+
+    let server = quinn::Endpoint::server(quinn_server_config(&auth), localhost())
+        .expect("the quinn server binds");
+    let server_addr = server.local_addr().expect("its address");
+    let peer = Peer::spawn(async move {
+        let conn = step("the quinn server accepts", server.accept())
+            .await
+            .expect("an attempt arrives")
+            .await
+            .expect("the handshake completes");
+        step("the quinn connection closes", conn.closed()).await;
+        step("the quinn server goes idle", server.wait_idle()).await;
+    });
+
+    let window = octets::mib_u64(1);
+    assert!(
+        TransportConfig::default()
+            .try_with_initial_congestion_window(0)
+            .is_err(),
+        "a window of no bytes is refused rather than stalling the connection"
+    );
+    assert!(
+        TransportConfig::default()
+            .try_with_initial_congestion_window(MIN_INITIAL_CONGESTION_WINDOW - 1)
+            .is_err(),
+        "and so is one below the documented minimum"
+    );
+    let transport: TransportConfig = TransportConfig::default()
+        .with_congestion_control(CongestionControl::Bbr)
+        .try_with_initial_congestion_window(window)
+        .expect("a mebibyte is above the minimum");
+    let config = rama_client_config(anchor).with_transport_config(Arc::new(transport));
+
+    let client = step("rama binds", Endpoint::client(localhost()))
+        .await
+        .expect("the client binds");
+    assert!(
+        client.advertised_addrs().is_empty(),
+        "a client advertises no preferred address"
+    );
+    let conn = step(
+        "the rama client connects",
+        client
+            .connect_with(config, server_addr, "localhost")
+            .expect("the attempt starts"),
+    )
+    .await
+    .expect("the handshake completes");
+
+    assert_eq!(conn.side(), Side::Client, "this end opened the connection");
+    assert!(
+        conn.stats().path.cwnd >= window,
+        "the path starts from the window that was configured: {}",
+        conn.stats().path.cwnd
+    );
+    assert!(
+        conn.min_rtt() <= conn.rtt(),
+        "the minimum is at or below the current estimate: {:?} against {:?}",
+        conn.min_rtt(),
+        conn.rtt()
+    );
+    conn.set_send_window(octets::mib_u64(2));
+
+    conn.close(0u32.into(), b"done");
+    step("rama's shutdown", client.wait_idle()).await;
+    peer.join("the quinn peer").await;
+}
+
+/// What a consumer can do with a Retry it could not send: read why, and take the attempt back
+/// to answer it another way. A second Retry is refused because the attempt already carries the
+/// token from the first (RFC 9000 §8.1.2), and the attempt handed back still completes.
+#[tokio::test]
+async fn a_refused_retry_says_why_and_hands_the_attempt_back() {
+    let auth = identity();
+    let anchor = auth.cert_chain.last().expect("a chain").clone();
+
+    let server = step(
+        "the rama server binds",
+        Endpoint::server(rama_server_config(&auth), localhost()),
+    )
+    .await
+    .expect("it binds");
+    let server_addr = server.local_addr().expect("its address");
+
+    let served = Peer::spawn({
+        let server = server.clone();
+        async move {
+            // The first attempt is sent back for address validation.
+            let first = step("the first attempt", server.accept())
+                .await
+                .expect("an attempt arrives");
+            assert!(!first.remote_address_validated(), "it carries no token yet");
+            first.retry().expect("a first Retry is allowed");
+
+            // The second carries the token, so a Retry is refused; the reason says which case
+            // it is, and the attempt comes back to be accepted instead.
+            let second = step("the validated attempt", server.accept())
+                .await
+                .expect("it comes back with the token");
+            assert!(second.remote_address_validated(), "the token validated it");
+            let refused = second.retry().expect_err("a second Retry is refused");
+            assert_eq!(
+                refused.reason(),
+                RetryRefused::AlreadyRetried,
+                "and says the attempt already bears a token"
+            );
+            let conn = refused
+                .into_incoming()
+                .accept()
+                .expect("the attempt handed back is still ours to accept")
+                .await
+                .expect("the handshake completes");
+            step("the connection closes", conn.closed()).await;
+        }
+    });
+
+    let mut client = quinn::Endpoint::client(localhost()).expect("quinn binds");
+    client.set_default_client_config(quinn_client_config(anchor));
+    let conn = step(
+        "the quinn client connects",
+        client
+            .connect(server_addr, "localhost")
+            .expect("the attempt starts"),
+    )
+    .await
+    .expect("the handshake completes through the Retry");
     conn.close(0u32.into(), b"done");
     step("quinn's shutdown", client.wait_idle()).await;
     served.join("the rama peer").await;

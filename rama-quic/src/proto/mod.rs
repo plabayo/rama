@@ -28,23 +28,32 @@ mod bloom_token_log;
 pub use bloom_token_log::BloomTokenLog;
 
 mod connection;
+/// Names the crate's own tests reach for through this module.
+#[cfg(test)]
+pub(crate) use crate::proto::connection::RecvStream;
 pub use crate::proto::connection::{
     Chunk, ClosedStream, ConnectionError, ConnectionStats, FrameStats, PathStats, UdpStats, Written,
 };
 pub(crate) use crate::proto::connection::{
-    Chunks, Connection, Datagrams, Event, FinishError, ReadError, ReadableError, RecvStream,
-    RttEstimator, SendDatagramError, SendStream, ShouldTransmit, StreamEvent, Streams, WriteError,
+    Chunks, Connection, Event, FinishError, ReadError, ReadableError, SendDatagramError,
+    SendStream, StreamEvent, WriteError,
 };
+#[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+pub(crate) use crate::proto::connection::{Datagrams, Streams};
+#[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+pub(crate) use crate::proto::endpoint::AcceptError;
+#[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+pub(crate) use crate::proto::frame::Datagram;
 #[cfg(feature = "qlog")]
 pub(crate) use connection::qlog::QlogStream;
 
 mod config;
 #[cfg(feature = "qlog")]
-pub(crate) use config::QlogConfig;
+pub use config::QlogConfig;
 pub use config::{
-    AckFrequencyConfig, ClientConfig, ConfigError, EndpointConfig, IdleTimeout, MtuDiscoveryConfig,
-    PreferredAddressPolicy, ReceiveQueueLimits, ServerConfig, StdSystemTime, TimeSource,
-    TransportConfig, ValidationTokenConfig,
+    AckFrequencyConfig, ClientConfig, ConfigError, CongestionControl, EndpointConfig, IdleTimeout,
+    MIN_INITIAL_CONGESTION_WINDOW, MtuDiscoveryConfig, PreferredAddressPolicy, ReceiveQueueLimits,
+    ServerConfig, StdSystemTime, TimeSource, TransportConfig, ValidationTokenConfig,
 };
 #[cfg(any(feature = "aws-lc", feature = "ring"))]
 pub use config::{AddressTokenKey, KEY_MATERIAL_SIZE, StatelessResetKey};
@@ -52,7 +61,6 @@ pub use config::{AddressTokenKey, KEY_MATERIAL_SIZE, StatelessResetKey};
 pub(crate) mod crypto;
 
 mod frame;
-pub(crate) use crate::proto::frame::Datagram;
 
 /// Whether a datagram carrying a particular connection ID may go to a particular address.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,17 +79,14 @@ pub use crate::proto::frame::{ApplicationClose, ConnectionClose, FrameType};
 
 mod endpoint;
 pub use crate::proto::endpoint::ConnectError;
+pub use crate::proto::endpoint::RetryRefused;
 pub(crate) use crate::proto::endpoint::{
-    AcceptError, ConnectionHandle, DatagramEvent, Endpoint, Incoming, RetryError, RetryRefused,
+    ConnectionHandle, DatagramEvent, Endpoint, Incoming, RetryError,
 };
 
 pub use crate::proto::crypto::{ExportKeyingMaterialError, HandshakeSummary};
 
 mod packet;
-pub(crate) use packet::{
-    ConnectionIdParser, FixedLengthConnectionIdParser, LongType, PacketDecodeError, PartialDecode,
-    ProtectedHeader, ProtectedInitialHeader,
-};
 
 mod shared;
 pub(crate) use crate::proto::shared::{ConnectionEvent, EndpointEvent};
@@ -99,7 +104,7 @@ pub use crate::proto::cid_generator::{
 
 mod token;
 use token::ResetToken;
-#[cfg(test)]
+#[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 pub(crate) use token::ResetToken as TestResetToken;
 pub use token::{NoneTokenLog, NoneTokenStore, TokenLog, TokenReuseError, TokenStore};
 

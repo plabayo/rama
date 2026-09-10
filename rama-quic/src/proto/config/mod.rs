@@ -1,3 +1,10 @@
+#![cfg_attr(
+    not(all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))),
+    allow(
+        dead_code,
+        reason = "without a TLS backend and a crypto provider nothing can drive a handshake, so the code that serves one has no caller"
+    )
+)]
 use rama_utils::octets;
 use std::{
     fmt,
@@ -7,8 +14,10 @@ use std::{
 };
 
 use crate::proto::BloomTokenLog;
+#[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+use crate::proto::crypto::rustls::QuicServerConfig;
 #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
-use crate::proto::crypto::rustls::{QuicServerConfig, configured_provider};
+use crate::proto::crypto::rustls::configured_provider;
 use crate::proto::{
     DEFAULT_SUPPORTED_VERSIONS, Duration, MAX_CID_SIZE, RandomConnectionIdGenerator, SystemTime,
     TokenLog, TokenMemoryCache, TokenStore, VarInt, VarIntBoundsExceeded,
@@ -16,9 +25,9 @@ use crate::proto::{
     crypto::{self, HandshakeTokenKey, HmacKey},
     shared::ConnectionId,
 };
-#[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+#[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer};
-#[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+#[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 use rama_tls_rustls::dep::rustls::client::WebPkiServerVerifier;
 
 #[cfg(any(feature = "aws-lc", feature = "ring"))]
@@ -28,8 +37,11 @@ pub use keys::{AddressTokenKey, KEY_MATERIAL_SIZE, StatelessResetKey};
 
 mod transport;
 #[cfg(feature = "qlog")]
-pub(crate) use transport::QlogConfig;
-pub use transport::{AckFrequencyConfig, IdleTimeout, MtuDiscoveryConfig, TransportConfig};
+pub use transport::QlogConfig;
+pub use transport::{
+    AckFrequencyConfig, CongestionControl, IdleTimeout, MIN_INITIAL_CONGESTION_WINDOW,
+    MtuDiscoveryConfig, TransportConfig,
+};
 
 /// Bounds for received packets queued between the endpoint driver and a connection driver.
 ///
@@ -145,6 +157,7 @@ impl EndpointConfig {
         }
     }
 
+    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
     /// Supply a custom connection ID generator factory
     ///
     /// Called once by each `Endpoint` constructed from this configuration to obtain the CID
@@ -163,6 +176,7 @@ impl EndpointConfig {
         self
     }
 
+    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
     /// Private key used to send authenticated connection resets to peers who were
     /// communicating with a previous instance of this endpoint.
     pub(crate) fn reset_key(&mut self, key: Arc<dyn HmacKey>) -> &mut Self {
@@ -378,6 +392,7 @@ impl ServerConfig {
         }
     }
 
+    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
     /// Private key used to authenticate data included in handshake tokens
     pub(crate) fn token_key(&mut self, value: Arc<dyn HandshakeTokenKey>) -> &mut Self {
         self.token_key = value;
@@ -523,6 +538,7 @@ impl ServerConfig {
         )))
     }
 
+    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
     /// Create a server config with the given certificate chain to be presented to clients
     ///
     /// Uses a randomized handshake token key.
@@ -753,22 +769,6 @@ impl ClientConfig {
         }
     }
 
-    /// Configure how to populate the destination CID of the initial packet when attempting to
-    /// establish a new connection
-    ///
-    /// By default, it's populated with random bytes with reasonable length, so unless you have
-    /// a good reason, you do not need to change it.
-    ///
-    /// When prefer to override the default, please note that the generated connection ID MUST be
-    /// at least 8 bytes long and unpredictable, as per section 7.2 of RFC 9000.
-    pub(crate) fn initial_dst_cid_provider(
-        &mut self,
-        initial_dst_cid_provider: Arc<dyn Fn() -> ConnectionId + Send + Sync>,
-    ) -> &mut Self {
-        self.initial_dst_cid_provider = initial_dst_cid_provider;
-        self
-    }
-
     rama_utils::macros::generate_set_and_with! {
         /// Set a custom [`TransportConfig`]
         pub fn transport_config(mut self, transport: Arc<TransportConfig>) -> Self {
@@ -814,6 +814,7 @@ impl ClientConfig {
         )))
     }
 
+    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
     /// Create a client configuration that trusts specified trust anchors
     pub(crate) fn with_root_certificates(
         roots: Arc<rama_tls_rustls::dep::rustls::RootCertStore>,

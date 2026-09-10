@@ -1,3 +1,10 @@
+#![cfg_attr(
+    not(all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))),
+    allow(
+        dead_code,
+        reason = "without a TLS backend and a crypto provider nothing can drive a handshake, so the code that serves one has no caller"
+    )
+)]
 use std::hash::Hasher;
 
 use rand::{Rng, RngExt};
@@ -67,6 +74,7 @@ impl RandomConnectionIdGenerator {
         }
     }
 
+    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
     /// Set the lifetime of CIDs created by this generator
     pub(crate) fn set_lifetime(&mut self, d: Duration) -> &mut Self {
         self.lifetime = Some(d);
@@ -119,6 +127,7 @@ impl HashedConnectionIdGenerator {
         }
     }
 
+    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
     /// Set the lifetime of CIDs created by this generator
     pub(crate) fn set_lifetime(&mut self, d: Duration) -> &mut Self {
         self.lifetime = Some(d);

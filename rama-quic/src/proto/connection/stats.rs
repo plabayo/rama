@@ -167,6 +167,11 @@ pub struct PathStats {
     pub min_rtt: Duration,
     /// Current congestion window of the connection
     pub cwnd: u64,
+    /// The window at which the controller leaves slow start, when it has one. BBR paces
+    /// instead and reports none.
+    pub ssthresh: Option<u64>,
+    /// The rate the controller paces at, in bits per second, when it paces.
+    pub pacing_rate: Option<u64>,
     /// Congestion events on the connection
     pub congestion_events: u64,
     /// The amount of packets lost on this path

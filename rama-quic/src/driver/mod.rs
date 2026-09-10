@@ -49,18 +49,10 @@ mod timer;
 mod udp;
 mod work_limiter;
 
-pub(crate) use crate::proto::BloomTokenLog;
-pub(crate) use crate::proto::{
-    AckFrequencyConfig, ApplicationClose, Chunk, ClientConfig, ClosedStream, ConfigError,
-    ConnectError, ConnectionClose, ConnectionError, ConnectionId, ConnectionIdGenerator,
-    ConnectionStats, Dir, EcnCodepoint, EndpointConfig, FrameStats, FrameType, IdleTimeout,
-    MtuDiscoveryConfig, NoneTokenLog, NoneTokenStore, PathStats, ReceiveQueueLimits, ServerConfig,
-    Side, StdSystemTime, StreamId, TimeSource, TokenLog, TokenMemoryCache, TokenReuseError,
-    TokenStore, Transmit, TransportConfig, TransportErrorCode, UdpStats, ValidationTokenConfig,
-    VarInt, VarIntBoundsExceeded, Written, congestion, crypto,
-};
-#[cfg(feature = "qlog")]
-pub(crate) use crate::proto::{QlogConfig, QlogStream};
+/// Names the driver's own tests reach for through this module.
+#[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+pub(crate) use crate::proto::{ClientConfig, ConnectionError, ServerConfig, TransportConfig};
+pub(crate) use crate::proto::{EndpointConfig, VarInt};
 pub(crate) use std::time::{Duration, Instant};
 
 pub use crate::driver::connection::{

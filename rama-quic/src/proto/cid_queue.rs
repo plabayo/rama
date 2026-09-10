@@ -126,6 +126,7 @@ impl RemCid {
         self.reset_token.filter(|_| self.is_sent_to(remote))
     }
 
+    #[cfg(test)]
     /// Whether a datagram carrying this identifier has gone out at all.
     pub(crate) fn is_sent(&self) -> bool {
         self.associations().any(|assoc| assoc.sent)
@@ -890,12 +891,14 @@ impl CidQueue {
         }
     }
 
+    #[cfg(test)]
     /// Whether a datagram carrying the identifier numbered `seq` has gone out. An identifier we do
     /// not hold has no history to report.
     pub(crate) fn is_sent(&self, seq: u64) -> bool {
         self.present().any(|cid| cid.seq == seq && cid.is_sent())
     }
 
+    #[cfg(test)]
     /// Whether a datagram carrying the identifier numbered `seq` has gone out towards `remote`.
     pub(crate) fn is_sent_to(&self, seq: u64, remote: SocketAddr) -> bool {
         self.present()

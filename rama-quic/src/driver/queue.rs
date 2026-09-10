@@ -36,9 +36,8 @@ pub(crate) const INCOMING_OVERHEAD: usize = 2048;
 pub struct PacketQueueStats {
     /// Datagrams waiting to be taken.
     pub queued_datagrams: usize,
-    /// Bytes charged for them: each datagram's payload plus a fixed per-datagram overhead
-    /// standing for the capacity a queued datagram retains beyond its payload. That overhead is
-    /// an estimate, so the charge tracks what the queue retains rather than measuring it.
+    /// Charged retained payload capacity plus per-packet bookkeeping overhead; the overhead is
+    /// an estimate.
     pub queued_bytes: usize,
     /// The most datagrams that have waited at once.
     pub peak_datagrams: usize,
@@ -67,6 +66,7 @@ impl PacketBudget {
         })))
     }
 
+    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
     pub(crate) fn limits(&self) -> ReceiveQueueLimits {
         self.0.lock().limits
     }
@@ -202,7 +202,7 @@ impl<T> BoundedDeque<T> {
     }
 
     /// Lower (or raise) the entry limit; a test seam for forcing storage refusal.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
     pub(crate) fn set_limit(&mut self, limit: usize) {
         self.limit = limit;
     }
@@ -270,6 +270,7 @@ impl<T> BoundedSender<T> {
         Ok(())
     }
 
+    #[cfg(test)]
     /// Entries the container currently retains storage for.
     pub(crate) fn capacity(&self) -> usize {
         self.shared.lock().items.capacity()
@@ -356,6 +357,7 @@ impl PacketPermit {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn bytes(&self) -> usize {
         self.bytes
     }

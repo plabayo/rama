@@ -329,7 +329,9 @@ fn the_close_deadline_is_fixed_and_expires() {
     }
 
     // A moment before it, the connection is still closing.
-    pair.time = deadline - Duration::from_micros(1);
+    pair.time = deadline
+        .checked_sub(Duration::from_micros(1))
+        .expect("the deadline is past the epoch");
     let now = pair.time;
     pair.client_conn_mut(client_ch).handle_timeout(now);
     assert!(

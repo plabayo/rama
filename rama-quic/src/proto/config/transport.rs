@@ -3,6 +3,7 @@ use std::{fmt, sync::Arc};
 #[cfg(feature = "qlog")]
 use std::{io, time::Instant};
 
+#[cfg(feature = "qlog")]
 use parking_lot::Mutex;
 
 #[cfg(feature = "qlog")]
@@ -11,9 +12,28 @@ use qlog::streamer::QlogStreamer;
 #[cfg(feature = "qlog")]
 use crate::proto::QlogStream;
 use crate::proto::{
-    Duration, INITIAL_MTU, MAX_UDP_PAYLOAD, VarInt, VarIntBoundsExceeded, congestion,
+    ConfigError, Duration, INITIAL_MTU, MAX_UDP_PAYLOAD, VarInt, VarIntBoundsExceeded, congestion,
     connection::qlog::QlogSink,
 };
+
+/// The smallest initial congestion window this crate accepts: two datagrams of the size every
+/// QUIC path carries (RFC 9000 §14.1). It is a policy floor, not a protocol one; a window of
+/// zero was measured to leave a connection unable to complete its handshake.
+pub const MIN_INITIAL_CONGESTION_WINDOW: u64 = 2 * congestion::BASE_DATAGRAM_SIZE;
+
+/// Which congestion controller a connection's paths use.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum CongestionControl {
+    /// CUBIC (RFC 9438). The default.
+    #[default]
+    Cubic,
+    /// NewReno (RFC 6582), the algorithm RFC 9002 §7 describes as the baseline.
+    NewReno,
+    /// BBR, from draft-cardwell-iccrg-bbr-congestion-control. It probes for bandwidth and
+    /// round-trip time rather than treating loss as the signal.
+    Bbr,
+}
 
 /// Parameters governing the core QUIC state machine
 ///
@@ -54,7 +74,8 @@ pub struct TransportConfig {
     #[cfg(test)]
     pub(crate) deterministic_packet_numbers: bool,
 
-    pub(crate) congestion_controller_factory: Arc<dyn congestion::ControllerFactory + Send + Sync>,
+    pub(crate) congestion_control: CongestionControl,
+    pub(crate) initial_congestion_window: Option<u64>,
 
     pub(crate) enable_segmentation_offload: bool,
 
@@ -219,14 +240,14 @@ impl TransportConfig {
         /// The maximum UDP payload size guaranteed to be supported by the network.
         ///
         /// Must be at least 1200, which is the default, and lower than or equal to
-        /// [`TransportConfig::initial_mtu`].
+        /// [`TransportConfig::set_initial_mtu`].
         ///
         /// Real-world MTUs can vary according to ISP, VPN, and properties of intermediate network links
         /// outside of either endpoint's control. Extreme care should be used when raising this value
         /// outside of private networks where these factors are fully controlled. If the provided value
         /// is higher than what the network path actually supports, the result will be unpredictable and
         /// catastrophic packet loss, without a possibility of repair. Prefer
-        /// [`TransportConfig::initial_mtu`] together with
+        /// [`TransportConfig::set_initial_mtu`] together with
         /// [`TransportConfig::mtu_discovery_config`] to set a maximum UDP payload size that robustly
         /// adapts to the network.
         pub fn min_mtu(mut self, value: u16) -> Self {
@@ -357,23 +378,64 @@ impl TransportConfig {
         self
     }
 
-    /// How to construct new `congestion::Controller`s
-    ///
-    /// Typically the refcounted configuration of a `congestion::Controller`,
-    /// e.g. a `congestion::NewRenoConfig`.
-    ///
-    /// # Example
-    /// ```
-    /// # use rama_quic::*; use std::sync::Arc;
-    /// let mut config = TransportConfig::default();
-    /// config.congestion_controller_factory(Arc::new(congestion::NewRenoConfig::default()));
-    /// ```
-    pub(crate) fn congestion_controller_factory(
-        &mut self,
-        factory: Arc<dyn congestion::ControllerFactory + Send + Sync + 'static>,
-    ) -> &mut Self {
-        self.congestion_controller_factory = factory;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Which congestion controller connections use.
+        ///
+        /// Defaults to [`CongestionControl::Cubic`].
+        pub fn congestion_control(mut self, value: CongestionControl) -> Self {
+            self.congestion_control = value;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Limit on the data in flight before the first acknowledgement, in bytes.
+        ///
+        /// `None`, the default, leaves each controller the window it computes from the
+        /// 1200-byte datagram size QUIC guarantees (RFC 9000 §14.1), not from the configured
+        /// MTU: CUBIC and NewReno start from the value RFC 9002 §7.2 recommends for that size,
+        /// and BBR starts higher.
+        ///
+        /// Fails below [`MIN_INITIAL_CONGESTION_WINDOW`], which includes zero.
+        pub fn initial_congestion_window(mut self, value: Option<u64>) -> Result<Self, ConfigError> {
+            if let Some(window) = value
+                && window < MIN_INITIAL_CONGESTION_WINDOW
+            {
+                return Err(ConfigError::OutOfBounds);
+            }
+            self.initial_congestion_window = value;
+            Ok(self)
+        }
+    }
+
+    /// The controller factory the current settings describe.
+    pub(crate) fn congestion_factory(
+        &self,
+    ) -> Arc<dyn congestion::ControllerFactory + Send + Sync + 'static> {
+        let window = self.initial_congestion_window;
+        match self.congestion_control {
+            CongestionControl::Cubic => {
+                let mut config = congestion::CubicConfig::default();
+                if let Some(window) = window {
+                    config.initial_window(window);
+                }
+                Arc::new(config)
+            }
+            CongestionControl::NewReno => {
+                let mut config = congestion::NewRenoConfig::default();
+                if let Some(window) = window {
+                    config.initial_window(window);
+                }
+                Arc::new(config)
+            }
+            CongestionControl::Bbr => {
+                let mut config = congestion::BbrConfig::default();
+                if let Some(window) = window {
+                    config.initial_window(window);
+                }
+                Arc::new(config)
+            }
+        }
     }
 
     rama_utils::macros::generate_set_and_with! {
@@ -394,10 +456,12 @@ impl TransportConfig {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// qlog capture configuration to use for a particular connection
+        /// Where connections write their qlog trace, and what it is titled.
+        ///
+        /// `None`, the default, writes none. A configuration without a writer also writes none.
         #[cfg(feature = "qlog")]
-        pub fn qlog_stream(mut self, stream: Option<QlogStream>) -> Self {
-            self.qlog_sink = stream.into();
+        pub fn qlog(mut self, config: Option<QlogConfig>) -> Self {
+            self.qlog_sink = config.and_then(QlogConfig::into_stream).into();
             self
         }
     }
@@ -439,7 +503,8 @@ impl Default for TransportConfig {
             #[cfg(test)]
             deterministic_packet_numbers: false,
 
-            congestion_controller_factory: Arc::new(congestion::CubicConfig::default()),
+            congestion_control: CongestionControl::default(),
+            initial_congestion_window: None,
 
             enable_segmentation_offload: true,
 
@@ -474,7 +539,8 @@ impl fmt::Debug for TransportConfig {
             datagram_send_buffer_size,
             #[cfg(test)]
                 deterministic_packet_numbers: _,
-            congestion_controller_factory: _,
+            congestion_control,
+            initial_congestion_window,
             enable_segmentation_offload,
             qlog_sink,
         } = self;
@@ -504,7 +570,8 @@ impl fmt::Debug for TransportConfig {
             .field("allow_spin", allow_spin)
             .field("datagram_receive_buffer_size", datagram_receive_buffer_size)
             .field("datagram_send_buffer_size", datagram_send_buffer_size)
-            // congestion_controller_factory not debug
+            .field("congestion_control", congestion_control)
+            .field("initial_congestion_window", initial_congestion_window)
             .field("enable_segmentation_offload", enable_segmentation_offload);
         if cfg!(feature = "qlog") {
             s.field("qlog_stream", &qlog_sink.is_enabled());
@@ -524,7 +591,7 @@ impl fmt::Debug for TransportConfig {
 /// [QUIC Acknowledgement Frequency extension](https://datatracker.ietf.org/doc/html/draft-ietf-quic-ack-frequency-04).
 /// The defaults produce behavior slightly different than the behavior without this extension,
 /// because they change the way reordered packets are handled (see
-/// [`AckFrequencyConfig::reordering_threshold`] for details).
+/// [`AckFrequencyConfig::set_reordering_threshold`] for details).
 #[derive(Clone, Debug)]
 pub struct AckFrequencyConfig {
     pub(crate) ack_eliciting_threshold: VarInt,
@@ -598,9 +665,12 @@ impl Default for AckFrequencyConfig {
     }
 }
 
-/// Configuration for qlog trace logging
+/// Where a connection writes its qlog trace (draft-ietf-quic-qlog), and what the trace says
+/// about itself.
+///
+/// A configuration with no writer produces no trace.
 #[cfg(feature = "qlog")]
-pub(crate) struct QlogConfig {
+pub struct QlogConfig {
     writer: Option<Box<dyn io::Write + Send + Sync>>,
     title: Option<String>,
     description: Option<String>,
@@ -727,23 +797,23 @@ impl Default for QlogConfig {
 /// packet's size.
 ///
 /// MTU discovery runs on a schedule (e.g. every 600 seconds) specified through
-/// [`MtuDiscoveryConfig::interval`]. The first run happens right after the handshake, and
+/// [`MtuDiscoveryConfig::set_interval`]. The first run happens right after the handshake, and
 /// subsequent discoveries are scheduled to run when the interval has elapsed, starting from the
 /// last time when MTU discovery completed.
 ///
 /// Since the search space for MTUs is quite big (the smallest possible MTU is 1200, and the highest
 /// is 65527), the discovery performs a binary search to keep the number of probes as low as possible. The
-/// lower bound of the search is equal to [`TransportConfig::initial_mtu`] in the
+/// lower bound of the search is equal to [`TransportConfig::set_initial_mtu`] in the
 /// initial MTU discovery run, and is equal to the currently discovered MTU in subsequent runs. The
-/// upper bound is determined by the minimum of [`MtuDiscoveryConfig::upper_bound`] and the
+/// upper bound is determined by the minimum of [`MtuDiscoveryConfig::set_upper_bound`] and the
 /// `max_udp_payload_size` transport parameter received from the peer during the handshake.
 ///
 /// # Black hole detection
 ///
 /// If, at some point, the network path no longer accepts packets of the detected size, packet loss
 /// will eventually trigger black hole detection and reset the detected MTU to 1200. In that case,
-/// MTU discovery will be triggered after [`MtuDiscoveryConfig::black_hole_cooldown`] (ignoring the
-/// timer that was set based on [`MtuDiscoveryConfig::interval`]).
+/// MTU discovery will be triggered after [`MtuDiscoveryConfig::set_black_hole_cooldown`] (ignoring the
+/// timer that was set based on [`MtuDiscoveryConfig::set_interval`]).
 ///
 /// # Interaction between peers
 ///

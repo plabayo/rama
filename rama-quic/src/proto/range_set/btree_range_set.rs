@@ -1,6 +1,5 @@
 use std::{
     cmp,
-    cmp::Ordering,
     collections::{BTreeMap, btree_map},
     ops::{
         Bound::{Excluded, Included},
@@ -17,18 +16,20 @@ impl RangeSet {
         Default::default()
     }
 
+    #[cfg(test)]
     pub(crate) fn contains(&self, x: u64) -> bool {
         self.pred(x).is_some_and(|(_, end)| end > x)
     }
 
+    #[cfg(test)]
     pub(crate) fn insert_one(&mut self, x: u64) -> bool {
         if let Some((start, end)) = self.pred(x) {
             match end.cmp(&x) {
                 // Wholly contained
-                Ordering::Greater => {
+                cmp::Ordering::Greater => {
                     return false;
                 }
-                Ordering::Equal => {
+                cmp::Ordering::Equal => {
                     // Extend existing
                     self.0.remove(&start);
                     let mut new_end = x + 1;
@@ -97,6 +98,7 @@ impl RangeSet {
             .map(|(&x, &y)| (x, y))
     }
 
+    #[cfg(test)]
     pub(crate) fn remove(&mut self, x: Range<u64>) -> bool {
         if x.is_empty() {
             return false;
@@ -160,12 +162,14 @@ impl RangeSet {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn add(&mut self, other: &Self) {
         for (&start, &end) in &other.0 {
             self.insert(start..end);
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn subtract(&mut self, other: &Self) {
         for (&start, &end) in &other.0 {
             self.remove(start..end);
@@ -180,16 +184,19 @@ impl RangeSet {
         self.0.first_key_value().map(|(&start, _)| start)
     }
 
+    #[cfg(test)]
     pub(crate) fn max(&self) -> Option<u64> {
         self.0.last_key_value().map(|(_, &end)| end - 1)
     }
 
+    #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.0.len()
     }
     pub(crate) fn iter(&self) -> Iter<'_> {
         Iter(self.0.iter())
     }
+    #[cfg(test)]
     pub(crate) fn elts(&self) -> EltIter<'_> {
         EltIter {
             inner: self.0.iter(),
@@ -235,12 +242,14 @@ impl<'a> IntoIterator for &'a RangeSet {
     }
 }
 
+#[cfg(test)]
 pub(crate) struct EltIter<'a> {
     inner: btree_map::Iter<'a, u64, u64>,
     next: u64,
     end: u64,
 }
 
+#[cfg(test)]
 impl Iterator for EltIter<'_> {
     type Item = u64;
     fn next(&mut self) -> Option<u64> {
@@ -255,6 +264,7 @@ impl Iterator for EltIter<'_> {
     }
 }
 
+#[cfg(test)]
 impl DoubleEndedIterator for EltIter<'_> {
     fn next_back(&mut self) -> Option<u64> {
         if self.next == self.end {

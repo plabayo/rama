@@ -9,7 +9,7 @@ use crate::driver::sockets::MAX_RETAINED_SOCKETS;
 use crate::proto::crypto::rustls::{
     QuicClientConfig, QuicServerConfig, TlsOptions, configured_provider,
 };
-use crate::proto::{RetryRefused, TransportConfig};
+use crate::proto::{CongestionControl, RetryRefused, TransportConfig};
 #[cfg(all(feature = "aws-lc", not(feature = "ring")))]
 use rama_crypto::dep::aws_lc_rs::hmac;
 #[cfg(feature = "ring")]
@@ -2253,11 +2253,12 @@ fn observe_next_driver(lifecycle: &Lifecycle, log: Arc<PollLog>) {
 #[tokio::test]
 async fn bulk_transmit_yields_at_the_quota_and_lets_another_connection_progress() {
     let (mut client_config, mut server_config) = configs();
-    let mut transport = TransportConfig::default();
-    let mut cc = crate::proto::congestion::NewRenoConfig::default();
-    cc.initial_window(octets::mib_u64(4));
-    transport.congestion_controller_factory(Arc::new(cc));
-    let transport = Arc::new(transport);
+    let transport = Arc::new(
+        TransportConfig::default()
+            .with_congestion_control(CongestionControl::NewReno)
+            .try_with_initial_congestion_window(octets::mib_u64(4))
+            .expect("four mebibytes is above the minimum window"),
+    );
     client_config.set_transport_config(transport.clone());
     server_config.set_transport_config(transport);
     let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
@@ -4977,7 +4978,6 @@ async fn the_first_accepted_datagram_grants_a_fresh_identifier_its_history() {
         crate::proto::SendPermit::Sendable,
         "the fresh identifier's route is installed while the socket is blocked"
     );
-    let sent_before = log.lock().sent.len();
     assert!(
         short_header_dcids(&log.lock().sent, fresh_dcid.len())
             .iter()

@@ -32,7 +32,7 @@ use crate::driver::{
 };
 use crate::proto::{
     ConnectionError, ConnectionHandle, ConnectionStats, Dir, EndpointEvent, HandshakeSummary,
-    SendPermit, Side, StreamEvent, StreamId, congestion::Controller,
+    SendPermit, Side, StreamEvent, StreamId,
 };
 
 /// Tests: one descriptor this connection offered to its sender, and what became of it.
@@ -84,7 +84,7 @@ pub struct Connecting {
 impl Connecting {
     /// Tests: hold or release this (server-side) connection's HANDSHAKE_DONE before the
     /// handshake completes, so the peer can be observed complete but unconfirmed.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
     pub(crate) fn hold_handshake_done(&self, hold: bool) {
         if let Some(conn) = &self.conn {
             let conn = &mut *conn.state.lock();
@@ -162,7 +162,7 @@ impl Connecting {
     /// ## Outgoing
     ///
     /// For outgoing connections, the initial attempt to convert to a [`Connection`] which sends
-    /// 0-RTT data will proceed if the [`crypto::ClientConfig`][crate::driver::crypto::ClientConfig]
+    /// 0-RTT data will proceed if the [`ClientConfig`](crate::ClientConfig)
     /// attempts to resume a previous TLS session. However, **the remote endpoint may not actually
     /// _accept_ the 0-RTT data**--yet still accept the connection attempt in general. This
     /// possibility is conveyed through the [`ZeroRttAccepted`] future--when the handshake
@@ -176,16 +176,16 @@ impl Connecting {
     /// relevant resumption state to be stored in the server, which servers may limit or lose for
     /// various reasons including not persisting resumption state across server restarts.
     ///
-    /// If manually providing a [`crypto::ClientConfig`][crate::driver::crypto::ClientConfig], check your
-    /// implementation's docs for 0-RTT pitfalls.
+    /// Whether the attempt offers 0-RTT at all follows the [`ClientConfig`](crate::ClientConfig)
+    /// it was made with: `TlsOptions::with_early_data` governs it, and it is off by default.
     ///
     /// ## Incoming
     ///
     /// Incoming connections permit a 0.5-RTT handle. The [`ZeroRttAccepted`] future resolves
     /// to `Ok(true)` after a successful handshake or `Err` if authentication or the connection fails.
     ///
-    /// If manually providing a [`crypto::ServerConfig`][crate::driver::crypto::ServerConfig], check your
-    /// implementation's docs for 0-RTT pitfalls.
+    /// Whether the server accepts 0-RTT follows the [`ServerConfig`](crate::ServerConfig) it
+    /// was built with, through the same `TlsOptions` setting.
     ///
     /// ## Security
     ///
@@ -211,12 +211,8 @@ impl Connecting {
         }
     }
 
-    /// Parameters negotiated during the handshake
-    ///
-    /// The dynamic type returned is determined by the configured
-    /// [`Session`](crate::proto::crypto::Session). For the default `rustls` session, the return value can
-    /// be [`downcast`](Box::downcast) to a
-    /// [`crypto::rustls::HandshakeData`](crate::driver::crypto::rustls::HandshakeData).
+    /// What the handshake settled: the application protocol both sides agreed on, and the name
+    /// the client sent, as [`HandshakeSummary`] carries them.
     pub async fn handshake_data(&mut self) -> Result<HandshakeSummary, ConnectionError> {
         // Taking &mut self allows us to use a single oneshot channel rather than dealing with
         // potentially many tasks waiting on the same event. It's a bit of a hack, but keeps things
@@ -324,7 +320,7 @@ impl EndpointLink {
     }
 
     /// A link to no endpoint, for driving a connection in isolation.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
     pub(crate) fn detached(handle: ConnectionHandle) -> Self {
         Self {
             endpoint: Weak::new(),
@@ -377,23 +373,58 @@ struct Held {
 }
 
 impl Held {
-    /// The descriptor's bytes, wherever they are.
+    /// The storage the descriptor's bytes are in: its own copy once taken, otherwise the send
+    /// buffer the engine wrote it into.
     fn bytes<'a>(&'a self, send_buffer: &'a [u8]) -> &'a [u8] {
         self.bytes.as_deref().unwrap_or(send_buffer)
     }
 
+    /// The bytes this descriptor covers, or `None` when its storage no longer holds them. A
+    /// sender refuses such a descriptor rather than sending part of one, and so does everything
+    /// here that needs the bytes.
+    fn payload<'a>(&'a self, send_buffer: &'a [u8]) -> Option<&'a [u8]> {
+        self.bytes(send_buffer).get(..self.transmit.size)
+    }
+
     /// Take the bytes out of the send buffer, so the engine may write the next descriptor while
     /// this one waits.
-    fn own(&mut self, send_buffer: &[u8]) {
-        if self.bytes.is_some() {
-            return;
+    ///
+    /// Fails, handing the descriptor back, when the buffer no longer holds them. A descriptor
+    /// that fails here must be retired: it still points at a buffer the engine is about to
+    /// write again, and offering it later would send whatever landed there instead.
+    fn into_owned(mut self, send_buffer: &[u8]) -> Result<Owned, Self> {
+        let bytes = match self.bytes.take() {
+            Some(bytes) => bytes,
+            None => match send_buffer.get(..self.transmit.size) {
+                Some(payload) => payload.to_vec(),
+                None => return Err(self),
+            },
+        };
+        Ok(Owned {
+            id: self.id,
+            transmit: self.transmit,
+            bytes,
+        })
+    }
+}
+
+/// A descriptor that carries its own bytes, so no later write to the send buffer can change
+/// what it holds. It is the only way one is kept across an engine write.
+#[derive(Debug)]
+struct Owned {
+    id: crate::driver::udp::TransmitId,
+    transmit: crate::proto::Transmit,
+    bytes: Vec<u8>,
+}
+
+impl Owned {
+    /// Back to a held descriptor, still carrying its own bytes.
+    fn into_held(self) -> Held {
+        Held {
+            id: self.id,
+            transmit: self.transmit,
+            bytes: Some(self.bytes),
         }
-        self.bytes = Some(
-            send_buffer
-                .get(..self.transmit.size)
-                .expect("a descriptor's size is within the buffer it was written to")
-                .to_vec(),
-        );
     }
 }
 
@@ -480,11 +511,10 @@ fn offer(
     inner: &mut crate::proto::Connection,
     sender: &mut Sender,
     cx: &mut Context,
-    held: &Held,
+    id: crate::driver::udp::TransmitId,
+    transmit: &crate::proto::Transmit,
     bytes: &[u8],
 ) -> Offered {
-    let Held { id, transmit, .. } = held;
-    let (id, transmit) = (*id, transmit);
     if let Some(seq) = transmit.cid_used {
         match inner.may_send_cid(seq, transmit.destination) {
             SendPermit::Sendable => {}
@@ -808,8 +838,8 @@ impl Connection {
     /// undelivered to the application, including data that was acknowledged as received to
     /// the local endpoint.
     ///
-    /// [`ConnectionError::LocallyClosed`]: crate::driver::ConnectionError::LocallyClosed
-    /// [`Endpoint::wait_idle()`]: crate::driver::Endpoint::wait_idle
+    /// [`ConnectionError::LocallyClosed`]: crate::ConnectionError::LocallyClosed
+    /// [`Endpoint::wait_idle()`]: crate::Endpoint::wait_idle
     /// [`close()`]: Connection::close
     pub fn close(&self, error_code: VarInt, reason: &[u8]) {
         let conn = &mut *self.0.state.lock();
@@ -831,7 +861,7 @@ impl Connection {
     }
 
     /// Tests: hold or release the server's HANDSHAKE_DONE (see the engine seam).
-    #[cfg(test)]
+    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
     pub(crate) fn hold_handshake_done(&self, hold: bool) {
         let conn = &mut *self.0.state.lock();
         conn.inner.hold_handshake_done(hold);
@@ -839,20 +869,20 @@ impl Connection {
     }
 
     /// The destination connection ID this connection currently puts on the wire (tests).
-    #[cfg(test)]
+    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
     pub(crate) fn active_dcid(&self) -> Vec<u8> {
         self.0.state.lock().inner.active_rem_cid().to_vec()
     }
 
     /// Tests: whether a datagram carrying the active connection ID has gone out since the last
     /// switch, which is what makes that identifier one this connection has used.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
     pub(crate) fn active_cid_confirmed(&self) -> bool {
         self.0.state.lock().inner.active_cid_confirmed()
     }
 
     /// Tests: whether a datagram carrying the identifier numbered `seq` has gone out.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
     pub(crate) fn cid_confirmed(&self, seq: u64) -> bool {
         self.0.state.lock().inner.cid_confirmed(seq)
     }
@@ -864,33 +894,30 @@ impl Connection {
     /// route its identifier needs is not installed; this does not distinguish the two. A test
     /// that needs to know which must arrange one of them, as the route tests do by holding
     /// installation on a socket that is otherwise writable.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
     pub(crate) fn held_transmit(&self) -> Option<(Vec<u8>, std::net::SocketAddr, Option<u64>)> {
         let state = self.0.state.lock();
         let held = state.buffered_transmit.as_ref()?;
-        let bytes = held
-            .bytes(&state.send_buffer)
-            .get(..held.transmit.size)?
-            .to_vec();
+        let bytes = held.payload(&state.send_buffer)?.to_vec();
         Some((bytes, held.transmit.destination, held.transmit.cid_used))
     }
 
     /// Tests: run send passes with a smaller allowance, so the end of a pass is reachable
     /// without arranging twenty datagrams.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
     pub(crate) fn set_pass_allowance(&self, datagrams: usize) {
         self.0.state.lock().pass_allowance = Some(datagrams);
     }
 
     /// Tests: how many send passes this connection has run.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
     pub(crate) fn send_passes(&self) -> u64 {
         self.0.state.lock().passes
     }
 
     /// Tests: passes that spent their allowance on descriptors that were already waiting and put
     /// bytes on the wire — those that asked for another turn, and those that parked instead.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
     pub(crate) fn retry_allowance_ends(&self) -> (u64, u64) {
         let state = self.0.state.lock();
         (state.retry_allowance_asked, state.retry_allowance_parked)
@@ -898,38 +925,36 @@ impl Connection {
 
     /// Tests: the datagram waiting on the handle kept aside for another path, with the address
     /// that handle serves.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
     pub(crate) fn aside_transmit(&self) -> Option<(std::net::SocketAddr, Vec<u8>, Option<u64>)> {
         let state = self.0.state.lock();
         let slot = state.aside.as_ref()?;
         let held = slot.held.as_ref()?;
-        let bytes = held.bytes(&state.send_buffer).get(..held.transmit.size)?;
+        let bytes = held.payload(&state.send_buffer)?;
         Some((slot.serves, bytes.to_vec(), held.transmit.cid_used))
     }
 
     /// Tests: the local address of the handle kept aside for another path, if one is held.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
     pub(crate) fn aside_address(&self) -> Option<std::net::SocketAddr> {
         self.0.state.lock().aside.as_ref().map(|slot| slot.serves)
     }
 
-    /// Tests: the datagram that no handle at hand could take.
-    #[cfg(test)]
-    pub(crate) fn deferred_transmit(&self) -> Option<(Option<std::net::SocketAddr>, Vec<u8>)> {
-        let state = self.0.state.lock();
-        let held = state.deferred.as_ref()?;
-        let bytes = held.bytes(&state.send_buffer).get(..held.transmit.size)?;
-        Some((held.transmit.local, bytes.to_vec()))
+    /// Tests: make the next attempt to take a descriptor's bytes out of the send buffer find
+    /// nothing there, so the retirement path can be observed.
+    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+    pub(crate) fn fail_next_ownership(&self) {
+        self.0.state.lock().fail_ownership = true;
     }
 
     /// Tests: the descriptors this connection offered to its sender, oldest first.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
     pub(crate) fn descriptors(&self) -> Vec<Descriptor> {
         self.0.state.lock().descriptors.iter().cloned().collect()
     }
 
     /// Tests: how many times this connection has been told a datagram reached the network.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
     pub(crate) fn cid_sent_calls(&self) -> u64 {
         self.0.state.lock().inner.cid_sent_calls()
     }
@@ -937,42 +962,36 @@ impl Connection {
     /// Tests: whether the identifier numbered `seq` may be sent to `remote` — that is, whether
     /// its route is installed, which is a different question from whether anything has been sent
     /// with it.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
     pub(crate) fn send_permit(&self, seq: u64, remote: std::net::SocketAddr) -> SendPermit {
         self.0.state.lock().inner.may_send_cid(seq, remote)
     }
 
     /// Tests: whether a datagram carrying the identifier numbered `seq` has gone out towards
     /// `remote`, which is what RFC 9000 §10.3.1 ties recognition to.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
     pub(crate) fn cid_confirmed_to(&self, seq: u64, remote: std::net::SocketAddr) -> bool {
         self.0.state.lock().inner.cid_confirmed_to(seq, remote)
     }
 
     /// Tests: how many datagrams were given up because their identifier may never be sent again.
     /// A datagram merely waiting for its route is not one of them.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
     pub(crate) fn stale_transmits(&self) -> u64 {
         self.0.state.lock().stale_transmits
     }
 
     /// Tests: how many datagrams were given up because this endpoint owns no socket that could
     /// send from the local address their path names.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
     pub(crate) fn unowned_paths(&self) -> u64 {
         self.0.state.lock().unowned_paths
-    }
-
-    /// Tests: the local address of the path this connection sends on, as the engine knows it.
-    #[cfg(test)]
-    pub(crate) fn local_path(&self) -> Option<std::net::SocketAddr> {
-        self.0.state.lock().inner.path_local()
     }
 
     /// Tests: whether a datagram naming `local` would leave from the handle this connection
     /// sends on — because that is the handle's own address, or because the endpoint said the
     /// socket behind it covers that address.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
     pub(crate) fn sends_from_for(&self, local: std::net::SocketAddr) -> bool {
         matches!(
             self.0.state.lock().station_for(Some(local)),
@@ -981,19 +1000,19 @@ impl Connection {
     }
 
     /// Tests: the local address this connection sends from, as its send handle reports it.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
     pub(crate) fn sending_from(&self) -> Option<std::net::SocketAddr> {
         self.0.state.lock().socket.as_ref().map(Sender::local_addr)
     }
 
     /// Tests: the sequence number of the connection ID this side is addressing its peer with.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
     pub(crate) fn active_dcid_seq(&self) -> u64 {
         self.0.state.lock().inner.active_rem_cid_seq()
     }
 
     /// Tests: have the peer retire every connection ID we issued below `v`, issuing replacements.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
     pub(crate) fn rotate_local_cid(&self, v: u64) {
         let conn = &mut *self.0.state.lock();
         conn.inner
@@ -1002,7 +1021,7 @@ impl Connection {
     }
 
     /// The destination connection ID set aside for a candidate path, if any (tests).
-    #[cfg(test)]
+    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
     pub(crate) fn reserved_dcid(&self) -> Option<Vec<u8>> {
         self.0
             .state
@@ -1105,8 +1124,10 @@ impl Connection {
         self.0.state.lock().inner.datagrams().send_buffer_space()
     }
 
-    /// The side of the connection (client or server)
-    pub(crate) fn side(&self) -> Side {
+    /// Which side of the connection this is: the one that opened it, or the one that accepted
+    /// it.
+    #[must_use]
+    pub fn side(&self) -> Side {
         self.0.state.lock().inner.side()
     }
 
@@ -1137,18 +1158,14 @@ impl Connection {
     }
 
     /// Minimum RTT seen on this path, ignoring ack delay
-    pub(crate) fn min_rtt(&self) -> Duration {
+    #[must_use]
+    pub fn min_rtt(&self) -> Duration {
         self.0.state.lock().inner.min_rtt()
     }
 
     /// Returns connection statistics
     pub fn stats(&self) -> ConnectionStats {
         self.0.state.lock().inner.stats()
-    }
-
-    /// Current state of the congestion control algorithm, for debugging purposes
-    pub(crate) fn congestion_state(&self) -> Box<dyn Controller> {
-        self.0.state.lock().inner.congestion_state().clone_box()
     }
 
     /// Parameters negotiated during the handshake
@@ -1248,14 +1265,49 @@ impl Connection {
         conn.wake();
     }
 
-    /// See [`crate::proto::TransportConfig::send_window()`]
-    pub(crate) fn set_send_window(&self, send_window: u64) {
+    /// How many remotely initiated streams of `dir` may be open at once, as this side has
+    /// allowed them.
+    ///
+    /// Lowering the target with
+    /// [`set_max_concurrent_streams`](Self::set_max_concurrent_uni_streams) does not take
+    /// effect at once: the number falls by one as each open stream of that direction closes.
+    #[must_use]
+    pub fn max_concurrent_streams(&self, dir: Dir) -> u64 {
+        self.0.state.lock().inner.max_concurrent_streams(dir)
+    }
+
+    /// How many remotely initiated streams of `dir` are open, including those this side has
+    /// not accepted yet. They count against
+    /// [`max_concurrent_streams`](Self::max_concurrent_streams).
+    #[must_use]
+    pub fn remote_open_streams(&self, dir: Dir) -> u64 {
+        self.0.state.lock().inner.streams().remote_open_streams(dir)
+    }
+
+    /// Tell the connection its network path changed, so the congestion controller, the
+    /// round-trip estimate and MTU discovery start again from the transport configuration.
+    ///
+    /// Use it when something outside QUIC says the path is a different one, such as a change of
+    /// interface. The connection detects a peer's own move on its own.
+    pub fn path_changed(&self) {
+        let mut conn = self.0.state.lock();
+        let now = now();
+        conn.inner.path_changed(now);
+        conn.wake();
+    }
+
+    /// Set the maximum data this connection keeps in flight, as
+    /// [`TransportConfig::set_send_window`](crate::TransportConfig::set_send_window) does
+    /// before it is established.
+    pub fn set_send_window(&self, send_window: u64) {
         let mut conn = self.0.state.lock();
         conn.inner.set_send_window(send_window);
         conn.wake();
     }
 
-    /// See [`crate::proto::TransportConfig::receive_window()`]
+    /// Set the flow control window this connection advertises, as
+    /// [`TransportConfig::set_receive_window`](crate::TransportConfig::set_receive_window) does
+    /// before it is established.
     pub fn set_receive_window(&self, receive_window: VarInt) {
         let mut conn = self.0.state.lock();
         conn.inner.set_receive_window(receive_window);
@@ -1555,6 +1607,8 @@ impl ConnectionRef {
                 retry_allowance_parked: 0,
                 released_senders: Vec::new(),
                 stale_transmits: 0,
+                #[cfg(test)]
+                fail_ownership: false,
                 receive_queue,
                 failure_log: FailureLog::default(),
                 send_failures: 0,
@@ -1665,15 +1719,14 @@ impl ConnectionInner {
             .socket
             .as_ref()
             .is_some_and(|s| s.socket_id() == failed)
+            && let Some(dead) = {
+                // A prefix that handle accepted has left from its address, so the identifier it
+                // carried counts before the handle goes; a descriptor nothing was taken from is
+                // kept for whichever handle comes next.
+                conn.release_buffered();
+                conn.socket.take()
+            }
         {
-            // A prefix that handle accepted has left from its address, so the identifier it
-            // carried counts before the handle goes; a descriptor nothing was taken from is kept
-            // for whichever handle comes next.
-            conn.release_buffered();
-            let dead = conn
-                .socket
-                .take()
-                .expect("the handle was there a moment ago");
             let dead_addr = dead.local_addr();
             conn.released_senders.push(dead);
             outcome = match conn.pending_rebind.take() {
@@ -1862,6 +1915,9 @@ pub(crate) struct State {
     released_senders: Vec<Sender>,
     /// Datagrams dropped because the identifier they carried may no longer be sent.
     stale_transmits: u64,
+    /// Tests: make the next ownership attempt find nothing where the descriptor's bytes were.
+    #[cfg(test)]
+    fail_ownership: bool,
     send_buffer: Vec<u8>,
     /// We buffer a transmit when the underlying I/O would block, with the name of the attempt it
     /// belongs to, so the sender cannot apply what it accepted to a different descriptor.
@@ -1951,11 +2007,7 @@ impl State {
         while self.descriptors.len() >= DESCRIPTORS {
             self.descriptors.pop_front();
         }
-        let bytes = held
-            .bytes(&self.send_buffer)
-            .get(..held.transmit.size)
-            .expect("a descriptor's size is within the buffer it was written to")
-            .to_vec();
+        let bytes = held.payload(&self.send_buffer).unwrap_or_default().to_vec();
         self.descriptors.push_back(Descriptor {
             id: held.id.0,
             size: held.transmit.size,
@@ -2027,7 +2079,7 @@ impl State {
         &mut self,
         cx: &mut Context,
         now: crate::driver::Instant,
-        mut held: Held,
+        held: Held,
         work: &mut Work,
     ) -> io::Result<Placed> {
         let Some(sender) = self.socket.as_mut() else {
@@ -2041,13 +2093,12 @@ impl State {
         // this count while this state is locked.
         #[cfg(test)]
         let reports_before = self.inner.cid_sent_calls();
-        let outcome = offer(
-            &mut self.inner,
-            sender,
-            cx,
-            &held,
-            held.bytes(&self.send_buffer),
-        );
+        // This descriptor is offered in the pass the engine wrote it in, so the send buffer
+        // still holds it; a descriptor kept past that owns its bytes.
+        let Some(bytes) = held.payload(&self.send_buffer) else {
+            return Ok(self.retire(held, work));
+        };
+        let outcome = offer(&mut self.inner, sender, cx, held.id, &held.transmit, bytes);
         #[cfg(test)]
         let reported = self.inner.cid_sent_calls() > reports_before;
         match outcome {
@@ -2077,9 +2128,13 @@ impl State {
                 // go on: the engine can then write what that path needs. With no such path the
                 // descriptor stays where the engine wrote it and the pass ends here.
                 if self.aside.is_some() || self.inner.serves_another_path() {
-                    held.own(&self.send_buffer);
-                    self.buffered_transmit = Some(held);
-                    return Ok(Placed::Blocked);
+                    return match held.into_owned(self.ownership_source()) {
+                        Ok(owned) => {
+                            self.buffered_transmit = Some(owned.into_held());
+                            Ok(Placed::Blocked)
+                        }
+                        Err(held) => Ok(self.retire(held, work)),
+                    };
                 }
                 self.buffered_transmit = Some(held);
                 Ok(Placed::Stopped)
@@ -2121,30 +2176,40 @@ impl State {
         &mut self,
         cx: &mut Context,
         now: crate::driver::Instant,
-        mut held: Held,
+        held: Held,
         work: &mut Work,
     ) -> Placed {
         // One descriptor at a time on that path: what the engine produced next waits until the
         // handle has taken what already waits on it.
-        if !self.aside.as_ref().is_some_and(|slot| slot.held.is_none()) {
+        let Some(serves) = self
+            .aside
+            .as_ref()
+            .and_then(|slot| slot.held.is_none().then_some(slot.serves))
+        else {
             return self.set_aside(held, work);
-        }
+        };
         // The descriptor waits on that handle across passes, so its bytes come with it.
-        held.own(&self.send_buffer);
-        let serves = self.aside.as_ref().map(|slot| slot.serves);
+        let owned = match held.into_owned(self.ownership_source()) {
+            Ok(owned) => owned,
+            Err(held) => return self.retire(held, work),
+        };
+        let serves = Some(serves);
         #[cfg(test)]
         let reports_before = self.inner.cid_sent_calls();
         let outcome = {
-            let bytes = held
-                .bytes
-                .as_deref()
-                .expect("a descriptor waiting aside owns its bytes");
-            let slot = self
-                .aside
-                .as_mut()
-                .expect("the slot answered for this descriptor a moment ago");
-            offer(&mut self.inner, &mut slot.sender, cx, &held, bytes)
+            let Some(slot) = self.aside.as_mut() else {
+                return self.set_aside(owned.into_held(), work);
+            };
+            offer(
+                &mut self.inner,
+                &mut slot.sender,
+                cx,
+                owned.id,
+                &owned.transmit,
+                &owned.bytes,
+            )
         };
+        let held = owned.into_held();
         #[cfg(test)]
         let reported = self.inner.cid_sent_calls() > reports_before;
         match outcome {
@@ -2221,10 +2286,16 @@ impl State {
         let waiting = self
             .buffered_transmit
             .take_if(|held| primary.accepted_any(held.id));
-        let mut waiting = waiting;
-        if let Some(held) = waiting.as_mut() {
-            held.own(&self.send_buffer);
-        }
+        // Whatever waits goes on to another handle, so its bytes come with it; one whose bytes
+        // are gone is retired here rather than carried.
+        let waiting = match waiting.map(|held| held.into_owned(self.ownership_source())) {
+            Some(Ok(owned)) => Some(owned.into_held()),
+            Some(Err(held)) => {
+                self.retire_quietly(held);
+                None
+            }
+            None => None,
+        };
         let Some(slot) = self.aside.as_mut() else {
             self.socket = Some(primary);
             self.buffered_transmit = waiting.or_else(|| self.buffered_transmit.take());
@@ -2237,6 +2308,35 @@ impl State {
         // The coverage record stays as it is: it names the socket it was established on, and that
         // socket is no longer the one in use, so the record is inert until the endpoint answers
         // about this one.
+    }
+
+    /// The buffer an ownership attempt copies from.
+    ///
+    /// Tests can make one attempt find nothing there: the engine cannot produce that state, and
+    /// the code has to retire the descriptor rather than leave it pointing at a buffer that is
+    /// about to hold something else.
+    fn ownership_source(&mut self) -> &[u8] {
+        #[cfg(test)]
+        if std::mem::take(&mut self.fail_ownership) {
+            return &[];
+        }
+        &self.send_buffer
+    }
+
+    /// Give up a descriptor whose bytes are no longer there to send. It is never offered: it
+    /// points at a buffer the engine writes again, so what it named is left to loss recovery.
+    fn retire(&mut self, held: Held, work: &mut Work) -> Placed {
+        self.retire_quietly(held);
+        work.advanced = true;
+        Placed::Done
+    }
+
+    /// The same, where the caller is not running a send pass.
+    fn retire_quietly(&mut self, held: Held) {
+        #[cfg(test)]
+        self.note_descriptor(&held, Outcome::Obsolete, false);
+        let _ = held;
+        self.stale_transmits += 1;
     }
 
     /// Ask the engine for the next descriptor, written into the send buffer.
@@ -2312,29 +2412,21 @@ impl State {
         self.stale_transmits += 1;
     }
 
-    /// Give up the descriptor waiting on this connection's sender: there is no socket it may
-    /// leave from, so it is released and, if it was kept whole by the release, dropped.
-    fn give_up_buffered(&mut self) {
-        self.release_buffered();
-        if let Some(held) = self.buffered_transmit.take() {
-            #[cfg(test)]
-            self.note_descriptor(&held, Outcome::Obsolete, false);
-            let _ = held;
-            self.stale_transmits += 1;
-        }
-    }
-
     /// Keep a descriptor whose station is occupied, or that is waiting for the endpoint's answer,
     /// until it can be placed. It takes its bytes with it, so the engine may write the next one.
     ///
     /// There is one such place. A second descriptor for a station that is still occupied is given
     /// up the way one that never reached a sender is: a path that cannot take anything does not
     /// get to stop the path that can, and loss recovery decides what follows.
-    fn set_aside(&mut self, mut held: Held, work: &mut Work) -> Placed {
+    fn set_aside(&mut self, held: Held, work: &mut Work) -> Placed {
         if self.deferred.is_none() {
-            held.own(&self.send_buffer);
-            self.deferred = Some(held);
-            return Placed::Done;
+            return match held.into_owned(self.ownership_source()) {
+                Ok(owned) => {
+                    self.deferred = Some(owned.into_held());
+                    Placed::Done
+                }
+                Err(held) => self.retire(held, work),
+            };
         }
         #[cfg(test)]
         self.note_descriptor(&held, Outcome::Obsolete, false);

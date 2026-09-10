@@ -103,9 +103,7 @@ impl fmt::Debug for AddressTokenKey {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proto::{
-        RESET_TOKEN_SIZE, crypto::AeadKey, shared::ConnectionId, token::ResetToken,
-    };
+    use crate::proto::{RESET_TOKEN_SIZE, shared::ConnectionId, token::ResetToken};
 
     /// The material is the caller's; what these types keep is the provider's key. Neither the
     /// type nor its debug output carries the bytes.

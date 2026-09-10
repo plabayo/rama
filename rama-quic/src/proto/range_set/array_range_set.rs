@@ -49,6 +49,7 @@ impl ArrayRangeSet {
         self.0.len()
     }
 
+    #[cfg(test)]
     pub(crate) fn contains(&self, x: u64) -> bool {
         for range in self.0.iter() {
             if range.start > x {
@@ -61,6 +62,7 @@ impl ArrayRangeSet {
         false
     }
 
+    #[cfg(test)]
     pub(crate) fn subtract(&mut self, other: &Self) {
         // TODO: This can potentially be made more efficient, since the we know
         // individual ranges are not overlapping, and the next range must start
@@ -192,6 +194,7 @@ impl ArrayRangeSet {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn min(&self) -> Option<u64> {
         self.iter().next().map(|x| x.start)
     }

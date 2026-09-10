@@ -6,6 +6,13 @@
 //! contained in this modules should generally only be referred to by custom
 //! implementations of the `crypto::Session` trait.
 
+#![cfg_attr(
+    not(all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))),
+    allow(
+        dead_code,
+        reason = "without a TLS backend and a crypto provider nothing can drive a handshake, so the code that serves one has no caller"
+    )
+)]
 use std::{
     convert::TryFrom,
     net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6},

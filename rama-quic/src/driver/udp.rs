@@ -229,6 +229,7 @@ impl Socket {
         self.failed_responses
     }
 
+    #[cfg(test)]
     /// Return true when fairness, rather than socket readiness, interrupted sending.
     ///
     /// Only an unusable socket is an error. A response refused for its destination is

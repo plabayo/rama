@@ -110,6 +110,7 @@ impl<'a> Streams<'a> {
         self.state
     }
 
+    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
     /// The number of streams that may have unacknowledged data.
     pub(crate) fn send_streams(&self) -> usize {
         self.state.send_streams
