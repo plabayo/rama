@@ -33,13 +33,14 @@ use crate::proto::{
     packet::{Header, InitialHeader, PacketNumber},
     transport_parameters::TransportParameters,
 };
-mod util;
+pub(crate) mod util;
 use util::*;
 
 mod admission;
 mod closing;
 mod tls;
 mod token;
+mod validation;
 
 #[cfg(all(target_family = "wasm", target_os = "unknown"))]
 use wasm_bindgen_test::wasm_bindgen_test as test;
@@ -2480,7 +2481,9 @@ fn migration() {
     );
 
     // Assert that the client's response to the PATH_CHALLENGE was an IMMEDIATE_ACK, instead of a
-    // second ping
+    // second ping. There are two challenges to answer: the server's first one goes out under the
+    // amplification limit on the new address and so cannot prove the path carries 1200 bytes, and
+    // RFC 9000 §8.2.3 asks for a second, expanded validation once the address itself is settled.
     let client_stats_after_migrate = pair.client_conn_mut(client_ch).stats();
     assert_eq!(
         client_stats_after_migrate.frame_tx.ping - client_stats_after_connect.frame_tx.ping,
@@ -2489,7 +2492,7 @@ fn migration() {
     assert_eq!(
         client_stats_after_migrate.frame_tx.immediate_ack
             - client_stats_after_connect.frame_tx.immediate_ack,
-        1
+        2
     );
 }
 

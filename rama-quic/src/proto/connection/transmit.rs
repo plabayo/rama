@@ -497,8 +497,17 @@ impl Connection {
                 }
             }
 
-            let sent =
-                self.populate_packet(now, space_id, buf, builder.max_size, builder.exact_number);
+            // Whether this datagram can still reach `MIN_INITIAL_SIZE`, which decides whether
+            // a challenge written into it can prove the path's minimum MTU (RFC 9000 §8.2.1).
+            let expands = buf_capacity - builder.datagram_start >= usize::from(MIN_INITIAL_SIZE);
+            let sent = self.populate_packet(
+                now,
+                space_id,
+                buf,
+                builder.max_size,
+                builder.exact_number,
+                expands,
+            );
 
             // ACK-only packets should only be sent when explicitly allowed. If we write them due to
             // any other reason, there is a bug which leads to one component announcing write
@@ -563,7 +572,7 @@ impl Connection {
         // Send MTU probe if necessary. A probe is a full-size datagram, and what may go towards
         // an address this side has not validated is bounded in bytes (RFC 9000 §8), so discovery
         // waits until the path is confirmed.
-        if buf.is_empty() && self.state.is_established() && self.path.validated {
+        if buf.is_empty() && self.state.is_established() && self.path.mtu_validated {
             let space_id = SpaceId::Data;
             let probe_size = self
                 .path
@@ -649,10 +658,13 @@ impl Connection {
             path: prev_path,
             cid,
         } = self.prev_path.as_mut()?;
-        if !prev_path.challenge_pending {
-            return None;
-        }
-        prev_path.challenge_pending = false;
+        let token = match prev_path.challenge.as_mut() {
+            Some(challenge) if challenge.pending() => {
+                challenge.written();
+                challenge.token()
+            }
+            _ => return None,
+        };
         // The previous path is only ever sent with the connection ID bound to it, from the local
         // address that path uses (RFC 9000 §9.5).
         let (prev_cid, prev_seq) = match cid {
@@ -661,13 +673,6 @@ impl Connection {
             PrevCid::Gone => return None,
         };
         let local = prev_path.local;
-        #[expect(
-            clippy::expect_used,
-            reason = "`challenge_pending` is set together with `challenge` in `migrate` and cleared before `challenge` is"
-        )]
-        let token = prev_path
-            .challenge
-            .expect("previous path challenge pending without token");
         let destination = prev_path.remote;
         debug_assert_eq!(
             self.highest_space,
@@ -813,11 +818,11 @@ impl Connection {
     /// See also `self.space(SpaceId::Data).can_send()`
     fn can_send_1rtt(&self, max_size: usize) -> bool {
         self.streams.can_send_stream_data()
-            || self.path.challenge_pending
+            || self.path.challenge.is_some_and(|it| it.pending())
             || self
                 .prev_path
                 .as_ref()
-                .is_some_and(|prev| prev.path.challenge_pending)
+                .is_some_and(|prev| prev.path.challenge.is_some_and(|it| it.pending()))
             || self.candidate.as_ref().is_some_and(|c| c.pending.is_some())
             || !self.path_responses.is_empty()
             || self.datagrams.outgoing.can_send_1rtt(max_size)
@@ -890,6 +895,9 @@ const MAX_HANDSHAKE_OR_0RTT_HEADER_SIZE: usize =
 
 #[derive(Default)]
 pub(super) struct SentFrames {
+    /// The path-validation token this datagram carried, if any. The finish point records how
+    /// large the datagram turned out, which is what a response to that token can prove.
+    pub(super) challenge: Option<u64>,
     pub(super) retransmits: ThinRetransmits,
     pub(super) largest_acked: Option<u64>,
     pub(super) stream_frames: StreamMetaVec,

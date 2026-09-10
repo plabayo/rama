@@ -26,6 +26,7 @@ impl Connection {
         buf: &mut Vec<u8>,
         max_size: usize,
         pn: u64,
+        expands: bool,
     ) -> SentFrames {
         let mut sent = SentFrames::default();
         let space = &mut self.spaces[space_id];
@@ -109,11 +110,15 @@ impl Connection {
         // PATH_CHALLENGE
         if buf.len() + 9 < max_size && space_id == SpaceId::Data {
             // Transmit challenges with every outgoing frame on an unvalidated path
-            if let Some(token) = self.path.challenge {
+            if let Some(challenge) = self.path.challenge.as_mut()
+                && challenge.may_go_in(expands)
+            {
+                let token = challenge.token();
                 // But only send a packet solely for that purpose at most once
-                self.path.challenge_pending = false;
+                challenge.written();
                 sent.non_retransmits = true;
                 sent.requires_padding = true;
+                sent.challenge = Some(token);
                 trace!("PATH_CHALLENGE {:08x}", token);
                 buf.write(frame::FrameType::PATH_CHALLENGE);
                 buf.write(token);

@@ -3,7 +3,7 @@
 
 use std::cmp;
 
-use rama_core::telemetry::tracing::{debug, trace};
+use rama_core::telemetry::tracing::trace;
 
 use crate::proto::{
     Instant, TransportError,
@@ -177,10 +177,7 @@ impl Connection {
                     self.zero_rtt_crypto = None;
                     self.prev_crypto = None;
                 }
-                Timer::PathValidation => {
-                    debug!("path validation failed");
-                    self.abandon_current_path(now);
-                }
+                Timer::PathValidation => self.on_path_validation_timeout(now),
                 Timer::PathProbe => self.on_probe_timeout(now),
                 Timer::Pacing => trace!("pacing timer expired"),
                 Timer::PushNewCid => {

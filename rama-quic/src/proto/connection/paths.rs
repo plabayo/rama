@@ -8,8 +8,8 @@ use super::{
     spaces::{PacketSpace, SentPacket},
 };
 use crate::proto::{
-    ConnectionId, Duration, Instant, TIMER_GRANULARITY, TransportConfig, congestion,
-    packet::SpaceId,
+    ConnectionId, Duration, Instant, MIN_INITIAL_SIZE, TIMER_GRANULARITY, TransportConfig,
+    congestion, packet::SpaceId,
 };
 
 #[cfg(feature = "qlog")]
@@ -31,13 +31,21 @@ pub(super) struct PathData {
     pub(super) congestion: Box<dyn congestion::Controller>,
     /// Pacing state
     pub(super) pacing: Pacer,
-    pub(super) challenge: Option<u64>,
-    pub(super) challenge_pending: bool,
+    /// The validation this side has outstanding on this path, if any.
+    pub(super) challenge: Option<Challenge>,
     /// Whether we're certain the peer can both send and receive on this address
     ///
     /// Initially equal to `use_stateless_retry` for servers, and becomes false again on every
     /// migration. Always true for clients.
     pub(super) validated: bool,
+    /// Expanded validations attempted on this path, bounding how long a path whose address
+    /// answers keeps spending full-size datagrams on proving its minimum MTU.
+    pub(super) mtu_validations: u8,
+    /// Whether this path is known to carry a datagram of [`MIN_INITIAL_SIZE`].
+    ///
+    /// Separate from `validated`: an address validated by an undersized challenge says
+    /// nothing about the path's minimum MTU (RFC 9000 §8.2.3). MTU discovery waits on this.
+    pub(super) mtu_validated: bool,
     /// Total size of all UDP datagrams sent on this path
     pub(super) total_sent: u64,
     /// Total size of all UDP datagrams received on this path
@@ -61,6 +69,124 @@ pub(super) struct PathData {
 
     /// Tag uniquely identifying a path in a connection
     generation: u64,
+}
+
+/// A path validation this side is waiting on (RFC 9000 §8.2).
+///
+/// A response names only the token, never which transmission of it answered. So what a token
+/// can prove is decided by the first datagram that carried it and never revised, and a token
+/// whose first datagram was expanded is never written into a smaller one afterwards — either
+/// direction of that aliasing would certify an MTU the path has not shown.
+///
+/// The fields are private: `Proves`, the optional size and the pending flag admit
+/// combinations the sender must not produce, so they are reached through the operations
+/// below rather than set directly.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Challenge {
+    token: u64,
+    proves: Proves,
+    sent: Option<Sent>,
+    generation: u64,
+    pending: bool,
+}
+
+/// What answering a token would establish.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Proves {
+    /// That the peer is at this address, and its minimum MTU too when the datagram that
+    /// carried the token reached [`MIN_INITIAL_SIZE`].
+    Address,
+    /// The minimum MTU, after an undersized challenge already proved the address
+    /// (RFC 9000 §8.2.3).
+    Mtu,
+}
+
+/// How large the first datagram carrying a token turned out to be.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Sent {
+    /// Under [`MIN_INITIAL_SIZE`], because the anti-amplification limit did not allow more
+    /// (RFC 9000 §8.2.1). A response proves the address and not the path's MTU.
+    Undersized,
+    /// [`MIN_INITIAL_SIZE`] or more, so a response proves both.
+    Expanded,
+}
+
+impl Challenge {
+    /// A first validation of a path, which proves its MTU too when the limit leaves room to
+    /// expand the datagram.
+    pub(super) fn of_address(token: u64, generation: u64) -> Self {
+        Self {
+            token,
+            proves: Proves::Address,
+            sent: None,
+            generation,
+            pending: true,
+        }
+    }
+
+    /// The second validation RFC 9000 §8.2.3 requires once an undersized challenge has proved
+    /// the address. Its token is fresh, so no earlier response can answer it.
+    pub(super) fn of_mtu(token: u64, generation: u64) -> Self {
+        Self {
+            proves: Proves::Mtu,
+            ..Self::of_address(token, generation)
+        }
+    }
+
+    pub(super) fn token(&self) -> u64 {
+        self.token
+    }
+
+    /// Whether a packet may still go out for the sole purpose of carrying this.
+    pub(super) fn pending(&self) -> bool {
+        self.pending
+    }
+
+    /// Whether this validation is the one that has to prove the minimum MTU.
+    pub(super) fn is_for_mtu(&self) -> bool {
+        self.proves == Proves::Mtu
+    }
+
+    /// Whether this token may go into a datagram that `expands` to [`MIN_INITIAL_SIZE`],
+    /// or not.
+    ///
+    /// A token that is out to prove the MTU is only ever sent expanded, and so is one whose
+    /// first datagram already was: a smaller copy of it could be the one a response answers,
+    /// and the response could not say which.
+    pub(super) fn may_go_in(&self, expands: bool) -> bool {
+        expands || !(self.proves == Proves::Mtu || self.sent == Some(Sent::Expanded))
+    }
+
+    /// Whether a response to this token proves the path carries [`MIN_INITIAL_SIZE`].
+    pub(super) fn proves_mtu(&self) -> bool {
+        self.sent == Some(Sent::Expanded)
+    }
+
+    /// Whether a response naming `token` on a path at `generation` answers this validation.
+    ///
+    /// A token nothing has sent answers nothing, and one from a path the connection has since
+    /// left validates nothing on the path that replaced it.
+    pub(super) fn is_answered_by(&self, token: u64, generation: u64) -> bool {
+        self.token == token && self.sent.is_some() && self.generation == generation
+    }
+
+    /// Note that a packet carrying this token has gone into the buffer, so no further packet
+    /// is owed for that purpose alone.
+    pub(super) fn written(&mut self) {
+        self.pending = false;
+    }
+
+    /// Record how large the first datagram carrying this token turned out.
+    ///
+    /// Only the first counts, which is what makes the evidence stable across retransmission.
+    pub(super) fn note_sent(&mut self, bytes: usize) {
+        if self.sent.is_none() {
+            self.sent = Some(match bytes >= usize::from(MIN_INITIAL_SIZE) {
+                true => Sent::Expanded,
+                false => Sent::Undersized,
+            });
+        }
+    }
 }
 
 impl PathData {
@@ -90,8 +216,9 @@ impl PathData {
             ),
             congestion,
             challenge: None,
-            challenge_pending: false,
             validated: false,
+            mtu_validations: 0,
+            mtu_validated: false,
             total_sent: 0,
             total_recvd: 0,
             mtud: config
@@ -136,8 +263,9 @@ impl PathData {
             sending_ecn: true,
             congestion,
             challenge: None,
-            challenge_pending: false,
             validated: false,
+            mtu_validations: 0,
+            mtu_validated: false,
             total_sent: 0,
             total_recvd: 0,
             mtud: prev.mtud.clone(),
@@ -150,6 +278,7 @@ impl PathData {
         }
     }
 
+    /// A path validation this side is waiting on (RFC 9000 §8.2).
     /// Resets RTT, congestion control and MTU states.
     ///
     /// This is useful when it is known the underlying path has changed.
@@ -520,6 +649,9 @@ impl InFlight {
         self.ack_eliciting -= u64::from(packet.ack_eliciting);
     }
 }
+
+#[cfg(test)]
+mod challenge_tests;
 
 #[cfg(test)]
 mod tests {

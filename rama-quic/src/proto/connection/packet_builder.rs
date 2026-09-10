@@ -208,8 +208,17 @@ impl PacketBuilder {
         let ack_eliciting = self.ack_eliciting;
         let exact_number = self.exact_number;
         let space_id = self.space;
+        let datagram_start = self.datagram_start;
         let (size, padded) = self.finish(conn, now, buffer);
         let Some(sent) = sent else { return };
+
+        // What a challenge in this datagram can prove is decided by how large the datagram
+        // turned out, after every padding decision (RFC 9000 §8.2.1). Only the first datagram
+        // to carry a token counts: the same token can go out again at another size, and a
+        // response names neither.
+        if let Some(token) = sent.challenge {
+            conn.record_challenge_size(token, buffer.len() - datagram_start);
+        }
 
         let size = match padded || ack_eliciting {
             true => size as u16,
@@ -302,3 +311,6 @@ impl PacketBuilder {
         (len, pad)
     }
 }
+
+#[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+mod tests;

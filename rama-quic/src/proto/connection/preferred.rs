@@ -295,8 +295,10 @@ impl Connection {
         self.migrate(now, candidate.remote, local, PreviousPath::Discard);
         // The candidate answered our challenge, so the path it stands for needs no validation.
         self.path.challenge = None;
-        self.path.challenge_pending = false;
         self.path.validated = true;
+        // The probe that was answered is padded to `MIN_INITIAL_SIZE`, so this address has
+        // shown it carries one.
+        self.path.mtu_validated = true;
         self.timers.stop(Timer::PathValidation);
         self.set_reset_token(candidate.remote, token);
         self.preferred_state = PreferredAddressState::Validated;

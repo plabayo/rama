@@ -5,14 +5,114 @@
 use std::net::SocketAddr;
 
 use crate::proto::{
+    Instant,
     connection::{
-        Connection, preferred::PreferredAddressState, spaces::PacketNumberFilter, timer::Timer,
+        Connection, ConnectionError, paths::Challenge, preferred::PreferredAddressState,
+        spaces::PacketNumberFilter, timer::Timer,
     },
     packet::SpaceId,
     shared::ConnectionId,
 };
 
 impl Connection {
+    /// Tests: hand the connection a PATH_RESPONSE naming `token`, as a duplicate or a
+    /// delayed copy would arrive.
+    #[cfg(test)]
+    pub(crate) fn replay_path_response(&mut self, now: Instant, token: u64) -> bool {
+        self.on_path_response(now, token)
+    }
+
+    /// Tests: why this connection ended, when something ended it.
+    #[cfg(test)]
+    pub(crate) fn ended_because(&self) -> Option<ConnectionError> {
+        self.error.clone()
+    }
+
+    /// Tests: the address of the path kept as a fallback, if one is kept.
+    #[cfg(test)]
+    pub(crate) fn previous_path_remote(&self) -> Option<SocketAddr> {
+        self.prev_path.as_ref().map(|it| it.path.remote)
+    }
+
+    /// Tests: install a validation on the current path directly, for a case that drives the
+    /// packet builder rather than a whole pass.
+    #[cfg(test)]
+    pub(crate) fn set_challenge(&mut self, token: u64) {
+        let generation = self.path.generation();
+        self.path.challenge = Some(Challenge::of_address(token, generation));
+    }
+
+    /// Tests: install the validation that must prove the minimum MTU, which is only ever
+    /// written into a datagram that can reach `MIN_INITIAL_SIZE`.
+    #[cfg(test)]
+    pub(crate) fn set_mtu_challenge(&mut self, token: u64) {
+        let generation = self.path.generation();
+        self.path.challenge = Some(Challenge::of_mtu(token, generation));
+    }
+
+    /// Tests: write the frames a packet would carry, saying whether the datagram it goes in
+    /// can still reach `MIN_INITIAL_SIZE`.
+    #[cfg(test)]
+    pub(crate) fn populate_for_tests(
+        &mut self,
+        now: Instant,
+        buf: &mut Vec<u8>,
+        max_size: usize,
+        expands: bool,
+    ) {
+        let pn = self.spaces[SpaceId::Data].next_packet_number;
+        self.populate_packet(now, SpaceId::Data, buf, max_size, pn, expands);
+    }
+
+    /// Tests: the current path's generation, for building a validation that belongs to it.
+    #[cfg(test)]
+    pub(crate) fn path_generation(&self) -> u64 {
+        self.path.generation()
+    }
+
+    /// Tests: whether the outstanding validation would prove the path's minimum MTU.
+    #[cfg(test)]
+    pub(crate) fn challenge_proves_mtu(&self) -> bool {
+        self.path.challenge.is_some_and(|it| it.proves_mtu())
+    }
+
+    /// Tests: when the path validation deadline is set, if it is.
+    #[cfg(test)]
+    pub(crate) fn path_validation_deadline(&self) -> Option<Instant> {
+        self.timers.get(Timer::PathValidation)
+    }
+
+    /// Tests: abandon the fallback the way a completed validation does, retiring the
+    /// identifier kept for it, so what follows has nowhere to fall back to.
+    #[cfg(test)]
+    pub(crate) fn abandon_the_fallback(&mut self) {
+        self.drop_previous_path();
+    }
+
+    /// Tests: whether this path has shown it carries a datagram of `MIN_INITIAL_SIZE`.
+    #[cfg(test)]
+    pub(crate) fn mtu_validated(&self) -> bool {
+        self.path.mtu_validated
+    }
+
+    /// Tests: the token of the validation outstanding on the current path, if any.
+    #[cfg(test)]
+    pub(crate) fn challenge_token(&self) -> Option<u64> {
+        self.path.challenge.map(|it| it.token())
+    }
+
+    /// Tests: whether the outstanding validation is the one that must prove the minimum MTU.
+    #[cfg(test)]
+    pub(crate) fn challenge_is_for_mtu(&self) -> bool {
+        self.path.challenge.is_some_and(|it| it.is_for_mtu())
+    }
+
+    /// Tests: how many expanded validations this path has spent.
+    #[cfg(test)]
+    pub(crate) fn mtu_validations(&self) -> u8 {
+        self.path.mtu_validations
+    }
+
     /// Whether the loss-detection (PTO) timer is armed (tests).
     #[cfg(test)]
     pub(crate) fn loss_detection_armed(&self) -> bool {

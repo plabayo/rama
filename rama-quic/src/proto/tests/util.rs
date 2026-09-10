@@ -26,13 +26,13 @@ use crate::proto::{Duration, Instant};
 
 pub(super) const DEFAULT_MTU: usize = 1452;
 
-pub(super) struct Pair {
+pub(crate) struct Pair {
     pub(super) server: TestEndpoint,
     pub(super) client: TestEndpoint,
     /// Start time
     epoch: Instant,
     /// Current time
-    pub(super) time: Instant,
+    pub(crate) time: Instant,
     /// Simulates the maximum size allowed for UDP payloads by the link (packets exceeding this size will be dropped)
     pub(super) mtu: usize,
     /// Simulates explicit congestion notification
@@ -228,7 +228,7 @@ impl Pair {
         }
     }
 
-    pub(super) fn connect(&mut self) -> (ConnectionHandle, ConnectionHandle) {
+    pub(crate) fn connect(&mut self) -> (ConnectionHandle, ConnectionHandle) {
         self.connect_with(client_config())
     }
 
@@ -295,7 +295,7 @@ impl Pair {
         }
     }
 
-    pub(super) fn client_conn_mut(&mut self, ch: ConnectionHandle) -> &mut Connection {
+    pub(crate) fn client_conn_mut(&mut self, ch: ConnectionHandle) -> &mut Connection {
         self.client.connections.get_mut(&ch).unwrap()
     }
 

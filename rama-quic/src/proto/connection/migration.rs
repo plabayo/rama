@@ -6,18 +6,26 @@ use std::{
     net::{IpAddr, SocketAddr},
 };
 
-use rama_core::telemetry::tracing::trace;
+use rama_core::telemetry::tracing::{debug, trace};
 
 use rand::RngExt;
 
 use crate::proto::{
     Instant, TransportError,
     connection::{
-        Connection, ConnectionSide, paths::PathData, preferred::PreferredAddressState, timer::Timer,
+        Connection, ConnectionSide,
+        paths::{Challenge, PathData},
+        preferred::PreferredAddressState,
+        timer::Timer,
     },
     packet::SpaceId,
     shared::ConnectionId,
 };
+
+/// How many times the expanded validation is attempted before the path is given up. Each
+/// attempt costs a full-size datagram, and running out of them abandons the path rather than
+/// settling for anything: an address that answers is not proof it carries 1200 bytes.
+const MAX_MTU_VALIDATIONS: u8 = 3;
 
 impl Connection {
     /// The peer's connection ID this connection may send on the path (`remote`, `local`), with its
@@ -186,9 +194,10 @@ impl Connection {
         if !nat_rebinding && !self.rem_cids.has_unused() {
             return Ok(false);
         }
-        // The path being replaced is kept as a fallback only while it was validated: an
-        // unvalidated one is dropped, and an older kept path stays as it is.
-        let keep_replaced = self.path.challenge.is_none();
+        // The path being replaced is kept as a fallback only when it is proven usable, which
+        // takes both its address and its minimum MTU (RFC 9000 §8.2.4, §14.2); otherwise it is
+        // dropped and an older kept path stays as it is.
+        let keep_replaced = self.path.mtu_validated;
         let (prev_cid, token) = if nat_rebinding {
             (PrevCid::Active, self.rem_cids.active_reset_token())
         } else {
@@ -238,7 +247,8 @@ impl Connection {
 
     /// The current path failed validation: return to the previous path when it is kept and has a
     /// connection ID to be sent with (RFC 9000 §9.5), otherwise stay on the current one.
-    pub(super) fn abandon_current_path(&mut self, now: Instant) {
+    /// Answers whether a usable path was taken up in its place.
+    pub(super) fn abandon_current_path(&mut self, now: Instant) -> bool {
         if let Some(PrevPath { path: prev, cid }) = self.prev_path.take() {
             let usable = match cid {
                 PrevCid::Held => match self.rem_cids.restore_held() {
@@ -276,12 +286,13 @@ impl Connection {
             if usable {
                 self.path = prev;
                 self.set_loss_detection_timer(now);
-            } else {
-                trace!("no connection ID for the previous path: staying on the unvalidated one");
+                self.path.challenge = None;
+                return true;
             }
+            trace!("no connection ID for the previous path: staying on the unvalidated one");
         }
         self.path.challenge = None;
-        self.path.challenge_pending = false;
+        false
     }
 
     /// Whether a datagram received at `local` belongs to the current path's local address. An
@@ -328,16 +339,18 @@ impl Connection {
                 &self.config,
             )
         };
-        new_path.challenge = Some(self.rng.random());
-        new_path.challenge_pending = true;
+        new_path.challenge = Some(Challenge::of_address(
+            self.rng.random(),
+            new_path.generation(),
+        ));
         let prev_pto = self.pto(SpaceId::Data);
 
         let mut prev = mem::replace(&mut self.path, new_path);
         match previous {
-            // Don't clobber the original path if the previous one hasn't been validated yet
-            PreviousPath::Keep(cid) if prev.challenge.is_none() => {
-                prev.challenge = Some(self.rng.random());
-                prev.challenge_pending = true;
+            // Don't clobber the original path with one that is not proven usable: a path
+            // still proving its address, or its minimum MTU, is not a fallback.
+            PreviousPath::Keep(cid) if prev.mtu_validated => {
+                prev.challenge = Some(Challenge::of_address(self.rng.random(), prev.generation()));
                 self.prev_path = Some(PrevPath { path: prev, cid });
             }
             PreviousPath::Keep(_) => {}
@@ -384,9 +397,108 @@ impl Connection {
         self.deferred_migration.is_some()
     }
 
+    /// Start the expanded validation RFC 9000 §8.2.3 requires after an undersized challenge.
+    ///
+    /// The token is fresh: a response to the small one must not be able to answer this, and
+    /// the same token is never written into a datagram that could not expand.
+    fn expand_the_validation(&mut self, now: Instant) {
+        if self.path.mtu_validations >= MAX_MTU_VALIDATIONS {
+            self.give_up_on_the_path(now);
+            return;
+        }
+        self.path.mtu_validations += 1;
+        let generation = self.path.generation();
+        self.path.challenge = Some(Challenge::of_mtu(self.rng.random(), generation));
+        // Three PTOs, as RFC 9000 §8.2.4 recommends, so losing a single challenge or its
+        // response costs a retry rather than the path.
+        self.timers
+            .set(Timer::PathValidation, now + 3 * self.pto(SpaceId::Data));
+    }
+
+    /// The expanded validation was abandoned, so this path is unusable.
+    ///
+    /// RFC 9000 §8.2.4: abandoning a validation determines the path unusable, and §14.2
+    /// forbids ordinary use of a path that cannot carry `MIN_INITIAL_SIZE`. An address that
+    /// answers is not that proof, so there is no conservative MTU to settle for: either
+    /// another path remains, or this connection has nowhere left to send, which is what
+    /// `NO_VIABLE_PATH` says.
+    fn give_up_on_the_path(&mut self, now: Instant) {
+        debug!("the path never carried an expanded challenge");
+        self.path.challenge = None;
+        if self.abandon_current_path(now) {
+            return;
+        }
+        self.kill(TransportError::NO_VIABLE_PATH("the path does not carry 1200 bytes").into());
+    }
+
+    /// The validation timer expired.
+    ///
+    /// An expanded attempt gets another try rather than costing the path at once: three
+    /// PTOs already cover a lost challenge or response, and the retries beyond that are
+    /// bounded. Running out of them abandons the path, because an address that answers is
+    /// not proof it carries 1200 bytes.
+    pub(super) fn on_path_validation_timeout(&mut self, now: Instant) {
+        if self.path.challenge.is_some_and(|it| it.is_for_mtu()) {
+            debug!("the expanded path validation went unanswered");
+            self.expand_the_validation(now);
+            return;
+        }
+        debug!("path validation failed");
+        let _ = self.abandon_current_path(now);
+    }
+
+    /// Note how large the datagram that carried `token` turned out to be.
+    ///
+    /// The first one to carry it decides: a token sent under the anti-amplification limit
+    /// stays undersized evidence even if a later datagram carrying it is expanded, because a
+    /// response names the token and not the transmission (RFC 9000 §8.2.1).
+    pub(super) fn record_challenge_size(&mut self, token: u64, bytes: usize) {
+        if let Some(challenge) = self.path.challenge.as_mut()
+            && challenge.token() == token
+        {
+            challenge.note_sent(bytes);
+        }
+    }
+
+    /// Settle whatever validation `token` answers, and answer whether it answered one.
+    ///
+    /// A token nothing has sent answers nothing, and one from a path this connection has
+    /// since left validates nothing on the path that replaced it; either simply returns.
+    ///
+    /// A response to a token that went out in an undersized datagram proves the peer is at
+    /// this address, and with it the anti-amplification limit lifts. It says nothing about
+    /// whether the path carries a full-size datagram, so RFC 9000 §8.2.3 asks for a second
+    /// validation, which this starts with a token that has never been in a small one.
+    pub(super) fn on_path_response(&mut self, now: Instant, token: u64) -> bool {
+        let generation = self.path.generation();
+        let Some(challenge) = self
+            .path
+            .challenge
+            .filter(|it| it.is_answered_by(token, generation))
+        else {
+            return false;
+        };
+        self.timers.stop(Timer::PathValidation);
+        self.path.validated = true;
+        if challenge.proves_mtu() {
+            trace!("new path validated");
+            self.path.mtu_validated = true;
+            self.path.challenge = None;
+            self.drop_previous_path();
+            return true;
+        }
+        trace!("path validated; its minimum MTU is not");
+        self.expand_the_validation(now);
+        true
+    }
+
     /// Mark the path as validated, and enqueue NEW_TOKEN frames to be sent as appropriate
     pub(super) fn on_path_validated(&mut self) {
         self.path.validated = true;
+        // A handshake reaches this address in datagrams padded to `MIN_INITIAL_SIZE`
+        // (RFC 9000 §14.1), and a client's own path is trusted from the start, so nothing
+        // here is left to prove about the minimum MTU.
+        self.path.mtu_validated = true;
         let ConnectionSide::Server { server_config } = &self.side else {
             return;
         };

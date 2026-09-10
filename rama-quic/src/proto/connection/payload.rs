@@ -222,13 +222,7 @@ impl Connection {
                     // and leaves an attempt in progress alone.
                     if self.candidate.as_ref().is_some_and(|c| c.matches(token)) {
                         self.take_preferred_address(now);
-                    } else if self.path.challenge == Some(token) {
-                        trace!("new path validated");
-                        self.timers.stop(Timer::PathValidation);
-                        self.path.challenge = None;
-                        self.path.validated = true;
-                        self.drop_previous_path();
-                    } else {
+                    } else if !self.on_path_response(now, token) {
                         debug!(token, "ignoring unmatched PATH_RESPONSE");
                     }
                 }
