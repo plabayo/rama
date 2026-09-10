@@ -19,12 +19,11 @@ use rama_core::extensions::{Extension, Extensions};
 /// snapshots of HTTP parts should have empty extensions to avoid ownership
 /// cycles and retaining resources from the HTTP exchange.
 ///
-/// # Migrating response metadata
+/// # Selecting response metadata
 ///
-/// The relay previously copied all top-level response extensions onto the
-/// egress transport. Inserting a value only on the response no longer transfers
-/// it. Custom response matchers and middleware must also select each value
-/// needed by the upgraded relay:
+/// To make response metadata available to the upgraded egress transport,
+/// insert it into this selection. Store it on the HTTP response as well
+/// when HTTP middleware needs access to the same value:
 ///
 /// ```
 /// use rama_core::extensions::{Extension, ExtensionsRef};
