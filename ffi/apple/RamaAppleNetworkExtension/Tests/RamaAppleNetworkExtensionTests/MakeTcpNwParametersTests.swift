@@ -154,29 +154,15 @@ final class MakeTcpNwParametersTests: XCTestCase {
         XCTAssertEqual(tcp?.keepaliveCount, defaultTcpKeepaliveCount)
     }
 
-    /// A real promoted slow reader closed the egress receive window and hit
-    /// Network.framework's keepalive timeout before its 300-second pause ended.
-    /// Pin the policy relationship rather than just echoing the defaults: the
-    /// no-reply allowance must cover the write-stall window, without delaying
-    /// the first keepalive that maintains a healthy idle NAT mapping.
-    func testDefaultKeepaliveDoesNotPreemptSupportedReaderPause() throws {
+    /// Keep writer stall tolerance independent from the existing silent-peer
+    /// detection policy. A writer with no outstanding payload has no watchdog.
+    func testKeepalivePreservesSilentPeerDetectionDefaults() throws {
         for opts in [nil, makeOpts(keepaliveEnabled: true)] {
             let tcp = try XCTUnwrap(tcpOptions(makeTcpNwParameters(opts)))
             XCTAssertEqual(tcp.keepaliveIdle, 15)
             XCTAssertEqual(tcp.keepaliveInterval, 5)
-            let noReplyAllowanceMs = tcp.keepaliveInterval * tcp.keepaliveCount * 1000
-            XCTAssertGreaterThanOrEqual(noReplyAllowanceMs, TcpWritePumpPolicy.defaultStallTimeoutMs)
-            XCTAssertGreaterThan(noReplyAllowanceMs, 300_000)
+            XCTAssertEqual(tcp.keepaliveCount, 3)
         }
-    }
-
-    func testExplicitAggressiveKeepaliveBudgetRemainsOptIn() throws {
-        let tcp = try XCTUnwrap(tcpOptions(makeTcpNwParameters(makeOpts(
-            keepaliveEnabled: true, hasIdle: true, idle: 15,
-            hasInterval: true, interval: 5, hasCount: true, count: 3))))
-        XCTAssertEqual(tcp.keepaliveIdle, 15)
-        XCTAssertEqual(tcp.keepaliveInterval, 5)
-        XCTAssertEqual(tcp.keepaliveCount, 3)
     }
 
     // MARK: - TCP tuning

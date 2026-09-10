@@ -407,7 +407,7 @@ final class TcpFlowContext: @unchecked Sendable {
         // A final receive may already have reported a reset while its tail
         // waits behind this writer. Keep the first source failure even when
         // the independent write deadline wins the teardown race.
-        let cause = directForwarder?.pendingServerReadError ?? error
+        let cause = directForwarder?.pendingServerReadError ?? egressReadError ?? error
         applyFullTeardown(error: cause, driveForwarder: true)
     }
 
@@ -555,7 +555,8 @@ final class TcpFlowContext: @unchecked Sendable {
             userInfo: [
                 NSLocalizedDescriptionKey: "graceful close drain stalled; flow force-dropped"
             ])
-        applyFullTeardown(error: err, driveForwarder: true)
+        let cause = directForwarder?.pendingServerReadError ?? egressReadError ?? err
+        applyFullTeardown(error: cause, driveForwarder: true)
     }
 
     /// The promoted (`TcpDirectForwarder`) data path made no progress for

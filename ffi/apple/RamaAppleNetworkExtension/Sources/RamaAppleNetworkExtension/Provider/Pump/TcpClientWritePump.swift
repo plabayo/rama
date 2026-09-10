@@ -86,6 +86,7 @@ final class TcpClientWritePump: @unchecked Sendable {
         core.enqueuePrecharged(payload)
     }
 
+    var hasOutstandingWork: Bool { core.hasOutstandingWork }
     var stallTimeoutMs: Int { core.writePolicy.stallTimeoutMs }
     var maxPendingBytes: Int { core.writePolicy.maxPendingBytes }
     var aggregateBudget: WriterMemoryBudget { core.aggregateBudget }

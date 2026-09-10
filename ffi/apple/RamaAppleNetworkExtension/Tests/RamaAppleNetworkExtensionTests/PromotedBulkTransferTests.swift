@@ -98,12 +98,17 @@ final class PromotedBulkTransferTests: XCTestCase {
 
         init(timeout: Int = 360_000, dropEdges: Int = 0,
              budget: WriterMemoryBudget = WriterMemoryBudget(),
-             productionCore: TransparentProxyCore? = nil) {
+             productionCore: TransparentProxyCore? = nil,
+             clientCap: Int? = nil, egressCap: Int? = nil,
+             writeChunkLimit: Int? = nil) {
             self.budget = budget
             let ctx = ctx, clock = clock, terminals = terminals, edges = droppedEdges
             edges.set(dropEdges)
             let forwarderRef = BulkForwarderRef()
-            let policy = TcpWritePumpPolicy(maxPendingBytes: cap, stallTimeoutMs: timeout)
+            let clientPolicy = TcpWritePumpPolicy(
+                maxPendingBytes: clientCap ?? cap, stallTimeoutMs: timeout)
+            let egressPolicy = TcpWritePumpPolicy(
+                maxPendingBytes: egressCap ?? cap, stallTimeoutMs: timeout)
             writer = TcpClientWritePump(
                 flow: flow, queue: queue, logger: { _ in },
                 onTerminalError: { [weak ctx] error in
@@ -119,14 +124,14 @@ final class PromotedBulkTransferTests: XCTestCase {
                 onActivity: { [weak ctx] in ctx?.recordActivityUnlessPressureEvicted() ?? false },
                 retryScheduler: { clock.schedule($0, $1) },
                 stallScheduler: { clock.schedule($0, $1) },
-                now: { clock.now() }, writerMemoryBudget: budget, writePolicy: policy)
+                now: { clock.now() }, writerMemoryBudget: budget, writePolicy: clientPolicy)
             egress = NwTcpConnectionWritePump(
                 connection: connection, queue: queue,
                 onDrained: { forwarderRef.value?.onEgressPumpDrained() },
                 onTerminal: { [weak ctx] error in ctx?.applyWriterTerminal(error) },
                 retryScheduler: { clock.schedule($0, $1) },
                 stallScheduler: { clock.schedule($0, $1) },
-                now: { clock.now() }, writerMemoryBudget: budget, writePolicy: policy)
+                now: { clock.now() }, writerMemoryBudget: budget, writePolicy: egressPolicy)
             if let core = productionCore {
                 let queue = queue, flow = flow, connection = connection
                 let writer = writer, egress = egress
@@ -141,7 +146,7 @@ final class PromotedBulkTransferTests: XCTestCase {
                     egressWritePump: egress, writerMemoryBudget: budget, queue: queue,
                     logger: { _ in }, drainStallDeadline: .never,
                     onReadError: { [weak ctx] error in ctx?.applyReadHardError(error) },
-                    writeChunkLimit: cap,
+                    writeChunkLimit: writeChunkLimit ?? cap,
                     closeClientWrite: { [weak ctx] error in ctx?.closeClientWriteOnce(error) },
                     pauseScheduler: { clock.schedule($0, $1) }, onTerminal: {})
             }
@@ -314,6 +319,73 @@ final class PromotedBulkTransferTests: XCTestCase {
         h.drain()
         XCTAssertFalse(h.done)
         XCTAssertEqual(h.flow.base.closeWriteCallCount, 0)
+    }
+
+    func testMismatchedPumpCapsStillDrainBothDirectionsWithoutLostBytes() {
+        for (clientCap, egressCap) in [(3, 7), (7, 3)] {
+            let h = Harness(clientCap: clientCap, egressCap: egressCap, writeChunkLimit: 64)
+            let upload = pattern(23), download = pattern(29)
+            h.forwarder.acceptClientCarryover(upload)
+            h.forwarder.acceptClientCarryover(nil)
+            h.forwarder.acceptEgressCarryover(download)
+            h.forwarder.acceptEgressCarryover(nil)
+            h.drain()
+            // Complete bounded writes deterministically; an oversized head
+            // would remain paused forever without any callback to complete.
+            for _ in 0..<32 {
+                if h.flow.pending.get() != nil { h.complete() }
+                _ = h.connection.completePendingSend()
+                h.drain()
+            }
+            XCTAssertEqual(h.flow.delivered.get(), download)
+            let sent = h.connection.sentChunks.compactMap(\.content)
+            XCTAssertEqual(Data(sent.joined()), upload)
+            XCTAssertTrue(sent.allSatisfy { $0.count <= egressCap })
+            XCTAssertEqual(h.queue.sync { h.forwarder.c2sPhase }, .finished)
+            XCTAssertEqual(h.queue.sync { h.forwarder.s2cPhase }, .finished)
+            XCTAssertNil(h.flow.base.lastCloseWriteError)
+            XCTAssertEqual(h.flow.base.closeWriteCallCount, 1)
+            XCTAssertEqual(h.budget.snapshot().retainedBytes, 0)
+            h.advance(720_000)
+            XCTAssertEqual(h.terminals.get(), 0)
+        }
+    }
+
+    func testOwnerCancellationPreservesCauseAcrossLateCompletionsAndPauseChecks() {
+        let actions: [(TcpFlowContext) -> Void] = [
+            { $0.applyEngineDetached() },
+            { $0.applyReadHardError(NWError.posix(.ECANCELED)) },
+        ]
+        for action in actions {
+            for lateWriteError in [nil, NWError.posix(.ECANCELED)] as [NWError?] {
+                let h = Harness(timeout: 30_000)
+                h.receive(pattern(h.cap))
+                h.receive(pattern(h.cap)) // Hold a paused tail and an armed recheck.
+                h.forwarder.acceptClientCarryover(pattern(h.cap * 2))
+                h.drain()
+                h.queue.sync { action(h.ctx); action(h.ctx) }
+                h.drain()
+                let original = h.flow.base.lastCloseWriteError as NSError?
+                XCTAssertNotNil(original)
+                XCTAssertNotEqual(original?.code, Int(EPIPE))
+                // Exercise stale reads, drain edges, timers and foreign-queue
+                // completions after the owner has committed its terminal cause.
+                h.flow.base.completeReadSynchronously(data: pattern(31), error: nil)
+                h.forwarder.onClientPumpDrained()
+                h.forwarder.onEgressPumpDrained()
+                h.complete(lateWriteError)
+                XCTAssertTrue(h.connection.completePendingSend(error: lateWriteError))
+                h.drain()
+                h.advance(90_000)
+                h.assertError()
+                XCTAssertEqual(h.terminals.get(), 0)
+                XCTAssertEqual((h.flow.base.lastCloseWriteError as NSError?)?.domain, original?.domain)
+                XCTAssertEqual((h.flow.base.lastCloseWriteError as NSError?)?.code, original?.code)
+                XCTAssertEqual(h.budget.snapshot().retainedBytes, 0)
+                XCTAssertEqual(h.budget.snapshot().retainedItems, 0)
+                XCTAssertEqual(h.queue.sync { h.forwarder.testBufferedChunkCount }, 0)
+            }
+        }
     }
 
     func testEveryForcedTeardownCarriesErrorWithUnwrittenBytes() {

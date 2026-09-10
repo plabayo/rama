@@ -99,6 +99,8 @@ final class NwTcpConnectionWritePump: @unchecked Sendable {
         core.enqueuePrecharged(payload)
     }
 
+    var maxPendingBytes: Int { core.writePolicy.maxPendingBytes }
+
     var aggregateBudget: WriterMemoryBudget { core.aggregateBudget }
 
     func retireAdmissionForEngineDetach() { core.retireAdmission() }

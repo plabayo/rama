@@ -543,6 +543,9 @@ final class TcpWritePumpCore: @unchecked Sendable {
         }
     }
 
+    /// Lock-protected admission snapshot, including callback and budget waits.
+    var hasOutstandingWork: Bool { hasOutstandingWorkLocked() }
+
     private func hasOutstandingWorkLocked() -> Bool {
         state.withLock {
             $0.pendingItems > 0 || $0.aggregateWaitExpectedBytes != nil

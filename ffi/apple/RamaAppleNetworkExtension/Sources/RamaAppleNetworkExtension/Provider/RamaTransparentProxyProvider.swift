@@ -309,11 +309,13 @@ nonisolated(unsafe) var writePumpHwmLogThresholdBytes: Int = writePumpMaxPending
 /// log — same 50 % heuristic as the TCP byte threshold.
 let udpWritePumpHwmLogThreshold: Int = udpWritePumpMaxPending / 2
 
-/// Default wall-clock grace after a promoted flow reaches terminal before
+/// Base grace after a flow reaches terminal before
 /// Swift force-cancels its egress NWConnection. Applied when
 /// `RamaTcpEgressConnectOptions.has_linger_close_ms`
 /// is `false`; an explicit Rust-side `NwTcpConnectOptions.linger_close_timeout`
-/// overrides. A successful local FIN does not start this grace because the
+/// overrides this base. Session drain grace is at least the writer stall
+/// allowance on both Rust-mediated and promoted paths. A local FIN does not
+/// start this grace because the
 /// opposite response half may remain quiet and legally resume later.
 ///
 /// `var` for tests that need a short linger to keep ARC-leak-check
@@ -1709,24 +1711,15 @@ func makeTcpNwParameters(_ opts: RamaTcpEgressConnectOptions?) -> NWParameters {
     return params
 }
 
-// Keep the healthy-idle probe cadence, but allow unanswered probes for the
-// default writer stall window. In the real slow-reader repro, Network.framework
-// failed the egress on keepalive timeout with its local receive window at zero,
-// long before the paused app could resume. A full receive window is not evidence
-// of a dead peer. This also deliberately lengthens silent-dead-peer detection;
-// write stalls, path failures, and flow-pressure limits remain independent nets.
+// NOTE: Longer keepalive budgets also retain silent dead peers; validate paused-reader recovery and sleep/VPN cleanup before increasing this default.
 let defaultTcpKeepaliveIdleSec: Int = 15
 let defaultTcpKeepaliveIntervalSec: Int = 5
-let defaultTcpKeepaliveCount: Int =
-    (TcpWritePumpPolicy.defaultStallTimeoutMs + defaultTcpKeepaliveIntervalSec * 1000 - 1)
-    / (defaultTcpKeepaliveIntervalSec * 1000)
+let defaultTcpKeepaliveCount: Int = 3
 
 /// Apply TCP keepalive to the egress connection's `NWProtocolTCP.Options`.
 /// On by default (nil opts, or `tcp_keepalive_enabled`). Keeps idle NAT mappings
-/// alive and eventually fails silent peers, while the default failure budget
-/// tolerates a five-minute reader pause. Explicit per-flow timing overrides are
-/// honored independently; callers choosing shorter budgets also accept earlier
-/// failures under backpressure.
+/// alive and fails silent peers even when no writer has outstanding work.
+/// Explicit per-flow timing overrides are honored independently.
 /// Opt out with `tcp_keepalive_enabled = false`.
 private func applyTcpKeepalive(_ opts: RamaTcpEgressConnectOptions?, to tcp: NWProtocolTCP.Options)
 {

@@ -162,7 +162,12 @@ final class TcpDirectForwarder: @unchecked Sendable {
     /// Queue-confined error already observed while draining a server tail.
     /// A writer watchdog may expire before the original-error backstop; the
     /// owner must preserve this cause rather than replace it with a timeout.
-    var pendingServerReadError: Error? { s2cTerminalError }
+    /// The owning context and its writer terminal callbacks must share this
+    /// forwarder's queue; reading the cause on another queue races receive EOF.
+    var pendingServerReadError: Error? {
+        dispatchPrecondition(condition: .onQueue(queue))
+        return s2cTerminalError
+    }
 
     /// Set by `markClientReadDrained` / `markEgressReadDrained`
     /// after the cancelled-for-promote read pump has fired its
@@ -258,7 +263,11 @@ final class TcpDirectForwarder: @unchecked Sendable {
         self.onDrainStall = onDrainStall
         self.onReadError = onReadError
         self.onActivity = onActivity
-        self.writeChunkLimit = max(writeChunkLimit, 1)
+        // Even an independently constructed forwarder must never submit a chunk
+        // larger than either destination can admit: that pause has no progress edge.
+        self.writeChunkLimit = min(
+            max(writeChunkLimit, 1), clientWritePump.maxPendingBytes,
+            egressWritePump.maxPendingBytes)
         self.closeClientWrite = closeClientWrite
         self.onTerminal = onTerminal
         queue.setSpecific(key: queueKey, value: 1)
