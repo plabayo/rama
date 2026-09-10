@@ -22,8 +22,11 @@ pub(super) fn pair<B>(
     send_stream: SendStream<SendBuf<B>>,
     recv_stream: RecvStream,
     ping: Recorder,
-    extensions: Extensions,
 ) -> (H2Upgraded, UpgradedSendStreamTask<B>) {
+    // The upgraded IO owns this HTTP/2 stream's transport metadata. Message
+    // extensions may contain OnUpgrade itself, creating a cycle through the
+    // queued Upgraded, and may describe the opposite side of a proxy.
+    let extensions = recv_stream.extensions();
     let (tx, rx) = mpsc::channel(1);
     let (error_tx, error_rx) = oneshot::channel();
     let close_notify = Arc::new(UpgradedCloseNotify::new());

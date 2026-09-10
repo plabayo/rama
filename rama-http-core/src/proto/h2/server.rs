@@ -495,13 +495,11 @@ where
                                 "successful response to CONNECT request disallows content-length header"
                             );
                         }
-                        let extensions = res.extensions().clone();
                         let send_stream = reply!(me, res, false);
                         let (h2_up, up_task) = super::upgrade::pair(
                             send_stream,
                             connect_parts.recv_stream,
                             connect_parts.ping,
-                            extensions,
                         );
                         connect_parts
                             .pending
