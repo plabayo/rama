@@ -5,7 +5,6 @@
 //! cases hold those apart, on the public configuration path.
 
 use std::{
-    future::Future,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -23,14 +22,14 @@ use rama_tls_rustls::{
     server::RustlsServerConfigExt,
 };
 use rama_utils::{collections::smallvec::smallvec, octets};
-use tokio::{task::JoinHandle, time::timeout};
+use tokio::time::timeout;
 
 use crate::{
     driver::{ClientConfig, Endpoint, ServerConfig},
     proto::crypto::rustls::TlsOptions,
 };
 
-use super::subscribe;
+use super::{owned::Owned, subscribe};
 
 /// How long either case may take altogether. A handshake that never settles fails here rather
 /// than holding the suite.
@@ -38,35 +37,6 @@ const LIMIT: Duration = Duration::from_secs(20);
 
 /// The protocol both ends of these cases agree on.
 const ALPN: &[u8] = b"rama-quic-resumption";
-
-/// A task the case owns: it is aborted if the case ends without waiting for it, and its panics
-/// come back through the wait.
-struct Owned<T>(Option<JoinHandle<T>>);
-
-impl<T: Send + 'static> Owned<T> {
-    fn spawn(task: impl Future<Output = T> + Send + 'static) -> Self {
-        Self(Some(tokio::spawn(task)))
-    }
-
-    async fn join(mut self) -> T {
-        let handle = self.0.as_mut().expect("waited on once");
-        let outcome = handle.await;
-        self.0 = None;
-        match outcome {
-            Ok(value) => value,
-            Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
-            Err(error) => panic!("the server task ended: {error}"),
-        }
-    }
-}
-
-impl<T> Drop for Owned<T> {
-    fn drop(&mut self) {
-        if let Some(handle) = self.0.take() {
-            handle.abort();
-        }
-    }
-}
 
 /// A session store the server was asked for, so a case can tell a lookup from a resumption.
 ///

@@ -10,7 +10,7 @@ mod common;
 
 use common::{Identity, Quiche, quiche_client_config, quiche_server_config};
 use interop_common::{
-    Initiator, KeyObservation, Received, Reported, Role, Unsupported, for_each_case,
+    Initiator, KeyObservation, KeyScenario, Received, Reported, Role, Unsupported, for_each_case,
     keys::{key_cases, rama_client_side, rama_server_side},
     registry::CaseRun,
     scenario::SERVER_NAME,
@@ -123,7 +123,7 @@ async fn key_cases_rama_server() {
 }
 
 /// Whether this case can run against this peer at all, and the record when it cannot.
-fn runs_here(run: &CaseRun<interop_common::KeyScenario>) -> bool {
+fn runs_here(run: &CaseRun<KeyScenario>) -> bool {
     if run.scenario.initiator == Initiator::Peer {
         // Visible with `cargo test -- --nocapture`.
         println!(
@@ -140,7 +140,7 @@ fn runs_here(run: &CaseRun<interop_common::KeyScenario>) -> bool {
 }
 
 /// What this peer can say for itself, which is nothing about the phase.
-fn record(run: &CaseRun<interop_common::KeyScenario>) {
+fn record(run: &CaseRun<KeyScenario>) {
     let observed = KeyObservation {
         phase_changed: Reported::Unavailable(NO_PHASE),
         detail: None,

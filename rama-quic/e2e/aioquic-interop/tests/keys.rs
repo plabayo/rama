@@ -3,7 +3,7 @@
 
 mod common;
 
-use std::{net::SocketAddr, time::Duration};
+use std::net::SocketAddr;
 
 use common::*;
 use interop_common::keys::ask_when_ready;
@@ -118,10 +118,8 @@ async fn rama_can_update_its_keys() {
 /// The peer asks for the update, and Rama follows it: the count rises on Rama's side too,
 /// because it counts updates whichever side asked.
 ///
-/// This one is not settled first: the peer cannot start an update while a settling one is in
-/// flight and has no way to say when it can, so its ask is the connection's first. The window
-/// before it — the handshake and one exchange — could in principle hold an automatic update,
-/// which would fail the count rather than pass unnoticed.
+/// Settled first like the others, and the peer is asked again with an exchange behind each
+/// try until the count moves, since it cannot say whether an earlier try was taken.
 #[tokio::test]
 async fn rama_follows_a_key_update_the_peer_asks_for() {
     prepare().await;
@@ -142,25 +140,38 @@ async fn rama_follows_a_key_update_the_peer_asks_for() {
         .await
         .expect("the handshake completes");
     peer.expect("handshake", deadline).await;
+    // The same warm-up the other cases use: an update of rama's, carried to the peer by an
+    // exchange, after which neither side updates its keys on its own.
+    ask_when_ready(
+        "rama_follows_a_key_update_the_peer_asks_for",
+        deadline,
+        &connection,
+    )
+    .await;
+    exchange(&connection, &mut peer, 0xc2, deadline).await;
     exchange(&connection, &mut peer, 0xc3, deadline).await;
 
     let before = connection.stats().key_updates;
     let phase_before = phase(&mut peer, deadline).await;
-    peer.tell("update-keys", deadline).await;
-    exchange(&connection, &mut peer, 0xc4, deadline).await;
-
-    let counted = deadline
-        .wait("the update is counted", async {
-            loop {
-                let now = connection.stats().key_updates;
-                if now > before {
-                    return now;
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await;
-    assert_eq!(counted, before + 1, "exactly one update was counted");
+    // The peer may refuse to start one while rama's warm-up update is still in flight and
+    // says nothing about it, so it is asked again with an exchange behind each try, and the
+    // asking stops at the first update counted here.
+    let mut asked = 0;
+    let counted = loop {
+        peer.tell("update-keys", deadline).await;
+        asked += 1;
+        exchange(&connection, &mut peer, 0xc4, deadline).await;
+        let now = connection.stats().key_updates;
+        if now > before {
+            break now;
+        }
+        deadline.expect("the peer takes the order to update its keys");
+    };
+    assert_eq!(
+        counted,
+        before + 1,
+        "exactly one update was counted, over {asked} ask(s)"
+    );
     assert_ne!(
         phase(&mut peer, deadline).await,
         phase_before,

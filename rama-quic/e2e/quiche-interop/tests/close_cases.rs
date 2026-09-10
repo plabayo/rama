@@ -3,50 +3,40 @@
 //! quiche reports the other side's close through `peer_error`, which says whether it was an
 //! application close and carries the code and the reason.
 //!
-//! The case that closes as its first act does not run in the rama-client role. A close sent
-//! the moment the handshake resolves is coalesced into the Handshake and 1-RTT spaces, as RFC
-//! 9000 §10.2.3 asks, and this peer acts on neither: its server stays established and reports
-//! no peer error. The same behaviour is recorded in this project's native resumption tests.
+//! The case that closes as its first act used to fail here: rama coalesced its Handshake and
+//! 1-RTT closes into one datagram, and this peer, having discarded its Handshake keys, made
+//! nothing of either packet. The closes go in separate datagrams now, and the case at the end
+//! of this file records what arrives.
 
 mod common;
 
 use common::{Identity, Quiche, quiche_client_config, quiche_server_config, rama_client_config};
 use interop_common::{
-    CloseObservation, Deadline, Received, Role, Unsupported,
+    CloseObservation, Deadline, Received, Role,
     close::{close_cases, rama_client_closes, rama_server_side},
     for_each_case,
     scenario::SERVER_NAME,
     support::{Peer, localhost},
 };
+use parking_lot::Mutex;
 use rama::{
     quic::{Endpoint, VarInt},
     utils::octets,
 };
-use std::time::Duration;
+use std::{
+    io::{Result as IoResult, Write},
+    sync::Arc,
+    time::Duration,
+};
 
 const PEER: &str = "quiche";
 const READ_CAP: usize = octets::mib(1);
 const CLIENT_BI: u64 = 0;
-/// Why the immediate close is not run against this peer's server.
-const NOT_ACTED_ON: &str = "a close coalesced into the Handshake and 1-RTT spaces the moment the handshake resolves \
-     is acted on by neither space here: the server stays established and reports no peer error";
 
 /// Rama's client closes, and quiche says what it was told.
 #[tokio::test]
 async fn close_cases_rama_client() {
     for_each_case(PEER, Role::RamaClient, close_cases(), |run| async move {
-        if run.scenario.first.is_none() {
-            // Visible with `cargo test -- --nocapture`.
-            println!(
-                "{}",
-                Unsupported {
-                    case: "close-right-after-the-handshake",
-                    peer: PEER,
-                    reason: NOT_ACTED_ON,
-                }
-            );
-            return;
-        }
         let served = Identity::generate(SERVER_NAME);
         let run = run.with_identity(served.auth.clone());
         let (addr, accepting) =
@@ -138,18 +128,13 @@ async fn close_cases_rama_server() {
     .await;
 }
 
-/// A bounded reproducer for the close this peer does not act on, kept out of the suite until
-/// it is understood.
+/// Rama's client closes as its first application act and this peer reads it.
 ///
-/// Rama's client closes as its first application act, after both sides have settled their
-/// handshakes — this side says it is established before the close goes out, so the close is
-/// not racing the handshake. What the case records is what left rama after the close and what
-/// reached this peer, so that rama sending nothing can be told from this peer making nothing
-/// of what arrived. Run it with
-/// `cargo test --test close_cases -- --ignored --nocapture`.
+/// Both handshakes are settled first, so the close is not racing one. The closes of the
+/// spaces arrive in separate datagrams, which is what this peer needs: coalesced behind a
+/// Handshake packet whose keys it had discarded, it read neither.
 #[tokio::test]
-#[ignore = "unresolved: an immediate close from rama is not reported by quiche's server"]
-async fn an_immediate_close_is_not_reported_by_this_peer() {
+async fn an_immediate_close_reaches_this_peer_in_its_own_datagram() {
     let deadline = Deadline::new();
     // The peer's own watch is shorter than the case's, so it comes back with what it saw
     // instead of the case running out of time.
@@ -157,40 +142,55 @@ async fn an_immediate_close_is_not_reported_by_this_peer() {
     let served = Identity::generate(SERVER_NAME);
     let (addr, accepting) = Quiche::bind_server(quiche_server_config(&served), deadline).await;
     let (settled, is_settled) = tokio::sync::oneshot::channel();
-    let observing = Peer::spawn(async move {
-        let mut server = accepting.await;
-        server
-            .drive_until("the handshake", deadline, |connection| {
-                connection.is_established()
-            })
-            .await;
-        let before = server.connection().stats().recv;
-        settled.send(()).expect("the case is listening");
-        // Driven under the case's own deadline, and given up on when the shorter watch has
-        // passed, so what comes back is what this peer saw rather than a failure to wait.
-        let stopped = server
-            .drive_or_stop("the close", deadline, |connection| {
-                connection.peer_error().is_some() || connection.is_closed() || watching.passed()
-            })
-            .await;
-        let stats = server.connection().stats();
-        format!(
-            "quiche read {} datagrams after the handshake ({} bytes in all), \
-             peer_error {:?}, local_error {:?}, established {}, closed {}, stopped {stopped:?}",
-            stats.recv - before,
-            stats.recv_bytes,
-            server.connection().peer_error().map(|error| (
-                error.is_app,
-                error.error_code,
-                String::from_utf8_lossy(&error.reason).into_owned()
-            )),
+    // Said just before the close goes out, so the record shows which datagrams came after it.
+    let (closing, is_closing) = tokio::sync::oneshot::channel::<()>();
+    // The peer's own qlog, which says what it made of each packet. Kept in memory and read
+    // by the case; quiche writes JSON-SEQ.
+    let qlog = Shared::default();
+    let observing = Peer::spawn({
+        let qlog = qlog.clone();
+        async move {
+            let mut server = accepting.await;
+            server.write_qlog(Box::new(qlog), "the immediate close");
             server
-                .connection()
-                .local_error()
-                .map(|error| error.error_code),
-            server.connection().is_established(),
-            server.connection().is_closed(),
-        )
+                .drive_until("the handshake", deadline, |connection| {
+                    connection.is_established()
+                })
+                .await;
+            let before = server.connection().stats().recv;
+            // From here on, what each datagram carried is recorded as it arrives; the bytes go to
+            // `recv` untouched.
+            server.read_headers();
+            settled.send(()).expect("the case is listening");
+            // Driven under the case's own deadline, and given up on when the shorter watch has
+            // passed, so what comes back is what this peer saw rather than a failure to wait.
+            // The case says when it is about to close before this side reads anything more, so
+            // every datagram recorded after the note arrived after the close was asked for. The
+            // socket buffers them while this waits.
+            if deadline.try_wait(is_closing).await.is_some() {
+                server.note("rama closed here");
+            }
+            let stopped = server
+                .drive_or_stop("the close", deadline, |connection| {
+                    connection.peer_error().is_some() || connection.is_closed() || watching.passed()
+                })
+                .await;
+            let stats = server.connection().stats();
+            Seen {
+                packets: stats.recv - before,
+                told: server.connection().peer_error().map(|error| {
+                    (
+                        error.is_app,
+                        error.error_code,
+                        String::from_utf8_lossy(&error.reason).into_owned(),
+                    )
+                }),
+                established: server.connection().is_established(),
+                closed: server.connection().is_closed(),
+                datagrams: server.headers().to_vec(),
+                stopped: format!("{stopped:?}"),
+            }
+        }
     });
 
     let client = deadline
@@ -211,17 +211,83 @@ async fn an_immediate_close_is_not_reported_by_this_peer() {
         .await
         .expect("it said so");
     let before = connection.stats().udp_tx.datagrams;
+    closing.send(()).expect("the peer is listening");
     connection.close(VarInt::from(0x2au32), b"immediate");
     deadline.wait("rama's shutdown", client.wait_idle()).await;
-    // Outgoing CONNECTION_CLOSE frames are not counted anywhere in this crate's frame
-    // statistics, so what is recorded here is the datagrams that left after the close was
-    // asked for.
     let sent = connection.stats().udp_tx.datagrams - before;
+    let frames = connection.stats().frame_tx.connection_close;
 
     let seen = observing.join("the quiche peer", deadline).await;
-    println!("rama sent {sent} datagram(s) after closing; {seen}");
-    assert!(
-        seen.contains("peer_error Some"),
-        "the peer reads the close rama sent as its first application act; {seen}"
+    println!(
+        "rama wrote {frames} close frame(s) in {sent} datagram(s); the peer took {} packet(s) \
+         carrying [{}], was told {:?}, established {}, closed {}, stopped {}",
+        seen.packets,
+        seen.datagrams.join("; "),
+        seen.told,
+        seen.established,
+        seen.closed,
+        seen.stopped
     );
+    // What the peer says it did with the packets it read, in its own words.
+    for line in qlog.lines() {
+        if line.contains("packet_dropped") || line.contains("packet_received") {
+            println!("qlog: {line}");
+        }
+    }
+    assert_eq!(
+        seen.told,
+        Some((true, 0x2a, "immediate".to_owned())),
+        "the peer reads the close rama sent as its first application act"
+    );
+    // The shape that makes that possible: no datagram carries a close behind another packet.
+    for datagram in &seen.datagrams {
+        assert!(
+            !datagram.contains('+'),
+            "each datagram carries one packet: {datagram}"
+        );
+    }
+    assert!(
+        seen.datagrams.iter().any(|line| line.starts_with("Short(")),
+        "and one of them is the 1-RTT close: {:?}",
+        seen.datagrams
+    );
+}
+
+/// A sink the peer writes its qlog into and the case reads afterwards.
+#[derive(Clone, Default)]
+struct Shared(Arc<Mutex<Vec<u8>>>);
+
+impl Shared {
+    fn lines(&self) -> Vec<String> {
+        String::from_utf8_lossy(&self.0.lock())
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+}
+
+impl Write for Shared {
+    fn write(&mut self, buf: &[u8]) -> IoResult<usize> {
+        self.0.lock().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> IoResult<()> {
+        Ok(())
+    }
+}
+
+/// What the peer's own state said after the close, rather than a line to read words out of.
+#[derive(Debug)]
+struct Seen {
+    /// QUIC packets this peer took after the handshake, which is what its own counter counts.
+    packets: usize,
+    /// The application close it was told about: whether it was one, its code and its reason.
+    told: Option<(bool, u64, String)>,
+    established: bool,
+    closed: bool,
+    /// What each datagram carried, as its packet headers say.
+    datagrams: Vec<String>,
+    /// Why the driver stopped, in its own words.
+    stopped: String,
 }

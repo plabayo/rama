@@ -306,6 +306,10 @@ pub(crate) struct Connection {
     /// Set if 0-RTT is supported, then cleared when no longer needed.
     zero_rtt_crypto: Option<ZeroRttCrypto>,
     key_phase: bool,
+    /// The lowest space whose CONNECTION_CLOSE has still to go out. A close this side makes
+    /// goes in every space that has keys (RFC 9000 §10.2.3), one datagram each; a pass that
+    /// encodes none leaves this where it was.
+    close_from: SpaceId,
     /// How many packets are in the current key phase. Used only for `Data` space.
     key_phase_size: u64,
     /// Transport parameters set by the peer
@@ -471,6 +475,7 @@ impl Connection {
             zero_rtt_enabled: false,
             zero_rtt_crypto: None,
             key_phase: false,
+            close_from: SpaceId::Initial,
             // A small initial key phase size ensures peers that don't handle key updates correctly
             // fail sooner rather than later. It's okay for both peers to do this, as the first one
             // to perform an update will reset the other's key phase size in `update_keys`, and a
@@ -696,7 +701,9 @@ impl Connection {
 
         // Whether a close frame actually made it into a packet on this pass, which is what
         // counts as one response.
-        let mut encoded_close = false;
+        // Whether this pass carried the close all the way to the highest space, which is when
+        // the close is done with.
+        let mut closed_highest = false;
 
         // Check whether we need to send a close message
         let close = match self.state {
@@ -757,6 +764,11 @@ impl Connection {
             // Is there data or a close message to send in this space?
             let can_send = self.space_can_send(space_id, frame_space_1rtt);
             if can_send.is_empty() && (!close || self.spaces[space_id].crypto.is_none()) {
+                space_idx += 1;
+                continue;
+            }
+            // A close already carried in an earlier pass is not sent again.
+            if close && space_id < self.close_from {
                 space_idx += 1;
                 continue;
             }
@@ -1033,8 +1045,13 @@ impl Connection {
                     buf.len() + frame::ConnectionClose::SIZE_BOUND < builder.max_size,
                     "ACKs should leave space for ConnectionClose"
                 );
+                let mut encoded = false;
                 if buf.len() + frame::ConnectionClose::SIZE_BOUND < builder.max_size {
-                    encoded_close = true;
+                    encoded = true;
+                    // The only place a close frame is written, so the only place one is
+                    // counted.
+                    self.stats.frame_tx.connection_close =
+                        self.stats.frame_tx.connection_close.saturating_add(1);
                     let max_frame_size = builder.max_size - buf.len();
                     match self.state {
                         State::Closed(state::Closed { ref reason }) => {
@@ -1064,15 +1081,32 @@ impl Connection {
                         ),
                     }
                 }
-                if space_id == self.highest_space {
+                if !encoded {
+                    // Nothing was written, so nothing has moved on: the same space is due
+                    // again on the next pass and the close stays pending.
+                    break;
+                }
+                // A draining endpoint may send one packet in response and nothing after it
+                // (RFC 9000 §10.2.2), so the cursor over spaces is for a close this side is
+                // making, not for an answer to one it received.
+                if space_id == self.highest_space || matches!(self.state, State::Draining) {
                     // `CONNECTION_CLOSE` is the final packet
+                    closed_highest = true;
                     break;
                 } else {
                     // Send a close frame in every possible space for robustness, per RFC9000
                     // "Immediate Close during the Handshake". Don't bother trying to send anything
                     // else.
-                    space_idx += 1;
-                    continue;
+                    //
+                    // One space's close per datagram: a receiver that cannot read the first
+                    // packet of a datagram need not look past it, so a coalesced 1-RTT close
+                    // can go unseen. The close stays pending until the highest space has had
+                    // one; the next pass starts at `close_from`.
+                    self.close_from = spaces
+                        .get(space_idx + 1)
+                        .copied()
+                        .unwrap_or(self.highest_space);
+                    break;
                 }
             }
 
@@ -1188,10 +1222,12 @@ impl Connection {
             return None;
         }
 
-        // One logical close response, whichever spaces carried it. A pass that encoded none
-        // leaves the close pending for the next one.
-        if encoded_close {
+        // One logical close response, whichever spaces carried it. A pass that stopped short
+        // of the highest space leaves the close pending, and the next one carries on from the
+        // space it reached.
+        if closed_highest {
             self.close = false;
+            self.close_from = SpaceId::Initial;
             self.close_responses.answered();
         }
 
@@ -4363,6 +4399,12 @@ impl Connection {
     #[cfg(test)]
     pub(crate) fn close_response_gap(&self) -> u32 {
         self.close_responses.gap.get()
+    }
+
+    /// Tests: the space whose close is due next.
+    #[cfg(test)]
+    pub(crate) fn close_due_from(&self) -> usize {
+        self.close_from as usize
     }
 
     /// Tests: how many packet number spaces a close would be written into, which is more than

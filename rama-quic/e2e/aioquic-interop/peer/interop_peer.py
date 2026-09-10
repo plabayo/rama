@@ -397,11 +397,12 @@ async def run_key_client(arguments):
     ) as client:
         settling = shared_payload(arguments.settling_seed, arguments.settling_length)
         if arguments.settling_length:
-            # Carries the other side's settling update over here, so the phases said below
-            # are either side of the case's own update.
+            # Carries the other side's warm-up update over here. The phase is said straight
+            # afterwards, before anything this side sends can release the measured update, so
+            # the two phases are either side of that update and of nothing else.
             await exchange(client, settling)
-        await exchange(client, shared_payload(arguments.before_seed, arguments.before_length))
         say(event="phase", phase=key_phase(client))
+        await exchange(client, shared_payload(arguments.before_seed, arguments.before_length))
         if arguments.ask_for_a_key_update:
             client._quic.request_key_update()
             client.transmit()

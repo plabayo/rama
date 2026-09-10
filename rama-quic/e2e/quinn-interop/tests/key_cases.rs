@@ -139,7 +139,7 @@ async fn key_cases_rama_server() {
 }
 
 /// What this peer can say for itself, which is nothing about the phase.
-fn record(run: &CaseRun<interop_common::KeyScenario>) {
+fn record(run: &CaseRun<KeyScenario>) {
     let observed = KeyObservation {
         phase_changed: Reported::Unavailable(NO_PHASE),
         detail: None,
@@ -202,23 +202,4 @@ async fn echo_one(what: &str, deadline: Deadline, connection: &quinn::Connection
         .expect("the answer is written");
     send.finish().expect("the answer ends");
     got
-}
-
-/// The same exchange from the answering side.
-#[expect(dead_code, reason = "kept for a case whose exchanges are fixed")]
-async fn answer(what: &str, deadline: Deadline, connection: &quinn::Connection, payload: Chunk) {
-    let (mut send, mut recv) = deadline
-        .wait(what, connection.accept_bi())
-        .await
-        .expect("the stream arrives");
-    let got = deadline
-        .wait(what, recv.read_to_end(READ_CAP))
-        .await
-        .expect("it completes");
-    Received::Bytes(got.clone()).check(what, "exchange", payload);
-    deadline
-        .wait(what, send.write_all(&got))
-        .await
-        .expect("the answer is written");
-    send.finish().expect("the answer ends");
 }

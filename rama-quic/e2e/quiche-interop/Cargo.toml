@@ -13,7 +13,10 @@ publish = false
 [dev-dependencies]
 rama = { path = "../../..", features = ["quic", "rustls", "ring", "udp"] }
 interop-common = { package = "rama-quic-interop-common", path = "../interop-common" }
-# Default features vendor and build BoringSSL, so quiche's TLS provider is its own.
-quiche = "0.24"
+# Default features vendor and build BoringSSL, so quiche's TLS provider is its own. `qlog` is
+# quiche's own record of what it did with each packet, which the close cases read.
+quiche = { version = "0.24", features = ["qlog"] }
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "time"] }
 sha2 = "0.10"
+# The lock the other peer projects use for the same purpose.
+parking_lot = "0.12"

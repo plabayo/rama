@@ -294,6 +294,10 @@ pub enum Stopped {
 /// A quiche connection with the socket and the clock it does not own itself.
 pub struct Quiche {
     connection: quiche::Connection,
+    /// Whether each datagram's packet headers are recorded as it arrives.
+    reading_headers: bool,
+    /// One line per datagram read while that was on.
+    headers: Vec<String>,
     socket: UdpSocket,
     local: SocketAddr,
     last_from: Option<SocketAddr>,
@@ -355,6 +359,8 @@ impl Quiche {
             socket,
             local,
             last_from: None,
+            reading_headers: false,
+            headers: Vec::new(),
         };
         // Offered before the first flight leaves, so the offer is in it.
         if let Some(session) = session {
@@ -429,6 +435,8 @@ impl Quiche {
             socket,
             local,
             last_from: None,
+            reading_headers: false,
+            headers: Vec::new(),
         }
     }
 
@@ -469,6 +477,9 @@ impl Quiche {
         match tokio::time::timeout_at(wake, self.socket.recv_from(&mut buffer)).await {
             Ok(Ok((len, from))) => {
                 self.last_from = Some(from);
+                if self.reading_headers {
+                    self.headers.push(packets_in(&buffer[..len]));
+                }
                 let info = quiche::RecvInfo {
                     from,
                     to: self.local,
@@ -687,6 +698,34 @@ impl Quiche {
         &mut self.connection
     }
 
+    /// Record what each datagram carries. Reads headers and lengths only; the buffer goes to
+    /// `recv` untouched.
+    pub fn read_headers(&mut self) {
+        self.reading_headers = true;
+    }
+
+    /// Write this connection's qlog into `sink`. Called as quiche's documentation asks, as
+    /// soon as the connection exists.
+    pub fn write_qlog(&mut self, sink: Box<dyn std::io::Write + Send + Sync>, title: &str) {
+        // The fullest level quiche offers; it has no event for a packet it drops.
+        self.connection.set_qlog_with_level(
+            sink,
+            title.to_owned(),
+            String::new(),
+            quiche::QlogLevel::Extra,
+        );
+    }
+
+    /// Note something in that record, so the datagrams either side of it can be told apart.
+    pub fn note(&mut self, what: &str) {
+        self.headers.push(format!("-- {what} --"));
+    }
+
+    /// What the datagrams read since then carried, one line each.
+    pub fn headers(&self) -> &[String] {
+        &self.headers
+    }
+
     /// Whether this connection ended for the reason a rejected certificate gives: a TLS alert,
     /// which QUIC carries as an error code in the crypto range (RFC 9001 §4.8).
     pub fn ended_on_a_tls_alert(&self) -> Option<u64> {
@@ -778,4 +817,63 @@ pub async fn within(limit: Duration, mut holds: impl FnMut() -> bool) -> bool {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     holds()
+}
+
+/// What a datagram carries, packet by packet. The long header's Length field is unprotected
+/// (RFC 9000 §17.2), so coalesced packets can be walked without decrypting anything; a short
+/// header runs to the end of the datagram.
+fn packets_in(datagram: &[u8]) -> String {
+    let mut said = Vec::new();
+    let mut at = 0;
+    while at < datagram.len() {
+        let rest = &datagram[at..];
+        let mut copy = rest.to_vec();
+        let Ok(header) = quiche::Header::from_slice(&mut copy, quiche::MAX_CONN_ID_LEN) else {
+            said.push(format!("unreadable({})", rest.len()));
+            break;
+        };
+        if header.ty == quiche::Type::Short {
+            said.push(format!("Short({})", rest.len()));
+            break;
+        }
+        let Some(taken) = long_packet_length(rest, header.ty) else {
+            said.push(format!("{:?}(rest {})", header.ty, rest.len()));
+            break;
+        };
+        said.push(format!("{:?}({taken})", header.ty));
+        at += taken;
+    }
+    said.join(" + ")
+}
+
+/// How many bytes one long-header packet takes, from its own Length field.
+fn long_packet_length(packet: &[u8], ty: quiche::Type) -> Option<usize> {
+    if ty == quiche::Type::Retry || ty == quiche::Type::VersionNegotiation {
+        return None;
+    }
+    // first byte, version, then each connection identifier behind its own length byte
+    let mut at = 5;
+    let dcid = *packet.get(at)? as usize;
+    at += 1 + dcid;
+    let scid = *packet.get(at)? as usize;
+    at += 1 + scid;
+    if ty == quiche::Type::Initial {
+        let (token, used) = varint(packet.get(at..)?)?;
+        at += used + usize::try_from(token).ok()?;
+    }
+    let (length, used) = varint(packet.get(at..)?)?;
+    at += used;
+    at.checked_add(usize::try_from(length).ok()?)
+        .filter(|taken| *taken <= packet.len() && *taken > 0)
+}
+
+/// One QUIC variable-length integer, and how many bytes it took (RFC 9000 §16).
+fn varint(bytes: &[u8]) -> Option<(u64, usize)> {
+    let first = *bytes.first()?;
+    let used = 1usize << (first >> 6);
+    let mut value = u64::from(first & 0x3f);
+    for byte in bytes.get(1..used)? {
+        value = (value << 8) | u64::from(*byte);
+    }
+    Some((value, used))
 }

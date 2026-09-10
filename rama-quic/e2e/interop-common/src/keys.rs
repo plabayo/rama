@@ -11,13 +11,10 @@
 //! which no case here approaches. So a case that counts updates settles the phase first with
 //! one deliberate update, and what it counts afterwards is only what it asked for.
 //!
-//! The case where the peer asks cannot settle that way: a peer cannot start an update while
-//! the settling one is still in flight (RFC 9001 §6.1) and has no way to say when it can. That
-//! case therefore makes its asked-for update the connection's first, which is always allowed,
-//! and leaves the handshake and one exchange as a window in which an automatic update could
-//! occur. If one does, the count assertion fails; it cannot pass unnoticed. Closing that
-//! window needs either a per-phase packet count on this side or an ask this side can repeat
-//! with traffic behind it, and it is the next thing in this family. Two facts are kept apart: Rama
+//! Where the peer asks, the request is made, an exchange is driven behind it so a request that
+//! was taken can travel, and the count says whether it was; the asking stops at the first
+//! update seen. A peer that cannot start an update while the settling one is in flight
+//! (RFC 9001 §6.1) is simply asked again. Two facts are kept apart: Rama
 //! counts the updates it makes and follows (`ConnectionStats::key_updates`), and the peer says
 //! what key phase it is using, where its own API has one. A peer with no phase to report is
 //! recorded as such.
@@ -320,12 +317,14 @@ pub async fn settle_the_keys(
 ) {
     let before = connection.stats().key_updates;
     // An update cannot start before the handshake is confirmed (RFC 9001 §6), which is what
-    // this waits for; `force_key_update` answers `false` until then.
+    // this waits for; `force_key_update` answers `false` until then. What the warm-up needs
+    // is that an update happened at all — that is what leaves the phase size at the keys'
+    // confidentiality limit — so the count is only required to have moved. An automatic
+    // update inside the wait is one of the updates that establishes it, not a failure.
     ask_when_ready(what, deadline, connection).await;
-    assert_eq!(
-        connection.stats().key_updates,
-        before + 1,
-        "{what}: the settling update started"
+    assert!(
+        connection.stats().key_updates > before,
+        "{what}: the phase moved on before the case measured anything"
     );
     // Carried to the peer, so its own keys are in the new phase before the case reads
     // anything: an update it has not seen yet is not a settled phase.
@@ -341,10 +340,9 @@ pub async fn settle_the_keys_answering(
 ) {
     let before = connection.stats().key_updates;
     ask_when_ready(what, deadline, connection).await;
-    assert_eq!(
-        connection.stats().key_updates,
-        before + 1,
-        "{what}: the settling update started"
+    assert!(
+        connection.stats().key_updates > before,
+        "{what}: the phase moved on before the case measured anything"
     );
     answer(what, deadline, connection, carrying).await;
 }

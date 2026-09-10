@@ -18,7 +18,7 @@ use rama_crypto::dep::rcgen::{CertificateParams, DistinguishedName, DnType, KeyP
 use rama_tls_rustls::dep::rustls::AlertDescription;
 
 use crate::proto::{
-    DEFAULT_SUPPORTED_VERSIONS, TransportErrorCode,
+    DEFAULT_SUPPORTED_VERSIONS, MIN_INITIAL_SIZE, TransportErrorCode,
     packet::{FixedLengthConnectionIdParser, PartialDecode},
     shared::{ConnectionEvent, ConnectionEventInner, DatagramConnectionEvent},
 };
@@ -516,10 +516,15 @@ fn an_exhausted_key_budget_stops_the_answers() {
     );
 }
 
-/// A close made before the handshake is confirmed is coalesced into one datagram, which RFC
-/// 9000 §10.2.3 permits, and counts as one answer: the gap doubles once, not once per packet.
+/// A close made before the handshake is confirmed goes into every space that has keys, one
+/// datagram each, and still counts as one answer: the gap doubles once, not once per space.
+///
+/// The spaces are not coalesced into a single datagram. A receiver that cannot read the first
+/// packet of a datagram is asked by RFC 9000 §12.2 to try the ones behind it, and a receiver
+/// that does not would never see the close that matters — the one in the space it still holds
+/// keys for. Sending each on its own costs a datagram and does not depend on that behaviour.
 #[test]
-fn a_coalesced_close_counts_once() {
+fn a_close_before_the_handshake_is_confirmed_reaches_every_space() {
     let _guard = subscribe();
     let mut pair = Pair::default();
     let client_ch = pair.begin_connect(client_config());
@@ -546,30 +551,148 @@ fn a_coalesced_close_counts_once() {
         "nothing has been answered yet"
     );
 
-    let before = pair.client_sent.len();
+    let before = pair.server.inbound.len();
     pair.drive_client();
-    assert!(pair.client_sent.len() > before, "the close went out");
+    let sent = &pair.server.inbound;
+    assert_eq!(
+        sent.len() - before,
+        spaces,
+        "one datagram for each space that had keys"
+    );
 
-    // What went out, as it sits on the wire: more than one packet in the datagram, the first of
-    // them a long header.
-    let datagram = pair
-        .server
-        .inbound
-        .back()
-        .expect("the close reached the peer's queue");
+    // What went out, as it sits on the wire: one packet per datagram, and the last of them a
+    // short header, which is the space the peer will still be able to read.
+    for datagram in sent.iter().skip(before) {
+        assert_eq!(
+            packets_in(&datagram.packet),
+            1,
+            "each datagram carries the close of one space and nothing else"
+        );
+    }
+    let last = sent.back().expect("the close reached the peer's queue");
     assert!(
-        datagram.packet[0] & 0x80 != 0,
-        "the first packet has a long header"
+        last.packet[0] & 0x80 == 0,
+        "the last of them is the 1-RTT close, in a short header"
     );
-    assert!(
-        packets_in(&datagram.packet) > 1,
-        "and the datagram carries more than one packet"
-    );
+    // A datagram carrying an Initial packet is padded to the minimum a client may send
+    // (RFC 9000 §14.1), which separating the spaces must not lose.
+    for datagram in sent.iter().skip(before) {
+        if datagram.packet[0] & 0xb0 == 0x80 {
+            assert!(
+                datagram.packet.len() >= usize::from(MIN_INITIAL_SIZE),
+                "an initial close is padded to {MIN_INITIAL_SIZE}, not {}",
+                datagram.packet.len()
+            );
+        }
+    }
 
     assert_eq!(
         pair.client_conn_mut(client_ch).close_response_gap(),
         2,
-        "one logical answer, however many packets carried it"
+        "one logical answer, however many datagrams carried it"
+    );
+}
+
+/// The space a close is due in moves on only when a pass actually writes one: each pass
+/// carries one space's close, the cursor follows it, and the close stays pending until the
+/// highest space has had one. A pass that writes nothing — here, one taken by a peer's
+/// address that has not been validated — leaves both where they were.
+#[test]
+fn the_close_cursor_follows_what_was_written() {
+    let _guard = subscribe();
+    let mut pair = Pair::default();
+    let client_ch = pair.begin_connect(client_config());
+
+    // One flight each way, so the client holds keys for more than one space.
+    pair.drive_client();
+    pair.drive_server();
+    pair.drive_client();
+    let spaces = pair.client_conn_mut(client_ch).spaces_with_close_keys();
+    assert!(spaces > 1, "this close has {spaces} spaces to go into");
+
+    pair.client.connections.get_mut(&client_ch).unwrap().close(
+        pair.time,
+        VarInt(42),
+        Bytes::from_static(b"done"),
+    );
+
+    // One pass, one space, and the cursor follows what went out.
+    let mut seen = 0;
+    let mut buf = Vec::new();
+    let mut due = pair.client_conn_mut(client_ch).close_due_from();
+    for step in 0..spaces {
+        buf.clear();
+        let now = pair.time;
+        let sent = pair
+            .client_conn_mut(client_ch)
+            .poll_transmit(now, 1, &mut buf);
+        assert!(sent.is_some(), "the pass carried a datagram");
+        seen += 1;
+        let moved = pair.client_conn_mut(client_ch).close_due_from();
+        if step + 1 < spaces {
+            assert!(
+                moved > due,
+                "the space due next moved on from {due} once a close was written"
+            );
+            assert_eq!(
+                pair.client_conn_mut(client_ch).close_response_gap(),
+                1,
+                "and the close is still pending while a space is left"
+            );
+        }
+        due = moved;
+    }
+    assert_eq!(seen, spaces, "one datagram for each space that had keys");
+    assert_eq!(
+        pair.client_conn_mut(client_ch).close_response_gap(),
+        2,
+        "and one logical answer once the highest space has had its close"
+    );
+}
+
+/// An endpoint that receives a close while more than one space still has keys answers with
+/// one packet and nothing after it, which is what RFC 9000 §10.2.2 allows a draining endpoint.
+#[test]
+fn a_draining_endpoint_answers_with_one_packet() {
+    let _guard = subscribe();
+    let mut pair = Pair::default();
+    let client_ch = pair.begin_connect(client_config());
+
+    // One flight each way, so both sides hold keys for more than one space.
+    pair.drive_client();
+    pair.drive_server();
+    pair.drive_client();
+    let server_ch = pair.server.assert_accept();
+    assert!(
+        pair.server_conn_mut(server_ch).spaces_with_close_keys() > 1,
+        "the answering side has more than one space with keys"
+    );
+
+    pair.client.connections.get_mut(&client_ch).unwrap().close(
+        pair.time,
+        VarInt(42),
+        Bytes::from_static(b"done"),
+    );
+    pair.drive_client();
+
+    // The server takes the close, enters draining, and answers.
+    let before = pair.client.inbound.len();
+    pair.drive_server();
+    let answered = pair.client.inbound.len() - before;
+    assert!(
+        answered <= 1,
+        "a draining endpoint answers with at most one packet, not {answered}"
+    );
+
+    // And nothing after it, however much is driven.
+    let after_the_answer = pair.client.inbound.len();
+    for _ in 0..4 {
+        pair.drive_server();
+    }
+    assert_eq!(
+        pair.client.inbound.len(),
+        after_the_answer,
+        "a draining endpoint sends nothing further"
     );
 }
 

@@ -39,6 +39,8 @@ use tracing_subscriber::EnvFilter;
 
 use super::{ClientConfig, Endpoint, EndpointConfig, RecvStream, SendStream, TransportConfig};
 
+mod closing;
+mod owned;
 mod resumption;
 
 /// A loopback address to bind on, for a fixture that lets the endpoint make its own socket.

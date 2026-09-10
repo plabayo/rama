@@ -90,9 +90,10 @@ async fn migration_cases_rama_client() {
 
 /// A quiche client moves under Rama's server, which either follows it or does not.
 ///
-/// Two of the three cases run here: Rama's own server says whether a peer may move
-/// (`ServerConfig::with_migration`), so the forbidden case is this side's to set. Withholding
-/// an identifier is not: Rama issues its own, and that case is recorded instead.
+/// One of the three cases runs here. Withholding an identifier is not this side's to do:
+/// Rama issues its own. Forbidding a move is (`ServerConfig::with_migration`), but a peer
+/// that moves anyway is then not answered at its new address, so that case needs an
+/// expectation of its own. Both are recorded rather than skipped.
 #[tokio::test]
 async fn migration_cases_rama_server() {
     for_each_case(
