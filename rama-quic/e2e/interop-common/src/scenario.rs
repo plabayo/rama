@@ -163,7 +163,7 @@ impl PeerObservation {
 ///
 /// Its own assertions are made here; what the peer saw is checked separately, so neither side
 /// stands in for the other.
-pub async fn rama_client_side(run: &CaseRun, peer_addr: SocketAddr) -> RamaClient {
+pub async fn rama_client_side(run: &CaseRun<StreamScenario>, peer_addr: SocketAddr) -> RamaClient {
     let CaseRun {
         what,
         identity,
@@ -230,7 +230,7 @@ impl RamaClient {
 
 /// Rama as the server: bind, accept, take the upload, answer the question, and stay until the
 /// peer is done with the connection.
-pub async fn rama_server_side(run: &CaseRun) -> (Endpoint, SocketAddr, Peer<()>) {
+pub async fn rama_server_side(run: &CaseRun<StreamScenario>) -> (Endpoint, SocketAddr, Peer<()>) {
     let CaseRun {
         what,
         deadline,
@@ -287,7 +287,7 @@ pub async fn rama_server_side(run: &CaseRun) -> (Endpoint, SocketAddr, Peer<()>)
 
 /// The uploading half: a unidirectional stream ended with FIN, then a bidirectional question
 /// whose answer is read back.
-async fn upload_and_ask(run: &CaseRun, conn: &Connection) {
+async fn upload_and_ask(run: &CaseRun<StreamScenario>, conn: &Connection) {
     let CaseRun {
         what,
         scenario,
@@ -321,7 +321,7 @@ async fn upload_and_ask(run: &CaseRun, conn: &Connection) {
 }
 
 /// The answering half: take the upload, read the question, write a different answer, end it.
-async fn take_and_answer(run: &CaseRun, conn: &Connection) {
+async fn take_and_answer(run: &CaseRun<StreamScenario>, conn: &Connection) {
     let CaseRun {
         what,
         scenario,

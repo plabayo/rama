@@ -14,10 +14,14 @@ use rama::{
     utils::octets,
 };
 
-/// Rama's client sends a datagram at the negotiated size, quiche reads it and echoes it, and
-/// one byte over that size is refused rather than truncated.
+// The both-ways datagram exchange in both roles moved to `datagram_cases.rs`, where it runs
+// from the shared registry. What stays here is the boundary the shared cases do not carry:
+// the negotiated size itself, refused one byte over and delivered exactly at it.
+
+/// A datagram of exactly the negotiated size crosses, and one byte more is refused before it
+/// is sent. The shared cases carry fixed payloads and so do not reach this boundary.
 #[tokio::test]
-async fn a_rama_client_sends_and_receives_datagrams() {
+async fn a_datagram_at_the_negotiated_size_crosses_and_one_byte_more_is_refused() {
     let deadline = Deadline::new();
     let identity = Identity::generate("localhost");
     let (server_addr, accepting) =
@@ -75,62 +79,6 @@ async fn a_rama_client_sends_and_receives_datagrams() {
     connection.close(0u32.into(), b"done");
     deadline.wait("rama's shutdown", client.wait_idle()).await;
     peer.join("the quiche peer", deadline).await;
-}
-
-/// The same with Rama serving: quiche's client sends, Rama reads and echoes.
-#[tokio::test]
-async fn a_rama_server_sends_and_receives_datagrams() {
-    let deadline = Deadline::new();
-    let identity = Identity::generate("localhost");
-    let server = deadline
-        .wait(
-            "the rama server binds",
-            Endpoint::server(rama_server_config(&identity), localhost()),
-        )
-        .await
-        .expect("it binds");
-    let server_addr = server.local_addr().expect("its address");
-
-    let served = Peer::spawn({
-        let server = server.clone();
-        async move {
-            let connection = accept_one("the rama server", &server, deadline).await;
-            assert!(
-                connection.max_datagram_size().is_some(),
-                "the peer offered the extension"
-            );
-            let arrived = deadline
-                .wait("the datagram arrives", connection.read_datagram())
-                .await
-                .expect("it arrives");
-            connection
-                .send_datagram(arrived)
-                .expect("the echo is accepted");
-            deadline
-                .wait("the connection ends", connection.closed())
-                .await;
-        }
-    });
-
-    let mut peer = Quiche::connect(
-        server_addr,
-        "localhost",
-        with_datagrams(quiche_client_config(&identity)),
-        deadline,
-    )
-    .await;
-    peer.drive_until("the quiche client completes the handshake", deadline, |c| {
-        c.is_established()
-    })
-    .await;
-
-    let sent = payload(0x83, octets::kib(1));
-    peer.send_datagram(&sent, deadline).await;
-    let back = peer.read_datagram(octets::kib(64), deadline).await;
-    assert_eq!(digest(&back), digest(&sent), "the echo came back whole");
-
-    peer.close(deadline).await;
-    served.join("the rama peer", deadline).await;
 }
 
 /// A peer that never enabled datagrams gets none, and the connection is otherwise usable.

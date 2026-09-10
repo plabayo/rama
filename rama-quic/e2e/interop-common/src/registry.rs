@@ -38,14 +38,15 @@ impl fmt::Display for Role {
 
 /// One shared case: a name and the parameters that are the single source for every peer.
 #[derive(Debug, Clone)]
-pub struct Case {
+pub struct Case<S> {
     pub name: &'static str,
-    pub scenario: StreamScenario,
+    pub scenario: S,
 }
 
-/// Every case each eligible peer runs, in both roles. Adding one here runs it everywhere.
+/// Every stream case each eligible peer runs, in both roles. Adding one here runs it
+/// everywhere.
 #[must_use]
-pub fn cases() -> Vec<Case> {
+pub fn stream_cases() -> Vec<Case<StreamScenario>> {
     vec![
         Case {
             name: "stream-baseline",
@@ -89,15 +90,15 @@ pub fn cases() -> Vec<Case> {
 /// One case being run: its name for failures, its parameters, the identity in play and the
 /// deadline every await under it shares.
 #[derive(Debug, Clone)]
-pub struct CaseRun {
+pub struct CaseRun<S> {
     pub what: String,
-    pub scenario: StreamScenario,
+    pub scenario: S,
     pub identity: Identity,
     pub deadline: Deadline,
     pub role: Role,
 }
 
-impl CaseRun {
+impl<S> CaseRun<S> {
     /// The same case with an identity of the peer's own making, for a peer that needs one in a
     /// form only it can produce — files on disk, say. The payloads are unaffected: they come
     /// from the registry and nowhere else.
@@ -107,17 +108,24 @@ impl CaseRun {
     }
 }
 
-/// Run `body` once for every shared case in `role`. [`cases`] is the only list an adapter
-/// iterates, so a case added there reaches every peer project without any of them being
-/// edited. What `body` does with a case is the adapter's own business.
-pub async fn for_each_case<F, Fut>(peer: &'static str, role: Role, mut body: F)
-where
-    F: FnMut(CaseRun) -> Fut,
+/// Run `body` once for every shared case in `role`. The list a family names — [`stream_cases`],
+/// [`crate::datagram::datagram_cases`], [`crate::trust::trust_cases`] — is the only one an
+/// adapter iterates, so a case added there reaches every peer project without any of them
+/// being edited.
+///
+/// The whole callback runs inside the case's deadline, not only the operations that take one:
+/// binding a peer's socket and tearing its tasks down are part of a case's time too.
+pub async fn for_each_case<S, F, Fut>(
+    peer: &'static str,
+    role: Role,
+    cases: Vec<Case<S>>,
+    mut body: F,
+) where
+    F: FnMut(CaseRun<S>) -> Fut,
     Fut: Future<Output = ()>,
 {
-    let all = cases();
-    assert!(!all.is_empty(), "the registry names at least one case");
-    for case in all {
+    assert!(!cases.is_empty(), "the registry names at least one case");
+    for case in cases {
         let run = CaseRun {
             what: format!("{peer}/{}/{role}", case.name),
             scenario: case.scenario,
@@ -125,7 +133,9 @@ where
             deadline: Deadline::new(),
             role,
         };
-        body(run).await;
+        let deadline = run.deadline;
+        let what = run.what.clone();
+        deadline.wait(&what, body(run)).await;
     }
 }
 

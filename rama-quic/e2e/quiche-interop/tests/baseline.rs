@@ -9,8 +9,9 @@ mod common;
 
 use common::{Identity, Quiche, quiche_client_config, quiche_server_config};
 use interop_common::{
-    CaseRun, Peer, PeerObservation, Received, Role, SERVER_NAME, for_each_case,
+    CaseRun, Peer, PeerObservation, Received, Role, SERVER_NAME, StreamScenario, for_each_case,
     scenario::{rama_client_side, rama_server_side},
+    stream_cases,
 };
 use rama::utils::octets;
 
@@ -23,7 +24,7 @@ const READ_CAP: usize = octets::mib(1);
 /// Rama opens the connection and quiche answers it, for every registered case.
 #[tokio::test]
 async fn stream_cases_rama_client() {
-    for_each_case(PEER, Role::RamaClient, |run| async move {
+    for_each_case(PEER, Role::RamaClient, stream_cases(), |run| async move {
         // quiche reads its identity from files, so it makes its own and the run takes it.
         let identity = Identity::generate(SERVER_NAME);
         let run = run.with_identity(identity.auth.clone());
@@ -48,7 +49,7 @@ async fn stream_cases_rama_client() {
 /// quiche opens the connection and Rama answers it, for every registered case.
 #[tokio::test]
 async fn stream_cases_rama_server() {
-    for_each_case(PEER, Role::RamaServer, |run| async move {
+    for_each_case(PEER, Role::RamaServer, stream_cases(), |run| async move {
         let identity = Identity::generate(SERVER_NAME);
         let run = run.with_identity(identity.auth.clone());
         let (endpoint, addr, serving) = rama_server_side(&run).await;
@@ -68,7 +69,7 @@ async fn stream_cases_rama_server() {
 }
 
 /// quiche as the answering end.
-async fn quiche_answers(run: &CaseRun, server: &mut Quiche) -> PeerObservation {
+async fn quiche_answers(run: &CaseRun<StreamScenario>, server: &mut Quiche) -> PeerObservation {
     let (what, deadline) = (&run.what, run.deadline);
     server
         .drive_until(what, deadline, |connection| connection.is_established())
@@ -93,7 +94,7 @@ async fn quiche_answers(run: &CaseRun, server: &mut Quiche) -> PeerObservation {
 }
 
 /// quiche as the asking end.
-async fn quiche_asks(run: &CaseRun, client: &mut Quiche) -> PeerObservation {
+async fn quiche_asks(run: &CaseRun<StreamScenario>, client: &mut Quiche) -> PeerObservation {
     let (what, deadline) = (&run.what, run.deadline);
     client
         .drive_until(what, deadline, |connection| connection.is_established())

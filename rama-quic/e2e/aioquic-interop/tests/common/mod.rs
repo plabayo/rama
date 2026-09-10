@@ -38,8 +38,7 @@ use rama::{
         client::TlsClientConfig,
         server::{ServerAuthData, TlsServerConfig},
     },
-    utils::collections::smallvec::smallvec,
-    utils::{fmt, octets},
+    utils::{collections::smallvec::smallvec, fmt, octets},
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};

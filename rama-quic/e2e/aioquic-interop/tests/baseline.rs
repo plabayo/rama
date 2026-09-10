@@ -9,8 +9,9 @@ mod common;
 
 use common::*;
 use interop_common::{
-    CaseRun, PeerObservation, Received, Role, SERVER_NAME, for_each_case,
+    CaseRun, PeerObservation, Received, Role, SERVER_NAME, StreamScenario, for_each_case,
     scenario::{rama_client_side, rama_server_side},
+    stream_cases,
 };
 use rama::utils::hex;
 
@@ -21,7 +22,7 @@ const BI: u64 = 0;
 
 /// This case's payloads as the child takes them: a seed and a length each, from the same
 /// scenario the Rama side is running.
-fn scenario_arguments(run: &CaseRun) -> Vec<String> {
+fn scenario_arguments(run: &CaseRun<StreamScenario>) -> Vec<String> {
     let scenario = &run.scenario;
     [
         ("--up-seed", usize::from(scenario.up.seed)),
@@ -40,7 +41,7 @@ fn scenario_arguments(run: &CaseRun) -> Vec<String> {
 #[tokio::test]
 async fn stream_cases_rama_client() {
     prepare().await;
-    for_each_case(PEER, Role::RamaClient, |run| async move {
+    for_each_case(PEER, Role::RamaClient, stream_cases(), |run| async move {
         let identity = Identity::generate(SERVER_NAME);
         let run = run.with_identity(identity.auth.clone());
         let mut arguments = vec![
@@ -87,7 +88,7 @@ async fn stream_cases_rama_client() {
 #[tokio::test]
 async fn stream_cases_rama_server() {
     prepare().await;
-    for_each_case(PEER, Role::RamaServer, |run| async move {
+    for_each_case(PEER, Role::RamaServer, stream_cases(), |run| async move {
         let identity = Identity::generate(SERVER_NAME);
         let run = run.with_identity(identity.auth.clone());
         let (endpoint, addr, serving) = rama_server_side(&run).await;

@@ -7,11 +7,14 @@
 
 mod common;
 
+use std::{any::Any, net::SocketAddr};
+
 use common::{quinn_client_config, quinn_server_config};
 use interop_common::{
-    CaseRun, Peer, PeerObservation, Received, Role, SERVER_NAME, for_each_case,
+    CaseRun, Peer, PeerObservation, Received, Role, SERVER_NAME, StreamScenario, for_each_case,
     identity::anchor_of,
     scenario::{rama_client_side, rama_server_side},
+    stream_cases,
     support::localhost,
 };
 use rama::{crypto::pki_types::CertificateDer, utils::octets};
@@ -22,7 +25,7 @@ const READ_CAP: usize = octets::mib(1);
 /// Rama opens the connection and Quinn answers it, for every registered case.
 #[tokio::test]
 async fn stream_cases_rama_client() {
-    for_each_case(PEER, Role::RamaClient, |run| async move {
+    for_each_case(PEER, Role::RamaClient, stream_cases(), |run| async move {
         let server = quinn::Endpoint::server(quinn_server_config(&run.identity), localhost())
             .expect("the quinn server binds");
         let addr = server.local_addr().expect("its address");
@@ -42,7 +45,7 @@ async fn stream_cases_rama_client() {
 /// Quinn opens the connection and Rama answers it, for every registered case.
 #[tokio::test]
 async fn stream_cases_rama_server() {
-    for_each_case(PEER, Role::RamaServer, |run| async move {
+    for_each_case(PEER, Role::RamaServer, stream_cases(), |run| async move {
         let (endpoint, addr, serving) = rama_server_side(&run).await;
         let observed = quinn_asks(&run, anchor_of(&run.identity), addr).await;
         observed.check(&run.what, &run.scenario, run.role);
@@ -54,7 +57,7 @@ async fn stream_cases_rama_server() {
 
 /// Quinn as the answering end: take the upload, read the question, write the answer, and hand
 /// back the bytes it read.
-async fn quinn_answers(run: &CaseRun, server: quinn::Endpoint) -> PeerObservation {
+async fn quinn_answers(run: &CaseRun<StreamScenario>, server: quinn::Endpoint) -> PeerObservation {
     let (what, deadline) = (&run.what, run.deadline);
     let attempt = deadline
         .wait(what, server.accept())
@@ -102,9 +105,9 @@ async fn quinn_answers(run: &CaseRun, server: quinn::Endpoint) -> PeerObservatio
 
 /// Quinn as the asking end: upload, ask, read the answer, and hand back the bytes it read.
 async fn quinn_asks(
-    run: &CaseRun,
+    run: &CaseRun<StreamScenario>,
     anchor: CertificateDer<'static>,
-    addr: std::net::SocketAddr,
+    addr: SocketAddr,
 ) -> PeerObservation {
     let (what, deadline) = (&run.what, run.deadline);
     let mut client = quinn::Endpoint::client(localhost()).expect("the quinn client binds");
@@ -154,7 +157,7 @@ async fn quinn_asks(
     observed
 }
 
-fn negotiated_protocol(data: Box<dyn std::any::Any>) -> Option<Vec<u8>> {
+fn negotiated_protocol(data: Box<dyn Any>) -> Option<Vec<u8>> {
     data.downcast::<quinn::crypto::rustls::HandshakeData>()
         .ok()
         .and_then(|data| data.protocol)

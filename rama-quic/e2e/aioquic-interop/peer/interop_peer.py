@@ -110,7 +110,7 @@ async def run_server(arguments):
                     early=event.early_data_accepted,
                 )
             elif isinstance(event, DatagramFrameReceived):
-                report_datagram(self, event, echo=True)
+                report_datagram(self, event, echo=True, answer=datagram_answer(arguments))
             elif isinstance(event, ConnectionTerminated):
                 ended += 1
                 say(event="ended", code=event.error_code, reason=event.reason_phrase)
@@ -165,17 +165,30 @@ async def run_server(arguments):
         server.close()
 
 
-def report_datagram(protocol, event, echo):
-    """Report a datagram by length and digest, and echo it back if this side answers."""
+def report_datagram(protocol, event, echo, answer=None):
+    """Report a datagram by length and digest, then answer it if this side answers.
+
+    A shared scenario supplies its own answer, named by a seed and a length; without one the
+    answer is the datagram itself.
+    """
     say(event="datagram", len=len(event.data), sha256=digest(event.data))
     if echo:
-        send_datagram(protocol, event.data)
+        send_datagram(protocol, event.data if answer is None else answer)
 
 
 def send_datagram(protocol, data):
     """aioquic offers no datagram method on the protocol, so this goes through the connection."""
     protocol._quic.send_datagram_frame(data)
     protocol.transmit()
+
+
+def datagram_answer(arguments):
+    """The datagram a shared scenario asks this side to answer with, if it named one."""
+    if arguments.datagram_answer_length is None:
+        return None
+    return shared_payload(
+        arguments.datagram_answer_seed, arguments.datagram_answer_length
+    )
 
 
 def shared_payload(seed, length):
@@ -216,7 +229,21 @@ async def run_client(arguments):
     ) as client:
         say(event="connected")
 
-        if arguments.streams:
+        # A shared trust case asks for exactly one bidirectional probe and no upload, so it is
+        # handled before the generic stream traffic rather than alongside it.
+        if arguments.probe_length is not None:
+            probe = shared_payload(arguments.probe_seed, arguments.probe_length)
+            reader, writer = await client.create_stream()
+            writer.write(probe)
+            writer.write_eof()
+            answered = await read_stream(reader)
+            say(
+                event="stream",
+                id=writer.get_extra_info("stream_id"),
+                len=len(answered),
+                sha256=digest(answered),
+            )
+        elif arguments.streams:
             # A shared scenario names its payloads by seed and length rather than sending the
             # bytes here, and its question is answered with different bytes than it carried.
             up = payload
@@ -244,8 +271,15 @@ async def run_client(arguments):
                 sha256=digest(answered),
             )
 
+        # A shared scenario names the datagram this side sends; without one the client sends
+        # the payload it was given.
+        outgoing = payload
+        if arguments.datagram_out_length is not None:
+            outgoing = shared_payload(
+                arguments.datagram_out_seed, arguments.datagram_out_length
+            )
         for _ in range(arguments.datagrams):
-            send_datagram(client, payload)
+            send_datagram(client, outgoing)
         # Every datagram sent is answered before the connection is closed, so a close cannot
         # discard what this test is about.
         await echoes.wait()
@@ -364,6 +398,12 @@ def main():
     parser.add_argument("--question-length", type=int, default=None)
     parser.add_argument("--answer-seed", type=int, default=None)
     parser.add_argument("--answer-length", type=int, default=None)
+    parser.add_argument("--datagram-answer-seed", type=int, default=None)
+    parser.add_argument("--datagram-answer-length", type=int, default=None)
+    parser.add_argument("--datagram-out-seed", type=int, default=None)
+    parser.add_argument("--datagram-out-length", type=int, default=None)
+    parser.add_argument("--probe-seed", type=int, default=None)
+    parser.add_argument("--probe-length", type=int, default=None)
     parser.add_argument("--idle-timeout", type=float, default=20.0)
     parser.add_argument("--connections", type=int, default=1)
     parser.add_argument("--datagram-frame", type=int, default=0)
