@@ -1709,18 +1709,24 @@ func makeTcpNwParameters(_ opts: RamaTcpEgressConnectOptions?) -> NWParameters {
     return params
 }
 
-// Keepalive defaults: detection ≈ idle + interval*count = 30 s — under the
-// 60 s watchdog, above a sub-second Wi-Fi blip. Overridable per flow.
+// Keep the healthy-idle probe cadence, but allow unanswered probes for the
+// default writer stall window. In the real slow-reader repro, Network.framework
+// failed the egress on keepalive timeout with its local receive window at zero,
+// long before the paused app could resume. A full receive window is not evidence
+// of a dead peer. This also deliberately lengthens silent-dead-peer detection;
+// write stalls, path failures, and flow-pressure limits remain independent nets.
 let defaultTcpKeepaliveIdleSec: Int = 15
 let defaultTcpKeepaliveIntervalSec: Int = 5
-let defaultTcpKeepaliveCount: Int = 3
+let defaultTcpKeepaliveCount: Int =
+    (TcpWritePumpPolicy.defaultStallTimeoutMs + defaultTcpKeepaliveIntervalSec * 1000 - 1)
+    / (defaultTcpKeepaliveIntervalSec * 1000)
 
 /// Apply TCP keepalive to the egress connection's `NWProtocolTCP.Options`.
-/// On by default (nil opts, or `tcp_keepalive_enabled`). Self-heals a
-/// silently-dead egress: after sleep / VPN reset / NAT rebind a connection
-/// can sit `.ready` over a black-holed path (NW fires neither `.waiting` nor
-/// `.failed`, viability stays true) and wedge until the 60 s watchdog;
-/// keepalive probes fail it → `.failed` → existing reaper → app reconnects.
+/// On by default (nil opts, or `tcp_keepalive_enabled`). Keeps idle NAT mappings
+/// alive and eventually fails silent peers, while the default failure budget
+/// tolerates a five-minute reader pause. Explicit per-flow timing overrides are
+/// honored independently; callers choosing shorter budgets also accept earlier
+/// failures under backpressure.
 /// Opt out with `tcp_keepalive_enabled = false`.
 private func applyTcpKeepalive(_ opts: RamaTcpEgressConnectOptions?, to tcp: NWProtocolTCP.Options)
 {

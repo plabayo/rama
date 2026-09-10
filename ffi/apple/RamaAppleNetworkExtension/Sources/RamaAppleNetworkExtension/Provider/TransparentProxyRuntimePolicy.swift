@@ -29,7 +29,8 @@ struct TcpWritePumpPolicy: Sendable, Equatable {
     /// NE acceptance is observable; application consumption is not. Six minutes
     /// deliberately tolerates a five-minute paused reader. Each direction owns
     /// its own deadline, so an upload cannot hide a wedged download.
-    var stallTimeoutMs: Int = 360_000
+    static let defaultStallTimeoutMs: Int = 360_000
+    var stallTimeoutMs: Int = Self.defaultStallTimeoutMs
 
     var hwmLogThresholdBytes: Int { maxPendingBytes / 2 }
 }
