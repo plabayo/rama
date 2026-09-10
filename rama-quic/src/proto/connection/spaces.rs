@@ -150,16 +150,26 @@ impl PacketSpace {
         }
     }
 
-    /// Get the next outgoing packet number in this space
+    /// Get the next outgoing packet number in this space, for a packet these keys will
+    /// protect. It counts towards their confidentiality limit (RFC 9001 §6.6), which is
+    /// counted in packets protected.
     ///
     /// In the Data space, the connection's [`PacketNumberFilter`] must be used rather than calling
     /// this directly.
     pub(super) fn get_tx_number(&mut self) -> u64 {
+        let x = self.skip_tx_number();
+        self.sent_with_keys += 1;
+        x
+    }
+
+    /// Pass over a packet number without protecting anything with it, as the filter does to
+    /// catch a peer acknowledging what it never received (RFC 9000 §21.4). It costs a number,
+    /// not a use of the keys.
+    pub(super) fn skip_tx_number(&mut self) -> u64 {
         // TODO: Handle packet number overflow gracefully
         assert!(self.next_packet_number < 2u64.pow(62));
         let x = self.next_packet_number;
         self.next_packet_number += 1;
-        self.sent_with_keys += 1;
         x
     }
 
@@ -896,6 +906,18 @@ impl PacketNumberFilter {
         }
     }
 
+    /// Tests: make the next allocated packet number the one that is skipped.
+    #[cfg(test)]
+    pub(super) fn skip_next(&mut self, next_packet_number: u64) {
+        self.next_skipped_packet_number = next_packet_number;
+    }
+
+    /// Tests: the number most recently passed over without protecting a packet.
+    #[cfg(test)]
+    pub(super) fn last_skipped(&self) -> Option<u64> {
+        self.prev_skipped_packet_number
+    }
+
     #[cfg(test)]
     pub(super) fn disabled() -> Self {
         Self {
@@ -918,18 +940,17 @@ impl PacketNumberFilter {
         rng: &mut (impl Rng + ?Sized),
         space: &mut PacketSpace,
     ) -> u64 {
-        let n = space.get_tx_number();
-        if n != self.next_skipped_packet_number {
-            return n;
+        if space.next_packet_number == self.next_skipped_packet_number {
+            let skipped = space.skip_tx_number();
+            trace!("skipping pn {skipped}");
+            // Skip this packet number, and choose the next one to skip
+            self.prev_skipped_packet_number = Some(skipped);
+            let next_exponent = self.exponent.saturating_add(1);
+            self.next_skipped_packet_number = rng.random_range(
+                2u64.saturating_pow(self.exponent)..2u64.saturating_pow(next_exponent),
+            );
+            self.exponent = next_exponent;
         }
-
-        trace!("skipping pn {n}");
-        // Skip this packet number, and choose the next one to skip
-        self.prev_skipped_packet_number = Some(self.next_skipped_packet_number);
-        let next_exponent = self.exponent.saturating_add(1);
-        self.next_skipped_packet_number = rng
-            .random_range(2u64.saturating_pow(self.exponent)..2u64.saturating_pow(next_exponent));
-        self.exponent = next_exponent;
 
         space.get_tx_number()
     }
@@ -1190,7 +1211,13 @@ mod test {
         // Empty and reversed ranges are nothing to do, and change nothing.
         let now = pending.retire_cids.clone();
         assert!(pending.retire_cids(7..7).is_ok(), "an empty range");
-        assert!(pending.retire_cids(9..4).is_ok(), "a reversed range");
+        #[expect(
+            clippy::reversed_empty_ranges,
+            reason = "the reversed range is what this line checks: the lint's rev() would ask a different question"
+        )]
+        {
+            assert!(pending.retire_cids(9..4).is_ok(), "a reversed range");
+        }
         assert_eq!(pending.retire_cids, now);
 
         // A retransmission of a range already queued is free even at the cap: what it would add

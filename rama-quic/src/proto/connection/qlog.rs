@@ -40,10 +40,14 @@ pub(crate) struct QlogStream(pub(crate) Arc<Mutex<QlogStreamer>>);
 
 #[cfg(feature = "qlog")]
 impl QlogStream {
-    fn emit_event(&self, orig_rem_cid: ConnectionId, event: EventData, now: Instant) {
+    /// Record one event under the connection's group. The group is the destination identifier
+    /// the client chose for its first Initial (RFC 9000 §7.2): it is the one identifier both
+    /// ends know and neither changes, so every record of a connection carries the same group
+    /// even when several connections write into one stream.
+    fn emit_event(&self, group: ConnectionId, event: EventData, now: Instant) {
         // Time will be overwritten by `add_event_with_instant`
         let mut event = Event::with_time(0.0, event);
-        event.group_id = Some(orig_rem_cid.to_string());
+        event.group_id = Some(group.to_string());
 
         let mut qlog_streamer = self.0.lock();
         if let Err(e) = qlog_streamer.add_event_with_instant(event, now) {
@@ -76,7 +80,7 @@ impl QlogSink {
         pto_count: u32,
         path: &mut PathData,
         now: Instant,
-        orig_rem_cid: ConnectionId,
+        group: ConnectionId,
     ) {
         #[cfg(feature = "qlog")]
         {
@@ -88,7 +92,7 @@ impl QlogSink {
                 return;
             };
 
-            stream.emit_event(orig_rem_cid, EventData::MetricsUpdated(metrics), now);
+            stream.emit_event(group, EventData::MetricsUpdated(metrics), now);
         }
     }
 
@@ -99,7 +103,7 @@ impl QlogSink {
         loss_delay: Duration,
         space: SpaceId,
         now: Instant,
-        orig_rem_cid: ConnectionId,
+        group: ConnectionId,
     ) {
         #[cfg(feature = "qlog")]
         {
@@ -123,7 +127,7 @@ impl QlogSink {
                 ),
             };
 
-            stream.emit_event(orig_rem_cid, EventData::PacketLost(event), now);
+            stream.emit_event(group, EventData::PacketLost(event), now);
         }
     }
 
@@ -134,7 +138,7 @@ impl QlogSink {
         space: SpaceId,
         is_0rtt: bool,
         now: Instant,
-        orig_rem_cid: ConnectionId,
+        group: ConnectionId,
     ) {
         #[cfg(feature = "qlog")]
         {
@@ -152,7 +156,7 @@ impl QlogSink {
                 ..Default::default()
             };
 
-            stream.emit_event(orig_rem_cid, EventData::PacketSent(event), now);
+            stream.emit_event(group, EventData::PacketSent(event), now);
         }
     }
 
@@ -162,7 +166,7 @@ impl QlogSink {
         space: SpaceId,
         is_0rtt: bool,
         now: Instant,
-        orig_rem_cid: ConnectionId,
+        group: ConnectionId,
     ) {
         #[cfg(feature = "qlog")]
         {
@@ -179,7 +183,7 @@ impl QlogSink {
                 ..Default::default()
             };
 
-            stream.emit_event(orig_rem_cid, EventData::PacketReceived(event), now);
+            stream.emit_event(group, EventData::PacketReceived(event), now);
         }
     }
 }

@@ -837,9 +837,9 @@ async fn two_datagram_readers() {
 async fn multiple_conns_with_zero_length_cids() {
     let _guard = subscribe();
     let mut factory = EndpointFactory::new();
-    factory
-        .endpoint_config
-        .cid_generator(|| Box::new(RandomConnectionIdGenerator::new(0)));
+    factory.endpoint_config.set_cid_generator(Arc::new(|| {
+        Box::new(RandomConnectionIdGenerator::new(0).expect("zero is a length"))
+    }));
     let server = {
         let _guard = error_span!("server").entered();
         factory.endpoint()

@@ -320,6 +320,10 @@ pub(crate) struct Connection {
     orig_rem_cid: ConnectionId,
     /// Destination ConnectionId sent by the client on the first Initial
     initial_dst_cid: ConnectionId,
+    /// The identifier both ends name this connection by in a trace: the destination of the
+    /// client's very first Initial, before any Retry. Packet protection, routing and handshake
+    /// validation use `initial_dst_cid`, which a Retry moves; this one does not move.
+    trace_cid: ConnectionId,
     /// The value that the server included in the Source Connection ID field of a Retry packet, if
     /// one was received
     retry_src_cid: Option<ConnectionId>,
@@ -423,6 +427,7 @@ impl Connection {
     ) -> Self {
         let pref_addr_cid = side_args.pref_addr_cid();
         let path_validated = side_args.path_validated();
+        let trace_cid = side_args.trace_cid(init_cid);
         let connection_side = ConnectionSide::from(side_args);
         let side = connection_side.side();
         let initial_space = PacketSpace {
@@ -480,6 +485,7 @@ impl Connection {
             withheld_handshake_done: false,
             orig_rem_cid: rem_cid,
             initial_dst_cid: init_cid,
+            trace_cid,
             retry_src_cid: None,
             events: VecDeque::new(),
             endpoint_events: VecDeque::new(),
@@ -1128,7 +1134,7 @@ impl Connection {
                 self.pto_count,
                 &mut self.path,
                 now,
-                self.orig_rem_cid,
+                self.trace_cid,
             );
         }
 
@@ -1484,7 +1490,7 @@ impl Connection {
                     self.pto_count,
                     &mut self.path,
                     now,
-                    self.orig_rem_cid,
+                    self.trace_cid,
                 );
 
                 if was_anti_amplification_blocked {
@@ -1564,7 +1570,7 @@ impl Connection {
                         self.pto_count,
                         &mut self.path,
                         now,
-                        self.orig_rem_cid,
+                        self.trace_cid,
                     );
                 }
                 Timer::KeyDiscard => {
@@ -1761,6 +1767,19 @@ impl Connection {
     /// Whether 0-RTT is/was possible during the handshake
     pub(crate) fn has_0rtt(&self) -> bool {
         self.zero_rtt_enabled
+    }
+
+    /// The identifier this endpoint's generator made for the handshake. Later ones are issued
+    /// as the connection runs and this one is eventually retired, so it names the connection
+    /// rather than saying what a peer sends to now.
+    pub(crate) fn initial_local_id(&self) -> ConnectionId {
+        self.handshake_cid
+    }
+
+    /// The identifier the client chose for its first Initial, which both ends know and neither
+    /// changes. It is the group a qlog trace records this connection under.
+    pub(crate) fn trace_id(&self) -> ConnectionId {
+        self.trace_cid
     }
 
     /// Look up whether we're the client or server of this Connection
@@ -2201,7 +2220,7 @@ impl Connection {
                     loss_delay,
                     pn_space,
                     now,
-                    self.orig_rem_cid,
+                    self.trace_cid,
                 );
                 self.remove_in_flight(&info);
                 for frame in info.stream_frames {
@@ -2409,13 +2428,9 @@ impl Connection {
             self.spin = self.side.is_client() ^ spin;
         }
 
-        self.config.qlog_sink.emit_packet_received(
-            packet,
-            space_id,
-            !is_1rtt,
-            now,
-            self.orig_rem_cid,
-        );
+        self.config
+            .qlog_sink
+            .emit_packet_received(packet, space_id, !is_1rtt, now, self.trace_cid);
     }
 
     fn reset_idle_timeout(&mut self, now: Instant, space: SpaceId) {
@@ -2494,7 +2509,7 @@ impl Connection {
             self.pto_count,
             &mut self.path,
             now,
-            self.orig_rem_cid,
+            self.trace_cid,
         );
 
         Ok(())
@@ -2576,10 +2591,16 @@ impl Connection {
             return Err(TransportError::CRYPTO_BUFFER_EXCEEDED(""));
         }
 
-        space
+        // As above: the assembler reports only that it holds too many spans.
+        if space
             .crypto_stream
             .insert(crypto.offset, crypto.data.clone(), payload_len)
-            .map_err(|_| TransportError::INTERNAL_ERROR("too many gaps in crypto stream buffer"))?;
+            .is_err()
+        {
+            return Err(TransportError::INTERNAL_ERROR(
+                "too many gaps in crypto stream buffer",
+            ));
+        }
 
         while let Some(chunk) = space.crypto_stream.read(usize::MAX, true) {
             trace!("consumed {} CRYPTO bytes", chunk.bytes.len());
@@ -4329,6 +4350,24 @@ impl Connection {
         self.spaces[SpaceId::Data].sent_with_keys = sent;
     }
 
+    /// Tests: arrange for the next 1-RTT packet number to be one the filter passes over, which
+    /// is otherwise chosen at random.
+    #[cfg(test)]
+    pub(crate) fn skip_next_packet_number(&mut self) {
+        let next = self.spaces[SpaceId::Data].next_packet_number;
+        self.packet_number_filter.skip_next(next);
+    }
+
+    /// Tests: the packet number most recently passed over, and the number the next packet
+    /// will take.
+    #[cfg(test)]
+    pub(crate) fn packet_numbers(&self) -> (Option<u64>, u64) {
+        (
+            self.packet_number_filter.last_skipped(),
+            self.spaces[SpaceId::Data].next_packet_number,
+        )
+    }
+
     /// Tests: how much input the next close response costs, which doubles with each one sent.
     #[cfg(test)]
     pub(crate) fn close_response_gap(&self) -> u32 {
@@ -5349,6 +5388,7 @@ impl From<SideArgs> for ConnectionSide {
                 server_config,
                 pref_addr_cid: _,
                 path_validated: _,
+                orig_dst_cid: _,
             } => Self::Server { server_config },
         }
     }
@@ -5365,10 +5405,23 @@ pub(crate) enum SideArgs {
         server_config: Arc<ServerConfig>,
         pref_addr_cid: Option<ConnectionId>,
         path_validated: bool,
+        /// The destination the client's first Initial named, before any Retry. It is what both
+        /// ends call this connection in a trace.
+        orig_dst_cid: ConnectionId,
     },
 }
 
 impl SideArgs {
+    /// The identifier a trace names this connection by: the destination of the client's first
+    /// Initial. A client knows it because it chose it; a server is told it by the token, since
+    /// a Retry changes what the packets carry.
+    pub(crate) fn trace_cid(&self, init_cid: ConnectionId) -> ConnectionId {
+        match *self {
+            Self::Client { .. } => init_cid,
+            Self::Server { orig_dst_cid, .. } => orig_dst_cid,
+        }
+    }
+
     pub(crate) fn pref_addr_cid(&self) -> Option<ConnectionId> {
         match *self {
             Self::Client { .. } => None,

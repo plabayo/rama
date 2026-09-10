@@ -4,16 +4,21 @@
 
 mod common;
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use common::*;
 use rama::{
     net::tls::ApplicationProtocol,
     quic::{
-        AddressTokenKey, CongestionControl, ConnectionStats, DriverStats, Endpoint, EndpointConfig,
-        EndpointStats, FrameStats, KEY_MATERIAL_SIZE, MIN_INITIAL_CONGESTION_WINDOW,
-        PacketQueueStats, ReceiveQueueLimits, RetryRefused, SendDatagramError, ServerConfig, Side,
-        StatelessResetKey, TransportConfig, ValidationTokenConfig,
+        AddressTokenKey, CongestionControl, Connection, ConnectionId, ConnectionIdGenerator,
+        ConnectionStats, DriverStats, Endpoint, EndpointConfig, EndpointStats, FrameStats,
+        HashedConnectionIdGenerator, InvalidCid, KEY_MATERIAL_SIZE, MAX_CID_SIZE,
+        MIN_INITIAL_CONGESTION_WINDOW, PacketQueueStats, RandomConnectionIdGenerator,
+        ReceiveQueueLimits, RetryRefused, SendDatagramError, ServerConfig, Side, StatelessResetKey,
+        TransportConfig, ValidationTokenConfig,
     },
     udp::UdpSocketConfig,
     utils::octets,
@@ -802,4 +807,266 @@ async fn a_refused_retry_says_why_and_hands_the_attempt_back() {
     step("quinn's shutdown", client.wait_idle()).await;
     served.join("the rama peer").await;
     step("rama's shutdown", server.shutdown()).await;
+}
+
+/// The connection identifiers an endpoint issues, configured from outside: a hashed generator
+/// with a key of the consumer's own, whose identifiers that key recognises and another key
+/// does not, and a random generator of a chosen length whose identifiers are that length.
+#[tokio::test]
+async fn a_consumer_chooses_how_connection_identifiers_are_made() {
+    const KEY: u64 = 0x5ea1_5ea1_5ea1_5ea1;
+    const OTHER_KEY: u64 = 0x0b0b_0b0b_0b0b_0b0b;
+    const LENGTH: usize = 12;
+
+    assert!(
+        RandomConnectionIdGenerator::new(MAX_CID_SIZE + 1).is_err(),
+        "a length QUIC has no room for is refused"
+    );
+
+    let auth = identity();
+    let anchor = auth.cert_chain.last().expect("a chain").clone();
+    let server = step(
+        "the rama server binds",
+        Endpoint::bind(
+            EndpointConfig::default().with_cid_generator(Arc::new(|| {
+                Box::new(HashedConnectionIdGenerator::from_key(KEY))
+            })),
+            Some(rama_server_config(&auth)),
+            localhost(),
+            UdpSocketConfig::default(),
+        ),
+    )
+    .await
+    .expect("it binds");
+    let server_addr = server.local_addr().expect("its address");
+    let served = Peer::spawn({
+        let server = server.clone();
+        async move {
+            let conn = step("the rama server accepts", server.accept())
+                .await
+                .expect("an attempt arrives")
+                .accept()
+                .expect("it is accepted")
+                .await
+                .expect("the handshake completes");
+
+            // The identifier peers send to on this connection is one the configured generator
+            // made: the key it was built with recognises it, another key does not.
+            let issued = conn.initial_local_id();
+            assert_eq!(
+                issued.len(),
+                HashedConnectionIdGenerator::from_key(KEY).cid_len(),
+                "the length that generator issues"
+            );
+            assert!(
+                HashedConnectionIdGenerator::from_key(KEY)
+                    .validate(&issued)
+                    .is_ok(),
+                "the key the endpoint was configured with recognises what it issued"
+            );
+            assert!(
+                HashedConnectionIdGenerator::from_key(OTHER_KEY)
+                    .validate(&issued)
+                    .is_err(),
+                "and another key does not"
+            );
+            step("the connection closes", conn.closed()).await;
+        }
+    });
+
+    // The client's own identifiers are the ones the peer sends to, so they are the length this
+    // client asked for.
+    let client_generator = RandomConnectionIdGenerator::new(LENGTH)
+        .expect("twelve bytes is within the maximum")
+        .with_lifetime(Duration::from_secs(30));
+    assert_eq!(client_generator.cid_len(), LENGTH);
+    assert_eq!(
+        client_generator.cid_lifetime(),
+        Some(Duration::from_secs(30))
+    );
+    let client = step(
+        "rama binds",
+        Endpoint::bind(
+            EndpointConfig::default()
+                .with_cid_generator(Arc::new(move || Box::new(client_generator))),
+            None,
+            localhost(),
+            UdpSocketConfig::default(),
+        ),
+    )
+    .await
+    .expect("the client binds");
+    let conn = step(
+        "the rama client connects",
+        client
+            .connect_with(rama_client_config(anchor), server_addr, "localhost")
+            .expect("the attempt starts"),
+    )
+    .await
+    .expect("the handshake completes");
+
+    // The client's own identifiers are the length its generator was configured with, and the
+    // trace identifier is the one a qlog reader groups this connection by.
+    assert_eq!(
+        conn.initial_local_id().len(),
+        LENGTH,
+        "the client issues identifiers of the length it asked for"
+    );
+    assert_eq!(
+        conn.trace_id().len(),
+        MAX_CID_SIZE,
+        "and names itself in a trace by the destination it chose for its first Initial"
+    );
+
+    conn.close(0u32.into(), b"done");
+    step("rama's shutdown", client.wait_idle()).await;
+    served.join("the rama peer").await;
+    step("the server's shutdown", server.shutdown()).await;
+}
+
+/// A generator written outside this crate, building its identifiers from bytes, and the
+/// identifier a connection reports for itself staying the same while the connection rotates
+/// through new ones.
+#[tokio::test]
+async fn a_generator_of_ones_own_issues_identifiers_that_outlast_rotation() {
+    /// Identifiers that carry a fixed prefix, as something in front of the endpoint might
+    /// read, and eight bytes of counter behind it.
+    #[derive(Debug)]
+    struct Tagged {
+        tag: [u8; 4],
+        next: u64,
+    }
+
+    impl ConnectionIdGenerator for Tagged {
+        fn generate_cid(&mut self) -> ConnectionId {
+            self.next += 1;
+            let mut bytes = self.tag.to_vec();
+            bytes.extend_from_slice(&self.next.to_be_bytes());
+            ConnectionId::try_from_bytes(&bytes).expect("twelve bytes is within the maximum")
+        }
+
+        fn validate(&self, cid: &ConnectionId) -> Result<(), InvalidCid> {
+            match cid.len() == 12 && cid[..4] == self.tag {
+                true => Ok(()),
+                false => Err(InvalidCid),
+            }
+        }
+
+        fn cid_len(&self) -> usize {
+            12
+        }
+
+        fn cid_lifetime(&self) -> Option<Duration> {
+            // Short, so the connection retires and replaces its identifiers while it runs.
+            Some(Duration::from_millis(100))
+        }
+    }
+
+    const TAG: [u8; 4] = *b"rama";
+
+    let auth = identity();
+    let anchor = auth.cert_chain.last().expect("a chain").clone();
+    let server = step(
+        "the rama server binds",
+        Endpoint::bind(
+            EndpointConfig::default()
+                .with_cid_generator(Arc::new(|| Box::new(Tagged { tag: TAG, next: 0 }))),
+            Some(rama_server_config(&auth)),
+            localhost(),
+            UdpSocketConfig::default(),
+        ),
+    )
+    .await
+    .expect("it binds");
+    let server_addr = server.local_addr().expect("its address");
+    let (rotated, wait_for_it) = tokio::sync::oneshot::channel();
+    let served = Peer::spawn({
+        let server = server.clone();
+        async move {
+            let conn = step("the rama server accepts", server.accept())
+                .await
+                .expect("an attempt arrives")
+                .accept()
+                .expect("it is accepted")
+                .await
+                .expect("the handshake completes");
+            let named = conn.initial_local_id();
+            assert_eq!(named.len(), 12, "the generator's own length");
+            assert_eq!(&named[..4], &TAG, "carrying the tag it was built with");
+
+            // Identifiers are retired and replaced as the connection runs; what the connection
+            // is called does not change with them. The client holds the connection open until
+            // this has been seen.
+            wait_for_rotation(&conn, named).await;
+            let _ = rotated.send(());
+            step("the connection closes", conn.closed()).await;
+        }
+    });
+
+    let client = step("rama binds", Endpoint::client(localhost()))
+        .await
+        .expect("the client binds");
+    let conn = step(
+        "the rama client connects",
+        client
+            .connect_with(rama_client_config(anchor), server_addr, "localhost")
+            .expect("the attempt starts"),
+    )
+    .await
+    .expect("the handshake completes");
+    // Traffic, so the identifiers have reason to turn over.
+    for round in 0..4u8 {
+        let mut stream = step("a stream opens", conn.open_uni())
+            .await
+            .expect("it opens");
+        step(
+            "the payload",
+            stream.write_all(&payload(round, octets::kib(4))),
+        )
+        .await
+        .expect("it is written");
+        stream.finish().expect("the stream is finished");
+        step("the peer has it", stream.stopped())
+            .await
+            .expect("the peer did not reset it");
+    }
+
+    step("the identifiers turn over", wait_for_it)
+        .await
+        .expect("the server saw them turn over");
+    conn.close(0u32.into(), b"done");
+    step("rama's shutdown", client.wait_idle()).await;
+    served.join("the rama peer").await;
+    step("the server's shutdown", server.shutdown()).await;
+}
+
+/// Wait until this endpoint's own identifiers have turned over: it issued new ones and the
+/// peer retired the old ones, both past where the handshake left the counters. Then check the
+/// identifier the connection is named by has not moved with them.
+async fn wait_for_rotation(conn: &Connection, named: ConnectionId) {
+    let settled = conn.stats();
+    let issued_at_first = settled.frame_tx.new_connection_id;
+    let retired_at_first = settled.frame_rx.retire_connection_id;
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let now = conn.stats();
+        let issued = now.frame_tx.new_connection_id;
+        let retired = now.frame_rx.retire_connection_id;
+        if issued > issued_at_first && retired > retired_at_first {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the identifiers never turned over: issued {issued_at_first} then {issued}, \
+             retired {retired_at_first} then {retired}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    assert_eq!(
+        conn.initial_local_id(),
+        named,
+        "the identifier the connection is named by is the one it started with"
+    );
 }

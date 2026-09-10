@@ -34,14 +34,14 @@ pub use proto::QlogConfig;
 pub use proto::{
     AckFrequencyConfig, ApplicationClose, BloomTokenLog, Chunk, ClientConfig, ClosedStream,
     ConfigError, CongestionControl, ConnectError, ConnectionClose, ConnectionError, ConnectionId,
-    ConnectionIdGenerator, ConnectionStats, DEFAULT_SUPPORTED_VERSIONS, Dir, EcnCodepoint,
-    EndpointConfig, ExportKeyingMaterialError, FrameStats, FrameType, HandshakeSummary,
-    HashedConnectionIdGenerator, IdleTimeout, InvalidCid, MIN_INITIAL_CONGESTION_WINDOW,
-    MtuDiscoveryConfig, NoneTokenLog, NoneTokenStore, PathStats, PreferredAddressPolicy,
-    RandomConnectionIdGenerator, ReceiveQueueLimits, RetryRefused, ServerConfig, Side,
-    StdSystemTime, StreamId, TimeSource, TokenLog, TokenMemoryCache, TokenReuseError, TokenStore,
-    TransportConfig, TransportError, TransportErrorCode, UdpStats, ValidationTokenConfig, VarInt,
-    VarIntBoundsExceeded, Written,
+    ConnectionIdGenerator, ConnectionIdGeneratorFactory, ConnectionStats,
+    DEFAULT_SUPPORTED_VERSIONS, Dir, EcnCodepoint, EndpointConfig, ExportKeyingMaterialError,
+    FrameStats, FrameType, HandshakeSummary, HashedConnectionIdGenerator, IdleTimeout, InvalidCid,
+    MAX_CID_SIZE, MIN_INITIAL_CONGESTION_WINDOW, MtuDiscoveryConfig, NoneTokenLog, NoneTokenStore,
+    PathStats, PreferredAddressPolicy, RandomConnectionIdGenerator, ReceiveQueueLimits,
+    RetryRefused, ServerConfig, Side, StdSystemTime, StreamId, TimeSource, TokenLog,
+    TokenMemoryCache, TokenReuseError, TokenStore, TransportConfig, TransportError,
+    TransportErrorCode, UdpStats, ValidationTokenConfig, VarInt, VarIntBoundsExceeded, Written,
 };
 #[cfg(any(feature = "aws-lc", feature = "ring"))]
 pub use proto::{AddressTokenKey, KEY_MATERIAL_SIZE, StatelessResetKey};

@@ -98,7 +98,7 @@ fn version_negotiate_client() {
     // Configure client to use empty CIDs so we can easily hardcode a server version negotiation
     // packet
     let cid_generator_factory: fn() -> Box<dyn ConnectionIdGenerator> =
-        || Box::new(RandomConnectionIdGenerator::new(0));
+        || Box::new(RandomConnectionIdGenerator::new(0).expect("zero is a length"));
     let mut client = Endpoint::new(
         Arc::new(EndpointConfig {
             connection_id_generator_factory: Arc::new(cid_generator_factory),
@@ -242,7 +242,9 @@ fn server_stateless_reset() {
     rng.fill_bytes(&mut key_material);
 
     let mut endpoint_config = EndpointConfig::new(Arc::new(reset_key));
-    endpoint_config.cid_generator(move || Box::new(HashedConnectionIdGenerator::from_key(0)));
+    endpoint_config.set_cid_generator(Arc::new(move || {
+        Box::new(HashedConnectionIdGenerator::from_key(0))
+    }));
     let endpoint_config = Arc::new(endpoint_config);
 
     let mut pair = Pair::new(endpoint_config.clone(), server_config());
@@ -274,7 +276,9 @@ fn client_stateless_reset() {
     rng.fill_bytes(&mut key_material);
 
     let mut endpoint_config = EndpointConfig::new(Arc::new(reset_key));
-    endpoint_config.cid_generator(move || Box::new(HashedConnectionIdGenerator::from_key(0)));
+    endpoint_config.set_cid_generator(Arc::new(move || {
+        Box::new(HashedConnectionIdGenerator::from_key(0))
+    }));
     let endpoint_config = Arc::new(endpoint_config);
 
     let mut pair = Pair::new(endpoint_config.clone(), server_config());
@@ -309,10 +313,10 @@ fn stateless_reset_with_a_foreign_key_is_ignored() {
     let real_key = hmac::Key::new(hmac::HMAC_SHA256, &[0x11; 64]);
     let real_key_copy = hmac::Key::new(hmac::HMAC_SHA256, &[0x11; 64]);
     let foreign_key = hmac::Key::new(hmac::HMAC_SHA256, &[0x22; 64]);
-    let cid_generator =
-        || Box::new(HashedConnectionIdGenerator::from_key(0)) as Box<dyn ConnectionIdGenerator>;
+    let cid_generator: ConnectionIdGeneratorFactory =
+        Arc::new(|| Box::new(HashedConnectionIdGenerator::from_key(0)));
     let mut endpoint_config = EndpointConfig::new(Arc::new(real_key));
-    endpoint_config.cid_generator(cid_generator);
+    endpoint_config.set_cid_generator(cid_generator);
     let endpoint_config = Arc::new(endpoint_config);
     let mut pair = Pair::new(endpoint_config, server_config());
     let (client_ch, server_ch) = pair.connect();
@@ -551,12 +555,12 @@ fn a_configured_stateless_reset_key_is_what_the_issued_tokens_come_from() {
 
     // Only the server's endpoint is given the key: it is the side whose tokens the client
     // learns and later recognises resets by.
-    let cid_generator =
-        || Box::new(HashedConnectionIdGenerator::from_key(0)) as Box<dyn ConnectionIdGenerator>;
+    let cid_generator: ConnectionIdGeneratorFactory =
+        Arc::new(|| Box::new(HashedConnectionIdGenerator::from_key(0)));
     let mut issuing = EndpointConfig::default();
     issuing
         .set_stateless_reset_key(StatelessResetKey::from_seed(&SEED))
-        .cid_generator(cid_generator);
+        .set_cid_generator(cid_generator);
     let server = Endpoint::new(
         Arc::new(issuing),
         Some(Arc::new(server_config())),
@@ -634,7 +638,9 @@ fn stateless_reset_limit() {
     let _guard = subscribe();
     let remote = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 42);
     let mut endpoint_config = EndpointConfig::default();
-    endpoint_config.cid_generator(move || Box::new(RandomConnectionIdGenerator::new(8)));
+    endpoint_config.set_cid_generator(Arc::new(move || {
+        Box::new(RandomConnectionIdGenerator::new(8).expect("eight bytes is a length"))
+    }));
     let endpoint_config = Arc::new(endpoint_config);
     let mut endpoint = Endpoint::new(
         endpoint_config.clone(),
@@ -1916,6 +1922,78 @@ fn one_rtt_keys_stop_at_their_confidentiality_limit_when_no_update_is_available(
     );
 }
 
+/// A packet number the filter passes over to catch a peer acknowledging what it never
+/// received (RFC 9000 §21.4) protects nothing, so it costs a number and not a use of the keys.
+/// RFC 9001 §6.6 counts packets protected, and a skip at the last packet of the budget must
+/// not spend two of it.
+#[test]
+fn a_skipped_packet_number_does_not_spend_the_key_budget() {
+    let _guard = subscribe();
+
+    for skip in [false, true] {
+        for from_the_end in [1u64, 0] {
+            let mut pair = Pair::default();
+            let (client_ch, _server_ch) = pair.connect();
+            pair.drive();
+            let limit = pair.client_conn_mut(client_ch).confidentiality_limit();
+            assert!(pair.client_conn_mut(client_ch).force_key_update());
+            pair.client_conn_mut(client_ch)
+                .set_packets_sent_with_keys(limit - from_the_end);
+            if skip {
+                pair.client_conn_mut(client_ch).skip_next_packet_number();
+            }
+            let (skipped_before, number_before) = pair.client_conn_mut(client_ch).packet_numbers();
+            let counted_before = pair.client_conn_mut(client_ch).packets_sent_with_keys();
+
+            let stream = pair
+                .client_streams(client_ch)
+                .open(Dir::Bi)
+                .expect("a stream opens");
+            pair.client_send(client_ch, stream)
+                .write(b"one packet of budget")
+                .expect("the write is queued");
+            let sent_before = pair.client_sent.len();
+            pair.drive_client();
+            let sent = pair.client_sent.len() - sent_before;
+
+            let (skipped, number_after) = pair.client_conn_mut(client_ch).packet_numbers();
+            let counted = pair.client_conn_mut(client_ch).packets_sent_with_keys();
+            assert_eq!(
+                counted - counted_before,
+                sent as u64,
+                "the budget is spent once per packet the keys protected ({skip}, \
+                 {from_the_end} from the end)"
+            );
+            if skip && sent > 0 {
+                assert_eq!(
+                    skipped,
+                    Some(number_before),
+                    "the filter passed over the number this pass started at"
+                );
+                assert_ne!(
+                    skipped, skipped_before,
+                    "which it had not passed over before"
+                );
+                assert_eq!(
+                    number_after - number_before,
+                    sent as u64 + 1,
+                    "and that number is spent, on top of the packets that were protected"
+                );
+            } else {
+                assert_eq!(
+                    number_after - number_before,
+                    sent as u64,
+                    "without a skip a number is spent per packet"
+                );
+            }
+            assert!(
+                counted <= limit,
+                "and never past the limit: {counted} against {limit}"
+            );
+        }
+    }
+}
+
 /// The count belongs to the keys. An update starts the new phase at zero, so a connection that
 /// rotates keeps sending, and its peer receives what it sends.
 #[test]
@@ -2615,7 +2693,7 @@ fn implicit_open() {
 fn zero_length_cid() {
     let _guard = subscribe();
     let cid_generator_factory: fn() -> Box<dyn ConnectionIdGenerator> =
-        || Box::new(RandomConnectionIdGenerator::new(0));
+        || Box::new(RandomConnectionIdGenerator::new(0).expect("zero is a length"));
     let mut pair = Pair::new(
         Arc::new(EndpointConfig {
             connection_id_generator_factory: Arc::new(cid_generator_factory),
@@ -2672,8 +2750,13 @@ fn cid_rotation() {
     let _guard = subscribe();
     const CID_TIMEOUT: Duration = Duration::from_secs(2);
 
-    let cid_generator_factory: fn() -> Box<dyn ConnectionIdGenerator> =
-        || Box::new(*RandomConnectionIdGenerator::new(8).set_lifetime(CID_TIMEOUT));
+    let cid_generator_factory: fn() -> Box<dyn ConnectionIdGenerator> = || {
+        Box::new(
+            RandomConnectionIdGenerator::new(8)
+                .expect("eight bytes is a length")
+                .with_lifetime(CID_TIMEOUT),
+        )
+    };
 
     // Only test cid rotation on server side to have a clear output trace
     let server = Endpoint::new(
@@ -5512,7 +5595,7 @@ fn local_migration_requires_an_unused_destination_cid() {
 fn zero_length_destination_cids_need_no_switch_to_migrate() {
     let _guard = subscribe();
     let factory: fn() -> Box<dyn ConnectionIdGenerator> =
-        || Box::new(RandomConnectionIdGenerator::new(0));
+        || Box::new(RandomConnectionIdGenerator::new(0).expect("zero is a length"));
     let mut pair = Pair::new(
         Arc::new(EndpointConfig {
             connection_id_generator_factory: Arc::new(factory),
@@ -6078,7 +6161,9 @@ fn a_client_with_zero_length_ids_does_not_move_to_a_preferred_address() {
     config.set_preferred_address_v6(alt);
     // The client's own identifiers are zero length; the server's are not.
     let mut client_config_endpoint = EndpointConfig::default();
-    client_config_endpoint.cid_generator(|| Box::new(RandomConnectionIdGenerator::new(0)));
+    client_config_endpoint.set_cid_generator(Arc::new(|| {
+        Box::new(RandomConnectionIdGenerator::new(0).expect("zero is a length"))
+    }));
     let client = Endpoint::new(Arc::new(client_config_endpoint), None, true, None);
     let server = Endpoint::new(
         Arc::new(EndpointConfig::default()),
@@ -6131,7 +6216,7 @@ fn a_server_with_zero_length_ids_advertises_no_preferred_address() {
     );
     config.set_preferred_address_v6(alt);
     let cid_generator_factory: fn() -> Box<dyn ConnectionIdGenerator> =
-        || Box::new(RandomConnectionIdGenerator::new(0));
+        || Box::new(RandomConnectionIdGenerator::new(0).expect("zero is a length"));
     let mut pair = Pair::new(
         Arc::new(EndpointConfig {
             connection_id_generator_factory: Arc::new(cid_generator_factory),

@@ -31,8 +31,8 @@ use crate::driver::{
     udp::{FailureLog, Sender},
 };
 use crate::proto::{
-    ConnectionError, ConnectionHandle, ConnectionStats, Dir, EndpointEvent, HandshakeSummary,
-    SendPermit, Side, StreamEvent, StreamId,
+    ConnectionError, ConnectionHandle, ConnectionId, ConnectionStats, Dir, EndpointEvent,
+    HandshakeSummary, SendPermit, Side, StreamEvent, StreamId,
 };
 
 /// Tests: one descriptor this connection offered to its sender, and what became of it.
@@ -1282,6 +1282,25 @@ impl Connection {
     #[must_use]
     pub fn remote_open_streams(&self, dir: Dir) -> u64 {
         self.0.state.lock().inner.streams().remote_open_streams(dir)
+    }
+
+    /// The connection ID this endpoint's generator made for the handshake, from the generator
+    /// [`EndpointConfig::set_cid_generator`](crate::EndpointConfig::set_cid_generator)
+    /// installed.
+    ///
+    /// A connection issues further identifiers as it runs and retires this one in time, so
+    /// several may be usable at once and this is not "the one in use". It stays the same for
+    /// the life of the connection, which is what makes it worth reporting.
+    #[must_use]
+    pub fn initial_local_id(&self) -> ConnectionId {
+        self.0.state.lock().inner.initial_local_id()
+    }
+
+    /// The connection ID that names this connection in a qlog trace: the destination the
+    /// client chose for its first Initial, which both ends know and neither changes.
+    #[must_use]
+    pub fn trace_id(&self) -> ConnectionId {
+        self.0.state.lock().inner.trace_id()
     }
 
     /// Tell the connection its network path changed, so the congestion controller, the
@@ -2632,16 +2651,17 @@ impl State {
             match event {
                 HandshakeDataReady => {
                     if let Some(x) = self.on_handshake_data.take() {
-                        let _ = x.send(());
+                        // Nobody waiting for it is not an error: the receiver may be gone.
+                        let _sent = x.send(());
                     }
                 }
                 Connected => {
                     self.connected = true;
                     if let Some(x) = self.on_connected.take() {
-                        // We don't care if the on-connected future was dropped
-                        let _ = x.send(Ok(
+                        // Nobody waiting for it is not an error: the receiver may be gone.
+                        drop(x.send(Ok(
                             self.inner.side().is_server() || self.inner.accepted_0rtt()
-                        ));
+                        )));
                     }
                     if self.inner.side().is_client() && !self.inner.accepted_0rtt() {
                         // Wake up rejected 0-RTT streams so they can fail immediately with

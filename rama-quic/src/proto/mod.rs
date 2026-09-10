@@ -99,7 +99,8 @@ pub(crate) mod congestion;
 
 mod cid_generator;
 pub use crate::proto::cid_generator::{
-    ConnectionIdGenerator, HashedConnectionIdGenerator, InvalidCid, RandomConnectionIdGenerator,
+    ConnectionIdGenerator, ConnectionIdGeneratorFactory, HashedConnectionIdGenerator, InvalidCid,
+    RandomConnectionIdGenerator,
 };
 
 mod token;
@@ -350,7 +351,8 @@ pub(crate) struct Transmit {
 /// The maximum number of CIDs we bother to issue per connection
 const LOC_CID_COUNT: u64 = 8;
 const RESET_TOKEN_SIZE: usize = 16;
-const MAX_CID_SIZE: usize = 20;
+/// The longest connection ID QUIC version 1 carries, in bytes (RFC 9000 §17.2).
+pub const MAX_CID_SIZE: usize = 20;
 const MIN_INITIAL_SIZE: u16 = 1200;
 /// <https://www.rfc-editor.org/rfc/rfc9000.html#name-datagram-size>
 const INITIAL_MTU: u16 = 1200;

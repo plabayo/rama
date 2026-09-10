@@ -19,9 +19,11 @@ use crate::proto::crypto::rustls::QuicServerConfig;
 #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 use crate::proto::crypto::rustls::configured_provider;
 use crate::proto::{
-    DEFAULT_SUPPORTED_VERSIONS, Duration, MAX_CID_SIZE, RandomConnectionIdGenerator, SystemTime,
-    TokenLog, TokenMemoryCache, TokenStore, VarInt, VarIntBoundsExceeded,
-    cid_generator::{ConnectionIdGenerator, HashedConnectionIdGenerator},
+    DEFAULT_SUPPORTED_VERSIONS, Duration, RandomConnectionIdGenerator, SystemTime, TokenLog,
+    TokenMemoryCache, TokenStore, VarInt, VarIntBoundsExceeded,
+    cid_generator::{
+        ConnectionIdGenerator, ConnectionIdGeneratorFactory, HashedConnectionIdGenerator,
+    },
     crypto::{self, HandshakeTokenKey, HmacKey},
     shared::ConnectionId,
 };
@@ -85,8 +87,7 @@ pub struct EndpointConfig {
     /// CID generator factory
     ///
     /// Create a cid generator for local cid in Endpoint struct
-    pub(crate) connection_id_generator_factory:
-        Arc<dyn Fn() -> Box<dyn ConnectionIdGenerator> + Send + Sync>,
+    pub(crate) connection_id_generator_factory: ConnectionIdGeneratorFactory,
     pub(crate) supported_versions: Vec<u32>,
     pub(crate) grease_quic_bit: bool,
     /// Minimum interval between outgoing stateless reset packets
@@ -157,28 +158,26 @@ impl EndpointConfig {
         }
     }
 
-    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
-    /// Supply a custom connection ID generator factory
-    ///
-    /// Called once by each `Endpoint` constructed from this configuration to obtain the CID
-    /// generator which will be used to generate the CIDs used for incoming packets on all
-    /// connections involving that  `Endpoint`. A custom CID generator allows applications to embed
-    /// information in local connection IDs, e.g. to support stateless packet-level load balancers.
-    ///
-    /// Defaults to [`HashedConnectionIdGenerator`].
-    pub(crate) fn cid_generator<
-        F: Fn() -> Box<dyn ConnectionIdGenerator> + Send + Sync + 'static,
-    >(
-        &mut self,
-        factory: F,
-    ) -> &mut Self {
-        self.connection_id_generator_factory = Arc::new(factory);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// How this endpoint generates the connection IDs it asks peers to send to.
+        ///
+        /// The factory is called once per [`Endpoint`](crate::Endpoint) built from this
+        /// configuration, and that generator issues the identifiers of every connection on
+        /// it. [`HashedConnectionIdGenerator`] is the default; [`RandomConnectionIdGenerator`]
+        /// gives identifiers of a chosen length, and a generator of your own can carry
+        /// whatever a load balancer in front of the endpoint needs to read, as long as it
+        /// keeps to what [`ConnectionIdGenerator::generate_cid`] requires.
+        pub fn cid_generator(mut self, factory: ConnectionIdGeneratorFactory) -> Self {
+            self.connection_id_generator_factory = factory;
+            self
+        }
     }
 
-    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
     /// Private key used to send authenticated connection resets to peers who were
-    /// communicating with a previous instance of this endpoint.
+    /// communicating with a previous instance of this endpoint. The public way in is
+    /// [`set_stateless_reset_key`](Self::set_stateless_reset_key); this one is what the
+    /// crate's own tests use to install a key they can forge with.
+    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
     pub(crate) fn reset_key(&mut self, key: Arc<dyn HmacKey>) -> &mut Self {
         self.reset_key = key;
         self
@@ -750,7 +749,7 @@ impl ClientConfig {
             crypto,
             token_store: Arc::new(TokenMemoryCache::default()),
             initial_dst_cid_provider: Arc::new(|| {
-                RandomConnectionIdGenerator::new(MAX_CID_SIZE).generate_cid()
+                RandomConnectionIdGenerator::of_max_size().generate_cid()
             }),
             version: 1,
             preferred_address_policy: PreferredAddressPolicy::default(),

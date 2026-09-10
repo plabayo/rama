@@ -9,9 +9,7 @@ use std::hash::Hasher;
 
 use rand::{Rng, RngExt};
 
-use crate::proto::Duration;
-use crate::proto::MAX_CID_SIZE;
-use crate::proto::shared::ConnectionId;
+use crate::proto::{ConfigError, Duration, MAX_CID_SIZE, shared::ConnectionId};
 
 /// Generates connection IDs for incoming connections
 pub trait ConnectionIdGenerator: Send + Sync {
@@ -39,6 +37,11 @@ pub trait ConnectionIdGenerator: Send + Sync {
     fn cid_lifetime(&self) -> Option<Duration>;
 }
 
+/// How an endpoint makes a connection ID generator: one call per endpoint, so each has its
+/// own state.
+pub type ConnectionIdGeneratorFactory =
+    std::sync::Arc<dyn Fn() -> Box<dyn ConnectionIdGenerator> + Send + Sync>;
+
 /// The connection ID was not recognized by the [`ConnectionIdGenerator`]
 #[derive(Debug, Copy, Clone)]
 pub struct InvalidCid;
@@ -63,22 +66,36 @@ impl Default for RandomConnectionIdGenerator {
 }
 
 impl RandomConnectionIdGenerator {
-    /// Initialize Random CID generator with a fixed CID length
+    /// A generator of identifiers `cid_len` bytes long, at most [`MAX_CID_SIZE`].
     ///
-    /// The given length must be less than or equal to MAX_CID_SIZE.
-    pub(crate) fn new(cid_len: usize) -> Self {
-        debug_assert!(cid_len <= MAX_CID_SIZE);
-        Self {
+    /// Fails for a longer length, which QUIC has no room for (RFC 9000 §17.2).
+    pub fn new(cid_len: usize) -> Result<Self, ConfigError> {
+        if cid_len > MAX_CID_SIZE {
+            return Err(ConfigError::OutOfBounds);
+        }
+        Ok(Self {
             cid_len,
+            ..Self::default()
+        })
+    }
+
+    /// A generator of identifiers of the longest size QUIC carries.
+    #[must_use]
+    pub fn of_max_size() -> Self {
+        Self {
+            cid_len: MAX_CID_SIZE,
             ..Self::default()
         }
     }
 
-    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
-    /// Set the lifetime of CIDs created by this generator
-    pub(crate) fn set_lifetime(&mut self, d: Duration) -> &mut Self {
-        self.lifetime = Some(d);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// How long the identifiers this generator creates are used before they are retired.
+        ///
+        /// `None`, the default, retires them only when the peer or the protocol asks.
+        pub fn lifetime(mut self, lifetime: Option<Duration>) -> Self {
+            self.lifetime = lifetime;
+            self
+        }
     }
 }
 
@@ -111,27 +128,33 @@ pub struct HashedConnectionIdGenerator {
 }
 
 impl HashedConnectionIdGenerator {
-    /// Create a generator with a random key
-    pub(crate) fn new() -> Self {
+    /// A generator with a random key, so its identifiers are recognised only by itself.
+    #[must_use]
+    pub fn new() -> Self {
         Self::from_key(rand::rng().random())
     }
 
-    /// Create a generator with a specific key
+    /// A generator with a key of your own.
     ///
-    /// Allows [`validate`](ConnectionIdGenerator::validate) to recognize a consistent set of
-    /// connection IDs across restarts
-    pub(crate) fn from_key(key: u64) -> Self {
+    /// Endpoints given the same key recognise one another's identifiers through
+    /// [`validate`](ConnectionIdGenerator::validate), which is what lets a restarted endpoint,
+    /// or another endpoint of the same service, tell a connection of its own from noise.
+    #[must_use]
+    pub fn from_key(key: u64) -> Self {
         Self {
             key,
             lifetime: None,
         }
     }
 
-    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
-    /// Set the lifetime of CIDs created by this generator
-    pub(crate) fn set_lifetime(&mut self, d: Duration) -> &mut Self {
-        self.lifetime = Some(d);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// How long the identifiers this generator creates are used before they are retired.
+        ///
+        /// `None`, the default, retires them only when the peer or the protocol asks.
+        pub fn lifetime(mut self, lifetime: Option<Duration>) -> Self {
+            self.lifetime = lifetime;
+            self
+        }
     }
 }
 
@@ -153,6 +176,12 @@ impl ConnectionIdGenerator for HashedConnectionIdGenerator {
     }
 
     fn validate(&self, cid: &ConnectionId) -> Result<(), InvalidCid> {
+        // An identifier this generator did not make can be any length a peer chose, including
+        // none. Only one of its own can be recognised, so any other length is refused before
+        // it is split.
+        if cid.len() != NONCE_LEN + SIGNATURE_LEN {
+            return Err(InvalidCid);
+        }
         let (nonce, signature) = cid.split_at(NONCE_LEN);
         let mut hasher = rustc_hash::FxHasher::default();
         hasher.write_u64(self.key);
@@ -184,6 +213,65 @@ mod tests {
     fn validate_keyed_cid() {
         let mut generator = HashedConnectionIdGenerator::new();
         let cid = generator.generate_cid();
-        generator.validate(&cid).unwrap();
+        generator.validate(&cid).expect("its own identifier");
+    }
+
+    /// An identifier this generator did not make is refused, whatever length a peer gave it,
+    /// including none and the longest QUIC carries. Only one of its own, under the key that
+    /// made it, is recognised.
+    #[test]
+    fn a_hashed_generator_refuses_what_it_did_not_make() {
+        const KEY: u64 = 0x1234_5678_9abc_def0;
+        const OTHER_KEY: u64 = 0x0fed_cba9_8765_4321;
+        let mut generator = HashedConnectionIdGenerator::from_key(KEY);
+        let mine = generator.generate_cid();
+        assert_eq!(mine.len(), generator.cid_len());
+        assert!(
+            HashedConnectionIdGenerator::from_key(KEY)
+                .validate(&mine)
+                .is_ok()
+        );
+        assert!(
+            HashedConnectionIdGenerator::from_key(OTHER_KEY)
+                .validate(&mine)
+                .is_err(),
+            "another key does not recognise it"
+        );
+
+        for length in [0usize, 1, 7, 9, MAX_CID_SIZE] {
+            let other = ConnectionId::try_from_bytes(&vec![0x5a; length])
+                .expect("a length within the maximum");
+            assert!(
+                HashedConnectionIdGenerator::from_key(KEY)
+                    .validate(&other)
+                    .is_err(),
+                "an identifier of {length} bytes is not one this generator made"
+            );
+        }
+
+        assert!(
+            ConnectionId::try_from_bytes(&vec![0x5a; MAX_CID_SIZE + 1]).is_err(),
+            "and nothing longer than the maximum can be built at all"
+        );
+    }
+
+    /// A random generator issues the length it was built with, and refuses one QUIC has no
+    /// room for.
+    #[test]
+    fn a_random_generator_issues_the_length_it_was_given() {
+        for length in [0usize, 1, 8, MAX_CID_SIZE] {
+            let mut generator =
+                RandomConnectionIdGenerator::new(length).expect("a length within the maximum");
+            assert_eq!(generator.cid_len(), length);
+            assert_eq!(generator.generate_cid().len(), length);
+            assert_eq!(generator.cid_lifetime(), None);
+        }
+        assert!(RandomConnectionIdGenerator::new(MAX_CID_SIZE + 1).is_err());
+
+        let lived = RandomConnectionIdGenerator::new(8)
+            .expect("eight bytes is a length")
+            .with_lifetime(Duration::from_secs(60));
+        assert_eq!(lived.cid_lifetime(), Some(Duration::from_secs(60)));
+        assert_eq!(lived.without_lifetime().cid_lifetime(), None);
     }
 }

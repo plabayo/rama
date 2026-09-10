@@ -5249,55 +5249,57 @@ async fn a_retirement_mid_descriptor_gives_up_only_the_unsent_suffix() {
         "the successor is a single datagram, not a segmented descriptor"
     );
     {
-        let log = log.lock();
-        let matching: Vec<&SentDatagram> =
-            log.sent.iter().filter(|d| d.bytes == taken.bytes).collect();
-        assert_eq!(
-            matching.len(),
-            1,
-            "the successor's bytes reached the socket exactly once"
-        );
-        assert_eq!(
-            matching[0].destination,
-            SocketAddress::from(taken.destination),
-            "at the destination it was built for"
-        );
-    }
+        // The socket's record is read under its lock, which is released before the shutdown
+        // below writes to it.
+        {
+            let log = log.lock();
+            let matching: Vec<&SentDatagram> =
+                log.sent.iter().filter(|d| d.bytes == taken.bytes).collect();
+            assert_eq!(
+                matching.len(),
+                1,
+                "the successor's bytes reached the socket exactly once"
+            );
+            assert_eq!(
+                matching[0].destination,
+                SocketAddress::from(taken.destination),
+                "at the destination it was built for"
+            );
+        }
 
-    let log = log.lock();
-    for bytes in &accepted {
-        assert_eq!(
-            log.sent.iter().filter(|d| &d.bytes == bytes).count(),
-            1,
-            "an accepted datagram was sent twice"
-        );
-    }
-    // The suffix is several datagrams, not one: each unsent segment has to be absent on its
-    // own, or a single forbidden segment could slip through a comparison against their
-    // concatenation.
-    let segments: Vec<&[u8]> = rejected.bytes.chunks(segment_size).collect();
-    assert_eq!(segments.len(), total, "the descriptor's own segmentation");
-    for (i, segment) in segments.iter().enumerate().take(accepted.len()) {
-        assert_eq!(
-            accepted[i], *segment,
-            "the accepted prefix is the descriptor's first segments, in order"
-        );
-    }
-    for (i, segment) in segments.iter().enumerate().skip(accepted.len()) {
+        let log = log.lock();
+        for bytes in &accepted {
+            assert_eq!(
+                log.sent.iter().filter(|d| &d.bytes == bytes).count(),
+                1,
+                "an accepted datagram was sent twice"
+            );
+        }
+        // The suffix is several datagrams, not one: each unsent segment has to be absent on its
+        // own, or a single forbidden segment could slip through a comparison against their
+        // concatenation.
+        let segments: Vec<&[u8]> = rejected.bytes.chunks(segment_size).collect();
+        assert_eq!(segments.len(), total, "the descriptor's own segmentation");
+        for (i, segment) in segments.iter().enumerate().take(accepted.len()) {
+            assert_eq!(
+                accepted[i], *segment,
+                "the accepted prefix is the descriptor's first segments, in order"
+            );
+        }
+        for (i, segment) in segments.iter().enumerate().skip(accepted.len()) {
+            assert!(
+                !log.sent.iter().any(|d| d.bytes == *segment),
+                "unsent segment {i} of the abandoned descriptor reached the wire"
+            );
+        }
+        // And nothing at all went out under the retired identifier after it was retired.
         assert!(
-            !log.sent.iter().any(|d| d.bytes == *segment),
-            "unsent segment {i} of the abandoned descriptor reached the wire"
+            !short_header_dcids(&log.sent[log.rejected_at + accepted.len()..], doomed.len())
+                .iter()
+                .any(|dcid| *dcid == doomed),
+            "a datagram used the retired identifier after it was retired"
         );
     }
-    // And nothing at all went out under the retired identifier after it was retired.
-    assert!(
-        !short_header_dcids(&log.sent[log.rejected_at + accepted.len()..], doomed.len())
-            .iter()
-            .any(|dcid| *dcid == doomed),
-        "a datagram used the retired identifier after it was retired"
-    );
-    // The socket's record is locked above and the shutdown below writes to it.
-    drop(log);
     drop((c, s));
     tokio::time::timeout(Duration::from_secs(5), async {
         tokio::join!(client.shutdown(), server.shutdown());

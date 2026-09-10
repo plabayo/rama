@@ -56,6 +56,7 @@ impl ArcError {
         self.0.downcast_ref::<T>()
     }
 
+    #[must_use]
     /// Wrap the error in a context, as [`ErrorExt::context`](crate::ErrorExt::context) does.
     pub fn context<M>(self, value: M) -> Self
     where
@@ -64,6 +65,7 @@ impl ArcError {
         self.layer(|fields| fields.insert_value(value))
     }
 
+    #[must_use]
     /// Wrap the error in a keyed context, as
     /// [`ErrorExt::context_field`](crate::ErrorExt::context_field) does.
     pub fn context_field<M>(self, key: &'static str, value: M) -> Self
@@ -73,6 +75,7 @@ impl ArcError {
         self.layer(|fields| fields.insert_key_value(key, value))
     }
 
+    #[must_use]
     /// Wrap the error in a keyed context from a string-like value, for a value that cannot be
     /// borrowed for the error's lifetime.
     pub fn context_str_field<M>(self, key: &'static str, value: M) -> Self
@@ -82,6 +85,7 @@ impl ArcError {
         self.layer(|fields| fields.insert_key_value_str(key, value))
     }
 
+    #[must_use]
     /// Wrap the error in a context, using [`fmt::LowerHex`] as [`fmt::Debug`] and
     /// [`fmt::Display`].
     pub fn context_hex<M>(self, value: M) -> Self
@@ -91,6 +95,7 @@ impl ArcError {
         self.context(HexContextValue(value))
     }
 
+    #[must_use]
     /// Wrap the error in a context, using [`fmt::Debug`] as [`fmt::Display`].
     pub fn context_debug<M>(self, value: M) -> Self
     where
@@ -99,6 +104,7 @@ impl ArcError {
         self.context(DebugContextValue(value))
     }
 
+    #[must_use]
     /// Wrap the error in a keyed context, using [`fmt::LowerHex`] as [`fmt::Debug`] and
     /// [`fmt::Display`].
     pub fn context_hex_field<M>(self, key: &'static str, value: M) -> Self
@@ -108,6 +114,7 @@ impl ArcError {
         self.context_field(key, HexContextValue(value))
     }
 
+    #[must_use]
     /// Wrap the error in a keyed context, using [`fmt::Debug`] as [`fmt::Display`].
     pub fn context_debug_field<M>(self, key: &'static str, value: M) -> Self
     where
@@ -116,6 +123,7 @@ impl ArcError {
         self.context_field(key, DebugContextValue(value))
     }
 
+    #[must_use]
     /// Wrap the error with a context the caller builds only now.
     pub fn with_context<C, F>(self, cb: F) -> Self
     where
@@ -125,6 +133,7 @@ impl ArcError {
         self.context(cb())
     }
 
+    #[must_use]
     /// Wrap the error with a context the caller builds only now, using [`fmt::LowerHex`].
     pub fn with_context_hex<C, F>(self, cb: F) -> Self
     where
@@ -134,6 +143,7 @@ impl ArcError {
         self.context_hex(cb())
     }
 
+    #[must_use]
     /// Wrap the error with a context the caller builds only now, using [`fmt::Debug`].
     pub fn with_context_debug<C, F>(self, cb: F) -> Self
     where
@@ -143,6 +153,7 @@ impl ArcError {
         self.context_debug(cb())
     }
 
+    #[must_use]
     /// Wrap the error with a keyed context the caller builds only now.
     pub fn with_context_field<C, F>(self, key: &'static str, cb: F) -> Self
     where
@@ -152,6 +163,7 @@ impl ArcError {
         self.context_field(key, cb())
     }
 
+    #[must_use]
     /// Wrap the error with a keyed string-like context the caller builds only now.
     pub fn with_context_str_field<C, F>(self, key: &'static str, cb: F) -> Self
     where
@@ -161,6 +173,7 @@ impl ArcError {
         self.context_str_field(key, cb())
     }
 
+    #[must_use]
     /// Wrap the error with a keyed context the caller builds only now, using [`fmt::LowerHex`].
     pub fn with_context_hex_field<C, F>(self, key: &'static str, cb: F) -> Self
     where
@@ -170,6 +183,7 @@ impl ArcError {
         self.context_hex_field(key, cb())
     }
 
+    #[must_use]
     /// Wrap the error with a keyed context the caller builds only now, using [`fmt::Debug`].
     pub fn with_context_debug_field<C, F>(self, key: &'static str, cb: F) -> Self
     where

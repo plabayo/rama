@@ -290,7 +290,7 @@ impl PacketBuilder {
             self.space,
             self.space == SpaceId::Data && conn.spaces[SpaceId::Data].crypto.is_none(),
             now,
-            conn.orig_rem_cid,
+            conn.trace_cid,
         );
 
         (len, pad)

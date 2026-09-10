@@ -26,6 +26,15 @@ use crate::proto::{
     transport_parameters::TransportParameters,
 };
 
+/// The name to ask a server for, as the backend spells it. What it refuses is the name itself,
+/// which the error carries back.
+fn server_name_of(server_name: &str) -> Result<ServerName<'static>, ConnectError> {
+    match ServerName::try_from(server_name) {
+        Ok(name) => Ok(name.to_owned()),
+        Err(_) => Err(ConnectError::InvalidServerName(server_name.into())),
+    }
+}
+
 /// The name the backend reports, as a [`Domain`].
 ///
 /// Every shape the backend accepts as a DNS name is one `Domain` accepts, so a name that
@@ -243,9 +252,15 @@ impl crypto::Session for TlsSession {
         label: &[u8],
         context: &[u8],
     ) -> Result<(), ExportKeyingMaterialError> {
-        self.inner
+        // The backend fails this only for an output length it cannot serve, which is what
+        // this error says.
+        if self
+            .inner
             .export_keying_material(output, label, Some(context))
-            .map_err(|_| ExportKeyingMaterialError)?;
+            .is_err()
+        {
+            return Err(ExportKeyingMaterialError);
+        }
         Ok(())
     }
 }
@@ -404,9 +419,7 @@ impl crypto::ClientConfig for QuicClientConfig {
                 rama_tls_rustls::dep::rustls::quic::ClientConnection::new(
                     self.inner.clone(),
                     version,
-                    ServerName::try_from(server_name)
-                        .map_err(|_| ConnectError::InvalidServerName(server_name.into()))?
-                        .to_owned(),
+                    server_name_of(server_name)?,
                     to_vec(params),
                 )
                 .map_err(|error| ConnectError::Crypto(session_error(error)))?,
@@ -576,8 +589,10 @@ impl crypto::ServerConfig for QuicServerConfig {
         version: u32,
         params: &TransportParameters,
     ) -> Result<Box<dyn crypto::Session>, TransportError> {
-        let version = interpret_version(version)
-            .map_err(|_| TransportError::INTERNAL_ERROR("unsupported QUIC version"))?;
+        let Ok(version) = interpret_version(version) else {
+            // The only thing that fails here is the version, which the reason names.
+            return Err(TransportError::INTERNAL_ERROR("unsupported QUIC version"));
+        };
         Ok(Box::new(TlsSession {
             alpn_policy: self.alpn_policy,
             version,
@@ -713,9 +728,10 @@ impl crypto::PacketKey for Box<dyn PacketKey> {
         header: &[u8],
         payload: &mut BytesMut,
     ) -> Result<(), CryptoError> {
-        let plain = self
-            .decrypt_in_place(packet, header, payload.as_mut())
-            .map_err(|_| CryptoError)?;
+        // The backend reports only that it failed, which is all `CryptoError` says.
+        let Ok(plain) = self.decrypt_in_place(packet, header, payload.as_mut()) else {
+            return Err(CryptoError);
+        };
         let plain_len = plain.len();
         payload.truncate(plain_len);
         Ok(())

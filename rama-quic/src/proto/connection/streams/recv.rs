@@ -77,9 +77,17 @@ impl Recv {
         // Don't bother storing data or releasing stream-level flow control credit if the stream's
         // already stopped
         if !self.stopped {
-            self.assembler
+            // The assembler reports only that it holds too many spans, which is what the
+            // reason says, so there is no cause to carry.
+            if self
+                .assembler
                 .insert(frame.offset, frame.data, payload_len)
-                .map_err(|_| TransportError::INTERNAL_ERROR("too many gaps in stream buffer"))?;
+                .is_err()
+            {
+                return Err(TransportError::INTERNAL_ERROR(
+                    "too many gaps in stream buffer",
+                ));
+            }
         }
 
         Ok((new_bytes, frame.fin && self.stopped))
@@ -398,7 +406,10 @@ impl<'a> Chunks<'a> {
 
 impl Drop for Chunks<'_> {
     fn drop(&mut self) {
-        let _ = self.finalize_inner();
+        // Whether the connection should transmit is the caller's to act on, and a `Chunks`
+        // that is dropped rather than finalized has no caller left to tell: the connection is
+        // woken by its own machinery instead.
+        let _transmit = self.finalize_inner();
     }
 }
 

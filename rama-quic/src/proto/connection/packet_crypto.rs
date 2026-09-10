@@ -112,12 +112,15 @@ pub(super) fn decrypt_packet_body(
         &next_crypto.unwrap().remote
     };
 
-    crypto
+    // The AEAD says only that the packet did not authenticate, and such a packet is dropped
+    // without telling the peer, so there is nothing to carry.
+    if crypto
         .decrypt(number, &packet.header_data, &mut packet.payload)
-        .map_err(|_| {
-            trace!("decryption failed with packet number {}", number);
-            None
-        })?;
+        .is_err()
+    {
+        trace!("decryption failed with packet number {}", number);
+        return Err(None);
+    }
 
     if !packet.reserved_bits_valid() {
         return Err(Some(TransportError::PROTOCOL_VIOLATION(

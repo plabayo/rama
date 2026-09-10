@@ -104,7 +104,10 @@ impl std::convert::TryFrom<u128> for VarInt {
     type Error = VarIntBoundsExceeded;
     /// Succeeds iff `x` < 2^62
     fn try_from(x: u128) -> Result<Self, VarIntBoundsExceeded> {
-        Self::from_u64(x.try_into().map_err(|_| VarIntBoundsExceeded)?)
+        let Ok(x) = x.try_into() else {
+            return Err(VarIntBoundsExceeded);
+        };
+        Self::from_u64(x)
     }
 }
 

@@ -2,7 +2,9 @@ use std::{fmt, net::SocketAddr, ops::Range};
 
 use rama_core::bytes::{Buf, BufMut, BytesMut};
 
-use crate::proto::{Instant, MAX_CID_SIZE, ResetToken, coding::BufExt, packet::PartialDecode};
+use crate::proto::{
+    Instant, InvalidCid, MAX_CID_SIZE, ResetToken, coding::BufExt, packet::PartialDecode,
+};
 
 /// Events sent from an Endpoint to a Connection
 #[derive(Debug)]
@@ -122,6 +124,18 @@ pub struct ConnectionId {
 }
 
 impl ConnectionId {
+    /// An identifier of these bytes, at most [`MAX_CID_SIZE`] of them.
+    ///
+    /// Fails for anything longer, which QUIC version 1 has no room for (RFC 9000 §17.2). This
+    /// is how a [`ConnectionIdGenerator`](crate::ConnectionIdGenerator) of your own builds
+    /// what it hands back.
+    pub fn try_from_bytes(bytes: &[u8]) -> Result<Self, InvalidCid> {
+        if bytes.len() > MAX_CID_SIZE {
+            return Err(InvalidCid);
+        }
+        Ok(Self::new(bytes))
+    }
+
     /// Construct cid from byte array
     pub(crate) fn new(bytes: &[u8]) -> Self {
         debug_assert!(bytes.len() <= MAX_CID_SIZE);

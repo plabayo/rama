@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeSet, hash_map},
     convert::TryFrom,
-    fmt, mem,
+    fmt,
     net::{IpAddr, SocketAddr},
     ops::{Index, IndexMut, Range},
     sync::{
@@ -686,7 +686,7 @@ impl Endpoint {
             incoming_idx,
             live,
             deadline,
-            improper_drop_warner: IncomingImproperDropWarner,
+            improper_drop_warner: IncomingImproperDropWarner::armed(),
         }))
     }
 
@@ -845,6 +845,7 @@ impl Endpoint {
                 server_config,
                 pref_addr_cid,
                 path_validated: remote_address_validated,
+                orig_dst_cid: incoming.token.orig_dst_cid,
             },
         );
         self.index.insert_initial(dst_cid, ch);
@@ -1831,16 +1832,28 @@ impl fmt::Debug for Incoming {
     }
 }
 
-struct IncomingImproperDropWarner;
+/// Warns when an incoming attempt is dropped without being answered. It is armed while the
+/// attempt is unanswered and disarmed by whoever answers it, so the warning is a state of this
+/// guard rather than a drop that has to be skipped.
+struct IncomingImproperDropWarner {
+    armed: bool,
+}
 
 impl IncomingImproperDropWarner {
-    fn dismiss(self) {
-        mem::forget(self);
+    fn armed() -> Self {
+        Self { armed: true }
+    }
+
+    fn dismiss(mut self) {
+        self.armed = false;
     }
 }
 
 impl Drop for IncomingImproperDropWarner {
     fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
         warn!(
             "Incoming dropped without passing to Endpoint::accept/refuse/retry/ignore \
                (may cause memory leak and eventual inability to accept new connections)"
