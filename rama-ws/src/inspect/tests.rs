@@ -697,3 +697,175 @@ async fn preview_pages_read_bounded_prefixes_and_preserve_full_downloads() {
     reader.read_to_end(&mut downloaded).await.unwrap();
     assert_eq!(downloaded, payload);
 }
+
+#[tokio::test]
+async fn outer_http_capture_metadata_reaches_default_websocket_relay() {
+    use crate::handshake::matcher::HttpWebSocketRelayServiceRequestMatcher;
+    use rama_core::{extensions::ExtensionsRef as _, io::BridgeIo, rt::Executor};
+    use rama_http::{
+        inspect::control::HttpUpgradeContext,
+        io::upgrade::{self, Upgraded},
+        layer::upgrade::mitm::HttpUpgradeMitmRelay,
+    };
+
+    for version in [Version::HTTP_11, Version::HTTP_2] {
+        let store = store(16, rama_utils::octets::kib_u64(1), 0);
+        let (ingress_pending, ingress_upgrade) = upgrade::pending();
+        let (egress_pending, egress_upgrade) = upgrade::pending();
+        let (_ingress_peer, ingress_io) = tokio::io::duplex(1024);
+        let (_egress_peer, egress_io) = tokio::io::duplex(1024);
+        egress_pending.fulfill(Upgraded::new(ServiceInput::new(egress_io), Bytes::new()));
+
+        let (entered, mut observations) = tokio::sync::mpsc::unbounded_channel();
+        let release = Arc::new(tokio::sync::Notify::new());
+        let capture_relay = CaptureWebSocketLayer::new(Some(store.clone())).layer(service_fn({
+            let release = release.clone();
+            move |bridge: WebSocketBridge<Upgraded, Upgraded>| {
+                let entered = entered.clone();
+                let release = release.clone();
+                async move {
+                    entered
+                        .send((
+                            bridge
+                                .ingress
+                                .extensions()
+                                .get_ref::<HttpExchangeId>()
+                                .copied(),
+                            bridge
+                                .egress
+                                .extensions()
+                                .get_ref::<HttpExchangeId>()
+                                .copied(),
+                            bridge
+                                .ingress
+                                .extensions()
+                                .get_ref::<HttpUpgradeContext>()
+                                .cloned(),
+                            bridge
+                                .egress
+                                .extensions()
+                                .get_ref::<HttpUpgradeContext>()
+                                .cloned(),
+                            bridge
+                                .egress
+                                .extensions()
+                                .get_arc::<HttpUpgradeCaptureGuard>(),
+                        ))
+                        .unwrap();
+                    release.notified().await;
+                    drop(bridge);
+                    Ok::<_, Infallible>(())
+                }
+            }
+        }));
+        let relay = service_fn(
+            move |BridgeIo(ingress, egress): BridgeIo<Upgraded, Upgraded>| {
+                let capture_relay = capture_relay.clone();
+                async move {
+                    capture_relay
+                        .serve(WebSocketBridge { ingress, egress })
+                        .await
+                }
+            },
+        );
+        let upstream = service_fn(move |request: Request| {
+            let egress_upgrade = egress_upgrade.clone();
+            async move {
+                request.into_body().collect().await.unwrap();
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .version(version)
+                        .status(if version == Version::HTTP_2 {
+                            StatusCode::OK
+                        } else {
+                            StatusCode::SWITCHING_PROTOCOLS
+                        })
+                        .extension(egress_upgrade)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+            }
+        });
+        // Match the CLI ordering: capture response metadata is added only
+        // after the inner relay has already returned its upgrade response.
+        let service = CaptureHttpLayer::new(Some(store.clone())).layer(HttpUpgradeMitmRelay::new(
+            Executor::default(),
+            HttpWebSocketRelayServiceRequestMatcher::new(relay),
+            upstream,
+        ));
+        let request = Request::builder()
+            .uri("https://example.test/socket")
+            .version(version)
+            .extension(ingress_upgrade);
+        let request = if version == Version::HTTP_2 {
+            request.method(Method::CONNECT).extension(
+                rama_http::proto::h2::ext::Protocol::from_static("websocket"),
+            )
+        } else {
+            request
+                .header("upgrade", "websocket")
+                .header("connection", "upgrade")
+        };
+        let response = service
+            .serve(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let exchange_id = *response.extensions().get_ref::<HttpExchangeId>().unwrap();
+        let guard = response
+            .extensions()
+            .get_arc::<HttpUpgradeCaptureGuard>()
+            .unwrap();
+        let guard_weak = Arc::downgrade(&guard);
+        drop(guard);
+        // A real HTTP server completes ingress only after outer middleware
+        // returns; fulfilling earlier masks this timing-sensitive regression.
+        ingress_pending.fulfill(Upgraded::new(ServiceInput::new(ingress_io), Bytes::new()));
+        let (ingress_id, egress_id, ingress_context, egress_context, relay_guard) =
+            tokio::time::timeout(Duration::from_secs(2), observations.recv())
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            ingress_id,
+            Some(exchange_id),
+            "ingress exchange association, {version:?}"
+        );
+        assert_eq!(
+            egress_id,
+            Some(exchange_id),
+            "egress exchange association, {version:?}"
+        );
+        assert_eq!(
+            ingress_context.unwrap().request.url.path_or_root().as_ref(),
+            "/socket"
+        );
+        assert_eq!(
+            egress_context.unwrap().request.url.path_or_root().as_ref(),
+            "/socket"
+        );
+        assert!(Arc::ptr_eq(
+            &relay_guard.unwrap(),
+            &guard_weak.upgrade().unwrap()
+        ));
+        response.into_body().collect().await.unwrap();
+        assert!(
+            guard_weak.upgrade().is_some(),
+            "relay retains capture after HTTP response drop"
+        );
+        assert!(store.details(exchange_id.0).await.unwrap().summary.active);
+        release.notify_one();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while store.details(exchange_id.0).await.unwrap().summary.active
+                || guard_weak.upgrade().is_some()
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            guard_weak.upgrade().is_none(),
+            "completion releases the shared capture guard"
+        );
+    }
+}

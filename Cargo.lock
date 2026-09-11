@@ -5040,6 +5040,7 @@ dependencies = [
  "pin-project-lite",
  "rama-core",
  "rama-http",
+ "rama-http-core",
  "rama-inspect",
  "rama-net",
  "rama-utils",

@@ -337,13 +337,9 @@ final class TcpClientWritePumpTests: XCTestCase {
     /// captured `self` via `asyncAfter`, so without a wall-clock
     /// deadline the writer had no terminating condition.
     ///
-    /// Clamp the hard deadline so the test completes deterministically
-    /// in well under a second; the production default (5s) was the
-    /// source of CI-killing flakes on loaded test runners.
+    /// Use a short immutable policy for this legacy real-scheduler smoke test.
+    /// PromotedBulkTransferTests checks exact deadlines with virtual time.
     func testTransientRetryLoopHonoursDeadline() {
-        let savedDeadline = writeRetryHardDeadlineMs
-        writeRetryHardDeadlineMs = 200
-        defer { writeRetryHardDeadlineMs = savedDeadline }
 
         let flow = MockTcpFlow()
         flow.handler = { _, _ in transientENOBUFS() }
@@ -358,7 +354,8 @@ final class TcpClientWritePumpTests: XCTestCase {
                 observedError.set(error)
                 terminalError.fulfill()
             },
-            onDrained: {}
+            onDrained: {},
+            writePolicy: TcpWritePumpPolicy(maxPendingBytes: writePumpMaxPendingBytes, stallTimeoutMs: 200)
         )
         pump.markOpened()
         XCTAssertEqual(pump.enqueue(Data(repeating: 0xAB, count: 64)), .accepted)

@@ -2,6 +2,7 @@ use rama_core::extensions::ExtensionsRef as _;
 
 use super::*;
 use crate::inspect::control::{ControlConnection, Decision, HttpUpgradeContext, http_message};
+use crate::layer::upgrade::mitm::HttpUpgradeMitmRelayExtensions;
 
 #[derive(Clone)]
 struct CaptureBodySink {
@@ -290,6 +291,11 @@ where
             }
         };
         if let Some(context) = upgrade_context {
+            response
+                .extensions()
+                .self_get_ref_or_insert(HttpUpgradeMitmRelayExtensions::default)
+                .0
+                .insert(context.clone());
             response.extensions().insert(context);
         }
         if let Some(id) = id {
@@ -299,7 +305,15 @@ where
                 rama_core::telemetry::tracing::debug!("failed to capture response head: {error}");
             }
             if let Some(guard) = store.upgrade_guard_for_response(id, parts.status.as_u16()) {
-                parts.extensions.insert(guard);
+                let relay_extensions = &parts
+                    .extensions
+                    .self_get_ref_or_insert(HttpUpgradeMitmRelayExtensions::default)
+                    .0;
+                relay_extensions.insert(HttpExchangeId(id));
+                // Share the same guard so response and relay owners jointly
+                // retain capture until the upgraded transport is released.
+                let guard = parts.extensions.insert_arc(Arc::new(guard));
+                relay_extensions.insert_arc(guard);
             }
             response = Response::from_parts(
                 parts,

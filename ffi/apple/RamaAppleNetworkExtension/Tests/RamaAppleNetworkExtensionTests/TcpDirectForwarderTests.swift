@@ -1408,7 +1408,7 @@ final class TcpDirectForwarderTests: XCTestCase {
     /// PROBE (audit): the egress write pump can hit a TERMINAL state
     /// (`pumpCore(_:didTerminateWith:)`) — a non-transient
     /// `NWConnection.send` error, or transient backpressure that
-    /// exceeds `writeRetryHardDeadlineMs` — while the forwarder's
+    /// exceeds the pump's no-progress window — while the forwarder's
     /// C→S direction is `.active` AND holding a chunk it could not
     /// enqueue (`c2sWritePaused == true`).
     ///

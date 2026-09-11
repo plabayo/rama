@@ -43,6 +43,13 @@ final class TcpWritePumpCore: @unchecked Sendable {
     private let doWrite: (Data, @escaping @Sendable (Error?) -> Void) -> Void
     private let logHwm: @Sendable (Int) -> Void
     private let retryScheduler: TcpWritePumpRetryScheduler
+    private let stallScheduler: TcpWritePumpRetryScheduler?
+    private var stallTimer: DispatchSourceTimer?
+    private let now: @Sendable () -> DispatchTime
+    private var stallDeadline: DispatchTime?
+    private var stallGeneration: UInt64 = 0
+    private var stallTimerArmed = false
+    private var lastBackpressureError: Error?
     weak var delegate: TcpWritePumpCoreDelegate?
 
     // Queue-only mutable state — never read/written outside a block
@@ -52,7 +59,7 @@ final class TcpWritePumpCore: @unchecked Sendable {
     private var pending: ChunkQueue<ChargedChunk> = ChunkQueue()
     private var writing = false
     private var lifecycle: WritePumpLifecycle
-    private var retrying: WriteRetry?
+    private var retrying: Int?
     /// True while the one valid retry timer is waiting to reopen `flush()`.
     /// New enqueues may append while this is set, but cannot bypass the
     /// transport's backoff interval.
@@ -61,11 +68,9 @@ final class TcpWritePumpCore: @unchecked Sendable {
     /// It also makes an accidentally repeated scheduler callback harmless.
     private var retryDelayGeneration: UInt64 = 0
 
-    /// Fired before an accepted chunk is reported and, while draining, again
-    /// when its underlying write completes successfully. The first edge
-    /// linearizes acceptance against pressure teardown; the drain-only edge
-    /// proves a pending close still progresses without adding an ordinary
-    /// streaming hot-path lock. Both data-path modes flush through these pumps.
+    /// Admission linearizes with teardown; successful completions refresh the
+    /// context's idle clock even when no new source reads are possible. Neither
+    /// edge proves that the client application has consumed the bytes.
     private let onActivity: @Sendable () -> Bool
 
     init(
@@ -77,10 +82,15 @@ final class TcpWritePumpCore: @unchecked Sendable {
         inlineWriteCompletionWhenOnQueue: Bool = false,
         onActivity: @escaping @Sendable () -> Bool = { true },
         retryScheduler: TcpWritePumpRetryScheduler? = nil,
+        stallScheduler: TcpWritePumpRetryScheduler? = nil,
+        now: @escaping @Sendable () -> DispatchTime = { .now() },
         writerMemoryBudget: WriterMemoryBudget = WriterMemoryBudget(),
         writePolicy: TcpWritePumpPolicy =
             TcpWritePumpPolicy(maxPendingBytes: writePumpMaxPendingBytes)
     ) {
+        precondition(writePolicy.stallTimeoutMs > 0)
+        self.now = now
+        self.stallScheduler = stallScheduler
         self.queue = queue
         self.writePolicy = writePolicy
         self.writerMemoryBudget = writerMemoryBudget
@@ -100,6 +110,7 @@ final class TcpWritePumpCore: @unchecked Sendable {
     }
 
     deinit {
+        stallTimer?.cancel()
         let retired = closeAdmission()
         retired.waiter?.cancel()
         retired.grant?.release()
@@ -140,6 +151,7 @@ final class TcpWritePumpCore: @unchecked Sendable {
         return { [self] in
             self.releaseQueuedPayloadsLocked()
             self.retrying = nil
+            self.clearStallLocked()
             self.invalidateRetryDelayLocked()
         }
     }
@@ -198,6 +210,7 @@ final class TcpWritePumpCore: @unchecked Sendable {
     func markOpen(draining: Bool = false) {
         if isClosed() { return }
         lifecycle = draining ? .draining : .open
+        armStallLocked()
         flush()
     }
 
@@ -302,7 +315,12 @@ final class TcpWritePumpCore: @unchecked Sendable {
         staleGrant?.release()
         staleWaiter?.cancel()
         if needsAggregateWait { registerAggregateWaiter(bytes: data.count) }
-        guard decision == .accepted else { return decision }
+        guard decision == .accepted else {
+            if decision == .paused {
+                queue.async { [weak self] in self?.armStallLocked() }
+            }
+            return decision
+        }
 
         // From here the aggregate reservation is owned by an ARC root. A
         // precharged promotion slice already has that root; a normal Rust
@@ -427,6 +445,7 @@ final class TcpWritePumpCore: @unchecked Sendable {
         lifecycle = .draining
         releaseQueuedPayloadsLocked()
         retrying = nil
+        clearStallLocked()
         invalidateRetryDelayLocked()
         delegate?.pumpCore(self, didTerminateWith: error)
     }
@@ -438,6 +457,7 @@ final class TcpWritePumpCore: @unchecked Sendable {
             return
         }
 
+        armStallLocked()
         writing = true
         guard let chunk = pending.popFront() else { return }
 
@@ -468,26 +488,10 @@ final class TcpWritePumpCore: @unchecked Sendable {
                 self.writing = false
                 if let error {
                     if isTransientWriteBackpressure(error) {
-                        let now = DispatchTime.now()
-                        let currentDelayMs: Int
-                        let deadline: DispatchTime
-                        if let existing = self.retrying {
-                            if now >= existing.deadline {
-                                self.releasePayloadAccounting(bytes: chunk.data.count)
-                                self.terminateLocked(with: error)
-                                return
-                            }
-                            currentDelayMs = existing.delayMs
-                            deadline = existing.deadline
-                        } else {
-                            currentDelayMs = writeRetryInitialDelayMs
-                            deadline = now + .milliseconds(writeRetryHardDeadlineMs)
-                        }
+                        self.lastBackpressureError = error
+                        let currentDelayMs = self.retrying ?? writeRetryInitialDelayMs
                         self.pending.pushFront(chunk)
-                        self.retrying = WriteRetry(
-                            delayMs: min(currentDelayMs * 2, writeRetryMaxDelayMs),
-                            deadline: deadline
-                        )
+                        self.retrying = min(currentDelayMs * 2, writeRetryMaxDelayMs)
                         self.scheduleRetryLocked(after: currentDelayMs)
                         return
                     }
@@ -495,6 +499,9 @@ final class TcpWritePumpCore: @unchecked Sendable {
                     self.terminateLocked(with: error)
                     return
                 }
+                // Publish observed progress before waking a producer or
+                // exposing released admission capacity to maintenance.
+                _ = self.onActivity()
                 let shouldWake = self.state.withLock { s -> Bool in
                     precondition(s.pendingBytes >= chunk.data.count && s.pendingItems >= 1)
                     s.pendingBytes -= chunk.data.count
@@ -513,14 +520,18 @@ final class TcpWritePumpCore: @unchecked Sendable {
                 // queued, retrying, and in-flight work while still waking Rust
                 // as soon as real capacity becomes available.
                 if shouldWake { self.onDrained() }
-                // Only the closing path needs a second activity edge. Keep
-                // ordinary streaming at its existing one lock per accepted
-                // chunk, while a drain with no new enqueues still refreshes
-                // its progress clock before advancing to the next chunk.
-                if self.lifecycle == .draining { _ = self.onActivity() }
+                self.lastBackpressureError = nil
+                // This is transport acceptance progress, never delivery ACKs.
+                self.stallDeadline = self.now() + .milliseconds(self.writePolicy.stallTimeoutMs)
                 self.retrying = nil
                 self.invalidateRetryDelayLocked()
                 self.flush()
+                if !self.hasOutstandingWorkLocked() {
+                    // Keep the single sleeping timer available for the next
+                    // burst. Scheduling one six-minute closure per short write
+                    // would itself create unbounded timer memory at line rate.
+                    self.stallDeadline = nil
+                }
             }
             if self.inlineWriteCompletionWhenOnQueue,
                 DispatchQueue.getSpecific(key: self.queueKey) != nil
@@ -530,6 +541,83 @@ final class TcpWritePumpCore: @unchecked Sendable {
                 self.queue.async(execute: finish)
             }
         }
+    }
+
+    /// Lock-protected admission snapshot, including callback and budget waits.
+    var hasOutstandingWork: Bool { hasOutstandingWorkLocked() }
+
+    private func hasOutstandingWorkLocked() -> Bool {
+        state.withLock {
+            $0.pendingItems > 0 || $0.aggregateWaitExpectedBytes != nil
+                || $0.aggregateGrant != nil
+        }
+    }
+
+    /// At most one sleeping timer per pump, including across short bursts. A withheld callback leaves
+    /// `writing` true but cannot suppress this independent watchdog. New data,
+    /// retry errors, and activity in the opposite direction never reset it.
+    private func armStallLocked() {
+        guard !isClosed(), lifecycle != .pending,
+            hasOutstandingWorkLocked(), stallDeadline == nil else { return }
+        stallDeadline = now() + .milliseconds(writePolicy.stallTimeoutMs)
+        if !stallTimerArmed { scheduleStallLocked(afterMs: writePolicy.stallTimeoutMs) }
+    }
+
+    private func scheduleStallLocked(afterMs: Int) {
+        stallTimerArmed = true
+        stallGeneration &+= 1
+        let generation = stallGeneration
+        let check: @Sendable () -> Void = { [weak self] in
+            guard let self else { return }
+            self.queue.async { [weak self] in
+                guard let self, !self.isClosed(), self.stallTimerArmed,
+                    self.stallGeneration == generation else { return }
+                self.stallTimerArmed = false
+                self.stallTimer?.cancel()
+                self.stallTimer = nil
+                guard let deadline = self.stallDeadline,
+                    self.hasOutstandingWorkLocked() else {
+                    self.clearStallLocked()
+                    return
+                }
+                let current = self.now()
+                if current < deadline {
+                    let remaining = deadline.uptimeNanoseconds - current.uptimeNanoseconds
+                    self.scheduleStallLocked(
+                        afterMs: Int((remaining + 999_999) / 1_000_000))
+                    return
+                }
+                let pending = self.state.withLock { ($0.pendingBytes, $0.pendingItems) }
+                RamaLog.noticePublic(
+                    "tcp_writer_stall timeout_ms=\(self.writePolicy.stallTimeoutMs) "
+                    + "pending_bytes=\(pending.0) pending_items=\(pending.1) "
+                    + "write_pending=\(self.writing ? 1 : 0) retrying=\(self.retrying == nil ? 0 : 1)")
+                self.terminateLocked(with: self.lastBackpressureError ?? NSError(
+                    domain: NSPOSIXErrorDomain, code: Int(ETIMEDOUT),
+                    userInfo: [NSLocalizedDescriptionKey: "TCP write made no completion progress before stall timeout"]))
+            }
+        }
+        if let stallScheduler {
+            stallScheduler(afterMs, check)
+        } else {
+            // Unlike asyncAfter, a cancelled source retires its timer promptly.
+            // Short-lived flow churn must not leave six minutes of dead timer
+            // registrations in the provider after those pumps are released.
+            let timer = DispatchSource.makeTimerSource(queue: queue)
+            timer.schedule(deadline: .now() + .milliseconds(afterMs))
+            timer.setEventHandler(handler: check)
+            stallTimer = timer
+            timer.resume()
+        }
+    }
+
+    private func clearStallLocked() {
+        stallTimer?.cancel()
+        stallTimer = nil
+        stallDeadline = nil
+        stallTimerArmed = false
+        stallGeneration &+= 1
+        lastBackpressureError = nil
     }
 
     /// Arm exactly one retry delay for the current backoff generation.
@@ -575,6 +663,7 @@ final class TcpWritePumpCore: @unchecked Sendable {
             return true
         }
         if !proceed { return }
+        clearStallLocked()
         delegate?.pumpCoreDidFinishDraining(self)
     }
 }

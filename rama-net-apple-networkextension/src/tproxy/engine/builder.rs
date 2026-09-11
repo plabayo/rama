@@ -191,7 +191,7 @@ where
         /// drain signal after a `Paused` ack. Backstops a stuck
         /// downstream writer; flow closes with
         /// [`BridgeCloseReason::PausedTimeout`] on expiry. Defaults to
-        /// [`DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT`] (60 seconds).
+        /// [`DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT`] (360 seconds).
         ///
         /// [`BridgeCloseReason::PausedTimeout`]: rama_net::proxy::BridgeCloseReason::PausedTimeout
         /// [`DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT`]: super::DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT

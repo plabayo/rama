@@ -56,7 +56,7 @@ async fn test_http_sse_datastar_hello() {
             .unwrap_or_default()
     );
     let script_content = script_rsponse.try_into_string().await.unwrap();
-    assert!(script_content.contains(r##"// Datastar v1.0.2"##));
+    assert!(script_content.contains(r##"// Datastar v1.0.3"##));
 
     let source_map_response = runner
         .get("http://127.0.0.1:62051/assets/datastar.js.map")

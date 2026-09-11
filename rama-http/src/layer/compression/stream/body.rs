@@ -242,6 +242,12 @@ impl CompressData {
 
     /// Compresses a chunk of input data.
     fn compress_chunk(&mut self, input: &[u8]) -> io::Result<Option<Frame<Bytes>>> {
+        // Skip empty DATA locally to avoid flate's no-progress BufError while preserving EOF
+        // and trailers, and consider an upstream fix in the future if needed.
+        if input.is_empty() {
+            return Ok(None);
+        }
+
         let mut input_buf = util::PartialBuffer::new(input);
 
         loop {
@@ -454,6 +460,108 @@ mod tests {
         match Pin::new(body).poll_frame(&mut cx) {
             Poll::Ready(result) => result,
             Poll::Pending => None,
+        }
+    }
+
+    #[test]
+    fn empty_data_frames() {
+        use std::io::Read;
+
+        // Exercise initialization, interleaved empties, EOF, and trailer delivery,
+        // both with normal buffering and the per-chunk flushing used for SSE.
+        for chunks in [
+            vec!["a", "", "b"],
+            vec!["", "", ""],
+            vec!["a", ""],
+            vec!["", "a"],
+        ] {
+            for with_trailers in [false, true] {
+                for always_flush in [false, true] {
+                    for encoding in ["gzip", "deflate", "br", "zstd"] {
+                        let mut trailers = HeaderMap::new();
+                        trailers.insert("x-checksum", "abc123".parse().unwrap());
+                        let mut frames: Vec<_> = chunks
+                            .iter()
+                            .map(|chunk| Frame::data(Bytes::from_static(chunk.as_bytes())))
+                            .collect();
+                        if with_trailers {
+                            frames.push(Frame::trailers(trailers.clone()));
+                        }
+                        let inner = TestBody::new(frames);
+                        let mut body = match encoding {
+                            "gzip" => {
+                                StreamCompressionBody::gzip(inner, Default::default(), always_flush)
+                            }
+                            "deflate" => StreamCompressionBody::deflate(
+                                inner,
+                                Default::default(),
+                                always_flush,
+                            ),
+                            "br" => StreamCompressionBody::brotli(
+                                inner,
+                                Default::default(),
+                                always_flush,
+                            ),
+                            "zstd" => {
+                                StreamCompressionBody::zstd(inner, Default::default(), always_flush)
+                            }
+                            _ => panic!("unexpected test encoding: {encoding}"),
+                        };
+                        let mut compressed = Vec::new();
+                        let mut received_trailers = None;
+                        loop {
+                            // Pending is not EOF: these ready-only fixtures must finish.
+                            let Poll::Ready(frame) = Pin::new(&mut body)
+                                .poll_frame(&mut Context::from_waker(std::task::Waker::noop()))
+                            else {
+                                panic!("unexpected Pending: {encoding}, {chunks:?}");
+                            };
+                            let Some(frame) = frame else { break };
+                            let frame = frame.unwrap_or_else(|err| {
+                                panic!("{encoding}, {chunks:?}, flush={always_flush}: {err}")
+                            });
+                            match frame.into_data() {
+                                Ok(data) => {
+                                    assert!(received_trailers.is_none(), "data after trailers");
+                                    compressed.extend_from_slice(&data);
+                                }
+                                Err(frame) => {
+                                    assert!(received_trailers.is_none(), "duplicate trailers");
+                                    received_trailers = Some(frame.into_trailers().unwrap());
+                                }
+                            }
+                            if body.is_end_stream() {
+                                // A transport may stop polling immediately on this hint.
+                                assert_eq!(received_trailers.is_some(), with_trailers);
+                                assert!(
+                                    matches!(
+                                        Pin::new(&mut body).poll_frame(&mut Context::from_waker(
+                                            std::task::Waker::noop(),
+                                        )),
+                                        Poll::Ready(None)
+                                    ),
+                                    "{encoding}: frames remain after the EOS hint"
+                                );
+                                break;
+                            }
+                        }
+                        assert!(body.is_end_stream());
+                        assert_eq!(received_trailers, with_trailers.then_some(trailers));
+                        let mut decoder: Box<dyn Read> = match encoding {
+                            "gzip" => Box::new(flate2::read::GzDecoder::new(&compressed[..])),
+                            "deflate" => Box::new(flate2::read::ZlibDecoder::new(&compressed[..])),
+                            "br" => Box::new(brotli::Decompressor::new(&compressed[..], 4096)),
+                            "zstd" => {
+                                Box::new(zstd::stream::read::Decoder::new(&compressed[..]).unwrap())
+                            }
+                            _ => panic!("unexpected test encoding: {encoding}"),
+                        };
+                        let mut decoded = Vec::new();
+                        decoder.read_to_end(&mut decoded).unwrap();
+                        assert_eq!(decoded, chunks.concat().as_bytes(), "{encoding}");
+                    }
+                }
+            }
         }
     }
 

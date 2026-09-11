@@ -231,7 +231,10 @@ pub struct NwTcpConnectOptions {
     /// Grace after a promoted flow reaches terminal before Swift
     /// force-cancels its egress `NWConnection`. A successful local FIN alone
     /// does not start this window because the response half may legally remain
-    /// quiet. `None` falls back to the Swift-side default (currently 5 seconds).
+    /// quiet. Both intercepted and promoted flows use at least the Swift writer
+    /// stall allowance (currently six minutes); shorter values cannot truncate
+    /// a pending writer tail. Longer values extend the terminal fallback, not
+    /// the independent writer watchdog.
     pub linger_close_timeout: Option<Duration>,
     /// Grace window for abnormal egress-read termination: a read error,
     /// a vanished Swift session, or Rust dropping its egress consumer.

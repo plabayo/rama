@@ -374,7 +374,7 @@ final class WriterMemoryBudget: @unchecked Sendable {
     init(
         policy: WriterMemoryPolicy = .default,
         onPressureEvent: @escaping @Sendable (WriterMemoryPressureEvent) -> Void = {
-            RamaLog.info($0.logMessage)
+            RamaLog.noticePublic($0.logMessage)
         }
     ) {
         guard let atomic = rama_writer_budget_atomic_new(0) else {

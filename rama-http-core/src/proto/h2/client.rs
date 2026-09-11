@@ -779,8 +779,9 @@ where
                 // to the response extensions. By the time HEADERS arrives
                 // the peer's SETTINGS frame has already been received
                 // (h2 spec requires it first), so this is reliable.
-                if let Some(peer) = this.h2_tx.peer_initial_settings() {
-                    res.extensions().insert_arc(peer);
+                let peer_settings = this.h2_tx.peer_initial_settings();
+                if let Some(peer) = &peer_settings {
+                    res.extensions().insert_arc(peer.clone());
                 }
 
                 let content_length = headers::content_length_parse_all(res.headers());
@@ -795,14 +796,14 @@ where
 
                     let (pending, on_upgrade) = upgrade::pending();
 
-                    let (h2_up, up_task) = super::upgrade::pair(
-                        send_stream,
-                        recv_stream,
-                        ping,
-                        res.extensions().clone(),
-                    );
+                    let (h2_up, up_task) = super::upgrade::pair(send_stream, recv_stream, ping);
                     self.exec.spawn_task(up_task);
                     let upgraded = Upgraded::new(h2_up, Bytes::new());
+                    // Preserve the peer's connection metadata explicitly; sharing
+                    // its immutable snapshot cannot retain the handshake message.
+                    if let Some(peer) = peer_settings {
+                        upgraded.extensions().insert_arc(peer);
+                    }
 
                     pending.fulfill(upgraded);
                     res.extensions().insert(on_upgrade);

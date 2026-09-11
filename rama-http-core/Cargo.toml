@@ -56,6 +56,7 @@ want = { workspace = true }
 
 [dev-dependencies]
 rama-error = { path = "../rama-error" }
+rama-http = { workspace = true, features = ["compression"] }
 rama-tls = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "net"] }
 tokio-rustls = { workspace = true }

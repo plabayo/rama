@@ -180,8 +180,8 @@ fn engine_exports_enabled_udp_idle_timeout_as_ceil_nonzero_millis() {
 }
 
 #[test]
-fn default_tcp_paused_drain_max_wait_constant_is_one_minute() {
-    assert_eq!(DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT, Duration::from_mins(1));
+fn default_tcp_paused_drain_max_wait_constant_is_six_minutes() {
+    assert_eq!(DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT, Duration::from_mins(6));
 }
 
 #[test]

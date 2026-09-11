@@ -52,6 +52,9 @@ enum RamaLog {
     static func debugPublic(_ message: String) {
         logger().debug("\(message, privacy: .public)")
     }
+    static func noticePublic(_ message: String) {
+        logger().notice("\(message, privacy: .public)")
+    }
     static func info(_ message: String) { log(.info, message) }
     static func warn(_ message: String) { log(.warn, message) }
     static func error(_ message: String) { log(.error, message) }

@@ -4098,6 +4098,12 @@ final class TransparentProxyCore: @unchecked Sendable {
         egressWritePump: NwTcpConnectionWritePump,
         flowQueue: DispatchQueue
     ) -> TcpDirectForwarder {
+        // A clean server EOF does not shorten the slow-reader allowance to
+        // the old five-second linger budget. Keep maintenance and the direct
+        // forwarder's fallback on the same window; per-pump watchdogs enforce
+        // direction-specific progress even while the other half is busy.
+        ctx.lingerCloseMs = max(ctx.lingerCloseMs, UInt32(clamping:
+            max(clientWritePump.stallTimeoutMs, egressWritePump.stallTimeoutMs)))
         let forwarder = TcpDirectForwarder(
             flow: flow,
             connection: connection,

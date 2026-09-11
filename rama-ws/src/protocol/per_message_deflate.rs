@@ -354,6 +354,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn empty_messages_between_nonempty_messages() {
+        for reset in [false, true] {
+            let mut encoder = DeflateEncoder::new(Compression::default(), 15, reset);
+            let mut decoder = DeflateDecoder::new(15, reset);
+            for payload in [
+                b"".as_slice(),
+                b"hello hello",
+                b"",
+                b"",
+                b"hello again",
+                b"",
+            ] {
+                let compressed = encoder.encode(payload).unwrap();
+                let decoded = decoder.decode(&compressed, Some(128)).unwrap();
+                assert_eq!(decoded, payload, "context reset: {reset}");
+            }
+        }
+    }
+
+    #[test]
     fn deflate_decoder_rejects_output_past_size_limit() {
         let payload = vec![b'a'; 1024];
         let mut encoder = DeflateEncoder::new(Compression::default(), 15, false);

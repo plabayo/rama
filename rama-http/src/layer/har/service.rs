@@ -4,6 +4,7 @@ use crate::layer::har::recorder::{
 };
 use crate::layer::har::spec::{Request as HarRequest, Response as HarResponse};
 use crate::layer::har::toggle::Toggle;
+use crate::layer::upgrade::mitm::HttpUpgradeMitmRelayExtensions;
 use crate::{Body, Request, Response, StreamingBody};
 
 use jiff::Timestamp;
@@ -173,6 +174,11 @@ where
         let (sink, body_stream) = body_capture_channel();
         if let Some(capture) = recording.web_socket_capture {
             if is_successful_web_socket_response(&parts) {
+                parts
+                    .extensions
+                    .self_get_ref_or_insert(HttpUpgradeMitmRelayExtensions::default)
+                    .0
+                    .insert(capture.clone());
                 parts.extensions.insert(capture);
             } else {
                 capture.close();

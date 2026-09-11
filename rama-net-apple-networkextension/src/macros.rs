@@ -913,6 +913,18 @@ macro_rules! __transparent_proxy_ffi_emit {
             };
         }
 
+        /// First recorded abnormal stream terminal as a POSIX code, or zero.
+        /// Safe to query after a close callback while the session remains alive.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn rama_transparent_proxy_tcp_session_terminal_error_code(
+            session: *const RamaTransparentProxyTcpSession,
+        ) -> i32 {
+            if session.is_null() {
+                return 0;
+            }
+            unsafe { (*session).terminal_error_code() }
+        }
+
         /// Swift → Rust: signal that the `TcpClientWritePump` has drained
         /// capacity after `on_server_bytes` returned `Paused`.
         ///

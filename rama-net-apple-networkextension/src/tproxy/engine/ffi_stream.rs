@@ -153,6 +153,7 @@ impl FfiBridgeStream {
 
     /// Record this direction's and the whole bridge's first terminal reason.
     fn record_reason(&self, reason: BridgeCloseReason) {
+        self.signals.record_terminal_error(reason);
         self.flow_close_reason.lock().get_or_insert(reason);
         self.close_reason.lock().get_or_insert(reason);
     }
@@ -415,6 +416,84 @@ mod tests {
             max_wait,
             TEST_WRITE_CHUNK_LIMIT,
         )
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn paused_timeout_is_queryable_inside_close_callback_after_read_eof() {
+        for direction in [BridgeDirection::Ingress, BridgeDirection::Egress] {
+            let (tx, rx) = mpsc::channel::<Bytes>(1);
+            drop(tx);
+            let signals = Arc::new(TcpPerFlowSignals::new());
+            let callback_codes = Arc::new(Mutex::new(Vec::new()));
+            let on_closed: ClosedSink = {
+                let signals = signals.clone();
+                let callback_codes = callback_codes.clone();
+                Arc::new(move || callback_codes.lock().push(signals.terminal_error_code()))
+            };
+            let mut s = stream(
+                rx,
+                const_sink(TcpDeliverStatus::Paused),
+                noop(),
+                on_closed,
+                direction,
+                super::super::DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT,
+                signals.clone(),
+                Arc::new(TcpFlowByteCounters::default()),
+            );
+            // A clean read half-close can precede a failed response write.
+            assert_eq!(s.read(&mut [0; 1]).await.unwrap(), 0);
+            assert_eq!(signals.terminal_error_code(), 0);
+            let first_reason = *s.close_reason.lock();
+            assert!(matches!(
+                first_reason,
+                Some(BridgeCloseReason::PeerEofLeft | BridgeCloseReason::PeerEofRight)
+            ));
+            let (_w, waker) = count_waker();
+            let mut cx = Context::from_waker(&waker);
+            {
+                let mut write = std::pin::pin!(s.write_all(b"response tail"));
+                assert!(write.as_mut().poll(&mut cx).is_pending());
+                tokio::time::advance(
+                    super::super::DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT
+                        .checked_sub(Duration::from_millis(1))
+                        .unwrap(),
+                )
+                .await;
+                assert!(write.as_mut().poll(&mut cx).is_pending());
+                assert!(callback_codes.lock().is_empty());
+                tokio::time::advance(Duration::from_millis(1)).await;
+                assert_eq!(write.await.unwrap_err().kind(), io::ErrorKind::TimedOut);
+            }
+            assert_eq!(*callback_codes.lock(), vec![libc::ETIMEDOUT]);
+            // Diagnostic first-EOF semantics remain unchanged; the error channel
+            // independently prevents a later callback from presenting clean.
+            assert_eq!(*s.close_reason.lock(), first_reason);
+            s.shutdown().await.unwrap();
+            drop(s);
+            assert_eq!(*callback_codes.lock(), vec![libc::ETIMEDOUT]);
+            assert_eq!(signals.terminal_error_code(), libc::ETIMEDOUT);
+        }
+    }
+
+    #[test]
+    fn terminal_error_keeps_first_abnormal_reason_across_halves() {
+        use BridgeCloseReason::*;
+        for (reason, expected) in [
+            (PausedTimeout, libc::ETIMEDOUT),
+            (ReadErrorRight, libc::ECONNRESET),
+            (WriteErrorLeft, libc::EPIPE),
+            (Shutdown, libc::ECANCELED),
+            (ServicePanic, libc::EIO),
+        ] {
+            let signals = TcpPerFlowSignals::new();
+            signals.record_terminal_error(PeerEofLeft);
+            signals.record_terminal_error(PeerEofRight);
+            assert_eq!(signals.terminal_error_code(), 0);
+            signals.record_terminal_error(reason);
+            signals.record_terminal_error(PeerEofLeft);
+            signals.record_terminal_error(WriteErrorRight);
+            assert_eq!(signals.terminal_error_code(), expected);
+        }
     }
 
     /// Stream with sane defaults + inspectable directional and flow cells.
@@ -680,6 +759,272 @@ mod tests {
             Poll::Ready(Err(e)) => assert_eq!(e.kind(), io::ErrorKind::TimedOut),
             other => panic!("expected TimedOut, got {other:?}"),
         }
+    }
+
+    /// Exercise production-duration pauses in both directions, retaining the
+    /// exact unaccepted prefix until Swift admits it again.
+    #[tokio::test(start_paused = true)]
+    async fn production_pause_window_preserves_bytes_and_close_order() {
+        for direction in [BridgeDirection::Ingress, BridgeDirection::Egress] {
+            for seconds in [1, 6, 30, 300] {
+                let (_tx, rx) = mpsc::channel::<Bytes>(1);
+                let accepting = Arc::new(AtomicBool::new(false));
+                let delivered = Arc::new(Mutex::new(Vec::new()));
+                let sink: BytesStatusSink = {
+                    let accepting = accepting.clone();
+                    let delivered = delivered.clone();
+                    Arc::new(move |bytes| {
+                        if !accepting.load(Ordering::Acquire) {
+                            return TcpDeliverStatus::Paused;
+                        }
+                        delivered.lock().extend_from_slice(bytes);
+                        TcpDeliverStatus::Accepted
+                    })
+                };
+                let closed = Arc::new(AtomicUsize::new(0));
+                let signals = Arc::new(TcpPerFlowSignals::new());
+                let counters = Arc::new(TcpFlowByteCounters::default());
+                let mut s = stream(
+                    rx,
+                    sink,
+                    noop(),
+                    counter_cb(closed.clone()),
+                    direction,
+                    super::super::DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT,
+                    signals.clone(),
+                    counters.clone(),
+                );
+                let payload: Vec<_> = (0..TEST_WRITE_CHUNK_LIMIT * 3 + 17)
+                    .map(|i| (i % 251) as u8)
+                    .collect();
+                let (_w, waker) = count_waker();
+                let mut cx = Context::from_waker(&waker);
+                assert!(Pin::new(&mut s).poll_write(&mut cx, &payload).is_pending());
+                tokio::time::advance(Duration::from_secs(seconds)).await;
+                assert!(Pin::new(&mut s).poll_write(&mut cx, &payload).is_pending());
+                assert_eq!(closed.load(Ordering::SeqCst), 0);
+                assert!(delivered.lock().is_empty());
+                assert_eq!(counters.snapshot(direction).1, 0);
+
+                accepting.store(true, Ordering::Release);
+                signals.note_drain(direction);
+                s.write_all(&payload).await.unwrap();
+                assert_eq!(*delivered.lock(), payload);
+                assert_eq!(counters.snapshot(direction).1, payload.len() as u64);
+                assert_eq!(closed.load(Ordering::SeqCst), 0);
+                s.shutdown().await.unwrap();
+                drop(s);
+                assert_eq!(closed.load(Ordering::SeqCst), 1);
+            }
+        }
+    }
+
+    /// Successful admissions and matching drain signals may keep a slow
+    /// transfer alive beyond one window; unrelated traffic and wakeups cannot.
+    #[tokio::test(start_paused = true)]
+    async fn production_pause_window_tracks_only_matching_progress() {
+        let max_wait = super::super::DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT;
+        for direction in [BridgeDirection::Ingress, BridgeDirection::Egress] {
+            let opposite = match direction {
+                BridgeDirection::Ingress => BridgeDirection::Egress,
+                BridgeDirection::Egress => BridgeDirection::Ingress,
+            };
+            for accept_between_pauses in [false, true] {
+                let (_tx, rx) = mpsc::channel::<Bytes>(1);
+                let code = Arc::new(AtomicU8::new(TcpDeliverStatus::Paused as u8));
+                let signals = Arc::new(TcpPerFlowSignals::new());
+                let counters = Arc::new(TcpFlowByteCounters::default());
+                let closed = Arc::new(AtomicUsize::new(0));
+                let mut s = stream(
+                    rx,
+                    dynamic_sink(code.clone()),
+                    noop(),
+                    counter_cb(closed.clone()),
+                    direction,
+                    max_wait,
+                    signals.clone(),
+                    counters.clone(),
+                );
+                let reason = s.close_reason.clone();
+                let (_other_tx, other_rx) = mpsc::channel::<Bytes>(1);
+                let mut other = stream(
+                    other_rx,
+                    accept_sink(),
+                    noop(),
+                    noop(),
+                    opposite,
+                    max_wait,
+                    signals.clone(),
+                    counters.clone(),
+                );
+                let (_w, waker) = count_waker();
+                let mut cx = Context::from_waker(&waker);
+                assert!(Pin::new(&mut s).poll_write(&mut cx, b"body").is_pending());
+                for _ in 0..4 {
+                    tokio::time::advance(Duration::from_secs(300)).await;
+                    assert!(Pin::new(&mut s).poll_write(&mut cx, b"body").is_pending());
+                    if accept_between_pauses {
+                        code.store(TcpDeliverStatus::Accepted as u8, Ordering::SeqCst);
+                        s.write_all(b"body").await.unwrap();
+                        code.store(TcpDeliverStatus::Paused as u8, Ordering::SeqCst);
+                    } else {
+                        // Same-direction completion can free capacity which
+                        // another producer consumes before this retry.
+                        signals.note_drain(direction);
+                    }
+                    assert!(Pin::new(&mut s).poll_write(&mut cx, b"body").is_pending());
+                    assert_eq!(closed.load(Ordering::SeqCst), 0);
+                }
+                // Five minutes of unrelated progress cannot renew this timer.
+                for _ in 0..5 {
+                    tokio::time::advance(Duration::from_secs(60)).await;
+                    other.write_all(b"upload").await.unwrap();
+                    signals.note_drain(opposite);
+                    signals.drain(direction).wake(); // spurious wake, no drain
+                    assert!(Pin::new(&mut s).poll_write(&mut cx, b"body").is_pending());
+                }
+                tokio::time::advance(Duration::from_secs(59)).await;
+                assert!(Pin::new(&mut s).poll_write(&mut cx, b"body").is_pending());
+                assert_eq!(closed.load(Ordering::SeqCst), 0);
+                tokio::time::advance(Duration::from_millis(1001)).await;
+                assert!(matches!(
+                    Pin::new(&mut s).poll_write(&mut cx, b"body"),
+                    Poll::Ready(Err(e)) if e.kind() == io::ErrorKind::TimedOut
+                ));
+                assert_eq!(*reason.lock(), Some(BridgeCloseReason::PausedTimeout));
+                assert_eq!(signals.terminal_error_code(), libc::ETIMEDOUT);
+                assert_eq!(closed.load(Ordering::SeqCst), 1);
+                // An independent upload still works after the stalled writer's
+                // local terminal; whole-flow teardown belongs to the owner.
+                other.write_all(b"still writable").await.unwrap();
+                s.shutdown().await.unwrap();
+                drop(s);
+                assert_eq!(closed.load(Ordering::SeqCst), 1);
+            }
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn source_eof_during_pause_drains_exactly_or_reports_timeout() {
+        for should_resume in [false, true] {
+            let payload: Vec<_> = (0..TEST_WRITE_CHUNK_LIMIT * 3 + 17)
+                .map(|i| (i % 251) as u8)
+                .collect();
+            let (mut server, mut source) = tokio::io::duplex(payload.len());
+            server.write_all(&payload).await.unwrap();
+            server.shutdown().await.unwrap();
+            let (_tx, rx) = mpsc::channel::<Bytes>(1);
+            let accepting = Arc::new(AtomicBool::new(false));
+            let delivered = Arc::new(Mutex::new(Vec::new()));
+            let sink: BytesStatusSink = {
+                let accepting = accepting.clone();
+                let delivered = delivered.clone();
+                Arc::new(move |bytes| {
+                    if !accepting.load(Ordering::Acquire) {
+                        return TcpDeliverStatus::Paused;
+                    }
+                    delivered.lock().extend_from_slice(bytes);
+                    TcpDeliverStatus::Accepted
+                })
+            };
+            let closed = Arc::new(AtomicUsize::new(0));
+            let signals = Arc::new(TcpPerFlowSignals::new());
+            let mut s = stream(
+                rx,
+                sink,
+                noop(),
+                counter_cb(closed.clone()),
+                BridgeDirection::Ingress,
+                super::super::DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT,
+                signals.clone(),
+                Arc::new(TcpFlowByteCounters::default()),
+            );
+            let reason = s.close_reason.clone();
+            let (_w, waker) = count_waker();
+            let mut cx = Context::from_waker(&waker);
+            {
+                let mut copy = std::pin::pin!(tokio::io::copy(&mut source, &mut s));
+                assert!(copy.as_mut().poll(&mut cx).is_pending());
+                tokio::time::advance(Duration::from_secs(300)).await;
+                assert!(copy.as_mut().poll(&mut cx).is_pending());
+                assert_eq!(closed.load(Ordering::SeqCst), 0);
+                if should_resume {
+                    accepting.store(true, Ordering::Release);
+                    signals.note_drain(BridgeDirection::Ingress);
+                    assert_eq!(copy.await.unwrap(), payload.len() as u64);
+                    assert_eq!(*delivered.lock(), payload);
+                    assert_eq!(*reason.lock(), None);
+                    assert_eq!(signals.terminal_error_code(), 0);
+                } else {
+                    tokio::time::advance(Duration::from_millis(60_001)).await;
+                    assert_eq!(copy.await.unwrap_err().kind(), io::ErrorKind::TimedOut);
+                    assert!(delivered.lock().is_empty());
+                    assert_eq!(*reason.lock(), Some(BridgeCloseReason::PausedTimeout));
+                    assert_eq!(signals.terminal_error_code(), libc::ETIMEDOUT);
+                }
+            }
+            s.shutdown().await.unwrap();
+            drop(s);
+            assert_eq!(closed.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn source_error_after_buffered_tail_survives_long_pause() {
+        let payload = Bytes::from(vec![0x5a; TEST_WRITE_CHUNK_LIMIT * 2 + 7]);
+        let (tx, rx) = mpsc::channel::<Bytes>(1);
+        tx.try_send(payload.clone()).unwrap();
+        drop(tx);
+        let (source, source_reason, _) = stream_with_reasons(
+            rx,
+            accept_sink(),
+            BridgeDirection::Egress,
+            super::super::DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT,
+        );
+        // Swift supplies the buffered tail and then reports a failed read.
+        let mut source = source.with_read_error_flag(Arc::new(AtomicBool::new(true)));
+        let accepting = Arc::new(AtomicBool::new(false));
+        let delivered = Arc::new(Mutex::new(Vec::new()));
+        let sink: BytesStatusSink = {
+            let accepting = accepting.clone();
+            let delivered = delivered.clone();
+            Arc::new(move |bytes| {
+                if !accepting.load(Ordering::Acquire) {
+                    return TcpDeliverStatus::Paused;
+                }
+                delivered.lock().extend_from_slice(bytes);
+                TcpDeliverStatus::Accepted
+            })
+        };
+        let (_tx, rx) = mpsc::channel::<Bytes>(1);
+        let signals = Arc::new(TcpPerFlowSignals::new());
+        let mut target = stream(
+            rx,
+            sink,
+            noop(),
+            noop(),
+            BridgeDirection::Ingress,
+            super::super::DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT,
+            signals.clone(),
+            Arc::new(TcpFlowByteCounters::default()),
+        );
+        let (_w, waker) = count_waker();
+        let mut cx = Context::from_waker(&waker);
+        let mut copy = std::pin::pin!(tokio::io::copy(&mut source, &mut target));
+        assert!(copy.as_mut().poll(&mut cx).is_pending());
+        tokio::time::advance(Duration::from_secs(300)).await;
+        assert!(copy.as_mut().poll(&mut cx).is_pending());
+        accepting.store(true, Ordering::Release);
+        signals.note_drain(BridgeDirection::Ingress);
+        assert_eq!(
+            copy.await.unwrap_err().kind(),
+            io::ErrorKind::ConnectionReset
+        );
+        assert_eq!(delivered.lock().as_slice(), payload.as_ref());
+        assert_eq!(
+            *source_reason.lock(),
+            Some(BridgeCloseReason::ReadErrorRight)
+        );
     }
 
     /// A near-elapsed backstop from an earlier pause episode must not fire

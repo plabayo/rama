@@ -347,7 +347,7 @@ impl CaptureWebSocketExt for CaptureStore {
         if !exchange.reserve_body(direction, length)
             || state
                 .messages
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                     (count < limit).then(|| count + 1)
                 })
                 .is_err()
