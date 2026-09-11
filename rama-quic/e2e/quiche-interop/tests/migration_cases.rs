@@ -27,9 +27,7 @@ const READ_CAP: usize = octets::mib(1);
 const CLIENT_BI: u64 = 0;
 /// The next bidirectional stream a client opens.
 const NEXT_BI: u64 = 4;
-/// How long a client that moved against the policy keeps trying before its new address is
-/// called unanswered. What settles the case is the count of packets that came back there,
-/// not this bound.
+/// Observe traffic on the moved socket for this long before returning to the original one.
 const SILENCE: Duration = Duration::from_millis(500);
 /// Why the case that withholds an identifier does not run in the rama-server role.
 const RAMA_ISSUES_ITS_OWN: &str = "rama issues its own connection identifiers, so this side cannot withhold the one the peer \
@@ -168,12 +166,8 @@ async fn migration_cases_rama_server() {
     .await;
 }
 
-/// What a forbidden move looks like from the client that made it anyway: it sends from the
-/// address it moved to and nothing comes back there, and the exchange it was holding is
-/// answered as soon as it is back on the path the server knows.
-///
-/// The count of packets that arrived at the new address is what says the move was refused. A
-/// bound that ran out would say only that this side waited.
+/// Observe the moved socket over [`SILENCE`], then return the connection to the socket the
+/// server knows. The exchange the client was holding is answered after the return.
 async fn refused_at_the_new_address(
     run: &CaseRun<MigrationScenario>,
     client: &mut Quiche,

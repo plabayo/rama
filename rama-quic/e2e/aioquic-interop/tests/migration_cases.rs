@@ -7,8 +7,10 @@
 //! its `is_validated` does refer to the client that moved.
 //!
 //! Neither role can withhold an identifier: aioquic issues its own and rama issues its own.
-//! It does not read rama's `disable_active_migration` either, so the forbidden case here is a
-//! client that moves against the policy and then comes back.
+//! Its client does not read rama's `disable_active_migration` either, so the forbidden case
+//! in the rama-server role is a client that moves against the policy and then returns. Its
+//! server configuration cannot refuse a move, so that case is recorded in the rama-client
+//! role rather than run.
 
 mod common;
 
@@ -131,32 +133,31 @@ async fn migration_cases_rama_server() {
             let served = Identity::generate(SERVER_NAME);
             let run = run.with_identity(served.auth.clone());
             let (endpoint, addr, serving) = rama_server_side(&run).await;
-            let refused = ["--the-move-is-refused"];
-            let mut peer = AioQuic::spawn(
-                "moving-client",
-                &[
-                    &[
-                        "--ca",
-                        served.certificate(),
-                        "--port",
-                        &addr.port().to_string(),
-                        "--before-seed",
-                        &run.scenario.before.seed.to_string(),
-                        "--before-length",
-                        &run.scenario.before.len.to_string(),
-                        "--after-seed",
-                        &run.scenario.after.seed.to_string(),
-                        "--after-length",
-                        &run.scenario.after.len.to_string(),
-                    ][..],
-                    match run.scenario.migration_allowed {
-                        true => &[][..],
-                        false => &refused[..],
-                    },
-                ]
-                .concat(),
-            )
-            .await;
+            let (port, before_seed, before_len, after_seed, after_len) = (
+                addr.port().to_string(),
+                run.scenario.before.seed.to_string(),
+                run.scenario.before.len.to_string(),
+                run.scenario.after.seed.to_string(),
+                run.scenario.after.len.to_string(),
+            );
+            let mut spawned = vec![
+                "--ca",
+                served.certificate(),
+                "--port",
+                &port,
+                "--before-seed",
+                &before_seed,
+                "--before-length",
+                &before_len,
+                "--after-seed",
+                &after_seed,
+                "--after-length",
+                &after_len,
+            ];
+            if !run.scenario.migration_allowed {
+                spawned.push("--the-move-is-refused");
+            }
+            let mut peer = AioQuic::spawn("moving-client", &spawned).await;
             peer.expect("handshake", run.deadline).await;
             let first = peer.expect("address", run.deadline).await.endpoint();
             peer.expect("stream", run.deadline).await.reported().check(
@@ -284,7 +285,7 @@ async fn a_moved_path_is_unvalidated_while_its_responses_go_unheard() {
             );
             assert!(
                 seen[0].validated(),
-                "{}: which the handshake settled, so only the moved path is in question",
+                "{}: original path reported unvalidated after the handshake",
                 run.what
             );
             assert_eq!(
@@ -295,7 +296,7 @@ async fn a_moved_path_is_unvalidated_while_its_responses_go_unheard() {
             );
             assert!(
                 !seen[1].validated(),
-                "{}: whose traffic it carried without validating it",
+                "{}: moved path reported validated while responses go unheard",
                 run.what
             );
         },

@@ -651,9 +651,8 @@ impl Quiche {
     /// would. Answers the address it moved to. Only a client may do this.
     ///
     /// quiche decides this on its own state alone: `migrate` refuses a server and a side with
-    /// no spare identifier, and never reads the peer's `disable_active_migration`. So a move
-    /// is accepted here whether or not the peer allows one, and what the peer does about it
-    /// is seen on the wire.
+    /// no spare identifier, and never reads the peer's `disable_active_migration`, so a move
+    /// is accepted whether or not the peer allows one.
     pub async fn move_to_a_new_socket(&mut self, deadline: Deadline) -> SocketAddr {
         let socket = UdpSocket::bind(if self.local.is_ipv6() {
             localhost_v6()
@@ -686,9 +685,7 @@ impl Quiche {
         local
     }
 
-    /// Drive for a bounded time with the address left behind unreachable, for a peer that is
-    /// expected to answer nothing at the new one. Answers what stopped the connection, if
-    /// anything did, so an unexpected close is not read as silence.
+    /// Drive for a bounded time, answering what stopped the connection if anything did.
     ///
     /// What lands on the socket left behind is discarded rather than buffered: a client whose
     /// network changed never reads it, and delivering it later would time a round trip that
@@ -718,8 +715,7 @@ impl Quiche {
         while socket.try_recv_from(&mut gone).is_ok() {}
     }
 
-    /// What the path from `local` has done, which is how silence at an address is stated as a
-    /// count rather than as a wait that ran out.
+    /// What quiche's own statistics say the path from `local` sent and received.
     pub fn path_from(&self, local: SocketAddr) -> quiche::PathStats {
         self.connection
             .path_stats()

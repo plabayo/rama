@@ -484,16 +484,13 @@ async def run_moving_client(arguments):
     the new socket is given to the same protocol, so the connection carries on.
 
     Both sockets are bound to the concrete address they send from. `aioquic.asyncio.connect`
-    binds the wildcard, and a wildcard `getsockname` is this side's bind address rather than
-    the endpoint the server sees, so the connection is set up here instead.
+    binds the wildcard, whose `getsockname` is a bind address rather than the endpoint the
+    server sees, so the connection is set up here instead.
     """
 
     class Watched(QuicConnectionProtocol):
-        """The connection, which stops hearing the address it moves off.
-
-        A client whose network changed never reads what still arrives there, and reading it
-        after the move back would time a round trip that did not happen.
-        """
+        """The connection. While `moved_away` is set it drops what arrives at the address
+        it moved off, as a client whose network changed would."""
 
         def __init__(self, *arguments, **named):
             super().__init__(*arguments, **named)
@@ -514,8 +511,8 @@ async def run_moving_client(arguments):
             super().datagram_received(data, addr)
 
     class Arriving(asyncio.DatagramProtocol):
-        """The new socket's reader: what it takes goes to the connection that moved, and it
-        counts what arrived so a refused move is a number rather than a wait."""
+        """The new socket's reader: what it delivers goes to the connection that moved, and
+        is counted."""
 
         def __init__(self, client):
             self._client = client
@@ -551,8 +548,8 @@ async def run_moving_client(arguments):
 
         after = shared_payload(arguments.after_seed, arguments.after_length)
         if arguments.the_move_is_refused:
-            # The counts are reported before the answer is waited for, so they say what the
-            # new address did whether or not the peer honoured its own policy.
+            # Reported before the answer is waited for, so the counts describe the new
+            # address either way.
             client.moved_away = True
             held = await send_half_of(client, after)
             await asyncio.sleep(arguments.quiet_for)
@@ -583,8 +580,8 @@ def mapped_destination(host, port):
 
 
 def source_for(destination):
-    """The address this host sends to `destination` from, asked of the routing table. A
-    connected UDP socket puts nothing on the wire; it only settles the source."""
+    """The address this host sends to `destination` from, asked of the routing table.
+    Connecting a UDP socket puts nothing on the wire; it only settles the source."""
     scratch = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
     try:
         scratch.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
@@ -610,7 +607,8 @@ def concrete_socket(destination):
 
 
 class Counted:
-    """A transport that counts the datagrams put through it."""
+    """A transport that counts the datagrams submitted to it, which is not delivery
+    confirmed on the wire."""
 
     def __init__(self, transport):
         self._transport = transport
@@ -638,7 +636,7 @@ async def endpoint_on(loop, factory, sock):
 
 def concrete_endpoint(sock):
     """The endpoint this socket sends from, with its family in the spelling and its scope
-    when it has one. A wildcard is a bind address and not an answer, so it is refused."""
+    when it has one. A wildcard is a bind address rather than a source, so it is refused."""
     name = sock.getsockname()
     host, port = name[0], name[1]
     scope = name[3] if len(name) == 4 else 0
@@ -680,15 +678,14 @@ def ignore_path_responses(connection):
     """Take the answer to this side's own PATH_CHALLENGE out of the connection, so a path it
     challenges stays unvalidated while the rest of the connection carries on.
 
-    The frame is still consumed off the wire, so nothing else about parsing changes; only the
-    verdict it would have settled is withheld.
+    The frame is still consumed off the wire, so nothing else about parsing changes.
     """
     handlers = connection._QuicConnection__frame_handlers
 
-    def consume_without_believing(context, frame_type, buf):
+    def consume_without_validating(context, frame_type, buf):
         buf.pull_bytes(8)
 
-    handlers[PATH_RESPONSE] = (consume_without_believing, handlers[PATH_RESPONSE][1])
+    handlers[PATH_RESPONSE] = (consume_without_validating, handlers[PATH_RESPONSE][1])
 
 
 async def run_silent(arguments):

@@ -1,18 +1,21 @@
-//! What a connection in the closing state answers, and how often.
+//! What a connection in the closing state answers, and how often, and what a server may send
+//! towards an address it has not validated.
 //!
 //! RFC 9000 §10.2.1 asks an endpoint in that state to answer received packets progressively less
 //! often. These tests drive each side by hand so the peer never learns of the close, and release
 //! the peer's packets one at a time, so what earns an answer is exactly what the test says it is.
+//! The anti-amplification cases share those hand-driven helpers, which is why they are here.
 
 use std::{collections::VecDeque, mem, net::SocketAddr, sync::Arc};
 
 use crate::proto::Duration;
 
 use rama_core::bytes::Bytes;
+use rama_utils::octets;
 
 use super::{
-    ApplicationClose, ConnectionError, ConnectionHandle, Event, Ipv6Addr, TransportConfig, VarInt,
-    big_cert_and_key, subscribe, util::*,
+    ApplicationClose, ConnectionError, ConnectionHandle, Dir, Event, Ipv6Addr, TransportConfig,
+    VarInt, big_cert_and_key, subscribe, util::*,
 };
 use rama_crypto::dep::rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair};
 use rama_tls_rustls::dep::rustls::AlertDescription;
@@ -826,6 +829,74 @@ fn the_amplification_bound_holds_on_a_new_path() {
     );
 }
 
+/// The bound is cumulative: round after round, everything the server has sent towards an
+/// address it has not validated stays within three times everything that address has sent it
+/// (RFC 9000 §8.1).
+///
+/// Both totals are counted from the datagrams themselves, so neither side of the comparison
+/// is the connection's own receive counter. The queued load exceeds every round's credit, and
+/// the configured window and latency estimate keep congestion and pacing from being the limit,
+/// so the credit is what each round measures.
+#[test]
+fn the_amplification_bound_holds_across_repeated_input_on_a_new_path() {
+    /// More than the rounds below can carry, so the server is never out of work.
+    const QUEUED: usize = octets::kib(64);
+
+    let _guard = subscribe();
+    // A window far larger than any round's credit, so what stops the server each round is the
+    // bound rather than congestion control. The peer never acknowledges anything here, so a
+    // default window would fill and become the limit instead.
+    let mut transport = TransportConfig::default();
+    transport
+        .try_set_initial_congestion_window(u64::try_from(QUEUED).expect("a window that fits"))
+        .expect("the window is accepted");
+    // A low latency estimate, so pacing does not decide how much of a round goes out.
+    transport.set_initial_rtt(Duration::from_millis(10));
+    let mut server = server_config();
+    server.set_transport_config(Arc::new(transport));
+    let mut pair = Pair::new(Default::default(), server);
+    let (client_ch, server_ch) = pair.connect();
+    let mut received = move_the_client_to(&mut pair, client_ch, server_ch);
+
+    // Opened after the move, so all of it is subject to the new address's credit, and long
+    // enough that the server always has more queued than any round may carry.
+    let stream = pair
+        .server_streams(server_ch)
+        .open(Dir::Uni)
+        .expect("the server opens a stream");
+    pair.server_send(server_ch, stream)
+        .write(&[b'x'; QUEUED])
+        .expect("the stream takes the payload");
+
+    let mut sent = drive_the_server_towards_elsewhere(&mut pair);
+    assert!(
+        sent > 0,
+        "no bytes sent towards the address the peer moved to"
+    );
+    for round in 1..=3 {
+        // Past any pacing delay, so what the round measures is the credit and not the clock.
+        pair.time += Duration::from_millis(10);
+        received = feed_the_server_from_elsewhere(&mut pair, client_ch, server_ch, received, 400);
+        let this_round = drive_the_server_towards_elsewhere(&mut pair);
+        sent += this_round;
+        assert!(
+            this_round > 0,
+            "round {round}: no bytes sent after the input that earned credit"
+        );
+        assert!(
+            sent <= received * 3,
+            "round {round}: sent {sent} bytes towards an address that has sent {received}, \
+             allowing {}",
+            received * 3
+        );
+    }
+    // The queue outlasted every round, so the credit was the limit and not the work.
+    assert!(
+        sent < QUEUED,
+        "queued load of {QUEUED} bytes did not outlast the rounds: {sent} sent"
+    );
+}
+
 /// Move the client to [`elsewhere`] with one small packet, and answer how many bytes of it the
 /// server received: three times that is all it may send back until the address is validated.
 fn move_the_client_to(
@@ -941,7 +1012,7 @@ fn nothing_more_goes_out_once_the_credit_on_a_new_path_is_spent() {
     }
 
     // More from that same address, and the close it was holding goes out within the credit.
-    let total = feed_the_server_from_elsewhere(&mut pair, client_ch, server_ch, 400);
+    let total = feed_the_server_from_elsewhere(&mut pair, client_ch, server_ch, received, 400);
     let sent = drive_the_server_towards_elsewhere(&mut pair);
     assert!(sent > 0, "the close went out once the credit covered it");
     assert!(
@@ -1003,10 +1074,16 @@ fn a_handshake_flight_fits_the_credit_the_client_earned() {
 
 /// Send an unreliable datagram from the client, hand it to the server as coming from
 /// [`elsewhere`], and answer everything that address has sent so far.
+///
+/// `already` is what that address had sent before this call, measured on the wire by the
+/// caller. Every byte in the credit these cases check is counted here from the datagrams
+/// handed over, never read back from the connection's own receive counter, so a fault in
+/// that counter cannot move the allowance with it.
 fn feed_the_server_from_elsewhere(
     pair: &mut Pair,
     client_ch: ConnectionHandle,
     server_ch: ConnectionHandle,
+    already: usize,
     want: usize,
 ) -> usize {
     let size = pair
@@ -1019,7 +1096,7 @@ fn feed_the_server_from_elsewhere(
         .expect("the datagram is queued");
     pair.drive_client();
     let mut held = mem::take(&mut pair.server.inbound);
-    let mut received = pair.server_conn_mut(server_ch).total_recvd() as usize;
+    let mut received = already;
     while let Some(datagram) = held.pop_front() {
         received += datagram.packet.len();
         hand_to_the_server(pair, server_ch, datagram, elsewhere());

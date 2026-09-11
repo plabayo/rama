@@ -35,9 +35,7 @@ const READ_CAP: usize = octets::mib(1);
 /// Why the case that withholds an identifier does not run in the rama-server role.
 const RAMA_ISSUES_ITS_OWN: &str = "rama issues its own connection identifiers, so this side cannot withhold the one the peer \
      would move with";
-/// How long a client that moved against the policy keeps trying before its new address is
-/// called unanswered. What settles the case is the count of datagrams that came back there,
-/// not this bound.
+/// Observe traffic on the moved socket for this long before returning to the original one.
 const SILENCE: Duration = Duration::from_millis(500);
 /// Why the case that withholds an identifier does not run against this peer.
 const ISSUES_ITS_OWN: &str = "quinn issues connection identifiers itself, with nothing in its configuration to withhold \
@@ -96,10 +94,10 @@ async fn migration_cases_rama_client() {
 
 /// A Quinn client moves under Rama's server, which follows it.
 ///
-/// One of the three cases runs here. Withholding an identifier is not this side's to do: Rama
-/// issues its own. Forbidding a move is (`ServerConfig::with_migration`), but a peer that
-/// moves anyway is then not answered at its new address, so that case needs an expectation of
-/// its own; both are recorded rather than skipped.
+/// Two of the three cases run here. Withholding an identifier is not this side's to do: Rama
+/// issues its own, so that case is recorded rather than run. Forbidding a move is Rama's
+/// (`ServerConfig::with_migration`), and this client does not read that policy, so it moves
+/// against it.
 #[tokio::test]
 async fn migration_cases_rama_server() {
     for_each_case(
@@ -254,12 +252,8 @@ fn bound_socket() -> UdpSocket {
     UdpSocket::bind(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0)).expect("the socket binds")
 }
 
-/// What a forbidden move looks like from the client that made it anyway: it sends the next
-/// exchange from the address it moved to, nothing comes back there, and the exchange is
-/// answered as soon as it is back on the path the server knows.
-///
-/// The datagrams counted at the new address are what say the move was refused. A bound that
-/// ran out would say only that this side waited.
+/// Send the next exchange from the address the client moved to, observe that socket over
+/// [`SILENCE`], then return to the socket the server knows and read the answer.
 async fn refused_at_the_new_address(
     run: &CaseRun<MigrationScenario>,
     connection: &quinn::Connection,

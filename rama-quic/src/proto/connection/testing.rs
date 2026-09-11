@@ -95,6 +95,13 @@ impl Connection {
         self.path.mtu_validated
     }
 
+    /// Tests: say whether the path has proven its minimum MTU, leaving everything else as it
+    /// is, for the cases about what waits on that condition alone.
+    #[cfg(test)]
+    pub(crate) fn set_mtu_validated(&mut self, proven: bool) {
+        self.path.mtu_validated = proven;
+    }
+
     /// Tests: the token of the validation outstanding on the current path, if any.
     #[cfg(test)]
     pub(crate) fn challenge_token(&self) -> Option<u64> {

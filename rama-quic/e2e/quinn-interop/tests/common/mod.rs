@@ -185,8 +185,7 @@ pub fn quinn_client_config(anchor: CertificateDer<'static>) -> quinn::ClientConf
     ))
 }
 
-/// A socket that counts the datagrams through it, so what a peer did about a move is a pair
-/// of numbers rather than a wait that ran out. Everything else is the socket it wraps.
+/// A socket that counts the datagrams through it. Everything else is the socket it wraps.
 #[derive(Debug)]
 pub struct Counted {
     inner: Arc<dyn AsyncUdpSocket>,
@@ -204,12 +203,13 @@ impl Counted {
         })
     }
 
-    /// Datagrams sent from this socket.
+    /// Datagrams submitted to this socket for sending, which is not delivery confirmed on
+    /// the wire.
     pub fn sent(&self) -> usize {
         self.sent.load(Ordering::Relaxed)
     }
 
-    /// Datagrams that arrived here.
+    /// Datagrams this socket delivered.
     pub fn received(&self) -> usize {
         self.received.load(Ordering::Relaxed)
     }

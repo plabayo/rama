@@ -470,3 +470,90 @@ fn a_path_given_up_with_no_fallback_ends_the_connection_with_no_viable_path() {
         "a connection with nowhere to send stops sending"
     );
 }
+
+/// Rama holds its MTU discovery search until the path has proven it carries the minimum
+/// datagram, since a discovery probe is larger than the path is known to carry and what may
+/// go towards an unvalidated address is bounded in bytes (RFC 9000 §8). This pins that
+/// policy; it is Rama's, not a requirement of RFC 9000 §14.2, which exempts PMTU probes from
+/// the rule it states.
+///
+/// Both arms reach one state — a peer that has just moved, so the new path has a fresh
+/// search with work to do — and differ only in `mtu_validated`. The unvalidated arm is what
+/// a move reaches, and the test asserts that before it sets anything. The validated arm is
+/// constructed through a private test helper, because the natural route to it would also
+/// exchange the packets that prove the path.
+#[test]
+fn a_path_that_has_not_proven_its_minimum_mtu_gets_no_discovery_probe() {
+    let _guard = subscribe();
+    let after_the_move = |proven: bool| {
+        let mut pair = Pair::default();
+        // Below what the link carries, so the search after the move has somewhere to go.
+        pair.mtu = 1300;
+        let (client_ch, server_ch) = pair.connect();
+        pair.drive();
+        pair.mtu = 1500;
+        let carried = pair.server_conn_mut(server_ch).path_mtu();
+
+        let moved_to = SocketAddr::new(
+            Ipv4Addr::new(127, 0, 0, 1).into(),
+            CLIENT_PORTS.lock().next().unwrap(),
+        );
+        pair.client.addr = moved_to;
+        pair.client_conn_mut(client_ch).ping();
+        pair.drive_client();
+        // Counted from before the server sees the move, so a probe emitted while the new
+        // path is unproven is counted too.
+        let probes_before = pair
+            .server_conn_mut(server_ch)
+            .stats()
+            .path
+            .sent_plpmtud_probes;
+        let sent_before = pair.server_sent.len();
+
+        pair.drive_server();
+        assert!(
+            !pair.server_conn_mut(server_ch).mtu_validated(),
+            "new path reports minimum-MTU validation before any is proven"
+        );
+        pair.server_conn_mut(server_ch).set_mtu_validated(proven);
+        // Past the pacing delay, so pacing is not the limit under test.
+        pair.time += Duration::from_millis(50);
+        pair.drive_server();
+
+        let probes = pair
+            .server_conn_mut(server_ch)
+            .stats()
+            .path
+            .sent_plpmtud_probes
+            - probes_before;
+        // A probe is the only datagram here larger than the path's known MTU.
+        let full_size: Vec<usize> = pair
+            .server_sent
+            .iter()
+            .skip(sent_before)
+            .filter(|sent| sent.to == moved_to && sent.bytes > usize::from(carried))
+            .map(|sent| sent.bytes)
+            .collect();
+        (probes, full_size, carried)
+    };
+
+    let (probes, full_size, carried) = after_the_move(true);
+    assert_eq!(
+        full_size.len(),
+        1,
+        "no PMTU probe emitted after minimum-MTU validation (path carries {carried}): \
+         {full_size:?}"
+    );
+    assert_eq!(probes, 1, "unexpected PMTU probe count after validation");
+
+    let (probes, full_size, carried) = after_the_move(false);
+    assert!(
+        full_size.is_empty(),
+        "PMTU probe emitted before minimum-MTU validation (path carries {carried}): \
+         {full_size:?}"
+    );
+    assert_eq!(
+        probes, 0,
+        "unexpected PMTU probe count before minimum-MTU validation"
+    );
+}

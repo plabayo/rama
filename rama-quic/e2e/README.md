@@ -58,15 +58,21 @@ Known gaps, as of this checkpoint:
   moved tuple, and it has a control of its own: the same move under a server that never acts
   on a PATH_RESPONSE carries the traffic and reports the path unvalidated. Every other role
   says nothing about validation, and an address that changed is not a validated path.
-- **`migration-without-an-identifier`** does not run in every role. quiche can withhold an
-  identifier; Quinn and aioquic issue their own, and so does Rama, so neither side can hold
-  one back in the roles where it would matter. Each is recorded with its reason, under
-  `--nocapture`.
+- **Two migration cases do not run in every role.** What runs where:
+
+  | case | runs | recorded unsupported |
+  | --- | --- | --- |
+  | `migration-moves` | every peer, both roles | — |
+  | `migration-forbidden` | all three rama-server roles; quiche and Quinn rama-client | aioquic rama-client: its server configuration cannot refuse a move |
+  | `migration-without-an-identifier` | quiche rama-client | all three rama-server roles, since Rama issues its own identifiers; Quinn and aioquic rama-client, since each issues its own |
+
+  Each unsupported combination is recorded with its reason, under `--nocapture`.
 - **`migration-forbidden` is a violating client.** None of the three peers reads the server's
   `disable_active_migration`, so in the rama-server role each moves against Rama's policy.
-  What the case asserts is that the peer sent from the address it moved to, that nothing came
-  back there, and that the exchange it was holding completes as soon as it returns to the
-  path Rama still holds — counts and traffic, not a wait that ran out.
+  The case observes the moved socket over a bounded interval, then returns the client to the
+  original socket and completes the exchange it was holding. What it establishes is an
+  absence of arrivals over that interval together with success on the original path; the
+  control that ties it to the policy is the run with `with_migration` overridden.
 - **Key updates**: quiche exposes none. aioquic covers both roles through the shared family.
 - **TLS keying-material exporters**: neither quiche nor aioquic exposes one, so exporters are
   covered against Quinn only.
