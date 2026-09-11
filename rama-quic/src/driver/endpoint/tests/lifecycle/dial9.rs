@@ -7,9 +7,9 @@ use rama_core::telemetry::dial9::{
 };
 
 /// Both tests read the process-wide driver observation, so they never overlap.
-fn observation_slot() -> parking_lot::MutexGuard<'static, ()> {
-    static SLOT: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
-    SLOT.lock()
+fn observation_slot() -> &'static tokio::sync::Mutex<()> {
+    static SLOT: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    &SLOT
 }
 
 async fn handshake_and_shutdown() {
@@ -33,12 +33,8 @@ async fn handshake_and_shutdown() {
 }
 
 #[tokio::test]
-#[expect(
-    clippy::await_holding_lock,
-    reason = "the slot is what keeps the other test out while this one drives the process-wide observation"
-)]
 async fn without_a_recorder_the_drivers_run_with_a_disabled_handle() {
-    let _slot = observation_slot();
+    let _slot = observation_slot().lock().await;
     assert!(!Dial9Handle::current().is_enabled());
     crate::driver::connection::DRIVER_POLLED_WITH_DIAL9.store(false, Ordering::Relaxed);
     handshake_and_shutdown().await;
@@ -50,7 +46,7 @@ async fn without_a_recorder_the_drivers_run_with_a_disabled_handle() {
 
 #[test]
 fn driver_tasks_run_inside_an_attached_dial9_session() {
-    let _slot = observation_slot();
+    let _slot = observation_slot().blocking_lock();
     let temp_dir = rama_utils::fs::tempdir().unwrap();
     let writer = DiskBuffer::builder()
         .base_path(temp_dir.path())
