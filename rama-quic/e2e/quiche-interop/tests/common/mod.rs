@@ -217,6 +217,7 @@ pub const OTHER_TICKET_KEY: [u8; 48] = [0xa5; 48];
 /// BoringSSL's `ssl_early_data_reason_t`, as the vendored header in the pinned quiche defines
 /// it. quiche reports it through `Connection::early_data_reason`.
 pub mod early_data {
+    pub const DISABLED: u32 = 1;
     pub const ACCEPTED: u32 = 2;
     pub const PEER_DECLINED: u32 = 4;
     pub const SESSION_NOT_RESUMED: u32 = 6;

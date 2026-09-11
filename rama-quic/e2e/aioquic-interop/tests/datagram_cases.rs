@@ -2,15 +2,23 @@
 //!
 //! The child takes each datagram as the two numbers it follows from, so its payloads come from
 //! the same case the Rama side is given, and it reports what it received for itself.
+//!
+//! The frame the child advertises is small enough that it, and not the path, is what bounds a
+//! datagram here. Against quiche it is the path that binds, so the two projects cover the two
+//! halves of the same limit.
 
 mod common;
 
 use common::*;
 use interop_common::{
-    CaseRun, DatagramObservation, DatagramScenario, Received, Role, Unsupported,
+    DatagramObservation, DatagramScenario, Deadline, Ears, Received, Role, UnsupportedObservation,
+    backpressure::rama_client_fills_and_cancels,
+    backpressure_cases,
     datagram::{rama_client_side, rama_server_side},
     datagram_cases, for_each_case_within,
     scenario::SERVER_NAME,
+    unsupported::{rama_client_without_datagrams, rama_server_without_datagrams},
+    unsupported_cases,
 };
 use rama::utils::hex;
 
@@ -81,9 +89,6 @@ async fn datagram_cases_rama_server() {
         datagram_cases(),
         LIMIT,
         |run| async move {
-            if skip_the_boundary(&run) {
-                return;
-            }
             let identity = Identity::generate(SERVER_NAME);
             let run = run.with_identity(identity.auth.clone());
             let (endpoint, addr, serving) = rama_server_side(&run).await;
@@ -109,8 +114,9 @@ async fn datagram_cases_rama_server() {
             let observed = observation(&reported);
             peer.finished(run.deadline).await;
 
-            observed.check(&run.what, &run.scenario, run.role, run.scenario.back);
-            observed.bounds(&run.what, serving.join(&run.what, run.deadline).await);
+            let (limit, sent) = serving.join(&run.what, run.deadline).await;
+            observed.check(&run.what, &run.scenario, run.role, sent);
+            observed.bounds(&run.what, limit);
             run.deadline.wait(&run.what, endpoint.wait_idle()).await;
         },
     )
@@ -123,34 +129,229 @@ async fn datagram_cases_rama_server() {
 /// advertise, an input rather than an observation, and aioquic exposes no usable send-payload
 /// size through the event bridge. So `sendable` is left unset and the shared check makes no
 /// claim about it; that it did send the answering datagram is shown by the delivery itself.
-fn observation(reported: &Event) -> DatagramObservation {
-    let mut digest = [0u8; 32];
-    let written = hex::decode_into(reported.sha256(), &mut digest).expect("a sha256 as text");
-    assert_eq!(written, digest.len(), "a whole sha256 digest");
+fn observation(event: &Event) -> DatagramObservation {
     DatagramObservation {
         sendable: None,
         // What this side told the child to advertise with `--datagram-frame`.
         advertised: Some(FRAME),
-        received: Some(Received::Reported {
-            digest,
-            len: reported.len(),
-        }),
+        received: Some(reported(event)),
     }
 }
 
-/// The boundary row probes what Rama may send, so it runs where Rama opens the connection.
-/// In this role Rama sends the case's fixed answer instead.
-fn skip_the_boundary(run: &CaseRun<DatagramScenario>) -> bool {
-    if run.scenario.at_the_boundary {
-        // Visible with `cargo test -- --nocapture`.
-        println!(
-            "{}",
-            Unsupported {
-                case: "datagram-at-the-boundary",
-                peer: PEER,
-                reason: "the boundary is probed in the role where rama opens the connection",
-            }
-        );
+/// One of the child's reports as a length and the digest it computed itself.
+fn reported(event: &Event) -> Received {
+    let mut digest = [0u8; 32];
+    let written = hex::decode_into(event.sha256(), &mut digest).expect("a sha256 as text");
+    assert_eq!(written, digest.len(), "a whole sha256 digest");
+    Received::Reported {
+        digest,
+        len: event.len(),
     }
-    run.scenario.at_the_boundary
+}
+
+/// What the child is told for a case where it must not offer the extension: a frame size of
+/// zero, which is how it is asked for no `max_datagram_frame_size` at all.
+const NO_FRAME: &str = "0";
+
+/// Rama opens the connection and an aioquic that offers no datagram size answers it.
+#[tokio::test]
+async fn unsupported_cases_rama_client() {
+    prepare().await;
+    for_each_case_within(
+        PEER,
+        Role::RamaClient,
+        unsupported_cases(),
+        LIMIT,
+        |run| async move {
+            let identity = Identity::generate(SERVER_NAME);
+            let run = run.with_identity(identity.auth.clone());
+            let mut peer = AioQuic::spawn(
+                "server",
+                &[
+                    "--cert",
+                    identity.certificate(),
+                    "--key",
+                    identity.key(),
+                    "--datagram-frame",
+                    NO_FRAME,
+                ],
+            )
+            .await;
+            let addr = peer.listening(run.deadline).await;
+
+            let rama = rama_client_without_datagrams(&run, addr).await;
+            peer.expect("handshake", run.deadline).await;
+            let carried = peer.expect("stream", run.deadline).await;
+            rama.close(&run.what, run.deadline).await;
+            // Nothing between the exchange and the end: a datagram the child was sent would
+            // be an event of its own here, and this would report it instead.
+            peer.expect("ended", run.deadline).await;
+            peer.finished(run.deadline).await;
+            observed_without_datagrams(&carried).check(&run.what, &run.scenario);
+        },
+    )
+    .await;
+}
+
+/// An aioquic that offers no datagram size opens the connection and Rama answers it.
+#[tokio::test]
+async fn unsupported_cases_rama_server() {
+    prepare().await;
+    for_each_case_within(
+        PEER,
+        Role::RamaServer,
+        unsupported_cases(),
+        LIMIT,
+        |run| async move {
+            let identity = Identity::generate(SERVER_NAME);
+            let run = run.with_identity(identity.auth.clone());
+            let (endpoint, addr, serving) = rama_server_without_datagrams(&run).await;
+            let mut peer = AioQuic::spawn(
+                "client",
+                &[
+                    "--ca",
+                    identity.certificate(),
+                    "--port",
+                    &addr.port().to_string(),
+                    "--datagram-frame",
+                    NO_FRAME,
+                    "--datagrams",
+                    "0",
+                    "--probe-seed",
+                    &run.scenario.carried.seed.to_string(),
+                    "--probe-length",
+                    &run.scenario.carried.len.to_string(),
+                ],
+            )
+            .await;
+
+            peer.expect("handshake", run.deadline).await;
+            peer.expect("connected", run.deadline).await;
+            let carried = peer.expect("stream", run.deadline).await;
+            peer.expect("ended", run.deadline).await;
+            peer.finished(run.deadline).await;
+
+            serving.join(&run.what, run.deadline).await;
+            observed_without_datagrams(&carried).check(&run.what, &run.scenario);
+            run.deadline.wait(&run.what, endpoint.wait_idle()).await;
+        },
+    )
+    .await;
+}
+
+/// What the child said about the exchange it carried. It reports every datagram it is given as
+/// an event of its own, and each role above reads its events in order, so a datagram that
+/// arrived would have failed the read that follows the exchange rather than reaching here.
+fn observed_without_datagrams(carried: &Event) -> UnsupportedObservation {
+    UnsupportedObservation {
+        datagram: None,
+        carried: Some(reported(carried)),
+    }
+}
+
+/// The child's own pause, as the shared backpressure case asks for it. `deaf` drops every
+/// datagram at its socket, so acknowledgements stop and the transport stalls rather than only
+/// its application reads.
+struct Orders<'a> {
+    peer: &'a mut AioQuic,
+    deadline: Deadline,
+    /// Whether the line the child writes when its handshake completes has been read. It says
+    /// that before it takes an order, so reading it here keeps its output in step.
+    greeted: bool,
+}
+
+impl Ears for Orders<'_> {
+    async fn deaf(&mut self) {
+        if !self.greeted {
+            self.peer.expect("handshake", self.deadline).await;
+            self.greeted = true;
+        }
+        self.peer.tell("deaf", self.deadline).await;
+    }
+
+    async fn hear(&mut self) {
+        self.peer.tell("hear", self.deadline).await;
+    }
+}
+
+/// Rama fills its outgoing buffer against an aioquic that has stopped reading, cancels the
+/// send that has no room, and carries on once it is reading again.
+#[tokio::test]
+async fn backpressure_cases_rama_client() {
+    prepare().await;
+    for_each_case_within(
+        PEER,
+        Role::RamaClient,
+        backpressure_cases(),
+        LIMIT,
+        |run| async move {
+            let identity = Identity::generate(SERVER_NAME);
+            let run = run.with_identity(identity.auth.clone());
+            let mut peer = AioQuic::spawn(
+                "server",
+                &[
+                    "--cert",
+                    identity.certificate(),
+                    "--key",
+                    identity.key(),
+                    "--datagram-frame",
+                    &FRAME.to_string(),
+                    "--orders",
+                ],
+            )
+            .await;
+            let addr = peer.listening(run.deadline).await;
+
+            let filled = {
+                let mut ears = Orders {
+                    peer: &mut peer,
+                    deadline: run.deadline,
+                    greeted: false,
+                };
+                rama_client_fills_and_cancels(&run, addr, &mut ears).await
+            };
+
+            // Read until the child has the one sent once there was room, so the connection is
+            // not closed while it is still catching up, then close and read the rest. What
+            // the child reports and in what order is not fixed here: datagrams are unordered
+            // and the exchange may be reported among them, so each line is taken for what it
+            // says.
+            let mut reports = Vec::new();
+            let mut carried = false;
+            loop {
+                let event = peer.event(&run.what, run.deadline).await;
+                match event.name() {
+                    "datagram" => {
+                        let report = reported(&event);
+                        let resumed = filled.sent.resumed(&report);
+                        reports.push(report);
+                        if resumed {
+                            break;
+                        }
+                    }
+                    "stream" => carried = true,
+                    other => panic!("{}: the child said {other} mid-case", run.what),
+                }
+            }
+            let sent = filled.sent.clone();
+            filled.close(&run.what, run.deadline).await;
+            loop {
+                let event = peer.event(&run.what, run.deadline).await;
+                match event.name() {
+                    "datagram" => reports.push(reported(&event)),
+                    "stream" => carried = true,
+                    "ended" => break,
+                    other => panic!("{}: the child said {other} as it ended", run.what),
+                }
+            }
+            peer.finished(run.deadline).await;
+            assert!(
+                carried,
+                "{}: the exchange after the stall was carried",
+                run.what
+            );
+            sent.account_for(&run.what, &reports);
+        },
+    )
+    .await;
 }

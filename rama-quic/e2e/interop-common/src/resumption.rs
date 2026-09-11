@@ -33,6 +33,7 @@ use rama::{
 };
 
 use crate::{
+    close::CloseObservation,
     identity::{ALPN, Identity, alpn},
     registry::{Case, CaseRun},
     scenario::{Chunk, Received, SERVER_NAME},
@@ -40,6 +41,11 @@ use crate::{
 };
 
 const READ_CAP: usize = octets::mib(1);
+
+/// The close every second connection ends on, so an idle timeout cannot stand in for the
+/// client having closed.
+pub const CLOSE_CODE: u64 = 0;
+pub const CLOSE_REASON: &[u8] = b"done";
 
 /// What the peer's server does with the second attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -200,6 +206,11 @@ pub struct ResumptionObservation {
     pub early_data: Reported,
     /// What it read on the second connection, in the order it read it.
     pub received: Vec<Received>,
+    /// How the peer saw Rama's client close the second connection, where it reports that.
+    /// Only the role where Rama opens the connection has one; it is checked by
+    /// [`Self::closed_as_the_client_did`] rather than by [`Self::check`], since what the
+    /// other role sees is the peer's own close and the peer chooses that.
+    pub closed: Option<CloseObservation>,
     /// Anything that implementation says for itself, kept for a failure message.
     pub detail: Option<String>,
 }
@@ -247,6 +258,19 @@ impl ResumptionObservation {
         }
         withheld
     }
+
+    /// How the peer saw Rama's client close: an application close with the code and reason it
+    /// gave, so an idle timeout cannot stand in for the client having closed. Only the role
+    /// where Rama opens the connection has one to report.
+    ///
+    /// # Panics
+    /// If the peer reported no close, or not that one.
+    pub fn closed_as_the_client_did(&self, what: &str) {
+        self.closed
+            .as_ref()
+            .unwrap_or_else(|| panic!("{what}: the peer says how the connection ended"))
+            .says(what, CLOSE_CODE, CLOSE_REASON);
+    }
 }
 
 /// A client configuration for a case: it asks for early keys only where the case offers early
@@ -287,7 +311,10 @@ pub async fn rama_client_warms_up(
         .await
         .expect("the first handshake completes");
     exchange(what, *deadline, &connection, run.scenario.warm).await;
-    connection.close(0u32.into(), b"done");
+    connection.close(
+        u32::try_from(CLOSE_CODE).expect("it fits").into(),
+        CLOSE_REASON,
+    );
     deadline.wait(what, connection.closed()).await;
 }
 
@@ -374,7 +401,10 @@ pub async fn rama_client_resumes(
         .handshake_data()
         .expect("the handshake settled something")
         .resumed;
-    connection.close(0u32.into(), b"done");
+    connection.close(
+        u32::try_from(CLOSE_CODE).expect("it fits").into(),
+        CLOSE_REASON,
+    );
     deadline.wait(what, connection.closed()).await;
     resumed
 }

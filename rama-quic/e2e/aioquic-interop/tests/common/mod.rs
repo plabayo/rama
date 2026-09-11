@@ -33,7 +33,7 @@ use rama::{
         dep::rcgen,
         pki_types::{CertificateDer, PrivatePkcs8KeyDer},
     },
-    quic::{ClientConfig, Connection, Endpoint, ServerConfig, TransportConfig, tls::TlsOptions},
+    quic::{ClientConfig, Connection, Endpoint, ServerConfig, tls::TlsOptions},
     tls::{
         client::TlsClientConfig,
         server::{ServerAuthData, TlsServerConfig},
@@ -277,13 +277,6 @@ pub fn rama_server_config(identity: &Identity) -> ServerConfig {
         .with_server_auth(identity.auth.clone());
     ServerConfig::try_from_rama_tls(&tls, TlsOptions::default())
         .expect("the server config is built")
-}
-
-/// A client that trusts `identity` and holds at most `buffer` bytes of outgoing datagrams, so
-/// a test can fill that buffer deliberately rather than by volume.
-pub fn rama_client_config_with_datagram_buffer(identity: &Identity, buffer: usize) -> ClientConfig {
-    let transport = TransportConfig::default().with_datagram_send_buffer_size(buffer);
-    rama_client_config(identity).with_transport_config(Arc::new(transport))
 }
 
 /// A client that trusts `identity` and may offer early application data. Early data is opt-in

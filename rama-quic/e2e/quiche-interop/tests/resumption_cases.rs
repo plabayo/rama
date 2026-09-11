@@ -4,6 +4,11 @@
 //! again, and `early_data_reason` says what became of the early data, so nothing here is
 //! inferred from the other. Which outcome a case gets is set by the second server's ticket key
 //! and whether it takes early data at all; everything else about the two servers is the same.
+//!
+//! Three outcomes are told apart rather than inferred from one another: early data accepted,
+//! early data refused while the session still resumes, and the resumption itself refused.
+//! [`expected_reason`] pins what quiche must say for each, since a session that was never
+//! resumed and a resumed session whose early data was refused are different facts.
 
 mod common;
 
@@ -12,8 +17,8 @@ use common::{
     quiche_resuming_server_config,
 };
 use interop_common::{
-    Arrival, Expected, Received, RecordingSessions, Reported, ResumptionObservation,
-    ResumptionScenario, Role, Verdict, for_each_case,
+    Arrival, CloseObservation, Expected, Received, RecordingSessions, Reported,
+    ResumptionObservation, ResumptionScenario, Role, Verdict, for_each_case,
     identity::anchor_of,
     registry::CaseRun,
     resumption::{
@@ -100,6 +105,7 @@ async fn resumption_cases_rama_client() {
                 "{}: this peer reports both verdicts itself: {withheld:?}",
                 run.what
             );
+            observed.closed_as_the_client_did(&run.what);
             run.deadline.wait(&run.what, client.wait_idle()).await;
         },
     )
@@ -145,14 +151,35 @@ async fn second_connection(
             "{what}: the early bytes were on the wire before the handshake was let finish"
         );
         server
+            .drive_until(what, deadline, |connection| connection.is_established())
+            .await;
+        server
     } else {
-        Quiche::accept_on(socket, config, deadline).await
+        let mut server = Quiche::accept_on(socket, config, deadline).await;
+        // Nothing may be readable before the handshake finishes: whatever the client offered
+        // was not taken on the early keys.
+        let mut early = Vec::new();
+        server
+            .drive_until(what, deadline, |connection| {
+                if !connection.is_established() {
+                    early.extend(connection.readable());
+                }
+                connection.is_established()
+            })
+            .await;
+        assert!(
+            early.is_empty(),
+            "{what}: no early bytes were taken, yet {early:?} was readable before the handshake"
+        );
+        server
     };
-    server
-        .drive_until(what, deadline, |connection| connection.is_established())
-        .await;
     let resumed = server.connection().is_resumed();
     let reason = server.connection().early_data_reason();
+    assert_eq!(
+        reason,
+        expected_reason(run.scenario.verdict),
+        "{what}: quiche's own reason for this verdict"
+    );
 
     let mut received = Vec::new();
     for expected in run.scenario.expected() {
@@ -180,7 +207,7 @@ async fn second_connection(
                     extra.push(stream);
                 }
             }
-            connection.is_closed()
+            connection.peer_error().is_some() || connection.is_closed()
         })
         .await;
     for stream in extra {
@@ -194,7 +221,41 @@ async fn second_connection(
         resumed: Reported::Seen(resumed),
         early_data: Reported::Seen(reason == early_data::ACCEPTED),
         received,
+        closed: Some(the_clients_close(&mut server)),
         detail: Some(format!("early data reason {reason}")),
+    }
+}
+
+/// The reason quiche must give for a case's verdict. `early_data_reason` tells a session that
+/// was never resumed apart from one that was and whose early data was refused, and the two
+/// refusals apart from one another, which the shared verdict alone does not.
+///
+/// The values are BoringSSL's `ssl_early_data_reason_t`, as vendored by quiche 0.24.9 at
+/// `deps/boringssl/src/include/openssl/ssl.h:3513`.
+fn expected_reason(verdict: Verdict) -> u32 {
+    match verdict {
+        Verdict::EarlyDataAccepted => early_data::ACCEPTED,
+        // The second server never enabled early data, so it is disabled rather than declined.
+        Verdict::EarlyDataRefused => early_data::DISABLED,
+        Verdict::NotResumed => early_data::SESSION_NOT_RESUMED,
+        // The client offered none, which is a refusal by the peer that had it to offer.
+        Verdict::ResumedWithoutEarlyData => early_data::PEER_DECLINED,
+    }
+}
+
+/// How quiche saw the client end the connection.
+fn the_clients_close(server: &mut Quiche) -> CloseObservation {
+    let ended = server
+        .connection()
+        .peer_error()
+        .expect("the client stated why it stopped")
+        .clone();
+    CloseObservation {
+        code: ended.error_code,
+        reason: ended.reason,
+        application: ended.is_app,
+        // quiche's `peer_error` is by definition the close that arrived.
+        received: Some(true),
     }
 }
 
@@ -285,6 +346,9 @@ async fn resumption_cases_rama_server() {
                 resumed: Reported::Seen(resumed),
                 early_data: Reported::Seen(reason == early_data::ACCEPTED),
                 received: report.received,
+                // Rama serves here, so the close this role sees is the peer's own, which the
+                // peer chooses rather than the case.
+                closed: None,
                 detail: Some(format!("early data reason {reason}, {}", active.detail())),
             };
             let withheld = observed.check(&run.what, &run.scenario);

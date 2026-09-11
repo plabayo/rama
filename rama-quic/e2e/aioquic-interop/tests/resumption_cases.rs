@@ -11,8 +11,8 @@ mod common;
 
 use common::*;
 use interop_common::{
-    Arrival, Expected, RecordingSessions, Reported, ResumptionObservation, ResumptionScenario,
-    Role, Unsupported, Verdict, for_each_case_within,
+    Arrival, CloseObservation, Expected, RecordingSessions, Reported, ResumptionObservation,
+    ResumptionScenario, Role, Unsupported, Verdict, for_each_case_within,
     identity::anchor_of,
     registry::CaseRun,
     resumption::{
@@ -111,6 +111,7 @@ async fn resumption_cases_rama_client() {
                 "{}: this peer reports both verdicts itself: {withheld:?}",
                 run.what
             );
+            observed.closed_as_the_client_did(&run.what);
             peer.finished(run.deadline).await;
             run.deadline.wait(&run.what, client.wait_idle()).await;
         },
@@ -144,20 +145,26 @@ async fn observe(run: &CaseRun<ResumptionScenario>, peer: &mut AioQuic) -> Resum
     let (what, deadline) = (&run.what, run.deadline);
     let handshake = peer.expect("handshake", deadline).await;
     let mut received = Vec::new();
-    loop {
+    let ended = loop {
         let event = peer.event(what, deadline).await;
         match event.name() {
             "stream" => received.push(event.reported()),
-            "ended" => break,
+            "ended" => break event,
             other => panic!("{what}: the peer reported {other} on the second connection"),
         }
-    }
+    };
     ResumptionObservation {
         // Filled in by the caller from Rama's own side.
         rama: None,
         resumed: Reported::Seen(handshake.resumed()),
         early_data: Reported::Seen(handshake.early()),
         received,
+        closed: Some(CloseObservation {
+            code: ended.code(),
+            reason: ended.reason().as_bytes().to_vec(),
+            application: ended.application(),
+            received: Some(ended.close_arrived()),
+        }),
         detail: None,
     }
 }
@@ -320,6 +327,9 @@ async fn resumption_cases_rama_server() {
                 resumed: Reported::Seen(second.resumed()),
                 early_data: Reported::Seen(second.early()),
                 received: report.received,
+                // Rama serves here, so the close this role sees is the peer's own, which the
+                // peer chooses rather than the case.
+                closed: None,
                 detail: Some(active.detail()),
             };
             let withheld = observed.check(&run.what, &run.scenario);

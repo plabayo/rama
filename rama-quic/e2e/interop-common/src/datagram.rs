@@ -4,12 +4,15 @@
 //! A datagram is one frame: what is sent arrives whole or not at all. Each case sends one out
 //! and expects one back, so nothing here depends on the order of two deliveries.
 
-use std::net::SocketAddr;
+use std::{net::SocketAddr, sync::Arc};
 
-use rama::quic::{Connection, Endpoint, SendDatagramError};
+use rama::{
+    quic::{ClientConfig, Connection, Endpoint, SendDatagramError, ServerConfig, TransportConfig},
+    utils::octets,
+};
 
 use crate::{
-    identity::{anchor_of, rama_client_config, rama_server_config},
+    identity::{Identity, anchor_of, rama_client_config, rama_server_config},
     registry::{Case, CaseRun, Role},
     scenario::{Chunk, Received, SERVER_NAME},
     support::{Deadline, Peer, localhost, payload},
@@ -23,7 +26,8 @@ pub struct DatagramScenario {
     /// Whether this row probes the size boundary rather than carrying the fixed payload.
     ///
     /// A boundary row pins the path so the limit cannot move under it: MTU discovery off and
-    /// a fixed MTU. The payload is then the limit itself, read immediately before the send.
+    /// a fixed MTU. Whatever Rama sends is then the limit itself, read immediately before the
+    /// send, in whichever role it plays.
     pub at_the_boundary: bool,
 }
 
@@ -59,9 +63,7 @@ pub fn datagram_cases() -> Vec<Case<DatagramScenario>> {
                 at_the_boundary: false,
             },
         },
-        // The API's own boundary: the largest datagram the connection reports is delivered,
-        // and one byte more is refused. `out` names only the seed; its length is the limit.
-        // Zero-length application data is valid and is not a boundary request.
+        // Zero-length application data is valid, and is not a request for the boundary.
         Case {
             name: "datagram-empty-payload",
             scenario: DatagramScenario {
@@ -73,11 +75,16 @@ pub fn datagram_cases() -> Vec<Case<DatagramScenario>> {
                 at_the_boundary: false,
             },
         },
+        // The API's own boundary: the largest datagram the connection reports is delivered,
+        // and one byte more is refused. Whichever of these two Rama sends has its length
+        // replaced by that maximum; the peer sends the other one as written.
         Case {
             name: "datagram-at-the-boundary",
             scenario: DatagramScenario {
-                // Its length is read from the connection, so this one is unused.
-                out: Chunk { seed: 0x75, len: 0 },
+                out: Chunk {
+                    seed: 0x75,
+                    len: 48,
+                },
                 back: Chunk {
                     seed: 0x76,
                     len: 64,
@@ -146,6 +153,40 @@ impl DatagramObservation {
     }
 }
 
+/// The MTU a boundary row pins its path to, comfortably above the smallest a QUIC path may
+/// carry and below what loopback would discover.
+const PINNED_MTU: u16 = 1300;
+
+/// A transport whose path cannot move under a boundary row. `max_datagram_size` and
+/// `send_datagram` take the connection lock separately, so discovery running between them
+/// could change the limit a case just read; an ordinary row keeps discovery on.
+fn pinned_path() -> Arc<TransportConfig> {
+    let mut transport = TransportConfig::default();
+    transport.unset_mtu_discovery_config();
+    transport.set_initial_mtu(PINNED_MTU);
+    transport.set_min_mtu(PINNED_MTU);
+    Arc::new(transport)
+}
+
+/// The client configuration a row runs with: the path is pinned for a boundary row and left
+/// to discovery otherwise.
+fn client_config_for(identity: &Identity, boundary: bool) -> ClientConfig {
+    let config = rama_client_config(anchor_of(identity));
+    match boundary {
+        true => config.with_transport_config(pinned_path()),
+        false => config,
+    }
+}
+
+/// The same for the serving side.
+fn server_config_for(identity: &Identity, boundary: bool) -> ServerConfig {
+    let config = rama_server_config(identity);
+    match boundary {
+        true => config.with_transport_config(pinned_path()),
+        false => config,
+    }
+}
+
 /// Rama as the client: connect, send one datagram, read the one that comes back.
 pub async fn rama_client_side(
     run: &CaseRun<DatagramScenario>,
@@ -167,7 +208,7 @@ pub async fn rama_client_side(
             what,
             endpoint
                 .connect_with(
-                    rama_client_config(anchor_of(identity)),
+                    client_config_for(identity, scenario.at_the_boundary),
                     peer_addr,
                     SERVER_NAME,
                 )
@@ -212,9 +253,12 @@ impl RamaDatagramClient {
 }
 
 /// Rama as the server: accept, read the datagram that arrives, send the answering one.
+///
+/// The peer joins on the limit Rama reported and the payload it sent, which a boundary row
+/// sizes from the connection rather than from the case.
 pub async fn rama_server_side(
     run: &CaseRun<DatagramScenario>,
-) -> (Endpoint, SocketAddr, Peer<usize>) {
+) -> (Endpoint, SocketAddr, Peer<(usize, Chunk)>) {
     let CaseRun {
         what,
         deadline,
@@ -224,7 +268,10 @@ pub async fn rama_server_side(
     let server = deadline
         .wait(
             what,
-            Endpoint::server(rama_server_config(identity), localhost()),
+            Endpoint::server(
+                server_config_for(identity, run.scenario.at_the_boundary),
+                localhost(),
+            ),
         )
         .await
         .expect("the rama server binds");
@@ -251,9 +298,17 @@ pub async fn rama_server_side(
                 .await
                 .expect("a datagram arrives");
             Received::Bytes(arrived.to_vec()).check(&run.what, "datagram", run.scenario.out);
-            let limit = send_one(&run.what, &conn, run.scenario.back);
+            let sent = send_sized(
+                &run.what,
+                run.deadline,
+                &conn,
+                run.scenario.back,
+                run.scenario.at_the_boundary,
+                true,
+            )
+            .await;
             run.deadline.wait(&run.what, conn.closed()).await;
-            limit
+            sent
         }
     });
     (server, addr, serving)
@@ -268,7 +323,7 @@ async fn exchange(
     back: Chunk,
     boundary: bool,
 ) -> (usize, Chunk) {
-    let (limit, out) = send_sized(what, conn, out, boundary);
+    let (limit, out) = send_sized(what, deadline, conn, out, boundary, false).await;
     let arrived = deadline
         .wait(what, conn.read_datagram())
         .await
@@ -279,12 +334,23 @@ async fn exchange(
 
 /// The payload a row sends: the one it names, or the connection's own limit read immediately
 /// before the send where the row probes the boundary. A boundary row then requires one byte
-/// more to be refused, reading the limit again at that moment so a stale value cannot stand
-/// in for a live one.
+/// more to be refused, reading the limit again at that moment: a stale value cannot stand in
+/// for a live one, and a path that moved between the two is what the pinning exists to stop.
+///
+/// The reported maximum reserves more than the header a frame of that size needs, so what
+/// this establishes is that it is deliverable and that one byte more is refused, not that it
+/// is exact to the byte.
 ///
 /// # Panics
 /// If an oversized datagram is accepted, or refused for another reason.
-fn send_sized(what: &str, conn: &Connection, out: Chunk, boundary: bool) -> (usize, Chunk) {
+async fn send_sized(
+    what: &str,
+    deadline: Deadline,
+    conn: &Connection,
+    out: Chunk,
+    boundary: bool,
+    waiting: bool,
+) -> (usize, Chunk) {
     let Chunk { seed, .. } = out;
     let out = match boundary {
         true => Chunk {
@@ -295,11 +361,15 @@ fn send_sized(what: &str, conn: &Connection, out: Chunk, boundary: bool) -> (usi
         },
         false => out,
     };
-    let limit = send_one(what, conn, out);
+    let limit = send_one(what, deadline, conn, out, waiting).await;
     if boundary {
         let live = conn
             .max_datagram_size()
             .expect("the peer offered the extension");
+        assert_eq!(
+            live, limit,
+            "{what}: the pinned path moved under this row: {limit} then {live}"
+        );
         let refused = conn
             .send_datagram(payload(seed, live + 1).into())
             .expect_err("a datagram over the limit is refused");
@@ -309,13 +379,31 @@ fn send_sized(what: &str, conn: &Connection, out: Chunk, boundary: bool) -> (usi
             "{what}: unexpected refusal for {} bytes against a live limit of {live}",
             live + 1
         );
+        // And a size beyond any path, so one refusal does not stand on where the limit sits.
+        let beyond = conn
+            .send_datagram(payload(seed, octets::kib(64)).into())
+            .expect_err("a datagram larger than any path could carry is refused");
+        assert_eq!(
+            beyond,
+            SendDatagramError::TooLarge,
+            "{what}: unexpected refusal for a datagram beyond any path"
+        );
     }
     (limit, out)
 }
 
 /// Send one datagram, having checked the connection admits one of that size. Answers the
 /// limit this side reported, which a case compares against what the peer advertised.
-fn send_one(what: &str, conn: &Connection, chunk: Chunk) -> usize {
+///
+/// The answering side waits for room rather than refusing; the opening side, which has a
+/// whole buffer to itself, does not.
+async fn send_one(
+    what: &str,
+    deadline: Deadline,
+    conn: &Connection,
+    chunk: Chunk,
+    waiting: bool,
+) -> usize {
     let limit = conn
         .max_datagram_size()
         .expect("the peer offered the extension");
@@ -324,88 +412,16 @@ fn send_one(what: &str, conn: &Connection, chunk: Chunk) -> usize {
         "{what}: the negotiated size admits this datagram: {limit} against {}",
         chunk.len
     );
-    conn.send_datagram(chunk.bytes().into())
-        .expect("the datagram is accepted");
+    let bytes = chunk.bytes().into();
+    match waiting {
+        true => deadline
+            .wait(what, conn.send_datagram_wait(bytes))
+            .await
+            .expect("the datagram is accepted once there is room"),
+        false => conn.send_datagram(bytes).expect("the datagram is accepted"),
+    }
     limit
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The two directions of a case, with a send limit that admits one and not the other. It is
-    /// the oracle that is exercised here, not the wire: a real peer's negotiated limit is not
-    /// configurable enough to sit between two payloads on every stack.
-    fn asymmetric() -> (DatagramScenario, DatagramObservation, DatagramObservation) {
-        let scenario = DatagramScenario {
-            out: Chunk {
-                seed: 0x01,
-                len: 64,
-            },
-            back: Chunk {
-                seed: 0x02,
-                len: 200,
-            },
-            at_the_boundary: false,
-        };
-        // Rama is the client: it sent `out`, and the peer must be able to send `back` (200).
-        let as_client = DatagramObservation {
-            sendable: Some(200),
-            advertised: None,
-            received: Some(Received::Bytes(scenario.out.bytes())),
-        };
-        // Rama is the server: it sent `back`, and the peer must be able to send `out` (64).
-        let as_server = DatagramObservation {
-            sendable: Some(64),
-            advertised: None,
-            received: Some(Received::Bytes(scenario.back.bytes())),
-        };
-        (scenario, as_client, as_server)
-    }
-
-    #[test]
-    fn the_send_limit_is_checked_against_what_the_peer_sends() {
-        let (scenario, as_client, as_server) = asymmetric();
-        as_client.check(
-            "oracle/rama-client",
-            &scenario,
-            Role::RamaClient,
-            scenario.out,
-        );
-        as_server.check(
-            "oracle/rama-server",
-            &scenario,
-            Role::RamaServer,
-            scenario.back,
-        );
-    }
-
-    /// A limit one byte short of what the peer has to send is caught, in either role. This is
-    /// what fails if the check takes its chunk from the wrong direction.
-    #[test]
-    #[should_panic(expected = "the peer may send the datagram this case asks of it")]
-    fn a_limit_short_of_what_the_peer_sends_is_refused() {
-        let (scenario, mut as_client, _) = asymmetric();
-        as_client.sendable = Some(scenario.back.len - 1);
-        as_client.check(
-            "oracle/rama-client",
-            &scenario,
-            Role::RamaClient,
-            scenario.out,
-        );
-    }
-
-    /// The same, with Rama as the server, so neither direction passes by accident.
-    #[test]
-    #[should_panic(expected = "the peer may send the datagram this case asks of it")]
-    fn a_limit_short_of_what_the_peer_sends_is_refused_in_the_other_role() {
-        let (scenario, _, mut as_server) = asymmetric();
-        as_server.sendable = Some(scenario.out.len - 1);
-        as_server.check(
-            "oracle/rama-server",
-            &scenario,
-            Role::RamaServer,
-            scenario.back,
-        );
-    }
-}
+mod tests;

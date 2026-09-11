@@ -5,6 +5,7 @@
 //! asserts lives here, so every peer is held to the same expectations; what the peer read comes
 //! back through its adapter.
 
+pub mod backpressure;
 pub mod close;
 pub mod datagram;
 pub mod identity;
@@ -17,7 +18,9 @@ pub mod scenario;
 pub mod serving;
 pub mod support;
 pub mod trust;
+pub mod unsupported;
 
+pub use backpressure::{BackpressureScenario, Ears, Filled, Sent, backpressure_cases};
 pub use close::{CloseObservation, CloseScenario, close_cases, told};
 pub use datagram::{DatagramObservation, DatagramScenario, datagram_cases};
 pub use identity::{
@@ -43,3 +46,4 @@ pub use scenario::{
 pub use serving::{ServerOutcome, expect_outcome, rama_probe_server};
 pub use support::{Deadline, Peer, digest, localhost, payload};
 pub use trust::{TrustObservation, TrustScenario, trust_cases};
+pub use unsupported::{UnsupportedObservation, UnsupportedScenario, unsupported_cases};

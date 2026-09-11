@@ -25,7 +25,7 @@ use std::{net::SocketAddr, sync::Arc};
 
 use common::ALPN;
 use interop_common::{
-    Arrival, Chunk, Expected, Identity, Received, RecordingSessions, Reported,
+    Arrival, Chunk, CloseObservation, Expected, Identity, Received, RecordingSessions, Reported,
     ResumptionObservation, ResumptionScenario, Role, Verdict, for_each_case,
     identity::anchor_of,
     registry::CaseRun,
@@ -138,6 +138,7 @@ async fn resumption_cases_rama_client() {
                 // Visible with `cargo test -- --nocapture`.
                 println!("{}: {reason}", run.what);
             }
+            observed.closed_as_the_client_did(&run.what);
             run.deadline.wait(&run.what, client.wait_idle()).await;
             resuming.close(0u32.into(), b"done");
             run.deadline.wait(&run.what, resuming.wait_idle()).await;
@@ -210,7 +211,7 @@ fn serve_one(
                 extra
             })
         });
-        deadline.wait(&what, conn.closed()).await;
+        let ended = deadline.wait(&what, conn.closed()).await;
         for draining in draining {
             received.extend(draining.join(&what, deadline).await);
         }
@@ -229,9 +230,25 @@ fn serve_one(
                  asserts it there",
             ),
             received,
+            closed: Some(the_clients_close(&what, ended)),
             detail: sessions.as_ref().map(|sessions| sessions.detail()),
         }
     })
+}
+
+/// How Quinn saw the client end the connection.
+fn the_clients_close(what: &str, ended: quinn::ConnectionError) -> CloseObservation {
+    let quinn::ConnectionError::ApplicationClosed(ref close) = ended else {
+        panic!("{what}: the client closed the connection rather than it failing: {ended:?}");
+    };
+    CloseObservation {
+        code: close.error_code.into_inner(),
+        reason: close.reason.to_vec(),
+        application: true,
+        // Quinn reports `LocallyClosed` for a close of its own, so this variant is both the
+        // category and the origin.
+        received: Some(true),
+    }
 }
 
 /// One more stream of that kind if the connection is still carrying any, and nothing once the
@@ -392,6 +409,9 @@ async fn resumption_cases_rama_server() {
                     Reported::Seen,
                 ),
                 received: report.received,
+                // Rama serves here, so the close this role sees is the peer's own, which the
+                // peer chooses rather than the case.
+                closed: None,
                 detail: Some(active.detail()),
             };
             let withheld = observed.check(&run.what, &run.scenario);

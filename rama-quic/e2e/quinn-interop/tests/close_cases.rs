@@ -5,19 +5,17 @@
 
 mod common;
 
-use common::{quinn_client_config, quinn_server_config};
+use common::{answer, exchange, quinn_client_config, quinn_server_config};
 use interop_common::{
-    CloseObservation, Received, Role,
+    CloseObservation, Role,
     close::{close_cases, rama_client_closes, rama_server_side},
     for_each_case,
     identity::anchor_of,
-    scenario::{Chunk, SERVER_NAME},
-    support::{Deadline, Peer, localhost},
+    scenario::SERVER_NAME,
+    support::{Peer, localhost},
 };
-use rama::utils::octets;
 
 const PEER: &str = "quinn";
-const READ_CAP: usize = octets::mib(1);
 
 /// Rama's client closes, and Quinn's server says what it was told.
 #[tokio::test]
@@ -106,40 +104,4 @@ fn told(what: &str, ended: quinn::ConnectionError) -> CloseObservation {
         // matched above establishes both the category and the origin.
         received: Some(true),
     }
-}
-
-/// A case's exchange, from the opening side.
-async fn exchange(what: &str, deadline: Deadline, connection: &quinn::Connection, payload: Chunk) {
-    let (mut send, mut recv) = deadline
-        .wait(what, connection.open_bi())
-        .await
-        .expect("a bi stream");
-    deadline
-        .wait(what, send.write_all(&payload.bytes()))
-        .await
-        .expect("the payload is written");
-    send.finish().expect("the stream ends");
-    let back = deadline
-        .wait(what, recv.read_to_end(READ_CAP))
-        .await
-        .expect("the answer completes");
-    Received::Bytes(back).check(what, "exchange", payload);
-}
-
-/// The same exchange, from the answering side.
-async fn answer(what: &str, deadline: Deadline, connection: &quinn::Connection, payload: Chunk) {
-    let (mut send, mut recv) = deadline
-        .wait(what, connection.accept_bi())
-        .await
-        .expect("the stream arrives");
-    let got = deadline
-        .wait(what, recv.read_to_end(READ_CAP))
-        .await
-        .expect("it completes");
-    Received::Bytes(got.clone()).check(what, "exchange", payload);
-    deadline
-        .wait(what, send.write_all(&got))
-        .await
-        .expect("the answer is written");
-    send.finish().expect("the answer ends");
 }

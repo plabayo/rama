@@ -57,9 +57,24 @@ fn varint(value: u64, width: usize) -> Vec<u8> {
     bytes
 }
 
-/// The bytes a minimal encoding of this payload occupies.
-fn minimal(payload: usize) -> usize {
-    parse(payload, Length::Of(if payload < 64 { 1 } else { 2 })).encoded
+/// The bytes a frame occupies, counted from its parts rather than from the parser: the type
+/// byte, the length varint where there is one, and the payload. A case states its own
+/// expectation this way so the measurement under test is never its own oracle.
+fn expected(payload: usize, length: Length) -> usize {
+    1 + match length {
+        Length::Absent => 0,
+        Length::Of(width) => width,
+    } + payload
+}
+
+/// The width a minimal length varint uses for this payload.
+fn narrowest(payload: usize) -> usize {
+    match payload {
+        0..64 => 1,
+        64..16384 => 2,
+        16384..1_073_741_824 => 4,
+        _ => 8,
+    }
 }
 
 fn refused(state: &mut DatagramState, arrived: ArrivedDatagram, window: usize) -> TransportError {
@@ -75,9 +90,15 @@ fn a_frame_exactly_at_the_advertised_size_is_not_a_protocol_error() {
     // dropping is not the peer's error.
     let mut state = DatagramState::default();
     let payload = 200;
-    let advertised = minimal(payload);
+    let width = narrowest(payload);
+    let advertised = expected(payload, Length::Of(width));
+    let arrived = parse(payload, Length::Of(width));
+    assert_eq!(
+        arrived.encoded, advertised,
+        "the parser measured what the frame was built from"
+    );
     let taken = state
-        .received(parse(payload, Length::Of(2)), Some(advertised))
+        .received(arrived, Some(advertised))
         .expect("a frame of exactly the advertised size is not a protocol error");
     assert!(!taken, "there was no room for it");
 }
@@ -102,30 +123,43 @@ fn a_frame_is_delivered_when_there_is_room_for_it() {
 fn a_frame_one_byte_over_the_advertised_size_is_a_protocol_violation() {
     let mut state = DatagramState::default();
     let payload = 200;
-    let advertised = minimal(payload) - 1;
-    let error = refused(&mut state, parse(payload, Length::Of(2)), advertised);
+    let width = narrowest(payload);
+    let advertised = expected(payload, Length::Of(width)) - 1;
+    let error = refused(&mut state, parse(payload, Length::Of(width)), advertised);
     assert_eq!(error.code, TransportErrorCode::PROTOCOL_VIOLATION);
 }
 
 #[test]
-fn a_wider_length_that_crosses_the_size_is_a_protocol_violation() {
-    // The same payload, inside the advertised size when its length is written minimally and
-    // over it when written in a legal wider varint. The frame on the wire is what counts.
+fn a_wider_length_is_measured_at_the_width_it_was_written_in() {
     let payload = 200;
-    let advertised = minimal(payload) + 1;
+    for width in [2, 4, 8] {
+        assert_eq!(
+            parse(payload, Length::Of(width)).encoded,
+            expected(payload, Length::Of(width)),
+            "a length varint of {width} bytes counts for {width} bytes"
+        );
+    }
+}
+
+#[test]
+fn a_wider_length_that_crosses_the_size_is_a_protocol_violation() {
+    // The same payload is inside the advertised size written minimally and over it written
+    // in a legal wider varint. Nothing here reads the measurement first, so a size taken
+    // from the canonical encoding rather than the wire reaches the check and is refused
+    // here, not at an earlier assertion.
+    let payload = 200;
+    let advertised = expected(payload, Length::Of(narrowest(payload))) + 1;
+
     let mut state = DatagramState::default();
     state
-        .received(parse(payload, Length::Of(2)), Some(advertised))
+        .received(
+            parse(payload, Length::Of(narrowest(payload))),
+            Some(advertised),
+        )
         .expect("the minimal encoding fits");
 
-    let wider = parse(payload, Length::Of(8));
-    assert!(
-        wider.encoded > advertised,
-        "the wider length takes it over: {} against {advertised}",
-        wider.encoded
-    );
     let mut state = DatagramState::default();
-    let error = refused(&mut state, wider, advertised);
+    let error = refused(&mut state, parse(payload, Length::Of(8)), advertised);
     assert_eq!(error.code, TransportErrorCode::PROTOCOL_VIOLATION);
 }
 
@@ -135,7 +169,7 @@ fn a_frame_without_a_length_is_measured_by_what_it_occupied() {
     let arrived = parse(payload, Length::Absent);
     assert_eq!(
         arrived.encoded,
-        1 + payload,
+        expected(payload, Length::Absent),
         "a type byte and the payload, with no length between them"
     );
     let mut state = DatagramState::default();

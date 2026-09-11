@@ -13,7 +13,7 @@ use std::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
-    task::{Context, Poll, ready},
+    task::{Context, Poll, Waker, ready},
     time::Duration,
 };
 
@@ -22,6 +22,7 @@ use quinn::{
     udp::{RecvMeta, Transmit},
 };
 
+use parking_lot::Mutex;
 use rama::{
     crypto::{
         cert::{CertificateIdentity, CertificateSubject, LeafCertRequest, SelfSignedCaConfig},
@@ -32,9 +33,11 @@ use rama::{
         client::TlsClientConfig,
         server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
     },
-    utils::collections::smallvec::smallvec,
+    utils::{collections::smallvec::smallvec, octets},
 };
 use sha2::{Digest, Sha256};
+
+use interop_common::{Chunk, Deadline, Received};
 
 /// The protocol every scenario negotiates, shared with the other peer projects.
 pub use interop_common::{ALPN, identity::alpn as shared_alpn};
@@ -191,6 +194,7 @@ pub struct Counted {
     inner: Arc<dyn AsyncUdpSocket>,
     sent: AtomicUsize,
     received: AtomicUsize,
+    polls: AtomicUsize,
 }
 
 impl Counted {
@@ -200,6 +204,7 @@ impl Counted {
             inner,
             sent: AtomicUsize::new(0),
             received: AtomicUsize::new(0),
+            polls: AtomicUsize::new(0),
         })
     }
 
@@ -212,6 +217,12 @@ impl Counted {
     /// Datagrams this socket delivered.
     pub fn received(&self) -> usize {
         self.received.load(Ordering::Relaxed)
+    }
+
+    /// Reads that reached this socket, whether or not one delivered anything. What tells a
+    /// read that was passed on from one that was held above it.
+    pub fn polls(&self) -> usize {
+        self.polls.load(Ordering::Relaxed)
     }
 }
 
@@ -236,6 +247,7 @@ impl AsyncUdpSocket for Counted {
         bufs: &mut [IoSliceMut<'_>],
         meta: &mut [RecvMeta],
     ) -> Poll<io::Result<usize>> {
+        self.polls.fetch_add(1, Ordering::Relaxed);
         let taken = ready!(self.inner.poll_recv(cx, bufs, meta))?;
         let datagrams: usize = meta[..taken]
             .iter()
@@ -260,4 +272,154 @@ impl AsyncUdpSocket for Counted {
     fn may_fragment(&self) -> bool {
         self.inner.may_fragment()
     }
+}
+
+/// The most one of these reads in a call, so a peer sending more fails rather than filling
+/// memory.
+const READ_CAP: usize = octets::mib(1);
+
+/// One exchange over Quinn, from the opening side, checked by length and digest on the way
+/// back, and saying what came back.
+pub async fn exchange(
+    what: &str,
+    deadline: Deadline,
+    connection: &quinn::Connection,
+    payload: Chunk,
+) -> Received {
+    let (mut send, mut recv) = deadline
+        .wait(what, connection.open_bi())
+        .await
+        .expect("a bi stream");
+    deadline
+        .wait(what, send.write_all(&payload.bytes()))
+        .await
+        .expect("the payload is written");
+    send.finish().expect("the stream ends");
+    let back = deadline
+        .wait(what, recv.read_to_end(READ_CAP))
+        .await
+        .expect("the answer completes");
+    let back = Received::Bytes(back);
+    back.check(what, "exchange", payload);
+    back
+}
+
+/// The same exchange from the answering side, saying what it carried.
+pub async fn answer(
+    what: &str,
+    deadline: Deadline,
+    connection: &quinn::Connection,
+    payload: Chunk,
+) -> Received {
+    let (mut send, mut recv) = deadline
+        .wait(what, connection.accept_bi())
+        .await
+        .expect("the stream arrives");
+    let got = deadline
+        .wait(what, recv.read_to_end(READ_CAP))
+        .await
+        .expect("it completes");
+    Received::Bytes(got.clone()).check(what, "exchange", payload);
+    deadline
+        .wait(what, send.write_all(&got))
+        .await
+        .expect("the answer is written");
+    send.finish().expect("the answer ends");
+    Received::Bytes(got)
+}
+
+/// Whether a socket is paused, and who to wake when it is let go. One lock over both: a
+/// resume that read the flag separately could land between a read seeing it set and that read
+/// registering, and the wake would go nowhere.
+#[derive(Debug, Default)]
+struct Paused {
+    deaf: bool,
+    waiting: Option<Waker>,
+}
+
+/// A socket that can be told to stop delivering what arrives, so the peer built on it stops
+/// acknowledging and the other side's transport stalls rather than only its reads. Everything
+/// else is the socket it wraps.
+#[derive(Debug)]
+pub struct Deaf {
+    inner: Arc<dyn AsyncUdpSocket>,
+    state: Mutex<Paused>,
+}
+
+impl Deaf {
+    #[must_use]
+    pub fn around(inner: Arc<dyn AsyncUdpSocket>) -> Arc<Self> {
+        Arc::new(Self {
+            inner,
+            state: Mutex::new(Paused::default()),
+        })
+    }
+
+    /// Stop delivering. What arrives stays in the kernel's buffer until this is lifted.
+    pub fn stop_reading(&self) {
+        self.state.lock().deaf = true;
+    }
+
+    /// Deliver again, waking whoever was waiting on a read. The waker is taken under the lock
+    /// and woken outside it.
+    pub fn read_again(&self) {
+        let waiting = {
+            let mut state = self.state.lock();
+            state.deaf = false;
+            state.waiting.take()
+        };
+        if let Some(waker) = waiting {
+            waker.wake();
+        }
+    }
+}
+
+impl AsyncUdpSocket for Deaf {
+    fn create_io_poller(self: Arc<Self>) -> Pin<Box<dyn UdpPoller>> {
+        self.inner.clone().create_io_poller()
+    }
+
+    fn try_send(&self, transmit: &Transmit) -> io::Result<()> {
+        self.inner.try_send(transmit)
+    }
+
+    fn poll_recv(
+        &self,
+        cx: &mut Context,
+        bufs: &mut [IoSliceMut<'_>],
+        meta: &mut [RecvMeta],
+    ) -> Poll<io::Result<usize>> {
+        {
+            // Held across both, and released before the socket below is touched.
+            let mut state = self.state.lock();
+            if state.deaf {
+                state.waiting = Some(cx.waker().clone());
+                return Poll::Pending;
+            }
+        }
+        self.inner.poll_recv(cx, bufs, meta)
+    }
+
+    fn local_addr(&self) -> io::Result<SocketAddr> {
+        self.inner.local_addr()
+    }
+
+    fn max_transmit_segments(&self) -> usize {
+        self.inner.max_transmit_segments()
+    }
+
+    fn max_receive_segments(&self) -> usize {
+        self.inner.max_receive_segments()
+    }
+
+    fn may_fragment(&self) -> bool {
+        self.inner.may_fragment()
+    }
+}
+
+/// A loopback socket ready for quinn's runtime to wrap.
+#[must_use]
+pub fn bound_socket() -> std::net::UdpSocket {
+    std::net::UdpSocket::bind(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0))
+        .expect("the socket binds")
 }

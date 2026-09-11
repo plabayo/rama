@@ -1,13 +1,21 @@
 //! The shared DATAGRAM cases, run against quiche in both roles.
+//!
+//! quiche advertises 65536 when datagrams are enabled, from draft-ietf-quic-datagram-01 rather
+//! than RFC 9221's 65535, and either value is far above the path budget: against this peer the
+//! binding limit is the path. That is the other half of what the aioquic project shows, where
+//! the peer's advertised size is small enough to bind.
 
 mod common;
 
 use common::{Identity, Quiche, quiche_client_config, quiche_server_config, with_datagrams};
 use interop_common::{
-    CaseRun, DatagramObservation, DatagramScenario, Peer, Received, Role, Unsupported,
+    CaseRun, DatagramObservation, DatagramScenario, Deadline, Peer, Received, Role, Unsupported,
+    UnsupportedObservation, UnsupportedScenario, backpressure_cases,
     datagram::{rama_client_side, rama_server_side},
     datagram_cases, for_each_case,
     scenario::SERVER_NAME,
+    unsupported::{rama_client_without_datagrams, rama_server_without_datagrams},
+    unsupported_cases,
 };
 use rama::utils::octets;
 
@@ -51,9 +59,6 @@ async fn datagram_cases_rama_client() {
 #[tokio::test]
 async fn datagram_cases_rama_server() {
     for_each_case(PEER, Role::RamaServer, datagram_cases(), |run| async move {
-        if skip_the_boundary(&run) {
-            return;
-        }
         let identity = Identity::generate(SERVER_NAME);
         let run = run.with_identity(identity.auth.clone());
         let (endpoint, addr, serving) = rama_server_side(&run).await;
@@ -65,8 +70,9 @@ async fn datagram_cases_rama_server() {
         )
         .await;
         let observed = quiche_asks(&run, &mut client).await;
-        observed.check(&run.what, &run.scenario, run.role, run.scenario.back);
-        observed.bounds(&run.what, serving.join(&run.what, run.deadline).await);
+        let (limit, sent) = serving.join(&run.what, run.deadline).await;
+        observed.check(&run.what, &run.scenario, run.role, sent);
+        observed.bounds(&run.what, limit);
         run.deadline.wait(&run.what, endpoint.wait_idle()).await;
     })
     .await;
@@ -116,19 +122,143 @@ async fn quiche_asks(run: &CaseRun<DatagramScenario>, client: &mut Quiche) -> Da
     }
 }
 
-/// The boundary row probes what Rama may send, so it runs where Rama opens the connection.
-/// In this role Rama sends the case's fixed answer instead.
-fn skip_the_boundary(run: &CaseRun<DatagramScenario>) -> bool {
-    if run.scenario.at_the_boundary {
-        // Visible with `cargo test -- --nocapture`.
-        println!(
-            "{}",
-            Unsupported {
-                case: "datagram-at-the-boundary",
-                peer: PEER,
-                reason: "the boundary is probed in the role where rama opens the connection",
-            }
-        );
+/// The client-initiated bidirectional stream a case's exchange runs on.
+const CLIENT_BI: u64 = 0;
+
+/// Rama opens the connection and a quiche that never enabled datagrams answers it.
+#[tokio::test]
+async fn unsupported_cases_rama_client() {
+    for_each_case(
+        PEER,
+        Role::RamaClient,
+        unsupported_cases(),
+        |run| async move {
+            let identity = Identity::generate(SERVER_NAME);
+            let run = run.with_identity(identity.auth.clone());
+            let (addr, accepting) =
+                Quiche::bind_server(quiche_server_config(&identity), run.deadline).await;
+            let peer = Peer::spawn({
+                let run = run.clone();
+                async move {
+                    let mut server = accepting.await;
+                    quiche_carries(&run, &mut server).await
+                }
+            });
+
+            let rama = rama_client_without_datagrams(&run, addr).await;
+            rama.close(&run.what, run.deadline).await;
+            peer.join(&run.what, run.deadline)
+                .await
+                .check(&run.what, &run.scenario);
+        },
+    )
+    .await;
+}
+
+/// A quiche that never enabled datagrams opens the connection and Rama answers it.
+#[tokio::test]
+async fn unsupported_cases_rama_server() {
+    for_each_case(
+        PEER,
+        Role::RamaServer,
+        unsupported_cases(),
+        |run| async move {
+            let identity = Identity::generate(SERVER_NAME);
+            let run = run.with_identity(identity.auth.clone());
+            let (endpoint, addr, serving) = rama_server_without_datagrams(&run).await;
+            let mut client = Quiche::connect(
+                addr,
+                SERVER_NAME,
+                quiche_client_config(&identity),
+                run.deadline,
+            )
+            .await;
+            let observed = quiche_opens_without_datagrams(&run, &mut client).await;
+            client.close(run.deadline).await;
+            serving.join(&run.what, run.deadline).await;
+            observed.check(&run.what, &run.scenario);
+            run.deadline.wait(&run.what, endpoint.wait_idle()).await;
+        },
+    )
+    .await;
+}
+
+/// quiche answers the exchange Rama opens, and says whether a datagram reached it.
+async fn quiche_carries(
+    run: &CaseRun<UnsupportedScenario>,
+    server: &mut Quiche,
+) -> UnsupportedObservation {
+    let (what, deadline) = (&run.what, run.deadline);
+    server
+        .drive_until(what, deadline, |connection| connection.is_established())
+        .await;
+    let got = server.read_stream(CLIENT_BI, READ_CAP, deadline).await;
+    server.write_stream(CLIENT_BI, &got, deadline).await;
+    server
+        .drive_until(what, deadline, |connection| connection.is_closed())
+        .await;
+    UnsupportedObservation {
+        datagram: nothing_arrived(server, deadline).await,
+        carried: Some(Received::Bytes(got)),
     }
-    run.scenario.at_the_boundary
+}
+
+/// quiche opens the exchange instead, and says the same.
+async fn quiche_opens_without_datagrams(
+    run: &CaseRun<UnsupportedScenario>,
+    client: &mut Quiche,
+) -> UnsupportedObservation {
+    let (what, deadline) = (&run.what, run.deadline);
+    client
+        .drive_until(what, deadline, |connection| connection.is_established())
+        .await;
+    client
+        .write_stream(CLIENT_BI, &run.scenario.carried.bytes(), deadline)
+        .await;
+    let back = client.read_stream(CLIENT_BI, READ_CAP, deadline).await;
+    client.close(deadline).await;
+    UnsupportedObservation {
+        datagram: nothing_arrived(client, deadline).await,
+        carried: Some(Received::Bytes(back)),
+    }
+}
+
+/// Whatever quiche has queued once the connection has ended. The queue keeps every datagram
+/// that arrived, so asking it here answers for the whole case rather than for a window.
+async fn nothing_arrived(peer: &mut Quiche, deadline: Deadline) -> Option<Received> {
+    match peer.connection().dgram_recv_queue_len() {
+        0 => None,
+        _ => Some(Received::Bytes(
+            peer.read_datagram(READ_CAP, deadline).await,
+        )),
+    }
+}
+
+/// Why the backpressure case does not run against this peer yet. quiche can be withheld and
+/// then driven again — that is what a pause is — but this adapter drives its connection from
+/// the case's own task, so it has nothing to implement `Ears` against. The gap is here, not
+/// in the peer.
+const THIS_ADAPTER_HAS_NO_PAUSE: &str = "this adapter drives the peer from the case's own task, so it has no reader to pause; \
+     the peer itself can be withheld and driven again";
+
+/// The backpressure case needs a peer that can stop reading while this side keeps sending.
+#[tokio::test]
+async fn backpressure_cases_rama_client() {
+    for_each_case(
+        PEER,
+        Role::RamaClient,
+        backpressure_cases(),
+        |_run| async move {
+            // Visible with `cargo test -- --nocapture`.
+            println!(
+                "{}",
+                Unsupported {
+                    case: "datagram-no-room",
+                    peer: PEER,
+                    reason: THIS_ADAPTER_HAS_NO_PAUSE,
+                }
+            );
+        },
+    )
+    .await;
 }
