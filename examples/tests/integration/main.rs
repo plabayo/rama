@@ -11,6 +11,11 @@
 
 mod utils;
 
+#[cfg(all(feature = "quic", feature = "rustls", feature = "ring"))]
+mod quic_client_server;
+#[cfg(all(feature = "quic", feature = "rustls", feature = "ring"))]
+mod quic_terminating_relay;
+
 #[cfg(all(feature = "fastcgi", feature = "http-full"))]
 mod fastcgi_reverse_proxy;
 #[cfg(all(feature = "grpc", feature = "http-full"))]
