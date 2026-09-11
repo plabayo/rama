@@ -1,15 +1,17 @@
 use rama_core::extensions::Extension;
 
-/// Request close-delimited framing when encoding an HTTP/1 response.
+/// Prefer close-delimited framing when encoding an HTTP/1 response.
 ///
-/// Insert this extension on the response itself. The encoder emits neither
+/// Insert this extension on the response or its inherited context.
+/// The encoder emits neither
 /// `Content-Length` nor `Transfer-Encoding`, adds `Connection: close`, streams
 /// the body unchanged, and closes the connection when the body ends. An exact
-/// body size hint does not override this choice. Request extensions inherited
-/// by a response do not enable it.
+/// body size hint does not override this choice. Like other context extensions,
+/// the preference remains effective when middleware derives a response from it.
 ///
-/// Conflicting `Content-Length`, `Transfer-Encoding`, or `Trailer` headers are
-/// rejected. The body must not produce trailers. This extension has no effect
+/// Explicit `Content-Length`, `Transfer-Encoding`, or `Trailer` headers take
+/// precedence, using the encoder's normal framing and validation rules. Without
+/// these headers, the body must not produce trailers. This extension has no effect
 /// on responses that cannot carry a body (including HEAD and successful CONNECT)
 /// or on HTTP/2 connections.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Extension)]

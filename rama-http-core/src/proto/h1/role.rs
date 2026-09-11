@@ -373,22 +373,12 @@ impl Http1Transaction for Server {
             msg.head.subject, msg.body, msg.req_method
         );
 
-        let close_delimited = msg
-            .head
-            .extensions
-            .self_contains::<CloseDelimitedResponse>()
-            && Self::can_have_body(msg.req_method.as_ref(), msg.head.subject);
-        if close_delimited {
-            if [
-                header::CONTENT_LENGTH,
-                header::TRANSFER_ENCODING,
-                header::TRAILER,
-            ]
-            .iter()
-            .any(|name| msg.head.headers.contains_key(name))
-            {
-                return Err(crate::Error::new_user_header());
-            }
+        if Self::use_close_delimited_response(
+            msg.head.extensions,
+            &msg.head.headers,
+            msg.req_method.as_ref(),
+            msg.head.subject,
+        ) {
             msg.head
                 .headers
                 .insert(header::CONNECTION, HeaderValue::from_static("close"));
@@ -497,6 +487,25 @@ impl Http1Transaction for Server {
 }
 
 impl Server {
+    // Explicit headers override a framing preference carried in extensions.
+    // Keep normal header validation and bodyless-response handling authoritative.
+    fn use_close_delimited_response(
+        extensions: &Extensions,
+        headers: &HeaderMap,
+        method: Option<&Method>,
+        status: StatusCode,
+    ) -> bool {
+        extensions.contains::<CloseDelimitedResponse>()
+            && Self::can_have_body(method, status)
+            && ![
+                header::CONTENT_LENGTH,
+                header::TRANSFER_ENCODING,
+                header::TRAILER,
+            ]
+            .iter()
+            .any(|name| headers.contains_key(name))
+    }
+
     fn can_have_body(method: Option<&Method>, status: StatusCode) -> bool {
         Self::can_chunked(method, status)
     }
@@ -602,6 +611,12 @@ impl Server {
             dst.truncate(orig_len);
         };
 
+        let close_delimited = Self::use_close_delimited_response(
+            ext,
+            &msg.head.headers,
+            msg.req_method.as_ref(),
+            msg.head.subject,
+        );
         let mut encoder = Encoder::length(0);
         let mut allowed_trailer_fields = headers::trailer_header_names(&msg.head.headers);
         let mut wrote_date = false;
@@ -807,10 +822,7 @@ impl Server {
 
         handle_is_name_written!();
 
-        if !wrote_len
-            && ext.self_contains::<CloseDelimitedResponse>()
-            && Self::can_have_body(msg.req_method.as_ref(), msg.head.subject)
-        {
+        if !wrote_len && close_delimited {
             encoder = Encoder::close_delimited();
         } else if !wrote_len {
             encoder = match msg.body {
@@ -3008,19 +3020,48 @@ mod tests {
     }
 
     #[test]
-    fn explicit_close_delimited_response_rejects_conflicting_headers() {
-        for (name, value) in [
-            (header::CONTENT_LENGTH, "4"),
-            (header::TRANSFER_ENCODING, "chunked"),
-            (header::TRANSFER_ENCODING, "gzip"),
-            (header::TRAILER, "checksum"),
+    fn explicit_headers_override_close_delimited_preference() {
+        for (name, value, expected) in [
+            (header::CONTENT_LENGTH, "4", Encoder::length(4)),
+            (header::TRANSFER_ENCODING, "chunked", Encoder::chunked()),
+            (header::TRANSFER_ENCODING, "gzip", Encoder::chunked()),
         ] {
             let mut head = MessageHead::default();
             head.extensions.insert(CloseDelimitedResponse);
-            head.headers.insert(name, HeaderValue::from_static(value));
-            encode_close_delimited_test_response(head, Some(BodyLength::Unknown), Method::GET)
-                .unwrap_err();
+            head.headers
+                .insert(name.clone(), HeaderValue::from_static(value));
+            let (encoder, wire) =
+                encode_close_delimited_test_response(head, Some(BodyLength::Unknown), Method::GET)
+                    .unwrap();
+            assert_eq!(encoder, expected);
+            let wire = String::from_utf8(wire).unwrap();
+            assert!(wire.contains(&format!("{name}: {value}")));
+            assert!(!wire.contains("connection: close"));
         }
+        let mut head = MessageHead::default();
+        head.extensions.insert(CloseDelimitedResponse);
+        head.headers
+            .insert(header::TRAILER, HeaderValue::from_static("checksum"));
+        let (encoder, wire) =
+            encode_close_delimited_test_response(head, Some(BodyLength::Unknown), Method::GET)
+                .unwrap();
+        assert!(encoder.is_chunked());
+        assert!(!encoder.is_last());
+        assert!(
+            String::from_utf8(wire)
+                .unwrap()
+                .contains("trailer: checksum\r\n")
+        );
+    }
+
+    #[test]
+    fn close_delimited_preference_does_not_hide_invalid_content_length() {
+        let mut head = MessageHead::default();
+        head.extensions.insert(CloseDelimitedResponse);
+        head.headers
+            .insert(header::CONTENT_LENGTH, HeaderValue::from_static("invalid"));
+        encode_close_delimited_test_response(head, Some(BodyLength::Unknown), Method::GET)
+            .unwrap_err();
     }
 
     #[test]
@@ -3049,17 +3090,41 @@ mod tests {
     }
 
     #[test]
-    fn close_delimited_directive_is_not_inherited_from_request() {
-        let request_extensions = Extensions::new();
-        request_extensions.insert(CloseDelimitedResponse);
-        let head = MessageHead {
-            extensions: request_extensions.fork(),
-            ..MessageHead::default()
-        };
-        let (encoder, _) =
-            encode_close_delimited_test_response(head, Some(BodyLength::Unknown), Method::GET)
+    fn close_delimited_preference_is_inherited_but_explicit_headers_win() {
+        let context = Extensions::new();
+        context.insert(CloseDelimitedResponse);
+        for extensions in [context.fork(), context.fork().fork()] {
+            for explicit_length in [false, true] {
+                let mut head = MessageHead {
+                    extensions: extensions.clone(),
+                    ..MessageHead::default()
+                };
+                if explicit_length {
+                    head.headers
+                        .insert(header::CONTENT_LENGTH, HeaderValue::from_static("4"));
+                }
+                let (encoder, wire) = encode_close_delimited_test_response(
+                    head,
+                    Some(BodyLength::Unknown),
+                    Method::GET,
+                )
                 .unwrap();
-        assert_eq!(encoder, Encoder::chunked());
+                assert_eq!(
+                    encoder,
+                    if explicit_length {
+                        Encoder::length(4)
+                    } else {
+                        Encoder::close_delimited().set_last(true)
+                    }
+                );
+                assert_eq!(
+                    String::from_utf8(wire)
+                        .unwrap()
+                        .contains("connection: close\r\n"),
+                    !explicit_length
+                );
+            }
+        }
     }
 
     #[test]
