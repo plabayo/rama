@@ -156,7 +156,12 @@ async fn a_zero_budget_forces_a_live_endpoint() {
         "a zero budget gives the drivers no time, so they are forced"
     );
     drop(connection);
-    drop(tokio::time::timeout(LIMIT, serving).await);
+    // The server was forced mid-connection, so its task ends without finishing its work. What
+    // is required of it is that it ends at all, and without panicking.
+    tokio::time::timeout(LIMIT, serving)
+        .await
+        .expect("the serving task ended with the forced shutdown")
+        .expect("it did not panic");
     tokio::time::timeout(LIMIT, client.shutdown())
         .await
         .expect("the client's own shutdown joined");

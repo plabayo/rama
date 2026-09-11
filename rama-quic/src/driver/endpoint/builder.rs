@@ -1,10 +1,11 @@
 //! Building an endpoint on an application's own executor.
 //!
-//! Tasks are spawned through that executor rather than on a runtime of this crate's making:
-//! they run on the caller's Tokio runtime either way, and what the executor adds is the
-//! application's graceful shutdown. Ownership follows from that — the supervisor takes the
-//! executor and with it the strong guard, and endpoint handles hold only a weak cancellation
-//! reference, so a handle the application keeps cannot hold the shutdown open.
+//! Tasks are spawned through that executor onto the caller's Tokio runtime. An executor
+//! carrying a graceful guard ties the endpoint to the application's shutdown.
+//!
+//! The supervisor takes the executor, and with it the strong guard. Endpoint handles hold only
+//! a weak cancellation reference, so a handle the application keeps does not hold the shutdown
+//! open.
 
 use std::{io, time::Duration};
 
@@ -35,8 +36,7 @@ pub struct EndpointBuilder {
 
 impl EndpointBuilder {
     /// A builder that spawns through `exec`, with `config` as the endpoint's own
-    /// configuration. An executor carrying a graceful guard ties this endpoint to the
-    /// application's shutdown; a plain one does not.
+    /// configuration.
     #[must_use]
     pub fn new(exec: Executor, config: EndpointConfig) -> Self {
         Self {
@@ -84,8 +84,8 @@ impl EndpointBuilder {
 
     /// Bind the address, and the addresses this endpoint advertises as preferred with it.
     ///
-    /// The advertised sockets are bound before the endpoint exists, so what it advertises is
-    /// what its sockets actually have, ports the platform assigned included.
+    /// The advertised sockets are bound before the endpoint exists, so it advertises the
+    /// addresses its sockets have, including ports the platform assigned.
     pub async fn bind_address(
         self,
         address: impl Into<SocketAddress>,
@@ -115,11 +115,11 @@ impl EndpointBuilder {
         .map_err(DatagramError::from)
     }
 
-    /// Build on a packet socket the caller prepared, where the packet metadata is set up and
-    /// the required features are already validated.
+    /// Build on a packet socket the caller prepared, with its packet metadata set up and its
+    /// required features validated.
     ///
-    /// The socket configuration this builder carries describes what to bind, so it has no part
-    /// here; anything the socket needs was decided when it was made.
+    /// The socket configuration this builder carries describes what to bind, so it takes no
+    /// part here.
     pub fn with_packet_socket(self, socket: UdpPacketSocket) -> Result<Endpoint, DatagramError> {
         self.on_socket(Socket::new(socket).map_err(DatagramError::from)?)
     }
@@ -131,7 +131,7 @@ impl EndpointBuilder {
         self.on_socket(Socket::from_std(socket).map_err(DatagramError::from)?)
     }
 
-    /// The one place a prepared socket becomes an endpoint.
+    /// Where a prepared socket becomes an endpoint.
     fn on_socket(self, socket: Socket) -> Result<Endpoint, DatagramError> {
         Endpoint::new_with_advertised(
             self.config,

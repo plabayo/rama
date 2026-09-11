@@ -353,10 +353,9 @@ mod tests {
             error_chain(&kept, 8).any(|error| error.downcast_ref::<Cause>().is_some()),
             "the clone made before the context still has it"
         );
-        let after = annotated.clone();
         assert!(
-            error_chain(&after, 8).any(|error| error.downcast_ref::<Cause>().is_some()),
-            "and so does one made after it"
+            error_chain(&annotated, 8).any(|error| error.downcast_ref::<Cause>().is_some()),
+            "and so does the one it was cloned from"
         );
     }
 
@@ -387,19 +386,19 @@ mod tests {
     #[test]
     fn the_context_methods_all_answer_with_a_shared_error() {
         let shared = ArcError::new(cause());
-        let _: ArcError = shared.clone().context(Note(1));
-        let _: ArcError = shared.clone().context_field("k", Note(2));
-        let _: ArcError = shared.clone().context_str_field("k", "v");
-        let _: ArcError = shared.clone().context_debug(3u8);
-        let _: ArcError = shared.clone().context_hex(4u8);
-        let _: ArcError = shared.clone().context_debug_field("k", 5u8);
-        let _: ArcError = shared.clone().context_hex_field("k", 6u8);
-        let _: ArcError = shared.clone().with_context(|| Note(7));
-        let _: ArcError = shared.clone().with_context_debug(|| 8u8);
-        let _: ArcError = shared.clone().with_context_hex(|| 9u8);
-        let _: ArcError = shared.clone().with_context_field("k", || Note(10));
-        let _: ArcError = shared.clone().with_context_str_field("k", || "v");
-        let _: ArcError = shared.clone().with_context_debug_field("k", || 11u8);
+        drop::<ArcError>(shared.clone().context(Note(1)));
+        drop::<ArcError>(shared.clone().context_field("k", Note(2)));
+        drop::<ArcError>(shared.clone().context_str_field("k", "v"));
+        drop::<ArcError>(shared.clone().context_debug(3u8));
+        drop::<ArcError>(shared.clone().context_hex(4u8));
+        drop::<ArcError>(shared.clone().context_debug_field("k", 5u8));
+        drop::<ArcError>(shared.clone().context_hex_field("k", 6u8));
+        drop::<ArcError>(shared.clone().with_context(|| Note(7)));
+        drop::<ArcError>(shared.clone().with_context_debug(|| 8u8));
+        drop::<ArcError>(shared.clone().with_context_hex(|| 9u8));
+        drop::<ArcError>(shared.clone().with_context_field("k", || Note(10)));
+        drop::<ArcError>(shared.clone().with_context_str_field("k", || "v"));
+        drop::<ArcError>(shared.clone().with_context_debug_field("k", || 11u8));
         let last: ArcError = shared.with_context_hex_field("k", || 12u8);
         assert!(
             error_chain(&last, 8).any(|error| error.downcast_ref::<Cause>().is_some()),
@@ -452,7 +451,8 @@ mod tests {
     fn a_static_message_needs_no_string() {
         let shared = ArcError::from_static_str("nothing to report");
         assert_eq!(shared.to_string(), "nothing to report");
-        let boxed: BoxError = Box::new(shared.clone());
+        // The same error boxed, which is how it reaches an ordinary `BoxError` caller.
+        let boxed: BoxError = Box::new(shared);
         assert_eq!(boxed.to_string(), "nothing to report");
     }
 

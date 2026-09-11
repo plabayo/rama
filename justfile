@@ -54,8 +54,13 @@ deny:
     @cargo install cargo-deny
     cargo deny --workspace --all-features check
 
+# fuzz targets need `--cfg fuzzing`, so they are checked by `check-fuzz`
 check:
-    cargo check --workspace --all-targets --all-features
+    cargo check --workspace --exclude rama-fuzz --all-targets --all-features
+
+# type check for the fuzz targets, without nightly or a sanitizer
+check-fuzz:
+    RUSTFLAGS="--cfg fuzzing" cargo check -p rama-fuzz --all-targets
 
 check-crate CRATE:
     cargo check -p {{CRATE}} --all-targets --all-features
@@ -144,7 +149,7 @@ check-links:
     lychee .
 
 clippy:
-    cargo clippy --workspace --all-targets --all-features
+    cargo clippy --workspace --exclude rama-fuzz --all-targets --all-features
 
 clippy-beta:
     cargo +beta clippy --workspace --all-targets --all-features
@@ -260,7 +265,7 @@ test-loom:
     @command -v cargo-nextest >/dev/null || cargo install cargo-nextest --locked
     RUSTFLAGS="--cfg loom -Dwarnings" cargo nextest run --all-features -p rama-utils
 
-qq: sort-check fmt-check check check-nostd clippy doc extra-checks
+qq: sort-check fmt-check check check-fuzz check-nostd clippy doc extra-checks
 
 qa: qq docsrs-metadata-check test test-no-default-features test-doc deny
 
@@ -276,19 +281,15 @@ qa-dial9:
     cargo check -p rama-core -p rama-http -p rama-ws -p rama-net -p rama-net-apple-networkextension -p rama-dns -p rama-tls-rustls -p rama-tls-boring -p rama-socks5 -p rama --features dial9 --all-targets
     cargo clippy -p rama-core -p rama-http -p rama-ws -p rama-net -p rama-net-apple-networkextension -p rama-dns -p rama-tls-rustls -p rama-tls-boring -p rama-socks5 -p rama --features dial9 --all-targets
     cargo nextest run -p rama-core -p rama-http -p rama-ws -p rama-net -p rama-net-apple-networkextension -p rama-dns -p rama-socks5 --features dial9
-    # rama-quic joins the all-targets lines once its public facade lets the integration tests build.
-    cargo clippy -p rama-quic --features dial9,rustls,ring --lib
-    cargo nextest run -p rama-quic --features dial9,rustls,ring --lib
+    # rama-quic needs a provider named alongside dial9
+    cargo clippy -p rama-quic --features dial9,rustls,ring --all-targets
+    cargo nextest run -p rama-quic --features dial9,rustls,ring
 
-# The QUIC interoperability peers: three upstream implementations, each its own cargo
-# project with its own lockfile so nothing about them reaches the workspace, plus the
-# sibling library holding the scenarios all three run.
-#
-# Each peer needs its own toolchain: quiche vendors and builds BoringSSL (cmake and a C++
-# compiler), and aioquic runs as a real Python process from a uv-locked environment.
+# QUIC interop peers: standalone projects, outside the workspace, each with its own lockfile.
+# quiche builds BoringSSL (needs cmake and a C++ compiler); aioquic needs uv.
 quic-interop-dirs := "rama-quic/e2e/interop-common rama-quic/e2e/quinn-interop rama-quic/e2e/quiche-interop rama-quic/e2e/aioquic-interop"
 
-# Formatting and lints for the shared scenarios and all three peer projects.
+# formatting and lints for the shared scenarios and all three peers
 qa-quic-interop-lint:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -302,8 +303,7 @@ qa-quic-interop-lint:
 quic-interop-aioquic-env:
     cd rama-quic/e2e/aioquic-interop && uv sync --frozen
 
-# The shared scenario library's own tests. The peer projects depend on it but do not run
-# these, so they need a step of their own.
+# the shared scenario library's own tests; the peers depend on it but do not run these
 test-quic-interop-common:
     cd rama-quic/e2e/interop-common && cargo test --locked
 
@@ -557,10 +557,22 @@ mdbook-serve:
 publish *ARGS:
     cargo publish --workspace {{ARGS}}
 
-update-deps:
+update-deps: update-deps-quic-interop
     @cargo install cargo-edit --locked
     cargo upgrade --incompatible && cargo update && cargo generate-lockfile
     just ./ffi/apple/examples/transparent_proxy/update-deps
+
+# the standalone QUIC interop projects, each with its own lockfile,
+# plus the aioquic python env (`uv add` keeps its exact pin, `uv lock --upgrade` would not)
+update-deps-quic-interop:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo install cargo-edit --locked
+    for dir in {{quic-interop-dirs}}; do
+        echo "== $dir"
+        (cd "$dir" && cargo upgrade --incompatible && cargo update && cargo generate-lockfile)
+    done
+    cd rama-quic/e2e/aioquic-interop && uv add --bounds exact --preview-features add-bounds --upgrade-package aioquic aioquic
 
 oss-endpoint-healthcheck:
     bash rama-fp/infra/scripts/remote-healthcheck.sh

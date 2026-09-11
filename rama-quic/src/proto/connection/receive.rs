@@ -194,9 +194,10 @@ impl Connection {
                 }
             }
             Ok((packet, number)) => {
-                let span = match number {
-                    Some(pn) => trace_span!("recv", space = ?packet.header.space(), pn),
-                    None => trace_span!("recv", space = ?packet.header.space()),
+                let span = if let Some(pn) = number {
+                    trace_span!("recv", space = ?packet.header.space(), pn)
+                } else {
+                    trace_span!("recv", space = ?packet.header.space())
                 };
                 let _guard = span.enter();
 

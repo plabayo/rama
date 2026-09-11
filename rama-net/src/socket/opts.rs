@@ -1380,7 +1380,7 @@ mod tests {
     /// While set, [`set_only_v6`] refuses. Tests that use it run one at a time under the lock
     /// below, since the flag is process-wide.
     static REFUSE_ONLY_V6: AtomicBool = AtomicBool::new(false);
-    static ONLY_V6: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    static ONLY_V6: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
     pub(super) fn refusing_only_v6() -> bool {
         REFUSE_ONLY_V6.load(Ordering::SeqCst)
@@ -1403,7 +1403,7 @@ mod tests {
     /// The requested value is the one applied, whether it is asked for strictly or as best effort.
     #[test]
     fn the_requested_only_v6_value_is_applied() {
-        let _guard = ONLY_V6.lock().unwrap();
+        let _guard = ONLY_V6.lock();
         for requested in [true, false] {
             let mut options = udp_options(v6());
             options.only_v6 = Some(requested);
@@ -1424,7 +1424,7 @@ mod tests {
     /// The strict field wins when both are set, and its value is the one on the socket.
     #[test]
     fn a_strict_only_v6_takes_precedence_over_the_best_effort_one() {
-        let _guard = ONLY_V6.lock().unwrap();
+        let _guard = ONLY_V6.lock();
         let mut options = udp_options(v6());
         options.only_v6 = Some(true);
         options.only_v6_best_effort = Some(false);
@@ -1437,7 +1437,7 @@ mod tests {
     /// here refuses it.
     #[test]
     fn a_refused_best_effort_only_v6_keeps_the_socket_and_a_strict_one_does_not() {
-        let _guard = ONLY_V6.lock().unwrap();
+        let _guard = ONLY_V6.lock();
         REFUSE_ONLY_V6.store(true, Ordering::SeqCst);
         let mut options = udp_options(v6());
         options.only_v6_best_effort = Some(false);
@@ -1469,7 +1469,7 @@ mod tests {
     /// it cannot fail there.
     #[test]
     fn the_best_effort_request_is_skipped_for_an_ipv4_socket() {
-        let _guard = ONLY_V6.lock().unwrap();
+        let _guard = ONLY_V6.lock();
         REFUSE_ONLY_V6.store(true, Ordering::SeqCst);
         let mut options = udp_options(v4());
         options.only_v6_best_effort = Some(true);

@@ -59,7 +59,7 @@ Rama ships with a large set of capabilities so you can focus on your unique logi
 
 ### Highlights
 
-- **Transports:** TCP, UDP, UDS, middleware, instrumentation  
+- **Transports:** TCP, UDP, QUIC, UDS, middleware, instrumentation  
 - **HTTP:** 1.1 and 2, automatic protocol detection, routing, middleware  
 - **TLS:** Rustls and BoringSSL support  
 - **Proxy protocols:** HTTP CONNECT, HTTPS CONNECT, SOCKS5, HAProxy PROXY protocol  
