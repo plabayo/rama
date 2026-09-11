@@ -140,6 +140,7 @@ pub type DefaultMiddleware = (
 /// HTTP/1 responses originally delimited by EOF (without Content-Length or
 /// Transfer-Encoding) retain that framing downstream, including HTTP/1.1.
 /// They stream without chunking and close the downstream connection at body EOF.
+/// Preserving EOF framing sacrifices downstream connection reuse and explicit truncation detection.
 /// Middleware can select different framing by adding Content-Length or
 /// Transfer-Encoding; a Trailer header also prevents automatic EOF framing.
 /// HTTP/2 framing is unaffected.

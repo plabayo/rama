@@ -913,3 +913,38 @@ async fn middleware_can_upgrade_response_version_without_rechunking() {
     assert_eof(&mut relay.client).await;
     relay.finish(false).await;
 }
+
+#[tokio::test(start_paused = true)]
+async fn repeated_content_lengths_are_normalized_and_keep_the_relay_reusable() {
+    for headers in [
+        "Content-Length: 4\r\nX-Between: kept\r\nContent-Length: 4\r\n",
+        "Content-Length: 04\r\nContent-Length: 4\r\nContent-Length: 004\r\n",
+        "Content-Length: 4, 4\r\n",
+        "Content-Length: 4, 04\r\nContent-Length: 004\r\n",
+    ] {
+        let mut relay = Relay::with_default_middleware();
+        relay.request("1.1", "GET", b"").await;
+        let head = relay.response_head("1.1", headers).await;
+        assert_framing(&head, "1.1", false, Some(4));
+        assert_eq!(
+            head.to_ascii_lowercase().matches("content-length:").count(),
+            1
+        );
+        write(relay.upstream.get_mut(), b"PO").await;
+        assert_payload(&mut relay.client, b"PO", false).await;
+        assert_no_output(&mut relay.client).await;
+        write(relay.upstream.get_mut(), b"NG").await;
+        assert_payload(&mut relay.client, b"NG", false).await;
+        // The normalized length completes the response without either peer closing.
+        relay.request("1.1", "GET", b"").await;
+        let head = relay
+            .response_head("1.1", "Content-Length: 0\r\nContent-Length: 0\r\n")
+            .await;
+        assert_framing(&head, "1.1", false, Some(0));
+        assert_eq!(
+            head.to_ascii_lowercase().matches("content-length:").count(),
+            1
+        );
+        relay.finish(false).await;
+    }
+}

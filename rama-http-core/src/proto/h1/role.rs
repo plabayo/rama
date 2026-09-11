@@ -373,12 +373,13 @@ impl Http1Transaction for Server {
             msg.head.subject, msg.body, msg.req_method
         );
 
-        if Self::use_close_delimited_response(
+        let close_delimited = Self::use_close_delimited_response(
             msg.head.extensions,
             &msg.head.headers,
             msg.req_method.as_ref(),
             msg.head.subject,
-        ) {
+        );
+        if close_delimited {
             msg.head
                 .headers
                 .insert(header::CONNECTION, HeaderValue::from_static("close"));
@@ -453,8 +454,9 @@ impl Http1Transaction for Server {
             extend(dst, b"\r\n");
         }
 
-        let extensions = std::mem::take(msg.head.extensions);
-        let encoder = Self::encode_h1_headers(msg, &extensions, dst, is_last, orig_len, wrote_len)?;
+        let _extensions = std::mem::take(msg.head.extensions);
+        let encoder =
+            Self::encode_h1_headers(msg, close_delimited, dst, is_last, orig_len, wrote_len)?;
         ret.map(|()| encoder)
     }
 
@@ -535,7 +537,7 @@ impl Server {
 
     fn encode_h1_headers(
         msg: Encode<'_, StatusCode>,
-        ext: &Extensions,
+        close_delimited: bool,
         dst: &mut Vec<u8>,
         is_last: bool,
         orig_len: usize,
@@ -582,7 +584,7 @@ impl Server {
 
         Self::encode_headers(
             msg,
-            ext,
+            close_delimited,
             dst,
             is_last,
             orig_len,
@@ -593,8 +595,8 @@ impl Server {
 
     #[inline]
     fn encode_headers<W>(
-        msg: Encode<'_, StatusCode>,
-        ext: &Extensions,
+        mut msg: Encode<'_, StatusCode>,
+        close_delimited: bool,
         dst: &mut Vec<u8>,
         mut is_last: bool,
         orig_len: usize,
@@ -611,18 +613,29 @@ impl Server {
             dst.truncate(orig_len);
         };
 
-        let close_delimited = Self::use_close_delimited_response(
-            ext,
-            &msg.head.headers,
-            msg.req_method.as_ref(),
-            msg.head.subject,
-        );
+        // Normalize repeated or comma-separated lengths before writing any headers.
+        // Every value must parse and agree; never select just the first value.
+        let normalize_content_length = {
+            let mut values = msg.head.headers.get_all(header::CONTENT_LENGTH).into_iter();
+            values
+                .next()
+                .is_some_and(|first| first.as_bytes().contains(&b',') || values.next().is_some())
+        };
+        if normalize_content_length {
+            let Some(len) = headers::content_length_parse_all(&msg.head.headers) else {
+                warn!("invalid or conflicting Content-Length values");
+                rewind(dst);
+                return Err(crate::Error::new_user_header());
+            };
+            msg.head
+                .headers
+                .insert(header::CONTENT_LENGTH, HeaderValue::from(len));
+        }
         let mut encoder = Encoder::length(0);
         let mut allowed_trailer_fields = headers::trailer_header_names(&msg.head.headers);
         let mut wrote_date = false;
         let mut is_name_written = false;
         let mut must_write_chunked = false;
-        let mut prev_con_len = None;
         let connection_header_names = headers::connection_header_names(&msg.head.headers);
 
         macro_rules! handle_is_name_written {
@@ -692,27 +705,12 @@ impl Server {
                             // Encoder...
 
                             if let Some(len) = headers::content_length_parse(&value) {
-                                if let Some(prev) = prev_con_len {
-                                    if prev != len {
-                                        warn!(
-                                            "multiple Content-Length values found: [{}, {}]",
-                                            prev, len
-                                        );
-                                        rewind(dst);
-                                        return Err(crate::Error::new_user_header());
-                                    }
-                                    debug_assert!(is_name_written);
-                                    continue 'headers;
-                                } else {
-                                    // we haven't written content-length yet!
-                                    encoder = Encoder::length(len);
-                                    header_name_writer.write_header_name_with_colon(dst, &name);
-                                    extend(dst, value.as_bytes());
-                                    wrote_len = true;
-                                    is_name_written = true;
-                                    prev_con_len = Some(len);
-                                    continue 'headers;
-                                }
+                                encoder = Encoder::length(len);
+                                header_name_writer.write_header_name_with_colon(dst, &name);
+                                extend(dst, value.as_bytes());
+                                wrote_len = true;
+                                is_name_written = true;
+                                continue 'headers;
                             } else {
                                 warn!("illegal Content-Length value: {:?}", value);
                                 rewind(dst);
@@ -2993,6 +2991,139 @@ mod tests {
     }
 
     #[test]
+    fn server_normalizes_identical_content_lengths() {
+        for version in [Version::HTTP_10, Version::HTTP_11] {
+            for preference in [false, true] {
+                for values in [
+                    &["4", "4"][..],
+                    &["04", "4", "004"][..],
+                    &["4, 4"][..],
+                    &["4, 04", "004"][..],
+                ] {
+                    for (method, body, expected_length) in [
+                        (Method::GET, Some(BodyLength::Unknown), 4),
+                        (Method::GET, Some(BodyLength::Known(4)), 4),
+                        (Method::HEAD, None, 0),
+                        (Method::HEAD, Some(BodyLength::Known(0)), 0),
+                    ] {
+                        let mut head = MessageHead {
+                            version,
+                            ..MessageHead::default()
+                        };
+                        if preference {
+                            head.extensions.insert(CloseDelimitedResponse);
+                        }
+                        for value in values {
+                            head.headers
+                                .append("Content-Length", HeaderValue::from_static(value));
+                            head.headers
+                                .insert("x-between", HeaderValue::from_static("kept"));
+                        }
+                        let (encoder, wire) =
+                            encode_close_delimited_test_response(head, body, method).unwrap();
+                        assert_eq!(encoder, Encoder::length(expected_length));
+                        let wire = String::from_utf8(wire).unwrap().to_ascii_lowercase();
+                        assert_eq!(wire.matches("content-length:").count(), 1, "{wire}");
+                        assert!(wire.contains("content-length: 4\r\n"), "{wire}");
+                        assert!(wire.contains("x-between: kept\r\n"), "{wire}");
+                        assert!(!wire.contains("transfer-encoding:"));
+                        assert!(!wire.contains("connection: close"));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn server_rejects_invalid_or_conflicting_content_lengths_without_output() {
+        for values in [
+            &["4", "5"][..],
+            &["4", ""][..],
+            &["4", "+4"][..],
+            &["4", "four"][..],
+            &["4", "18446744073709551616"][..],
+            &["4, 5"][..],
+            &["4, "][..],
+            &[",4"][..],
+            &["4, 4", "5"][..],
+        ] {
+            for reverse in [false, true] {
+                for preference in [false, true] {
+                    for body in [Some(BodyLength::Unknown), Some(BodyLength::Known(4))] {
+                        let mut head = MessageHead::default();
+                        if preference {
+                            head.extensions.insert(CloseDelimitedResponse);
+                        }
+                        let mut values = values.to_vec();
+                        if reverse {
+                            values.reverse();
+                        }
+                        for value in values {
+                            head.headers
+                                .append(header::CONTENT_LENGTH, HeaderValue::from_static(value));
+                        }
+                        let mut wire = b"previous response".to_vec();
+                        let error = Server::encode(
+                            Encode {
+                                head: EncodeHead {
+                                    version: head.version,
+                                    subject: head.subject,
+                                    headers: head.headers,
+                                    extensions: &mut head.extensions,
+                                },
+                                body,
+                                keep_alive: true,
+                                req_method: &mut Some(Method::GET),
+                                title_case_headers: false,
+                                date_header: false,
+                            },
+                            &mut wire,
+                        )
+                        .unwrap_err();
+                        assert!(matches!(
+                            error.kind(),
+                            crate::error::Kind::User(crate::error::User::UnexpectedHeader)
+                        ));
+                        assert_eq!(wire, b"previous response");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn normalized_content_length_still_conflicts_with_transfer_encoding() {
+        for transfer_encoding_first in [false, true] {
+            for body in [Some(BodyLength::Unknown), Some(BodyLength::Known(4))] {
+                let mut head = MessageHead::default();
+                head.extensions.insert(CloseDelimitedResponse);
+                if transfer_encoding_first {
+                    head.headers.insert(
+                        header::TRANSFER_ENCODING,
+                        HeaderValue::from_static("chunked"),
+                    );
+                }
+                for _ in 0..2 {
+                    head.headers
+                        .append(header::CONTENT_LENGTH, HeaderValue::from_static("4"));
+                }
+                if !transfer_encoding_first {
+                    head.headers.insert(
+                        header::TRANSFER_ENCODING,
+                        HeaderValue::from_static("chunked"),
+                    );
+                }
+                let error =
+                    encode_close_delimited_test_response(head, body, Method::GET).unwrap_err();
+                assert!(matches!(
+                    error.kind(),
+                    crate::error::Kind::User(crate::error::User::UnexpectedHeader)
+                ));
+            }
+        }
+    }
+
+    #[test]
     fn explicit_close_delimited_response_overrides_size_hint_and_keep_alive() {
         for version in [Version::HTTP_10, Version::HTTP_11] {
             for body in [
@@ -3211,6 +3342,7 @@ mod tests {
                 msg.head.extensions.self_get_ref::<Framing>(),
                 Some(&expected)
             );
+            assert_eq!(msg.head.extensions.get_ref::<Framing>(), Some(&expected));
         }
     }
 
