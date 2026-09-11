@@ -82,10 +82,9 @@ impl From<BoxError> for TlsConfigError {
     }
 }
 
-impl From<rustls::Error> for TlsConfigError {
-    fn from(error: rustls::Error) -> Self {
-        Self::InvalidConfiguration(Box::new(error))
-    }
+/// Carry a backend error as the cause, without that conversion being part of this crate's API.
+fn invalid_configuration(error: rustls::Error) -> TlsConfigError {
+    TlsConfigError::InvalidConfiguration(Box::new(error))
 }
 
 impl From<NoInitialCipherSuite> for TlsConfigError {
@@ -124,7 +123,8 @@ impl QuicClientConfig {
             rustls::quic::Version::V1,
             rustls::pki_types::ServerName::IpAddress(std::net::Ipv4Addr::LOCALHOST.into()),
             Vec::new(),
-        )?;
+        )
+        .map_err(invalid_configuration)?;
         let mut config = Self::try_from(native)?;
         config.alpn_policy = options.alpn;
         Ok(config)
@@ -155,7 +155,8 @@ impl QuicServerConfig {
             return Err(TlsConfigError::EarlyDataNotEnabled);
         }
         let native = Arc::new(native);
-        rustls::quic::ServerConnection::new(native.clone(), rustls::quic::Version::V1, Vec::new())?;
+        rustls::quic::ServerConnection::new(native.clone(), rustls::quic::Version::V1, Vec::new())
+            .map_err(invalid_configuration)?;
         let mut config = Self::try_from(native)?;
         config.alpn_policy = options.alpn;
         Ok(config)

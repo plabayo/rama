@@ -44,15 +44,6 @@ fn received_server_name(name: &str) -> Result<Domain, TransportError> {
     })
 }
 
-impl From<Side> for rama_tls_rustls::dep::rustls::Side {
-    fn from(s: Side) -> Self {
-        match s {
-            Side::Client => Self::Client,
-            Side::Server => Self::Server,
-        }
-    }
-}
-
 mod config;
 pub use config::{AlpnPolicy, TlsConfigError, TlsOptions};
 
@@ -698,7 +689,11 @@ pub(crate) fn initial_keys(
     side: Side,
     suite: &Suite,
 ) -> Keys {
-    let keys = suite.keys(&dst_cid, side.into(), version);
+    let side = match side {
+        Side::Client => rama_tls_rustls::dep::rustls::Side::Client,
+        Side::Server => rama_tls_rustls::dep::rustls::Side::Server,
+    };
+    let keys = suite.keys(&dst_cid, side, version);
     Keys {
         header: KeyPair {
             local: Box::new(keys.local.header),
