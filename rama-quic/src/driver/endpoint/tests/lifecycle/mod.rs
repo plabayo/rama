@@ -3948,6 +3948,9 @@ impl SentDatagram {
 pub(super) struct SegmentLog {
     /// The rejected segmented descriptor and its segment size.
     pub(super) rejected: Option<(SentDatagram, usize)>,
+    /// How many segments each segmented descriptor offered, so a test that never saw the batch
+    /// it needs says so rather than reporting a missing report.
+    pub(super) segmented_offers: Vec<usize>,
     /// Index into `sent` at which the rejection happened.
     rejected_at: usize,
     pub(super) sent: Vec<SentDatagram>,
@@ -4106,6 +4109,7 @@ impl<S: DatagramSender> DatagramSender for SegmentingSender<S> {
                 log.rejected.is_none(),
                 "segmentation is never advertised again after the downgrade"
             );
+            log.segmented_offers.push(datagram.segment_count());
             if datagram.segment_count() < 3 {
                 // Too small to leave a suffix: this stands in for an offload, and an offload is
                 // one call to the kernel. It takes every segment or none: `Pending` and `Err`
@@ -4831,6 +4835,17 @@ async fn shutdown_completes_while_a_descriptor_is_partly_accepted() {
     .await;
 }
 
+/// What the fixture was offered, for a wait that did not get the batch it needed.
+fn offers(log: &Mutex<SegmentLog>) -> String {
+    let log = log.lock();
+    format!(
+        "segmented offers {:?}, {} datagrams sent, rejected {}",
+        log.segmented_offers,
+        log.sent.len(),
+        log.rejected.is_some()
+    )
+}
+
 /// The connection counts an identifier as used from the first segment the socket accepted, not
 /// from the completion of the descriptor that carried it. The descriptor is deliberately left
 /// unfinished: one segment is accepted and the rest is held, and the identifier is already
@@ -4860,13 +4875,14 @@ async fn an_accepted_prefix_is_reported_before_its_descriptor_completes() {
     let mut stream = c.open_uni().await.unwrap();
     stream.write_all(&payload).await.unwrap();
     stream.finish().unwrap();
-    wait_for(
+    wait_for_with(
         "one segment is accepted and the rest is held",
         Duration::from_secs(10),
         || {
             let log = log.lock();
             log.rejected.is_some() && log.fallback().len() == 1
         },
+        || offers(&log),
     )
     .await;
     let (rejected, segment_size) = log.lock().rejected.clone().unwrap();
@@ -4957,13 +4973,14 @@ async fn an_accepted_prefix_is_reported_when_the_descriptor_then_fails() {
     stream.write_all(&payload).await.unwrap();
     stream.finish().unwrap();
     // Let the descriptor be downgraded and leave one segment, then hold.
-    wait_for(
+    wait_for_with(
         "one segment of the descriptor is accepted",
         Duration::from_secs(10),
         || {
             let log = log.lock();
             log.rejected.is_some() && log.fallback().len() == 1
         },
+        || offers(&log),
     )
     .await;
     let (rejected, _) = log.lock().rejected.clone().unwrap();
