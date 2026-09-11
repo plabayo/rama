@@ -371,6 +371,10 @@ impl<B: Buf> SendStream<B> {
 // ===== impl RecvStream =====
 
 impl RecvStream {
+    pub(crate) fn extensions(&self) -> rama_core::extensions::Extensions {
+        self.inner.inner.extensions()
+    }
+
     pub(crate) fn new(inner: FlowControl) -> Self {
         Self { inner }
     }

@@ -9,6 +9,7 @@ use rama_http::layer::har::recorder::{
     StreamingRecorder, WebSocketCapture, WebSocketCaptureRecorder,
 };
 use rama_http::layer::har::spec::{Log, WebSocketMessage, WebSocketMessageType};
+use rama_http::layer::upgrade::mitm::HttpUpgradeMitmRelayExtensions;
 use rama_http::{Body, BodyCaptureEvent, Request, Response};
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -169,31 +170,105 @@ impl RecorderSession for CaptureIdentitySession {
 }
 
 #[tokio::test]
-async fn har_export_claims_one_capture_identity_per_session() {
-    let calls = Arc::new(AtomicUsize::new(0));
-    let closed = Arc::new(AtomicBool::new(false));
-    let service = HARExportLayer::new(
-        CaptureIdentityRecorder {
-            calls: calls.clone(),
-            closed,
-        },
-        true,
-    )
-    .into_layer(service_fn(|_request: Request| async move {
-        Response::builder()
-            .status(rama_http::StatusCode::SWITCHING_PROTOCOLS)
-            .version(rama_http::Version::HTTP_11)
+async fn har_export_stages_one_capture_identity_for_successful_upgrades() {
+    for (version, status, successful) in [
+        (
+            rama_http::Version::HTTP_11,
+            rama_http::StatusCode::SWITCHING_PROTOCOLS,
+            true,
+        ),
+        (
+            rama_http::Version::HTTP_2,
+            rama_http::StatusCode::CREATED,
+            true,
+        ),
+        (
+            rama_http::Version::HTTP_11,
+            rama_http::StatusCode::BAD_REQUEST,
+            false,
+        ),
+        (
+            rama_http::Version::HTTP_2,
+            rama_http::StatusCode::BAD_REQUEST,
+            false,
+        ),
+    ] {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let closed = Arc::new(AtomicBool::new(false));
+        let service = HARExportLayer::new(
+            CaptureIdentityRecorder {
+                calls: calls.clone(),
+                closed: closed.clone(),
+            },
+            true,
+        )
+        .into_layer(service_fn(move |_request: Request| async move {
+            Response::builder()
+                .status(status)
+                .version(version)
+                .body(Body::empty())
+        }));
+        let mut request = Request::builder()
+            .uri("ws://example.test/capture-identity")
+            .version(version)
             .body(Body::empty())
-    }));
-    let request = Request::builder()
-        .uri("ws://example.test/capture-identity")
-        .header("upgrade", "websocket")
-        .body(Body::empty())
-        .expect("WebSocket request");
-
-    service.serve(request).await.expect("upgrade response");
-
-    assert_eq!(calls.load(Ordering::Acquire), 1);
+            .expect("WebSocket request");
+        if version == rama_http::Version::HTTP_2 {
+            *request.method_mut() = rama_http::Method::CONNECT;
+            request
+                .extensions()
+                .insert(rama_http::proto::h2::ext::Protocol::from_static(
+                    "websocket",
+                ));
+        } else {
+            request
+                .headers_mut()
+                .insert("upgrade", "websocket".parse().unwrap());
+        }
+        let response = service.serve(request).await.expect("handshake response");
+        assert_eq!(calls.load(Ordering::Acquire), 1);
+        let selected = response
+            .extensions()
+            .self_get_ref::<HttpUpgradeMitmRelayExtensions>();
+        if successful {
+            let selected = selected
+                .expect("successful capture selected for relay")
+                .clone();
+            let capture = selected
+                .0
+                .get_ref::<WebSocketCapture>()
+                .expect("selected capture");
+            assert!(selected.0.parent().is_none());
+            let lease = capture.lease().expect("one shared capture lease");
+            assert!(
+                response
+                    .extensions()
+                    .get_ref::<WebSocketCapture>()
+                    .unwrap()
+                    .lease()
+                    .is_none()
+            );
+            drop(response);
+            assert!(
+                !closed.load(Ordering::Acquire),
+                "response drop must not close relay capture"
+            );
+            drop(lease);
+            assert!(
+                closed.load(Ordering::Acquire),
+                "relay completion closes capture"
+            );
+        } else {
+            assert!(
+                selected.is_none(),
+                "rejected handshake must not stage a capture"
+            );
+            assert!(
+                closed.load(Ordering::Acquire),
+                "rejected handshake closes capture"
+            );
+        }
+    }
 }
 
 #[tokio::test]

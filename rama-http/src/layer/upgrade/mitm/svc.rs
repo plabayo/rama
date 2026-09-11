@@ -1,3 +1,4 @@
+use super::HttpUpgradeMitmRelayExtensions;
 use std::fmt;
 use std::sync::Arc;
 
@@ -21,6 +22,14 @@ use rama_core::{
 /// such as transparent (L4) proxies to relay a HTTP upgrade-request
 /// as-is and pipe the upgraded upgrade request on both ends
 /// via the upgrade (bridgeIo) svc.
+///
+/// Matchers and response middleware select protocol metadata with
+/// [`HttpUpgradeMitmRelayExtensions`]. Request selections reach the ingress
+/// transport and response selections reach the egress transport, after both
+/// upgrades succeed. Each upgraded transport otherwise retains its own
+/// connection or HTTP/2 stream state.
+///
+/// See [`HttpUpgradeMitmRelayExtensions`] for an example of selecting metadata.
 pub struct HttpUpgradeMitmRelay<M, S> {
     exec: Executor,
     nested_matcher_svc: M,
@@ -97,6 +106,12 @@ where
         if let Some(res_svc_matcher) = maybe_res_svc_matcher {
             tracing::debug!("HttpUpgradeMitmRelay: upgrade MITM relay req match made...");
 
+            // Select only this message's explicit payload, never a parent's
+            // selection or the message's structural connection/upgrade state.
+            let ingress_extensions = req
+                .extensions()
+                .self_get_ref::<HttpUpgradeMitmRelayExtensions>()
+                .cloned();
             let on_upgrade_ingress = crate::io::upgrade::handle_upgrade(&req);
 
             let relay_upgrade_span = tracing::trace_root_span!(
@@ -135,40 +150,13 @@ where
                 );
 
                 let on_upgrade_egress = crate::io::upgrade::handle_upgrade(&res);
-                // The relay reads response-negotiated config from the upgraded
-                // EGRESS stream's extensions (for example a WebSocket
-                // `RelayWebSocketConfig` carrying permessage-deflate params).
-                // An HTTP/1 upgraded stream is fulfilled from the bare
-                // connection io and does NOT inherit response extensions, so
-                // graft the response top level onto that egress side. Without
-                // it an h1 WebSocket relay builds its client socket without
-                // negotiated compression and resets the first compressed frame.
-                //
-                // On h2 the graft is needed for the same reason: the upgraded
-                // stream forks the h2 stream's extensions, while the
-                // response's top-level entries live in the response's own
-                // fork, outside that shared parent chain. Filtering to the
-                // specific entries the relay reads would couple this layer to
-                // rama-ws-side types (e.g. `RelayWebSocketConfig`), which
-                // we'd rather not — the over-graft is bounded and benign.
-                //
-                // NOTE: grafted per call site rather than inside
-                // `handle_upgrade` ON PURPOSE, and it grafts the ENTIRE
-                // top-level of `res.extensions()` (not a curated subset).
-                // This is safe because `extend` copies only the TOP-LEVEL
-                // entries of the source (it does NOT walk the parent chain),
-                // and a client-received response's top level is a `fork()` of
-                // the request (h1: `conn.rs` client branch; h2: the stream
-                // equivalent) — so it does NOT carry the connection's own
-                // `Ingress`/`Egress(self.io.extensions())` self-wrapper. And
-                // since `Upgraded::new` forks the io extensions, grafted
-                // entries land on the upgraded stream's own level, never
-                // inside the io's shared store. Centralizing inside
-                // `handle_upgrade` would still be wrong: it would also run on
-                // the server-acceptor path and graft request top-level
-                // entries (including its `Ingress(io)` wrapper) onto
-                // server-side upgraded streams that have no use for them.
-                let response_extensions = res.extensions().clone();
+                // Reserve the shared selection before returning the response:
+                // outer middleware can still append capture/inspection state
+                // before the server completes the ingress upgrade.
+                let egress_extensions = res
+                    .extensions()
+                    .self_get_ref_or_insert(HttpUpgradeMitmRelayExtensions::default)
+                    .clone();
                 let error_sink = self.error_sink.clone();
                 tracing::trace!("HttpUpgradeMitmRelay: spawn relay svc on its own task");
 
@@ -189,7 +177,10 @@ where
                         }
                     };
 
-                    graft_response_extensions(&egress_stream, &response_extensions);
+                    if let Some(extensions) = ingress_extensions {
+                        ingress_stream.extensions().extend(&extensions.0);
+                    }
+                    egress_stream.extensions().extend(&egress_extensions.0);
 
                     tracing::trace!(
                         "HttpUpgradeMitmRelay: relay task: bidirectional upgrade complete: continue serving via upgrade relay svc"
@@ -213,45 +204,153 @@ where
     }
 }
 
-fn graft_response_extensions(
-    egress_stream: &Upgraded,
-    response_extensions: &rama_core::extensions::Extensions,
-) {
-    egress_stream.extensions().extend(response_extensions);
-}
-
 #[cfg(test)]
 mod tests {
-    use rama_core::{ServiceInput, bytes::Bytes, extensions::Extension};
-    use tokio_test::io::Builder;
-
     use super::*;
+    use crate::io::upgrade::{self, OnUpgrade};
+    use rama_core::{
+        ServiceInput,
+        extensions::{Extension, Extensions},
+        matcher::service::MatcherServicePair,
+        service::service_fn,
+    };
+    use std::{convert::Infallible, time::Duration};
 
-    #[derive(Debug, Clone, PartialEq, Eq, Extension)]
-    struct ResponseNegotiation(&'static str);
+    #[derive(Debug, PartialEq, Extension)]
+    struct Selected(&'static str);
+    #[derive(Debug, Extension)]
+    struct MessageOnly;
+    #[derive(Debug, Extension)]
+    struct Lifetime(#[expect(dead_code, reason = "lifetime probe")] Arc<()>);
 
-    #[test]
-    fn response_extensions_are_grafted_only_onto_egress_upgrade() {
-        let ingress = Upgraded::new(ServiceInput::new(Builder::default().build()), Bytes::new());
-        let egress = Upgraded::new(ServiceInput::new(Builder::default().build()), Bytes::new());
-        let response_extensions = rama_core::extensions::Extensions::new();
-        response_extensions.insert(ResponseNegotiation("permessage-deflate"));
+    fn upgraded() -> Upgraded {
+        Upgraded::new(
+            ServiceInput::new(tokio::io::duplex(64).0),
+            bytes::Bytes::new(),
+        )
+    }
 
-        graft_response_extensions(&egress, &response_extensions);
+    async fn bounded<T>(future: impl Future<Output = T>) -> T {
+        tokio::time::timeout(Duration::from_secs(3), future)
+            .await
+            .unwrap()
+    }
 
-        assert_eq!(
-            egress
-                .extensions()
-                .get_ref::<ResponseNegotiation>()
-                .map(|value| value.0),
-            Some("permessage-deflate")
-        );
-        assert!(
-            ingress
-                .extensions()
-                .get_ref::<ResponseNegotiation>()
-                .is_none(),
-            "response metadata must not be copied onto ingress transport state"
-        );
+    #[tokio::test]
+    async fn transfers_only_explicit_message_local_metadata_to_each_side() {
+        for response_selection in [false, true] {
+            let (ingress_pending, ingress_upgrade) = upgrade::pending();
+            let (egress_pending, egress_upgrade) = upgrade::pending();
+            let ingress = upgraded();
+            let egress = upgraded();
+            let ingress_transport = ingress.extensions().parent().unwrap().clone();
+            let egress_transport = egress.extensions().parent().unwrap().clone();
+            ingress_pending.fulfill(ingress);
+            egress_pending.fulfill(egress);
+
+            let req = Request::new(Body::empty());
+            req.extensions().insert(ingress_upgrade);
+            req.extensions().insert(MessageOnly);
+            let selected = HttpUpgradeMitmRelayExtensions::default();
+            selected.0.insert(Selected("ingress"));
+            req.extensions().insert(selected);
+            let upstream = service_fn(move |req: Request| {
+                let res = Response::new(Body::empty()).with_extensions(req.extensions().fork());
+                res.extensions().insert(egress_upgrade.clone());
+                res.extensions().insert(MessageOnly);
+                if response_selection {
+                    let selected = HttpUpgradeMitmRelayExtensions::default();
+                    selected.0.insert(Selected("egress"));
+                    res.extensions().insert(selected);
+                }
+                async { Ok::<_, Infallible>(res) }
+            });
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            let relay = service_fn(move |bridge: BridgeIo<Upgraded, Upgraded>| {
+                tx.send(bridge).unwrap();
+                async { Ok::<_, Infallible>(()) }
+            });
+            let matcher = MatcherServicePair::new(true, MatcherServicePair::new(true, relay));
+            let res = HttpUpgradeMitmRelay::new(Executor::new(), matcher, upstream)
+                .serve(req)
+                .await
+                .unwrap();
+            let BridgeIo(ingress, egress) = bounded(rx.recv()).await.unwrap();
+            assert_eq!(
+                ingress.extensions().get_ref::<Selected>(),
+                Some(&Selected("ingress"))
+            );
+            assert_eq!(
+                egress.extensions().get_ref::<Selected>(),
+                response_selection.then_some(&Selected("egress"))
+            );
+            for stream in [&ingress, &egress] {
+                assert!(stream.extensions().get_ref::<MessageOnly>().is_none());
+                assert!(stream.extensions().get_ref::<OnUpgrade>().is_none());
+                assert!(
+                    stream
+                        .extensions()
+                        .get_ref::<HttpUpgradeMitmRelayExtensions>()
+                        .is_none()
+                );
+            }
+            for transport in [ingress_transport, egress_transport] {
+                assert!(transport.get_ref::<Selected>().is_none());
+            }
+            drop(res);
+        }
+    }
+
+    #[tokio::test]
+    async fn either_upgrade_failure_releases_selected_metadata_and_reports_error() {
+        for fail_ingress in [false, true] {
+            let (ingress_pending, ingress_upgrade) = upgrade::pending();
+            let (egress_pending, egress_upgrade) = upgrade::pending();
+            let req = Request::new(Body::empty());
+            req.extensions().insert(ingress_upgrade);
+            let ingress_lifetime = Arc::new(());
+            let ingress_weak = Arc::downgrade(&ingress_lifetime);
+            let selected = HttpUpgradeMitmRelayExtensions::default();
+            selected.0.insert(Lifetime(ingress_lifetime));
+            req.extensions().insert(selected);
+            let egress_lifetime = Arc::new(());
+            let egress_weak = Arc::downgrade(&egress_lifetime);
+            let response_extensions = Extensions::new();
+            response_extensions.insert(egress_upgrade);
+            let selected = HttpUpgradeMitmRelayExtensions::default();
+            selected.0.insert(Lifetime(egress_lifetime));
+            response_extensions.insert(selected);
+            let upstream = service_fn(move |_: Request| {
+                let res = Response::new(Body::empty()).with_extensions(response_extensions.clone());
+                async { Ok::<_, Infallible>(res) }
+            });
+            let relay = service_fn(|_: BridgeIo<Upgraded, Upgraded>| async {
+                panic!("a failed upgrade must not invoke the relay");
+                #[expect(unreachable_code, reason = "fix the service result type")]
+                Ok::<_, Infallible>(())
+            });
+            let matcher = MatcherServicePair::new(true, MatcherServicePair::new(true, relay));
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            let service = HttpUpgradeMitmRelay::new(Executor::new(), matcher, upstream)
+                .with_error_sink(move |error: BoxError| {
+                    tx.send(error.to_string()).unwrap();
+                });
+            let res = service.serve(req).await.unwrap();
+            drop((res, service));
+            if fail_ingress {
+                egress_pending.fulfill(upgraded());
+                drop(ingress_pending);
+            } else {
+                ingress_pending.fulfill(upgraded());
+                drop(egress_pending);
+            }
+            let error = bounded(rx.recv()).await.unwrap();
+            assert!(error.contains("mitm relay: upgrade failed on one or both sides"));
+            // Channel closure proves the detached task has finished dropping
+            // its selected payloads, rather than racing its error callback.
+            assert!(bounded(rx.recv()).await.is_none());
+            assert!(ingress_weak.upgrade().is_none());
+            assert!(egress_weak.upgrade().is_none());
+        }
     }
 }

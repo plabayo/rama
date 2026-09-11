@@ -1633,6 +1633,10 @@ impl<B> Clone for StreamRef<B> {
 // ===== impl OpaqueStreamRef =====
 
 impl OpaqueStreamRef {
+    pub(crate) fn extensions(&self) -> Extensions {
+        self.inner.lock().store.resolve(self.key).extensions.clone()
+    }
+
     fn new(inner: Arc<Mutex<Inner>>, stream: &mut store::Ptr) -> Self {
         stream.ref_inc();
         Self {
