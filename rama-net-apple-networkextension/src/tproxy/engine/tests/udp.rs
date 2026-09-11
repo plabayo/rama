@@ -510,6 +510,85 @@ fn udp_terminal_close_joins_admitted_copy_count_and_publish() {
 }
 
 #[test]
+fn udp_client_close_drains_before_same_engine_budget_refill() {
+    let handler = TestHandler {
+        udp_matcher: Arc::new(|meta| FlowAction::Intercept {
+            meta,
+            service: service_fn(
+                |_flow: crate::UdpFlow| -> std::future::Ready<Result<(), Infallible>> {
+                    panic!("inactive filler must never reach the service")
+                },
+            )
+            .boxed(),
+        }),
+        ..TestHandler::passthrough()
+    };
+    let engine = TransparentProxyEngineBuilder::new(TestHandlerFactory(handler))
+        .with_runtime_factory(paused_test_runtime)
+        .build()
+        .expect("build engine");
+    let budget = engine.udp_ingress_budget_for_test();
+    let payload = vec![b'f'; MAX_UDP_DATAGRAM_PAYLOAD_SIZE];
+    let tail = [b't'; 4];
+
+    for cycle in 1..=2 {
+        let mut sessions = Vec::new();
+        for _ in 0..64 {
+            let SessionFlowAction::Intercept(mut session) = engine.new_udp_session(
+                TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp),
+                |_| panic!("inactive filler emitted a datagram"),
+                |_| panic!("exact budget fill must not become a waiter"),
+                || panic!("client close must suppress server close"),
+            ) else {
+                panic!("expected intercepted flow");
+            };
+            for _ in 0..4 {
+                session.on_client_datagram(&payload, None);
+            }
+            session.on_client_datagram(&tail, None);
+            sessions.push(session);
+        }
+        let full = budget.snapshot();
+        assert_eq!(full.retained_bytes, DEFAULT_UDP_INGRESS_GLOBAL_MAX_BYTES);
+        assert_eq!(full.charged_bytes, DEFAULT_UDP_INGRESS_GLOBAL_MAX_BYTES);
+        assert_eq!(full.accepted_datagrams, cycle * 64 * 5);
+        assert_eq!(full.dropped_global_bytes_full, 0);
+        assert_eq!(full.global_waiters, 0);
+
+        let tasks = sessions
+            .iter_mut()
+            .map(|session| {
+                let task = session.service_task.take().expect("service task");
+                session.on_client_close();
+                task
+            })
+            .collect::<Vec<_>>();
+        drop(sessions);
+
+        // No worker drives this runtime between close and this snapshot. The
+        // old e2e's assumption that client close synchronously freed these
+        // bytes is deterministically false, independent of host scheduling.
+        assert_eq!(budget.snapshot().retained_bytes, full.retained_bytes);
+        engine.rt.as_ref().unwrap().block_on_borrowed(async {
+            tokio::time::timeout(Duration::from_secs(1), async {
+                for task in tasks {
+                    task.await.expect("UDP cleanup task");
+                }
+            })
+            .await
+            .expect("client-close cleanup must finish");
+        });
+        let drained = budget.snapshot();
+        assert_eq!(drained.retained_bytes, 0);
+        assert_eq!(drained.charged_bytes, 0);
+        assert_eq!(drained.global_waiters, 0);
+        assert_eq!(drained.provisional_probe_count, 0);
+        assert_eq!(drained.provisional_probe_bytes, 0);
+    }
+    stop_paused_engine(engine);
+}
+
+#[test]
 fn udp_preactivation_shutdown_owns_and_drains_queued_ingress_before_close() {
     assert_udp_preactivation_terminal_drains_ingress(false);
 }

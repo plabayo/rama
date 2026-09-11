@@ -139,7 +139,7 @@ cleanup-tproxy-ffi-e2e:
 
 [working-directory: './tproxy_ffi_e2e']
 run-tproxy-ffi-e2e:
-    cargo test --test e2e -- --test-threads=1 --nocapture
+    RUST_BACKTRACE=1 cargo test --test e2e -- --test-threads=1 --nocapture
 
 [working-directory: '.']
 run-tproxy-ffi-e2e-swift: build-tproxy-rs-debug

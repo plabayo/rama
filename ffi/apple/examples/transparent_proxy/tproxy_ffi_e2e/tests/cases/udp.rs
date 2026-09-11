@@ -193,12 +193,26 @@ async fn ffi_contract_udp_global_budget_probe_ack_and_cleanup() {
     stalled.close_from_client_and_assert(1);
     close_udp_sessions(fillers);
 
-    // Behavioral leak and exact-ACK check on the same engine generation.
-    // Refill the entire 64-flow boundary. If retained bytes survived the first
-    // teardown, a refill flow rejected earlier becomes a FIFO waiter and is
-    // observed below. First fill all four lease slots, then register two more
-    // waiters whose downstream progress will be an exact ACK witness.
-    let mut refill = fill_default_global_budget(&engine, remote);
+    let response = udp_roundtrip(engine, remote, b"post pressure canary").await;
+    assert_eq!(response, b"POST PRESSURE CANARY");
+}
+
+#[tokio::test]
+#[serial]
+async fn ffi_contract_udp_global_budget_exact_ack_ownership() {
+    let env = setup_env().await;
+    let engine =
+        engine_with_udp_ingress_probe_lease_ms(Some(ACK_TEST_PROBE_LEASE.as_millis() as u64));
+    let remote = localhost(env.ports.udp);
+
+    // Start with a fresh engine: client close suppresses callbacks immediately,
+    // but its service task drains retained ingress asynchronously. Refilling
+    // immediately after close can park the fillers themselves as global waiters
+    // and steal the verifier leases. The engine regression
+    // `udp_client_close_drains_before_same_engine_budget_refill` checks exact
+    // same-generation cleanup after joining the service tasks.
+    let mut fillers = fill_default_global_budget(&engine, remote);
+    let blocked_payload = vec![b'b'; MAX_UDP_DATAGRAM];
     let mut verifiers = (0..4)
         .map(|_| {
             let session = UdpFfiSession::new(engine.clone(), remote);
@@ -206,7 +220,7 @@ async fn ffi_contract_udp_global_budget_probe_ack_and_cleanup() {
             session
         })
         .collect::<Vec<_>>();
-    refill.remove(0).close_from_client_and_assert(1);
+    fillers.remove(0).close_from_client_and_assert(1);
 
     let mut initial_probes = Vec::with_capacity(4);
     for verifier in verifiers.iter_mut().take(4) {
@@ -298,13 +312,13 @@ async fn ffi_contract_udp_global_budget_probe_ack_and_cleanup() {
         "sixth probe was released by lease expiry instead of the second exact ACK + payload"
     );
 
-    for session in &mut refill {
+    for session in &mut fillers {
         session.assert_no_callbacks_queued();
     }
     close_udp_sessions(verifiers);
-    close_udp_sessions(refill);
+    close_udp_sessions(fillers);
 
-    // The same engine remains usable after both complete pressure cycles.
+    // The same engine remains usable after the complete pressure cycle.
     let response = udp_roundtrip(engine, remote, b"post pressure canary").await;
     assert_eq!(response, b"POST PRESSURE CANARY");
 }
@@ -394,17 +408,13 @@ async fn ffi_contract_udp_8192_sessions_admit_coordinate_and_close() {
 
     let progress_started = Instant::now();
     fillers.remove(0).close_from_client_and_assert(1);
-    let mut previous_callback_at = None;
+    // Each session must make progress, but partial per-datagram releases can
+    // rotate nonfitting waiters before all headroom is available. Creation order
+    // is therefore not callback order. FIFO ordering with an atomic capacity
+    // release is covered by the coordinator's deterministic 8,192-waiter test.
     for (index, session) in sessions.iter_mut().enumerate() {
-        let (probe_id, callback_at) = session.wait_for_probe_read_demand_observed().await;
+        let probe_id = session.wait_for_probe_read_demand().await;
         assert_ne!(probe_id, 0, "session {index} received an ordinary demand");
-        if let Some(previous) = previous_callback_at {
-            assert!(
-                callback_at >= previous,
-                "global-pressure callbacks violated FIFO creation order at session {index}"
-            );
-        }
-        previous_callback_at = Some(callback_at);
     }
     assert!(
         progress_started.elapsed() < MAX_COORDINATOR_ELAPSED,
