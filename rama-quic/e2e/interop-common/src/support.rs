@@ -2,7 +2,7 @@
 
 use std::{
     future::{Future, IntoFuture},
-    net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV6},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV6},
     time::Duration,
 };
 
@@ -146,6 +146,12 @@ impl<T> Drop for Peer<T> {
 #[must_use]
 pub fn localhost() -> SocketAddr {
     SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0)
+}
+
+/// The same on the other socket family, for the cases that run over both.
+#[must_use]
+pub fn localhost_v6() -> SocketAddr {
+    SocketAddr::new(Ipv6Addr::LOCALHOST.into(), 0)
 }
 
 /// The same endpoint however a peer holds it: a dual-stack socket reports an IPv4 peer as a

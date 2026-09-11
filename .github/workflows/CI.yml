@@ -470,6 +470,8 @@ jobs:
         run: uv sync --frozen
       - name: Formatting and lints for the shared scenarios and every peer
         run: just qa-quic-interop-lint
+      - name: Shared scenario library
+        run: just test-quic-interop-common
       - name: Quinn interoperability
         run: just test-quic-interop-quinn
       - name: quiche interoperability

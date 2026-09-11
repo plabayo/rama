@@ -161,7 +161,7 @@ impl Connection {
                     trace!(id = %f.id, offset = f.offset, len = f.data.len(), fin = f.fin, "got stream frame");
                 }
                 Frame::Datagram(f) => {
-                    trace!(len = f.data.len(), "got datagram frame");
+                    trace!(len = f.datagram.data.len(), "got datagram frame");
                 }
                 f => {
                     trace!("got frame {:?}", f);

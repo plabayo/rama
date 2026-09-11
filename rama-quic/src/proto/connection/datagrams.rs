@@ -6,7 +6,7 @@ use rama_core::telemetry::tracing::{debug, trace};
 use super::Connection;
 use crate::proto::{
     TransportError,
-    frame::{Datagram, FrameStruct},
+    frame::{ArrivedDatagram, Datagram, FrameStruct},
 };
 
 /// API to control datagram traffic
@@ -127,23 +127,35 @@ pub(super) struct DatagramState {
 impl DatagramState {
     pub(super) fn received(
         &mut self,
-        datagram: Datagram,
+        arrived: ArrivedDatagram,
         window: Option<usize>,
     ) -> Result<bool, TransportError> {
+        let ArrivedDatagram { datagram, encoded } = arrived;
         let Some(window) = window else {
             return Err(TransportError::PROTOCOL_VIOLATION(
                 "unexpected DATAGRAM frame",
             ));
         };
 
-        let size_with_overhead = datagram.data.len() + size_of::<Datagram>();
-
-        if size_with_overhead > window {
+        // What the peer was told it may send is the encoded frame, not what holding it costs
+        // here (RFC 9221 §3), and it is the value this side advertised: the receive budget
+        // capped to what the transport parameter can carry.
+        let advertised = window.min(usize::from(u16::MAX));
+        if encoded > advertised {
             return Err(TransportError::PROTOCOL_VIOLATION("oversized datagram"));
         }
 
+        // Storage is a separate matter. A frame that is valid on the wire but will not fit
+        // is dropped, which RFC 9221 §5.3 allows; it is not the peer's protocol error.
+        let stored = datagram.data.len() + size_of::<Datagram>();
+        // Nothing is given up for a frame that would not fit an empty queue: discarding
+        // readable datagrams could not make room for it.
+        if stored > window {
+            debug!("dropping a datagram there is no room for");
+            return Ok(false);
+        }
         let was_empty = self.incoming.is_empty();
-        while self.incoming.memory_used() + size_with_overhead > window {
+        while self.incoming.memory_used() + stored > window {
             debug!("dropping stale datagram");
             self.recv();
         }
@@ -275,16 +287,19 @@ impl std::error::Error for SendDatagramError {}
 mod tests {
     use super::*;
 
-    fn datagram(len: usize) -> Datagram {
-        Datagram {
+    /// A datagram as it would arrive, with the bytes a minimal encoding of it occupies.
+    fn datagram(len: usize) -> ArrivedDatagram {
+        let datagram = Datagram {
             data: Bytes::from(vec![0u8; len]),
-        }
+        };
+        let encoded = datagram.size(true);
+        ArrivedDatagram { datagram, encoded }
     }
 
     fn state_with(lens: &[usize]) -> DatagramState {
         let mut state = DatagramState::default();
         for &len in lens {
-            state.outgoing.push_back(datagram(len));
+            state.outgoing.push_back(datagram(len).datagram);
         }
         state
     }
@@ -343,3 +358,6 @@ mod tests {
         assert_eq!(state.outgoing.memory_used(), 0);
     }
 }
+
+#[cfg(test)]
+mod receiving;

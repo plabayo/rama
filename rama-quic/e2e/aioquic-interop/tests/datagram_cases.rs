@@ -7,7 +7,7 @@ mod common;
 
 use common::*;
 use interop_common::{
-    DatagramObservation, DatagramScenario, Received, Role,
+    CaseRun, DatagramObservation, DatagramScenario, Received, Role, Unsupported,
     datagram::{rama_client_side, rama_server_side},
     datagram_cases, for_each_case_within,
     scenario::SERVER_NAME,
@@ -59,11 +59,13 @@ async fn datagram_cases_rama_client() {
             let rama = rama_client_side(&run, addr).await;
             peer.expect("handshake", run.deadline).await;
             let reported = peer.expect("datagram", run.deadline).await;
+            let (limit, sent) = (rama.limit, rama.sent);
             rama.close(&run.what, run.deadline).await;
             peer.expect("ended", run.deadline).await;
             let observed = observation(&reported);
             peer.finished(run.deadline).await;
-            observed.check(&run.what, &run.scenario, run.role);
+            observed.check(&run.what, &run.scenario, run.role, sent);
+            observed.bounds(&run.what, limit);
         },
     )
     .await;
@@ -79,6 +81,9 @@ async fn datagram_cases_rama_server() {
         datagram_cases(),
         LIMIT,
         |run| async move {
+            if skip_the_boundary(&run) {
+                return;
+            }
             let identity = Identity::generate(SERVER_NAME);
             let run = run.with_identity(identity.auth.clone());
             let (endpoint, addr, serving) = rama_server_side(&run).await;
@@ -104,8 +109,8 @@ async fn datagram_cases_rama_server() {
             let observed = observation(&reported);
             peer.finished(run.deadline).await;
 
-            observed.check(&run.what, &run.scenario, run.role);
-            serving.join(&run.what, run.deadline).await;
+            observed.check(&run.what, &run.scenario, run.role, run.scenario.back);
+            observed.bounds(&run.what, serving.join(&run.what, run.deadline).await);
             run.deadline.wait(&run.what, endpoint.wait_idle()).await;
         },
     )
@@ -124,9 +129,28 @@ fn observation(reported: &Event) -> DatagramObservation {
     assert_eq!(written, digest.len(), "a whole sha256 digest");
     DatagramObservation {
         sendable: None,
+        // What this side told the child to advertise with `--datagram-frame`.
+        advertised: Some(FRAME),
         received: Some(Received::Reported {
             digest,
             len: reported.len(),
         }),
     }
+}
+
+/// The boundary row probes what Rama may send, so it runs where Rama opens the connection.
+/// In this role Rama sends the case's fixed answer instead.
+fn skip_the_boundary(run: &CaseRun<DatagramScenario>) -> bool {
+    if run.scenario.at_the_boundary {
+        // Visible with `cargo test -- --nocapture`.
+        println!(
+            "{}",
+            Unsupported {
+                case: "datagram-at-the-boundary",
+                peer: PEER,
+                reason: "the boundary is probed in the role where rama opens the connection",
+            }
+        );
+    }
+    run.scenario.at_the_boundary
 }

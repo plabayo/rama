@@ -18,12 +18,13 @@ use rama::{
 
 use crate::{
     identity::{
-        Identity, IssuedIdentities, IssuedIdentity, address_identity, alpn, anchor_of,
-        rama_client_config, rama_server_config, server_identity,
+        Identity, IssuedIdentities, IssuedIdentity, address_identity, address_identity_v6, alpn,
+        anchor_of, another_address_identity, another_named_identity, rama_client_config,
+        rama_server_config, server_identity,
     },
     registry::{Case, CaseRun},
     scenario::{ANOTHER_ADDRESS, ANOTHER_NAME, Chunk, Received, SERVER_NAME},
-    support::{Peer, localhost},
+    support::{Peer, localhost, localhost_v6},
 };
 
 const READ_CAP: usize = octets::kib(64);
@@ -33,6 +34,9 @@ const READ_CAP: usize = octets::kib(64);
 pub struct NameScenario {
     /// The name the client asks for, or none when it connects to an address literal.
     pub asked: Option<&'static str>,
+    /// Where the serving side binds, which is what makes a case run over one socket family
+    /// or the other. The identity a case asks for is separate from this.
+    pub bind: SocketAddr,
     pub probe: Chunk,
 }
 
@@ -67,9 +71,9 @@ impl Mismatch {
     pub fn identity(self) -> Identity {
         match self {
             Self::CertificateForAddress => address_identity(),
-            Self::CertificateForName => crate::identity::server_identity(),
-            Self::CertificateForAnotherName => crate::identity::another_named_identity(),
-            Self::CertificateForAnotherAddress => crate::identity::another_address_identity(),
+            Self::CertificateForName => server_identity(),
+            Self::CertificateForAnotherName => another_named_identity(),
+            Self::CertificateForAnotherAddress => another_address_identity(),
         }
     }
 
@@ -275,20 +279,34 @@ pub fn name_cases() -> Vec<Case<NameScenario>> {
             name: "name-asked",
             scenario: NameScenario {
                 asked: Some(SERVER_NAME),
+                bind: localhost(),
                 probe: Chunk {
                     seed: 0xa1,
                     len: 256,
                 },
             },
         },
-        // RFC 6066 §3: a client connecting to an address literal sends no name at all.
+        // RFC 6066 §3: a client connecting to an address literal sends no name at all. The
+        // socket family is separate from the shape of the name, so it runs over both.
         Case {
             name: "name-absent",
             scenario: NameScenario {
                 asked: None,
+                bind: localhost(),
                 probe: Chunk {
                     seed: 0xa2,
                     len: 192,
+                },
+            },
+        },
+        Case {
+            name: "name-absent-over-ipv6",
+            scenario: NameScenario {
+                asked: None,
+                bind: localhost_v6(),
+                probe: Chunk {
+                    seed: 0xa3,
+                    len: 208,
                 },
             },
         },
@@ -336,9 +354,10 @@ impl NameObservation {
 /// asked for, and one valid for the name otherwise.
 #[must_use]
 pub fn identity_for(scenario: &NameScenario) -> Identity {
-    match scenario.asked {
-        Some(_) => server_identity(),
-        None => address_identity(),
+    match (scenario.asked, scenario.bind.is_ipv6()) {
+        (Some(_), _) => server_identity(),
+        (None, false) => address_identity(),
+        (None, true) => address_identity_v6(),
     }
 }
 
@@ -352,8 +371,9 @@ pub async fn rama_client_side(run: &CaseRun<NameScenario>, peer_addr: SocketAddr
         scenario,
         ..
     } = run;
+    // On the family the peer bound, so a case over IPv6 reaches an IPv6 peer.
     let client = deadline
-        .wait(what, Endpoint::client(localhost()))
+        .wait(what, Endpoint::client(bound_like(peer_addr)))
         .await
         .expect("the rama client binds");
     // Asking for nothing means naming the address itself, which is how RFC 6066 §3 says a
@@ -382,7 +402,7 @@ pub async fn rama_server_side(run: &CaseRun<NameScenario>) -> (Endpoint, SocketA
     let server = deadline
         .wait(
             what,
-            Endpoint::server(rama_server_config(&run.identity), localhost()),
+            Endpoint::server(rama_server_config(&run.identity), run.scenario.bind),
         )
         .await
         .expect("the rama server binds");
@@ -459,4 +479,12 @@ async fn answer(what: &str, conn: &Connection, run: &CaseRun<NameScenario>) {
         .await
         .expect("the probe goes back");
     send.finish().expect("the answer ends");
+}
+
+/// A local address on the same socket family as `peer`, so a client reaches it.
+fn bound_like(peer: SocketAddr) -> SocketAddr {
+    match peer.is_ipv6() {
+        true => localhost_v6(),
+        false => localhost(),
+    }
 }

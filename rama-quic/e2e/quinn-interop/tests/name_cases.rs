@@ -12,7 +12,7 @@ use interop_common::{
     CaseRun, NameObservation, NameScenario, Peer, Received, ReceivedName, Role, for_each_case,
     identity::anchor_of,
     names::{identity_for, name_cases, rama_client_side, rama_server_side},
-    support::localhost,
+    support::{localhost, localhost_v6},
 };
 use rama::{crypto::pki_types::CertificateDer, utils::octets};
 
@@ -24,7 +24,7 @@ const READ_CAP: usize = octets::kib(64);
 async fn name_cases_rama_client() {
     for_each_case(PEER, Role::RamaClient, name_cases(), |run| async move {
         let run = run.clone().with_identity(identity_for(&run.scenario));
-        let server = quinn::Endpoint::server(quinn_server_config(&run.identity), localhost())
+        let server = quinn::Endpoint::server(quinn_server_config(&run.identity), run.scenario.bind)
             .expect("the quinn server binds");
         let addr = server.local_addr().expect("its address");
         let peer = Peer::spawn({
@@ -96,7 +96,7 @@ async fn quinn_asks(
     addr: SocketAddr,
 ) {
     let (what, deadline) = (&run.what, run.deadline);
-    let mut client = quinn::Endpoint::client(localhost()).expect("the quinn client binds");
+    let mut client = quinn::Endpoint::client(bound_like(addr)).expect("the quinn client binds");
     client.set_default_client_config(quinn_client_config(anchor));
     let asked = run
         .scenario
@@ -137,4 +137,12 @@ fn received_name(what: &str, conn: &quinn::Connection) -> Option<String> {
         .downcast::<quinn::crypto::rustls::HandshakeData>()
         .unwrap_or_else(|_| panic!("{what}: the handshake data is Quinn's rustls type"));
     data.server_name
+}
+
+/// A local address on the same socket family as `peer`.
+fn bound_like(peer: SocketAddr) -> SocketAddr {
+    match peer.is_ipv6() {
+        true => localhost_v6(),
+        false => localhost(),
+    }
 }

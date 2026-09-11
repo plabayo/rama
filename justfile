@@ -302,6 +302,11 @@ qa-quic-interop-lint:
 quic-interop-aioquic-env:
     cd rama-quic/e2e/aioquic-interop && uv sync --frozen
 
+# The shared scenario library's own tests. The peer projects depend on it but do not run
+# these, so they need a step of their own.
+test-quic-interop-common:
+    cd rama-quic/e2e/interop-common && cargo test --locked
+
 test-quic-interop-quinn:
     cd rama-quic/e2e/quinn-interop && cargo test --locked --tests
 
@@ -312,7 +317,7 @@ test-quic-interop-aioquic: quic-interop-aioquic-env
     cd rama-quic/e2e/aioquic-interop && cargo test --locked --tests
 
 # Everything the CI job runs, in the same order.
-test-quic-interop: qa-quic-interop-lint test-quic-interop-quinn test-quic-interop-quiche test-quic-interop-aioquic
+test-quic-interop: qa-quic-interop-lint test-quic-interop-common test-quic-interop-quinn test-quic-interop-quiche test-quic-interop-aioquic
 
 # `qa-dial9` under `--cfg tokio_unstable`, where dial9 gets its full task coverage.
 qa-dial9-tokio-unstable:

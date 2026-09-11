@@ -17,7 +17,7 @@
 
 use std::{
     io,
-    net::{Ipv4Addr, SocketAddr, UdpSocket},
+    net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
     path::{Path, PathBuf},
     process::Stdio,
     sync::{
@@ -169,8 +169,9 @@ pub fn payload(seed: u8, len: usize) -> Vec<u8> {
 /// A self-signed identity, as PEM files for the peer and as Rama's own types. The directory is
 /// owned before anything is written into it, so every path out removes it.
 pub struct Identity {
-    /// Held so the files live as long as the identity does.
-    #[expect(dead_code)]
+    /// Held so the files live as long as the identity does; never read. Allowed rather than
+    /// expected because a test binary that builds no identity never analyses the field.
+    #[allow(dead_code)]
     directory: TempDir,
     certificate: PathBuf,
     key: PathBuf,
@@ -201,20 +202,22 @@ impl Identity {
     pub fn generate_for(name: Option<&str>) -> Self {
         match name {
             Some(name) => Self::generate(name),
-            None => {
-                let mut params = rcgen::CertificateParams::default();
-                params.subject_alt_names =
-                    vec![rcgen::SanType::IpAddress(Ipv4Addr::LOCALHOST.into())];
-                let key = rcgen::KeyPair::generate().expect("a key pair");
-                let certificate = params.self_signed(&key).expect("an identity is generated");
-                Self::written(
-                    &certificate.pem(),
-                    &key.serialize_pem(),
-                    certificate.der().clone(),
-                    &key,
-                )
-            }
+            None => Self::generate_for_loopback(Ipv4Addr::LOCALHOST.into()),
         }
+    }
+
+    /// An identity for a loopback address, whichever family a case runs over.
+    pub fn generate_for_loopback(address: IpAddr) -> Self {
+        let mut params = rcgen::CertificateParams::default();
+        params.subject_alt_names = vec![rcgen::SanType::IpAddress(address)];
+        let key = rcgen::KeyPair::generate().expect("a key pair");
+        let certificate = params.self_signed(&key).expect("an identity is generated");
+        Self::written(
+            &certificate.pem(),
+            &key.serialize_pem(),
+            certificate.der().clone(),
+            &key,
+        )
     }
 
     pub fn generate(name: &str) -> Self {
@@ -691,8 +694,14 @@ impl AioQuic {
 
     /// The port the peer bound, from its first line.
     pub async fn listening(&mut self, deadline: Deadline) -> SocketAddr {
+        self.listening_on(Ipv4Addr::LOCALHOST.into(), deadline)
+            .await
+    }
+
+    /// The same for a peer told to bind a particular loopback address.
+    pub async fn listening_on(&mut self, host: IpAddr, deadline: Deadline) -> SocketAddr {
         let port = self.expect("listening", deadline).await.port();
-        SocketAddr::new(Ipv4Addr::LOCALHOST.into(), port)
+        SocketAddr::new(host, port)
     }
 
     /// Wait for the peer to finish, requiring a clean exit.

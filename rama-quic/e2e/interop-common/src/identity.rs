@@ -4,7 +4,7 @@
 
 use std::{
     fs,
-    net::Ipv4Addr,
+    net::{Ipv4Addr, Ipv6Addr},
     path::{Path, PathBuf},
 };
 
@@ -76,6 +76,15 @@ pub fn another_named_identity() -> Identity {
 pub fn another_address_identity() -> Identity {
     ServerAuthData::new_self_signed_leaf(LeafCertRequest::new(CertificateIdentity::Ip(
         Ipv4Addr::new(127, 0, 0, 2).into(),
+    )))
+    .expect("an identity is generated")
+}
+
+/// An identity valid for the IPv6 loopback address, for the same over that socket family.
+#[must_use]
+pub fn address_identity_v6() -> Identity {
+    ServerAuthData::new_self_signed_leaf(LeafCertRequest::new(CertificateIdentity::Ip(
+        Ipv6Addr::LOCALHOST.into(),
     )))
     .expect("an identity is generated")
 }

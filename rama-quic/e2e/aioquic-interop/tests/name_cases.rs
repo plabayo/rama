@@ -33,7 +33,11 @@ async fn name_cases_rama_client() {
         name_cases(),
         LIMIT,
         |run| async move {
-            let served = Identity::generate_for(run.scenario.asked);
+            let host = run.scenario.bind.ip();
+            let served = match run.scenario.asked {
+                Some(name) => Identity::generate(name),
+                None => Identity::generate_for_loopback(host),
+            };
             let run = run.clone().with_identity(served.auth.clone());
             let mut peer = AioQuic::spawn(
                 "server",
@@ -44,10 +48,12 @@ async fn name_cases_rama_client() {
                     served.key(),
                     "--connections",
                     "1",
+                    "--host",
+                    &host.to_string(),
                 ],
             )
             .await;
-            let addr = peer.listening(run.deadline).await;
+            let addr = peer.listening_on(host, run.deadline).await;
 
             rama_client_side(&run, addr).await;
 
@@ -94,7 +100,10 @@ async fn name_cases_rama_server() {
         name_cases(),
         LIMIT,
         |run| async move {
-            let served = Identity::generate_for(run.scenario.asked);
+            let served = match run.scenario.asked {
+                Some(name) => Identity::generate(name),
+                None => Identity::generate_for_loopback(run.scenario.bind.ip()),
+            };
             let run = run.clone().with_identity(served.auth.clone());
             let (endpoint, addr, serving) = rama_server_side(&run).await;
             let asked = run
@@ -106,6 +115,8 @@ async fn name_cases_rama_server() {
                 &[
                     "--ca",
                     served.certificate(),
+                    "--host",
+                    &addr.ip().to_string(),
                     "--port",
                     &addr.port().to_string(),
                     "--server-name",

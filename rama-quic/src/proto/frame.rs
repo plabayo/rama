@@ -167,7 +167,7 @@ pub(crate) enum Frame {
     PathChallenge(u64),
     PathResponse(u64),
     Close(Close),
-    Datagram(Datagram),
+    Datagram(ArrivedDatagram),
     AckFrequency(AckFrequency),
     ImmediateAck,
     HandshakeDone,
@@ -631,6 +631,9 @@ impl Iter {
     }
 
     fn try_next(&mut self) -> Result<Frame, IterErr> {
+        // Measured rather than recomputed, so a legal wider length varint counts for the
+        // width it was actually written in.
+        let before = self.bytes.remaining();
         let ty = self.bytes.get::<FrameType>()?;
         self.last_ty = Some(ty);
         Ok(match ty {
@@ -766,12 +769,14 @@ impl Iter {
                         },
                     })
                 } else if let Some(d) = ty.datagram() {
-                    Frame::Datagram(Datagram {
-                        data: if d.len() {
-                            self.take_len()?
-                        } else {
-                            self.take_remaining()
-                        },
+                    let data = if d.len() {
+                        self.take_len()?
+                    } else {
+                        self.take_remaining()
+                    };
+                    Frame::Datagram(ArrivedDatagram {
+                        datagram: Datagram { data },
+                        encoded: before - self.bytes.remaining(),
                     })
                 } else {
                     return Err(IterErr::InvalidFrameId);
@@ -963,6 +968,18 @@ pub(crate) const RETIRE_CONNECTION_ID_SIZE_BOUND: usize = 9;
 pub(crate) struct Datagram {
     /// Payload
     pub(crate) data: Bytes,
+}
+
+/// A datagram as it arrived, with the bytes it occupied on the wire: the type, the length
+/// where the frame carries one, and the payload. Measured while parsing, so a legal but
+/// wider length varint counts for the width it was written in.
+///
+/// The measurement belongs to the arrival, not to the datagram, and is dropped once the
+/// frame has been checked against what this side advertised.
+#[derive(Debug, Clone)]
+pub(crate) struct ArrivedDatagram {
+    pub(crate) datagram: Datagram,
+    pub(crate) encoded: usize,
 }
 
 impl FrameStruct for Datagram {

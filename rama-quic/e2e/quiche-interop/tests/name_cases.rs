@@ -25,12 +25,19 @@ const READ_CAP: usize = octets::kib(64);
 #[tokio::test]
 async fn name_cases_rama_client() {
     for_each_case(PEER, Role::RamaClient, name_cases(), |run| async move {
-        // quiche reads its identity from files, and the address case needs one valid for the
-        // loopback address rather than a name.
-        let served = Identity::generate_for(run.scenario.asked);
+        // quiche reads its identity from files, and an address case needs one valid for the
+        // loopback address of the family it runs over rather than a name.
+        let served = match run.scenario.asked {
+            Some(name) => Identity::generate(name),
+            None => Identity::generate(&run.scenario.bind.ip().to_string()),
+        };
         let run = run.with_identity(served.auth.clone());
-        let (addr, accepting) =
-            Quiche::bind_server(quiche_server_config(&served), run.deadline).await;
+        let (addr, accepting) = Quiche::bind_server_on(
+            run.scenario.bind,
+            quiche_server_config(&served),
+            run.deadline,
+        )
+        .await;
         let peer = Peer::spawn({
             let run = run.clone();
             async move {
@@ -54,7 +61,12 @@ async fn name_cases_rama_client() {
 #[tokio::test]
 async fn name_cases_rama_server() {
     for_each_case(PEER, Role::RamaServer, name_cases(), |run| async move {
-        let served = Identity::generate_for(run.scenario.asked);
+        // The same family-aware selection the client role uses: rama serves the address of
+        // the case's family, so the certificate must carry that address and not another.
+        let served = match run.scenario.asked {
+            Some(name) => Identity::generate(name),
+            None => Identity::generate(&run.scenario.bind.ip().to_string()),
+        };
         let run = run.with_identity(served.auth.clone());
         let (endpoint, addr, serving) = rama_server_side(&run).await;
         // RFC 6066 §3: a client naming an address sends no SNI. Passing no name is that path;

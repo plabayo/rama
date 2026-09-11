@@ -19,8 +19,8 @@ use interop_common::{
 use rama::utils::octets;
 
 const PEER: &str = "quiche";
-/// Why the address-asked case does not run against this client: `set_host_name` is the only
-/// place quiche installs an identity to verify against, and it installs a host name.
+/// Why the two address-requesting cases do not run against this client: `set_host_name` is
+/// the only place quiche installs an identity to verify against, and it installs a host name.
 const NO_IP_VERIFICATION: &str =
     "this adapter's quiche client verifies a host name and has no address identity to verify";
 const BI: u64 = 0;
@@ -89,11 +89,10 @@ async fn mismatch_cases_rama_client() {
 /// A quiche client refuses a Rama server whose certificate carries another identity, and
 /// accepts the one that carries the name it asked for.
 ///
-/// Only the name-asked case runs here. quiche installs an identity parameter in one place,
-/// `set_host_name`, which sets `X509_VERIFY_PARAM_set1_host` alongside SNI; this adapter's
-/// configuration has no address parameter to set, so an address literal is not checked as an
-/// identity, and the two cases that ask for an address are reported unsupported rather than
-/// passed.
+/// The two cases that ask for a DNS name run here. quiche installs an identity parameter in
+/// one place, `set_host_name`, which sets `X509_VERIFY_PARAM_set1_host` alongside SNI; this
+/// adapter's configuration has no address parameter to set, so an address literal is not
+/// checked as an identity and the two cases that ask for one are reported unsupported.
 #[tokio::test]
 async fn mismatch_cases_rama_server() {
     for_each_case(PEER, Role::RamaServer, mismatch_cases(), |run| async move {
