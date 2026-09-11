@@ -44,7 +44,7 @@ const READ_CAP: usize = octets::mib(1);
 
 /// The close every second connection ends on, so an idle timeout cannot stand in for the
 /// client having closed.
-pub const CLOSE_CODE: u64 = 0;
+pub const CLOSE_CODE: u32 = 0;
 pub const CLOSE_REASON: &[u8] = b"done";
 
 /// What the peer's server does with the second attempt.
@@ -269,7 +269,7 @@ impl ResumptionObservation {
         self.closed
             .as_ref()
             .unwrap_or_else(|| panic!("{what}: the peer says how the connection ended"))
-            .says(what, CLOSE_CODE, CLOSE_REASON);
+            .says(what, u64::from(CLOSE_CODE), CLOSE_REASON);
     }
 }
 
@@ -311,10 +311,7 @@ pub async fn rama_client_warms_up(
         .await
         .expect("the first handshake completes");
     exchange(what, *deadline, &connection, run.scenario.warm).await;
-    connection.close(
-        u32::try_from(CLOSE_CODE).expect("it fits").into(),
-        CLOSE_REASON,
-    );
+    connection.close(CLOSE_CODE.into(), CLOSE_REASON);
     deadline.wait(what, connection.closed()).await;
 }
 
@@ -401,10 +398,7 @@ pub async fn rama_client_resumes(
         .handshake_data()
         .expect("the handshake settled something")
         .resumed;
-    connection.close(
-        u32::try_from(CLOSE_CODE).expect("it fits").into(),
-        CLOSE_REASON,
-    );
+    connection.close(CLOSE_CODE.into(), CLOSE_REASON);
     deadline.wait(what, connection.closed()).await;
     resumed
 }

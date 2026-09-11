@@ -47,6 +47,9 @@ use rama_udp::{
 use rustc_hash::FxHashMap;
 use tokio::sync::{Notify, futures::Notified};
 
+mod builder;
+pub use builder::{DEFAULT_SHUTDOWN_BUDGET, EndpointBuilder};
+
 const BATCH_SIZE: usize = 32;
 
 use crate::driver::{
@@ -69,6 +72,19 @@ pub struct Endpoint {
 }
 
 impl Endpoint {
+    /// Build an endpoint on the application's own executor.
+    ///
+    /// The drivers and the supervisor that stops them are spawned through `exec`, so a
+    /// graceful shutdown the application holds a guard for stops this endpoint too. The
+    /// convenience constructors below use a plain [`Executor`] with no such guard: the tasks
+    /// still run on the caller's Tokio runtime, and stopping the endpoint is then
+    /// [`shutdown`](Self::shutdown)'s job.
+    #[cfg(any(feature = "aws-lc", feature = "ring"))] // `EndpointConfig::default()` needs one
+    #[must_use]
+    pub fn build(exec: Executor) -> EndpointBuilder {
+        EndpointBuilder::new(exec, EndpointConfig::default())
+    }
+
     /// Helper to construct an endpoint for use with outgoing connections only
     ///
     /// Note that `addr` is the *local* address to bind to, which should usually be a wildcard
@@ -117,25 +133,11 @@ impl Endpoint {
         address: impl Into<SocketAddress>,
         socket: UdpSocketConfig,
     ) -> Result<Self, DatagramError> {
-        let factory = UdpSocketFactory::new(socket);
-        let listener = factory.bind(address.into()).await?;
-        // The addresses this server advertises as preferred are bound first, so the engine
-        // advertises the addresses the sockets actually have, ports the platform assigned
-        // included.
-        let (server_config, advertised) = bind_advertised(&factory, server_config).await?;
-        let advertised = advertised
-            .into_iter()
-            .map(Socket::new)
-            .collect::<io::Result<Vec<_>>>()?;
-        Self::new_with_advertised(
-            config,
-            server_config,
-            Socket::new(listener)?,
-            advertised,
-            Executor::new(),
-            Duration::from_secs(5),
-        )
-        .map_err(DatagramError::from)
+        EndpointBuilder::new(Executor::new(), config)
+            .maybe_with_server_config(server_config)
+            .with_socket_config(socket)
+            .bind_address(address)
+            .await
     }
 
     /// Take ownership of a packet socket the caller prepared, bound to an address this endpoint
@@ -254,12 +256,12 @@ impl Endpoint {
             server_config,
             socket,
             Executor::new(),
-            Duration::from_secs(5),
+            DEFAULT_SHUTDOWN_BUDGET,
         )
     }
 
-    /// Construct an endpoint whose drivers and lifecycle supervisor run on the current Tokio
-    /// runtime through Rama's shared spawn utilities.
+    /// Construct an endpoint whose drivers and lifecycle supervisor are spawned through Rama's
+    /// shared utilities, onto the Tokio runtime the caller is already on.
     ///
     /// Fails outside a Tokio runtime context.
     pub(crate) fn new_with_executor(
@@ -299,6 +301,14 @@ impl Endpoint {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "invalid QUIC handshake timeout",
+            ));
+        }
+        // Zero is a shutdown that forces at once, which is a choice; a budget no clock can
+        // reach is not, and refusing it here is what keeps the supervisor's timeout sound.
+        if now().checked_add(shutdown_budget).is_none() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "QUIC shutdown budget is further away than this clock can reach",
             ));
         }
         let largest_payload =

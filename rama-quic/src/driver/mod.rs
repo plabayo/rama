@@ -59,7 +59,9 @@ pub use crate::driver::connection::{
     AcceptBi, AcceptUni, Connecting, Connection, DriverStats, OpenBi, OpenUni, ReadDatagram,
     SendDatagram, SendDatagramError, ZeroRttAccepted,
 };
-pub use crate::driver::endpoint::{Accept, Endpoint, EndpointStats};
+pub use crate::driver::endpoint::{
+    Accept, DEFAULT_SHUTDOWN_BUDGET, Endpoint, EndpointBuilder, EndpointStats,
+};
 pub use crate::driver::incoming::{Incoming, IncomingFuture, RetryError};
 pub use crate::driver::lifecycle::ShutdownOutcome;
 pub use crate::driver::queue::PacketQueueStats;

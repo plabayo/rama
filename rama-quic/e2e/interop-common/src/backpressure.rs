@@ -76,7 +76,8 @@ pub struct Sent {
     pub queued: usize,
     /// The payload whose send was cancelled. It must never reach the peer.
     pub cancelled: Vec<u8>,
-    /// The payload sent once the peer was reading again, which arrives after the rest.
+    /// The payload sent once the peer was reading again. Its arrival is what says the peer
+    /// is making progress; datagrams are unordered, so it says nothing about the rest.
     pub after: Vec<u8>,
 }
 
