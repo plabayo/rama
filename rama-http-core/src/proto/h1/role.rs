@@ -2852,6 +2852,72 @@ mod tests {
         );
     }
 
+    // Unknown response lengths must retain the framing appropriate to the
+    // response version. Connection: close controls reuse, not chunking.
+    #[test]
+    fn server_response_framing_for_version_and_length() {
+        use crate::proto::BodyLength;
+
+        for version in [Version::HTTP_10, Version::HTTP_11] {
+            for known_length in [false, true] {
+                for close in [false, true] {
+                    let mut head = MessageHead {
+                        version,
+                        ..MessageHead::default()
+                    };
+                    if close {
+                        head.headers
+                            .insert(header::CONNECTION, HeaderValue::from_static("close"));
+                    }
+                    let mut bytes = Vec::new();
+                    let encoder = Server::encode(
+                        Encode {
+                            head: EncodeHead {
+                                version: head.version,
+                                subject: head.subject,
+                                headers: head.headers,
+                                extensions: &mut head.extensions,
+                            },
+                            body: Some(if known_length {
+                                BodyLength::Known(4)
+                            } else {
+                                BodyLength::Unknown
+                            }),
+                            keep_alive: !close,
+                            req_method: &mut Some(Method::POST),
+                            title_case_headers: false,
+                            date_header: false,
+                        },
+                        &mut bytes,
+                    )
+                    .unwrap();
+                    let wire = String::from_utf8(bytes).unwrap().to_ascii_lowercase();
+                    let expected = if known_length {
+                        Encoder::length(4)
+                    } else if version == Version::HTTP_10 {
+                        Encoder::close_delimited()
+                    } else {
+                        Encoder::chunked()
+                    }
+                    .set_last(close);
+                    assert_eq!(
+                        encoder, expected,
+                        "{version:?}, known={known_length}, close={close}"
+                    );
+                    assert!(
+                        wire.starts_with(&format!("{version:?} 200 OK\r\n").to_ascii_lowercase())
+                    );
+                    assert_eq!(
+                        wire.contains("transfer-encoding: chunked\r\n"),
+                        encoder.is_chunked()
+                    );
+                    assert_eq!(wire.contains("content-length: 4\r\n"), known_length);
+                    assert_eq!(wire.contains("connection: close\r\n"), close);
+                }
+            }
+        }
+    }
+
     #[test]
     fn test_server_encode_connect_method() {
         let mut head = MessageHead::default();

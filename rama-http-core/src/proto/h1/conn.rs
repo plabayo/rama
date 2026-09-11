@@ -1199,6 +1199,31 @@ mod tests {
         }
     }
 
+    #[test]
+    fn server_enforces_peer_version_without_upgrading_response() {
+        for peer_version in [Version::HTTP_10, Version::HTTP_11] {
+            for response_version in [Version::HTTP_10, Version::HTTP_11] {
+                let io = TestIo::new(tokio_test::io::Builder::new().build());
+                let mut conn = Conn::<_, Bytes, ServerTransaction>::new(io);
+                conn.state.version = peer_version;
+                let mut head = MessageHead {
+                    version: response_version,
+                    ..MessageHead::default()
+                };
+                conn.enforce_version(&mut head);
+                assert_eq!(
+                    head.version,
+                    if peer_version == Version::HTTP_10 {
+                        Version::HTTP_10
+                    } else {
+                        response_version
+                    },
+                    "peer={peer_version:?}, response={response_version:?}",
+                );
+            }
+        }
+    }
+
     // A client request carrying `Connection: close` must evict the connection
     // (disable keep-alive) at request-encode time, so it is never returned to the
     // pool for reuse — independent of whether the backend response echoes
