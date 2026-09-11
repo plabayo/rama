@@ -101,7 +101,10 @@ fn told(what: &str, ended: quinn::ConnectionError) -> CloseObservation {
     CloseObservation {
         code: close.error_code.into_inner(),
         reason: close.reason.to_vec(),
-        by_the_peer: true,
+        application: true,
+        // Quinn reports `LocallyClosed` for a close of its own, so the variant
+        // matched above establishes both the category and the origin.
+        received: Some(true),
     }
 }
 

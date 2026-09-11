@@ -72,7 +72,9 @@ async fn close_cases_rama_client() {
                 CloseObservation {
                     code: ended.error_code,
                     reason: ended.reason.clone(),
-                    by_the_peer: ended.is_app,
+                    application: ended.is_app,
+                    // `peer_error` is the peer's, which `local_error` is not.
+                    received: Some(true),
                 }
             }
         });

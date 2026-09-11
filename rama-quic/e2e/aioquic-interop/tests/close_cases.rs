@@ -51,7 +51,8 @@ async fn close_cases_rama_client() {
             let observed = CloseObservation {
                 code: ended.code(),
                 reason: ended.reason().as_bytes().to_vec(),
-                by_the_peer: true,
+                application: ended.application(),
+                received: Some(ended.close_arrived()),
             };
             observed.check(&run.what, &run.scenario);
             peer.finished(run.deadline).await;
@@ -99,6 +100,14 @@ async fn close_cases_rama_server() {
                     .reported()
                     .check(&run.what, "exchange", first);
             }
+            // This close is the child's own; aioquic's termination event looks the same
+            // either way, so only the frame handler tells them apart.
+            let ended = peer.expect("ended", run.deadline).await;
+            assert!(
+                !ended.close_arrived(),
+                "{}: a close of the child's own making reported as one that arrived",
+                run.what
+            );
             peer.expect("done", run.deadline).await;
             peer.finished(run.deadline).await;
             let observed = serving.join(&run.what, run.deadline).await;

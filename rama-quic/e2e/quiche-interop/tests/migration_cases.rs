@@ -13,9 +13,9 @@ use common::{
 use std::{net::SocketAddr, time::Duration};
 
 use interop_common::{
-    MigrationObservation, MigrationScenario, Received, RefusedMove, Role, Unsupported,
-    for_each_case,
-    migration::{migration_cases, rama_client_side, rama_server_side},
+    CloseObservation, MigrationObservation, MigrationScenario, Received, RefusedMove, Role,
+    Unsupported, for_each_case,
+    migration::{CLOSED_WITH, migration_cases, rama_client_side, rama_server_side},
     registry::CaseRun,
     scenario::SERVER_NAME,
     support::Peer,
@@ -74,16 +74,32 @@ async fn migration_cases_rama_client() {
                     server
                         .drive_until(&run.what, run.deadline, |connection| connection.is_closed())
                         .await;
-                    MigrationObservation {
-                        from_before: seen[0],
-                        from_after: seen[1],
-                    }
+                    let ended = server
+                        .connection()
+                        .peer_error()
+                        .expect("the peer stated why it stopped")
+                        .clone();
+                    (
+                        MigrationObservation {
+                            from_before: seen[0],
+                            from_after: seen[1],
+                        },
+                        CloseObservation {
+                            code: ended.error_code,
+                            reason: ended.reason.clone(),
+                            application: ended.is_app,
+                            // `peer_error` is the peer's, which `local_error` is not.
+                            received: Some(true),
+                        },
+                    )
                 }
             });
 
             let bound = rama_client_side(&run, addr).await;
-            let observed = observing.join(&run.what, run.deadline).await;
+            let (observed, closed) = observing.join(&run.what, run.deadline).await;
             observed.check(&run.what, &run.scenario, bound);
+            let (code, reason) = CLOSED_WITH;
+            closed.says(&run.what, u64::from(code), reason);
         },
     )
     .await;
@@ -158,8 +174,10 @@ async fn migration_cases_rama_server() {
             Received::Bytes(back).check(&run.what, "exchange", run.scenario.after);
             client.close(run.deadline).await;
 
-            let observed = serving.join(&run.what, run.deadline).await;
+            let (observed, closed) = serving.join(&run.what, run.deadline).await;
             observed.check(&run.what, &run.scenario, (first, second));
+            let (code, reason) = CLOSED_WITH;
+            closed.says(&run.what, u64::from(code), reason);
             run.deadline.wait(&run.what, endpoint.wait_idle()).await;
         },
     )

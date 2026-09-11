@@ -10,8 +10,8 @@ mod common;
 
 use common::*;
 use interop_common::{
-    IssuedIdentities, MISMATCH_PROBE, Mismatch, Received, Role, SERVER_NAME, for_each_case_within,
-    mismatch_cases,
+    ANOTHER_ADDRESS, ANOTHER_NAME, IssuedIdentities, MISMATCH_PROBE, Mismatch, Received, Role,
+    SERVER_NAME, for_each_case_within, mismatch_cases,
     names::{identity_alert, rama_client_accepts_the_identity, rama_client_refuses_the_identity},
     path_of,
     serving::{ServerOutcome, expect_outcome, rama_probe_server},
@@ -34,6 +34,8 @@ async fn mismatch_cases_rama_client() {
             let served = match run.scenario {
                 Mismatch::CertificateForAddress => Identity::generate_for(None),
                 Mismatch::CertificateForName => Identity::generate_for(Some(SERVER_NAME)),
+                Mismatch::CertificateForAnotherName => Identity::generate(ANOTHER_NAME),
+                Mismatch::CertificateForAnotherAddress => Identity::generate(ANOTHER_ADDRESS),
             };
             let run = run.clone().with_identity(served.auth.clone());
             let mut peer = AioQuic::spawn(

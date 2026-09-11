@@ -16,8 +16,8 @@ mod common;
 
 use common::*;
 use interop_common::{
-    MigrationScenario, RefusedMove, Role, Unsupported, for_each_case_within,
-    migration::{migration_cases, rama_client_side, rama_server_side},
+    CloseObservation, MigrationScenario, RefusedMove, Role, Unsupported, for_each_case_within,
+    migration::{CLOSED_WITH, migration_cases, rama_client_side, rama_server_side},
     registry::CaseRun,
     scenario::SERVER_NAME,
 };
@@ -84,7 +84,7 @@ async fn migration_cases_rama_client() {
                 peer.expect("stream", run.deadline).await;
                 seen.push(peer.expect("path", run.deadline).await);
             }
-            peer.expect("ended", run.deadline).await;
+            closed_as_expected(&run.what, peer.expect("ended", run.deadline).await);
             peer.finished(run.deadline).await;
             assert_eq!(
                 seen[0].endpoint(),
@@ -140,9 +140,17 @@ async fn migration_cases_rama_server() {
                 run.scenario.after.seed.to_string(),
                 run.scenario.after.len.to_string(),
             );
+            let (close_code, close_reason) = (
+                CLOSED_WITH.0.to_string(),
+                String::from_utf8(CLOSED_WITH.1.to_vec()).expect("a reason that is text"),
+            );
             let mut spawned = vec![
                 "--ca",
                 served.certificate(),
+                "--close-code",
+                &close_code,
+                "--close-reason",
+                &close_reason,
                 "--port",
                 &port,
                 "--before-seed",
@@ -216,20 +224,19 @@ async fn migration_cases_rama_server() {
             // Both sides name the same two endpoints: the child binds each socket to the
             // address it sends from, and `endpoint` reads a v4-mapped spelling as the IPv4
             // address it maps.
-            let observed = serving.join(&run.what, run.deadline).await;
+            let (observed, closed) = serving.join(&run.what, run.deadline).await;
             observed.check(&run.what, &run.scenario, (first, second));
+            let (code, reason) = CLOSED_WITH;
+            closed.says(&run.what, u64::from(code), reason);
             run.deadline.wait(&run.what, endpoint.wait_idle()).await;
         },
     )
     .await;
 }
 
-/// The control for the verdict the role above reads: the same move under a server that never
-/// acts on a PATH_RESPONSE.
-///
-/// Its path is still the client's, it still sees the client at the address it moved to, and
-/// it still carries that traffic — and its verdict on that path stays negative. An address
-/// that changed and bytes that crossed are not validation, which is what this separates.
+/// The same move under a server that never acts on a PATH_RESPONSE. Its path is the client's,
+/// it reports the client at the address it moved to, it carries both exchanges, and it
+/// reports that path unvalidated. This is the control for the verdict the role above reads.
 #[tokio::test]
 async fn a_moved_path_is_unvalidated_while_its_responses_go_unheard() {
     prepare().await;
@@ -274,7 +281,7 @@ async fn a_moved_path_is_unvalidated_while_its_responses_go_unheard() {
                     .check(&run.what, "exchange", exchange);
                 seen.push(peer.expect("path", run.deadline).await);
             }
-            peer.expect("ended", run.deadline).await;
+            closed_as_expected(&run.what, peer.expect("ended", run.deadline).await);
             peer.finished(run.deadline).await;
 
             assert_eq!(
@@ -310,4 +317,17 @@ fn withheld_case(run: &CaseRun<MigrationScenario>) -> &'static str {
         true => "migration-forbidden",
         false => "migration-without-an-identifier",
     }
+}
+
+/// What the child was told when Rama closed, against what every migration case closes with.
+/// The category is the one the child read off the frame.
+fn closed_as_expected(what: &str, ended: Event) {
+    let (code, reason) = CLOSED_WITH;
+    CloseObservation {
+        code: ended.code(),
+        reason: ended.reason().as_bytes().to_vec(),
+        application: ended.application(),
+        received: Some(ended.close_arrived()),
+    }
+    .says(what, u64::from(code), reason);
 }

@@ -28,8 +28,10 @@ from aioquic.quic.events import (
 
 # What a stream may carry. A peer that sends more is a fault, not a larger test.
 STREAM_LIMIT = 1 << 20
-# PATH_RESPONSE, RFC 9000 §19.18.
+# PATH_RESPONSE, RFC 9000 §19.18, and the two CONNECTION_CLOSE frames, §19.19.
 PATH_RESPONSE = 0x1B
+TRANSPORT_CLOSE = 0x1C
+APPLICATION_CLOSE = 0x1D
 # What one order on stdin may carry, counted as `readline` counts a text stream. Orders are
 # single words.
 ORDER_LIMIT = 64
@@ -99,7 +101,7 @@ async def run_server(arguments):
 
     serving = {}
 
-    class Served(QuicConnectionProtocol):
+    class Served(Closes):
         def connection_made(self, transport):
             serving["protocol"] = self
             if arguments.never_act_on_path_responses:
@@ -119,7 +121,7 @@ async def run_server(arguments):
                 report_datagram(self, event, echo=True, answer=datagram_answer(arguments))
             elif isinstance(event, ConnectionTerminated):
                 ended += 1
-                say(event="ended", code=event.error_code, reason=event.reason_phrase)
+                say(event="ended", **terminated(event, self.arrived))
                 if ended >= arguments.connections:
                     stop()
             super().quic_event_received(event)
@@ -180,6 +182,56 @@ async def run_server(arguments):
         server.close()
 
 
+def terminated(event, arrived=None):
+    """What a termination says: its code and reason, whether it came from a close frame this
+    side processed, and that frame's category.
+
+    The event alone cannot say where a close came from: `QuicConnection.close` defaults
+    `frame_type` to `None` and builds its own `ConnectionTerminated` with it. `arrived` is
+    keyed by the event [`watch_for_a_close`] saw installed, so only that event is labelled.
+    """
+    seen = (arrived or {}).get(id(event))
+    return dict(
+        code=event.error_code,
+        reason=event.reason_phrase,
+        received=seen is not None,
+        application=bool(seen and seen[1]),
+    )
+
+
+class Closes(QuicConnectionProtocol):
+    """A protocol that records the CONNECTION_CLOSE its connection processes, so a close it
+    reports can be told apart from one of its own making."""
+
+    def __init__(self, *arguments, **named):
+        super().__init__(*arguments, **named)
+        self.arrived = {}
+        watch_for_a_close(self._quic, self.arrived)
+
+
+def watch_for_a_close(connection, arrived):
+    """Label the terminal event a received CONNECTION_CLOSE installs, by the frame's category:
+    0x1c is a transport close, 0x1d an application one (RFC 9000 §19.19).
+
+    The native handler runs first, so a frame it refuses labels nothing and its exceptions
+    are unchanged. Only a newly installed event is labelled, and it is held alongside its
+    label so the key stays valid.
+    """
+    handlers = connection._QuicConnection__frame_handlers
+    for frame_type in (TRANSPORT_CLOSE, APPLICATION_CLOSE):
+        handler, epochs = handlers[frame_type]
+
+        def note(context, seen_type, buf, handler=handler, frame_type=frame_type):
+            before = connection._close_event
+            answered = handler(context, seen_type, buf)
+            event = connection._close_event
+            if event is not None and event is not before:
+                arrived[id(event)] = (event, frame_type == APPLICATION_CLOSE)
+            return answered
+
+        handlers[frame_type] = (note, epochs)
+
+
 def report_datagram(protocol, event, echo, answer=None):
     """Report a datagram by length and digest, then answer it if this side answers.
 
@@ -220,7 +272,7 @@ async def run_client(arguments):
     if arguments.datagrams == 0:
         echoes.set()
 
-    class Watched(QuicConnectionProtocol):
+    class Watched(Closes):
         """A client connection: it reports what it sees and does not answer datagrams, so a
         test that echoes on the other side sees one round trip rather than a loop."""
 
@@ -233,7 +285,7 @@ async def run_client(arguments):
                 if counted["datagrams"] >= arguments.datagrams:
                     echoes.set()
             elif isinstance(event, ConnectionTerminated):
-                say(event="ended", code=event.error_code, reason=event.reason_phrase)
+                say(event="ended", **terminated(event, self.arrived))
             super().quic_event_received(event)
 
     async with connect(
@@ -317,7 +369,7 @@ async def run_resuming_client(arguments):
         nonlocal ticket
         ticket = new_ticket
 
-    class Watched(QuicConnectionProtocol):
+    class Watched(Closes):
         """A client connection, reporting what it is told about the handshake."""
 
         def quic_event_received(self, event):
@@ -329,7 +381,7 @@ async def run_resuming_client(arguments):
                     early=event.early_data_accepted,
                 )
             elif isinstance(event, ConnectionTerminated):
-                say(event="ended", code=event.error_code, reason=event.reason_phrase)
+                say(event="ended", **terminated(event, self.arrived))
             super().quic_event_received(event)
 
     configuration = client_configuration(arguments)
@@ -406,14 +458,14 @@ async def run_key_client(arguments):
     before this client can ask.
     """
 
-    class Watched(QuicConnectionProtocol):
+    class Watched(Closes):
         """A client connection, reporting what it is told about the handshake."""
 
         def quic_event_received(self, event):
             if isinstance(event, HandshakeCompleted):
                 say(event="handshake", alpn=event.alpn_protocol)
             elif isinstance(event, ConnectionTerminated):
-                say(event="ended", code=event.error_code, reason=event.reason_phrase)
+                say(event="ended", **terminated(event, self.arrived))
             super().quic_event_received(event)
 
     async with connect(
@@ -452,10 +504,13 @@ def key_phase(protocol):
 async def run_close_client(arguments):
     """Connect, exchange where the test asks for one, and close with a code and a reason."""
 
-    class Watched(QuicConnectionProtocol):
+    class Watched(Closes):
         def quic_event_received(self, event):
             if isinstance(event, HandshakeCompleted):
                 say(event="handshake", alpn=event.alpn_protocol)
+            elif isinstance(event, ConnectionTerminated):
+                # This side closes here, so what it reports is a termination of its own.
+                say(event="ended", **terminated(event, self.arrived))
             super().quic_event_received(event)
 
     async with connect(
@@ -488,7 +543,7 @@ async def run_moving_client(arguments):
     server sees, so the connection is set up here instead.
     """
 
-    class Watched(QuicConnectionProtocol):
+    class Watched(Closes):
         """The connection. While `moved_away` is set it drops what arrives at the address
         it moved off, as a client whose network changed would."""
 
@@ -500,7 +555,7 @@ async def run_moving_client(arguments):
             if isinstance(event, HandshakeCompleted):
                 say(event="handshake", alpn=event.alpn_protocol)
             elif isinstance(event, ConnectionTerminated):
-                say(event="ended", code=event.error_code, reason=event.reason_phrase)
+                say(event="ended", **terminated(event, self.arrived))
             super().quic_event_received(event)
 
         def datagram_received(self, data, addr):
@@ -562,7 +617,9 @@ async def run_moving_client(arguments):
         else:
             await exchange(client, after)
         say(event="path", **await settled_path(client))
-        client.close()
+        client.close(
+            error_code=arguments.close_code, reason_phrase=arguments.close_reason
+        )
         await client.wait_closed()
     finally:
         for transport in transports:
@@ -688,6 +745,78 @@ def ignore_path_responses(connection):
     handlers[PATH_RESPONSE] = (consume_without_validating, handlers[PATH_RESPONSE][1])
 
 
+async def run_observer_states(arguments):
+    """Drive the pinned CONNECTION_CLOSE handlers through the observer: a frame the handler
+    refuses, a close this side already chose, and a close that arrives."""
+    from aioquic.buffer import Buffer, BufferReadError
+    from aioquic.quic.connection import QuicNetworkPath, QuicReceiveContext
+    from aioquic.tls import Epoch
+
+    def fresh():
+        connection = QuicConnection(
+            configuration=QuicConfiguration(is_client=True, server_name="localhost")
+        )
+        arrived = {}
+        watch_for_a_close(connection, arrived)
+        wrapped = connection._QuicConnection__frame_handlers
+        return connection, arrived, wrapped
+
+    def context(connection):
+        return QuicReceiveContext(
+            epoch=Epoch.ONE_RTT,
+            host_cid=connection.host_cid,
+            network_path=QuicNetworkPath(("127.0.0.1", 443)),
+            quic_logger_frames=None,
+            time=0.0,
+            version=connection._version,
+        )
+
+    def application_close(code, reason):
+        buf = Buffer(capacity=128)
+        buf.push_uint_var(code)
+        buf.push_uint_var(len(reason))
+        buf.push_bytes(reason.encode())
+        buf.seek(0)
+        return buf
+
+    def transport_close(code, trigger, reason):
+        buf = Buffer(capacity=128)
+        buf.push_uint_var(code)
+        buf.push_uint_var(trigger)
+        buf.push_uint_var(len(reason))
+        buf.push_bytes(reason.encode())
+        buf.seek(0)
+        return buf
+
+    # A frame the handler refuses.
+    connection, arrived, wrapped = fresh()
+    refused = None
+    try:
+        wrapped[APPLICATION_CLOSE][0](context(connection), APPLICATION_CLOSE, Buffer(capacity=0))
+    except BufferReadError as error:
+        refused = type(error).__name__
+    say(event="refused-frame", raised=refused, labelled=len(arrived))
+
+    # A close already chosen here.
+    connection, arrived, wrapped = fresh()
+    connection.close(error_code=42, reason_phrase="local cause")
+    chosen = connection._close_event
+    wrapped[APPLICATION_CLOSE][0](
+        context(connection), APPLICATION_CLOSE, application_close(0, "done")
+    )
+    say(event="already-chosen", labelled=len(arrived), **terminated(chosen, arrived))
+
+    # A close that arrives, of each category.
+    for name, frame_type, buf in [
+        ("arrived-application", APPLICATION_CLOSE, application_close(0, "done")),
+        ("arrived-transport", TRANSPORT_CLOSE, transport_close(7, 0x1C, "bad frame")),
+    ]:
+        connection, arrived, wrapped = fresh()
+        wrapped[frame_type][0](context(connection), frame_type, buf)
+        say(event=name, labelled=len(arrived), **terminated(connection._close_event, arrived))
+    say(event="done")
+
+
 async def run_silent(arguments):
     """Hold a bound socket and answer nothing, for the tests about deadlines."""
     held = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -779,6 +908,7 @@ ROLES = {
     "resuming-client": run_resuming_client,
     "key-client": run_key_client,
     "close-client": run_close_client,
+    "observer-states": run_observer_states,
     "moving-client": run_moving_client,
     "silent": run_silent,
 }

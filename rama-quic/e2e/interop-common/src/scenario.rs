@@ -22,6 +22,11 @@ use crate::{
 /// The name a client asks for and a server reports, so both ends can assert the same thing.
 pub const SERVER_NAME: &str = "localhost";
 
+/// A second name, and a second loopback address, for the cases where a certificate carries
+/// one identity of a kind and the client asks for another of the same kind.
+pub const ANOTHER_NAME: &str = "elsewhere.test";
+pub const ANOTHER_ADDRESS: &str = "127.0.0.2";
+
 /// The most a scenario ever reads in one call, so a peer sending more fails rather than filling
 /// memory.
 const READ_CAP: usize = octets::mib(1);

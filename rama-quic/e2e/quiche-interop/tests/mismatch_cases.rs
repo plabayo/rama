@@ -11,8 +11,8 @@ mod common;
 
 use common::{Identity, Quiche, quiche_client_config_trusting, quiche_server_config};
 use interop_common::{
-    IssuedIdentities, MISMATCH_PROBE, Mismatch, Peer, Received, Role, SERVER_NAME, Unsupported,
-    for_each_case, mismatch_cases,
+    ANOTHER_ADDRESS, ANOTHER_NAME, IssuedIdentities, MISMATCH_PROBE, Mismatch, Peer, Received,
+    Role, SERVER_NAME, Unsupported, for_each_case, mismatch_cases,
     names::{identity_alert, rama_client_accepts_the_identity, rama_client_refuses_the_identity},
     serving::{ServerOutcome, expect_outcome, rama_probe_server},
 };
@@ -35,6 +35,8 @@ async fn mismatch_cases_rama_client() {
         let served = match run.scenario {
             Mismatch::CertificateForAddress => Identity::generate_for(None),
             Mismatch::CertificateForName => Identity::generate_for(Some(SERVER_NAME)),
+            Mismatch::CertificateForAnotherName => Identity::generate(ANOTHER_NAME),
+            Mismatch::CertificateForAnotherAddress => Identity::generate(ANOTHER_ADDRESS),
         };
         let run = run.clone().with_identity(served.auth.clone());
 
@@ -90,16 +92,23 @@ async fn mismatch_cases_rama_client() {
 /// Only the name-asked case runs here. quiche installs an identity parameter in one place,
 /// `set_host_name`, which sets `X509_VERIFY_PARAM_set1_host` alongside SNI; this adapter's
 /// configuration has no address parameter to set, so an address literal is not checked as an
-/// identity and the address-asked case is reported unsupported rather than passed.
+/// identity, and the two cases that ask for an address are reported unsupported rather than
+/// passed.
 #[tokio::test]
 async fn mismatch_cases_rama_server() {
     for_each_case(PEER, Role::RamaServer, mismatch_cases(), |run| async move {
-        if run.scenario == Mismatch::CertificateForName {
+        // The two cases whose request is an address: this client has no way to verify one.
+        if let Mismatch::CertificateForName | Mismatch::CertificateForAnotherAddress = run.scenario
+        {
             // Visible with `cargo test -- --nocapture`.
             println!(
                 "{}",
                 Unsupported {
-                    case: "identity-mismatch-address-asked",
+                    case: match run.scenario {
+                        Mismatch::CertificateForAnotherAddress =>
+                            "identity-mismatch-another-address",
+                        _ => "identity-mismatch-address-asked",
+                    },
                     peer: PEER,
                     reason: NO_IP_VERIFICATION,
                 }

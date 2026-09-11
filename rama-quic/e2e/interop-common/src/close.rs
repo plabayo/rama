@@ -68,25 +68,43 @@ pub fn close_cases() -> Vec<Case<CloseScenario>> {
 pub struct CloseObservation {
     pub code: u64,
     pub reason: Vec<u8>,
-    /// Whether the peer says the other side closed rather than the connection failing.
-    pub by_the_peer: bool,
+    /// Whether the close was an application close rather than a transport one. This is the
+    /// frame's category and says nothing about which side sent it.
+    pub application: bool,
+    /// Whether this side observed the close arriving, where its own API establishes that.
+    /// `None` where the peer exposes no way to tell a received close from a local one.
+    pub received: Option<bool>,
 }
 
 impl CloseObservation {
     pub fn check(&self, what: &str, scenario: &CloseScenario) {
+        self.says(what, u64::from(scenario.code), scenario.reason);
+    }
+
+    /// The same against a code and a reason given directly, for a family whose cases carry no
+    /// close scenario of their own.
+    ///
+    /// Origin is checked only where the peer establishes it; a `None` there is an
+    /// unavailable observation, not a passing one.
+    ///
+    /// # Panics
+    /// If the close was not an application close, if this side can tell it was not received,
+    /// or if its code or reason differ.
+    pub fn says(&self, what: &str, code: u64, reason: &[u8]) {
         assert!(
-            self.by_the_peer,
-            "{what}: the peer was told the other side closed, not that the connection failed"
+            self.application,
+            "{what}: transport close where an application close was due"
         );
-        assert_eq!(
-            self.code,
-            u64::from(scenario.code),
-            "{what}: the code the closing side gave"
+        assert_ne!(
+            self.received,
+            Some(false),
+            "{what}: close originated locally rather than arriving from the peer"
         );
+        assert_eq!(self.code, code, "{what}: unexpected close code");
         assert_eq!(
             self.reason,
-            scenario.reason,
-            "{what}: and its reason ({})",
+            reason,
+            "{what}: unexpected close reason ({})",
             String::from_utf8_lossy(&self.reason)
         );
     }
@@ -175,9 +193,12 @@ pub fn told(what: &str, ended: ConnectionError) -> CloseObservation {
     let ConnectionError::ApplicationClosed(ref close) = ended else {
         panic!("{what}: the peer closed the connection rather than it failing: {ended:?}");
     };
+    // The variant is the derivation: rama reports `LocallyClosed` for a close of its own and
+    // a transport error for a transport close, so reaching here establishes both facts.
     CloseObservation {
         code: u64::from(close.error_code()),
         reason: close.reason().to_vec(),
-        by_the_peer: true,
+        application: true,
+        received: Some(true),
     }
 }

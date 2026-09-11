@@ -542,6 +542,34 @@ impl Event {
         same_endpoint(parse_endpoint(self.0["addr"].as_str().expect("an address")))
     }
 
+    /// Whether the close the peer processed was an application close, read from the frame
+    /// it handled rather than from the termination event.
+    pub fn application(&self) -> bool {
+        self.0["application"]
+            .as_bool()
+            .expect("a close category verdict")
+    }
+
+    /// Whether the peer processed a close that arrived, as opposed to one of its own. Its
+    /// termination event cannot tell these apart, so this comes from the frame handler.
+    pub fn close_arrived(&self) -> bool {
+        self.0["received"]
+            .as_bool()
+            .expect("a close origin verdict")
+    }
+
+    /// The exception a frame handler raised, where the peer reports one.
+    pub fn raised(&self) -> Option<&str> {
+        self.0["raised"].as_str()
+    }
+
+    /// How many terminal events the observer labelled.
+    pub fn labelled(&self) -> u64 {
+        self.0["labelled"]
+            .as_u64()
+            .expect("a count of labelled events")
+    }
+
     /// Datagrams the peer put out of the socket it moved to.
     pub fn sent(&self) -> usize {
         usize::try_from(self.0["sent"].as_u64().expect("a count of datagrams sent"))

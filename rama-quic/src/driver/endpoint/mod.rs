@@ -81,7 +81,16 @@ impl Endpoint {
     /// address. For example:
     ///
     /// ```
-    /// Endpoint::client((std::net::Ipv6Addr::UNSPECIFIED, 0).into());
+    /// use std::net::{Ipv6Addr, SocketAddr};
+    ///
+    /// use rama_quic::Endpoint;
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let endpoint = Endpoint::client(SocketAddr::from((Ipv6Addr::UNSPECIFIED, 0))).await?;
+    /// assert!(endpoint.local_addr()?.is_ipv6());
+    /// # Ok(())
+    /// # }
     /// ```
     ///
     /// Some environments may not allow creation of dual-stack sockets, in which case an IPv6

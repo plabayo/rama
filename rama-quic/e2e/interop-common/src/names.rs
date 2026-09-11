@@ -18,11 +18,11 @@ use rama::{
 
 use crate::{
     identity::{
-        Identity, IssuedIdentities, IssuedIdentity, address_identity, anchor_of,
+        Identity, IssuedIdentities, IssuedIdentity, address_identity, alpn, anchor_of,
         rama_client_config, rama_server_config, server_identity,
     },
     registry::{Case, CaseRun},
-    scenario::{Chunk, Received, SERVER_NAME},
+    scenario::{ANOTHER_ADDRESS, ANOTHER_NAME, Chunk, Received, SERVER_NAME},
     support::{Peer, localhost},
 };
 
@@ -55,6 +55,10 @@ pub enum Mismatch {
     CertificateForAddress,
     /// The certificate carries the name; the client asks for the address.
     CertificateForName,
+    /// The certificate carries one name; the client asks for another name.
+    CertificateForAnotherName,
+    /// The certificate carries one address; the client asks for another address.
+    CertificateForAnotherAddress,
 }
 
 impl Mismatch {
@@ -64,6 +68,8 @@ impl Mismatch {
         match self {
             Self::CertificateForAddress => address_identity(),
             Self::CertificateForName => crate::identity::server_identity(),
+            Self::CertificateForAnotherName => crate::identity::another_named_identity(),
+            Self::CertificateForAnotherAddress => crate::identity::another_address_identity(),
         }
     }
 
@@ -73,8 +79,8 @@ impl Mismatch {
     #[must_use]
     pub fn requested(self, peer: SocketAddr) -> String {
         match self {
-            Self::CertificateForAddress => SERVER_NAME.to_owned(),
-            Self::CertificateForName => peer.ip().to_string(),
+            Self::CertificateForAddress | Self::CertificateForAnotherName => SERVER_NAME.to_owned(),
+            Self::CertificateForName | Self::CertificateForAnotherAddress => peer.ip().to_string(),
         }
     }
 
@@ -84,6 +90,8 @@ impl Mismatch {
         match self {
             Self::CertificateForAddress => peer.ip().to_string(),
             Self::CertificateForName => SERVER_NAME.to_owned(),
+            Self::CertificateForAnotherName => ANOTHER_NAME.to_owned(),
+            Self::CertificateForAnotherAddress => ANOTHER_ADDRESS.to_owned(),
         }
     }
 
@@ -94,6 +102,8 @@ impl Mismatch {
         match self {
             Self::CertificateForAddress => &pair.for_address,
             Self::CertificateForName => &pair.for_name,
+            Self::CertificateForAnotherName => &pair.for_another_name,
+            Self::CertificateForAnotherAddress => &pair.for_another_address,
         }
     }
 
@@ -103,7 +113,9 @@ impl Mismatch {
     pub fn matched_by(self, pair: &IssuedIdentities) -> &IssuedIdentity {
         match self {
             Self::CertificateForAddress => &pair.for_name,
+            Self::CertificateForAnotherName => &pair.for_name,
             Self::CertificateForName => &pair.for_address,
+            Self::CertificateForAnotherAddress => &pair.for_address,
         }
     }
 }
@@ -138,6 +150,14 @@ pub fn mismatch_cases() -> Vec<Case<Mismatch>> {
             name: "identity-mismatch-address-asked",
             scenario: Mismatch::CertificateForName,
         },
+        Case {
+            name: "identity-mismatch-another-name",
+            scenario: Mismatch::CertificateForAnotherName,
+        },
+        Case {
+            name: "identity-mismatch-another-address",
+            scenario: Mismatch::CertificateForAnotherAddress,
+        },
     ]
 }
 
@@ -168,6 +188,13 @@ pub async fn rama_client_refuses_the_identity(run: &CaseRun<Mismatch>, peer_addr
     let ConnectionError::TransportError(error) = &refused else {
         panic!("{what}: the attempt ended on a transport error: {refused:?}");
     };
+    // The wire carries the alert; the cause below is what went wrong locally.
+    assert_eq!(
+        error.code().tls_alert(),
+        Some(u8::from(AlertDescription::BadCertificate)),
+        "{what}: unexpected TLS alert ({})",
+        error.reason()
+    );
     // The anchor is trusted, so this must be the identity check and not the issuer.
     let cause = error
         .cause()
@@ -189,9 +216,11 @@ pub async fn rama_client_refuses_the_identity(run: &CaseRun<Mismatch>, peer_addr
         *expected, wanted,
         "{what}: the context names the identity that was asked for"
     );
+    // What the certificate is valid for is what the control asks for.
+    let carried = scenario.matching_request(peer_addr);
     assert!(
-        !presented.is_empty(),
-        "{what}: and the ones the certificate carried"
+        presented.iter().any(|name| name.contains(&carried)),
+        "{what}: the certificate did not carry {carried}: {presented:?}"
     );
     deadline.wait(what, client.wait_idle()).await;
 }
@@ -379,6 +408,12 @@ pub async fn rama_server_side(run: &CaseRun<NameScenario>) -> (Endpoint, SocketA
                 settled.server_name,
                 run.scenario.asked.map(Domain::from_static),
                 "{}: the name rama's server says the client asked for",
+                run.what
+            );
+            assert_eq!(
+                settled.protocol.as_ref(),
+                Some(&alpn()),
+                "{}: unexpected negotiated protocol",
                 run.what
             );
             answer(&run.what, &conn, &run).await;

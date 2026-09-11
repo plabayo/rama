@@ -14,7 +14,7 @@ use rama::{
         dep::rcgen,
         pki_types::{CertificateDer, PrivatePkcs8KeyDer},
     },
-    net::tls::ApplicationProtocol,
+    net::{address::Domain, tls::ApplicationProtocol},
     quic::{ClientConfig, ServerConfig, tls::TlsOptions},
     tls::{
         client::TlsClientConfig,
@@ -23,7 +23,7 @@ use rama::{
     utils::{collections::smallvec::smallvec, fs::TempDir},
 };
 
-use crate::scenario::SERVER_NAME;
+use crate::scenario::{ANOTHER_NAME, SERVER_NAME};
 
 /// The protocol every shared scenario negotiates. A handshake that settles on anything else is
 /// a failure, not a variant.
@@ -60,7 +60,28 @@ pub fn identity_from_a_stranger(issuer: &str) -> Identity {
     .expect("an identity is generated")
 }
 
-/// An identity valid for the loopback address, so a client may name the address it connects to.
+/// An identity for a name that is not the one a case asks for, for the same-type name
+/// mismatch.
+#[must_use]
+pub fn another_named_identity() -> Identity {
+    ServerAuthData::new_self_signed_leaf(LeafCertRequest::new(CertificateIdentity::Dns(
+        Domain::from_static(ANOTHER_NAME),
+    )))
+    .expect("an identity is generated")
+}
+
+/// An identity for a loopback address that is not the one a peer binds, for the same-type
+/// address mismatch.
+#[must_use]
+pub fn another_address_identity() -> Identity {
+    ServerAuthData::new_self_signed_leaf(LeafCertRequest::new(CertificateIdentity::Ip(
+        Ipv4Addr::new(127, 0, 0, 2).into(),
+    )))
+    .expect("an identity is generated")
+}
+
+/// An identity valid for the loopback address, so a client may name the address it connects
+/// to.
 #[must_use]
 pub fn address_identity() -> Identity {
     ServerAuthData::new_self_signed_leaf(LeafCertRequest::new(CertificateIdentity::Ip(
@@ -119,6 +140,9 @@ pub struct IssuedIdentities {
     pub anchor: CertificateDer<'static>,
     pub for_name: IssuedIdentity,
     pub for_address: IssuedIdentity,
+    /// A second name and a second address, for the same-type mismatches.
+    pub for_another_name: IssuedIdentity,
+    pub for_another_address: IssuedIdentity,
 }
 
 impl IssuedIdentities {
@@ -164,18 +188,46 @@ impl IssuedIdentities {
             &authority_pem,
             authority_cert.der(),
         );
+        let for_another_name = Self::issue(
+            directory.path(),
+            "another-name",
+            rcgen::SanType::DnsName(
+                ANOTHER_NAME
+                    .try_into()
+                    .expect("the name fits a certificate"),
+            ),
+            &issuer,
+            &authority_pem,
+            authority_cert.der(),
+        );
+        let for_another_address = Self::issue(
+            directory.path(),
+            "another-address",
+            rcgen::SanType::IpAddress(Ipv4Addr::new(127, 0, 0, 2).into()),
+            &issuer,
+            &authority_pem,
+            authority_cert.der(),
+        );
         let issued = Self {
             directory,
             authority: authority_path,
             anchor: authority_cert.der().clone(),
             for_name,
             for_address,
+            for_another_name,
+            for_another_address,
         };
-        assert_eq!(
-            anchor_of(&issued.for_name.auth),
-            anchor_of(&issued.for_address.auth),
-            "both identities chain to the one authority"
-        );
+        for other in [
+            &issued.for_address,
+            &issued.for_another_name,
+            &issued.for_another_address,
+        ] {
+            assert_eq!(
+                anchor_of(&issued.for_name.auth),
+                anchor_of(&other.auth),
+                "every identity chains to the one authority"
+            );
+        }
         issued
     }
 

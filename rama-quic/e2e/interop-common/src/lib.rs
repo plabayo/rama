@@ -18,7 +18,7 @@ pub mod serving;
 pub mod support;
 pub mod trust;
 
-pub use close::{CloseObservation, CloseScenario, close_cases};
+pub use close::{CloseObservation, CloseScenario, close_cases, told};
 pub use datagram::{DatagramObservation, DatagramScenario, datagram_cases};
 pub use identity::{
     ALPN, Identity, IssuedIdentities, IssuedIdentity, alpn, path_of, rama_client_config,
@@ -37,7 +37,9 @@ pub use resumption::{
     Arrival, Expected, RecordingSessions, Reported, ResumptionObservation, ResumptionScenario,
     ServerReport, Verdict, resumption_cases,
 };
-pub use scenario::{Chunk, PeerObservation, Received, SERVER_NAME, StreamScenario};
+pub use scenario::{
+    ANOTHER_ADDRESS, ANOTHER_NAME, Chunk, PeerObservation, Received, SERVER_NAME, StreamScenario,
+};
 pub use serving::{ServerOutcome, expect_outcome, rama_probe_server};
 pub use support::{Deadline, Peer, digest, localhost, payload};
 pub use trust::{TrustObservation, TrustScenario, trust_cases};

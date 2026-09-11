@@ -471,17 +471,15 @@ fn a_path_given_up_with_no_fallback_ends_the_connection_with_no_viable_path() {
     );
 }
 
-/// Rama holds its MTU discovery search until the path has proven it carries the minimum
-/// datagram, since a discovery probe is larger than the path is known to carry and what may
-/// go towards an unvalidated address is bounded in bytes (RFC 9000 §8). This pins that
-/// policy; it is Rama's, not a requirement of RFC 9000 §14.2, which exempts PMTU probes from
-/// the rule it states.
+/// Rama waits for minimum-MTU validation before starting its discovery search: a probe is
+/// larger than the path is known to carry, and what may go towards an unvalidated address is
+/// bounded in bytes (RFC 9000 §8).
 ///
 /// Both arms reach one state — a peer that has just moved, so the new path has a fresh
 /// search with work to do — and differ only in `mtu_validated`. The unvalidated arm is what
-/// a move reaches, and the test asserts that before it sets anything. The validated arm is
-/// constructed through a private test helper, because the natural route to it would also
-/// exchange the packets that prove the path.
+/// a move reaches, which the test asserts before setting anything. The validated arm is set
+/// through a private test helper, since the natural route to it would also exchange the
+/// packets that prove the path.
 #[test]
 fn a_path_that_has_not_proven_its_minimum_mtu_gets_no_discovery_probe() {
     let _guard = subscribe();

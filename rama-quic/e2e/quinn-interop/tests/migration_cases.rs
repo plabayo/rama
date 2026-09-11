@@ -20,10 +20,10 @@ use std::{
 
 use common::{Counted, quinn_client_config, quinn_server_config};
 use interop_common::{
-    MigrationObservation, MigrationScenario, Received, RefusedMove, Role, Unsupported,
-    for_each_case,
+    CloseObservation, MigrationObservation, MigrationScenario, Received, RefusedMove, Role,
+    Unsupported, for_each_case,
     identity::anchor_of,
-    migration::{migration_cases, rama_client_side, rama_server_side},
+    migration::{CLOSED_WITH, migration_cases, rama_client_side, rama_server_side},
     registry::CaseRun,
     scenario::{Chunk, SERVER_NAME},
     support::{Deadline, Peer, localhost},
@@ -74,17 +74,22 @@ async fn migration_cases_rama_client() {
                     let from_before = connection.remote_address();
                     answer(&run.what, run.deadline, &connection, run.scenario.after).await;
                     let from_after = seen_from(&run, &connection, from_before).await;
-                    run.deadline.wait(&run.what, connection.closed()).await;
-                    MigrationObservation {
-                        from_before,
-                        from_after,
-                    }
+                    let ended = run.deadline.wait(&run.what, connection.closed()).await;
+                    (
+                        MigrationObservation {
+                            from_before,
+                            from_after,
+                        },
+                        quinn_told(&run.what, ended),
+                    )
                 }
             });
 
             let bound = rama_client_side(&run, addr).await;
-            let observed = observing.join(&run.what, run.deadline).await;
+            let (observed, closed) = observing.join(&run.what, run.deadline).await;
             observed.check(&run.what, &run.scenario, bound);
+            let (code, reason) = CLOSED_WITH;
+            closed.says(&run.what, u64::from(code), reason);
             server.close(0u32.into(), b"done");
             run.deadline.wait(&run.what, server.wait_idle()).await;
         },
@@ -167,8 +172,10 @@ async fn migration_cases_rama_server() {
             connection.close(0u32.into(), b"done");
             run.deadline.wait(&run.what, client.wait_idle()).await;
 
-            let observed = serving.join(&run.what, run.deadline).await;
+            let (observed, closed) = serving.join(&run.what, run.deadline).await;
             observed.check(&run.what, &run.scenario, (first, second));
+            let (code, reason) = CLOSED_WITH;
+            closed.says(&run.what, u64::from(code), reason);
             run.deadline.wait(&run.what, endpoint.wait_idle()).await;
         },
     )
@@ -288,4 +295,20 @@ async fn refused_at_the_new_address(
         .await
         .expect("the answer completes once the client is back");
     Received::Bytes(back).check(&run.what, "exchange", run.scenario.after);
+}
+
+/// What Quinn's side was told when the other closed. The category comes from the variant
+/// Quinn reports, not from this fixture.
+fn quinn_told(what: &str, ended: quinn::ConnectionError) -> CloseObservation {
+    let quinn::ConnectionError::ApplicationClosed(ref close) = ended else {
+        panic!("{what}: close reported as a failure rather than an application close: {ended:?}");
+    };
+    CloseObservation {
+        code: close.error_code.into_inner(),
+        reason: close.reason.to_vec(),
+        application: true,
+        // Quinn reports `LocallyClosed` for a close of its own, so the variant
+        // matched above establishes both the category and the origin.
+        received: Some(true),
+    }
 }

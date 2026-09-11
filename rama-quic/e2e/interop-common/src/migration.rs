@@ -14,6 +14,7 @@ use rama::{
 };
 
 use crate::{
+    close::{CloseObservation, told},
     identity::{anchor_of, rama_client_config, rama_server_config},
     registry::{Case, CaseRun},
     scenario::{Chunk, SERVER_NAME, answer, exchange},
@@ -176,16 +177,26 @@ pub async fn rama_client_side(
 
     // The application carries on across the rebind whether or not the connection moved.
     exchange(what, *deadline, &connection, scenario.after).await;
-    connection.close(0u32.into(), b"done");
+    let (code, reason) = CLOSED_WITH;
+    connection.close(code.into(), reason);
     deadline.wait(what, client.wait_idle()).await;
     (first, second)
 }
 
+/// The code and reason every migration case closes with, so a case can check the close it
+/// was told about without carrying a close scenario of its own.
+pub const CLOSED_WITH: (u32, &[u8]) = (0, b"done");
+
 /// Rama's server for the other direction: it answers both exchanges and says where each came
-/// from, so a peer that moves is seen to have moved.
+/// from, so a peer that moves is seen to have moved, and what it was told when the peer
+/// closed.
 pub async fn rama_server_side(
     run: &CaseRun<MigrationScenario>,
-) -> (Endpoint, SocketAddr, Peer<MigrationObservation>) {
+) -> (
+    Endpoint,
+    SocketAddr,
+    Peer<(MigrationObservation, CloseObservation)>,
+) {
     let CaseRun { what, deadline, .. } = run;
     let (what, deadline, scenario) = (what.clone(), *deadline, run.scenario);
     // Rama's own server decides whether a peer may move: `ServerConfig::with_migration`.
@@ -208,11 +219,14 @@ pub async fn rama_server_side(
             let from_before = connection.remote_address();
             answer(&what, deadline, &connection, scenario.after).await;
             let from_after = seen_from(&what, deadline, &connection, from_before, &scenario).await;
-            deadline.wait(&what, connection.closed()).await;
-            MigrationObservation {
-                from_before,
-                from_after,
-            }
+            let ended = deadline.wait(&what, connection.closed()).await;
+            (
+                MigrationObservation {
+                    from_before,
+                    from_after,
+                },
+                told(&what, ended),
+            )
         }
     });
     (server, addr, serving)

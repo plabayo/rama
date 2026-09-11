@@ -120,7 +120,7 @@ impl TransportConfig {
         /// let mut config = TransportConfig::default();
         ///
         /// // Set the idle timeout as `VarInt`-encoded milliseconds
-        /// config.set_max_idle_timeout(VarInt::from_u32(10_000).into());
+        /// config.set_max_idle_timeout(VarInt::from(10_000u32).into());
         ///
         /// // Set the idle timeout as a `Duration`
         /// config.set_max_idle_timeout(Duration::from_secs(10).try_into()?);
@@ -898,7 +898,7 @@ impl Default for MtuDiscoveryConfig {
 /// # use rama_quic::{IdleTimeout, VarIntBoundsExceeded, VarInt};
 /// # fn main() -> Result<(), VarIntBoundsExceeded> {
 /// // A `VarInt`-encoded value in milliseconds
-/// let timeout = IdleTimeout::from(VarInt::from_u32(10_000));
+/// let timeout = IdleTimeout::from(VarInt::from(10_000u32));
 ///
 /// // Try to convert a `Duration` into a `VarInt`-encoded timeout
 /// let timeout = IdleTimeout::try_from(Duration::from_secs(10))?;
