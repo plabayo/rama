@@ -3106,7 +3106,7 @@ mod tests {
         roots.add(cert.cert.into()).unwrap();
         let config = crate::proto::ClientConfig::with_root_certificates(Arc::new(roots)).unwrap();
         let mut endpoint = crate::proto::Endpoint::new(
-            Arc::new(crate::proto::EndpointConfig::default()),
+            Arc::new(crate::proto::EndpointConfig::try_with_rand_key().unwrap()),
             None,
             false,
             None,

@@ -101,7 +101,10 @@ pub async fn rama_client_without_datagrams(
         ..
     } = run;
     let endpoint = deadline
-        .wait(what, Endpoint::client(localhost()))
+        .wait(
+            what,
+            Endpoint::bind_client(rama::rt::Executor::new(), localhost()),
+        )
         .await
         .expect("the rama client binds");
     let connection = deadline
@@ -138,7 +141,11 @@ pub async fn rama_server_without_datagrams(
     let server = deadline
         .wait(
             what,
-            Endpoint::server(rama_server_config(identity), localhost()),
+            Endpoint::bind_server(
+                rama::rt::Executor::new(),
+                rama_server_config(identity),
+                localhost(),
+            ),
         )
         .await
         .expect("the rama server binds");

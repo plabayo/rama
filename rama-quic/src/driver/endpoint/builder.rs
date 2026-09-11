@@ -28,47 +28,40 @@ pub const DEFAULT_SHUTDOWN_BUDGET: Duration = Duration::from_secs(5);
 #[derive(Debug, Clone)]
 pub struct EndpointBuilder {
     exec: Executor,
-    config: EndpointConfig,
+    config: Option<EndpointConfig>,
     server_config: Option<ServerConfig>,
-    socket_config: UdpSocketConfig,
     shutdown_budget: Duration,
 }
 
 impl EndpointBuilder {
-    /// A builder that spawns through `exec`, with `config` as the endpoint's own
-    /// configuration.
+    /// Build a client endpoint whose tasks run through `exec`.
+    ///
+    /// Unless configured otherwise, construction generates a fresh secret reset key.
+    /// A random-source failure is returned when binding or attaching a socket.
     #[must_use]
-    pub fn new(exec: Executor, config: EndpointConfig) -> Self {
+    pub fn new(exec: Executor) -> Self {
         Self {
             exec,
-            config,
+            config: None,
             server_config: None,
-            socket_config: UdpSocketConfig::default(),
             shutdown_budget: DEFAULT_SHUTDOWN_BUDGET,
         }
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// The endpoint's own configuration.
-        pub fn config(mut self, value: EndpointConfig) -> Self {
+        /// The endpoint configuration; when omitted, construction generates a random reset key.
+        pub fn config(mut self, value: Option<EndpointConfig>) -> Self {
             self.config = value;
             self
         }
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// What this endpoint serves incoming connections with. Without one it is a client.
+        /// What this endpoint serves incoming connections with
+        ///
+        /// Without a server config, the default, it is a client.
         pub fn server_config(mut self, value: Option<ServerConfig>) -> Self {
             self.server_config = value;
-            self
-        }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// The socket options to bind with, and the packet features this endpoint requires. A
-        /// feature the platform does not provide fails the bind rather than being dropped.
-        pub fn socket_config(mut self, value: UdpSocketConfig) -> Self {
-            self.socket_config = value;
             self
         }
     }
@@ -90,13 +83,27 @@ impl EndpointBuilder {
         self,
         address: impl Into<SocketAddress>,
     ) -> Result<Endpoint, DatagramError> {
+        self.bind_address_with_socket_config(address, UdpSocketConfig::default())
+            .await
+    }
+
+    /// Same as [`Self::bind_address`] but with custom [`UdpSocketConfig`].
+    pub async fn bind_address_with_socket_config(
+        self,
+        address: impl Into<SocketAddress>,
+        socket_config: UdpSocketConfig,
+    ) -> Result<Endpoint, DatagramError> {
         let Self {
             exec,
             config,
             server_config,
-            socket_config,
             shutdown_budget,
         } = self;
+
+        let config = match config {
+            Some(config) => config,
+            None => EndpointConfig::try_with_rand_key().map_err(io::Error::other)?,
+        };
         let factory = UdpSocketFactory::new(socket_config);
         let listener = factory.bind(address.into()).await?;
         let (server_config, advertised) = bind_advertised(&factory, server_config).await?;
@@ -104,6 +111,7 @@ impl EndpointBuilder {
             .into_iter()
             .map(Socket::new)
             .collect::<io::Result<Vec<_>>>()?;
+
         Endpoint::new_with_advertised(
             config,
             server_config,
@@ -118,8 +126,7 @@ impl EndpointBuilder {
     /// Build on a packet socket the caller prepared, with its packet metadata set up and its
     /// required features validated.
     ///
-    /// The socket configuration this builder carries describes what to bind, so it takes no
-    /// part here.
+    /// This does not bind preferred-address sockets or change the supplied socket options.
     pub fn with_packet_socket(self, socket: UdpPacketSocket) -> Result<Endpoint, DatagramError> {
         self.on_socket(Socket::new(socket).map_err(DatagramError::from)?)
     }
@@ -133,13 +140,25 @@ impl EndpointBuilder {
 
     /// Where a prepared socket becomes an endpoint.
     fn on_socket(self, socket: Socket) -> Result<Endpoint, DatagramError> {
+        let Self {
+            exec,
+            config,
+            server_config,
+            shutdown_budget,
+        } = self;
+
+        let config = match config {
+            Some(config) => config,
+            None => EndpointConfig::try_with_rand_key().map_err(io::Error::other)?,
+        };
+
         Endpoint::new_with_advertised(
-            self.config,
-            self.server_config,
+            config,
+            server_config,
             socket,
             Vec::new(),
-            self.exec,
-            self.shutdown_budget,
+            exec,
+            shutdown_budget,
         )
         .map_err(DatagramError::from)
     }

@@ -31,10 +31,14 @@ async fn exchange_both_ways(client: &Endpoint, server: &Endpoint, client_config:
 #[tokio::test]
 async fn default_bindings_carry_data() {
     let (client_config, server_config) = configs();
-    let server = Endpoint::server(server_config, localhost_v4())
-        .await
-        .expect("the server binds");
-    let client = Endpoint::client(localhost_v4())
+    let server = Endpoint::bind_server(
+        rama_core::rt::Executor::new(),
+        server_config,
+        localhost_v4(),
+    )
+    .await
+    .expect("the server binds");
+    let client = Endpoint::bind_client(rama_core::rt::Executor::new(), localhost_v4())
         .await
         .expect("the client binds");
     assert!(server.local_addr().unwrap().port() != 0);
@@ -51,9 +55,12 @@ async fn a_caller_prepared_socket_carries_data() {
     let prepared = config
         .wrap_std(std::net::UdpSocket::bind(localhost_v4()).unwrap())
         .expect("the socket is wrapped");
-    let server =
-        Endpoint::with_packet_socket(EndpointConfig::default(), Some(server_config), prepared)
-            .expect("the server takes the prepared socket");
+    let server = Endpoint::new_server_with_packet_socket(
+        rama_core::rt::Executor::new(),
+        server_config,
+        prepared,
+    )
+    .expect("the server takes the prepared socket");
 
     // The caller puts the socket in non-blocking mode and hands it to the runtime; registering
     // it does not do that. The wrapping only sets up the metadata this configuration asks for.
@@ -62,7 +69,7 @@ async fn a_caller_prepared_socket_carries_data() {
     let prepared = config
         .wrap_tokio(rama_udp::UdpSocket::from_std(bound).unwrap())
         .expect("a registered socket is wrapped");
-    let client = Endpoint::with_packet_socket(EndpointConfig::default(), None, prepared)
+    let client = Endpoint::new_client_with_packet_socket(rama_core::rt::Executor::new(), prepared)
         .expect("the client takes the prepared socket");
 
     exchange_both_ways(&client, &server, client_config).await;
@@ -78,7 +85,8 @@ async fn an_explicit_option_is_strict_and_a_best_effort_one_is_not() {
     let mut options = SocketOptions::default_udp();
     options.only_v6 = Some(true);
     let strict = UdpSocketConfig::default().with_socket_options(options);
-    let error = Endpoint::bind(EndpointConfig::default(), None, localhost_v4(), strict)
+    let error = Endpoint::build(rama_core::rt::Executor::new())
+        .bind_address_with_socket_config(localhost_v4(), strict)
         .await
         .expect_err("the option cannot be applied to an IPv4 socket");
     assert!(
@@ -89,7 +97,8 @@ async fn an_explicit_option_is_strict_and_a_best_effort_one_is_not() {
     let mut options = SocketOptions::default_udp();
     options.only_v6_best_effort = Some(true);
     let best_effort = UdpSocketConfig::default().with_socket_options(options);
-    let endpoint = Endpoint::bind(EndpointConfig::default(), None, localhost_v4(), best_effort)
+    let endpoint = Endpoint::build(rama_core::rt::Executor::new())
+        .bind_address_with_socket_config(localhost_v4(), best_effort)
         .await
         .expect("a best-effort option does not fail an IPv4 bind");
     assert!(endpoint.local_addr().unwrap().is_ipv4());
@@ -124,7 +133,9 @@ async fn a_required_feature_is_refused_only_when_the_socket_lacks_it() {
     let probed = probe.wrap_std(std::net::UdpSocket::bind(localhost_v4()).unwrap());
 
     let config = UdpSocketConfig::default().with_required_feature(feature);
-    let bound = Endpoint::bind(EndpointConfig::default(), None, localhost_v4(), config).await;
+    let bound = Endpoint::build(rama_core::rt::Executor::new())
+        .bind_address_with_socket_config(localhost_v4(), config)
+        .await;
     match probed {
         Ok(socket) if socket.capabilities().supports(feature) => {
             let endpoint = bound.expect("the platform provides the feature when asked");
@@ -152,10 +163,10 @@ async fn a_required_feature_is_refused_only_when_the_socket_lacks_it() {
 async fn ipv6_bindings_carry_data() {
     let (client_config, server_config) = configs();
     let localhost_v6 = SocketAddr::new(Ipv6Addr::LOCALHOST.into(), 0);
-    let server = Endpoint::server(server_config, localhost_v6)
+    let server = Endpoint::bind_server(rama_core::rt::Executor::new(), server_config, localhost_v6)
         .await
         .expect("the server binds");
-    let client = Endpoint::client(localhost_v6)
+    let client = Endpoint::bind_client(rama_core::rt::Executor::new(), localhost_v6)
         .await
         .expect("the client binds");
     assert!(client.local_addr().unwrap().is_ipv6());
@@ -170,25 +181,25 @@ async fn ipv6_bindings_carry_data() {
 #[tokio::test]
 async fn an_occupied_address_fails_once_and_changes_nothing() {
     let (client_config, server_config) = configs();
-    let server = Endpoint::server(server_config, localhost_v4())
-        .await
-        .expect("the server binds");
-    let occupied = server.local_addr().unwrap();
-
-    let error = Endpoint::bind(
-        EndpointConfig::default(),
-        None,
-        occupied,
-        UdpSocketConfig::default(),
+    let server = Endpoint::bind_server(
+        rama_core::rt::Executor::new(),
+        server_config,
+        localhost_v4(),
     )
     .await
-    .expect_err("the address is taken");
+    .expect("the server binds");
+    let occupied = server.local_addr().unwrap();
+
+    let error = Endpoint::build(rama_core::rt::Executor::new())
+        .bind_address_with_socket_config(occupied, UdpSocketConfig::default())
+        .await
+        .expect_err("the address is taken");
     assert!(
         matches!(&error, DatagramError::Io(error) if error.kind() == io::ErrorKind::AddrInUse),
         "the platform's own error, not a retry's: {error:?}"
     );
 
-    let client = Endpoint::client(localhost_v4())
+    let client = Endpoint::bind_client(rama_core::rt::Executor::new(), localhost_v4())
         .await
         .expect("the client binds");
     // A connection is open across the failed rebind, so what survives it is observable.
@@ -231,10 +242,14 @@ async fn an_occupied_address_fails_once_and_changes_nothing() {
 #[tokio::test]
 async fn a_rebind_through_the_shared_construction_keeps_the_connection() {
     let (client_config, server_config) = configs();
-    let server = Endpoint::server(server_config, localhost_v4())
-        .await
-        .expect("the server binds");
-    let client = Endpoint::client(localhost_v4())
+    let server = Endpoint::bind_server(
+        rama_core::rt::Executor::new(),
+        server_config,
+        localhost_v4(),
+    )
+    .await
+    .expect("the server binds");
+    let client = Endpoint::bind_client(rama_core::rt::Executor::new(), localhost_v4())
         .await
         .expect("the client binds");
     let first = client.local_addr().unwrap();
@@ -268,9 +283,10 @@ async fn a_rebind_through_the_shared_construction_keeps_the_connection() {
 #[test]
 fn registering_a_socket_outside_a_runtime_is_refused() {
     let socket = std::net::UdpSocket::bind(localhost_v4()).unwrap();
-    let error = Endpoint::with_std_socket(EndpointConfig::default(), None, socket)
+    let error = Endpoint::build(rama_core::rt::Executor::new())
+        .with_std_socket(socket)
         .expect_err("there is no runtime to register the socket with");
-    assert_eq!(error.kind(), io::ErrorKind::Other);
+    assert!(matches!(error, DatagramError::Io(ref error) if error.kind() == io::ErrorKind::Other));
 
     let socket = std::net::UdpSocket::bind(localhost_v4()).unwrap();
     let error = UdpSocketConfig::default()
@@ -281,12 +297,10 @@ fn registering_a_socket_outside_a_runtime_is_refused() {
         "the error carries its cause: {error:?}"
     );
 
-    let mut binding = std::pin::pin!(Endpoint::bind(
-        EndpointConfig::default(),
-        None,
-        localhost_v4(),
-        UdpSocketConfig::default(),
-    ));
+    let mut binding = std::pin::pin!(
+        Endpoint::build(rama_core::rt::Executor::new())
+            .bind_address_with_socket_config(localhost_v4(), UdpSocketConfig::default())
+    );
     let mut cx = Context::from_waker(Waker::noop());
     match binding.as_mut().poll(&mut cx) {
         Poll::Ready(Err(DatagramError::Io(error))) => {

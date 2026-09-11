@@ -106,9 +106,13 @@ async fn endpoint_remembering(store: Arc<AskedStore>) -> Endpoint {
         });
     let server_config = ServerConfig::try_from_rama_tls(&tls, TlsOptions::default())
         .expect("the server config is built");
-    let mut endpoint = Endpoint::server(server_config, crate::driver::tests::localhost())
-        .await
-        .expect("the endpoint binds");
+    let mut endpoint = Endpoint::bind_server(
+        rama_core::rt::Executor::new(),
+        server_config,
+        crate::driver::tests::localhost(),
+    )
+    .await
+    .expect("the endpoint binds");
     let client_tls = TlsClientConfig::new()
         .with_alpn(smallvec![ApplicationProtocol::from(ALPN)])
         .try_with_server_trust_anchors([anchor])

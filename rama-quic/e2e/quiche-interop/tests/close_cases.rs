@@ -199,7 +199,10 @@ async fn an_immediate_close_reaches_this_peer_in_its_own_datagram() {
     });
 
     let client = deadline
-        .wait("the rama client binds", Endpoint::client(localhost()))
+        .wait(
+            "the rama client binds",
+            Endpoint::bind_client(rama::rt::Executor::new(), localhost()),
+        )
         .await
         .expect("it binds");
     let connection = deadline

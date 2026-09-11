@@ -144,7 +144,10 @@ pub async fn rama_client_fills_and_cancels<E: Ears>(
         ..
     } = run;
     let endpoint = deadline
-        .wait(what, Endpoint::client(localhost()))
+        .wait(
+            what,
+            Endpoint::bind_client(rama::rt::Executor::new(), localhost()),
+        )
         .await
         .expect("the rama client binds");
     let transport = TransportConfig::default().with_datagram_send_buffer_size(scenario.buffer);

@@ -5,12 +5,13 @@ use std::{
 };
 
 use rama_core::bytes::{Buf, BufMut, Bytes};
+use rama_crypto::hmac::HmacSha2;
 use rand::{Rng, RngExt};
 
 use crate::proto::{
     Duration, RESET_TOKEN_SIZE, ServerConfig, SystemTime, UNIX_EPOCH,
     coding::{BufExt, BufMutExt},
-    crypto::{CryptoError, HandshakeTokenKey, HmacKey},
+    crypto::{CryptoError, HandshakeTokenKey},
     packet::InitialHeader,
     shared::ConnectionId,
 };
@@ -375,7 +376,7 @@ fn decode_unix_secs<B: Buf>(buf: &mut B) -> Option<SystemTime> {
 pub(crate) struct ResetToken([u8; RESET_TOKEN_SIZE]);
 
 impl ResetToken {
-    pub(crate) fn new(key: &dyn HmacKey, id: ConnectionId) -> Self {
+    pub(crate) fn new(key: &HmacSha2, id: ConnectionId) -> Self {
         let mut signature = vec![0; key.signature_len()];
         key.sign(&id, &mut signature);
         // TODO: Server ID??
@@ -480,12 +481,8 @@ mod test {
         assert_eq!(token.to_string(), "c24921e6febf880448cd5222002798e6");
     }
 
-    fn hkdf_free_hmac(key: &[u8]) -> impl HmacKey {
-        #[cfg(all(feature = "aws-lc", not(feature = "ring")))]
-        use rama_crypto::dep::aws_lc_rs::hmac;
-        #[cfg(feature = "ring")]
-        use rama_crypto::dep::ring::hmac;
-        hmac::Key::new(hmac::HMAC_SHA256, key)
+    fn hkdf_free_hmac(seed: &[u8; 32]) -> HmacSha2 {
+        HmacSha2::new_256(seed)
     }
 
     #[test]

@@ -214,6 +214,12 @@ hack:
 test *ARGS:
     @command -v cargo-nextest >/dev/null || cargo install cargo-nextest --locked
     cargo nextest run --all-features --workspace {{ARGS}}
+    bash scripts/test-crypto.sh all {{ARGS}}
+
+# Run crypto and TLS tests with each backend isolated (or choose rustcrypto/ring/aws-lc/boring).
+test-crypto BACKEND="all" *ARGS:
+    @command -v cargo-nextest >/dev/null || cargo install cargo-nextest --locked
+    bash scripts/test-crypto.sh {{BACKEND}} {{ARGS}}
 
 test-no-default-features *ARGS:
     @command -v cargo-nextest >/dev/null || cargo install cargo-nextest --locked

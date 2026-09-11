@@ -552,15 +552,19 @@ mod tests {
                 )
                 .unwrap(),
             ));
-            let server = Endpoint::server(
+            let server = Endpoint::bind_server(
+                rama_core::rt::Executor::new(),
                 server_config,
                 "127.0.0.1:0".parse::<std::net::SocketAddr>().unwrap(),
             )
             .await
             .unwrap();
-            let client = Endpoint::client("127.0.0.1:0".parse::<std::net::SocketAddr>().unwrap())
-                .await
-                .unwrap();
+            let client = Endpoint::bind_client(
+                rama_core::rt::Executor::new(),
+                "127.0.0.1:0".parse::<std::net::SocketAddr>().unwrap(),
+            )
+            .await
+            .unwrap();
             let connecting = client
                 .connect_with(client_config, server.local_addr().unwrap(), "localhost")
                 .unwrap();
@@ -660,16 +664,19 @@ mod tests {
                     QuicServerConfig::from_rama(&server_tls, configured_provider(), options)
                         .unwrap(),
                 ));
-                let server = Endpoint::server(
+                let server = Endpoint::bind_server(
+                    rama_core::rt::Executor::new(),
                     server_config,
                     "127.0.0.1:0".parse::<std::net::SocketAddr>().unwrap(),
                 )
                 .await
                 .unwrap();
-                let client =
-                    Endpoint::client("127.0.0.1:0".parse::<std::net::SocketAddr>().unwrap())
-                        .await
-                        .unwrap();
+                let client = Endpoint::bind_client(
+                    rama_core::rt::Executor::new(),
+                    "127.0.0.1:0".parse::<std::net::SocketAddr>().unwrap(),
+                )
+                .await
+                .unwrap();
                 let connecting = client
                     .connect_with(client_config, server.local_addr().unwrap(), "localhost")
                     .unwrap();

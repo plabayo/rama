@@ -439,7 +439,7 @@ impl Endpoint {
         buf.resize(padding_len, 0);
         self.rng.fill_bytes(&mut buf[0..padding_len]);
         buf[0] = 0b0100_0000 | (buf[0] >> 2);
-        buf.extend_from_slice(&ResetToken::new(&*self.config.reset_key, dst_cid));
+        buf.extend_from_slice(&ResetToken::new(&self.config.reset_key, dst_cid));
 
         debug_assert!(buf.len() < inciting_dgram_len);
 
@@ -533,7 +533,7 @@ impl Endpoint {
             ids.push(IssuedCid {
                 sequence,
                 id,
-                reset_token: ResetToken::new(&*self.config.reset_key, id),
+                reset_token: ResetToken::new(&self.config.reset_key, id),
             });
         }
         ConnectionEvent(ConnectionEventInner::NewIdentifiers(ids, now))
@@ -785,7 +785,7 @@ impl Endpoint {
             Some(&server_config),
             &mut self.rng,
         );
-        params.stateless_reset_token = Some(ResetToken::new(&*self.config.reset_key, loc_cid));
+        params.stateless_reset_token = Some(ResetToken::new(&self.config.reset_key, loc_cid));
         params.original_dst_cid = Some(incoming.token.orig_dst_cid);
         params.retry_src_cid = incoming.token.retry_src_cid;
         let mut pref_addr_cid = None;
@@ -798,7 +798,7 @@ impl Endpoint {
                 address_v4: server_config.preferred_address_v4,
                 address_v6: server_config.preferred_address_v6,
                 connection_id: cid,
-                stateless_reset_token: ResetToken::new(&*self.config.reset_key, cid),
+                stateless_reset_token: ResetToken::new(&self.config.reset_key, cid),
             });
         }
 

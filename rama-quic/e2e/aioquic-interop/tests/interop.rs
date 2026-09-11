@@ -36,7 +36,11 @@ async fn an_aioquic_client_refuses_a_rama_server_it_does_not_trust() {
     let server = deadline
         .wait(
             "the rama server binds",
-            Endpoint::server(rama_server_config(&identity), localhost()),
+            Endpoint::bind_server(
+                rama::rt::Executor::new(),
+                rama_server_config(&identity),
+                localhost(),
+            ),
         )
         .await
         .expect("it binds");
@@ -173,7 +177,10 @@ async fn a_rama_client_refuses_an_aioquic_server_it_does_not_trust() {
     let echo_hash = digest(&echo);
 
     let client = deadline
-        .wait("rama binds", Endpoint::client(localhost()))
+        .wait(
+            "rama binds",
+            Endpoint::bind_client(rama::rt::Executor::new(), localhost()),
+        )
         .await
         .expect("the client binds");
     let refused = deadline
@@ -272,7 +279,10 @@ async fn a_peer_that_never_finishes_is_stopped() {
     );
 
     let client = deadline
-        .wait("rama binds", Endpoint::client(localhost()))
+        .wait(
+            "rama binds",
+            Endpoint::bind_client(rama::rt::Executor::new(), localhost()),
+        )
         .await
         .expect("the client binds");
     let attempt = client
@@ -498,7 +508,10 @@ async fn a_close_right_after_the_handshake_reaches_the_peer() {
     let server_addr = peer.listening(deadline).await;
 
     let client = deadline
-        .wait("rama binds", Endpoint::client(localhost()))
+        .wait(
+            "rama binds",
+            Endpoint::bind_client(rama::rt::Executor::new(), localhost()),
+        )
         .await
         .expect("the client binds");
     let connection = deadline

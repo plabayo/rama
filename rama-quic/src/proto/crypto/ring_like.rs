@@ -1,24 +1,9 @@
 #[cfg(all(feature = "aws-lc", not(feature = "ring")))]
-use rama_crypto::dep::aws_lc_rs::{aead, error, hkdf, hmac};
+use rama_crypto::dep::aws_lc_rs::{aead, error, hkdf};
 #[cfg(feature = "ring")]
-use rama_crypto::dep::ring::{aead, error, hkdf, hmac};
+use rama_crypto::dep::ring::{aead, error, hkdf};
 
 use crate::proto::crypto::{self, CryptoError};
-
-impl crypto::HmacKey for hmac::Key {
-    fn sign(&self, data: &[u8], out: &mut [u8]) {
-        out.copy_from_slice(hmac::sign(self, data).as_ref());
-    }
-
-    fn signature_len(&self) -> usize {
-        32
-    }
-
-    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
-    fn verify(&self, data: &[u8], signature: &[u8]) -> Result<(), CryptoError> {
-        Ok(hmac::verify(self, data, signature)?)
-    }
-}
 
 impl crypto::HandshakeTokenKey for hkdf::Prk {
     fn aead_from_hkdf(&self, random_bytes: &[u8]) -> Result<Box<dyn crypto::AeadKey>, CryptoError> {

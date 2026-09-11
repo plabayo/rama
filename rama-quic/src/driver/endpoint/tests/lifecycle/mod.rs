@@ -12,10 +12,7 @@ use crate::proto::crypto::rustls::{
     QuicClientConfig, QuicServerConfig, TlsOptions, configured_provider,
 };
 use crate::proto::{CongestionControl, RetryRefused, TransportConfig};
-#[cfg(all(feature = "aws-lc", not(feature = "ring")))]
-use rama_crypto::dep::aws_lc_rs::hmac;
-#[cfg(feature = "ring")]
-use rama_crypto::dep::ring::hmac;
+use rama_crypto::hmac::HmacSha2;
 use rama_tls::{
     client::TlsClientConfig,
     server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
@@ -54,18 +51,26 @@ pub(super) fn configs() -> (ClientConfig, ServerConfig) {
 
 fn endpoint(config: Option<ServerConfig>, executor: Executor, budget: Duration) -> Endpoint {
     let socket = Socket::from_std(std::net::UdpSocket::bind("127.0.0.1:0").unwrap()).unwrap();
-    Endpoint::new_with_executor(EndpointConfig::default(), config, socket, executor, budget)
-        .unwrap()
+    Endpoint::new_with_advertised(
+        EndpointConfig::try_with_rand_key().unwrap(),
+        config,
+        socket,
+        Vec::new(),
+        executor,
+        budget,
+    )
+    .unwrap()
 }
 
 fn deadline_endpoint(config: Option<ServerConfig>, timeout: Duration) -> Endpoint {
     let socket = Socket::from_std(std::net::UdpSocket::bind("127.0.0.1:0").unwrap()).unwrap();
-    let mut endpoint_config = EndpointConfig::default();
+    let mut endpoint_config = EndpointConfig::try_with_rand_key().unwrap();
     endpoint_config.handshake_timeout(timeout).unwrap();
-    Endpoint::new_with_executor(
+    Endpoint::new_with_advertised(
         endpoint_config,
         config,
         socket,
+        Vec::new(),
         Executor::new(),
         Duration::from_millis(10),
     )
@@ -77,7 +82,7 @@ fn limited_config(
     connection: ReceiveQueueLimits,
     endpoint: ReceiveQueueLimits,
 ) -> EndpointConfig {
-    let mut config = EndpointConfig::default();
+    let mut config = EndpointConfig::try_with_rand_key().unwrap();
     config.handshake_timeout(handshake_timeout).unwrap();
     config.set_receive_queue_limits(connection, endpoint);
     config
@@ -95,10 +100,11 @@ pub(super) fn endpoint_with(
     server: Option<ServerConfig>,
     socket: Socket,
 ) -> Endpoint {
-    Endpoint::new_with_executor(
+    Endpoint::new_with_advertised(
         config,
         server,
         socket,
+        Vec::new(),
         Executor::new(),
         Duration::from_secs(1),
     )
@@ -391,7 +397,7 @@ fn faulty_endpoint_with_threshold(
         probe: None,
     })
     .unwrap();
-    endpoint_with(EndpointConfig::default(), server, socket)
+    endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), server, socket)
 }
 
 /// A real loopback socket whose sends can be held pending through the returned gate.
@@ -599,7 +605,7 @@ fn counting_endpoint(server: Option<ServerConfig>, sent: Arc<AtomicUsize>) -> En
         probe: None,
     })
     .unwrap();
-    endpoint_with(EndpointConfig::default(), server, socket)
+    endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), server, socket)
 }
 
 /// Keep application data flowing from `client` to `server` until `done` holds or the
@@ -845,17 +851,18 @@ async fn completed_handshake_cancels_deadline() {
 
 #[tokio::test]
 async fn invalid_handshake_deadlines_fail_before_spawning() {
-    let mut config = EndpointConfig::default();
+    let mut config = EndpointConfig::try_with_rand_key().unwrap();
     config
         .handshake_timeout(Duration::ZERO)
         .expect_err("a zero handshake timeout is refused");
     for duration in [Duration::ZERO, Duration::MAX] {
         config.handshake_timeout = duration;
         let socket = Socket::from_std(std::net::UdpSocket::bind("127.0.0.1:0").unwrap()).unwrap();
-        let error = Endpoint::new_with_executor(
+        let error = Endpoint::new_with_advertised(
             config.clone(),
             None,
             socket,
+            Vec::new(),
             Executor::new(),
             Duration::from_secs(1),
         )
@@ -1399,7 +1406,7 @@ async fn repeated_rebind_switches_connections_after_their_pending_send_and_retir
     let (client_config, server_config) = configs();
     let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
     let (socket_a, gate_a) = gated_socket();
-    let client = endpoint_with(EndpointConfig::default(), None, socket_a);
+    let client = endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), None, socket_a);
     let addr_a = client.local_addr().unwrap();
     let mut conns = Vec::new();
     for _ in 0..2 {
@@ -1507,7 +1514,7 @@ async fn repeated_rebind_switches_connections_after_their_pending_send_and_retir
 #[tokio::test]
 async fn attempts_received_before_rebinding_are_answered_on_their_own_socket() {
     let (client_config, server_config) = configs();
-    let defaults = EndpointConfig::default();
+    let defaults = EndpointConfig::try_with_rand_key().unwrap();
     let server = endpoint_with(
         limited_config(
             Duration::from_secs(3),
@@ -1699,8 +1706,12 @@ async fn dropped_and_ignored_attempts_release_their_socket() {
     let server = endpoint_with(
         limited_config(
             Duration::from_secs(1),
-            EndpointConfig::default().connection_receive_queue,
-            EndpointConfig::default().endpoint_receive_queue,
+            EndpointConfig::try_with_rand_key()
+                .unwrap()
+                .connection_receive_queue,
+            EndpointConfig::try_with_rand_key()
+                .unwrap()
+                .endpoint_receive_queue,
         ),
         Some(server_config),
         loopback_socket(),
@@ -1790,8 +1801,12 @@ async fn rebinding_past_the_retained_bound_is_refused_without_change() {
     let client = endpoint_with(
         limited_config(
             Duration::from_secs(30),
-            EndpointConfig::default().connection_receive_queue,
-            EndpointConfig::default().endpoint_receive_queue,
+            EndpointConfig::try_with_rand_key()
+                .unwrap()
+                .connection_receive_queue,
+            EndpointConfig::try_with_rand_key()
+                .unwrap()
+                .endpoint_receive_queue,
         ),
         None,
         socket,
@@ -2364,7 +2379,7 @@ async fn queued_admission_deadline_does_not_busy_poll_and_expires_on_time() {
     let (client_config, server_config) = configs();
     let handshake_timeout = Duration::from_millis(300);
     // Unspawned server: the test polls its driver by hand with a recording waker.
-    let mut endpoint_config = EndpointConfig::default();
+    let mut endpoint_config = EndpointConfig::try_with_rand_key().unwrap();
     endpoint_config
         .handshake_timeout(handshake_timeout)
         .unwrap();
@@ -2637,7 +2652,7 @@ async fn a_path_validation_probe_is_a_dedicated_packet_padded_to_the_smallest_al
     server_config.set_transport_config(transport);
     let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
     let (socket, _log) = recording_socket();
-    let client = endpoint_with(EndpointConfig::default(), None, socket);
+    let client = endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), None, socket);
     let connecting = client
         .connect_with(client_config, server.local_addr().unwrap(), "localhost")
         .unwrap();
@@ -2703,7 +2718,7 @@ async fn no_datagram_exceeds_the_confirmed_mtu_while_loss_recovery_runs() {
     server_config.set_transport_config(transport);
     let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
     let (socket, log) = recording_socket();
-    let client = endpoint_with(EndpointConfig::default(), None, socket);
+    let client = endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), None, socket);
     let connecting = client
         .connect_with(client_config, server.local_addr().unwrap(), "localhost")
         .unwrap();
@@ -2792,7 +2807,7 @@ async fn mtu_discovery_probes_search_above_the_confirmed_mtu_within_the_configur
     server_config.set_transport_config(transport);
     let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
     let (socket, log) = recording_socket();
-    let client = endpoint_with(EndpointConfig::default(), None, socket);
+    let client = endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), None, socket);
     let connecting = client
         .connect_with(client_config, server.local_addr().unwrap(), "localhost")
         .unwrap();
@@ -3065,31 +3080,38 @@ fn inline_dropped_accepted_driver_fails_the_attempt_and_retires_it() {
 
 #[tokio::test]
 async fn receive_queue_limits_accept_the_exact_boundary() {
-    let payload = usize::try_from(EndpointConfig::default().get_max_udp_payload_size()).unwrap();
+    let payload = usize::try_from(
+        EndpointConfig::try_with_rand_key()
+            .unwrap()
+            .get_max_udp_payload_size(),
+    )
+    .unwrap();
     let connection = ReceiveQueueLimits::new(1, payload + PACKET_OVERHEAD).unwrap();
     let endpoint_limits = ReceiveQueueLimits::new(1, payload + INCOMING_OVERHEAD).unwrap();
-    let mut config = EndpointConfig::default();
+    let mut config = EndpointConfig::try_with_rand_key().unwrap();
     config.set_receive_queue_limits(connection, endpoint_limits);
     let socket = Socket::from_std(std::net::UdpSocket::bind("127.0.0.1:0").unwrap()).unwrap();
-    let endpoint = Endpoint::new_with_executor(
+    let endpoint = Endpoint::new_with_advertised(
         config,
         None,
         socket,
+        Vec::new(),
         Executor::new(),
         Duration::from_secs(1),
     )
     .unwrap();
     assert_eq!(endpoint.shutdown().await, ShutdownOutcome::Drained);
-    let mut config = EndpointConfig::default();
+    let mut config = EndpointConfig::try_with_rand_key().unwrap();
     config.set_receive_queue_limits(
         ReceiveQueueLimits::new(1, payload + PACKET_OVERHEAD - 1).unwrap(),
         endpoint_limits,
     );
     let socket = Socket::from_std(std::net::UdpSocket::bind("127.0.0.1:0").unwrap()).unwrap();
-    Endpoint::new_with_executor(
+    Endpoint::new_with_advertised(
         config,
         None,
         socket,
+        Vec::new(),
         Executor::new(),
         Duration::from_secs(1),
     )
@@ -3097,13 +3119,14 @@ async fn receive_queue_limits_accept_the_exact_boundary() {
     // The endpoint budget must be able to hold one whole connection budget: equal is
     // accepted, one byte or one datagram less is refused.
     let build = |connection: ReceiveQueueLimits, endpoint_limits: ReceiveQueueLimits| {
-        let mut config = EndpointConfig::default();
+        let mut config = EndpointConfig::try_with_rand_key().unwrap();
         config.set_receive_queue_limits(connection, endpoint_limits);
         let socket = Socket::from_std(std::net::UdpSocket::bind("127.0.0.1:0").unwrap()).unwrap();
-        Endpoint::new_with_executor(
+        Endpoint::new_with_advertised(
             config,
             None,
             socket,
+            Vec::new(),
             Executor::new(),
             Duration::from_secs(1),
         )
@@ -3376,7 +3399,7 @@ async fn send_handles_are_destroyed_outside_every_lock_on_each_release_path() {
     let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
     let probe = Arc::new(SenderProbe::default());
     let (socket_a, gate_a, _, _) = breakable_socket(Some(probe.clone()));
-    let client = endpoint_with(EndpointConfig::default(), None, socket_a);
+    let client = endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), None, socket_a);
     probe.attach(&client);
     let connecting = client
         .connect_with(
@@ -3464,7 +3487,7 @@ async fn a_failed_retiring_receiver_moves_its_connection_to_the_pending_socket()
     let (client_config, server_config) = configs();
     let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
     let (socket_a, gate_a, fault_a, sent_a) = breakable_socket(None);
-    let client = endpoint_with(EndpointConfig::default(), None, socket_a);
+    let client = endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), None, socket_a);
     let addr_a = client.local_addr().unwrap();
     let (socket_b, log_b) = recording_socket();
     let connecting = client
@@ -3565,7 +3588,11 @@ fn assert_local_path_error(error: &ConnectionError) {
 async fn a_server_connection_keeps_its_socket_on_rebind_and_ends_with_it_when_it_fails() {
     let (client_config, server_config) = configs();
     let (socket_a, _gate, fault_a, _) = breakable_socket(None);
-    let server = endpoint_with(EndpointConfig::default(), Some(server_config), socket_a);
+    let server = endpoint_with(
+        EndpointConfig::try_with_rand_key().unwrap(),
+        Some(server_config),
+        socket_a,
+    );
     let addr_a = server.local_addr().unwrap();
     let client = endpoint(None, Executor::new(), Duration::from_secs(1));
     let connecting = client
@@ -3629,7 +3656,7 @@ async fn a_client_defers_its_migration_until_the_handshake_is_confirmed() {
     let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
     let (socket_a, gate_a) = gated_socket();
     gate_a.close();
-    let client = endpoint_with(EndpointConfig::default(), None, socket_a);
+    let client = endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), None, socket_a);
     let addr_a = client.local_addr().unwrap();
     let connecting = client
         .connect_with(client_config, server.local_addr().unwrap(), "localhost")
@@ -3676,7 +3703,7 @@ async fn a_client_whose_peer_disables_migration_keeps_its_socket_and_ends_with_i
     server_config.set_migration(false);
     let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
     let (socket_a, _gate, fault_a, _) = breakable_socket(None);
-    let client = endpoint_with(EndpointConfig::default(), None, socket_a);
+    let client = endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), None, socket_a);
     let addr_a = client.local_addr().unwrap();
     let connecting = client
         .connect_with(client_config, server.local_addr().unwrap(), "localhost")
@@ -3728,7 +3755,7 @@ async fn an_unconfirmed_client_whose_socket_fails_is_terminated() {
     // The server never accepts, so the client's handshake is never confirmed.
     let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
     let (socket_a, _gate, fault_a, _) = breakable_socket(None);
-    let client = endpoint_with(EndpointConfig::default(), None, socket_a);
+    let client = endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), None, socket_a);
     let connecting = client
         .connect_with(client_config, server.local_addr().unwrap(), "localhost")
         .unwrap();
@@ -3789,7 +3816,11 @@ async fn a_retry_lifetime_beyond_the_clock_is_refused_and_the_attempt_is_kept() 
 async fn attempts_queued_on_a_socket_that_fails_are_released_and_a_held_one_is_refused() {
     let (client_config, server_config) = configs();
     let (socket_a, _gate, fault_a, _) = breakable_socket(None);
-    let server = endpoint_with(EndpointConfig::default(), Some(server_config), socket_a);
+    let server = endpoint_with(
+        EndpointConfig::try_with_rand_key().unwrap(),
+        Some(server_config),
+        socket_a,
+    );
     let addr_a = server.local_addr().unwrap();
     let held_client = endpoint(None, Executor::new(), Duration::from_secs(1));
     let queued_client = endpoint(None, Executor::new(), Duration::from_secs(1));
@@ -3856,7 +3887,7 @@ async fn an_attempt_admitted_before_a_receive_fault_in_the_same_pass_is_released
     let (socket, _gate, fault, _) = breakable_socket(None);
     *fault.lock() = Some(RecvFault::AfterNextBatch);
     let fatal = endpoint_with(
-        EndpointConfig::default(),
+        EndpointConfig::try_with_rand_key().unwrap(),
         Some(server_config.clone()),
         socket,
     );
@@ -3885,7 +3916,11 @@ async fn an_attempt_admitted_before_a_receive_fault_in_the_same_pass_is_released
     drop(connecting);
 
     let (socket, _gate, fault, _) = breakable_socket(None);
-    let server = endpoint_with(EndpointConfig::default(), Some(server_config), socket);
+    let server = endpoint_with(
+        EndpointConfig::try_with_rand_key().unwrap(),
+        Some(server_config),
+        socket,
+    );
     server.inner.state.lock().recv_state.forced_recv_allowance = Some(usize::MAX);
     let addr_a = server.local_addr().unwrap();
     let pin = pin_active_socket(&server);
@@ -4344,7 +4379,7 @@ async fn a_partial_segmented_send_completes_on_its_socket_across_repeated_rebind
     let (client_config, server_config) = configs();
     let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
     let (socket_a, log, segments) = segmenting_socket(2);
-    let client = endpoint_with(EndpointConfig::default(), None, socket_a);
+    let client = endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), None, socket_a);
     let addr_a = client.local_addr().unwrap();
     let connecting = client
         .connect_with(client_config, server.local_addr().unwrap(), "localhost")
@@ -4472,7 +4507,7 @@ async fn a_datagram_waits_for_its_route_and_is_neither_dropped_nor_replayed() {
     let (client_config, server_config) = configs();
     let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
     let (socket, log) = recording_socket();
-    let client = endpoint_with(EndpointConfig::default(), None, socket);
+    let client = endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), None, socket);
     let connecting = client
         .connect_with(client_config, server.local_addr().unwrap(), "localhost")
         .unwrap();
@@ -4616,7 +4651,7 @@ async fn a_refused_route_closes_the_connection_with_its_cause() {
         Duration::from_secs(60),
     );
     let (socket, _log) = recording_socket();
-    let client = endpoint_with(EndpointConfig::default(), None, socket);
+    let client = endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), None, socket);
     let connecting = client
         .connect_with(client_config, server.local_addr().unwrap(), "localhost")
         .unwrap();
@@ -4718,7 +4753,7 @@ async fn shutdown_completes_while_a_descriptor_is_partly_accepted() {
     let (client_config, server_config) = configs();
     let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
     let (socket, log, segments) = segmenting_socket(1);
-    let client = endpoint_with(EndpointConfig::default(), None, socket);
+    let client = endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), None, socket);
     let connecting = client
         .connect_with(client_config, server.local_addr().unwrap(), "localhost")
         .unwrap();
@@ -4857,7 +4892,7 @@ async fn an_accepted_prefix_is_reported_before_its_descriptor_completes() {
     let (client_config, server_config) = configs();
     let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
     let (socket, log, segments) = segmenting_socket(1);
-    let client = endpoint_with(EndpointConfig::default(), None, socket);
+    let client = endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), None, socket);
     let server_addr = server.local_addr().unwrap();
     let connecting = client
         .connect_with(client_config, server_addr, "localhost")
@@ -4954,7 +4989,7 @@ async fn an_accepted_prefix_is_reported_when_the_descriptor_then_fails() {
     let (client_config, server_config) = configs();
     let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
     let (socket, log, segments) = segmenting_socket(1);
-    let client = endpoint_with(EndpointConfig::default(), None, socket);
+    let client = endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), None, socket);
     let server_addr = server.local_addr().unwrap();
     let connecting = client
         .connect_with(client_config, server_addr, "localhost")
@@ -5151,7 +5186,7 @@ async fn a_pass_that_spends_its_allowance_on_bytes_that_left_asks_for_another_tu
     let (client_config, server_config) = configs();
     let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
     let (socket, log, _segments) = segmenting_socket(usize::MAX);
-    let client = endpoint_with(EndpointConfig::default(), None, socket);
+    let client = endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), None, socket);
     let server_addr = server.local_addr().unwrap();
     let connecting = client
         .connect_with(client_config, server_addr, "localhost")
@@ -5221,7 +5256,7 @@ async fn a_pass_that_spends_its_allowance_waiting_does_not_poll_in_a_loop() {
     let (client_config, server_config) = configs();
     let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
     let (socket, log, _segments) = segmenting_socket(usize::MAX);
-    let client = endpoint_with(EndpointConfig::default(), None, socket);
+    let client = endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), None, socket);
     let server_addr = server.local_addr().unwrap();
     let connecting = client
         .connect_with(client_config, server_addr, "localhost")
@@ -5355,7 +5390,7 @@ async fn the_first_accepted_datagram_grants_a_fresh_identifier_its_history() {
     let (client_config, server_config) = configs();
     let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
     let (socket, log, segments) = segmenting_socket(1);
-    let client = endpoint_with(EndpointConfig::default(), None, socket);
+    let client = endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), None, socket);
     let server_addr = server.local_addr().unwrap();
     let connecting = client
         .connect_with(client_config, server_addr, "localhost")
@@ -5541,7 +5576,7 @@ async fn a_retirement_mid_descriptor_gives_up_only_the_unsent_suffix() {
     let (client_config, server_config) = configs();
     let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
     let (socket, log, segments) = segmenting_socket(2);
-    let client = endpoint_with(EndpointConfig::default(), None, socket);
+    let client = endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), None, socket);
     let connecting = client
         .connect_with(client_config, server.local_addr().unwrap(), "localhost")
         .unwrap();
@@ -5830,7 +5865,7 @@ async fn a_migration_switches_to_an_unused_destination_cid_and_a_same_address_re
     let (client_config, server_config) = configs();
     let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
     let (socket_a, log_a) = recording_socket();
-    let client = endpoint_with(EndpointConfig::default(), None, socket_a);
+    let client = endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), None, socket_a);
     let connecting = client
         .connect_with(client_config, server.local_addr().unwrap(), "localhost")
         .unwrap();
@@ -5904,7 +5939,7 @@ async fn a_migration_waits_for_an_unused_destination_cid_and_proceeds_when_one_a
     let (client_config, server_config) = configs();
     let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
     let (socket_a, log_a) = recording_socket();
-    let client = endpoint_with(EndpointConfig::default(), None, socket_a);
+    let client = endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), None, socket_a);
     let connecting = client
         .connect_with(client_config, server.local_addr().unwrap(), "localhost")
         .unwrap();
@@ -6024,7 +6059,7 @@ async fn preferring_pair(
     crate::driver::connection::Connection,
     std::net::UdpSocket,
     SocketAddr,
-    hmac::Key,
+    HmacSha2,
     Arc<SendGate>,
 ) {
     let (client_config, mut server_config) = configs();
@@ -6034,20 +6069,25 @@ async fn preferring_pair(
         SocketAddr::V6(addr) => panic!("expected an IPv4 loopback address, got {addr}"),
     };
     server_config.set_preferred_address_v4(preferred);
-    let key = hmac::Key::new(hmac::HMAC_SHA256, &[0x55; 64]);
-    let key_copy = hmac::Key::new(hmac::HMAC_SHA256, &[0x55; 64]);
+    let key = HmacSha2::new_256(&[0x55; 32]);
+    let key_copy = HmacSha2::new_256(&[0x55; 32]);
     let server_socket = Socket::from_std(std::net::UdpSocket::bind("127.0.0.1:0").unwrap())
         .expect("a loopback socket");
-    let server = Endpoint::new_with_executor(
-        EndpointConfig::new(Arc::new(key)),
+    let server = Endpoint::new_with_advertised(
+        EndpointConfig::new(key),
         Some(server_config),
         server_socket,
+        Vec::new(),
         Executor::new(),
         Duration::from_secs(1),
     )
     .unwrap();
     let (client_socket, gate, _, _) = breakable_socket(None);
-    let client = endpoint_with(EndpointConfig::default(), None, client_socket);
+    let client = endpoint_with(
+        EndpointConfig::try_with_rand_key().unwrap(),
+        None,
+        client_socket,
+    );
     let connecting = client
         .connect_with(client_config, server.local_addr().unwrap(), "localhost")
         .unwrap();
@@ -6094,7 +6134,11 @@ async fn switching_to_an_identifier_is_not_using_it_until_a_datagram_leaves() {
     let (client_config, server_config) = configs();
     let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
     let (client_socket, gate, _, sent) = breakable_socket(None);
-    let client = endpoint_with(EndpointConfig::default(), None, client_socket);
+    let client = endpoint_with(
+        EndpointConfig::try_with_rand_key().unwrap(),
+        None,
+        client_socket,
+    );
     let connecting = client
         .connect_with(client_config, server.local_addr().unwrap(), "localhost")
         .unwrap();
@@ -6171,7 +6215,7 @@ async fn switching_to_an_identifier_is_not_using_it_until_a_datagram_leaves() {
 }
 
 /// A stateless reset for `cid` under `key`, shaped like the server's.
-fn stateless_reset_for(key: &hmac::Key, cid: &[u8]) -> Vec<u8> {
+fn stateless_reset_for(key: &HmacSha2, cid: &[u8]) -> Vec<u8> {
     let mut datagram = vec![0x40u8];
     datagram.extend_from_slice(&[0xab; 40]);
     datagram.extend_from_slice(&crate::proto::TestResetToken::new(
@@ -6322,7 +6366,7 @@ async fn a_client_probes_a_preferred_address_at_most_three_times() {
     server_config.set_preferred_address_v4(preferred);
     let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
     let (socket, log) = recording_socket();
-    let client = endpoint_with(EndpointConfig::default(), None, socket);
+    let client = endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), None, socket);
     let connecting = client
         .connect_with(client_config, server.local_addr().unwrap(), "localhost")
         .unwrap();
@@ -6401,7 +6445,7 @@ async fn a_client_completes_before_it_confirms_and_migrates_only_once_confirmed(
     let (client_config, server_config) = configs();
     let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
     let (socket_a, _gate_a, _, _) = breakable_socket(None);
-    let client = endpoint_with(EndpointConfig::default(), None, socket_a);
+    let client = endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), None, socket_a);
     let connecting = client
         .connect_with(client_config, server.local_addr().unwrap(), "localhost")
         .unwrap();

@@ -5,6 +5,8 @@
         reason = "without a TLS backend and a crypto provider nothing can drive a handshake, so the code that serves one has no caller"
     )
 )]
+use rama_core::error::BoxError;
+use rama_crypto::hmac::HmacSha2;
 use rama_utils::octets;
 use std::{
     fmt,
@@ -24,7 +26,7 @@ use crate::proto::{
     cid_generator::{
         ConnectionIdGenerator, ConnectionIdGeneratorFactory, HashedConnectionIdGenerator,
     },
-    crypto::{self, HandshakeTokenKey, HmacKey},
+    crypto::{self, HandshakeTokenKey},
     shared::ConnectionId,
 };
 #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
@@ -32,10 +34,10 @@ use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer};
 #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 use rama_tls_rustls::dep::rustls::client::WebPkiServerVerifier;
 
-#[cfg(any(feature = "aws-lc", feature = "ring"))]
 mod keys;
 #[cfg(any(feature = "aws-lc", feature = "ring"))]
-pub use keys::{AddressTokenKey, KEY_MATERIAL_SIZE, StatelessResetKey};
+pub use keys::AddressTokenKey;
+pub use keys::{KEY_MATERIAL_SIZE, StatelessResetKey};
 
 mod transport;
 #[cfg(feature = "qlog")]
@@ -79,10 +81,12 @@ impl ReceiveQueueLimits {
 
 /// Global configuration for the endpoint, affecting all connections
 ///
-/// Default values should be suitable for most internet applications.
+/// Supply a secret reset key with [`Self::new`]; the remaining settings suit most
+/// internet applications. [`crate::EndpointBuilder`] generates a fresh random key
+/// when no endpoint configuration is supplied.
 #[derive(Clone)]
 pub struct EndpointConfig {
-    pub(crate) reset_key: Arc<dyn HmacKey>,
+    pub(crate) reset_key: HmacSha2,
     pub(crate) max_udp_payload_size: VarInt,
     /// CID generator factory
     ///
@@ -101,8 +105,19 @@ pub struct EndpointConfig {
 }
 
 impl EndpointConfig {
-    /// Create a default config with a particular `reset_key`
-    pub(crate) fn new(reset_key: Arc<dyn HmacKey>) -> Self {
+    /// Create an endpoint configuration with the supplied secret reset key.
+    ///
+    /// Reuse the same key and HMAC algorithm to keep reset tokens stable across restarts.
+    ///
+    /// ```
+    /// use rama_crypto::hmac::HmacSha2;
+    /// use rama_quic::EndpointConfig;
+    ///
+    /// let key = HmacSha2::try_rand_256()?;
+    /// let config = EndpointConfig::new(key);
+    /// # Ok::<(), rama_core::error::BoxError>(())
+    /// ```
+    pub fn new(reset_key: HmacSha2) -> Self {
         let cid_factory =
             || -> Box<dyn ConnectionIdGenerator> { Box::<HashedConnectionIdGenerator>::default() };
         Self {
@@ -118,11 +133,16 @@ impl EndpointConfig {
                 bytes: octets::kib(512),
             },
             endpoint_receive_queue: ReceiveQueueLimits {
-                datagrams: 8192,
+                datagrams: octets::kib(8),
                 bytes: octets::mib(16),
             },
             rng_seed: None,
         }
+    }
+
+    /// Create a configuration with a fresh operating-system-generated reset key.
+    pub(crate) fn try_with_rand_key() -> Result<Self, BoxError> {
+        HmacSha2::try_rand_256().map(Self::new)
     }
 
     /// Maximum time to complete a handshake, including time awaiting application acceptance.
@@ -173,23 +193,11 @@ impl EndpointConfig {
         }
     }
 
-    /// Private key used to send authenticated connection resets to peers who were
-    /// communicating with a previous instance of this endpoint. The public way in is
-    /// [`set_stateless_reset_key`](Self::set_stateless_reset_key); this one is what the
-    /// crate's own tests use to install a key they can forge with.
-    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
-    pub(crate) fn reset_key(&mut self, key: Arc<dyn HmacKey>) -> &mut Self {
-        self.reset_key = key;
-        self
-    }
-
-    #[cfg(any(feature = "aws-lc", feature = "ring"))]
     rama_utils::macros::generate_set_and_with! {
-        /// The key this endpoint derives the stateless reset tokens it issues from.
+        /// Set the secret used to derive stateless reset tokens.
         ///
-        /// Endpoints given the same key derive the same token for the same connection ID, so a
-        /// peer of one recognises a reset from another. Defaults to material from the
-        /// operating system's random source, generated per endpoint.
+        /// Keep the key secret and reuse it across endpoint restarts when peers should
+        /// recognise resets for connections whose state was lost.
         pub fn stateless_reset_key(mut self, key: StatelessResetKey) -> Self {
             self.reset_key = key.into_key();
             self
@@ -289,22 +297,6 @@ impl fmt::Debug for EndpointConfig {
             .field("endpoint_receive_queue", &self.endpoint_receive_queue)
             .field("rng_seed", &self.rng_seed)
             .finish_non_exhaustive()
-    }
-}
-
-#[cfg(any(feature = "aws-lc", feature = "ring"))]
-impl Default for EndpointConfig {
-    fn default() -> Self {
-        #[cfg(all(feature = "aws-lc", not(feature = "ring")))]
-        use rama_crypto::dep::aws_lc_rs::hmac;
-        #[cfg(feature = "ring")]
-        use rama_crypto::dep::ring::hmac;
-        use rand::Rng;
-
-        let mut reset_key = [0; 64];
-        rand::rng().fill_bytes(&mut reset_key);
-
-        Self::new(Arc::new(hmac::Key::new(hmac::HMAC_SHA256, &reset_key)))
     }
 }
 
@@ -887,5 +879,40 @@ pub struct StdSystemTime;
 impl TimeSource for StdSystemTime {
     fn now(&self) -> SystemTime {
         SystemTime::now()
+    }
+}
+
+#[cfg(test)]
+mod endpoint_key_tests {
+    use super::*;
+    use crate::proto::token::ResetToken;
+
+    #[test]
+    fn generated_endpoint_keys_are_independent_and_clones_keep_the_key() {
+        let first = EndpointConfig::try_with_rand_key().unwrap();
+        let second = EndpointConfig::try_with_rand_key().unwrap();
+        let cid = ConnectionId::new(&[1, 2, 3, 4]);
+        let token = ResetToken::new(&first.reset_key, cid);
+        assert_ne!(token, ResetToken::new(&second.reset_key, cid));
+        assert_eq!(
+            ResetToken::new(&first.clone().reset_key, cid),
+            ResetToken::new(&first.reset_key, cid)
+        );
+    }
+
+    #[test]
+    fn explicit_keys_survive_endpoint_reconstruction() {
+        let cid = ConnectionId::new(&[1, 2, 3, 4]);
+        for key in [
+            HmacSha2::new_256(&[0x4b; 32]),
+            HmacSha2::new_512(&[0x4b; 64]),
+        ] {
+            let first = EndpointConfig::new(key.clone());
+            let restarted = EndpointConfig::new(key);
+            assert_eq!(
+                ResetToken::new(&first.reset_key, cid),
+                ResetToken::new(&restarted.reset_key, cid)
+            );
+        }
     }
 }

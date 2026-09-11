@@ -178,6 +178,7 @@ percent-encoding = { version = "2.3", default-features = false }
 pin-project-lite = "0.2"
 prettyplease = "0.3"
 proc-macro-crate = "3.5"
+hmac = "0.13"
 proc-macro2 = "1.0"
 prost = "0.14.4"
 prost-build = "0.14.4"

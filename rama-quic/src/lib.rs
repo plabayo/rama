@@ -28,6 +28,8 @@ mod proto;
 
 // Engine types that are part of the public transport API. The runtime facade
 // (endpoints, connections, streams) is Rama-owned and lives in `driver`.
+#[cfg(any(feature = "aws-lc", feature = "ring"))]
+pub use proto::AddressTokenKey;
 #[cfg(feature = "qlog")]
 #[cfg_attr(docsrs, doc(cfg(feature = "qlog")))]
 pub use proto::QlogConfig;
@@ -43,8 +45,7 @@ pub use proto::{
     TokenMemoryCache, TokenReuseError, TokenStore, TransportConfig, TransportError,
     TransportErrorCode, UdpStats, ValidationTokenConfig, VarInt, VarIntBoundsExceeded, Written,
 };
-#[cfg(any(feature = "aws-lc", feature = "ring"))]
-pub use proto::{AddressTokenKey, KEY_MATERIAL_SIZE, StatelessResetKey};
+pub use proto::{KEY_MATERIAL_SIZE, StatelessResetKey};
 
 /// TLS for QUIC: how a connection's identity and application protocol are configured.
 ///

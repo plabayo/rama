@@ -77,7 +77,10 @@ pub async fn rama_client_refuses(
 ) -> ConnectionError {
     let CaseRun { what, deadline, .. } = run;
     let client = deadline
-        .wait(what, Endpoint::client(localhost()))
+        .wait(
+            what,
+            Endpoint::bind_client(rama::rt::Executor::new(), localhost()),
+        )
         .await
         .expect("the rama client binds");
     let refused = deadline
@@ -130,7 +133,10 @@ pub async fn rama_client_accepts(run: &CaseRun<TrustScenario>, peer_addr: Socket
         ..
     } = run;
     let client = deadline
-        .wait(what, Endpoint::client(localhost()))
+        .wait(
+            what,
+            Endpoint::bind_client(rama::rt::Executor::new(), localhost()),
+        )
         .await
         .expect("the rama client binds");
     let conn = deadline

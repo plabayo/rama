@@ -854,7 +854,10 @@ fn the_amplification_bound_holds_across_repeated_input_on_a_new_path() {
     transport.set_initial_rtt(Duration::from_millis(10));
     let mut server = server_config();
     server.set_transport_config(Arc::new(transport));
-    let mut pair = Pair::new(Default::default(), server);
+    let mut pair = Pair::new(
+        Arc::new(crate::proto::EndpointConfig::try_with_rand_key().unwrap()),
+        server,
+    );
     let (client_ch, server_ch) = pair.connect();
     let mut received = move_the_client_to(&mut pair, client_ch, server_ch);
 
@@ -1043,7 +1046,10 @@ fn a_handshake_flight_fits_the_credit_the_client_earned() {
     let (cert, key) = big_cert_and_key();
     let mut server = server_config_with_cert(cert, key);
     server.set_transport_config(Arc::new(server_transport));
-    let mut pair = Pair::new(Default::default(), server);
+    let mut pair = Pair::new(
+        Arc::new(crate::proto::EndpointConfig::try_with_rand_key().unwrap()),
+        server,
+    );
 
     pair.begin_connect(client_config());
     pair.drive_client();

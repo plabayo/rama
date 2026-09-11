@@ -41,7 +41,12 @@ fn failure() -> TransportError {
 #[test]
 fn failed_client_session_releases_reserved_cid() {
     use std::error::Error as _;
-    let mut endpoint = Endpoint::new(Default::default(), None, true, None);
+    let mut endpoint = Endpoint::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        None,
+        true,
+        None,
+    );
     let config = ClientConfig::new(Arc::new(FailingClient));
     for _ in 0..3 {
         let error = endpoint
@@ -72,7 +77,10 @@ fn failed_server_session_releases_reserved_and_preferred_cids() {
     let mut config = server_config();
     config.crypto = Arc::new(FailingServer(config.crypto));
     config.preferred_address_v4 = Some("127.0.0.1:444".parse().unwrap());
-    let mut pair = Pair::new(Default::default(), config);
+    let mut pair = Pair::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        config,
+    );
     for _ in 0..3 {
         let client = pair.begin_connect(client_config());
         pair.drive();

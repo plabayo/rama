@@ -30,6 +30,8 @@ pub mod cert;
 #[cfg_attr(docsrs, doc(cfg(feature = "aws-lc")))]
 pub mod jose;
 
+pub mod hmac;
+
 pub mod pki_types {
     //! Pki types used by rama. Currently this is a re-export of the [`rustls-pki-types`][rustls_pki_types] crate.
     //!

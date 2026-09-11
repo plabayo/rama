@@ -1,9 +1,6 @@
 use rama_core::bytes::{Bytes, BytesMut};
 use rama_core::telemetry::tracing::info;
-#[cfg(all(feature = "aws-lc", not(feature = "ring")))]
-use rama_crypto::dep::aws_lc_rs::hmac;
-#[cfg(feature = "ring")]
-use rama_crypto::dep::ring::hmac;
+use rama_crypto::hmac::HmacSha2;
 #[cfg(all(feature = "aws-lc", not(feature = "ring")))]
 use rama_tls_rustls::dep::rustls::crypto::aws_lc_rs::default_provider;
 #[cfg(feature = "ring")]
@@ -56,7 +53,7 @@ fn version_negotiate_server() {
     let _guard = subscribe();
     let client_addr = "[::2]:7890".parse().unwrap();
     let mut server = Endpoint::new(
-        Default::default(),
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
         Some(Arc::new(server_config())),
         true,
         None,
@@ -104,7 +101,7 @@ fn version_negotiate_client() {
     let mut client = Endpoint::new(
         Arc::new(EndpointConfig {
             connection_id_generator_factory: Arc::new(cid_generator_factory),
-            ..Default::default()
+            ..EndpointConfig::try_with_rand_key().unwrap()
         }),
         None,
         true,
@@ -189,7 +186,7 @@ fn draft_version_compat() {
 
     // Draft versions are not advertised by default (v1 only); both endpoints opt in explicitly
     // for this compatibility fixture.
-    let mut endpoint_config = EndpointConfig::default();
+    let mut endpoint_config = EndpointConfig::try_with_rand_key().unwrap();
     endpoint_config.set_supported_versions([DEFAULT_SUPPORTED_VERSIONS, DRAFT_VERSIONS].concat());
     let mut client_config = client_config();
     client_config.set_version(0xff00_0020);
@@ -237,13 +234,13 @@ fn draft_version_compat() {
 #[test]
 fn server_stateless_reset() {
     let _guard = subscribe();
-    let mut key_material = vec![0; 64];
+    let mut key_material = [0; 32];
     let mut rng = rand::rng();
     rng.fill_bytes(&mut key_material);
-    let reset_key = hmac::Key::new(hmac::HMAC_SHA256, &key_material);
+    let reset_key = HmacSha2::new_256(&key_material);
     rng.fill_bytes(&mut key_material);
 
-    let mut endpoint_config = EndpointConfig::new(Arc::new(reset_key));
+    let mut endpoint_config = EndpointConfig::new(reset_key);
     endpoint_config.set_cid_generator(Arc::new(move || {
         Box::new(HashedConnectionIdGenerator::from_key(0))
     }));
@@ -271,13 +268,13 @@ fn server_stateless_reset() {
 #[test]
 fn client_stateless_reset() {
     let _guard = subscribe();
-    let mut key_material = vec![0; 64];
+    let mut key_material = [0; 32];
     let mut rng = rand::rng();
     rng.fill_bytes(&mut key_material);
-    let reset_key = hmac::Key::new(hmac::HMAC_SHA256, &key_material);
+    let reset_key = HmacSha2::new_256(&key_material);
     rng.fill_bytes(&mut key_material);
 
-    let mut endpoint_config = EndpointConfig::new(Arc::new(reset_key));
+    let mut endpoint_config = EndpointConfig::new(reset_key);
     endpoint_config.set_cid_generator(Arc::new(move || {
         Box::new(HashedConnectionIdGenerator::from_key(0))
     }));
@@ -312,12 +309,12 @@ fn client_stateless_reset() {
 fn stateless_reset_with_a_foreign_key_is_ignored() {
     let _guard = subscribe();
     // Fixed, distinct keys so the case is deterministic.
-    let real_key = hmac::Key::new(hmac::HMAC_SHA256, &[0x11; 64]);
-    let real_key_copy = hmac::Key::new(hmac::HMAC_SHA256, &[0x11; 64]);
-    let foreign_key = hmac::Key::new(hmac::HMAC_SHA256, &[0x22; 64]);
+    let real_key = HmacSha2::new_256(&[0x11; 32]);
+    let real_key_copy = HmacSha2::new_256(&[0x11; 32]);
+    let foreign_key = HmacSha2::new_256(&[0x22; 32]);
     let cid_generator: ConnectionIdGeneratorFactory =
         Arc::new(|| Box::new(HashedConnectionIdGenerator::from_key(0)));
-    let mut endpoint_config = EndpointConfig::new(Arc::new(real_key));
+    let mut endpoint_config = EndpointConfig::new(real_key);
     endpoint_config.set_cid_generator(cid_generator);
     let endpoint_config = Arc::new(endpoint_config);
     let mut pair = Pair::new(endpoint_config, server_config());
@@ -559,7 +556,7 @@ fn a_configured_stateless_reset_key_is_what_the_issued_tokens_come_from() {
     // learns and later recognises resets by.
     let cid_generator: ConnectionIdGeneratorFactory =
         Arc::new(|| Box::new(HashedConnectionIdGenerator::from_key(0)));
-    let mut issuing = EndpointConfig::default();
+    let mut issuing = EndpointConfig::try_with_rand_key().unwrap();
     issuing
         .set_stateless_reset_key(StatelessResetKey::from_seed(&SEED))
         .set_cid_generator(cid_generator);
@@ -569,7 +566,12 @@ fn a_configured_stateless_reset_key_is_what_the_issued_tokens_come_from() {
         true,
         None,
     );
-    let client = Endpoint::new(Arc::new(EndpointConfig::default()), None, true, None);
+    let client = Endpoint::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        None,
+        true,
+        None,
+    );
     let mut pair = Pair::new_from_endpoint(client, server);
     let (client_ch, _server_ch) = pair.connect();
     pair.drive();
@@ -594,8 +596,8 @@ fn a_configured_stateless_reset_key_is_what_the_issued_tokens_come_from() {
         reset.extend_from_slice(&token);
         reset
     };
-    let elsewhere = hmac::Key::new(hmac::HMAC_SHA256, &OTHER_SEED);
-    let configured = hmac::Key::new(hmac::HMAC_SHA256, &SEED);
+    let elsewhere = HmacSha2::new_256(&OTHER_SEED);
+    let configured = HmacSha2::new_256(&SEED);
 
     // Other material gives a token the client was never handed.
     pair.client.inbound.push_back(Inbound::plain(
@@ -639,7 +641,7 @@ fn a_configured_stateless_reset_key_is_what_the_issued_tokens_come_from() {
 fn stateless_reset_limit() {
     let _guard = subscribe();
     let remote = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 42);
-    let mut endpoint_config = EndpointConfig::default();
+    let mut endpoint_config = EndpointConfig::try_with_rand_key().unwrap();
     endpoint_config.set_cid_generator(Arc::new(move || {
         Box::new(RandomConnectionIdGenerator::new(8).expect("eight bytes is a length"))
     }));
@@ -911,7 +913,7 @@ fn reject_missing_client_cert() {
     let config = QuicServerConfig::try_from(config).unwrap();
 
     let mut pair = Pair::new(
-        Default::default(),
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
         ServerConfig::with_crypto(Arc::new(config)),
     );
 
@@ -1112,7 +1114,10 @@ fn zero_rtt_rejection() {
         "foo".into(),
         "bar".into(),
     ])));
-    let mut pair = Pair::new(Arc::new(EndpointConfig::default()), server_config);
+    let mut pair = Pair::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        server_config,
+    );
     let mut client_crypto = Arc::new(client_crypto_with_alpn(vec!["foo".into()]));
     let client_config = ClientConfig::new(client_crypto.clone());
 
@@ -1234,7 +1239,10 @@ fn test_zero_rtt_incoming_limit<F: FnOnce(&mut ServerConfig)>(configure_server: 
 
     let mut server_config = server_config();
     configure_server(&mut server_config);
-    let mut pair = Pair::new(Arc::new(EndpointConfig::default()), server_config);
+    let mut pair = Pair::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        server_config,
+    );
     let mut config = client_config();
     config.set_transport_config(transport);
 
@@ -1350,7 +1358,10 @@ fn alpn_success() {
         "baz".into(),
     ])));
 
-    let mut pair = Pair::new(Arc::new(EndpointConfig::default()), server_config);
+    let mut pair = Pair::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        server_config,
+    );
     let client_config = ClientConfig::new(Arc::new(client_crypto_with_alpn(vec![
         "bar".into(),
         "quux".into(),
@@ -1392,7 +1403,10 @@ fn alpn_success() {
 #[test]
 fn server_alpn_unset() {
     let _guard = subscribe();
-    let mut pair = Pair::new(Arc::new(EndpointConfig::default()), server_config());
+    let mut pair = Pair::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        server_config(),
+    );
     let client_config = ClientConfig::new(Arc::new(client_crypto_with_alpn(vec!["foo".into()])));
 
     let client_ch = pair.begin_connect(client_config);
@@ -1416,7 +1430,10 @@ fn client_alpn_unset() {
         "baz".into(),
     ])));
 
-    let mut pair = Pair::new(Arc::new(EndpointConfig::default()), server_config);
+    let mut pair = Pair::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        server_config,
+    );
     let client_ch = pair.begin_connect(client_config());
     pair.drive();
     match pair.client_conn_mut(client_ch).poll() {
@@ -1438,7 +1455,10 @@ fn alpn_mismatch() {
         "baz".into(),
     ])));
 
-    let mut pair = Pair::new(Arc::new(EndpointConfig::default()), server_config);
+    let mut pair = Pair::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        server_config,
+    );
     let client_ch = pair.begin_connect(ClientConfig::new(Arc::new(client_crypto_with_alpn(vec![
         "quux".into(),
         "corge".into(),
@@ -1465,7 +1485,10 @@ fn stream_id_limit() {
         }),
         ..server_config()
     };
-    let mut pair = Pair::new(Default::default(), server);
+    let mut pair = Pair::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        server,
+    );
     let (client_ch, server_ch) = pair.connect();
 
     let s = pair
@@ -1580,7 +1603,10 @@ fn streams_blocked_pair() -> Pair {
         }),
         ..server_config()
     };
-    Pair::new(Default::default(), server)
+    Pair::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        server,
+    )
 }
 
 #[test]
@@ -2313,7 +2339,10 @@ fn idle_timeout() {
         }),
         ..server_config()
     };
-    let mut pair = Pair::new(Default::default(), server);
+    let mut pair = Pair::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        server,
+    );
     let (client_ch, server_ch) = pair.connect();
     pair.client_conn_mut(client_ch).ping();
     let start = pair.time;
@@ -2500,7 +2529,7 @@ fn migration() {
 fn test_flow_control(config: TransportConfig, window_size: usize) {
     let _guard = subscribe();
     let mut pair = Pair::new(
-        Default::default(),
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
         ServerConfig {
             transport: Arc::new(config),
             ..server_config()
@@ -2708,7 +2737,7 @@ fn zero_length_cid() {
     let mut pair = Pair::new(
         Arc::new(EndpointConfig {
             connection_id_generator_factory: Arc::new(cid_generator_factory),
-            ..EndpointConfig::default()
+            ..EndpointConfig::try_with_rand_key().unwrap()
         }),
         server_config(),
     );
@@ -2741,7 +2770,10 @@ fn keep_alive() {
         }),
         ..server_config()
     };
-    let mut pair = Pair::new(Default::default(), server);
+    let mut pair = Pair::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        server,
+    );
     let (client_ch, server_ch) = pair.connect();
     // Run a good while longer than the idle timeout
     let end = pair.time + Duration::from_millis(20 * IDLE_TIMEOUT);
@@ -2773,13 +2805,18 @@ fn cid_rotation() {
     let server = Endpoint::new(
         Arc::new(EndpointConfig {
             connection_id_generator_factory: Arc::new(cid_generator_factory),
-            ..EndpointConfig::default()
+            ..EndpointConfig::try_with_rand_key().unwrap()
         }),
         Some(Arc::new(server_config())),
         true,
         None,
     );
-    let client = Endpoint::new(Arc::new(EndpointConfig::default()), None, true, None);
+    let client = Endpoint::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        None,
+        true,
+        None,
+    );
 
     let mut pair = Pair::new_from_endpoint(client, server);
     let (_, server_ch) = pair.connect();
@@ -3181,7 +3218,10 @@ fn datagram_recv_buffer_overflow() {
         }),
         ..server_config()
     };
-    let mut pair = Pair::new(Default::default(), server);
+    let mut pair = Pair::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        server,
+    );
     let (client_ch, server_ch) = pair.connect();
     match pair.server_conn_mut(server_ch).poll() {
         None => {}
@@ -3287,7 +3327,10 @@ fn datagram_unsupported() {
         }),
         ..server_config()
     };
-    let mut pair = Pair::new(Default::default(), server);
+    let mut pair = Pair::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        server,
+    );
     let (client_ch, server_ch) = pair.connect();
     match pair.server_conn_mut(server_ch).poll() {
         None => {}
@@ -3311,7 +3354,10 @@ fn large_initial() {
     let server_config =
         ServerConfig::with_crypto(Arc::new(server_crypto_with_alpn(vec![vec![0, 0, 0, 42]])));
 
-    let mut pair = Pair::new(Arc::new(EndpointConfig::default()), server_config);
+    let mut pair = Pair::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        server_config,
+    );
     let client_crypto =
         client_crypto_with_alpn((0..1000u32).map(|x| x.to_be_bytes().to_vec()).collect());
     let cfg = ClientConfig::new(Arc::new(client_crypto));
@@ -3501,7 +3547,10 @@ fn repeated_request_response() {
         }),
         ..server_config()
     };
-    let mut pair = Pair::new(Default::default(), server);
+    let mut pair = Pair::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        server,
+    );
     let (client_ch, server_ch) = pair.connect();
     const REQUEST: &[u8] = b"hello";
     const RESPONSE: &[u8] = b"world";
@@ -3557,7 +3606,10 @@ fn handshake_anti_deadlock_probe() {
     let (cert, key) = big_cert_and_key();
     let server = server_config_with_cert(cert.clone(), key);
     let client = client_config_with_certs(vec![cert]);
-    let mut pair = Pair::new(Default::default(), server);
+    let mut pair = Pair::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        server,
+    );
 
     let client_ch = pair.begin_connect(client);
     // Client sends initial
@@ -3596,7 +3648,10 @@ fn server_can_send_3_inital_packets() {
     let mut server = server_config_with_cert(cert.clone(), key);
     server.set_transport_config(transport);
     let client = client_config_with_certs(vec![cert]);
-    let mut pair = Pair::new(Default::default(), server);
+    let mut pair = Pair::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        server,
+    );
 
     let client_ch = pair.begin_connect(client);
     // Client sends initial
@@ -3640,7 +3695,7 @@ fn malformed_token_len() {
     let _guard = subscribe();
     let client_addr = "[::2]:7890".parse().unwrap();
     let mut server = Endpoint::new(
-        Default::default(),
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
         Some(Arc::new(server_config())),
         true,
         None,
@@ -3747,7 +3802,7 @@ fn migrate_detects_new_mtu_and_respects_original_peer_max_udp_payload_size() {
     let client_max_udp_payload_size: u16 = 1400;
 
     // Set up a client with a max payload size of 1400 (and use the defaults for the server)
-    let server_endpoint_config = EndpointConfig::default();
+    let server_endpoint_config = EndpointConfig::try_with_rand_key().unwrap();
     let server = Endpoint::new(
         Arc::new(server_endpoint_config),
         Some(Arc::new(server_config())),
@@ -3756,7 +3811,7 @@ fn migrate_detects_new_mtu_and_respects_original_peer_max_udp_payload_size() {
     );
     let client_endpoint_config = EndpointConfig {
         max_udp_payload_size: VarInt::from(client_max_udp_payload_size),
-        ..EndpointConfig::default()
+        ..EndpointConfig::try_with_rand_key().unwrap()
     };
     let client = Endpoint::new(Arc::new(client_endpoint_config), None, true, None);
     let mut pair = Pair::new_from_endpoint(client, server);
@@ -3812,7 +3867,10 @@ fn connect_runs_mtud_again_after_600_seconds() {
         .unwrap()
         .maybe_set_max_idle_timeout(None);
 
-    let mut pair = Pair::new(Default::default(), server_config);
+    let mut pair = Pair::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        server_config,
+    );
     pair.mtu = 1400;
     let (client_ch, server_ch) = pair.connect_with(client_config);
     pair.drive();
@@ -4488,7 +4546,10 @@ fn silently_drop_rejected_initials() {
     let _guard = subscribe();
     let mut server_config = server_config();
     server_config.set_max_incoming(0);
-    let mut pair = Pair::new(Arc::new(EndpointConfig::default()), server_config);
+    let mut pair = Pair::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        server_config,
+    );
 
     let client_ch = pair.begin_connect(client_config());
     pair.drive();
@@ -4925,7 +4986,7 @@ fn reject_short_idcid() {
     let _guard = subscribe();
     let client_addr = "[::2]:7890".parse().unwrap();
     let mut server = Endpoint::new(
-        Default::default(),
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
         Some(Arc::new(server_config())),
         true,
         None,
@@ -4950,7 +5011,10 @@ fn preferred_address() {
     let mut server_config = server_config();
     server_config.set_preferred_address_v6("[::1]:65535".parse().unwrap());
 
-    let mut pair = Pair::new(Arc::new(EndpointConfig::default()), server_config);
+    let mut pair = Pair::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        server_config,
+    );
     pair.connect();
 }
 
@@ -5113,7 +5177,12 @@ fn handshake_confirmation_no_resumption_shortcut() {
 fn application_close_in_initial_is_rejected() {
     let _guard = subscribe();
     let server_addr = SocketAddr::new(Ipv6Addr::LOCALHOST.into(), 4433);
-    let mut client = Endpoint::new(Arc::new(EndpointConfig::default()), None, true, None);
+    let mut client = Endpoint::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        None,
+        true,
+        None,
+    );
     let now = Instant::now();
     let (_, mut conn) = client
         .connect(now, client_config(), server_addr, "localhost")
@@ -5201,7 +5270,10 @@ fn post_quantum_handshake_and_transfer() {
         None,
         None,
     )));
-    let mut pair = Pair::new(Default::default(), server);
+    let mut pair = Pair::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        server,
+    );
     let client = ClientConfig::new(Arc::new(client_crypto_with_provider(
         crate::proto::crypto::rustls::configured_provider(),
         None,
@@ -5610,7 +5682,7 @@ fn zero_length_destination_cids_need_no_switch_to_migrate() {
     let mut pair = Pair::new(
         Arc::new(EndpointConfig {
             connection_id_generator_factory: Arc::new(factory),
-            ..Default::default()
+            ..EndpointConfig::try_with_rand_key().unwrap()
         }),
         server_config(),
     );
@@ -5729,7 +5801,10 @@ fn lost_data_is_recovered_after_a_migration_that_discards_the_intermediate_path(
     transport.set_packet_threshold(1_000);
     transport.set_time_threshold(4.0);
     server_config.set_transport_config(Arc::new(transport));
-    let mut pair = Pair::new(Default::default(), server_config);
+    let mut pair = Pair::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        server_config,
+    );
     // A real round trip: with zero latency the first RTT sample on a fresh path would be tiny and
     // the loss-time threshold would pass before the newest path is quiet.
     pair.latency = Duration::from_millis(400);
@@ -6171,13 +6246,13 @@ fn a_client_with_zero_length_ids_does_not_move_to_a_preferred_address() {
     );
     config.set_preferred_address_v6(alt);
     // The client's own identifiers are zero length; the server's are not.
-    let mut client_config_endpoint = EndpointConfig::default();
+    let mut client_config_endpoint = EndpointConfig::try_with_rand_key().unwrap();
     client_config_endpoint.set_cid_generator(Arc::new(|| {
         Box::new(RandomConnectionIdGenerator::new(0).expect("zero is a length"))
     }));
     let client = Endpoint::new(Arc::new(client_config_endpoint), None, true, None);
     let server = Endpoint::new(
-        Arc::new(EndpointConfig::default()),
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
         Some(Arc::new(config)),
         true,
         None,
@@ -6231,7 +6306,7 @@ fn a_server_with_zero_length_ids_advertises_no_preferred_address() {
     let mut pair = Pair::new(
         Arc::new(EndpointConfig {
             connection_id_generator_factory: Arc::new(cid_generator_factory),
-            ..EndpointConfig::default()
+            ..EndpointConfig::try_with_rand_key().unwrap()
         }),
         config,
     );
@@ -6295,7 +6370,10 @@ fn pair_preferring(alt_reachable: bool) -> (Pair, SocketAddr) {
         0,
     );
     config.set_preferred_address_v6(alt);
-    let mut pair = Pair::new(Arc::new(EndpointConfig::default()), config);
+    let mut pair = Pair::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        config,
+    );
     if alt_reachable {
         pair.server.alt_addr = Some(alt.into());
     }
@@ -6310,7 +6388,10 @@ fn a_server_that_forbids_migration_discards_traffic_from_a_new_peer_address() {
     let _guard = subscribe();
     let mut config = server_config();
     config.set_migration(false);
-    let mut pair = Pair::new(Arc::new(EndpointConfig::default()), config);
+    let mut pair = Pair::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        config,
+    );
     let client_ch = pair.begin_connect(client_config());
     pair.step();
     let server_ch = pair.server.assert_accept();
@@ -6544,7 +6625,10 @@ fn a_move_to_the_preferred_address_is_followed_though_active_migration_is_disabl
     );
     config.set_preferred_address_v6(alt);
     config.set_migration(false);
-    let mut pair = Pair::new(Arc::new(EndpointConfig::default()), config);
+    let mut pair = Pair::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        config,
+    );
     pair.server.alt_addr = Some(alt.into());
     let preferred: SocketAddr = alt.into();
 
@@ -6666,9 +6750,9 @@ fn the_handshake_done_seam_only_covers_the_phase_before_the_frame_is_sent() {
 
 /// A pair whose endpoints share a known reset key and whose server advertises a preferred address
 /// that nothing answers at, so tests can forge resets from it.
-fn pair_preferring_with_key() -> (Pair, hmac::Key, SocketAddr) {
-    let key = hmac::Key::new(hmac::HMAC_SHA256, &[0x44; 64]);
-    let key_copy = hmac::Key::new(hmac::HMAC_SHA256, &[0x44; 64]);
+fn pair_preferring_with_key() -> (Pair, HmacSha2, SocketAddr) {
+    let key = HmacSha2::new_256(&[0x44; 32]);
+    let key_copy = HmacSha2::new_256(&[0x44; 32]);
     let mut config = server_config();
     let alt = SocketAddrV6::new(
         Ipv6Addr::LOCALHOST,
@@ -6677,7 +6761,7 @@ fn pair_preferring_with_key() -> (Pair, hmac::Key, SocketAddr) {
         0,
     );
     config.set_preferred_address_v6(alt);
-    let endpoint_config = Arc::new(EndpointConfig::new(Arc::new(key)));
+    let endpoint_config = Arc::new(EndpointConfig::new(key));
     let mut pair = Pair::new(endpoint_config, config);
     pair.server.hide_local = true;
     (pair, key_copy, alt.into())
@@ -6963,7 +7047,10 @@ fn a_preferred_address_that_is_the_one_in_use_is_not_probed() {
         0,
     );
     config.set_preferred_address_v6(own);
-    let mut pair = Pair::new(Arc::new(EndpointConfig::default()), config);
+    let mut pair = Pair::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        config,
+    );
     pair.server.addr = own.into();
     let ch = pair.begin_connect(client_config());
     drive_settled(&mut pair);
@@ -7166,7 +7253,10 @@ fn a_preferred_address_of_another_family_is_not_probed() {
     let _guard = subscribe();
     let mut config = server_config();
     config.set_preferred_address_v4("127.0.0.1:65535".parse().unwrap());
-    let mut pair = Pair::new(Arc::new(EndpointConfig::default()), config);
+    let mut pair = Pair::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        config,
+    );
     let ch = pair.begin_connect(client_config());
     drive_settled(&mut pair);
     let server_ch = pair.server.assert_accept();
@@ -7206,7 +7296,7 @@ fn deliver_to_client(pair: &mut Pair, datagrams: Vec<(Transmit, Bytes)>) {
 fn routed_reset_for(
     endpoint: &TestEndpoint,
     ch: ConnectionHandle,
-    key: &hmac::Key,
+    key: &HmacSha2,
     cid: ConnectionId,
 ) -> Vec<u8> {
     let dcid = *endpoint
@@ -7742,7 +7832,7 @@ fn an_endpoint_with_no_room_refuses_the_route_and_indexes_nothing() {
 }
 
 /// A stateless reset datagram carrying the token `key` derives for `cid`.
-fn stateless_reset_for(key: &hmac::Key, cid: ConnectionId) -> Vec<u8> {
+fn stateless_reset_for(key: &HmacSha2, cid: ConnectionId) -> Vec<u8> {
     let mut reset = vec![0x40; 1];
     reset.extend_from_slice(&[0xab; 40]);
     reset.extend_from_slice(&ResetToken::new(key, cid));
@@ -7788,10 +7878,10 @@ fn was_reset(conn: &mut Connection) -> bool {
 }
 
 /// A `Pair` whose two endpoints share a known reset key, so tests can forge the peer's resets.
-fn pair_with_known_reset_key() -> (Pair, hmac::Key) {
-    let key = hmac::Key::new(hmac::HMAC_SHA256, &[0x33; 64]);
-    let key_copy = hmac::Key::new(hmac::HMAC_SHA256, &[0x33; 64]);
-    let endpoint_config = Arc::new(EndpointConfig::new(Arc::new(key)));
+fn pair_with_known_reset_key() -> (Pair, HmacSha2) {
+    let key = HmacSha2::new_256(&[0x33; 32]);
+    let key_copy = HmacSha2::new_256(&[0x33; 32]);
+    let endpoint_config = Arc::new(EndpointConfig::new(key));
     (Pair::new(endpoint_config, server_config()), key_copy)
 }
 

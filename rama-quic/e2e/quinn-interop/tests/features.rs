@@ -52,9 +52,12 @@ async fn both_ends_export_the_same_keying_material() {
         step("the quinn server goes idle", server.wait_idle()).await;
     });
 
-    let client = step("rama binds", Endpoint::client(localhost()))
-        .await
-        .expect("the client binds");
+    let client = step(
+        "rama binds",
+        Endpoint::bind_client(rama::rt::Executor::new(), localhost()),
+    )
+    .await
+    .expect("the client binds");
     let conn = step(
         "the rama client connects",
         client
@@ -134,9 +137,12 @@ async fn a_key_update_does_not_disturb_the_traffic_around_it() {
         step("the quinn server goes idle", server.wait_idle()).await;
     });
 
-    let client = step("rama binds", Endpoint::client(localhost()))
-        .await
-        .expect("the client binds");
+    let client = step(
+        "rama binds",
+        Endpoint::bind_client(rama::rt::Executor::new(), localhost()),
+    )
+    .await
+    .expect("the client binds");
     let conn = step(
         "the rama client connects",
         client
@@ -197,7 +203,11 @@ async fn a_client_connecting_to_an_address_sends_no_server_name() {
 
     let server = step(
         "the rama server binds",
-        Endpoint::server(rama_server_config(&auth), localhost()),
+        Endpoint::bind_server(
+            rama::rt::Executor::new(),
+            rama_server_config(&auth),
+            localhost(),
+        ),
     )
     .await
     .expect("it binds");
@@ -285,9 +295,12 @@ async fn a_consumer_reads_the_counters_through_their_public_types() {
         step("the quinn server goes idle", server.wait_idle()).await;
     });
 
-    let client = step("rama binds", Endpoint::client(localhost()))
-        .await
-        .expect("the client binds");
+    let client = step(
+        "rama binds",
+        Endpoint::bind_client(rama::rt::Executor::new(), localhost()),
+    )
+    .await
+    .expect("the client binds");
     let conn = step(
         "the rama client connects",
         client
@@ -379,10 +392,6 @@ async fn a_consumer_configures_keys_and_budgets_by_name() {
         "StatelessResetKey",
         "the material is not in the debug output"
     );
-    assert!(
-        StatelessResetKey::try_from_bytes(&[0x31; KEY_MATERIAL_SIZE - 1]).is_err(),
-        "material shorter than a seed is refused"
-    );
 
     let validation: ValidationTokenConfig = ValidationTokenConfig::default()
         .with_lifetime(Duration::from_secs(600))
@@ -390,9 +399,11 @@ async fn a_consumer_configures_keys_and_budgets_by_name() {
     let per_connection = ReceiveQueueLimits::new(64, octets::mib(1)).expect("both are nonzero");
     let per_endpoint = ReceiveQueueLimits::new(1024, octets::mib(8)).expect("both are nonzero");
 
-    let endpoint_config: EndpointConfig = EndpointConfig::default()
-        .with_stateless_reset_key(reset_key)
-        .with_receive_queue_limits(per_connection, per_endpoint);
+    let endpoint_config: EndpointConfig = EndpointConfig::new(
+        rama::crypto::hmac::HmacSha2::try_rand_256().expect("random reset key"),
+    )
+    .with_stateless_reset_key(reset_key)
+    .with_receive_queue_limits(per_connection, per_endpoint);
     let server_config: ServerConfig = rama_server_config(&auth)
         .with_address_token_key(token_key)
         .with_validation_token_config(validation)
@@ -400,12 +411,10 @@ async fn a_consumer_configures_keys_and_budgets_by_name() {
 
     let server = step(
         "the rama server binds with the configuration",
-        Endpoint::bind(
-            endpoint_config,
-            Some(server_config),
-            localhost(),
-            UdpSocketConfig::default(),
-        ),
+        Endpoint::build(rama::rt::Executor::new())
+            .with_config(endpoint_config)
+            .maybe_with_server_config(Some(server_config))
+            .bind_address_with_socket_config(localhost(), UdpSocketConfig::default()),
     )
     .await
     .expect("it binds");
@@ -501,9 +510,12 @@ async fn a_consumer_chooses_congestion_control_and_reads_connection_facts() {
         .expect("a mebibyte is above the minimum");
     let config = rama_client_config(anchor).with_transport_config(Arc::new(transport));
 
-    let client = step("rama binds", Endpoint::client(localhost()))
-        .await
-        .expect("the client binds");
+    let client = step(
+        "rama binds",
+        Endpoint::bind_client(rama::rt::Executor::new(), localhost()),
+    )
+    .await
+    .expect("the client binds");
     assert!(
         client.advertised_addrs().is_empty(),
         "a client advertises no preferred address"
@@ -546,7 +558,11 @@ async fn a_refused_retry_says_why_and_hands_the_attempt_back() {
 
     let server = step(
         "the rama server binds",
-        Endpoint::server(rama_server_config(&auth), localhost()),
+        Endpoint::bind_server(
+            rama::rt::Executor::new(),
+            rama_server_config(&auth),
+            localhost(),
+        ),
     )
     .await
     .expect("it binds");
@@ -618,14 +634,17 @@ async fn a_consumer_chooses_how_connection_identifiers_are_made() {
     let anchor = auth.cert_chain.last().expect("a chain").clone();
     let server = step(
         "the rama server binds",
-        Endpoint::bind(
-            EndpointConfig::default().with_cid_generator(Arc::new(|| {
-                Box::new(HashedConnectionIdGenerator::from_key(KEY))
-            })),
-            Some(rama_server_config(&auth)),
-            localhost(),
-            UdpSocketConfig::default(),
-        ),
+        Endpoint::build(rama::rt::Executor::new())
+            .with_config(
+                EndpointConfig::new(
+                    rama::crypto::hmac::HmacSha2::try_rand_256().expect("random reset key"),
+                )
+                .with_cid_generator(Arc::new(|| {
+                    Box::new(HashedConnectionIdGenerator::from_key(KEY))
+                })),
+            )
+            .maybe_with_server_config(Some(rama_server_config(&auth)))
+            .bind_address_with_socket_config(localhost(), UdpSocketConfig::default()),
     )
     .await
     .expect("it binds");
@@ -677,13 +696,14 @@ async fn a_consumer_chooses_how_connection_identifiers_are_made() {
     );
     let client = step(
         "rama binds",
-        Endpoint::bind(
-            EndpointConfig::default()
+        Endpoint::build(rama::rt::Executor::new())
+            .with_config(
+                EndpointConfig::new(
+                    rama::crypto::hmac::HmacSha2::try_rand_256().expect("random reset key"),
+                )
                 .with_cid_generator(Arc::new(move || Box::new(client_generator))),
-            None,
-            localhost(),
-            UdpSocketConfig::default(),
-        ),
+            )
+            .bind_address_with_socket_config(localhost(), UdpSocketConfig::default()),
     )
     .await
     .expect("the client binds");
@@ -759,13 +779,15 @@ async fn a_generator_of_ones_own_issues_identifiers_that_outlast_rotation() {
     let anchor = auth.cert_chain.last().expect("a chain").clone();
     let server = step(
         "the rama server binds",
-        Endpoint::bind(
-            EndpointConfig::default()
+        Endpoint::build(rama::rt::Executor::new())
+            .with_config(
+                EndpointConfig::new(
+                    rama::crypto::hmac::HmacSha2::try_rand_256().expect("random reset key"),
+                )
                 .with_cid_generator(Arc::new(|| Box::new(Tagged { tag: TAG, next: 0 }))),
-            Some(rama_server_config(&auth)),
-            localhost(),
-            UdpSocketConfig::default(),
-        ),
+            )
+            .maybe_with_server_config(Some(rama_server_config(&auth)))
+            .bind_address_with_socket_config(localhost(), UdpSocketConfig::default()),
     )
     .await
     .expect("it binds");
@@ -794,9 +816,12 @@ async fn a_generator_of_ones_own_issues_identifiers_that_outlast_rotation() {
         }
     });
 
-    let client = step("rama binds", Endpoint::client(localhost()))
-        .await
-        .expect("the client binds");
+    let client = step(
+        "rama binds",
+        Endpoint::bind_client(rama::rt::Executor::new(), localhost()),
+    )
+    .await
+    .expect("the client binds");
     let conn = step(
         "the rama client connects",
         client

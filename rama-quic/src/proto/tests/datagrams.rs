@@ -16,7 +16,10 @@ fn a_datagram_with_no_room_is_dropped_and_the_connection_carries_on() {
         }),
         ..server_config()
     };
-    let mut pair = Pair::new(Default::default(), server);
+    let mut pair = Pair::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        server,
+    );
     let (client_ch, server_ch) = pair.connect();
 
     let limit = pair

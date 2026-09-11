@@ -3,7 +3,7 @@ use super::*;
 const LIMIT: Duration = Duration::from_millis(100);
 
 fn pair() -> Pair {
-    let mut config = EndpointConfig::default();
+    let mut config = EndpointConfig::try_with_rand_key().unwrap();
     config.handshake_timeout(LIMIT).unwrap();
     let mut pair = Pair::new(Arc::new(config), server_config());
     pair.server.handle_incoming = Box::new(|_| IncomingConnectionBehavior::Wait);

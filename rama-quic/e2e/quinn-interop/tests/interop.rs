@@ -40,9 +40,12 @@ async fn a_rama_client_refuses_a_server_it_does_not_trust() {
         }
     });
 
-    let client = step("rama binds", Endpoint::client(localhost()))
-        .await
-        .expect("the client binds");
+    let client = step(
+        "rama binds",
+        Endpoint::bind_client(rama::rt::Executor::new(), localhost()),
+    )
+    .await
+    .expect("the client binds");
     let refused = step(
         "the refused attempt",
         client
@@ -102,7 +105,11 @@ async fn a_quinn_client_refuses_a_rama_server_it_does_not_trust() {
 
     let server = step(
         "the rama server binds",
-        Endpoint::server(rama_server_config(&auth), localhost()),
+        Endpoint::bind_server(
+            rama::rt::Executor::new(),
+            rama_server_config(&auth),
+            localhost(),
+        ),
     )
     .await
     .expect("it binds");

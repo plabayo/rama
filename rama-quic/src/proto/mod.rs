@@ -48,6 +48,8 @@ pub(crate) use crate::proto::frame::Datagram;
 pub(crate) use connection::qlog::QlogStream;
 
 mod config;
+#[cfg(any(feature = "aws-lc", feature = "ring"))]
+pub use config::AddressTokenKey;
 #[cfg(feature = "qlog")]
 pub use config::QlogConfig;
 pub use config::{
@@ -55,8 +57,7 @@ pub use config::{
     MIN_INITIAL_CONGESTION_WINDOW, MtuDiscoveryConfig, PreferredAddressPolicy, ReceiveQueueLimits,
     ServerConfig, StdSystemTime, TimeSource, TransportConfig, ValidationTokenConfig,
 };
-#[cfg(any(feature = "aws-lc", feature = "ring"))]
-pub use config::{AddressTokenKey, KEY_MATERIAL_SIZE, StatelessResetKey};
+pub use config::{KEY_MATERIAL_SIZE, StatelessResetKey};
 
 pub(crate) mod crypto;
 

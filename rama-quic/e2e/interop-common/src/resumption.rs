@@ -449,7 +449,10 @@ async fn exchange(what: &str, deadline: Deadline, connection: &Connection, paylo
 /// A client endpoint for a resumption case.
 pub async fn rama_client(run: &CaseRun<ResumptionScenario>) -> Endpoint {
     run.deadline
-        .wait(&run.what, Endpoint::client(localhost()))
+        .wait(
+            &run.what,
+            Endpoint::bind_client(rama::rt::Executor::new(), localhost()),
+        )
         .await
         .expect("the rama client binds")
 }
@@ -581,7 +584,10 @@ pub async fn rama_server_reading(
     let CaseRun { what, deadline, .. } = run;
     let (what, deadline) = (what.clone(), *deadline);
     let server = deadline
-        .wait(&what, Endpoint::server(config, localhost()))
+        .wait(
+            &what,
+            Endpoint::bind_server(rama::rt::Executor::new(), config, localhost()),
+        )
         .await
         .expect("the rama server binds");
     let addr = server.local_addr().expect("its address");

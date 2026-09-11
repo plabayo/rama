@@ -90,7 +90,10 @@ async fn early_data_is_offered_and_accepted() {
     // One configuration for both attempts: the ticket lives in its resumption cache.
     let config = rama_client_config_with_early_data(&identity);
     let client = deadline
-        .wait("rama binds", Endpoint::client(localhost()))
+        .wait(
+            "rama binds",
+            Endpoint::bind_client(rama::rt::Executor::new(), localhost()),
+        )
         .await
         .expect("the client binds");
     warmed(&client, config.clone(), server_addr, &mut peer, deadline).await;
@@ -152,7 +155,10 @@ async fn a_client_that_did_not_ask_for_early_data_resumes_without_it() {
 
     let config = rama_client_config(&identity);
     let client = deadline
-        .wait("rama binds", Endpoint::client(localhost()))
+        .wait(
+            "rama binds",
+            Endpoint::bind_client(rama::rt::Executor::new(), localhost()),
+        )
         .await
         .expect("the client binds");
     warmed(&client, config.clone(), server_addr, &mut peer, deadline).await;

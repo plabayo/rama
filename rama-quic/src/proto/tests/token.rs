@@ -274,7 +274,10 @@ fn use_token_expired() {
         .set_time_source(Arc::clone(&fake_time) as _)
         .validation_token
         .set_lifetime(lifetime);
-    let mut pair = Pair::new(Default::default(), server_config);
+    let mut pair = Pair::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        server_config,
+    );
     let client_config = client_config();
     let (client_ch, _server_ch) = pair.connect_with(client_config.clone());
     pair.client

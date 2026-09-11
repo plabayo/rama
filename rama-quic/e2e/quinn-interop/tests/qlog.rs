@@ -51,9 +51,12 @@ async fn a_configured_qlog_writer_receives_the_connection_s_trace() {
     let anchor = auth.cert_chain.last().expect("a chain").clone();
     let (server, server_addr, accepting) = peer_taking(2, &auth);
 
-    let client = step("rama binds", Endpoint::client(localhost()))
-        .await
-        .expect("the client binds");
+    let client = step(
+        "rama binds",
+        Endpoint::bind_client(rama::rt::Executor::new(), localhost()),
+    )
+    .await
+    .expect("the client binds");
 
     // Configured: the writer receives this connection's trace.
     let trace = Trace::default();
@@ -138,9 +141,12 @@ async fn connections_sharing_a_writer_keep_their_own_group() {
     let anchor = auth.cert_chain.last().expect("a chain").clone();
     let (server, server_addr, accepting) = peer_taking(2, &auth);
 
-    let client = step("rama binds", Endpoint::client(localhost()))
-        .await
-        .expect("the client binds");
+    let client = step(
+        "rama binds",
+        Endpoint::bind_client(rama::rt::Executor::new(), localhost()),
+    )
+    .await
+    .expect("the client binds");
     let trace = Trace::default();
     let shared = Arc::new(TransportConfig::default().with_qlog(writer(&trace)));
 
@@ -283,7 +289,8 @@ async fn both_ends_group_a_retried_connection_the_same_way() {
     let server_trace = Trace::default();
     let server = step(
         "the rama server binds",
-        Endpoint::server(
+        Endpoint::bind_server(
+            rama::rt::Executor::new(),
             rama_server_config(&auth).with_transport_config(Arc::new(
                 TransportConfig::default().with_qlog(writer(&server_trace)),
             )),
@@ -317,9 +324,12 @@ async fn both_ends_group_a_retried_connection_the_same_way() {
     });
 
     let client_trace = Trace::default();
-    let client = step("rama binds", Endpoint::client(localhost()))
-        .await
-        .expect("the client binds");
+    let client = step(
+        "rama binds",
+        Endpoint::bind_client(rama::rt::Executor::new(), localhost()),
+    )
+    .await
+    .expect("the client binds");
     let config = rama_client_config(anchor).with_transport_config(Arc::new(
         TransportConfig::default().with_qlog(writer(&client_trace)),
     ));

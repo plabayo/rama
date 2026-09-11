@@ -244,7 +244,12 @@ fn receive_discards_truncated_groups_and_splits_complete_groups() {
         ..TestSocket::default()
     })
     .unwrap();
-    let mut endpoint = proto::Endpoint::new(Arc::new(EndpointConfig::default()), None, false, None);
+    let mut endpoint = proto::Endpoint::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        None,
+        false,
+        None,
+    );
     let mut recv = RecvState::new(4, &endpoint);
     let budget = PacketBudget::new(endpoint.config().endpoint_receive_queue);
     let mut cycle = recv.recv_limiter.start_cycle(Instant::now);
@@ -272,7 +277,12 @@ fn invalid_receive_length_returns_error_instead_of_indexing_past_buffer() {
         ..TestSocket::default()
     })
     .unwrap();
-    let mut endpoint = proto::Endpoint::new(Arc::new(EndpointConfig::default()), None, false, None);
+    let mut endpoint = proto::Endpoint::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        None,
+        false,
+        None,
+    );
     let mut recv = RecvState::new(1, &endpoint);
     let budget = PacketBudget::new(endpoint.config().endpoint_receive_queue);
     let mut cycle = recv.recv_limiter.start_cycle(Instant::now);
@@ -302,7 +312,7 @@ fn stateless_response_uses_actual_local_address_not_original_destination() {
     )
     .unwrap();
     let mut endpoint = proto::Endpoint::new(
-        Arc::new(EndpointConfig::default()),
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
         Some(Arc::new(server)),
         false,
         None,
@@ -450,7 +460,12 @@ fn response_queued_between_polls_wakes_the_endpoint() {
         ..TestSocket::default()
     })
     .unwrap();
-    let endpoint = proto::Endpoint::new(Arc::new(EndpointConfig::default()), None, false, None);
+    let endpoint = proto::Endpoint::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        None,
+        false,
+        None,
+    );
     let endpoint = EndpointRef::new(socket, endpoint, false);
     let mut driver = std::pin::pin!(EndpointDriver(endpoint.0.clone()));
     let count = Arc::new(WakeCount::default());
@@ -493,7 +508,7 @@ fn saturated_endpoint_budget_drops_packets_before_engine_work() {
     )
     .unwrap();
     let mut endpoint = proto::Endpoint::new(
-        Arc::new(EndpointConfig::default()),
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
         Some(Arc::new(server)),
         false,
         None,
@@ -560,7 +575,12 @@ fn refused_stateless_response_keeps_the_endpoint_driver_running() {
         ..TestSocket::default()
     })
     .unwrap();
-    let endpoint = proto::Endpoint::new(Arc::new(EndpointConfig::default()), None, false, None);
+    let endpoint = proto::Endpoint::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        None,
+        false,
+        None,
+    );
     let endpoint = EndpointRef::new(socket, endpoint, false);
     let mut driver = std::pin::pin!(EndpointDriver(endpoint.0.clone()));
     let mut cx = Context::from_waker(Waker::noop());
@@ -612,7 +632,7 @@ fn unsupported_required_source_fails_the_response_without_substitution_or_endpoi
     })
     .unwrap();
     let endpoint = proto::Endpoint::new(
-        Arc::new(EndpointConfig::default()),
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
         Some(Arc::new(server)),
         false,
         None,
@@ -636,7 +656,12 @@ fn test_endpoint(socket: TestSocket) -> Endpoint {
 }
 
 fn test_endpoint_on(socket: Socket) -> Endpoint {
-    let engine = proto::Endpoint::new(Arc::new(EndpointConfig::default()), None, false, None);
+    let engine = proto::Endpoint::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        None,
+        false,
+        None,
+    );
     Endpoint {
         inner: EndpointRef::new(socket, engine, false),
         default_client_config: None,
@@ -1363,7 +1388,12 @@ async fn retired_sockets_keep_their_response_counters() {
 
 #[test]
 fn full_batches_are_accepted_and_a_poll_drains_every_ready_batch() {
-    let mut engine = proto::Endpoint::new(Arc::new(EndpointConfig::default()), None, false, None);
+    let mut engine = proto::Endpoint::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        None,
+        false,
+        None,
+    );
     let budget = PacketBudget::new(engine.config().endpoint_receive_queue);
     let mut cx = Context::from_waker(Waker::noop());
     let mut recv = RecvState::new(1, &engine);
@@ -1424,7 +1454,12 @@ fn full_batches_are_accepted_and_a_poll_drains_every_ready_batch() {
 
 #[test]
 fn receive_entry_count_and_truncation_guards_each_fire_alone() {
-    let endpoint = proto::Endpoint::new(Arc::new(EndpointConfig::default()), None, false, None);
+    let endpoint = proto::Endpoint::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        None,
+        false,
+        None,
+    );
     let budget = PacketBudget::new(endpoint.config().endpoint_receive_queue);
     let mut cx = Context::from_waker(Waker::noop());
     // A receive reporting zero entries is invalid.
@@ -1500,7 +1535,12 @@ fn receive_entry_count_and_truncation_guards_each_fire_alone() {
 
 #[test]
 fn connection_reset_on_receive_is_ignored_but_other_errors_are_fatal() {
-    let mut engine = proto::Endpoint::new(Arc::new(EndpointConfig::default()), None, false, None);
+    let mut engine = proto::Endpoint::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        None,
+        false,
+        None,
+    );
     let budget = PacketBudget::new(engine.config().endpoint_receive_queue);
     let mut cx = Context::from_waker(Waker::noop());
     let mut recv = RecvState::new(1, &engine);
@@ -1773,13 +1813,14 @@ async fn receive_queue_limits_must_hold_one_datagram_and_one_attempt() {
         ),
     ];
     for (connection, endpoint) in cases {
-        let mut config = EndpointConfig::default();
+        let mut config = EndpointConfig::try_with_rand_key().unwrap();
         config.set_receive_queue_limits(connection, endpoint);
         let socket = Socket::new(TestSocket::default()).unwrap();
-        let error = Endpoint::new_with_executor(
+        let error = Endpoint::new_with_advertised(
             config,
             None,
             socket,
+            Vec::new(),
             rama_core::rt::Executor::new(),
             Duration::from_secs(1),
         )

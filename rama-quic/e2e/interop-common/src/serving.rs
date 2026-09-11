@@ -43,7 +43,11 @@ pub async fn rama_probe_server<S>(
     let server = deadline
         .wait(
             &what,
-            Endpoint::server(rama_server_config(&run.identity), localhost()),
+            Endpoint::bind_server(
+                rama::rt::Executor::new(),
+                rama_server_config(&run.identity),
+                localhost(),
+            ),
         )
         .await
         .expect("the rama server binds");

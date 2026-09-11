@@ -21,9 +21,13 @@ fn localhost_v4() -> SocketAddr {
 async fn preferring_server() -> (Endpoint, ClientConfig, SocketAddr, SocketAddr) {
     let (client_config, mut server_config) = configs();
     server_config.set_preferred_address_v4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0));
-    let server = Endpoint::server(server_config, localhost_v4())
-        .await
-        .expect("the server binds both addresses");
+    let server = Endpoint::bind_server(
+        rama_core::rt::Executor::new(),
+        server_config,
+        localhost_v4(),
+    )
+    .await
+    .expect("the server binds both addresses");
     let initial = server.local_addr().unwrap();
     let addrs = server.local_addrs();
     assert_eq!(addrs.len(), 2, "the endpoint owns both sockets: {addrs:?}");
@@ -39,7 +43,7 @@ async fn preferring_server() -> (Endpoint, ClientConfig, SocketAddr, SocketAddr)
 #[tokio::test]
 async fn a_client_moves_to_the_advertised_address_and_data_flows() {
     let (server, client_config, initial, preferred) = preferring_server().await;
-    let client = Endpoint::client(localhost_v4())
+    let client = Endpoint::bind_client(rama_core::rt::Executor::new(), localhost_v4())
         .await
         .expect("the client binds");
     let connecting = client
@@ -74,7 +78,8 @@ async fn a_client_moves_to_the_advertised_address_and_data_flows() {
 async fn a_wildcard_listener_and_a_concrete_advertised_socket_keep_their_own_tuples() {
     let (client_config, mut server_config) = configs();
     server_config.set_preferred_address_v4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0));
-    let server = Endpoint::server(
+    let server = Endpoint::bind_server(
+        rama_core::rt::Executor::new(),
         server_config,
         SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), 0),
     )
@@ -90,7 +95,7 @@ async fn a_wildcard_listener_and_a_concrete_advertised_socket_keep_their_own_tup
 
     // The client sends to a concrete address of ours that the wildcard listener receives on.
     let reachable = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), listener.port());
-    let client = Endpoint::client(localhost_v4())
+    let client = Endpoint::bind_client(rama_core::rt::Executor::new(), localhost_v4())
         .await
         .expect("the client binds");
     let connecting = client
@@ -147,7 +152,9 @@ async fn a_wildcard_listener_and_a_concrete_advertised_socket_keep_their_own_tup
 #[tokio::test]
 async fn the_listener_still_admits_clients_after_a_move_and_paths_stay_apart() {
     let (client_config, server, initial, preferred) = preferring_server_with_config().await;
-    let first = Endpoint::client(localhost_v4()).await.unwrap();
+    let first = Endpoint::bind_client(rama_core::rt::Executor::new(), localhost_v4())
+        .await
+        .unwrap();
     let (fc, fs) = connect_through(&first, &server, client_config.clone(), initial).await;
     wait_for("the first client moved", Duration::from_secs(5), || {
         fc.remote_address() == preferred
@@ -158,7 +165,9 @@ async fn the_listener_still_admits_clients_after_a_move_and_paths_stay_apart() {
     // declines the advertised address so it stays there.
     let mut declining = client_config;
     declining.set_preferred_address_policy(crate::proto::PreferredAddressPolicy::Decline);
-    let second = Endpoint::client(localhost_v4()).await.unwrap();
+    let second = Endpoint::bind_client(rama_core::rt::Executor::new(), localhost_v4())
+        .await
+        .unwrap();
     let (sc, ss) = connect_through(&second, &server, declining, initial).await;
     assert_eq!(
         sc.remote_address(),
@@ -186,7 +195,8 @@ async fn the_listener_still_admits_clients_after_a_move_and_paths_stay_apart() {
 async fn an_ipv6_server_advertises_an_ipv6_address() {
     let (client_config, mut server_config) = configs();
     server_config.set_preferred_address_v6(SocketAddrV6::new(Ipv6Addr::LOCALHOST, 0, 0, 0));
-    let server = Endpoint::server(
+    let server = Endpoint::bind_server(
+        rama_core::rt::Executor::new(),
         server_config,
         SocketAddr::new(Ipv6Addr::LOCALHOST.into(), 0),
     )
@@ -200,9 +210,12 @@ async fn an_ipv6_server_advertises_an_ipv6_address() {
         .expect("the advertised socket has its own address");
     assert!(preferred.is_ipv6());
 
-    let client = Endpoint::client(SocketAddr::new(Ipv6Addr::LOCALHOST.into(), 0))
-        .await
-        .unwrap();
+    let client = Endpoint::bind_client(
+        rama_core::rt::Executor::new(),
+        SocketAddr::new(Ipv6Addr::LOCALHOST.into(), 0),
+    )
+    .await
+    .unwrap();
     let (c, s) = connect_through(&client, &server, client_config, initial).await;
     wait_for("the client moved", Duration::from_secs(5), || {
         c.remote_address() == preferred
@@ -220,9 +233,13 @@ async fn an_ipv6_server_advertises_an_ipv6_address() {
 async fn a_wildcard_preferred_address_is_refused() {
     let (_client_config, mut server_config) = configs();
     server_config.set_preferred_address_v4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0));
-    let error = Endpoint::server(server_config, localhost_v4())
-        .await
-        .expect_err("a wildcard cannot be advertised");
+    let error = Endpoint::bind_server(
+        rama_core::rt::Executor::new(),
+        server_config,
+        localhost_v4(),
+    )
+    .await
+    .expect_err("a wildcard cannot be advertised");
     assert!(
         matches!(&error, rama_udp::DatagramError::Io(error)
             if error.kind() == io::ErrorKind::InvalidInput),
@@ -234,16 +251,22 @@ async fn a_wildcard_preferred_address_is_refused() {
 #[tokio::test]
 async fn shutdown_drops_the_advertised_socket() {
     let (client_config, server_config) = configs();
-    let server = Endpoint::server(server_config, localhost_v4())
-        .await
-        .expect("the server binds");
+    let server = Endpoint::bind_server(
+        rama_core::rt::Executor::new(),
+        server_config,
+        localhost_v4(),
+    )
+    .await
+    .expect("the server binds");
     let observer = Arc::new(DropObserver::default());
     server
         .advertise_abstract(probe_socket(&observer, TestSocket::default()))
         .expect("the endpoint takes the advertised socket");
     assert_eq!(server.local_addrs().len(), 2, "it owns both");
 
-    let client = Endpoint::client(localhost_v4()).await.unwrap();
+    let client = Endpoint::bind_client(rama_core::rt::Executor::new(), localhost_v4())
+        .await
+        .unwrap();
     let initial = server.local_addr().unwrap();
     let (c, s) = connect_through(&client, &server, client_config, initial).await;
     exchange(&c, &s, b"before the shutdown").await;
@@ -266,9 +289,13 @@ async fn shutdown_drops_the_advertised_socket() {
 #[tokio::test]
 async fn a_server_without_a_preferred_address_owns_one_socket() {
     let (_client_config, server_config) = configs();
-    let server = Endpoint::server(server_config, localhost_v4())
-        .await
-        .expect("the server binds");
+    let server = Endpoint::bind_server(
+        rama_core::rt::Executor::new(),
+        server_config,
+        localhost_v4(),
+    )
+    .await
+    .expect("the server binds");
     assert_eq!(server.local_addrs().len(), 1);
     server.shutdown().await;
 }
@@ -311,13 +338,17 @@ async fn the_datagrams_of_each_path_leave_by_that_paths_socket() {
         panic!("the fixture binds an IPv4 loopback socket");
     };
     server_config.set_preferred_address_v4(advertised_v4);
-    let server = endpoint_with(EndpointConfig::default(), Some(server_config), listener);
+    let server = endpoint_with(
+        EndpointConfig::try_with_rand_key().unwrap(),
+        Some(server_config),
+        listener,
+    );
     let initial = server.local_addr().unwrap();
     server
         .advertise_abstract(advertised)
         .expect("the endpoint takes the advertised socket");
 
-    let client = Endpoint::client(localhost_v4())
+    let client = Endpoint::bind_client(rama_core::rt::Executor::new(), localhost_v4())
         .await
         .expect("the client binds");
     let client_addr = client.local_addr().unwrap();
@@ -380,21 +411,24 @@ async fn the_datagrams_of_each_path_leave_by_that_paths_socket() {
 #[tokio::test]
 async fn a_wildcard_client_keeps_working_across_a_replacement() {
     let (client_config, server_config) = configs();
-    let server = Endpoint::server(server_config, localhost_v4())
-        .await
-        .expect("the server binds");
+    let server = Endpoint::bind_server(
+        rama_core::rt::Executor::new(),
+        server_config,
+        localhost_v4(),
+    )
+    .await
+    .expect("the server binds");
     let initial = server.local_addr().unwrap();
 
     // The client sends from a wildcard socket, so its path's local address is a concrete address
     // the socket covers rather than the address the socket is bound to.
-    let client = Endpoint::bind(
-        EndpointConfig::default(),
-        None,
-        SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), 0),
-        UdpSocketConfig::default(),
-    )
-    .await
-    .expect("the wildcard client binds");
+    let client = Endpoint::build(rama_core::rt::Executor::new())
+        .bind_address_with_socket_config(
+            SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), 0),
+            UdpSocketConfig::default(),
+        )
+        .await
+        .expect("the wildcard client binds");
     let (c, s) = connect_through(&client, &server, client_config, initial).await;
     exchange(&c, &s, b"from the wildcard socket").await;
 
@@ -422,7 +456,11 @@ async fn a_failed_advertised_socket_stops_being_advertised() {
         panic!("the fixture binds an IPv4 loopback socket");
     };
     server_config.set_preferred_address_v4(advertised_v4);
-    let server = endpoint_with(EndpointConfig::default(), Some(server_config), listener);
+    let server = endpoint_with(
+        EndpointConfig::try_with_rand_key().unwrap(),
+        Some(server_config),
+        listener,
+    );
     let initial = server.local_addr().unwrap();
     server.advertise_abstract(advertised).unwrap();
     assert_eq!(
@@ -457,7 +495,9 @@ async fn a_failed_advertised_socket_stops_being_advertised() {
     );
 
     // A client connecting now is never told about it, so it stays on the listener.
-    let client = Endpoint::client(localhost_v4()).await.unwrap();
+    let client = Endpoint::bind_client(rama_core::rt::Executor::new(), localhost_v4())
+        .await
+        .unwrap();
     let (c, s) = connect_through(&client, &server, client_config, initial).await;
     exchange(&c, &s, b"only the listener").await;
     exchange(&s, &c, b"and back").await;
@@ -485,7 +525,11 @@ async fn a_socket_advertised_after_the_driver_parked_is_polled() {
     };
     server_config.set_preferred_address_v4(advertised_v4);
     let (listener, _listener_log) = recording_socket();
-    let server = endpoint_with(EndpointConfig::default(), Some(server_config), listener);
+    let server = endpoint_with(
+        EndpointConfig::try_with_rand_key().unwrap(),
+        Some(server_config),
+        listener,
+    );
     let initial = server.local_addr().unwrap();
 
     // Let the endpoint settle with nothing to do, so its driver is parked before the socket
@@ -497,7 +541,9 @@ async fn a_socket_advertised_after_the_driver_parked_is_polled() {
 
     // The client reaches the advertised address and nothing else: its handshake is answered only
     // if that socket is being polled.
-    let client = Endpoint::client(localhost_v4()).await.unwrap();
+    let client = Endpoint::bind_client(rama_core::rt::Executor::new(), localhost_v4())
+        .await
+        .unwrap();
     let (c, s) = connect_through(&client, &server, client_config, advertised_addr).await;
     exchange(&c, &s, b"only through the socket added late").await;
     exchange(&s, &c, b"and back").await;
@@ -531,13 +577,17 @@ async fn preferring_server_with_a_stuck_candidate() -> (
         panic!("the fixture binds an IPv4 loopback socket");
     };
     server_config.set_preferred_address_v4(advertised_v4);
-    let server = endpoint_with(EndpointConfig::default(), Some(server_config), listener);
+    let server = endpoint_with(
+        EndpointConfig::try_with_rand_key().unwrap(),
+        Some(server_config),
+        listener,
+    );
     let initial = server.local_addr().unwrap();
     server
         .advertise_abstract(advertised)
         .expect("the endpoint takes the advertised socket");
 
-    let client = Endpoint::client(localhost_v4())
+    let client = Endpoint::bind_client(rama_core::rt::Executor::new(), localhost_v4())
         .await
         .expect("the client binds");
     let client_addr = client.local_addr().unwrap();
@@ -676,11 +726,17 @@ async fn a_part_sent_descriptor_stays_with_its_handle_when_the_path_moves() {
     // client's probes cannot be answered and the move waits. Its sender stays writable throughout.
     close_receive(&advertised_log);
     server_config.set_preferred_address_v4(advertised_v4);
-    let server = endpoint_with(EndpointConfig::default(), Some(server_config), listener);
+    let server = endpoint_with(
+        EndpointConfig::try_with_rand_key().unwrap(),
+        Some(server_config),
+        listener,
+    );
     let initial = server.local_addr().unwrap();
     server.advertise_abstract(advertised).unwrap();
 
-    let client = Endpoint::client(localhost_v4()).await.unwrap();
+    let client = Endpoint::bind_client(rama_core::rt::Executor::new(), localhost_v4())
+        .await
+        .unwrap();
     let (c, s) = connect_through(&client, &server, client_config, initial).await;
     exchange(&s, &c, b"before").await;
     segments.arm();
@@ -811,11 +867,17 @@ async fn a_candidate_paths_answer_waits_for_its_route_with_nothing_on_the_wire()
     // Nothing arrives through the advertised socket until the hold is in place, so the challenge
     // cannot be answered before the gate under test exists.
     close_receive(&advertised_log);
-    let server = endpoint_with(EndpointConfig::default(), Some(server_config), listener);
+    let server = endpoint_with(
+        EndpointConfig::try_with_rand_key().unwrap(),
+        Some(server_config),
+        listener,
+    );
     let initial = server.local_addr().unwrap();
     server.advertise_abstract(advertised).unwrap();
 
-    let client = Endpoint::client(localhost_v4()).await.unwrap();
+    let client = Endpoint::bind_client(rama_core::rt::Executor::new(), localhost_v4())
+        .await
+        .unwrap();
     let peer = client.local_addr().unwrap();
     let (c, s) = connect_through(&client, &server, client_config, initial).await;
     exchange(&c, &s, b"on the initial path").await;
@@ -869,11 +931,17 @@ async fn a_candidate_paths_answer_is_given_up_when_its_route_is_refused() {
     };
     server_config.set_preferred_address_v4(advertised_v4);
     close_receive(&advertised_log);
-    let server = endpoint_with(EndpointConfig::default(), Some(server_config), listener);
+    let server = endpoint_with(
+        EndpointConfig::try_with_rand_key().unwrap(),
+        Some(server_config),
+        listener,
+    );
     let initial = server.local_addr().unwrap();
     server.advertise_abstract(advertised).unwrap();
 
-    let client = Endpoint::client(localhost_v4()).await.unwrap();
+    let client = Endpoint::bind_client(rama_core::rt::Executor::new(), localhost_v4())
+        .await
+        .unwrap();
     let (c, s) = connect_through(&client, &server, client_config, initial).await;
     exchange(&c, &s, b"on the initial path").await;
 
@@ -973,13 +1041,17 @@ async fn a_descriptor_whose_bytes_are_gone_is_retired_rather_than_carried() {
         panic!("the fixture binds an IPv4 loopback socket");
     };
     server_config.set_preferred_address_v4(advertised_v4);
-    let server = endpoint_with(EndpointConfig::default(), Some(server_config), listener);
+    let server = endpoint_with(
+        EndpointConfig::try_with_rand_key().unwrap(),
+        Some(server_config),
+        listener,
+    );
     let initial = server.local_addr().unwrap();
     server
         .advertise_abstract(advertised)
         .expect("the endpoint takes the advertised socket");
 
-    let client = Endpoint::client(localhost_v4())
+    let client = Endpoint::bind_client(rama_core::rt::Executor::new(), localhost_v4())
         .await
         .expect("the client binds");
     let client_addr = client.local_addr().unwrap();
@@ -1217,7 +1289,8 @@ async fn a_spent_allowance_with_both_handles_held_asks_for_no_further_turn() {
 #[tokio::test]
 async fn a_covered_address_is_answered_by_the_handle_that_covers_it() {
     let (client_config, server_config) = configs();
-    let server = Endpoint::server(
+    let server = Endpoint::bind_server(
+        rama_core::rt::Executor::new(),
         server_config,
         SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), 0),
     )
@@ -1230,7 +1303,7 @@ async fn a_covered_address_is_answered_by_the_handle_that_covers_it() {
     // that address, and not the bind, is what the server's path names.
     let reachable = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), listener.port());
     let elsewhere = SocketAddr::new(Ipv4Addr::new(127, 0, 0, 2).into(), listener.port());
-    let client = Endpoint::client(localhost_v4())
+    let client = Endpoint::bind_client(rama_core::rt::Executor::new(), localhost_v4())
         .await
         .expect("the client binds");
     let (c, s) = connect_through(&client, &server, client_config, reachable).await;
@@ -1271,12 +1344,12 @@ async fn a_covered_address_is_answered_by_the_handle_that_covers_it() {
 async fn a_part_sent_descriptor_is_accounted_once_when_its_socket_then_fails() {
     let (client_config, server_config) = configs();
     let server = endpoint_with(
-        EndpointConfig::default(),
+        EndpointConfig::try_with_rand_key().unwrap(),
         Some(server_config),
         Socket::from_std(std::net::UdpSocket::bind("127.0.0.1:0").unwrap()).unwrap(),
     );
     let (socket_a, log_a, segments, fault_a) = breakable_segmenting_socket(1);
-    let client = endpoint_with(EndpointConfig::default(), None, socket_a);
+    let client = endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), None, socket_a);
     let addr_a = client.local_addr().unwrap();
     let (socket_b, log_b) = recording_socket();
 

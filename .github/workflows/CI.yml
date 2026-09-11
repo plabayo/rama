@@ -166,6 +166,9 @@ jobs:
         run: cargo nextest run --all-features --workspace
       - name: Run tests (--no-default--features)
         run: cargo nextest run --no-default-features --workspace
+      - name: Run crypto backend tests
+        shell: bash
+        run: bash scripts/test-crypto.sh all --profile ci
       - name: Run doc tests (cargo test)
         run: cargo test --doc --all-features --workspace
       - name: Run example tests (cargo test)

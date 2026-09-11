@@ -204,18 +204,6 @@ pub(crate) trait HeaderKey: Send + Sync {
     fn sample_size(&self) -> usize;
 }
 
-/// A key for signing with HMAC-based algorithms
-pub(crate) trait HmacKey: Send + Sync {
-    /// Method for signing a message
-    fn sign(&self, data: &[u8], signature_out: &mut [u8]);
-    /// Length of `sign`'s output
-    fn signature_len(&self) -> usize;
-    /// Method for verifying a message. Only the crate's own tests check a signature this way;
-    /// an endpoint compares reset tokens rather than verifying them.
-    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
-    fn verify(&self, data: &[u8], signature: &[u8]) -> Result<(), CryptoError>;
-}
-
 /// Error returned when exported keying material is asked for.
 ///
 /// This error occurs if the requested output length is too large.

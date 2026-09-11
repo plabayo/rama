@@ -72,70 +72,87 @@ pub struct Endpoint {
 }
 
 impl Endpoint {
-    /// Build an endpoint on the application's own executor.
+    /// Configure an endpoint whose drivers run through `exec` on the current Tokio runtime.
     ///
-    /// The drivers and the supervisor that stops them are spawned through `exec`, so a
-    /// graceful shutdown the application holds a guard for stops this endpoint too. The
-    /// convenience constructors below use a plain [`Executor`] with no such guard: the tasks
-    /// still run on the caller's Tokio runtime, and stopping the endpoint is then
-    /// [`shutdown`](Self::shutdown)'s job.
-    #[cfg(any(feature = "aws-lc", feature = "ring"))] // `EndpointConfig::default()` needs one
+    /// An executor carrying a graceful guard ties the endpoint to the application's
+    /// shutdown. All convenience constructors accept the same executor explicitly.
     #[must_use]
     pub fn build(exec: Executor) -> EndpointBuilder {
-        EndpointBuilder::new(exec, EndpointConfig::default())
+        EndpointBuilder::new(exec)
     }
 
-    /// Helper to construct an endpoint for use with outgoing connections only
+    /// Create a client endpoint on a bound standard UDP socket.
     ///
-    /// Note that `addr` is the *local* address to bind to, which should usually be a wildcard
-    /// address like `0.0.0.0:0` or `[::]:0`, which allow communication with any reachable IPv4 or
-    /// IPv6 address respectively from an OS-assigned port.
-    ///
-    /// If an IPv6 address is provided, attempts to make the socket dual-stack so as to allow
-    /// communication with both IPv4 and IPv6 addresses. As such, calling `Endpoint::client` with
-    /// the address `[::]:0` is a reasonable default to maximize the ability to connect to other
-    /// address. For example:
-    ///
-    /// ```
-    /// use std::net::{Ipv6Addr, SocketAddr};
-    ///
-    /// use rama_quic::Endpoint;
-    ///
-    /// # #[tokio::main]
-    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// let endpoint = Endpoint::client(SocketAddr::from((Ipv6Addr::UNSPECIFIED, 0))).await?;
-    /// assert!(endpoint.local_addr()?.is_ipv6());
-    /// # Ok(())
-    /// # }
-    /// ```
-    ///
-    /// Some environments may not allow creation of dual-stack sockets, in which case an IPv6
-    /// client will only be able to connect to IPv6 servers. An IPv4 client is never dual-stack.
-    #[cfg(any(feature = "aws-lc", feature = "ring"))] // `EndpointConfig::default()` is only available with these
-    pub async fn client(address: impl Into<SocketAddress>) -> Result<Self, DatagramError> {
-        let address = address.into();
-        Self::bind(
-            EndpointConfig::default(),
-            None,
-            address,
-            client_socket_config(address),
-        )
-        .await
-    }
-
-    /// Bind an endpoint through Rama's shared UDP construction.
-    ///
-    /// `socket` carries the socket options to bind with and the packet features this endpoint
-    /// requires; a feature the platform does not provide fails the call.
-    pub async fn bind(
-        config: EndpointConfig,
-        server_config: Option<ServerConfig>,
-        address: impl Into<SocketAddress>,
-        socket: UdpSocketConfig,
+    /// This does not configure packet metadata. Use [`Self::new_client_with_packet_socket`]
+    /// for a prepared socket, or [`Self::build`] for custom endpoint settings.
+    pub fn new_client_with_std_socket(
+        exec: Executor,
+        socket: std::net::UdpSocket,
     ) -> Result<Self, DatagramError> {
-        EndpointBuilder::new(Executor::new(), config)
-            .maybe_with_server_config(server_config)
-            .with_socket_config(socket)
+        EndpointBuilder::new(exec).with_std_socket(socket)
+    }
+
+    /// Create a client endpoint on a prepared packet socket, preserving its configuration.
+    ///
+    /// Use [`Self::build`] for custom endpoint settings.
+    pub fn new_client_with_packet_socket(
+        exec: Executor,
+        socket: UdpPacketSocket,
+    ) -> Result<Self, DatagramError> {
+        EndpointBuilder::new(exec).with_packet_socket(socket)
+    }
+
+    /// Bind a client endpoint, requesting best-effort dual-stack operation for IPv6.
+    ///
+    /// Use [`Self::build`] to customise the endpoint or UDP socket configuration.
+    pub async fn bind_client(
+        exec: Executor,
+        address: impl Into<SocketAddress>,
+    ) -> Result<Self, DatagramError> {
+        let address = address.into();
+        EndpointBuilder::new(exec)
+            .bind_address_with_socket_config(address, client_socket_config(address))
+            .await
+    }
+
+    /// Create a server endpoint on a bound standard UDP socket.
+    ///
+    /// This does not configure packet metadata or bind preferred-address sockets.
+    /// Use [`Self::new_server_with_packet_socket`] for a prepared socket, or
+    /// [`Self::build`] for custom endpoint settings.
+    pub fn new_server_with_std_socket(
+        exec: Executor,
+        config: ServerConfig,
+        socket: std::net::UdpSocket,
+    ) -> Result<Self, DatagramError> {
+        EndpointBuilder::new(exec)
+            .with_server_config(config)
+            .with_std_socket(socket)
+    }
+
+    /// Create a server endpoint on a prepared packet socket, preserving its configuration.
+    ///
+    /// This does not bind preferred-address sockets. Use [`Self::build`] for custom settings.
+    pub fn new_server_with_packet_socket(
+        exec: Executor,
+        config: ServerConfig,
+        socket: UdpPacketSocket,
+    ) -> Result<Self, DatagramError> {
+        EndpointBuilder::new(exec)
+            .with_server_config(config)
+            .with_packet_socket(socket)
+    }
+
+    /// Bind a server endpoint and any configured preferred-address sockets.
+    ///
+    /// Use [`Self::build`] to customise the endpoint or UDP socket configuration.
+    pub async fn bind_server(
+        exec: Executor,
+        config: ServerConfig,
+        address: impl Into<SocketAddress>,
+    ) -> Result<Self, DatagramError> {
+        EndpointBuilder::new(exec)
+            .with_server_config(config)
             .bind_address(address)
             .await
     }
@@ -172,17 +189,6 @@ impl Endpoint {
         }
     }
 
-    /// Construct an endpoint on a packet socket the caller prepared, for example through
-    /// [`UdpSocketConfig::wrap_std`](rama_udp::UdpSocketConfig::wrap_std), which is where the
-    /// packet metadata is set up and the required features are validated.
-    pub fn with_packet_socket(
-        config: EndpointConfig,
-        server_config: Option<ServerConfig>,
-        socket: UdpPacketSocket,
-    ) -> io::Result<Self> {
-        Self::new_with_abstract_socket(config, server_config, Socket::new(socket)?)
-    }
-
     /// Tests: the addresses this endpoint still advertises as preferred.
     #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
     pub(crate) fn advertised_preferred(&self) -> Vec<SocketAddr> {
@@ -205,80 +211,6 @@ impl Endpoint {
             retired_sockets: state.sockets.retired_sockets(),
             ..state.stats
         }
-    }
-
-    /// Helper to construct an endpoint for use with both incoming and outgoing connections
-    ///
-    /// Platform defaults for dual-stack sockets vary. For example, any socket bound to a wildcard
-    /// IPv6 address on Windows will not by default be able to communicate with IPv4
-    /// addresses. Portable applications should bind an address that matches the family they wish to
-    /// communicate within.
-    #[cfg(any(feature = "aws-lc", feature = "ring"))] // `EndpointConfig::default()` is only available with these
-    pub async fn server(
-        config: ServerConfig,
-        address: impl Into<SocketAddress>,
-    ) -> Result<Self, DatagramError> {
-        // The platform's own defaults: no dual-stack option is requested for a server, so an IPv6
-        // wildcard reaches IPv4 peers only where the platform says it does.
-        Self::bind(
-            EndpointConfig::default(),
-            Some(config),
-            address,
-            UdpSocketConfig::default(),
-        )
-        .await
-    }
-
-    /// Construct an endpoint on a bound standard socket.
-    ///
-    /// The packet metadata a [`UdpSocketConfig`] describes is not set
-    /// up here; a caller that needs it wraps the socket with that configuration first and uses
-    /// [`with_packet_socket`](Self::with_packet_socket).
-    pub fn with_std_socket(
-        config: EndpointConfig,
-        server_config: Option<ServerConfig>,
-        socket: std::net::UdpSocket,
-    ) -> io::Result<Self> {
-        Self::new_with_abstract_socket(config, server_config, Socket::from_std(socket)?)
-    }
-
-    /// Construct an endpoint with arbitrary configuration and pre-constructed abstract socket
-    ///
-    /// Useful when `socket` has additional state (e.g. sidechannels) attached for which shared
-    /// ownership is needed.
-    pub(crate) fn new_with_abstract_socket(
-        config: EndpointConfig,
-        server_config: Option<ServerConfig>,
-        socket: Socket,
-    ) -> io::Result<Self> {
-        Self::new_with_executor(
-            config,
-            server_config,
-            socket,
-            Executor::new(),
-            DEFAULT_SHUTDOWN_BUDGET,
-        )
-    }
-
-    /// Construct an endpoint whose drivers and lifecycle supervisor are spawned through Rama's
-    /// shared utilities, onto the Tokio runtime the caller is already on.
-    ///
-    /// Fails outside a Tokio runtime context.
-    pub(crate) fn new_with_executor(
-        config: EndpointConfig,
-        server_config: Option<ServerConfig>,
-        socket: Socket,
-        executor: Executor,
-        shutdown_budget: Duration,
-    ) -> io::Result<Self> {
-        Self::new_with_advertised(
-            config,
-            server_config,
-            socket,
-            Vec::new(),
-            executor,
-            shutdown_budget,
-        )
     }
 
     /// The same, with sockets bound to the addresses this endpoint advertises as preferred. They
@@ -929,7 +861,6 @@ async fn bind_advertised(
 /// The socket configuration a client binds with: Rama's UDP defaults, plus a request for a
 /// dual-stack socket on an IPv6 address that the platform may refuse. A refusal leaves the
 /// platform's own `IPV6_V6ONLY` default in place and the socket bound.
-#[cfg(any(feature = "aws-lc", feature = "ring"))]
 fn client_socket_config(address: SocketAddress) -> UdpSocketConfig {
     let mut config = UdpSocketConfig::default();
     if address.ip_addr.is_ipv6() {

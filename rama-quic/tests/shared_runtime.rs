@@ -262,14 +262,14 @@ async fn an_active_connection_ends_with_the_application_that_holds_it() {
 #[tokio::test]
 async fn an_unreachable_budget_is_refused_and_releases_the_guard() {
     let (shutdown, tell) = application();
-    let refused = EndpointBuilder::new(
-        Executor::graceful(shutdown.guard()),
-        EndpointConfig::default(),
-    )
-    .with_shutdown_budget(Duration::MAX)
-    .bind_address(localhost())
-    .await
-    .expect_err("a budget beyond the clock is refused");
+    let refused = EndpointBuilder::new(Executor::graceful(shutdown.guard()))
+        .with_config(EndpointConfig::new(
+            rama_crypto::hmac::HmacSha2::try_rand_256().expect("random reset key"),
+        ))
+        .with_shutdown_budget(Duration::MAX)
+        .bind_address(localhost())
+        .await
+        .expect_err("a budget beyond the clock is refused");
     assert!(
         refused.to_string().contains("shutdown budget"),
         "and it says which limit: {refused}"
@@ -292,8 +292,10 @@ async fn a_failed_bind_releases_the_guard() {
     options.reuse_port = Some(false);
     options.reuse_address = Some(false);
     let refused = Endpoint::build(Executor::graceful(shutdown.guard()))
-        .with_socket_config(UdpSocketConfig::default().with_socket_options(options))
-        .bind_address(occupied)
+        .bind_address_with_socket_config(
+            occupied,
+            UdpSocketConfig::default().with_socket_options(options),
+        )
         .await;
     assert!(refused.is_err(), "the address is already in use");
 

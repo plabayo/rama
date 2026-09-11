@@ -200,7 +200,10 @@ pub async fn rama_client_side(
         ..
     } = run;
     let endpoint = deadline
-        .wait(what, Endpoint::client(localhost()))
+        .wait(
+            what,
+            Endpoint::bind_client(rama::rt::Executor::new(), localhost()),
+        )
         .await
         .expect("the rama client binds");
     let connection = deadline
@@ -268,7 +271,8 @@ pub async fn rama_server_side(
     let server = deadline
         .wait(
             what,
-            Endpoint::server(
+            Endpoint::bind_server(
+                rama::rt::Executor::new(),
                 server_config_for(identity, run.scenario.at_the_boundary),
                 localhost(),
             ),

@@ -153,7 +153,10 @@ pub async fn rama_client_side(
         ..
     } = run;
     let client = deadline
-        .wait(what, Endpoint::client(localhost()))
+        .wait(
+            what,
+            Endpoint::bind_client(rama::rt::Executor::new(), localhost()),
+        )
         .await
         .expect("the rama client binds");
     let first = client.local_addr().expect("its address");
@@ -202,7 +205,10 @@ pub async fn rama_server_side(
     // Rama's own server decides whether a peer may move: `ServerConfig::with_migration`.
     let config = rama_server_config(&run.identity).with_migration(scenario.migration_allowed);
     let server = deadline
-        .wait(&what, Endpoint::server(config, localhost()))
+        .wait(
+            &what,
+            Endpoint::bind_server(rama::rt::Executor::new(), config, localhost()),
+        )
         .await
         .expect("the rama server binds");
     let addr = server.local_addr().expect("its address");

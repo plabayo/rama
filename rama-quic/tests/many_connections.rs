@@ -58,7 +58,8 @@ fn connect_n_nodes_to_1_and_send_1mb_data() {
 async fn run() {
     let auth = ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).unwrap();
     let anchor = auth.cert_chain.last().unwrap().clone();
-    let endpoint = Endpoint::server(
+    let endpoint = Endpoint::bind_server(
+        rama_core::rt::Executor::new(),
         listener_config(&auth),
         SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
     )

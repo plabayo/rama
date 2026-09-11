@@ -53,10 +53,10 @@ fn handshake_timeout() {
     let _guard = subscribe();
     let runtime = rt_threaded();
     let client = runtime
-        .block_on(Endpoint::client(SocketAddr::new(
-            IpAddr::V4(Ipv4Addr::LOCALHOST),
-            0,
-        )))
+        .block_on(Endpoint::bind_client(
+            rama_core::rt::Executor::new(),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+        ))
         .unwrap();
 
     // Avoid NoRootAnchors error
@@ -104,9 +104,12 @@ async fn close_endpoint() {
     let mut roots = RootCertStore::empty();
     roots.add(cert.cert.into()).unwrap();
 
-    let mut endpoint = Endpoint::client(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
-        .await
-        .unwrap();
+    let mut endpoint = Endpoint::bind_client(
+        rama_core::rt::Executor::new(),
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+    )
+    .await
+    .unwrap();
     endpoint
         .set_default_client_config(ClientConfig::with_root_certificates(Arc::new(roots)).unwrap());
 
@@ -144,7 +147,9 @@ fn local_addr() {
     let runtime = rt_basic();
     let ep = {
         let _guard = runtime.enter();
-        Endpoint::with_std_socket(Default::default(), None, socket).unwrap()
+        Endpoint::build(rama_core::rt::Executor::new())
+            .with_std_socket(socket)
+            .unwrap()
     };
     assert_eq!(
         addr,
@@ -299,7 +304,7 @@ impl EndpointFactory {
         Self {
             cert: rama_crypto::dep::rcgen::generate_simple_self_signed(vec!["localhost".into()])
                 .unwrap(),
-            endpoint_config: EndpointConfig::default(),
+            endpoint_config: EndpointConfig::try_with_rand_key().unwrap(),
         }
     }
 
@@ -317,12 +322,13 @@ impl EndpointFactory {
 
         let mut roots = rama_tls_rustls::dep::rustls::RootCertStore::empty();
         roots.add(self.cert.cert.der().clone()).unwrap();
-        let mut endpoint = Endpoint::with_std_socket(
-            self.endpoint_config.clone(),
-            Some(server_config),
-            UdpSocket::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0)).unwrap(),
-        )
-        .unwrap();
+        let mut endpoint = Endpoint::build(rama_core::rt::Executor::new())
+            .with_config(self.endpoint_config.clone())
+            .maybe_with_server_config(Some(server_config))
+            .with_std_socket(
+                UdpSocket::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0)).unwrap(),
+            )
+            .unwrap();
         let mut client_config = ClientConfig::with_root_certificates(Arc::new(roots)).unwrap();
         client_config.set_transport_config(transport_config);
         endpoint.set_default_client_config(client_config);
@@ -529,7 +535,10 @@ fn run_echo(args: &EchoArgs) {
         let server = {
             let _guard = runtime.enter();
             let _guard = error_span!("server").entered();
-            Endpoint::with_std_socket(Default::default(), Some(server_config), server_sock).unwrap()
+            Endpoint::build(rama_core::rt::Executor::new())
+                .maybe_with_server_config(Some(server_config))
+                .with_std_socket(server_sock)
+                .unwrap()
         };
 
         let mut roots = rama_tls_rustls::dep::rustls::RootCertStore::empty();
@@ -546,7 +555,10 @@ fn run_echo(args: &EchoArgs) {
         let mut client = {
             let _guard = error_span!("client").entered();
             runtime
-                .block_on(Endpoint::client(args.client_addr))
+                .block_on(Endpoint::bind_client(
+                    rama_core::rt::Executor::new(),
+                    args.client_addr,
+                ))
                 .unwrap()
         };
         let mut client_config =
@@ -708,9 +720,12 @@ async fn rebind_recv() {
     let mut roots = rama_tls_rustls::dep::rustls::RootCertStore::empty();
     roots.add(cert.clone()).unwrap();
 
-    let mut client = Endpoint::client(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
-        .await
-        .unwrap();
+    let mut client = Endpoint::bind_client(
+        rama_core::rt::Executor::new(),
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+    )
+    .await
+    .unwrap();
     let mut client_config = ClientConfig::with_root_certificates(Arc::new(roots)).unwrap();
     client_config.set_transport_config(Arc::new({
         let mut cfg = TransportConfig::default();
@@ -723,7 +738,8 @@ async fn rebind_recv() {
         crate::driver::ServerConfig::with_single_cert(vec![cert.clone()], key.into()).unwrap();
     let server = {
         let _guard = rama_core::telemetry::tracing::error_span!("server").entered();
-        Endpoint::server(
+        Endpoint::bind_server(
+            rama_core::rt::Executor::new(),
             server_config,
             SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
         )

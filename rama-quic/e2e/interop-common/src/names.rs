@@ -176,7 +176,10 @@ pub async fn rama_client_refuses_the_identity(run: &CaseRun<Mismatch>, peer_addr
         ..
     } = run;
     let client = deadline
-        .wait(what, Endpoint::client(localhost()))
+        .wait(
+            what,
+            Endpoint::bind_client(rama::rt::Executor::new(), localhost()),
+        )
         .await
         .expect("the rama client binds");
     let asked = scenario.requested(peer_addr);
@@ -240,7 +243,10 @@ pub async fn rama_client_accepts_the_identity(run: &CaseRun<Mismatch>, peer_addr
         ..
     } = run;
     let client = deadline
-        .wait(what, Endpoint::client(localhost()))
+        .wait(
+            what,
+            Endpoint::bind_client(rama::rt::Executor::new(), localhost()),
+        )
         .await
         .expect("the rama client binds");
     let asked = scenario.matching_request(peer_addr);
@@ -373,7 +379,10 @@ pub async fn rama_client_side(run: &CaseRun<NameScenario>, peer_addr: SocketAddr
     } = run;
     // On the family the peer bound, so a case over IPv6 reaches an IPv6 peer.
     let client = deadline
-        .wait(what, Endpoint::client(bound_like(peer_addr)))
+        .wait(
+            what,
+            Endpoint::bind_client(rama::rt::Executor::new(), bound_like(peer_addr)),
+        )
         .await
         .expect("the rama client binds");
     // Asking for nothing means naming the address itself, which is how RFC 6066 §3 says a
@@ -402,7 +411,11 @@ pub async fn rama_server_side(run: &CaseRun<NameScenario>) -> (Endpoint, SocketA
     let server = deadline
         .wait(
             what,
-            Endpoint::server(rama_server_config(&run.identity), run.scenario.bind),
+            Endpoint::bind_server(
+                rama::rt::Executor::new(),
+                rama_server_config(&run.identity),
+                run.scenario.bind,
+            ),
         )
         .await
         .expect("the rama server binds");

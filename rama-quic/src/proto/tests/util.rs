@@ -56,7 +56,7 @@ impl Pair {
         let mut transport = TransportConfig::default();
         transport.deterministic_packet_numbers(true);
         cfg.transport = Arc::new(transport);
-        Self::new(Default::default(), cfg)
+        Self::new(Arc::new(EndpointConfig::try_with_rand_key().unwrap()), cfg)
     }
 
     pub(super) fn new(endpoint_config: Arc<EndpointConfig>, server_config: ServerConfig) -> Self {
@@ -338,7 +338,10 @@ impl Pair {
 
 impl Default for Pair {
     fn default() -> Self {
-        Self::new(Default::default(), server_config())
+        Self::new(
+            Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+            server_config(),
+        )
     }
 }
 
