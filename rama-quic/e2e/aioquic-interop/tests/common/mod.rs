@@ -158,7 +158,7 @@ pub fn digest(payload: &[u8]) -> [u8; 32] {
 }
 
 pub fn hex(payload: &[u8]) -> String {
-    format!("{:x}", fmt::hex(payload))
+    fmt::hex(payload).to_string()
 }
 
 /// The payload shape the peer builds from the same seed and length.
@@ -513,9 +513,7 @@ impl Event {
     /// What the child said it read on a stream, as the shared scenarios take it: a digest it
     /// computed itself and the length it read.
     pub fn reported(&self) -> Received {
-        let mut digest = [0u8; 32];
-        let written = hex::decode_into(self.sha256(), &mut digest).expect("a sha256 as text");
-        assert_eq!(written, digest.len(), "a whole sha256 digest");
+        let digest = hex::decode::<[u8; 32]>(self.sha256()).expect("a whole sha256 digest as text");
         Received::Reported {
             digest,
             len: self.len(),

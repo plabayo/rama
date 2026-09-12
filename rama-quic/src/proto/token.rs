@@ -409,10 +409,7 @@ impl std::ops::Deref for ResetToken {
 
 impl fmt::Display for ResetToken {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for byte in self.iter() {
-            write!(f, "{byte:02x}")?;
-        }
-        Ok(())
+        rama_utils::fmt::hex(&self.0).write_to(f)
     }
 }
 

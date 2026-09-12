@@ -16,7 +16,7 @@ use rama::{
         client::TlsServerCertPin,
         server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
     },
-    utils::str::NATIVE_NEWLINE,
+    utils::{fmt::hex, str::NATIVE_NEWLINE},
 };
 
 use base64::Engine;
@@ -178,19 +178,14 @@ fn fmt_crt_name(
         if let Ok(utf8_str) = entry_data.as_utf8() {
             write!(w, "{separator}{short}={utf8_str}")?;
         } else {
-            write!(w, "{separator}{short}=")?;
-            fmt_hex(entry_data.as_slice(), ":", w)?;
+            write!(
+                w,
+                "{separator}{short}={:X}",
+                hex(entry_data.as_slice()).with_separator(":")
+            )?;
         }
     }
 
-    Ok(())
-}
-
-fn fmt_hex(bytes: &[u8], sep: &str, w: &mut impl std::io::Write) -> std::io::Result<()> {
-    for (i, b) in bytes.iter().enumerate() {
-        let separator = if i == 0 { "" } else { sep };
-        write!(w, "{separator}{b:02X}")?;
-    }
     Ok(())
 }
 

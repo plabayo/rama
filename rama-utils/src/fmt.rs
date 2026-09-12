@@ -50,84 +50,34 @@ pub fn display_fn<F>(formatter: F) -> DisplayFn<F> {
     DisplayFn(formatter)
 }
 
-/// Format bytes as contiguous hexadecimal without an intermediate allocation.
+/// Borrow bytes as contiguous lowercase hexadecimal without a prefix.
 ///
-/// Display (`{}`) uses uppercase digits with a `0x` prefix. Lower hex (`{:x}`)
-/// and upper hex (`{:X}`) omit the prefix unless alternate formatting (`#`)
-/// is requested. Each input byte always produces two digits.
-///
-/// Use `write!` to append directly to a reusable `String` (`core::fmt::Write`)
-/// or a byte buffer or I/O writer (`std::io::Write`). Only the destination may
-/// allocate; the formatter uses a small stack buffer. A failed write can leave
-/// a partially written prefix, following the destination's usual semantics.
-///
-/// Supported format options are the case (`{:x}` / `{:X}`) and the alternate
-/// `0x` prefix (`#`). Width, fill, alignment, precision and zero padding are
-/// accepted but not interpreted.
+/// Creating and configuring the view does not allocate. Use its [`Hex`](crate::hex::Hex)
+/// methods to select case/prefix, create owned output, or encode into an existing
+/// destination. Formatting with `:x` / `:X` selects lowercase / uppercase;
+/// `:#x` / `:#X` also adds `0x`, independently of the view's configuration.
 ///
 /// ```
-/// use core::fmt::Write as _;
 /// use rama_utils::fmt::hex;
 ///
-/// let mut output = String::with_capacity(64);
-/// output.push_str("key=");
-/// write!(&mut output, "{:x}", hex(&[0xCA, 0xFE])).unwrap();
-/// assert_eq!(output, "key=cafe");
-/// assert_eq!(format!("{:#X}", hex(&[0xCA, 0xFE])), "0xCAFE");
+/// let view = hex(&[0x00, 0xab]);
+/// assert_eq!(view.to_string(), "00ab");
+/// assert_eq!(format!("{view:#X}"), "0x00AB");
+/// assert_eq!(hex("Hi").to_vec(), b"4869");
 /// ```
-pub fn hex(bytes: &[u8]) -> impl fmt::Display + fmt::LowerHex + fmt::UpperHex + '_ {
-    Hex(bytes)
+pub fn hex<T: AsRef<[u8]> + ?Sized>(bytes: &T) -> crate::hex::Hex<'_> {
+    crate::hex::Hex::new(bytes.as_ref())
 }
 
-struct Hex<'a>(&'a [u8]);
-
-impl Hex<'_> {
-    fn format(&self, formatter: &mut fmt::Formatter<'_>, upper: bool, prefix: bool) -> fmt::Result {
-        if prefix {
-            formatter.write_str("0x")?;
-        }
-        let mut buffer = [0u8; 128];
-        for chunk in self.0.chunks(buffer.len() / 2) {
-            let written = if upper {
-                crate::hex::encode_upper_into(chunk, &mut buffer)
-            } else {
-                crate::hex::encode_into(chunk, &mut buffer)
-            }
-            .map_err(|_capacity| fmt::Error)?;
-            // The encoders write only ASCII digits into the initialized prefix.
-            let text = core::str::from_utf8(&buffer[..written]).map_err(|_ascii| fmt::Error)?;
-            formatter.write_str(text)?;
-        }
-        Ok(())
-    }
-}
-
-impl fmt::Display for Hex<'_> {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.format(formatter, true, true)
-    }
-}
-
-impl fmt::LowerHex for Hex<'_> {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.format(formatter, false, formatter.alternate())
-    }
-}
-
-impl fmt::UpperHex for Hex<'_> {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.format(formatter, true, formatter.alternate())
-    }
-}
-
-/// Display valid UTF-8 as a quoted debug string, or other bytes as [`hex`].
+/// Display valid UTF-8 as a quoted debug string, or other bytes as uppercase
+/// hexadecimal prefixed with `0x`.
 ///
 /// Formatting is deferred and does not allocate.
 pub fn utf8_or_hex(bytes: &[u8]) -> impl fmt::Display + '_ {
     display_fn(
         move |formatter: &mut fmt::Formatter<'_>| match core::str::from_utf8(bytes) {
             Ok(text) => write!(formatter, "{text:?}"),
-            Err(_) => fmt::Display::fmt(&hex(bytes), formatter),
+            Err(_) => write!(formatter, "{:#X}", hex(bytes)),
         },
     )
 }
@@ -199,15 +149,11 @@ mod tests {
         assert_eq!(output.as_ptr(), allocation);
         assert_eq!(
             output,
-            format!(
-                "key={}/{}",
-                crate::hex::encode(&bytes),
-                crate::hex::encode_upper(&bytes)
-            )
+            format!("key={}/{}", hex(&bytes), hex(&bytes).with_upper_case())
         );
         assert_eq!(
             format!("{:#x}/{:#X}/{}", hex(&[0xAB]), hex(&[0xAB]), hex(&[0xAB])),
-            "0xab/0xAB/0xAB"
+            "0xab/0xAB/ab"
         );
         assert_eq!(
             format!("{:x}/{:X}/{:#x}", hex(&[]), hex(&[]), hex(&[])),
@@ -301,9 +247,9 @@ mod tests {
     }
 
     #[test]
-    fn displays_bytes_as_uppercase_hex_without_separators() {
-        assert_eq!(hex(&[0x00, 0x4f, 0xa5, 0xff]).to_string(), "0x004FA5FF");
-        assert_eq!(hex(&[]).to_string(), "0x");
+    fn displays_bytes_as_lowercase_hex_without_prefix_or_separators() {
+        assert_eq!(hex(&[0x00, 0x4f, 0xa5, 0xff]).to_string(), "004fa5ff");
+        assert_eq!(hex(&[]).to_string(), "");
     }
 
     #[test]

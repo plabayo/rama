@@ -3,7 +3,7 @@
 use std::fmt::{self, Write};
 
 use rama_utils::{
-    hex::encode_byte_upper,
+    fmt::hex as display_hex,
     octets::kib,
     str::utf8::{self, DecodeError, Incomplete},
 };
@@ -135,11 +135,9 @@ pub async fn matches_reader(
             return Ok(if utf8 { text.matched } else { hex.matched });
         }
         if !hex.matched {
-            for &byte in &buffer[..count] {
-                let encoded = encode_byte_upper(byte);
-                _ = hex.write_char(char::from(encoded[0]));
-                _ = hex.write_char(char::from(encoded[1]));
-            }
+            _ = display_hex(&buffer[..count])
+                .with_upper_case()
+                .write_to(&mut hex);
         }
         let mut input = &buffer[..count];
         if utf8 && !incomplete.is_empty() {
@@ -188,11 +186,9 @@ pub async fn matches_hex_reader(
         if count == 0 {
             break;
         }
-        for &byte in &buffer[..count] {
-            let encoded = encode_byte_upper(byte);
-            _ = matcher.write_char(char::from(encoded[0]));
-            _ = matcher.write_char(char::from(encoded[1]));
-        }
+        _ = display_hex(&buffer[..count])
+            .with_upper_case()
+            .write_to(&mut matcher);
     }
     Ok(matcher.matched)
 }

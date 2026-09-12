@@ -11,7 +11,7 @@ mod common;
 
 use common::*;
 use interop_common::{
-    DatagramObservation, DatagramScenario, Deadline, Ears, Received, Role, UnsupportedObservation,
+    DatagramObservation, DatagramScenario, Deadline, Ears, Role, UnsupportedObservation,
     backpressure::rama_client_fills_and_cancels,
     backpressure_cases,
     datagram::{rama_client_side, rama_server_side},
@@ -20,7 +20,6 @@ use interop_common::{
     unsupported::{rama_client_without_datagrams, rama_server_without_datagrams},
     unsupported_cases,
 };
-use rama::utils::hex;
 
 const PEER: &str = "aioquic";
 /// The frame size the child advertises: large enough for either case's datagrams, small enough
@@ -134,18 +133,7 @@ fn observation(event: &Event) -> DatagramObservation {
         sendable: None,
         // What this side told the child to advertise with `--datagram-frame`.
         advertised: Some(FRAME),
-        received: Some(reported(event)),
-    }
-}
-
-/// One of the child's reports as a length and the digest it computed itself.
-fn reported(event: &Event) -> Received {
-    let mut digest = [0u8; 32];
-    let written = hex::decode_into(event.sha256(), &mut digest).expect("a sha256 as text");
-    assert_eq!(written, digest.len(), "a whole sha256 digest");
-    Received::Reported {
-        digest,
-        len: event.len(),
+        received: Some(event.reported()),
     }
 }
 
@@ -245,7 +233,7 @@ async fn unsupported_cases_rama_server() {
 fn observed_without_datagrams(carried: &Event) -> UnsupportedObservation {
     UnsupportedObservation {
         datagram: None,
-        carried: Some(reported(carried)),
+        carried: Some(carried.reported()),
     }
 }
 
@@ -322,7 +310,7 @@ async fn backpressure_cases_rama_client() {
                 let event = peer.event(&run.what, run.deadline).await;
                 match event.name() {
                     "datagram" => {
-                        let report = reported(&event);
+                        let report = event.reported();
                         let resumed = filled.sent.resumed(&report);
                         reports.push(report);
                         if resumed {
@@ -338,7 +326,7 @@ async fn backpressure_cases_rama_client() {
             loop {
                 let event = peer.event(&run.what, run.deadline).await;
                 match event.name() {
-                    "datagram" => reports.push(reported(&event)),
+                    "datagram" => reports.push(event.reported()),
                     "stream" => carried = true,
                     "ended" => break,
                     other => panic!("{}: the child said {other} as it ended", run.what),

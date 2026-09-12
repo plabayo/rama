@@ -299,10 +299,10 @@ pub(in crate::cmd::serve::proxy::dashboard) fn websocket_payload(
         if text {
             match std::str::from_utf8(bytes) {
                 Ok(value) => f.write_str(&value[..value.floor_char_boundary(end)])?,
-                Err(_) => write!(f, "{}", rama::utils::fmt::hex(&bytes[..end]))?,
+                Err(_) => write!(f, "{:#X}", rama::utils::fmt::hex(&bytes[..end]))?,
             }
         } else {
-            write!(f, "{}", rama::utils::fmt::hex(&bytes[..end]))?;
+            write!(f, "{:#X}", rama::utils::fmt::hex(&bytes[..end]))?;
         }
         if bytes.len() > limit {
             f.write_str("…")?;

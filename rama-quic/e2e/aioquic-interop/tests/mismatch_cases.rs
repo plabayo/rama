@@ -10,13 +10,12 @@ mod common;
 
 use common::*;
 use interop_common::{
-    ANOTHER_ADDRESS, ANOTHER_NAME, IssuedIdentities, MISMATCH_PROBE, Mismatch, Received, Role,
-    SERVER_NAME, for_each_case_within, mismatch_cases,
+    ANOTHER_ADDRESS, ANOTHER_NAME, IssuedIdentities, MISMATCH_PROBE, Mismatch, Role, SERVER_NAME,
+    for_each_case_within, mismatch_cases,
     names::{identity_alert, rama_client_accepts_the_identity, rama_client_refuses_the_identity},
     path_of,
     serving::{ServerOutcome, expect_outcome, rama_probe_server},
 };
-use rama::utils::hex;
 
 const PEER: &str = "aioquic";
 
@@ -67,15 +66,9 @@ async fn mismatch_cases_rama_client() {
             rama_client_accepts_the_identity(&run, addr).await;
             peer.expect("handshake", run.deadline).await;
             let reported = peer.expect("stream", run.deadline).await;
-            let mut digest = [0u8; 32];
-            let written =
-                hex::decode_into(reported.sha256(), &mut digest).expect("a sha256 as text");
-            assert_eq!(written, digest.len(), "a whole sha256 digest");
-            Received::Reported {
-                digest,
-                len: reported.len(),
-            }
-            .check(&run.what, "probe", MISMATCH_PROBE);
+            reported
+                .reported()
+                .check(&run.what, "probe", MISMATCH_PROBE);
             peer.expect("ended", run.deadline).await;
             peer.finished(run.deadline).await;
         },
@@ -170,14 +163,7 @@ async fn mismatch_cases_rama_server() {
             accepted.expect("handshake", run.deadline).await;
             accepted.expect("connected", run.deadline).await;
             let back = accepted.expect("stream", run.deadline).await;
-            let mut digest = [0u8; 32];
-            let written = hex::decode_into(back.sha256(), &mut digest).expect("a sha256 as text");
-            assert_eq!(written, digest.len(), "a whole sha256 digest");
-            Received::Reported {
-                digest,
-                len: back.len(),
-            }
-            .check(&run.what, "probe", MISMATCH_PROBE);
+            back.reported().check(&run.what, "probe", MISMATCH_PROBE);
             accepted.expect("ended", run.deadline).await;
             accepted.finished(run.deadline).await;
             expect_outcome(serving, &run.what, run.deadline, ServerOutcome::Probed).await;

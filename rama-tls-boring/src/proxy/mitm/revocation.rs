@@ -72,20 +72,14 @@ impl MitmCa {
     /// served URL path so several CAs don't collide.
     #[must_use]
     pub fn id(&self) -> CaId {
-        let bytes = match self.cert.subject_key_id() {
-            Some(skid) => skid.as_slice().to_vec(),
+        let hex = match self.cert.subject_key_id() {
+            Some(skid) => rama_utils::fmt::hex(skid.as_slice()).to_string(),
             None => self
                 .cert
                 .pubkey_digest(MessageDigest::sha1())
-                .map(|d| d.as_ref().to_vec())
+                .map(|d| rama_utils::fmt::hex(&d).to_string())
                 .unwrap_or_default(),
         };
-        const HEX: &[u8; 16] = b"0123456789abcdef";
-        let mut hex = String::with_capacity(bytes.len() * 2);
-        for &b in &bytes {
-            hex.push(HEX[(b >> 4) as usize] as char);
-            hex.push(HEX[(b & 0x0f) as usize] as char);
-        }
         CaId(hex)
     }
 }

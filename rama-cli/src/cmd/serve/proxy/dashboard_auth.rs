@@ -31,7 +31,7 @@ impl<S> DashboardAuthService<S> {
 pub(super) fn generate_token() -> Result<Arc<str>, rama::error::BoxError> {
     let mut token = [0_u8; 32];
     rama::tls::boring::core::rand::rand_bytes(&mut token)?;
-    Ok(Arc::from(hex::encode(token)))
+    Ok(Arc::from(rama::utils::fmt::hex(&token).to_string()))
 }
 
 impl<S> Service<Request> for DashboardAuthService<S>

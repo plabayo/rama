@@ -9,11 +9,10 @@ mod common;
 
 use common::*;
 use interop_common::{
-    CaseRun, PeerObservation, Received, Role, SERVER_NAME, StreamScenario, for_each_case_within,
+    CaseRun, PeerObservation, Role, SERVER_NAME, StreamScenario, for_each_case_within,
     scenario::{rama_client_side, rama_server_side},
     stream_cases,
 };
-use rama::utils::hex;
 
 const PEER: &str = "aioquic";
 /// A client's first unidirectional stream, and its first bidirectional one.
@@ -78,8 +77,8 @@ async fn stream_cases_rama_client() {
             let ended = peer.expect("ended", run.deadline).await;
             let observed = PeerObservation {
                 protocol: Some(handshake.alpn().as_bytes().to_vec()),
-                up: Some((reported_stream(up), true)),
-                question: Some((reported_stream(question), true)),
+                up: Some((up.reported(), true)),
+                question: Some((question.reported(), true)),
                 answer: None,
                 closed: ended.name() == "ended",
             };
@@ -122,7 +121,7 @@ async fn stream_cases_rama_server() {
                 protocol: Some(handshake.alpn().as_bytes().to_vec()),
                 up: None,
                 question: None,
-                answer: Some((reported_stream(&answer), true)),
+                answer: Some((answer.reported(), true)),
                 closed: ended.name() == "ended",
             };
             peer.finished(run.deadline).await;
@@ -133,15 +132,4 @@ async fn stream_cases_rama_server() {
         },
     )
     .await;
-}
-
-/// What the child said about one stream: the digest it computed and the length it read.
-fn reported_stream(event: &Event) -> Received {
-    let mut digest = [0u8; 32];
-    let written = hex::decode_into(event.sha256(), &mut digest).expect("a sha256 digest as text");
-    assert_eq!(written, digest.len(), "a whole sha256 digest");
-    Received::Reported {
-        digest,
-        len: event.len(),
-    }
 }

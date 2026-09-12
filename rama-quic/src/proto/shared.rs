@@ -197,10 +197,7 @@ impl fmt::Debug for ConnectionId {
 
 impl fmt::Display for ConnectionId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for byte in self.iter() {
-            write!(f, "{byte:02x}")?;
-        }
-        Ok(())
+        rama_utils::fmt::hex(&self[..]).write_to(f)
     }
 }
 

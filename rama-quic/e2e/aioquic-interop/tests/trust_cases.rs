@@ -8,12 +8,11 @@ mod common;
 
 use common::*;
 use interop_common::{
-    CaseRun, Received, Role, TrustObservation, TrustScenario, for_each_case_within,
+    CaseRun, Role, TrustObservation, TrustScenario, for_each_case_within,
     scenario::SERVER_NAME,
     serving::{ServerOutcome, expect_outcome, rama_probe_server},
     trust::{rama_client_accepts, rama_client_refuses, trust_cases},
 };
-use rama::utils::hex;
 
 const PEER: &str = "aioquic";
 
@@ -154,12 +153,7 @@ async fn trust_cases_rama_server() {
 /// What the child said it read on the probe's stream, checked by length and digest the same way
 /// the in-process peers are.
 fn probe_seen(run: &CaseRun<TrustScenario>, reported: &Event) {
-    let mut digest = [0u8; 32];
-    let written = hex::decode_into(reported.sha256(), &mut digest).expect("a sha256 as text");
-    assert_eq!(written, digest.len(), "a whole sha256 digest");
-    Received::Reported {
-        digest,
-        len: reported.len(),
-    }
-    .check(&run.what, "probe", run.scenario.probe);
+    reported
+        .reported()
+        .check(&run.what, "probe", run.scenario.probe);
 }

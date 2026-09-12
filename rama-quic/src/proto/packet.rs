@@ -1022,18 +1022,12 @@ mod tests {
             Some((0, &*client.packet.local)),
         );
 
-        for byte in &buf {
-            print!("{byte:02x}");
-        }
-        println!();
-        let mut expected = [0u8; 51];
-        assert_eq!(
-            rama_utils::hex::decode_into(
-                "c8000000 010806b8 58ec6f80 452b0000 4021be3e f50807b8 4191a196 f760a6da d1e9d1c4 30c48952 cba01482 50c21c0a 6a70e1",
-                &mut expected
-            ),
-            Ok(51)
-        );
+        println!("{}", rama_utils::fmt::hex(&buf));
+        let expected: [u8; 51] = rama_utils::hex::decode(concat!(
+            "c8000000", "010806b8", "58ec6f80", "452b0000", "4021be3e", "f50807b8", "4191a196",
+            "f760a6da", "d1e9d1c4", "30c48952", "cba01482", "50c21c0a", "6a70e1",
+        ))
+        .expect("valid initial packet test vector");
         assert_eq!(buf[..], expected[..]);
 
         let server = initial_keys(Version::V1, dcid, Side::Server, &suite);

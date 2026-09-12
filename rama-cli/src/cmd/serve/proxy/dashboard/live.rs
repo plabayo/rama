@@ -8,7 +8,7 @@ pub(super) async fn index(
     if let Err(error) = rama::tls::boring::core::rand::rand_bytes(&mut token) {
         return error_response(StatusCode::INTERNAL_SERVER_ERROR, error);
     }
-    let session = hex::encode(token);
+    let session = rama::utils::fmt::hex(&token).to_string();
     state.ensure_session(&session);
     if let Some(ui_session) = state.sessions.write().get_mut(&session) {
         ui_session.focus = query

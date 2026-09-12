@@ -10,10 +10,9 @@ mod common;
 
 use common::*;
 use interop_common::{
-    NameObservation, Received, ReceivedName, Role, for_each_case_within,
+    NameObservation, ReceivedName, Role, for_each_case_within,
     names::{name_cases, rama_client_side, rama_server_side},
 };
-use rama::utils::hex;
 
 /// The child parses and uses the name it receives but does not retain it, so the bridge has
 /// no field to read. The protocol side works; only the observation is missing.
@@ -61,15 +60,9 @@ async fn name_cases_rama_client() {
             // peers' probes are.
             peer.expect("handshake", run.deadline).await;
             let reported = peer.expect("stream", run.deadline).await;
-            let mut digest = [0u8; 32];
-            let written =
-                hex::decode_into(reported.sha256(), &mut digest).expect("a sha256 as text");
-            assert_eq!(written, digest.len(), "a whole sha256 digest");
-            Received::Reported {
-                digest,
-                len: reported.len(),
-            }
-            .check(&run.what, "probe", run.scenario.probe);
+            reported
+                .reported()
+                .check(&run.what, "probe", run.scenario.probe);
             peer.expect("ended", run.deadline).await;
             peer.finished(run.deadline).await;
 
@@ -131,14 +124,8 @@ async fn name_cases_rama_server() {
             peer.expect("handshake", run.deadline).await;
             peer.expect("connected", run.deadline).await;
             let back = peer.expect("stream", run.deadline).await;
-            let mut digest = [0u8; 32];
-            let written = hex::decode_into(back.sha256(), &mut digest).expect("a sha256 as text");
-            assert_eq!(written, digest.len(), "a whole sha256 digest");
-            Received::Reported {
-                digest,
-                len: back.len(),
-            }
-            .check(&run.what, "probe", run.scenario.probe);
+            back.reported()
+                .check(&run.what, "probe", run.scenario.probe);
             peer.expect("ended", run.deadline).await;
             peer.finished(run.deadline).await;
             serving.join(&run.what, run.deadline).await;

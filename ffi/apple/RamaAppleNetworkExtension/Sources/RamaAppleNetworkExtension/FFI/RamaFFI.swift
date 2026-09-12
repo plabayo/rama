@@ -223,11 +223,11 @@ final class TcpPromoteCallbackBox {
     }
 }
 
-/// Swift-visible publication / retirement gate for the raw promote callback
-/// context handed to Rust.
+/// Swift-visible publication / retirement gate for promote and egress callback
+/// contexts handed to Rust.
 ///
 /// Rust's `callback_active` mutex remains the load-bearing lifetime guarantee:
-/// registration and session teardown cannot complete while a promote callback
+/// registration and session teardown cannot complete while a callback
 /// is in flight. The linked Rust static library is not TSan-instrumented,
 /// however, so Swift's ThreadSanitizer cannot observe that happens-before edge.
 /// This gate mirrors ARC visibility on the instrumented side; Rust's
@@ -241,38 +241,37 @@ final class TcpPromoteCallbackBox {
 /// Never hold this gate across a Rust FFI call or the user callback. That would
 /// invert with Rust's `callback_active` mutex or serialize arbitrary callback
 /// work globally.
-private let tcpPromoteCallbackContextGate = NSLock()
+private let tcpCallbackContextGate = NSLock()
 
-private func makeTcpPromoteCallbackBox(
-    onPromoteRequest: @escaping () -> Void
-) -> Unmanaged<TcpPromoteCallbackBox> {
-    tcpPromoteCallbackContextGate.lock()
-    let box = Unmanaged.passRetained(
-        TcpPromoteCallbackBox(onPromoteRequest: onPromoteRequest))
-    tcpPromoteCallbackContextGate.unlock()
+private func makeTcpCallbackBox<Box: AnyObject>(
+    _ makeBox: () -> Box
+) -> Unmanaged<Box> {
+    tcpCallbackContextGate.lock()
+    let box = Unmanaged.passRetained(makeBox())
+    tcpCallbackContextGate.unlock()
     return box
 }
 
-private func retainTcpPromoteCallbackBox(
+private func retainTcpCallbackBox<Box: AnyObject>(
     from context: UnsafeMutableRawPointer
-) -> TcpPromoteCallbackBox {
-    tcpPromoteCallbackContextGate.lock()
-    let box = Unmanaged<TcpPromoteCallbackBox>
+) -> Box {
+    tcpCallbackContextGate.lock()
+    let box = Unmanaged<Box>
         .fromOpaque(context)
         .retain()
         .takeRetainedValue()
-    tcpPromoteCallbackContextGate.unlock()
+    tcpCallbackContextGate.unlock()
     return box
 }
 
-private func retireTcpPromoteCallbackBox(
-    _ box: Unmanaged<TcpPromoteCallbackBox>?
+private func retireTcpCallbackBox<Box: AnyObject>(
+    _ box: Unmanaged<Box>?
 ) {
     guard let box else { return }
 
-    tcpPromoteCallbackContextGate.lock()
+    tcpCallbackContextGate.lock()
     let ownedBox = box.takeRetainedValue()
-    tcpPromoteCallbackContextGate.unlock()
+    tcpCallbackContextGate.unlock()
 
     // Keep destruction (and arbitrary captured-value deinits) outside the
     // global gate while making the post-unlock release point explicit.
@@ -522,7 +521,7 @@ private let ramaTcpOnWriteToEgressCallback:
     @convention(c) (UnsafeMutableRawPointer?, RamaBytesView) -> RamaTcpDeliverStatus = {
         context, view in
         guard let context else { return RAMA_TCP_DELIVER_CLOSED }
-        let box = Unmanaged<TcpEgressCallbackBox>.fromOpaque(context).takeUnretainedValue()
+        let box: TcpEgressCallbackBox = retainTcpCallbackBox(from: context)
         let data = dataFromView(view)
         if data.isEmpty { return RAMA_TCP_DELIVER_ACCEPTED }
         return cTcpDeliverStatus(box.onWriteToEgress(data))
@@ -531,14 +530,14 @@ private let ramaTcpOnWriteToEgressCallback:
 private let ramaTcpOnCloseEgressCallback: @convention(c) (UnsafeMutableRawPointer?) -> Void = {
     context in
     guard let context else { return }
-    let box = Unmanaged<TcpEgressCallbackBox>.fromOpaque(context).takeUnretainedValue()
+    let box: TcpEgressCallbackBox = retainTcpCallbackBox(from: context)
     box.onCloseEgress()
 }
 
 private let ramaTcpOnEgressReadDemandCallback: @convention(c) (UnsafeMutableRawPointer?) -> Void =
     { context in
         guard let context else { return }
-        let box = Unmanaged<TcpEgressCallbackBox>.fromOpaque(context).takeUnretainedValue()
+        let box: TcpEgressCallbackBox = retainTcpCallbackBox(from: context)
         box.onEgressReadDemand()
     }
 
@@ -547,7 +546,7 @@ private let ramaTcpOnEgressReadDemandCallback: @convention(c) (UnsafeMutableRawP
 private let ramaTcpOnPromoteRequestCallback:
     @convention(c) (UnsafeMutableRawPointer?) -> Void = { context in
         guard let context else { return }
-        let box = retainTcpPromoteCallbackBox(from: context)
+        let box: TcpPromoteCallbackBox = retainTcpCallbackBox(from: context)
         box.onPromoteRequest()
     }
 
@@ -959,8 +958,8 @@ final class RamaTcpSessionHandle: @unchecked Sendable {
             rama_transparent_proxy_tcp_session_free(p)
         }
         callbackBox.release()
-        egressBox?.release()
-        retireTcpPromoteCallbackBox(promoteBox)
+        retireTcpCallbackBox(egressBox)
+        retireTcpCallbackBox(promoteBox)
     }
 
     /// Deliver bytes from the intercepted flow to the Rust session.
@@ -1103,12 +1102,13 @@ final class RamaTcpSessionHandle: @unchecked Sendable {
             )
             return
         }
-        let box = Unmanaged.passRetained(
+        let box = makeTcpCallbackBox {
             TcpEgressCallbackBox(
                 onWriteToEgress: onWriteToEgress,
                 onEgressReadDemand: onEgressReadDemand,
                 onCloseEgress: onCloseEgress
-            ))
+            )
+        }
         egressCallbackBox = box
 
         let callbacks = RamaTransparentProxyTcpEgressCallbacks(
@@ -1226,7 +1226,9 @@ final class RamaTcpSessionHandle: @unchecked Sendable {
             return
         }
 
-        let box = makeTcpPromoteCallbackBox(onPromoteRequest: onPromoteRequest)
+        let box = makeTcpCallbackBox {
+            TcpPromoteCallbackBox(onPromoteRequest: onPromoteRequest)
+        }
         let previous = promoteCallbackBox
         promoteCallbackBox = box
 
@@ -1244,7 +1246,7 @@ final class RamaTcpSessionHandle: @unchecked Sendable {
         // owner can now retire safely. Do this outside both locks: releasing a
         // closure can run arbitrary captured-value deinits, including code that
         // re-enters this session.
-        retireTcpPromoteCallbackBox(previous)
+        retireTcpCallbackBox(previous)
     }
 
 #if DEBUG || RAMA_TESTING

@@ -51,7 +51,7 @@ impl Payload {
 impl std::fmt::Display for Payload {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.binary {
-            write!(f, "{}", rama_utils::fmt::hex(&self.bytes))
+            write!(f, "{:#X}", rama_utils::fmt::hex(&self.bytes))
         } else {
             write!(f, "{}", rama_utils::fmt::utf8_or_hex(&self.bytes))
         }

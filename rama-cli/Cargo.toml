@@ -27,7 +27,6 @@ base64 = { workspace = true }
 bb8 = { workspace = true }
 bb8-postgres = { workspace = true }
 clap = { workspace = true }
-hex = { workspace = true }
 hickory-resolver = { workspace = true }
 itertools = { workspace = true }
 jiff = { workspace = true }

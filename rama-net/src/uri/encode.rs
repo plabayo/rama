@@ -229,15 +229,15 @@ fn is_pct_triplet(input: &[u8], i: usize) -> bool {
 
 #[inline]
 fn push_pct_encoded(out: &mut String, b: u8) {
-    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let [high, low] = rama_utils::hex::encode_byte_upper(b);
     out.push('%');
-    out.push(HEX[(b >> 4) as usize] as char);
-    out.push(HEX[(b & 0x0f) as usize] as char);
+    out.push(char::from(high));
+    out.push(char::from(low));
 }
 
 fn extend_pct_encoded(out: &mut BytesMut, b: u8) {
-    const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    out.extend_from_slice(&[b'%', HEX[(b >> 4) as usize], HEX[(b & 0x0f) as usize]]);
+    let [high, low] = rama_utils::hex::encode_byte_upper(b);
+    out.extend_from_slice(&[b'%', high, low]);
 }
 
 #[derive(Debug, Clone)]
@@ -289,8 +289,8 @@ impl Iterator for EncodedBytes<'_> {
             return Some(b);
         }
 
-        const HEX: &[u8; 16] = b"0123456789ABCDEF";
-        self.pending = [b'%', HEX[(b >> 4) as usize], HEX[(b & 0x0f) as usize]];
+        let [high, low] = rama_utils::hex::encode_byte_upper(b);
+        self.pending = [b'%', high, low];
         self.pending_index = 1;
         self.pending_len = 3;
         Some(b'%')
@@ -381,8 +381,8 @@ fn write_encoded_prefix(f: &mut fmt::Formatter<'_>, input: &[u8]) -> fmt::Result
 }
 
 fn write_pct_encoded(f: &mut fmt::Formatter<'_>, b: u8) -> fmt::Result {
-    const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    let bytes = [b'%', HEX[(b >> 4) as usize], HEX[(b & 0x0f) as usize]];
+    let [high, low] = rama_utils::hex::encode_byte_upper(b);
+    let bytes = [b'%', high, low];
     // Safety: the literal '%' and hex digits are ASCII.
     f.write_str(unsafe { core::str::from_utf8_unchecked(&bytes) })
 }
@@ -421,8 +421,8 @@ fn hash_encoded_preserving_pct<H: Hasher>(state: &mut H, input: &[u8], is_allowe
 }
 
 fn hash_pct_encoded<H: Hasher>(state: &mut H, b: u8) {
-    const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    state.write(&[b'%', HEX[(b >> 4) as usize], HEX[(b & 0x0f) as usize]]);
+    let [high, low] = rama_utils::hex::encode_byte_upper(b);
+    state.write(&[b'%', high, low]);
 }
 
 fn extend_encoded_preserving_pct(

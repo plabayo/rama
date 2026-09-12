@@ -115,10 +115,10 @@ impl ContentDisposition {
                 if is_rfc8187_attr_char(byte) {
                     value.push(char::from(byte));
                 } else {
-                    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+                    let [high, low] = rama_utils::hex::encode_byte_upper(byte);
                     value.push('%');
-                    value.push(char::from(HEX[usize::from(byte >> 4)]));
-                    value.push(char::from(HEX[usize::from(byte & 0x0f)]));
+                    value.push(char::from(high));
+                    value.push(char::from(low));
                 }
             }
         }
