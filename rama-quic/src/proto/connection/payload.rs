@@ -28,6 +28,7 @@ impl Connection {
         now: Instant,
         frame: frame::NewConnectionId,
     ) -> Result<(), TransportError> {
+        let old_remote_cid = self.rem_cids.active();
         trace!(
             sequence = frame.sequence,
             id = %frame.id,
@@ -71,7 +72,7 @@ impl Connection {
             prev.cid = PrevCid::Gone;
         }
         if reserved_retired.is_some() {
-            self.restart_candidate();
+            self.restart_candidate(now);
         }
         match self.rem_cids.insert(frame) {
             Ok(inserted) => {
@@ -83,6 +84,7 @@ impl Connection {
                 if let Some((retired, reset_token)) = inserted.switched {
                     self.retire_rem_cids(&retired)?;
                     self.set_reset_token(self.path.remote, reset_token);
+                    self.qlog_remote_cid_updated(now, old_remote_cid);
                 }
             }
             Err(InsertError::ExceedsLimit) => {
@@ -124,7 +126,7 @@ impl Connection {
         if self.side.is_server() && self.rem_cids.active_seq() == 0 {
             // We're a server still using the initial remote CID for the client, so
             // let's switch immediately to enable clientside stateless resets.
-            self.update_rem_cid();
+            self.update_rem_cid(now);
         }
         Ok(())
     }
@@ -353,6 +355,7 @@ impl Connection {
                         self.discard_space(now, SpaceId::Handshake);
                     }
                     self.events.push_back(Event::HandshakeConfirmed);
+                    self.qlog_observe_state(now);
                     trace!("handshake confirmed");
                     // Migration, the preferred address included, waits for confirmation
                     // (RFC 9000 §9).
@@ -444,6 +447,7 @@ impl Connection {
                 trace!(%remote, "ignoring a client-side off-path packet");
             }
         } else if on_current_path {
+            self.qlog_local_cid_updated(now, self.path.received_dcid, received_dcid);
             self.path.received_dcid = Some(received_dcid);
         }
 

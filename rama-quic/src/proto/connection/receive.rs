@@ -12,6 +12,7 @@ use crate::proto::{
     Frame, Instant, TransportError, TransportErrorCode,
     connection::{
         Connection, ConnectionError, ConnectionSide, Event, State, packet_crypto,
+        qlog::drops::{DropInfo, DropReason},
         spaces::{PacketSpace, Retransmits},
         state,
         timer::Timer,
@@ -98,6 +99,15 @@ impl Connection {
                 }
                 Err(e) => {
                     trace!("malformed header: {}", e);
+                    let reason = match e {
+                        crate::proto::packet::PacketDecodeError::UnsupportedVersion { .. } => {
+                            DropReason::Unsupported
+                        }
+                        crate::proto::packet::PacketDecodeError::InvalidHeader(_) => {
+                            DropReason::Invalid
+                        }
+                    };
+                    self.qlog_packet_dropped(now, DropInfo::unknown(), reason);
                     return;
                 }
             }
@@ -112,22 +122,25 @@ impl Connection {
         ecn: Option<EcnCodepoint>,
         partial_decode: PartialDecode,
     ) {
-        if let Some(decoded) = packet_crypto::unprotect_header(
+        let info = DropInfo::partial(&partial_decode);
+        match packet_crypto::unprotect_header(
             partial_decode,
             &self.spaces,
             self.zero_rtt_crypto.as_ref(),
             // A reset is only ours when it comes from an address this identifier was sent to.
             &self.used_reset_tokens(remote),
         ) {
-            self.handle_packet(
+            Ok(decoded) => self.handle_packet(
                 now,
                 remote,
                 local,
                 ecn,
                 decoded.packet,
                 decoded.stateless_reset,
-            );
+            ),
+            Err(reason) => self.qlog_packet_dropped(now, info, reason),
         }
+        self.qlog_observe_state(now);
     }
 
     fn handle_packet(
@@ -139,6 +152,10 @@ impl Connection {
         packet: Option<Packet>,
         stateless_reset: bool,
     ) {
+        let info = packet
+            .as_ref()
+            .map(DropInfo::packet)
+            .unwrap_or_else(DropInfo::unknown);
         self.stats.udp_rx.ios += 1;
         if let Some(ref packet) = packet {
             trace!(
@@ -152,6 +169,7 @@ impl Connection {
 
         if self.is_handshaking() && remote != self.path.remote {
             debug!("discarding packet with unexpected remote during handshake");
+            self.qlog_packet_dropped(now, info, DropReason::Rejected);
             return;
         }
 
@@ -171,10 +189,12 @@ impl Connection {
             }
             Err(Some(e)) => {
                 warn!("illegal packet: {}", e);
+                self.qlog_packet_dropped(now, info, DropReason::Invalid);
                 Err(e.into())
             }
             Err(None) => {
                 debug!("failed to authenticate packet");
+                self.qlog_packet_dropped(now, info, DropReason::DecryptionFailure);
                 self.authentication_failures += 1;
                 #[expect(
                     clippy::unwrap_used,
@@ -204,10 +224,12 @@ impl Connection {
                 let is_duplicate = |n| self.spaces[packet.header.space()].dedup.insert(n);
                 if number.is_some_and(is_duplicate) {
                     debug!("discarding possible duplicate packet");
+                    self.qlog_packet_dropped(now, info.with_number(number), DropReason::Duplicate);
                     return;
                 } else if self.state.is_handshake() && packet.header.is_short() {
                     // TODO: SHOULD buffer these to improve reordering tolerance.
                     trace!("dropping short packet during handshake");
+                    self.qlog_packet_dropped(now, info.with_number(number), DropReason::Rejected);
                     return;
                 } else {
                     if let Header::Initial(InitialHeader { ref token, .. }) = packet.header
@@ -219,9 +241,17 @@ impl Connection {
                         // packets can be spoofed, so we discard rather than killing the
                         // connection.
                         warn!("discarding Initial with invalid retry token");
+                        self.qlog_packet_dropped(
+                            now,
+                            info.with_number(number),
+                            DropReason::Invalid,
+                        );
                         return;
                     }
 
+                    if packet.header.space() == SpaceId::Handshake && self.state.is_handshake() {
+                        self.qlog_handshake_started(now);
+                    }
                     if !self.state.is_closed() {
                         let spin = match packet.header {
                             Header::Short { spin, .. } => spin,
@@ -237,7 +267,13 @@ impl Connection {
                         );
                     }
 
-                    self.process_decrypted_packet(now, remote, local, number, packet)
+                    let info = info.with_number(number);
+                    let result =
+                        self.process_decrypted_packet_with_info(now, remote, local, packet, info);
+                    if matches!(result, Err(ConnectionError::TransportError(_))) {
+                        self.qlog_packet_dropped(now, info, DropReason::Invalid);
+                    }
+                    result
                 }
             }
         };
@@ -307,10 +343,6 @@ impl Connection {
         }
     }
 
-    #[expect(
-        clippy::unwrap_used,
-        reason = "this branch is inside `if self.side.is_client()`, and the rustls client session always reports whether early data was accepted; 0-RTT long headers carry a packet number, so `decrypt_packet` yields `Some`"
-    )]
     pub(super) fn process_decrypted_packet(
         &mut self,
         now: Instant,
@@ -319,6 +351,30 @@ impl Connection {
         number: Option<u64>,
         packet: Packet,
     ) -> Result<(), ConnectionError> {
+        // The accepting endpoint has already decrypted the first Initial; its ciphertext
+        // length is unavailable here, so omit it rather than report a plaintext length.
+        let info = DropInfo::decrypted(&packet, number);
+        self.process_decrypted_packet_with_info(now, remote, local, packet, info)
+            .inspect_err(|error| {
+                if matches!(error, ConnectionError::TransportError(_)) {
+                    self.qlog_packet_dropped(now, info, DropReason::Invalid);
+                }
+            })
+    }
+
+    #[expect(
+        clippy::unwrap_used,
+        reason = "this branch is inside `if self.side.is_client()`, and the rustls client session always reports whether early data was accepted; 0-RTT long headers carry a packet number, so `decrypt_packet` yields `Some`"
+    )]
+    fn process_decrypted_packet_with_info(
+        &mut self,
+        now: Instant,
+        remote: SocketAddr,
+        local: Option<SocketAddr>,
+        packet: Packet,
+        info: DropInfo,
+    ) -> Result<(), ConnectionError> {
+        let number = info.number;
         let state = match self.state {
             State::Established => {
                 match packet.header.space() {
@@ -332,6 +388,7 @@ impl Connection {
                     _ if packet.header.has_frames() => self.process_early_payload(now, packet)?,
                     _ => {
                         trace!("discarding unexpected pre-handshake packet");
+                        self.qlog_packet_dropped(now, info, DropReason::Rejected);
                     }
                 }
                 return Ok(());
@@ -360,7 +417,10 @@ impl Connection {
                 }
                 return Ok(());
             }
-            State::Draining | State::Drained => return Ok(()),
+            State::Draining | State::Drained => {
+                self.qlog_packet_dropped(now, info, DropReason::Rejected);
+                return Ok(());
+            }
             State::Handshake(ref mut state) => state,
         };
 
@@ -381,6 +441,7 @@ impl Connection {
                             )
                 {
                     trace!("discarding invalid Retry");
+                    self.qlog_packet_dropped(now, info, DropReason::Invalid);
                     // - After the client has received and processed an Initial or Retry
                     //   packet from the server, it MUST discard any subsequent Retry
                     //   packets that it receives.
@@ -398,7 +459,9 @@ impl Connection {
                 )]
                 let client_hello = state.client_hello.take().unwrap();
                 self.retry_src_cid = Some(rem_cid);
+                let old_remote_cid = self.rem_cids.active();
                 self.rem_cids.update_initial_cid(rem_cid);
+                self.qlog_remote_cid_updated(now, old_remote_cid);
                 self.rem_handshake_cid = rem_cid;
 
                 let space = &mut self.spaces[SpaceId::Initial];
@@ -413,6 +476,7 @@ impl Connection {
                     crypto_offset: client_hello.len() as u64,
                     ..PacketSpace::new(now)
                 };
+                self.qlog_key_change(now, SpaceId::Initial, false, Some("tls"));
                 self.spaces[SpaceId::Initial]
                     .pending
                     .crypto
@@ -455,6 +519,7 @@ impl Connection {
                         "discarding packet with mismatched remote CID: {} != {}",
                         self.rem_handshake_cid, rem_cid
                     );
+                    self.qlog_packet_dropped(now, info, DropReason::Invalid);
                     return Ok(());
                 }
                 self.on_path_validated();
@@ -510,7 +575,7 @@ impl Connection {
                         let seq = self.rem_cids.active_seq();
                         self.announce_reset_routes(seq);
                     }
-                    self.handle_peer_params(params)?;
+                    self.handle_peer_params(now, params)?;
                     self.issue_first_cids(now);
                 } else {
                     // Server-only
@@ -532,7 +597,9 @@ impl Connection {
                 if !state.rem_cid_set {
                     trace!("switching remote CID to {}", rem_cid);
                     let mut state = state.clone();
+                    let old_remote_cid = self.rem_cids.active();
                     self.rem_cids.update_initial_cid(rem_cid);
+                    self.qlog_remote_cid_updated(now, old_remote_cid);
                     self.rem_handshake_cid = rem_cid;
                     self.orig_rem_cid = rem_cid;
                     state.rem_cid_set = true;
@@ -542,6 +609,7 @@ impl Connection {
                         "discarding packet with mismatched remote CID: {} != {}",
                         self.rem_handshake_cid, rem_cid
                     );
+                    self.qlog_packet_dropped(now, info, DropReason::Invalid);
                     return Ok(());
                 }
 
@@ -561,9 +629,9 @@ impl Connection {
                                 reason: "transport parameters missing".into(),
                                 cause: None,
                             })?;
-                    self.handle_peer_params(params)?;
+                    self.handle_peer_params(now, params)?;
                     self.issue_first_cids(now);
-                    self.init_0rtt();
+                    self.init_0rtt(now);
                 }
                 Ok(())
             }
@@ -576,6 +644,7 @@ impl Connection {
             }
             Header::VersionNegotiate { .. } => {
                 if self.total_authed_packets > 1 {
+                    self.qlog_packet_dropped(now, info, DropReason::Rejected);
                     return Ok(());
                 }
                 let supported = packet
@@ -586,8 +655,10 @@ impl Connection {
                         Err(_) => false,
                     });
                 if supported {
+                    self.qlog_packet_dropped(now, info, DropReason::Invalid);
                     return Ok(());
                 }
+                self.qlog_version_negotiated(now, &packet.payload);
                 debug!("remote doesn't support our version");
                 Err(ConnectionError::VersionMismatch)
             }
@@ -655,7 +726,7 @@ impl Connection {
                 .set_immediate_ack_required();
         }
 
-        self.write_crypto();
+        self.write_crypto(now);
         Ok(())
     }
 
@@ -686,7 +757,7 @@ impl Connection {
 
         if result.incoming_key_update {
             trace!("key update authenticated");
-            self.update_keys(Some((result.number, now)), true);
+            self.update_keys(now, Some((result.number, now)), true);
             self.set_key_discard_timer(now, packet.header.space());
         }
 
@@ -722,7 +793,8 @@ impl Connection {
             &self.spaces,
             self.zero_rtt_crypto.as_ref(),
             &self.used_reset_tokens(self.path.remote),
-        )?;
+        )
+        .ok()?;
 
         let mut packet = decrypted_header.packet?;
         packet_crypto::decrypt_packet_body(

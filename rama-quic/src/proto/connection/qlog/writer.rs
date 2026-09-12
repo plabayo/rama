@@ -1,6 +1,5 @@
 //! Streaming qlog JSON Text Sequences (RFC 7464), using main schema draft 14.
 
-use super::event::Event;
 use serde::Serialize;
 use std::{
     io::{self, Write},
@@ -49,7 +48,12 @@ impl QlogWriter {
         Ok(stream)
     }
 
-    pub(crate) fn emit(&mut self, group: &[u8], event: Event, now: Instant) -> io::Result<()> {
+    pub(crate) fn emit(
+        &mut self,
+        group: &[u8],
+        event: impl Serialize,
+        now: Instant,
+    ) -> io::Result<()> {
         self.write_record(&Record {
             time: now.saturating_duration_since(self.start_time).as_secs_f64() * 1000.0,
             group_id: group,
@@ -122,10 +126,10 @@ struct ReferenceTime {
 }
 
 #[derive(Serialize)]
-struct Record<'a> {
+struct Record<'a, E> {
     time: f64,
     #[serde(serialize_with = "rama_utils::bytes::serde_hex::serialize")]
     group_id: &'a [u8],
     #[serde(flatten)]
-    event: Event,
+    event: E,
 }

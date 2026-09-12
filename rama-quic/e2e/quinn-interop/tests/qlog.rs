@@ -97,6 +97,16 @@ async fn a_configured_qlog_writer_receives_the_connection_s_trace() {
         "quic:packet_sent",
         "quic:packet_received",
         "quic:recovery_metrics_updated",
+        "quic:connection_started",
+        "quic:connection_closed",
+        "quic:connection_state_updated",
+        "quic:version_information",
+        "quic:alpn_information",
+        "quic:parameters_set",
+        "quic:key_updated",
+        "quic:key_discarded",
+        "quic:recovery_parameters_set",
+        "quic:tuple_assigned",
     ] {
         assert!(
             events.iter().any(|event| event.name == name),

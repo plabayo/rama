@@ -1,9 +1,14 @@
+use serde::Serialize;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
 use std::time::Duration;
 
+pub(super) mod drops;
 pub(super) mod event;
+pub(super) mod lifecycle;
+pub(super) mod negotiation;
+pub(super) mod path;
 pub(crate) mod writer;
 use event::{Event, Packet, PacketHeader, PacketLost, PacketLostTrigger, PacketType, RawInfo};
 use rama_core::telemetry::tracing::warn;
@@ -24,7 +29,7 @@ impl QlogStream {
     /// the client chose for its first Initial (RFC 9000 §7.2): it is the one identifier both
     /// ends know and neither changes, so every record of a connection carries the same group
     /// even when several connections write into one stream.
-    fn emit_event(&self, group: ConnectionId, event: Event, now: Instant) {
+    fn emit_event(&self, group: ConnectionId, event: impl Serialize, now: Instant) {
         let result = self.0.lock().emit(&group, event, now);
         if let Err(e) = result {
             warn!("could not emit qlog event: {e}");
@@ -39,6 +44,18 @@ pub(crate) struct QlogSink {
 }
 
 impl QlogSink {
+    /// Construct diagnostic data only when a writer is configured.
+    pub(crate) fn emit<E: Serialize>(
+        &self,
+        group: ConnectionId,
+        now: Instant,
+        event: impl FnOnce() -> E,
+    ) {
+        if let Some(stream) = &self.stream {
+            stream.emit_event(group, event(), now);
+        }
+    }
+
     pub(crate) fn is_enabled(&self) -> bool {
         self.stream.is_some()
     }
@@ -58,7 +75,11 @@ impl QlogSink {
             return;
         };
 
-        stream.emit_event(group, Event::RecoveryMetricsUpdated(metrics), now);
+        stream.emit_event(
+            group,
+            path::with_path(path.generation(), Event::RecoveryMetricsUpdated(metrics)),
+            now,
+        );
     }
 
     pub(super) fn emit_packet_lost(

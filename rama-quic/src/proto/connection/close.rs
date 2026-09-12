@@ -34,10 +34,12 @@ impl Connection {
     pub(super) fn close_inner(&mut self, now: Instant, reason: Close) {
         let was_closed = self.state.is_closed();
         if !was_closed {
+            self.qlog_local_close(now, &reason);
             self.close_common();
             self.set_close_timer(now);
             self.close = true;
             self.state = State::Closed(state::Closed { reason });
+            self.qlog_observe_state(now);
         }
     }
 
@@ -73,10 +75,12 @@ impl Connection {
     }
 
     /// Terminate the connection instantly, without sending a close packet
-    pub(super) fn kill(&mut self, reason: ConnectionError) {
+    pub(super) fn kill(&mut self, now: Instant, reason: ConnectionError) {
+        self.qlog_connection_error(now, &reason);
         self.close_common();
         self.error = Some(reason);
         self.state = State::Drained;
+        self.qlog_observe_state(now);
         self.endpoint_events.push_back(EndpointEventInner::Drained);
     }
 }

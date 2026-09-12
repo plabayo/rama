@@ -80,8 +80,10 @@ impl Connection {
                 ack_eliciting_acked |= info.ack_eliciting;
 
                 // Notify MTU discovery that a packet was acked, because it might be an MTU probe
+                let old_mtu = self.path.current_mtu();
                 let mtu_updated = self.path.mtud.on_acked(space, packet, info.size);
                 if mtu_updated {
+                    self.qlog_mtu_updated(now, old_mtu);
                     self.path
                         .congestion
                         .on_mtu_update(self.path.mtud.current_mtu());
@@ -376,7 +378,9 @@ impl Connection {
                 self.path.mtud.on_non_probe_lost(packet, info.size);
             }
 
+            let old_mtu = self.path.current_mtu();
             if self.path.mtud.black_hole_detected(now) {
+                self.qlog_mtu_updated(now, old_mtu);
                 self.stats.path.black_holes_detected += 1;
                 self.path
                     .congestion

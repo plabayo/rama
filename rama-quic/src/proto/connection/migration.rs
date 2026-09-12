@@ -16,6 +16,7 @@ use crate::proto::{
         Connection, ConnectionSide,
         paths::{Challenge, PathData},
         preferred::PreferredAddressState,
+        qlog::path::MigrationState,
         timer::Timer,
     },
     packet::SpaceId,
@@ -176,7 +177,9 @@ impl Connection {
     /// faster or reduce loss to settle on optimal values by restarting from the initial
     /// configuration in the [`TransportConfig`](crate::proto::config::TransportConfig).
     pub(crate) fn path_changed(&mut self, now: Instant) {
+        let old_mtu = self.path.current_mtu();
         self.path.reset(now, &self.config);
+        self.qlog_mtu_updated(now, old_mtu);
     }
 
     /// Follow a peer move to `remote`/`local` (RFC 9000 §9.3). A NAT rebinding keeps the current
@@ -197,6 +200,7 @@ impl Connection {
         // The path being replaced is kept as a fallback only when it is proven usable, which
         // takes both its address and its minimum MTU (RFC 9000 §8.2.4, §14.2); otherwise it is
         // dropped and an older kept path stays as it is.
+        let old_cid = self.rem_cids.active();
         let keep_replaced = self.path.mtu_validated;
         let (prev_cid, token) = if nat_rebinding {
             (PrevCid::Active, self.rem_cids.active_reset_token())
@@ -223,6 +227,8 @@ impl Connection {
             }
             (prev_cid, Some(token))
         };
+        self.qlog_remote_cid_updated(now, old_cid);
+        self.qlog_local_cid_updated(now, self.path.received_dcid, received_dcid);
         self.migrate(now, remote, local, PreviousPath::Keep(prev_cid));
         self.path.received_dcid = Some(received_dcid);
         if let Some(token) = token {
@@ -249,6 +255,8 @@ impl Connection {
     /// connection ID to be sent with (RFC 9000 §9.5), otherwise stay on the current one.
     /// Answers whether a usable path was taken up in its place.
     pub(super) fn abandon_current_path(&mut self, now: Instant) -> bool {
+        self.qlog_migration_state(now, MigrationState::MigrationAbandoned);
+        let old_cid = self.rem_cids.active();
         if let Some(PrevPath { path: prev, cid }) = self.prev_path.take() {
             let usable = match cid {
                 PrevCid::Held => match self.rem_cids.restore_held() {
@@ -284,7 +292,12 @@ impl Connection {
                 },
             };
             if usable {
+                let old_local_cid = self.path.received_dcid;
                 self.path = prev;
+                self.qlog_remote_cid_updated(now, old_cid);
+                if let Some(restored_local_cid) = self.path.received_dcid {
+                    self.qlog_local_cid_updated(now, old_local_cid, restored_local_cid);
+                }
                 self.set_loss_detection_timer(now);
                 self.path.challenge = None;
                 return true;
@@ -366,6 +379,8 @@ impl Connection {
         // the path just replaced or on one dropped here, stays outstanding in its packet number
         // space and keeps driving the loss timer; re-evaluate it against that outstanding set.
         self.set_loss_detection_timer(now);
+        self.qlog_assign_current_tuple(now);
+        self.qlog_migration_state(now, MigrationState::MigrationStarted);
     }
 
     /// Whether this connection can start using a new local address now: RFC 9000 §9.5 forbids
@@ -380,13 +395,13 @@ impl Connection {
     /// nothing, when no unused connection ID is available and the peer's are not zero-length;
     /// the caller must then keep sending from the old address (see
     /// [`can_migrate_locally`](Self::can_migrate_locally)).
-    pub(crate) fn migrate_local_address(&mut self) -> bool {
-        if !self.rem_cids.active().is_empty() && !self.update_rem_cid() {
+    pub(crate) fn migrate_local_address(&mut self, now: Instant) -> bool {
+        if !self.rem_cids.active().is_empty() && !self.update_rem_cid(now) {
             return false;
         }
         // A candidate path's identifier may not be sent from another local address (RFC 9000
         // §9.5): the attempt starts over with a fresh identifier, or ends when none is unused.
-        self.restart_candidate();
+        self.restart_candidate(now);
         self.ping();
         true
     }
@@ -428,7 +443,10 @@ impl Connection {
         if self.abandon_current_path(now) {
             return;
         }
-        self.kill(TransportError::NO_VIABLE_PATH("the path does not carry 1200 bytes").into());
+        self.kill(
+            now,
+            TransportError::NO_VIABLE_PATH("the path does not carry 1200 bytes").into(),
+        );
     }
 
     /// The validation timer expired.
@@ -485,6 +503,7 @@ impl Connection {
             self.path.mtu_validated = true;
             self.path.challenge = None;
             self.drop_previous_path();
+            self.qlog_migration_state(now, MigrationState::MigrationComplete);
             return true;
         }
         trace!("path validated; its minimum MTU is not");

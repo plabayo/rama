@@ -299,6 +299,16 @@ impl Pair {
         self.client.connections.get_mut(&ch).unwrap()
     }
 
+    pub(super) fn client_force_key_update(&mut self, ch: ConnectionHandle) -> bool {
+        let now = self.time;
+        self.client_conn_mut(ch).force_key_update(now)
+    }
+
+    pub(super) fn client_migrate_local_address(&mut self, ch: ConnectionHandle) -> bool {
+        let now = self.time;
+        self.client_conn_mut(ch).migrate_local_address(now)
+    }
+
     pub(super) fn client_streams(&mut self, ch: ConnectionHandle) -> Streams<'_> {
         self.client_conn_mut(ch).streams()
     }

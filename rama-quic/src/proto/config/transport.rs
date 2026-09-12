@@ -659,8 +659,10 @@ impl Default for AckFrequencyConfig {
 /// about itself.
 ///
 /// Uses qlog main schema draft 14 and QUIC events draft 13, serialized as
-/// `application/qlog+json-seq`. Packet sends, receives, losses and recovery
-/// metric changes carry a connection group ID and millisecond timestamps.
+/// `application/qlog+json-seq`. Records packet activity, negotiation, connection
+/// and path lifecycle, key transitions, and recovery settings and metrics.
+/// Events carry a connection group ID and millisecond timestamps; key material
+/// and application payloads are not recorded.
 ///
 /// Writes synchronously to the supplied writer; callers can wrap it in a
 /// buffered or off-thread writer. A failed write ends the trace and is logged.

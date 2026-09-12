@@ -62,7 +62,7 @@ impl PacketBuilder {
         let mut sent_with_keys = conn.spaces[space_id].sent_with_keys;
         if space_id == SpaceId::Data && sent_with_keys >= conn.key_phase_size {
             debug!("routine key update due to phase exhaustion");
-            if conn.force_key_update() {
+            if conn.force_key_update(now) {
                 // The count belongs to the keys, and these are new ones.
                 sent_with_keys = 0;
             }
@@ -88,7 +88,10 @@ impl PacketBuilder {
             )
         } else if sent_with_keys >= confidentiality_limit {
             // No budget remains, so nothing more is encrypted with these keys.
-            conn.kill(TransportError::AEAD_LIMIT_REACHED("confidentiality limit reached").into());
+            conn.kill(
+                now,
+                TransportError::AEAD_LIMIT_REACHED("confidentiality limit reached").into(),
+            );
             return None;
         }
 
@@ -265,7 +268,7 @@ impl PacketBuilder {
     )]
     pub(super) fn finish(
         self,
-        conn: &Connection,
+        conn: &mut Connection,
         now: Instant,
         buffer: &mut Vec<u8>,
     ) -> (usize, bool) {
@@ -301,6 +304,9 @@ impl PacketBuilder {
         );
 
         let len = buffer.len() - encode_start;
+        if self.space == SpaceId::Handshake {
+            conn.qlog_handshake_started(now);
+        }
         conn.config.qlog_sink.emit_packet_sent(
             self.exact_number,
             len,

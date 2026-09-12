@@ -7,7 +7,11 @@ use rama_core::telemetry::tracing::trace;
 
 use crate::proto::{
     Instant, TransportError,
-    connection::{Connection, ConnectionError, Event, State, timer::Timer},
+    connection::{
+        Connection, ConnectionError, Event, State,
+        qlog::drops::{DropInfo, DropReason},
+        timer::Timer,
+    },
     packet::SpaceId,
     shared::{
         ConnectionEvent, ConnectionEventInner, DatagramConnectionEvent, EndpointEvent,
@@ -72,6 +76,11 @@ impl Connection {
                     && !self.probing_address(remote)
                 {
                     trace!("discarding packet from unrecognized peer {}", remote);
+                    self.qlog_packet_dropped(
+                        now,
+                        DropInfo::partial(&first_decode),
+                        DropReason::Rejected,
+                    );
                     return;
                 }
 
@@ -154,10 +163,15 @@ impl Connection {
             match timer {
                 Timer::Close => {
                     self.state = State::Drained;
+                    self.qlog_observe_state(now);
                     self.endpoint_events.push_back(EndpointEventInner::Drained);
                 }
-                Timer::Idle | Timer::Handshake => {
-                    self.kill(ConnectionError::TimedOut);
+                Timer::Idle => {
+                    self.kill(now, ConnectionError::TimedOut);
+                }
+                Timer::Handshake => {
+                    self.qlog_handshake_timeout(now);
+                    self.kill(now, ConnectionError::TimedOut);
                 }
                 Timer::KeepAlive => {
                     trace!("sending keep-alive");
@@ -173,10 +187,7 @@ impl Connection {
                         self.trace_cid,
                     );
                 }
-                Timer::KeyDiscard => {
-                    self.zero_rtt_crypto = None;
-                    self.prev_crypto = None;
-                }
+                Timer::KeyDiscard => self.qlog_discard_retired_keys(now),
                 Timer::PathValidation => self.on_path_validation_timeout(now),
                 Timer::PathProbe => self.on_probe_timeout(now),
                 Timer::Pacing => trace!("pacing timer expired"),

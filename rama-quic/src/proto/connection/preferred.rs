@@ -15,7 +15,7 @@ use crate::proto::{
     config::{PreferredAddressPolicy, ServerConfig},
     connection::{
         Connection, ConnectionSide, migration::PreviousPath, packet_builder::PacketBuilder,
-        timer::Timer,
+        qlog::path::MigrationState, timer::Timer,
     },
     frame,
     packet::SpaceId,
@@ -101,6 +101,7 @@ impl Connection {
             transmitted: 0,
             pending: Some(self.rng.random()),
             in_flight: None,
+            qlog_started: false,
         });
         self.preferred_state = PreferredAddressState::Probing;
     }
@@ -143,6 +144,10 @@ impl Connection {
         candidate.pending = None;
         candidate.in_flight = Some(token);
         let seq = candidate.seq;
+        let started = std::mem::replace(&mut candidate.qlog_started, true);
+        if !started {
+            self.qlog_candidate_state(now, seq, destination, MigrationState::ProbingStarted);
+        }
         self.timers
             .set(Timer::PathProbe, now + self.probe_interval());
         Some(Transmit {
@@ -229,12 +234,12 @@ impl Connection {
         };
         if waiting {
             debug!("a preferred-address probe could not be sent in time");
-            self.give_up_preferred_address();
+            self.give_up_preferred_address(now);
             return;
         }
         if transmitted >= MAX_PREFERRED_PROBES {
             debug!("the preferred address did not answer");
-            self.give_up_preferred_address();
+            self.give_up_preferred_address(now);
             return;
         }
         // Each probe carries fresh data; the earlier ones stay valid until the attempt ends. This
@@ -250,9 +255,17 @@ impl Connection {
     /// Start the preferred-address attempt over: the identifier set aside for it is given up
     /// along with its challenge data, so nothing written with it can validate anything or go out,
     /// and a fresh identifier is reserved. Without one the attempt ends.
-    pub(super) fn restart_candidate(&mut self) {
-        if self.candidate.take().is_none() {
+    pub(super) fn restart_candidate(&mut self, now: Instant) {
+        let Some(candidate) = self.candidate.take() else {
             return;
+        };
+        if candidate.qlog_started {
+            self.qlog_candidate_state(
+                now,
+                candidate.seq,
+                candidate.remote,
+                MigrationState::ProbingAbandoned,
+            );
         }
         self.timers.stop(Timer::PathProbe);
         if let Some(seq) = self.rem_cids.release_reserved()
@@ -265,8 +278,17 @@ impl Connection {
     }
 
     /// End the attempt: the reserved identifier is retired and the connection stays where it is.
-    fn give_up_preferred_address(&mut self) {
-        self.candidate = None;
+    fn give_up_preferred_address(&mut self, now: Instant) {
+        if let Some(candidate) = self.candidate.take()
+            && candidate.qlog_started
+        {
+            self.qlog_candidate_state(
+                now,
+                candidate.seq,
+                candidate.remote,
+                MigrationState::ProbingAbandoned,
+            );
+        }
         self.timers.stop(Timer::PathProbe);
         if let Some(seq) = self.rem_cids.release_reserved()
             && let Err(error) = self.retire_rem_cid(seq)
@@ -283,7 +305,16 @@ impl Connection {
             return;
         };
         self.timers.stop(Timer::PathProbe);
+        let old_cid = self.rem_cids.active();
         let Some((token, retired)) = self.rem_cids.promote_reserved() else {
+            if candidate.qlog_started {
+                self.qlog_candidate_state(
+                    now,
+                    candidate.seq,
+                    candidate.remote,
+                    MigrationState::ProbingAbandoned,
+                );
+            }
             debug!("the preferred address answered, but its connection ID is gone");
             self.preferred_state = PreferredAddressState::Failed;
             return;
@@ -291,6 +322,13 @@ impl Connection {
         if let Err(error) = self.retire_rem_cids(&retired) {
             self.defer_error(error);
         }
+        self.qlog_remote_cid_updated(now, old_cid);
+        self.qlog_candidate_state(
+            now,
+            candidate.seq,
+            candidate.remote,
+            MigrationState::ProbingSuccessful,
+        );
         let local = self.path.local;
         self.migrate(now, candidate.remote, local, PreviousPath::Discard);
         // The candidate answered our challenge, so the path it stands for needs no validation.
@@ -302,6 +340,7 @@ impl Connection {
         self.timers.stop(Timer::PathValidation);
         self.set_reset_token(candidate.remote, token);
         self.preferred_state = PreferredAddressState::Validated;
+        self.qlog_migration_state(now, MigrationState::MigrationComplete);
         debug!(remote = %candidate.remote, "moved to the server's preferred address");
     }
 }
@@ -346,6 +385,8 @@ pub(super) struct PreferredCandidate {
     /// Challenge data written into a datagram the sender has not taken yet. It counts, and its
     /// identifier becomes one we have used, only once the sender reports it gone.
     in_flight: Option<u64>,
+    /// Whether the first probe has been handed to the sender.
+    qlog_started: bool,
 }
 
 impl PreferredCandidate {

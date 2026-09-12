@@ -1,25 +1,25 @@
 use rama_core::telemetry::tracing::{debug, trace};
 
 use crate::proto::Instant;
-use crate::proto::connection::spaces::PacketSpace;
+use crate::proto::connection::{qlog::drops::DropReason, spaces::PacketSpace};
 use crate::proto::crypto::{HeaderKey, KeyPair, PacketKey};
 use crate::proto::packet::{Packet, PartialDecode, SpaceId};
 use crate::proto::token::ResetToken;
 use crate::proto::{RESET_TOKEN_SIZE, TransportError};
 
-/// Removes header protection of a packet, or returns `None` if the packet was dropped
+/// Removes header protection of a packet, or returns the reason the packet was dropped
 pub(super) fn unprotect_header(
     partial_decode: PartialDecode,
     spaces: &[PacketSpace; 3],
     zero_rtt_crypto: Option<&ZeroRttCrypto>,
     stateless_reset_tokens: &[Option<ResetToken>],
-) -> Option<UnprotectHeaderResult> {
+) -> Result<UnprotectHeaderResult, DropReason> {
     let header_crypto = if partial_decode.is_0rtt() {
         if let Some(crypto) = zero_rtt_crypto {
             Some(&*crypto.header)
         } else {
             debug!("dropping unexpected 0-RTT packet");
-            return None;
+            return Err(DropReason::KeyUnavailable);
         }
     } else if let Some(space) = partial_decode.space() {
         if let Some(ref crypto) = spaces[space].crypto {
@@ -30,7 +30,7 @@ pub(super) fn unprotect_header(
                 space,
                 partial_decode.len(),
             );
-            return None;
+            return Err(DropReason::KeyUnavailable);
         }
     } else {
         // Unprotected packet
@@ -46,17 +46,17 @@ pub(super) fn unprotect_header(
         });
 
     match partial_decode.finish(header_crypto) {
-        Ok(packet) => Some(UnprotectHeaderResult {
+        Ok(packet) => Ok(UnprotectHeaderResult {
             packet: Some(packet),
             stateless_reset,
         }),
-        Err(_) if stateless_reset => Some(UnprotectHeaderResult {
+        Err(_) if stateless_reset => Ok(UnprotectHeaderResult {
             packet: None,
             stateless_reset: true,
         }),
         Err(e) => {
             trace!("unable to complete packet decoding: {}", e);
-            None
+            Err(DropReason::Invalid)
         }
     }
 }

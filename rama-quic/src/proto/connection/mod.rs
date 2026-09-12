@@ -283,6 +283,9 @@ pub(crate) struct Connection {
     local_cid_state: CidState,
     /// State of the unreliable datagram extension
     datagrams: DatagramState,
+    /// Last lifecycle state written to qlog, if recording is enabled.
+    qlog_state: Option<qlog::lifecycle::ConnectionState>,
+    qlog_closed: bool,
     /// Connection level statistics
     stats: ConnectionStats,
     /// QUIC version used for the connection.
@@ -421,13 +424,20 @@ impl Connection {
             config,
             rem_cids: CidQueue::new(rem_cid),
             rng,
+            qlog_state: None,
+            qlog_closed: false,
             stats: ConnectionStats::default(),
             version,
         };
+        this.qlog_connection_started(now);
+        this.qlog_init_negotiation(now);
+        this.qlog_init_recovery(now);
+        this.qlog_assign_current_tuple(now);
         if let Some(deadline) = now.checked_add(this.endpoint_config.handshake_timeout) {
             this.timers.set(Timer::Handshake, deadline);
         } else {
             this.kill(
+                now,
                 TransportError::INTERNAL_ERROR("handshake timeout exceeds clock range").into(),
             );
             return this;
@@ -437,8 +447,8 @@ impl Connection {
         }
         if side.is_client() {
             // Kick off the connection
-            this.write_crypto();
-            this.init_0rtt();
+            this.write_crypto(now);
+            this.init_0rtt(now);
         }
         this
     }

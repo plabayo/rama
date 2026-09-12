@@ -128,7 +128,8 @@ impl Connection {
 
     /// Switch to a previously unused remote connection ID, if possible; `false` when none is
     /// available (nothing changes).
-    pub(super) fn update_rem_cid(&mut self) -> bool {
+    pub(super) fn update_rem_cid(&mut self, now: Instant) -> bool {
+        let old = self.rem_cids.active();
         let Some((reset_token, retired)) = self.rem_cids.next() else {
             return false;
         };
@@ -138,6 +139,7 @@ impl Connection {
             self.defer_error(error);
         }
         self.set_reset_token(self.path.remote, reset_token);
+        self.qlog_remote_cid_updated(now, old);
         true
     }
 

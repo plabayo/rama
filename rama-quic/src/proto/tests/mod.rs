@@ -37,6 +37,10 @@ mod admission;
 mod closing;
 mod datagrams;
 mod qlog;
+mod qlog_drops;
+mod qlog_lifecycle;
+mod qlog_negotiation;
+mod qlog_paths;
 mod tls;
 mod token;
 mod validation;
@@ -1851,11 +1855,11 @@ fn one_rtt_keys_stop_at_their_confidentiality_limit_when_no_update_is_available(
     let (client_ch, _server_ch) = pair.connect();
     let limit = pair.client_conn_mut(client_ch).confidentiality_limit();
     assert!(
-        pair.client_conn_mut(client_ch).force_key_update(),
+        pair.client_force_key_update(client_ch),
         "the first update starts"
     );
     assert!(
-        !pair.client_conn_mut(client_ch).force_key_update(),
+        !pair.client_force_key_update(client_ch),
         "a second update cannot start while the first is unacknowledged"
     );
     pair.client_conn_mut(client_ch)
@@ -1895,7 +1899,7 @@ fn one_rtt_keys_stop_at_their_confidentiality_limit_when_no_update_is_available(
     let mut pair = Pair::default();
     let (client_ch, _server_ch) = pair.connect();
     let limit = pair.client_conn_mut(client_ch).confidentiality_limit();
-    assert!(pair.client_conn_mut(client_ch).force_key_update());
+    assert!(pair.client_force_key_update(client_ch));
     pair.client_conn_mut(client_ch)
         .set_packets_sent_with_keys(limit);
     let stream = pair
@@ -1932,7 +1936,7 @@ fn one_rtt_keys_stop_at_their_confidentiality_limit_when_no_update_is_available(
     let mut pair = Pair::default();
     let (client_ch, _server_ch) = pair.connect();
     let limit = pair.client_conn_mut(client_ch).confidentiality_limit();
-    assert!(pair.client_conn_mut(client_ch).force_key_update());
+    assert!(pair.client_force_key_update(client_ch));
     pair.client_conn_mut(client_ch)
         .set_packets_sent_with_keys(limit + 1);
     let stream = pair
@@ -1965,7 +1969,7 @@ fn a_skipped_packet_number_does_not_spend_the_key_budget() {
             let (client_ch, _server_ch) = pair.connect();
             pair.drive();
             let limit = pair.client_conn_mut(client_ch).confidentiality_limit();
-            assert!(pair.client_conn_mut(client_ch).force_key_update());
+            assert!(pair.client_force_key_update(client_ch));
             pair.client_conn_mut(client_ch)
                 .set_packets_sent_with_keys(limit - from_the_end);
             match skip {
@@ -2041,10 +2045,7 @@ fn a_key_update_starts_the_new_phase_count_at_zero() {
     let limit = pair.client_conn_mut(client_ch).confidentiality_limit();
     pair.client_conn_mut(client_ch)
         .set_packets_sent_with_keys(limit - 2);
-    assert!(
-        pair.client_conn_mut(client_ch).force_key_update(),
-        "the update starts"
-    );
+    assert!(pair.client_force_key_update(client_ch), "the update starts");
     assert_eq!(
         pair.client_conn_mut(client_ch).packets_sent_with_keys(),
         0,
@@ -2121,7 +2122,7 @@ fn key_update_simple() {
     let _transmit = chunks.finalize();
 
     info!("initiating key update");
-    pair.client_conn_mut(client_ch).force_key_update();
+    pair.client_force_key_update(client_ch);
 
     const MSG2: &[u8] = b"hello2";
     pair.client_send(client_ch, s).write(MSG2).unwrap();
@@ -2171,7 +2172,7 @@ fn key_update_reordered() {
     assert!(!pair.client.outbound.is_empty());
     pair.client.delay_outbound();
 
-    pair.client_conn_mut(client_ch).force_key_update();
+    pair.client_force_key_update(client_ch);
     info!("updated keys");
 
     const MSG2: &[u8] = b"two";
@@ -5639,7 +5640,7 @@ fn local_migration_requires_an_unused_destination_cid() {
     let mut used = vec![pair.client_conn_mut(client_ch).active_rem_cid()];
     let mut moves = 0;
     while pair.client_conn_mut(client_ch).can_migrate_locally() {
-        assert!(pair.client_conn_mut(client_ch).migrate_local_address());
+        assert!(pair.client_migrate_local_address(client_ch));
         let cid = pair.client_conn_mut(client_ch).active_rem_cid();
         assert!(!used.contains(&cid), "each address change uses a fresh ID");
         used.push(cid);
@@ -5652,7 +5653,7 @@ fn local_migration_requires_an_unused_destination_cid() {
     assert!(moves >= 1, "spare IDs exist after the handshake");
     let current = *used.last().unwrap();
     assert!(
-        !pair.client_conn_mut(client_ch).migrate_local_address(),
+        !pair.client_migrate_local_address(client_ch),
         "without an unused ID nothing moves"
     );
     assert_eq!(pair.client_conn_mut(client_ch).active_rem_cid(), current);
@@ -5669,7 +5670,7 @@ fn local_migration_requires_an_unused_destination_cid() {
         pair.client_conn_mut(client_ch).can_migrate_locally(),
         "the peer replenished the IDs"
     );
-    assert!(pair.client_conn_mut(client_ch).migrate_local_address());
+    assert!(pair.client_migrate_local_address(client_ch));
     assert!(!used.contains(&pair.client_conn_mut(client_ch).active_rem_cid()));
 }
 
@@ -5691,7 +5692,7 @@ fn zero_length_destination_cids_need_no_switch_to_migrate() {
     assert!(pair.client_conn_mut(client_ch).active_rem_cid().is_empty());
     for _ in 0..3 {
         assert!(pair.client_conn_mut(client_ch).can_migrate_locally());
-        assert!(pair.client_conn_mut(client_ch).migrate_local_address());
+        assert!(pair.client_migrate_local_address(client_ch));
         assert!(pair.client_conn_mut(client_ch).active_rem_cid().is_empty());
     }
     pair.drive();
@@ -6475,7 +6476,7 @@ fn a_distant_switch_names_a_bounded_set_of_numbers() {
 
     // Spend the identifiers the peer issued, so the distant one is the only unused one left.
     let mut moves = 0;
-    while pair.client_conn_mut(client_ch).migrate_local_address() {
+    while pair.client_migrate_local_address(client_ch) {
         moves += 1;
         assert!(
             moves < 16,
@@ -6498,7 +6499,7 @@ fn a_distant_switch_names_a_bounded_set_of_numbers() {
 
     let in_use = pair.client_conn_mut(client_ch).active_rem_cid_seq();
     assert!(
-        pair.client_conn_mut(client_ch).migrate_local_address(),
+        pair.client_migrate_local_address(client_ch),
         "the distant identifier is the one left to take"
     );
     assert_eq!(pair.client_conn_mut(client_ch).active_rem_cid_seq(), far);
@@ -6688,7 +6689,7 @@ fn a_move_to_the_preferred_address_is_followed_though_active_migration_is_disabl
         CLIENT_PORTS.lock().next().unwrap(),
     );
     pair.client.addr = rebound;
-    assert!(pair.client_conn_mut(ch).migrate_local_address());
+    assert!(pair.client_migrate_local_address(ch));
     drive_settled(&mut pair);
     assert_eq!(
         pair.server_conn_mut(server_ch).remote_address(),
@@ -7142,7 +7143,7 @@ fn a_stale_probe_answer_validates_nothing() {
         Ipv6Addr::LOCALHOST.into(),
         CLIENT_PORTS.lock().next().unwrap(),
     );
-    assert!(pair.client_conn_mut(ch).migrate_local_address());
+    assert!(pair.client_migrate_local_address(ch));
     let fresh = pair
         .client_conn_mut(ch)
         .reserved_rem_cid()
@@ -8176,7 +8177,7 @@ fn a_reset_token_counts_only_once_its_connection_id_is_used() {
         Ipv4Addr::new(127, 0, 0, 1).into(),
         CLIENT_PORTS.lock().next().unwrap(),
     );
-    assert!(pair.client_conn_mut(client_ch).migrate_local_address());
+    assert!(pair.client_migrate_local_address(client_ch));
     assert_eq!(pair.client_conn_mut(client_ch).active_rem_cid(), next);
     pair.drive();
     assert_eq!(
@@ -8211,7 +8212,7 @@ fn a_reset_for_the_previous_paths_connection_id_counts_until_that_id_is_retired(
             Ipv4Addr::new(127, 0, 0, 1).into(),
             CLIENT_PORTS.lock().next().unwrap(),
         );
-        assert!(pair.client_conn_mut(client_ch).migrate_local_address());
+        assert!(pair.client_migrate_local_address(client_ch));
         pair.drive_client();
         pair.server.drive(pair.time, pair.client.addr);
         assert_eq!(
@@ -8337,7 +8338,7 @@ fn a_deferred_peer_move_is_dropped_when_the_peer_is_back_on_the_current_path() {
         CLIENT_PORTS.lock().next().unwrap(),
     );
     pair.client.addr = elsewhere;
-    assert!(pair.client_conn_mut(client_ch).migrate_local_address());
+    assert!(pair.client_migrate_local_address(client_ch));
     pair.drive_client();
     pair.server.drive(pair.time, elsewhere);
     assert!(pair.server_conn_mut(server_ch).deferred_move_pending());
@@ -8424,7 +8425,7 @@ fn the_challenge_for_a_replaced_path_carries_that_paths_local_address_and_identi
         CLIENT_PORTS.lock().next().unwrap(),
     );
     pair.client.addr = moved;
-    assert!(pair.client_conn_mut(client_ch).migrate_local_address());
+    assert!(pair.client_migrate_local_address(client_ch));
     pair.drive_client();
     pair.server.outbound.clear();
     pair.server.drive(pair.time, moved);
@@ -8734,7 +8735,7 @@ fn no_identifier_is_sent_to_two_addresses_across_a_rebinding_and_a_move() {
         CLIENT_PORTS.lock().next().unwrap(),
     );
     pair.client.addr = moved;
-    assert!(pair.client_conn_mut(client_ch).migrate_local_address());
+    assert!(pair.client_migrate_local_address(client_ch));
     pair.drive_client();
     pair.server.drive_incoming(pair.time, moved);
     pair.server.drive_outgoing(pair.time);
@@ -8837,7 +8838,7 @@ fn a_deferred_peer_move_follows_the_latest_candidate() {
         CLIENT_PORTS.lock().next().unwrap(),
     );
     pair.client.addr = first;
-    assert!(pair.client_conn_mut(client_ch).migrate_local_address());
+    assert!(pair.client_migrate_local_address(client_ch));
     pair.drive_client();
     pair.server.drive(pair.time, first);
     assert!(pair.server_conn_mut(server_ch).deferred_move_pending());
@@ -8848,7 +8849,7 @@ fn a_deferred_peer_move_follows_the_latest_candidate() {
         CLIENT_PORTS.lock().next().unwrap(),
     );
     pair.client.addr = second;
-    assert!(pair.client_conn_mut(client_ch).migrate_local_address());
+    assert!(pair.client_migrate_local_address(client_ch));
     pair.drive_client();
     pair.server.drive(pair.time, second);
     assert!(pair.server_conn_mut(server_ch).deferred_move_pending());
@@ -8881,7 +8882,7 @@ fn a_failed_peer_migration_returns_to_the_previous_path_with_its_connection_id()
         CLIENT_PORTS.lock().next().unwrap(),
     );
     pair.client.addr = spoofed;
-    assert!(pair.client_conn_mut(client_ch).migrate_local_address());
+    assert!(pair.client_migrate_local_address(client_ch));
     pair.drive_client();
     pair.server.drive(pair.time, spoofed);
     pair.client.addr = real;
@@ -9004,7 +9005,7 @@ fn exhaust_server_cids(pair: &mut Pair, client_ch: ConnectionHandle, server_ch: 
             Ipv4Addr::new(127, 0, 0, 1).into(),
             CLIENT_PORTS.lock().next().unwrap(),
         );
-        assert!(pair.client_conn_mut(client_ch).migrate_local_address());
+        assert!(pair.client_migrate_local_address(client_ch));
         drive_settled(pair);
         assert_eq!(
             pair.server_conn_mut(server_ch).remote_address(),
@@ -9053,7 +9054,7 @@ fn a_peer_move_needs_an_unused_cid_unless_it_is_a_nat_rebinding() {
         CLIENT_PORTS.lock().next().unwrap(),
     );
     assert!(pair.client_conn_mut(client_ch).can_migrate_locally());
-    assert!(pair.client_conn_mut(client_ch).migrate_local_address());
+    assert!(pair.client_migrate_local_address(client_ch));
     pair.drive_client();
     pair.drive_server();
     assert_eq!(

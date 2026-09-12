@@ -367,3 +367,10 @@ fn qlog_recovery_metrics_emit_initial_snapshot_then_changes() {
         json!({"time": 5.0, "group_id": "ff", "name": "quic:recovery_metrics_updated", "data": {"pto_count": 1}})
     );
 }
+
+#[test]
+fn qlog_disabled_sink_does_not_construct_event_data() {
+    QlogSink::default().emit(ConnectionId::new(&[]), Instant::now(), || -> Value {
+        panic!("disabled recording must not construct diagnostic data")
+    });
+}

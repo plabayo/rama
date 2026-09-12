@@ -514,6 +514,7 @@ impl Endpoint {
                 preferred_address_policy: config.preferred_address_policy,
             },
         );
+        conn.qlog_local_parameters(now, &params);
         Ok((ch, conn))
     }
 
@@ -843,6 +844,7 @@ impl Endpoint {
             },
         );
         self.index.insert_initial(dst_cid, ch);
+        conn.qlog_local_parameters(incoming.received_at, &params);
 
         match conn.handle_first_packet(
             incoming.received_at,

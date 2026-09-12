@@ -32,7 +32,8 @@ impl Connection {
     /// Enforce the handshake lifetime before processing queued packets in the async driver.
     pub(crate) fn expire_handshake(&mut self, now: Instant) {
         if self.timers.is_expired(Timer::Handshake, now) {
-            self.kill(ConnectionError::TimedOut);
+            self.qlog_handshake_timeout(now);
+            self.kill(now, ConnectionError::TimedOut);
         }
     }
 
@@ -41,7 +42,7 @@ impl Connection {
     /// An update is initiated only once the handshake is confirmed (RFC 9001 §6.1) and only when
     /// no update is in flight (§6). Answering the peer's update is a different path and is not
     /// bound by the first of those.
-    pub(crate) fn force_key_update(&mut self) -> bool {
+    pub(crate) fn force_key_update(&mut self, now: Instant) -> bool {
         if !self.state.is_established() {
             debug!("ignoring forced key update in illegal state");
             return false;
@@ -56,7 +57,7 @@ impl Connection {
             debug!("ignoring redundant forced key update");
             return false;
         }
-        self.update_keys(None, false);
+        self.update_keys(now, None, false);
         true
     }
 
@@ -139,7 +140,12 @@ impl Connection {
             false,
         );
 
-        self.process_decrypted_packet(now, remote, local, Some(packet_number), packet.into())?;
+        self.process_decrypted_packet(now, remote, local, Some(packet_number), packet.into())
+            .inspect_err(|error| {
+                self.qlog_connection_error(now, error);
+                self.qlog_discarded(now);
+            })?;
+        self.qlog_observe_state(now);
         if let Some(data) = remaining {
             self.handle_coalesced(now, remote, local, ecn, data);
         }
@@ -154,7 +160,7 @@ impl Connection {
         Ok(())
     }
 
-    pub(super) fn init_0rtt(&mut self) {
+    pub(super) fn init_0rtt(&mut self, now: Instant) {
         let Some((header, packet)) = self.crypto.early_crypto() else {
             return;
         };
@@ -179,7 +185,8 @@ impl Connection {
                         max_ack_delay: TransportParameters::default().max_ack_delay,
                         ..params
                     };
-                    self.set_peer_params(params);
+                    self.qlog_restored_parameters(now, &params);
+                    self.set_peer_params(now, params);
                 }
                 Err(e) => {
                     error!("session ticket has malformed transport parameters: {}", e);
@@ -190,6 +197,7 @@ impl Connection {
         trace!("0-RTT enabled");
         self.zero_rtt_enabled = true;
         self.zero_rtt_crypto = Some(ZeroRttCrypto { header, packet });
+        self.qlog_zero_rtt_key(now, false);
     }
 
     pub(super) fn read_crypto(
@@ -250,17 +258,17 @@ impl Connection {
         Ok(())
     }
 
-    pub(super) fn write_crypto(&mut self) {
+    pub(super) fn write_crypto(&mut self, now: Instant) {
         loop {
             let space = self.highest_space;
             let mut outgoing = Vec::new();
             if let Some(crypto) = self.crypto.write_handshake(&mut outgoing) {
                 match space {
                     SpaceId::Initial => {
-                        self.upgrade_crypto(SpaceId::Handshake, crypto);
+                        self.upgrade_crypto(now, SpaceId::Handshake, crypto);
                     }
                     SpaceId::Handshake => {
-                        self.upgrade_crypto(SpaceId::Data, crypto);
+                        self.upgrade_crypto(now, SpaceId::Data, crypto);
                     }
                     #[expect(
                         clippy::unreachable,
@@ -300,7 +308,7 @@ impl Connection {
         clippy::expect_used,
         reason = "rustls exposes `next_1rtt_keys` as soon as 1-RTT secrets exist, which is the `space == SpaceId::Data` branch condition"
     )]
-    fn upgrade_crypto(&mut self, space: SpaceId, crypto: Keys) {
+    fn upgrade_crypto(&mut self, now: Instant, space: SpaceId, crypto: Keys) {
         debug_assert!(
             self.spaces[space].crypto.is_none(),
             "already reached packet space {space:?}"
@@ -316,11 +324,17 @@ impl Connection {
         }
 
         self.spaces[space].crypto = Some(crypto);
+        self.qlog_key_change(now, space, false, Some("tls"));
+        if space == SpaceId::Data {
+            self.qlog_negotiated_alpn(now);
+        }
         debug_assert!(space as usize > self.highest_space as usize);
         self.highest_space = space;
         if space == SpaceId::Data && self.side.is_client() {
             // Discard 0-RTT keys because 1-RTT keys are available.
-            self.zero_rtt_crypto = None;
+            if self.zero_rtt_crypto.take().is_some() {
+                self.qlog_zero_rtt_key(now, true);
+            }
         }
     }
 
@@ -333,8 +347,10 @@ impl Connection {
                 *token = Bytes::new();
             }
         }
+        if self.spaces[space_id].crypto.take().is_some() {
+            self.qlog_key_change(now, space_id, true, Some("tls"));
+        }
         let space = &mut self.spaces[space_id];
-        space.crypto = None;
         space.time_of_last_ack_eliciting_packet = None;
         space.loss_time = None;
         let sent_packets = mem::take(&mut space.sent_packets);
@@ -376,6 +392,7 @@ impl Connection {
     /// Handle transport parameters received from the peer
     pub(super) fn handle_peer_params(
         &mut self,
+        now: Instant,
         params: TransportParameters,
     ) -> Result<(), TransportError> {
         if Some(self.orig_rem_cid) != params.initial_src_cid
@@ -388,12 +405,13 @@ impl Connection {
             ));
         }
 
-        self.set_peer_params(params);
+        self.qlog_remote_parameters(now, &params);
+        self.set_peer_params(now, params);
 
         Ok(())
     }
 
-    fn set_peer_params(&mut self, params: TransportParameters) {
+    fn set_peer_params(&mut self, now: Instant, params: TransportParameters) {
         self.streams.set_params(&params);
         self.idle_timeout =
             negotiate_max_idle_timeout(self.config.max_idle_timeout, Some(params.max_idle_timeout));
@@ -410,13 +428,21 @@ impl Connection {
         }
         self.ack_frequency.peer_max_ack_delay = get_max_ack_delay(&params);
         self.peer_params = params;
+        let old_mtu = self.path.current_mtu();
         self.path.mtud.on_peer_max_udp_payload_size_received(
             u16::try_from(self.peer_params.max_udp_payload_size.into_inner()).unwrap_or(u16::MAX),
         );
+        self.qlog_mtu_updated(now, old_mtu);
     }
 
-    pub(super) fn update_keys(&mut self, end_packet: Option<(u64, Instant)>, remote: bool) {
+    pub(super) fn update_keys(
+        &mut self,
+        now: Instant,
+        end_packet: Option<(u64, Instant)>,
+        remote: bool,
+    ) {
         trace!("executing key update");
+        self.qlog_discard_previous_keys(now);
         self.stats.key_updates = self.stats.key_updates.saturating_add(1);
         // Generate keys for the key phase after the one we're switching to, store them in
         // `next_crypto`, make the contents of `next_crypto` current, and move the current keys into
@@ -452,6 +478,16 @@ impl Connection {
             update_unacked: remote,
         });
         self.key_phase = !self.key_phase;
+        self.qlog_key_change(
+            now,
+            SpaceId::Data,
+            false,
+            Some(if remote {
+                "remote_update"
+            } else {
+                "local_update"
+            }),
+        );
     }
 
     pub(super) fn peer_supports_ack_frequency(&self) -> bool {

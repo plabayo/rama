@@ -1269,7 +1269,7 @@ impl Connection {
     /// [`ConnectionStats::key_updates`](crate::ConnectionStats::key_updates) counts the updates
     /// this connection has made, whichever side asked for them.
     pub fn force_key_update(&self) -> bool {
-        self.0.state.lock().inner.force_key_update()
+        self.0.state.lock().inner.force_key_update(now())
     }
 
     /// Derive keying material from this connection's TLS session secrets.
@@ -1813,7 +1813,7 @@ impl ConnectionInner {
                         conn.socket = Some(replacement);
                         PathFailure::Switched
                     }
-                    Switch::Now if conn.inner.migrate_local_address() => {
+                    Switch::Now if conn.inner.migrate_local_address(now()) => {
                         conn.socket = Some(replacement);
                         PathFailure::Switched
                     }
@@ -2600,7 +2600,7 @@ impl State {
                 match self.switch_to(pending) {
                     // The connection ID switch is committed first; the address follows only
                     // once it succeeded, so no CID is ever sent from two addresses.
-                    Switch::Now if !self.inner.migrate_local_address() => {}
+                    Switch::Now if !self.inner.migrate_local_address(now) => {}
                     Switch::SameAddress | Switch::Now => {
                         if let Some(socket) = self.pending_rebind.take()
                             && let Some(old) = self.socket.replace(socket)
