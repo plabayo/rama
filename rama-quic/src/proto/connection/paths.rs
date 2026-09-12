@@ -12,7 +12,6 @@ use crate::proto::{
     congestion, packet::SpaceId,
 };
 
-#[cfg(feature = "qlog")]
 use super::qlog::event::RecoveryMetricsUpdated;
 
 /// Description of a particular network path
@@ -63,9 +62,8 @@ pub(super) struct PathData {
     /// a packet was sent on a later path.
     first_packet: Option<u64>,
 
-    /// Snapshot of the qlog recovery metrics
-    #[cfg(feature = "qlog")]
-    recovery_metrics: RecoveryMetrics,
+    /// Snapshot allocated on the first recorded recovery event.
+    recovery_metrics: Option<Box<RecoveryMetrics>>,
 
     /// Tag uniquely identifying a path in a connection
     generation: u64,
@@ -239,8 +237,7 @@ impl PathData {
             first_packet_after_rtt_sample: None,
             in_flight: InFlight::new(),
             first_packet: None,
-            #[cfg(feature = "qlog")]
-            recovery_metrics: RecoveryMetrics::default(),
+            recovery_metrics: None,
             generation,
         }
     }
@@ -272,7 +269,6 @@ impl PathData {
             first_packet_after_rtt_sample: prev.first_packet_after_rtt_sample,
             in_flight: InFlight::new(),
             first_packet: None,
-            #[cfg(feature = "qlog")]
             recovery_metrics: prev.recovery_metrics.clone(),
             generation,
         }
@@ -339,7 +335,6 @@ impl PathData {
         true
     }
 
-    #[cfg(feature = "qlog")]
     pub(super) fn qlog_recovery_metrics(
         &mut self,
         pto_count: u32,
@@ -359,8 +354,9 @@ impl PathData {
             pacing_rate: controller_metrics.pacing_rate,
         };
 
-        let event = metrics.to_qlog_event(&self.recovery_metrics);
-        self.recovery_metrics = metrics;
+        let previous = self.recovery_metrics.get_or_insert_with(Box::default);
+        let event = metrics.to_qlog_event(previous);
+        **previous = metrics;
         event
     }
 
@@ -372,7 +368,6 @@ impl PathData {
 /// Congestion metrics as described in [`recovery_metrics_updated`].
 ///
 /// [`recovery_metrics_updated`]: https://datatracker.ietf.org/doc/html/draft-ietf-quic-qlog-quic-events.html#name-recovery_metrics_updated
-#[cfg(feature = "qlog")]
 #[derive(Default, Clone, PartialEq)]
 #[non_exhaustive]
 struct RecoveryMetrics {
@@ -387,7 +382,6 @@ struct RecoveryMetrics {
     pub(crate) pacing_rate: Option<u64>,
 }
 
-#[cfg(feature = "qlog")]
 impl RecoveryMetrics {
     /// Retain only values that have been updated since the last snapshot.
     fn retain_updated(&self, previous: &Self) -> Self {
@@ -655,7 +649,43 @@ mod challenge_tests;
 mod tests {
     use super::*;
 
-    #[cfg(feature = "qlog")]
+    #[test]
+    fn qlog_recovery_snapshot_is_only_allocated_when_recording() {
+        let now = Instant::now();
+        let mut path = PathData::new(
+            addr(443),
+            None,
+            false,
+            None,
+            0,
+            now,
+            &TransportConfig::default(),
+        );
+        super::super::qlog::QlogSink::default().emit_recovery_metrics(
+            0,
+            &mut path,
+            now,
+            ConnectionId::new(&[]),
+        );
+        assert!(path.recovery_metrics.is_none());
+        let untraced = PathData::from_previous(addr(444), None, &path, 1, now);
+        assert!(untraced.recovery_metrics.is_none());
+
+        assert!(path.qlog_recovery_metrics(0).is_some());
+        assert!(path.recovery_metrics.is_some());
+        assert!(path.qlog_recovery_metrics(0).is_none());
+        let mut migrated = PathData::from_previous(addr(444), None, &path, 1, now);
+        assert!(migrated.qlog_recovery_metrics(0).is_none());
+        assert_eq!(
+            migrated.qlog_recovery_metrics(1).unwrap().pto_count,
+            Some(1)
+        );
+        assert!(
+            path.qlog_recovery_metrics(0).is_none(),
+            "the new path owns its snapshot"
+        );
+    }
+
     #[test]
     fn qlog_rtt_metrics_use_milliseconds_and_only_report_changes() {
         let metrics = RecoveryMetrics {

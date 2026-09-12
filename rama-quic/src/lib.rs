@@ -30,8 +30,6 @@ mod proto;
 // (endpoints, connections, streams) is Rama-owned and lives in `driver`.
 #[cfg(any(feature = "aws-lc", feature = "ring"))]
 pub use proto::AddressTokenKey;
-#[cfg(feature = "qlog")]
-#[cfg_attr(docsrs, doc(cfg(feature = "qlog")))]
 pub use proto::QlogConfig;
 pub use proto::{
     AckFrequencyConfig, ApplicationClose, BloomTokenLog, Chunk, ClientConfig, ClosedStream,

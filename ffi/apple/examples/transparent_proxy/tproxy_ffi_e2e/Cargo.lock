@@ -2510,6 +2510,8 @@ dependencies = [
  "rand",
  "rand_pcg",
  "rustc-hash",
+ "serde",
+ "serde_json",
  "slab",
  "tokio",
 ]

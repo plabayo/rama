@@ -16,10 +16,6 @@ struct Output {
 struct Trace(Arc<Mutex<Output>>);
 
 impl Trace {
-    #[expect(
-        clippy::unwrap_used,
-        reason = "invalid JSON must fail the trace assertion"
-    )]
     fn records(&self) -> Vec<Value> {
         let output = self.0.lock();
         assert_eq!(output.bytes.first(), Some(&0x1e));

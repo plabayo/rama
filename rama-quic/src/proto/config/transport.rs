@@ -1,19 +1,12 @@
 use rama_utils::octets;
-use std::{fmt, sync::Arc};
-#[cfg(feature = "qlog")]
-use std::{io, time::Instant};
+use std::{fmt, io, sync::Arc, time::Instant};
 
-#[cfg(feature = "qlog")]
 use parking_lot::Mutex;
 
-#[cfg(feature = "qlog")]
-use crate::proto::connection::qlog::writer::QlogWriter;
-
-#[cfg(feature = "qlog")]
-use crate::proto::QlogStream;
 use crate::proto::{
-    ConfigError, Duration, INITIAL_MTU, MAX_UDP_PAYLOAD, VarInt, VarIntBoundsExceeded, congestion,
-    connection::qlog::QlogSink,
+    ConfigError, Duration, INITIAL_MTU, MAX_UDP_PAYLOAD, QlogStream, VarInt, VarIntBoundsExceeded,
+    congestion,
+    connection::qlog::{QlogSink, writer::QlogWriter},
 };
 
 /// The smallest initial congestion window this crate accepts: two datagrams of the size every
@@ -459,7 +452,6 @@ impl TransportConfig {
         /// Where connections write their qlog trace, and what it is titled.
         ///
         /// `None`, the default, writes none. A configuration without a writer also writes none.
-        #[cfg(feature = "qlog")]
         pub fn qlog(mut self, config: Option<QlogConfig>) -> Self {
             self.qlog_sink = config.and_then(QlogConfig::into_stream).into();
             self
@@ -573,9 +565,7 @@ impl fmt::Debug for TransportConfig {
             .field("congestion_control", congestion_control)
             .field("initial_congestion_window", initial_congestion_window)
             .field("enable_segmentation_offload", enable_segmentation_offload);
-        if cfg!(feature = "qlog") {
-            s.field("qlog_stream", &qlog_sink.is_enabled());
-        }
+        s.field("qlog_stream", &qlog_sink.is_enabled());
 
         s.finish_non_exhaustive()
     }
@@ -676,7 +666,6 @@ impl Default for AckFrequencyConfig {
 /// buffered or off-thread writer. A failed write ends the trace and is logged.
 /// The writer is flushed when its last shared configuration/connection handle
 /// is dropped. A configuration with no writer produces no trace.
-#[cfg(feature = "qlog")]
 pub struct QlogConfig {
     writer: Option<Box<dyn io::Write + Send + Sync>>,
     title: Option<String>,
@@ -684,7 +673,6 @@ pub struct QlogConfig {
     start_time: Instant,
 }
 
-#[cfg(feature = "qlog")]
 impl QlogConfig {
     rama_utils::macros::generate_set_and_with! {
         /// Where to write the qlog JSON text sequence.
@@ -738,7 +726,6 @@ impl QlogConfig {
     }
 }
 
-#[cfg(feature = "qlog")]
 impl Default for QlogConfig {
     fn default() -> Self {
         Self {

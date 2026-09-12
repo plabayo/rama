@@ -208,7 +208,6 @@ impl PacketBuilder {
         let ack_eliciting = self.ack_eliciting;
         let exact_number = self.exact_number;
         let space_id = self.space;
-        #[cfg(feature = "qlog")]
         let is_0rtt = space_id == SpaceId::Data && conn.spaces[SpaceId::Data].crypto.is_none();
         let datagram_start = self.datagram_start;
         let (size, padded) = self.finish(conn, now, buffer);
@@ -233,7 +232,6 @@ impl PacketBuilder {
             time_sent: now,
             size,
             ack_eliciting,
-            #[cfg(feature = "qlog")]
             is_0rtt,
             retransmits: sent.retransmits,
             stream_frames: sent.stream_frames,

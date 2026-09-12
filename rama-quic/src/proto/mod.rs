@@ -44,13 +44,11 @@ pub(crate) use crate::proto::connection::{Datagrams, Streams};
 pub(crate) use crate::proto::endpoint::AcceptError;
 #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 pub(crate) use crate::proto::frame::Datagram;
-#[cfg(feature = "qlog")]
 pub(crate) use connection::qlog::QlogStream;
 
 mod config;
 #[cfg(any(feature = "aws-lc", feature = "ring"))]
 pub use config::AddressTokenKey;
-#[cfg(feature = "qlog")]
 pub use config::QlogConfig;
 pub use config::{
     AckFrequencyConfig, ClientConfig, ConfigError, CongestionControl, EndpointConfig, IdleTimeout,
