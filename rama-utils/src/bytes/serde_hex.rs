@@ -1,8 +1,12 @@
 //! Serialize byte fields as hex strings, with one adapter for vectors and arrays.
 //!
-//! The default is lowercase without a prefix. Use [`upper`], [`prefixed`], or
-//! [`upper_prefixed`] for common alternatives, or [`colon`] / [`upper_colon`]
-//! for colon-separated bytes. Deserialization accepts either
+//! The default is lowercase without a prefix. Use
+//! [`upper`](crate::bytes::serde_hex::upper),
+//! [`prefixed`](crate::bytes::serde_hex::prefixed), or
+//! [`upper_prefixed`](crate::bytes::serde_hex::upper_prefixed) for common alternatives,
+//! or [`colon`](crate::bytes::serde_hex::colon) /
+//! [`upper_colon`](crate::bytes::serde_hex::upper_colon) for colon-separated bytes.
+//! Deserialization accepts either
 //! digit case and requires the selected prefix and separators exactly.
 //!
 //! ```
@@ -19,8 +23,8 @@
 //! ```
 //!
 //! For custom formats, use [`crate::hex::serde_with!`]. Serialization uses
-//! [`Serializer::collect_str`]; whether it allocates depends on the serializer.
-//! Deserializing an array needs no intermediate vector.
+//! [`Serializer::collect_str`](serde::Serializer::collect_str); whether it allocates
+//! depends on the serializer. Deserializing an array needs no intermediate vector.
 
 use core::{fmt, marker::PhantomData};
 
