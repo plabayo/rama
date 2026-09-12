@@ -13,7 +13,9 @@ use core::fmt;
 use crate::std::{String, Vec};
 
 mod decode;
-pub use decode::{DecodeError, FromHex, decode};
+pub use decode::{DecodeError, FromHex, decode, decode_append, decode_into};
+#[cfg(feature = "std")]
+pub use decode::{DecodeWriteError, decode_write};
 
 #[doc(inline)]
 pub use crate::__hex_serde_with as serde_with;
