@@ -1199,6 +1199,63 @@ mod tests {
         }
     }
 
+    #[test]
+    fn server_enforces_peer_version_and_keep_alive_state() {
+        for peer_version in [Version::HTTP_10, Version::HTTP_11] {
+            for response_version in [Version::HTTP_10, Version::HTTP_11] {
+                for enabled in [false, true] {
+                    for explicit_keep_alive in [false, true] {
+                        let io = TestIo::new(tokio_test::io::Builder::new().build());
+                        let mut conn = Conn::<_, Bytes, ServerTransaction>::new(io);
+                        conn.state.version = peer_version;
+                        if !enabled {
+                            conn.state.disable_keep_alive();
+                        }
+                        let mut head = MessageHead {
+                            version: response_version,
+                            ..MessageHead::default()
+                        };
+                        if explicit_keep_alive {
+                            head.headers
+                                .insert(CONNECTION, HeaderValue::from_static("keep-alive"));
+                        }
+                        conn.enforce_version(&mut head);
+                        assert_eq!(
+                            head.version,
+                            if peer_version == Version::HTTP_10 {
+                                Version::HTTP_10
+                            } else {
+                                response_version
+                            }
+                        );
+                        let expected_enabled = enabled
+                            && !(peer_version == Version::HTTP_10
+                                && response_version == Version::HTTP_10
+                                && !explicit_keep_alive);
+                        assert_eq!(conn.state.wants_keep_alive(), expected_enabled);
+                        let expected_header = if peer_version == Version::HTTP_11 && !enabled {
+                            Some("close")
+                        } else if explicit_keep_alive
+                            || (peer_version == Version::HTTP_10
+                                && response_version == Version::HTTP_11
+                                && enabled)
+                        {
+                            Some("keep-alive")
+                        } else {
+                            None
+                        };
+                        assert_eq!(
+                            head.headers
+                                .get(CONNECTION)
+                                .map(|value| value.to_str().unwrap()),
+                            expected_header
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     // A client request carrying `Connection: close` must evict the connection
     // (disable keep-alive) at request-encode time, so it is never returned to the
     // pool for reuse — independent of whether the backend response echoes

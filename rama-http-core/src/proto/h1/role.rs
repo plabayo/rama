@@ -5,7 +5,9 @@ use rama_core::bytes::BytesMut;
 use rama_core::extensions::Extensions;
 use rama_core::telemetry::tracing::{debug, error, trace, trace_span, warn};
 use rama_http::HeaderName;
-use rama_http::proto::h1::ext::{ReasonPhrase, RequestTargetForm};
+use rama_http::proto::h1::ext::{
+    CloseDelimitedResponse, OriginalResponseBodyFraming, ReasonPhrase, RequestTargetForm,
+};
 use rama_http::proto::{HeaderByteLength, RequestHeaders};
 
 use rama_http_types::header::Entry;
@@ -371,6 +373,19 @@ impl Http1Transaction for Server {
             msg.head.subject, msg.body, msg.req_method
         );
 
+        let close_delimited = Self::use_close_delimited_response(
+            msg.head.extensions,
+            &msg.head.headers,
+            msg.req_method.as_ref(),
+            msg.head.subject,
+        );
+        if close_delimited {
+            msg.head
+                .headers
+                .insert(header::CONNECTION, HeaderValue::from_static("close"));
+            msg.keep_alive = false;
+        }
+
         let mut wrote_len = false;
 
         // hyper currently doesn't support returning 1xx status codes as a Response
@@ -439,8 +454,9 @@ impl Http1Transaction for Server {
             extend(dst, b"\r\n");
         }
 
-        let extensions = std::mem::take(msg.head.extensions);
-        let encoder = Self::encode_h1_headers(msg, &extensions, dst, is_last, orig_len, wrote_len)?;
+        let _extensions = std::mem::take(msg.head.extensions);
+        let encoder =
+            Self::encode_h1_headers(msg, close_delimited, dst, is_last, orig_len, wrote_len)?;
         ret.map(|()| encoder)
     }
 
@@ -473,6 +489,25 @@ impl Http1Transaction for Server {
 }
 
 impl Server {
+    // Explicit headers override a framing preference carried in extensions.
+    // Keep normal header validation and bodyless-response handling authoritative.
+    fn use_close_delimited_response(
+        extensions: &Extensions,
+        headers: &HeaderMap,
+        method: Option<&Method>,
+        status: StatusCode,
+    ) -> bool {
+        extensions.contains::<CloseDelimitedResponse>()
+            && Self::can_have_body(method, status)
+            && ![
+                header::CONTENT_LENGTH,
+                header::TRANSFER_ENCODING,
+                header::TRAILER,
+            ]
+            .iter()
+            .any(|name| headers.contains_key(name))
+    }
+
     fn can_have_body(method: Option<&Method>, status: StatusCode) -> bool {
         Self::can_chunked(method, status)
     }
@@ -502,7 +537,7 @@ impl Server {
 
     fn encode_h1_headers(
         msg: Encode<'_, StatusCode>,
-        ext: &Extensions,
+        close_delimited: bool,
         dst: &mut Vec<u8>,
         is_last: bool,
         orig_len: usize,
@@ -549,7 +584,7 @@ impl Server {
 
         Self::encode_headers(
             msg,
-            ext,
+            close_delimited,
             dst,
             is_last,
             orig_len,
@@ -560,8 +595,8 @@ impl Server {
 
     #[inline]
     fn encode_headers<W>(
-        msg: Encode<'_, StatusCode>,
-        ext: &Extensions,
+        mut msg: Encode<'_, StatusCode>,
+        close_delimited: bool,
         dst: &mut Vec<u8>,
         mut is_last: bool,
         orig_len: usize,
@@ -578,12 +613,29 @@ impl Server {
             dst.truncate(orig_len);
         };
 
+        // Normalize repeated or comma-separated lengths before writing any headers.
+        // Every value must parse and agree; never select just the first value.
+        let normalize_content_length = {
+            let mut values = msg.head.headers.get_all(header::CONTENT_LENGTH).into_iter();
+            values
+                .next()
+                .is_some_and(|first| first.as_bytes().contains(&b',') || values.next().is_some())
+        };
+        if normalize_content_length {
+            let Some(len) = headers::content_length_parse_all(&msg.head.headers) else {
+                warn!("invalid or conflicting Content-Length values");
+                rewind(dst);
+                return Err(crate::Error::new_user_header());
+            };
+            msg.head
+                .headers
+                .insert(header::CONTENT_LENGTH, HeaderValue::from(len));
+        }
         let mut encoder = Encoder::length(0);
         let mut allowed_trailer_fields = headers::trailer_header_names(&msg.head.headers);
         let mut wrote_date = false;
         let mut is_name_written = false;
         let mut must_write_chunked = false;
-        let mut prev_con_len = None;
         let connection_header_names = headers::connection_header_names(&msg.head.headers);
 
         macro_rules! handle_is_name_written {
@@ -604,8 +656,6 @@ impl Server {
                 }
             }};
         }
-
-        let _ = ext;
 
         'headers: for (name, value) in msg.head.headers.into_ordered_iter() {
             handle_is_name_written!();
@@ -655,27 +705,12 @@ impl Server {
                             // Encoder...
 
                             if let Some(len) = headers::content_length_parse(&value) {
-                                if let Some(prev) = prev_con_len {
-                                    if prev != len {
-                                        warn!(
-                                            "multiple Content-Length values found: [{}, {}]",
-                                            prev, len
-                                        );
-                                        rewind(dst);
-                                        return Err(crate::Error::new_user_header());
-                                    }
-                                    debug_assert!(is_name_written);
-                                    continue 'headers;
-                                } else {
-                                    // we haven't written content-length yet!
-                                    encoder = Encoder::length(len);
-                                    header_name_writer.write_header_name_with_colon(dst, &name);
-                                    extend(dst, value.as_bytes());
-                                    wrote_len = true;
-                                    is_name_written = true;
-                                    prev_con_len = Some(len);
-                                    continue 'headers;
-                                }
+                                encoder = Encoder::length(len);
+                                header_name_writer.write_header_name_with_colon(dst, &name);
+                                extend(dst, value.as_bytes());
+                                wrote_len = true;
+                                is_name_written = true;
+                                continue 'headers;
                             } else {
                                 warn!("illegal Content-Length value: {:?}", value);
                                 rewind(dst);
@@ -785,7 +820,9 @@ impl Server {
 
         handle_is_name_written!();
 
-        if !wrote_len {
+        if !wrote_len && close_delimited {
+            encoder = Encoder::close_delimited();
+        } else if !wrote_len {
             encoder = match msg.body {
                 Some(BodyLength::Unknown) => {
                     if msg.head.version == Version::HTTP_10
@@ -1028,6 +1065,16 @@ impl Http1Transaction for Client {
                 extensions,
             };
             if let Some((decode, is_upgrade)) = Self::decoder(&head, ctx.req_method)? {
+                let framing = if !Server::can_have_body(ctx.req_method.as_ref(), status) {
+                    OriginalResponseBodyFraming::Empty
+                } else if head.headers.contains_key(header::TRANSFER_ENCODING) {
+                    OriginalResponseBodyFraming::TransferEncoded
+                } else if decode == DecodedLength::CLOSE_DELIMITED {
+                    OriginalResponseBodyFraming::CloseDelimited
+                } else {
+                    OriginalResponseBodyFraming::ContentLength
+                };
+                head.extensions.insert(framing);
                 return Ok(Some(ParsedMessage {
                     head,
                     decode,
@@ -2850,6 +2897,453 @@ mod tests {
                 .encode_trailers::<&[u8]>(trailers(), false)
                 .is_none()
         );
+    }
+
+    // Unknown response lengths must retain the framing appropriate to the
+    // response version. Connection: close controls reuse, not chunking.
+    #[test]
+    fn server_response_framing_for_version_and_length() {
+        use crate::proto::BodyLength;
+
+        for version in [Version::HTTP_10, Version::HTTP_11] {
+            for known_length in [false, true] {
+                for close in [false, true] {
+                    let mut head = MessageHead {
+                        version,
+                        ..MessageHead::default()
+                    };
+                    if close {
+                        head.headers
+                            .insert(header::CONNECTION, HeaderValue::from_static("close"));
+                    }
+                    let mut bytes = Vec::new();
+                    let encoder = Server::encode(
+                        Encode {
+                            head: EncodeHead {
+                                version: head.version,
+                                subject: head.subject,
+                                headers: head.headers,
+                                extensions: &mut head.extensions,
+                            },
+                            body: Some(if known_length {
+                                BodyLength::Known(4)
+                            } else {
+                                BodyLength::Unknown
+                            }),
+                            keep_alive: !close,
+                            req_method: &mut Some(Method::POST),
+                            title_case_headers: false,
+                            date_header: false,
+                        },
+                        &mut bytes,
+                    )
+                    .unwrap();
+                    let wire = String::from_utf8(bytes).unwrap().to_ascii_lowercase();
+                    let expected = if known_length {
+                        Encoder::length(4)
+                    } else if version == Version::HTTP_10 {
+                        Encoder::close_delimited()
+                    } else {
+                        Encoder::chunked()
+                    }
+                    .set_last(close);
+                    assert_eq!(
+                        encoder, expected,
+                        "{version:?}, known={known_length}, close={close}"
+                    );
+                    assert!(
+                        wire.starts_with(&format!("{version:?} 200 OK\r\n").to_ascii_lowercase())
+                    );
+                    assert_eq!(
+                        wire.contains("transfer-encoding: chunked\r\n"),
+                        encoder.is_chunked()
+                    );
+                    assert_eq!(wire.contains("content-length: 4\r\n"), known_length);
+                    assert_eq!(wire.contains("connection: close\r\n"), close);
+                }
+            }
+        }
+    }
+
+    fn encode_close_delimited_test_response(
+        mut head: MessageHead<StatusCode>,
+        body: Option<BodyLength>,
+        method: Method,
+    ) -> crate::Result<(Encoder, Vec<u8>)> {
+        let mut wire = Vec::new();
+        let encoder = Server::encode(
+            Encode {
+                head: EncodeHead {
+                    version: head.version,
+                    subject: head.subject,
+                    headers: head.headers,
+                    extensions: &mut head.extensions,
+                },
+                body,
+                keep_alive: true,
+                req_method: &mut Some(method),
+                title_case_headers: false,
+                date_header: false,
+            },
+            &mut wire,
+        )?;
+        Ok((encoder, wire))
+    }
+
+    #[test]
+    fn server_normalizes_identical_content_lengths() {
+        for version in [Version::HTTP_10, Version::HTTP_11] {
+            for preference in [false, true] {
+                for values in [
+                    &["4", "4"][..],
+                    &["04", "4", "004"][..],
+                    &["4, 4"][..],
+                    &["4, 04", "004"][..],
+                ] {
+                    for (method, body, expected_length) in [
+                        (Method::GET, Some(BodyLength::Unknown), 4),
+                        (Method::GET, Some(BodyLength::Known(4)), 4),
+                        (Method::HEAD, None, 0),
+                        (Method::HEAD, Some(BodyLength::Known(0)), 0),
+                    ] {
+                        let mut head = MessageHead {
+                            version,
+                            ..MessageHead::default()
+                        };
+                        if preference {
+                            head.extensions.insert(CloseDelimitedResponse);
+                        }
+                        for value in values {
+                            head.headers
+                                .append("Content-Length", HeaderValue::from_static(value));
+                            head.headers
+                                .insert("x-between", HeaderValue::from_static("kept"));
+                        }
+                        let (encoder, wire) =
+                            encode_close_delimited_test_response(head, body, method).unwrap();
+                        assert_eq!(encoder, Encoder::length(expected_length));
+                        let wire = String::from_utf8(wire).unwrap().to_ascii_lowercase();
+                        assert_eq!(wire.matches("content-length:").count(), 1, "{wire}");
+                        assert!(wire.contains("content-length: 4\r\n"), "{wire}");
+                        assert!(wire.contains("x-between: kept\r\n"), "{wire}");
+                        assert!(!wire.contains("transfer-encoding:"));
+                        assert!(!wire.contains("connection: close"));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn server_rejects_invalid_or_conflicting_content_lengths_without_output() {
+        for values in [
+            &["4", "5"][..],
+            &["4", ""][..],
+            &["4", "+4"][..],
+            &["4", "four"][..],
+            &["4", "18446744073709551616"][..],
+            &["4, 5"][..],
+            &["4, "][..],
+            &[",4"][..],
+            &["4, 4", "5"][..],
+        ] {
+            for reverse in [false, true] {
+                for preference in [false, true] {
+                    for body in [Some(BodyLength::Unknown), Some(BodyLength::Known(4))] {
+                        let mut head = MessageHead::default();
+                        if preference {
+                            head.extensions.insert(CloseDelimitedResponse);
+                        }
+                        let mut values = values.to_vec();
+                        if reverse {
+                            values.reverse();
+                        }
+                        for value in values {
+                            head.headers
+                                .append(header::CONTENT_LENGTH, HeaderValue::from_static(value));
+                        }
+                        let mut wire = b"previous response".to_vec();
+                        let error = Server::encode(
+                            Encode {
+                                head: EncodeHead {
+                                    version: head.version,
+                                    subject: head.subject,
+                                    headers: head.headers,
+                                    extensions: &mut head.extensions,
+                                },
+                                body,
+                                keep_alive: true,
+                                req_method: &mut Some(Method::GET),
+                                title_case_headers: false,
+                                date_header: false,
+                            },
+                            &mut wire,
+                        )
+                        .unwrap_err();
+                        assert!(matches!(
+                            error.kind(),
+                            crate::error::Kind::User(crate::error::User::UnexpectedHeader)
+                        ));
+                        assert_eq!(wire, b"previous response");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn normalized_content_length_still_conflicts_with_transfer_encoding() {
+        for transfer_encoding_first in [false, true] {
+            for body in [Some(BodyLength::Unknown), Some(BodyLength::Known(4))] {
+                let mut head = MessageHead::default();
+                head.extensions.insert(CloseDelimitedResponse);
+                if transfer_encoding_first {
+                    head.headers.insert(
+                        header::TRANSFER_ENCODING,
+                        HeaderValue::from_static("chunked"),
+                    );
+                }
+                for _ in 0..2 {
+                    head.headers
+                        .append(header::CONTENT_LENGTH, HeaderValue::from_static("4"));
+                }
+                if !transfer_encoding_first {
+                    head.headers.insert(
+                        header::TRANSFER_ENCODING,
+                        HeaderValue::from_static("chunked"),
+                    );
+                }
+                let error =
+                    encode_close_delimited_test_response(head, body, Method::GET).unwrap_err();
+                assert!(matches!(
+                    error.kind(),
+                    crate::error::Kind::User(crate::error::User::UnexpectedHeader)
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn explicit_close_delimited_response_overrides_size_hint_and_keep_alive() {
+        for version in [Version::HTTP_10, Version::HTTP_11] {
+            for body in [
+                None,
+                Some(BodyLength::Known(0)),
+                Some(BodyLength::Known(4)),
+                Some(BodyLength::Unknown),
+            ] {
+                let mut head = MessageHead {
+                    version,
+                    ..MessageHead::default()
+                };
+                head.extensions.insert(CloseDelimitedResponse);
+                head.headers
+                    .insert(header::CONNECTION, HeaderValue::from_static("keep-alive"));
+                let (encoder, wire) =
+                    encode_close_delimited_test_response(head, body, Method::GET).unwrap();
+                assert_eq!(encoder, Encoder::close_delimited().set_last(true));
+                assert_eq!(
+                    wire,
+                    format!("{version:?} 200 OK\r\nconnection: close\r\n\r\n").as_bytes()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn explicit_headers_override_close_delimited_preference() {
+        for (name, value, expected) in [
+            (header::CONTENT_LENGTH, "4", Encoder::length(4)),
+            (header::TRANSFER_ENCODING, "chunked", Encoder::chunked()),
+            (header::TRANSFER_ENCODING, "gzip", Encoder::chunked()),
+        ] {
+            let mut head = MessageHead::default();
+            head.extensions.insert(CloseDelimitedResponse);
+            head.headers
+                .insert(name.clone(), HeaderValue::from_static(value));
+            let (encoder, wire) =
+                encode_close_delimited_test_response(head, Some(BodyLength::Unknown), Method::GET)
+                    .unwrap();
+            assert_eq!(encoder, expected);
+            let wire = String::from_utf8(wire).unwrap();
+            assert!(wire.contains(&format!("{name}: {value}")));
+            assert!(!wire.contains("connection: close"));
+        }
+        let mut head = MessageHead::default();
+        head.extensions.insert(CloseDelimitedResponse);
+        head.headers
+            .insert(header::TRAILER, HeaderValue::from_static("checksum"));
+        let (encoder, wire) =
+            encode_close_delimited_test_response(head, Some(BodyLength::Unknown), Method::GET)
+                .unwrap();
+        assert!(encoder.is_chunked());
+        assert!(!encoder.is_last());
+        assert!(
+            String::from_utf8(wire)
+                .unwrap()
+                .contains("trailer: checksum\r\n")
+        );
+    }
+
+    #[test]
+    fn close_delimited_preference_does_not_hide_invalid_content_length() {
+        let mut head = MessageHead::default();
+        head.extensions.insert(CloseDelimitedResponse);
+        head.headers
+            .insert(header::CONTENT_LENGTH, HeaderValue::from_static("invalid"));
+        encode_close_delimited_test_response(head, Some(BodyLength::Unknown), Method::GET)
+            .unwrap_err();
+    }
+
+    #[test]
+    fn close_delimited_directive_does_not_change_bodyless_responses() {
+        for (method, status) in [
+            (Method::HEAD, StatusCode::OK),
+            (Method::GET, StatusCode::NO_CONTENT),
+            (Method::GET, StatusCode::NOT_MODIFIED),
+            (Method::CONNECT, StatusCode::OK),
+            (Method::GET, StatusCode::SWITCHING_PROTOCOLS),
+        ] {
+            let baseline = MessageHead {
+                subject: status,
+                ..MessageHead::default()
+            };
+            let marked = MessageHead {
+                subject: status,
+                ..MessageHead::default()
+            };
+            marked.extensions.insert(CloseDelimitedResponse);
+            assert_eq!(
+                encode_close_delimited_test_response(baseline, None, method.clone()).unwrap(),
+                encode_close_delimited_test_response(marked, None, method).unwrap(),
+            );
+        }
+    }
+
+    #[test]
+    fn close_delimited_preference_is_inherited_but_explicit_headers_win() {
+        let context = Extensions::new();
+        context.insert(CloseDelimitedResponse);
+        for extensions in [context.fork(), context.fork().fork()] {
+            for explicit_length in [false, true] {
+                let mut head = MessageHead {
+                    extensions: extensions.clone(),
+                    ..MessageHead::default()
+                };
+                if explicit_length {
+                    head.headers
+                        .insert(header::CONTENT_LENGTH, HeaderValue::from_static("4"));
+                }
+                let (encoder, wire) = encode_close_delimited_test_response(
+                    head,
+                    Some(BodyLength::Unknown),
+                    Method::GET,
+                )
+                .unwrap();
+                assert_eq!(
+                    encoder,
+                    if explicit_length {
+                        Encoder::length(4)
+                    } else {
+                        Encoder::close_delimited().set_last(true)
+                    }
+                );
+                assert_eq!(
+                    String::from_utf8(wire)
+                        .unwrap()
+                        .contains("connection: close\r\n"),
+                    !explicit_length
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn original_response_framing_is_recorded_and_overrides_inherited_metadata() {
+        use rama_http_types::proto::h1::ext::OriginalResponseBodyFraming as Framing;
+        for (version, method, status, headers, expected) in [
+            ("1.0", Method::GET, "200 OK", "", Framing::CloseDelimited),
+            ("1.1", Method::GET, "200 OK", "", Framing::CloseDelimited),
+            (
+                "1.1",
+                Method::GET,
+                "200 OK",
+                "Connection: close\r\n",
+                Framing::CloseDelimited,
+            ),
+            (
+                "1.1",
+                Method::GET,
+                "200 OK",
+                "Content-Length: 0\r\n",
+                Framing::ContentLength,
+            ),
+            (
+                "1.1",
+                Method::GET,
+                "200 OK",
+                "Content-Length: 4\r\n",
+                Framing::ContentLength,
+            ),
+            (
+                "1.1",
+                Method::GET,
+                "200 OK",
+                "Transfer-Encoding: chunked\r\n",
+                Framing::TransferEncoded,
+            ),
+            (
+                "1.1",
+                Method::GET,
+                "200 OK",
+                "Transfer-Encoding: gzip\r\n",
+                Framing::TransferEncoded,
+            ),
+            (
+                "1.1",
+                Method::HEAD,
+                "200 OK",
+                "Content-Length: 4\r\n",
+                Framing::Empty,
+            ),
+            ("1.1", Method::GET, "204 No Content", "", Framing::Empty),
+            ("1.1", Method::GET, "304 Not Modified", "", Framing::Empty),
+            ("1.1", Method::CONNECT, "200 OK", "", Framing::Empty),
+            (
+                "1.1",
+                Method::GET,
+                "101 Switching Protocols",
+                "",
+                Framing::Empty,
+            ),
+        ] {
+            let inherited = Extensions::new();
+            inherited.insert(if expected == Framing::CloseDelimited {
+                Framing::Empty
+            } else {
+                Framing::CloseDelimited
+            });
+            let mut raw =
+                BytesMut::from(format!("HTTP/{version} {status}\r\n{headers}\r\n").as_bytes());
+            let msg = Client::parse(
+                &mut raw,
+                ParseContext {
+                    req_method: &mut Some(method),
+                    h1_parser_config: Default::default(),
+                    h1_max_headers: None,
+                    h09_responses: false,
+                    on_informational: &mut None,
+                    prepared_extensions: &mut Some(inherited.fork()),
+                },
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(
+                msg.head.extensions.self_get_ref::<Framing>(),
+                Some(&expected)
+            );
+            assert_eq!(msg.head.extensions.get_ref::<Framing>(), Some(&expected));
+        }
     }
 
     #[test]

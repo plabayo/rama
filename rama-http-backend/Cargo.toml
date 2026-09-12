@@ -59,6 +59,7 @@ rama-unix = { workspace = true }
 rama-net = { workspace = true, features = ["test-utils"] }
 rama-ws = { workspace = true }
 serde_json = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

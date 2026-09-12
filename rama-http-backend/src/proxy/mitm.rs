@@ -29,7 +29,10 @@ use rama_http_core::server::conn::{
     auto::Builder as AutoConnBuilder, http1::Builder as Http1ConnBuilder,
     http2::Builder as H2ConnBuilder,
 };
-use rama_http_types::proto::{h1::ext::ConnectionClose, h2::frame::Settings};
+use rama_http_types::proto::{
+    h1::ext::{CloseDelimitedResponse, ConnectionClose, OriginalResponseBodyFraming},
+    h2::frame::Settings,
+};
 use rama_net::client::EstablishedClientConnection;
 use rama_net::uri::Uri;
 
@@ -133,6 +136,14 @@ pub type DefaultMiddleware = (
 /// Useful if you have a fairly standard MITM http flow and already
 /// have pre-established ingress and egress connections (e.g. because
 /// you already MITM'd the <L7 layers, such as SOCKS5 MITM'ng, TLS, ...).
+///
+/// HTTP/1 responses originally delimited by EOF (without Content-Length or
+/// Transfer-Encoding) retain that framing downstream, including HTTP/1.1.
+/// They stream without chunking and close the downstream connection at body EOF.
+/// Preserving EOF framing sacrifices downstream connection reuse and explicit truncation detection.
+/// Middleware can select different framing by adding Content-Length or
+/// Transfer-Encoding; a Trailer header also prevents automatic EOF framing.
+/// HTTP/2 framing is unaffected.
 ///
 /// The relay does not consume proxy-authentication fields: a transparent
 /// intermediary may be forwarding them to the proxy that owns the exchange.
@@ -325,7 +336,25 @@ where
                     let close_ingress = token.clone();
                     let guard = request_guard.clone();
                     async move {
-                        Ok(handle_relay_request(&relay_state, req, guard, close_ingress).await)
+                        let version = req.version();
+                        let resp =
+                            handle_relay_request(&relay_state, req, guard, close_ingress).await;
+                        // Hop sanitation has already consumed received framing headers.
+                        // Use decoder metadata, while respecting framing originated by middleware.
+                        if matches!(version, Version::HTTP_10 | Version::HTTP_11)
+                            && resp.extensions().get_ref::<OriginalResponseBodyFraming>()
+                                == Some(&OriginalResponseBodyFraming::CloseDelimited)
+                            && ![
+                                header::CONTENT_LENGTH,
+                                header::TRANSFER_ENCODING,
+                                header::TRAILER,
+                            ]
+                            .iter()
+                            .any(|name| resp.headers().contains_key(name))
+                        {
+                            resp.extensions().insert(CloseDelimitedResponse);
+                        }
+                        Ok(resp)
                     }
                 }),
             )
