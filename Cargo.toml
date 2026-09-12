@@ -136,7 +136,7 @@ futures-channel = "0.3"
 futures-core = { version = "0.3", default-features = false }
 futures-util = { version = "0.3", default-features = false }
 hex = "0.4"
-hickory-resolver = { version = "0.26.2", default-features = false, features = ["tokio", "system-config", "serde"] }
+hickory-resolver = { version = "0.26.3", default-features = false, features = ["tokio", "system-config", "serde"] }
 honggfuzz = "0.5"
 http = "1" # interop-only (rama-http-hyperium / rama-tower); native rama Uri handles CONNECT, so no version pin needed
 http-body = "1" # interop-only (rama-http-hyperium body bridge)
@@ -280,7 +280,7 @@ uuid = "1.26"
 venndb = "0.6"
 walkdir = "2.5"
 want = "0.3"
-wasmtime = { version = "48.0.1", default-features = false }
+wasmtime = { version = "48.0.2", default-features = false }
 webpki-root-certs = "1.0"
 webpki-roots = "1.0"
 wildcard = "0.3"
