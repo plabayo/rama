@@ -132,7 +132,7 @@ async fn test_http_multipart_form() {
     assert!(lines.contains("72757374"), "lines: {lines:?}");
     // Content-Disposition + name="username" appears in the part header bytes.
     // "name=\"username\"" -> hex
-    let needle = hex_of("name=\"username\"");
+    let needle = rama::utils::fmt::hex("name=\"username\"").to_string();
     assert!(lines.contains(&needle), "needle={needle} lines: {lines:?}");
 }
 
@@ -166,14 +166,6 @@ async fn test_http_data_inmemory_emits_content_length() {
         lines.contains(r##""content-length","16""##),
         "lines: {lines:?}",
     );
-}
-
-fn hex_of(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() * 2);
-    for b in s.as_bytes() {
-        out.push_str(&format!("{b:02x}"));
-    }
-    out
 }
 
 #[ignore]

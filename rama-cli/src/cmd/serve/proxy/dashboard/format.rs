@@ -38,7 +38,7 @@ pub(super) fn header_preview(value: &HeaderValue) -> impl fmt::Display + '_ {
         // Header values remain borrowed; only the final HTML buffer is allocated.
         match std::str::from_utf8(bytes) {
             Ok(text) => f.write_str(&text[..text.floor_char_boundary(limit)])?,
-            Err(_) => write!(f, "{}", rama::utils::fmt::hex(&bytes[..limit]))?,
+            Err(_) => write!(f, "{:#X}", rama::utils::fmt::hex(&bytes[..limit]))?,
         }
         if limit < bytes.len() {
             f.write_str("…")?;

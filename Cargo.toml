@@ -445,7 +445,6 @@ cli = [
     "std",
     "dep:base64",
     "dep:bytes",
-    "dep:hex",
     "dep:serde",
     "dep:serde_json",
     "dep:tokio",
@@ -567,7 +566,6 @@ dial9 = [
 ahash = { workspace = true, optional = true }
 base64 = { workspace = true, optional = true }
 bytes = { workspace = true, features = ["std"], optional = true }
-hex = { workspace = true, optional = true }
 pin-project-lite = { workspace = true, optional = true }
 rama-core = { workspace = true }
 rama-crypto = { workspace = true, optional = true }

@@ -235,7 +235,7 @@ impl PeetPrint {
                 self.write_to_fmt(&mut writer)?;
             }
             let digest = ctx.finalize();
-            write!(f, "{}", hex::encode(*digest))
+            rama_utils::fmt::hex(&*digest).write_to(f)
         } else {
             self.write_to_fmt(f)
         }

@@ -37,7 +37,6 @@ base64 = { workspace = true }
 bytes = { workspace = true, features = ["std"] }
 dial9-trace-format = { workspace = true, optional = true }
 flume = { workspace = true, features = ["async"] }
-hex = { workspace = true }
 jiff = { workspace = true }
 md5 = { workspace = true }
 nom = { workspace = true }

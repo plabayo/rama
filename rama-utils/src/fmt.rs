@@ -50,29 +50,34 @@ pub fn display_fn<F>(formatter: F) -> DisplayFn<F> {
     DisplayFn(formatter)
 }
 
-/// Display bytes as contiguous uppercase hexadecimal prefixed with `0x`.
+/// Borrow bytes as contiguous lowercase hexadecimal without a prefix.
 ///
-/// Formatting is deferred and does not allocate.
-pub fn hex(bytes: &[u8]) -> impl fmt::Display + '_ {
-    display_fn(move |formatter: &mut fmt::Formatter<'_>| {
-        formatter.write_str("0x")?;
-        for &byte in bytes {
-            let encoded = crate::hex::encode_byte_upper(byte);
-            formatter.write_char(char::from(encoded[0]))?;
-            formatter.write_char(char::from(encoded[1]))?;
-        }
-        Ok(())
-    })
+/// Creating and configuring the view does not allocate. Use its [`Hex`](crate::hex::Hex)
+/// methods to select case/prefix, create owned output, or encode into an existing
+/// destination. Formatting with `:x` / `:X` selects lowercase / uppercase;
+/// `:#x` / `:#X` also adds `0x`, independently of the view's configuration.
+///
+/// ```
+/// use rama_utils::fmt::hex;
+///
+/// let view = hex(&[0x00, 0xab]);
+/// assert_eq!(view.to_string(), "00ab");
+/// assert_eq!(format!("{view:#X}"), "0x00AB");
+/// assert_eq!(hex("Hi").to_vec(), b"4869");
+/// ```
+pub fn hex<T: AsRef<[u8]> + ?Sized>(bytes: &T) -> crate::hex::Hex<'_> {
+    crate::hex::Hex::new(bytes.as_ref())
 }
 
-/// Display valid UTF-8 as a quoted debug string, or other bytes as [`hex`].
+/// Display valid UTF-8 as a quoted debug string, or other bytes as uppercase
+/// hexadecimal prefixed with `0x`.
 ///
 /// Formatting is deferred and does not allocate.
 pub fn utf8_or_hex(bytes: &[u8]) -> impl fmt::Display + '_ {
     display_fn(
         move |formatter: &mut fmt::Formatter<'_>| match core::str::from_utf8(bytes) {
             Ok(text) => write!(formatter, "{text:?}"),
-            Err(_) => fmt::Display::fmt(&hex(bytes), formatter),
+            Err(_) => write!(formatter, "{:#X}", hex(bytes)),
         },
     )
 }
@@ -182,9 +187,9 @@ mod tests {
     }
 
     #[test]
-    fn displays_bytes_as_uppercase_hex_without_separators() {
-        assert_eq!(hex(&[0x00, 0x4f, 0xa5, 0xff]).to_string(), "0x004FA5FF");
-        assert_eq!(hex(&[]).to_string(), "0x");
+    fn displays_bytes_as_lowercase_hex_without_prefix_or_separators() {
+        assert_eq!(hex(&[0x00, 0x4f, 0xa5, 0xff]).to_string(), "004fa5ff");
+        assert_eq!(hex(&[]).to_string(), "");
     }
 
     #[test]

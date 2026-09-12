@@ -351,11 +351,7 @@ macro_rules! __enum_builder {
                         match ::core::str::from_utf8(x) {
                             Ok(x) => write!(f, "Unknown ({x})"),
                             Err(_) => {
-                                write!(f, "Unknown (0x")?;
-                                for byte in x {
-                                    write!(f, "{byte:02x}")?;
-                                }
-                                write!(f, ")")
+                                write!(f, "Unknown ({:#x})", $crate::fmt::hex(x))
                             },
                         }
                     },
