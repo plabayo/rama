@@ -76,12 +76,28 @@ async fn a_configured_qlog_writer_receives_the_connection_s_trace() {
     assert_eq!(
         headers
             .iter()
-            .map(|header| header.get("qlog_format").and_then(Value::as_str))
+            .map(|header| header.get("serialization_format").and_then(Value::as_str))
             .collect::<Vec<_>>(),
-        vec![Some("JSON-SEQ")],
+        vec![Some("application/qlog+json-seq")],
         "the stream opens with one header, and it says what the format is"
     );
-    for name in ["transport:packet_sent", "transport:packet_received"] {
+    assert_eq!(
+        headers[0]["file_schema"],
+        "urn:ietf:params:qlog:file:sequential"
+    );
+    assert_eq!(
+        headers[0]["trace"]["event_schemas"],
+        serde_json::json!(["urn:ietf:params:qlog:events:quic-13"])
+    );
+    let common = &headers[0]["trace"]["common_fields"];
+    assert_eq!(common["reference_time"]["clock_type"], "monotonic");
+    assert_eq!(common["reference_time"]["epoch"], "unknown");
+    assert_eq!(common["time_format"], "relative_to_epoch");
+    for name in [
+        "quic:packet_sent",
+        "quic:packet_received",
+        "quic:recovery_metrics_updated",
+    ] {
         assert!(
             events.iter().any(|event| event.name == name),
             "the writer received this connection's {name} records: {events:?}"
@@ -230,7 +246,7 @@ fn parse(written: &[u8]) -> (Vec<Value>, Vec<Recorded>) {
             .unwrap_or_else(|error| panic!("a record is not JSON: {error}: {record}"));
         // A stream opens with a header, and a second configuration writing into the same one
         // opens another. Anything else is an event and must name itself.
-        if value.get("qlog_format").is_some() {
+        if value.get("serialization_format").is_some() {
             headers.push(value);
             continue;
         }

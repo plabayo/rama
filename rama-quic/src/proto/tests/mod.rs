@@ -36,6 +36,8 @@ use util::*;
 mod admission;
 mod closing;
 mod datagrams;
+#[cfg(feature = "qlog")]
+mod qlog;
 mod tls;
 mod token;
 mod validation;

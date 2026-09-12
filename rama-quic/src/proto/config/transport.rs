@@ -7,7 +7,7 @@ use std::{io, time::Instant};
 use parking_lot::Mutex;
 
 #[cfg(feature = "qlog")]
-use qlog::streamer::QlogStreamer;
+use crate::proto::connection::qlog::writer::QlogWriter;
 
 #[cfg(feature = "qlog")]
 use crate::proto::QlogStream;
@@ -665,10 +665,17 @@ impl Default for AckFrequencyConfig {
     }
 }
 
-/// Where a connection writes its qlog trace (draft-ietf-quic-qlog), and what the trace says
+/// Where a connection writes its qlog trace, and what the trace says
 /// about itself.
 ///
-/// A configuration with no writer produces no trace.
+/// Uses qlog main schema draft 14 and QUIC events draft 13, serialized as
+/// `application/qlog+json-seq`. Packet sends, receives, losses and recovery
+/// metric changes carry a connection group ID and millisecond timestamps.
+///
+/// Writes synchronously to the supplied writer; callers can wrap it in a
+/// buffered or off-thread writer. A failed write ends the trace and is logged.
+/// The writer is flushed when its last shared configuration/connection handle
+/// is dropped. A configuration with no writer produces no trace.
 #[cfg(feature = "qlog")]
 pub struct QlogConfig {
     writer: Option<Box<dyn io::Write + Send + Sync>>,
@@ -680,7 +687,7 @@ pub struct QlogConfig {
 #[cfg(feature = "qlog")]
 impl QlogConfig {
     rama_utils::macros::generate_set_and_with! {
-        /// Where to write a qlog `TraceSeq`
+        /// Where to write the qlog JSON text sequence.
         pub fn writer(mut self, writer: Box<dyn io::Write + Send + Sync>) -> Self {
             self.writer = Some(writer);
             self
@@ -716,34 +723,13 @@ impl QlogConfig {
         use rama_core::telemetry::tracing::warn;
 
         let writer = self.writer?;
-        let trace = qlog::TraceSeq::new(
-            qlog::VantagePoint {
-                name: None,
-                ty: qlog::VantagePointType::Unknown,
-                flow: None,
-            },
-            self.title.clone(),
-            self.description.clone(),
-            Some(qlog::Configuration {
-                time_offset: Some(0.0),
-                original_uris: None,
-            }),
-            None,
-        );
-
-        let mut streamer = QlogStreamer::new(
-            qlog::QLOG_VERSION.into(),
-            self.title,
-            self.description,
-            None,
-            self.start_time,
-            trace,
-            qlog::events::EventImportance::Core,
+        match QlogWriter::new(
             writer,
-        );
-
-        match streamer.start_log() {
-            Ok(()) => Some(QlogStream(Arc::new(Mutex::new(streamer)))),
+            self.start_time,
+            self.title.as_deref(),
+            self.description.as_deref(),
+        ) {
+            Ok(writer) => Some(QlogStream(Arc::new(Mutex::new(writer)))),
             Err(e) => {
                 warn!("could not initialize endpoint qlog streamer: {e}");
                 None

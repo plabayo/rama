@@ -15,17 +15,15 @@ use parking_lot::Mutex;
 use std::time::Duration;
 
 #[cfg(feature = "qlog")]
-use qlog::{
-    events::{
-        Event, EventData,
-        quic::{
-            PacketHeader, PacketLost, PacketLostTrigger, PacketReceived, PacketSent, PacketType,
-        },
-    },
-    streamer::QlogStreamer,
-};
+pub(super) mod event;
+#[cfg(feature = "qlog")]
+pub(crate) mod writer;
+#[cfg(feature = "qlog")]
+use event::{Event, Packet, PacketHeader, PacketLost, PacketLostTrigger, PacketType, RawInfo};
 #[cfg(feature = "qlog")]
 use rama_core::telemetry::tracing::warn;
+#[cfg(feature = "qlog")]
+use writer::QlogWriter;
 
 use crate::proto::{
     ConnectionId, Instant,
@@ -36,7 +34,7 @@ use crate::proto::{
 /// Shareable handle to a single qlog output stream
 #[cfg(feature = "qlog")]
 #[derive(Clone)]
-pub(crate) struct QlogStream(pub(crate) Arc<Mutex<QlogStreamer>>);
+pub(crate) struct QlogStream(pub(crate) Arc<Mutex<QlogWriter>>);
 
 #[cfg(feature = "qlog")]
 impl QlogStream {
@@ -44,13 +42,9 @@ impl QlogStream {
     /// the client chose for its first Initial (RFC 9000 §7.2): it is the one identifier both
     /// ends know and neither changes, so every record of a connection carries the same group
     /// even when several connections write into one stream.
-    fn emit_event(&self, group: ConnectionId, event: EventData, now: Instant) {
-        // Time will be overwritten by `add_event_with_instant`
-        let mut event = Event::with_time(0.0, event);
-        event.group_id = Some(group.to_string());
-
-        let mut qlog_streamer = self.0.lock();
-        if let Err(e) = qlog_streamer.add_event_with_instant(event, now) {
+    fn emit_event(&self, group: ConnectionId, event: Event, now: Instant) {
+        let result = self.0.lock().emit(&group, event, now);
+        if let Err(e) = result {
             warn!("could not emit qlog event: {e}");
         }
     }
@@ -106,7 +100,7 @@ impl QlogSink {
                 return;
             };
 
-            stream.emit_event(group, EventData::MetricsUpdated(metrics), now);
+            stream.emit_event(group, Event::RecoveryMetricsUpdated(metrics), now);
         }
     }
 
@@ -126,22 +120,18 @@ impl QlogSink {
             };
 
             let event = PacketLost {
-                header: Some(PacketHeader {
-                    packet_number: Some(pn),
-                    packet_type: packet_type(space, false),
-                    length: Some(info.size),
-                    ..Default::default()
-                }),
-                frames: None,
-                trigger: Some(
-                    match info.time_sent.saturating_duration_since(now) >= loss_delay {
-                        true => PacketLostTrigger::TimeThreshold,
-                        false => PacketLostTrigger::ReorderingThreshold,
-                    },
-                ),
+                header: PacketHeader {
+                    packet_number: pn,
+                    packet_type: packet_type(space, info.is_0rtt),
+                },
+                is_mtu_probe_packet: false,
+                trigger: match now.saturating_duration_since(info.time_sent) >= loss_delay {
+                    true => PacketLostTrigger::TimeThreshold,
+                    false => PacketLostTrigger::ReorderingThreshold,
+                },
             };
 
-            stream.emit_event(group, EventData::PacketLost(event), now);
+            stream.emit_event(group, Event::PacketLost(event), now);
         }
     }
 
@@ -160,17 +150,15 @@ impl QlogSink {
                 return;
             };
 
-            let event = PacketSent {
+            let event = Packet {
                 header: PacketHeader {
-                    packet_number: Some(pn),
+                    packet_number: pn,
                     packet_type: packet_type(space, is_0rtt),
-                    length: Some(len as u16),
-                    ..Default::default()
                 },
-                ..Default::default()
+                raw: Some(RawInfo { length: len }),
             };
 
-            stream.emit_event(group, EventData::PacketSent(event), now);
+            stream.emit_event(group, Event::PacketSent(event), now);
         }
     }
 
@@ -188,16 +176,15 @@ impl QlogSink {
                 return;
             };
 
-            let event = PacketReceived {
+            let event = Packet {
                 header: PacketHeader {
-                    packet_number: Some(pn),
+                    packet_number: pn,
                     packet_type: packet_type(space, is_0rtt),
-                    ..Default::default()
                 },
-                ..Default::default()
+                raw: None,
             };
 
-            stream.emit_event(group, EventData::PacketReceived(event), now);
+            stream.emit_event(group, Event::PacketReceived(event), now);
         }
     }
 }
@@ -218,3 +205,6 @@ fn packet_type(space: SpaceId, is_0rtt: bool) -> PacketType {
         SpaceId::Data => PacketType::OneRtt,
     }
 }
+
+#[cfg(all(test, feature = "qlog"))]
+mod tests;

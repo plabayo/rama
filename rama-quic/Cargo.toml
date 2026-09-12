@@ -29,7 +29,7 @@ rustls = ["dep:rama-tls-rustls"]
 aws-lc = ["rama-crypto/aws-lc", "rama-tls-rustls?/aws-lc"]
 ring = ["rama-crypto/ring", "rama-tls-rustls?/ring"]
 # Optional qlog (draft-ietf-quic-qlog) event output; off by default.
-qlog = ["dep:qlog"]
+qlog = ["dep:serde", "dep:serde_json"]
 # Deterministic in-memory sockets and engine simulator helpers for tests.
 test-utils = ["rama-udp/test-utils"]
 # Byte-oriented hooks used by the workspace fuzz crate only.
@@ -47,7 +47,6 @@ fastbloom = { workspace = true }
 lru-slab = { workspace = true }
 parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
-qlog = { workspace = true, optional = true }
 rama-core = { workspace = true, features = ["std"] }
 rama-crypto = { workspace = true }
 rama-net = { workspace = true, features = ["std"] }
@@ -60,6 +59,8 @@ rama-utils = { workspace = true, features = ["std"] }
 rand = { workspace = true }
 rand_pcg = { workspace = true }
 rustc-hash = { workspace = true }
+serde = { workspace = true, features = ["derive"], optional = true }
+serde_json = { workspace = true, optional = true }
 slab = { workspace = true }
 tokio = { workspace = true, features = ["macros", "net", "rt", "sync", "time"] }
 

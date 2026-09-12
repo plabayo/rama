@@ -13,7 +13,7 @@ use crate::proto::{
 };
 
 #[cfg(feature = "qlog")]
-use qlog::events::quic::MetricsUpdated;
+use super::qlog::event::RecoveryMetricsUpdated;
 
 /// Description of a particular network path
 pub(super) struct PathData {
@@ -340,7 +340,10 @@ impl PathData {
     }
 
     #[cfg(feature = "qlog")]
-    pub(super) fn qlog_recovery_metrics(&mut self, pto_count: u32) -> Option<MetricsUpdated> {
+    pub(super) fn qlog_recovery_metrics(
+        &mut self,
+        pto_count: u32,
+    ) -> Option<RecoveryMetricsUpdated> {
         let controller_metrics = self.congestion.metrics();
 
         let metrics = RecoveryMetrics {
@@ -350,7 +353,6 @@ impl PathData {
             rtt_variance: Some(self.rtt.var),
             pto_count: Some(pto_count),
             bytes_in_flight: Some(self.in_flight.bytes),
-            packets_in_flight: Some(self.in_flight.ack_eliciting),
 
             congestion_window: Some(controller_metrics.congestion_window),
             ssthresh: controller_metrics.ssthresh,
@@ -380,7 +382,6 @@ struct RecoveryMetrics {
     pub(crate) rtt_variance: Option<Duration>,
     pub(crate) pto_count: Option<u32>,
     pub(crate) bytes_in_flight: Option<u64>,
-    pub(crate) packets_in_flight: Option<u64>,
     pub(crate) congestion_window: Option<u64>,
     pub(crate) ssthresh: Option<u64>,
     pub(crate) pacing_rate: Option<u64>,
@@ -407,31 +408,29 @@ impl RecoveryMetrics {
             rtt_variance: keep_if_changed!(rtt_variance),
             pto_count: keep_if_changed!(pto_count),
             bytes_in_flight: keep_if_changed!(bytes_in_flight),
-            packets_in_flight: keep_if_changed!(packets_in_flight),
             congestion_window: keep_if_changed!(congestion_window),
             ssthresh: keep_if_changed!(ssthresh),
             pacing_rate: keep_if_changed!(pacing_rate),
         }
     }
 
-    /// Emit a `MetricsUpdated` event containing only updated values
-    fn to_qlog_event(&self, previous: &Self) -> Option<MetricsUpdated> {
+    /// Emit a `RecoveryMetricsUpdated` event containing only updated values
+    fn to_qlog_event(&self, previous: &Self) -> Option<RecoveryMetricsUpdated> {
         let updated = self.retain_updated(previous);
 
         if updated == Self::default() {
             return None;
         }
 
-        Some(MetricsUpdated {
-            min_rtt: updated.min_rtt.map(|rtt| rtt.as_secs_f32()),
-            smoothed_rtt: updated.smoothed_rtt.map(|rtt| rtt.as_secs_f32()),
-            latest_rtt: updated.latest_rtt.map(|rtt| rtt.as_secs_f32()),
-            rtt_variance: updated.rtt_variance.map(|rtt| rtt.as_secs_f32()),
+        Some(RecoveryMetricsUpdated {
+            min_rtt: updated.min_rtt.map(|rtt| rtt.as_secs_f32() * 1000.0),
+            smoothed_rtt: updated.smoothed_rtt.map(|rtt| rtt.as_secs_f32() * 1000.0),
+            latest_rtt: updated.latest_rtt.map(|rtt| rtt.as_secs_f32() * 1000.0),
+            rtt_variance: updated.rtt_variance.map(|rtt| rtt.as_secs_f32() * 1000.0),
             pto_count: updated
                 .pto_count
                 .map(|count| count.try_into().unwrap_or(u16::MAX)),
             bytes_in_flight: updated.bytes_in_flight,
-            packets_in_flight: updated.packets_in_flight,
             congestion_window: updated.congestion_window,
             ssthresh: updated.ssthresh,
             pacing_rate: updated.pacing_rate,
@@ -655,6 +654,37 @@ mod challenge_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "qlog")]
+    #[test]
+    fn qlog_rtt_metrics_use_milliseconds_and_only_report_changes() {
+        let metrics = RecoveryMetrics {
+            min_rtt: Some(Duration::from_micros(1250)),
+            smoothed_rtt: Some(Duration::from_micros(2500)),
+            latest_rtt: Some(Duration::from_micros(3750)),
+            rtt_variance: Some(Duration::from_micros(500)),
+            pto_count: Some(u32::MAX),
+            ..Default::default()
+        };
+        let event = metrics.to_qlog_event(&RecoveryMetrics::default()).unwrap();
+        assert_eq!(event.min_rtt, Some(1.25));
+        assert_eq!(event.smoothed_rtt, Some(2.5));
+        assert_eq!(event.latest_rtt, Some(3.75));
+        assert_eq!(event.rtt_variance, Some(0.5));
+        assert_eq!(event.pto_count, Some(u16::MAX));
+        assert!(metrics.to_qlog_event(&metrics).is_none());
+
+        let changed = RecoveryMetrics {
+            pto_count: Some(1),
+            ..metrics
+        };
+        let event = changed.to_qlog_event(&metrics).unwrap();
+        assert_eq!(event.pto_count, Some(1));
+        assert!(event.min_rtt.is_none());
+        assert!(event.smoothed_rtt.is_none());
+        assert!(event.latest_rtt.is_none());
+        assert!(event.rtt_variance.is_none());
+    }
 
     fn addr(port: u16) -> SocketAddr {
         SocketAddr::new(std::net::Ipv4Addr::LOCALHOST.into(), port)
