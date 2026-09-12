@@ -500,7 +500,11 @@ mod tests {
     fn owned_destinations_and_all_byte_values() {
         let bytes: Vec<_> = (0..=255).collect();
         for case in [HexCase::Lower, HexCase::Upper] {
-            let text = hex(&bytes).with_case(case).to_string();
+            let text = match case {
+                HexCase::Lower => hex(&bytes).with_lower_case(),
+                HexCase::Upper => hex(&bytes).with_upper_case(),
+            }
+            .to_string();
             assert_eq!(decode::<Vec<u8>>(&text).unwrap(), bytes);
             assert_eq!(decode::<[u8; 256]>(&text).unwrap().as_slice(), bytes);
         }
@@ -546,7 +550,7 @@ mod tests {
     #[test]
     fn shared_format_round_trips_prefixes_and_utf8() {
         for prefix in ["0x", "SHA:", "🔑:"] {
-            let format = Format::new().with_case(HexCase::Upper).with_prefix(prefix);
+            let format = Format::new().with_upper_case().with_prefix(prefix);
             let view = hex(&[0xab, 0]).with_format(format);
             let text = format!("{prefix}AB00");
             assert_eq!(view.to_string(), text);

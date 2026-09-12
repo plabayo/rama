@@ -15,7 +15,7 @@ use rama::{
     service::BoxService,
     telemetry::tracing,
     tls::boring::core::{sha::sha256, x509::X509},
-    utils::{fmt::hex, hex::HexCase},
+    utils::fmt::hex,
 };
 use std::{convert::Infallible, sync::Arc};
 
@@ -79,7 +79,7 @@ pub(super) fn ca_sha256_fingerprint(ca_pem: &[u8]) -> Result<String, BoxError> {
         .context("encode MITM CA certificate as DER")?;
     let digest = sha256(&der);
     Ok(hex(&digest)
-        .with_case(HexCase::Upper)
+        .with_upper_case()
         .with_separator(":")
         .to_string())
 }

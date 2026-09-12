@@ -4,7 +4,6 @@ use std::fmt::{self, Write};
 
 use rama_utils::{
     fmt::hex as display_hex,
-    hex::HexCase,
     octets::kib,
     str::utf8::{self, DecodeError, Incomplete},
 };
@@ -137,7 +136,7 @@ pub async fn matches_reader(
         }
         if !hex.matched {
             _ = display_hex(&buffer[..count])
-                .with_case(HexCase::Upper)
+                .with_upper_case()
                 .write_to(&mut hex);
         }
         let mut input = &buffer[..count];
@@ -188,7 +187,7 @@ pub async fn matches_hex_reader(
             break;
         }
         _ = display_hex(&buffer[..count])
-            .with_case(HexCase::Upper)
+            .with_upper_case()
             .write_to(&mut matcher);
     }
     Ok(matcher.matched)

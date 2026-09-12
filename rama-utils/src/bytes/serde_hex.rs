@@ -95,9 +95,9 @@ pub use serde as __serde;
 /// can expose the adapter for reuse elsewhere.
 ///
 /// ```
-/// use rama_utils::hex::{self, Format, HexCase};
+/// use rama_utils::hex::{self, Format};
 /// const CUSTOM: Format<'static> = Format::new()
-///     .with_case(HexCase::Upper).with_prefix("sha256:");
+///     .with_upper_case().with_prefix("sha256:");
 /// hex::serde_with!(custom_hex, CUSTOM);
 /// #[derive(serde::Serialize, serde::Deserialize)]
 /// struct Payload(#[serde(with = "custom_hex")] [u8; 2]);
@@ -143,7 +143,7 @@ macro_rules! __hex_serde_with {
 
 crate::__hex_serde_with!(
     /// Uppercase hex without a prefix.
-    pub upper, Format::new().with_case(crate::hex::HexCase::Upper)
+    pub upper, Format::new().with_upper_case()
 );
 crate::__hex_serde_with!(
     /// Lowercase hex with a required `0x` prefix.
@@ -152,7 +152,7 @@ crate::__hex_serde_with!(
 crate::__hex_serde_with!(
     /// Uppercase hex with a required lowercase `0x` prefix.
     pub upper_prefixed,
-    Format::new().with_case(crate::hex::HexCase::Upper).with_prefix("0x")
+    Format::new().with_upper_case().with_prefix("0x")
 );
 
 crate::__hex_serde_with!(
@@ -161,7 +161,7 @@ crate::__hex_serde_with!(
 );
 crate::__hex_serde_with!(
     /// Uppercase colon-separated bytes, without a prefix.
-    pub upper_colon, Format::new().with_case(crate::hex::HexCase::Upper).with_separator(":")
+    pub upper_colon, Format::new().with_upper_case().with_separator(":")
 );
 
 #[cfg(test)]
@@ -170,9 +170,7 @@ mod tests {
     use crate::std::Vec;
     use serde_test::{Token, assert_ser_tokens};
 
-    const FORMAT: Format<'static> = Format::new()
-        .with_case(crate::hex::HexCase::Upper)
-        .with_prefix("🔑:");
+    const FORMAT: Format<'static> = Format::new().with_upper_case().with_prefix("🔑:");
     crate::hex::serde_with!(custom, FORMAT);
     crate::hex::serde_with!(relative, super::FORMAT);
 

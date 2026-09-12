@@ -27,7 +27,7 @@ pub use crate::__hex_serde_with as serde_with;
 
 /// Letter case for hexadecimal digits.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum HexCase {
+enum HexCase {
     /// Use `a` through `f` (the default).
     #[default]
     Lower,
@@ -53,9 +53,9 @@ impl HexCase {
 /// lifetime, shortened as needed when combining independently borrowed values.
 ///
 /// ```
-/// use rama_utils::{fmt::hex, hex::{Format, HexCase}};
+/// use rama_utils::{fmt::hex, hex::Format};
 /// const FORMAT: Format<'static> = Format::new()
-///     .with_case(HexCase::Upper).with_prefix("hash:").with_separator(":");
+///     .with_upper_case().with_prefix("hash:").with_separator(":");
 /// let view = hex(&[0, 0xab, 255]).with_format(FORMAT);
 /// assert_eq!(view.to_string(), "hash:00:AB:FF");
 /// assert_eq!(FORMAT.decode::<[u8; 3]>("hash:00:aB:ff")?, [0, 0xab, 255]);
@@ -80,9 +80,17 @@ impl<'a> Format<'a> {
     }
 
     generate_set_and_with!(
-        /// Select the encoding case. Decoding always accepts both cases.
-        pub const fn case(mut self, case: HexCase) -> Self {
-            self.case = case;
+        /// Select lowercase hex digits. Decoding always accepts both cases.
+        pub const fn lower_case(mut self) -> Self {
+            self.case = HexCase::Lower;
+            self
+        }
+    );
+
+    generate_set_and_with!(
+        /// Select uppercase hex digits. Decoding always accepts both cases.
+        pub const fn upper_case(mut self) -> Self {
+            self.case = HexCase::Upper;
             self
         }
     );
@@ -122,7 +130,7 @@ impl<'a> Format<'a> {
 /// Other formatting flags are ignored.
 ///
 /// ```
-/// use rama_utils::{fmt::hex, hex::HexCase};
+/// use rama_utils::fmt::hex;
 ///
 /// let bytes = [0x00, 0xab, 0xff];
 /// let view = hex(&bytes);
@@ -130,7 +138,7 @@ impl<'a> Format<'a> {
 /// assert_eq!(view.to_vec(), b"00abff");
 /// assert_eq!(format!("{view:#X}"), "0x00ABFF");
 /// assert_eq!(view.with_custom_prefix("bytes:").with_separator(":").to_string(), "bytes:00:ab:ff");
-/// assert_eq!(view.with_case(HexCase::Upper).with_prefix(true).to_string(), "0x00ABFF");
+/// assert_eq!(view.with_upper_case().with_prefix(true).to_string(), "0x00ABFF");
 ///
 /// let mut storage = [0; 8];
 /// assert_eq!(view.encode_to_slice(&mut storage)?, b"00abff");
@@ -152,9 +160,19 @@ impl<'a> Hex<'a> {
     }
 
     generate_set_and_with!(
-        /// Select the digit case for [`Display`](fmt::Display) and output methods.
-        pub const fn case(mut self, case: HexCase) -> Self {
-            self.format.case = case;
+        /// Select lowercase hex digits.
+        /// Applies to [`Display`](fmt::Display) and output methods.
+        pub const fn lower_case(mut self) -> Self {
+            self.format.case = HexCase::Lower;
+            self
+        }
+    );
+
+    generate_set_and_with!(
+        /// Select uppercase hex digits.
+        /// Applies to [`Display`](fmt::Display) and output methods.
+        pub const fn upper_case(mut self) -> Self {
+            self.format.case = HexCase::Upper;
             self
         }
     );
@@ -317,7 +335,7 @@ impl fmt::Display for Hex<'_> {
 
 impl fmt::LowerHex for Hex<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.with_case(HexCase::Lower)
+        self.with_lower_case()
             .with_prefix(f.alternate())
             .write_to(f)
     }
@@ -325,7 +343,7 @@ impl fmt::LowerHex for Hex<'_> {
 
 impl fmt::UpperHex for Hex<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.with_case(HexCase::Upper)
+        self.with_upper_case()
             .with_prefix(f.alternate())
             .write_to(f)
     }
@@ -455,7 +473,11 @@ mod tests {
                 // Exercise the writer's stack-buffer boundaries as well as empty input.
                 for len in [0, 1, 63, 64, 65, 127, 128, 129, 255, 256] {
                     let bytes = &bytes[..len];
-                    let view = hex(bytes).with_case(case).with_prefix(prefix);
+                    let view = match case {
+                        HexCase::Lower => hex(bytes).with_lower_case(),
+                        HexCase::Upper => hex(bytes).with_upper_case(),
+                    }
+                    .with_prefix(prefix);
                     let mut expected = String::new();
                     if prefix {
                         expected.push_str("0x");
@@ -501,7 +523,11 @@ mod tests {
     fn formatting_traits_override_configured_case_and_prefix() {
         for case in [HexCase::Lower, HexCase::Upper] {
             for prefix in [false, true] {
-                let view = hex(&[0x00, 0xab, 0xff]).with_case(case).with_prefix(prefix);
+                let view = match case {
+                    HexCase::Lower => hex(&[0x00, 0xab, 0xff]).with_lower_case(),
+                    HexCase::Upper => hex(&[0x00, 0xab, 0xff]).with_upper_case(),
+                }
+                .with_prefix(prefix);
                 assert_eq!(format!("{view:x}"), "00abff");
                 assert_eq!(format!("{view:X}"), "00ABFF");
                 assert_eq!(format!("{view:#x}"), "0x00abff");
@@ -513,10 +539,7 @@ mod tests {
         assert_eq!(format!("{empty:#X}"), "0x");
         let original = hex(&[0xab]);
         assert_eq!(
-            original
-                .with_case(HexCase::Upper)
-                .with_prefix(true)
-                .to_string(),
+            original.with_upper_case().with_prefix(true).to_string(),
             "0xAB"
         );
         assert_eq!(original.to_string(), "ab");

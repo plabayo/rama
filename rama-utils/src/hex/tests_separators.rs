@@ -7,10 +7,12 @@ fn every_output_path_round_trips_literal_framing() {
     for prefix in ["", "0x", "00", "🔑:"] {
         for separator in ["", ":", " ", "ab", " :: ", "→", "\0"] {
             for case in [HexCase::Lower, HexCase::Upper] {
-                let format = Format::new()
-                    .with_prefix(prefix)
-                    .with_separator(separator)
-                    .with_case(case);
+                let format = match case {
+                    HexCase::Lower => Format::new().with_lower_case(),
+                    HexCase::Upper => Format::new().with_upper_case(),
+                }
+                .with_prefix(prefix)
+                .with_separator(separator);
                 for bytes in [&bytes[..0], &bytes[..1], &bytes[..3], &bytes[..]] {
                     let digits: Vec<_> = bytes
                         .iter()
@@ -69,9 +71,7 @@ fn every_output_path_round_trips_literal_framing() {
 fn builders_borrow_and_format_flags_keep_the_separator() {
     let bytes = Vec::from([0, 0xab, 255]);
     let prefix = String::from("hash:");
-    let view = hex(&bytes)
-        .with_custom_prefix(&prefix)
-        .with_case(HexCase::Upper);
+    let view = hex(&bytes).with_custom_prefix(&prefix).with_upper_case();
     {
         let separator = String::from(":");
         let view = view.with_separator(&separator);
@@ -265,9 +265,11 @@ fn setters_and_const_builders_keep_borrowed_configuration() {
         format.with_prefix(prefix)
     }
     const FORMAT: Format<'static> = Format::new()
-        .with_case(HexCase::Upper)
+        .with_upper_case()
         .with_prefix("0x")
         .with_separator(":");
+    const LOWER: Format<'static> = FORMAT.with_lower_case();
+    assert_eq!(hex(&[0, 0xab]).with_format(LOWER).to_string(), "0x00:ab");
     const VIEW: Hex<'static> = Hex::new(&[0, 0xab])
         .with_format(FORMAT)
         .with_custom_prefix("hash:");
@@ -286,7 +288,7 @@ fn setters_and_const_builders_keep_borrowed_configuration() {
     );
     let mut format = Format::new();
     format
-        .set_case(HexCase::Upper)
+        .set_upper_case()
         .set_prefix(&prefix)
         .set_separator(&separator);
     assert_eq!(
@@ -296,12 +298,17 @@ fn setters_and_const_builders_keep_borrowed_configuration() {
     let mut view = hex(&[0, 0xab]);
     view.set_format(format);
     assert_eq!(view.to_string(), "borrowed:00-AB");
-    view.set_case(HexCase::Lower)
-        .set_prefix(true)
-        .set_separator(":");
+    view.set_lower_case().set_prefix(true).set_separator(":");
     assert_eq!(view.to_string(), "0x00:ab");
     view.set_custom_prefix(&prefix);
     assert_eq!(view.to_string(), "borrowed:00:ab");
     view.set_prefix(false);
     assert_eq!(view.to_string(), "00:ab");
+    view.set_upper_case();
+    assert_eq!(view.to_string(), "00:AB");
+    format.set_lower_case();
+    assert_eq!(
+        hex(&[0, 0xab]).with_format(format).to_string(),
+        "borrowed:00-ab"
+    );
 }
