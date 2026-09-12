@@ -15,8 +15,9 @@ use rama::{
     service::BoxService,
     telemetry::tracing,
     tls::boring::core::{sha::sha256, x509::X509},
+    utils::{fmt::hex, hex::HexCase},
 };
-use std::{convert::Infallible, fmt::Write as _, sync::Arc};
+use std::{convert::Infallible, sync::Arc};
 
 const RAMA_LOGO_SVG: &str = include_str!("../../../../../docs/img/rama_logo.svg");
 const STYLE_CSS: &str = include_str!("portal.css");
@@ -77,14 +78,10 @@ pub(super) fn ca_sha256_fingerprint(ca_pem: &[u8]) -> Result<String, BoxError> {
         .to_der()
         .context("encode MITM CA certificate as DER")?;
     let digest = sha256(&der);
-    let mut fingerprint = String::with_capacity(digest.len() * 3 - 1);
-    for (index, byte) in digest.iter().enumerate() {
-        if index != 0 {
-            fingerprint.push(':');
-        }
-        write!(&mut fingerprint, "{byte:02X}").context("format MITM CA fingerprint")?;
-    }
-    Ok(fingerprint)
+    Ok(hex(&digest)
+        .with_case(HexCase::Upper)
+        .with_separator(":")
+        .to_string())
 }
 
 fn certificate_download(ca_pem: Bytes) -> Response {

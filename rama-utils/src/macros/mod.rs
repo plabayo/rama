@@ -359,7 +359,7 @@ macro_rules! __generate_set_and_with {
     ) => {
         $crate::macros::paste! {
             $(#[$outer_doc])*
-            #[must_use]
+            #[must_use = "use the returned value to retain the updated configuration"]
             $vis const fn [<with_ $fn_name>](mut $self_token, $($param_name: $param_ty),+) -> Self {
                 $($body)*
             }

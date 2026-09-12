@@ -4,11 +4,13 @@ use super::{Format, nibble};
 use crate::std::Vec;
 
 /// Invalid hex input or an incompatible output size.
-/// Indices are byte offsets in the original input, including its prefix.
+/// Indices are byte offsets in the original input, including prefix/separators.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecodeError {
     /// The configured literal prefix is missing or differs.
     InvalidPrefix,
+    /// A required separator differs or a separator trails the last byte.
+    InvalidSeparator { index: usize },
     /// A byte has no matching second hex digit.
     OddLength,
     /// An input byte is not an ASCII hex digit.
@@ -25,6 +27,7 @@ impl fmt::Display for DecodeError {
             Self::InvalidPrefix => {
                 f.write_str("hex input does not start with the configured prefix")
             }
+            Self::InvalidSeparator { index } => write!(f, "invalid hex separator at byte {index}"),
             Self::OddLength => f.write_str("hex input has an odd number of digits"),
             Self::InvalidDigit { byte, index } => {
                 write!(f, "invalid hex byte 0x{byte:02X} at byte {index}")
@@ -82,9 +85,10 @@ pub fn decode_into<B: AsMut<[u8]> + ?Sized>(
     Format::new().decode_into(input, output)
 }
 
-/// Append decoded bytes to a collection, returning the number appended.
+/// Append decoded bytes to a collection, returning the number supplied to it.
 ///
-/// Preserves existing contents and lets the collection allocate as needed.
+/// Does not clear the collection and lets it allocate as needed. The count is
+/// decoded bytes, even if a collection such as a set discards duplicates.
 /// Malformed input leaves the collection unchanged.
 ///
 /// ```
@@ -159,7 +163,7 @@ impl From<std::io::Error> for DecodeWriteError {
 
 impl Format<'_> {
     /// Decode using this format, accepting either digit case and requiring the
-    /// configured prefix. All input must be consumed.
+    /// configured prefix and separators. All input must be consumed.
     pub fn decode<T: FromHex>(&self, input: impl AsRef<[u8]>) -> Result<T, DecodeError> {
         T::from_hex(input.as_ref(), *self)
     }
@@ -216,8 +220,8 @@ impl Format<'_> {
         let mut bytes = validated.bytes();
         let len = bytes.len();
         let mut buffer = [0; 128];
-        while bytes.len() != 0 {
-            let chunk_len = bytes.len().min(buffer.len());
+        for start in (0..len).step_by(buffer.len()) {
+            let chunk_len = (len - start).min(buffer.len());
             let chunk = &mut buffer[..chunk_len];
             for (slot, byte) in chunk.iter_mut().zip(bytes.by_ref()) {
                 *slot = byte;
@@ -255,25 +259,45 @@ impl<const N: usize> FromHex for [u8; N] {
 /// Validation precedes allocation or modification of any destination.
 struct Validated<'a> {
     input: &'a [u8],
+    stride: usize,
 }
 
 impl<'a> Validated<'a> {
-    fn new(input: &'a [u8], format: Format<'_>) -> Result<Self, DecodeError> {
-        let input = input
+    fn new(original: &'a [u8], format: Format<'_>) -> Result<Self, DecodeError> {
+        let input = original
             .strip_prefix(format.prefix.as_bytes())
             .ok_or(DecodeError::InvalidPrefix)?;
-        if !input.len().is_multiple_of(2) {
+        if format.separator.is_empty() && !input.len().is_multiple_of(2) {
             return Err(DecodeError::OddLength);
         }
-        for (index, &byte) in input.iter().enumerate() {
-            if nibble(byte).is_none() {
-                return Err(DecodeError::InvalidDigit {
-                    byte,
-                    index: format.prefix.len() + index,
-                });
+        let mut remaining = input;
+        while !remaining.is_empty() {
+            let pair = remaining.get(..2).ok_or(DecodeError::OddLength)?;
+            for (index, &byte) in pair.iter().enumerate() {
+                if nibble(byte).is_none() {
+                    return Err(DecodeError::InvalidDigit {
+                        byte,
+                        index: original.len() - remaining.len() + index,
+                    });
+                }
+            }
+            remaining = &remaining[2..];
+            if remaining.is_empty() {
+                break;
+            }
+            let index = original.len() - remaining.len();
+            remaining = remaining
+                .strip_prefix(format.separator.as_bytes())
+                .ok_or(DecodeError::InvalidSeparator { index })?;
+            if remaining.is_empty() {
+                return Err(DecodeError::InvalidSeparator { index });
             }
         }
-        Ok(Self { input })
+        // A str is at most isize::MAX bytes, so adding two cannot overflow usize.
+        Ok(Self {
+            input,
+            stride: 2 + format.separator.len(),
+        })
     }
 
     #[expect(
@@ -281,9 +305,9 @@ impl<'a> Validated<'a> {
         reason = "all digits were checked by Validated::new"
     )]
     fn bytes(&self) -> impl ExactSizeIterator<Item = u8> + '_ {
-        self.input.as_chunks::<2>().0.iter().map(|&[high, low]| {
-            (nibble(high).expect("validated hex digit") << 4)
-                | nibble(low).expect("validated hex digit")
+        self.input.chunks(self.stride).map(|chunk| {
+            (nibble(chunk[0]).expect("validated hex digit") << 4)
+                | nibble(chunk[1]).expect("validated hex digit")
         })
     }
 }

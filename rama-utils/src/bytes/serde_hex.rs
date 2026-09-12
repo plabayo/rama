@@ -1,8 +1,9 @@
 //! Serialize byte fields as hex strings, with one adapter for vectors and arrays.
 //!
 //! The default is lowercase without a prefix. Use [`upper`], [`prefixed`], or
-//! [`upper_prefixed`] for common alternatives. Deserialization accepts either
-//! digit case and requires the selected prefix exactly.
+//! [`upper_prefixed`] for common alternatives, or [`colon`] / [`upper_colon`]
+//! for colon-separated bytes. Deserialization accepts either
+//! digit case and requires the selected prefix and separators exactly.
 //!
 //! ```
 //! #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -154,6 +155,15 @@ crate::__hex_serde_with!(
     Format::new().with_case(crate::hex::HexCase::Upper).with_prefix("0x")
 );
 
+crate::__hex_serde_with!(
+    /// Lowercase colon-separated bytes, without a prefix.
+    pub colon, Format::new().with_separator(":")
+);
+crate::__hex_serde_with!(
+    /// Uppercase colon-separated bytes, without a prefix.
+    pub upper_colon, Format::new().with_case(crate::hex::HexCase::Upper).with_separator(":")
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -178,6 +188,52 @@ mod tests {
         upper_prefixed: [u8; 2],
         #[serde(with = "custom")]
         custom: [u8; 2],
+    }
+
+    const SEPARATED: Format<'static> = Format::new().with_prefix("hash:").with_separator("→");
+    crate::hex::serde_with!(separated, SEPARATED);
+
+    #[test]
+    fn separated_adapters_round_trip_and_reject_malformed_framing() {
+        #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+        struct Separated {
+            #[serde(with = "colon")]
+            lower: Vec<u8>,
+            #[serde(with = "upper_colon")]
+            upper: [u8; 3],
+            #[serde(with = "separated")]
+            custom: [u8; 3],
+        }
+        let payload = Separated {
+            lower: Vec::from([0, 0xab, 255]),
+            upper: [0, 0xab, 255],
+            custom: [0, 0xab, 255],
+        };
+        let json = serde_json::to_string(&payload).unwrap();
+        assert_eq!(
+            json,
+            r#"{"lower":"00:ab:ff","upper":"00:AB:FF","custom":"hash:00→ab→ff"}"#
+        );
+        assert_eq!(serde_json::from_str::<Separated>(&json).unwrap(), payload);
+        for (valid, invalid) in [
+            ("00:ab:ff", "00abff"),
+            ("00:AB:FF", "00:AB:FF:"),
+            ("hash:00→ab→ff", "hash:00:ab:ff"),
+        ] {
+            serde_json::from_str::<Separated>(&json.replace(valid, invalid)).unwrap_err();
+        }
+        #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+        struct Empty(#[serde(with = "separated")] [u8; 0]);
+        assert_eq!(serde_json::to_string(&Empty([])).unwrap(), "\"hash:\"");
+        assert_eq!(
+            serde_json::from_str::<Empty>("\"hash:\"").unwrap(),
+            Empty([])
+        );
+        #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+        struct Large(#[serde(with = "upper_colon")] [u8; 65]);
+        let value = Large([0xab; 65]);
+        let json = serde_json::to_string(&value).unwrap();
+        assert_eq!(serde_json::from_str::<Large>(&json).unwrap(), value);
     }
 
     #[test]

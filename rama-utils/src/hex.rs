@@ -1,7 +1,7 @@
 //! Hexadecimal encoding and decoding utilities.
 //!
 //! Use [`crate::fmt::hex`] to borrow bytes as a configurable [`Hex`] view.
-//! The view supports deferred formatting, owned ASCII output, and writing into
+//! The view supports deferred formatting, owned text output, and writing into
 //! existing strings, byte buffers, or slices. Encoding defaults to lowercase
 //! without a prefix and works with `no_std + alloc`.
 //!
@@ -10,9 +10,14 @@
 
 use core::fmt;
 
-use crate::std::{String, Vec};
+use crate::{
+    macros::generate_set_and_with,
+    std::{String, Vec},
+};
 
 mod decode;
+#[cfg(test)]
+mod tests_separators;
 pub use decode::{DecodeError, FromHex, decode, decode_append, decode_into};
 #[cfg(feature = "std")]
 pub use decode::{DecodeWriteError, decode_write};
@@ -42,13 +47,26 @@ impl HexCase {
 
 /// Shared hex representation for encoding and decoding.
 ///
-/// Defaults to lowercase without a prefix. Decoding accepts either digit case
-/// and requires the configured prefix exactly. Configuration only borrows text.
+/// Defaults to lowercase without a prefix or separator. Decoding accepts either
+/// digit case and requires the configured prefix and separators exactly.
+/// Configuration only borrows text; it never allocates. Both strings share a
+/// lifetime, shortened as needed when combining independently borrowed values.
+///
+/// ```
+/// use rama_utils::{fmt::hex, hex::{Format, HexCase}};
+/// const FORMAT: Format<'static> = Format::new()
+///     .with_case(HexCase::Upper).with_prefix("hash:").with_separator(":");
+/// let view = hex(&[0, 0xab, 255]).with_format(FORMAT);
+/// assert_eq!(view.to_string(), "hash:00:AB:FF");
+/// assert_eq!(FORMAT.decode::<[u8; 3]>("hash:00:aB:ff")?, [0, 0xab, 255]);
+/// # Ok::<(), rama_utils::hex::DecodeError>(())
+/// ```
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[must_use]
 pub struct Format<'a> {
     case: HexCase,
     prefix: &'a str,
+    separator: &'a str,
 }
 
 impl<'a> Format<'a> {
@@ -57,34 +75,50 @@ impl<'a> Format<'a> {
         Self {
             case: HexCase::Lower,
             prefix: "",
+            separator: "",
         }
     }
 
-    /// Select the encoding case. Decoding always accepts both cases.
-    pub const fn with_case(mut self, case: HexCase) -> Self {
-        self.case = case;
-        self
-    }
-
-    /// Select a literal prefix, required exactly once when decoding.
-    /// An empty string disables the prefix.
-    pub const fn with_prefix<'b>(self, prefix: &'b str) -> Format<'b> {
-        Format {
-            case: self.case,
-            prefix,
+    generate_set_and_with!(
+        /// Select the encoding case. Decoding always accepts both cases.
+        pub const fn case(mut self, case: HexCase) -> Self {
+            self.case = case;
+            self
         }
-    }
+    );
+
+    generate_set_and_with!(
+        /// Select a literal prefix, required exactly once when decoding.
+        /// An empty string disables the prefix.
+        pub const fn prefix(mut self, prefix: &'a str) -> Self {
+            self.prefix = prefix;
+            self
+        }
+    );
+
+    generate_set_and_with!(
+        /// Insert this literal separator between bytes, never at either end.
+        ///
+        /// Decoding requires it at every byte boundary. An empty separator selects
+        /// compact hex. Any UTF-8 text, including hex digits, is supported; decoding
+        /// uses fixed two-digit byte groups rather than splitting on the separator.
+        pub const fn separator(mut self, separator: &'a str) -> Self {
+            self.separator = separator;
+            self
+        }
+    );
 }
 
-/// A borrowed view that encodes bytes as contiguous ASCII hexadecimal.
+/// A borrowed view that encodes bytes as hex digits with optional framing.
 ///
 /// Construct a view with [`crate::fmt::hex`]. Creating, copying, or configuring
 /// it does not allocate or encode the input. Each byte is always represented by
 /// two digits, in input order, including leading zero bytes.
 ///
 /// [`Display`](fmt::Display) and the output methods use the configured case and
-/// prefix. [`LowerHex`](fmt::LowerHex) and [`UpperHex`](fmt::UpperHex) override
-/// both: `:x` and `:X` omit the prefix, while `:#x` and `:#X` include `0x`.
+/// prefix and separator. [`LowerHex`](fmt::LowerHex) and [`UpperHex`](fmt::UpperHex)
+/// override case and prefix: `:x` and `:X` omit the prefix, while `:#x` and `:#X`
+/// include `0x`. These traits retain the configured separator.
 /// Other formatting flags are ignored.
 ///
 /// ```
@@ -95,6 +129,7 @@ impl<'a> Format<'a> {
 /// assert_eq!(view.to_string(), "00abff");
 /// assert_eq!(view.to_vec(), b"00abff");
 /// assert_eq!(format!("{view:#X}"), "0x00ABFF");
+/// assert_eq!(view.with_custom_prefix("bytes:").with_separator(":").to_string(), "bytes:00:ab:ff");
 /// assert_eq!(view.with_case(HexCase::Upper).with_prefix(true).to_string(), "0x00ABFF");
 ///
 /// let mut storage = [0; 8];
@@ -116,31 +151,49 @@ impl<'a> Hex<'a> {
         }
     }
 
-    /// Select the digit case for [`Display`](fmt::Display) and output methods.
-    pub const fn with_case(mut self, case: HexCase) -> Self {
-        self.format.case = case;
-        self
-    }
-
-    /// Enable or disable the `0x` prefix for [`Display`](fmt::Display) and output
-    /// methods. The prefix itself is lowercase regardless of the digit case.
-    pub const fn with_prefix(mut self, prefix: bool) -> Self {
-        self.format.prefix = if prefix { "0x" } else { "" };
-        self
-    }
-
-    /// Apply shared encoding/decoding configuration without allocating.
-    pub const fn with_format<'b>(self, format: Format<'b>) -> Hex<'b>
-    where
-        'a: 'b,
-    {
-        Hex {
-            bytes: self.bytes,
-            format,
+    generate_set_and_with!(
+        /// Select the digit case for [`Display`](fmt::Display) and output methods.
+        pub const fn case(mut self, case: HexCase) -> Self {
+            self.format.case = case;
+            self
         }
-    }
+    );
 
-    /// Number of UTF-8 bytes in the configured output, including its prefix.
+    generate_set_and_with!(
+        /// Enable or disable the `0x` prefix for [`Display`](fmt::Display) and output
+        /// methods. The prefix itself is lowercase regardless of the digit case.
+        pub const fn prefix(mut self, prefix: bool) -> Self {
+            self.format.prefix = if prefix { "0x" } else { "" };
+            self
+        }
+    );
+
+    generate_set_and_with!(
+        /// Set a custom literal prefix without allocating.
+        pub const fn custom_prefix(mut self, prefix: &'a str) -> Self {
+            self.format.prefix = prefix;
+            self
+        }
+    );
+
+    generate_set_and_with!(
+        /// Set a literal separator between bytes without allocating.
+        /// See [`Format::with_separator`] for details.
+        pub const fn separator(mut self, separator: &'a str) -> Self {
+            self.format.separator = separator;
+            self
+        }
+    );
+
+    generate_set_and_with!(
+        /// Apply shared encoding/decoding configuration without allocating.
+        pub const fn format(mut self, format: Format<'a>) -> Self {
+            self.format = format;
+            self
+        }
+    );
+
+    /// Number of UTF-8 bytes in the output, including prefix and separators.
     ///
     /// # Panics
     ///
@@ -157,18 +210,32 @@ impl<'a> Hex<'a> {
             .expect("hex output length overflow")
             .checked_add(self.format.prefix.len())
             .expect("hex output length overflow")
+            .checked_add(
+                self.bytes
+                    .len()
+                    .saturating_sub(1)
+                    .checked_mul(self.format.separator.len())
+                    .expect("hex output length overflow"),
+            )
+            .expect("hex output length overflow")
     }
 
     fn encoded_bytes(&self) -> impl Iterator<Item = u8> + '_ {
         let prefix = self.format.prefix.as_bytes();
-        prefix.iter().copied().chain(
-            self.bytes
-                .iter()
-                .flat_map(|&byte| self.format.case.encode_byte(byte)),
-        )
+        prefix
+            .iter()
+            .copied()
+            .chain(self.bytes.iter().enumerate().flat_map(|(index, &byte)| {
+                let separator = if index == 0 {
+                    ""
+                } else {
+                    self.format.separator
+                };
+                separator.bytes().chain(self.format.case.encode_byte(byte))
+            }))
     }
 
-    /// Encode into a new vector of UTF-8 bytes (ASCII digits and a literal prefix).
+    /// Encode into a new vector of UTF-8 bytes (digits, prefix, and separators).
     pub fn to_vec(&self) -> Vec<u8> {
         let mut output = Vec::new();
         self.append_to_vec(&mut output);
@@ -182,15 +249,11 @@ impl<'a> Hex<'a> {
     }
 
     /// Append hex text, reserving space without clearing existing contents.
+    #[expect(clippy::expect_used, reason = "writing into a String is infallible")]
     pub fn append_to_string(&self, output: &mut String) {
         output.reserve(self.encoded_len());
-        output.push_str(self.format.prefix);
-        output.extend(
-            self.bytes
-                .iter()
-                .flat_map(|&byte| self.format.case.encode_byte(byte))
-                .map(char::from),
-        );
+        self.write_to(output)
+            .expect("writing hex to String cannot fail");
     }
 
     /// Encode into the start of `output` and return the written subslice.
@@ -223,6 +286,16 @@ impl<'a> Hex<'a> {
     pub fn write_to<W: fmt::Write + ?Sized>(&self, writer: &mut W) -> fmt::Result {
         if !self.format.prefix.is_empty() {
             writer.write_str(self.format.prefix)?;
+        }
+        if !self.format.separator.is_empty() {
+            for (index, &byte) in self.bytes.iter().enumerate() {
+                if index != 0 {
+                    writer.write_str(self.format.separator)?;
+                }
+                let digits = self.format.case.encode_byte(byte);
+                writer.write_str(core::str::from_utf8(&digits).expect("hex digits are ASCII"))?;
+            }
+            return Ok(());
         }
         let mut buffer = [0; 128];
         for chunk in self.bytes.chunks(buffer.len() / 2) {
@@ -261,7 +334,7 @@ impl fmt::UpperHex for Hex<'_> {
 /// The destination cannot hold the complete hex encoding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BufferTooSmall {
-    /// Required destination length, including any configured prefix.
+    /// Required destination length, including any configured prefix/separators.
     pub required: usize,
     /// Supplied destination length.
     pub available: usize,
