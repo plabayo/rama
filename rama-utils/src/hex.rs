@@ -15,6 +15,9 @@ use crate::std::{String, Vec};
 mod decode;
 pub use decode::{DecodeError, FromHex, decode};
 
+#[doc(inline)]
+pub use crate::__hex_serde_with as serde_with;
+
 /// Letter case for hexadecimal digits.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum HexCase {
