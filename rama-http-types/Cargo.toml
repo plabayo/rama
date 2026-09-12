@@ -54,7 +54,6 @@ sync_wrapper = { workspace = true }
 tokio = { workspace = true, features = ["macros", "io-std", "sync"] }
 
 [dev-dependencies]
-hex = { workspace = true }
 quickcheck = { workspace = true }
 rand = { workspace = true }
 serde_test = { workspace = true }

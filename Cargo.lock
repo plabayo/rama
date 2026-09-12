@@ -4513,7 +4513,6 @@ dependencies = [
  "const_format",
  "fnv",
  "futures-core",
- "hex",
  "httparse",
  "itoa",
  "md5",

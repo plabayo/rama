@@ -1,4 +1,4 @@
-//! ASCII-hex encoding and single-byte decoding utilities.
+//! Hexadecimal encoding and decoding utilities.
 //!
 //! Use [`crate::fmt::hex`] to borrow bytes as a configurable [`Hex`] view.
 //! The view supports deferred formatting, owned ASCII output, and writing into
@@ -6,11 +6,14 @@
 //! without a prefix and works with `no_std + alloc`.
 //!
 //! The byte/pair helpers are also useful in URI percent-encoding and decoding.
-//! Bulk decoding is outside this module's scope.
+//! Use [`decode`] to decode into a vector or fixed-size array.
 
 use core::fmt;
 
 use crate::std::{String, Vec};
+
+mod decode;
+pub use decode::{DecodeError, FromHex, decode};
 
 /// Letter case for hexadecimal digits.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -29,6 +32,42 @@ impl HexCase {
             Self::Upper => b"0123456789ABCDEF",
         };
         [digits[(byte >> 4) as usize], digits[(byte & 0x0f) as usize]]
+    }
+}
+
+/// Shared hex representation for encoding and decoding.
+///
+/// Defaults to lowercase without a prefix. Decoding accepts either digit case
+/// and requires the configured prefix exactly. Configuration only borrows text.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[must_use]
+pub struct Format<'a> {
+    case: HexCase,
+    prefix: &'a str,
+}
+
+impl<'a> Format<'a> {
+    /// Lowercase, unprefixed hex.
+    pub const fn new() -> Self {
+        Self {
+            case: HexCase::Lower,
+            prefix: "",
+        }
+    }
+
+    /// Select the encoding case. Decoding always accepts both cases.
+    pub const fn with_case(mut self, case: HexCase) -> Self {
+        self.case = case;
+        self
+    }
+
+    /// Select a literal prefix, required exactly once when decoding.
+    /// An empty string disables the prefix.
+    pub const fn with_prefix<'b>(self, prefix: &'b str) -> Format<'b> {
+        Format {
+            case: self.case,
+            prefix,
+        }
     }
 }
 
@@ -61,33 +100,42 @@ impl HexCase {
 #[must_use]
 pub struct Hex<'a> {
     bytes: &'a [u8],
-    case: HexCase,
-    prefix: bool,
+    format: Format<'a>,
 }
 
 impl<'a> Hex<'a> {
     pub(crate) const fn new(bytes: &'a [u8]) -> Self {
         Self {
             bytes,
-            case: HexCase::Lower,
-            prefix: false,
+            format: Format::new(),
         }
     }
 
     /// Select the digit case for [`Display`](fmt::Display) and output methods.
     pub const fn with_case(mut self, case: HexCase) -> Self {
-        self.case = case;
+        self.format.case = case;
         self
     }
 
     /// Enable or disable the `0x` prefix for [`Display`](fmt::Display) and output
     /// methods. The prefix itself is lowercase regardless of the digit case.
     pub const fn with_prefix(mut self, prefix: bool) -> Self {
-        self.prefix = prefix;
+        self.format.prefix = if prefix { "0x" } else { "" };
         self
     }
 
-    /// Number of ASCII bytes in the configured output, including its prefix.
+    /// Apply shared encoding/decoding configuration without allocating.
+    pub const fn with_format<'b>(self, format: Format<'b>) -> Hex<'b>
+    where
+        'a: 'b,
+    {
+        Hex {
+            bytes: self.bytes,
+            format,
+        }
+    }
+
+    /// Number of UTF-8 bytes in the configured output, including its prefix.
     ///
     /// # Panics
     ///
@@ -102,27 +150,27 @@ impl<'a> Hex<'a> {
             .len()
             .checked_mul(2)
             .expect("hex output length overflow")
-            .checked_add(if self.prefix { 2 } else { 0 })
+            .checked_add(self.format.prefix.len())
             .expect("hex output length overflow")
     }
 
     fn encoded_bytes(&self) -> impl Iterator<Item = u8> + '_ {
-        let prefix: &[u8] = if self.prefix { b"0x" } else { b"" };
+        let prefix = self.format.prefix.as_bytes();
         prefix.iter().copied().chain(
             self.bytes
                 .iter()
-                .flat_map(|&byte| self.case.encode_byte(byte)),
+                .flat_map(|&byte| self.format.case.encode_byte(byte)),
         )
     }
 
-    /// Encode into a new vector of ASCII hex bytes.
+    /// Encode into a new vector of UTF-8 bytes (ASCII digits and a literal prefix).
     pub fn to_vec(&self) -> Vec<u8> {
         let mut output = Vec::new();
         self.append_to_vec(&mut output);
         output
     }
 
-    /// Append ASCII hex bytes, reserving space without clearing existing data.
+    /// Append encoded bytes, reserving space without clearing existing data.
     pub fn append_to_vec(&self, output: &mut Vec<u8>) {
         output.reserve(self.encoded_len());
         output.extend(self.encoded_bytes());
@@ -131,7 +179,13 @@ impl<'a> Hex<'a> {
     /// Append hex text, reserving space without clearing existing contents.
     pub fn append_to_string(&self, output: &mut String) {
         output.reserve(self.encoded_len());
-        output.extend(self.encoded_bytes().map(char::from));
+        output.push_str(self.format.prefix);
+        output.extend(
+            self.bytes
+                .iter()
+                .flat_map(|&byte| self.format.case.encode_byte(byte))
+                .map(char::from),
+        );
     }
 
     /// Encode into the start of `output` and return the written subslice.
@@ -162,14 +216,14 @@ impl<'a> Hex<'a> {
     /// with the I/O trait in scope instead.
     #[expect(clippy::expect_used, reason = "hex digits are always valid ASCII")]
     pub fn write_to<W: fmt::Write + ?Sized>(&self, writer: &mut W) -> fmt::Result {
-        if self.prefix {
-            writer.write_str("0x")?;
+        if !self.format.prefix.is_empty() {
+            writer.write_str(self.format.prefix)?;
         }
         let mut buffer = [0; 128];
         for chunk in self.bytes.chunks(buffer.len() / 2) {
             let encoded = &mut buffer[..chunk.len() * 2];
             for (pair, &byte) in encoded.as_chunks_mut::<2>().0.iter_mut().zip(chunk) {
-                pair.copy_from_slice(&self.case.encode_byte(byte));
+                pair.copy_from_slice(&self.format.case.encode_byte(byte));
             }
             writer.write_str(core::str::from_utf8(encoded).expect("hex digits are ASCII"))?;
         }

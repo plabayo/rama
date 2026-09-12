@@ -1,6 +1,5 @@
 use crate::proto::h2::hpack::{Decoder, Encoder, Header};
 
-use hex::FromHex;
 use rama_core::bytes::BytesMut;
 use rama_utils::octets::kib;
 use serde_json::Value;
@@ -32,7 +31,7 @@ fn test_story(story: &Value) {
                     .map(|v| v.as_u64().unwrap() as usize);
 
                 let wire = case.get("wire").unwrap().as_str().unwrap();
-                let wire: Vec<u8> = FromHex::from_hex(wire.as_bytes()).unwrap();
+                let wire: Vec<u8> = rama_utils::hex::decode(wire).unwrap();
 
                 let expect: Vec<_> = case
                     .get("headers")
