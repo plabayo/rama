@@ -26,7 +26,7 @@ targets = [
 ]
 
 [package.metadata.cargo-machete]
-ignored = ["bindgen"]
+ignored = ["bindgen", "cc"]
 
 [features]
 default = []

@@ -11,4 +11,4 @@ publish = false
 [dependencies]
 rama = { path = "../../..", features = ["quic", "rustls", "ring"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
-sha2 = "0.10"
+sha2 = "0.11"
