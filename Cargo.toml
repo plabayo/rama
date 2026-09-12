@@ -135,7 +135,6 @@ futures = "0.3"
 futures-channel = "0.3"
 futures-core = { version = "0.3", default-features = false }
 futures-util = { version = "0.3", default-features = false }
-hex = "0.4"
 hickory-resolver = { version = "0.26.3", default-features = false, features = ["tokio", "system-config", "serde"] }
 honggfuzz = "0.5"
 http = "1" # interop-only (rama-http-hyperium / rama-tower); native rama Uri handles CONNECT, so no version pin needed
@@ -445,7 +444,6 @@ cli = [
     "std",
     "dep:base64",
     "dep:bytes",
-    "dep:hex",
     "dep:serde",
     "dep:serde_json",
     "dep:tokio",
@@ -567,7 +565,6 @@ dial9 = [
 ahash = { workspace = true, optional = true }
 base64 = { workspace = true, optional = true }
 bytes = { workspace = true, features = ["std"], optional = true }
-hex = { workspace = true, optional = true }
 pin-project-lite = { workspace = true, optional = true }
 rama-core = { workspace = true }
 rama-crypto = { workspace = true, optional = true }

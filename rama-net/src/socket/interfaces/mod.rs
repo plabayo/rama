@@ -189,13 +189,9 @@ impl_serde_str!(display HardwareAddress);
 
 impl fmt::Display for HardwareAddress {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for (i, b) in self.as_bytes().iter().enumerate() {
-            if i > 0 {
-                write!(f, ":")?;
-            }
-            write!(f, "{b:02x}")?;
-        }
-        Ok(())
+        rama_utils::fmt::hex(self.as_bytes())
+            .with_separator(":")
+            .write_to(f)
     }
 }
 

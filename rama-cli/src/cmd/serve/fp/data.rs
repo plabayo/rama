@@ -572,8 +572,12 @@ pub(super) async fn get_tls_display_info_and_store(
                             Some(TlsDisplayInfoExtensionData::Multi(vec![
                                 hello.cipher_suite.to_string(),
                                 hello.config_id.to_string(),
-                                format!("0x{}", hex::encode(&hello.enc)),
-                                format!("0x{}", hex::encode(&hello.payload)),
+                                rama::utils::fmt::hex(&hello.enc)
+                                    .with_prefix(true)
+                                    .to_string(),
+                                rama::utils::fmt::hex(&hello.payload)
+                                    .with_prefix(true)
+                                    .to_string(),
                             ]))
                         }
                         ECHClientHello::Inner => None,
@@ -584,10 +588,9 @@ pub(super) async fn get_tls_display_info_and_store(
                     data: if data.is_empty() {
                         None
                     } else {
-                        Some(TlsDisplayInfoExtensionData::Single(format!(
-                            "0x{}",
-                            hex::encode(data)
-                        )))
+                        Some(TlsDisplayInfoExtensionData::Single(
+                            rama::utils::fmt::hex(data).with_prefix(true).to_string(),
+                        ))
                     },
                 },
             })

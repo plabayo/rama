@@ -353,19 +353,19 @@ macro_rules! __generate_set_and_with {
     };
     (
         $(#[$outer_doc:meta])*
-        $vis:vis const fn $fn_name:ident(mut $self_token:ident, $($param_name:ident: $param_ty:ty),+ $(,)?) -> Self {
+        $vis:vis const fn $fn_name:ident(mut $self_token:ident $(, $param_name:ident: $param_ty:ty)* $(,)?) -> Self {
             $($body:tt)*
         }
     ) => {
         $crate::macros::paste! {
             $(#[$outer_doc])*
-            #[must_use]
-            $vis const fn [<with_ $fn_name>](mut $self_token, $($param_name: $param_ty),+) -> Self {
+            #[must_use = "use the returned value to retain the updated configuration"]
+            $vis const fn [<with_ $fn_name>](mut $self_token $(, $param_name: $param_ty)*) -> Self {
                 $($body)*
             }
 
             $(#[$outer_doc])*
-            $vis fn [<set_ $fn_name>](&mut $self_token, $($param_name: $param_ty),+) -> &mut Self {
+            $vis fn [<set_ $fn_name>](&mut $self_token $(, $param_name: $param_ty)*) -> &mut Self {
                 $($body)*
             }
         }
@@ -661,7 +661,16 @@ mod test {
                     self
                 }
             );
+            generate_set_and_with!(
+                /// Reset the value.
+                const fn reset(mut self) -> Self {
+                    self.value = 0;
+                    self
+                }
+            );
         }
+        const RESET: Builder = Builder { value: 1 }.with_reset();
+        assert_eq!(RESET.value, 0);
 
         const BUILDER: Builder = Builder { value: 1 }.with_value(2);
         assert_eq!(BUILDER.value, 2);
@@ -669,5 +678,7 @@ mod test {
         let mut builder = Builder { value: 3 };
         builder.set_value(4);
         assert_eq!(builder.value, 4);
+        builder.set_reset();
+        assert_eq!(builder.value, 0);
     }
 }

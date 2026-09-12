@@ -542,7 +542,7 @@ impl Service<Request> for EchoService {
             })
             .collect();
 
-        let body = hex::encode(body.as_ref());
+        let body = crate::utils::fmt::hex(&body).to_string();
 
         #[cfg(any(feature = "rustls", feature = "boring"))]
         let tls_info = parts
@@ -727,8 +727,8 @@ impl Service<Request> for EchoService {
                                         "kdf_id": ech.cipher_suite.kdf_id.to_string(),
                                     },
                                     "config_id": ech.config_id,
-                                    "enc":  format!("0x{}", hex::encode(&ech.enc)),
-                                    "payload": format!("0x{}", hex::encode(&ech.payload)),
+                                    "enc":  crate::utils::fmt::hex(&ech.enc).with_prefix(true).to_string(),
+                                    "payload": crate::utils::fmt::hex(&ech.payload).with_prefix(true).to_string(),
                                 },
                             }),
                             ECHClientHello::Inner => json!({
@@ -746,7 +746,7 @@ impl Service<Request> for EchoService {
                         } else {
                             json!({
                                 "id": id.to_string(),
-                                "data": format!("0x{}", hex::encode(data))
+                                "data": crate::utils::fmt::hex(data).with_prefix(true).to_string()
                             })
                         },
                     }).collect::<Vec<_>>(),

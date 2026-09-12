@@ -204,13 +204,13 @@ impl fmt::Display for SvcParam {
                 f.write_str("ipv4hint=")?;
                 write_joined_with(f, addresses, ",", |f, address| address.fmt(f))
             }
-            Self::Ech(config) => write!(f, "ech={}", hex(config)),
+            Self::Ech(config) => write!(f, "ech={:#X}", hex(config)),
             Self::Ipv6Hint(addresses) => {
                 f.write_str("ipv6hint=")?;
                 write_joined_with(f, addresses, ",", |f, address| address.fmt(f))
             }
             Self::Unknown { key, value } => {
-                write!(f, "{}={}", ParamKeyName(*key), hex(value))
+                write!(f, "{}={:#X}", ParamKeyName(*key), hex(value))
             }
         }
     }

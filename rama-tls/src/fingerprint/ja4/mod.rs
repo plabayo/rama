@@ -34,9 +34,6 @@ fn write_hash12(
         output.write_str("000000000000")
     } else {
         let digest = writer.hasher.finalize();
-        for byte in &digest[..6] {
-            write!(output, "{byte:02x}")?;
-        }
-        Ok(())
+        rama_utils::fmt::hex(&digest[..6]).write_to(output)
     }
 }

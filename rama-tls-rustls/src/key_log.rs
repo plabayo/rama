@@ -1,6 +1,6 @@
 use crate::dep::rustls::KeyLog;
 use rama_tls::keylog::KeyLogSink;
-use std::fmt;
+use rama_utils::fmt::hex;
 use std::sync::Arc;
 
 /// Adapter that exposes a rama [`KeyLogSink`] as a rustls
@@ -18,35 +18,35 @@ impl RamaKeyLog {
 impl KeyLog for RamaKeyLog {
     #[inline]
     fn log(&self, label: &str, client_random: &[u8], secret: &[u8]) {
-        let line = format!(
-            "{} {:02x} {:02x}\n",
-            label,
-            PlainHex {
-                slice: client_random
-            },
-            PlainHex { slice: secret },
-        );
+        let line = format!("{label} {} {}\n", hex(client_random), hex(secret));
         self.0.write_line(&line);
     }
 }
 
-struct PlainHex<'a, T: 'a> {
-    slice: &'a [T],
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-impl<T: fmt::LowerHex> fmt::LowerHex for PlainHex<'_, T> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        fmt_inner_hex(self.slice, f, fmt::LowerHex::fmt)
-    }
-}
+    #[test]
+    fn keylog_line_preserves_lowercase_pairs_without_prefixes() {
+        use std::sync::atomic::{AtomicBool, Ordering};
 
-fn fmt_inner_hex<T, F: Fn(&T, &mut fmt::Formatter) -> fmt::Result>(
-    slice: &[T],
-    f: &mut fmt::Formatter,
-    fmt_fn: F,
-) -> fmt::Result {
-    for val in slice.iter() {
-        fmt_fn(val, f)?;
+        #[derive(Debug)]
+        struct Sink(AtomicBool);
+
+        impl KeyLogSink for Sink {
+            fn write_line(&self, line: &str) {
+                assert_eq!(line, "CLIENT_RANDOM 0001abff 00cdef\n");
+                self.0.store(true, Ordering::Relaxed);
+            }
+        }
+
+        let sink = Arc::new(Sink(AtomicBool::new(false)));
+        RamaKeyLog::new(sink.clone()).log(
+            "CLIENT_RANDOM",
+            &[0x00, 0x01, 0xab, 0xff],
+            &[0x00, 0xcd, 0xef],
+        );
+        assert!(sink.0.load(Ordering::Relaxed));
     }
-    Ok(())
 }
