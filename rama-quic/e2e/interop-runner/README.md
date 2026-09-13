@@ -12,7 +12,7 @@ records and retains their counts in the manifest.
 
 ## Run
 
-Install Docker with Linux containers, Docker Compose **>=2.36**, host
+Install Docker Engine **>=28.1** with Linux containers, Docker Compose **>=2.36**, host
 **tshark >=4.5**, Python **>=3.10** with venv/pip, Git, Bash, and **OpenSSL >=3**.
 The Docker daemon must allow IPv6 bridges and `NET_ADMIN`/`NET_RAW`; Linux may
 need `sudo modprobe ip6table_filter`. GitHub, PyPI, Docker Hub, and GHCR access

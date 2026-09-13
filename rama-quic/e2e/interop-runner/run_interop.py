@@ -129,6 +129,11 @@ def preflight():
     version = re.search(r"(\d+)\.(\d+)", compose)
     if not version or tuple(map(int, version.groups())) < (2, 36):
         raise RuntimeError(f"Docker Compose >=2.36 required (interface_name); found {compose}")
+    docker = json.loads(output(["docker", "version", "--format", "{{json .}}"]))
+    engine = docker.get("Server", {}).get("Version", "unknown")
+    version = re.match(r"(\d+)\.(\d+)", engine)
+    if not version or tuple(map(int, version.groups())) < (28, 1):
+        raise RuntimeError(f"Docker Engine >=28.1 required (interface_name); found {engine}")
     tshark = output(["tshark", "--version"]).splitlines()[0]
     version = re.search(r"(\d+)\.(\d+)", tshark)
     if not version or tuple(map(int, version.groups())) < (4, 5):
@@ -152,7 +157,7 @@ def preflight():
                        for wanted in required):
                     raise RuntimeError(f"network {network['Name']} overlaps the runner's fixed subnets; stop its owner first")
     return {"compose": compose, "tshark": tshark, "openssl": openssl,
-            "docker": json.loads(output(["docker", "version", "--format", "{{json .}}"])),
+            "docker": docker,
             "python": sys.version}
 
 

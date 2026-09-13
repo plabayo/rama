@@ -10,7 +10,34 @@ import time
 import unittest
 from unittest.mock import Mock, call, patch
 
-from run_interop import compose_override, inspect_image, run_managed, snapshot_container_logs
+from run_interop import compose_override, inspect_image, preflight, run_managed, snapshot_container_logs
+
+
+class PrerequisiteTests(unittest.TestCase):
+    def preflight_with_engine(self, engine):
+        docker = {"Client": {"Version": "29.3.0"}, "Server": {"Version": engine}}
+        responses = {
+            ("openssl", "version"): "OpenSSL 3.6.2",
+            ("docker", "compose", "version", "--short"): "v2.36.0",
+            ("docker", "version", "--format", "{{json .}}"): json.dumps(docker),
+            ("tshark", "--version"): "TShark (Wireshark) 4.6.6",
+            ("docker", "info", "--format", "{{.OSType}}"): "linux",
+            ("docker", "network", "ls", "--quiet"): "",
+        }
+        with patch("run_interop.shutil.which", return_value="/installed/tool"):
+            with patch("run_interop.output", side_effect=lambda command: responses[tuple(command)]):
+                return preflight()
+
+    def test_new_client_does_not_hide_old_or_unknown_engine(self):
+        for engine in ("27.5.1", "28.0.4", "unknown"):
+            with self.subTest(engine=engine):
+                with self.assertRaisesRegex(RuntimeError, r"Docker Engine >=28\.1 required"):
+                    self.preflight_with_engine(engine)
+
+    def test_supported_engine_is_recorded(self):
+        for engine in ("28.1.0", "28.5.1", "29.3.0"):
+            with self.subTest(engine=engine):
+                self.assertEqual(self.preflight_with_engine(engine)["docker"]["Server"]["Version"], engine)
 
 
 @unittest.skipUnless(os.name == "posix", "runner requires POSIX process groups")
