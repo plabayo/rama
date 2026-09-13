@@ -305,7 +305,7 @@ impl<T> BoundedSender<T> {
     }
 
     /// Tests can inspect the processing lock boundary without waiting on that lock.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
     pub(super) fn is_unlocked(&self) -> bool {
         self.shared.try_lock().is_some()
     }
