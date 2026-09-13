@@ -6,17 +6,13 @@ use rama_core::bytes::{Buf, BufMut};
 
 use crate::proto::VarInt;
 
-/// Error indicating that the provided buffer was too small
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub(crate) struct UnexpectedEnd;
-
-impl core::fmt::Display for UnexpectedEnd {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str("unexpected end of buffer")
-    }
+rama_utils::macros::error::static_str_error! {
+    #[doc = "unexpected end of buffer"]
+    ///
+    /// Error indicating that the provided buffer was too small.
+    #[derive(Copy)]
+    pub(crate) struct UnexpectedEnd;
 }
-
-impl std::error::Error for UnexpectedEnd {}
 
 /// Coding result type
 pub(crate) type Result<T> = ::std::result::Result<T, UnexpectedEnd>;
@@ -32,7 +28,7 @@ pub(crate) trait Codec: Sized {
 impl Codec for u8 {
     fn decode<B: Buf>(buf: &mut B) -> Result<Self> {
         if buf.remaining() < 1 {
-            return Err(UnexpectedEnd);
+            return Err(UnexpectedEnd::new());
         }
         Ok(buf.get_u8())
     }
@@ -44,7 +40,7 @@ impl Codec for u8 {
 impl Codec for u16 {
     fn decode<B: Buf>(buf: &mut B) -> Result<Self> {
         if buf.remaining() < 2 {
-            return Err(UnexpectedEnd);
+            return Err(UnexpectedEnd::new());
         }
         Ok(buf.get_u16())
     }
@@ -56,7 +52,7 @@ impl Codec for u16 {
 impl Codec for u32 {
     fn decode<B: Buf>(buf: &mut B) -> Result<Self> {
         if buf.remaining() < 4 {
-            return Err(UnexpectedEnd);
+            return Err(UnexpectedEnd::new());
         }
         Ok(buf.get_u32())
     }
@@ -68,7 +64,7 @@ impl Codec for u32 {
 impl Codec for u64 {
     fn decode<B: Buf>(buf: &mut B) -> Result<Self> {
         if buf.remaining() < 8 {
-            return Err(UnexpectedEnd);
+            return Err(UnexpectedEnd::new());
         }
         Ok(buf.get_u64())
     }
@@ -80,7 +76,7 @@ impl Codec for u64 {
 impl Codec for Ipv4Addr {
     fn decode<B: Buf>(buf: &mut B) -> Result<Self> {
         if buf.remaining() < 4 {
-            return Err(UnexpectedEnd);
+            return Err(UnexpectedEnd::new());
         }
         let mut octets = [0; 4];
         buf.copy_to_slice(&mut octets);
@@ -94,7 +90,7 @@ impl Codec for Ipv4Addr {
 impl Codec for Ipv6Addr {
     fn decode<B: Buf>(buf: &mut B) -> Result<Self> {
         if buf.remaining() < 16 {
-            return Err(UnexpectedEnd);
+            return Err(UnexpectedEnd::new());
         }
         let mut octets = [0; 16];
         buf.copy_to_slice(&mut octets);

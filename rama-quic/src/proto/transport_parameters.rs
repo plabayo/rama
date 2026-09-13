@@ -484,7 +484,11 @@ impl TransportParameters {
                     if params.preferred_address.is_some() {
                         return Err(Error::Malformed);
                     }
-                    params.preferred_address = Some(PreferredAddress::read(&mut r.take(len))?);
+                    let mut value = r.take(len);
+                    params.preferred_address = Some(PreferredAddress::read(&mut value)?);
+                    if value.has_remaining() {
+                        return Err(Error::Malformed);
+                    }
                 }
                 TransportParameterId::InitialSourceConnectionId => {
                     decode_cid(len, &mut params.initial_src_cid, r)?
@@ -496,20 +500,25 @@ impl TransportParameters {
                     if len > 8 || params.max_datagram_frame_size.is_some() {
                         return Err(Error::Malformed);
                     }
-                    params.max_datagram_frame_size = Some(r.get()?);
+                    params.max_datagram_frame_size = Some(read_integer_parameter(len, r)?);
                 }
                 TransportParameterId::GreaseQuicBit => match len {
-                    0 => params.grease_quic_bit = true,
+                    0 if !params.grease_quic_bit => params.grease_quic_bit = true,
                     _ => return Err(Error::Malformed),
                 },
-                TransportParameterId::MinAckDelayDraft07 => params.min_ack_delay = Some(r.get()?),
+                TransportParameterId::MinAckDelayDraft07 => {
+                    if params.min_ack_delay.is_some() {
+                        return Err(Error::Malformed);
+                    }
+                    params.min_ack_delay = Some(read_integer_parameter(len, r)?);
+                }
                 _ => {
                     macro_rules! parse {
                         {$($(#[$doc:meta])* $name:ident ($id:ident) = $default:expr,)*} => {
                             match id {
                                 $(TransportParameterId::$id => {
-                                    let value = r.get::<VarInt>()?;
-                                    if len != value.size() || got.$name { return Err(Error::Malformed); }
+                                    let value = read_integer_parameter(len, r)?;
+                                    if got.$name { return Err(Error::Malformed); }
                                     params.$name = value.into();
                                     got.$name = true;
                                 })*
@@ -549,6 +558,8 @@ impl TransportParameters {
             // https://www.rfc-editor.org/rfc/rfc9000.html#section-18.2-4.38.1
             || params
                 .preferred_address.is_some_and(|x| x.connection_id.is_empty())
+            || (params.preferred_address.is_some()
+                && params.initial_src_cid.is_some_and(|cid| cid.is_empty()))
         {
             return Err(Error::IllegalValue);
         }
@@ -736,6 +747,15 @@ impl TryFrom<u64> for TransportParameterId {
     }
 }
 
+fn read_integer_parameter<R: Buf>(len: usize, input: &mut R) -> Result<VarInt, Error> {
+    let mut value = input.take(len);
+    let result = value.get()?;
+    if value.has_remaining() {
+        return Err(Error::Malformed);
+    }
+    Ok(result)
+}
+
 fn decode_cid(len: usize, value: &mut Option<ConnectionId>, r: &mut impl Buf) -> Result<(), Error> {
     if len > MAX_CID_SIZE || value.is_some() || r.remaining() < len {
         return Err(Error::Malformed);
@@ -757,7 +777,7 @@ mod test {
     fn coding() {
         let mut buf = Vec::new();
         let params = TransportParameters {
-            initial_src_cid: Some(ConnectionId::new(&[])),
+            initial_src_cid: Some(ConnectionId::new(&[0x41])),
             original_dst_cid: Some(ConnectionId::new(&[])),
             initial_max_streams_bidi: 16u32.into(),
             initial_max_streams_uni: 16u32.into(),
@@ -856,6 +876,137 @@ mod test {
         assert!(!buf.is_empty());
         let read_params = TransportParameters::read(Side::Server, &mut buf.as_slice()).unwrap();
         assert_eq!(read_params, TransportParameters::default());
+    }
+
+    #[test]
+    fn integer_parameters_accept_wider_varints_with_exact_tlv_lengths() {
+        // max_idle_timeout=1 with its permitted two-byte integer encoding.
+        let encoded = [0x01, 0x02, 0x40, 0x01];
+        let params = TransportParameters::read(Side::Server, &mut encoded.as_slice()).unwrap();
+        assert_eq!(params.max_idle_timeout, VarInt::from_u32(1));
+        // The same value must not consume bytes beyond its declared parameter length.
+        let short_length = [0x01, 0x01, 0x40, 0x01];
+        assert_eq!(
+            TransportParameters::read(Side::Server, &mut short_length.as_slice()).unwrap_err(),
+            Error::Malformed
+        );
+        let long_length = [0x01, 0x03, 0x40, 0x01, 0x00];
+        assert_eq!(
+            TransportParameters::read(Side::Server, &mut long_length.as_slice()).unwrap_err(),
+            Error::Malformed
+        );
+    }
+
+    #[test]
+    fn extension_integer_parameters_enforce_exact_lengths() {
+        for id in [
+            TransportParameterId::MaxDatagramFrameSize,
+            TransportParameterId::MinAckDelayDraft07,
+        ] {
+            for (len, payload) in [
+                (1, &[0x40, 0x01][..]),
+                (2, &[0x40, 0x01][..]),
+                (3, &[0x40, 0x01, 0x00][..]),
+            ] {
+                let mut encoded = Vec::new();
+                encoded.write_var(id as u64);
+                encoded.write_var(len);
+                encoded.extend_from_slice(payload);
+                let result = TransportParameters::read(Side::Server, &mut encoded.as_slice());
+                if len == 2 {
+                    let params = result.unwrap();
+                    let value = match id {
+                        TransportParameterId::MaxDatagramFrameSize => {
+                            params.max_datagram_frame_size
+                        }
+                        _ => params.min_ack_delay,
+                    };
+                    assert_eq!(value, Some(VarInt::from_u32(1)));
+                } else {
+                    assert_eq!(
+                        result.unwrap_err(),
+                        Error::Malformed,
+                        "{id:?}, length {len}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn duplicate_extension_parameters_are_malformed() {
+        for (id, payload) in [
+            (TransportParameterId::MaxDatagramFrameSize, &[1][..]),
+            (TransportParameterId::MinAckDelayDraft07, &[1][..]),
+            (TransportParameterId::GreaseQuicBit, &[][..]),
+        ] {
+            let mut encoded = Vec::new();
+            for _ in 0..2 {
+                encoded.write_var(id as u64);
+                encoded.write_var(payload.len() as u64);
+                encoded.extend_from_slice(payload);
+            }
+            assert_eq!(
+                TransportParameters::read(Side::Server, &mut encoded.as_slice()).unwrap_err(),
+                Error::Malformed,
+                "{id:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn preferred_address_enforces_its_tlv_boundary() {
+        let preferred = PreferredAddress {
+            address_v4: Some(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 443)),
+            address_v6: None,
+            connection_id: ConnectionId::new(&[0x42]),
+            stateless_reset_token: [0xab; RESET_TOKEN_SIZE].into(),
+        };
+        let mut value = Vec::new();
+        preferred.write(&mut value);
+        // These bytes would otherwise be decoded as a separate max_idle_timeout parameter.
+        let trailing_parameter = [0x01, 0x01, 0x01];
+        for declared_length in 0..=value.len() + trailing_parameter.len() {
+            let mut encoded = Vec::new();
+            encoded.write_var(TransportParameterId::PreferredAddress as u64);
+            encoded.write_var(declared_length as u64);
+            encoded.extend_from_slice(&value);
+            encoded.extend_from_slice(&trailing_parameter);
+            let result = TransportParameters::read(Side::Client, &mut encoded.as_slice());
+            if declared_length == value.len() {
+                let params = result.unwrap();
+                assert_eq!(params.preferred_address, Some(preferred));
+                assert_eq!(params.max_idle_timeout, VarInt(1));
+            } else {
+                assert_eq!(result, Err(Error::Malformed), "length {declared_length}");
+            }
+        }
+    }
+
+    #[test]
+    fn preferred_address_requires_nonempty_initial_and_preferred_connection_ids() {
+        for initial_cid in [&[][..], &[0x41][..]] {
+            for preferred_cid in [&[][..], &[0x42][..]] {
+                let params = TransportParameters {
+                    initial_src_cid: Some(ConnectionId::new(initial_cid)),
+                    preferred_address: Some(PreferredAddress {
+                        address_v4: Some(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 443)),
+                        address_v6: None,
+                        connection_id: ConnectionId::new(preferred_cid),
+                        stateless_reset_token: [0xab; RESET_TOKEN_SIZE].into(),
+                    }),
+                    ..TransportParameters::default()
+                };
+                let mut encoded = Vec::new();
+                params.write(&mut encoded);
+                let result = TransportParameters::read(Side::Client, &mut encoded.as_slice());
+                if initial_cid.is_empty() || preferred_cid.is_empty() {
+                    assert_eq!(result, Err(Error::IllegalValue));
+                } else {
+                    assert_eq!(result, Ok(params));
+                }
+            }
+        }
     }
 
     #[test]

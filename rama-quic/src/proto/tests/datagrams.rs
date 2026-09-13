@@ -64,3 +64,33 @@ fn a_datagram_with_no_room_is_dropped_and_the_connection_carries_on() {
     assert_eq!(&chunk.bytes[..], AFTER, "and it is what was written");
     let _transmit = chunks.finalize();
 }
+
+#[test]
+fn tiny_peer_datagram_limits_never_emit_an_oversized_frame() {
+    for limit in 0..=2 {
+        let server = ServerConfig {
+            transport: Arc::new(TransportConfig {
+                datagram_receive_buffer_size: Some(limit),
+                ..TransportConfig::default()
+            }),
+            ..server_config()
+        };
+        let mut pair = Pair::new(
+            Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+            server,
+        );
+        let (client_ch, server_ch) = pair.connect();
+        let sent = pair.client_datagrams(client_ch).send(Bytes::new(), true);
+        match limit {
+            0 => assert_eq!(sent, Err(SendDatagramError::UnsupportedByPeer)),
+            1 => assert_eq!(sent, Err(SendDatagramError::TooLarge)),
+            _ => sent.unwrap(),
+        }
+        assert_eq!(
+            pair.client_datagrams(client_ch).max_size(),
+            (limit == 2).then_some(0)
+        );
+        pair.drive();
+        assert!(!pair.server_conn_mut(server_ch).is_closed());
+    }
+}

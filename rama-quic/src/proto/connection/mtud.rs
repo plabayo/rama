@@ -65,6 +65,12 @@ impl MtuDiscovery {
         self.black_hole_detector = BlackHoleDetector::new(min_mtu);
     }
 
+    /// Retain the confirmed MTU and configured limits when rebinding, but discard
+    /// probes and loss evidence collected on the previous path.
+    pub(super) fn reset_for_new_path(&mut self) {
+        self.reset(self.current_mtu, self.black_hole_detector.min_mtu);
+    }
+
     /// Returns the current MTU
     pub(crate) fn current_mtu(&self) -> u16 {
         self.current_mtu

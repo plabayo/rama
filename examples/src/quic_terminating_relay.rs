@@ -1,5 +1,5 @@
-//! A terminating QUIC relay. It accepts client connections and carries each stream over a
-//! separate connection of its own to an upstream origin.
+//! A QUIC stream proxy with one upstream connection per accepted client connection.
+//! Each client-initiated bidirectional stream gets a corresponding upstream stream.
 //!
 //! Terminating means the relay is the TLS peer of both sides. It presents its own identity to
 //! the client and authenticates the origin as a client itself, so there are two independent
@@ -66,8 +66,8 @@ use rama::{
     graceful::{Shutdown, WeakShutdownGuard, default_signal},
     net::tls::ApplicationProtocol,
     quic::{
-        ClientConfig, Connection, Endpoint, RecvStream, SendStream, ServerConfig, StoppedError,
-        VarInt, tls::TlsOptions,
+        ClientConfig, Connection, Endpoint, ReadError, RecvStream, SendStream, ServerConfig,
+        StoppedError, VarInt, tls::TlsOptions,
     },
     rt::{Executor, spawn},
     telemetry::tracing::{
@@ -392,7 +392,7 @@ async fn carry(
 
     let streams = Arc::new(Semaphore::new(bounds.streams));
     let mut relaying: Vec<JoinHandle<()>> = Vec::new();
-    let outcome = 'serving: loop {
+    let outcome = loop {
         let accepted = tokio::select! {
             accepted = downstream.accept_bi() => accepted,
             failed = finished(&mut relaying) => match failed {
@@ -413,30 +413,11 @@ async fn carry(
             tracing::warn!("relay: at its stream limit for this connection");
             continue;
         };
-        // An origin with no stream credit would otherwise hold this here, leaving a closed
-        // downstream or a failed task unobserved until it answers.
-        let (up_send, up_recv) = loop {
-            tokio::select! {
-                opened = upstream.open_bi() => match opened {
-                    Ok(pair) => break pair,
-                    Err(error) => {
-                        upstream_gone(&downstream, stopping);
-                        break 'serving Err(error.into());
-                    }
-                },
-                error = downstream.closed() => {
-                    tracing::info!("relay: the client left while a stream waited: {error}");
-                    break 'serving Ok(());
-                }
-                failed = finished(&mut relaying) => {
-                    if let Err(error) = failed {
-                        break 'serving Err(error);
-                    }
-                }
-            }
-        };
+        // A credit-starved stream owns only its permit. The connection loop keeps accepting
+        // and observing peers while this worker watches the individual stream for cancellation.
+        let upstream = upstream.clone();
         relaying.push(spawn(async move {
-            if let Err(error) = relay_stream(down_send, down_recv, up_send, up_recv).await {
+            if let Err(error) = open_and_relay(down_send, down_recv, &upstream).await {
                 tracing::warn!("relay: a stream ended early: {error}");
             }
             drop(permit);
@@ -447,6 +428,39 @@ async fn carry(
     upstream.close(0u32.into(), b"done");
     let joined = join(relaying).await;
     outcome.and(joined)
+}
+
+/// Wait for upstream credit without retaining a request its client has cancelled.
+async fn open_and_relay(
+    mut down_send: SendStream,
+    mut down_recv: RecvStream,
+    upstream: &Connection,
+) -> Result<(), BoxError> {
+    let mut finished_receiving = false;
+    let pair = loop {
+        tokio::select! {
+            opened = upstream.open_bi() => break opened?,
+            stopped = down_send.stopped() => {
+                drop(down_send.reset(RELAY_CANCELLED.into()));
+                drop(down_recv.stop(RELAY_CANCELLED.into()));
+                return Err(why(stopped));
+            }
+            reset = down_recv.received_reset(), if !finished_receiving => {
+                let error: BoxError = match reset {
+                    Ok(None) => {
+                        finished_receiving = true;
+                        continue;
+                    }
+                    Ok(Some(code)) => ReadError::Reset(code).into(),
+                    Err(error) => error.into(),
+                };
+                drop(down_send.reset(RELAY_CANCELLED.into()));
+                drop(down_recv.stop(RELAY_CANCELLED.into()));
+                return Err(error.context("the request ended while waiting for upstream credit"));
+            }
+        }
+    };
+    relay_stream(down_send, down_recv, pair.0, pair.1).await
 }
 
 /// Not sent while the relay is stopping: both connections are closed by their endpoints then,
@@ -538,9 +552,20 @@ async fn copy(
             // Half-close: the source is done, so the destination is told where it ends. The
             // other direction carries on.
             Ok(None) => {
-                return match to.finish() {
-                    Ok(()) => Ok(carried),
-                    Err(error) => Err(ended(&mut from, &mut to, cancel, error.into())),
+                if let Err(error) = to.finish() {
+                    return Err(ended(&mut from, &mut to, cancel, error.into()));
+                }
+                // FIN is queued, not acknowledged. A destination that stops before its
+                // acknowledgment still cancels the sibling; a clean ACK preserves half-close.
+                return tokio::select! {
+                    stopped = &mut stopped => match stopped {
+                        Ok(None) => Ok(carried),
+                        stopped => Err(ended(&mut from, &mut to, cancel, why(stopped))),
+                    },
+                    changed = hear.changed() => {
+                        drop(changed);
+                        Err(sibling_ended(&mut from, &mut to))
+                    }
                 };
             }
             Err(error) => return Err(ended(&mut from, &mut to, cancel, error.into())),

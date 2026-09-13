@@ -11,7 +11,7 @@ separate interpreter running `peer/interop_peer.py`, with its own TLS (aioquic o
 ## What is covered
 
 `tests/interop.rs` has the handshakes, streams, the two certificate-refusal controls and the
-harness's own regressions. `tests/datagrams.rs` has DATAGRAM in both Rama roles: the peer
+harness's own regressions. `tests/datagram_cases.rs` has DATAGRAM in both Rama roles: the peer
 advertises a small `max_datagram_frame_size`, so what limits a datagram is the value it
 advertised rather than the path, and the local outgoing buffer is set small so a test can fill
 it deliberately.
@@ -20,12 +20,10 @@ it deliberately.
 and the server accepts it, and a client that did not ask still resumes and offers none. Early
 data is opt-in in this crate, so the second is the default behaviour rather than a failure.
 
-`tests/keys.rs` has key updates, asked for from each side in turn, with the peer's key phase
-read back so the counter is not the only witness, and a control where no update is asked for.
-Those three have Rama as the client. `tests/key_cases.rs` runs the shared key family in **both**
-roles, so Rama as the server asking for an update, following one, and neither, is covered here;
-quiche still exposes no key update at all. Neither peer exposes a TLS keying-material exporter,
-so exporters stay covered against Quinn.
+`tests/key_cases.rs` runs key updates in both roles, asked for from each side in turn, with
+the peer's key phase read back so the counter is not the only witness, and a control where no
+update is asked for. quiche exposes no key update at all. Neither peer exposes a TLS
+keying-material exporter, so exporters stay covered against Quinn.
 
 ## Prerequisites
 

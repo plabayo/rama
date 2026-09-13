@@ -309,3 +309,89 @@ fn registering_a_socket_outside_a_runtime_is_refused() {
         other => panic!("the binding resolves with that error: {other:?}"),
     }
 }
+
+/// The server's path uses the canonical IPv4 destination reported by a dual-stack
+/// receiver even though the socket itself is bound to the IPv6 wildcard.
+#[tokio::test]
+async fn a_dual_stack_wildcard_server_answers_an_ipv4_client() {
+    let (client_config, server_config) = configs();
+    let mut options = SocketOptions::default_udp();
+    options.only_v6 = Some(false);
+    let server = Endpoint::build(rama_core::rt::Executor::new())
+        .with_server_config(server_config)
+        .with_shutdown_budget(Duration::from_millis(100))
+        .bind_address_with_socket_config(
+            SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), 0),
+            UdpSocketConfig::default().with_socket_options(options),
+        )
+        .await
+        .expect("the explicit dual-stack listener binds");
+    let bound = server.local_addr().unwrap();
+    assert!(bound.is_ipv6() && bound.ip().is_unspecified());
+    let client = Endpoint::build(rama_core::rt::Executor::new())
+        .with_shutdown_budget(Duration::from_millis(100))
+        .bind_address(localhost_v4())
+        .await
+        .unwrap();
+    let connecting = client
+        .connect_with(
+            client_config,
+            SocketAddr::new(Ipv4Addr::LOCALHOST.into(), bound.port()),
+            "localhost",
+        )
+        .unwrap();
+    let incoming = tokio::time::timeout(Duration::from_secs(2), server.accept())
+        .await
+        .expect("the IPv4 Initial reaches the dual-stack listener")
+        .unwrap();
+    assert_eq!(incoming.local_ip(), Some(Ipv4Addr::LOCALHOST.into()));
+    let transfer = tokio::time::timeout(Duration::from_secs(3), async {
+        let accepted = incoming.accept().unwrap();
+        let (client_connection, server_connection) = tokio::join!(connecting, accepted);
+        let (c, s) = (client_connection.unwrap(), server_connection.unwrap());
+        exchange(&c, &s, b"IPv4 through an IPv6 wildcard").await;
+        exchange(&s, &c, b"and back from the same socket").await;
+    })
+    .await;
+    tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::join!(client.shutdown(), server.shutdown());
+    })
+    .await
+    .expect("the endpoints release their drivers");
+    transfer.expect("the dual-stack server sends its handshake and application data");
+}
+
+/// Receiving ordinary IPv6 traffic never lets an IPv6-only wildcard socket cover IPv4.
+#[tokio::test]
+async fn an_ipv6_only_wildcard_receiver_does_not_cover_ipv4() {
+    let mut options = SocketOptions::default_udp();
+    options.only_v6 = Some(true);
+    let packet = UdpSocketFactory::new(UdpSocketConfig::default().with_socket_options(options))
+        .bind(SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), 0))
+        .await
+        .unwrap();
+    let mut socket = Socket::new(packet).unwrap();
+    let port = socket.local_addr().port();
+    let peer = tokio::net::UdpSocket::bind(SocketAddr::new(Ipv6Addr::LOCALHOST.into(), 0))
+        .await
+        .unwrap();
+    peer.send_to(b"ipv6", SocketAddr::new(Ipv6Addr::LOCALHOST.into(), port))
+        .await
+        .unwrap();
+    let mut buffer = [0; 32];
+    let mut buffers = [IoSliceMut::new(&mut buffer)];
+    let mut metadata = [DatagramMetadata::empty()];
+    let received = tokio::time::timeout(
+        Duration::from_secs(2),
+        std::future::poll_fn(|cx| socket.poll_recv(cx, &mut buffers, &mut metadata)),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(received, 1);
+    assert_eq!(metadata[0].peer.ip_addr, Ipv6Addr::LOCALHOST);
+    let registry = SocketRegistry::new(socket);
+    let ipv4 = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), port);
+    assert!(!registry.covers_local(registry.active_id(), ipv4));
+    assert_eq!(registry.only_cover_for(ipv4), None);
+}

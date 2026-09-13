@@ -31,11 +31,13 @@ use crate::proto::{
     transport_parameters::TransportParameters,
 };
 pub(crate) mod util;
+pub(crate) use util::Pair;
 use util::*;
 
 mod admission;
 mod closing;
 mod datagrams;
+mod loss_config;
 mod qlog;
 mod qlog_drops;
 mod qlog_lifecycle;
@@ -5801,7 +5803,7 @@ fn lost_data_is_recovered_after_a_migration_that_discards_the_intermediate_path(
     // detection it schedules the loss for later instead, so the newest path becomes quiet while
     // the data is still outstanding.
     transport.set_packet_threshold(1_000);
-    transport.set_time_threshold(4.0);
+    transport.try_set_time_threshold(4.0).unwrap();
     server_config.set_transport_config(Arc::new(transport));
     let mut pair = Pair::new(
         Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
@@ -9130,4 +9132,21 @@ fn a_peer_move_needs_an_unused_cid_unless_it_is_a_nat_rebinding() {
     );
     pair.drive();
     assert!(!pair.server_conn_mut(server_ch).is_closed());
+}
+
+#[test]
+fn blocked_early_open_does_not_generate_extra_initial_packets() {
+    let mut pair = Pair::default();
+    let ch = pair.begin_connect(client_config());
+    assert!(pair.client_streams(ch).open(Dir::Uni).is_none());
+    let now = pair.time;
+    let conn = pair.client_conn_mut(ch);
+    let mut buf = Vec::new();
+    assert!(conn.poll_transmit(now, 1, &mut buf).is_some());
+    buf.clear();
+    assert!(
+        conn.poll_transmit(now + Duration::from_secs(1), 1, &mut buf)
+            .is_none(),
+        "the blocked stream must not create another Initial packet"
+    );
 }

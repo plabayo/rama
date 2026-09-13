@@ -10,7 +10,7 @@ fn qlog_paths_follow_actual_migration_and_mtu_changes() {
     let transport = Arc::get_mut(&mut server.transport).unwrap();
     transport.set_initial_rtt(Duration::from_micros(123_456));
     transport.set_packet_threshold(7);
-    transport.set_time_threshold(1.25);
+    transport.try_set_time_threshold(1.25).unwrap();
     transport.set_persistent_congestion_threshold(4);
     transport.set_initial_mtu(1250);
     transport.try_set_initial_congestion_window(18_000).unwrap();

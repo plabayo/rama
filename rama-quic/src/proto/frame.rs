@@ -326,7 +326,8 @@ impl ConnectionClose {
             reason = "frame types and reason lengths are below 2^62"
         )]
         let max_len = max_len
-            - 3
+            - 1
+            - VarInt::from_u64(self.error_code.into()).unwrap().size()
             - VarInt::from_u64(ty).unwrap().size()
             - VarInt::from_u64(self.reason.len() as u64).unwrap().size();
         let actual_len = self.reason.len().min(max_len);
@@ -382,7 +383,10 @@ impl ApplicationClose {
         out.write(FrameType::APPLICATION_CLOSE); // 1 byte
         out.write(self.error_code); // <= 8 bytes
         #[expect(clippy::unwrap_used, reason = "reason lengths are below 2^62")]
-        let max_len = max_len - 3 - VarInt::from_u64(self.reason.len() as u64).unwrap().size();
+        let max_len = max_len
+            - 1
+            - self.error_code.size()
+            - VarInt::from_u64(self.reason.len() as u64).unwrap().size();
         let actual_len = self.reason.len().min(max_len);
         out.write_var(actual_len as u64); // <= 8 bytes
         out.put_slice(&self.reason[0..actual_len]); // whatever's left
@@ -625,7 +629,7 @@ impl Iter {
     fn take_len(&mut self) -> Result<Bytes, UnexpectedEnd> {
         let len = self.bytes.get_var()?;
         if len > self.bytes.remaining() as u64 {
-            return Err(UnexpectedEnd);
+            return Err(UnexpectedEnd::new());
         }
         Ok(self.bytes.split_to(len as usize))
     }
@@ -1067,6 +1071,65 @@ mod test {
             crate::proto::TransportErrorCode::FRAME_ENCODING_ERROR
         );
         assert_eq!(error.frame, Some(FrameType::NEW_CONNECTION_ID));
+    }
+
+    #[test]
+    fn application_close_respects_budget_for_every_error_code_width() {
+        for code in [
+            0,
+            63,
+            64,
+            16_383,
+            16_384,
+            (1 << 30) - 1,
+            1 << 30,
+            VarInt::MAX.into_inner(),
+        ] {
+            let close = ApplicationClose {
+                error_code: VarInt::from_u64(code).unwrap(),
+                reason: Bytes::from(vec![b'x'; 100]),
+            };
+            let mut encoded = Vec::new();
+            close.encode(&mut encoded, 25);
+            assert!(
+                encoded.len() <= 25,
+                "code {code} wrote {} bytes",
+                encoded.len()
+            );
+            let decoded = frames(encoded);
+            let Frame::Close(Close::Application(decoded)) = &decoded[0] else {
+                panic!("expected application close");
+            };
+            assert_eq!(decoded.error_code, close.error_code);
+            assert!(!decoded.reason.is_empty());
+        }
+    }
+
+    #[test]
+    fn transport_close_respects_budget_for_every_error_code_width() {
+        for code in [0, 0x100, 16_384, 1 << 30] {
+            let mut code_bytes = Vec::new();
+            code_bytes.write_var(code);
+            let close = ConnectionClose {
+                error_code: coding::Codec::decode(&mut code_bytes.as_slice()).unwrap(),
+                frame_type: Some(FrameType::ACK_FREQUENCY),
+                reason: Bytes::from(vec![b'x'; 60]),
+            };
+            let mut encoded = Vec::new();
+            close.encode(&mut encoded, 25);
+            assert_eq!(encoded.len(), 25, "error code {code}");
+
+            let decoded = frames(encoded);
+            assert_eq!(decoded.len(), 1);
+            let Frame::Close(Close::Connection(decoded)) = &decoded[0] else {
+                panic!("expected transport close");
+            };
+            assert_eq!(decoded.error_code, close.error_code);
+            assert_eq!(decoded.frame_type, close.frame_type);
+            assert!(!decoded.reason.is_empty());
+            assert!(decoded.reason.len() < close.reason.len());
+            assert!(close.reason.starts_with(&decoded.reason));
+        }
     }
 
     #[test]

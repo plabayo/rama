@@ -186,6 +186,9 @@ pub(crate) struct Connection {
     /// Set if 0-RTT is supported, then cleared when no longer needed.
     zero_rtt_crypto: Option<ZeroRttCrypto>,
     key_phase: bool,
+    /// First outgoing packet number of the latest key update. Read-key retirement does
+    /// not establish that the peer acknowledged a packet from this phase.
+    key_update_start_packet: Option<u64>,
     /// The lowest space whose CONNECTION_CLOSE has still to go out. A close this side makes
     /// goes in every space that has keys (RFC 9000 §10.2.3), one datagram each; a pass that
     /// encodes none leaves this where it was.
@@ -351,6 +354,7 @@ impl Connection {
             zero_rtt_enabled: false,
             zero_rtt_crypto: None,
             key_phase: false,
+            key_update_start_packet: None,
             close_from: SpaceId::Initial,
             // A small initial key phase size ensures peers that don't handle key updates correctly
             // fail sooner rather than later. It's okay for both peers to do this, as the first one

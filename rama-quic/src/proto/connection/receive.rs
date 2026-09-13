@@ -81,7 +81,7 @@ impl Connection {
         ecn: Option<EcnCodepoint>,
         data: BytesMut,
     ) {
-        self.path.total_recvd = self.path.total_recvd.saturating_add(data.len() as u64);
+        let received_bytes = data.len() as u64;
         let mut remaining = Some(data);
         while let Some(data) = remaining {
             match PartialDecode::new(
@@ -109,6 +109,9 @@ impl Connection {
                 }
             }
         }
+        if remote == self.path.remote && self.same_local(local) {
+            self.path.total_recvd = self.path.total_recvd.saturating_add(received_bytes);
+        }
     }
 
     pub(super) fn handle_decode(
@@ -120,6 +123,24 @@ impl Connection {
         partial_decode: PartialDecode,
     ) {
         let info = DropInfo::partial(&partial_decode);
+        let reject_early_data = self.side.is_client() && partial_decode.is_0rtt();
+        // Established is entered only after TLS completion. Only an aborted
+        // handshake in a closed state needs a backend query on this path.
+        let reject_short = !partial_decode.has_long_header()
+            && (self.state.is_handshake()
+                || (self.state.is_closed() && self.crypto.is_handshaking()));
+        if reject_early_data || reject_short {
+            // RFC 9001 §§5.6–5.7: clients never decrypt received 0-RTT, and
+            // neither role decrypts 1-RTT before TLS completion. Discard before
+            // header/body protection or duplicate tracking changes any state.
+            let reason = if reject_short && self.spaces[SpaceId::Data].crypto.is_none() {
+                DropReason::KeyUnavailable
+            } else {
+                DropReason::Rejected
+            };
+            self.qlog_packet_dropped(now, info, reason);
+            return;
+        }
         match packet_crypto::unprotect_header(
             partial_decode,
             &self.spaces,
@@ -222,11 +243,6 @@ impl Connection {
                 if number.is_some_and(is_duplicate) {
                     debug!("discarding possible duplicate packet");
                     self.qlog_packet_dropped(now, info.with_number(number), DropReason::Duplicate);
-                    return;
-                } else if self.state.is_handshake() && packet.header.is_short() {
-                    // TODO: SHOULD buffer these to improve reordering tolerance.
-                    trace!("dropping short packet during handshake");
-                    self.qlog_packet_dropped(now, info.with_number(number), DropReason::Rejected);
                     return;
                 } else {
                     if let Header::Initial(InitialHeader { ref token, .. }) = packet.header
@@ -389,9 +405,14 @@ impl Connection {
                         clippy::unwrap_used,
                         reason = "0-RTT and 1-RTT headers always carry a packet number and `decrypt_packet` returns it for exactly those"
                     )]
-                    SpaceId::Data => {
-                        self.process_payload(now, remote, local, number.unwrap(), packet)?
-                    }
+                    SpaceId::Data => self.process_payload(
+                        now,
+                        remote,
+                        local,
+                        number.unwrap(),
+                        packet,
+                        info.length,
+                    )?,
                     _ if packet.header.has_frames() => self.process_early_payload(now, packet)?,
                     _ => {
                         trace!("discarding unexpected pre-handshake packet");
@@ -646,7 +667,7 @@ impl Connection {
                 ty: LongType::ZeroRtt,
                 ..
             } => {
-                self.process_payload(now, remote, local, number.unwrap(), packet)?;
+                self.process_payload(now, remote, local, number.unwrap(), packet, info.length)?;
                 Ok(())
             }
             Header::VersionNegotiate { .. } => {

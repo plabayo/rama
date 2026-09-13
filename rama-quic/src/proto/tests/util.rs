@@ -131,7 +131,7 @@ impl Pair {
     /// Advance time until both endpoints are idle. Bounded: a pair that never settles is a stuck
     /// test rather than one that needs longer, and an unbounded loop here would hang instead of
     /// reporting.
-    pub(super) fn drive(&mut self) {
+    pub(crate) fn drive(&mut self) {
         for _ in 0..Self::DRIVE_STEPS {
             if !self.step() {
                 return;
@@ -325,7 +325,7 @@ impl Pair {
         self.client_conn_mut(ch).datagrams()
     }
 
-    pub(super) fn server_conn_mut(&mut self, ch: ConnectionHandle) -> &mut Connection {
+    pub(crate) fn server_conn_mut(&mut self, ch: ConnectionHandle) -> &mut Connection {
         self.server.connections.get_mut(&ch).unwrap()
     }
 
@@ -1110,7 +1110,7 @@ impl TokenLog for SimpleTokenLog {
         if self.0.lock().insert(nonce) {
             Ok(())
         } else {
-            Err(TokenReuseError)
+            Err(TokenReuseError::new())
         }
     }
 }

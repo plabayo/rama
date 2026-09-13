@@ -108,7 +108,8 @@ fn covers(entry: &Entry, local: std::net::SocketAddr) -> bool {
     !entry.failed
         && bound.ip().is_unspecified()
         && bound.port() == local.port()
-        && bound.is_ipv4() == local.is_ipv4()
+        && (bound.is_ipv4() == local.is_ipv4()
+            || (bound.is_ipv6() && local.is_ipv4() && entry.socket.received_ipv4()))
         && entry.socket.capabilities().send_source_ip
 }
 
@@ -282,8 +283,8 @@ impl SocketRegistry {
     }
 
     /// Whether the socket named `id` can carry the path whose local address is `local`: it is
-    /// bound to a wildcard of the same port and family, and it can select a source address per
-    /// datagram. Without that capability the sender refuses such a datagram
+    /// bound to a wildcard of the same port and family (or an IPv6 wildcard that has actually
+    /// received IPv4), and it can select a source address per datagram. Without that capability the sender refuses such a datagram
     /// (`DatagramError::Unsupported(SendSourceIp)`), so a wildcard bind alone does not make the
     /// socket usable for that path.
     pub(crate) fn covers_local(&self, id: SocketId, local: std::net::SocketAddr) -> bool {

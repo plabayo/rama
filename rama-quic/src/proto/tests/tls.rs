@@ -102,3 +102,50 @@ fn failed_server_session_releases_reserved_and_preferred_cids() {
         );
     }
 }
+#[test]
+fn retired_keys_do_not_replace_acknowledgment_of_the_current_phase() {
+    let mut pair = Pair::default();
+    let (client, server) = pair.connect();
+    pair.drive();
+    let now = pair.time + Duration::from_secs(1);
+    pair.client_conn_mut(client)
+        .assert_key_retirement_does_not_authorize_an_update(now);
+    pair.server_conn_mut(server)
+        .assert_key_retirement_does_not_authorize_an_update(now);
+}
+
+#[test]
+fn server_does_not_decrypt_one_rtt_before_client_finished() {
+    let mut pair = Pair::default();
+    pair.begin_connect(client_config());
+    pair.drive_client();
+    pair.drive_server();
+    let server = pair.server.assert_accept();
+    assert!(pair.server_conn_mut(server).is_handshaking());
+    // Complete short header and protection sample, with an invalid AEAD tag.
+    // Attempting decryption would increment the authentication failure counter.
+    let mut packet = BytesMut::from(&[0x40][..]);
+    packet.resize(41, 0);
+    let now = pair.time;
+    pair.server_conn_mut(server)
+        .assert_early_packet_is_not_decrypted(now, packet);
+}
+
+#[test]
+fn client_does_not_decrypt_zero_rtt_while_resuming() {
+    let mut pair = Pair::default();
+    let config = client_config();
+    pair.connect_with(config.clone());
+    pair.drive();
+    let client = pair.begin_connect(config);
+    assert!(pair.client_conn_mut(client).has_0rtt());
+    // 0-RTT long header: version 1, eight-byte destination ID, no source ID,
+    // and 32 bytes of protected packet number/payload/tag.
+    let mut packet = BytesMut::from(&[0xd0, 0, 0, 0, 1, 8][..]);
+    packet.extend_from_slice(&[0; 8]);
+    packet.extend_from_slice(&[0, 32]);
+    packet.resize(48, 0);
+    let now = pair.time;
+    pair.client_conn_mut(client)
+        .assert_early_packet_is_not_decrypted(now, packet);
+}

@@ -36,6 +36,6 @@ impl crypto::AeadKey for aead::LessSafeKey {
 
 impl From<error::Unspecified> for CryptoError {
     fn from(_: error::Unspecified) -> Self {
-        Self
+        Self::new()
     }
 }

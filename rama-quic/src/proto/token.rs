@@ -64,15 +64,17 @@ pub trait TokenLog: Send + Sync {
     ) -> Result<(), TokenReuseError>;
 }
 
-/// Error for when a validation token may have been reused
-pub struct TokenReuseError;
+rama_utils::macros::error::static_str_error! {
+    #[doc = "validation token may have been reused"]
+    pub struct TokenReuseError;
+}
 
 /// Null implementation of [`TokenLog`], which never accepts tokens
 pub struct NoneTokenLog;
 
 impl TokenLog for NoneTokenLog {
     fn check_and_insert(&self, _: u128, _: SystemTime, _: Duration) -> Result<(), TokenReuseError> {
-        Err(TokenReuseError)
+        Err(TokenReuseError::new())
     }
 }
 

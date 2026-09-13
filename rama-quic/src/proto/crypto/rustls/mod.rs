@@ -141,7 +141,7 @@ impl crypto::Session for TlsSession {
                     cause: Some(rama_core::error::ArcError::new(e)),
                 }
             } else {
-                TransportError::PROTOCOL_VIOLATION(format!("TLS error: {e}"))
+                TransportError::PROTOCOL_VIOLATION(format!("TLS error: {e}")).with_cause(e)
             }
         })?;
         if !self.inner.is_handshaking()
@@ -734,7 +734,7 @@ impl crypto::PacketKey for Box<dyn PacketKey> {
     ) -> Result<(), CryptoError> {
         // The backend reports only that it failed, which is all `CryptoError` says.
         let Ok(plain) = self.decrypt_in_place(packet, header, payload.as_mut()) else {
-            return Err(CryptoError);
+            return Err(CryptoError::new());
         };
         let plain_len = plain.len();
         payload.truncate(plain_len);
@@ -770,6 +770,35 @@ fn session_error(error: rustls::Error) -> TransportError {
 mod tests {
     use super::*;
     use rama_tls_rustls::dep::rustls::pki_types::DnsName;
+
+    #[test]
+    fn handshake_error_without_alert_preserves_its_source() {
+        use crate::proto::crypto::ClientConfig as _;
+        use std::error::Error as _;
+
+        let native = rustls::ClientConfig::builder_with_provider(configured_provider())
+            .with_protocol_versions(&[&rustls::version::TLS13])
+            .unwrap()
+            .with_root_certificates(rustls::RootCertStore::empty())
+            .with_no_client_auth();
+        let config = Arc::new(QuicClientConfig::try_from(native).unwrap());
+        let mut session = config
+            .start_session(1, "example.com", &TransportParameters::default())
+            .unwrap();
+
+        // An oversized handshake header fails in rustls's deframer before an alert is set.
+        let error = session.read_handshake(&[2, 0xff, 0xff, 0xff]).unwrap_err();
+        assert_eq!(error.code(), TransportErrorCode::PROTOCOL_VIOLATION);
+        let source = error
+            .source()
+            .and_then(|source| source.downcast_ref::<rustls::Error>())
+            .expect("the original rustls error remains in the source chain");
+        assert!(matches!(
+            source,
+            rustls::Error::InvalidMessage(rustls::InvalidMessage::HandshakePayloadTooLarge)
+        ));
+        assert_eq!(error.reason(), format!("TLS error: {source}"));
+    }
 
     /// The contract the handshake summary rests on: a name this backend validated as a DNS name
     /// reads as a domain. Rustls checks label shape, length and the 253-octet total, and a

@@ -20,8 +20,8 @@ pub enum CongestionControl {
     Cubic,
     /// NewReno (RFC 6582), the algorithm RFC 9002 §7 describes as the baseline.
     NewReno,
-    /// BBR, from draft-cardwell-iccrg-bbr-congestion-control. It probes for bandwidth and
-    /// round-trip time rather than treating loss as the signal.
+    /// Experimental BBR-style bandwidth and round-trip-time controller.
+    /// Uses the shared congestion-window-based pacer; dedicated BBR pacing is not implemented.
     Bbr,
 }
 
@@ -192,10 +192,14 @@ impl TransportConfig {
 
     rama_utils::macros::generate_set_and_with! {
         /// Maximum reordering in time space before time based loss detection considers a packet lost,
-        /// as a factor of RTT
-        pub fn time_threshold(mut self, value: f32) -> Self {
+        /// as a factor of RTT. Must be finite and nonnegative; the resulting duration is
+        /// at least the timer granularity. Defaults to 9/8.
+        pub fn time_threshold(mut self, value: f32) -> Result<Self, ConfigError> {
+            if !value.is_finite() || value < 0.0 {
+                return Err(ConfigError::OutOfBounds);
+            }
             self.time_threshold = value;
-            self
+            Ok(self)
         }
     }
 

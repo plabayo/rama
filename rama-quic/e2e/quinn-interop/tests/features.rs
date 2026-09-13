@@ -759,7 +759,7 @@ async fn a_generator_of_ones_own_issues_identifiers_that_outlast_rotation() {
         fn validate(&self, cid: &ConnectionId) -> Result<(), InvalidCid> {
             match cid.len() == 12 && cid[..4] == self.tag {
                 true => Ok(()),
-                false => Err(InvalidCid),
+                false => Err(InvalidCid::new()),
             }
         }
 

@@ -114,6 +114,8 @@ impl<T: DatagramSocket> ReceiveSocket for T {
 pub(crate) struct Socket {
     inner: Box<dyn ReceiveSocket>,
     local_addr: SocketAddr,
+    /// Evidence that this socket receives IPv4, including IPv4 on an IPv6 wildcard bind.
+    received_ipv4: bool,
     response_sender: Sender,
     responses: VecDeque<(proto::Transmit, Box<[u8]>)>,
     response_bytes: usize,
@@ -136,6 +138,7 @@ impl Socket {
         Ok(Self {
             inner: Box::new(socket),
             local_addr,
+            received_ipv4: false,
             response_sender,
             responses: VecDeque::new(),
             response_bytes: 0,
@@ -198,9 +201,27 @@ impl Socket {
         buffers: &mut [IoSliceMut<'_>],
         metadata: &mut [DatagramMetadata],
     ) -> Poll<io::Result<usize>> {
-        self.inner
+        let outcome = self
+            .inner
             .poll_recv(cx, buffers, metadata)
-            .map_err(io_error)
+            .map_err(io_error);
+        if !self.received_ipv4
+            && let Poll::Ready(Ok(received)) = &outcome
+            && *received <= buffers.len().min(metadata.len())
+        {
+            self.received_ipv4 = metadata
+                .iter()
+                .take(*received)
+                .any(|meta| meta.peer.into_canonical_ip_addr().ip_addr.is_ipv4());
+        }
+        outcome
+    }
+
+    /// Whether an IPv4 datagram actually arrived on this socket. The shared UDP abstraction
+    /// does not expose IPV6_V6ONLY, so an IPv6 wildcard is offered for an IPv4 local path only
+    /// after receiving IPv4 proves that this particular socket supports it.
+    pub(crate) fn received_ipv4(&self) -> bool {
+        self.received_ipv4
     }
 
     /// Queue a response without polling from a second task. The caller wakes the endpoint.

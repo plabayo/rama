@@ -24,3 +24,56 @@ fn negotiate_max_idle_timeout_commutative() {
         assert_eq!(negotiate_max_idle_timeout(right, left), result);
     }
 }
+impl super::Connection {
+    pub(crate) fn assert_key_retirement_does_not_authorize_an_update(
+        &mut self,
+        now: crate::proto::Instant,
+    ) {
+        use crate::proto::{frame, packet::SpaceId};
+        use rama_core::bytes::Bytes;
+
+        self.skip_no_packet_number();
+        assert!(self.force_key_update(now));
+        self.ping();
+        let mut buf = Vec::new();
+        assert!(self.poll_transmit(now, 1, &mut buf).is_some());
+        let sent = self.spaces[SpaceId::Data].next_packet_number - 1;
+
+        // A peer packet with new keys permits read-key retirement even when its
+        // ACK was lost or it carried no ACK. Run that timer's retirement action.
+        self.prev_crypto.as_mut().unwrap().end_packet = Some((1, now));
+        self.qlog_discard_retired_keys(now);
+        assert!(!self.force_key_update(now));
+
+        self.on_ack_received(
+            now + crate::proto::Duration::from_millis(1),
+            SpaceId::Data,
+            &frame::Ack {
+                largest: sent,
+                delay: 0,
+                additional: Bytes::from_static(&[0]),
+                ecn: None,
+            },
+        )
+        .unwrap();
+        assert!(self.force_key_update(now));
+    }
+
+    pub(crate) fn assert_early_packet_is_not_decrypted(
+        &mut self,
+        now: crate::proto::Instant,
+        packet: rama_core::bytes::BytesMut,
+    ) {
+        use crate::proto::packet::{FixedLengthConnectionIdParser, PartialDecode, SpaceId};
+        assert!(self.spaces[SpaceId::Data].crypto.is_some() || self.zero_rtt_crypto.is_some());
+        let (packet, remaining) =
+            PartialDecode::new(packet, &FixedLengthConnectionIdParser::new(8), &[1], true).unwrap();
+        assert!(remaining.is_none());
+        let failures = self.authentication_failures;
+        let authenticated = self.total_authed_packets;
+        self.handle_decode(now, self.path.remote, self.path.local, None, packet);
+        assert_eq!(self.authentication_failures, failures);
+        assert_eq!(self.total_authed_packets, authenticated);
+        assert!(!self.is_closed());
+    }
+}

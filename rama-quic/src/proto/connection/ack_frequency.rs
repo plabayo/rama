@@ -42,7 +42,12 @@ impl AckFrequencyState {
         config
             .max_ack_delay
             .unwrap_or(self.peer_max_ack_delay)
-            .clamp(min_ack_delay, rtt.max(MIN_AUTOMATIC_ACK_DELAY))
+            .clamp(
+                min_ack_delay,
+                rtt.max(MIN_AUTOMATIC_ACK_DELAY)
+                    .max(min_ack_delay)
+                    .min(MAX_ACK_DELAY.saturating_sub(Duration::from_micros(1))),
+            )
     }
 
     /// Returns the `max_ack_delay` for the purposes of calculating the PTO
@@ -130,6 +135,11 @@ impl AckFrequencyState {
                 "Requested Max Ack Delay in ACK_FREQUENCY frame is less than min_ack_delay",
             ));
         }
+        if max_ack_delay >= MAX_ACK_DELAY {
+            return Err(TransportError::PROTOCOL_VIOLATION(
+                "Requested Max Ack Delay in ACK_FREQUENCY frame is too large",
+            ));
+        }
         self.max_ack_delay = max_ack_delay;
 
         // Update the rest of the params
@@ -148,3 +158,86 @@ const MAX_RTT_ERROR: f32 = 0.2;
 /// extension and an explicit max ACK delay is not configured.
 // Keep in sync with `AckFrequencyConfig::max_ack_delay` documentation
 const MIN_AUTOMATIC_ACK_DELAY: Duration = Duration::from_millis(25);
+
+// The ACK_FREQUENCY field uses microseconds, but retains the 2^14 millisecond limit.
+const MAX_ACK_DELAY: Duration = Duration::from_millis(1 << 14);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn requested_delay_respects_a_peer_minimum_above_the_rtt() {
+        let params = TransportParameters {
+            max_ack_delay: 100u32.into(),
+            min_ack_delay: Some(100_000u32.into()),
+            ..TransportParameters::default()
+        };
+        let mut wire = Vec::new();
+        params.write(&mut wire);
+        let params =
+            TransportParameters::read(crate::proto::Side::Client, &mut wire.as_slice()).unwrap();
+        let state = AckFrequencyState::new(Duration::from_millis(25));
+        assert_eq!(
+            state.candidate_max_ack_delay(
+                Duration::from_millis(1),
+                &AckFrequencyConfig::default(),
+                &params
+            ),
+            Duration::from_millis(100)
+        );
+    }
+
+    #[test]
+    fn requested_delays_stay_within_the_wire_limit() {
+        let state = AckFrequencyState::new(Duration::from_millis(25));
+        let config = AckFrequencyConfig {
+            max_ack_delay: Some(Duration::MAX),
+            ..AckFrequencyConfig::default()
+        };
+        let delay =
+            state.candidate_max_ack_delay(Duration::MAX, &config, &TransportParameters::default());
+        assert_eq!(delay, Duration::from_micros(16_383_999));
+    }
+
+    #[test]
+    fn received_delays_enforce_microsecond_boundaries_and_ignore_stale_frames() {
+        use crate::proto::{Instant, connection::spaces::PacketSpace};
+
+        for micros in [
+            0,
+            999,
+            1_000,
+            25_000,
+            16_383_999,
+            16_384_000,
+            VarInt::MAX.into_inner(),
+        ] {
+            let mut state = AckFrequencyState::new(Duration::from_millis(25));
+            let mut pending = PacketSpace::new(Instant::now()).pending_acks;
+            let frame = AckFrequency {
+                sequence: 1u32.into(),
+                ack_eliciting_threshold: 1u32.into(),
+                request_max_ack_delay: VarInt::from_u64(micros).unwrap(),
+                reordering_threshold: 1u32.into(),
+            };
+            let result = state.ack_frequency_received(&frame, &mut pending);
+            if (1_000..16_384_000).contains(&micros) {
+                assert!(result.unwrap());
+                assert_eq!(state.max_ack_delay, Duration::from_micros(micros));
+                let stale = AckFrequency {
+                    sequence: 0u32.into(),
+                    request_max_ack_delay: VarInt::MAX,
+                    ..frame
+                };
+                assert!(!state.ack_frequency_received(&stale, &mut pending).unwrap());
+                assert_eq!(state.max_ack_delay, Duration::from_micros(micros));
+            } else {
+                assert_eq!(
+                    result.unwrap_err().code(),
+                    crate::proto::TransportErrorCode::PROTOCOL_VIOLATION
+                );
+            }
+        }
+    }
+}

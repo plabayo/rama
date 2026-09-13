@@ -405,9 +405,6 @@ impl Retransmits {
         !self.max_data
             && !self.max_stream_id.into_iter().any(|x| x)
             && !self.streams_blocked.into_iter().any(|x| x)
-            // A blocked `open` that has not been written yet must count as pending work, or
-            // a connection with nothing else to send would never emit STREAMS_BLOCKED
-            && !streams.has_streams_blocked()
             && self.reset_stream.is_empty()
             && self.stop_sending.is_empty()
             && self

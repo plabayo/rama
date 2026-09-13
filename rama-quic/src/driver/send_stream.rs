@@ -183,12 +183,15 @@ impl SendStream {
     /// incorrect assumptions about the stream's state.
     pub fn finish(&mut self) -> Result<(), ClosedStream> {
         let mut conn = self.conn.state.lock();
+        if self.is_0rtt && conn.check_0rtt().is_err() {
+            return Err(ClosedStream::new());
+        }
         match conn.inner.send_stream(self.stream).finish() {
             Ok(()) => {
                 conn.wake();
                 Ok(())
             }
-            Err(FinishError::ClosedStream) => Err(ClosedStream::default()),
+            Err(FinishError::ClosedStream) => Err(ClosedStream::new()),
             // Harmless. If the application needs to know about stopped streams at this point, it
             // should call `stopped`.
             Err(FinishError::Stopped(_)) => Ok(()),
@@ -223,6 +226,9 @@ impl SendStream {
     /// impact on performance.
     pub fn set_priority(&self, priority: i32) -> Result<(), ClosedStream> {
         let mut conn = self.conn.state.lock();
+        if self.is_0rtt && conn.check_0rtt().is_err() {
+            return Err(ClosedStream::new());
+        }
         conn.inner.send_stream(self.stream).set_priority(priority)?;
         Ok(())
     }
@@ -230,6 +236,9 @@ impl SendStream {
     /// Get the priority of the send stream
     pub fn priority(&self) -> Result<i32, ClosedStream> {
         let mut conn = self.conn.state.lock();
+        if self.is_0rtt && conn.check_0rtt().is_err() {
+            return Err(ClosedStream::new());
+        }
         conn.inner.send_stream(self.stream).priority()
     }
 
@@ -334,10 +343,13 @@ impl Drop for SendStream {
     fn drop(&mut self) {
         let mut conn = self.conn.state.lock();
 
-        // clean up any previously registered wakers
+        // Rejected early streams share their numeric IDs with new 1-RTT streams. Their
+        // handles must not touch the replacement stream, including its registered waker.
+        if self.is_0rtt && conn.check_0rtt().is_err() {
+            return;
+        }
         conn.blocked_writers.remove(&self.stream);
-
-        if conn.error.is_some() || (self.is_0rtt && conn.check_0rtt().is_err()) {
+        if conn.error.is_some() {
             return;
         }
         match conn.inner.send_stream(self.stream).finish() {

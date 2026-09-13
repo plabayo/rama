@@ -34,10 +34,14 @@ impl BandwidthEstimation {
         round: u64,
         app_limited: bool,
     ) {
-        self.prev_total_acked = self.total_acked;
+        // All packets in an ACK batch have the same timestamp. Keep the start of the
+        // measurement interval until a later batch so every acknowledged byte contributes.
+        if self.acked_time != Some(now) {
+            self.prev_total_acked = self.total_acked;
+            self.prev_acked_time = self.acked_time;
+            self.acked_time = Some(now);
+        }
         self.total_acked += bytes;
-        self.prev_acked_time = self.acked_time;
-        self.acked_time = Some(now);
 
         let Some(prev_sent_time) = self.prev_sent_time else {
             return;
@@ -62,7 +66,9 @@ impl BandwidthEstimation {
         };
 
         let bandwidth = send_rate.min(ack_rate);
-        if !app_limited && self.max_filter.get() < bandwidth {
+        // Lower non-app-limited samples must advance the filter's window too. An
+        // application-limited sample is useful only when it raises the estimate.
+        if !app_limited || bandwidth > self.max_filter.get() {
             self.max_filter.update_max(round, bandwidth);
         }
     }
@@ -117,6 +123,70 @@ impl Display for BandwidthEstimation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bandwidth_falls_after_the_measurement_window_expires() {
+        let mut estimate = BandwidthEstimation::default();
+        let start = Instant::now();
+        for round in 0..=2 {
+            let sent = start + Duration::from_millis(round);
+            estimate.on_sent(sent, 1200);
+            estimate.on_ack(sent + Duration::from_millis(100), sent, 1200, round, false);
+        }
+        assert_eq!(estimate.get_estimate(), 1_200_000);
+        for round in 3..=40 {
+            let sent = start + Duration::from_millis(2 + (round - 2) * 10);
+            estimate.on_sent(sent, 1200);
+            estimate.on_ack(sent + Duration::from_millis(100), sent, 1200, round, false);
+        }
+        assert_eq!(estimate.get_estimate(), 120_000);
+    }
+
+    #[test]
+    fn bandwidth_counts_every_packet_in_an_ack_batch() {
+        let mut estimate = BandwidthEstimation::default();
+        let start = Instant::now();
+        // Two 1200-byte packets per two milliseconds, acknowledged together.
+        for round in 0..40 {
+            for packet in 0..2 {
+                estimate.on_sent(start + Duration::from_millis(round * 2 + packet), 1200);
+            }
+            for packet in 0..2 {
+                estimate.on_ack(
+                    start + Duration::from_millis(100 + round * 2),
+                    start + Duration::from_millis(round * 2 + packet),
+                    1200,
+                    round,
+                    false,
+                );
+            }
+            estimate.end_acks(round, false);
+        }
+        assert_eq!(estimate.get_estimate(), 1_200_000);
+    }
+
+    #[test]
+    fn application_limited_samples_only_raise_the_estimate() {
+        let mut estimate = BandwidthEstimation::default();
+        let start = Instant::now();
+        for round in 0..=2 {
+            let sent = start + Duration::from_millis(round);
+            estimate.on_sent(sent, 1200);
+            estimate.on_ack(sent + Duration::from_millis(100), sent, 1200, round, false);
+        }
+        for round in 3..=40 {
+            let sent = start + Duration::from_millis(2 + (round - 2) * 10);
+            estimate.on_sent(sent, 1200);
+            estimate.on_ack(sent + Duration::from_millis(100), sent, 1200, round, true);
+        }
+        assert_eq!(estimate.get_estimate(), 1_200_000);
+        for round in 41..=43 {
+            let sent = start + Duration::from_micros(382_000 + (round - 40) * 500);
+            estimate.on_sent(sent, 1200);
+            estimate.on_ack(sent + Duration::from_millis(100), sent, 1200, round, true);
+        }
+        assert_eq!(estimate.get_estimate(), 2_400_000);
+    }
 
     /// Bytes over a span, at the edges of the range the public configuration accepts.
     #[test]

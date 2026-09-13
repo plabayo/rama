@@ -6550,3 +6550,92 @@ async fn handshake_confirmed_fails_when_the_connection_ends_unconfirmed() {
     drop((c, s));
     tokio::join!(client.shutdown(), server.shutdown());
 }
+
+/// A rejection produced while accepting must schedule the endpoint just like an explicit
+/// refusal: its response otherwise waits for an unrelated receive or admission timer.
+#[tokio::test]
+async fn an_accept_error_wakes_the_parked_endpoint_to_send_its_response() {
+    struct FailingServer(Arc<dyn crate::proto::crypto::ServerConfig>);
+    impl crate::proto::crypto::ServerConfig for FailingServer {
+        fn initial_keys(
+            &self,
+            version: u32,
+            cid: &crate::proto::ConnectionId,
+        ) -> Result<crate::proto::crypto::Keys, crate::proto::crypto::UnsupportedVersion> {
+            self.0.initial_keys(version, cid)
+        }
+        fn retry_tag(
+            &self,
+            version: u32,
+            cid: &crate::proto::ConnectionId,
+            packet: &[u8],
+        ) -> [u8; 16] {
+            self.0.retry_tag(version, cid, packet)
+        }
+        fn start_session(
+            self: Arc<Self>,
+            _: u32,
+            _: &crate::proto::transport_parameters::TransportParameters,
+        ) -> Result<Box<dyn crate::proto::crypto::Session>, crate::proto::TransportError> {
+            Err(crate::proto::TransportError::INTERNAL_ERROR(
+                "injected accept failure",
+            ))
+        }
+    }
+    struct ObservedWake {
+        count: Arc<AtomicUsize>,
+        driver: Waker,
+    }
+    impl Wake for ObservedWake {
+        fn wake(self: Arc<Self>) {
+            self.count.fetch_add(1, Ordering::Relaxed);
+            self.driver.wake_by_ref();
+        }
+    }
+
+    let (client_config, mut server_config) = configs();
+    server_config.crypto = Arc::new(FailingServer(server_config.crypto));
+    let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+    let client = endpoint(None, Executor::new(), Duration::from_secs(1));
+    let connecting = client
+        .connect_with(client_config, server.local_addr().unwrap(), "localhost")
+        .unwrap();
+    let incoming = tokio::time::timeout(Duration::from_secs(2), server.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    let wakes = Arc::new(AtomicUsize::new(0));
+    {
+        let mut state = server.inner.state.lock();
+        let driver = state
+            .driver
+            .take()
+            .expect("the endpoint registered its waker");
+        state.driver = Some(Waker::from(Arc::new(ObservedWake {
+            count: wakes.clone(),
+            driver,
+        })));
+    }
+    // There is no await between installing the observer and checking it, so no receive or
+    // timer can be mistaken for the accept operation's wake on this current-thread runtime.
+    assert!(matches!(
+        incoming.accept(),
+        Err(ConnectionError::TransportError(_))
+    ));
+    assert_eq!(
+        wakes.load(Ordering::Relaxed),
+        1,
+        "accept must wake its response sender"
+    );
+    let error = tokio::time::timeout(Duration::from_secs(2), connecting)
+        .await
+        .expect("the peer receives the rejection")
+        .unwrap_err();
+    assert!(matches!(error, ConnectionError::ConnectionClosed(ref close)
+        if close.error_code == crate::proto::TransportErrorCode::INTERNAL_ERROR));
+    tokio::time::timeout(Duration::from_secs(3), async {
+        tokio::join!(client.shutdown(), server.shutdown());
+    })
+    .await
+    .expect("both endpoints release their drivers");
+}

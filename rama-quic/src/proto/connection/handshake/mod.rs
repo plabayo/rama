@@ -58,6 +58,14 @@ impl Connection {
             debug!("ignoring redundant forced key update");
             return false;
         }
+        if self.key_update_start_packet.is_some_and(|start| {
+            self.spaces[SpaceId::Data]
+                .largest_acked_packet
+                .is_none_or(|acked| acked < start)
+        }) {
+            debug!("ignoring key update before a current-phase packet is acknowledged");
+            return false;
+        }
         self.update_keys(now, None, false);
         true
     }
@@ -478,6 +486,7 @@ impl Connection {
             mem::replace(self.next_crypto.as_mut().unwrap(), new),
         );
         self.spaces[SpaceId::Data].sent_with_keys = 0;
+        self.key_update_start_packet = Some(self.spaces[SpaceId::Data].next_packet_number);
         self.prev_crypto = Some(PrevCrypto {
             crypto: old,
             end_packet,

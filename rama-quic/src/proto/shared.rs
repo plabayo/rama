@@ -131,7 +131,7 @@ impl ConnectionId {
     /// what it hands back.
     pub fn try_from_bytes(bytes: &[u8]) -> Result<Self, InvalidCid> {
         if bytes.len() > MAX_CID_SIZE {
-            return Err(InvalidCid);
+            return Err(InvalidCid::new());
         }
         Ok(Self::new(bytes))
     }

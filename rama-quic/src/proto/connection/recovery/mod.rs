@@ -37,6 +37,10 @@ impl Connection {
         if ack.largest >= self.spaces[space].next_packet_number {
             return Err(TransportError::PROTOCOL_VIOLATION("unsent packet acked"));
         }
+        let largest_on_current_path = self.spaces[space]
+            .sent_packets
+            .get(&ack.largest)
+            .is_some_and(|info| info.path_generation == self.path.generation());
         let new_largest = {
             let space = &mut self.spaces[space];
             if space.largest_acked_packet.is_none_or(|pn| ack.largest > pn) {
@@ -67,6 +71,8 @@ impl Connection {
         }
 
         let mut ack_eliciting_acked = false;
+        let mut largest_current_acked = None;
+        let mut all_on_current_path = true;
         for packet in newly_acked.elts() {
             if let Some(info) = self.spaces[space].take(packet) {
                 if let Some(acked) = info.largest_acked {
@@ -77,11 +83,17 @@ impl Connection {
                     // https://www.rfc-editor.org/rfc/rfc9000.html#name-limiting-ranges-by-tracking
                     self.spaces[space].pending_acks.subtract_below(acked);
                 }
-                ack_eliciting_acked |= info.ack_eliciting;
+                let on_current_path = info.path_generation == self.path.generation();
+                all_on_current_path &= on_current_path;
+                if on_current_path {
+                    largest_current_acked = Some(packet);
+                    ack_eliciting_acked |= info.ack_eliciting;
+                }
 
                 // Notify MTU discovery that a packet was acked, because it might be an MTU probe
                 let old_mtu = self.path.current_mtu();
-                let mtu_updated = self.path.mtud.on_acked(space, packet, info.size);
+                let mtu_updated =
+                    on_current_path && self.path.mtud.on_acked(space, packet, info.size);
                 if mtu_updated {
                     self.qlog_mtu_updated(now, old_mtu);
                     self.path
@@ -96,21 +108,28 @@ impl Connection {
             }
         }
 
-        self.path.congestion.on_end_acks(
-            now,
-            self.path.in_flight.bytes,
-            self.app_limited,
-            self.spaces[space].largest_acked_packet,
-        );
+        if largest_current_acked.is_some() {
+            self.path.congestion.on_end_acks(
+                now,
+                self.path.in_flight.bytes,
+                self.app_limited,
+                largest_current_acked,
+            );
+        }
 
-        if new_largest && ack_eliciting_acked {
+        if new_largest && largest_on_current_path && ack_eliciting_acked {
             let ack_delay = if space != SpaceId::Data {
                 Duration::from_micros(0)
             } else {
-                cmp::min(
-                    self.ack_frequency.peer_max_ack_delay,
-                    Duration::from_micros(ack.delay << self.peer_params.ack_delay_exponent.0),
-                )
+                let reported =
+                    Duration::from_micros(ack.delay << self.peer_params.ack_delay_exponent.0);
+                if self.handshake_confirmed() {
+                    cmp::min(self.ack_frequency.peer_max_ack_delay, reported)
+                } else {
+                    // Handshake scheduling can legitimately exceed max_ack_delay
+                    // (RFC 9002 §5.3). The estimator still protects min_rtt.
+                    reported
+                }
             };
             let rtt = now.saturating_duration_since(self.spaces[space].largest_acked_packet_sent);
             self.path.rtt.update(ack_delay, rtt);
@@ -136,9 +155,15 @@ impl Connection {
                 // reordering.
                 if new_largest {
                     let sent = self.spaces[space].largest_acked_packet_sent;
-                    self.process_ecn(now, space, newly_acked.len() as u64, ecn, sent);
+                    self.process_ecn(
+                        now,
+                        space,
+                        newly_acked.len() as u64,
+                        ecn,
+                        (all_on_current_path && largest_on_current_path).then_some(sent),
+                    );
                 }
-            } else {
+            } else if all_on_current_path {
                 // We always start out sending ECN, so any ack that doesn't acknowledge it disables it.
                 debug!("ECN not acknowledged by peer");
                 self.path.sending_ecn = false;
@@ -156,8 +181,19 @@ impl Connection {
         space: SpaceId,
         newly_acked: u64,
         ecn: frame::EcnCounts,
-        largest_sent_time: Instant,
+        current_path_sent: Option<Instant>,
     ) {
+        let Some(sent) = current_path_sent else {
+            // Old or mixed-path feedback cannot validate the current path. Still
+            // consume monotonic observations even if the old path bleached or
+            // corrupted markings, so its CE increase is not charged to a later ACK.
+            let previous = &mut self.spaces[space].ecn_feedback;
+            if ecn.ect0 >= previous.ect0 && ecn.ect1 >= previous.ect1 && ecn.ce >= previous.ce {
+                *previous = ecn;
+            }
+            return;
+        };
+
         match self.spaces[space].detect_ecn(newly_acked, ecn) {
             Err(e) => {
                 debug!("halting ECN due to verification failure: {}", e);
@@ -171,7 +207,7 @@ impl Connection {
                 self.stats.path.congestion_events += 1;
                 self.path
                     .congestion
-                    .on_congestion_event(now, largest_sent_time, false, 0);
+                    .on_congestion_event(now, sent, false, 0);
             }
         }
     }
@@ -180,9 +216,11 @@ impl Connection {
     // high-latency handshakes
     pub(super) fn on_packet_acked(&mut self, now: Instant, info: SentPacket) {
         self.remove_in_flight(&info);
-        if info.ack_eliciting && self.path.challenge.is_none() {
-            // Only pass ACKs to the congestion controller if we are not validating the current
-            // path, so as to ignore any ACKs from older paths still coming in.
+        if info.ack_eliciting
+            && info.path_generation == self.path.generation()
+            && self.path.challenge.is_none()
+        {
+            // ACKs from older paths can arrive even after current-path validation finishes.
             self.path.congestion.on_ack(
                 now,
                 info.time_sent,
@@ -268,10 +306,13 @@ impl Connection {
 
     fn detect_lost_packets(&mut self, now: Instant, pn_space: SpaceId, due_to_ack: bool) {
         let mut lost_packets = Vec::<u64>::new();
-        let mut lost_mtu_probe = None;
-        let in_flight_mtu_probe = self.path.mtud.in_flight_mtu_probe();
+        let mut lost_mtu_probes = Vec::new();
+        let generation = self.path.generation();
+        let mut largest_current_lost_sent = None;
+        let mut current_lost_bytes = 0;
+        let mut current_non_probe_lost = false;
         let rtt = self.path.rtt.conservative();
-        let loss_delay = cmp::max(rtt.mul_f32(self.config.time_threshold), TIMER_GRANULARITY);
+        let loss_delay = loss_delay(rtt, self.config.time_threshold);
 
         #[expect(
             clippy::unwrap_used,
@@ -296,8 +337,9 @@ impl Connection {
         space.loss_time = None;
 
         for (&packet, info) in space.sent_packets.range(0..largest_acked_packet) {
-            if prev_packet != Some(packet.wrapping_sub(1)) {
-                // An intervening packet was acknowledged
+            let on_current_path = info.path_generation == generation;
+            if !on_current_path || prev_packet != Some(packet.wrapping_sub(1)) {
+                // An intervening packet was acknowledged or belonged to another path
                 persistent_congestion_start = None;
             }
 
@@ -306,14 +348,19 @@ impl Connection {
             // saturating equivalent of this substraction operation with a Duration.
             let packet_too_old = now.saturating_duration_since(info.time_sent) >= loss_delay;
             if packet_too_old || largest_acked_packet >= packet + packet_threshold {
-                if pn_space == SpaceId::Data && Some(packet) == in_flight_mtu_probe {
+                if info.is_mtu_probe_packet {
                     // Lost MTU probes are not included in `lost_packets`, because they should not
                     // trigger a congestion control response
-                    lost_mtu_probe = in_flight_mtu_probe;
+                    lost_mtu_probes.push(packet);
                 } else {
                     lost_packets.push(packet);
                     size_of_lost_packets += info.size as u64;
-                    if info.ack_eliciting && due_to_ack {
+                    if on_current_path {
+                        largest_current_lost_sent = Some(info.time_sent);
+                        current_lost_bytes += u64::from(info.size);
+                        current_non_probe_lost = true;
+                    }
+                    if on_current_path && info.ack_eliciting && due_to_ack {
                         match persistent_congestion_start {
                             // Two ACK-eliciting packets lost more than congestion_period apart, with no
                             // ACKed packets in between
@@ -333,12 +380,15 @@ impl Connection {
                     }
                 }
             } else {
-                let next_loss_time = info.time_sent + loss_delay;
-                space.loss_time = Some(
-                    space
-                        .loss_time
-                        .map_or(next_loss_time, |x| cmp::min(x, next_loss_time)),
-                );
+                // A finite configured factor can put time-threshold loss beyond this
+                // clock's range. Packet-threshold detection and PTO remain available.
+                if let Some(next_loss_time) = info.time_sent.checked_add(loss_delay) {
+                    space.loss_time = Some(
+                        space
+                            .loss_time
+                            .map_or(next_loss_time, |x| cmp::min(x, next_loss_time)),
+                    );
+                }
                 persistent_congestion_start = None;
             }
 
@@ -346,9 +396,8 @@ impl Connection {
         }
 
         // OnPacketsLost
-        if let Some(largest_lost) = lost_packets.last().cloned() {
+        if !lost_packets.is_empty() {
             let old_bytes_in_flight = self.path.in_flight.bytes;
-            let largest_lost_sent = self.spaces[pn_space].sent_packets[&largest_lost].time_sent;
             self.stats.path.lost_packets += lost_packets.len() as u64;
             self.stats.path.lost_bytes += size_of_lost_packets;
             trace!(
@@ -375,11 +424,16 @@ impl Connection {
                     self.streams.retransmit(frame);
                 }
                 self.spaces[pn_space].pending |= info.retransmits;
-                self.path.mtud.on_non_probe_lost(packet, info.size);
+                if info.path_generation == generation && pn_space == SpaceId::Data {
+                    self.path.mtud.on_non_probe_lost(packet, info.size);
+                }
             }
 
             let old_mtu = self.path.current_mtu();
-            if self.path.mtud.black_hole_detected(now) {
+            if current_non_probe_lost
+                && pn_space == SpaceId::Data
+                && self.path.mtud.black_hole_detected(now)
+            {
                 self.qlog_mtu_updated(now, old_mtu);
                 self.stats.path.black_holes_detected += 1;
                 self.path
@@ -397,24 +451,26 @@ impl Connection {
             // Don't apply congestion penalty for lost ack-only packets
             let lost_ack_eliciting = old_bytes_in_flight != self.path.in_flight.bytes;
 
-            if lost_ack_eliciting {
+            if let Some(largest_lost_sent) =
+                largest_current_lost_sent.filter(|_| lost_ack_eliciting)
+            {
                 self.stats.path.congestion_events += 1;
                 self.path.congestion.on_congestion_event(
                     now,
                     largest_lost_sent,
                     in_persistent_congestion,
-                    size_of_lost_packets,
+                    current_lost_bytes,
                 );
             }
         }
 
-        // Handle a lost MTU probe
-        if let Some(packet) = lost_mtu_probe {
+        // Retire probes by their send-time identity even if their path was replaced.
+        for packet in lost_mtu_probes {
             #[expect(
                 clippy::unwrap_used,
-                reason = "the lost MTU probe is excluded from `lost_packets`, so it is still in `sent_packets`"
+                reason = "lost MTU probes are excluded from `lost_packets`, so they are still in `sent_packets`"
             )]
-            let info = self.spaces[SpaceId::Data].take(packet).unwrap(); // safe: lost_mtu_probe is omitted from lost_packets, and therefore must not have been removed yet
+            let info = self.spaces[pn_space].take(packet).unwrap();
             self.qlog_sink.emit_packet_lost(
                 packet,
                 &info,
@@ -424,7 +480,11 @@ impl Connection {
                 self.trace_cid,
             );
             self.remove_in_flight(&info);
-            self.path.mtud.on_probe_lost();
+            if info.path_generation == generation
+                && self.path.mtud.in_flight_mtu_probe() == Some(packet)
+            {
+                self.path.mtud.on_probe_lost();
+            }
             self.stats.path.lost_plpmtud_probes += 1;
         }
     }
@@ -462,8 +522,9 @@ impl Connection {
                 continue;
             }
             if space == SpaceId::Data {
-                // Skip ApplicationData until handshake completes.
-                if self.is_handshaking() {
+                // TLS completion alone does not confirm a client's handshake.
+                // RFC 9002 §6.2.1 forbids Data PTO until confirmation.
+                if !self.handshake_confirmed() {
                     return result;
                 }
                 // Include max_ack_delay and backoff for ApplicationData.
@@ -585,6 +646,14 @@ const MAX_BACKOFF_EXPONENT: u32 = 16;
 
 pub(super) fn persistent_congestion_period(pto: Duration, threshold: u32) -> Duration {
     pto.saturating_mul(threshold)
+}
+
+// A finite factor can still overflow Duration when multiplied by an RTT. Saturate
+// the duration here; callers use checked clock arithmetic for the resulting deadline.
+fn loss_delay(rtt: Duration, factor: f32) -> Duration {
+    let scaled =
+        Duration::try_from_secs_f64(rtt.as_secs_f64() * f64::from(factor)).unwrap_or(Duration::MAX);
+    cmp::max(scaled, TIMER_GRANULARITY)
 }
 
 #[cfg(test)]

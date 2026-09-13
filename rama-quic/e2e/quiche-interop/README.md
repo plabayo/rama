@@ -26,26 +26,26 @@ project is not part of the workspace, so `cargo test` at the repository root doe
 ## What is covered
 
 `tests/interop.rs` has the handshakes, streams and the two certificate-refusal controls.
-`tests/datagrams.rs` has DATAGRAM in both Rama roles. quiche advertises 65536 as its
+`tests/datagram_cases.rs` has DATAGRAM in both Rama roles. quiche advertises 65536 as its
 `max_datagram_frame_size` whenever datagrams are enabled, from draft-ietf-quic-datagram-01
 rather than RFC 9221's 65535, and either value is far above the path budget: towards a quiche
 peer the binding limit is the path. The aioquic project covers the other case, where the peer's
-advertised size is small enough to be the binding one. The size boundary and the
-unsupported-peer case are covered for the client role here; the server-role test covers
-delivery and support.
+advertised size is small enough to be the binding one. The shared DATAGRAM cases cover delivery, the size boundary, and a peer that does not offer
+the extension, in both Rama roles.
 
-`tests/resumption.rs` has resumption and 0-RTT. quiche can be the same resumption authority
+`tests/resumption_cases.rs` has resumption and 0-RTT. quiche can be the same resumption authority
 twice through `set_ticket_key`, and can accept or refuse early data independently of that, so
 the three outcomes are separate tests: early data accepted, early data refused while the
 session still resumes, and the resumption itself refused.
 
-`tests/names.rs` has what the server is asked for and what it reports: a name reported as a
+`tests/name_cases.rs` and `tests/mismatch_cases.rs` cover what the server is asked for and what
+it reports: a name reported as a
 domain, a client that sends none reported as absent, a Rama client connecting to an IPv4 or
 IPv6 literal sending no SNI and checking the address in the certificate, and two negatives
 where a trusted certificate covers a different identity. The literal and the bind address are
 separate arguments, so the shape of the name and the family of the socket are not conflated.
 
-`tests/paths.rs` has moving a connection, in both roles, against the policy `Endpoint::rebind`
+`tests/migration_cases.rs` has moving a connection, in both roles, against the policy `Endpoint::rebind`
 documents: a Rama client follows the endpoint to its new socket only when it holds an unused
 destination identifier and the peer allows active migration, and otherwise keeps sending from
 the socket it is on. The other role is a quiche client that migrates its own source address,

@@ -284,6 +284,9 @@ impl StreamsState {
         self.pending.clear();
         self.send_streams = 0;
         self.data_sent = 0;
+        // The rejected buffers have been discarded, so no acknowledgement can release
+        // their send-window credit later.
+        self.unacked_data = 0;
         self.connection_blocked.clear();
     }
 
@@ -824,6 +827,12 @@ impl StreamsState {
             ));
         }
 
+        if id.initiator() != self.side {
+            // MAX_STREAM_DATA implicitly opens a peer-initiated bidirectional stream,
+            // subject to the same stream-count limit as STREAM and RESET_STREAM.
+            self.validate_receive_id(id)?;
+        }
+
         let write_limit = self.write_limit();
         let max_send_data = self.max_send_data(id);
         if let Some(ss) = self
@@ -1125,6 +1134,148 @@ mod tests {
             );
         }
         assert!(state.poll().is_none());
+    }
+
+    #[test]
+    fn rejected_early_data_restores_the_send_window() {
+        let mut state = make(Side::Client);
+        state.set_send_window(4);
+        let params = TransportParameters {
+            initial_max_data: 8u32.into(),
+            initial_max_stream_data_uni: 8u32.into(),
+            initial_max_streams_uni: 1u32.into(),
+            ..TransportParameters::default()
+        };
+        state.set_params(&params);
+        let conn_state = ConnState::Established;
+        let mut pending = Retransmits::default();
+        let id = (Streams {
+            state: &mut state,
+            conn_state: &conn_state,
+        })
+        .open(Dir::Uni)
+        .unwrap();
+        assert_eq!(
+            SendStream {
+                id,
+                state: &mut state,
+                pending: &mut pending,
+                conn_state: &conn_state
+            }
+            .write(b"zero")
+            .unwrap(),
+            4
+        );
+        assert_eq!(state.write_limit(), 0);
+
+        state.zero_rtt_rejected();
+        state.set_params(&params);
+        let id = (Streams {
+            state: &mut state,
+            conn_state: &conn_state,
+        })
+        .open(Dir::Uni)
+        .unwrap();
+        assert_eq!(
+            SendStream {
+                id,
+                state: &mut state,
+                pending: &mut pending,
+                conn_state: &conn_state
+            }
+            .write(b"one!")
+            .unwrap(),
+            4
+        );
+    }
+
+    #[test]
+    fn max_stream_data_cannot_open_a_remote_stream_past_the_limit() {
+        let mut state = make(Side::Server);
+        let limit = state.max_remote[Dir::Bi as usize];
+        let id = StreamId::new(Side::Client, Dir::Bi, limit);
+        let error = state.received_max_stream_data(id, 1).unwrap_err();
+        assert_eq!(error.code, TransportErrorCode::STREAM_LIMIT_ERROR);
+        assert!(state.poll().is_none());
+        let conn_state = ConnState::Established;
+        assert!(
+            (Streams {
+                state: &mut state,
+                conn_state: &conn_state
+            })
+            .accept(Dir::Bi)
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn rejected_ordered_read_preserves_unordered_stream_and_credit() {
+        let mut state = make(Side::Client);
+        let id = StreamId::new(Side::Server, Dir::Uni, 0);
+        let initial_credit = state.local_max_data;
+        let initial_limit = state.max_remote[Dir::Uni as usize];
+        let _transmit = state
+            .received(
+                frame::Stream {
+                    id,
+                    offset: 0,
+                    fin: true,
+                    data: Bytes::from_static(b"abcd"),
+                },
+                4,
+            )
+            .unwrap();
+        let mut pending = Retransmits::default();
+        let mut recv = RecvStream {
+            id,
+            state: &mut state,
+            pending: &mut pending,
+        };
+        let mut chunks = recv.read(false).unwrap();
+        assert_eq!(&chunks.next(2).unwrap().unwrap().bytes[..], b"ab");
+        let _transmit = chunks.finalize();
+        assert!(matches!(
+            recv.read(true),
+            Err(ReadableError::IllegalOrderedRead)
+        ));
+        let mut chunks = recv
+            .read(false)
+            .expect("the rejected read must preserve the stream");
+        assert_eq!(&chunks.next(2).unwrap().unwrap().bytes[..], b"cd");
+        assert!(chunks.next(1).unwrap().is_none());
+        let _transmit = chunks.finalize();
+        assert_eq!(state.local_max_data, initial_credit + 4);
+        assert_eq!(state.max_remote[Dir::Uni as usize], initial_limit + 1);
+        assert!(!state.recv.contains_key(&id));
+    }
+
+    #[test]
+    fn first_fin_cannot_shrink_a_stream_below_received_data() {
+        let mut state = make(Side::Client);
+        let id = StreamId::new(Side::Server, Dir::Uni, 0);
+        let _transmit = state
+            .received(
+                frame::Stream {
+                    id,
+                    offset: 0,
+                    fin: false,
+                    data: Bytes::from_static(b"abcd"),
+                },
+                4,
+            )
+            .unwrap();
+        let error = state
+            .received(
+                frame::Stream {
+                    id,
+                    offset: 2,
+                    fin: true,
+                    data: Bytes::new(),
+                },
+                0,
+            )
+            .unwrap_err();
+        assert_eq!(error.code, TransportErrorCode::FINAL_SIZE_ERROR);
     }
 
     #[test]

@@ -10,7 +10,10 @@ use std::{
     fs,
     net::{Ipv4Addr, SocketAddr, UdpSocket},
     path::PathBuf,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -146,23 +149,32 @@ struct Relay {
     client_config: ClientConfig,
     address: SocketAddr,
     origin: Option<Endpoint>,
+    gate: Option<PacketGate>,
+}
+
+impl Drop for Relay {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            eprintln!("{}", self.process.said());
+        }
+    }
 }
 
 impl Relay {
     /// Start an origin, then the example pointed at it.
     async fn new(streams: usize, origin_window: Option<u32>) -> Self {
-        Self::start(streams, origin_window, true, None).await
+        Self::start(streams, origin_window, true, None, false).await
     }
 
     /// Start the example pointed at an address nothing is listening on.
     async fn without_an_origin() -> Self {
-        Self::start(1, None, false, None).await
+        Self::start(1, None, false, None, false).await
     }
 
     /// The same, with an origin that grants no stream credit, so the relay's upstream open
     /// stays pending however long a client waits.
     async fn without_stream_credit() -> Self {
-        Self::start(1, None, true, Some(0)).await
+        Self::start(1, None, true, Some(0), false).await
     }
 
     async fn start(
@@ -170,6 +182,7 @@ impl Relay {
         origin_window: Option<u32>,
         with_origin: bool,
         origin_streams: Option<u32>,
+        gate_packets: bool,
     ) -> Self {
         let directory = tempdir().expect("a directory for the identities");
         let relay_identity = Identity::generate(&directory, "relay");
@@ -187,6 +200,13 @@ impl Relay {
             let (held, address) = reserved();
             (None, address, Some(held))
         };
+
+        let gate = if gate_packets {
+            Some(PacketGate::new(origin_address).await)
+        } else {
+            None
+        };
+        let origin_address = gate.as_ref().map_or(origin_address, |gate| gate.address);
 
         // Port 0: the example binds and reports what it got, so no address is chosen here and
         // released for something else to take.
@@ -225,6 +245,7 @@ impl Relay {
             client_config,
             address,
             origin,
+            gate,
         }
     }
 
@@ -698,4 +719,146 @@ fn listening_address(line: &str) -> SocketAddr {
         .next()
         .and_then(|address| address.trim().parse().ok())
         .unwrap_or_else(|| panic!("an address in: {line}"))
+}
+
+/// A UDP hop that can withhold relay-to-origin packets while continuing to carry the
+/// origin's STOP_SENDING back. It never alters a packet or relies on its encrypted contents.
+struct PacketGate {
+    address: SocketAddr,
+    paused: Arc<AtomicBool>,
+    withheld: Arc<tokio::sync::Notify>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl PacketGate {
+    async fn new(origin: SocketAddr) -> Self {
+        let socket = tokio::net::UdpSocket::bind(localhost()).await.unwrap();
+        let address = socket.local_addr().unwrap();
+        let paused = Arc::new(AtomicBool::new(false));
+        let withheld = Arc::new(tokio::sync::Notify::new());
+        let task = spawn({
+            let paused = paused.clone();
+            let withheld = withheld.clone();
+            async move {
+                let mut relay = None;
+                let mut buffer = vec![0; 65536];
+                loop {
+                    let (len, from) = socket.recv_from(&mut buffer).await.unwrap();
+                    let destination = if from == origin {
+                        relay.expect("the relay sent the first packet")
+                    } else {
+                        relay = Some(from);
+                        if paused.load(Ordering::Acquire) {
+                            withheld.notify_one();
+                            continue;
+                        }
+                        origin
+                    };
+                    socket.send_to(&buffer[..len], destination).await.unwrap();
+                }
+            }
+        });
+        Self {
+            address,
+            paused,
+            withheld,
+            task,
+        }
+    }
+}
+
+impl Drop for PacketGate {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+#[tokio::test]
+#[ignore]
+async fn a_reset_cancels_a_request_waiting_on_upstream_credit() {
+    cancelled_while_waiting_for_credit(true).await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn a_stop_cancels_a_request_waiting_on_upstream_credit() {
+    cancelled_while_waiting_for_credit(false).await;
+}
+
+async fn cancelled_while_waiting_for_credit(reset: bool) {
+    utils::init_tracing();
+    let relay = Relay::without_stream_credit().await;
+    let connection = relay.connect().await;
+    let upstream = relay.upstream().await;
+    let (mut send, mut recv) = connection.open_bi().await.unwrap();
+    send.write_all(b"abandoned").await.unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), upstream.accept_bi())
+            .await
+            .is_err()
+    );
+    if reset {
+        send.reset(7u32.into()).unwrap();
+        let error = tokio::time::timeout(PROMPTLY, recv.read_to_end(READ_CAP))
+            .await
+            .expect("a queued request reset is noticed promptly")
+            .unwrap_err();
+        assert!(
+            matches!(error, ReadToEndError::Read(ReadError::Reset(code)) if code == RELAY_CANCELLED.into())
+        );
+    } else {
+        recv.stop(CLIENT_STOPPED.into()).unwrap();
+        assert_eq!(
+            tokio::time::timeout(PROMPTLY, send.stopped())
+                .await
+                .expect("a queued response stop is noticed promptly")
+                .unwrap(),
+            Some(RELAY_CANCELLED.into())
+        );
+    }
+    // Grant exactly one stream: a stale open for the abandoned request would consume it.
+    upstream.set_max_concurrent_bi_streams(1u32.into());
+    carries_another_stream(&connection, &upstream).await;
+    connection.close(0u32.into(), b"done");
+}
+
+/// The request FIN has left the relay but is withheld before the origin. A stop at this
+/// point is meaningful: the FIN cannot have been acknowledged. The idle response must be
+/// cancelled too, and its permit must become available again.
+#[tokio::test]
+#[ignore]
+async fn a_stop_after_forwarding_fin_cancels_the_idle_response() {
+    utils::init_tracing();
+    let relay = Relay::start(1, None, true, None, true).await;
+    let connection = relay.connect().await;
+    let upstream = relay.upstream().await;
+    let (mut send, mut recv) = connection.open_bi().await.unwrap();
+    send.write_all(b"begin").await.unwrap();
+    let (_answering, mut asked) = upstream_stream(&upstream).await;
+    let mut prefix = [0; 5];
+    tokio::time::timeout(LIMIT, asked.read_exact(&mut prefix))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(&prefix, b"begin");
+    // Let the prefix and handshake ACKs settle before closing the gate. Once closed, the
+    // only new application work is FIN, and the origin cannot acknowledge that packet.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let gate = relay.gate.as_ref().unwrap();
+    gate.paused.store(true, Ordering::Release);
+    send.finish().unwrap();
+    tokio::time::timeout(PROMPTLY, gate.withheld.notified())
+        .await
+        .expect("the relay tried to forward the request FIN");
+    asked.stop(ORIGIN_STOPPED.into()).unwrap();
+    let error = tokio::time::timeout(PROMPTLY, recv.read_to_end(READ_CAP))
+        .await
+        .expect("the unacknowledged FIN still observes a stop")
+        .unwrap_err();
+    assert!(
+        matches!(error, ReadToEndError::Read(ReadError::Reset(code)) if code == RELAY_CANCELLED.into())
+    );
+    gate.paused.store(false, Ordering::Release);
+    carries_another_stream(&connection, &upstream).await;
+    connection.close(0u32.into(), b"done");
 }

@@ -209,11 +209,12 @@ pub(crate) trait HeaderKey: Send + Sync {
     fn sample_size(&self) -> usize;
 }
 
-/// Error returned when exported keying material is asked for.
-///
-/// This error occurs if the requested output length is too large.
-#[derive(Debug, PartialEq, Eq)]
-pub struct ExportKeyingMaterialError;
+rama_utils::macros::error::static_str_error! {
+    #[doc = "failed to export keying material"]
+    ///
+    /// The requested output length exceeds the exporter's limit.
+    pub struct ExportKeyingMaterialError;
+}
 
 /// A pseudo random key for HKDF
 pub(crate) trait HandshakeTokenKey: Send + Sync {
@@ -235,17 +236,13 @@ pub(crate) trait AeadKey {
     ) -> Result<&'a mut [u8], CryptoError>;
 }
 
-/// Generic crypto errors
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct CryptoError;
-
-impl core::fmt::Display for CryptoError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str("cryptographic operation failed")
-    }
+rama_utils::macros::error::static_str_error! {
+    #[doc = "cryptographic operation failed"]
+    ///
+    /// Generic crypto errors.
+    #[derive(Copy)]
+    pub(crate) struct CryptoError;
 }
-
-impl std::error::Error for CryptoError {}
 
 /// Error indicating that the specified QUIC version is not supported
 #[derive(Debug)]

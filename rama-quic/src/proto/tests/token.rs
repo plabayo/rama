@@ -369,7 +369,7 @@ struct FailingTokenKey(ProviderFailure);
 impl HandshakeTokenKey for FailingTokenKey {
     fn aead_from_hkdf(&self, _random_bytes: &[u8]) -> Result<Box<dyn AeadKey>, CryptoError> {
         match self.0 {
-            ProviderFailure::Derivation => Err(CryptoError),
+            ProviderFailure::Derivation => Err(CryptoError::new()),
             ProviderFailure::Sealing => Ok(Box::new(SealFails)),
         }
     }
@@ -381,7 +381,7 @@ struct SealFails;
 impl AeadKey for SealFails {
     fn seal(&self, data: &mut Vec<u8>, _additional_data: &[u8]) -> Result<(), CryptoError> {
         data.extend_from_slice(b"PARTIAL-TAG-MUST-NOT-ESCAPE");
-        Err(CryptoError)
+        Err(CryptoError::new())
     }
 
     fn open<'a>(
@@ -389,7 +389,7 @@ impl AeadKey for SealFails {
         _data: &'a mut [u8],
         _additional_data: &[u8],
     ) -> Result<&'a mut [u8], CryptoError> {
-        Err(CryptoError)
+        Err(CryptoError::new())
     }
 }
 

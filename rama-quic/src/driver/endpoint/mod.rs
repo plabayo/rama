@@ -1053,6 +1053,7 @@ impl EndpointRef {
                         state
                             .sockets
                             .respond(received_on, transmit, &response_buffer);
+                        state.wake_driver();
                     }
                     Err(error.cause)
                 }

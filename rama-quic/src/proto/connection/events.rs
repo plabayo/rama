@@ -95,7 +95,9 @@ impl Connection {
                 // since the packet could have triggered a migration. Make sure
                 // the data received is accounted for the most recent path by accessing
                 // `path` after `handle_decode`.
-                self.path.total_recvd = self.path.total_recvd.saturating_add(data_len as u64);
+                if remote == self.path.remote && self.same_local(local) {
+                    self.path.total_recvd = self.path.total_recvd.saturating_add(data_len as u64);
+                }
 
                 if let Some(data) = remaining {
                     self.stats.udp_rx.bytes += data.len() as u64;

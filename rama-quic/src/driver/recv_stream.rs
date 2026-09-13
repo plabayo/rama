@@ -316,6 +316,8 @@ impl RecvStream {
                 return Poll::Ready(Err(ResetError::ZeroRttRejected));
             }
 
+            // A cancelled read or reset wait may have left its registration behind.
+            conn.blocked_readers.remove(&self.stream);
             if let Some(code) = self.reset {
                 return Poll::Ready(Ok(Some(code)));
             }
@@ -367,6 +369,9 @@ impl RecvStream {
         if self.is_0rtt {
             conn.check_0rtt().map_err(|()| ReadError::ZeroRttRejected)?;
         }
+
+        // This poll replaces any registration left by a cancelled read or reset wait.
+        conn.blocked_readers.remove(&self.stream);
 
         // If we stored an error during a previous call, return it now. This can happen if a
         // `read_fn` both wants to return data and also returns an error in its final stream status.
@@ -447,10 +452,10 @@ impl Future for ReadToEnd<'_> {
             if let Some(chunk) = ready!(self.stream.poll_read_chunk(cx, usize::MAX, false))? {
                 self.start = self.start.min(chunk.offset);
                 let end = chunk.bytes.len() as u64 + chunk.offset;
-                if (end - self.start) > self.size_limit as u64 {
+                self.end = self.end.max(end);
+                if (self.end - self.start) > self.size_limit as u64 {
                     return Poll::Ready(Err(ReadToEndError::TooLong));
                 }
-                self.end = self.end.max(end);
                 self.read.push((chunk.bytes, chunk.offset));
             } else {
                 if self.end == 0 {
@@ -515,25 +520,21 @@ impl tokio::io::AsyncRead for RecvStream {
 
 impl Drop for RecvStream {
     fn drop(&mut self) {
+        let mut conn = self.conn.state.lock();
+        // A rejected early stream's ID may already belong to a new 1-RTT stream.
+        if self.is_0rtt && conn.check_0rtt().is_err() {
+            return;
+        }
         if self.all_data_read {
             debug_assert!(
-                !self
-                    .conn
-                    .state
-                    .lock()
-                    .blocked_readers
-                    .contains_key(&self.stream),
+                !conn.blocked_readers.contains_key(&self.stream),
                 "Stream {} should not have a blocked reader when all data read is true",
                 self.stream
             );
             return;
         }
-        let mut conn = self.conn.state.lock();
-
-        // clean up any previously registered wakers
         conn.blocked_readers.remove(&self.stream);
-
-        if conn.error.is_some() || (self.is_0rtt && conn.check_0rtt().is_err()) {
+        if conn.error.is_some() {
             return;
         }
 
@@ -781,5 +782,87 @@ impl Future for ReadChunks<'_> {
     fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
         let this = self.get_mut();
         this.stream.poll_read_chunks(cx, this.bufs)
+    }
+}
+
+#[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+mod tests {
+    use super::*;
+    use crate::driver::Duration;
+
+    #[tokio::test]
+    async fn cancelled_reset_wait_does_not_leave_a_reader_after_eof() {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let endpoint = crate::driver::tests::endpoint();
+            let (client, server) = tokio::join!(
+                endpoint
+                    .connect(endpoint.local_addr().unwrap(), "localhost")
+                    .unwrap(),
+                async { endpoint.accept().await.unwrap().await },
+            );
+            let (client, server) = (client.unwrap(), server.unwrap());
+            let mut send = server.open_uni().await.unwrap();
+            send.write_all(b"abcd").await.unwrap();
+            send.finish().unwrap();
+            let mut recv = client.accept_uni().await.unwrap();
+            assert_eq!(send.stopped().await.unwrap(), None);
+
+            let mut cx = Context::from_waker(std::task::Waker::noop());
+            {
+                let wait = std::pin::pin!(recv.received_reset());
+                assert!(wait.poll(&mut cx).is_pending());
+            }
+
+            // The data and FIN are already buffered, so no driver event can clear the
+            // cancelled wait's registration between the wait and this read.
+            {
+                let read = std::pin::pin!(recv.read_to_end(4));
+                assert_eq!(read.poll(&mut cx), Poll::Ready(Ok(b"abcd".to_vec())));
+            }
+            assert!(
+                !recv
+                    .conn
+                    .state
+                    .lock()
+                    .blocked_readers
+                    .contains_key(&recv.stream)
+            );
+            drop(recv);
+            endpoint.shutdown().await;
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn read_to_end_checks_previously_received_high_offsets() {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let endpoint = crate::driver::tests::endpoint();
+            let (client, server) = tokio::join!(
+                endpoint
+                    .connect(endpoint.local_addr().unwrap(), "localhost")
+                    .unwrap(),
+                async { endpoint.accept().await.unwrap().await },
+            );
+            let (client, server) = (client.unwrap(), server.unwrap());
+            let mut send = server.open_uni().await.unwrap();
+            send.write_all(b"abcd").await.unwrap();
+            send.finish().unwrap();
+            let mut recv = client.accept_uni().await.unwrap();
+            // Resume after an unordered read already consumed a higher-offset chunk.
+            // The newly arriving lower offset must be checked against that prior end.
+            let read = ReadToEnd {
+                stream: &mut recv,
+                read: vec![(Bytes::from_static(b"z"), 16)],
+                start: 16,
+                end: 17,
+                size_limit: 8,
+            };
+            assert_eq!(read.await, Err(ReadToEndError::TooLong));
+            client.close(0u32.into(), b"done");
+            endpoint.shutdown().await;
+        })
+        .await
+        .unwrap();
     }
 }

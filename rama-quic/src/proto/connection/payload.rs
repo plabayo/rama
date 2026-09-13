@@ -138,6 +138,7 @@ impl Connection {
         local: Option<SocketAddr>,
         number: u64,
         packet: Packet,
+        received_bytes: Option<usize>,
     ) -> Result<(), TransportError> {
         let received_dcid = packet.header.dst_cid();
         let payload = packet.payload.freeze();
@@ -174,7 +175,14 @@ impl Connection {
             // RFC 9000 §12.5: CRYPTO frames cannot be sent in 0-RTT packets. Both
             // CONNECTION_CLOSE types are permitted there, as 0-RTT belongs to the application
             // data packet number space; see §12.4 Table 3.
-            if packet.header.is_0rtt() && matches!(frame, Frame::Crypto(_)) {
+            // ACK frequency support cannot be remembered for 0-RTT either (draft-ietf-quic-
+            // ack-frequency-11 §3), so its frames require 1-RTT as well.
+            if packet.header.is_0rtt()
+                && matches!(
+                    frame,
+                    Frame::Crypto(_) | Frame::AckFrequency(_) | Frame::ImmediateAck
+                )
+            {
                 return Err(TransportError::PROTOCOL_VIOLATION(
                     "illegal frame type in 0-RTT",
                 ));
@@ -208,7 +216,13 @@ impl Connection {
                     close = Some(reason);
                 }
                 Frame::PathChallenge(token) => {
-                    self.path_responses.push(number, token, remote, local);
+                    self.path_responses.push(
+                        number,
+                        token,
+                        remote,
+                        local,
+                        received_bytes.unwrap_or(0),
+                    );
                     if remote == self.path.remote && self.same_local(local) {
                         // PATH_CHALLENGE on active path, possible off-path packet forwarding
                         // attack. Send a non-probing packet to recover the active path.
@@ -452,5 +466,72 @@ impl Connection {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+mod tests {
+    use super::*;
+    use crate::proto::{
+        TransportErrorCode, VarInt,
+        coding::Codec,
+        packet::{Header, LongType, PacketNumber},
+        tests::Pair,
+    };
+
+    #[test]
+    fn ack_frequency_frames_require_one_rtt() {
+        for immediate in [false, true] {
+            for early in [true, false] {
+                let mut pair = Pair::default();
+                let (_, server) = pair.connect();
+                let now = pair.time;
+                let conn = pair.server_conn_mut(server);
+                let mut payload = Vec::new();
+                if immediate {
+                    frame::FrameType::IMMEDIATE_ACK.encode(&mut payload);
+                } else {
+                    frame::AckFrequency {
+                        sequence: VarInt(1_000),
+                        ack_eliciting_threshold: VarInt(1),
+                        request_max_ack_delay: VarInt(25_000),
+                        reordering_threshold: VarInt(1),
+                    }
+                    .encode(&mut payload);
+                }
+                // Exercise the decoded-packet dispatch boundary; keys and packet-number
+                // deduplication are checked before this method in production.
+                let header = if early {
+                    Header::Long {
+                        ty: LongType::ZeroRtt,
+                        dst_cid: conn.handshake_cid,
+                        src_cid: conn.orig_rem_cid,
+                        number: PacketNumber::U8(0),
+                        version: 1,
+                    }
+                } else {
+                    Header::Short {
+                        spin: false,
+                        key_phase: false,
+                        dst_cid: conn.handshake_cid,
+                        number: PacketNumber::U8(0),
+                    }
+                };
+                let packet = Packet {
+                    header,
+                    header_data: Default::default(),
+                    payload: payload.as_slice().into(),
+                };
+                let result =
+                    conn.process_payload(now, conn.path.remote, conn.path.local, 0, packet, None);
+                if early {
+                    let error = result.unwrap_err();
+                    assert_eq!(error.code, TransportErrorCode::PROTOCOL_VIOLATION);
+                    assert_eq!(error.reason, "illegal frame type in 0-RTT");
+                } else {
+                    result.unwrap();
+                }
+            }
+        }
     }
 }

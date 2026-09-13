@@ -15,6 +15,7 @@ use crate::qlog::{
         path::TupleEndpointInfo as PathEndpoint,
     },
 };
+use rama_utils::str::utf8::{self, DecodeError, REPLACEMENT_CHARACTER};
 use serde::Serialize;
 use std::{
     io,
@@ -633,23 +634,24 @@ async fn lossy_string<W: AsyncWrite + Unpin + Send>(
 ) -> io::Result<()> {
     output.write_all(b"\"").await?;
     loop {
-        match std::str::from_utf8(bytes) {
+        match utf8::decode(bytes) {
             Ok(valid) => {
                 string_contents(output, valid).await?;
                 break;
             }
-            Err(error) => {
-                let (valid, invalid) = bytes.split_at(error.valid_up_to());
-                string_contents(
-                    output,
-                    std::str::from_utf8(valid).map_err(io::Error::other)?,
-                )
-                .await?;
-                output.write_all("\u{fffd}".as_bytes()).await?;
-                match error.error_len() {
-                    Some(length) => bytes = &invalid[length..],
-                    None => break,
-                }
+            Err(DecodeError::Invalid {
+                valid_prefix,
+                remaining_input,
+                ..
+            }) => {
+                string_contents(output, valid_prefix).await?;
+                output.write_all(REPLACEMENT_CHARACTER.as_bytes()).await?;
+                bytes = remaining_input;
+            }
+            Err(DecodeError::Incomplete { valid_prefix, .. }) => {
+                string_contents(output, valid_prefix).await?;
+                output.write_all(REPLACEMENT_CHARACTER.as_bytes()).await?;
+                break;
             }
         }
     }

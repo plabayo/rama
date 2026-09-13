@@ -28,9 +28,18 @@ impl Datagrams<'_> {
         if self.conn.config.datagram_receive_buffer_size.is_none() {
             return Err(SendDatagramError::Disabled);
         }
-        let max = self
-            .max_size()
-            .ok_or(SendDatagramError::UnsupportedByPeer)?;
+        let max = self.max_size().ok_or_else(|| {
+            if self
+                .conn
+                .peer_params
+                .max_datagram_frame_size
+                .is_some_and(|size| size.into_inner() > 0)
+            {
+                SendDatagramError::TooLarge
+            } else {
+                SendDatagramError::UnsupportedByPeer
+            }
+        })?;
         if data.len() > max {
             return Err(SendDatagramError::TooLarge);
         }
@@ -74,7 +83,7 @@ impl Datagrams<'_> {
 
     /// Compute the maximum size of datagrams that may passed to `send_datagram`
     ///
-    /// Returns `None` if datagrams are unsupported by the peer or disabled locally.
+    /// Returns `None` if disabled locally or the peer's limit cannot fit a datagram frame.
     ///
     /// This may change over the lifetime of a connection according to variation in the path MTU
     /// estimate. The peer can also enforce an arbitrarily small fixed limit, but if the peer's
@@ -88,12 +97,12 @@ impl Datagrams<'_> {
         let max_size = self.conn.path.current_mtu() as usize
             - self.conn.predict_1rtt_overhead(None)
             - Datagram::SIZE_BOUND;
-        let limit = self
-            .conn
-            .peer_params
-            .max_datagram_frame_size?
-            .into_inner()
-            .saturating_sub(Datagram::SIZE_BOUND as u64);
+        let peer_limit = self.conn.peer_params.max_datagram_frame_size?.into_inner();
+        // Our DATAGRAM encoding includes its length, even for an empty payload.
+        if peer_limit < 2 || self.conn.config.datagram_receive_buffer_size.is_none() {
+            return None;
+        }
+        let limit = peer_limit.saturating_sub(Datagram::SIZE_BOUND as u64);
         Some(limit.min(max_size as u64) as usize)
     }
 

@@ -65,6 +65,12 @@ fn qlog_negotiation_records_actual_parameters_alpn_and_key_generations() {
             pair.client_conn_mut(client).ping();
         }
         pair.drive();
+        // The responder may have sent only an ACK in the new phase. Have both
+        // sides send ack-eliciting packets so either can initiate the next
+        // update after actual acknowledgment, independently of key retirement.
+        pair.client_conn_mut(client).ping();
+        pair.server_conn_mut(server).ping();
+        pair.drive();
         let updates = capture.events("quic:key_updated");
         for key_type in ["client_1rtt_secret", "server_1rtt_secret"] {
             let event = updates

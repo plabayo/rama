@@ -63,6 +63,12 @@ impl Recv {
             return Err(TransportError::FINAL_SIZE_ERROR(""));
         }
 
+        if frame.fin && end < self.end {
+            return Err(TransportError::FINAL_SIZE_ERROR(
+                "final size below received data",
+            ));
+        }
+
         let new_bytes = self.credit_consumed_by(end, received, max_data)?;
 
         // Stopped streams don't need to wait for the actual data, they just need to know
@@ -96,7 +102,7 @@ impl Recv {
 
     pub(super) fn stop(&mut self) -> Result<(u64, ShouldTransmit), ClosedStream> {
         if self.stopped {
-            return Err(ClosedStream { _private: () });
+            return Err(ClosedStream::new());
         }
 
         self.stopped = true;
@@ -273,17 +279,14 @@ impl<'a> Chunks<'a> {
             Entry::Vacant(_) => return Err(ReadableError::ClosedStream),
         };
 
-        #[expect(
-            clippy::unwrap_used,
-            reason = "`get_or_insert_recv` filled the entry on the previous line"
-        )]
-        let mut recv =
-            match get_or_insert_recv(streams.stream_receive_window)(entry.get_mut()).stopped {
-                true => return Err(ReadableError::ClosedStream),
-                false => entry.remove().unwrap().into_inner(), // this can't fail due to the previous get_or_insert_with
-            };
-
+        let recv = get_or_insert_recv(streams.stream_receive_window)(entry.get_mut());
+        if recv.stopped {
+            return Err(ReadableError::ClosedStream);
+        }
+        // Validate before removing the entry: a rejected ordered read must leave it usable.
         recv.assembler.ensure_ordering(ordered)?;
+        #[expect(clippy::unwrap_used, reason = "get_or_insert_recv filled the entry")]
+        let recv = entry.remove().unwrap().into_inner();
         Ok(Self {
             id,
             ordered,

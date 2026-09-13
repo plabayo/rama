@@ -2,6 +2,7 @@
 
 use super::Initiator;
 use crate::ConnectionId;
+use rama_utils::str::utf8::{self, DecodeError, REPLACEMENT_CHARACTER};
 use serde::{Serialize, Serializer};
 use std::{
     borrow::Cow,
@@ -258,17 +259,20 @@ impl fmt::Display for LossyUtf8<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut remaining = self.0;
         loop {
-            match std::str::from_utf8(remaining) {
+            match utf8::decode(remaining) {
                 Ok(valid) => return f.write_str(valid),
-                Err(error) => {
-                    let (valid, invalid) = remaining.split_at(error.valid_up_to());
-                    // The UTF-8 validator guarantees this prefix; keep the conversion checked.
-                    f.write_str(std::str::from_utf8(valid).map_err(|_error| fmt::Error)?)?;
-                    f.write_str("\u{fffd}")?;
-                    match error.error_len() {
-                        Some(length) => remaining = &invalid[length..],
-                        None => return Ok(()),
-                    }
+                Err(DecodeError::Invalid {
+                    valid_prefix,
+                    remaining_input,
+                    ..
+                }) => {
+                    f.write_str(valid_prefix)?;
+                    f.write_str(REPLACEMENT_CHARACTER)?;
+                    remaining = remaining_input;
+                }
+                Err(DecodeError::Incomplete { valid_prefix, .. }) => {
+                    f.write_str(valid_prefix)?;
+                    return f.write_str(REPLACEMENT_CHARACTER);
                 }
             }
         }

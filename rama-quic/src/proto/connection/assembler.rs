@@ -240,9 +240,9 @@ impl Assembler {
 #[derive(Debug, PartialEq, Eq)]
 pub struct Chunk {
     /// The offset in the stream
-    pub(crate) offset: u64,
+    pub offset: u64,
     /// The contents of the chunk
-    pub(crate) bytes: Bytes,
+    pub bytes: Bytes,
 }
 
 impl Chunk {

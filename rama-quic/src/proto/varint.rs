@@ -29,7 +29,7 @@ impl VarInt {
         if x < 2u64.pow(62) {
             Ok(Self(x))
         } else {
-            Err(VarIntBoundsExceeded)
+            Err(VarIntBoundsExceeded::new())
         }
     }
 
@@ -105,7 +105,7 @@ impl std::convert::TryFrom<u128> for VarInt {
     /// Succeeds iff `x` < 2^62
     fn try_from(x: u128) -> Result<Self, VarIntBoundsExceeded> {
         let Ok(x) = x.try_into() else {
-            return Err(VarIntBoundsExceeded);
+            return Err(VarIntBoundsExceeded::new());
         };
         Self::from_u64(x)
     }
@@ -138,17 +138,12 @@ impl<'arbitrary> Arbitrary<'arbitrary> for VarInt {
     }
 }
 
-/// Error returned when constructing a `VarInt` from a value >= 2^62
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub struct VarIntBoundsExceeded;
-
-impl core::fmt::Display for VarIntBoundsExceeded {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str("value too large for varint encoding")
-    }
+rama_utils::macros::error::static_str_error! {
+    #[doc = "value too large for varint encoding"]
+    /// Error returned when constructing a `VarInt` from a value >= 2^62.
+    #[derive(Copy)]
+    pub struct VarIntBoundsExceeded;
 }
-
-impl std::error::Error for VarIntBoundsExceeded {}
 
 impl Codec for VarInt {
     #[expect(
@@ -158,7 +153,7 @@ impl Codec for VarInt {
     )]
     fn decode<B: Buf>(r: &mut B) -> coding::Result<Self> {
         if !r.has_remaining() {
-            return Err(UnexpectedEnd);
+            return Err(UnexpectedEnd::new());
         }
         let mut buf = [0; 8];
         buf[0] = r.get_u8();
@@ -168,21 +163,21 @@ impl Codec for VarInt {
             0b00 => u64::from(buf[0]),
             0b01 => {
                 if r.remaining() < 1 {
-                    return Err(UnexpectedEnd);
+                    return Err(UnexpectedEnd::new());
                 }
                 r.copy_to_slice(&mut buf[1..2]);
                 u64::from(u16::from_be_bytes(buf[..2].try_into().unwrap()))
             }
             0b10 => {
                 if r.remaining() < 3 {
-                    return Err(UnexpectedEnd);
+                    return Err(UnexpectedEnd::new());
                 }
                 r.copy_to_slice(&mut buf[1..4]);
                 u64::from(u32::from_be_bytes(buf[..4].try_into().unwrap()))
             }
             0b11 => {
                 if r.remaining() < 7 {
-                    return Err(UnexpectedEnd);
+                    return Err(UnexpectedEnd::new());
                 }
                 r.copy_to_slice(&mut buf[1..8]);
                 u64::from_be_bytes(buf)

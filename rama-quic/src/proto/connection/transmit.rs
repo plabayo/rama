@@ -723,7 +723,7 @@ impl Connection {
         if self.highest_space != SpaceId::Data || self.state.is_closed() {
             return None;
         }
-        let (token, remote, local) = self
+        let (token, remote, local, max_response_size) = self
             .path_responses
             .pop_off_path(self.path.remote, self.path.local)?;
         let Some((cid, seq)) = self.cid_for_path(remote, local) else {
@@ -731,8 +731,14 @@ impl Connection {
             debug!(%remote, ?local, "no connection ID bound to that path: its answer is dropped");
             return None;
         };
-        buf.reserve(MIN_INITIAL_SIZE as usize);
-        let buf_capacity = buf.capacity();
+        // An off-path response has no validated-path budget to borrow. Its padding must
+        // fit the credit of the packet whose challenge it answers (RFC 9000 section 8.2.2).
+        let minimum_size = 1 + cid.len() + 4 + self.tag_len_1rtt() + 9;
+        if max_response_size < minimum_size {
+            return None;
+        }
+        buf.reserve(max_response_size);
+        let buf_capacity = max_response_size;
         let mut builder =
             PacketBuilder::new(now, SpaceId::Data, cid, buf, buf_capacity, 0, false, self)?;
         trace!(%remote, ?local, "PATH_RESPONSE {:08x} (off-path)", token);
@@ -816,6 +822,9 @@ impl Connection {
     /// See also `self.space(SpaceId::Data).can_send()`
     fn can_send_1rtt(&self, max_size: usize) -> bool {
         self.streams.can_send_stream_data()
+            // STREAMS_BLOCKED belongs only to the application data space. Counting it in
+            // every space's retransmits would keep emitting empty handshake packets.
+            || self.streams.has_streams_blocked()
             || self.path.challenge.is_some_and(|it| it.pending())
             || self
                 .prev_path

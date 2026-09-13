@@ -164,7 +164,7 @@ impl RecvStream<'_> {
     pub(crate) fn stop(&mut self, error_code: VarInt) -> Result<(), ClosedStream> {
         let mut entry = match self.state.recv.entry(self.id) {
             hash_map::Entry::Occupied(s) => s,
-            hash_map::Entry::Vacant(_) => return Err(ClosedStream { _private: () }),
+            hash_map::Entry::Vacant(_) => return Err(ClosedStream::new()),
         };
         let stream = get_or_insert_recv(self.state.stream_receive_window)(entry.get_mut());
 
@@ -201,13 +201,13 @@ impl RecvStream<'_> {
     /// return `Err(ClosedStream)`.
     pub(crate) fn received_reset(&mut self) -> Result<Option<VarInt>, ClosedStream> {
         let hash_map::Entry::Occupied(entry) = self.state.recv.entry(self.id) else {
-            return Err(ClosedStream { _private: () });
+            return Err(ClosedStream::new());
         };
         let Some(s) = entry.get().as_ref().and_then(|s| s.as_open_recv()) else {
             return Ok(None);
         };
         if s.stopped {
-            return Err(ClosedStream { _private: () });
+            return Err(ClosedStream::new());
         }
         let Some(code) = s.reset_code() else {
             return Ok(None);
@@ -321,7 +321,7 @@ impl<'a> SendStream<'a> {
         match self.state.send.get(&self.id).as_ref() {
             Some(Some(s)) => Ok(s.stop_reason),
             Some(None) => Ok(None),
-            None => Err(ClosedStream { _private: () }),
+            None => Err(ClosedStream::new()),
         }
     }
 
@@ -373,11 +373,11 @@ impl<'a> SendStream<'a> {
             .send
             .get_mut(&self.id)
             .map(get_or_insert_send(max_send_data))
-            .ok_or(ClosedStream { _private: () })?;
+            .ok_or(ClosedStream::new())?;
 
         if matches!(stream.state, SendState::ResetSent) {
             // Redundant reset call
-            return Err(ClosedStream { _private: () });
+            return Err(ClosedStream::new());
         }
 
         // Restore the portion of the send window consumed by the data that we aren't about to
@@ -402,7 +402,7 @@ impl<'a> SendStream<'a> {
             .send
             .get_mut(&self.id)
             .map(get_or_insert_send(max_send_data))
-            .ok_or(ClosedStream { _private: () })?;
+            .ok_or(ClosedStream::new())?;
 
         stream.priority = priority;
         Ok(())
@@ -413,11 +413,7 @@ impl<'a> SendStream<'a> {
     /// # Panics
     /// - when applied to a receive stream
     pub(crate) fn priority(&self) -> Result<i32, ClosedStream> {
-        let stream = self
-            .state
-            .send
-            .get(&self.id)
-            .ok_or(ClosedStream { _private: () })?;
+        let stream = self.state.send.get(&self.id).ok_or(ClosedStream::new())?;
 
         Ok(stream.as_ref().map(|s| s.priority).unwrap_or_default())
     }
@@ -571,19 +567,11 @@ impl ShouldTransmit {
     }
 }
 
-/// Error indicating that a stream has not been opened or has already been finished or reset
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct ClosedStream {
-    _private: (),
+rama_utils::macros::error::static_str_error! {
+    #[doc = "closed stream"]
+    /// Error indicating that a stream has not been opened or has already been finished or reset.
+    pub struct ClosedStream;
 }
-
-impl core::fmt::Display for ClosedStream {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str("closed stream")
-    }
-}
-
-impl std::error::Error for ClosedStream {}
 
 impl From<ClosedStream> for io::Error {
     fn from(x: ClosedStream) -> Self {

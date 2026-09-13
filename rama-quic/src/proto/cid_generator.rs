@@ -42,9 +42,11 @@ pub trait ConnectionIdGenerator: Send + Sync {
 pub type ConnectionIdGeneratorFactory =
     std::sync::Arc<dyn Fn() -> Box<dyn ConnectionIdGenerator> + Send + Sync>;
 
-/// The connection ID was not recognized by the [`ConnectionIdGenerator`]
-#[derive(Debug, Copy, Clone)]
-pub struct InvalidCid;
+rama_utils::macros::error::static_str_error! {
+    #[doc = "connection ID was not recognized by the connection ID generator"]
+    #[derive(Copy)]
+    pub struct InvalidCid;
+}
 
 /// Generates purely random connection IDs of a specified length
 ///
@@ -180,7 +182,7 @@ impl ConnectionIdGenerator for HashedConnectionIdGenerator {
         // none. Only one of its own can be recognised, so any other length is refused before
         // it is split.
         if cid.len() != NONCE_LEN + SIGNATURE_LEN {
-            return Err(InvalidCid);
+            return Err(InvalidCid::new());
         }
         let (nonce, signature) = cid.split_at(NONCE_LEN);
         let mut hasher = rustc_hash::FxHasher::default();
@@ -189,7 +191,7 @@ impl ConnectionIdGenerator for HashedConnectionIdGenerator {
         let expected = hasher.finish().to_le_bytes();
         match expected[..SIGNATURE_LEN] == signature[..] {
             true => Ok(()),
-            false => Err(InvalidCid),
+            false => Err(InvalidCid::new()),
         }
     }
 

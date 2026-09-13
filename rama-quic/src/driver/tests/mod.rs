@@ -285,7 +285,7 @@ async fn ip_blocking() {
 }
 
 /// Construct an endpoint suitable for connecting to itself
-fn endpoint() -> Endpoint {
+pub(super) fn endpoint() -> Endpoint {
     EndpointFactory::new().endpoint()
 }
 
@@ -1118,4 +1118,93 @@ impl Wake for WakeCounter {
 fn new_count_waker() -> (Waker, Arc<WakeCounter>) {
     let counter = Arc::new(WakeCounter::default());
     (Waker::from(counter.clone()), counter)
+}
+
+/// Rejected early handles can outlive rejection while their stream IDs are reused. Operations
+/// on those handles must leave the replacement's state and readiness registrations alone.
+#[tokio::test]
+async fn rejected_early_handles_leave_replacement_streams_untouched() {
+    timeout(Duration::from_secs(20), async {
+        let factory = EndpointFactory::new();
+        let endpoint = factory.endpoint();
+        let addr = endpoint.local_addr().unwrap();
+        let first = endpoint.connect(addr, "localhost").unwrap();
+        let (client, server) = join!(first, async { endpoint.accept().await.unwrap().await });
+        let client = client.unwrap();
+        let server = server.unwrap();
+        // An application response arrives after the server's session tickets, priming 0-RTT.
+        let mut response = server.open_uni().await.unwrap();
+        response.write_all(b"ticket").await.unwrap();
+        response.finish().unwrap();
+        let mut received = client.accept_uni().await.unwrap();
+        assert_eq!(received.read_to_end(64).await.unwrap(), b"ticket");
+        client.close(0u32.into(), b"primed");
+        drop((response, received, client, server));
+        endpoint.wait_idle().await;
+
+        // The same identity with a fresh session store rejects the client's cached early data.
+        let key = PrivateKeyDer::Pkcs8(factory.cert.signing_key.serialize_der().into());
+        endpoint.set_server_config(Some(
+            crate::driver::ServerConfig::with_single_cert(
+                vec![factory.cert.cert.der().clone()],
+                key,
+            )
+            .unwrap(),
+        ));
+        let (client, accepted) = endpoint
+            .connect(addr, "localhost")
+            .unwrap()
+            .into_0rtt()
+            .unwrap_or_else(|_| panic!("a cached early-data ticket"));
+        let (mut old_send, old_recv) = client.open_bi().await.unwrap();
+        let old_id = old_send.id();
+        let (accepted, server) = join!(accepted, async { endpoint.accept().await.unwrap().await });
+        assert!(!accepted.unwrap(), "the early data was rejected");
+        let server = server.unwrap();
+        let (mut send, mut recv) = client.open_bi().await.unwrap();
+        assert_eq!(
+            send.id(),
+            old_id,
+            "the early stream's numeric ID was reused"
+        );
+        send.set_priority(7).unwrap();
+        assert!(old_send.set_priority(19).is_err());
+        old_send.priority().unwrap_err();
+        assert_eq!(send.priority().unwrap(), 7);
+        assert!(old_send.finish().is_err());
+        send.write_all(b"request").await.unwrap();
+
+        let (reader_waker, reader_wakes) = new_count_waker();
+        let mut reader_cx = Context::from_waker(&reader_waker);
+        let mut read_buf = [0; 1];
+        assert!(recv.poll_read(&mut reader_cx, &mut read_buf).is_pending());
+        drop(old_recv);
+
+        // Make the replacement writer block without yielding, then drop its rejected namesake.
+        client.set_send_window(0);
+        let (writer_waker, writer_wakes) = new_count_waker();
+        let mut writer_cx = Context::from_waker(&writer_waker);
+        assert!(
+            std::pin::Pin::new(&mut send)
+                .poll_write(&mut writer_cx, b"x")
+                .is_pending()
+        );
+        drop(old_send);
+        client.set_send_window(1024);
+
+        let (mut answer, mut request) = server.accept_bi().await.unwrap();
+        assert_eq!(request.read(&mut [0; 7]).await.unwrap(), Some(7));
+        answer.write_all(b"a").await.unwrap();
+        answer.finish().unwrap();
+        // Advance the drivers without manually re-polling the blocked stream futures.
+        while reader_wakes.wakes() == 0 || writer_wakes.wakes() == 0 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(recv.read(&mut read_buf).await.unwrap(), Some(1));
+        assert_eq!(read_buf, [b'a']);
+        send.write_all(b"x").await.unwrap();
+        endpoint.shutdown().await;
+    })
+    .await
+    .expect("rejected handles do not strand replacement streams");
 }

@@ -63,7 +63,7 @@ impl TokenLog for BloomTokenLog {
 
         if lifetime.is_zero() {
             // avoid divide-by-zero if lifetime is zero
-            return Err(TokenReuseError);
+            return Err(TokenReuseError::new());
         }
 
         let mut guard = self.0.lock();
@@ -78,7 +78,7 @@ impl TokenLog for BloomTokenLog {
             // shouldn't happen unless time travels backwards or lifetime changes or the current
             // system time is before the Unix epoch
             warn!("BloomTokenLog presented with token too far in past");
-            return Err(TokenReuseError);
+            return Err(TokenReuseError::new());
         };
 
         // get relevant filter
@@ -169,7 +169,7 @@ impl Filter {
         match self {
             Self::Set(hset) => {
                 if !hset.insert(fingerprint) {
-                    return Err(TokenReuseError);
+                    return Err(TokenReuseError::new());
                 }
 
                 if hset.capacity() * size_of::<u64>() <= config.filter_max_bytes {
@@ -189,7 +189,7 @@ impl Filter {
             }
             Self::Bloom(bloom) => {
                 if bloom.insert(&fingerprint) {
-                    return Err(TokenReuseError);
+                    return Err(TokenReuseError::new());
                 }
             }
         }
@@ -307,7 +307,7 @@ mod test {
                 if let Filter::Set(ref hset) = *filter {
                     assert!(hset.capacity() * size_of::<u64>() <= 800);
                     assert_eq!(hset.len(), i + 1);
-                    assert!(result.is_ok());
+                    result.unwrap();
                 } else {
                     assert!(i > 10, "definitely bloomed too early");
                 }
