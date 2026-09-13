@@ -46,6 +46,10 @@ control and path MTU discovery, on top of `rama-udp` sockets and the common
 
 Crate used by the end-user `rama` crate.
 
+Qlog recording targets main schema draft 14 and QUIC events draft 13.
+See the [qlog module documentation](src/qlog/mod.rs) for scope, specification links,
+and compatibility considerations for older readers.
+
 Learn more about `rama`:
 
 - Github: <https://github.com/plabayo/rama>

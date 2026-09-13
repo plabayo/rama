@@ -45,6 +45,7 @@ pub struct HistoryConfig {
 
 /// Configure a worker and destination. The default has no destination and records nothing.
 /// Built-in output uses qlog main draft 14 / QUIC events draft 13 JSON text sequences.
+/// See [qlog](crate::qlog) for specification links and reader compatibility.
 /// Supply an output for custom storage, or an `EncodedWriter` for a custom serializer.
 pub struct QlogConfig {
     pub(super) output: Option<Box<dyn super::recorder::OutputFactory>>,

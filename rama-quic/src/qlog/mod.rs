@@ -13,6 +13,22 @@
 //! [`HistoryConfig`] retains a bounded recent window for [`QlogRecorder::dump_recent`].
 //! [`ConnectionQlogControl`] provides per-connection toggles and triggers. Disabled observations
 //! are not retained; enabling later produces a partial trace.
+//!
+//! # Format and tooling
+//!
+//! The built-in encoder targets [main schema draft 14] and [QUIC events draft 13],
+//! using RFC 7464 JSON text sequences (`application/qlog+json-seq`) and event schema
+//! `urn:ietf:params:qlog:events:quic-13`. [`event::EventView`] lists the implemented
+//! event subset; HTTP/3 events are not included. The linked specifications are fixed
+//! published revisions; neither the drafts nor their CDDL schemas are vendored.
+//!
+//! Some tools still expect older qlog formats, such as draft-02 / qlog 0.3,
+//! and may not accept this output. Compatibility depends on both the file schema
+//! and event definitions; changing the header alone does not convert a trace.
+//! Rama does not emit a legacy compatibility format.
+//!
+//! [main schema draft 14]: https://www.ietf.org/archive/id/draft-ietf-quic-qlog-main-schema-14.html
+//! [QUIC events draft 13]: https://www.ietf.org/archive/id/draft-ietf-quic-qlog-quic-events-13.html
 
 mod config;
 pub mod event;
