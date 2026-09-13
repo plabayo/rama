@@ -1205,7 +1205,7 @@ impl SocketOptions {
             socket.set_unicast_hops_v6(hops)?;
         }
         if let Some(only_v6) = self.only_v6 {
-            socket.set_only_v6(only_v6)?;
+            set_only_v6(&socket, only_v6)?;
         } else if domain == Domain::IPv6
             && let Some(only_v6) = self.only_v6_best_effort
             && let Err(error) = set_only_v6(&socket, only_v6)
@@ -1372,18 +1372,16 @@ fn set_only_v6(socket: &Socket, only_v6: bool) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{
-        net::{Ipv4Addr, Ipv6Addr},
-        sync::atomic::{AtomicBool, Ordering},
-    };
+    use core::cell::Cell;
+    use std::net::{Ipv4Addr, Ipv6Addr};
 
-    /// While set, [`set_only_v6`] refuses. Tests that use it run one at a time under the lock
-    /// below, since the flag is process-wide.
-    static REFUSE_ONLY_V6: AtomicBool = AtomicBool::new(false);
-    static ONLY_V6: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+    std::thread_local! {
+        // Socket construction is synchronous; refusal must not affect concurrent tests.
+        static REFUSE_ONLY_V6: Cell<bool> = const { Cell::new(false) };
+    }
 
     pub(super) fn refusing_only_v6() -> bool {
-        REFUSE_ONLY_V6.load(Ordering::SeqCst)
+        REFUSE_ONLY_V6.get()
     }
 
     fn udp_options(address: SocketAddr) -> SocketOptions {
@@ -1403,7 +1401,6 @@ mod tests {
     /// The requested value is the one applied, whether it is asked for strictly or as best effort.
     #[test]
     fn the_requested_only_v6_value_is_applied() {
-        let _guard = ONLY_V6.lock();
         // A specific IPv6 bind can force IPV6_V6ONLY on Linux. Test the option on a wildcard.
         for requested in [true, false] {
             let mut options = udp_options(SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), 0));
@@ -1425,7 +1422,6 @@ mod tests {
     /// The strict field wins when both are set, and its value is the one on the socket.
     #[test]
     fn a_strict_only_v6_takes_precedence_over_the_best_effort_one() {
-        let _guard = ONLY_V6.lock();
         let mut options = udp_options(v6());
         options.only_v6 = Some(true);
         options.only_v6_best_effort = Some(false);
@@ -1433,36 +1429,29 @@ mod tests {
         assert!(socket.only_v6().unwrap());
     }
 
-    /// A platform that refuses the best-effort request keeps the socket, and the strict request
-    /// fails with the platform's error. The refusal is provoked by the seam, since no platform
-    /// here refuses it.
+    /// Best-effort requests preserve the socket on refusal; strict requests return the error.
     #[test]
     fn a_refused_best_effort_only_v6_keeps_the_socket_and_a_strict_one_does_not() {
-        let _guard = ONLY_V6.lock();
-        REFUSE_ONLY_V6.store(true, Ordering::SeqCst);
+        REFUSE_ONLY_V6.set(true);
         let mut options = udp_options(v6());
         options.only_v6_best_effort = Some(false);
-        let built = options.try_build_socket(Domain::IPv6);
-        REFUSE_ONLY_V6.store(false, Ordering::SeqCst);
-        let socket = built.expect("the refusal does not fail socket creation");
-        assert!(
-            socket.local_addr().unwrap().as_socket().unwrap().is_ipv6(),
-            "and the socket is bound"
-        );
-
-        let mut options = udp_options(v6());
+        let best_effort = options.try_build_socket(Domain::IPv6);
         options.only_v6 = Some(false);
-        // The seam only affects the best-effort call, so the strict path is checked for what it
-        // does with a real error: an IPv4 socket cannot carry this option at all.
-        let mut ipv4 = udp_options(v4());
-        ipv4.only_v6 = Some(true);
-        assert!(
-            ipv4.try_build_socket(Domain::IPv4).is_err(),
-            "a strict request the platform cannot satisfy fails"
+        let strict = options.try_build_socket(Domain::IPv6);
+        REFUSE_ONLY_V6.set(false);
+
+        let socket = best_effort.expect("the refusal does not fail socket creation");
+        let address = socket.local_addr().unwrap().as_socket().unwrap();
+        assert_eq!(address.ip(), v6().ip(), "the requested address is bound");
+        assert_ne!(address.port(), 0, "the socket has an assigned port");
+        assert_eq!(
+            strict.expect_err("a refused strict request fails").kind(),
+            io::ErrorKind::InvalidInput,
+            "the strict request preserves the option error"
         );
         assert!(
             options.try_build_socket(Domain::IPv6).is_ok(),
-            "and one it can satisfy does not"
+            "a supported strict request succeeds"
         );
     }
 
@@ -1470,12 +1459,11 @@ mod tests {
     /// it cannot fail there.
     #[test]
     fn the_best_effort_request_is_skipped_for_an_ipv4_socket() {
-        let _guard = ONLY_V6.lock();
-        REFUSE_ONLY_V6.store(true, Ordering::SeqCst);
+        REFUSE_ONLY_V6.set(true);
         let mut options = udp_options(v4());
         options.only_v6_best_effort = Some(true);
         let built = options.try_build_socket(Domain::IPv4);
-        REFUSE_ONLY_V6.store(false, Ordering::SeqCst);
+        REFUSE_ONLY_V6.set(false);
         assert!(
             built.is_ok(),
             "the option is never asked for, so the seam cannot refuse it"
