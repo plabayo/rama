@@ -707,6 +707,10 @@ const CTRL_C_PID: &str = "RAMA_E2E_CTRL_C_PID";
 #[cfg(windows)]
 #[test]
 #[ignore]
+#[expect(
+    unsafe_code,
+    reason = "joining another process console and raising an event requires Windows FFI"
+)]
 fn raise_ctrl_c_for_a_child() {
     let Ok(pid) = std::env::var(CTRL_C_PID) else {
         return;
@@ -727,30 +731,25 @@ fn raise_ctrl_c_for_a_child() {
     /// Everything attached to the console this process has joined.
     const WHOLE_GROUP: u32 = 0;
 
-    #[expect(
-        unsafe_code,
-        reason = "joining another process's console and raising an event there is only reachable through these calls"
-    )]
-    unsafe {
-        FreeConsole();
-        assert_ne!(
-            AttachConsole(pid),
-            0,
-            "attached to the console of {pid}: {}",
-            GetLastError()
-        );
-        // The event reaches this process too; ignoring it keeps it alive to report.
-        assert_ne!(
-            SetConsoleCtrlHandler(None, 1),
-            0,
-            "ignored ctrl-c here: {}",
-            GetLastError()
-        );
-        assert_ne!(
-            GenerateConsoleCtrlEvent(CTRL_C_EVENT, WHOLE_GROUP),
-            0,
-            "raised ctrl-c for {pid}: {}",
-            GetLastError()
-        );
-    }
+    // SAFETY: Detaching this helper requires no pointers or additional preconditions.
+    unsafe { FreeConsole() };
+    // SAFETY: Windows validates the process ID; this helper has detached its console.
+    let attached = unsafe { AttachConsole(pid) };
+    assert_ne!(attached, 0, "attached to the console of {pid}: {}", {
+        // SAFETY: Reading this thread's last error requires no preconditions.
+        unsafe { GetLastError() }
+    });
+    // The event reaches this process too; ignoring it keeps it alive to report.
+    // SAFETY: A null handler with add=1 requests the documented ignore-Ctrl-C behavior.
+    let ignored = unsafe { SetConsoleCtrlHandler(None, 1) };
+    assert_ne!(ignored, 0, "ignored ctrl-c here: {}", {
+        // SAFETY: Reading this thread's last error requires no preconditions.
+        unsafe { GetLastError() }
+    });
+    // SAFETY: Both values are documented constants targeting our attached console.
+    let raised = unsafe { GenerateConsoleCtrlEvent(CTRL_C_EVENT, WHOLE_GROUP) };
+    assert_ne!(raised, 0, "raised ctrl-c for {pid}: {}", {
+        // SAFETY: Reading this thread's last error requires no preconditions.
+        unsafe { GetLastError() }
+    });
 }
