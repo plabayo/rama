@@ -289,7 +289,13 @@ async fn a_failed_bind_releases_the_guard() {
     let taken = std::net::UdpSocket::bind(localhost()).unwrap();
     let occupied = taken.local_addr().unwrap();
     let mut options = rama_net::socket::SocketOptions::default_udp();
-    options.reuse_port = Some(false);
+    #[cfg(all(
+        target_family = "unix",
+        not(any(target_os = "solaris", target_os = "illumos"))
+    ))]
+    {
+        options.reuse_port = Some(false);
+    }
     options.reuse_address = Some(false);
     let refused = Endpoint::build(Executor::graceful(shutdown.guard()))
         .bind_address_with_socket_config(
