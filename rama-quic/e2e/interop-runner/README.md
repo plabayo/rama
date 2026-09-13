@@ -64,9 +64,11 @@ IDs/digests. Setup failures and interruptions also retain their manifest.
 randomizes data/loss, so packet captures vary. The adapter only scopes log
 copying to this run's Compose project and pins temporary-file cleanup. It
 leaves upstream protocol checks intact. Shutdown terminates the runner's
-process group on interruption or a 30-minute role timeout before removing only this project's containers/networks; it
-never prunes Docker or deletes another run's resources. Both endpoints have an
-explicit ten-second Compose shutdown grace period to drain and flush qlogs.
+process group on interruption or a 30-minute role timeout before removing only
+this project's containers/networks; it never prunes Docker or deletes another
+run's resources. The simulator joins its capture processes on shutdown. All
+three services have an explicit ten-second Compose grace period for final
+packet captures and qlog output.
 
 ## Validation and CI
 

@@ -91,10 +91,14 @@ def snapshot_container_logs(checkout, env, artifacts, console):
 def compose_override(project, platform, simulator):
     services = {name: {"container_name": f"{project}-{name}", "platform": platform}
                 for name in ("sim", "client", "server", "iperf_client", "iperf_server")}
-    services["sim"]["image"] = simulator
+    services["sim"].update({
+        "image": simulator,
+        "entrypoint": ["/bin/bash", "/rama-run-simulator.sh"],
+        "volumes": [f"{HERE / 'run_simulator.sh'}:/rama-run-simulator.sh:ro"],
+    })
     # Compose 5.1 abort-on-exit can kill immediately without service-level grace,
-    # despite `up --timeout 10`; allow endpoint drain and qlog flush explicitly.
-    for role in ("client", "server"):
+    # despite `up --timeout 10`; allow endpoints and packet capture processes to drain explicitly.
+    for role in ("sim", "client", "server"):
         services[role]["stop_grace_period"] = "10s"
     return {"services": services}
 

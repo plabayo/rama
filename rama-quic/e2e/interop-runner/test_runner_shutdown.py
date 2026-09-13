@@ -73,6 +73,37 @@ class RunnerShutdownTests(unittest.TestCase):
                     process.kill()
                     process.wait(timeout=5)
 
+    def test_simulator_joins_capture_children_before_exit(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "capture.sh").write_text(
+                "#!/bin/bash\n"
+                "trap 'sleep 0.05; touch flushed; exit 0' TERM\n"
+                "touch ready\nwhile true; do sleep 0.01; done\n"
+            )
+            (root / "run.sh").write_text(
+                '#!/bin/bash\nset -e\nbash ./capture.sh &\nPID=$!\n'
+                'trap "kill -SIGINT $PID" INT\n'
+                'trap "kill -SIGTERM $PID" TERM\nwait\n'
+            )
+            script = Path(__file__).resolve().parent / "run_simulator.sh"
+            process = subprocess.Popen(["bash", str(script)], cwd=root, start_new_session=True,
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            try:
+                deadline = time.monotonic() + 5
+                while not (root / "ready").exists() and process.poll() is None and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue((root / "ready").exists(), "fake capture did not start")
+                process.send_signal(signal.SIGTERM)
+                process.wait(timeout=5)
+                self.assertTrue((root / "flushed").exists(), "simulator exited before capture flush")
+            finally:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.wait(timeout=5)
+
     def test_role_timeout_stops_the_group(self):
         process = Mock(pid=12345)
         process.wait.side_effect = [subprocess.TimeoutExpired("fake", 1800), 0, 0]
@@ -102,7 +133,7 @@ class RunnerShutdownTests(unittest.TestCase):
 class ContainerSnapshotTests(unittest.TestCase):
     def test_endpoints_have_explicit_shutdown_grace(self):
         services = compose_override("our-project", "linux/arm64", "sim@sha256:pinned")["services"]
-        for role in ("client", "server"):
+        for role in ("sim", "client", "server"):
             self.assertEqual(services[role]["stop_grace_period"], "10s")
             self.assertEqual(services[role]["container_name"], f"our-project-{role}")
         self.assertEqual(services["sim"]["image"], "sim@sha256:pinned")
