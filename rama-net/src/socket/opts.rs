@@ -1404,13 +1404,14 @@ mod tests {
     #[test]
     fn the_requested_only_v6_value_is_applied() {
         let _guard = ONLY_V6.lock();
+        // A specific IPv6 bind can force IPV6_V6ONLY on Linux. Test the option on a wildcard.
         for requested in [true, false] {
-            let mut options = udp_options(v6());
+            let mut options = udp_options(SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), 0));
             options.only_v6 = Some(requested);
             let socket = options.try_build_socket(Domain::IPv6).unwrap();
             assert_eq!(socket.only_v6().unwrap(), requested, "strict {requested}");
 
-            let mut options = udp_options(v6());
+            let mut options = udp_options(SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), 0));
             options.only_v6_best_effort = Some(requested);
             let socket = options.try_build_socket(Domain::IPv6).unwrap();
             assert_eq!(

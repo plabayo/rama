@@ -831,7 +831,10 @@ impl ConnectionIdParser for FixedLengthConnectionIdParser {
 /// Parse connection id in short header packet
 #[cfg_attr(
     not(fuzzing),
-    expect(unreachable_pub, reason = "exposed only through the fuzzing entry points")
+    expect(
+        unreachable_pub,
+        reason = "exposed only through the fuzzing entry points"
+    )
 )]
 pub trait ConnectionIdParser {
     /// Parse a connection id from given buffer

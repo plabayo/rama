@@ -124,7 +124,9 @@ pub(crate) mod fuzzing {
     pub use crate::proto::connection::{Retransmits, State as ConnectionState, StreamsState};
     pub use crate::proto::connection::{SendStream, Streams};
     pub use crate::proto::frame::ResetStream;
-    pub use crate::proto::packet::{ConnectionIdParser, FixedLengthConnectionIdParser, PartialDecode};
+    pub use crate::proto::packet::{
+        ConnectionIdParser, FixedLengthConnectionIdParser, PartialDecode,
+    };
     pub use crate::proto::transport_parameters::TransportParameters;
     pub use rama_core::bytes::{BufMut, BytesMut};
 
