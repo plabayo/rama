@@ -1,4 +1,5 @@
 #![no_main]
+#![cfg(fuzzing)]
 
 use libfuzzer_sys::fuzz_target;
 use rama_quic::{

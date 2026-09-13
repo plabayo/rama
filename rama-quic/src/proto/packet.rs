@@ -829,7 +829,11 @@ impl ConnectionIdParser for FixedLengthConnectionIdParser {
 }
 
 /// Parse connection id in short header packet
-pub(crate) trait ConnectionIdParser {
+#[cfg_attr(
+    not(fuzzing),
+    expect(unreachable_pub, reason = "exposed only through the fuzzing entry points")
+)]
+pub trait ConnectionIdParser {
     /// Parse a connection id from given buffer
     fn parse(&self, buf: &mut dyn Buf) -> Result<ConnectionId, PacketDecodeError>;
 }

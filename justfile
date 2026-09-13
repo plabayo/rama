@@ -54,9 +54,9 @@ deny:
     @cargo install cargo-deny
     cargo deny --workspace --all-features check
 
-# fuzz targets need `--cfg fuzzing`, so they are checked by `check-fuzz`
+# Fuzz-only code is checked separately with `check-fuzz`.
 check:
-    cargo check --workspace --exclude rama-fuzz --all-targets --all-features
+    cargo check --workspace --all-targets --all-features
 
 # type check for the fuzz targets, without nightly or a sanitizer
 check-fuzz:
@@ -149,7 +149,7 @@ check-links:
     lychee .
 
 clippy:
-    cargo clippy --workspace --exclude rama-fuzz --all-targets --all-features
+    cargo clippy --workspace --all-targets --all-features
 
 clippy-beta:
     cargo +beta clippy --workspace --all-targets --all-features

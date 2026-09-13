@@ -38,6 +38,8 @@ jobs:
       - name: check
         run: |
           cargo check --workspace --all-targets --all-features
+      - name: check fuzz targets
+        run: RUSTFLAGS="${RUSTFLAGS} --cfg fuzzing" cargo check -p rama-fuzz --all-targets
 
   precheck-docs:
     runs-on: ubuntu-latest
