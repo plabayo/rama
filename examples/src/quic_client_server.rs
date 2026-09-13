@@ -125,7 +125,7 @@ async fn main() -> Result<(), BoxError> {
             .context("create the client qlog file")
             .with_context_field("path", || path.display().to_string())?;
         let recorder = QlogConfig::default()
-            .with_writer(tokio::io::BufWriter::new(file))
+            .with_writer(file)
             .with_executor(Executor::graceful(shutdown.guard()))
             .with_error_sink(TracingErrorSink::warn())
             .start()?;

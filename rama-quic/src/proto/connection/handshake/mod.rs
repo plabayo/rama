@@ -1,6 +1,7 @@
 //! The handshake: crypto progression, the packet spaces and keys it installs and discards,
 //! the peer's transport parameters, and 0-RTT.
 
+use crate::qlog::event::negotiation::KeyChangeTrigger;
 use std::{cmp, mem, net::SocketAddr};
 
 use rama_core::{
@@ -138,6 +139,15 @@ impl Connection {
             Some(packet_number),
             false,
             false,
+        );
+
+        self.qlog_sink.emit_packet_received(
+            packet_number,
+            Some(len),
+            SpaceId::Initial,
+            false,
+            now,
+            self.trace_cid,
         );
 
         self.process_decrypted_packet(now, remote, local, Some(packet_number), packet.into())
@@ -320,7 +330,7 @@ impl Connection {
         }
 
         self.spaces[space].crypto = Some(crypto);
-        self.qlog_key_change(now, space, false, Some("tls"));
+        self.qlog_key_change(now, space, false, Some(KeyChangeTrigger::Tls));
         if space == SpaceId::Data {
             self.qlog_negotiated_alpn(now);
         }
@@ -344,7 +354,7 @@ impl Connection {
             }
         }
         if self.spaces[space_id].crypto.take().is_some() {
-            self.qlog_key_change(now, space_id, true, Some("tls"));
+            self.qlog_key_change(now, space_id, true, Some(KeyChangeTrigger::Tls));
         }
         let space = &mut self.spaces[space_id];
         space.time_of_last_ack_eliciting_packet = None;
@@ -479,9 +489,9 @@ impl Connection {
             SpaceId::Data,
             false,
             Some(if remote {
-                "remote_update"
+                KeyChangeTrigger::RemoteUpdate
             } else {
-                "local_update"
+                KeyChangeTrigger::LocalUpdate
             }),
         );
     }

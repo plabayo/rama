@@ -179,6 +179,7 @@ impl Connection {
     pub(crate) fn path_changed(&mut self, now: Instant) {
         let old_mtu = self.path.current_mtu();
         self.path.reset(now, &self.config);
+        self.path.qlog_reset_metrics();
         self.qlog_mtu_updated(now, old_mtu);
     }
 
@@ -255,7 +256,6 @@ impl Connection {
     /// connection ID to be sent with (RFC 9000 §9.5), otherwise stay on the current one.
     /// Answers whether a usable path was taken up in its place.
     pub(super) fn abandon_current_path(&mut self, now: Instant) -> bool {
-        self.qlog_migration_state(now, MigrationState::MigrationAbandoned);
         let old_cid = self.rem_cids.active();
         if let Some(PrevPath { path: prev, cid }) = self.prev_path.take() {
             let usable = match cid {
@@ -292,8 +292,10 @@ impl Connection {
                 },
             };
             if usable {
+                self.qlog_migration_state(now, MigrationState::MigrationAbandoned);
                 let old_local_cid = self.path.received_dcid;
                 self.path = prev;
+                self.path.qlog_reset_metrics();
                 self.qlog_remote_cid_updated(now, old_cid);
                 if let Some(restored_local_cid) = self.path.received_dcid {
                     self.qlog_local_cid_updated(now, old_local_cid, restored_local_cid);
@@ -443,6 +445,7 @@ impl Connection {
         if self.abandon_current_path(now) {
             return;
         }
+        self.qlog_migration_state(now, MigrationState::MigrationAbandoned);
         self.kill(
             now,
             TransportError::NO_VIABLE_PATH("the path does not carry 1200 bytes").into(),

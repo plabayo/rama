@@ -2,10 +2,11 @@
 
 use std::{borrow::Cow, net::SocketAddr};
 
+use crate::qlog::event::Initiator;
 pub(in crate::proto::connection) use crate::qlog::event::lifecycle::ConnectionState;
 use crate::qlog::event::lifecycle::{
-    ConnectionClosedView as ConnectionClosed, LifecycleEventView as Event, ReasonView,
-    TransportErrorName, TupleEndpointInfo,
+    ConnectionClosedTrigger, ConnectionClosedView as ConnectionClosed, LifecycleEventView as Event,
+    ReasonView, TransportErrorName, TupleEndpointInfo,
 };
 
 use crate::proto::{
@@ -36,11 +37,15 @@ impl TupleEndpointInfo {
 }
 
 impl<'a> ConnectionClosed<'a> {
-    fn transport(initiator: &'static str, code: u64, reason: ReasonView<'a>) -> Self {
+    fn transport(initiator: Initiator, code: u64, reason: ReasonView<'a>) -> Self {
         let (connection_error, error_code) = transport_error(code);
         Self {
-            initiator,
-            trigger: if code == 0 { "unspecified" } else { "error" },
+            initiator: Some(initiator),
+            trigger: Some(if code == 0 {
+                ConnectionClosedTrigger::Unspecified
+            } else {
+                ConnectionClosedTrigger::Error
+            }),
             connection_error: Some(connection_error),
             error_code,
             reason: Some(reason),
@@ -48,7 +53,7 @@ impl<'a> ConnectionClosed<'a> {
         }
     }
 
-    fn close(initiator: &'static str, reason: &'a Close) -> Self {
+    fn close(initiator: Initiator, reason: &'a Close) -> Self {
         match reason {
             Close::Connection(close) => Self::transport(
                 initiator,
@@ -56,8 +61,8 @@ impl<'a> ConnectionClosed<'a> {
                 ReasonView::Bytes(Cow::Borrowed(&close.reason)),
             ),
             Close::Application(close) => Self {
-                initiator,
-                trigger: "application",
+                initiator: Some(initiator),
+                trigger: Some(ConnectionClosedTrigger::Application),
                 application_error: Some("unknown"),
                 error_code: Some(close.error_code.into()),
                 reason: Some(ReasonView::Bytes(Cow::Borrowed(&close.reason))),
@@ -66,10 +71,14 @@ impl<'a> ConnectionClosed<'a> {
         }
     }
 
-    fn internal(initiator: &'static str, trigger: &'static str, reason: &'static str) -> Self {
+    fn internal(
+        initiator: Initiator,
+        trigger: ConnectionClosedTrigger,
+        reason: &'static str,
+    ) -> Self {
         Self {
-            initiator,
-            trigger,
+            initiator: Some(initiator),
+            trigger: Some(trigger),
             reason: Some(ReasonView::Static(reason)),
             ..Self::default()
         }
@@ -77,31 +86,49 @@ impl<'a> ConnectionClosed<'a> {
 
     fn error(error: &'a ConnectionError) -> Self {
         match error {
-            ConnectionError::TransportError(error) => {
-                Self::transport("local", error.code.into(), ReasonView::Text(&error.reason))
-            }
+            ConnectionError::TransportError(error) => Self::transport(
+                Initiator::Local,
+                error.code.into(),
+                ReasonView::Text(&error.reason),
+            ),
             ConnectionError::ConnectionClosed(close) => Self::transport(
-                "remote",
+                Initiator::Remote,
                 close.error_code.into(),
                 ReasonView::Bytes(Cow::Borrowed(&close.reason)),
             ),
             ConnectionError::ApplicationClosed(close) => Self {
-                initiator: "remote",
-                trigger: "application",
+                initiator: Some(Initiator::Remote),
+                trigger: Some(ConnectionClosedTrigger::Application),
                 application_error: Some("unknown"),
                 error_code: Some(close.error_code.into()),
                 reason: Some(ReasonView::Bytes(Cow::Borrowed(&close.reason))),
                 ..Self::default()
             },
             ConnectionError::VersionMismatch => Self::internal(
-                "local",
-                "version_mismatch",
+                Initiator::Local,
+                ConnectionClosedTrigger::VersionMismatch,
                 "peer doesn't implement any supported version",
             ),
-            ConnectionError::Reset => Self::internal("remote", "stateless_reset", "reset by peer"),
-            ConnectionError::TimedOut => Self::internal("local", "idle_timeout", "timed out"),
-            ConnectionError::LocallyClosed => Self::internal("local", "application", "closed"),
-            ConnectionError::CidsExhausted => Self::internal("local", "error", "CIDs exhausted"),
+            ConnectionError::Reset => Self::internal(
+                Initiator::Remote,
+                ConnectionClosedTrigger::StatelessReset,
+                "reset by peer",
+            ),
+            ConnectionError::TimedOut => Self::internal(
+                Initiator::Local,
+                ConnectionClosedTrigger::IdleTimeout,
+                "timed out",
+            ),
+            ConnectionError::LocallyClosed => Self::internal(
+                Initiator::Local,
+                ConnectionClosedTrigger::Application,
+                "closed",
+            ),
+            ConnectionError::CidsExhausted => Self::internal(
+                Initiator::Local,
+                ConnectionClosedTrigger::Error,
+                "CIDs exhausted",
+            ),
         }
     }
 }
@@ -178,7 +205,7 @@ impl Connection {
             return;
         }
         self.qlog_closed = self.qlog_sink.emit(self.trace_cid, now, || {
-            Event::Closed(ConnectionClosed::close("local", reason))
+            Event::Closed(ConnectionClosed::close(Initiator::Local, reason))
         });
     }
 
@@ -188,8 +215,8 @@ impl Connection {
         }
         self.qlog_closed = self.qlog_sink.emit(self.trace_cid, now, || {
             Event::Closed(ConnectionClosed {
-                initiator: "local",
-                trigger: "error",
+                initiator: Some(Initiator::Local),
+                trigger: Some(ConnectionClosedTrigger::Error),
                 reason: Some(ReasonView::Static("handshake timeout")),
                 ..ConnectionClosed::default()
             })
@@ -337,7 +364,7 @@ mod tests {
             for (initiator, event) in [
                 (
                     "local",
-                    Event::Closed(ConnectionClosed::close("local", &local)),
+                    Event::Closed(ConnectionClosed::close(Initiator::Local, &local)),
                 ),
                 ("remote", Event::Closed(ConnectionClosed::error(&remote))),
                 ("local", Event::Closed(ConnectionClosed::error(&internal))),
@@ -372,7 +399,7 @@ mod tests {
             for (initiator, event) in [
                 (
                     "local",
-                    Event::Closed(ConnectionClosed::close("local", &local)),
+                    Event::Closed(ConnectionClosed::close(Initiator::Local, &local)),
                 ),
                 ("remote", Event::Closed(ConnectionClosed::error(&remote))),
             ] {
@@ -473,7 +500,7 @@ mod tests {
         for (initiator, event) in [
             (
                 "local",
-                Event::Closed(ConnectionClosed::close("local", &local)),
+                Event::Closed(ConnectionClosed::close(Initiator::Local, &local)),
             ),
             ("remote", Event::Closed(ConnectionClosed::error(&remote))),
         ] {

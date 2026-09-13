@@ -1,6 +1,6 @@
 //! Network tuple, migration, and recovery configuration event data.
 
-use super::TupleId;
+use super::{Initiator, TupleId};
 use crate::ConnectionId;
 use serde::Serialize;
 use std::net::{Ipv4Addr, Ipv6Addr};
@@ -27,7 +27,7 @@ pub enum PathEvent {
     #[serde(rename = "quic:connection_id_updated")]
     ConnectionIdUpdated {
         /// Endpoint owning the changed connection ID: local or remote.
-        initiator: &'static str,
+        initiator: Initiator,
 
         /// Previous connection ID, when known.
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -57,13 +57,17 @@ pub enum PathEvent {
         reordering_threshold: Option<u16>,
 
         /// Round-trip time multiplier used for time-threshold loss detection.
+        /// Non-finite values are omitted.
+        #[serde(skip_serializing_if = "non_finite")]
         time_threshold: f32,
 
         /// Minimum timer resolution, in milliseconds.
         timer_granularity: u16,
 
         /// Initial round-trip time estimate, in milliseconds.
-        initial_rtt: f64,
+        /// Non-finite values are omitted.
+        #[serde(skip_serializing_if = "non_finite")]
+        initial_rtt: f32,
 
         /// Maximum UDP payload used by recovery calculations, in bytes.
         max_datagram_size: u16,
@@ -136,4 +140,12 @@ pub enum TupleEndpointInfo {
         /// UDP port.
         port_v6: u16,
     },
+}
+
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "Serde skip predicates borrow the field"
+)]
+fn non_finite(value: &f32) -> bool {
+    !value.is_finite()
 }

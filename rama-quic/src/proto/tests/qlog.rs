@@ -225,3 +225,150 @@ fn lost_packets_keep_their_original_encryption_level() {
         "the lost established packet must be classified as 1-RTT: {losses:?}"
     );
 }
+
+#[test]
+fn qlog_mtu_probe_packets_are_identified_when_sent_and_lost() {
+    let _guard = subscribe();
+    let capture = Capture::default();
+    let mut pair = Pair::default();
+    pair.mtu = 1200;
+    let mut config = client_config();
+    config.transport = capture.transport(pair.time);
+    let (client_ch, _) = pair.connect_with(config);
+    pair.drive();
+
+    let stats = pair.client_conn_mut(client_ch).stats();
+    let sent = capture.events("quic:packet_sent");
+    let probes: Vec<_> = sent
+        .iter()
+        .filter(|event| event["data"]["is_mtu_probe_packet"] == true)
+        .collect();
+    assert!(stats.path.sent_plpmtud_probes > 0);
+    assert_eq!(probes.len() as u64, stats.path.sent_plpmtud_probes);
+    assert!(
+        sent.iter()
+            .any(|event| event["data"]["is_mtu_probe_packet"] == false)
+    );
+    let losses = capture.events("quic:packet_lost");
+    let lost_probes: Vec<_> = losses
+        .iter()
+        .filter(|event| event["data"]["is_mtu_probe_packet"] == true)
+        .collect();
+    assert_eq!(lost_probes.len() as u64, stats.path.lost_plpmtud_probes);
+    assert_eq!(probes.len(), lost_probes.len());
+    for probe in probes {
+        assert_eq!(probe["data"]["header"]["packet_type"], "1RTT");
+        assert!(probe["data"]["raw"]["length"].as_u64().unwrap() > pair.mtu as u64);
+        assert!(
+            lost_probes
+                .iter()
+                .any(|loss| loss["data"]["header"] == probe["data"]["header"])
+        );
+    }
+    // Recording probe losses must not turn them into congestion losses.
+    assert_eq!(stats.path.congestion_events, 0);
+}
+
+#[test]
+fn qlog_received_lengths_match_individual_coalesced_packets() {
+    let _guard = subscribe();
+    let client_capture = Capture::default();
+    let server_capture = Capture::default();
+    let mut server = server_config();
+    server.transport = server_capture.transport(Instant::now());
+    let mut pair = Pair::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        server,
+    );
+    let mut config = client_config();
+    config.transport = client_capture.transport(pair.time);
+    pair.begin_connect(config);
+    pair.drive_client();
+
+    // Deliver the client's Initial, then inspect the server's first flight before delivery.
+    pair.server.drive(pair.time, pair.client.addr);
+    let mut wire_lengths = Vec::new();
+    let mut coalesced = false;
+    for (_, bytes) in &pair.server.outbound {
+        let mut remaining = Some(BytesMut::from(&bytes[..]));
+        let mut packets = 0;
+        while let Some(bytes) = remaining {
+            let (packet, rest) = packet::PartialDecode::new(
+                bytes,
+                &packet::FixedLengthConnectionIdParser::new(8),
+                &[1],
+                true,
+            )
+            .unwrap();
+            wire_lengths.push(packet.len());
+            packets += 1;
+            remaining = rest;
+        }
+        coalesced |= packets > 1;
+    }
+    assert!(
+        coalesced,
+        "fixture must contain multiple QUIC packets in one datagram"
+    );
+    let sent = server_capture.events("quic:packet_sent");
+    assert_eq!(sent.len(), wire_lengths.len());
+    for (event, len) in sent.iter().zip(&wire_lengths) {
+        assert_eq!(event["data"]["raw"]["length"], *len);
+    }
+    pair.drive_server();
+    pair.drive_client();
+    let received = client_capture.events("quic:packet_received");
+    assert_eq!(received.len(), sent.len());
+    for (received, sent) in received.iter().zip(&sent) {
+        assert_eq!(received["data"]["header"], sent["data"]["header"]);
+        assert_eq!(received["data"]["raw"], sent["data"]["raw"]);
+        assert!(received["data"].get("is_mtu_probe_packet").is_none());
+    }
+
+    // The accepting server's first Initial is decrypted in the endpoint, before the
+    // connection receives it. Its length must still include the authentication tag.
+    let first_sent = &client_capture.events("quic:packet_sent")[0];
+    let first_received = &server_capture.events("quic:packet_received")[0];
+    assert_eq!(
+        first_received["data"]["header"],
+        first_sent["data"]["header"]
+    );
+    assert_eq!(first_received["data"]["raw"], first_sent["data"]["raw"]);
+}
+
+#[test]
+fn qlog_lost_probe_retains_identity_after_path_reset() {
+    let _guard = subscribe();
+    let capture = Capture::default();
+    let mut pair = Pair::default();
+    let mut config = client_config();
+    config.transport = capture.transport(pair.time);
+    let (client_ch, _) = pair.connect_with(config);
+    pair.drive();
+
+    // Restart discovery and put a real probe on the wire, without delivering it.
+    capture.clear();
+    let now = pair.time;
+    pair.client_conn_mut(client_ch).path_changed(now);
+    pair.client.drive_outgoing(now);
+    let sent = capture.events("quic:packet_sent");
+    let probe = sent
+        .iter()
+        .find(|event| event["data"]["is_mtu_probe_packet"] == true)
+        .expect("reset MTU discovery must send a probe");
+    assert!(!pair.client.outbound.is_empty());
+    pair.client.outbound.clear();
+
+    // Reset while that packet remains outstanding. MTUD no longer remembers its
+    // probe number; a later ACK declares it lost through the ordinary loss path.
+    let connection = pair.client_conn_mut(client_ch);
+    connection.path_changed(now);
+    connection.ping();
+    pair.drive();
+    let losses = capture.events("quic:packet_lost");
+    let loss = losses
+        .iter()
+        .find(|event| event["data"]["header"] == probe["data"]["header"])
+        .expect("the dropped outstanding probe must be declared lost");
+    assert_eq!(loss["data"]["is_mtu_probe_packet"], true);
+}

@@ -315,6 +315,8 @@ pub(super) struct SentPacket {
     pub(super) ack_eliciting: bool,
     /// Whether this packet used 0-RTT keys, retained for loss logging after key changes.
     pub(super) is_0rtt: bool,
+    /// Send-time probe identity, retained for loss logging after path or MTU state resets.
+    pub(super) is_mtu_probe_packet: bool,
     /// The largest packet number acknowledged by this packet
     pub(super) largest_acked: Option<u64>,
     /// Data which needs to be retransmitted in case the packet is lost.

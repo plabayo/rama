@@ -1,6 +1,7 @@
 //! Taking a datagram apart: dispatch by space, decryption, the packets coalesced behind the
 //! first, and what an authenticated packet settles.
 
+use crate::qlog::event::negotiation::KeyChangeTrigger;
 use std::{mem, net::SocketAddr};
 
 use rama_core::{
@@ -70,9 +71,6 @@ impl Connection {
             // Update outgoing spin bit, inverting iff we're the client
             self.spin = self.side.is_client() ^ spin;
         }
-
-        self.qlog_sink
-            .emit_packet_received(packet, space_id, !is_1rtt, now, self.trace_cid);
     }
 
     pub(super) fn handle_coalesced(
@@ -264,6 +262,16 @@ impl Connection {
                             spin,
                             packet.header.is_1rtt(),
                         );
+                        if let Some(number) = number {
+                            self.qlog_sink.emit_packet_received(
+                                number,
+                                info.length,
+                                packet.header.space(),
+                                !packet.header.is_1rtt(),
+                                now,
+                                self.trace_cid,
+                            );
+                        }
                     }
 
                     let info = info.with_number(number);
@@ -475,7 +483,7 @@ impl Connection {
                     crypto_offset: client_hello.len() as u64,
                     ..PacketSpace::new(now)
                 };
-                self.qlog_key_change(now, SpaceId::Initial, false, Some("tls"));
+                self.qlog_key_change(now, SpaceId::Initial, false, Some(KeyChangeTrigger::Tls));
                 self.spaces[SpaceId::Initial]
                     .pending
                     .crypto

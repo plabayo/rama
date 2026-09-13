@@ -31,13 +31,13 @@ impl Default for QueueLimits {
 }
 
 /// A rolling history shared by all connections on this recorder.
-/// Age is measured from worker receipt; original observation timestamps are preserved.
-/// Entries already older than the window when dequeued are discarded. Node storage and
-/// retained field capacities fit `max_bytes` (allocator bookkeeping excluded).
+/// Age is measured from admission using a monotonic clock; original event timestamps
+/// are preserved. Queue wait counts toward the window. Node storage and retained field
+/// capacities fit `max_bytes` (allocator bookkeeping excluded).
 /// No events are written until explicitly dumped.
 #[derive(Debug, Clone, Copy)]
 pub struct HistoryConfig {
-    /// Retention duration measured from worker receipt.
+    /// Retention duration measured from admission.
     pub window: Duration,
     /// Maximum retained history storage across all connections.
     pub max_bytes: usize,
@@ -58,9 +58,17 @@ pub struct QlogConfig {
 
 impl QlogConfig {
     rama_utils::macros::generate_set_and_with! {
-        /// Asynchronous destination for JSON text sequences, accessed by the recording task.
+        /// Asynchronous destination for JSON text sequences, buffered with an 8 KiB buffer.
+        /// Flush and shutdown drain the buffer. Use `output` with an [`EncodedWriter`] to
+        /// control buffering explicitly or use a custom encoder.
         pub fn writer(mut self, writer: impl tokio::io::AsyncWrite + Unpin + Send + 'static) -> Self {
-            self.output = Some(Box::new(EncodedWriter::new(writer, JsonSeqEncoder)));
+            self.output = Some(Box::new(EncodedWriter::new(
+                tokio::io::BufWriter::with_capacity(
+                    octets::kib(8),
+                    super::output::RetryInterrupted::new(writer),
+                ),
+                JsonSeqEncoder,
+            )));
             self
         }
     }
@@ -123,7 +131,7 @@ impl QlogConfig {
 
     rama_utils::macros::generate_set_and_with! {
         /// Executor for the recording task. A graceful executor closes admission on shutdown,
-        /// then waits for accepted events and the final output flush.
+        /// then waits for accepted events and output finalization, including writer shutdown.
         pub fn executor(mut self, executor: rama_core::rt::Executor) -> Self {
             self.executor = executor;
             self
@@ -146,17 +154,6 @@ impl QlogConfig {
     /// initialization. Submitting observations afterwards requires no runtime on the caller.
     pub fn start(self) -> io::Result<QlogRecorder> {
         QlogRecorder::start(self)
-    }
-
-    pub(crate) fn into_stream(self) -> Option<QlogRecorder> {
-        self.output.as_ref()?;
-        match self.start() {
-            Ok(recorder) => Some(recorder),
-            Err(error) => {
-                rama_core::telemetry::tracing::warn!(%error, "could not start qlog recorder");
-                None
-            }
-        }
     }
 }
 

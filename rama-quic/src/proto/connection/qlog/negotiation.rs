@@ -1,5 +1,6 @@
 //! Negotiation and traffic-key observations for the QUIC qlog event schema.
 
+use crate::qlog::event::Initiator;
 use crate::qlog::event::negotiation::{NegotiationEventView as Event, *};
 use std::borrow::Cow;
 
@@ -29,7 +30,7 @@ fn restored_parameters(params: &TransportParameters) -> RestoredParameters {
 }
 
 impl ParametersSet {
-    fn new(initiator: &'static str, params: &TransportParameters) -> Self {
+    fn new(initiator: Initiator, params: &TransportParameters) -> Self {
         Self {
             initiator,
             parameters: restored_parameters(params),
@@ -57,7 +58,7 @@ impl Connection {
                 chosen_version: Some(Version(self.version.to_be_bytes())),
             })
         });
-        self.qlog_key_change(now, SpaceId::Initial, false, Some("tls"));
+        self.qlog_key_change(now, SpaceId::Initial, false, Some(KeyChangeTrigger::Tls));
     }
 
     pub(in crate::proto::connection) fn qlog_version_negotiated(
@@ -77,7 +78,7 @@ impl Connection {
 
     pub(crate) fn qlog_local_parameters(&self, now: Instant, params: &TransportParameters) {
         self.qlog_sink.emit(self.trace_cid, now, || {
-            Event::ParametersSet(ParametersSet::new("local", params))
+            Event::ParametersSet(ParametersSet::new(Initiator::Local, params))
         });
     }
 
@@ -87,7 +88,7 @@ impl Connection {
         params: &TransportParameters,
     ) {
         self.qlog_sink.emit(self.trace_cid, now, || {
-            Event::ParametersSet(ParametersSet::new("remote", params))
+            Event::ParametersSet(ParametersSet::new(Initiator::Remote, params))
         });
     }
 
@@ -120,12 +121,15 @@ impl Connection {
         now: Instant,
         space: SpaceId,
         discarded: bool,
-        trigger: Option<&'static str>,
+        trigger: Option<KeyChangeTrigger>,
     ) {
         let key_types = match space {
-            SpaceId::Initial => ["client_initial_secret", "server_initial_secret"],
-            SpaceId::Handshake => ["client_handshake_secret", "server_handshake_secret"],
-            SpaceId::Data => ["client_1rtt_secret", "server_1rtt_secret"],
+            SpaceId::Initial => [KeyType::ClientInitialSecret, KeyType::ServerInitialSecret],
+            SpaceId::Handshake => [
+                KeyType::ClientHandshakeSecret,
+                KeyType::ServerHandshakeSecret,
+            ],
+            SpaceId::Data => [KeyType::ClientOneRttSecret, KeyType::ServerOneRttSecret],
         };
         for key_type in key_types {
             self.qlog_key(
@@ -145,9 +149,9 @@ impl Connection {
         self.qlog_key(
             now,
             KeyChange {
-                key_type: "client_0rtt_secret",
+                key_type: KeyType::ClientZeroRttSecret,
                 key_phase: None,
-                trigger: Some("tls"),
+                trigger: Some(KeyChangeTrigger::Tls),
             },
             discarded,
         );
@@ -162,7 +166,7 @@ impl Connection {
 
     pub(in crate::proto::connection) fn qlog_discard_previous_keys(&mut self, now: Instant) {
         if self.prev_crypto.take().is_some() {
-            for key_type in ["client_1rtt_secret", "server_1rtt_secret"] {
+            for key_type in [KeyType::ClientOneRttSecret, KeyType::ServerOneRttSecret] {
                 self.qlog_key(
                     now,
                     KeyChange {

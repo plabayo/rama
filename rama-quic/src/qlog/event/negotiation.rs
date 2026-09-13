@@ -1,5 +1,6 @@
 //! Version, ALPN, transport parameter, and traffic-key event data.
 
+use super::Initiator;
 use crate::ConnectionId;
 use serde::{Serialize, Serializer, ser::SerializeSeq};
 use std::borrow::Cow;
@@ -270,7 +271,7 @@ pub struct RestoredParameters {
 /// Excludes reset tokens. Maximum ACK delay is expressed in milliseconds.
 pub struct ParametersSet {
     /// Endpoint advertising these parameters: local or remote.
-    pub initiator: &'static str,
+    pub initiator: Initiator,
 
     /// Transport parameters also retained across session resumption.
     #[serde(flatten)]
@@ -302,7 +303,7 @@ pub struct ParametersSet {
 /// Traffic-key generation and update cause. Contains no secret key material.
 pub struct KeyChange {
     /// Qlog key type identifying endpoint role and encryption level.
-    pub key_type: &'static str,
+    pub key_type: KeyType,
 
     /// Monotonic 1-RTT key generation, rather than the single wire phase bit.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -310,5 +311,55 @@ pub struct KeyChange {
 
     /// Cause of the key update or discard, when known.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub trigger: Option<&'static str>,
+    pub trigger: Option<KeyChangeTrigger>,
+}
+
+/// Endpoint role and encryption level of a traffic key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub enum KeyType {
+    /// Server initial traffic secret.
+    #[serde(rename = "server_initial_secret")]
+    ServerInitialSecret,
+
+    /// Server handshake traffic secret.
+    #[serde(rename = "server_handshake_secret")]
+    ServerHandshakeSecret,
+
+    /// Server 0-RTT traffic secret.
+    #[serde(rename = "server_0rtt_secret")]
+    ServerZeroRttSecret,
+
+    /// Server 1-RTT traffic secret.
+    #[serde(rename = "server_1rtt_secret")]
+    ServerOneRttSecret,
+
+    /// Client initial traffic secret.
+    #[serde(rename = "client_initial_secret")]
+    ClientInitialSecret,
+
+    /// Client handshake traffic secret.
+    #[serde(rename = "client_handshake_secret")]
+    ClientHandshakeSecret,
+
+    /// Client 0-RTT traffic secret.
+    #[serde(rename = "client_0rtt_secret")]
+    ClientZeroRttSecret,
+
+    /// Client 1-RTT traffic secret.
+    #[serde(rename = "client_1rtt_secret")]
+    ClientOneRttSecret,
+}
+
+/// Cause of a traffic-key update or discard.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KeyChangeTrigger {
+    /// TLS generated or discarded the keys.
+    Tls,
+
+    /// The peer initiated a key update.
+    RemoteUpdate,
+
+    /// The logging endpoint initiated a key update.
+    LocalUpdate,
 }

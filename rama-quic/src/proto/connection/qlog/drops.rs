@@ -1,7 +1,7 @@
 //! Connection-scoped packet drops (QUIC events draft 13, section 5.7).
 
 pub(crate) use crate::qlog::event::drops::DropReason;
-use crate::qlog::event::drops::{DropHeader, PacketDropped};
+use crate::qlog::event::drops::{DropHeader, DropPacketType, PacketDropped};
 
 use super::event::RawInfo;
 use crate::proto::{
@@ -13,9 +13,9 @@ use crate::proto::{
 /// Only authenticated, expanded packet numbers are recorded. An undecodable header is omitted.
 #[derive(Clone, Copy)]
 pub(crate) struct DropInfo {
-    packet_type: Option<&'static str>,
+    packet_type: Option<DropPacketType>,
     pub(crate) number: Option<u64>,
-    length: Option<usize>,
+    pub(crate) length: Option<usize>,
 }
 
 impl DropInfo {
@@ -29,10 +29,10 @@ impl DropInfo {
 
     pub(crate) fn partial(packet: &PartialDecode) -> Self {
         let packet_type = match packet.space() {
-            Some(SpaceId::Initial) => Some("initial"),
-            Some(SpaceId::Handshake) => Some("handshake"),
-            Some(SpaceId::Data) if packet.is_0rtt() => Some("0RTT"),
-            Some(SpaceId::Data) => Some("1RTT"),
+            Some(SpaceId::Initial) => Some(DropPacketType::Initial),
+            Some(SpaceId::Handshake) => Some(DropPacketType::Handshake),
+            Some(SpaceId::Data) if packet.is_0rtt() => Some(DropPacketType::ZeroRtt),
+            Some(SpaceId::Data) => Some(DropPacketType::OneRtt),
             None => None,
         };
         Self {
@@ -44,18 +44,18 @@ impl DropInfo {
 
     pub(crate) fn packet(packet: &Packet) -> Self {
         let packet_type = match packet.header {
-            Header::Initial(_) => "initial",
+            Header::Initial(_) => DropPacketType::Initial,
             Header::Long {
                 ty: LongType::Handshake,
                 ..
-            } => "handshake",
+            } => DropPacketType::Handshake,
             Header::Long {
                 ty: LongType::ZeroRtt,
                 ..
-            } => "0RTT",
-            Header::Short { .. } => "1RTT",
-            Header::Retry { .. } => "retry",
-            Header::VersionNegotiate { .. } => "version_negotiation",
+            } => DropPacketType::ZeroRtt,
+            Header::Short { .. } => DropPacketType::OneRtt,
+            Header::Retry { .. } => DropPacketType::Retry,
+            Header::VersionNegotiate { .. } => DropPacketType::VersionNegotiation,
         };
         Self {
             packet_type: Some(packet_type),

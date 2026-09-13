@@ -158,7 +158,7 @@ async fn a_configured_qlog_writer_receives_the_connection_s_trace() {
     let cleared = rama_client_config(anchor).with_transport_config(Arc::new(
         TransportConfig::default()
             .with_qlog_recorder(writer(&trace))
-            .without_qlog(),
+            .without_qlog_sink(),
     ));
     trace.flush().await;
     let opened_a_second_trace = trace.written().len();

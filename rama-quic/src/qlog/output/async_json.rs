@@ -25,6 +25,8 @@ use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 /// Direct async qlog JSON text-sequence output without whole-event byte buffers.
 /// Cancellation or an I/O error may leave a partial record; do not retry it on the same stream.
+/// At most eight consecutive `Interrupted` writes are retried before returning an error retaining the original source.
+/// Writers must report backpressure with `Pending` and arrange a wakeup; `WouldBlock` is an error.
 #[derive(Debug, Default)]
 pub struct AsyncJsonSeqEncoder;
 
@@ -45,7 +47,7 @@ impl super::QlogEncoder for AsyncJsonSeqEncoder {
         info: &TraceInfo,
         output: &mut W,
     ) -> io::Result<()> {
-        let mut retrying = RetryInterrupted(output);
+        let mut retrying = RetryInterrupted::new(output);
         let output = &mut retrying;
         output.write_all(b"\x1e").await?;
         let mut object = Object::new(output).await?;
@@ -79,7 +81,7 @@ impl super::QlogEncoder for AsyncJsonSeqEncoder {
         event: &QlogEventView<'_>,
         output: &mut W,
     ) -> io::Result<()> {
-        let mut retrying = RetryInterrupted(output);
+        let mut retrying = RetryInterrupted::new(output);
         let output = &mut retrying;
         output.write_all(b"\x1e").await?;
         let mut object = Object::new(output).await?;
@@ -106,30 +108,85 @@ impl super::QlogEncoder for AsyncJsonSeqEncoder {
 }
 
 /// Tokio's write_all preserves progress across Pending but returns Interrupted as an error.
-/// Retry only the current write by yielding one poll, leaving write_all's byte offset intact.
-struct RetryInterrupted<'a, W>(&'a mut W);
+/// Retry only the current write, leaving write_all's byte offset intact. Count interruptions
+/// until a successful write, including across Pending, to bound self-wakes without progress.
+pub(in crate::qlog) struct RetryInterrupted<W> {
+    writer: W,
+    interruptions: u8,
+}
 
-impl<W: AsyncWrite + Unpin> AsyncWrite for RetryInterrupted<'_, W> {
+impl<W> RetryInterrupted<W> {
+    const MAX_RETRIES: u8 = 8;
+
+    pub(in crate::qlog) fn new(writer: W) -> Self {
+        Self {
+            writer,
+            interruptions: 0,
+        }
+    }
+}
+
+/// Marks an exhausted retry budget so an adapter outside a buffer propagates the error
+/// immediately. Keep the original error, including its source, intact inside this marker.
+#[derive(Debug)]
+struct RetryExhausted(io::Error);
+
+impl std::fmt::Display for RetryExhausted {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+impl std::error::Error for RetryExhausted {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
+}
+
+impl<W> RetryInterrupted<W> {
+    fn retry<T>(&mut self, cx: &Context<'_>, result: Poll<io::Result<T>>) -> Poll<io::Result<T>> {
+        match result {
+            Poll::Ready(Err(error)) if error.kind() == io::ErrorKind::Interrupted => {
+                if error
+                    .get_ref()
+                    .is_some_and(|source| source.is::<RetryExhausted>())
+                {
+                    Poll::Ready(Err(error))
+                } else if self.interruptions < Self::MAX_RETRIES {
+                    self.interruptions += 1;
+                    cx.waker().wake_by_ref();
+                    Poll::Pending
+                } else {
+                    Poll::Ready(Err(io::Error::new(error.kind(), RetryExhausted(error))))
+                }
+            }
+            Poll::Ready(Ok(value)) => {
+                self.interruptions = 0;
+                Poll::Ready(Ok(value))
+            }
+            result => result,
+        }
+    }
+}
+
+impl<W: AsyncWrite + Unpin> AsyncWrite for RetryInterrupted<W> {
     fn poll_write(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         bytes: &[u8],
     ) -> Poll<io::Result<usize>> {
-        match Pin::new(&mut *self.0).poll_write(cx, bytes) {
-            Poll::Ready(Err(error)) if error.kind() == io::ErrorKind::Interrupted => {
-                cx.waker().wake_by_ref();
-                Poll::Pending
-            }
-            result => result,
-        }
+        let result = Pin::new(&mut self.writer).poll_write(cx, bytes);
+        self.retry(cx, result)
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut *self.0).poll_flush(cx)
+        let result = Pin::new(&mut self.writer).poll_flush(cx);
+        self.retry(cx, result)
     }
 
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut *self.0).poll_shutdown(cx)
+        let result = Pin::new(&mut self.writer).poll_shutdown(cx);
+        self.retry(cx, result)
     }
 }
 
@@ -192,6 +249,7 @@ async fn data<W: AsyncWrite + Unpin + Send>(
                     object.key("raw").await?;
                     raw_info(object.output, raw).await?;
                 }
+                optional_fields!(object, packet; is_mtu_probe_packet);
             }
             PacketEvent::PacketLost(packet) => {
                 object.key("header").await?;
@@ -199,7 +257,17 @@ async fn data<W: AsyncWrite + Unpin + Send>(
                 fields!(object, packet; is_mtu_probe_packet, trigger);
             }
             PacketEvent::RecoveryMetricsUpdated(metrics) => {
-                optional_fields!(object, metrics; min_rtt, smoothed_rtt, latest_rtt, rtt_variance,
+                for (name, value) in [
+                    ("min_rtt", metrics.min_rtt),
+                    ("smoothed_rtt", metrics.smoothed_rtt),
+                    ("latest_rtt", metrics.latest_rtt),
+                    ("rtt_variance", metrics.rtt_variance),
+                ] {
+                    if let Some(value) = value.filter(|value| value.is_finite()) {
+                        object.scalar(name, &value).await?;
+                    }
+                }
+                optional_fields!(object, metrics;
                     pto_count, congestion_window, bytes_in_flight, ssthresh, pacing_rate);
             }
         },
@@ -222,7 +290,7 @@ async fn data<W: AsyncWrite + Unpin + Send>(
                 alpn.end().await?;
             }
             NegotiationEventView::ParametersSet(params) => {
-                object.text("initiator", params.initiator).await?;
+                object.scalar("initiator", &params.initiator).await?;
                 restored_parameters(&mut object, &params.parameters).await?;
                 fields!(object, params; ack_delay_exponent, max_ack_delay);
                 if let Some(cid) = &params.original_destination_connection_id {
@@ -241,10 +309,10 @@ async fn data<W: AsyncWrite + Unpin + Send>(
                 restored_parameters(&mut object, params).await?
             }
             NegotiationEventView::KeyUpdated(key) | NegotiationEventView::KeyDiscarded(key) => {
-                object.text("key_type", key.key_type).await?;
+                object.scalar("key_type", &key.key_type).await?;
                 optional_fields!(object, key; key_phase);
                 if let Some(trigger) = key.trigger {
-                    object.text("trigger", trigger).await?;
+                    object.scalar("trigger", &trigger).await?;
                 }
             }
         },
@@ -262,8 +330,7 @@ async fn data<W: AsyncWrite + Unpin + Send>(
                 object.scalar("new", new).await?;
             }
             LifecycleEventView::Closed(closed) => {
-                object.text("initiator", closed.initiator).await?;
-                object.text("trigger", closed.trigger).await?;
+                optional_fields!(object, closed; initiator, trigger);
                 optional_fields!(object, closed; connection_error);
                 if let Some(value) = closed.application_error {
                     object.text("application_error", value).await?;
@@ -305,7 +372,7 @@ async fn data<W: AsyncWrite + Unpin + Send>(
                 old,
                 new,
             } => {
-                object.text("initiator", initiator).await?;
+                object.scalar("initiator", initiator).await?;
                 if let Some(value) = old {
                     object.hex("old", value).await?;
                 }
@@ -327,11 +394,15 @@ async fn data<W: AsyncWrite + Unpin + Send>(
                 if let Some(value) = reordering_threshold {
                     object.scalar("reordering_threshold", value).await?;
                 }
-                object.scalar("time_threshold", time_threshold).await?;
+                if time_threshold.is_finite() {
+                    object.scalar("time_threshold", time_threshold).await?;
+                }
                 object
                     .scalar("timer_granularity", timer_granularity)
                     .await?;
-                object.scalar("initial_rtt", initial_rtt).await?;
+                if initial_rtt.is_finite() {
+                    object.scalar("initial_rtt", initial_rtt).await?;
+                }
                 object
                     .scalar("max_datagram_size", max_datagram_size)
                     .await?;
@@ -349,7 +420,7 @@ async fn data<W: AsyncWrite + Unpin + Send>(
             if let Some(header) = &packet.header {
                 object.key("header").await?;
                 let mut nested = Object::new(object.output).await?;
-                nested.text("packet_type", header.packet_type).await?;
+                nested.scalar("packet_type", &header.packet_type).await?;
                 optional_fields!(nested, header; packet_number);
                 nested.end().await?;
             }
@@ -594,11 +665,15 @@ mod tests {
         qlog::{
             QlogEncoder,
             event::{
-                EventFields, EventFieldsView, TupleId,
-                drops::{DropHeader, DropReason, PacketDropped},
-                lifecycle::{ConnectionClosedView, ConnectionState, TransportErrorName},
+                EventFields, EventFieldsView, Initiator, TupleId,
+                drops::{DropHeader, DropPacketType, DropReason, PacketDropped},
+                lifecycle::{
+                    ConnectionClosedTrigger, ConnectionClosedView, ConnectionState,
+                    TransportErrorName,
+                },
                 negotiation::{
-                    AlpnIdentifierView, HexView, KeyChange, ParametersSet, VersionInformationView,
+                    AlpnIdentifierView, HexView, KeyChange, KeyChangeTrigger, KeyType,
+                    ParametersSet, VersionInformationView,
                 },
                 packet::{
                     Packet, PacketLost, PacketLostTrigger, PacketType, RecoveryMetricsUpdated,
@@ -700,17 +775,23 @@ mod tests {
             connection_ids: [cid],
         };
         let key = KeyChange {
-            key_type: "client_1rtt_secret",
+            key_type: KeyType::ClientOneRttSecret,
             key_phase: Some(u64::MAX),
-            trigger: Some("tls"),
+            trigger: Some(KeyChangeTrigger::Tls),
         };
         let mut events: Vec<EventFields> = vec![
             PacketEvent::PacketSent(Packet {
                 header,
                 raw: Some(RawInfo { length: usize::MAX }),
+                is_mtu_probe_packet: Some(true),
             })
             .into(),
-            PacketEvent::PacketReceived(Packet { header, raw: None }).into(),
+            PacketEvent::PacketReceived(Packet {
+                header,
+                raw: None,
+                is_mtu_probe_packet: None,
+            })
+            .into(),
             PacketEvent::PacketLost(PacketLost {
                 header,
                 is_mtu_probe_packet: true,
@@ -730,6 +811,14 @@ mod tests {
             })
             .into(),
             PacketEvent::RecoveryMetricsUpdated(RecoveryMetricsUpdated::default()).into(),
+            PacketEvent::RecoveryMetricsUpdated(RecoveryMetricsUpdated {
+                min_rtt: Some(f32::NAN),
+                smoothed_rtt: Some(f32::NEG_INFINITY),
+                latest_rtt: Some(f32::INFINITY),
+                rtt_variance: Some(0.0),
+                ..Default::default()
+            })
+            .into(),
             NegotiationEventView::VersionInformation(VersionInformationView {
                 server_versions: Some(VersionListView::Network(Cow::Owned(vec![
                     [0, 0, 0, 1],
@@ -752,7 +841,7 @@ mod tests {
             }
             .into(),
             NegotiationEventView::ParametersSet(ParametersSet {
-                initiator: "remote",
+                initiator: Initiator::Remote,
                 parameters: params(),
                 ack_delay_exponent: 3,
                 max_ack_delay: u64::MAX,
@@ -764,7 +853,7 @@ mod tests {
             NegotiationEventView::ParametersRestored(params()).into(),
             NegotiationEventView::KeyUpdated(key).into(),
             NegotiationEventView::KeyDiscarded(KeyChange {
-                key_type: "server_initial_secret",
+                key_type: KeyType::ServerInitialSecret,
                 key_phase: None,
                 trigger: None,
             })
@@ -785,8 +874,8 @@ mod tests {
             }
             .into(),
             LifecycleEventView::Closed(ConnectionClosedView {
-                initiator: "local",
-                trigger: "application",
+                initiator: Some(Initiator::Local),
+                trigger: Some(ConnectionClosedTrigger::Application),
                 connection_error: Some(TransportErrorName::Crypto(255)),
                 application_error: Some("unknown"),
                 error_code: Some(u64::MAX),
@@ -818,13 +907,13 @@ mod tests {
             }
             .into(),
             PathEvent::ConnectionIdUpdated {
-                initiator: "local",
+                initiator: Initiator::Local,
                 old: Some(cid),
                 new: cid,
             }
             .into(),
             PathEvent::ConnectionIdUpdated {
-                initiator: "remote",
+                initiator: Initiator::Remote,
                 old: None,
                 new: cid,
             }
@@ -838,7 +927,7 @@ mod tests {
                 reordering_threshold: Some(u16::MAX),
                 time_threshold: 1.125,
                 timer_granularity: 1,
-                initial_rtt: f64::MAX,
+                initial_rtt: f32::MAX,
                 max_datagram_size: u16::MAX,
                 initial_congestion_window: u64::MAX,
                 persistent_congestion_threshold: Some(u16::MAX),
@@ -848,7 +937,7 @@ mod tests {
                 reordering_threshold: None,
                 time_threshold: f32::NEG_INFINITY,
                 timer_granularity: 0,
-                initial_rtt: f64::INFINITY,
+                initial_rtt: f32::INFINITY,
                 max_datagram_size: 1200,
                 initial_congestion_window: 0,
                 persistent_congestion_threshold: None,
@@ -856,7 +945,7 @@ mod tests {
             .into(),
             DropEvent::PacketDropped(PacketDropped {
                 header: Some(DropHeader {
-                    packet_type: "version_negotiation",
+                    packet_type: DropPacketType::VersionNegotiation,
                     packet_number: Some(u64::MAX),
                 }),
                 raw: Some(RawInfo { length: usize::MAX }),
@@ -875,7 +964,7 @@ mod tests {
         events.push(NegotiationEventView::ParametersRestored(without_datagrams).into());
         events.push(
             NegotiationEventView::ParametersSet(ParametersSet {
-                initiator: "local",
+                initiator: Initiator::Local,
                 parameters: without_datagrams,
                 ack_delay_exponent: 0,
                 max_ack_delay: 0,
@@ -896,7 +985,7 @@ mod tests {
         events.push(
             DropEvent::PacketDropped(PacketDropped {
                 header: Some(DropHeader {
-                    packet_type: "initial",
+                    packet_type: DropPacketType::Initial,
                     packet_number: None,
                 }),
                 raw: None,
@@ -904,12 +993,120 @@ mod tests {
             })
             .into(),
         );
+        events.push(
+            PacketEvent::PacketSent(Packet {
+                header,
+                raw: None,
+                is_mtu_probe_packet: Some(false),
+            })
+            .into(),
+        );
+        for trigger in [
+            ConnectionClosedTrigger::IdleTimeout,
+            ConnectionClosedTrigger::Application,
+            ConnectionClosedTrigger::Error,
+            ConnectionClosedTrigger::VersionMismatch,
+            ConnectionClosedTrigger::StatelessReset,
+            ConnectionClosedTrigger::Aborted,
+            ConnectionClosedTrigger::Unspecified,
+        ] {
+            events.push(
+                LifecycleEventView::Closed(ConnectionClosedView {
+                    initiator: Some(Initiator::Remote),
+                    trigger: Some(trigger),
+                    ..Default::default()
+                })
+                .into(),
+            );
+        }
+        for key_type in [
+            KeyType::ServerInitialSecret,
+            KeyType::ClientInitialSecret,
+            KeyType::ServerHandshakeSecret,
+            KeyType::ClientHandshakeSecret,
+            KeyType::ServerZeroRttSecret,
+            KeyType::ClientZeroRttSecret,
+            KeyType::ServerOneRttSecret,
+            KeyType::ClientOneRttSecret,
+        ] {
+            for trigger in [
+                None,
+                Some(KeyChangeTrigger::Tls),
+                Some(KeyChangeTrigger::RemoteUpdate),
+                Some(KeyChangeTrigger::LocalUpdate),
+            ] {
+                events.push(
+                    NegotiationEventView::KeyUpdated(KeyChange {
+                        key_type,
+                        key_phase: None,
+                        trigger,
+                    })
+                    .into(),
+                );
+            }
+        }
+        for packet_type in [
+            DropPacketType::Initial,
+            DropPacketType::Handshake,
+            DropPacketType::ZeroRtt,
+            DropPacketType::OneRtt,
+            DropPacketType::Retry,
+            DropPacketType::VersionNegotiation,
+            DropPacketType::StatelessReset,
+            DropPacketType::Unknown,
+        ] {
+            events.push(
+                DropEvent::PacketDropped(PacketDropped {
+                    header: Some(DropHeader {
+                        packet_type,
+                        packet_number: None,
+                    }),
+                    raw: None,
+                    trigger: DropReason::Invalid,
+                })
+                .into(),
+            );
+        }
         for (index, fields) in events.iter_mut().enumerate() {
             if index % 2 == 0 {
                 fields.tuple = Some(TupleId::Probe(index as u64));
             }
         }
         events
+    }
+
+    // Keep this exhaustive match beside the fixtures: every new schema variant needs an
+    // oracle case, even if production serialization was already updated to handle it.
+    fn fixture_variant(event: &EventView<'_>) -> usize {
+        match event {
+            EventView::Packet(event) => match event {
+                PacketEvent::PacketSent(_) => 0,
+                PacketEvent::PacketReceived(_) => 1,
+                PacketEvent::PacketLost(_) => 2,
+                PacketEvent::RecoveryMetricsUpdated(_) => 3,
+            },
+            EventView::Negotiation(event) => match event {
+                NegotiationEventView::VersionInformation(_) => 4,
+                NegotiationEventView::AlpnInformation { .. } => 5,
+                NegotiationEventView::ParametersSet(_) => 6,
+                NegotiationEventView::ParametersRestored(_) => 7,
+                NegotiationEventView::KeyUpdated(_) => 8,
+                NegotiationEventView::KeyDiscarded(_) => 9,
+            },
+            EventView::Lifecycle(event) => match event {
+                LifecycleEventView::Started { .. } => 10,
+                LifecycleEventView::StateUpdated { .. } => 11,
+                LifecycleEventView::Closed(_) => 12,
+            },
+            EventView::Path(event) => match event {
+                PathEvent::TupleAssigned(_) => 13,
+                PathEvent::MigrationStateUpdated { .. } => 14,
+                PathEvent::ConnectionIdUpdated { .. } => 15,
+                PathEvent::MtuUpdated { .. } => 16,
+                PathEvent::RecoveryParametersSet { .. } => 17,
+            },
+            EventView::Drop(DropEvent::PacketDropped(_)) => 18,
+        }
     }
 
     async fn parity(info: &TraceInfo, event: &QlogEventView<'_>) {
@@ -932,7 +1129,9 @@ mod tests {
             description: None,
             start_time: now + Duration::from_secs(1),
         };
+        let mut covered = [false; 19];
         for fields in samples() {
+            covered[fixture_variant(&fields.event)] = true;
             let event = QlogEventView {
                 group_id: ConnectionId::new(&[0; 20]),
                 time: now,
@@ -940,6 +1139,7 @@ mod tests {
             };
             parity(&info, &event).await;
         }
+        assert!(covered.into_iter().all(|covered| covered));
     }
 
     #[tokio::test]
@@ -1112,7 +1312,7 @@ mod tests {
             }
         }
         let mut writer = Interrupted(0);
-        let mut adapter = RetryInterrupted(&mut writer);
+        let mut adapter = RetryInterrupted::new(&mut writer);
         let mut context = Context::from_waker(std::task::Waker::noop());
         assert!(
             Pin::new(&mut adapter)
@@ -1120,6 +1320,76 @@ mod tests {
                 .is_pending()
         );
         assert_eq!(writer.0, 1);
+    }
+
+    #[tokio::test]
+    async fn persistent_interruptions_return_the_original_error_after_bounded_retries() {
+        struct Interrupted {
+            polls: usize,
+            pending: bool,
+        }
+
+        impl AsyncWrite for Interrupted {
+            fn poll_write(
+                mut self: Pin<&mut Self>,
+                cx: &mut Context<'_>,
+                _bytes: &[u8],
+            ) -> Poll<io::Result<usize>> {
+                if self.pending {
+                    self.pending = false;
+                    cx.waker().wake_by_ref();
+                    return Poll::Pending;
+                }
+                self.pending = true;
+                self.polls += 1;
+                Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    io::Error::new(io::ErrorKind::PermissionDenied, "original source"),
+                )))
+            }
+
+            fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+                Poll::Ready(Ok(()))
+            }
+
+            fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+                Poll::Ready(Ok(()))
+            }
+        }
+
+        let info = TraceInfo {
+            title: None,
+            description: None,
+            start_time: Instant::now(),
+        };
+        let mut writer = Interrupted {
+            polls: 0,
+            pending: false,
+        };
+        let error = AsyncJsonSeqEncoder
+            .begin(&info, &mut writer)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            writer.polls,
+            usize::from(RetryInterrupted::<Interrupted>::MAX_RETRIES) + 1
+        );
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        assert_eq!(
+            error
+                .get_ref()
+                .unwrap()
+                .downcast_ref::<RetryExhausted>()
+                .unwrap()
+                .0
+                .get_ref()
+                .unwrap()
+                .downcast_ref::<io::Error>()
+                .unwrap()
+                .kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        assert_eq!(error.to_string(), "original source");
     }
 
     #[tokio::test]

@@ -1,4 +1,3 @@
-use crate::qlog::QlogConfig;
 use rama_utils::octets;
 use std::{fmt, sync::Arc};
 
@@ -447,27 +446,20 @@ impl TransportConfig {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Where connections write their qlog trace, and what it is titled.
-        ///
-        /// `None`, the default, writes none. A configuration without an output also writes none.
-        pub fn qlog(mut self, config: Option<QlogConfig>) -> Self {
-            self.qlog_sink = config.and_then(QlogConfig::into_stream).into();
-            self
-        }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Share a running recorder with these connections. Retain its handle to await
-        /// flush/shutdown and to inspect dropped events or output failures.
+        /// Attach an explicitly started recorder. Call `QlogConfig::start` first to handle
+        /// configuration/runtime errors. Replaces the previously configured sink.
+        /// Retain a handle to inspect failures, trigger history, or await completion.
         pub fn qlog_recorder(mut self, recorder: Option<crate::qlog::QlogRecorder>) -> Self {
             self.qlog_sink = recorder.into();
             self
         }
     }
+
     rama_utils::macros::generate_set_and_with! {
         /// Observe borrowed events inline. Sink callbacks run inside the transport
         /// state machine and must be cheap and nonblocking. Use `qlog_recorder` for background
         /// output, or compose a recorder with a lightweight sink as `(recorder, sink)`.
+        /// Replaces the previously configured sink; `unset_qlog_sink` detaches diagnostics.
         pub fn qlog_sink(mut self, sink: Option<Arc<dyn crate::qlog::QlogSink>>) -> Self {
             self.qlog_sink = ConnectionQlog::from_sink(sink);
             self

@@ -22,6 +22,7 @@ fn packet(number: u64) -> EventFields {
             packet_number: number,
         },
         raw: None,
+        is_mtu_probe_packet: None,
     })
     .into()
 }
@@ -1772,4 +1773,311 @@ async fn output_destructor_failure_is_reported_once_and_preserved_for_completion
         error.to_string()
     );
     assert_eq!(reports.0.lock().len(), 1);
+}
+
+#[tokio::test]
+async fn flush_waiting_for_queue_capacity_observes_shutdown_completion() {
+    for fail in [false, true] {
+        let log = Log::default();
+        let (gate, entered, release) = block();
+        let mut output = Probe::new(&log);
+        output.block = Some((Phase::Begin, gate));
+        output.fail = fail.then_some(Phase::Finish);
+        let recorder = config(output)
+            .with_queue_limits(QueueLimits {
+                max_queued_events: 1,
+                ..QueueLimits::default()
+            })
+            .start()
+            .unwrap();
+        entered.await.unwrap();
+        emit(&recorder, 1);
+        let flush = recorder.flush();
+        tokio::pin!(flush);
+        tokio::select! {
+            biased;
+            result = &mut flush => panic!("flush must wait for queue capacity: {result:?}"),
+            () = std::future::ready(()) => {}
+        }
+        recorder.shared.drain();
+        release.send(()).unwrap();
+        let result = flush.await;
+        if fail {
+            let error = result.unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+            assert!(error.to_string().contains("qlog output finish failed"));
+        } else {
+            result.unwrap();
+            assert_eq!(recorder.state(), RecorderState::Closed);
+        }
+        assert_eq!(log.lock().events.len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn terminal_admission_and_interrupted_capture_count_as_dropped() {
+    for fail in [false, true] {
+        let mut output = Probe::new(&Log::default());
+        output.fail = fail.then_some(Phase::Finish);
+        let recorder = config(output).start().unwrap();
+        recorder.flush().await.unwrap();
+        assert!(!recorder.emit(ConnectionId::new(&[1]), Instant::now(), || {
+            recorder.set_enabled(false);
+            Some(packet(1))
+        }));
+        assert_eq!(recorder.stats().dropped_events, 1);
+        must_skip(&recorder);
+        assert_eq!(recorder.stats().dropped_events, 1);
+        recorder.set_enabled(true);
+        assert!(!recorder.emit(ConnectionId::new(&[1]), Instant::now(), || {
+            recorder.shared.drain();
+            Some(packet(2))
+        }));
+        must_skip(&recorder);
+        assert_eq!(recorder.stats().dropped_events, 3);
+        assert_eq!(recorder.shutdown().await.is_err(), fail);
+        must_skip(&recorder);
+        let stats = recorder.stats();
+        assert_eq!(stats.dropped_events, 4);
+        assert_eq!(stats.submitted_events, 0);
+        assert_eq!(stats.queued_events, 0);
+        assert_eq!(stats.queued_bytes, 0);
+        recorder.set_enabled(false);
+        must_skip(&recorder);
+        assert_eq!(recorder.stats().dropped_events, 4);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_admission_accounts_for_every_attempt_and_bounds_storage() {
+    const PRODUCERS: usize = 8;
+    const ATTEMPTS: usize = 256;
+    let size = std::mem::size_of::<QueuedEvent>();
+    for limits in [
+        QueueLimits {
+            max_queued_events: 16,
+            max_queued_bytes: size * 32,
+            max_event_bytes: size,
+        },
+        QueueLimits {
+            max_queued_events: 32,
+            max_queued_bytes: size * 16,
+            max_event_bytes: size,
+        },
+    ] {
+        let log = Log::default();
+        let (gate, entered, release) = block();
+        let mut output = Probe::new(&log);
+        output.block = Some((Phase::Begin, gate));
+        let recorder = config(output).with_queue_limits(limits).start().unwrap();
+        entered.await.unwrap();
+        let barrier = std::sync::Barrier::new(PRODUCERS);
+        let accepted = AtomicU64::new(0);
+        std::thread::scope(|scope| {
+            for _ in 0..PRODUCERS {
+                scope.spawn(|| {
+                    barrier.wait();
+                    for number in 0..ATTEMPTS {
+                        if recorder.emit(ConnectionId::new(&[1]), Instant::now(), || {
+                            Some(packet(number as u64))
+                        }) {
+                            accepted.fetch_add(1, Ordering::Relaxed);
+                        }
+                        let stats = recorder.stats();
+                        assert!(stats.queued_events <= limits.max_queued_events);
+                        assert!(stats.queued_bytes <= limits.max_queued_bytes);
+                    }
+                    barrier.wait();
+                    recorder.shared.drain();
+                    for _ in 0..ATTEMPTS {
+                        must_skip(&recorder);
+                    }
+                });
+            }
+        });
+        let stats = recorder.stats();
+        assert_eq!(stats.submitted_events, accepted.load(Ordering::Relaxed));
+        assert_eq!(
+            stats.submitted_events + stats.dropped_events,
+            (PRODUCERS * ATTEMPTS * 2) as u64
+        );
+        assert_eq!(stats.queued_events, stats.submitted_events as usize);
+        assert_eq!(stats.queued_bytes, stats.queued_events * size);
+        release.send(()).unwrap();
+        recorder.shutdown().await.unwrap();
+        assert_eq!(log.lock().events.len(), stats.submitted_events as usize);
+        assert_eq!(recorder.stats().queued_events, 0);
+        assert_eq!(recorder.stats().queued_bytes, 0);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn worker_history_expiry_includes_queue_wait_and_wakes_while_idle() {
+    for delay in [9, 10] {
+        let log = Log::default();
+        let (gate, entered, release) = block();
+        let mut output = Probe::new(&log);
+        output.block = Some((Phase::Begin, gate));
+        let recorder = config(output)
+            .with_history(HistoryConfig {
+                window: Duration::from_secs(10),
+                max_bytes: rama_utils::octets::mib(1),
+            })
+            .start()
+            .unwrap();
+        entered.await.unwrap();
+        emit(&recorder, 1);
+        tokio::time::advance(Duration::from_secs(delay)).await;
+        release.send(()).unwrap();
+        recorder.flush().await.unwrap();
+        assert_eq!(recorder.stats().history_events, usize::from(delay < 10));
+        if delay < 10 {
+            tokio::time::advance(Duration::from_secs(1)).await;
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(recorder.stats().history_events, 0);
+        assert_eq!(recorder.stats().history_bytes, 0);
+        recorder.dump_recent(ConnectionId::new(&[1])).await.unwrap();
+        assert!(log.lock().events.is_empty());
+        recorder.shutdown().await.unwrap();
+    }
+}
+
+#[test]
+fn history_orders_concurrent_admission_times_for_expiry_and_eviction() {
+    let now = Instant::now();
+    let mut history = History::new(HistoryConfig {
+        window: Duration::from_secs(10),
+        max_bytes: Retained::storage_size() * 3,
+    });
+    for (number, age) in [(0, 0), (2, 2), (1, 0)] {
+        history.push(observation(1, number, now), now + Duration::from_secs(age));
+    }
+    assert_eq!(
+        history
+            .events
+            .iter()
+            .map(|entry| number(&entry.event))
+            .collect::<Vec<_>>(),
+        [0, 1, 2]
+    );
+    history.push(observation(1, 3, now), now + Duration::from_secs(3));
+    history.push(
+        observation(1, 0, now),
+        now.checked_sub(Duration::from_secs(1)).unwrap(),
+    );
+    assert_eq!(
+        history
+            .events
+            .iter()
+            .map(|entry| number(&entry.event))
+            .collect::<Vec<_>>(),
+        [1, 2, 3]
+    );
+    history.expire(now + Duration::from_secs(11));
+    assert_eq!(
+        history
+            .events
+            .iter()
+            .map(|entry| number(&entry.event))
+            .collect::<Vec<_>>(),
+        [2, 3]
+    );
+    assert_eq!(history.bytes, Retained::storage_size() * 2);
+}
+
+#[tokio::test]
+async fn failed_history_dump_preserves_other_groups_and_remaining_storage() {
+    let now = Instant::now();
+    let mut history = History::new(HistoryConfig {
+        window: Duration::from_secs(10),
+        max_bytes: rama_utils::octets::mib(1),
+    });
+    for (group, number) in [(2, 0), (1, 1), (2, 2), (1, 3), (3, 4)] {
+        history.push(observation(group, number, now), now);
+    }
+    let log = Log::default();
+    let mut output = Probe::new(&log);
+    output.fail = Some(Phase::Event);
+    assert_eq!(
+        history
+            .dump(ConnectionId::new(&[1]), &mut output)
+            .await
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::PermissionDenied
+    );
+    assert_eq!(
+        history
+            .events
+            .iter()
+            .map(|entry| number(&entry.event))
+            .collect::<Vec<_>>(),
+        [0, 2, 3, 4]
+    );
+    assert_eq!(
+        history.bytes,
+        history
+            .events
+            .iter()
+            .map(|entry| entry.bytes)
+            .sum::<usize>()
+    );
+    output.fail = None;
+    history
+        .dump(ConnectionId::new(&[2]), &mut output)
+        .await
+        .unwrap();
+    assert_eq!(
+        log.lock()
+            .events
+            .iter()
+            .map(|(_, _, number)| *number)
+            .collect::<Vec<_>>(),
+        [0, 2]
+    );
+    assert_eq!(history.bytes, Retained::storage_size() * 2);
+}
+
+#[tokio::test]
+async fn borrowed_capture_is_skipped_when_disabled_full_or_closed() {
+    let log = Log::default();
+    let (gate, entered, release) = block();
+    let mut output = Probe::new(&log);
+    output.block = Some((Phase::Begin, gate));
+    let recorder = config(output)
+        .with_queue_limits(QueueLimits {
+            max_queued_events: 1,
+            ..QueueLimits::default()
+        })
+        .start()
+        .unwrap();
+    entered.await.unwrap();
+    let text = String::from("borrowed diagnostic storage");
+    let built = std::cell::Cell::new(0);
+    let attempt = || {
+        recorder.emit_view(ConnectionId::new(&[1]), Instant::now(), || {
+            built.set(built.get() + 1);
+            Some(borrowed_reason(&text))
+        })
+    };
+    recorder.set_enabled(false);
+    assert!(!attempt());
+    recorder.set_enabled(true);
+    // Control commands share channel slots with event admission.
+    let (reply, _response) = oneshot::channel();
+    recorder.sender.try_send(Command::Flush(reply)).unwrap();
+    assert!(!attempt());
+    assert_eq!(recorder.stats().queued_events, 0);
+    assert_eq!(recorder.stats().queued_bytes, 0);
+    assert_eq!(built.get(), 0, "rejected views never reach owned capture");
+    release.send(()).unwrap();
+    recorder.flush().await.unwrap();
+    assert!(attempt());
+    assert!(!attempt());
+    recorder.shutdown().await.unwrap();
+    assert!(!attempt());
+    assert_eq!(built.get(), 1);
+    assert_eq!(recorder.stats().submitted_events, 1);
+    assert_eq!(recorder.stats().dropped_events, 3);
 }

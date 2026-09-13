@@ -1,5 +1,6 @@
 //! Connection lifetime event data.
 
+use super::Initiator;
 use crate::ConnectionId;
 use serde::{Serialize, Serializer};
 use std::{
@@ -274,14 +275,42 @@ impl fmt::Display for LossyUtf8<'_> {
     }
 }
 
+/// Cause of connection closure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectionClosedTrigger {
+    /// The idle timeout expired.
+    IdleTimeout,
+
+    /// The application requested closure.
+    Application,
+
+    /// An error caused closure.
+    Error,
+
+    /// The peers share no supported version.
+    VersionMismatch,
+
+    /// The peer sent a stateless reset.
+    StatelessReset,
+
+    /// The connection was aborted.
+    Aborted,
+
+    /// The closure cause could not be determined.
+    Unspecified,
+}
+
 /// Connection closure classification, wire error code, and borrowed diagnostic reason.
 #[derive(Default, Clone, Debug, Serialize)]
 pub struct ConnectionClosedView<'a> {
     /// Endpoint initiating closure: local or remote.
-    pub initiator: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub initiator: Option<Initiator>,
 
     /// Qlog closure cause, such as application, error, or timeout.
-    pub trigger: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trigger: Option<ConnectionClosedTrigger>,
 
     /// Named transport error classification, when applicable.
     #[serde(skip_serializing_if = "Option::is_none")]

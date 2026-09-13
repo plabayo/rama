@@ -19,6 +19,17 @@ pub use negotiation::{NegotiationEvent, NegotiationEventView};
 pub use packet::PacketEvent;
 pub use path::PathEvent;
 
+/// Endpoint responsible for an observed change.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Initiator {
+    /// The logging endpoint.
+    Local,
+
+    /// The peer endpoint.
+    Remote,
+}
+
 /// A compact tuple identifier, formatted only by an encoder.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TupleId {

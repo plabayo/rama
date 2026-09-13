@@ -32,6 +32,11 @@ pub struct Packet {
     /// Encoded packet size, when known.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub raw: Option<RawInfo>,
+
+    /// Whether this transmitted packet tested a larger path MTU.
+    /// Omitted on received packets, where the sender's intent is unknown.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_mtu_probe_packet: Option<bool>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -97,22 +102,22 @@ pub enum PacketLostTrigger {
 
 #[derive(Default, Clone, Copy, Debug, Serialize)]
 /// Changed recovery metrics. RTT values are milliseconds; window sizes are bytes.
-/// Absent values were not updated by this observation.
+/// Absent values were not updated by this observation. Nonfinite RTT values are omitted.
 pub struct RecoveryMetricsUpdated {
     /// Minimum observed round-trip time, in milliseconds.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "absent_or_nonfinite")]
     pub min_rtt: Option<f32>,
 
     /// Smoothed round-trip time estimate, in milliseconds.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "absent_or_nonfinite")]
     pub smoothed_rtt: Option<f32>,
 
     /// Most recent round-trip time sample, in milliseconds.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "absent_or_nonfinite")]
     pub latest_rtt: Option<f32>,
 
     /// Smoothed round-trip time variation, in milliseconds.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "absent_or_nonfinite")]
     pub rtt_variance: Option<f32>,
 
     /// Consecutive probe timeouts since acknowledgement progress.
@@ -134,4 +139,35 @@ pub struct RecoveryMetricsUpdated {
     /// Congestion controller pacing rate, in bits per second.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pacing_rate: Option<u64>,
+}
+
+// qlog numbers must be finite. An unavailable RTT observation is optional, so leave
+// it out instead of serializing NaN or infinity as JSON null.
+#[expect(
+    clippy::ref_option,
+    clippy::trivially_copy_pass_by_ref,
+    reason = "Serde skip predicates borrow the field"
+)]
+fn absent_or_nonfinite(value: &Option<f32>) -> bool {
+    value.is_none_or(|value| !value.is_finite())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RecoveryMetricsUpdated;
+
+    #[test]
+    fn unavailable_rtt_observations_are_omitted() {
+        let metrics = RecoveryMetricsUpdated {
+            min_rtt: Some(f32::NAN),
+            smoothed_rtt: Some(f32::INFINITY),
+            latest_rtt: Some(1.25),
+            rtt_variance: Some(f32::NEG_INFINITY),
+            ..Default::default()
+        };
+        assert_eq!(
+            serde_json::to_value(metrics).unwrap(),
+            serde_json::json!({"latest_rtt": 1.25})
+        );
+    }
 }

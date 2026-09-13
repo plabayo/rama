@@ -46,8 +46,9 @@ pub enum RecorderState {
 pub struct RecorderStats {
     /// Total events admitted to the recording task, including history-only events.
     pub submitted_events: u64,
-    /// Counted admission rejections, including full queues and oversized events.
-    /// Observations skipped while recording is disabled are not counted.
+    /// Rejected recorder admission attempts, including closed admission, full queues,
+    /// oversized events and attempts interrupted by a recording toggle. Observations
+    /// skipped before admission while recording is disabled are not counted.
     pub dropped_events: u64,
     /// Events exceeding the per-event byte limit; also included in `dropped_events`.
     pub oversized_events: u64,
@@ -299,13 +300,15 @@ impl QlogRecorder {
             return self.wait_done().await;
         }
         let (sender, receiver) = oneshot::channel();
-        self.sender
-            .send(Command::Flush(sender))
-            .await
-            .map_err(|_channel_closed| self.shared.unavailable())?;
-        receiver
-            .await
-            .map_err(|_channel_closed| self.shared.unavailable())?
+        if self.sender.send(Command::Flush(sender)).await.is_ok()
+            && let Ok(result) = receiver.await
+        {
+            return result;
+        }
+        if let Some(error) = self.error() {
+            return Err(error);
+        }
+        self.wait_done().await
     }
 
     /// Close admission immediately, drain submitted events, finish and drop the destination.
@@ -341,10 +344,14 @@ impl QlogRecorder {
     }
 
     fn reserve(&self) -> Option<Reservation> {
-        if !self.is_enabled() {
+        let shared = &self.shared;
+        if !shared.enabled.load(Ordering::Acquire) {
             return None;
         }
-        let shared = &self.shared;
+        if !shared.accepting() {
+            shared.dropped.fetch_add(1, Ordering::Relaxed);
+            return None;
+        }
         if shared
             .events
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
@@ -436,6 +443,7 @@ impl QlogRecorder {
             .fetch_sub(reservation.bytes - bytes, Ordering::AcqRel);
         reservation.bytes = bytes;
         if !self.is_enabled() {
+            self.shared.dropped.fetch_add(1, Ordering::Relaxed);
             return false;
         }
         let event = Box::new(QueuedEvent {
@@ -444,7 +452,11 @@ impl QlogRecorder {
                 time: now,
                 fields,
             },
-            observed: Instant::now(),
+            observed: if self.shared.history {
+                tokio::time::Instant::now().into_std()
+            } else {
+                now
+            },
             reservation,
         });
         permit.send(Command::Event(event));
@@ -705,14 +717,35 @@ impl History {
         while self.bytes > self.config.max_bytes - bytes
             && let Some(old) = self.events.pop_front()
         {
+            if old.observed > observed {
+                self.events.push_front(old);
+                return;
+            }
             self.bytes -= old.bytes;
         }
         self.bytes += bytes;
-        self.events.push_back(Retained {
+        let entry = Retained {
             event,
             observed,
             bytes,
-        });
+        };
+        if self
+            .events
+            .back()
+            .is_none_or(|last| last.observed <= observed)
+        {
+            self.events.push_back(entry);
+        } else {
+            // Concurrent emitters can enqueue in a different order from admission.
+            let index = self
+                .events
+                .iter()
+                .position(|entry| entry.observed > observed)
+                .unwrap_or(self.events.len());
+            let mut later = self.events.split_off(index);
+            self.events.push_back(entry);
+            self.events.append(&mut later);
+        }
     }
 
     async fn dump(&mut self, group: ConnectionId, output: &mut impl QlogOutput) -> io::Result<()> {
@@ -723,7 +756,10 @@ impl History {
                 && let Some(entry) = pending.pop_front()
             {
                 self.bytes -= entry.bytes;
-                output.event(&entry.event).await?;
+                if let Err(error) = output.event(&entry.event).await {
+                    self.events.append(&mut pending);
+                    return Err(error);
+                }
             } else {
                 // Preserve unmatched nodes without freeing and reallocating them.
                 let rest = pending.split_off(1);
@@ -783,7 +819,7 @@ async fn run(
             receiver.close();
         }
         if let Some(history) = &mut history {
-            history.expire(Instant::now());
+            history.expire(tokio::time::Instant::now().into_std());
             history.stats(shared);
         }
         let command = match receiver.try_recv() {
@@ -823,9 +859,9 @@ async fn run(
                     reservation,
                 } = *queued;
                 if let Some(history) = &mut history {
-                    let now = Instant::now();
+                    let now = tokio::time::Instant::now().into_std();
                     if history.within_window(observed, now) {
-                        history.push(event, now);
+                        history.push(event, observed);
                     }
                     history.stats(shared);
                 } else {
@@ -849,7 +885,7 @@ async fn run(
             }
             Command::Dump(group, reply) => {
                 let result = if let Some(history) = &mut history {
-                    history.expire(Instant::now());
+                    history.expire(tokio::time::Instant::now().into_std());
                     let result = output_call(
                         shared,
                         "qlog history dump failed",

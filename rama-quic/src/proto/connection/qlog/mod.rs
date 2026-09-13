@@ -95,7 +95,7 @@ impl ConnectionQlog {
                     packet_number: pn,
                     packet_type: packet_type(space, info.is_0rtt),
                 },
-                is_mtu_probe_packet: false,
+                is_mtu_probe_packet: info.is_mtu_probe_packet,
                 trigger: if now.saturating_duration_since(info.time_sent) >= loss_delay {
                     PacketLostTrigger::TimeThreshold
                 } else {
@@ -111,6 +111,7 @@ impl ConnectionQlog {
         len: usize,
         space: SpaceId,
         is_0rtt: bool,
+        is_mtu_probe_packet: bool,
         now: Instant,
         group: ConnectionId,
     ) {
@@ -121,6 +122,7 @@ impl ConnectionQlog {
                     packet_type: packet_type(space, is_0rtt),
                 },
                 raw: Some(RawInfo { length: len }),
+                is_mtu_probe_packet: Some(is_mtu_probe_packet),
             })
         });
     }
@@ -128,6 +130,7 @@ impl ConnectionQlog {
     pub(super) fn emit_packet_received(
         &self,
         pn: u64,
+        len: Option<usize>,
         space: SpaceId,
         is_0rtt: bool,
         now: Instant,
@@ -139,7 +142,8 @@ impl ConnectionQlog {
                     packet_number: pn,
                     packet_type: packet_type(space, is_0rtt),
                 },
-                raw: None,
+                raw: len.map(|length| RawInfo { length }),
+                is_mtu_probe_packet: None,
             })
         });
     }

@@ -31,7 +31,10 @@ fn qlog_paths_follow_actual_migration_and_mtu_changes() {
     assert_eq!(recovery[0]["data"]["initial_congestion_window"], 18_000);
     // qlog uses milliseconds, retaining the fraction from the configured microseconds.
     let initial_rtt_ms = recovery[0]["data"]["initial_rtt"].as_f64().unwrap();
-    assert!((initial_rtt_ms - 123.456).abs() < 1e-9, "{initial_rtt_ms}");
+    assert!(
+        (initial_rtt_ms - 123.456).abs() < 0.00002,
+        "{initial_rtt_ms}"
+    );
     let mtus = capture.events("quic:mtu_updated");
     assert!(!mtus.is_empty());
     assert!(
@@ -203,6 +206,8 @@ fn qlog_paths_failed_migration_restores_both_connection_ids() {
     pair.drive();
     let original_address = pair.client.addr;
     let original_remote_cid = pair.server_conn_mut(server_ch).active_rem_cid();
+    let original_cwnd = pair.server_conn_mut(server_ch).stats().path.cwnd;
+    let original_rtt = pair.server_conn_mut(server_ch).rtt().as_secs_f64() * 1000.0;
     capture.clear();
 
     // Deliver a fresh-CID packet from a different address, then lose every validation
@@ -268,4 +273,169 @@ fn qlog_paths_failed_migration_restores_both_connection_ids() {
         .map(|event| event["data"]["new"].as_str().unwrap())
         .collect();
     assert_eq!(states, ["migration_started", "migration_abandoned"]);
+    assert_eq!(migrations[0]["tuple"], migrations[1]["tuple"]);
+
+    pair.server_conn_mut(server_ch).ping();
+    pair.server.drive_outgoing(pair.time);
+    let records = capture.records();
+    let abandoned = records
+        .iter()
+        .position(|event| {
+            event["name"] == "quic:migration_state_updated"
+                && event["data"]["new"] == "migration_abandoned"
+        })
+        .unwrap();
+    let restored = records[abandoned + 1..]
+        .iter()
+        .find(|event| event["name"] == "quic:recovery_metrics_updated")
+        .expect("the restored path reports its recovery state");
+    assert!(
+        restored.get("tuple").is_none(),
+        "restored the original tuple"
+    );
+    assert_eq!(restored["data"]["congestion_window"], original_cwnd);
+    let restored_rtt = restored["data"]["smoothed_rtt"].as_f64().unwrap();
+    assert!((restored_rtt - original_rtt).abs() < 0.00002);
+    assert!(
+        capture
+            .events("quic:recovery_metrics_updated")
+            .iter()
+            .any(|event| {
+                event.get("tuple").is_some()
+                    && event["data"]
+                        .get("smoothed_rtt")
+                        .is_some_and(|rtt| *rtt != original_rtt)
+            }),
+        "the abandoned path had a different RTT baseline"
+    );
+}
+
+#[test]
+fn qlog_paths_reset_starts_a_complete_recovery_snapshot() {
+    let _guard = subscribe();
+    let capture = Capture::default();
+    let mut client = client_config();
+    client.transport = capture.transport(Instant::now());
+    let mut pair = Pair::default();
+    let (client_ch, _) = pair.connect_with(client);
+    pair.drive();
+
+    for _ in 0..2 {
+        capture.clear();
+        pair.time += Duration::from_secs(1);
+        let now = pair.time;
+        let connection = pair.client_conn_mut(client_ch);
+        connection.path_changed(now);
+        let cwnd = connection.stats().path.cwnd;
+        let rtt = connection.rtt().as_secs_f64() * 1000.0;
+        connection.ping();
+        pair.client.drive_outgoing(now);
+        let metrics = capture.events("quic:recovery_metrics_updated");
+        let data = &metrics.first().expect("the reset path sends a ping")["data"];
+        assert_eq!(data["congestion_window"], cwnd);
+        assert!((data["smoothed_rtt"].as_f64().unwrap() - rtt).abs() < 0.00002);
+        for field in [
+            "min_rtt",
+            "latest_rtt",
+            "rtt_variance",
+            "pto_count",
+            "bytes_in_flight",
+        ] {
+            assert!(
+                data.get(field).is_some(),
+                "reset snapshot missing {field}: {data}"
+            );
+        }
+        pair.client.outbound.clear();
+    }
+}
+
+#[test]
+fn qlog_paths_validation_timeout_without_fallback_keeps_current_path() {
+    let _guard = subscribe();
+    let capture = Capture::default();
+    let mut server = server_config();
+    server.transport = capture.transport(Instant::now());
+    let mut pair = Pair::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        server,
+    );
+    let (client_ch, server_ch) = pair.connect();
+    pair.drive();
+    capture.clear();
+    pair.client
+        .addr
+        .set_port(CLIENT_PORTS.lock().next().unwrap());
+    pair.client_conn_mut(client_ch).ping();
+    pair.drive_client();
+    pair.server.drive(pair.time, pair.client.addr);
+    let moved_to = pair.client.addr;
+    assert!(pair.server_conn_mut(server_ch).challenge_token().is_some());
+    pair.server_conn_mut(server_ch).abandon_the_fallback();
+    assert_eq!(pair.server_conn_mut(server_ch).previous_path_remote(), None);
+
+    pair.server.outbound.clear();
+    pair.time = pair
+        .server_conn_mut(server_ch)
+        .path_validation_deadline()
+        .expect("pending validation deadline");
+    pair.server.drive(pair.time, moved_to);
+    let connection = pair.server_conn_mut(server_ch);
+    assert!(
+        connection.challenge_token().is_none(),
+        "validation timed out"
+    );
+    assert_eq!(connection.remote_address(), moved_to);
+    assert!(!connection.is_closed());
+    let migrations = capture.events("quic:migration_state_updated");
+    assert_eq!(
+        migrations.len(),
+        1,
+        "a retained path is not abandoned: {migrations:?}"
+    );
+    assert_eq!(migrations[0]["data"]["new"], "migration_started");
+}
+
+#[test]
+fn qlog_paths_mtu_validation_without_fallback_logs_abandonment_on_close() {
+    let _guard = subscribe();
+    let capture = Capture::default();
+    let mut server = server_config();
+    server.transport = capture.transport(Instant::now());
+    let mut pair = Pair::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        server,
+    );
+    let (client_ch, server_ch) = pair.connect();
+    pair.drive();
+    capture.clear();
+    pair.client
+        .addr
+        .set_port(CLIENT_PORTS.lock().next().unwrap());
+    pair.client_conn_mut(client_ch).ping();
+    pair.drive_client();
+    pair.drive_server();
+    pair.drive_client();
+    pair.drive_server();
+    assert!(pair.server_conn_mut(server_ch).challenge_is_for_mtu());
+    pair.server_conn_mut(server_ch).abandon_the_fallback();
+    pair.client.inbound.clear();
+
+    for _ in 0..3 {
+        pair.time = pair
+            .server_conn_mut(server_ch)
+            .path_validation_deadline()
+            .expect("pending expanded validation deadline");
+        pair.server.drive(pair.time, pair.client.addr);
+        pair.server.outbound.clear();
+    }
+    assert!(matches!(
+        pair.server_conn_mut(server_ch).ended_because(),
+        Some(ConnectionError::TransportError(error)) if error.code == TransportErrorCode::NO_VIABLE_PATH
+    ));
+    let migrations = capture.events("quic:migration_state_updated");
+    assert_eq!(migrations.len(), 2);
+    assert_eq!(migrations[0]["data"]["new"], "migration_started");
+    assert_eq!(migrations[1]["data"]["new"], "migration_abandoned");
+    assert_eq!(migrations[1]["tuple"], migrations[0]["tuple"]);
 }

@@ -17,8 +17,8 @@ use rama::quic::{
         JsonSeqEncoder, QlogConfig, QlogEncoder, QlogEventView, QlogOutput, QlogRecorder, QlogSink,
         QueueLimits, TraceInfo,
         event::{
-            EventView, LifecycleEventView, NegotiationEventView, PacketEvent,
-            lifecycle::{ConnectionClosedView, ReasonView},
+            EventView, Initiator, LifecycleEventView, NegotiationEventView, PacketEvent,
+            lifecycle::{ConnectionClosedTrigger, ConnectionClosedView, ReasonView},
             negotiation::{AlpnIdentifierView, HexView},
             packet::{Packet, PacketHeader, PacketType, RawInfo},
         },
@@ -50,6 +50,7 @@ fn event<'a>(kind: &str, alpn: &'a [u8], time: Instant) -> QlogEventView<'a> {
                 packet_number: 42,
             },
             raw: Some(RawInfo { length: 1200 }),
+            is_mtu_probe_packet: Some(false),
         })
         .into()
     } else {
@@ -341,8 +342,8 @@ fn oversized_borrowed_reason(bencher: divan::Bencher) {
         group_id: ConnectionId::try_from_bytes(b"qlogbench").unwrap(),
         time: Instant::now(),
         fields: LifecycleEventView::Closed(ConnectionClosedView {
-            initiator: "remote",
-            trigger: "error",
+            initiator: Some(Initiator::Remote),
+            trigger: Some(ConnectionClosedTrigger::Error),
             reason: Some(ReasonView::Bytes(Cow::Borrowed(&reason))),
             ..Default::default()
         })

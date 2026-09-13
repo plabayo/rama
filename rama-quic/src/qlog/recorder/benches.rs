@@ -61,6 +61,7 @@ impl Fixture {
                     packet_number: black_box(number),
                 },
                 raw: Some(RawInfo { length: 1200 }),
+                is_mtu_probe_packet: Some(false),
             })
             .into(),
             Self::Negotiation => NegotiationEvent::AlpnInformation {

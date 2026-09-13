@@ -306,7 +306,7 @@ impl Connection {
             // saturating equivalent of this substraction operation with a Duration.
             let packet_too_old = now.saturating_duration_since(info.time_sent) >= loss_delay;
             if packet_too_old || largest_acked_packet >= packet + packet_threshold {
-                if Some(packet) == in_flight_mtu_probe {
+                if pn_space == SpaceId::Data && Some(packet) == in_flight_mtu_probe {
                     // Lost MTU probes are not included in `lost_packets`, because they should not
                     // trigger a congestion control response
                     lost_mtu_probe = in_flight_mtu_probe;
@@ -415,6 +415,14 @@ impl Connection {
                 reason = "the lost MTU probe is excluded from `lost_packets`, so it is still in `sent_packets`"
             )]
             let info = self.spaces[SpaceId::Data].take(packet).unwrap(); // safe: lost_mtu_probe is omitted from lost_packets, and therefore must not have been removed yet
+            self.qlog_sink.emit_packet_lost(
+                packet,
+                &info,
+                loss_delay,
+                SpaceId::Data,
+                now,
+                self.trace_cid,
+            );
             self.remove_in_flight(&info);
             self.path.mtud.on_probe_lost();
             self.stats.path.lost_plpmtud_probes += 1;

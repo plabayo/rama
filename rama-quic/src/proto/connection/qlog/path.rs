@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 
 pub(in crate::proto::connection) use crate::qlog::event::path::MigrationState;
 use crate::qlog::event::{
-    EventFieldsView, EventView, TupleId,
+    EventFieldsView, EventView, Initiator, TupleId,
     path::{PathEvent, TupleAssigned, TupleEndpointInfo},
 };
 
@@ -50,7 +50,7 @@ impl Connection {
                 reordering_threshold: self.config.packet_threshold.try_into().ok(),
                 time_threshold: self.config.time_threshold,
                 timer_granularity: TIMER_GRANULARITY.as_millis() as u16,
-                initial_rtt: self.config.initial_rtt.as_secs_f64() * 1000.0,
+                initial_rtt: self.config.initial_rtt.as_secs_f32() * 1000.0,
                 max_datagram_size: self.path.current_mtu(),
                 initial_congestion_window: self.path.congestion.initial_window(),
                 persistent_congestion_threshold: self
@@ -125,7 +125,7 @@ impl Connection {
         }
         self.qlog_sink
             .emit(self.trace_cid, now, || PathEvent::ConnectionIdUpdated {
-                initiator: "remote",
+                initiator: Initiator::Remote,
                 old: Some(old),
                 new,
             });
@@ -142,7 +142,7 @@ impl Connection {
         }
         self.qlog_sink
             .emit(self.trace_cid, now, || PathEvent::ConnectionIdUpdated {
-                initiator: "local",
+                initiator: Initiator::Local,
                 old,
                 new,
             });
@@ -206,7 +206,7 @@ mod tests {
         assert_eq!(value["data"]["tuple_remote"]["port_v6"], 443);
         assert!(value["data"].get("tuple_local").is_none());
         let value = serde_json::to_value(PathEvent::ConnectionIdUpdated {
-            initiator: "remote",
+            initiator: Initiator::Remote,
             old: Some(ConnectionId::new(&[0xab, 0xcd])),
             new: ConnectionId::new(&[0xef, 0x12]),
         })

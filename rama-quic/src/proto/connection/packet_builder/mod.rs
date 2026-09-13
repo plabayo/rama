@@ -212,6 +212,8 @@ impl PacketBuilder {
         let exact_number = self.exact_number;
         let space_id = self.space;
         let is_0rtt = space_id == SpaceId::Data && conn.spaces[SpaceId::Data].crypto.is_none();
+        let is_mtu_probe_packet =
+            space_id == SpaceId::Data && conn.path.mtud.in_flight_mtu_probe() == Some(exact_number);
         let datagram_start = self.datagram_start;
         let (size, padded) = self.finish(conn, now, buffer);
         let Some(sent) = sent else { return };
@@ -236,6 +238,7 @@ impl PacketBuilder {
             size,
             ack_eliciting,
             is_0rtt,
+            is_mtu_probe_packet,
             retransmits: sent.retransmits,
             stream_frames: sent.stream_frames,
         };
@@ -312,6 +315,8 @@ impl PacketBuilder {
             len,
             self.space,
             self.space == SpaceId::Data && conn.spaces[SpaceId::Data].crypto.is_none(),
+            self.space == SpaceId::Data
+                && conn.path.mtud.in_flight_mtu_probe() == Some(self.exact_number),
             now,
             conn.trace_cid,
         );

@@ -19,6 +19,7 @@ struct Output {
     interrupt_once: bool,
     calls: usize,
     flushes: usize,
+    shutdowns: usize,
 }
 
 #[derive(Clone, Default)]
@@ -79,8 +80,9 @@ impl AsyncWrite for Trace {
         Poll::Ready(io::Write::flush(&mut *self))
     }
 
-    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        self.poll_flush(cx)
+    fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self.0.lock().shutdowns += 1;
+        Poll::Ready(Ok(()))
     }
 }
 
@@ -120,6 +122,7 @@ async fn qlog_header_escapes_metadata_and_declares_schema_and_clock() {
     assert_eq!(trace.0.lock().flushes, 0);
     writer.finish().await.unwrap();
     assert_eq!(trace.0.lock().flushes, 1);
+    assert_eq!(trace.0.lock().shutdowns, 1);
 }
 
 #[tokio::test]
@@ -146,12 +149,14 @@ async fn qlog_events_preserve_packet_types_time_group_and_loss_reason() {
             1200,
             space,
             early,
+            false,
             start + Duration::from_micros(1250),
             group,
         );
     }
     sink.emit_packet_received(
         8,
+        Some(1200),
         SpaceId::Data,
         false,
         start.checked_sub(Duration::from_millis(1)).unwrap(),
@@ -163,6 +168,7 @@ async fn qlog_events_preserve_packet_types_time_group_and_loss_reason() {
         size: 1200,
         ack_eliciting: true,
         is_0rtt: false,
+        is_mtu_probe_packet: false,
         largest_acked: None,
         retransmits: Default::default(),
         stream_frames: Default::default(),
@@ -193,7 +199,7 @@ async fn qlog_events_preserve_packet_types_time_group_and_loss_reason() {
             *record,
             json!({
                 "time": 1.25, "group_id": "00ab", "name": "quic:packet_sent",
-                "data": {"header": {"packet_type": kind, "packet_number": 7}, "raw": {"length": 1200}}
+                "data": {"header": {"packet_type": kind, "packet_number": 7}, "raw": {"length": 1200}, "is_mtu_probe_packet": false}
             })
         );
     }
@@ -201,7 +207,7 @@ async fn qlog_events_preserve_packet_types_time_group_and_loss_reason() {
         records[5],
         json!({
             "time": 0.0, "group_id": "00ab", "name": "quic:packet_received",
-            "data": {"header": {"packet_type": "1RTT", "packet_number": 8}}
+            "data": {"header": {"packet_type": "1RTT", "packet_number": 8}, "raw": {"length": 1200}}
         })
     );
     for (record, (time, trigger)) in records[6..8]
@@ -254,7 +260,14 @@ async fn qlog_writer_failure_disables_further_writes_and_preserves_first_error()
     stream.flush().await.unwrap();
     trace.0.lock().remaining = Some(5);
     let sink = ConnectionQlog::from(Some(stream.clone()));
-    sink.emit_packet_received(0, SpaceId::Initial, false, start, ConnectionId::new(&[]));
+    sink.emit_packet_received(
+        0,
+        Some(1200),
+        SpaceId::Initial,
+        false,
+        start,
+        ConnectionId::new(&[]),
+    );
     let error = stream.flush().await.unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
     assert!(!sink.is_enabled());
@@ -285,7 +298,9 @@ async fn qlog_writer_failure_disables_further_writes_and_preserves_first_error()
     );
     assert!(!ConnectionQlog::from(Some(stream.clone())).is_enabled());
     assert!(stream.shutdown().await.is_err());
-    assert!(crate::qlog::QlogConfig::default().into_stream().is_none());
+    crate::qlog::QlogConfig::default()
+        .start()
+        .expect_err("starting a recorder requires an output destination");
 }
 
 #[tokio::test]
@@ -306,6 +321,7 @@ async fn qlog_short_writes_and_interruptions_preserve_complete_records() {
     trace.0.lock().interrupt_once = true;
     ConnectionQlog::from(Some(stream.clone())).emit_packet_received(
         42,
+        Some(1200),
         SpaceId::Handshake,
         false,
         start,
@@ -316,7 +332,7 @@ async fn qlog_short_writes_and_interruptions_preserve_complete_records() {
     assert_eq!(records.len(), 2);
     assert_eq!(
         records[1],
-        json!({"time": 0.0, "group_id": "", "name": "quic:packet_received", "data": {"header": {"packet_type": "handshake", "packet_number": 42}}})
+        json!({"time": 0.0, "group_id": "", "name": "quic:packet_received", "data": {"header": {"packet_type": "handshake", "packet_number": 42}, "raw": {"length": 1200}}})
     );
     stream.shutdown().await.unwrap();
     assert_eq!(trace.0.lock().flushes, 3);
@@ -343,6 +359,7 @@ async fn qlog_cloned_streams_serialize_concurrent_records() {
                         pn,
                         1200,
                         SpaceId::Data,
+                        false,
                         false,
                         start,
                         ConnectionId::new(&[producer]),
@@ -457,8 +474,8 @@ impl AsyncWrite for BlockedHeader {
         Pin::new(&mut self.trace).poll_flush(cx)
     }
 
-    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        self.poll_flush(cx)
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.trace).poll_shutdown(cx)
     }
 }
 
@@ -472,11 +489,14 @@ fn blocked_recorder() -> (
     let (entered, waiting) = tokio::sync::oneshot::channel();
     let (release, receiver) = tokio::sync::oneshot::channel();
     let recorder = crate::qlog::QlogConfig::default()
-        .with_writer(Box::new(BlockedHeader {
-            trace: trace.clone(),
-            entered: Some(entered),
-            release: Some(receiver),
-        }))
+        .with_output(EncodedWriter::new(
+            BlockedHeader {
+                trace: trace.clone(),
+                entered: Some(entered),
+                release: Some(receiver),
+            },
+            JsonSeqEncoder,
+        ))
         .with_queue_limits(QueueLimits {
             max_queued_events: 1,
             ..QueueLimits::default()
@@ -573,14 +593,15 @@ async fn rejected_lifecycle_events_do_not_commit_connection_logging_state() {
 }
 
 #[tokio::test]
-async fn legacy_transport_qlog_configuration_starts_and_records_to_its_writer() {
+async fn transport_qlog_recorder_records_to_its_writer() {
     let trace = Trace::default();
     let start = Instant::now();
-    let transport = crate::TransportConfig::default().with_qlog(
-        crate::qlog::QlogConfig::default()
-            .with_writer(Box::new(trace.clone()))
-            .with_start_time(start),
-    );
+    let recorder = crate::qlog::QlogConfig::default()
+        .with_writer(Box::new(trace.clone()))
+        .with_start_time(start)
+        .start()
+        .unwrap();
+    let transport = crate::TransportConfig::default().with_qlog_recorder(recorder);
     let control = transport
         .qlog_sink
         .control()
@@ -589,6 +610,7 @@ async fn legacy_transport_qlog_configuration_starts_and_records_to_its_writer() 
         42,
         1200,
         SpaceId::Data,
+        false,
         false,
         start,
         ConnectionId::new(&[1]),
@@ -723,4 +745,107 @@ async fn dynamic_filter_generation_refreshes_previously_suppressed_recovery_snap
         3,
         "the filter also propagates its recorder's generation"
     );
+}
+
+#[test]
+fn post_build_recovery_snapshot_rejection_retries_complete_snapshot() {
+    use crate::qlog::{QlogEventView, QlogSink};
+
+    #[derive(Default)]
+    struct RejectFirst(Mutex<Vec<Value>>);
+
+    impl QlogSink for RejectFirst {
+        fn emit(&self, event: &QlogEventView<'_>) -> bool {
+            let mut attempts = self.0.lock();
+            attempts.push(serde_json::to_value(&event.fields).unwrap());
+            attempts.len() != 1
+        }
+    }
+
+    let output = Arc::new(RejectFirst::default());
+    let sink = ConnectionQlog::from_sink(Some(output.clone()));
+    let now = Instant::now();
+    let group = ConnectionId::new(&[1]);
+    let mut path = PathData::new(
+        "127.0.0.1:443".parse().unwrap(),
+        None,
+        false,
+        None,
+        0,
+        now,
+        &crate::TransportConfig::default(),
+    );
+    sink.emit_recovery_metrics(0, &mut path, now, group);
+    assert_eq!(
+        output.0.lock().len(),
+        1,
+        "rejection happened after building the event"
+    );
+    sink.emit_recovery_metrics(0, &mut path, now, group);
+    {
+        let attempts = output.0.lock();
+        assert_eq!(
+            attempts.len(),
+            2,
+            "unchanged metrics must retry after rejection"
+        );
+        assert_eq!(
+            attempts[0], attempts[1],
+            "retry retains the complete snapshot"
+        );
+        for field in [
+            "min_rtt",
+            "smoothed_rtt",
+            "latest_rtt",
+            "rtt_variance",
+            "pto_count",
+            "bytes_in_flight",
+            "congestion_window",
+        ] {
+            assert!(attempts[1]["data"].get(field).is_some(), "missing {field}");
+        }
+    }
+    sink.emit_recovery_metrics(0, &mut path, now, group);
+    assert_eq!(
+        output.0.lock().len(),
+        2,
+        "accepted unchanged metrics remain suppressed"
+    );
+}
+
+#[cfg(all(feature = "rustls", any(feature = "ring", feature = "aws-lc")))]
+#[tokio::test]
+async fn migration_with_unusable_fallback_does_not_log_abandonment() {
+    use crate::proto::connection::migration::{PrevCid, PreviousPath};
+
+    let mut pair = crate::proto::tests::util::Pair::default();
+    let (client, _) = pair.connect();
+    let now = pair.time;
+    let trace = Trace::default();
+    let recorder = crate::qlog::QlogConfig::default()
+        .with_writer(Box::new(trace.clone()))
+        .start()
+        .unwrap();
+    let connection = pair.client_conn_mut(client);
+    connection.qlog_sink = ConnectionQlog::from(Some(recorder.clone()));
+    let moved_to = "127.0.0.7:443".parse().unwrap();
+    connection.migrate(now, moved_to, None, PreviousPath::Keep(PrevCid::Gone));
+    assert!(connection.prev_path.is_some());
+    while connection.rem_cids.next().is_some() {}
+
+    assert!(!connection.abandon_current_path(now));
+    assert_eq!(connection.remote_address(), moved_to);
+    assert!(!connection.is_closed());
+    recorder.shutdown().await.unwrap();
+    let migrations: Vec<_> = trace
+        .records()
+        .into_iter()
+        .filter(|event| event["name"] == "quic:migration_state_updated")
+        .collect();
+    assert_eq!(
+        migrations.len(),
+        1,
+        "an unusable fallback cannot replace the path"
+    );
+    assert_eq!(migrations[0]["data"]["new"], "migration_started");
 }

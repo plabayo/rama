@@ -297,7 +297,7 @@ fn compact_path_and_connection_values_need_no_heap() {
 fn wrapper_preserves_tagged_packet_drop_schema() {
     let fields = EventFields::from(PacketDropped {
         header: Some(drops::DropHeader {
-            packet_type: "1RTT",
+            packet_type: drops::DropPacketType::OneRtt,
             packet_number: Some(42),
         }),
         raw: Some(packet::RawInfo { length: 1200 }),
@@ -317,7 +317,7 @@ fn wrapper_preserves_tagged_packet_drop_schema() {
 #[test]
 fn transport_parameter_cids_are_inline_and_hex_only_at_serialization() {
     let params = negotiation::ParametersSet {
-        initiator: "local",
+        initiator: Initiator::Local,
         parameters: negotiation::RestoredParameters {
             disable_active_migration: false,
             max_idle_timeout: 0,
@@ -362,5 +362,34 @@ fn all_crypto_alert_names_format_without_owned_text() {
             value["data"]["connection_error"],
             format!("crypto_error_0x{:03x}", 0x100 + u16::from(alert))
         );
+    }
+}
+
+#[test]
+fn unspecified_closure_omits_unknown_classifications() {
+    let value =
+        serde_json::to_value(LifecycleEventView::Closed(ConnectionClosedView::default())).unwrap();
+    assert_eq!(
+        value,
+        serde_json::json!({"name": "quic:connection_closed", "data": {}})
+    );
+}
+
+#[test]
+fn recovery_parameters_omit_non_finite_optional_measurements() {
+    for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        let event = PathEvent::RecoveryParametersSet {
+            reordering_threshold: None,
+            time_threshold: value,
+            timer_granularity: 1,
+            initial_rtt: value,
+            max_datagram_size: 1200,
+            initial_congestion_window: 12000,
+            persistent_congestion_threshold: None,
+        };
+        let data = serde_json::to_value(event).unwrap();
+        assert!(data["data"].get("time_threshold").is_none());
+        assert!(data["data"].get("initial_rtt").is_none());
+        assert_eq!(data["data"]["timer_granularity"], 1);
     }
 }

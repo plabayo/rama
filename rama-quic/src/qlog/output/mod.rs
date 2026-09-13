@@ -52,7 +52,7 @@ pub trait QlogEncoder: Send {
         output: &mut W,
     ) -> impl Future<Output = io::Result<()>> + Send;
 
-    /// Write format-specific closing data. The owning output flushes the destination afterwards.
+    /// Write format-specific closing data. The owning output then flushes and shuts down the destination.
     fn finish<W: tokio::io::AsyncWrite + Unpin + Send>(
         &mut self,
         _output: &mut W,
@@ -63,13 +63,29 @@ pub trait QlogEncoder: Send {
 
 mod async_json;
 pub use async_json::AsyncJsonSeqEncoder as JsonSeqEncoder;
+pub(super) use async_json::RetryInterrupted;
 
 /// Combine an asynchronous writer with a streaming encoder.
-/// Buffering is optional: callers can supply an `AsyncWrite` buffer when small writes are costly.
+/// The writer is used directly; supply an `AsyncWrite` buffer when small writes are costly.
+/// Finishing writes encoder trailers, flushes, then shuts down the writer, even on errors.
+/// Cancellation while the encoder writes trailers cannot be retried; drop the output.
+/// Cancellation during writer flush or shutdown resumes that phase. Successful finishes are idempotent.
 pub struct EncodedWriter<W, E> {
     writer: W,
     encoder: E,
     info: Option<TraceInfo>,
+    state: OutputState,
+    finish_error: Option<io::Error>,
+}
+
+#[derive(PartialEq, Eq)]
+enum OutputState {
+    Active,
+    Encoding,
+    Flushing,
+    ShuttingDown,
+    Finished,
+    Failed,
 }
 
 impl<W, E> EncodedWriter<W, E> {
@@ -79,6 +95,19 @@ impl<W, E> EncodedWriter<W, E> {
             writer,
             encoder,
             info: None,
+            state: OutputState::Active,
+            finish_error: None,
+        }
+    }
+
+    fn ensure_active(&self) -> io::Result<()> {
+        if self.state == OutputState::Active {
+            Ok(())
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "qlog output is finalized",
+            ))
         }
     }
 }
@@ -89,12 +118,14 @@ where
     E: QlogEncoder + 'static,
 {
     async fn begin(&mut self, info: &TraceInfo) -> io::Result<()> {
+        self.ensure_active()?;
         self.encoder.begin(info, &mut self.writer).await?;
         self.info = Some(info.clone());
         Ok(())
     }
 
     async fn event(&mut self, event: &QlogEventView<'_>) -> io::Result<()> {
+        self.ensure_active()?;
         self.encoder
             .event(
                 self.info
@@ -107,14 +138,49 @@ where
     }
 
     async fn flush(&mut self) -> io::Result<()> {
+        self.ensure_active()?;
         tokio::io::AsyncWriteExt::flush(&mut self.writer).await
     }
 
     async fn finish(&mut self) -> io::Result<()> {
-        self.encoder.finish(&mut self.writer).await?;
-        tokio::io::AsyncWriteExt::flush(&mut self.writer).await
+        match self.state {
+            OutputState::Active => {
+                self.state = OutputState::Encoding;
+                self.finish_error = self.encoder.finish(&mut self.writer).await.err();
+                self.state = OutputState::Flushing;
+            }
+            OutputState::Encoding => {
+                return Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "qlog encoder finalization was cancelled and cannot be retried",
+                ));
+            }
+            OutputState::Failed => return self.ensure_active(),
+            OutputState::Finished => return Ok(()),
+            OutputState::Flushing | OutputState::ShuttingDown => {}
+        }
+        if self.state == OutputState::Flushing {
+            let error = tokio::io::AsyncWriteExt::flush(&mut self.writer)
+                .await
+                .err();
+            self.finish_error = self.finish_error.take().or(error);
+            self.state = OutputState::ShuttingDown;
+        }
+        let error = tokio::io::AsyncWriteExt::shutdown(&mut self.writer)
+            .await
+            .err();
+        if let Some(error) = self.finish_error.take().or(error) {
+            self.state = OutputState::Failed;
+            Err(error)
+        } else {
+            self.state = OutputState::Finished;
+            Ok(())
+        }
     }
 }
 
 #[cfg(test)]
 pub(crate) mod reference;
+
+#[cfg(test)]
+mod tests;

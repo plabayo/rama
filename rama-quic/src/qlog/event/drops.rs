@@ -45,7 +45,7 @@ pub struct PacketDropped {
 /// Known packet type and, when authenticated, expanded packet number.
 pub struct DropHeader {
     /// Qlog packet type name, including unnumbered packet types.
-    pub packet_type: &'static str,
+    pub packet_type: DropPacketType,
 
     /// Full packet number, present only when authenticated.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -59,4 +59,40 @@ pub enum DropEvent {
     /// A packet was discarded before normal processing completed.
     #[serde(rename = "quic:packet_dropped")]
     PacketDropped(PacketDropped),
+}
+
+/// Packet classification known when a packet is discarded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub enum DropPacketType {
+    /// An Initial packet.
+    #[serde(rename = "initial")]
+    Initial,
+
+    /// A Handshake packet.
+    #[serde(rename = "handshake")]
+    Handshake,
+
+    /// An early application-data packet.
+    #[serde(rename = "0RTT")]
+    ZeroRtt,
+
+    /// An application-data packet.
+    #[serde(rename = "1RTT")]
+    OneRtt,
+
+    /// A Retry packet.
+    #[serde(rename = "retry")]
+    Retry,
+
+    /// A Version Negotiation packet.
+    #[serde(rename = "version_negotiation")]
+    VersionNegotiation,
+
+    /// A stateless reset.
+    #[serde(rename = "stateless_reset")]
+    StatelessReset,
+
+    /// An unrecognized packet type.
+    #[serde(rename = "unknown")]
+    Unknown,
 }
