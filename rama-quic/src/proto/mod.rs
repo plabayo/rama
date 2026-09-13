@@ -44,6 +44,8 @@ pub(crate) use crate::proto::connection::{Datagrams, Streams};
 pub(crate) use crate::proto::endpoint::AcceptError;
 #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 pub(crate) use crate::proto::frame::Datagram;
+#[cfg(feature = "test-utils")]
+pub(crate) use connection::benchmarks;
 
 #[cfg(test)]
 pub(crate) use connection::qlog::ConnectionQlog;

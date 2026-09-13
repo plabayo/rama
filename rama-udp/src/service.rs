@@ -162,7 +162,9 @@ impl UdpSocketFactory {
         options.r#type = Type::Datagram;
         options.protocol = Some(Protocol::UDP);
         let socket = options.try_build_socket(Domain::from(address))?;
-        self.config.wrap_core(socket)
+        let mut socket = self.config.wrap_core(socket)?;
+        socket.cache_bound_address()?;
+        Ok(socket)
     }
 }
 

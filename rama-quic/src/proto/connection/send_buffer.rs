@@ -8,7 +8,7 @@ use crate::proto::{VarInt, range_set::RangeSet};
 #[derive(Default, Debug)]
 pub(super) struct SendBuffer {
     /// Data queued by the application but not yet acknowledged. May or may not have been sent.
-    unacked_segments: VecDeque<Bytes>,
+    unacked_segments: VecDeque<Segment>,
     /// Total size of `unacked_segments`
     unacked_len: usize,
     /// The first offset that hasn't been written by the application, i.e. the offset past the end of `unacked`
@@ -25,6 +25,13 @@ pub(super) struct SendBuffer {
     retransmits: RangeSet,
 }
 
+#[derive(Debug)]
+struct Segment {
+    /// Absolute end offset, unchanged when a partial ACK advances `data`.
+    end: u64,
+    data: Bytes,
+}
+
 impl SendBuffer {
     /// Construct an empty buffer at the initial offset
     pub(super) fn new() -> Self {
@@ -35,7 +42,10 @@ impl SendBuffer {
     pub(super) fn write(&mut self, data: Bytes) {
         self.unacked_len += data.len();
         self.offset += data.len() as u64;
-        self.unacked_segments.push_back(data);
+        self.unacked_segments.push_back(Segment {
+            end: self.offset,
+            data,
+        });
     }
 
     /// Discard a range of acknowledged stream data
@@ -66,15 +76,15 @@ impl SendBuffer {
                     .front_mut()
                     .expect("Expected buffered data");
 
-                if front.len() <= to_advance {
-                    to_advance -= front.len();
+                if front.data.len() <= to_advance {
+                    to_advance -= front.data.len();
                     self.unacked_segments.pop_front();
 
                     if self.unacked_segments.len() * 4 < self.unacked_segments.capacity() {
                         self.unacked_segments.shrink_to_fit();
                     }
                 } else {
-                    front.advance(to_advance);
+                    front.data.advance(to_advance);
                     to_advance = 0;
                 }
             }
@@ -146,21 +156,31 @@ impl SendBuffer {
     /// retrieve more data.
     pub(super) fn get(&self, offsets: Range<u64>) -> &[u8] {
         let base_offset = self.offset - self.unacked_len as u64;
-
-        let mut segment_offset = base_offset;
-        for segment in self.unacked_segments.iter() {
-            if offsets.start >= segment_offset
-                && offsets.start < segment_offset + segment.len() as u64
-            {
-                let start = (offsets.start - segment_offset) as usize;
-                let end = (offsets.end - segment_offset) as usize;
-
-                return &segment[start..end.min(segment.len())];
-            }
-            segment_offset += segment.len() as u64;
+        if offsets.start < base_offset {
+            return &[];
         }
 
-        &[]
+        let segment = if let Some(front) = self.unacked_segments.front()
+            && offsets.start < front.end
+        {
+            front
+        } else {
+            // End offsets remain sorted, including across empty writes and partial ACKs.
+            let index = self
+                .unacked_segments
+                .partition_point(|segment| segment.end <= offsets.start);
+
+            let Some(segment) = self.unacked_segments.get(index) else {
+                return &[];
+            };
+            segment
+        };
+
+        let segment_offset = segment.end - segment.data.len() as u64;
+        let start = (offsets.start - segment_offset) as usize;
+        let end = (offsets.end - segment_offset) as usize;
+
+        &segment.data[start..end.min(segment.data.len())]
     }
 
     /// Queue a range of sent but unacknowledged data to be retransmitted
@@ -393,10 +413,180 @@ mod tests {
         assert!(buf.acks.is_empty());
     }
 
+    #[test]
+    fn get_empty_and_single_segment() {
+        let mut buf = SendBuffer::new();
+        assert_eq!(buf.get(0..1), b"");
+        buf.write(Bytes::new());
+        assert_eq!(buf.get(0..1), b"");
+        buf.write(Bytes::from_static(b"hello"));
+        buf.write(Bytes::new());
+        assert_eq!(buf.get(0..9), b"hello");
+        assert_eq!(buf.get(2..4), b"ll");
+        assert_eq!(buf.get(2..2), b"");
+        assert_eq!(buf.get(5..9), b"");
+        assert_eq!(buf.get(9..10), b"");
+
+        buf.poll_transmit(32);
+        buf.ack(0..2);
+        assert_eq!(buf.get(1..5), b"");
+        assert_eq!(buf.get(2..5), b"llo");
+        buf.ack(2..5);
+        assert_eq!(buf.get(2..5), b"");
+        buf.write(Bytes::from_static(b"world"));
+        assert_eq!(buf.get(5..20), b"world");
+    }
+
+    #[test]
+    fn indexed_reads_match_flat_model_after_ack_and_refill() {
+        let mut model = SendModel::default();
+        model.buf.unacked_segments.reserve(16);
+        for len in 1..=5 {
+            model.write(len);
+        }
+        let partial_ack = model.bytes.len() - 1;
+        for index in 5..16 {
+            model.write(index % 7 + 1);
+        }
+        model.transmit();
+        model.ack(0..partial_ack);
+        for len in [2, 7, 3, 1] {
+            model.write(len);
+        }
+        assert!(!model.buf.unacked_segments.as_slices().1.is_empty());
+        model.check();
+        model.transmit();
+
+        // Keep an acknowledged hole, then close it with overlapping and duplicate ACKs.
+        model.ack(partial_ack + 9..partial_ack + 17);
+        model.ack(partial_ack + 11..partial_ack + 19);
+        model.ack(0..partial_ack);
+        model.ack(partial_ack..partial_ack + 12);
+        model.ack(0..model.bytes.len());
+
+        // Reuse the buffer at nonzero offsets, with duplicate end offsets from empty writes.
+        for len in [0, 0, 3, 0, 19, 1, 0] {
+            model.write(len);
+            model.check();
+        }
+        model.transmit();
+        let end = model.bytes.len();
+        for index in (end - 23..end).rev() {
+            model.ack(index..index + 1);
+        }
+        assert!(model.buf.is_fully_acked());
+    }
+
+    #[test]
+    fn indexed_reads_match_retransmissions_and_0rtt_reset() {
+        let mut model = SendModel::default();
+        for len in [0, 1, 7, 0, 11, 3, 29, 0, 5] {
+            model.write(len);
+        }
+        let end = model.bytes.len() as u64;
+        let initial = model.transmit();
+        assert_eq!(initial, model.bytes);
+
+        model.buf.retransmit_all_for_0rtt();
+        assert_eq!(model.transmit(), initial);
+
+        model.buf.retransmit(31..end);
+        model.buf.retransmit(9..27);
+        model.buf.retransmit(0..5);
+        let expected: Vec<_> = model.bytes[..5]
+            .iter()
+            .chain(&model.bytes[9..27])
+            .chain(&model.bytes[31..])
+            .copied()
+            .collect();
+        assert_eq!(model.transmit(), expected);
+
+        model.ack(0..10);
+        model.buf.retransmit(10..end);
+        assert_eq!(model.transmit(), model.bytes[10..]);
+        model.check();
+    }
+
+    /// Flat payload and per-byte ACK state, independent of segment indexing and range merging.
+    #[derive(Default)]
+    struct SendModel {
+        buf: SendBuffer,
+        bytes: Vec<u8>,
+        acked: Vec<bool>,
+    }
+
+    impl SendModel {
+        fn write(&mut self, len: usize) {
+            let start = self.bytes.len();
+            self.bytes
+                .extend((start..start + len).map(|index| (index * 37 + index / 7) as u8));
+            self.acked.resize(self.bytes.len(), false);
+            self.buf.write(Bytes::copy_from_slice(&self.bytes[start..]));
+        }
+
+        fn ack(&mut self, range: Range<usize>) {
+            self.acked[range.clone()].fill(true);
+            self.buf.ack(range.start as u64..range.end as u64);
+            self.check();
+        }
+
+        fn read(&self, mut range: Range<u64>) -> Vec<u8> {
+            let mut result = Vec::new();
+            while range.start < range.end {
+                let data = self.buf.get(range.clone());
+                assert!(!data.is_empty(), "missing data at {range:?}");
+                assert!(data.len() as u64 <= range.end - range.start);
+                let start = range.start as usize;
+                assert_eq!(data, &self.bytes[start..start + data.len()]);
+                result.extend_from_slice(data);
+                range.start += data.len() as u64;
+            }
+            result
+        }
+
+        fn transmit(&mut self) -> Vec<u8> {
+            let mut result = Vec::new();
+            while self.buf.has_unsent_data() {
+                let (range, _) = self.buf.poll_transmit(23);
+                assert!(!range.is_empty());
+                result.extend(self.read(range));
+            }
+            result
+        }
+
+        fn check(&self) {
+            let end = self.bytes.len();
+            let base = self.acked.iter().position(|acked| !acked).unwrap_or(end);
+            assert_eq!(self.buf.offset(), end as u64);
+            assert_eq!(
+                self.buf.unacked(),
+                self.acked.iter().filter(|acked| !**acked).count() as u64
+            );
+            assert_eq!(self.buf.is_fully_acked(), base == end);
+            for start in 0..=end + 1 {
+                assert!(self.buf.get(start as u64..start as u64).is_empty());
+                if start < base || start >= end {
+                    assert!(self.buf.get(start as u64..end as u64 + 2).is_empty());
+                    continue;
+                }
+                for len in [1, 3, 17, end - start] {
+                    let stop = end.min(start + len);
+                    assert_eq!(
+                        self.read(start as u64..stop as u64),
+                        self.bytes[start..stop]
+                    );
+                }
+                let data = self.buf.get(start as u64..end as u64 + 2);
+                assert!(!data.is_empty());
+                assert_eq!(data, &self.bytes[start..start + data.len()]);
+            }
+        }
+    }
+
     fn aggregate_unacked(buf: &SendBuffer) -> Vec<u8> {
         let mut result = Vec::new();
         for segment in buf.unacked_segments.iter() {
-            result.extend_from_slice(&segment[..]);
+            result.extend_from_slice(&segment.data);
         }
         result
     }

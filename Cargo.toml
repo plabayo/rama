@@ -682,6 +682,21 @@ required-features = ["http-full"]
 harness = false
 
 [[bench]]
+name = "udp_packet"
+required-features = ["udp"]
+harness = false
+
+[[bench]]
+name = "quic_layers"
+required-features = ["quic", "test-utils"]
+harness = false
+
+[[bench]]
+name = "quic_transport"
+required-features = ["quic", "rustls", "aws-lc"]
+harness = false
+
+[[bench]]
 name = "quic_qlog"
 required-features = ["quic"]
 harness = false

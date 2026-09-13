@@ -1,3 +1,6 @@
+#[cfg(feature = "test-utils")]
+pub(crate) mod benchmarks;
+
 use std::{collections::VecDeque, fmt, net::SocketAddr, sync::Arc};
 
 use rama_core::bytes::Bytes;

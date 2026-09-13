@@ -24,6 +24,10 @@
 )]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+#[cfg(feature = "test-utils")]
+#[doc(hidden)]
+pub mod benchmarks;
+
 mod proto;
 pub mod qlog;
 

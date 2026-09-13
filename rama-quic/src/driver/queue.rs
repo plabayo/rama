@@ -123,21 +123,29 @@ impl PacketBudget {
 /// Smallest storage a drained bounded container keeps, so a steady trickle does not reallocate.
 pub(crate) const MIN_RETAINED: usize = 16;
 
+/// Completed low-occupancy drain cycles before a container gives back excess storage.
+pub(crate) const QUIET_DRAINS_BEFORE_SHRINK: u8 = 8;
+
 /// A deque whose retained storage follows its use within a hard limit.
 ///
 /// Storage is allocated lazily and grows geometrically from [`MIN_RETAINED`] entries, never
-/// beyond `limit` entries, so an idle container costs nothing and a busy one retains at most
-/// `min(limit, max(2 × MIN_RETAINED, 2 × peak occupancy since the last drain))` entries. A
-/// drain is the [`pop_front`](Self::pop_front) that empties the container: if it leaves more
-/// than `2 × MIN_RETAINED` entries of storage, storage shrinks to [`MIN_RETAINED`]; smaller
-/// storage is kept as is, so the baseline after any drain is at most `min(limit, 2 ×
-/// MIN_RETAINED)`. Nothing is shrunk on ordinary pops, and [`drain_all`](Self::drain_all) is
-/// for a container that is being destroyed. A push that cannot get storage (limit reached, or
-/// the allocator refuses) returns the item instead of panicking or growing past the limit.
+/// beyond `limit` entries. A drain is a successful [`pop_front`](Self::pop_front) that empties
+/// the container. Capacity above `2 × MIN_RETAINED` shrinks only after eight consecutive drains
+/// whose peak occupancy was at most one quarter of that capacity. The shrink target is the
+/// larger of [`MIN_RETAINED`] and twice the last cycle's peak, capped at the entry limit. A
+/// busier cycle resets the quiet-drain count, so repeated bursts retain their storage.
+///
+/// Empty polls and ordinary pops never shrink storage. A queue that becomes idle retains its
+/// recent capacity until further drain cycles or destruction; a never-used queue allocates
+/// nothing. [`clear`](Self::clear) releases all storage, and [`drain_all`](Self::drain_all) is for
+/// a container being destroyed. A push that cannot get storage (limit reached, or the allocator
+/// refuses) returns the item instead of panicking or growing past the limit.
 #[derive(Debug)]
 pub(crate) struct BoundedDeque<T> {
     items: VecDeque<T>,
     limit: usize,
+    cycle_peak: usize,
+    quiet_drains: u8,
 }
 
 impl<T> BoundedDeque<T> {
@@ -145,6 +153,8 @@ impl<T> BoundedDeque<T> {
         Self {
             items: VecDeque::new(),
             limit,
+            cycle_peak: 0,
+            quiet_drains: 0,
         }
     }
 
@@ -168,15 +178,31 @@ impl<T> BoundedDeque<T> {
             }
         }
         self.items.push_back(item);
+        self.cycle_peak = self.cycle_peak.max(self.items.len());
+
         Ok(())
     }
 
     pub(crate) fn pop_front(&mut self) -> Option<T> {
-        let item = self.items.pop_front();
-        if self.items.is_empty() && self.items.capacity() > MIN_RETAINED.saturating_mul(2) {
-            self.items.shrink_to(MIN_RETAINED);
+        let item = self.items.pop_front()?;
+        if self.items.is_empty() {
+            let capacity = self.items.capacity();
+            if capacity > 2 * MIN_RETAINED && self.cycle_peak <= capacity / 4 {
+                self.quiet_drains += 1;
+                if self.quiet_drains == QUIET_DRAINS_BEFORE_SHRINK {
+                    let target = MIN_RETAINED
+                        .max(self.cycle_peak.saturating_mul(2))
+                        .min(self.limit);
+                    self.items.shrink_to(target);
+                    self.quiet_drains = 0;
+                }
+            } else {
+                self.quiet_drains = 0;
+            }
+            self.cycle_peak = 0;
         }
-        item
+
+        Some(item)
     }
 
     pub(crate) fn front(&self) -> Option<&T> {
@@ -199,6 +225,8 @@ impl<T> BoundedDeque<T> {
     pub(crate) fn clear(&mut self) {
         self.items.clear();
         self.items.shrink_to(0);
+        self.cycle_peak = 0;
+        self.quiet_drains = 0;
     }
 
     /// Lower (or raise) the entry limit; a test seam for forcing storage refusal.
@@ -208,6 +236,8 @@ impl<T> BoundedDeque<T> {
     }
 
     pub(crate) fn drain_all(&mut self) -> std::collections::vec_deque::Drain<'_, T> {
+        self.cycle_peak = 0;
+        self.quiet_drains = 0;
         self.items.drain(..)
     }
 }
@@ -264,10 +294,20 @@ impl<T> BoundedSender<T> {
             .items
             .push_back(item)
             .map_err(|item| (item, Refusal::Full))?;
-        if let Some(waker) = state.waker.take() {
+
+        let waker = state.waker.take();
+        drop(state);
+
+        if let Some(waker) = waker {
             waker.wake();
         }
         Ok(())
+    }
+
+    /// Tests can inspect the processing lock boundary without waiting on that lock.
+    #[cfg(test)]
+    pub(super) fn is_unlocked(&self) -> bool {
+        self.shared.try_lock().is_some()
     }
 
     #[cfg(test)]
@@ -281,7 +321,10 @@ impl<T> Drop for BoundedSender<T> {
     fn drop(&mut self) {
         let mut state = self.shared.lock();
         state.sender_dropped = true;
-        if let Some(waker) = state.waker.take() {
+        let waker = state.waker.take();
+        drop(state);
+
+        if let Some(waker) = waker {
             waker.wake();
         }
     }
@@ -534,22 +577,27 @@ mod tests {
             assert_eq!(receiver.capacity(), 256, "ordinary pops do not shrink");
         }
         assert_eq!(receiver.poll_recv(&mut cx), Poll::Ready(Some(256)));
-        assert_eq!(
-            receiver.capacity(),
-            MIN_RETAINED,
-            "a drained queue gives its burst back"
-        );
+        assert_eq!(receiver.capacity(), 256, "a burst keeps its capacity");
         assert!(receiver.poll_recv(&mut cx).is_pending());
-        // Burst just past the minimum, drain, then trickle: the retained baseline is
-        // 2 × MIN_RETAINED, which the published bound includes.
+        for round in 1..=QUIET_DRAINS_BEFORE_SHRINK {
+            sender.send(1).unwrap();
+            assert_eq!(receiver.poll_recv(&mut cx), Poll::Ready(Some(1)));
+            assert_eq!(
+                receiver.capacity(),
+                if round < QUIET_DRAINS_BEFORE_SHRINK {
+                    256
+                } else {
+                    MIN_RETAINED
+                }
+            );
+        }
+        // Small storage remains reusable across subsequent trickles.
         for i in 1..=17 {
             sender.send(i).unwrap();
         }
         while receiver.poll_recv(&mut cx).is_ready() {}
         sender.send(1).unwrap();
         assert_eq!(receiver.capacity(), 2 * MIN_RETAINED);
-        // Peak since the last drain is one item: the baseline term is what allows 32.
-        assert!(receiver.capacity() <= 256.min((2 * MIN_RETAINED).max(2)));
     }
 
     #[test]
@@ -557,13 +605,11 @@ mod tests {
         for limit in [1usize, 3, 15, 16, 17, 33] {
             let (sender, mut receiver) = bounded_queue::<usize>(limit);
             let mut cx = Context::from_waker(Waker::noop());
-            let mut peak = 0;
             for round in 0..3 {
                 for i in 0..limit {
                     sender.send(i).unwrap();
-                    peak = peak.max(i + 1);
                     assert!(
-                        receiver.capacity() <= limit.min((2 * MIN_RETAINED).max(2 * peak)),
+                        receiver.capacity() <= limit,
                         "limit {limit} round {round}: capacity {}",
                         receiver.capacity()
                     );
@@ -571,12 +617,18 @@ mod tests {
                 assert_eq!(sender.send(usize::MAX), Err((usize::MAX, Refusal::Full)));
                 while receiver.poll_recv(&mut cx).is_ready() {}
                 assert!(
-                    receiver.capacity() <= limit.min(2 * MIN_RETAINED),
+                    receiver.capacity() <= limit,
                     "limit {limit}: drained baseline {}",
                     receiver.capacity()
                 );
-                peak = 0;
             }
+
+            for _ in 0..QUIET_DRAINS_BEFORE_SHRINK {
+                sender.send(1).unwrap();
+                assert_eq!(receiver.poll_recv(&mut cx), Poll::Ready(Some(1)));
+                assert!(receiver.capacity() <= limit);
+            }
+            assert!(receiver.capacity() <= limit.min(2 * MIN_RETAINED));
         }
     }
 
@@ -584,12 +636,14 @@ mod tests {
     fn dropping_the_receiver_releases_items_refuses_sends_and_drops_the_waker() {
         #[derive(Debug)]
         struct Tracked(Arc<std::sync::atomic::AtomicUsize>);
+
         impl Drop for Tracked {
             fn drop(&mut self) {
                 self.0.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
             }
         }
         struct CountWake(std::sync::atomic::AtomicUsize);
+
         impl std::task::Wake for CountWake {
             fn wake(self: Arc<Self>) {
                 self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -709,9 +763,123 @@ mod tests {
         while queue.pop_front().is_some() {}
         assert_eq!(
             queue.capacity(),
-            MIN_RETAINED,
-            "larger storage shrinks on drain"
+            64,
+            "a busy drain keeps larger storage too"
         );
+    }
+
+    fn burst(queue: &mut BoundedDeque<usize>, count: usize) {
+        for i in 0..count {
+            queue.push_back(i).unwrap();
+        }
+        for i in 0..count {
+            assert_eq!(queue.pop_front(), Some(i));
+        }
+    }
+
+    #[test]
+    fn repeated_busy_bursts_keep_storage_without_empty_polls_trimming_it() {
+        for size in [64, 128] {
+            let mut queue = BoundedDeque::new(256);
+            for _ in 0..16 {
+                burst(&mut queue, size);
+                assert_eq!(queue.capacity(), size);
+                for _ in 0..16 {
+                    assert_eq!(queue.pop_front(), None);
+                    assert_eq!(queue.capacity(), size);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn only_eight_completed_quiet_cycles_shrink_storage() {
+        let mut queue = BoundedDeque::new(256);
+        burst(&mut queue, 128);
+        for _ in 1..QUIET_DRAINS_BEFORE_SHRINK {
+            burst(&mut queue, 32);
+            assert_eq!(queue.capacity(), 128);
+        }
+        // Empty observations do not count as drain cycles.
+        for _ in 0..32 {
+            assert_eq!(queue.pop_front(), None);
+            assert_eq!(queue.capacity(), 128);
+        }
+        // The eighth quiet cycle is counted on its final pop, not its first.
+        queue.push_back(1).unwrap();
+        queue.push_back(2).unwrap();
+        assert_eq!(queue.pop_front(), Some(1));
+        assert_eq!(queue.capacity(), 128);
+        assert_eq!(queue.pop_front(), Some(2));
+        assert_eq!(queue.capacity(), MIN_RETAINED);
+    }
+
+    #[test]
+    fn shrink_target_tracks_quiet_peak_and_busy_cycles_cancel_quiet_history() {
+        let mut queue = BoundedDeque::new(256);
+        burst(&mut queue, 128);
+        for _ in 1..QUIET_DRAINS_BEFORE_SHRINK {
+            burst(&mut queue, 32);
+        }
+        // One above the quiet threshold resets the run of quiet cycles.
+        burst(&mut queue, 33);
+        for _ in 1..QUIET_DRAINS_BEFORE_SHRINK {
+            burst(&mut queue, 32);
+            assert_eq!(queue.capacity(), 128);
+        }
+        burst(&mut queue, 32);
+        assert_eq!(queue.capacity(), 64, "twice the final quiet peak");
+        for _ in 0..QUIET_DRAINS_BEFORE_SHRINK {
+            burst(&mut queue, 16);
+        }
+        assert_eq!(queue.capacity(), 32);
+        for _ in 0..16 {
+            burst(&mut queue, 1);
+        }
+        assert_eq!(queue.capacity(), 32, "the small baseline remains reusable");
+        queue.clear();
+        assert_eq!(queue.capacity(), 0);
+        burst(&mut queue, 128);
+        burst(&mut queue, 1);
+        assert_eq!(queue.capacity(), 128, "clear resets the quiet history");
+    }
+
+    #[test]
+    fn sender_wakes_after_releasing_the_queue_lock() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct InspectWake {
+            queue: std::sync::Weak<Mutex<QueueState<u8>>>,
+            wakes: AtomicUsize,
+        }
+
+        impl std::task::Wake for InspectWake {
+            fn wake(self: Arc<Self>) {
+                let shared = self.queue.upgrade().unwrap();
+                let state = shared
+                    .try_lock()
+                    .expect("wake must run outside the queue lock");
+                assert!(state.waker.is_none(), "the stored waker was taken");
+                assert_eq!(state.items.len(), usize::from(!state.sender_dropped));
+                self.wakes.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        let (sender, mut receiver) = bounded_queue(4);
+        let wake = Arc::new(InspectWake {
+            queue: Arc::downgrade(&receiver.shared),
+            wakes: AtomicUsize::new(0),
+        });
+        let waker = Waker::from(wake.clone());
+        let mut cx = Context::from_waker(&waker);
+        assert!(receiver.poll_recv(&mut cx).is_pending());
+        sender.send(1).unwrap();
+        assert_eq!(wake.wakes.load(Ordering::Relaxed), 1);
+        assert_eq!(receiver.poll_recv(&mut cx), Poll::Ready(Some(1)));
+        assert!(receiver.poll_recv(&mut cx).is_pending());
+        drop(sender);
+        assert_eq!(wake.wakes.load(Ordering::Relaxed), 2);
+        assert_eq!(receiver.poll_recv(&mut cx), Poll::Ready(None));
     }
 
     #[test]
@@ -757,6 +925,7 @@ mod tests {
     fn closing_or_dropping_a_bounded_queue_releases_its_items_and_wakes() {
         #[derive(Debug)]
         struct Tracked(Arc<std::sync::atomic::AtomicUsize>);
+
         impl Drop for Tracked {
             fn drop(&mut self) {
                 self.0.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
@@ -789,6 +958,7 @@ mod tests {
         );
 
         struct CountWake(std::sync::atomic::AtomicUsize);
+
         impl std::task::Wake for CountWake {
             fn wake(self: Arc<Self>) {
                 self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);

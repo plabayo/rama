@@ -6,7 +6,7 @@ use crate::driver::connection::{
 };
 use crate::driver::endpoint::*;
 use crate::driver::lifecycle::ShutdownOutcome;
-use crate::driver::queue::MIN_RETAINED;
+use crate::driver::queue::{MIN_RETAINED, QUIET_DRAINS_BEFORE_SHRINK};
 use crate::driver::sockets::MAX_RETAINED_SOCKETS;
 use crate::proto::crypto::rustls::{
     QuicClientConfig, QuicServerConfig, TlsOptions, configured_provider,
@@ -3244,7 +3244,7 @@ fn dropped_reservation_releases_supervision_and_wakes_the_joiner() {
 }
 
 #[test]
-fn drained_incoming_container_gives_back_its_burst_capacity() {
+fn incoming_container_gives_back_burst_capacity_after_sustained_quiet_cycles() {
     let mut queue: BoundedDeque<[u8; 64]> = BoundedDeque::new(8192);
     assert_eq!(queue.capacity(), 0);
     for _ in 0..512 {
@@ -3257,11 +3257,20 @@ fn drained_incoming_container_gives_back_its_burst_capacity() {
         assert_eq!(queue.capacity(), peak, "ordinary pops keep the storage");
     }
     queue.pop_front();
-    assert_eq!(
-        queue.capacity(),
-        MIN_RETAINED,
-        "drained: back to the minimum step"
-    );
+    assert_eq!(queue.capacity(), peak, "a recent burst keeps its capacity");
+    for round in 1..=QUIET_DRAINS_BEFORE_SHRINK {
+        queue.push_back([0; 64]).unwrap();
+        queue.pop_front();
+        assert_eq!(
+            queue.capacity(),
+            if round < QUIET_DRAINS_BEFORE_SHRINK {
+                peak
+            } else {
+                MIN_RETAINED
+            },
+            "only sustained quiet drain cycles release burst storage"
+        );
+    }
 }
 
 /// The shared spawn path is the only way driver tasks are created, so an attached dial9

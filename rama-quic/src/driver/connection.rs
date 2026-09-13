@@ -3108,11 +3108,40 @@ mod tests {
         Arc<AtomicUsize>,
         crate::driver::queue::BoundedSender<QueuedPacket>,
     ) {
+        let (connecting, driver, alive, packets, _endpoint) = unspawned_connection(
+            failure,
+            4,
+            PacketBudget::new(ReceiveQueueLimits::new(4, octets::kib(64)).unwrap()),
+            None,
+        );
+        driver.spawn(crate::driver::lifecycle::Lifecycle::default().reserve());
+        let connection = Connection(connecting.conn.as_ref().unwrap().clone());
+        (connecting, connection, alive, packets)
+    }
+
+    /// Keep the real engine and its endpoint available without scheduling the connection driver.
+    fn unspawned_connection(
+        failure: Failure,
+        packet_limit: usize,
+        receive_queue: PacketBudget,
+        sink: Option<Arc<dyn crate::qlog::QlogSink>>,
+    ) -> (
+        Connecting,
+        ConnectionDriver,
+        Arc<AtomicUsize>,
+        crate::driver::queue::BoundedSender<QueuedPacket>,
+        crate::proto::Endpoint,
+    ) {
         let cert =
             rama_crypto::dep::rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
         let mut roots = RootCertStore::empty();
         roots.add(cert.cert.into()).unwrap();
-        let config = crate::proto::ClientConfig::with_root_certificates(Arc::new(roots)).unwrap();
+        let mut config =
+            crate::proto::ClientConfig::with_root_certificates(Arc::new(roots)).unwrap();
+        if let Some(sink) = sink {
+            config.transport =
+                Arc::new(crate::proto::TransportConfig::default().with_qlog_sink(sink));
+        }
         let mut endpoint = crate::proto::Endpoint::new(
             Arc::new(crate::proto::EndpointConfig::try_with_rand_key().unwrap()),
             None,
@@ -3131,18 +3160,200 @@ mod tests {
         let sender = crate::driver::udp::Socket::new(FailingSocket(alive.clone(), failure))
             .unwrap()
             .create_sender();
-        let (packets, receiver) = crate::driver::queue::bounded_queue(4);
+        let (packets, receiver) = crate::driver::queue::bounded_queue(packet_limit);
         let (connecting, driver) = Connecting::new(
             handle,
             engine,
             EndpointLink::detached(handle),
             receiver,
             sender,
-            PacketBudget::new(ReceiveQueueLimits::new(4, octets::kib(64)).unwrap()),
+            receive_queue,
         );
-        driver.spawn(crate::driver::lifecycle::Lifecycle::default().reserve());
-        let connection = Connection(connecting.conn.as_ref().unwrap().clone());
-        (connecting, connection, alive, packets)
+        (connecting, driver, alive, packets, endpoint)
+    }
+
+    /// Inspect actual packet processing through the engine's synchronous qlog callback.
+    /// Distinct wire lengths identify FIFO order without adding an engine or driver hook.
+    struct ReceiveObserver {
+        endpoint: PacketBudget,
+        connection: PacketBudget,
+        packets: std::sync::OnceLock<Weak<crate::driver::queue::BoundedSender<QueuedPacket>>>,
+        total: usize,
+        seen: AtomicUsize,
+        panic_on: Option<usize>,
+    }
+
+    impl ReceiveObserver {
+        fn assert_charged(&self, first: usize) {
+            let bytes = (first..self.total)
+                .map(|index| crate::driver::queue::PACKET_OVERHEAD + 32 + index)
+                .sum::<usize>();
+            for budget in [&self.endpoint, &self.connection] {
+                let stats = budget.stats();
+                assert_eq!(stats.queued_datagrams, self.total - first);
+                assert_eq!(stats.queued_bytes, bytes);
+                assert_eq!(stats.dropped_datagrams, 0);
+            }
+        }
+    }
+
+    impl crate::qlog::QlogSink for ReceiveObserver {
+        fn emit(&self, event: &crate::qlog::QlogEventView<'_>) -> bool {
+            use crate::qlog::event::{DropEvent, EventView, drops::DropReason};
+            let EventView::Drop(DropEvent::PacketDropped(packet)) = &event.fields.event else {
+                return true;
+            };
+            let index = self.seen.fetch_add(1, Ordering::Relaxed);
+            assert!(matches!(packet.trigger, DropReason::KeyUnavailable));
+            assert_eq!(packet.raw.unwrap().length, 32 + index, "packet FIFO order");
+            // The current event and every unprocessed packet in the queue remain charged.
+            // This runs inside handle_event, so it detects release after dequeue but before
+            // processing, which a receiver-only test cannot see.
+            self.assert_charged(index);
+            if let Some(packets) = self.packets.get().and_then(Weak::upgrade) {
+                assert!(packets.is_unlocked(), "event callback holds the queue lock");
+            }
+            assert_ne!(
+                self.panic_on,
+                Some(index),
+                "injected receive callback panic"
+            );
+            true
+        }
+    }
+
+    struct ReceiveFixture {
+        _connecting: Connecting,
+        driver: ConnectionDriver,
+        packets: Option<Arc<crate::driver::queue::BoundedSender<QueuedPacket>>>,
+        observer: Arc<ReceiveObserver>,
+    }
+
+    impl ReceiveFixture {
+        fn new(total: usize, panic_on: Option<usize>) -> Self {
+            let limits = ReceiveQueueLimits::new(total, octets::mib(1)).unwrap();
+            let observer = Arc::new(ReceiveObserver {
+                endpoint: PacketBudget::new(limits),
+                connection: PacketBudget::new(limits),
+                packets: std::sync::OnceLock::new(),
+                total,
+                seen: AtomicUsize::new(0),
+                panic_on,
+            });
+            let (connecting, driver, _alive, packets, mut endpoint) = unspawned_connection(
+                Failure::Datagram,
+                total,
+                observer.connection.clone(),
+                Some(observer.clone()),
+            );
+            let packets = Arc::new(packets);
+            observer.packets.set(Arc::downgrade(&packets)).unwrap();
+            let cid = driver.conn.state.lock().inner.initial_local_id();
+            for index in 0..total {
+                // These routed short headers reach the real connection but cannot decrypt:
+                // the unspawned client has not obtained application packet-protection keys.
+                let mut wire = vec![0; 32 + index];
+                wire[0] = 0x40;
+                wire[1..1 + cid.len()].copy_from_slice(&cid);
+                let event = endpoint.handle(
+                    now(),
+                    ([127, 0, 0, 2], 443).into(),
+                    None,
+                    None,
+                    wire.as_slice().into(),
+                    &mut Vec::new(),
+                );
+                let Some(crate::proto::DatagramEvent::ConnectionEvent(_, event)) = event else {
+                    panic!("test datagram must route to the connection");
+                };
+                let permit = observer
+                    .endpoint
+                    .reserve(wire.len())
+                    .unwrap()
+                    .for_connection(&observer.connection)
+                    .unwrap();
+                packets
+                    .send(QueuedPacket {
+                        event,
+                        _permit: permit,
+                    })
+                    .unwrap();
+            }
+            Self {
+                _connecting: connecting,
+                driver,
+                packets: Some(packets),
+                observer,
+            }
+        }
+
+        fn process(&self) -> Result<bool, ConnectionError> {
+            self.driver
+                .conn
+                .state
+                .lock()
+                .process_packets(&mut Context::from_waker(Waker::noop()))
+        }
+    }
+
+    #[tokio::test]
+    async fn receive_processing_obeys_the_exact_poll_allowance_and_drains_before_eof() {
+        // Literal boundaries deliberately pin the production fairness contract to 160.
+        for total in [159, 160, 161] {
+            for sender_dropped in [false, true] {
+                let mut fixture = ReceiveFixture::new(total, None);
+                if sender_dropped {
+                    drop(fixture.packets.take());
+                }
+                let result = fixture.process();
+                if total >= 160 {
+                    assert!(
+                        matches!(result, Ok(true)),
+                        "the allowance requests another poll"
+                    );
+                } else if sender_dropped {
+                    assert!(matches!(result, Err(ConnectionError::TransportError(_))));
+                } else {
+                    assert!(matches!(result, Ok(false)), "a live drained queue waits");
+                }
+                assert_eq!(
+                    fixture.observer.seen.load(Ordering::Relaxed),
+                    total.min(160)
+                );
+                fixture.observer.assert_charged(total.min(160));
+
+                let result = fixture.process();
+                if sender_dropped {
+                    assert!(matches!(result, Err(ConnectionError::TransportError(_))));
+                } else {
+                    assert!(matches!(result, Ok(false)));
+                }
+                assert_eq!(fixture.observer.seen.load(Ordering::Relaxed), total);
+                fixture.observer.assert_charged(total);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn receive_callback_panic_releases_the_current_packet_but_preserves_queued_charges() {
+        let fixture = ReceiveFixture::new(17, Some(1));
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| fixture.process()))
+            .expect_err("the second packet callback must panic");
+        let message = panic
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| panic.downcast_ref::<&str>().copied())
+            .unwrap();
+        assert!(
+            message.contains("injected receive callback panic"),
+            "{message}"
+        );
+        assert_eq!(fixture.observer.seen.load(Ordering::Relaxed), 2);
+        // The completed first packet and the second callback's current permit release.
+        // The other fifteen packets stay queued and charged until the receiver closes.
+        fixture.observer.assert_charged(2);
+        fixture.driver.conn.state.lock().packets.close();
+        fixture.observer.assert_charged(17);
     }
 
     #[tokio::test]

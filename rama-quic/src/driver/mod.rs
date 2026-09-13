@@ -41,7 +41,7 @@ mod connection;
 mod endpoint;
 mod incoming;
 mod lifecycle;
-mod queue;
+pub(crate) mod queue;
 mod recv_stream;
 mod send_stream;
 mod sockets;
