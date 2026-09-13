@@ -99,6 +99,19 @@ def compose_override(project, platform, simulator):
     return {"services": services}
 
 
+def inspect_image(reference, platform):
+    expected_os, expected_arch = platform.split("/")
+    command = ["docker", "image", "inspect", reference]
+    info = json.loads(output(command))[0]
+    # A multi-platform local store can inspect the host variant by default.
+    # Classic stores already return the variant selected by the preceding pull.
+    if (info.get("Os"), info.get("Architecture")) != (expected_os, expected_arch):
+        info = json.loads(output(command + ["--platform", platform]))[0]
+    if (info.get("Os"), info.get("Architecture")) != (expected_os, expected_arch):
+        raise RuntimeError(f"image {reference} does not provide requested platform {platform}")
+    return info
+
+
 def preflight():
     if sys.version_info < (3, 10):
         raise RuntimeError("Python >=3.10 required by upstream; set PYTHON=/path/to/python3.12")
@@ -190,7 +203,7 @@ def main():
         for name, ref in images.items():
             if name != "rama":
                 execute(["docker", "pull", "--platform", args.platform, ref])
-            manifest["images"][name] = json.loads(output(["docker", "image", "inspect", ref]))[0]
+            manifest["images"][name] = inspect_image(ref, args.platform)
         execute(["git", "init", checkout])
         execute(["git", "-C", checkout, "remote", "add", "origin", lock["repository"]])
         execute(["git", "-C", checkout, "fetch", "--depth=1", "origin", lock["revision"]])

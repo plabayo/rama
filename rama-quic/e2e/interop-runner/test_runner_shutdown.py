@@ -1,4 +1,5 @@
-"""Exercise bounded runner shutdown without Docker or network access."""
+"""Exercise runner bookkeeping and bounded shutdown without Docker or network access."""
+import json
 import os
 from pathlib import Path
 import signal
@@ -9,7 +10,7 @@ import time
 import unittest
 from unittest.mock import Mock, call, patch
 
-from run_interop import compose_override, run_managed, snapshot_container_logs
+from run_interop import compose_override, inspect_image, run_managed, snapshot_container_logs
 
 
 @unittest.skipUnless(os.name == "posix", "runner requires POSIX process groups")
@@ -24,7 +25,7 @@ class RunnerShutdownTests(unittest.TestCase):
                 f"Path({str(ready)!r}).touch(); time.sleep(30)"
             )
             launcher = (
-                "import signal,sys; from run_interop import compose_override, run_managed, snapshot_container_logs\n"
+                "import signal,sys; from run_interop import compose_override, inspect_image, run_managed, snapshot_container_logs\n"
                 "def stop(*_): raise KeyboardInterrupt()\n"
                 "signal.signal(signal.SIGTERM, stop)\n"
                 f"run_managed([sys.executable, '-c', {child!r}])\n"
@@ -107,6 +108,21 @@ class ContainerSnapshotTests(unittest.TestCase):
                 self.assertEqual(invocation.kwargs["timeout"], 10)
                 self.assertEqual(invocation.kwargs["cwd"], artifacts)
             self.assertIn("snapshot sim logs", (artifacts / "cleanup.log").read_text())
+
+
+class ImageMetadataTests(unittest.TestCase):
+    def test_inspection_selects_the_requested_platform(self):
+        arm = {"Os": "linux", "Architecture": "arm64"}
+        amd = {"Os": "linux", "Architecture": "amd64"}
+        with patch("run_interop.output", side_effect=[json.dumps([arm]), json.dumps([amd])]) as read:
+            self.assertEqual(inspect_image("peer:local", "linux/amd64"), amd)
+            self.assertEqual(read.call_args.args[0][-2:], ["--platform", "linux/amd64"])
+        with patch("run_interop.output", return_value=json.dumps([arm])) as read:
+            self.assertEqual(inspect_image("peer:local", "linux/arm64"), arm)
+            read.assert_called_once()
+        with patch("run_interop.output", return_value=json.dumps([arm])):
+            with self.assertRaises(RuntimeError):
+                inspect_image("peer:local", "linux/amd64")
 
 
 if __name__ == "__main__":
