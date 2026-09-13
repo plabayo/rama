@@ -29,7 +29,7 @@ const FRAME: usize = 256;
 /// What a boundary row configures instead. Quinn derives the frame it advertises from this
 /// same number, which RFC 9221 §3 makes a bound on the frame, but its receive check compares
 /// `data.len() + size_of::<Datagram>()` against it (quinn-proto 0.11.17
-/// `connection/datagrams.rs:126`). That second term is the size of its own Rust struct rather
+/// `connection/datagrams/mod.rs:126`). That second term is the size of its own Rust struct rather
 /// than the wire header, so a budget that only just covers what it advertised refuses what it
 /// invited. A budget well above the row's pinned path leaves the MTU as what bounds Rama, and
 /// that quirk out of the way.
