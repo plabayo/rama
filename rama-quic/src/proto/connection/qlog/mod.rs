@@ -1,7 +1,3 @@
-use serde::Serialize;
-use std::sync::Arc;
-
-use parking_lot::Mutex;
 use std::time::Duration;
 
 pub(super) mod drops;
@@ -9,55 +5,57 @@ pub(super) mod event;
 pub(super) mod lifecycle;
 pub(super) mod negotiation;
 pub(super) mod path;
-pub(crate) mod writer;
-use event::{Event, Packet, PacketHeader, PacketLost, PacketLostTrigger, PacketType, RawInfo};
-use rama_core::telemetry::tracing::warn;
-use writer::QlogWriter;
-
 use crate::proto::{
     ConnectionId, Instant,
     connection::{PathData, SentPacket},
     packet::SpaceId,
 };
+use crate::qlog::{ConnectionQlogControl, QlogRecorder, event::EventFieldsView};
+use event::{Event, Packet, PacketHeader, PacketLost, PacketLostTrigger, PacketType, RawInfo};
 
-/// Shareable handle to a single qlog output stream
-#[derive(Clone)]
-pub(crate) struct QlogStream(pub(crate) Arc<Mutex<QlogWriter>>);
+/// Per-connection admission. The configuration's template is forked for each connection.
+#[derive(Clone, Default)]
+pub(crate) struct ConnectionQlog {
+    control: Option<ConnectionQlogControl>,
+}
 
-impl QlogStream {
-    /// Record one event under the connection's group. The group is the destination identifier
-    /// the client chose for its first Initial (RFC 9000 §7.2): it is the one identifier both
-    /// ends know and neither changes, so every record of a connection carries the same group
-    /// even when several connections write into one stream.
-    fn emit_event(&self, group: ConnectionId, event: impl Serialize, now: Instant) {
-        let result = self.0.lock().emit(&group, event, now);
-        if let Err(e) = result {
-            warn!("could not emit qlog event: {e}");
+impl ConnectionQlog {
+    pub(crate) fn from_sink(sink: Option<std::sync::Arc<dyn crate::qlog::QlogSink>>) -> Self {
+        Self {
+            control: sink
+                .map(|sink| ConnectionQlogControl::from_sink(sink, ConnectionId::new(&[]))),
         }
     }
-}
 
-/// An optional shared qlog stream; no writer means recording is disabled.
-#[derive(Clone, Default)]
-pub(crate) struct QlogSink {
-    stream: Option<QlogStream>,
-}
+    pub(crate) fn for_connection(&self, group: ConnectionId) -> Self {
+        Self {
+            control: self
+                .control
+                .as_ref()
+                .map(|control| control.for_connection(group)),
+        }
+    }
 
-impl QlogSink {
-    /// Construct diagnostic data only when a writer is configured.
-    pub(crate) fn emit<E: Serialize>(
+    pub(crate) fn control(&self) -> Option<ConnectionQlogControl> {
+        self.control.clone()
+    }
+
+    /// Reserve queue capacity before capturing any diagnostic data.
+    pub(crate) fn emit<'a, E: Into<EventFieldsView<'a>>>(
         &self,
         group: ConnectionId,
         now: Instant,
         event: impl FnOnce() -> E,
-    ) {
-        if let Some(stream) = &self.stream {
-            stream.emit_event(group, event(), now);
-        }
+    ) -> bool {
+        self.control
+            .as_ref()
+            .is_some_and(|control| control.emit(group, now, || Some(event())))
     }
 
     pub(crate) fn is_enabled(&self) -> bool {
-        self.stream.is_some()
+        self.control
+            .as_ref()
+            .is_some_and(ConnectionQlogControl::is_enabled)
     }
 
     pub(super) fn emit_recovery_metrics(
@@ -67,19 +65,19 @@ impl QlogSink {
         now: Instant,
         group: ConnectionId,
     ) {
-        let Some(stream) = self.stream.as_ref() else {
-            return;
-        };
-
-        let Some(metrics) = path.qlog_recovery_metrics(pto_count) else {
-            return;
-        };
-
-        stream.emit_event(
-            group,
-            path::with_path(path.generation(), Event::RecoveryMetricsUpdated(metrics)),
-            now,
-        );
+        let mut changed = false;
+        if let Some(control) = &self.control
+            && !control.emit(group, now, || {
+                path.qlog_reset_on_toggle(control.generation());
+                path.qlog_recovery_metrics(pto_count).map(|metrics| {
+                    changed = true;
+                    path::with_path(path.generation(), Event::RecoveryMetricsUpdated(metrics))
+                })
+            })
+            && changed
+        {
+            path.qlog_reset_metrics();
+        }
     }
 
     pub(super) fn emit_packet_lost(
@@ -91,23 +89,20 @@ impl QlogSink {
         now: Instant,
         group: ConnectionId,
     ) {
-        let Some(stream) = self.stream.as_ref() else {
-            return;
-        };
-
-        let event = PacketLost {
-            header: PacketHeader {
-                packet_number: pn,
-                packet_type: packet_type(space, info.is_0rtt),
-            },
-            is_mtu_probe_packet: false,
-            trigger: match now.saturating_duration_since(info.time_sent) >= loss_delay {
-                true => PacketLostTrigger::TimeThreshold,
-                false => PacketLostTrigger::ReorderingThreshold,
-            },
-        };
-
-        stream.emit_event(group, Event::PacketLost(event), now);
+        self.emit(group, now, || {
+            Event::PacketLost(PacketLost {
+                header: PacketHeader {
+                    packet_number: pn,
+                    packet_type: packet_type(space, info.is_0rtt),
+                },
+                is_mtu_probe_packet: false,
+                trigger: if now.saturating_duration_since(info.time_sent) >= loss_delay {
+                    PacketLostTrigger::TimeThreshold
+                } else {
+                    PacketLostTrigger::ReorderingThreshold
+                },
+            })
+        });
     }
 
     pub(super) fn emit_packet_sent(
@@ -119,19 +114,15 @@ impl QlogSink {
         now: Instant,
         group: ConnectionId,
     ) {
-        let Some(stream) = self.stream.as_ref() else {
-            return;
-        };
-
-        let event = Packet {
-            header: PacketHeader {
-                packet_number: pn,
-                packet_type: packet_type(space, is_0rtt),
-            },
-            raw: Some(RawInfo { length: len }),
-        };
-
-        stream.emit_event(group, Event::PacketSent(event), now);
+        self.emit(group, now, || {
+            Event::PacketSent(Packet {
+                header: PacketHeader {
+                    packet_number: pn,
+                    packet_type: packet_type(space, is_0rtt),
+                },
+                raw: Some(RawInfo { length: len }),
+            })
+        });
     }
 
     pub(super) fn emit_packet_received(
@@ -142,25 +133,23 @@ impl QlogSink {
         now: Instant,
         group: ConnectionId,
     ) {
-        let Some(stream) = self.stream.as_ref() else {
-            return;
-        };
-
-        let event = Packet {
-            header: PacketHeader {
-                packet_number: pn,
-                packet_type: packet_type(space, is_0rtt),
-            },
-            raw: None,
-        };
-
-        stream.emit_event(group, Event::PacketReceived(event), now);
+        self.emit(group, now, || {
+            Event::PacketReceived(Packet {
+                header: PacketHeader {
+                    packet_number: pn,
+                    packet_type: packet_type(space, is_0rtt),
+                },
+                raw: None,
+            })
+        });
     }
 }
 
-impl From<Option<QlogStream>> for QlogSink {
-    fn from(stream: Option<QlogStream>) -> Self {
-        Self { stream }
+impl From<Option<QlogRecorder>> for ConnectionQlog {
+    fn from(recorder: Option<QlogRecorder>) -> Self {
+        Self {
+            control: recorder.map(|recorder| recorder.connection(ConnectionId::new(&[]))),
+        }
     }
 }
 

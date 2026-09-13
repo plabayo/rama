@@ -1,43 +1,12 @@
+use super::qlog::Capture;
 use super::*;
-use parking_lot::Mutex;
-use std::io::{self, Write};
-
-#[derive(Clone, Default)]
-struct Capture(Arc<Mutex<Vec<u8>>>);
-
-impl Write for Capture {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.0.lock().extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
-impl Capture {
-    fn events(&self, name: &str) -> Vec<serde_json::Value> {
-        self.0
-            .lock()
-            .split(|byte| *byte == 0x1e)
-            .filter(|record| !record.is_empty())
-            .map(|record| serde_json::from_slice::<serde_json::Value>(record).unwrap())
-            .filter(|record| record["name"] == name)
-            .collect()
-    }
-    fn transport(&self) -> Arc<TransportConfig> {
-        let mut transport = TransportConfig::default();
-        transport.set_qlog(QlogConfig::default().with_writer(Box::new(self.clone())));
-        Arc::new(transport)
-    }
-}
 
 #[test]
 fn qlog_paths_follow_actual_migration_and_mtu_changes() {
     let _guard = subscribe();
     let capture = Capture::default();
     let mut server = server_config();
-    server.transport = capture.transport();
+    server.transport = capture.transport(Instant::now());
     let transport = Arc::get_mut(&mut server.transport).unwrap();
     transport.set_initial_rtt(Duration::from_micros(123_456));
     transport.set_packet_threshold(7);
@@ -113,17 +82,17 @@ fn qlog_paths_cid_rotation_has_remote_and_local_perspectives() {
     let client_capture = Capture::default();
     let server_capture = Capture::default();
     let mut server = server_config();
-    server.transport = server_capture.transport();
+    server.transport = server_capture.transport(Instant::now());
     let mut client = client_config();
-    client.transport = client_capture.transport();
+    client.transport = client_capture.transport(Instant::now());
     let mut pair = Pair::new(
         Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
         server,
     );
     let (client_ch, _) = pair.connect_with(client);
     pair.drive();
-    client_capture.0.lock().clear();
-    server_capture.0.lock().clear();
+    client_capture.clear();
+    server_capture.clear();
     let now = pair.time;
     assert!(pair.client_conn_mut(client_ch).migrate_local_address(now));
     pair.drive();
@@ -150,7 +119,7 @@ fn qlog_paths_preferred_address_records_success_and_abandonment() {
         let capture = Capture::default();
         let (mut pair, preferred) = pair_preferring(reachable);
         let mut client = client_config();
-        client.transport = capture.transport();
+        client.transport = capture.transport(Instant::now());
         let (client_ch, _) = pair.connect_with(client);
         drive_settled(&mut pair);
         let migrations = capture.events("quic:migration_state_updated");
@@ -187,14 +156,14 @@ fn qlog_paths_mtu_black_hole_logs_reduction() {
     let _guard = subscribe();
     let capture = Capture::default();
     let mut client = client_config();
-    client.transport = capture.transport();
+    client.transport = capture.transport(Instant::now());
     let mut pair = Pair::default();
     pair.mtu = 1500;
     let (client_ch, server_ch) = pair.connect_with(client);
     pair.drive();
     let old_mtu = pair.client_conn_mut(client_ch).path_mtu();
     assert!(old_mtu > 1200);
-    capture.0.lock().clear();
+    capture.clear();
     pair.mtu = 1200;
     let stream = pair.client_streams(client_ch).open(Dir::Uni).unwrap();
     pair.client_send(client_ch, stream)
@@ -225,7 +194,7 @@ fn qlog_paths_failed_migration_restores_both_connection_ids() {
     let _guard = subscribe();
     let capture = Capture::default();
     let mut server = server_config();
-    server.transport = capture.transport();
+    server.transport = capture.transport(Instant::now());
     let mut pair = Pair::new(
         Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
         server,
@@ -234,7 +203,7 @@ fn qlog_paths_failed_migration_restores_both_connection_ids() {
     pair.drive();
     let original_address = pair.client.addr;
     let original_remote_cid = pair.server_conn_mut(server_ch).active_rem_cid();
-    capture.0.lock().clear();
+    capture.clear();
 
     // Deliver a fresh-CID packet from a different address, then lose every validation
     // challenge. The server adopts the move but must return to its validated fallback.

@@ -71,8 +71,7 @@ impl Connection {
             self.spin = self.side.is_client() ^ spin;
         }
 
-        self.config
-            .qlog_sink
+        self.qlog_sink
             .emit_packet_received(packet, space_id, !is_1rtt, now, self.trace_cid);
     }
 

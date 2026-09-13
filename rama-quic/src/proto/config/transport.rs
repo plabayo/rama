@@ -1,12 +1,10 @@
+use crate::qlog::QlogConfig;
 use rama_utils::octets;
-use std::{fmt, io, sync::Arc, time::Instant};
-
-use parking_lot::Mutex;
+use std::{fmt, sync::Arc};
 
 use crate::proto::{
-    ConfigError, Duration, INITIAL_MTU, MAX_UDP_PAYLOAD, QlogStream, VarInt, VarIntBoundsExceeded,
-    congestion,
-    connection::qlog::{QlogSink, writer::QlogWriter},
+    ConfigError, Duration, INITIAL_MTU, MAX_UDP_PAYLOAD, VarInt, VarIntBoundsExceeded, congestion,
+    connection::qlog::ConnectionQlog,
 };
 
 /// The smallest initial congestion window this crate accepts: two datagrams of the size every
@@ -72,7 +70,7 @@ pub struct TransportConfig {
 
     pub(crate) enable_segmentation_offload: bool,
 
-    pub(crate) qlog_sink: QlogSink,
+    pub(crate) qlog_sink: ConnectionQlog,
 }
 
 impl TransportConfig {
@@ -451,9 +449,27 @@ impl TransportConfig {
     rama_utils::macros::generate_set_and_with! {
         /// Where connections write their qlog trace, and what it is titled.
         ///
-        /// `None`, the default, writes none. A configuration without a writer also writes none.
+        /// `None`, the default, writes none. A configuration without an output also writes none.
         pub fn qlog(mut self, config: Option<QlogConfig>) -> Self {
             self.qlog_sink = config.and_then(QlogConfig::into_stream).into();
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Share a running recorder with these connections. Retain its handle to await
+        /// flush/shutdown and to inspect dropped events or output failures.
+        pub fn qlog_recorder(mut self, recorder: Option<crate::qlog::QlogRecorder>) -> Self {
+            self.qlog_sink = recorder.into();
+            self
+        }
+    }
+    rama_utils::macros::generate_set_and_with! {
+        /// Observe borrowed events inline. Sink callbacks run inside the transport
+        /// state machine and must be cheap and nonblocking. Use `qlog_recorder` for background
+        /// output, or compose a recorder with a lightweight sink as `(recorder, sink)`.
+        pub fn qlog_sink(mut self, sink: Option<Arc<dyn crate::qlog::QlogSink>>) -> Self {
+            self.qlog_sink = ConnectionQlog::from_sink(sink);
             self
         }
     }
@@ -500,7 +516,7 @@ impl Default for TransportConfig {
 
             enable_segmentation_offload: true,
 
-            qlog_sink: QlogSink::default(),
+            qlog_sink: ConnectionQlog::default(),
         }
     }
 }
@@ -651,90 +667,6 @@ impl Default for AckFrequencyConfig {
             ack_eliciting_threshold: VarInt(1),
             max_ack_delay: None,
             reordering_threshold: VarInt(2),
-        }
-    }
-}
-
-/// Where a connection writes its qlog trace, and what the trace says
-/// about itself.
-///
-/// Uses qlog main schema draft 14 and QUIC events draft 13, serialized as
-/// `application/qlog+json-seq`. Records packet activity, negotiation, connection
-/// and path lifecycle, key transitions, and recovery settings and metrics.
-/// Events carry a connection group ID and millisecond timestamps; key material
-/// and application payloads are not recorded.
-///
-/// Writes synchronously to the supplied writer; callers can wrap it in a
-/// buffered or off-thread writer. A failed write ends the trace and is logged.
-/// The writer is flushed when its last shared configuration/connection handle
-/// is dropped. A configuration with no writer produces no trace.
-pub struct QlogConfig {
-    writer: Option<Box<dyn io::Write + Send + Sync>>,
-    title: Option<String>,
-    description: Option<String>,
-    start_time: Instant,
-}
-
-impl QlogConfig {
-    rama_utils::macros::generate_set_and_with! {
-        /// Where to write the qlog JSON text sequence.
-        pub fn writer(mut self, writer: Box<dyn io::Write + Send + Sync>) -> Self {
-            self.writer = Some(writer);
-            self
-        }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Title to record in the qlog capture
-        pub fn title(mut self, title: Option<String>) -> Self {
-            self.title = title;
-            self
-        }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Description to record in the qlog capture
-        pub fn description(mut self, description: Option<String>) -> Self {
-            self.description = description;
-            self
-        }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Epoch qlog event times are recorded relative to
-        pub fn start_time(mut self, start_time: Instant) -> Self {
-            self.start_time = start_time;
-            self
-        }
-    }
-
-    /// Construct the [`QlogStream`] described by this configuration
-    pub(crate) fn into_stream(self) -> Option<QlogStream> {
-        use rama_core::telemetry::tracing::warn;
-
-        let writer = self.writer?;
-        match QlogWriter::new(
-            writer,
-            self.start_time,
-            self.title.as_deref(),
-            self.description.as_deref(),
-        ) {
-            Ok(writer) => Some(QlogStream(Arc::new(Mutex::new(writer)))),
-            Err(e) => {
-                warn!("could not initialize endpoint qlog streamer: {e}");
-                None
-            }
-        }
-    }
-}
-
-impl Default for QlogConfig {
-    fn default() -> Self {
-        Self {
-            writer: None,
-            title: None,
-            description: None,
-            start_time: Instant::now(),
         }
     }
 }

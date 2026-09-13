@@ -1,143 +1,57 @@
 //! Negotiation and traffic-key observations for the QUIC qlog event schema.
 
-use serde::Serialize;
+use crate::qlog::event::negotiation::{NegotiationEventView as Event, *};
+use std::borrow::Cow;
 
 use crate::proto::{
     Instant, connection::Connection, packet::SpaceId, transport_parameters::TransportParameters,
 };
 
-#[derive(Serialize)]
-#[serde(tag = "name", content = "data")]
-enum Event<'a> {
-    #[serde(rename = "quic:version_information")]
-    VersionInformation(VersionInformation),
-    #[serde(rename = "quic:alpn_information")]
-    AlpnInformation { chosen_alpn: AlpnIdentifier<'a> },
-    #[serde(rename = "quic:parameters_set")]
-    ParametersSet(ParametersSet<'a>),
-    #[serde(rename = "quic:parameters_restored")]
-    ParametersRestored(RestoredParameters),
-    #[serde(rename = "quic:key_updated")]
-    KeyUpdated(KeyChange),
-    #[serde(rename = "quic:key_discarded")]
-    KeyDiscarded(KeyChange),
-}
-
-#[derive(Serialize)]
-struct Hex<'a>(#[serde(with = "rama_utils::bytes::serde_hex")] &'a [u8]);
-
-#[derive(Serialize)]
-struct Version(#[serde(with = "rama_utils::bytes::serde_hex")] [u8; 4]);
-
-#[derive(Serialize)]
-struct VersionInformation {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    server_versions: Option<Vec<Version>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    client_versions: Option<Vec<Version>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    chosen_version: Option<Version>,
-}
-
-#[derive(Serialize)]
-struct AlpnIdentifier<'a> {
-    byte_value: Hex<'a>,
-}
-
-// These are the remembered parameters that this implementation actually restores.
-#[derive(Serialize)]
-struct RestoredParameters {
-    disable_active_migration: bool,
-    max_idle_timeout: u64,
-    max_udp_payload_size: u64,
-    active_connection_id_limit: u64,
-    initial_max_data: u64,
-    initial_max_stream_data_bidi_local: u64,
-    initial_max_stream_data_bidi_remote: u64,
-    initial_max_stream_data_uni: u64,
-    initial_max_streams_bidi: u64,
-    initial_max_streams_uni: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    max_datagram_frame_size: Option<u64>,
-    grease_quic_bit: bool,
-}
-
-impl From<&TransportParameters> for RestoredParameters {
-    fn from(params: &TransportParameters) -> Self {
-        Self {
-            disable_active_migration: params.disable_active_migration,
-            max_idle_timeout: params.max_idle_timeout.into_inner(),
-            max_udp_payload_size: params.max_udp_payload_size.into_inner(),
-            active_connection_id_limit: params.active_connection_id_limit.into_inner(),
-            initial_max_data: params.initial_max_data.into_inner(),
-            initial_max_stream_data_bidi_local: params
-                .initial_max_stream_data_bidi_local
-                .into_inner(),
-            initial_max_stream_data_bidi_remote: params
-                .initial_max_stream_data_bidi_remote
-                .into_inner(),
-            initial_max_stream_data_uni: params.initial_max_stream_data_uni.into_inner(),
-            initial_max_streams_bidi: params.initial_max_streams_bidi.into_inner(),
-            initial_max_streams_uni: params.initial_max_streams_uni.into_inner(),
-            max_datagram_frame_size: params
-                .max_datagram_frame_size
-                .map(|value| value.into_inner()),
-            grease_quic_bit: params.grease_quic_bit,
-        }
+fn restored_parameters(params: &TransportParameters) -> RestoredParameters {
+    RestoredParameters {
+        disable_active_migration: params.disable_active_migration,
+        max_idle_timeout: params.max_idle_timeout.into_inner(),
+        max_udp_payload_size: params.max_udp_payload_size.into_inner(),
+        active_connection_id_limit: params.active_connection_id_limit.into_inner(),
+        initial_max_data: params.initial_max_data.into_inner(),
+        initial_max_stream_data_bidi_local: params.initial_max_stream_data_bidi_local.into_inner(),
+        initial_max_stream_data_bidi_remote: params
+            .initial_max_stream_data_bidi_remote
+            .into_inner(),
+        initial_max_stream_data_uni: params.initial_max_stream_data_uni.into_inner(),
+        initial_max_streams_bidi: params.initial_max_streams_bidi.into_inner(),
+        initial_max_streams_uni: params.initial_max_streams_uni.into_inner(),
+        max_datagram_frame_size: params
+            .max_datagram_frame_size
+            .map(|value| value.into_inner()),
+        grease_quic_bit: params.grease_quic_bit,
     }
 }
 
-#[derive(Serialize)]
-struct ParametersSet<'a> {
-    initiator: &'static str,
-    #[serde(flatten)]
-    parameters: RestoredParameters,
-    ack_delay_exponent: u64,
-    max_ack_delay: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    original_destination_connection_id: Option<Hex<'a>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    initial_source_connection_id: Option<Hex<'a>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    retry_source_connection_id: Option<Hex<'a>>,
-}
-
-impl<'a> ParametersSet<'a> {
-    fn new(initiator: &'static str, params: &'a TransportParameters) -> Self {
+impl ParametersSet {
+    fn new(initiator: &'static str, params: &TransportParameters) -> Self {
         Self {
             initiator,
-            parameters: params.into(),
+            parameters: restored_parameters(params),
             ack_delay_exponent: params.ack_delay_exponent.into_inner(),
             max_ack_delay: params.max_ack_delay.into_inner(),
-            original_destination_connection_id: params
-                .original_dst_cid
-                .as_ref()
-                .map(|cid| Hex(cid)),
-            initial_source_connection_id: params.initial_src_cid.as_ref().map(|cid| Hex(cid)),
-            retry_source_connection_id: params.retry_src_cid.as_ref().map(|cid| Hex(cid)),
+            original_destination_connection_id: params.original_dst_cid,
+            initial_source_connection_id: params.initial_src_cid,
+            retry_source_connection_id: params.retry_src_cid,
         }
     }
-}
-
-#[derive(Serialize)]
-struct KeyChange {
-    key_type: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    key_phase: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    trigger: Option<&'static str>,
 }
 
 impl Connection {
     pub(in crate::proto::connection) fn qlog_init_negotiation(&self, now: Instant) {
-        self.config.qlog_sink.emit(self.trace_cid, now, || {
-            let versions = version_list(self.endpoint_config.supported_versions.iter().copied());
+        self.qlog_sink.emit(self.trace_cid, now, || {
+            let versions = version_list(&self.endpoint_config.supported_versions);
             let (client_versions, server_versions) = if self.side.is_client() {
                 (versions, None)
             } else {
                 (None, versions)
             };
-            Event::VersionInformation(VersionInformation {
+            Event::VersionInformation(VersionInformationView {
                 client_versions,
                 server_versions,
                 chosen_version: Some(Version(self.version.to_be_bytes())),
@@ -151,18 +65,10 @@ impl Connection {
         now: Instant,
         payload: &[u8],
     ) {
-        self.config.qlog_sink.emit(self.trace_cid, now, || {
-            Event::VersionInformation(VersionInformation {
-                client_versions: version_list(
-                    self.endpoint_config.supported_versions.iter().copied(),
-                ),
-                server_versions: version_list(
-                    payload
-                        .as_chunks::<4>()
-                        .0
-                        .iter()
-                        .map(|bytes| u32::from_be_bytes(*bytes)),
-                ),
+        self.qlog_sink.emit(self.trace_cid, now, || {
+            Event::VersionInformation(VersionInformationView {
+                client_versions: version_list(&self.endpoint_config.supported_versions),
+                server_versions: network_version_list(payload.as_chunks::<4>().0),
                 // This connection terminates on Version Negotiation, so no version was selected.
                 chosen_version: None,
             })
@@ -170,7 +76,7 @@ impl Connection {
     }
 
     pub(crate) fn qlog_local_parameters(&self, now: Instant, params: &TransportParameters) {
-        self.config.qlog_sink.emit(self.trace_cid, now, || {
+        self.qlog_sink.emit(self.trace_cid, now, || {
             Event::ParametersSet(ParametersSet::new("local", params))
         });
     }
@@ -180,7 +86,7 @@ impl Connection {
         now: Instant,
         params: &TransportParameters,
     ) {
-        self.config.qlog_sink.emit(self.trace_cid, now, || {
+        self.qlog_sink.emit(self.trace_cid, now, || {
             Event::ParametersSet(ParametersSet::new("remote", params))
         });
     }
@@ -190,23 +96,20 @@ impl Connection {
         now: Instant,
         params: &TransportParameters,
     ) {
-        self.config.qlog_sink.emit(self.trace_cid, now, || {
-            Event::ParametersRestored(params.into())
+        self.qlog_sink.emit(self.trace_cid, now, || {
+            Event::ParametersRestored(restored_parameters(params))
         });
     }
 
     pub(in crate::proto::connection) fn qlog_negotiated_alpn(&self, now: Instant) {
-        if !self.config.qlog_sink.is_enabled() {
+        if !self.qlog_sink.is_enabled() {
             return;
         }
-        if let Some(summary) = self.crypto.handshake_summary()
-            && let Some(protocol) = summary.protocol
-        {
-            self.config
-                .qlog_sink
+        if let Some(protocol) = self.crypto.negotiated_alpn() {
+            self.qlog_sink
                 .emit(self.trace_cid, now, || Event::AlpnInformation {
-                    chosen_alpn: AlpnIdentifier {
-                        byte_value: Hex(protocol.as_bytes()),
+                    chosen_alpn: AlpnIdentifierView {
+                        byte_value: HexView(Cow::Borrowed(protocol)),
                     },
                 });
         }
@@ -274,7 +177,7 @@ impl Connection {
     }
 
     fn qlog_key(&self, now: Instant, change: KeyChange, discarded: bool) {
-        self.config.qlog_sink.emit(self.trace_cid, now, || {
+        self.qlog_sink.emit(self.trace_cid, now, || {
             if discarded {
                 Event::KeyDiscarded(change)
             } else {
@@ -284,11 +187,12 @@ impl Connection {
     }
 }
 
-fn version_list(versions: impl Iterator<Item = u32>) -> Option<Vec<Version>> {
-    let versions: Vec<_> = versions
-        .map(|version| Version(version.to_be_bytes()))
-        .collect();
-    (!versions.is_empty()).then_some(versions)
+fn version_list(versions: &[u32]) -> Option<VersionListView<'_>> {
+    (!versions.is_empty()).then_some(VersionListView::Host(Cow::Borrowed(versions)))
+}
+
+fn network_version_list(versions: &[[u8; 4]]) -> Option<VersionListView<'_>> {
+    (!versions.is_empty()).then_some(VersionListView::Network(Cow::Borrowed(versions)))
 }
 
 #[cfg(test)]
@@ -297,9 +201,9 @@ mod tests {
 
     #[test]
     fn empty_version_lists_are_omitted() {
-        let event = Event::VersionInformation(VersionInformation {
-            client_versions: version_list([1, 0x6b3343cf].into_iter()),
-            server_versions: version_list(std::iter::empty()),
+        let event = Event::VersionInformation(VersionInformationView {
+            client_versions: version_list(&[1, 0x6b3343cf]),
+            server_versions: version_list(&[]),
             chosen_version: None,
         });
         assert_eq!(

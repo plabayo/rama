@@ -3,35 +3,67 @@
 
 mod common;
 
-use std::{io, net::SocketAddr, sync::Arc};
+use std::{
+    io,
+    net::SocketAddr,
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
+};
+use tokio::io::AsyncWrite;
 
 use common::*;
 use parking_lot::Mutex;
 use rama::{
-    quic::{ClientConfig, Endpoint, QlogConfig, TransportConfig},
+    quic::{
+        ClientConfig, Endpoint, TransportConfig,
+        qlog::{QlogConfig, QlogRecorder},
+    },
     utils::octets,
 };
 use serde_json::Value;
 
 /// A writer a test can read back. qlog takes ownership of the writer, so what it wrote is read
 /// through the shared buffer rather than the handle.
-#[derive(Clone, Default)]
-struct Trace(Arc<Mutex<Vec<u8>>>);
+#[derive(Default)]
+struct Trace {
+    bytes: Arc<Mutex<Vec<u8>>>,
+    recorders: Mutex<Vec<QlogRecorder>>,
+}
 
 impl Trace {
+    async fn flush(&self) {
+        let recorders = self.recorders.lock().clone();
+        for recorder in recorders {
+            step("the qlog recorder flushes", recorder.flush())
+                .await
+                .unwrap();
+        }
+    }
+
     fn written(&self) -> Vec<u8> {
-        self.0.lock().clone()
+        self.bytes.lock().clone()
     }
 }
 
-impl io::Write for Trace {
-    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+struct TraceWriter(Arc<Mutex<Vec<u8>>>);
+
+impl AsyncWrite for TraceWriter {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+        buffer: &[u8],
+    ) -> Poll<io::Result<usize>> {
         self.0.lock().extend_from_slice(buffer);
-        Ok(buffer.len())
+        Poll::Ready(Ok(buffer.len()))
     }
 
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
+    fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self.poll_flush(cx)
     }
 }
 
@@ -61,7 +93,7 @@ async fn a_configured_qlog_writer_receives_the_connection_s_trace() {
     // Configured: the writer receives this connection's trace.
     let trace = Trace::default();
     let traced = rama_client_config(anchor.clone()).with_transport_config(Arc::new(
-        TransportConfig::default().with_qlog(writer(&trace)),
+        TransportConfig::default().with_qlog_recorder(writer(&trace)),
     ));
     exchange(
         &client,
@@ -72,6 +104,7 @@ async fn a_configured_qlog_writer_receives_the_connection_s_trace() {
     .await;
     step("the traced connection is done with", client.wait_idle()).await;
 
+    trace.flush().await;
     let (headers, events) = parse(&trace.written());
     assert_eq!(
         headers
@@ -124,9 +157,10 @@ async fn a_configured_qlog_writer_receives_the_connection_s_trace() {
     // so what is compared afterwards is the size once this connection has finished.
     let cleared = rama_client_config(anchor).with_transport_config(Arc::new(
         TransportConfig::default()
-            .with_qlog(writer(&trace))
+            .with_qlog_recorder(writer(&trace))
             .without_qlog(),
     ));
+    trace.flush().await;
     let opened_a_second_trace = trace.written().len();
     exchange(
         &client,
@@ -136,10 +170,11 @@ async fn a_configured_qlog_writer_receives_the_connection_s_trace() {
     )
     .await;
     step("the cleared connection is done with", client.wait_idle()).await;
+    trace.flush().await;
 
     assert!(
         opened_a_second_trace > after_the_first,
-        "setting a writer opens a trace at once, which is what the header is"
+        "starting and flushing the recorder writes its trace header"
     );
     assert_eq!(
         trace.written().len(),
@@ -174,7 +209,7 @@ async fn connections_sharing_a_writer_keep_their_own_group() {
     .await
     .expect("the client binds");
     let trace = Trace::default();
-    let shared = Arc::new(TransportConfig::default().with_qlog(writer(&trace)));
+    let shared = Arc::new(TransportConfig::default().with_qlog_recorder(writer(&trace)));
 
     for seed in [0x11, 0x22] {
         let config = rama_client_config(anchor.clone()).with_transport_config(shared.clone());
@@ -182,6 +217,7 @@ async fn connections_sharing_a_writer_keep_their_own_group() {
     }
     step("both connections are done with", client.wait_idle()).await;
 
+    trace.flush().await;
     let (_, events) = parse(&trace.written());
     let mut groups: Vec<&str> = events
         .iter()
@@ -206,8 +242,13 @@ async fn connections_sharing_a_writer_keep_their_own_group() {
 }
 
 /// A qlog configuration writing into `trace`.
-fn writer(trace: &Trace) -> QlogConfig {
-    QlogConfig::default().with_writer(Box::new(trace.clone()))
+fn writer(trace: &Trace) -> QlogRecorder {
+    let recorder = QlogConfig::default()
+        .with_writer(Box::new(TraceWriter(trace.bytes.clone())))
+        .start()
+        .expect("the qlog recorder starts");
+    trace.recorders.lock().push(recorder.clone());
+    recorder
 }
 
 /// A quinn server that takes `attempts` connections, reads a stream from each, and waits for
@@ -318,7 +359,7 @@ async fn both_ends_group_a_retried_connection_the_same_way() {
         Endpoint::bind_server(
             rama::rt::Executor::new(),
             rama_server_config(&auth).with_transport_config(Arc::new(
-                TransportConfig::default().with_qlog(writer(&server_trace)),
+                TransportConfig::default().with_qlog_recorder(writer(&server_trace)),
             )),
             localhost(),
         ),
@@ -357,7 +398,7 @@ async fn both_ends_group_a_retried_connection_the_same_way() {
     .await
     .expect("the client binds");
     let config = rama_client_config(anchor).with_transport_config(Arc::new(
-        TransportConfig::default().with_qlog(writer(&client_trace)),
+        TransportConfig::default().with_qlog_recorder(writer(&client_trace)),
     ));
     let conn = step(
         "the rama client connects",
@@ -387,6 +428,7 @@ async fn both_ends_group_a_retried_connection_the_same_way() {
         ("client", &client_trace, client_id),
         ("server", &server_trace, server_id),
     ] {
+        trace.flush().await;
         let (_, events) = parse(&trace.written());
         assert!(!events.is_empty(), "the {side} recorded its connection");
         let groups: Vec<&str> = events

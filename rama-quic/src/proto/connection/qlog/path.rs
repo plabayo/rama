@@ -1,116 +1,51 @@
 //! Path observations use only tuples and transitions known to the engine.
 use std::net::SocketAddr;
 
-use serde::Serialize;
+pub(in crate::proto::connection) use crate::qlog::event::path::MigrationState;
+use crate::qlog::event::{
+    EventFieldsView, EventView, TupleId,
+    path::{PathEvent, TupleAssigned, TupleEndpointInfo},
+};
 
 use crate::proto::{ConnectionId, Instant, TIMER_GRANULARITY, connection::Connection};
 
-#[derive(Serialize)]
-#[serde(tag = "name", content = "data")]
-enum PathEvent {
-    #[serde(rename = "quic:tuple_assigned")]
-    TupleAssigned(TupleAssigned),
-    #[serde(rename = "quic:migration_state_updated")]
-    MigrationStateUpdated {
-        new: MigrationState,
-        tuple_id: String,
-    },
-    #[serde(rename = "quic:connection_id_updated")]
-    ConnectionIdUpdated {
-        initiator: &'static str,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        old: Option<String>,
-        new: String,
-    },
-    #[serde(rename = "quic:mtu_updated")]
-    MtuUpdated { old: u16, new: u16 },
-    #[serde(rename = "quic:recovery_parameters_set")]
-    RecoveryParametersSet {
-        #[serde(skip_serializing_if = "Option::is_none")]
-        reordering_threshold: Option<u16>,
-        time_threshold: f32,
-        timer_granularity: u16,
-        initial_rtt: f64,
-        max_datagram_size: u16,
-        initial_congestion_window: u64,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        persistent_congestion_threshold: Option<u16>,
-    },
-}
-
-#[derive(Serialize)]
-struct OnTuple<E> {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tuple: Option<String>,
-    #[serde(flatten)]
-    event: E,
-}
-
 /// Attach a known path, leaving the default handshake tuple implicit.
-pub(in crate::proto::connection) fn with_path(
+pub(in crate::proto::connection) fn with_path<'a>(
     generation: u64,
-    event: impl Serialize,
-) -> impl Serialize {
-    OnTuple {
-        tuple: (generation != 0).then(|| generation.to_string()),
-        event,
+    event: impl Into<EventView<'a>>,
+) -> EventFieldsView<'a> {
+    EventFieldsView {
+        tuple: (generation != 0).then_some(TupleId::Generation(generation)),
+        event: event.into(),
     }
-}
-
-#[derive(Clone, Copy, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(in crate::proto::connection) enum MigrationState {
-    ProbingStarted,
-    ProbingAbandoned,
-    ProbingSuccessful,
-    MigrationStarted,
-    MigrationAbandoned,
-    MigrationComplete,
-}
-
-#[derive(Serialize)]
-struct TupleAssigned {
-    tuple_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tuple_remote: Option<TupleEndpointInfo>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tuple_local: Option<TupleEndpointInfo>,
-}
-
-#[derive(Serialize)]
-#[serde(untagged)]
-enum TupleEndpointInfo {
-    V4 { ip_v4: String, port_v4: u16 },
-    V6 { ip_v6: String, port_v6: u16 },
 }
 
 impl From<SocketAddr> for TupleEndpointInfo {
     fn from(address: SocketAddr) -> Self {
         match address {
             SocketAddr::V4(address) => Self::V4 {
-                ip_v4: address.ip().to_string(),
+                ip_v4: *address.ip(),
                 port_v4: address.port(),
             },
             SocketAddr::V6(address) => Self::V6 {
-                ip_v6: address.ip().to_string(),
+                ip_v6: *address.ip(),
                 port_v6: address.port(),
             },
         }
     }
 }
 
-fn tuple_id(generation: u64) -> String {
+fn tuple_id(generation: u64) -> TupleId {
     if generation == 0 {
-        String::new()
+        TupleId::Default
     } else {
-        generation.to_string()
+        TupleId::Generation(generation)
     }
 }
 
 impl Connection {
     pub(in crate::proto::connection) fn qlog_init_recovery(&self, now: Instant) {
-        self.config
-            .qlog_sink
+        self.qlog_sink
             .emit(self.trace_cid, now, || PathEvent::RecoveryParametersSet {
                 reordering_threshold: self.config.packet_threshold.try_into().ok(),
                 time_threshold: self.config.time_threshold,
@@ -127,7 +62,7 @@ impl Connection {
     }
 
     pub(in crate::proto::connection) fn qlog_assign_current_tuple(&self, now: Instant) {
-        self.config.qlog_sink.emit(self.trace_cid, now, || {
+        self.qlog_sink.emit(self.trace_cid, now, || {
             PathEvent::TupleAssigned(TupleAssigned {
                 tuple_id: tuple_id(self.path.generation()),
                 tuple_remote: Some(self.path.remote.into()),
@@ -141,7 +76,7 @@ impl Connection {
         now: Instant,
         new: MigrationState,
     ) {
-        self.config.qlog_sink.emit(self.trace_cid, now, || {
+        self.qlog_sink.emit(self.trace_cid, now, || {
             with_path(
                 self.path.generation(),
                 PathEvent::MigrationStateUpdated {
@@ -161,20 +96,22 @@ impl Connection {
     ) {
         // The reserved CID sequence is unique for each probing attempt. A path generation is
         // assigned only after promotion; the probe tuple remains the history of that attempt.
-        self.config.qlog_sink.emit(self.trace_cid, now, || {
+        self.qlog_sink.emit(self.trace_cid, now, || {
             PathEvent::TupleAssigned(TupleAssigned {
-                tuple_id: format!("probe-{seq}"),
+                tuple_id: TupleId::Probe(seq),
                 tuple_remote: Some(remote.into()),
                 tuple_local: self.path.local.map(Into::into),
             })
         });
-        self.config.qlog_sink.emit(self.trace_cid, now, || OnTuple {
-            tuple: Some(format!("probe-{seq}")),
-            event: PathEvent::MigrationStateUpdated {
-                new,
-                tuple_id: format!("probe-{seq}"),
-            },
-        });
+        self.qlog_sink
+            .emit(self.trace_cid, now, || EventFieldsView {
+                tuple: Some(TupleId::Probe(seq)),
+                event: PathEvent::MigrationStateUpdated {
+                    new,
+                    tuple_id: TupleId::Probe(seq),
+                }
+                .into(),
+            });
     }
 
     pub(in crate::proto::connection) fn qlog_remote_cid_updated(
@@ -186,12 +123,11 @@ impl Connection {
         if old == new {
             return;
         }
-        self.config
-            .qlog_sink
+        self.qlog_sink
             .emit(self.trace_cid, now, || PathEvent::ConnectionIdUpdated {
                 initiator: "remote",
-                old: Some(old.to_string()),
-                new: new.to_string(),
+                old: Some(old),
+                new,
             });
     }
 
@@ -204,12 +140,11 @@ impl Connection {
         if old == Some(new) {
             return;
         }
-        self.config
-            .qlog_sink
+        self.qlog_sink
             .emit(self.trace_cid, now, || PathEvent::ConnectionIdUpdated {
                 initiator: "local",
-                old: old.map(|id| id.to_string()),
-                new: new.to_string(),
+                old,
+                new,
             });
     }
 
@@ -218,7 +153,7 @@ impl Connection {
         if old == new {
             return;
         }
-        self.config.qlog_sink.emit(self.trace_cid, now, || {
+        self.qlog_sink.emit(self.trace_cid, now, || {
             with_path(self.path.generation(), PathEvent::MtuUpdated { old, new })
         });
     }
@@ -260,7 +195,7 @@ mod tests {
     #[test]
     fn tuple_and_cid_schema() {
         let event = PathEvent::TupleAssigned(TupleAssigned {
-            tuple_id: String::new(),
+            tuple_id: TupleId::Default,
             tuple_remote: Some("[::1]:443".parse::<SocketAddr>().unwrap().into()),
             tuple_local: None,
         });
@@ -272,8 +207,8 @@ mod tests {
         assert!(value["data"].get("tuple_local").is_none());
         let value = serde_json::to_value(PathEvent::ConnectionIdUpdated {
             initiator: "remote",
-            old: Some("abcd".into()),
-            new: "ef12".into(),
+            old: Some(ConnectionId::new(&[0xab, 0xcd])),
+            new: ConnectionId::new(&[0xef, 0x12]),
         })
         .unwrap();
         assert_eq!(

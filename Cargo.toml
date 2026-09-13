@@ -682,6 +682,11 @@ required-features = ["http-full"]
 harness = false
 
 [[bench]]
+name = "quic_qlog"
+required-features = ["quic"]
+harness = false
+
+[[bench]]
 name = "graceful_shutdown"
 required-features = ["std"]
 harness = false

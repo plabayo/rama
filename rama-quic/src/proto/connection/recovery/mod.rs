@@ -362,7 +362,7 @@ impl Connection {
                     reason = "`lost_packets` was collected from this space's `sent_packets` in the loop above and nothing removed entries since"
                 )]
                 let info = self.spaces[pn_space].take(packet).unwrap(); // safe: lost_packets is populated just above
-                self.config.qlog_sink.emit_packet_lost(
+                self.qlog_sink.emit_packet_lost(
                     packet,
                     &info,
                     loss_delay,

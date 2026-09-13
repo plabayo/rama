@@ -245,29 +245,21 @@ pub(crate) struct Connection {
     /// Identifies Data-space packet numbers to skip. Not used in earlier spaces.
     packet_number_filter: PacketNumberFilter,
 
-    //
     // Queued non-retransmittable 1-RTT data
-    //
     /// Responses to PATH_CHALLENGE frames
     path_responses: PathResponses,
     close: bool,
     /// How often the closing state answers the peer.
     close_responses: CloseResponses,
 
-    //
     // ACK frequency
-    //
     ack_frequency: AckFrequencyState,
 
-    //
     // Loss Detection
-    //
     /// The number of times a PTO has been sent without receiving an ack.
     pto_count: u32,
 
-    //
     // Congestion Control
-    //
     /// Whether the most recently received packet had an ECN codepoint set
     receiving_ecn: bool,
     /// Number of packets authenticated
@@ -284,6 +276,7 @@ pub(crate) struct Connection {
     /// State of the unreliable datagram extension
     datagrams: DatagramState,
     /// Last lifecycle state written to qlog, if recording is enabled.
+    qlog_sink: qlog::ConnectionQlog,
     qlog_state: Option<qlog::lifecycle::ConnectionState>,
     qlog_closed: bool,
     /// Connection level statistics
@@ -421,6 +414,7 @@ impl Connection {
                 config.stream_receive_window,
             ),
             datagrams: DatagramState::default(),
+            qlog_sink: config.qlog_sink.for_connection(trace_cid),
             config,
             rem_cids: CidQueue::new(rem_cid),
             rng,
@@ -513,6 +507,10 @@ impl Connection {
 
     /// The identifier the client chose for its first Initial, which both ends know and neither
     /// changes. It is the group a qlog trace records this connection under.
+    pub(crate) fn qlog_control(&self) -> Option<crate::qlog::ConnectionQlogControl> {
+        self.qlog_sink.control()
+    }
+
     pub(crate) fn trace_id(&self) -> ConnectionId {
         self.trace_cid
     }

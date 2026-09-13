@@ -40,7 +40,6 @@ pub use keys::AddressTokenKey;
 pub use keys::{KEY_MATERIAL_SIZE, StatelessResetKey};
 
 mod transport;
-pub use transport::QlogConfig;
 pub use transport::{
     AckFrequencyConfig, CongestionControl, IdleTimeout, MIN_INITIAL_CONGESTION_WINDOW,
     MtuDiscoveryConfig, TransportConfig,

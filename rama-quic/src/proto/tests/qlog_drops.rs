@@ -1,48 +1,15 @@
+use super::qlog::Capture;
 use super::*;
 use crate::proto::{
     packet::{FixedLengthConnectionIdParser, PartialDecode},
     shared::{ConnectionEvent, ConnectionEventInner, DatagramConnectionEvent},
 };
-use parking_lot::Mutex;
-use std::io::{self, Write};
-
-#[derive(Clone, Default)]
-struct Capture(Arc<Mutex<Vec<u8>>>);
-
-impl Write for Capture {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.0.lock().extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
-impl Capture {
-    fn clear(&self) {
-        self.0.lock().clear();
-    }
-    fn events(&self, name: &str) -> Vec<serde_json::Value> {
-        self.0
-            .lock()
-            .split(|byte| *byte == 0x1e)
-            .filter(|record| !record.is_empty())
-            .map(|record| serde_json::from_slice::<serde_json::Value>(record).unwrap())
-            .filter(|record| record["name"] == name)
-            .collect()
-    }
-}
 
 fn traced_client(pair: &Pair, capture: &Capture) -> ClientConfig {
     let mut config = client_config_with_deterministic_pns();
     let mut transport = TransportConfig::default();
     transport.deterministic_packet_numbers(true);
-    transport.set_qlog(
-        QlogConfig::default()
-            .with_writer(Box::new(capture.clone()))
-            .with_start_time(pair.time),
-    );
+    transport.set_qlog_recorder(capture.config(pair.time));
     config.transport = Arc::new(transport);
     config
 }
@@ -239,7 +206,7 @@ fn invalid_first_accepted_initial_logs_drop_without_plaintext_length() {
     let capture = Capture::default();
     let mut server = server_config();
     let mut transport = TransportConfig::default();
-    transport.set_qlog(QlogConfig::default().with_writer(Box::new(capture.clone())));
+    transport.set_qlog_recorder(capture.config(Instant::now()));
     server.transport = Arc::new(transport);
     let version = DEFAULT_SUPPORTED_VERSIONS[0];
     let destination = ConnectionId::new(&[1; 8]);
@@ -311,7 +278,7 @@ fn replay_after_zero_rtt_key_discard_keeps_early_packet_type() {
     let capture = Capture::default();
     let mut server = server_config();
     let mut transport = TransportConfig::default();
-    transport.set_qlog(QlogConfig::default().with_writer(Box::new(capture.clone())));
+    transport.set_qlog_recorder(capture.config(Instant::now()));
     server.transport = Arc::new(transport);
     let mut pair = Pair::new(
         Arc::new(EndpointConfig::try_with_rand_key().unwrap()),

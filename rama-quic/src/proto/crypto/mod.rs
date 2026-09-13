@@ -56,6 +56,11 @@ pub(crate) trait Session: Send + Sync + 'static {
         None
     }
 
+    /// Borrow negotiated ALPN bytes for diagnostics without allocating a handshake summary.
+    fn negotiated_alpn(&self) -> Option<&[u8]> {
+        None
+    }
+
     /// The certificate chain the peer presented, if it presented one.
     fn peer_certificates(&self) -> Option<Vec<CertificateDer<'static>>> {
         None

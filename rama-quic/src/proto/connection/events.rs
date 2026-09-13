@@ -102,7 +102,7 @@ impl Connection {
                     self.handle_coalesced(now, remote, local, ecn, data);
                 }
 
-                self.config.qlog_sink.emit_recovery_metrics(
+                self.qlog_sink.emit_recovery_metrics(
                     self.pto_count,
                     &mut self.path,
                     now,
@@ -180,7 +180,7 @@ impl Connection {
                 Timer::LossDetection => {
                     self.on_loss_detection_timeout(now);
 
-                    self.config.qlog_sink.emit_recovery_metrics(
+                    self.qlog_sink.emit_recovery_metrics(
                         self.pto_count,
                         &mut self.path,
                         now,

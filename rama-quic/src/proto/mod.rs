@@ -44,12 +44,13 @@ pub(crate) use crate::proto::connection::{Datagrams, Streams};
 pub(crate) use crate::proto::endpoint::AcceptError;
 #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 pub(crate) use crate::proto::frame::Datagram;
-pub(crate) use connection::qlog::QlogStream;
+
+#[cfg(test)]
+pub(crate) use connection::qlog::ConnectionQlog;
 
 mod config;
 #[cfg(any(feature = "aws-lc", feature = "ring"))]
 pub use config::AddressTokenKey;
-pub use config::QlogConfig;
 pub use config::{
     AckFrequencyConfig, ClientConfig, ConfigError, CongestionControl, EndpointConfig, IdleTimeout,
     MIN_INITIAL_CONGESTION_WINDOW, MtuDiscoveryConfig, PreferredAddressPolicy, ReceiveQueueLimits,
@@ -342,9 +343,7 @@ pub(crate) struct Transmit {
     pub(crate) cid_used: Option<u64>,
 }
 
-//
 // Useful internal constants
-//
 
 /// The maximum number of CIDs we bother to issue per connection
 const LOC_CID_COUNT: u64 = 8;

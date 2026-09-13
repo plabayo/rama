@@ -25,12 +25,12 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod proto;
+pub mod qlog;
 
 // Engine types that are part of the public transport API. The runtime facade
 // (endpoints, connections, streams) is Rama-owned and lives in `driver`.
 #[cfg(any(feature = "aws-lc", feature = "ring"))]
 pub use proto::AddressTokenKey;
-pub use proto::QlogConfig;
 pub use proto::{
     AckFrequencyConfig, ApplicationClose, BloomTokenLog, Chunk, ClientConfig, ClosedStream,
     ConfigError, CongestionControl, ConnectError, ConnectionClose, ConnectionError, ConnectionId,

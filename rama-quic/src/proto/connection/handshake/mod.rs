@@ -150,12 +150,8 @@ impl Connection {
             self.handle_coalesced(now, remote, local, ecn, data);
         }
 
-        self.config.qlog_sink.emit_recovery_metrics(
-            self.pto_count,
-            &mut self.path,
-            now,
-            self.trace_cid,
-        );
+        self.qlog_sink
+            .emit_recovery_metrics(self.pto_count, &mut self.path, now, self.trace_cid);
 
         Ok(())
     }

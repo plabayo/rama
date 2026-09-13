@@ -1,37 +1,7 @@
+use super::qlog::Capture;
 use super::*;
-use parking_lot::Mutex;
-use std::io::{self, Write};
-
-#[derive(Clone, Default)]
-struct Capture(Arc<Mutex<Vec<u8>>>);
-
-impl Write for Capture {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.0.lock().extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
 
 impl Capture {
-    fn records(&self) -> Vec<serde_json::Value> {
-        self.0
-            .lock()
-            .split(|byte| *byte == 0x1e)
-            .filter(|record| !record.is_empty())
-            .map(|record| serde_json::from_slice::<serde_json::Value>(record).unwrap())
-            .collect()
-    }
-
-    fn events(&self, name: &str) -> Vec<serde_json::Value> {
-        self.records()
-            .into_iter()
-            .filter(|record| record["name"] == name)
-            .collect()
-    }
-
     fn assert_handshake_starts_on_first_handshake_packet(&self) {
         // State updates are emitted immediately before the packet event they describe.
         // Keep packet events in the projection so an Initial or 0-RTT trigger cannot
@@ -77,16 +47,6 @@ impl Capture {
             .iter()
             .map(|event| event["data"]["new"].as_str().unwrap().to_owned())
             .collect()
-    }
-
-    fn transport(&self, now: Instant) -> Arc<TransportConfig> {
-        let mut transport = TransportConfig::default();
-        transport.set_qlog(
-            QlogConfig::default()
-                .with_writer(Box::new(self.clone()))
-                .with_start_time(now),
-        );
-        Arc::new(transport)
     }
 }
 

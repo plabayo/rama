@@ -2,7 +2,11 @@
 
 use std::{borrow::Cow, net::SocketAddr};
 
-use serde::Serialize;
+pub(in crate::proto::connection) use crate::qlog::event::lifecycle::ConnectionState;
+use crate::qlog::event::lifecycle::{
+    ConnectionClosedView as ConnectionClosed, LifecycleEventView as Event, ReasonView,
+    TransportErrorName, TupleEndpointInfo,
+};
 
 use crate::proto::{
     ConnectionId, Instant,
@@ -10,81 +14,29 @@ use crate::proto::{
     frame::Close,
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(in crate::proto::connection) enum ConnectionState {
-    Attempted,
-    HandshakeStarted,
-    HandshakeComplete,
-    HandshakeConfirmed,
-    Closing,
-    Draining,
-    Closed,
-}
-
-#[derive(Serialize)]
-#[serde(tag = "name", content = "data")]
-enum Event<'a> {
-    #[serde(rename = "quic:connection_started")]
-    Started {
-        local: TupleEndpointInfo,
-        remote: TupleEndpointInfo,
-    },
-    #[serde(rename = "quic:connection_state_updated")]
-    StateUpdated {
-        #[serde(skip_serializing_if = "Option::is_none")]
-        old: Option<ConnectionState>,
-        new: ConnectionState,
-    },
-    #[serde(rename = "quic:connection_closed")]
-    Closed(ConnectionClosed<'a>),
-}
-
-#[derive(Serialize)]
-struct TupleEndpointInfo {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    ip_v4: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    port_v4: Option<u16>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    ip_v6: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    port_v6: Option<u16>,
-    connection_ids: [String; 1],
-}
-
 impl TupleEndpointInfo {
     fn new(address: Option<SocketAddr>, cid: ConnectionId) -> Self {
+        let (ip_v4, port_v4, ip_v6, port_v6) = match address {
+            Some(SocketAddr::V4(address)) => {
+                (Some(*address.ip()), Some(address.port()), None, None)
+            }
+            Some(SocketAddr::V6(address)) => {
+                (None, None, Some(*address.ip()), Some(address.port()))
+            }
+            None => (None, None, None, None),
+        };
         Self {
-            ip_v4: address
-                .filter(SocketAddr::is_ipv4)
-                .map(|a| a.ip().to_string()),
-            port_v4: address.filter(SocketAddr::is_ipv4).map(|a| a.port()),
-            ip_v6: address
-                .filter(SocketAddr::is_ipv6)
-                .map(|a| a.ip().to_string()),
-            port_v6: address.filter(SocketAddr::is_ipv6).map(|a| a.port()),
-            connection_ids: [cid.to_string()],
+            ip_v4,
+            port_v4,
+            ip_v6,
+            port_v6,
+            connection_ids: [cid],
         }
     }
 }
 
-#[derive(Default, Serialize)]
-struct ConnectionClosed<'a> {
-    initiator: &'static str,
-    trigger: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    connection_error: Option<Cow<'static, str>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    application_error: Option<&'static str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error_code: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    reason: Option<Cow<'a, str>>,
-}
-
 impl<'a> ConnectionClosed<'a> {
-    fn transport(initiator: &'static str, code: u64, reason: Cow<'a, str>) -> Self {
+    fn transport(initiator: &'static str, code: u64, reason: ReasonView<'a>) -> Self {
         let (connection_error, error_code) = transport_error(code);
         Self {
             initiator,
@@ -101,105 +53,109 @@ impl<'a> ConnectionClosed<'a> {
             Close::Connection(close) => Self::transport(
                 initiator,
                 close.error_code.into(),
-                String::from_utf8_lossy(&close.reason),
+                ReasonView::Bytes(Cow::Borrowed(&close.reason)),
             ),
             Close::Application(close) => Self {
                 initiator,
                 trigger: "application",
                 application_error: Some("unknown"),
                 error_code: Some(close.error_code.into()),
-                reason: Some(String::from_utf8_lossy(&close.reason)),
+                reason: Some(ReasonView::Bytes(Cow::Borrowed(&close.reason))),
                 ..Self::default()
             },
+        }
+    }
+
+    fn internal(initiator: &'static str, trigger: &'static str, reason: &'static str) -> Self {
+        Self {
+            initiator,
+            trigger,
+            reason: Some(ReasonView::Static(reason)),
+            ..Self::default()
         }
     }
 
     fn error(error: &'a ConnectionError) -> Self {
         match error {
             ConnectionError::TransportError(error) => {
-                Self::transport("local", error.code.into(), Cow::Borrowed(&error.reason))
+                Self::transport("local", error.code.into(), ReasonView::Text(&error.reason))
             }
             ConnectionError::ConnectionClosed(close) => Self::transport(
                 "remote",
                 close.error_code.into(),
-                String::from_utf8_lossy(&close.reason),
+                ReasonView::Bytes(Cow::Borrowed(&close.reason)),
             ),
             ConnectionError::ApplicationClosed(close) => Self {
                 initiator: "remote",
                 trigger: "application",
                 application_error: Some("unknown"),
                 error_code: Some(close.error_code.into()),
-                reason: Some(String::from_utf8_lossy(&close.reason)),
+                reason: Some(ReasonView::Bytes(Cow::Borrowed(&close.reason))),
                 ..Self::default()
             },
-            other => Self {
-                initiator: if matches!(other, ConnectionError::Reset) {
-                    "remote"
-                } else {
-                    "local"
-                },
-                trigger: match other {
-                    ConnectionError::VersionMismatch => "version_mismatch",
-                    ConnectionError::Reset => "stateless_reset",
-                    ConnectionError::TimedOut => "idle_timeout",
-                    ConnectionError::LocallyClosed => "application",
-                    _ => "error",
-                },
-                reason: Some(Cow::Owned(other.to_string())),
-                ..Self::default()
-            },
+            ConnectionError::VersionMismatch => Self::internal(
+                "local",
+                "version_mismatch",
+                "peer doesn't implement any supported version",
+            ),
+            ConnectionError::Reset => Self::internal("remote", "stateless_reset", "reset by peer"),
+            ConnectionError::TimedOut => Self::internal("local", "idle_timeout", "timed out"),
+            ConnectionError::LocallyClosed => Self::internal("local", "application", "closed"),
+            ConnectionError::CidsExhausted => Self::internal("local", "error", "CIDs exhausted"),
         }
     }
 }
 
-fn transport_error(code: u64) -> (Cow<'static, str>, Option<u64>) {
+fn transport_error(code: u64) -> (TransportErrorName, Option<u64>) {
+    use TransportErrorName as Name;
     let name = match code {
-        0x00 => "no_error",
-        0x01 => "internal_error",
-        0x02 => "connection_refused",
-        0x03 => "flow_control_error",
-        0x04 => "stream_limit_error",
-        0x05 => "stream_state_error",
-        0x06 => "final_size_error",
-        0x07 => "frame_encoding_error",
-        0x08 => "transport_parameter_error",
-        0x09 => "connection_id_limit_error",
-        0x0a => "protocol_violation",
-        0x0b => "invalid_token",
-        0x0c => "application_error",
-        0x0d => "crypto_buffer_exceeded",
-        0x0e => "key_update_error",
-        0x0f => "aead_limit_reached",
-        0x10 => "no_viable_path",
-        0x100..=0x1ff => return (format!("crypto_error_0x{code:03x}").into(), None),
-        _ => return (Cow::Borrowed("unknown"), Some(code)),
+        0x00 => Name::NoError,
+        0x01 => Name::InternalError,
+        0x02 => Name::ConnectionRefused,
+        0x03 => Name::FlowControlError,
+        0x04 => Name::StreamLimitError,
+        0x05 => Name::StreamStateError,
+        0x06 => Name::FinalSizeError,
+        0x07 => Name::FrameEncodingError,
+        0x08 => Name::TransportParameterError,
+        0x09 => Name::ConnectionIdLimitError,
+        0x0a => Name::ProtocolViolation,
+        0x0b => Name::InvalidToken,
+        0x0c => Name::ApplicationError,
+        0x0d => Name::CryptoBufferExceeded,
+        0x0e => Name::KeyUpdateError,
+        0x0f => Name::AeadLimitReached,
+        0x10 => Name::NoViablePath,
+        0x100..=0x1ff => Name::Crypto((code - 0x100) as u8),
+        _ => return (Name::Unknown, Some(code)),
     };
-    (Cow::Borrowed(name), None)
+    (name, None)
 }
 
 impl Connection {
     pub(in crate::proto::connection) fn qlog_connection_started(&mut self, now: Instant) {
-        self.config
-            .qlog_sink
-            .emit(self.trace_cid, now, || Event::Started {
-                local: TupleEndpointInfo::new(self.path.local, self.handshake_cid),
-                remote: TupleEndpointInfo::new(Some(self.path.remote), self.rem_handshake_cid),
-            });
+        self.qlog_sink.emit(self.trace_cid, now, || Event::Started {
+            local: TupleEndpointInfo::new(self.path.local, self.handshake_cid),
+            remote: TupleEndpointInfo::new(Some(self.path.remote), self.rem_handshake_cid),
+        });
         self.qlog_state_updated(now, ConnectionState::Attempted);
     }
 
     fn qlog_state_updated(&mut self, now: Instant, new: ConnectionState) {
-        if !self.config.qlog_sink.is_enabled() || self.qlog_state == Some(new) {
+        if !self.qlog_sink.is_enabled() || self.qlog_state == Some(new) {
             return;
         }
-        let old = self.qlog_state.replace(new);
-        self.config
+        let old = self.qlog_state;
+        if self
             .qlog_sink
-            .emit(self.trace_cid, now, || Event::StateUpdated { old, new });
+            .emit(self.trace_cid, now, || Event::StateUpdated { old, new })
+        {
+            self.qlog_state = Some(new);
+        }
     }
 
     pub(in crate::proto::connection) fn qlog_handshake_started(&mut self, now: Instant) {
-        if self.qlog_state == Some(ConnectionState::Attempted) {
+        if matches!(self.qlog_state, None | Some(ConnectionState::Attempted)) {
             self.qlog_state_updated(now, ConnectionState::HandshakeStarted);
         }
     }
@@ -209,35 +165,32 @@ impl Connection {
         now: Instant,
         error: &ConnectionError,
     ) {
-        if !self.config.qlog_sink.is_enabled() || self.qlog_closed {
+        if !self.qlog_sink.is_enabled() || self.qlog_closed {
             return;
         }
-        self.qlog_closed = true;
-        self.config.qlog_sink.emit(self.trace_cid, now, || {
+        self.qlog_closed = self.qlog_sink.emit(self.trace_cid, now, || {
             Event::Closed(ConnectionClosed::error(error))
         });
     }
 
     pub(in crate::proto::connection) fn qlog_local_close(&mut self, now: Instant, reason: &Close) {
-        if !self.config.qlog_sink.is_enabled() || self.qlog_closed {
+        if !self.qlog_sink.is_enabled() || self.qlog_closed {
             return;
         }
-        self.qlog_closed = true;
-        self.config.qlog_sink.emit(self.trace_cid, now, || {
+        self.qlog_closed = self.qlog_sink.emit(self.trace_cid, now, || {
             Event::Closed(ConnectionClosed::close("local", reason))
         });
     }
 
     pub(in crate::proto::connection) fn qlog_handshake_timeout(&mut self, now: Instant) {
-        if !self.config.qlog_sink.is_enabled() || self.qlog_closed {
+        if !self.qlog_sink.is_enabled() || self.qlog_closed {
             return;
         }
-        self.qlog_closed = true;
-        self.config.qlog_sink.emit(self.trace_cid, now, || {
+        self.qlog_closed = self.qlog_sink.emit(self.trace_cid, now, || {
             Event::Closed(ConnectionClosed {
                 initiator: "local",
                 trigger: "error",
-                reason: Some(Cow::Borrowed("handshake timeout")),
+                reason: Some(ReasonView::Static("handshake timeout")),
                 ..ConnectionClosed::default()
             })
         });
@@ -249,14 +202,13 @@ impl Connection {
 
     /// Called at packet processing boundaries, before application polling can consume the error.
     pub(in crate::proto::connection) fn qlog_observe_state(&mut self, now: Instant) {
-        if !self.config.qlog_sink.is_enabled() {
+        if !self.qlog_sink.is_enabled() {
             return;
         }
         if !self.qlog_closed
             && let Some(error) = &self.error
         {
-            self.qlog_closed = true;
-            self.config.qlog_sink.emit(self.trace_cid, now, || {
+            self.qlog_closed = self.qlog_sink.emit(self.trace_cid, now, || {
                 Event::Closed(ConnectionClosed::error(error))
             });
         }

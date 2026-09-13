@@ -80,6 +80,14 @@ impl crypto::Session for TlsSession {
             .map(|group| u16::from(group.name()))
     }
 
+    fn negotiated_alpn(&self) -> Option<&[u8]> {
+        if self.got_handshake_data {
+            self.inner.alpn_protocol()
+        } else {
+            None
+        }
+    }
+
     fn handshake_summary(&self) -> Option<crate::proto::crypto::HandshakeSummary> {
         if !self.got_handshake_data {
             return None;

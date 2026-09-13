@@ -1,24 +1,84 @@
 use super::*;
+use crate::qlog::QlogConfig;
 use parking_lot::Mutex;
-use std::io::{self, Write};
+use std::{
+    io,
+    pin::Pin,
+    task::{Context, Poll},
+};
+use tokio::io::AsyncWrite;
 
 #[derive(Clone, Default)]
-struct Capture(Arc<Mutex<Vec<u8>>>);
+struct CaptureWriter(Arc<Mutex<Vec<u8>>>);
 
-impl Write for Capture {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+impl AsyncWrite for CaptureWriter {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<io::Result<usize>> {
         self.0.lock().extend_from_slice(bytes);
-        Ok(bytes.len())
+        Poll::Ready(Ok(bytes.len()))
     }
 
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
+    fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self.poll_flush(cx)
+    }
+}
+
+pub(super) struct Capture {
+    writer: CaptureWriter,
+    recorder: Mutex<Option<crate::qlog::QlogRecorder>>,
+    runtime: tokio::runtime::Runtime,
+}
+
+impl Default for Capture {
+    fn default() -> Self {
+        Self {
+            writer: CaptureWriter::default(),
+            recorder: Mutex::new(None),
+            runtime: tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap(),
+        }
     }
 }
 
 impl Capture {
-    fn records(&self) -> Vec<serde_json::Value> {
-        self.0
+    pub(super) fn config(&self, start: Instant) -> crate::qlog::QlogRecorder {
+        let _entered = self.runtime.enter();
+        let recorder = QlogConfig::default()
+            .with_writer(Box::new(self.writer.clone()))
+            .with_start_time(start)
+            .start()
+            .unwrap();
+        assert!(self.recorder.lock().replace(recorder.clone()).is_none());
+        recorder
+    }
+
+    pub(super) fn transport(&self, start: Instant) -> Arc<TransportConfig> {
+        Arc::new(TransportConfig::default().with_qlog_recorder(self.config(start)))
+    }
+
+    fn flush(&self) {
+        let recorder = self.recorder.lock().clone().expect("configured capture");
+        // Drive the same runtime that owns this synchronous simulator's recording task.
+        self.runtime.block_on(recorder.flush()).unwrap();
+    }
+
+    pub(super) fn clear(&self) {
+        self.flush();
+        self.writer.0.lock().clear();
+    }
+
+    pub(super) fn records(&self) -> Vec<serde_json::Value> {
+        self.flush();
+        self.writer
+            .0
             .lock()
             .split(|byte| *byte == 0x1e)
             .filter(|record| !record.is_empty())
@@ -26,9 +86,16 @@ impl Capture {
             .collect()
     }
 
+    pub(super) fn events(&self, name: &str) -> Vec<serde_json::Value> {
+        self.records()
+            .into_iter()
+            .filter(|record| record["name"] == name)
+            .collect()
+    }
+
     fn take_sent(&self) -> Vec<serde_json::Value> {
         let records = self.records();
-        self.0.lock().clear();
+        self.writer.0.lock().clear();
         records
             .into_iter()
             .filter(|record| record["name"] == "quic:packet_sent")
@@ -39,7 +106,7 @@ impl Capture {
 /// Send a flight without delivering it, checking the logged packet lengths against the wire.
 fn capture_flight(pair: &mut Pair, capture: &Capture) -> Vec<serde_json::Value> {
     assert!(pair.client.outbound.is_empty());
-    capture.0.lock().clear();
+    capture.clear();
     for _ in 0..10 {
         pair.client.drive(pair.time, pair.server.addr);
         if !pair.client.outbound.is_empty() {
@@ -86,11 +153,7 @@ fn lost_packets_keep_their_original_encryption_level() {
     let capture = Capture::default();
     let mut transport = TransportConfig::default();
     transport.deterministic_packet_numbers(true);
-    transport.set_qlog(
-        QlogConfig::default()
-            .with_writer(Box::new(capture.clone()))
-            .with_start_time(pair.time),
-    );
+    transport.set_qlog_recorder(capture.config(pair.time));
     config.transport = Arc::new(transport);
     let client_ch = pair.begin_connect(config);
     assert!(pair.client_conn_mut(client_ch).has_0rtt());

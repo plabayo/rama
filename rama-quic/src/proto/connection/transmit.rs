@@ -375,9 +375,7 @@ impl Connection {
 
             debug_assert!(buf_capacity - buf.len() >= MIN_PACKET_SPACE);
 
-            //
             // From here on, we've determined that a packet will definitely be sent.
-            //
 
             if self.spaces[SpaceId::Initial].crypto.is_some()
                 && space_id == SpaceId::Handshake
@@ -559,7 +557,7 @@ impl Connection {
                 .congestion
                 .on_sent(now, buf.len() as u64, last_packet_number);
 
-            self.config.qlog_sink.emit_recovery_metrics(
+            self.qlog_sink.emit_recovery_metrics(
                 self.pto_count,
                 &mut self.path,
                 now,

@@ -1,41 +1,9 @@
+use super::qlog::Capture;
 use super::*;
-use parking_lot::Mutex;
-use serde_json::Value;
-use std::io::{self, Write};
-
-#[derive(Clone, Default)]
-struct Capture(Arc<Mutex<Vec<u8>>>);
-
-impl Write for Capture {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.0.lock().extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
-impl Capture {
-    fn events(&self, name: &str) -> Vec<Value> {
-        self.0
-            .lock()
-            .split(|byte| *byte == 0x1e)
-            .filter(|record| !record.is_empty())
-            .map(|record| serde_json::from_slice::<Value>(record).unwrap())
-            .filter(|record| record["name"] == name)
-            .collect()
-    }
-}
 
 fn trace_config(capture: &Capture, now: Instant) -> Arc<TransportConfig> {
     let mut transport = TransportConfig::default();
-    transport.set_qlog(
-        QlogConfig::default()
-            .with_writer(Box::new(capture.clone()))
-            .with_start_time(now),
-    );
+    transport.set_qlog_recorder(capture.config(now));
     Arc::new(transport)
 }
 

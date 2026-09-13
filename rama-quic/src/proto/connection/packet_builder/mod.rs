@@ -307,7 +307,7 @@ impl PacketBuilder {
         if self.space == SpaceId::Handshake {
             conn.qlog_handshake_started(now);
         }
-        conn.config.qlog_sink.emit_packet_sent(
+        conn.qlog_sink.emit_packet_sent(
             self.exact_number,
             len,
             self.space,

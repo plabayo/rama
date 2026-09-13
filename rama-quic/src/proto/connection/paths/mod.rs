@@ -63,6 +63,7 @@ pub(super) struct PathData {
     first_packet: Option<u64>,
 
     /// Snapshot allocated on the first recorded recovery event.
+    qlog_recording_generation: (u64, u64),
     recovery_metrics: Option<Box<RecoveryMetrics>>,
 
     /// Tag uniquely identifying a path in a connection
@@ -237,6 +238,7 @@ impl PathData {
             first_packet_after_rtt_sample: None,
             in_flight: InFlight::new(),
             first_packet: None,
+            qlog_recording_generation: (0, 0),
             recovery_metrics: None,
             generation,
         }
@@ -269,6 +271,7 @@ impl PathData {
             first_packet_after_rtt_sample: prev.first_packet_after_rtt_sample,
             in_flight: InFlight::new(),
             first_packet: None,
+            qlog_recording_generation: prev.qlog_recording_generation,
             recovery_metrics: prev.recovery_metrics.clone(),
             generation,
         }
@@ -333,6 +336,19 @@ impl PathData {
         }
         self.in_flight.remove(packet);
         true
+    }
+
+    pub(super) fn qlog_reset_metrics(&mut self) {
+        if let Some(metrics) = &mut self.recovery_metrics {
+            **metrics = RecoveryMetrics::default();
+        }
+    }
+
+    pub(super) fn qlog_reset_on_toggle(&mut self, generation: (u64, u64)) {
+        if self.qlog_recording_generation != generation {
+            self.qlog_recording_generation = generation;
+            self.qlog_reset_metrics();
+        }
     }
 
     pub(super) fn qlog_recovery_metrics(
@@ -661,7 +677,7 @@ mod tests {
             now,
             &TransportConfig::default(),
         );
-        super::super::qlog::QlogSink::default().emit_recovery_metrics(
+        super::super::qlog::ConnectionQlog::default().emit_recovery_metrics(
             0,
             &mut path,
             now,
@@ -684,6 +700,36 @@ mod tests {
             path.qlog_recovery_metrics(0).is_none(),
             "the new path owns its snapshot"
         );
+    }
+
+    #[test]
+    fn qlog_rejected_snapshot_reset_reuses_storage_and_recreates_full_metrics() {
+        let now = Instant::now();
+        let mut path = PathData::new(
+            addr(443),
+            None,
+            false,
+            None,
+            0,
+            now,
+            &TransportConfig::default(),
+        );
+        let initial = serde_json::to_value(path.qlog_recovery_metrics(0).unwrap()).unwrap();
+        let storage = std::ptr::from_ref(path.recovery_metrics.as_deref().unwrap());
+        for _ in 0..3 {
+            path.qlog_reset_metrics();
+            assert_eq!(
+                std::ptr::from_ref(path.recovery_metrics.as_deref().unwrap()),
+                storage
+            );
+            let snapshot = serde_json::to_value(path.qlog_recovery_metrics(0).unwrap()).unwrap();
+            assert_eq!(snapshot, initial, "a rejection must retry all metrics");
+            assert_eq!(
+                std::ptr::from_ref(path.recovery_metrics.as_deref().unwrap()),
+                storage
+            );
+            assert!(path.qlog_recovery_metrics(0).is_none());
+        }
     }
 
     #[test]

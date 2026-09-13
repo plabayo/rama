@@ -1,6 +1,7 @@
 //! Connection-scoped packet drops (QUIC events draft 13, section 5.7).
 
-use serde::Serialize;
+pub(crate) use crate::qlog::event::drops::DropReason;
+use crate::qlog::event::drops::{DropHeader, PacketDropped};
 
 use super::event::RawInfo;
 use crate::proto::{
@@ -8,17 +9,6 @@ use crate::proto::{
     connection::Connection,
     packet::{Header, LongType, Packet, PartialDecode, SpaceId},
 };
-
-#[derive(Clone, Copy, Debug, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum DropReason {
-    Invalid,
-    Duplicate,
-    DecryptionFailure,
-    KeyUnavailable,
-    Rejected,
-    Unsupported,
-}
 
 /// Only authenticated, expanded packet numbers are recorded. An undecodable header is omitted.
 #[derive(Clone, Copy)]
@@ -89,40 +79,15 @@ impl DropInfo {
     }
 }
 
-#[derive(Serialize)]
-#[serde(tag = "name", content = "data")]
-enum Event {
-    #[serde(rename = "quic:packet_dropped")]
-    PacketDropped(PacketDropped),
-}
-
-#[derive(Serialize)]
-struct PacketDropped {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    header: Option<DropHeader>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    raw: Option<RawInfo>,
-    trigger: DropReason,
-}
-
-#[derive(Serialize)]
-struct DropHeader {
-    packet_type: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    packet_number: Option<u64>,
-}
-
 impl Connection {
     pub(crate) fn qlog_packet_dropped(&self, now: Instant, info: DropInfo, trigger: DropReason) {
-        self.config.qlog_sink.emit(self.trace_cid, now, || {
-            Event::PacketDropped(PacketDropped {
-                header: info.packet_type.map(|packet_type| DropHeader {
-                    packet_type,
-                    packet_number: info.number,
-                }),
-                raw: info.length.map(|length| RawInfo { length }),
-                trigger,
-            })
+        self.qlog_sink.emit(self.trace_cid, now, || PacketDropped {
+            header: info.packet_type.map(|packet_type| DropHeader {
+                packet_type,
+                packet_number: info.number,
+            }),
+            raw: info.length.map(|length| RawInfo { length }),
+            trigger,
         });
     }
 }

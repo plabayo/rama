@@ -61,7 +61,7 @@
 
 use rama::{
     crypto::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject as _},
-    error::BoxError,
+    error::{BoxError, BoxErrorExt as _, ErrorContext as _, ErrorExt as _},
     futures::{FutureExt as _, future::select_all},
     graceful::{Shutdown, WeakShutdownGuard, default_signal},
     net::tls::ApplicationProtocol,
@@ -165,11 +165,7 @@ impl Settings {
         let mut bounds = Bounds::default();
         let mut args = std::env::args().skip(1);
         while let Some(flag) = args.next() {
-            let mut value = || {
-                args.next()
-                    .ok_or_else(|| format!("{flag} needs a value").into())
-                    .map_err(|error: BoxError| error)
-            };
+            let mut value = || args.next().with_context(|| format!("{flag} needs a value"));
             match flag.as_str() {
                 "--listen" => listen = value()?.parse()?,
                 "--upstream" => upstream = Some(value()?.parse()?),
@@ -186,12 +182,16 @@ impl Settings {
         }
         let identity = match (cert, key) {
             (Some(cert), Some(key)) => (cert, key),
-            _ => return Err("--cert and --key are both required".into()),
+            _ => {
+                return Err(BoxError::from_static_str(
+                    "--cert and --key are both required",
+                ));
+            }
         };
         Ok(Self {
             listen,
-            upstream: upstream.ok_or("--upstream is required")?,
-            upstream_ca: upstream_ca.ok_or("--upstream-ca is required")?,
+            upstream: upstream.context("--upstream is required")?,
+            upstream_ca: upstream_ca.context("--upstream-ca is required")?,
             upstream_name,
             identity,
             bounds,
@@ -272,9 +272,7 @@ async fn main() -> Result<(), BoxError> {
 
     // The shutdown holds that task's guard, so it has ended by the time this returns.
     let took = shutdown.shutdown().await;
-    serving.await.map_err(|error| -> BoxError {
-        format!("the relay's serving task failed: {error}").into()
-    })??;
+    serving.await.context("the relay's serving task failed")??;
     tracing::info!("relay: stopped, shutdown joined in {took:?}");
     Ok(())
 }
@@ -353,7 +351,7 @@ async fn finished(tasks: &mut Vec<JoinHandle<()>>) -> Result<(), BoxError> {
         (outcome, which)
     };
     drop(tasks.swap_remove(which));
-    outcome.map_err(|error| -> BoxError { format!("a relay task failed: {error}").into() })
+    outcome.context("a relay task failed")
 }
 
 /// Join every task, reporting the first failure once they have all ended.
@@ -365,7 +363,7 @@ async fn join(tasks: Vec<JoinHandle<()>>) -> Result<(), BoxError> {
         }
     }
     match failure {
-        Some(error) => Err(format!("a relay task failed: {error}").into()),
+        Some(error) => Err(error.context("a relay task failed")),
         None => Ok(()),
     }
 }
@@ -568,7 +566,7 @@ async fn copy(
 fn why(stopped: Result<Option<VarInt>, StoppedError>) -> BoxError {
     match stopped {
         Ok(Some(code)) => format!("the destination stopped this stream: {code}").into(),
-        Ok(None) => "the destination ended this stream".into(),
+        Ok(None) => BoxError::from_static_str("the destination ended this stream"),
         Err(error) => error.into(),
     }
 }
@@ -577,7 +575,7 @@ fn why(stopped: Result<Option<VarInt>, StoppedError>) -> BoxError {
 fn sibling_ended(from: &mut RecvStream, to: &mut SendStream) -> BoxError {
     drop(to.reset(RELAY_CANCELLED.into()));
     drop(from.stop(RELAY_CANCELLED.into()));
-    "the other direction of this stream ended".into()
+    BoxError::from_static_str("the other direction of this stream ended")
 }
 
 /// End this direction deliberately and tell the other one, rather than leaving either peer to

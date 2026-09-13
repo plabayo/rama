@@ -6,16 +6,12 @@ use crate::proto::{AckFrequencyConfig, TIMER_GRANULARITY, TransportError, VarInt
 
 /// State associated to ACK frequency
 pub(super) struct AckFrequencyState {
-    //
     // Sending ACK_FREQUENCY frames
-    //
     in_flight_ack_frequency_frame: Option<(u64, Duration)>,
     next_outgoing_sequence_number: VarInt,
     pub(super) peer_max_ack_delay: Duration,
 
-    //
     // Receiving ACK_FREQUENCY frames
-    //
     last_ack_frequency_frame: Option<u64>,
     pub(super) max_ack_delay: Duration,
 }
@@ -98,12 +94,11 @@ impl AckFrequencyState {
 
     /// Notifies the [`AckFrequencyState`] that a packet has been ACKed
     pub(super) fn on_acked(&mut self, pn: u64) {
-        match self.in_flight_ack_frequency_frame {
-            Some((number, requested_max_ack_delay)) if number == pn => {
-                self.in_flight_ack_frequency_frame = None;
-                self.peer_max_ack_delay = requested_max_ack_delay;
-            }
-            _ => {}
+        if let Some((number, requested_max_ack_delay)) = self.in_flight_ack_frequency_frame
+            && number == pn
+        {
+            self.in_flight_ack_frequency_frame = None;
+            self.peer_max_ack_delay = requested_max_ack_delay;
         }
     }
 

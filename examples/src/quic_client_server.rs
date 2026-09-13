@@ -12,6 +12,11 @@
 //! cargo run -p rama-examples --bin quic_client_server --features=quic,rustls,ring
 //! ```
 //!
+//! Add `-- --qlog client.qlog` to record the client side as a qlog JSON text sequence.
+//! The file is created or replaced only when requested. Its asynchronous recording task
+//! shares the application's graceful shutdown, which drains accepted events and flushes
+//! the file before the example exits. Recording failures are reported through tracing.
+//!
 //! # Expected output
 //!
 //! ```
@@ -38,12 +43,17 @@
     reason = "example: panic-on-error is the standard pattern for demos"
 )]
 
+use clap::Parser;
 use rama::{
     crypto::pki_types::CertificateDer,
-    error::BoxError,
+    error::{BoxError, BoxErrorExt as _, ErrorContext as _, ErrorExt as _},
+    error_sink::TracingErrorSink,
     graceful::Shutdown,
     net::tls::ApplicationProtocol,
-    quic::{ClientConfig, Connection, Endpoint, ServerConfig, tls::TlsOptions},
+    quic::{
+        ClientConfig, Connection, Endpoint, ServerConfig, TransportConfig, qlog::QlogConfig,
+        tls::TlsOptions,
+    },
     rt::Executor,
     telemetry::tracing::{
         self,
@@ -59,6 +69,8 @@ use rama::{
 
 use std::{
     net::{Ipv4Addr, SocketAddr},
+    path::PathBuf,
+    sync::Arc,
     time::Duration,
 };
 
@@ -76,8 +88,16 @@ const READ_CAP: usize = octets::mib(1);
 /// How long the server side is given to finish once the client is done.
 const SERVER_LIMIT: Duration = Duration::from_secs(20);
 
+#[derive(Debug, Parser)]
+struct Args {
+    /// Create or replace a file with the client's qlog JSON text sequence.
+    #[arg(long, value_name = "PATH")]
+    qlog: Option<PathBuf>,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), BoxError> {
+    let args = Args::parse();
     tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
@@ -99,6 +119,21 @@ async fn main() -> Result<(), BoxError> {
         drop(is_finished.await);
     });
 
+    let qlog = if let Some(path) = args.qlog {
+        let file = tokio::fs::File::create(&path)
+            .await
+            .context("create the client qlog file")
+            .with_context_field("path", || path.display().to_string())?;
+        let recorder = QlogConfig::default()
+            .with_writer(tokio::io::BufWriter::new(file))
+            .with_executor(Executor::graceful(shutdown.guard()))
+            .with_error_sink(TracingErrorSink::warn())
+            .start()?;
+        Some(recorder)
+    } else {
+        None
+    };
+
     let server = Endpoint::build(Executor::graceful(shutdown.guard()))
         .with_server_config(server_config(&auth)?)
         .bind_address(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0))
@@ -112,15 +147,19 @@ async fn main() -> Result<(), BoxError> {
     let client = Endpoint::build(Executor::graceful(shutdown.guard()))
         .bind_address(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0))
         .await?;
-    let connection = client
-        .connect_with(client_config(anchor)?, addr, "localhost")?
-        .await?;
+    let config = client_config(anchor)?.with_transport_config(Arc::new(
+        TransportConfig::default().maybe_with_qlog_recorder(qlog),
+    ));
+    let connection = client.connect_with(config, addr, "localhost")?.await?;
     let settled = connection
         .handshake_data()
         .ok_or("the handshake settled nothing")?;
     let negotiated = settled.protocol.ok_or("no protocol was negotiated")?;
     if negotiated != ApplicationProtocol::from(ALPN) {
-        return Err(format!("the client negotiated {negotiated}, not the example's own").into());
+        return Err(
+            BoxError::from_static_str("the client negotiated an unexpected protocol")
+                .context_field("negotiated", negotiated),
+        );
     }
     tracing::info!("client: negotiated {negotiated}");
 
@@ -132,17 +171,18 @@ async fn main() -> Result<(), BoxError> {
     connection.close(0u32.into(), b"done");
     client.wait_idle().await;
 
-    // Nothing holds a guard but the endpoints' own supervisors and the serving task, so this
-    // joins once they have stopped. Both endpoints are still alive here.
+    // Wait for the serving task before ending the endpoints and optional recorder.
+    // Both endpoints are still alive here.
     // Bounded, so a server that never finishes fails rather than hanging.
     tokio::time::timeout(SERVER_LIMIT, serving)
         .await
-        .map_err(|_elapsed| -> BoxError { "the server did not finish".into() })?
-        .map_err(|error| -> BoxError { format!("the server task failed: {error}").into() })??;
+        .context("the server did not finish before its deadline")?
+        .context("the server task failed")??;
 
     finished
         .send(())
-        .map_err(|()| -> BoxError { "nothing is listening for the end".into() })?;
+        .ok()
+        .context("nothing is listening for the end")?;
     let took = shutdown.shutdown().await;
     drop((client, addr));
     tracing::info!("shutdown: joined in {took:?}");
@@ -203,7 +243,10 @@ async fn serve(server: &Endpoint) -> Result<(), BoxError> {
         .ok_or("the handshake settled nothing")?;
     let negotiated = settled.protocol.ok_or("no protocol was negotiated")?;
     if negotiated != ApplicationProtocol::from(ALPN) {
-        return Err(format!("the server negotiated {negotiated}, not the example's own").into());
+        return Err(
+            BoxError::from_static_str("the server negotiated an unexpected protocol")
+                .context_field("negotiated", negotiated),
+        );
     }
     tracing::info!("server: negotiated {negotiated}");
 

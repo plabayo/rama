@@ -1361,6 +1361,14 @@ impl Connection {
         self.0.state.lock().inner.trace_id()
     }
 
+    /// Control this connection's configured qlog sink. The handle can outlive the
+    /// connection and can be inserted into Rama extensions for an application-level trigger.
+    /// Returns `None` when no qlog sink was configured before creating the connection.
+    #[must_use]
+    pub fn qlog_control(&self) -> Option<crate::qlog::ConnectionQlogControl> {
+        self.0.state.lock().inner.qlog_control()
+    }
+
     /// Tell the connection its network path changed, so the congestion controller, the
     /// round-trip estimate and MTU discovery start again from the transport configuration.
     ///
