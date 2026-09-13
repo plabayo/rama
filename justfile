@@ -582,3 +582,7 @@ update-deps-quic-interop:
 
 oss-endpoint-healthcheck:
     bash rama-fp/infra/scripts/remote-healthcheck.sh
+
+# Run the pinned independent QUIC interop matrix (Rama client and server).
+test-quic-interop-runner *ARGS:
+    bash {{justfile_directory()}}/rama-quic/e2e/interop-runner/run.sh {{ARGS}}
