@@ -792,11 +792,9 @@ async fn cancelled_while_waiting_for_credit(reset: bool) {
     let upstream = relay.upstream().await;
     let (mut send, mut recv) = connection.open_bi().await.unwrap();
     send.write_all(b"abandoned").await.unwrap();
-    assert!(
-        tokio::time::timeout(Duration::from_millis(100), upstream.accept_bi())
-            .await
-            .is_err()
-    );
+    tokio::time::timeout(Duration::from_millis(100), upstream.accept_bi())
+        .await
+        .expect_err("the relay must wait for upstream stream credit");
     if reset {
         send.reset(7u32.into()).unwrap();
         let error = tokio::time::timeout(PROMPTLY, recv.read_to_end(READ_CAP))
