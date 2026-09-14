@@ -207,7 +207,7 @@ impl PacketBuilder {
         conn: &mut Connection,
         sent: Option<SentFrames>,
         buffer: &mut Vec<u8>,
-    ) {
+    ) -> Option<()> {
         let ack_eliciting = self.ack_eliciting;
         let exact_number = self.exact_number;
         let space_id = self.space;
@@ -215,8 +215,8 @@ impl PacketBuilder {
         let is_mtu_probe_packet =
             space_id == SpaceId::Data && conn.path.mtud.in_flight_mtu_probe() == Some(exact_number);
         let datagram_start = self.datagram_start;
-        let (size, padded) = self.finish(conn, now, buffer);
-        let Some(sent) = sent else { return };
+        let (size, padded) = self.finish(conn, now, buffer)?;
+        let Some(sent) = sent else { return Some(()) };
 
         // What a challenge in this datagram can prove is decided by how large the datagram
         // turned out, after every padding decision (RFC 9000 §8.2.1). Only the first datagram
@@ -261,6 +261,7 @@ impl PacketBuilder {
             conn.set_loss_detection_timer(now);
             conn.path.pacing.on_transmit(size);
         }
+        Some(())
     }
 
     /// Encrypt packet, returning the length of the packet and whether padding was added
@@ -274,7 +275,7 @@ impl PacketBuilder {
         conn: &mut Connection,
         now: Instant,
         buffer: &mut Vec<u8>,
-    ) -> (usize, bool) {
+    ) -> Option<(usize, bool)> {
         let pad = buffer.len() < self.min_size;
         if pad {
             trace!("PADDING * {}", self.min_size - buffer.len());
@@ -300,11 +301,20 @@ impl PacketBuilder {
         buffer.resize(buffer.len() + packet_crypto.tag_len(), 0);
         let encode_start = self.partial_encode.start;
         let packet_buf = &mut buffer[encode_start..];
-        self.partial_encode.finish(
+        if let Err(error) = self.partial_encode.finish(
             packet_buf,
             header_crypto,
             Some((self.exact_number, packet_crypto)),
-        );
+        ) {
+            buffer.clear();
+            conn.kill(
+                now,
+                crate::proto::TransportError::INTERNAL_ERROR("packet encryption failed")
+                    .with_cause(error)
+                    .into(),
+            );
+            return None;
+        }
 
         let len = buffer.len() - encode_start;
         if self.space == SpaceId::Handshake {
@@ -321,7 +331,7 @@ impl PacketBuilder {
             conn.trace_cid,
         );
 
-        (len, pad)
+        Some((len, pad))
     }
 }
 

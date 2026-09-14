@@ -229,11 +229,13 @@ fn invalid_first_accepted_initial_logs_drop_without_plaintext_length() {
     let partial = header.encode(&mut packet);
     packet.extend_from_slice(&[0x1d, 0x2a, 0x00]);
     packet.resize(MIN_INITIAL_SIZE as usize, 0);
-    partial.finish(
-        &mut packet,
-        keys.remote.as_ref().unwrap().header.as_ref(),
-        Some((0, keys.remote.as_ref().unwrap().packet.as_ref())),
-    );
+    partial
+        .finish(
+            &mut packet,
+            keys.remote.as_ref().unwrap().header.as_ref(),
+            Some((0, keys.remote.as_ref().unwrap().packet.as_ref())),
+        )
+        .unwrap();
     pair.server.inbound.push_back(Inbound::plain(
         pair.time,
         None,

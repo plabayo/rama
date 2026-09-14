@@ -31,7 +31,7 @@ pub(crate) mod rustls;
 /// A cryptographic session (commonly TLS)
 pub(crate) trait Session: Send + Sync + 'static {
     /// Create the initial set of keys given the client's initial destination ConnectionId
-    fn initial_keys(&self, dst_cid: &ConnectionId, side: Side) -> Keys;
+    fn initial_keys(&self, dst_cid: &ConnectionId, side: Side) -> Result<Keys, TransportError>;
 
     /// What the handshake has settled, when the session has it. `None` until the connection
     /// emits `HandshakeDataReady`.
@@ -164,7 +164,12 @@ pub(crate) trait ServerConfig: Send + Sync {
     /// Generate the integrity tag for a retry packet
     ///
     /// Never called if `initial_keys` rejected `version`.
-    fn retry_tag(&self, version: u32, orig_dst_cid: &ConnectionId, packet: &[u8]) -> [u8; 16];
+    fn retry_tag(
+        &self,
+        version: u32,
+        orig_dst_cid: &ConnectionId,
+        packet: &[u8],
+    ) -> Result<[u8; 16], CryptoError>;
 
     /// Start a server session with this configuration
     ///
@@ -179,7 +184,7 @@ pub(crate) trait ServerConfig: Send + Sync {
 /// Keys used to protect packet payloads
 pub(crate) trait PacketKey: Send + Sync {
     /// Encrypt the packet payload with the given packet number
-    fn encrypt(&self, packet: u64, buf: &mut [u8], header_len: usize);
+    fn encrypt(&self, packet: u64, buf: &mut [u8], header_len: usize) -> Result<(), CryptoError>;
     /// Decrypt the packet payload with the given packet number
     fn decrypt(
         &self,

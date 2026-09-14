@@ -6562,7 +6562,7 @@ async fn an_accept_error_wakes_the_parked_endpoint_to_send_its_response() {
             version: u32,
             cid: &crate::proto::ConnectionId,
             packet: &[u8],
-        ) -> [u8; 16] {
+        ) -> Result<[u8; 16], crate::proto::crypto::CryptoError> {
             self.0.retry_tag(version, cid, packet)
         }
         fn start_session(

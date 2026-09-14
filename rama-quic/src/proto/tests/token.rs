@@ -400,6 +400,60 @@ fn retry_with_a_failing_token_key_hands_the_attempt_back_intact() {
     }
 }
 
+struct FailingRetryIntegrity(Arc<dyn crypto::ServerConfig>);
+impl crypto::ServerConfig for FailingRetryIntegrity {
+    fn initial_keys(
+        &self,
+        version: u32,
+        cid: &ConnectionId,
+    ) -> Result<crypto::Keys, crypto::UnsupportedVersion> {
+        self.0.initial_keys(version, cid)
+    }
+    fn retry_tag(
+        &self,
+        _: u32,
+        _: &ConnectionId,
+        _: &[u8],
+    ) -> Result<[u8; 16], crypto::CryptoError> {
+        Err(crypto::CryptoError)
+    }
+    fn start_session(
+        self: Arc<Self>,
+        version: u32,
+        params: &TransportParameters,
+    ) -> Result<Box<dyn crypto::Session>, TransportError> {
+        self.0.clone().start_session(version, params)
+    }
+}
+
+#[test]
+fn failed_retry_integrity_preserves_the_attempt_and_callers_buffer() {
+    let mut pair = Pair::default();
+    let mut config = server_config();
+    config.crypto = Arc::new(FailingRetryIntegrity(config.crypto));
+    pair.server.set_server_config(Some(Arc::new(config)));
+    pair.server.handle_incoming = Box::new(|_| IncomingConnectionBehavior::Wait);
+    let client = pair.begin_connect(client_config());
+    pair.drive_client();
+    pair.drive_server();
+    let incoming = pair.server.waiting_incoming.pop().unwrap();
+    let mut buffer = b"caller-owned".to_vec();
+    let error = pair
+        .server
+        .endpoint
+        .retry(incoming, &mut buffer)
+        .unwrap_err();
+    assert_eq!(error.reason(), RetryRefused::IntegrityProtection);
+    assert_eq!(buffer, b"caller-owned");
+    let incoming = error.into_incoming();
+    assert!(incoming.may_retry());
+    let server = pair.server.try_accept(incoming, pair.time).unwrap();
+    pair.drive();
+    assert!(!pair.client_conn_mut(client).is_handshaking());
+    assert!(!pair.server_conn_mut(server).is_closed());
+    assert_eq!(pair.server.known_connections(), 1);
+}
+
 fn retry_with_failing_key(failure: ProviderFailure) {
     let _guard = subscribe();
     let mut pair = Pair::default();

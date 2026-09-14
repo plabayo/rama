@@ -486,10 +486,10 @@ impl PartialEncode {
         buf: &mut [u8],
         header_crypto: &dyn crypto::HeaderKey,
         crypto: Option<(u64, &dyn crypto::PacketKey)>,
-    ) {
+    ) -> Result<(), crypto::CryptoError> {
         let Self { header_len, pn, .. } = self;
         let Some((pn_len, write_len)) = pn else {
-            return;
+            return Ok(());
         };
 
         let pn_pos = header_len - pn_len;
@@ -501,7 +501,7 @@ impl PartialEncode {
         }
 
         if let Some((number, crypto)) = crypto {
-            crypto.encrypt(number, buf, header_len);
+            crypto.encrypt(number, buf, header_len)?;
         }
 
         debug_assert!(
@@ -510,6 +510,7 @@ impl PartialEncode {
             pn_pos + 4 + header_crypto.sample_size()
         );
         header_crypto.encrypt(pn_pos, buf);
+        Ok(())
     }
 }
 
@@ -1023,11 +1024,13 @@ mod tests {
         let encode = header.encode(&mut buf);
         let header_len = buf.len();
         buf.resize(header_len + 16 + client.local.packet.tag_len(), 0);
-        encode.finish(
-            &mut buf,
-            &*client.local.header,
-            Some((0, &*client.local.packet)),
-        );
+        encode
+            .finish(
+                &mut buf,
+                &*client.local.header,
+                Some((0, &*client.local.packet)),
+            )
+            .unwrap();
 
         println!("{}", rama_utils::fmt::hex(&buf));
         let expected: [u8; 51] = rama_utils::hex::decode(concat!(

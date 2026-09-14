@@ -302,7 +302,7 @@ impl Connection {
                         builder.pad_to(segment_size as u16);
                     }
 
-                    builder.finish_and_track(now, self, sent_frames.take(), buf);
+                    builder.finish_and_track(now, self, sent_frames.take(), buf)?;
 
                     if num_datagrams == 1 {
                         // Set the segment size for this GSO batch to the size of the first UDP
@@ -369,7 +369,7 @@ impl Connection {
                 // datagram.
                 // Finish current packet without adding extra padding
                 if let Some(builder) = builder_storage.take() {
-                    builder.finish_and_track(now, self, sent_frames.take(), buf);
+                    builder.finish_and_track(now, self, sent_frames.take(), buf)?;
                 }
             }
 
@@ -552,7 +552,7 @@ impl Connection {
             }
 
             let last_packet_number = builder.exact_number;
-            builder.finish_and_track(now, self, sent_frames, buf);
+            builder.finish_and_track(now, self, sent_frames, buf)?;
             self.path
                 .congestion
                 .on_sent(now, buf.len() as u64, last_packet_number);
@@ -606,7 +606,7 @@ impl Connection {
                 non_retransmits: true,
                 ..Default::default()
             };
-            builder.finish_and_track(now, self, Some(sent_frames), buf);
+            builder.finish_and_track(now, self, Some(sent_frames), buf)?;
 
             self.stats.path.sent_plpmtud_probes += 1;
             num_datagrams = 1;
@@ -702,7 +702,7 @@ impl Connection {
         // sending a datagram of this size
         builder.pad_to(MIN_INITIAL_SIZE);
 
-        builder.finish(self, now, buf);
+        builder.finish(self, now, buf)?;
         self.stats.udp_tx.on_sent(1, buf.len());
 
         Some(Transmit {
@@ -746,7 +746,7 @@ impl Connection {
         buf.write(token);
         self.stats.frame_tx.path_response += 1;
         builder.pad_to(MIN_INITIAL_SIZE);
-        builder.finish(self, now, buf);
+        builder.finish(self, now, buf)?;
         self.stats.udp_tx.on_sent(1, buf.len());
         Some(Transmit {
             destination: remote,

@@ -495,25 +495,30 @@ impl Endpoint {
             }
         };
 
-        let conn = self.add_connection(
-            ch,
-            config.version,
-            remote_id,
-            loc_cid,
-            remote_id,
-            FourTuple {
-                remote,
-                local: None,
-            },
-            now,
-            tls,
-            config.transport,
-            SideArgs::Client {
-                token_store: config.token_store,
-                server_name: server_name.into(),
-                preferred_address_policy: config.preferred_address_policy,
-            },
-        );
+        let conn = self
+            .add_connection(
+                ch,
+                config.version,
+                remote_id,
+                loc_cid,
+                remote_id,
+                FourTuple {
+                    remote,
+                    local: None,
+                },
+                now,
+                tls,
+                config.transport,
+                SideArgs::Client {
+                    token_store: config.token_store,
+                    server_name: server_name.into(),
+                    preferred_address_policy: config.preferred_address_policy,
+                },
+            )
+            .map_err(|error| {
+                self.index.connection_ids.remove(&loc_cid);
+                ConnectError::Crypto(error)
+            })?;
         conn.qlog_local_parameters(now, &params);
         Ok((ch, conn))
     }
@@ -603,14 +608,16 @@ impl Endpoint {
         };
 
         if let Err(reason) = self.early_validate_first_packet(header) {
-            return Some(DatagramEvent::Response(self.initial_close(
-                header.version,
-                addresses,
-                &crypto,
-                &header.src_cid,
-                reason,
-                buf,
-            )));
+            return self
+                .initial_close(
+                    header.version,
+                    addresses,
+                    &crypto,
+                    &header.src_cid,
+                    reason,
+                    buf,
+                )
+                .map(DatagramEvent::Response);
         }
 
         let packet = match event
@@ -646,14 +653,16 @@ impl Endpoint {
         let Ok(token) = IncomingToken::from_header(&header, &server_config, addresses.remote)
         else {
             debug!("rejecting invalid retry token");
-            return Some(DatagramEvent::Response(self.initial_close(
-                header.version,
-                addresses,
-                &crypto,
-                &header.src_cid,
-                TransportError::INVALID_TOKEN(""),
-                buf,
-            )));
+            return self
+                .initial_close(
+                    header.version,
+                    addresses,
+                    &crypto,
+                    &header.src_cid,
+                    TransportError::INVALID_TOKEN(""),
+                    buf,
+                )
+                .map(DatagramEvent::Response);
         };
 
         let deadline = event.now.checked_add(self.config.handshake_timeout)?;
@@ -749,14 +758,14 @@ impl Endpoint {
             self.index.remove_initial(dst_cid);
             return Err(AcceptError {
                 cause: ConnectionError::CidsExhausted,
-                response: Some(self.initial_close(
+                response: self.initial_close(
                     version,
                     incoming.addresses,
                     &incoming.crypto,
                     &src_cid,
                     TransportError::CONNECTION_REFUSED(""),
                     buf,
-                )),
+                ),
             });
         }
 
@@ -822,28 +831,48 @@ impl Endpoint {
                 );
                 return Err(AcceptError {
                     cause: error.into(),
-                    response: Some(response),
+                    response,
                 });
             }
         };
         let transport_config = server_config.transport.clone();
-        let mut conn = self.add_connection(
-            ch,
-            version,
-            dst_cid,
-            loc_cid,
-            src_cid,
-            incoming.addresses,
-            incoming.received_at,
-            tls,
-            transport_config,
-            SideArgs::Server {
-                server_config,
-                pref_addr_cid,
-                path_validated: remote_address_validated,
-                orig_dst_cid: incoming.token.orig_dst_cid,
-            },
-        );
+        let mut conn = self
+            .add_connection(
+                ch,
+                version,
+                dst_cid,
+                loc_cid,
+                src_cid,
+                incoming.addresses,
+                incoming.received_at,
+                tls,
+                transport_config,
+                SideArgs::Server {
+                    server_config,
+                    pref_addr_cid,
+                    path_validated: remote_address_validated,
+                    orig_dst_cid: incoming.token.orig_dst_cid,
+                },
+            )
+            .map_err(|error| {
+                self.index.connection_ids.remove(&loc_cid);
+                if let Some(cid) = pref_addr_cid {
+                    self.index.connection_ids.remove(&cid);
+                }
+                self.index.remove_initial(dst_cid);
+                let response = self.initial_close(
+                    version,
+                    incoming.addresses,
+                    &incoming.crypto,
+                    &src_cid,
+                    error.clone(),
+                    buf,
+                );
+                AcceptError {
+                    cause: error.into(),
+                    response,
+                }
+            })?;
         self.index.insert_initial(dst_cid, ch);
         conn.qlog_local_parameters(incoming.received_at, &params);
 
@@ -869,14 +898,14 @@ impl Endpoint {
                 debug!("handshake failed: {}", e);
                 self.handle_event(ch, EndpointEvent(EndpointEventInner::Drained));
                 let response = match e {
-                    ConnectionError::TransportError(ref e) => Some(self.initial_close(
+                    ConnectionError::TransportError(ref e) => self.initial_close(
                         version,
                         incoming.addresses,
                         &incoming.crypto,
                         &src_cid,
                         e.clone(),
                         buf,
-                    )),
+                    ),
                     _ => None,
                 };
                 Err(AcceptError { cause: e, response })
@@ -910,7 +939,7 @@ impl Endpoint {
     }
 
     /// Reject this incoming connection attempt
-    pub(crate) fn refuse(&mut self, incoming: Incoming, buf: &mut Vec<u8>) -> Transmit {
+    pub(crate) fn refuse(&mut self, incoming: Incoming, buf: &mut Vec<u8>) -> Option<Transmit> {
         self.clean_up_incoming(&incoming);
         incoming.improper_drop_warner.dismiss();
 
@@ -955,9 +984,6 @@ impl Endpoint {
             }
         };
 
-        self.clean_up_incoming(&incoming);
-        incoming.improper_drop_warner.dismiss();
-
         // First Initial
         // The peer will use this as the DCID of its following Initials. Initial DCIDs are
         // looked up separately from Handshake/Data DCIDs, so there is no risk of collision
@@ -972,14 +998,24 @@ impl Endpoint {
             version: incoming.packet.header.version,
         };
 
-        let encode = header.encode(buf);
+        let original_len = buf.len();
+        header.encode(buf);
         buf.put_slice(&token);
-        buf.extend_from_slice(&server_config.crypto.retry_tag(
+        let tag = match server_config.crypto.retry_tag(
             incoming.packet.header.version,
             &incoming.packet.header.dst_cid,
-            buf,
-        ));
-        encode.finish(buf, &*incoming.crypto.local.header, None);
+            &buf[original_len..],
+        ) {
+            Ok(tag) => tag,
+            Err(error) => {
+                warn!(%error, "retry integrity protection failed; the attempt is left to the application");
+                buf.truncate(original_len);
+                return Err(RetryError::new(incoming, RetryRefused::IntegrityProtection));
+            }
+        };
+        buf.extend_from_slice(&tag);
+        self.clean_up_incoming(&incoming);
+        incoming.improper_drop_warner.dismiss();
 
         Ok(Transmit {
             destination: incoming.addresses.remote,
@@ -1096,7 +1132,7 @@ impl Endpoint {
         tls: Box<dyn crypto::Session>,
         transport_config: Arc<TransportConfig>,
         side_args: SideArgs,
-    ) -> Connection {
+    ) -> Result<Connection, TransportError> {
         let mut rng_seed = [0; 32];
         self.rng.fill_bytes(&mut rng_seed);
         let side = side_args.side();
@@ -1116,7 +1152,7 @@ impl Endpoint {
             self.allow_mtud,
             rng_seed,
             side_args,
-        );
+        )?;
 
         let mut cids_issued = 0;
         let mut loc_cids = FxHashMap::default();
@@ -1142,7 +1178,7 @@ impl Endpoint {
 
         self.index.insert_conn(addresses, loc_cid, ch, side);
 
-        conn
+        Ok(conn)
     }
 
     fn initial_close(
@@ -1153,7 +1189,7 @@ impl Endpoint {
         remote_id: &ConnectionId,
         reason: TransportError,
         buf: &mut Vec<u8>,
-    ) -> Transmit {
+    ) -> Option<Transmit> {
         // We don't need to worry about CID collisions in initial closes because the peer
         // shouldn't respond, and if it does, and the CID collides, we'll just drop the
         // unexpected response.
@@ -1172,15 +1208,21 @@ impl Endpoint {
             INITIAL_MTU as usize - partial_encode.header_len - crypto.local.packet.tag_len();
         frame::Close::from(reason).encode(buf, max_len);
         buf.resize(buf.len() + crypto.local.packet.tag_len(), 0);
-        partial_encode.finish(buf, &*crypto.local.header, Some((0, &*crypto.local.packet)));
-        Transmit {
+        if let Err(error) =
+            partial_encode.finish(buf, &*crypto.local.header, Some((0, &*crypto.local.packet)))
+        {
+            debug!(%error, "cannot encrypt initial close");
+            buf.clear();
+            return None;
+        }
+        Some(Transmit {
             destination: addresses.remote,
             ecn: None,
             size: buf.len(),
             segment_size: None,
             local: addresses.local,
             cid_used: None,
-        }
+        })
     }
 
     /// Access the configuration used by this endpoint
@@ -1936,6 +1978,8 @@ pub enum RetryRefused {
     NoServerConfig,
     /// The token key's provider failed to seal the retry token
     TokenSealing,
+    /// The crypto provider failed to authenticate the Retry packet.
+    IntegrityProtection,
     /// The configured retry token lifetime cannot be represented on the clock that would bound
     /// the return route, so no Retry is issued and the attempt is kept
     LifetimeUnrepresentable,
@@ -1947,6 +1991,9 @@ impl core::fmt::Display for RetryError {
             RetryRefused::AlreadyRetried => f.write_str("retry() with validated Incoming"),
             RetryRefused::NoServerConfig => f.write_str("retry() without a server config"),
             RetryRefused::TokenSealing => f.write_str("retry token could not be sealed"),
+            RetryRefused::IntegrityProtection => {
+                f.write_str("retry packet could not be authenticated")
+            }
             RetryRefused::LifetimeUnrepresentable => {
                 f.write_str("retry token lifetime exceeds the clock")
             }

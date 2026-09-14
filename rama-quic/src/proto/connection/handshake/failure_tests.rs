@@ -10,12 +10,10 @@ struct FailedKeyUpdate {
 }
 
 impl Session for FailedKeyUpdate {
-    #[expect(
-        clippy::panic,
-        reason = "the test installs this session after the handshake"
-    )]
-    fn initial_keys(&self, _: &ConnectionId, _: Side) -> Keys {
-        panic!("handshake already completed")
+    fn initial_keys(&self, _: &ConnectionId, _: Side) -> Result<Keys, TransportError> {
+        Err(TransportError::INTERNAL_ERROR(
+            "injected Initial key derivation failure",
+        ))
     }
     fn early_crypto(&self) -> Option<(Box<dyn HeaderKey>, Box<dyn PacketKey>)> {
         None
@@ -82,4 +80,51 @@ fn failed_key_derivation_closes_without_rotating_or_counting_an_update() {
             if error.code == TransportErrorCode::INTERNAL_ERROR)
         );
     }
+}
+
+struct FailedEncryption;
+
+impl PacketKey for FailedEncryption {
+    fn encrypt(&self, _: u64, buffer: &mut [u8], _: usize) -> Result<(), crypto::CryptoError> {
+        buffer.fill(0x42);
+        Err(crypto::CryptoError)
+    }
+    fn decrypt(&self, _: u64, _: &[u8], _: &mut BytesMut) -> Result<(), crypto::CryptoError> {
+        Err(crypto::CryptoError)
+    }
+    fn tag_len(&self) -> usize {
+        16
+    }
+    fn confidentiality_limit(&self) -> u64 {
+        u64::MAX
+    }
+    fn integrity_limit(&self) -> u64 {
+        u64::MAX
+    }
+}
+
+#[test]
+fn failed_packet_encryption_does_not_emit_or_track_plaintext() {
+    let mut pair = Pair::default();
+    let (client, _) = pair.connect();
+    let now = pair.time + Duration::from_millis(20);
+    let connection = pair.client_conn_mut(client);
+    connection.spaces[SpaceId::Data]
+        .crypto
+        .as_mut()
+        .unwrap()
+        .local
+        .packet = Box::new(FailedEncryption);
+    let sent = connection.stats.path.sent_packets;
+    let datagrams = connection.stats.udp_tx.datagrams;
+    connection.ping();
+    let mut buffer = Vec::new();
+    assert!(connection.poll_transmit(now, 1, &mut buffer).is_none());
+    assert!(buffer.is_empty());
+    assert_eq!(connection.stats.path.sent_packets, sent);
+    assert_eq!(connection.stats.udp_tx.datagrams, datagrams);
+    assert!(
+        matches!(connection.ended_because(), Some(ConnectionError::TransportError(error))
+        if error.code == TransportErrorCode::INTERNAL_ERROR)
+    );
 }

@@ -5229,11 +5229,13 @@ fn application_close_in_initial_is_rejected() {
     packet.resize(header_len + 16, 0);
     // Room for the AEAD tag
     packet.resize(packet.len() + keys.local.packet.tag_len(), 0);
-    partial.finish(
-        &mut packet,
-        keys.local.header.as_ref(),
-        Some((0, keys.local.packet.as_ref())),
-    );
+    partial
+        .finish(
+            &mut packet,
+            keys.local.header.as_ref(),
+            Some((0, keys.local.packet.as_ref())),
+        )
+        .unwrap();
 
     let event = client.handle(
         now,

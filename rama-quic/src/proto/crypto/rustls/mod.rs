@@ -74,8 +74,8 @@ impl TlsSession {
 }
 
 impl crypto::Session for TlsSession {
-    fn initial_keys(&self, dst_cid: &ConnectionId, side: Side) -> Keys {
-        initial_keys(self.version, *dst_cid, side, &self.suite)
+    fn initial_keys(&self, dst_cid: &ConnectionId, side: Side) -> Result<Keys, TransportError> {
+        Ok(initial_keys(self.version, *dst_cid, side, &self.suite))
     }
 
     #[cfg(test)]
@@ -631,7 +631,12 @@ impl crypto::ServerConfig for QuicServerConfig {
         Ok(initial_keys(version, *dst_cid, Side::Server, &self.initial))
     }
 
-    fn retry_tag(&self, version: u32, orig_dst_cid: &ConnectionId, packet: &[u8]) -> [u8; 16] {
+    fn retry_tag(
+        &self,
+        version: u32,
+        orig_dst_cid: &ConnectionId,
+        packet: &[u8],
+    ) -> Result<[u8; 16], CryptoError> {
         // Safe: `start_session()` is never called if `initial_keys()` rejected `version`
         #[expect(
             clippy::unwrap_used,
@@ -654,22 +659,11 @@ impl crypto::ServerConfig for QuicServerConfig {
         pseudo_packet.extend_from_slice(packet);
 
         let nonce = aead::Nonce::assume_unique_for_key(nonce);
-        #[expect(
-            clippy::unwrap_used,
-            reason = "the Retry integrity keys are 16-byte constants"
-        )]
-        let key = aead::LessSafeKey::new(aead::UnboundKey::new(&aead::AES_128_GCM, &key).unwrap());
-
-        #[expect(
-            clippy::unwrap_used,
-            reason = "sealing an empty in-place buffer with AAD cannot fail for a valid key"
-        )]
-        let tag = key
-            .seal_in_place_separate_tag(nonce, aead::Aad::from(pseudo_packet), &mut [])
-            .unwrap();
+        let key = aead::LessSafeKey::new(aead::UnboundKey::new(&aead::AES_128_GCM, &key)?);
+        let tag = key.seal_in_place_separate_tag(nonce, aead::Aad::from(pseudo_packet), &mut [])?;
         let mut result = [0; 16];
         result.copy_from_slice(tag.as_ref());
-        result
+        Ok(result)
     }
 }
 
@@ -726,15 +720,14 @@ pub(crate) fn initial_keys(
 }
 
 impl crypto::PacketKey for Box<dyn PacketKey> {
-    fn encrypt(&self, packet: u64, buf: &mut [u8], header_len: usize) {
+    fn encrypt(&self, packet: u64, buf: &mut [u8], header_len: usize) -> Result<(), CryptoError> {
         let (header, payload_tag) = buf.split_at_mut(header_len);
         let (payload, tag_storage) = payload_tag.split_at_mut(payload_tag.len() - self.tag_len());
-        #[expect(
-            clippy::unwrap_used,
-            reason = "`payload` excludes the `tag_len()` bytes the caller reserved, so rustls always has room for the tag"
-        )]
-        let tag = self.encrypt_in_place(packet, &*header, payload).unwrap();
+        let tag = self
+            .encrypt_in_place(packet, &*header, payload)
+            .map_err(|_error| CryptoError)?;
         tag_storage.copy_from_slice(tag.as_ref());
+        Ok(())
     }
 
     fn decrypt(

@@ -1086,10 +1086,11 @@ impl EndpointInner {
         } else {
             state.stats.refused_handshakes += 1;
             let mut response_buffer = Vec::new();
-            let transmit = state.inner.refuse(incoming, &mut response_buffer);
-            state
-                .sockets
-                .respond(received_on, transmit, &response_buffer);
+            if let Some(transmit) = state.inner.refuse(incoming, &mut response_buffer) {
+                state
+                    .sockets
+                    .respond(received_on, transmit, &response_buffer);
+            }
         }
         let retired = state.sockets.release(lease, now());
         state.wake_driver();
@@ -1765,9 +1766,11 @@ impl RecvState {
                             ) {
                                 Some(DatagramEvent::NewConnection(incoming)) => {
                                     if self.connections.close.is_some() {
-                                        let transmit =
-                                            endpoint.refuse(incoming, &mut response_buffer);
-                                        respond(transmit, &response_buffer, socket);
+                                        if let Some(transmit) =
+                                            endpoint.refuse(incoming, &mut response_buffer)
+                                        {
+                                            respond(transmit, &response_buffer, socket);
+                                        }
                                     } else if permit.widen(INCOMING_OVERHEAD - PACKET_OVERHEAD) {
                                         // Charged until the application takes the attempt; it is
                                         // queued by the caller once this socket is released.

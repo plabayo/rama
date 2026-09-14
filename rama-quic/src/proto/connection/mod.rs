@@ -307,14 +307,14 @@ impl Connection {
         allow_mtud: bool,
         rng_seed: [u8; 32],
         side_args: SideArgs,
-    ) -> Self {
+    ) -> Result<Self, TransportError> {
         let pref_addr_cid = side_args.pref_addr_cid();
         let path_validated = side_args.path_validated();
         let trace_cid = side_args.trace_cid(init_cid);
         let connection_side = ConnectionSide::from(side_args);
         let side = connection_side.side();
         let initial_space = PacketSpace {
-            crypto: Some(crypto.initial_keys(&init_cid, side)),
+            crypto: Some(crypto.initial_keys(&init_cid, side)?),
             ..PacketSpace::new(now)
         };
         let state = State::Handshake(state::Handshake {
@@ -441,7 +441,7 @@ impl Connection {
                 now,
                 TransportError::INTERNAL_ERROR("handshake timeout exceeds clock range").into(),
             );
-            return this;
+            return Ok(this);
         }
         if path_validated {
             this.on_path_validated();
@@ -451,7 +451,7 @@ impl Connection {
             this.write_crypto(now);
             this.init_0rtt(now);
         }
-        this
+        Ok(this)
     }
 
     /// Provide control over streams
