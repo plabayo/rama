@@ -1,16 +1,10 @@
 use std::io::Cursor;
 use std::pin::Pin;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Context, Poll};
-
-use atomic_waker::AtomicWaker;
-use futures_channel::{mpsc, oneshot};
-use pin_project_lite::pin_project;
 
 use rama_core::bytes::{Buf, Bytes};
 use rama_core::extensions::{Extensions, ExtensionsRef};
-use rama_core::futures::{Stream, ready};
+use rama_core::futures::ready;
 use rama_core::telemetry::tracing::trace;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
@@ -18,43 +12,74 @@ use super::SendBuf;
 use super::ping::Recorder;
 use crate::h2::{Reason, RecvStream, SendStream};
 
-pub(super) fn pair<B>(
+pub(super) fn upgraded<B>(
     send_stream: SendStream<SendBuf<B>>,
     recv_stream: RecvStream,
     ping: Recorder,
-) -> (H2Upgraded, UpgradedSendStreamTask<B>) {
+) -> H2Upgraded
+where
+    B: Buf + Send + 'static,
+{
     // The upgraded IO owns this HTTP/2 stream's transport metadata. Message
     // extensions may contain OnUpgrade itself, creating a cycle through the
     // queued Upgraded, and may describe the opposite side of a proxy.
     let extensions = recv_stream.extensions();
-    let (tx, rx) = mpsc::channel(1);
-    let (error_tx, error_rx) = oneshot::channel();
-    let close_notify = Arc::new(UpgradedCloseNotify::new());
+    H2Upgraded {
+        send_stream: Box::new(send_stream),
+        send_closed: false,
+        recv_stream,
+        ping,
+        buf: Bytes::new(),
+        extensions,
+    }
+}
 
-    (
-        H2Upgraded {
-            send_stream: UpgradedSendStreamBridge {
-                tx,
-                error_rx,
-                close_notify: close_notify.clone(),
-            },
-            recv_stream,
-            ping,
-            buf: Bytes::new(),
-            extensions,
-        },
-        UpgradedSendStreamTask {
-            h2_tx: send_stream,
-            rx,
-            close_notify,
-            error_tx: Some(error_tx),
-        },
-    )
+/// The h2 send half of a tunnel with the body type erased, so the upgraded IO
+/// writes into the stream directly instead of hopping through a channel and a
+/// writer task per tunnel.
+trait TunnelSink: Send {
+    fn reserve_capacity(&mut self, capacity: usize);
+    fn poll_capacity(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<usize, crate::h2::Error>>>;
+    fn poll_reset(&mut self, cx: &mut Context<'_>) -> Poll<Result<Reason, crate::h2::Error>>;
+    fn send_data(&mut self, data: Box<[u8]>) -> Result<(), crate::h2::Error>;
+    fn send_end_of_stream(&mut self) -> Result<(), crate::h2::Error>;
+}
+
+impl<B> TunnelSink for SendStream<SendBuf<B>>
+where
+    B: Buf + Send + 'static,
+{
+    fn reserve_capacity(&mut self, capacity: usize) {
+        Self::reserve_capacity(self, capacity);
+    }
+
+    fn poll_capacity(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<usize, crate::h2::Error>>> {
+        Self::poll_capacity(self, cx)
+    }
+
+    fn poll_reset(&mut self, cx: &mut Context<'_>) -> Poll<Result<Reason, crate::h2::Error>> {
+        Self::poll_reset(self, cx)
+    }
+
+    fn send_data(&mut self, data: Box<[u8]>) -> Result<(), crate::h2::Error> {
+        Self::send_data(self, SendBuf::Cursor(Cursor::new(data)), false)
+    }
+
+    fn send_end_of_stream(&mut self) -> Result<(), crate::h2::Error> {
+        Self::send_data(self, SendBuf::None, true)
+    }
 }
 
 pub(super) struct H2Upgraded {
     ping: Recorder,
-    send_stream: UpgradedSendStreamBridge,
+    send_stream: Box<dyn TunnelSink>,
+    send_closed: bool,
     recv_stream: RecvStream,
     buf: Bytes,
     extensions: Extensions,
@@ -66,174 +91,12 @@ impl ExtensionsRef for H2Upgraded {
     }
 }
 
-struct UpgradedSendStreamBridge {
-    tx: mpsc::Sender<Cursor<Box<[u8]>>>,
-    error_rx: oneshot::Receiver<crate::Error>,
-    close_notify: Arc<UpgradedCloseNotify>,
-}
-
-impl Drop for UpgradedSendStreamBridge {
+impl Drop for H2Upgraded {
     fn drop(&mut self) {
-        self.close_notify.close();
-    }
-}
-
-struct UpgradedCloseNotify {
-    closed: AtomicBool,
-    task: AtomicWaker,
-}
-
-impl UpgradedCloseNotify {
-    fn new() -> Self {
-        Self {
-            closed: AtomicBool::new(false),
-            task: AtomicWaker::new(),
-        }
-    }
-
-    fn close(&self) {
-        self.closed.store(true, Ordering::Release);
-        self.task.wake();
-    }
-
-    fn poll_closed(&self, cx: &Context<'_>) -> Poll<()> {
-        if self.closed.load(Ordering::Acquire) {
-            return Poll::Ready(());
-        }
-
-        self.task.register(cx.waker());
-
-        if self.closed.load(Ordering::Acquire) {
-            Poll::Ready(())
-        } else {
-            Poll::Pending
-        }
-    }
-}
-
-pin_project! {
-    #[must_use = "futures do nothing unless polled"]
-    pub struct UpgradedSendStreamTask<B> {
-        #[pin]
-        h2_tx: SendStream<SendBuf<B>>,
-        #[pin]
-        rx: mpsc::Receiver<Cursor<Box<[u8]>>>,
-        close_notify: Arc<UpgradedCloseNotify>,
-        error_tx: Option<oneshot::Sender<crate::Error>>,
-    }
-}
-
-// ===== impl UpgradedSendStreamTask =====
-
-impl<B> UpgradedSendStreamTask<B>
-where
-    B: Buf,
-{
-    fn tick(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), crate::Error>> {
-        let mut me = self.project();
-
-        // this is a manual `select()` over 3 "futures", so we always need
-        // to be sure they are ready and/or we are waiting notification of
-        // one of the sides hanging up, so the task doesn't live around
-        // longer than it's meant to.
-        loop {
-            // we don't have the next chunk of data yet, so just reserve 1 byte to make
-            // sure there's some capacity available. h2 will handle the capacity management
-            // for the actual body chunk.
-            me.h2_tx.reserve_capacity(1);
-
-            let h2_has_capacity = if me.h2_tx.capacity() == 0 {
-                // poll_capacity oddly needs a loop
-                loop {
-                    match me.h2_tx.poll_capacity(cx) {
-                        Poll::Ready(Some(Ok(0))) => {}
-                        Poll::Ready(Some(Ok(_))) => break true,
-                        Poll::Ready(Some(Err(e))) => {
-                            return Poll::Ready(Err(crate::Error::new_body_write(e)));
-                        }
-                        Poll::Ready(None) => {
-                            // None means the stream is no longer in a
-                            // streaming state, we either finished it
-                            // somehow, or the remote reset us.
-                            return Poll::Ready(Err(crate::Error::new_body_write(
-                                "send stream capacity unexpectedly closed",
-                            )));
-                        }
-                        Poll::Pending => break false,
-                    }
-                }
-            } else {
-                true
-            };
-
-            match me.h2_tx.poll_reset(cx) {
-                Poll::Ready(Ok(reason)) => {
-                    trace!("stream received RST_STREAM: {:?}", reason);
-                    return Poll::Ready(Err(crate::Error::new_body_write(crate::h2::Error::from(
-                        reason,
-                    ))));
-                }
-                Poll::Ready(Err(err)) => {
-                    return Poll::Ready(Err(crate::Error::new_body_write(err)));
-                }
-                Poll::Pending => (),
-            }
-
-            // If h2 has no capacity, don't pull another item from the mpsc
-            // receiver. That would free a channel slot and let the writer
-            // enqueue more data without h2 backpressure.
-            //
-            // Still allow the task to finish once the upgraded write side is
-            // gone and the mpsc queue is empty.
-            if !h2_has_capacity {
-                // `size_hint` reads the queued message count without popping,
-                // so an accepted write stays queued until h2 capacity returns.
-                if me.rx.size_hint().0 == 0 && me.close_notify.poll_closed(cx).is_ready() {
-                    me.h2_tx
-                        .send_data(SendBuf::None, true)
-                        .map_err(crate::Error::new_body_write)?;
-                    return Poll::Ready(Ok(()));
-                }
-
-                return Poll::Pending;
-            }
-
-            match me.rx.as_mut().poll_next(cx) {
-                Poll::Ready(Some(cursor)) => {
-                    me.h2_tx
-                        .send_data(SendBuf::Cursor(cursor), false)
-                        .map_err(crate::Error::new_body_write)?;
-                }
-                Poll::Ready(None) => {
-                    me.h2_tx
-                        .send_data(SendBuf::None, true)
-                        .map_err(crate::Error::new_body_write)?;
-                    return Poll::Ready(Ok(()));
-                }
-                Poll::Pending => {
-                    return Poll::Pending;
-                }
-            }
-        }
-    }
-}
-
-impl<B> Future for UpgradedSendStreamTask<B>
-where
-    B: Buf,
-{
-    type Output = ();
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        match self.as_mut().tick(cx) {
-            Poll::Ready(Ok(())) => Poll::Ready(()),
-            Poll::Ready(Err(err)) => {
-                if let Some(tx) = self.error_tx.take() {
-                    let _oh_well = tx.send(err);
-                }
-                Poll::Ready(())
-            }
-            Poll::Pending => Poll::Pending,
+        // Half-close the tunnel for a peer that is still reading, as a
+        // shutdown would have. Nothing to do if the stream is already gone.
+        if !self.send_closed {
+            _ = self.send_stream.send_end_of_stream();
         }
     }
 }
@@ -284,76 +147,67 @@ impl AsyncWrite for H2Upgraded {
         if buf.is_empty() {
             return Poll::Ready(Ok(0));
         }
-
-        match self.send_stream.tx.poll_ready(cx) {
-            Poll::Ready(Ok(())) => {}
-            Poll::Ready(Err(_task_dropped)) => {
-                // if the task dropped, check if there was an error
-                // otherwise i guess its a broken pipe
-                return match Pin::new(&mut self.send_stream.error_rx).poll(cx) {
-                    Poll::Ready(Ok(reason)) => Poll::Ready(Err(io_error(reason))),
-                    Poll::Ready(Err(_task_dropped)) => {
-                        Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into()))
-                    }
-                    Poll::Pending => Poll::Pending,
-                };
-            }
-            Poll::Pending => return Poll::Pending,
+        if self.send_closed {
+            return Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into()));
         }
 
-        let n = buf.len();
-        match self.send_stream.tx.start_send(Cursor::new(buf.into())) {
-            Ok(()) => Poll::Ready(Ok(n)),
-            Err(_task_dropped) => {
-                // if the task dropped, check if there was an error
-                // otherwise i guess its a broken pipe
-                match Pin::new(&mut self.send_stream.error_rx).poll(cx) {
-                    Poll::Ready(Ok(reason)) => Poll::Ready(Err(io_error(reason))),
-                    Poll::Ready(Err(_task_dropped)) => {
-                        Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into()))
+        // Flow control decides how much of this write fits; a partial write is
+        // fine for `AsyncWrite`. Errors from the capacity and data paths are
+        // read off `poll_reset`, which carries the peer's actual reason.
+        self.send_stream.reserve_capacity(buf.len());
+        let sent = loop {
+            match ready!(self.send_stream.poll_capacity(cx)) {
+                None => break Some(0),
+                // a zero grant is not a grant yet; poll again
+                Some(Ok(0)) => {}
+                Some(Ok(cnt)) => {
+                    let cnt = cnt.min(buf.len());
+                    break self
+                        .send_stream
+                        .send_data(buf[..cnt].into())
+                        .ok()
+                        .map(|()| cnt);
+                }
+                Some(Err(_)) => break None,
+            }
+        };
+        if let Some(sent) = sent {
+            return Poll::Ready(Ok(sent));
+        }
+
+        Poll::Ready(Err(match ready!(self.send_stream.poll_reset(cx)) {
+            Ok(reason) => {
+                trace!("stream received RST_STREAM: {:?}", reason);
+                match reason {
+                    Reason::NO_ERROR | Reason::CANCEL | Reason::STREAM_CLOSED => {
+                        std::io::ErrorKind::BrokenPipe.into()
                     }
-                    Poll::Pending => Poll::Pending,
+                    reason => h2_to_io_error(reason.into()),
                 }
             }
-        }
+            Err(e) => h2_to_io_error(e),
+        }))
     }
 
-    fn poll_flush(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<(), std::io::Error>> {
-        match self.send_stream.tx.poll_ready(cx) {
-            Poll::Ready(Ok(())) => Poll::Ready(Ok(())),
-            Poll::Ready(Err(_task_dropped)) => {
-                // if the task dropped, check if there was an error
-                // otherwise it was a clean close
-                match Pin::new(&mut self.send_stream.error_rx).poll(cx) {
-                    Poll::Ready(Ok(reason)) => Poll::Ready(Err(io_error(reason))),
-                    Poll::Ready(Err(_task_dropped)) => Poll::Ready(Ok(())),
-                    Poll::Pending => Poll::Pending,
-                }
-            }
-            Poll::Pending => Poll::Pending,
-        }
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), std::io::Error>> {
+        // data handed to h2 is flushed by the connection task
+        Poll::Ready(Ok(()))
     }
 
     fn poll_shutdown(
         mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
+        _cx: &mut Context<'_>,
     ) -> Poll<Result<(), std::io::Error>> {
-        self.send_stream.tx.close_channel();
-        self.send_stream.close_notify.close();
-        match Pin::new(&mut self.send_stream.error_rx).poll(cx) {
-            Poll::Ready(Ok(reason)) => Poll::Ready(Err(io_error(reason))),
-            Poll::Ready(Err(_task_dropped)) => Poll::Ready(Ok(())),
-            Poll::Pending => Poll::Pending,
+        if self.send_closed {
+            return Poll::Ready(Ok(()));
         }
+        self.send_closed = true;
+        Poll::Ready(
+            self.send_stream
+                .send_end_of_stream()
+                .map_err(h2_to_io_error),
+        )
     }
-}
-
-#[inline(always)]
-fn io_error(e: crate::Error) -> std::io::Error {
-    std::io::Error::other(e)
 }
 
 #[inline(always)]

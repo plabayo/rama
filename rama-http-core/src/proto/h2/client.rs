@@ -796,8 +796,7 @@ where
 
                     let (pending, on_upgrade) = upgrade::pending();
 
-                    let (h2_up, up_task) = super::upgrade::pair(send_stream, recv_stream, ping);
-                    self.exec.spawn_task(up_task);
+                    let h2_up = super::upgrade::upgraded(send_stream, recv_stream, ping);
                     let upgraded = Upgraded::new(h2_up, Bytes::new());
                     // Preserve the peer's connection metadata explicitly; sharing
                     // its immutable snapshot cannot retain the handshake message.
