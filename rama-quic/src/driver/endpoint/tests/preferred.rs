@@ -1107,6 +1107,8 @@ async fn a_descriptor_whose_bytes_are_gone_is_retired_rather_than_carried() {
     let (client_config, mut server_config) = configs();
     let (listener, _listener_log) = recording_socket();
     let (advertised, advertised_log) = recording_socket();
+    // Keep the first candidate probe unread until the ownership fault is armed.
+    close_receive(&advertised_log);
     let advertised_addr = advertised.local_addr();
     let SocketAddr::V4(advertised_v4) = advertised_addr else {
         panic!("the fixture binds an IPv4 loopback socket");
@@ -1133,15 +1135,19 @@ async fn a_descriptor_whose_bytes_are_gone_is_retired_rather_than_carried() {
     let (c, s) = connect_through(&client, &server, client_config, initial).await;
 
     // From here, the next attempt to take a descriptor's bytes finds nothing where they were.
+    assert!(s.aside_transmit().is_none());
     s.fail_next_ownership();
+    open_receive(&advertised_log);
 
     // Traffic on the path in use, so the engine keeps writing into the same buffer.
-    let mut round = 0u8;
-    while s.stale_transmits() == 0 && round < 40 {
-        exchange(&c, &s, b"while a descriptor loses its bytes").await;
-        exchange(&s, &c, b"and the engine writes more").await;
-        round += 1;
-    }
+    exchange(&c, &s, b"while a descriptor loses its bytes").await;
+    exchange(&s, &c, b"and the engine writes more").await;
+    wait_for(
+        "the armed ownership attempt retires its descriptor",
+        Duration::from_secs(5),
+        || s.stale_transmits() != 0,
+    )
+    .await;
     assert_eq!(
         s.stale_transmits(),
         1,
