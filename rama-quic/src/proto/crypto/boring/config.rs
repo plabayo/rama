@@ -31,13 +31,13 @@ use crate::proto::{
 };
 
 struct Ticket {
-    host: String,
+    host: Host,
     session: SslSession,
     params: TransportParameters,
 }
 
 struct TicketState {
-    host: String,
+    host: Host,
     params: Arc<Mutex<Option<TransportParameters>>>,
 }
 
@@ -146,7 +146,7 @@ impl crypto::ClientConfig for QuicClientConfig {
             .context
             .configure()
             .map_err(|error| ConnectError::Crypto(crypto_error(error)))?;
-        let host = data.server_name.get_or_insert(host).to_string();
+        let host = data.server_name.get_or_insert(host).clone();
         let mut ssl = data
             .into_ssl()
             .map_err(|error| ConnectError::Crypto(crypto_error(error)))?;
