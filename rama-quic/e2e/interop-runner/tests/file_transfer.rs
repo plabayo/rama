@@ -1,5 +1,8 @@
 //! Subprocess checks of file transfers and TLS diagnostics, plus Unix shutdown signals.
 
+mod common;
+
+use common::endpoint_command;
 use rama::{
     crypto::dep::rcgen,
     utils::{fs::TempDir, octets},
@@ -34,20 +37,21 @@ async fn runner_file_transfer_and_retry() {
             fs::write(www.join(&name), name.as_bytes()).unwrap();
             names.push(name);
         }
-        let mut server = Command::new(env!("CARGO_BIN_EXE_rama-quic-interop-server"))
-            .env_clear()
-            .env("TESTCASE", testcase)
-            .env("CERTS", root)
-            .env("WWW", &www)
-            .env("SSLKEYLOGFILE", root.join("server.keys"))
-            .env("QLOGDIR", root.join("server-qlog"))
-            .arg("--listen")
-            .arg("[::]:0")
-            .stderr(Stdio::piped())
-            .stdout(Stdio::null())
-            .kill_on_drop(true)
-            .spawn()
-            .unwrap();
+        let mut server = Command::from(endpoint_command(env!(
+            "CARGO_BIN_EXE_rama-quic-interop-server"
+        )))
+        .env("TESTCASE", testcase)
+        .env("CERTS", root)
+        .env("WWW", &www)
+        .env("SSLKEYLOGFILE", root.join("server.keys"))
+        .env("QLOGDIR", root.join("server-qlog"))
+        .arg("--listen")
+        .arg("[::]:0")
+        .stderr(Stdio::piped())
+        .stdout(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
         let mut logs = BufReader::new(server.stderr.take().unwrap());
         let mut line = String::new();
         tokio::time::timeout(Duration::from_secs(10), logs.read_line(&mut line))
@@ -75,17 +79,18 @@ async fn runner_file_transfer_and_retry() {
         });
         let output = tokio::time::timeout(
             Duration::from_secs(60),
-            Command::new(env!("CARGO_BIN_EXE_rama-quic-interop-client"))
-                .env_clear()
-                .env("TESTCASE", testcase)
-                .env("REQUESTS", requests)
-                .env("DOWNLOADS", &downloads)
-                .env("SSLKEYLOGFILE", root.join("client.keys"))
-                .env("QLOGDIR", root.join("qlog"))
-                .arg("--timeout-seconds")
-                .arg("45")
-                .kill_on_drop(true)
-                .output(),
+            Command::from(endpoint_command(env!(
+                "CARGO_BIN_EXE_rama-quic-interop-client"
+            )))
+            .env("TESTCASE", testcase)
+            .env("REQUESTS", requests)
+            .env("DOWNLOADS", &downloads)
+            .env("SSLKEYLOGFILE", root.join("client.keys"))
+            .env("QLOGDIR", root.join("qlog"))
+            .arg("--timeout-seconds")
+            .arg("45")
+            .kill_on_drop(true)
+            .output(),
         )
         .await
         .unwrap()
@@ -223,20 +228,21 @@ async fn interrupted_client_drains_qlog_and_reports_failure() {
         let root = directory.path();
         // Keep a UDP receiver alive without replying: the client's handshake remains pending.
         let peer = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let mut client = Command::new(env!("CARGO_BIN_EXE_rama-quic-interop-client"))
-            .env_clear()
-            .env("TESTCASE", "transfer")
-            .env(
-                "REQUESTS",
-                format!("https://{}/pending.bin", peer.local_addr().unwrap()),
-            )
-            .env("DOWNLOADS", root.join("downloads"))
-            .env("QLOGDIR", root.join("qlog"))
-            .stderr(Stdio::piped())
-            .stdout(Stdio::null())
-            .kill_on_drop(true)
-            .spawn()
-            .unwrap();
+        let mut client = Command::from(endpoint_command(env!(
+            "CARGO_BIN_EXE_rama-quic-interop-client"
+        )))
+        .env("TESTCASE", "transfer")
+        .env(
+            "REQUESTS",
+            format!("https://{}/pending.bin", peer.local_addr().unwrap()),
+        )
+        .env("DOWNLOADS", root.join("downloads"))
+        .env("QLOGDIR", root.join("qlog"))
+        .stderr(Stdio::piped())
+        .stdout(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
         let mut packet = [0_u8; octets::kib(2)];
         tokio::time::timeout(Duration::from_secs(10), peer.recv_from(&mut packet))
             .await

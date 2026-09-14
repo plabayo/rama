@@ -16,11 +16,11 @@ use common::*;
 use rama::{
     quic::{ConnectionError, Endpoint, VarInt},
     tls::rustls::dep::rustls::{self, AlertDescription, CertificateError},
-    utils::{fs::tempdir, octets},
+    utils::octets,
 };
 use std::process::Stdio;
 
-use tokio::{process::Command, time::Instant};
+use tokio::process::Command;
 
 // The baseline stream scenario in both roles moved to `baseline.rs`, where it runs from the
 // shared `interop-common` definition; what remains here is aioquic-specific.
@@ -392,6 +392,9 @@ async fn acknowledged(
 #[cfg(unix)]
 #[tokio::test]
 async fn a_setup_command_that_hangs_is_stopped_and_reaped() {
+    use rama::utils::fs::tempdir;
+    use tokio::time::Instant;
+
     prepare().await;
     let scratch = tempdir().expect("a directory of our own");
 

@@ -1,6 +1,8 @@
 //! Exit statuses are part of the runner's supported-case discovery protocol.
 
-use std::process::Command;
+mod common;
+
+use common::endpoint_command;
 
 #[test]
 fn testcase_probe_needs_neither_mounts_nor_network() {
@@ -9,9 +11,8 @@ fn testcase_probe_needs_neither_mounts_nor_network() {
         env!("CARGO_BIN_EXE_rama-quic-interop-server"),
     ] {
         for testcase in ["handshake", "transfer", "retry", "multiconnect"] {
-            let status = Command::new(binary)
+            let status = endpoint_command(binary)
                 .arg("--check-testcase")
-                .env_clear()
                 .env("TESTCASE", testcase)
                 .status()
                 .unwrap();
@@ -27,9 +28,8 @@ fn testcase_probe_needs_neither_mounts_nor_network() {
             "connectionmigration",
             "unknown",
         ] {
-            let status = Command::new(binary)
+            let status = endpoint_command(binary)
                 .arg("--check-testcase")
-                .env_clear()
                 .env("TESTCASE", testcase)
                 .status()
                 .unwrap();

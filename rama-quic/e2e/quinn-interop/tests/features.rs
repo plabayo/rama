@@ -12,6 +12,7 @@ use std::{
 };
 
 use common::*;
+use interop_common::{keys::ask_when_ready, support::Deadline};
 use rama::{
     net::tls::ApplicationProtocol,
     quic::{
@@ -92,9 +93,9 @@ async fn both_ends_export_the_same_keying_material() {
     peer.join("the quinn peer").await;
 }
 
-/// Traffic keys updated mid-connection. The first payload is confirmed by the peer before the
-/// update is asked for, so what follows it really is on the other side of a key phase, and the
-/// connection's own count of key updates has to move: an update that never happened fails this.
+/// Traffic keys updated mid-connection after the initial random key phase is settled. The peer
+/// confirms the first payload before the measured update, and the second payload crosses
+/// exactly that update: an update that never happened or extra updates fail this.
 #[tokio::test]
 async fn a_key_update_does_not_disturb_the_traffic_around_it() {
     let auth = identity();
@@ -152,6 +153,11 @@ async fn a_key_update_does_not_disturb_the_traffic_around_it() {
     .await
     .expect("the handshake completes");
 
+    // Both stacks start with a small random first key-phase budget. Retire that phase
+    // before measuring: the first payload below carries this warm-up update to Quinn,
+    // so both peers have their normal confidentiality-limit budgets at the baseline.
+    ask_when_ready("settle the initial key phase", Deadline::of(LIMIT), &conn).await;
+
     let mut first = step("a stream before the update", conn.open_uni())
         .await
         .expect("a stream");
@@ -166,14 +172,9 @@ async fn a_key_update_does_not_disturb_the_traffic_around_it() {
         .expect("the peer reported it");
 
     let updates = conn.stats().key_updates;
-    // Peer delivery can precede the client's handshake confirmation. Wait for the
-    // public key-update gate, as the shared key scenarios do.
-    interop_common::keys::ask_when_ready(
-        "the client can update its keys",
-        interop_common::support::Deadline::of(LIMIT),
-        &conn,
-    )
-    .await;
+    // The warm-up may still be awaiting acknowledgement or old-key retirement. Neither
+    // peer can exhaust its settled phase while this waits for the public update gate.
+    ask_when_ready("the client can update its keys", Deadline::of(LIMIT), &conn).await;
     assert_eq!(
         conn.stats().key_updates,
         updates + 1,
@@ -193,6 +194,11 @@ async fn a_key_update_does_not_disturb_the_traffic_around_it() {
     step("the peer has the second payload", seen.recv())
         .await
         .expect("the peer reported it");
+    assert_eq!(
+        conn.stats().key_updates,
+        updates + 1,
+        "the second payload crossed exactly the requested update"
+    );
     conn.close(0u32.into(), b"done");
     step("rama's shutdown", client.wait_idle()).await;
     peer.join("the quinn peer").await;

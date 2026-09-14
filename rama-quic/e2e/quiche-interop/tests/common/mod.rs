@@ -2,10 +2,9 @@
 //! files, the two stacks' configurations, and a hand-driven loop for a library that owns neither
 //! sockets nor timers.
 //!
-//! Two limits of the driver, both fine for the scenarios here and both to lift before the MTU,
-//! pacing and loss matrix: datagrams are read and written through a 1350-byte buffer, so a peer
-//! that raises its MTU needs that raised with it; and `SendInfo::at`, the moment quiche asks a
-//! datagram to leave, is ignored, so nothing here is paced.
+//! Outgoing datagrams have a 1350-byte buffer; incoming datagrams use the full UDP size budget.
+//! `SendInfo::at`, the moment quiche asks a datagram to leave, is ignored, so nothing here is
+//! paced. The send cap and pacing need extending before an MTU, pacing and loss matrix.
 #![allow(
     dead_code,
     reason = "shared support for several integration test binaries, each using part of it"
@@ -44,9 +43,12 @@ pub use interop_common::{
     ALPN, Deadline, Peer, digest, identity::alpn as shared_alpn, localhost, payload,
 };
 
-/// The largest datagram this driver reads or writes at once. quiche owns no socket, so the
-/// buffer is the harness's.
-const DATAGRAM: usize = 1350;
+/// Keep quiche's outgoing datagrams within the harness's send budget.
+const SEND_DATAGRAM: usize = 1350;
+/// Receive whole UDP datagrams, including Rama's path MTU probes. A short buffer truncates
+/// them on Unix and returns WSAEMSGSIZE on Windows. These plain Tokio sockets do not enable
+/// receive coalescing, so each read contains one datagram.
+const RECEIVE_DATAGRAM: usize = u16::MAX as usize;
 
 pub fn localhost_v6() -> SocketAddr {
     SocketAddr::new(Ipv6Addr::LOCALHOST.into(), 0)
@@ -305,6 +307,7 @@ pub struct Quiche {
     /// What was read while that was on, in order.
     headers: Vec<Read>,
     socket: UdpSocket,
+    receive_buffer: Box<[u8]>,
     local: SocketAddr,
     last_from: Option<SocketAddr>,
     /// The socket a move left behind, kept so the connection can be put back on it.
@@ -365,6 +368,7 @@ impl Quiche {
         let mut peer = Self {
             connection,
             socket,
+            receive_buffer: vec![0; RECEIVE_DATAGRAM].into_boxed_slice(),
             local,
             last_from: None,
             left_behind: None,
@@ -417,7 +421,7 @@ impl Quiche {
         deadline: Deadline,
     ) -> Self {
         let local = socket.local_addr().expect("its address");
-        let mut buffer = [0u8; DATAGRAM];
+        let mut buffer = vec![0u8; RECEIVE_DATAGRAM].into_boxed_slice();
         // A socket that served an earlier attempt can still hold that attempt's trailing
         // datagrams, so the accept starts at the next Initial.
         let (len, from, header) = loop {
@@ -442,6 +446,7 @@ impl Quiche {
         Self {
             connection,
             socket,
+            receive_buffer: buffer,
             local,
             last_from: None,
             left_behind: None,
@@ -458,7 +463,7 @@ impl Quiche {
     /// Send everything the connection has to send. A datagram the socket refuses fails the test:
     /// a lost send would otherwise look like a peer that never answered.
     async fn flush(&mut self, deadline: Deadline) {
-        let mut out = [0u8; DATAGRAM];
+        let mut out = [0u8; SEND_DATAGRAM];
         loop {
             let (written, info) = match self.connection.send(&mut out) {
                 Ok(sent) => sent,
@@ -482,9 +487,9 @@ impl Quiche {
         if self.connection.is_closed() {
             return Some(Stopped::Closed);
         }
-        let mut buffer = [0u8; DATAGRAM];
+        let buffer = &mut self.receive_buffer;
         let wake = deadline.next_wake(self.connection.timeout());
-        match tokio::time::timeout_at(wake, self.socket.recv_from(&mut buffer)).await {
+        match tokio::time::timeout_at(wake, self.socket.recv_from(buffer)).await {
             Ok(Ok((len, from))) => {
                 self.last_from = Some(from);
                 if self.reading_headers {
@@ -516,9 +521,9 @@ impl Quiche {
     /// Take one datagram, or let a timer fire, without answering. Used to watch what a peer
     /// sends while this side stays silent.
     pub async fn receive(&mut self, deadline: Deadline) {
-        let mut buffer = [0u8; DATAGRAM];
+        let buffer = &mut self.receive_buffer;
         let wake = deadline.next_wake(self.connection.timeout());
-        match tokio::time::timeout_at(wake, self.socket.recv_from(&mut buffer)).await {
+        match tokio::time::timeout_at(wake, self.socket.recv_from(buffer)).await {
             Ok(Ok((len, from))) => {
                 let info = quiche::RecvInfo {
                     from,
@@ -716,8 +721,7 @@ impl Quiche {
         let Some((socket, _)) = &self.left_behind else {
             return;
         };
-        let mut gone = [0u8; DATAGRAM];
-        while socket.try_recv_from(&mut gone).is_ok() {}
+        while socket.try_recv_from(&mut self.receive_buffer).is_ok() {}
     }
 
     /// What quiche's own statistics say the path from `local` sent and received.

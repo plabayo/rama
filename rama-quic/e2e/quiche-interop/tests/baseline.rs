@@ -116,3 +116,76 @@ async fn quiche_asks(run: &CaseRun<StreamScenario>, client: &mut Quiche) -> Peer
         closed: client.connection().is_closed(),
     }
 }
+
+/// The receive budget must accommodate the peer's datagrams independently of our send budget.
+#[tokio::test]
+async fn rama_datagrams_larger_than_quiche_send_budget_arrive_intact() {
+    use common::{Deadline, Packet, Read, localhost, rama_client_config};
+    use rama::quic::{Endpoint, TransportConfig};
+    use std::sync::Arc;
+
+    const MTU: u16 = 1452;
+    let deadline = Deadline::new();
+    let identity = Identity::generate(SERVER_NAME);
+    let (addr, accepting) = Quiche::bind_server(quiche_server_config(&identity), deadline).await;
+    let bytes = common::payload(0x5a, 4096);
+    let peer = Peer::spawn({
+        let expected = bytes.clone();
+        async move {
+            let mut server = accepting.await;
+            server.read_headers();
+            server
+                .drive_until("the connection establishes", deadline, |connection| {
+                    connection.is_established()
+                })
+                .await;
+            assert_eq!(server.read_stream(UNI, READ_CAP, deadline).await, expected);
+            // A short-header packet runs to the end of its UDP datagram. Verify its actual
+            // received length, so retransmission after truncation cannot hide a short buffer.
+            assert!(server.headers().iter().any(|read| matches!(
+                read,
+                Read::Datagram(packets) if packets.iter().any(|packet| matches!(
+                    packet,
+                    Packet::Known { kind: quiche::Type::Short, bytes } if *bytes == usize::from(MTU)
+                ))
+            )));
+            server.close(deadline).await;
+        }
+    });
+    let client = deadline
+        .wait(
+            "the Rama client binds",
+            Endpoint::bind_client(rama::rt::Executor::new(), localhost()),
+        )
+        .await
+        .expect("the client binds");
+    // Pin the path size so this tests oversized datagrams without waiting for MTU discovery.
+    let transport = TransportConfig::default()
+        .with_initial_mtu(MTU)
+        .with_min_mtu(MTU)
+        .with_pad_to_mtu(true)
+        .without_mtu_discovery_config();
+    let config = rama_client_config(&identity).with_transport_config(Arc::new(transport));
+    let connection = deadline
+        .wait(
+            "the Rama client connects",
+            client
+                .connect_with(config, addr, SERVER_NAME)
+                .expect("the attempt starts"),
+        )
+        .await
+        .expect("the handshake completes");
+    let mut stream = deadline
+        .wait("Rama opens the stream", connection.open_uni())
+        .await
+        .expect("the stream opens");
+    deadline
+        .wait("Rama writes the payload", stream.write_all(&bytes))
+        .await
+        .expect("the payload is written");
+    stream.finish().expect("the stream finishes");
+    peer.join("the oversized datagrams arrive", deadline).await;
+    deadline
+        .wait("the endpoint shuts down", client.wait_idle())
+        .await;
+}
