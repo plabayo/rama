@@ -526,6 +526,49 @@ mod tests {
         assert!(!is_would_block(&io::Error::from(io::ErrorKind::BrokenPipe)));
     }
 
+    /// Only a refusal of the segmentation request itself may be reported as
+    /// [`DatagramError::SegmentationRejected`], which invites the caller to
+    /// retry without segmentation. An ordinary send failure must not be, or a
+    /// datagram that could never be delivered would be retried pointlessly.
+    ///
+    /// Windows leans on this hardest: its backend drops the offload capability
+    /// after any failed segmented send, so this classification alone decides
+    /// whether the error is reported as a rejection.
+    #[cfg(any(target_os = "linux", target_os = "android", windows))]
+    #[test]
+    fn only_segmentation_refusals_are_reported_as_rejections() {
+        let raw = |code| is_segmentation_rejection(&io::Error::from_raw_os_error(code));
+
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        {
+            assert!(raw(libc::EIO));
+            assert!(raw(libc::EINVAL));
+            assert!(!raw(libc::EMSGSIZE));
+            assert!(!raw(libc::ENETUNREACH));
+            assert!(!raw(libc::ENOBUFS));
+            assert!(!raw(libc::EPERM));
+        }
+
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::Networking::WinSock::{
+                WSAEINVAL, WSAEMSGSIZE, WSAENETUNREACH, WSAENOBUFS, WSAENOPROTOOPT, WSAEOPNOTSUPP,
+                WSAEWOULDBLOCK,
+            };
+
+            assert!(raw(WSAEINVAL));
+            assert!(raw(WSAENOPROTOOPT));
+            assert!(raw(WSAEOPNOTSUPP));
+            assert!(!raw(WSAEMSGSIZE));
+            assert!(!raw(WSAENETUNREACH));
+            assert!(!raw(WSAENOBUFS));
+            assert!(!raw(WSAEWOULDBLOCK));
+        }
+
+        // A synthetic error carries no native code and is never a rejection.
+        assert!(!is_segmentation_rejection(&io::Error::other("x")));
+    }
+
     #[tokio::test]
     async fn zero_length_truncation_and_following_packet() {
         let (mut receiver, sender_socket) = bind_pair(false).await;

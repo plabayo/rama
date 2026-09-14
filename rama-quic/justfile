@@ -21,9 +21,24 @@ export RUSTDOCFLAGS := \
 export RUST_LOG := "debug"
 export PYTHON := env_var_or_default("PYTHON", "python3")
 
+# Install a cargo tool only when it is missing, as the root justfile does: the
+# probe needs a shell of its own on each platform, since Windows PowerShell has
+# neither `command` nor `||`.
+[private]
+_ensure-installed TOOL PACKAGE:
+    @just _ensure-installed-{{os_family()}} {{TOOL}} {{PACKAGE}}
+
+[private]
+_ensure-installed-unix TOOL PACKAGE:
+    @command -v {{TOOL}} >/dev/null || cargo install {{PACKAGE}} --locked
+
+[private]
+_ensure-installed-windows TOOL PACKAGE:
+    @if (-not (Get-Command {{TOOL}} -ErrorAction SilentlyContinue)) { cargo install {{PACKAGE}} --locked }
+
 # QUIC requires an explicit TLS provider alongside dial9.
 qa-dial9:
-    @command -v cargo-nextest >/dev/null || cargo install cargo-nextest --locked
+    @just _ensure-installed cargo-nextest cargo-nextest
     cargo clippy -p rama-quic --features dial9,rustls,ring --all-targets
     cargo nextest run -p rama-quic --features dial9,rustls,ring
 
