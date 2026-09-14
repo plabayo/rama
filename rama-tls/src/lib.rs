@@ -43,6 +43,7 @@ pub use enums::{
 
 pub mod client;
 pub mod fingerprint;
+pub mod key_schedule;
 pub mod keylog;
 pub mod server;
 
