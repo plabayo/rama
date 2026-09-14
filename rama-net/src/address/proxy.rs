@@ -14,7 +14,7 @@ use crate::{
     user::ProxyCredential,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 /// Address of a proxy that can be connected to.
 pub struct ProxyAddress {
     /// [`Protocol`] used by the proxy.

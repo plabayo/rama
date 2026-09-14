@@ -761,3 +761,9 @@ name = "e2e_http_client_server"
 path = "benches/e2e_http_client_server.rs"
 required-features = ["http-full", "rustls", "aws-lc", "boring", "socks5"]
 harness = false
+
+[[bench]]
+name = "tls_mitm_issue"
+path = "benches/tls_mitm_issue.rs"
+required-features = ["boring", "crypto"]
+harness = false

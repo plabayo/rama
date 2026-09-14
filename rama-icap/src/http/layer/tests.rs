@@ -154,7 +154,7 @@ fn discovered_transfer_capabilities(
     ServiceCapabilities::parse(response, None, 16, false, OptionsValidation::Compatible).unwrap()
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
 struct TestConnectionId;
 
 impl ConnID for TestConnectionId {}

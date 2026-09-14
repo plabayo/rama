@@ -653,6 +653,10 @@ where
     let mut buf = vec![0u8; buf_size];
     let mut copy_err: Option<std::io::Error> = None;
     loop {
+        // Only tokio's own IO resources charge the coop budget; an in-memory or
+        // TLS-buffered reader can stay ready indefinitely. Charge it here so a
+        // busy tunnel still yields to the other direction and to shutdown.
+        tokio::task::consume_budget().await;
         match reader.read(&mut buf).await {
             Ok(0) => {
                 if let Some(seen) = &eof_seen {

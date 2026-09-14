@@ -490,8 +490,8 @@ fuzz-60s: fuzz-ua-60s fuzz-h2-60s fuzz-http-headers-x-robots-tag-60s fuzz-http-h
 
 fuzz-full: fuzz-60s fuzz-h2-main
 
-bench:
-    cargo bench --features=full
+bench *ARGS:
+    cargo bench --features=http-full,rustls,aws-lc,boring,socks5,ua,udp,quic,test-utils,rss {{ARGS}}
 
 bench-icap *ARGS:
     cargo bench -p rama-icap --features=http --bench icap -- {{ARGS}}
