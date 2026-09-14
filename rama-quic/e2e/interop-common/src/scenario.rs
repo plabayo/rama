@@ -201,7 +201,7 @@ pub async fn rama_client_side(run: &CaseRun<StreamScenario>, peer_addr: SocketAd
         .handshake_data()
         .expect("the handshake settled something");
     assert_eq!(
-        settled.protocol,
+        settled.application_layer_protocol,
         Some(alpn()),
         "{what}: the protocol both sides agreed on"
     );
@@ -278,7 +278,7 @@ pub async fn rama_server_side(run: &CaseRun<StreamScenario>) -> (Endpoint, Socke
                 .handshake_data()
                 .expect("the handshake settled something");
             assert_eq!(
-                settled.protocol,
+                settled.application_layer_protocol,
                 Some(alpn()),
                 "{}: the protocol both sides agreed on",
                 run.what

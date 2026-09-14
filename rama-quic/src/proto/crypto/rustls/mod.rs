@@ -21,8 +21,10 @@ use rama_tls_rustls::dep::rustls::{
 use crate::proto::{
     ConnectError, ConnectionId, Side, TransportError, TransportErrorCode,
     crypto::{
-        self, CryptoError, ExportKeyingMaterialError, HeaderKey, KeyPair, Keys, UnsupportedVersion,
+        self, CryptoError, DirectionalKeys, ExportKeyingMaterialError, HandshakeEvent, HeaderKey,
+        KeyPair, Keys, UnsupportedVersion,
     },
+    packet::SpaceId,
     transport_parameters::TransportParameters,
 };
 
@@ -45,7 +47,8 @@ fn received_server_name(name: &str) -> Result<Domain, TransportError> {
 }
 
 mod config;
-pub use config::{AlpnPolicy, TlsConfigError, TlsOptions};
+pub(crate) use super::config::NoInitialCipherSuite;
+pub(crate) use config::{AlpnPolicy, TlsConfigError, TlsOptions};
 
 /// A rustls TLS session
 pub(crate) struct TlsSession {
@@ -55,6 +58,8 @@ pub(crate) struct TlsSession {
     /// The name the peer asked for, converted once when the backend first has it.
     server_name: Option<Domain>,
     next_secrets: Option<Secrets>,
+    write_level: SpaceId,
+    output: std::collections::VecDeque<HandshakeEvent>,
     inner: Connection,
     suite: Suite,
 }
@@ -88,13 +93,16 @@ impl crypto::Session for TlsSession {
         }
     }
 
-    fn handshake_summary(&self) -> Option<crate::proto::crypto::HandshakeSummary> {
+    fn handshake_summary(&self) -> Option<rama_tls::client::NegotiatedTlsParameters> {
         if !self.got_handshake_data {
             return None;
         }
-        Some(crate::proto::crypto::HandshakeSummary {
+        Some(rama_tls::client::NegotiatedTlsParameters {
+            protocol_version: rama_tls::ProtocolVersion::TLSv1_3,
+            // QUIC exposes the chain separately through `peer_certificates`.
+            peer_certificate_chain: None,
             // Read afresh: the protocol can still be settling when the name is already known.
-            protocol: self.inner.alpn_protocol().map(ApplicationProtocol::from),
+            application_layer_protocol: self.inner.alpn_protocol().map(ApplicationProtocol::from),
             server_name: self.server_name.clone(),
             // The session's own answer, once it has one. A resumption is the whole handshake
             // having taken up a session, not a session having been looked up.
@@ -131,7 +139,7 @@ impl crypto::Session for TlsSession {
         self.inner.is_handshaking()
     }
 
-    fn read_handshake(&mut self, buf: &[u8]) -> Result<bool, TransportError> {
+    fn read_handshake(&mut self, _level: SpaceId, buf: &[u8]) -> Result<bool, TransportError> {
         self.inner.read_hs(buf).map_err(|e| {
             if let Some(alert) = self.inner.alert() {
                 TransportError {
@@ -184,34 +192,57 @@ impl crypto::Session for TlsSession {
         }
     }
 
-    fn write_handshake(&mut self, buf: &mut Vec<u8>) -> Option<Keys> {
-        let keys = match self.inner.write_hs(buf)? {
-            KeyChange::Handshake { keys } => keys,
-            KeyChange::OneRtt { keys, next } => {
-                self.next_secrets = Some(next);
-                keys
-            }
-        };
-
-        Some(Keys {
-            header: KeyPair {
-                local: Box::new(keys.local.header),
-                remote: Box::new(keys.remote.header),
-            },
-            packet: KeyPair {
-                local: Box::new(keys.local.packet),
-                remote: Box::new(keys.remote.packet),
-            },
-        })
+    fn poll_handshake(&mut self) -> Result<Option<HandshakeEvent>, TransportError> {
+        if let Some(event) = self.output.pop_front() {
+            return Ok(Some(event));
+        }
+        let mut bytes = Vec::new();
+        let change = self.inner.write_hs(&mut bytes);
+        if !bytes.is_empty() {
+            self.output
+                .push_back(HandshakeEvent::Data(self.write_level, bytes));
+        }
+        if let Some(change) = change {
+            let (level, keys) = match change {
+                KeyChange::Handshake { keys } => (SpaceId::Handshake, keys),
+                KeyChange::OneRtt { keys, next } => {
+                    self.next_secrets = Some(next);
+                    (SpaceId::Data, keys)
+                }
+            };
+            self.write_level = level;
+            self.output.push_back(HandshakeEvent::Keys(
+                level,
+                Keys {
+                    local: DirectionalKeys {
+                        header: Box::new(keys.local.header),
+                        packet: Box::new(keys.local.packet),
+                    },
+                    remote: None,
+                },
+            ));
+            self.output.push_back(HandshakeEvent::ReadKeys(
+                level,
+                DirectionalKeys {
+                    header: Box::new(keys.remote.header),
+                    packet: Box::new(keys.remote.packet),
+                },
+            ));
+        }
+        Ok(self.output.pop_front())
     }
 
-    fn next_1rtt_keys(&mut self) -> Option<KeyPair<Box<dyn crypto::PacketKey>>> {
-        let secrets = self.next_secrets.as_mut()?;
+    fn next_1rtt_keys(
+        &mut self,
+    ) -> Result<Option<KeyPair<Box<dyn crypto::PacketKey>>>, TransportError> {
+        let Some(secrets) = self.next_secrets.as_mut() else {
+            return Ok(None);
+        };
         let keys = secrets.next_packet_keys();
-        Some(KeyPair {
+        Ok(Some(KeyPair {
             local: Box::new(keys.local),
             remote: Box::new(keys.remote),
-        })
+        }))
     }
 
     fn is_valid_retry(&self, orig_dst_cid: &ConnectionId, header: &[u8], payload: &[u8]) -> bool {
@@ -416,6 +447,8 @@ impl crypto::ClientConfig for QuicClientConfig {
             got_handshake_data: false,
             server_name: None,
             next_secrets: None,
+            write_level: SpaceId::Initial,
+            output: Default::default(),
             inner: rama_tls_rustls::dep::rustls::quic::Connection::Client(
                 rama_tls_rustls::dep::rustls::quic::ClientConnection::new(
                     self.inner.clone(),
@@ -452,30 +485,6 @@ impl TryFrom<Arc<rama_tls_rustls::dep::rustls::ClientConfig>> for QuicClientConf
         })
     }
 }
-
-/// The initial cipher suite (AES-128-GCM-SHA256) is not available
-///
-/// A configuration built with its own initial cipher suite must use
-/// `TLS13_AES_128_GCM_SHA256`. When the cipher suite is derived from a config's
-/// [`CryptoProvider`][provider], that provider must reference a cipher suite with the same ID.
-///
-/// [provider]: rama_tls_rustls::dep::rustls::crypto::CryptoProvider
-#[derive(Clone, Debug)]
-pub struct NoInitialCipherSuite {
-    /// Whether the initial cipher suite was supplied by the caller
-    specific: bool,
-}
-
-impl std::fmt::Display for NoInitialCipherSuite {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        f.write_str(match self.specific {
-            true => "invalid cipher suite specified",
-            false => "no initial cipher suite found",
-        })
-    }
-}
-
-impl std::error::Error for NoInitialCipherSuite {}
 
 /// A QUIC-compatible TLS server configuration
 ///
@@ -599,6 +608,8 @@ impl crypto::ServerConfig for QuicServerConfig {
             got_handshake_data: false,
             server_name: None,
             next_secrets: None,
+            write_level: SpaceId::Initial,
+            output: Default::default(),
             inner: rama_tls_rustls::dep::rustls::quic::Connection::Server(
                 rama_tls_rustls::dep::rustls::quic::ServerConnection::new(
                     self.inner.clone(),
@@ -703,14 +714,14 @@ pub(crate) fn initial_keys(
     };
     let keys = suite.keys(&dst_cid, side, version);
     Keys {
-        header: KeyPair {
-            local: Box::new(keys.local.header),
-            remote: Box::new(keys.remote.header),
+        local: DirectionalKeys {
+            header: Box::new(keys.local.header),
+            packet: Box::new(keys.local.packet),
         },
-        packet: KeyPair {
-            local: Box::new(keys.local.packet),
-            remote: Box::new(keys.remote.packet),
-        },
+        remote: Some(DirectionalKeys {
+            header: Box::new(keys.remote.header),
+            packet: Box::new(keys.remote.packet),
+        }),
     }
 }
 
@@ -787,7 +798,9 @@ mod tests {
             .unwrap();
 
         // An oversized handshake header fails in rustls's deframer before an alert is set.
-        let error = session.read_handshake(&[2, 0xff, 0xff, 0xff]).unwrap_err();
+        let error = session
+            .read_handshake(SpaceId::Initial, &[2, 0xff, 0xff, 0xff])
+            .unwrap_err();
         assert_eq!(error.code(), TransportErrorCode::PROTOCOL_VIOLATION);
         let source = error
             .source()

@@ -1022,11 +1022,11 @@ mod tests {
         });
         let encode = header.encode(&mut buf);
         let header_len = buf.len();
-        buf.resize(header_len + 16 + client.packet.local.tag_len(), 0);
+        buf.resize(header_len + 16 + client.local.packet.tag_len(), 0);
         encode.finish(
             &mut buf,
-            &*client.header.local,
-            Some((0, &*client.packet.local)),
+            &*client.local.header,
+            Some((0, &*client.local.packet)),
         );
 
         println!("{}", rama_utils::fmt::hex(&buf));
@@ -1047,7 +1047,9 @@ mod tests {
         )
         .unwrap()
         .0;
-        let mut packet = decode.finish(Some(&*server.header.remote)).unwrap();
+        let mut packet = decode
+            .finish(Some(&*server.remote.as_ref().unwrap().header))
+            .unwrap();
         assert_eq!(
             packet.header_data[..],
             [
@@ -1056,8 +1058,10 @@ mod tests {
             ][..]
         );
         server
-            .packet
             .remote
+            .as_ref()
+            .unwrap()
+            .packet
             .decrypt(0, &packet.header_data, &mut packet.payload)
             .unwrap();
         assert_eq!(packet.payload[..], [0; 16]);

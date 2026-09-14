@@ -72,7 +72,7 @@ impl PacketBuilder {
             .as_ref()
             .map_or_else(
                 || &conn.zero_rtt_crypto.as_ref().unwrap().packet,
-                |keys| &keys.packet.local,
+                |keys| &keys.local.packet,
             )
             .confidentiality_limit();
         if sent_with_keys.saturating_add(1) == confidentiality_limit {
@@ -147,8 +147,8 @@ impl PacketBuilder {
 
         let (sample_size, tag_len) = if let Some(ref crypto) = space.crypto {
             (
-                crypto.header.local.sample_size(),
-                crypto.packet.local.tag_len(),
+                crypto.local.header.sample_size(),
+                crypto.local.packet.tag_len(),
             )
         } else if space_id == SpaceId::Data {
             let zero_rtt = conn.zero_rtt_crypto.as_ref().unwrap();
@@ -283,7 +283,7 @@ impl PacketBuilder {
 
         let space = &conn.spaces[self.space];
         let (header_crypto, packet_crypto) = if let Some(ref crypto) = space.crypto {
-            (&*crypto.header.local, &*crypto.packet.local)
+            (&*crypto.local.header, &*crypto.local.packet)
         } else if self.space == SpaceId::Data {
             let zero_rtt = conn.zero_rtt_crypto.as_ref().unwrap();
             (&*zero_rtt.header, &*zero_rtt.packet)

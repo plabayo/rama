@@ -40,11 +40,11 @@ pub use proto::{
     ConfigError, CongestionControl, ConnectError, ConnectionClose, ConnectionError, ConnectionId,
     ConnectionIdGenerator, ConnectionIdGeneratorFactory, ConnectionStats,
     DEFAULT_SUPPORTED_VERSIONS, Dir, EcnCodepoint, EndpointConfig, ExportKeyingMaterialError,
-    FrameStats, FrameType, HandshakeSummary, HashedConnectionIdGenerator, IdleTimeout, InvalidCid,
-    MAX_CID_SIZE, MIN_INITIAL_CONGESTION_WINDOW, MtuDiscoveryConfig, NoneTokenLog, NoneTokenStore,
-    PathStats, PreferredAddressPolicy, RandomConnectionIdGenerator, ReceiveQueueLimits,
-    RetryRefused, ServerConfig, Side, StdSystemTime, StreamId, TimeSource, TokenLog,
-    TokenMemoryCache, TokenReuseError, TokenStore, TransportConfig, TransportError,
+    FrameStats, FrameType, HashedConnectionIdGenerator, IdleTimeout, InvalidCid, MAX_CID_SIZE,
+    MIN_INITIAL_CONGESTION_WINDOW, MtuDiscoveryConfig, NegotiatedTlsParameters, NoneTokenLog,
+    NoneTokenStore, PathStats, PreferredAddressPolicy, RandomConnectionIdGenerator,
+    ReceiveQueueLimits, RetryRefused, ServerConfig, Side, StdSystemTime, StreamId, TimeSource,
+    TokenLog, TokenMemoryCache, TokenReuseError, TokenStore, TransportConfig, TransportError,
     TransportErrorCode, UdpStats, ValidationTokenConfig, VarInt, VarIntBoundsExceeded, Written,
 };
 pub use proto::{KEY_MATERIAL_SIZE, StatelessResetKey};
@@ -54,13 +54,8 @@ pub use proto::{KEY_MATERIAL_SIZE, StatelessResetKey};
 /// The configuration itself is the common Rama TLS client and server configuration; this module
 /// carries only what QUIC adds to it. The provider behind it follows this crate's features, and
 /// no Rustls type appears in any signature here.
-#[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
-#[cfg_attr(
-    docsrs,
-    doc(cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))))
-)]
 pub mod tls {
-    pub use crate::proto::crypto::rustls::{
+    pub use crate::proto::crypto::config::{
         AlpnPolicy, NoInitialCipherSuite, TlsConfigError, TlsOptions,
     };
 }

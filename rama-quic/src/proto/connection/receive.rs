@@ -222,8 +222,8 @@ impl Connection {
                     .crypto
                     .as_ref()
                     .unwrap()
-                    .packet
                     .local
+                    .packet
                     .integrity_limit();
                 if self.authentication_failures > integrity_limit {
                     Err(TransportError::AEAD_LIMIT_REACHED("integrity limit violated").into())
@@ -785,7 +785,8 @@ impl Connection {
 
         if result.incoming_key_update {
             trace!("key update authenticated");
-            self.update_keys(now, Some((result.number, now)), true);
+            self.update_keys(now, Some((result.number, now)), true)
+                .map_err(Some)?;
             self.set_key_discard_timer(now, packet.header.space());
         }
 

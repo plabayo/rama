@@ -1,6 +1,9 @@
 //! The handshake: crypto progression, the packet spaces and keys it installs and discards,
 //! the peer's transport parameters, and 0-RTT.
 
+#[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+mod failure_tests;
+
 use crate::qlog::event::negotiation::KeyChangeTrigger;
 use std::{cmp, mem, net::SocketAddr};
 
@@ -16,7 +19,7 @@ use crate::proto::{
         packet_crypto::{PrevCrypto, ZeroRttCrypto},
         timer::Timer,
     },
-    crypto::{self, Keys},
+    crypto::{self, HandshakeEvent, KeyPair, Keys},
     frame,
     packet::{InitialPacket, SpaceId},
     shared::EcnCodepoint,
@@ -66,8 +69,13 @@ impl Connection {
             debug!("ignoring key update before a current-phase packet is acknowledged");
             return false;
         }
-        self.update_keys(now, None, false);
-        true
+        match self.update_keys(now, None, false) {
+            Ok(()) => true,
+            Err(error) => {
+                self.kill(now, error.into());
+                false
+            }
+        }
     }
 
     /// Get a session reference
@@ -125,7 +133,8 @@ impl Connection {
         let tag_len = self.spaces[SpaceId::Initial]
             .crypto
             .as_ref()
-            .map_or(0, |crypto| crypto.packet.remote.tag_len());
+            .and_then(|crypto| crypto.remote.as_ref())
+            .map_or(0, |crypto| crypto.packet.tag_len());
         let len = packet.header_data.len() + packet.payload.len() + tag_len;
         self.path.total_recvd = len as u64;
 
@@ -245,6 +254,7 @@ impl Connection {
             ));
         }
 
+        let level = space;
         let space = &mut self.spaces[space];
         let max = end.saturating_sub(space.crypto_stream.bytes_read());
         if max > self.config.crypto_buffer_size as u64 {
@@ -264,7 +274,7 @@ impl Connection {
 
         while let Some(chunk) = space.crypto_stream.read(usize::MAX, true) {
             trace!("consumed {} CRYPTO bytes", chunk.bytes.len());
-            if self.crypto.read_handshake(&chunk.bytes)? {
+            if self.crypto.read_handshake(level, &chunk.bytes)? {
                 self.events.push_back(Event::HandshakeDataReady);
             }
         }
@@ -274,31 +284,52 @@ impl Connection {
 
     pub(super) fn write_crypto(&mut self, now: Instant) {
         loop {
-            let space = self.highest_space;
-            let mut outgoing = Vec::new();
-            if let Some(crypto) = self.crypto.write_handshake(&mut outgoing) {
-                match space {
-                    SpaceId::Initial => {
-                        self.upgrade_crypto(now, SpaceId::Handshake, crypto);
-                    }
-                    SpaceId::Handshake => {
-                        self.upgrade_crypto(now, SpaceId::Data, crypto);
-                    }
-                    #[expect(
-                        clippy::unreachable,
-                        reason = "`upgrade_crypto` is only called while `highest_space` is Initial or Handshake; 1-RTT key changes go through `update_keys`"
-                    )]
-                    SpaceId::Data => unreachable!("got updated secrets during 1-RTT"),
-                }
-            }
-            if outgoing.is_empty() {
-                if space == self.highest_space {
+            let event = match self.crypto.poll_handshake() {
+                Ok(Some(event)) => event,
+                Ok(None) => break,
+                Err(error) => {
+                    self.kill(now, error.into());
                     break;
-                } else {
-                    // Keys updated, check for more data to send
+                }
+            };
+            let (space, outgoing) = match event {
+                HandshakeEvent::Data(space, bytes) => (space, bytes),
+                HandshakeEvent::Keys(space, keys) => {
+                    self.upgrade_crypto(now, space, keys);
                     continue;
                 }
-            }
+                HandshakeEvent::ReadKeys(space, keys) => {
+                    let Some(crypto) = self.spaces[space].crypto.as_mut() else {
+                        self.kill(
+                            now,
+                            TransportError::INTERNAL_ERROR("read keys before write keys").into(),
+                        );
+                        break;
+                    };
+                    if crypto.remote.is_some() {
+                        self.kill(
+                            now,
+                            TransportError::INTERNAL_ERROR("duplicate read keys").into(),
+                        );
+                        break;
+                    }
+                    crypto.remote = Some(keys);
+                    self.qlog_directional_key_change(
+                        now,
+                        space,
+                        !self.side.is_client(),
+                        false,
+                        Some(KeyChangeTrigger::Tls),
+                    );
+                    if space == SpaceId::Data
+                        && let Err(error) = self.prepare_key_update()
+                    {
+                        self.kill(now, error.into());
+                        break;
+                    }
+                    continue;
+                }
+            };
             let offset = self.spaces[space].crypto_offset;
             let outgoing = Bytes::from(outgoing);
             if let State::Handshake(ref mut state) = self.state
@@ -318,27 +349,38 @@ impl Connection {
     }
 
     /// Switch to stronger cryptography during handshake
-    #[expect(
-        clippy::expect_used,
-        reason = "rustls exposes `next_1rtt_keys` as soon as 1-RTT secrets exist, which is the `space == SpaceId::Data` branch condition"
-    )]
     fn upgrade_crypto(&mut self, now: Instant, space: SpaceId, crypto: Keys) {
         debug_assert!(
             self.spaces[space].crypto.is_none(),
             "already reached packet space {space:?}"
         );
         trace!("{:?} keys ready", space);
-        if space == SpaceId::Data {
-            // Precompute the first key update
-            self.next_crypto = Some(
-                self.crypto
-                    .next_1rtt_keys()
-                    .expect("handshake should be complete"),
-            );
+        if space == SpaceId::Data
+            && crypto.remote.is_some()
+            && let Err(error) = self.prepare_key_update()
+        {
+            self.kill(now, error.into());
+            return;
         }
 
+        let has_remote = crypto.remote.is_some();
         self.spaces[space].crypto = Some(crypto);
-        self.qlog_key_change(now, space, false, Some(KeyChangeTrigger::Tls));
+        self.qlog_directional_key_change(
+            now,
+            space,
+            self.side.is_client(),
+            false,
+            Some(KeyChangeTrigger::Tls),
+        );
+        if has_remote {
+            self.qlog_directional_key_change(
+                now,
+                space,
+                !self.side.is_client(),
+                false,
+                Some(KeyChangeTrigger::Tls),
+            );
+        }
         if space == SpaceId::Data {
             self.qlog_negotiated_alpn(now);
         }
@@ -449,42 +491,46 @@ impl Connection {
         self.qlog_mtu_updated(now, old_mtu);
     }
 
+    fn prepare_key_update(&mut self) -> Result<(), TransportError> {
+        self.next_crypto = Some(self.crypto.next_1rtt_keys()?.ok_or_else(|| {
+            TransportError::INTERNAL_ERROR("TLS did not provide key update secrets")
+        })?);
+        Ok(())
+    }
+
     pub(super) fn update_keys(
         &mut self,
         now: Instant,
         end_packet: Option<(u64, Instant)>,
         remote: bool,
-    ) {
+    ) -> Result<(), TransportError> {
         trace!("executing key update");
-        self.qlog_discard_previous_keys(now);
-        self.stats.key_updates = self.stats.key_updates.saturating_add(1);
         // Generate keys for the key phase after the one we're switching to, store them in
         // `next_crypto`, make the contents of `next_crypto` current, and move the current keys into
         // `prev_crypto`.
-        #[expect(
-            clippy::expect_used,
-            reason = "a key update is only triggered by 1-RTT packets, i.e. after `upgrade_crypto(Data)` made `next_1rtt_keys` available"
-        )]
-        let new = self
-            .crypto
-            .next_1rtt_keys()
-            .expect("only called for `Data` packets");
-        self.key_phase_size = new
+        let new = self.crypto.next_1rtt_keys()?.ok_or_else(|| {
+            TransportError::INTERNAL_ERROR("TLS did not provide key update secrets")
+        })?;
+        let key_phase_size = new
             .local
             .confidentiality_limit()
             .saturating_sub(KEY_UPDATE_MARGIN);
-        #[expect(
-            clippy::unwrap_used,
-            reason = "1-RTT keys and `next_crypto` are installed together in `upgrade_crypto(Data)` before any key update can happen"
-        )]
-        let old = mem::replace(
-            &mut self.spaces[SpaceId::Data]
-                .crypto
-                .as_mut()
-                .unwrap() // safe because update_keys() can only be triggered by short packets
-                .packet,
-            mem::replace(self.next_crypto.as_mut().unwrap(), new),
-        );
+        let missing_keys =
+            || TransportError::INTERNAL_ERROR("key update before directional keys are installed");
+        let keys = self.spaces[SpaceId::Data]
+            .crypto
+            .as_mut()
+            .ok_or_else(missing_keys)?;
+        let read_keys = keys.remote.as_mut().ok_or_else(missing_keys)?;
+        let next = self.next_crypto.as_mut().ok_or_else(missing_keys)?;
+        let replacement = mem::replace(next, new);
+        let old = KeyPair {
+            local: mem::replace(&mut keys.local.packet, replacement.local),
+            remote: mem::replace(&mut read_keys.packet, replacement.remote),
+        };
+        self.qlog_discard_previous_keys(now);
+        self.stats.key_updates = self.stats.key_updates.saturating_add(1);
+        self.key_phase_size = key_phase_size;
         self.spaces[SpaceId::Data].sent_with_keys = 0;
         self.key_update_start_packet = Some(self.spaces[SpaceId::Data].next_packet_number);
         self.prev_crypto = Some(PrevCrypto {
@@ -503,6 +549,7 @@ impl Connection {
                 KeyChangeTrigger::LocalUpdate
             }),
         );
+        Ok(())
     }
 
     pub(super) fn peer_supports_ack_frequency(&self) -> bool {

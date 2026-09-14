@@ -6,7 +6,7 @@
 //! about the client's early data.
 //!
 //! What this adapter observes instead is the one event that makes a session resume here:
-//! Rama's own handshake, through `HandshakeSummary::resumed`. The server's session store is
+//! Rama's own handshake, through `NegotiatedTlsParameters::resumed`. The server's session store is
 //! wrapped as well, but only to say what rustls looked for: a lookup that found something is
 //! not a resumption, and the counts are diagnostics.
 //!
@@ -326,7 +326,7 @@ async fn read_one(
 ///
 /// Quinn's client reports what it was told about its early data, through the verdict
 /// `into_0rtt` hands back; whether the session itself resumed is Rama's own handshake, read
-/// from `HandshakeSummary::resumed` on the server side.
+/// from `NegotiatedTlsParameters::resumed` on the server side.
 #[tokio::test]
 async fn resumption_cases_rama_server() {
     for_each_case(

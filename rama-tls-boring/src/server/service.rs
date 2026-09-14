@@ -1,11 +1,7 @@
 use super::TlsAcceptorData;
 use super::acceptor_data::prepare_server_cert_issuer;
 use super::config::{BoringTlsAcceptorConfig, BoringTlsAuth};
-use crate::{
-    TlsStream,
-    core::ssl::{AlpnError, SslAcceptor, SslMethod, SslRef, SslVerifyMode},
-    types::SecureTransport,
-};
+use crate::{TlsStream, types::SecureTransport};
 use parking_lot::Mutex;
 use rama_core::error::BoxErrorExt as _;
 use rama_core::{
@@ -14,16 +10,14 @@ use rama_core::{
     error::{BoxError, ErrorContext, ErrorExt},
     extensions::ExtensionsRef,
     io::Io,
-    telemetry::tracing::{debug, trace},
 };
 use rama_net::{client::ConnectorTarget, extensions::StreamTransformed, tls::ApplicationProtocol};
-use rama_tls::keylog::{KeyLogSink, open_intent_sink};
 use rama_tls::{
     client::NegotiatedTlsParameters,
     server::{CertificateIdentity, TlsServerConfig},
 };
 use rama_utils::macros::define_inner_service_accessors;
-use std::{io::ErrorKind, sync::Arc};
+use std::sync::Arc;
 
 /// A [`Service`] which accepts TLS connections and delegates the underlying transport
 /// stream to the given service.
@@ -76,15 +70,7 @@ where
                 .context("boring acceptor: build acceptor data from config")?
                 .config;
 
-        let mut acceptor_builder = SslAcceptor::mozilla_intermediate_v5(SslMethod::tls_server())
-            .context("create boring ssl acceptor")?;
-
-        acceptor_builder.set_grease_enabled(true);
-        // Deliberately NOT calling `set_default_verify_paths()`: when client-cert
-        // verification is disabled, the OS trust store would never be consulted.
-        // When client-cert auth is enabled (below), we install an explicit
-        // client-CA store + verify mode instead of the OS bundle (which is the
-        // wrong trust anchor set for client auth anyway).
+        let acceptor_builder = tls_config.acceptor_builder()?;
 
         let target_identity = stream
             .extensions()
@@ -107,7 +93,7 @@ where
             .store_client_hello
             .then_some(Arc::new(Mutex::new(None)));
 
-        let mut acceptor_builder = tls_config
+        let acceptor_builder = tls_config
             .cert_source
             .issue_certs(
                 acceptor_builder,
@@ -115,83 +101,6 @@ where
                 maybe_client_hello.as_ref(),
             )
             .await?;
-
-        if let Some(min_ver) = tls_config.protocol_versions.iter().flatten().min() {
-            acceptor_builder
-                .set_min_proto_version(Some((*min_ver).rama_try_into().map_err(|v| {
-                    BoxError::from_static_str("build boring ssl acceptor: cast min proto version")
-                        .context_field("protocol_version", v)
-                })?))
-                .context("build boring ssl acceptor: set min proto version")?;
-        }
-
-        if let Some(max_ver) = tls_config.protocol_versions.iter().flatten().max() {
-            acceptor_builder
-                .set_max_proto_version(Some((*max_ver).rama_try_into().map_err(|v| {
-                    BoxError::from_static_str("build boring ssl acceptor: cast max proto version")
-                        .context_field("protocol_version", v)
-                })?))
-                .context("build boring ssl acceptor: set max proto version")?;
-        }
-
-        for ca_cert in tls_config.client_cert_chain.iter().flatten() {
-            acceptor_builder
-                .add_client_ca(ca_cert)
-                .context("build boring ssl acceptor: set ca client cert")?;
-        }
-
-        // Enable client certificate verification if client CAs are configured.
-        // This enforces mTLS by requiring the client to present a certificate
-        // signed by one of the configured CAs.
-        if tls_config.client_cert_chain.is_some() {
-            trace!("tls boring server service: enabling client certificate verification (mTLS)");
-            acceptor_builder.set_custom_verify_callback(
-                SslVerifyMode::PEER | SslVerifyMode::FAIL_IF_NO_PEER_CERT,
-                |_| Ok(()),
-            );
-        }
-
-        if let Some(alpn_protocols) = tls_config.alpn_protocols {
-            trace!("tls boring server service: set alpn protos callback");
-            acceptor_builder.set_alpn_select_callback(
-                move |_: &mut SslRef, client_alpns: &[u8]| {
-                    let mut reader = std::io::Cursor::new(client_alpns);
-                    loop {
-                        let n = reader.position() as usize;
-                        match ApplicationProtocol::decode_wire_format(&mut reader) {
-                            Ok(proto) => {
-                                if alpn_protocols.contains(&proto) {
-                                    let m = reader.position() as usize;
-                                    return Ok(&client_alpns[n+1..m]);
-                                }
-                            }
-                            Err(error) => {
-                                return Err(if error.kind() == ErrorKind::UnexpectedEof {
-                                    trace!(
-                                        "tls boring server service: alpn protos callback: no compatible ALPN found: {error:?}",
-                                    );
-                                    AlpnError::NOACK
-                                } else {
-                                    debug!(
-                                        "tls boring server service: alpn protos callback: client ALPN decode error: {error:?}",
-                                    );
-                                    AlpnError::ALERT_FATAL
-                                })
-                            }
-                        }
-                    }
-                },
-            );
-        }
-
-        if let Some(sink) = open_intent_sink(&tls_config.keylog_intent)? {
-            acceptor_builder.set_keylog_callback(move |_, line| {
-                let mut buf = String::with_capacity(line.len() + 1);
-                buf.push_str(line);
-                buf.push('\n');
-                sink.write_line(&buf);
-            });
-        }
 
         let acceptor = acceptor_builder.build();
 
@@ -256,6 +165,12 @@ where
                     protocol_version,
                     application_layer_protocol,
                     peer_certificate_chain: client_certificate_chain,
+                    server_name: stream
+                        .ssl()
+                        .servername(rama_boring::ssl::NameType::HOST_NAME)
+                        .map(rama_net::address::Domain::try_from)
+                        .transpose()?,
+                    resumed: Some(stream.ssl().session_reused()),
                 }
             }
             None => {
@@ -289,5 +204,122 @@ where
             .serve(stream)
             .await
             .context("boring acceptor: service error")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::{
+        asn1::Asn1Time,
+        bn::BigNum,
+        hash::MessageDigest,
+        pkey::PKey,
+        rsa::Rsa,
+        x509::{
+            X509, X509NameBuilder,
+            extension::{BasicConstraints, ExtendedKeyUsage, KeyUsage},
+        },
+    };
+    use rama_core::{ServiceInput, service::service_fn};
+    use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+    use rama_tls::{
+        client::{ClientAuth, ClientAuthData, TlsClientConfig},
+        server::{ClientVerifyMode, GeneratedServerAuthConfig, SelfSignedCaConfig, ServerAuthData},
+    };
+
+    fn client_identity() -> (CertificateDer<'static>, ClientAuthData) {
+        let (ca, ca_key) = rama_crypto::cert::boring::generate_certificate_authority_x509(
+            &SelfSignedCaConfig::default(),
+        )
+        .unwrap();
+        let key = PKey::from_rsa(Rsa::generate(2048).unwrap()).unwrap();
+        let mut name = X509NameBuilder::new().unwrap();
+        name.append_entry_by_text("CN", "Rama test client").unwrap();
+        let mut cert = X509::builder().unwrap();
+        cert.set_version(2).unwrap();
+        cert.set_serial_number(&BigNum::from_u32(1).unwrap().to_asn1_integer().unwrap())
+            .unwrap();
+        cert.set_subject_name(&name.build()).unwrap();
+        cert.set_issuer_name(ca.subject_name()).unwrap();
+        cert.set_pubkey(&key).unwrap();
+        cert.set_not_before(&Asn1Time::days_from_now(0).unwrap())
+            .unwrap();
+        cert.set_not_after(&Asn1Time::days_from_now(1).unwrap())
+            .unwrap();
+        cert.append_extension(&BasicConstraints::new().critical().build().unwrap())
+            .unwrap();
+        cert.append_extension(&KeyUsage::new().digital_signature().build().unwrap())
+            .unwrap();
+        cert.append_extension(&ExtendedKeyUsage::new().client_auth().build().unwrap())
+            .unwrap();
+        cert.sign(&ca_key, MessageDigest::sha256()).unwrap();
+        let root = CertificateDer::from(ca.to_der().unwrap());
+        (
+            root.clone(),
+            ClientAuthData {
+                cert_chain: vec![CertificateDer::from(cert.build().to_der().unwrap()), root],
+                private_key: PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
+                    key.private_key_to_der_pkcs8().unwrap(),
+                )),
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn client_auth_requires_a_certificate_from_configured_trust() {
+        let (root, trusted) = client_identity();
+        let (_, untrusted) = client_identity();
+        let server_auth =
+            ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).unwrap();
+        for (identity, roots, accepted) in [
+            (Some(trusted.clone()), vec![root.clone()], true),
+            (Some(untrusted), vec![root.clone()], false),
+            (None, vec![root], false),
+            (Some(trusted), vec![], false),
+        ] {
+            let server = TlsAcceptorService::new(
+                TlsServerConfig::new()
+                    .with_server_auth(server_auth.clone())
+                    .with_client_verify(ClientVerifyMode::ClientAuth(roots)),
+                service_fn(
+                    |stream: TlsStream<ServiceInput<tokio::io::DuplexStream>>| async move {
+                        Ok::<_, BoxError>(
+                            stream
+                                .extensions()
+                                .get_ref::<NegotiatedTlsParameters>()
+                                .unwrap()
+                                .clone(),
+                        )
+                    },
+                ),
+                false,
+            );
+            let mut client = TlsClientConfig::new()
+                .with_server_name(rama_net::address::Host::from_static("localhost"))
+                .try_with_server_trust_anchors([server_auth.cert_chain.last().unwrap().clone()])
+                .unwrap();
+            if let Some(identity) = identity {
+                client = client.with_client_auth(ClientAuth::Single(identity));
+            }
+            let data = crate::client::TlsConnectorData::try_from(&client).unwrap();
+            let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+            let (_, result) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                tokio::join!(
+                    crate::client::tls_connect(ServiceInput::new(client_io), Some(data)),
+                    server.serve(ServiceInput::new(server_io)),
+                )
+            })
+            .await
+            .expect("client-auth handshake timeout");
+            assert_eq!(result.is_ok(), accepted, "server result: {result:?}");
+            if let Ok(metadata) = result {
+                assert_eq!(
+                    metadata.server_name,
+                    Some(rama_net::address::Domain::from_static("localhost"))
+                );
+                assert_eq!(metadata.resumed, Some(false));
+            }
+        }
     }
 }

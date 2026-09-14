@@ -22,8 +22,12 @@ pub(super) fn unprotect_header(
             return Err(DropReason::KeyUnavailable);
         }
     } else if let Some(space) = partial_decode.space() {
-        if let Some(ref crypto) = spaces[space].crypto {
-            Some(&*crypto.header.remote)
+        if let Some(crypto) = spaces[space]
+            .crypto
+            .as_ref()
+            .and_then(|keys| keys.remote.as_ref())
+        {
+            Some(&*crypto.header)
         } else {
             debug!(
                 "discarding unexpected {:?} packet ({} bytes)",
@@ -95,7 +99,14 @@ pub(super) fn decrypt_packet_body(
     let crypto = if packet.header.is_0rtt() {
         &zero_rtt_crypto.unwrap().packet
     } else if packet_key_phase == conn_key_phase || space != SpaceId::Data {
-        &spaces[space].crypto.as_ref().unwrap().packet.remote
+        &spaces[space]
+            .crypto
+            .as_ref()
+            .ok_or(None)?
+            .remote
+            .as_ref()
+            .ok_or(None)?
+            .packet
     } else if let Some(prev) = prev_crypto.filter(|&crypto|
         // Use the previous keys if this packet comes prior to acknowledgment of the
         // key update by the peer; otherwise, this must be a remotely-initiated key

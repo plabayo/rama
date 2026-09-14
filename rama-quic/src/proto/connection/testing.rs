@@ -232,7 +232,7 @@ impl Connection {
             .as_ref()
             .map_or_else(
                 || &self.zero_rtt_crypto.as_ref().unwrap().packet,
-                |keys| &keys.packet.local,
+                |keys| &keys.local.packet,
             )
             .confidentiality_limit()
     }

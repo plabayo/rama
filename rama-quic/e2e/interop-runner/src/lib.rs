@@ -113,7 +113,7 @@ async fn shutdown_endpoint(
 }
 
 fn check_alpn(connection: &Connection) -> Result<(), BoxError> {
-    if connection.handshake_data().and_then(|data| data.protocol)
+    if connection.handshake_data().and_then(|data| data.application_layer_protocol)
         != Some(ApplicationProtocol::from(ALPN))
     {
         return Err("peer did not negotiate hq-interop".into());

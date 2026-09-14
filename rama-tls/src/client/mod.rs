@@ -31,12 +31,14 @@ use rama_crypto::pki_types::CertificateDer;
 
 use super::ProtocolVersion;
 use rama_core::extensions::Extension;
+use rama_net::address::Domain;
 use rama_net::tls::ApplicationProtocol;
 
-#[derive(Debug, Clone, Extension)]
+#[derive(Debug, Clone, PartialEq, Eq, Extension)]
 #[extension(tags(tls))]
-/// Indicate (some) of the negotiated tls parameters that
-/// can be added to the input extensions by Tls implementations.
+/// TLS parameters reported by either endpoint and stored in connection extensions.
+/// QUIC can expose this while the handshake progresses; optional values may
+/// become available later and do not imply handshake completion.
 pub struct NegotiatedTlsParameters {
     /// The used [`ProtocolVersion`].
     ///
@@ -50,6 +52,12 @@ pub struct NegotiatedTlsParameters {
     pub application_layer_protocol: Option<ApplicationProtocol>,
     /// Certificate chain provided the peer (only stored if config requested this)
     pub peer_certificate_chain: Option<Vec<CertificateDer<'static>>>,
+    /// Received SNI on a server, not a verified peer identity. Absent on clients
+    /// and when the peer omits SNI (including IP-address connections).
+    pub server_name: Option<Domain>,
+    /// Whether TLS resumed a session. Absent until the backend has decided,
+    /// or if it cannot report resumption.
+    pub resumed: Option<bool>,
 }
 
 /// Merge extension lists A and B, with

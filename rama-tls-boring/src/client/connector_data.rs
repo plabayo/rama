@@ -43,13 +43,39 @@ use rama_tls::CertificateCompressionAlgorithm;
 
 use rama_tls::keylog::{KeyLogSink, open_intent_sink};
 
-/// /// The resolved native boringssl config consumed by [`super::TlsConnector`].
+/// The resolved native BoringSSL config consumed by [`super::TlsConnector`].
 pub struct TlsConnectorData {
     pub config: ConnectConfiguration,
     pub store_server_certificate_chain: bool,
     pub server_name: Option<Host>,
     pub server_verify_mode: ServerVerifyMode,
     pub server_cert_pins: Option<TlsServerCertPins>,
+}
+
+impl TlsConnectorData {
+    /// Prepare one TLS session, including peer identity verification and certificate pins.
+    /// The caller selects its transport and starts the handshake.
+    pub fn into_ssl(mut self) -> Result<rama_boring::ssl::Ssl, BoxError> {
+        if self.server_verify_mode == ServerVerifyMode::Auto && self.server_name.is_none() {
+            return Err(BoxError::from_static_str(
+                "server identity required when server verification is enabled",
+            ));
+        }
+        super::connector::configure_server_cert_pins(
+            &mut self.config,
+            self.server_verify_mode,
+            self.server_cert_pins,
+            self.server_name.as_ref(),
+        );
+        let identity = self
+            .server_name
+            .as_ref()
+            .map(super::connector::server_identity_for)
+            .transpose()?;
+        self.config
+            .into_ssl(identity.as_deref())
+            .context("prepare boring client TLS session")
+    }
 }
 
 impl std::fmt::Debug for TlsConnectorData {

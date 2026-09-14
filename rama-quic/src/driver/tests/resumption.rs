@@ -1,4 +1,4 @@
-//! What `HandshakeSummary::resumed` reports, and what it does not.
+//! What `NegotiatedTlsParameters::resumed` reports, and what it does not.
 //!
 //! A session found in the server's store is not a resumption: rustls takes the bytes before it
 //! parses them, so the store can answer a lookup that the handshake then refuses. These two

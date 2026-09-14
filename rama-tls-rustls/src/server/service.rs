@@ -81,6 +81,13 @@ where
                 .map(ApplicationProtocol::from),
             // Currently not supported as this would mean we need to wrap rustls config
             peer_certificate_chain: None,
+            server_name: conn_data_ref
+                .server_name()
+                .map(rama_net::address::Domain::try_from)
+                .transpose()?,
+            resumed: conn_data_ref
+                .handshake_kind()
+                .map(|kind| kind == crate::dep::rustls::HandshakeKind::Resumed),
         };
 
         stream.extensions().insert(negotiated_tls_params);

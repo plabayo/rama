@@ -1402,7 +1402,7 @@ fn alpn_success() {
         .handshake_summary()
         .unwrap();
     assert_eq!(
-        settled.protocol,
+        settled.application_layer_protocol,
         Some(rama_net::tls::ApplicationProtocol::from(&b"bar"[..]))
     );
 }
@@ -5228,11 +5228,11 @@ fn application_close_in_initial_is_rejected() {
     // PADDING, so that the packet is long enough for header protection sampling
     packet.resize(header_len + 16, 0);
     // Room for the AEAD tag
-    packet.resize(packet.len() + keys.packet.local.tag_len(), 0);
+    packet.resize(packet.len() + keys.local.packet.tag_len(), 0);
     partial.finish(
         &mut packet,
-        keys.header.local.as_ref(),
-        Some((0, keys.packet.local.as_ref())),
+        keys.local.header.as_ref(),
+        Some((0, keys.local.packet.as_ref())),
     );
 
     let event = client.handle(

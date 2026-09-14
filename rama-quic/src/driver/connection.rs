@@ -32,8 +32,8 @@ use crate::driver::{
 };
 use crate::proto::{
     ConnectionError, ConnectionHandle, ConnectionId, ConnectionStats, Dir, EndpointEvent, Event,
-    HandshakeSummary, SendDatagramError as ProtoSendDatagramError, SendPermit, Side, StreamEvent,
-    StreamId,
+    NegotiatedTlsParameters, SendDatagramError as ProtoSendDatagramError, SendPermit, Side,
+    StreamEvent, StreamId,
 };
 
 /// Tests: the bytes a connection keeps allocated for sending, split by where they are.
@@ -225,8 +225,8 @@ impl Connecting {
     }
 
     /// What the handshake settled: the application protocol both sides agreed on, and the name
-    /// the client sent, as [`HandshakeSummary`] carries them.
-    pub async fn handshake_data(&mut self) -> Result<HandshakeSummary, ConnectionError> {
+    /// the client sent, as [`NegotiatedTlsParameters`] carries them.
+    pub async fn handshake_data(&mut self) -> Result<NegotiatedTlsParameters, ConnectionError> {
         // Taking &mut self allows us to use a single oneshot channel rather than dealing with
         // potentially many tasks waiting on the same event. It's a bit of a hack, but keeps things
         // simple.
@@ -1233,7 +1233,7 @@ impl Connection {
     /// the returned value.
     ///
     /// [`Connection::handshake_data()`]: crate::driver::Connecting::handshake_data
-    pub fn handshake_data(&self) -> Option<HandshakeSummary> {
+    pub fn handshake_data(&self) -> Option<NegotiatedTlsParameters> {
         self.0
             .state
             .lock()

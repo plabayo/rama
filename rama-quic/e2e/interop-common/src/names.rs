@@ -444,7 +444,7 @@ pub async fn rama_server_side(run: &CaseRun<NameScenario>) -> (Endpoint, SocketA
                 run.what
             );
             assert_eq!(
-                settled.protocol.as_ref(),
+                settled.application_layer_protocol.as_ref(),
                 Some(&alpn()),
                 "{}: unexpected negotiated protocol",
                 run.what

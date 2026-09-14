@@ -86,7 +86,7 @@ pub(crate) use crate::proto::endpoint::{
     ConnectionHandle, DatagramEvent, Endpoint, Incoming, RetryError,
 };
 
-pub use crate::proto::crypto::{ExportKeyingMaterialError, HandshakeSummary};
+pub use crate::proto::crypto::{ExportKeyingMaterialError, NegotiatedTlsParameters};
 
 mod packet;
 

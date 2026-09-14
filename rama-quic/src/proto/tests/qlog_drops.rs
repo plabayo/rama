@@ -231,8 +231,8 @@ fn invalid_first_accepted_initial_logs_drop_without_plaintext_length() {
     packet.resize(MIN_INITIAL_SIZE as usize, 0);
     partial.finish(
         &mut packet,
-        keys.header.remote.as_ref(),
-        Some((0, keys.packet.remote.as_ref())),
+        keys.remote.as_ref().unwrap().header.as_ref(),
+        Some((0, keys.remote.as_ref().unwrap().packet.as_ref())),
     );
     pair.server.inbound.push_back(Inbound::plain(
         pair.time,

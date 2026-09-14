@@ -100,7 +100,7 @@ pub(crate) async fn connect(
         connection
             .handshake_data()
             .expect("the handshake settled something")
-            .protocol,
+            .application_layer_protocol,
         Some(alpn()),
         "the protocol both ends agreed on"
     );

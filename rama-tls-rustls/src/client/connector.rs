@@ -489,6 +489,10 @@ impl<S, K> TlsConnector<S, K> {
                 .alpn_protocol()
                 .map(ApplicationProtocol::from),
             peer_certificate_chain: server_certificate_chain,
+            server_name: None,
+            resumed: conn_data_ref
+                .handshake_kind()
+                .map(|kind| kind == crate::dep::rustls::HandshakeKind::Resumed),
         };
 
         #[cfg(feature = "dial9")]
@@ -851,6 +855,8 @@ mod tests {
             .extensions()
             .get_ref::<NegotiatedTlsParameters>()
             .expect("proxy TLS parameters");
+        assert_eq!(negotiated.resumed, Some(false));
+        assert_eq!(negotiated.server_name, None);
         assert_eq!(
             negotiated.application_layer_protocol,
             Some(ApplicationProtocol::HTTP_2)

@@ -613,7 +613,10 @@ impl Endpoint {
             )));
         }
 
-        let packet = match event.first_decode.finish(Some(&*crypto.header.remote)) {
+        let packet = match event
+            .first_decode
+            .finish(crypto.remote.as_ref().map(|keys| keys.header.as_ref()))
+        {
             Ok(packet) => packet,
             Err(e) => {
                 trace!("unable to decode initial packet: {}", e);
@@ -757,17 +760,15 @@ impl Endpoint {
             });
         }
 
-        if incoming
-            .crypto
-            .packet
-            .remote
-            .decrypt(
-                packet_number,
-                &incoming.packet.header_data,
-                &mut incoming.packet.payload,
-            )
-            .is_err()
-        {
+        if incoming.crypto.remote.as_ref().is_none_or(|keys| {
+            keys.packet
+                .decrypt(
+                    packet_number,
+                    &incoming.packet.header_data,
+                    &mut incoming.packet.payload,
+                )
+                .is_err()
+        }) {
             debug!(packet_number, "failed to authenticate initial packet");
             self.index.remove_initial(dst_cid);
             return Err(AcceptError {
@@ -978,7 +979,7 @@ impl Endpoint {
             &incoming.packet.header.dst_cid,
             buf,
         ));
-        encode.finish(buf, &*incoming.crypto.header.local, None);
+        encode.finish(buf, &*incoming.crypto.local.header, None);
 
         Ok(Transmit {
             destination: incoming.addresses.remote,
@@ -1168,10 +1169,10 @@ impl Endpoint {
 
         let partial_encode = header.encode(buf);
         let max_len =
-            INITIAL_MTU as usize - partial_encode.header_len - crypto.packet.local.tag_len();
+            INITIAL_MTU as usize - partial_encode.header_len - crypto.local.packet.tag_len();
         frame::Close::from(reason).encode(buf, max_len);
-        buf.resize(buf.len() + crypto.packet.local.tag_len(), 0);
-        partial_encode.finish(buf, &*crypto.header.local, Some((0, &*crypto.packet.local)));
+        buf.resize(buf.len() + crypto.local.packet.tag_len(), 0);
+        partial_encode.finish(buf, &*crypto.local.header, Some((0, &*crypto.local.packet)));
         Transmit {
             destination: addresses.remote,
             ecn: None,

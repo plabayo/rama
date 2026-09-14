@@ -174,7 +174,7 @@ async fn observe(run: &CaseRun<ResumptionScenario>, peer: &mut AioQuic) -> Resum
 ///
 /// The child runs both connections, so the ticket the first is given is the one the second
 /// offers. It says what it was told about each handshake, and Rama's own handshake says
-/// whether it resumed, through `HandshakeSummary::resumed`; the two are checked against each
+/// whether it resumed, through `NegotiatedTlsParameters::resumed`; the two are checked against each
 /// other.
 #[tokio::test]
 async fn resumption_cases_rama_server() {

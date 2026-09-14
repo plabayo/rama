@@ -375,7 +375,7 @@ where
     }
 }
 
-fn server_identity_for(host: &Host) -> Result<String, BoxError> {
+pub(super) fn server_identity_for(host: &Host) -> Result<String, BoxError> {
     match TlsServerIdentity::try_from(host)
         .context("server identity is not a DNS name or IP address")?
     {
@@ -575,47 +575,26 @@ pub async fn tls_connect<T>(
 where
     T: Io + Unpin + ExtensionsRef,
 {
-    let TlsConnectorData {
-        mut config,
-        store_server_certificate_chain: _,
-        ref server_name,
-        server_verify_mode,
-        server_cert_pins,
-    } = match connector_data {
+    let data = match connector_data {
         Some(connector_data) => connector_data,
         None => {
             TlsConnectorData::try_from(&TlsClientConfig::new()).map_err(TlsConnectError::Builder)?
         }
     };
 
-    if server_verify_mode == ServerVerifyMode::Auto && server_name.is_none() {
-        return Err(TlsConnectError::Builder(BoxError::from_static_str(
-            "server identity required when server verification is enabled",
-        )));
-    }
-
-    configure_server_cert_pins(
-        &mut config,
-        server_verify_mode,
-        server_cert_pins,
-        server_name.as_ref(),
-    );
-    let server_identity = server_name
-        .as_ref()
-        .map(server_identity_for)
-        .transpose()
-        .map_err(TlsConnectError::Builder)?;
-    let stream: SslStream<T> =
-        rama_boring_tokio::connect(config, server_identity.as_deref(), stream)
-            .await
-            .map_err(|error| TlsConnectError::Handshake {
-                error,
-                server_name: server_name.clone(),
-            })?;
+    let server_name = data.server_name.clone();
+    let ssl = data.into_ssl().map_err(TlsConnectError::Builder)?;
+    let stream: SslStream<T> = rama_boring_tokio::SslStreamBuilder::new(ssl, stream)
+        .connect()
+        .await
+        .map_err(|error| TlsConnectError::Handshake {
+            error,
+            server_name: server_name.clone(),
+        })?;
     Ok(TlsStream::new(stream))
 }
 
-fn configure_server_cert_pins(
+pub(super) fn configure_server_cert_pins(
     config: &mut ConnectConfiguration,
     verify_mode: ServerVerifyMode,
     pins: Option<TlsServerCertPins>,
@@ -775,6 +754,8 @@ where
                 protocol_version,
                 application_layer_protocol,
                 peer_certificate_chain: server_certificate_chain,
+                server_name: None,
+                resumed: Some(stream.ssl().session_reused()),
             }
         }
         None => {
@@ -1120,6 +1101,8 @@ mod tests {
             .extensions()
             .get_ref::<NegotiatedTlsParameters>()
             .expect("proxy TLS parameters");
+        assert_eq!(negotiated.resumed, Some(false));
+        assert_eq!(negotiated.server_name, None);
         assert_eq!(
             negotiated.application_layer_protocol,
             Some(ApplicationProtocol::HTTP_2)

@@ -12,12 +12,14 @@ use std::{str, sync::Arc};
 
 use rama_core::bytes::BytesMut;
 use rama_crypto::pki_types::CertificateDer;
-use rama_net::{address::Domain, tls::ApplicationProtocol};
+pub use rama_tls::client::NegotiatedTlsParameters;
 
 use crate::proto::{
-    ConnectError, Side, TransportError, shared::ConnectionId,
+    ConnectError, Side, TransportError, packet::SpaceId, shared::ConnectionId,
     transport_parameters::TransportParameters,
 };
+
+pub(crate) mod config;
 
 /// Cryptography interface based on *ring*
 #[cfg(any(feature = "aws-lc", feature = "ring"))]
@@ -26,25 +28,6 @@ pub(crate) mod ring_like;
 #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 pub(crate) mod rustls;
 
-/// Negotiated ALPN and received server name reported by the TLS backend.
-///
-/// Available once the session has the data, which is before the handshake is confirmed.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct HandshakeSummary {
-    /// The application protocol both sides agreed on (RFC 7301), when ALPN was used.
-    pub protocol: Option<ApplicationProtocol>,
-    /// The name the client sent in its SNI extension, when it sent one. It is what the peer
-    /// said, not an identity a certificate was verified against, and the backend may have
-    /// canonicalised its case. `None` on a client, and on a server whose peer sent no SNI,
-    /// which includes a client connecting to an IP address (RFC 6066 §3).
-    pub server_name: Option<Domain>,
-    /// Whether the handshake resumed a session rather than doing a full one.
-    ///
-    /// `None` until the backend has decided, which can be after the rest of this summary is
-    /// available: the two are read separately. Both ends report it once it is known.
-    pub resumed: Option<bool>,
-}
-
 /// A cryptographic session (commonly TLS)
 pub(crate) trait Session: Send + Sync + 'static {
     /// Create the initial set of keys given the client's initial destination ConnectionId
@@ -52,7 +35,7 @@ pub(crate) trait Session: Send + Sync + 'static {
 
     /// What the handshake has settled, when the session has it. `None` until the connection
     /// emits `HandshakeDataReady`.
-    fn handshake_summary(&self) -> Option<HandshakeSummary> {
+    fn handshake_summary(&self) -> Option<NegotiatedTlsParameters> {
         None
     }
 
@@ -90,26 +73,23 @@ pub(crate) trait Session: Send + Sync + 'static {
     /// Read bytes of handshake data
     ///
     /// This should be called with the contents of `CRYPTO` frames. If it returns `Ok`, the
-    /// caller should call `write_handshake()` to check if the crypto protocol has anything
+    /// caller should call `poll_handshake()` to check if the crypto protocol has anything
     /// to send to the peer. This method will only return `true` the first time that
     /// handshake data is available. Future calls will always return false.
     ///
     /// On success, returns `true` iff `self.handshake_data()` has been populated.
-    fn read_handshake(&mut self, buf: &[u8]) -> Result<bool, TransportError>;
+    fn read_handshake(&mut self, level: SpaceId, buf: &[u8]) -> Result<bool, TransportError>;
 
     /// The peer's QUIC transport parameters
     ///
     /// These are only available after the first flight from the peer has been received.
     fn transport_parameters(&self) -> Result<Option<TransportParameters>, TransportError>;
 
-    /// Writes handshake bytes into the given buffer and optionally returns the negotiated keys
-    ///
-    /// When the handshake proceeds to the next phase, this method will return a new set of
-    /// keys to encrypt data with.
-    fn write_handshake(&mut self, buf: &mut Vec<u8>) -> Option<Keys>;
+    /// Drain ordered handshake output and directional key changes.
+    fn poll_handshake(&mut self) -> Result<Option<HandshakeEvent>, TransportError>;
 
     /// Compute keys for the next key update
-    fn next_1rtt_keys(&mut self) -> Option<KeyPair<Box<dyn PacketKey>>>;
+    fn next_1rtt_keys(&mut self) -> Result<Option<KeyPair<Box<dyn PacketKey>>>, TransportError>;
 
     /// Verify the integrity of a retry packet
     fn is_valid_retry(&self, orig_dst_cid: &ConnectionId, header: &[u8], payload: &[u8]) -> bool;
@@ -136,12 +116,29 @@ pub(crate) struct KeyPair<T> {
     pub(crate) remote: T,
 }
 
-/// A complete set of keys for a certain packet space
+/// Packet and header protection for one direction.
+pub(crate) struct DirectionalKeys {
+    pub(crate) header: Box<dyn HeaderKey>,
+    pub(crate) packet: Box<dyn PacketKey>,
+}
+
+/// Write keys become available before read keys on a TLS server.
 pub(crate) struct Keys {
-    /// Header protection keys
-    pub(crate) header: KeyPair<Box<dyn HeaderKey>>,
-    /// Packet protection keys
-    pub(crate) packet: KeyPair<Box<dyn PacketKey>>,
+    pub(crate) local: DirectionalKeys,
+    pub(crate) remote: Option<DirectionalKeys>,
+}
+
+#[cfg_attr(
+    not(all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))),
+    expect(
+        dead_code,
+        reason = "handshake events are constructed by enabled TLS backends"
+    )
+)]
+pub(crate) enum HandshakeEvent {
+    Data(SpaceId, Vec<u8>),
+    Keys(SpaceId, Keys),
+    ReadKeys(SpaceId, DirectionalKeys),
 }
 
 /// Client-side configuration for the crypto protocol

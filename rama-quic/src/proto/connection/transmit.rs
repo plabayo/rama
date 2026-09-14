@@ -185,7 +185,7 @@ impl Connection {
                 reason = "`space_can_send` selected this space because it has keys: Initial/Handshake keep `crypto` until discarded and the Data space has 1-RTT keys or, before the handshake completes, the 0-RTT keys"
             )]
             let tag_len = if let Some(ref crypto) = self.spaces[space_id].crypto {
-                crypto.packet.local.tag_len()
+                crypto.local.packet.tag_len()
             } else if space_id == SpaceId::Data {
                 self.zero_rtt_crypto.as_ref().expect(
                     "sending packets in the application data space requires known 0-RTT or 1-RTT keys",
@@ -873,7 +873,7 @@ impl Connection {
 
     fn tag_len_1rtt(&self) -> usize {
         let key = match self.spaces[SpaceId::Data].crypto.as_ref() {
-            Some(crypto) => Some(&*crypto.packet.local),
+            Some(crypto) => Some(&*crypto.local.packet),
             None => self.zero_rtt_crypto.as_ref().map(|x| &*x.packet),
         };
         // If neither Data nor 0-RTT keys are available, make a reasonable tag length guess. As of

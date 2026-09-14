@@ -686,6 +686,7 @@ where
                 peer_cert_chain: Option<Vec<CertificateDer<'static>>>,
                 version_for_log: &'static str,
                 has_alpn: bool,
+                resumed: bool,
             }
             let snapshot = {
                 let egress_ssl_ref = egress_tls_stream.ssl_ref();
@@ -721,6 +722,7 @@ where
                     peer_cert_chain,
                     version_for_log,
                     has_alpn,
+                    resumed: egress_ssl_ref.session_reused(),
                 }
             };
             // `egress_ssl_ref` borrow is released here.
@@ -852,6 +854,8 @@ where
                         protocol_version,
                         application_layer_protocol,
                         peer_certificate_chain: snapshot.peer_cert_chain,
+                        server_name: None,
+                        resumed: Some(snapshot.resumed),
                     })
                 } else {
                     None
@@ -938,6 +942,12 @@ where
                 // This relay does not request a downstream client certificate.
                 // Never mislabel the upstream server chain as a client chain.
                 peer_certificate_chain: None,
+                server_name: ssl
+                    .servername(rama_boring::ssl::NameType::HOST_NAME)
+                    .map(rama_net::address::Domain::try_from)
+                    .transpose()
+                    .map_err(TlsMitmRelayError::config)?,
+                resumed: Some(ssl.session_reused()),
             }
         };
         if let Some(negotiated_params) = maybe_negotiated_params {
