@@ -85,3 +85,33 @@ mod tests {
         let _ = crate::identity::rama_server_config(&identity);
     }
 }
+
+/// Select the Rama backend explicitly; peer dependencies may enable other implementations.
+pub fn options() -> rama::quic::tls::TlsOptions {
+    #[cfg(feature = "boring")]
+    let backend = rama::tls::TlsBackend::Boring;
+    #[cfg(not(feature = "boring"))]
+    let backend = rama::tls::TlsBackend::Rustls;
+    rama::quic::tls::TlsOptions::default().with_backend(backend)
+}
+
+#[cfg(feature = "boring")]
+pub fn assert_certificate_failure(error: &rama::quic::TransportError) {
+    use rama::tls::boring::core::ssl::quic::QuicError;
+    let Some(QuicError::Tls(native)) = error
+        .cause()
+        .and_then(|cause| cause.downcast_ref::<QuicError>())
+    else {
+        panic!(
+            "a native TLS verification failure was due: {:?}",
+            error.cause()
+        );
+    };
+    assert!(
+        native.ssl_error().is_some_and(|stack| stack
+            .errors()
+            .iter()
+            .any(|entry| entry.reason() == Some("CERTIFICATE_VERIFY_FAILED"))),
+        "the native failure must be certificate verification: {native:?}"
+    );
+}

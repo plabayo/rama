@@ -20,7 +20,7 @@ use std::{
 
 use rama::{
     crypto::pki_types::CertificateDer,
-    quic::{ClientConfig, Connection, Endpoint, ServerConfig, StoppedError, tls::TlsOptions},
+    quic::{ClientConfig, Connection, Endpoint, ServerConfig, StoppedError},
     tls::{
         client::TlsClientConfig,
         rustls::{
@@ -289,7 +289,7 @@ pub fn rama_client_config_for(
         .with_modify_rustls_config(crate::backend::verify_client);
     ClientConfig::try_from_rama_tls(
         &tls,
-        TlsOptions::default().with_early_data(scenario.offers_early_data),
+        crate::backend::options().with_early_data(scenario.offers_early_data),
     )
     .expect("the client config is built")
 }
@@ -557,8 +557,100 @@ pub fn rama_resuming_server_config(
             native.session_storage = sessions.clone();
             crate::backend::verify_server(native)
         });
-    ServerConfig::try_from_rama_tls(&tls, TlsOptions::default().with_early_data(early_data))
+    ServerConfig::try_from_rama_tls(&tls, crate::backend::options().with_early_data(early_data))
         .expect("the server config is built")
+}
+
+/// Server configurations for the shared verdicts, retaining the backend's native ticket state.
+pub struct RamaResumptionConfigs {
+    warming: ServerConfig,
+    identity: Identity,
+    #[cfg(not(feature = "boring"))]
+    sessions: Arc<RecordingSessions>,
+}
+
+impl RamaResumptionConfigs {
+    pub fn new(identity: &Identity) -> Self {
+        #[cfg(not(feature = "boring"))]
+        let sessions = RecordingSessions::new();
+        #[cfg(not(feature = "boring"))]
+        let warming = rama_resuming_server_config(identity, sessions.clone(), true);
+        #[cfg(feature = "boring")]
+        let warming = {
+            let tls = TlsServerConfig::new()
+                .with_alpn(smallvec![alpn()])
+                .with_server_auth(identity.clone());
+            let mut config = ServerConfig::try_from_rama_tls(
+                &tls,
+                crate::backend::options().with_early_data(true),
+            )
+            .unwrap();
+            config.set_transport_config(Arc::new(
+                rama::quic::TransportConfig::default()
+                    .with_receive_window(rama::quic::VarInt::from(65536u32)),
+            ));
+            config
+        };
+        Self {
+            warming,
+            identity: identity.clone(),
+            #[cfg(not(feature = "boring"))]
+            sessions,
+        }
+    }
+
+    pub fn warming(&self) -> ServerConfig {
+        self.warming.clone()
+    }
+
+    pub fn after_warmup(&self, what: &str) {
+        #[cfg(not(feature = "boring"))]
+        {
+            assert!(
+                self.sessions.kept_a_session(),
+                "{what}: no session stored: {}",
+                self.sessions.detail()
+            );
+            self.sessions.forget_offers();
+        }
+        #[cfg(feature = "boring")]
+        let _ = what; // Stateless ticket issuance is proved by the second handshake resuming.
+    }
+
+    pub fn resuming(&self, verdict: Verdict) -> (ServerConfig, impl Fn() -> String) {
+        #[cfg(not(feature = "boring"))]
+        {
+            let sessions = if verdict == Verdict::NotResumed {
+                RecordingSessions::new()
+            } else {
+                self.sessions.clone()
+            };
+            let config = rama_resuming_server_config(
+                &self.identity,
+                sessions.clone(),
+                verdict != Verdict::EarlyDataRefused,
+            );
+            (config, move || sessions.detail())
+        }
+        #[cfg(feature = "boring")]
+        {
+            let mut config = if verdict == Verdict::NotResumed {
+                Self::new(&self.identity).warming
+            } else {
+                self.warming.clone()
+            };
+            if verdict == Verdict::EarlyDataRefused {
+                // Preserve ticket keys but change their bound transport context to reject 0-RTT.
+                config.set_transport_config(Arc::new(
+                    rama::quic::TransportConfig::default()
+                        .with_receive_window(rama::quic::VarInt::from(131072u32)),
+                ));
+            }
+            (config, || {
+                "native stateless tickets; verdict checked from the handshake".into()
+            })
+        }
+    }
 }
 
 /// What Rama's server made of one connection: the payloads it read, and whether its own

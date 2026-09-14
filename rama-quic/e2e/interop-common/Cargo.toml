@@ -9,6 +9,7 @@ edition = "2024"
 publish = false
 
 [features]
+boring = ["rama/boring", "rama/rustls", "rama/ring"]
 rustls-ring = ["rama/rustls", "rama/ring"]
 rustls-aws-lc = ["rama/rustls", "rama/aws-lc"]
 

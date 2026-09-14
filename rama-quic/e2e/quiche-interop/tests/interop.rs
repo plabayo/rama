@@ -13,9 +13,11 @@ use std::{
 };
 
 use common::*;
+#[cfg(not(feature = "boring"))]
+use rama::tls::rustls::dep::rustls::{self, CertificateError};
 use rama::{
     quic::{ConnectionError, Endpoint},
-    tls::rustls::dep::rustls::{self, AlertDescription, CertificateError},
+    tls::rustls::dep::rustls::AlertDescription,
     utils::octets,
 };
 use tokio::net::UdpSocket;
@@ -301,6 +303,9 @@ async fn a_rama_client_refuses_a_quiche_server_it_does_not_trust() {
         "the alert says the issuer is not one it trusts: {}",
         error.reason()
     );
+    #[cfg(feature = "boring")]
+    interop_common::backend::assert_certificate_failure(error);
+    #[cfg(not(feature = "boring"))]
     assert!(
         error
             .cause()

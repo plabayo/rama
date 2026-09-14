@@ -17,13 +17,13 @@ use common::{
     quiche_resuming_server_config,
 };
 use interop_common::{
-    Arrival, CloseObservation, Expected, Received, RecordingSessions, Reported,
-    ResumptionObservation, ResumptionScenario, Role, Verdict, for_each_case,
+    Arrival, CloseObservation, Expected, Received, Reported, ResumptionObservation,
+    ResumptionScenario, Role, Verdict, for_each_case,
     identity::anchor_of,
     registry::CaseRun,
     resumption::{
-        rama_client, rama_client_config_for, rama_client_resumes, rama_client_warms_up,
-        rama_resuming_server_config, rama_server_reading, resumption_cases,
+        RamaResumptionConfigs, rama_client, rama_client_config_for, rama_client_resumes,
+        rama_client_warms_up, rama_server_reading, resumption_cases,
     },
     scenario::SERVER_NAME,
     support::Peer,
@@ -276,12 +276,12 @@ async fn resumption_cases_rama_server() {
             // as one.
             let served = Identity::generate(SERVER_NAME);
             let run = run.with_identity(served.auth.clone());
-            let sessions = RecordingSessions::new();
+            let configs = RamaResumptionConfigs::new(&run.identity);
             // The first server always allows early data, so the session it keeps carries early
             // keys for the client to offer.
             let (endpoint, addr, serving) = rama_server_reading(
                 &run,
-                rama_resuming_server_config(&run.identity, sessions.clone(), true),
+                configs.warming(),
                 vec![Expected {
                     chunk: run.scenario.warm,
                     arrival: Arrival::Bi,
@@ -304,33 +304,10 @@ async fn resumption_cases_rama_server() {
                 run.what
             );
             run.deadline.wait(&run.what, endpoint.wait_idle()).await;
-            assert!(
-                sessions.kept_a_session(),
-                "{}: the first connection left a session behind ({})",
-                run.what,
-                sessions.detail()
-            );
-            // Only offers made from here on count towards the second attempt's verdict.
-            sessions.forget_offers();
-
-            // What the second server changes about the first is one thing, named by the case: the
-            // store it looks in, or whether it takes early data at all.
-            let (store, early_data) = match run.scenario.verdict {
-                Verdict::NotResumed => (RecordingSessions::new(), true),
-                Verdict::EarlyDataRefused => (sessions.clone(), false),
-                Verdict::EarlyDataAccepted | Verdict::ResumedWithoutEarlyData => {
-                    (sessions.clone(), true)
-                }
-            };
-            // Kept, so the diagnostics come from the store this server actually used and not
-            // from the one the warm-up filled.
-            let active = store.clone();
-            let (endpoint, addr, serving) = rama_server_reading(
-                &run,
-                rama_resuming_server_config(&run.identity, store, early_data),
-                run.scenario.expected(),
-            )
-            .await;
+            configs.after_warmup(&run.what);
+            let (resuming, active) = configs.resuming(run.scenario.verdict);
+            let (endpoint, addr, serving) =
+                rama_server_reading(&run, resuming, run.scenario.expected()).await;
             let (resumed, reason) = quiche_resumes(&run, &served, addr, &session).await;
             let report = serving.join(&run.what, run.deadline).await;
             // Two sides that decided for themselves, and they have to agree.
@@ -339,7 +316,7 @@ async fn resumption_cases_rama_server() {
                 report.resumed,
                 "{}: the client and rama's own handshake agree on the resumption ({})",
                 run.what,
-                active.detail()
+                active()
             );
             let observed = ResumptionObservation {
                 rama: report.resumed,
@@ -349,7 +326,7 @@ async fn resumption_cases_rama_server() {
                 // Rama serves here, so the close this role sees is the peer's own, which the
                 // peer chooses rather than the case.
                 closed: None,
-                detail: Some(format!("early data reason {reason}, {}", active.detail())),
+                detail: Some(format!("early data reason {reason}, {}", active())),
             };
             let withheld = observed.check(&run.what, &run.scenario);
             assert!(

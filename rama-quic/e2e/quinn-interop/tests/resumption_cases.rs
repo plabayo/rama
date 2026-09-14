@@ -30,8 +30,8 @@ use interop_common::{
     identity::anchor_of,
     registry::CaseRun,
     resumption::{
-        rama_client, rama_client_config_for, rama_client_resumes, rama_client_warms_up,
-        rama_resuming_server_config, rama_server_reading, resumption_cases,
+        RamaResumptionConfigs, rama_client, rama_client_config_for, rama_client_resumes,
+        rama_client_warms_up, rama_server_reading, resumption_cases,
     },
     scenario::SERVER_NAME,
     support::{Deadline, Peer, localhost},
@@ -334,10 +334,10 @@ async fn resumption_cases_rama_server() {
         Role::RamaServer,
         resumption_cases(),
         |run| async move {
-            let sessions = RecordingSessions::new();
+            let configs = RamaResumptionConfigs::new(&run.identity);
             // The first server always allows early data, so the session it keeps carries early
             // keys for the client to offer.
-            let warming = rama_resuming_server_config(&run.identity, sessions.clone(), true);
+            let warming = configs.warming();
             let (endpoint, addr, serving) = rama_server_reading(
                 &run,
                 warming,
@@ -369,28 +369,8 @@ async fn resumption_cases_rama_server() {
                 run.what
             );
             run.deadline.wait(&run.what, endpoint.wait_idle()).await;
-            assert!(
-                sessions.kept_a_session(),
-                "{}: the first connection left a session behind ({})",
-                run.what,
-                sessions.detail()
-            );
-            // Only offers made from here on count towards the second attempt's verdict.
-            sessions.forget_offers();
-
-            // What the second server changes about the first is one thing, named by the case: the
-            // store it looks in, or whether it takes early data at all.
-            let (store, early_data) = match run.scenario.verdict {
-                Verdict::NotResumed => (RecordingSessions::new(), true),
-                Verdict::EarlyDataRefused => (sessions.clone(), false),
-                Verdict::EarlyDataAccepted | Verdict::ResumedWithoutEarlyData => {
-                    (sessions.clone(), true)
-                }
-            };
-            // Kept, so the diagnostics come from the store this server actually used and not
-            // from the one the warm-up filled.
-            let active = store.clone();
-            let resuming = rama_resuming_server_config(&run.identity, store, early_data);
+            configs.after_warmup(&run.what);
+            let (resuming, active) = configs.resuming(run.scenario.verdict);
             let (endpoint, addr, serving) =
                 rama_server_reading(&run, resuming, run.scenario.expected()).await;
             let early_accepted = quinn_resumes(&run, &client, addr).await;
@@ -412,7 +392,7 @@ async fn resumption_cases_rama_server() {
                 // Rama serves here, so the close this role sees is the peer's own, which the
                 // peer chooses rather than the case.
                 closed: None,
-                detail: Some(active.detail()),
+                detail: Some(active()),
             };
             let withheld = observed.check(&run.what, &run.scenario);
             assert_eq!(

@@ -1575,6 +1575,7 @@ dependencies = [
  "rama-net",
  "rama-quic",
  "rama-tls",
+ "rama-tls-boring",
  "rama-tls-rustls",
  "rama-ua",
  "rama-udp",
@@ -1584,6 +1585,36 @@ dependencies = [
  "time",
  "tokio-util",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "rama-boring"
+version = "0.6.8"
+dependencies = [
+ "bitflags 2.13.2",
+ "foreign-types",
+ "libc",
+ "openssl-macros",
+ "rama-boring-sys",
+]
+
+[[package]]
+name = "rama-boring-sys"
+version = "0.6.8"
+dependencies = [
+ "bindgen",
+ "cmake",
+ "fs_extra",
+ "fslock",
+]
+
+[[package]]
+name = "rama-boring-tokio"
+version = "0.6.8"
+dependencies = [
+ "rama-boring",
+ "rama-boring-sys",
+ "tokio",
 ]
 
 [[package]]
@@ -1618,6 +1649,7 @@ dependencies = [
  "base64",
  "hmac",
  "openssl-probe",
+ "rama-boring",
  "rama-core",
  "rama-net",
  "rama-utils",
@@ -1845,6 +1877,7 @@ dependencies = [
  "rama-crypto",
  "rama-net",
  "rama-tls",
+ "rama-tls-boring",
  "rama-tls-rustls",
  "rama-udp",
  "rama-utils",
@@ -1855,6 +1888,7 @@ dependencies = [
  "serde_json",
  "slab",
  "tokio",
+ "zeroize",
 ]
 
 [[package]]
@@ -1910,6 +1944,25 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tokio",
+]
+
+[[package]]
+name = "rama-tls-boring"
+version = "0.5.0"
+dependencies = [
+ "ahash",
+ "itertools 0.15.0",
+ "moka",
+ "parking_lot",
+ "pin-project-lite",
+ "rama-boring",
+ "rama-boring-tokio",
+ "rama-core",
+ "rama-crypto",
+ "rama-net",
+ "rama-tls",
+ "rama-utils",
  "tokio",
 ]
 

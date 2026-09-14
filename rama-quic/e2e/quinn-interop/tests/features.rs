@@ -264,7 +264,7 @@ async fn a_client_connecting_to_an_address_sends_no_server_name() {
         "a client naming an address sends no server name"
     );
     assert_eq!(
-        settled.protocol,
+        settled.application_layer_protocol,
         Some(ApplicationProtocol::from(ALPN)),
         "and the protocol is settled all the same"
     );

@@ -83,9 +83,10 @@ This transport-first model is also part of why Rama's [gRPC support](./http/grpc
     <https://ramaproxy.org/docs/rama/quic/struct.EndpointBuilder.html>, so a graceful shutdown
     the application holds a guard for stops the endpoint too
 
-QUIC needs the `quic` feature and a TLS provider: `quic` together with `rustls` and one of
-`ring` or `aws-lc`. It is built on [rama-udp][rama-udp], so the socket options and packet
-features of that layer apply to it.
+QUIC needs the `quic` feature and a TLS provider: either `boring`, or `rustls` together with
+`ring` or `aws-lc`. Select an implementation with `TlsOptions::with_backend`; automatic
+selection prefers Rustls when both are available. It is built on [rama-udp][rama-udp], so
+the socket options and packet features of that layer apply to it.
 
 For the connection-oriented streams there are also connectors to make it easy to establish connections in bigger stacks
 (e.g. http within tls on top of tcp):

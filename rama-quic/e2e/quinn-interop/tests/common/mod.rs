@@ -28,7 +28,7 @@ use rama::{
         cert::{CertificateIdentity, CertificateSubject, LeafCertRequest, SelfSignedCaConfig},
         pki_types::CertificateDer,
     },
-    quic::{ClientConfig, ServerConfig, tls::TlsOptions},
+    quic::{ClientConfig, ServerConfig},
     tls::{
         client::TlsClientConfig,
         rustls::{client::RustlsClientConfigExt as _, server::RustlsServerConfigExt as _},
@@ -146,7 +146,7 @@ pub fn rama_server_config(auth: &ServerAuthData) -> ServerConfig {
         .with_alpn(smallvec![shared_alpn()])
         .with_server_auth(auth.clone())
         .with_modify_rustls_config(interop_common::backend::verify_server);
-    ServerConfig::try_from_rama_tls(&tls, TlsOptions::default())
+    ServerConfig::try_from_rama_tls(&tls, interop_common::backend::options())
         .expect("the server config is built")
 }
 
@@ -156,7 +156,7 @@ pub fn rama_client_config(anchor: CertificateDer<'static>) -> ClientConfig {
         .try_with_server_trust_anchors([anchor])
         .expect("the trust anchor is accepted")
         .with_modify_rustls_config(interop_common::backend::verify_client);
-    ClientConfig::try_from_rama_tls(&tls, TlsOptions::default())
+    ClientConfig::try_from_rama_tls(&tls, interop_common::backend::options())
         .expect("the client config is built")
 }
 

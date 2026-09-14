@@ -10,8 +10,11 @@ use std::net::SocketAddr;
 use rama::{
     crypto::pki_types::CertificateDer,
     quic::{ConnectionError, Endpoint},
-    tls::rustls::dep::rustls::{self, AlertDescription, CertificateError},
+    tls::rustls::dep::rustls::AlertDescription,
 };
+
+#[cfg(not(feature = "boring"))]
+use rama::tls::rustls::dep::rustls::{self, CertificateError};
 
 use crate::{
     identity::{anchor_of, identity_from_a_stranger, rama_client_config},
@@ -103,6 +106,9 @@ pub async fn rama_client_refuses(
         "{what}: the alert says the issuer is not one it trusts: {}",
         error.reason()
     );
+    #[cfg(feature = "boring")]
+    crate::backend::assert_certificate_failure(error);
+    #[cfg(not(feature = "boring"))]
     assert!(
         error
             .cause()
