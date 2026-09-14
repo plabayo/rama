@@ -77,21 +77,26 @@ async fn a_client_moves_to_the_advertised_address_and_data_flows() {
 #[tokio::test]
 async fn a_wildcard_listener_and_a_concrete_advertised_socket_keep_their_own_tuples() {
     let (client_config, mut server_config) = configs();
-    server_config.set_preferred_address_v4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0));
-    let server = Endpoint::bind_server(
-        rama_core::rt::Executor::new(),
-        server_config,
-        SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), 0),
-    )
-    .await
-    .expect("the wildcard listener and the advertised socket both bind");
+    let (advertised, advertised_log) = recording_socket();
+    let preferred = advertised.local_addr();
+    let SocketAddr::V4(preferred_v4) = preferred else {
+        panic!("the fixture binds an IPv4 loopback socket");
+    };
+    // Handshake confirmation starts probing, so hold arrivals until the initial tuple has
+    // been observed. Both sockets remain writable.
+    close_receive(&advertised_log);
+    server_config.set_preferred_address_v4(preferred_v4);
+    let server = endpoint_with(
+        EndpointConfig::try_with_rand_key().unwrap(),
+        Some(server_config),
+        Socket::from_std(
+            std::net::UdpSocket::bind(SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), 0)).unwrap(),
+        )
+        .unwrap(),
+    );
+    server.advertise_abstract(advertised).unwrap();
     let listener = server.local_addr().unwrap();
     assert!(listener.ip().is_unspecified(), "the listener is a wildcard");
-    let preferred = server
-        .local_addrs()
-        .into_iter()
-        .find(|address| !address.ip().is_unspecified())
-        .expect("the advertised socket is concrete");
 
     // The client sends to a concrete address of ours that the wildcard listener receives on.
     let reachable = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), listener.port());
@@ -114,6 +119,7 @@ async fn a_wildcard_listener_and_a_concrete_advertised_socket_keep_their_own_tup
         "the connection's peer address is the one the client sent to"
     );
     exchange(&c, &s, b"through the wildcard listener").await;
+    open_receive(&advertised_log);
 
     wait_for(
         "the client moved to the advertised address",
@@ -122,6 +128,12 @@ async fn a_wildcard_listener_and_a_concrete_advertised_socket_keep_their_own_tup
     )
     .await;
     exchange(&c, &s, b"up from the advertised socket").await;
+    wait_for(
+        "the server sends from the advertised socket",
+        Duration::from_secs(5),
+        || s.sending_from() == Some(preferred),
+    )
+    .await;
     // The handle the move left behind is kept for the concrete path it was serving, not for the
     // wildcard address it is bound to: that address is not a path, and a datagram naming the old
     // path has to find it here rather than send the endpoint looking for a socket again.
@@ -381,24 +393,62 @@ async fn the_datagrams_of_each_path_leave_by_that_paths_socket() {
         c.remote_address() == advertised_addr
     })
     .await;
-    let listener_before = to_client(&listener_log);
-    let advertised_before = to_client(&advertised_log);
     assert!(
-        advertised_before > 0,
+        to_client(&advertised_log) > 0,
         "the advertised socket answered on its own path"
     );
-
-    // The traffic that follows leaves by the advertised socket, and the listener sends no more.
     exchange(&c, &s, b"up over the advertised path").await;
-    exchange(&s, &c, b"down over the advertised path").await;
+    wait_for(
+        "the server sends from the advertised socket",
+        Duration::from_secs(5),
+        || s.sending_from() == Some(advertised_addr),
+    )
+    .await;
+
+    // Capture the exact descriptor offered on the new path. Old-path control traffic can
+    // still leave by the listener; it cannot stand in for this descriptor's placement.
+    block_segments_for(&advertised_log, SocketAddress::from(client_addr));
+    let payload = b"down over the advertised path";
+    let mut stream = s.open_uni().await.unwrap();
+    stream.write_all(payload).await.unwrap();
+    stream.finish().unwrap();
+    wait_for(
+        "a descriptor waits on the advertised socket",
+        Duration::from_secs(5),
+        || s.held_transmit().is_some(),
+    )
+    .await;
+    let (waiting, destination, _) = s.held_transmit().expect("the descriptor is held");
+    assert_eq!(destination, client_addr);
+    unblock_segments(&advertised_log);
+    wait_for(
+        "the exact descriptor leaves by the advertised socket",
+        Duration::from_secs(5),
+        || {
+            advertised_log.lock().sent.iter().any(|datagram| {
+                datagram.destination == SocketAddress::from(client_addr)
+                    && datagram.bytes == waiting
+            })
+        },
+    )
+    .await;
+    let mut incoming = tokio::time::timeout(Duration::from_secs(5), c.accept_uni())
+        .await
+        .expect("the stream arrives")
+        .expect("the connection is alive");
+    let received = tokio::time::timeout(
+        Duration::from_secs(5),
+        incoming.read_to_end(payload.len() + 1),
+    )
+    .await
+    .expect("the stream completes")
+    .expect("it is not truncated");
+    assert_eq!(received, payload);
     assert!(
-        to_client(&advertised_log) > advertised_before,
-        "the exchange left by the advertised socket"
-    );
-    assert_eq!(
-        to_client(&listener_log),
-        listener_before,
-        "and nothing more left by the listener"
+        !listener_log.lock().sent.iter().any(|datagram| {
+            datagram.destination == SocketAddress::from(client_addr) && datagram.bytes == waiting
+        }),
+        "the descriptor offered on the advertised path never left by the listener"
     );
     drop((c, s));
     tokio::join!(client.shutdown(), server.shutdown());
@@ -739,6 +789,14 @@ async fn a_part_sent_descriptor_stays_with_its_handle_when_the_path_moves() {
         .unwrap();
     let (c, s) = connect_through(&client, &server, client_config, initial).await;
     exchange(&s, &c, b"before").await;
+    // Receiving application data does not imply that NEW_CONNECTION_ID arrived. The server
+    // replaces CID 0 when it does; settle that transition before holding a descriptor for a move.
+    wait_for(
+        "the server replaced its handshake destination CID",
+        Duration::from_secs(5),
+        || s.active_dcid_seq() != 0,
+    )
+    .await;
     segments.arm();
 
     // A payload offered as one segmented descriptor, held after one accepted segment.
@@ -762,9 +820,22 @@ async fn a_part_sent_descriptor_stays_with_its_handle_when_the_path_moves() {
         .map(|datagram| datagram.bytes.clone())
         .collect();
     let peer = client.local_addr().unwrap();
-    let (_, _, held_cid) = s
+    let (held_bytes, _, held_cid) = s
         .held_transmit()
         .expect("the part-sent descriptor waits on the handle that took its prefix");
+    assert_eq!(
+        held_bytes,
+        listener_log.lock().rejected.as_ref().unwrap().0.bytes,
+        "the held descriptor is the one whose prefix the socket accepted"
+    );
+    assert!(
+        s.descriptors().iter().any(|descriptor| {
+            descriptor.bytes == held_bytes
+                && descriptor.outcome == Outcome::Pending
+                && descriptor.reported
+        }),
+        "the partial send itself reported its CID before the descriptor completed"
+    );
     let carried = held_cid.expect("it carries an identifier");
     // The prefix that left carries this descriptor's own identifier, and it is reported as used
     // towards the peer at that moment (RFC 9000 §10.3.1) — before the move, while the queue can
