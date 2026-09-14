@@ -650,4 +650,86 @@ mod tests {
         relay_task.await.unwrap().expect("relay handshake ok");
         upstream.await.unwrap().expect("upstream server ok");
     }
+
+    /// Repeat connections to one upstream reuse a single cached ingress
+    /// acceptor; a different upstream cert gets its own entry.
+    #[tokio::test]
+    async fn relay_reuses_cached_acceptor_per_upstream_cert() {
+        use crate::client::TlsConnectorData;
+        use crate::proxy::mitm::TlsMitmRelay;
+        use rama_core::{ServiceInput, io::BridgeIo};
+        use rama_tls::client::{ServerVerifyMode, TlsClientConfig};
+
+        fn upstream_acceptor(revocation: Revocation) -> SslAcceptor {
+            let (key, x509) = upstream_identity(revocation);
+            let mut up = SslAcceptor::mozilla_intermediate_v5(SslMethod::tls_server()).unwrap();
+            up.set_certificate(&x509).unwrap();
+            up.set_private_key(&key).unwrap();
+            up.build()
+        }
+
+        async fn handshake_through(
+            relay: &TlsMitmRelay<InMemoryBoringMitmCertIssuer>,
+            upstream: &SslAcceptor,
+        ) {
+            let (client_io, relay_ingress) = duplex(1 << 16);
+            let (relay_egress, upstream_io) = duplex(1 << 16);
+            let upstream = upstream.clone();
+            let server =
+                tokio::spawn(
+                    async move { rama_boring_tokio::accept(&upstream, upstream_io).await },
+                );
+            let egress_cd = TlsConnectorData::try_from(
+                &TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable),
+            )
+            .expect("egress connector data");
+            let relayed = relay.handshake(
+                BridgeIo(
+                    ServiceInput::new(relay_ingress),
+                    ServiceInput::new(relay_egress),
+                ),
+                Some(egress_cd),
+            );
+            let mut conn = SslConnector::builder(SslMethod::tls_client()).unwrap();
+            conn.set_verify(SslVerifyMode::NONE);
+            let mut cfg = conn.build().configure().unwrap();
+            cfg.set_verify_hostname(false);
+            let client = rama_boring_tokio::connect(cfg, Some("upstream.example"), client_io);
+            let (relayed, client) = tokio::join!(relayed, client);
+            relayed.expect("relay handshake");
+            client.expect("client handshake");
+            server.await.unwrap().expect("upstream handshake");
+        }
+
+        let (ca_crt, ca_key) = generate_certificate_authority_x509(&ca_config(
+            "rama-mitm-relay-ca.example",
+            Some("Rama"),
+            CertificateKeyKind::default(),
+        ))
+        .expect("self-signed MITM CA");
+        let relay = TlsMitmRelay::new_in_memory(ca_crt, ca_key);
+        let acceptors = relay
+            .acceptors
+            .clone()
+            .expect("acceptor cache on by default");
+
+        let first = upstream_acceptor(Revocation::None);
+        handshake_through(&relay, &first).await;
+        handshake_through(&relay, &first).await;
+        acceptors.run_pending_tasks().await;
+        assert_eq!(
+            acceptors.entry_count(),
+            1,
+            "same upstream cert: one acceptor"
+        );
+
+        let second = upstream_acceptor(Revocation::None);
+        handshake_through(&relay, &second).await;
+        acceptors.run_pending_tasks().await;
+        assert_eq!(
+            acceptors.entry_count(),
+            2,
+            "new upstream cert: new acceptor"
+        );
+    }
 }

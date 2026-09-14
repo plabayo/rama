@@ -7,6 +7,7 @@
 //! ```
 
 #![expect(
+    clippy::unwrap_used,
     clippy::expect_used,
     reason = "bench: panic-on-error is the standard pattern for harnesses"
 )]
@@ -96,6 +97,92 @@ fn issue_cached_hit(bencher: divan::Bencher) {
             .block_on(issuer.issue_mitm_x509_cert(upstream.clone()))
             .expect("cached mirrored leaf")
     });
+}
+
+/// Full relay handshake (egress connect, mirror, ingress accept) over in-memory
+/// duplex pipes against a warm cert cache: the steady-state per-connection cost
+/// of intercepting a host that was seen before.
+#[divan::bench(args = [true, false], sample_count = 50)]
+fn relay_handshake_warm(bencher: divan::Bencher, acceptor_cache: bool) {
+    use rama::{
+        ServiceInput,
+        io::BridgeIo,
+        tls::{
+            boring::{
+                client::TlsConnectorData,
+                core::{
+                    ssl::{SslAcceptor, SslConnector, SslMethod, SslVerifyMode},
+                    tokio as boring_tokio,
+                },
+                proxy::{MitmAcceptorCacheConfig, TlsMitmRelay},
+            },
+            client::{ServerVerifyMode, TlsClientConfig},
+        },
+    };
+    use tokio::io::duplex;
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime build");
+
+    // Upstream server presenting an EC leaf.
+    let upstream_ca = SelfSignedCaConfig::default();
+    let (ca_cert, ca_key) = generate_certificate_authority_x509(&upstream_ca).expect("CA");
+    let (upstream_cert, upstream_key) =
+        issue_leaf_certificate(&LeafCertRequest::default(), &ca_cert, &ca_key).expect("leaf");
+    let mut upstream = SslAcceptor::mozilla_intermediate_v5(SslMethod::tls_server()).unwrap();
+    upstream.set_certificate(&upstream_cert).unwrap();
+    upstream.set_private_key(&upstream_key).unwrap();
+    let upstream = upstream.build();
+
+    let (mitm_ca, mitm_key) =
+        generate_certificate_authority_x509(&SelfSignedCaConfig::default()).expect("MITM CA");
+    let relay = TlsMitmRelay::new_cached_in_memory(mitm_ca, mitm_key)
+        .maybe_with_acceptor_cache(acceptor_cache.then(MitmAcceptorCacheConfig::default));
+    let egress_config = TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable);
+
+    let handshake = || async {
+        let (client_io, relay_ingress) = duplex(1 << 16);
+        let (relay_egress, upstream_io) = duplex(1 << 16);
+        let upstream = upstream.clone();
+        let server =
+            tokio::spawn(async move { boring_tokio::accept(&upstream, upstream_io).await });
+        // the relay service builds this per flow as well
+        let egress_cd = TlsConnectorData::try_from(&egress_config).expect("egress connector data");
+        let relay_task = relay.handshake(
+            BridgeIo(
+                ServiceInput::new(relay_ingress),
+                ServiceInput::new(relay_egress),
+            ),
+            Some(egress_cd),
+        );
+        let mut conn = SslConnector::builder(SslMethod::tls_client()).unwrap();
+        conn.set_verify(SslVerifyMode::NONE);
+        let mut cfg = conn.build().configure().unwrap();
+        cfg.set_verify_hostname(false);
+        let client = boring_tokio::connect(cfg, Some("localhost"), client_io);
+        let (relayed, client) = tokio::join!(relay_task, client);
+        relayed.expect("relay handshake");
+        client.expect("client handshake");
+        server.await.unwrap().expect("upstream handshake");
+    };
+
+    // warm the cert cache
+    runtime.block_on(handshake());
+    bencher.bench_local(|| runtime.block_on(handshake()));
+}
+
+/// The egress connector data the relay service builds for every intercepted
+/// flow (it is not clonable): a fresh `SSL_CTX` per connection.
+#[divan::bench]
+fn egress_connector_data_build(bencher: divan::Bencher) {
+    use rama::tls::{
+        boring::client::TlsConnectorData,
+        client::{ServerVerifyMode, TlsClientConfig},
+    };
+    let egress_config = TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable);
+    bencher.bench_local(|| TlsConnectorData::try_from(&egress_config).expect("connector data"));
 }
 
 /// A burst of concurrent misses for one upstream cert (a browser opening its
