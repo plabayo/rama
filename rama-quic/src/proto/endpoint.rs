@@ -597,14 +597,21 @@ impl Endpoint {
             return None;
         }
 
-        let Ok(crypto) = server_config.crypto.initial_keys(header.version, dst_cid) else {
-            // This probably indicates that the user set supported_versions incorrectly in
-            // `EndpointConfig`.
-            debug!(
-                "ignoring initial packet version {:#x} unsupported by cryptographic layer",
-                header.version
-            );
-            return None;
+        let crypto = match server_config.crypto.initial_keys(header.version, dst_cid) {
+            Ok(keys) => keys,
+            Err(error) => {
+                match error {
+                    crypto::InitialKeysError::UnsupportedVersion => debug!(
+                        "ignoring initial packet version {:#x} unsupported by cryptographic layer",
+                        header.version
+                    ),
+                    #[cfg(feature = "boring")]
+                    crypto::InitialKeysError::Crypto(error) => {
+                        debug!(%error, "unable to derive Initial packet keys")
+                    }
+                }
+                return None;
+            }
         };
 
         if let Err(reason) = self.early_validate_first_packet(header) {

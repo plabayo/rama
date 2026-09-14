@@ -21,6 +21,9 @@ use crate::proto::{
 
 pub(crate) mod config;
 
+#[cfg(feature = "boring")]
+pub(crate) mod boring;
+
 /// Cryptography interface based on *ring*
 #[cfg(any(feature = "aws-lc", feature = "ring"))]
 pub(crate) mod ring_like;
@@ -129,7 +132,10 @@ pub(crate) struct Keys {
 }
 
 #[cfg_attr(
-    not(all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))),
+    not(any(
+        feature = "boring",
+        all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+    )),
     expect(
         dead_code,
         reason = "handshake events are constructed by enabled TLS backends"
@@ -155,11 +161,7 @@ pub(crate) trait ClientConfig: Send + Sync {
 /// Server-side configuration for the crypto protocol
 pub(crate) trait ServerConfig: Send + Sync {
     /// Create the initial set of keys given the client's initial destination ConnectionId
-    fn initial_keys(
-        &self,
-        version: u32,
-        dst_cid: &ConnectionId,
-    ) -> Result<Keys, UnsupportedVersion>;
+    fn initial_keys(&self, version: u32, dst_cid: &ConnectionId) -> Result<Keys, InitialKeysError>;
 
     /// Generate the integrity tag for a retry packet
     ///
@@ -211,6 +213,41 @@ pub(crate) trait HeaderKey: Send + Sync {
     fn sample_size(&self) -> usize;
 }
 
+impl<T: PacketKey + ?Sized> PacketKey for Arc<T> {
+    fn encrypt(&self, packet: u64, buf: &mut [u8], header_len: usize) -> Result<(), CryptoError> {
+        (**self).encrypt(packet, buf, header_len)
+    }
+    fn decrypt(
+        &self,
+        packet: u64,
+        header: &[u8],
+        payload: &mut BytesMut,
+    ) -> Result<(), CryptoError> {
+        (**self).decrypt(packet, header, payload)
+    }
+    fn tag_len(&self) -> usize {
+        (**self).tag_len()
+    }
+    fn confidentiality_limit(&self) -> u64 {
+        (**self).confidentiality_limit()
+    }
+    fn integrity_limit(&self) -> u64 {
+        (**self).integrity_limit()
+    }
+}
+
+impl<T: HeaderKey + ?Sized> HeaderKey for Arc<T> {
+    fn decrypt(&self, pn_offset: usize, packet: &mut [u8]) {
+        (**self).decrypt(pn_offset, packet);
+    }
+    fn encrypt(&self, pn_offset: usize, packet: &mut [u8]) {
+        (**self).encrypt(pn_offset, packet);
+    }
+    fn sample_size(&self) -> usize {
+        (**self).sample_size()
+    }
+}
+
 rama_utils::macros::error::static_str_error! {
     #[doc = "failed to export keying material"]
     ///
@@ -249,6 +286,19 @@ rama_utils::macros::error::static_str_error! {
 /// Error indicating that the specified QUIC version is not supported
 #[derive(Debug)]
 pub(crate) struct UnsupportedVersion;
+
+#[derive(Debug)]
+pub(crate) enum InitialKeysError {
+    UnsupportedVersion,
+    #[cfg(feature = "boring")]
+    Crypto(rama_core::error::BoxError),
+}
+
+impl From<UnsupportedVersion> for InitialKeysError {
+    fn from(_: UnsupportedVersion) -> Self {
+        Self::UnsupportedVersion
+    }
+}
 
 impl From<UnsupportedVersion> for ConnectError {
     fn from(_: UnsupportedVersion) -> Self {

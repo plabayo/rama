@@ -51,7 +51,7 @@ pub(crate) use connection::benchmarks;
 pub(crate) use connection::qlog::ConnectionQlog;
 
 mod config;
-#[cfg(any(feature = "aws-lc", feature = "ring"))]
+#[cfg(any(feature = "aws-lc", feature = "ring", feature = "boring"))]
 pub use config::AddressTokenKey;
 pub use config::{
     AckFrequencyConfig, ClientConfig, ConfigError, CongestionControl, EndpointConfig, IdleTimeout,

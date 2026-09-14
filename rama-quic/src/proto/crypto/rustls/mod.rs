@@ -48,7 +48,9 @@ fn received_server_name(name: &str) -> Result<Domain, TransportError> {
 
 mod config;
 pub(crate) use super::config::NoInitialCipherSuite;
-pub(crate) use config::{AlpnPolicy, TlsConfigError, TlsOptions};
+use config::AlpnPolicy;
+#[cfg(test)]
+pub(crate) use config::TlsOptions;
 
 /// A rustls TLS session
 pub(crate) struct TlsSession {
@@ -65,6 +67,42 @@ pub(crate) struct TlsSession {
 }
 
 impl TlsSession {
+    fn collect_output(&mut self) {
+        let mut bytes = Vec::new();
+        let change = self.inner.write_hs(&mut bytes);
+        if !bytes.is_empty() {
+            self.output
+                .push_back(HandshakeEvent::Data(self.write_level, bytes));
+        }
+        if let Some(change) = change {
+            let (level, keys) = match change {
+                KeyChange::Handshake { keys } => (SpaceId::Handshake, keys),
+                KeyChange::OneRtt { keys, next } => {
+                    self.next_secrets = Some(next);
+                    (SpaceId::Data, keys)
+                }
+            };
+            self.write_level = level;
+            self.output.push_back(HandshakeEvent::Keys(
+                level,
+                Keys {
+                    local: DirectionalKeys {
+                        header: Box::new(keys.local.header),
+                        packet: Box::new(keys.local.packet),
+                    },
+                    remote: None,
+                },
+            ));
+            self.output.push_back(HandshakeEvent::ReadKeys(
+                level,
+                DirectionalKeys {
+                    header: Box::new(keys.remote.header),
+                    packet: Box::new(keys.remote.packet),
+                },
+            ));
+        }
+    }
+
     fn side(&self) -> Side {
         match self.inner {
             Connection::Client(_) => Side::Client,
@@ -152,6 +190,8 @@ impl crypto::Session for TlsSession {
                 TransportError::PROTOCOL_VIOLATION(format!("TLS error: {e}")).with_cause(e)
             }
         })?;
+        // Drain each TLS transition before processing bytes from the next encryption level.
+        self.collect_output();
         if !self.inner.is_handshaking()
             && self.alpn_policy == AlpnPolicy::Require
             && self.inner.alpn_protocol().is_none()
@@ -196,39 +236,7 @@ impl crypto::Session for TlsSession {
         if let Some(event) = self.output.pop_front() {
             return Ok(Some(event));
         }
-        let mut bytes = Vec::new();
-        let change = self.inner.write_hs(&mut bytes);
-        if !bytes.is_empty() {
-            self.output
-                .push_back(HandshakeEvent::Data(self.write_level, bytes));
-        }
-        if let Some(change) = change {
-            let (level, keys) = match change {
-                KeyChange::Handshake { keys } => (SpaceId::Handshake, keys),
-                KeyChange::OneRtt { keys, next } => {
-                    self.next_secrets = Some(next);
-                    (SpaceId::Data, keys)
-                }
-            };
-            self.write_level = level;
-            self.output.push_back(HandshakeEvent::Keys(
-                level,
-                Keys {
-                    local: DirectionalKeys {
-                        header: Box::new(keys.local.header),
-                        packet: Box::new(keys.local.packet),
-                    },
-                    remote: None,
-                },
-            ));
-            self.output.push_back(HandshakeEvent::ReadKeys(
-                level,
-                DirectionalKeys {
-                    header: Box::new(keys.remote.header),
-                    packet: Box::new(keys.remote.packet),
-                },
-            ));
-        }
+        self.collect_output();
         Ok(self.output.pop_front())
     }
 
@@ -626,7 +634,7 @@ impl crypto::ServerConfig for QuicServerConfig {
         &self,
         version: u32,
         dst_cid: &ConnectionId,
-    ) -> Result<Keys, UnsupportedVersion> {
+    ) -> Result<Keys, crypto::InitialKeysError> {
         let version = interpret_version(version)?;
         Ok(initial_keys(version, *dst_cid, Side::Server, &self.initial))
     }

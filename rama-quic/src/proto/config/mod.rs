@@ -1,5 +1,8 @@
 #![cfg_attr(
-    not(all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))),
+    not(any(
+        feature = "boring",
+        all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+    )),
     allow(
         dead_code,
         reason = "without a TLS backend and a crypto provider nothing can drive a handshake, so the code that serves one has no caller"
@@ -35,7 +38,7 @@ use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer};
 use rama_tls_rustls::dep::rustls::client::WebPkiServerVerifier;
 
 mod keys;
-#[cfg(any(feature = "aws-lc", feature = "ring"))]
+#[cfg(any(feature = "aws-lc", feature = "ring", feature = "boring"))]
 pub use keys::AddressTokenKey;
 pub use keys::{KEY_MATERIAL_SIZE, StatelessResetKey};
 
@@ -388,7 +391,7 @@ impl ServerConfig {
         self
     }
 
-    #[cfg(any(feature = "aws-lc", feature = "ring"))]
+    #[cfg(any(feature = "aws-lc", feature = "ring", feature = "boring"))]
     rama_utils::macros::generate_set_and_with! {
         /// The key this server seals address-validation tokens with.
         ///
@@ -513,18 +516,33 @@ impl ServerConfig {
     }
 }
 
-#[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+#[cfg(any(
+    feature = "boring",
+    all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+))]
 impl ServerConfig {
     /// Build a server configuration from the common Rama TLS server configuration: the identity
     /// to present, the protocols to accept and everything else TLS decides, with the provider
     /// chosen by this crate's features.
     pub fn try_from_rama_tls(
         config: &rama_tls::server::TlsServerConfig,
-        options: crypto::rustls::TlsOptions,
-    ) -> Result<Self, crypto::rustls::TlsConfigError> {
-        Ok(Self::with_crypto(Arc::new(
-            crypto::rustls::QuicServerConfig::from_rama(config, configured_provider(), options)?,
-        )))
+        options: crypto::config::TlsOptions,
+    ) -> Result<Self, crypto::config::TlsConfigError> {
+        match options.resolve_backend()? {
+            #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+            rama_tls::TlsBackend::Rustls => Ok(Self::with_crypto(Arc::new(
+                crypto::rustls::QuicServerConfig::from_rama(
+                    config,
+                    configured_provider(),
+                    options,
+                )?,
+            ))),
+            #[cfg(feature = "boring")]
+            rama_tls::TlsBackend::Boring => Ok(Self::with_crypto(Arc::new(
+                crypto::boring::QuicServerConfig::from_rama(config, options)?,
+            ))),
+            backend => Err(crypto::config::TlsConfigError::BackendUnavailable(backend)),
+        }
     }
 
     #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
@@ -541,24 +559,21 @@ impl ServerConfig {
     }
 }
 
-#[cfg(any(feature = "aws-lc", feature = "ring"))]
+#[cfg(any(feature = "aws-lc", feature = "ring", feature = "boring"))]
 impl ServerConfig {
     /// Create a server config with the given [`crypto::ServerConfig`]
     ///
     /// Uses a randomized handshake token key.
     pub(crate) fn with_crypto(crypto: Arc<dyn crypto::ServerConfig>) -> Self {
-        #[cfg(all(feature = "aws-lc", not(feature = "ring")))]
-        use rama_crypto::dep::aws_lc_rs::hkdf;
-        #[cfg(feature = "ring")]
-        use rama_crypto::dep::ring::hkdf;
         use rand::Rng;
 
         let rng = &mut rand::rng();
         let mut master_key = [0u8; 64];
         rng.fill_bytes(&mut master_key);
-        let master_key = hkdf::Salt::new(hkdf::HKDF_SHA256, &[]).extract(&master_key);
-
-        Self::new(crypto, Arc::new(master_key))
+        Self::new(
+            crypto,
+            AddressTokenKey::from_material(&master_key).into_key(),
+        )
     }
 }
 
@@ -785,7 +800,10 @@ impl ClientConfig {
     }
 }
 
-#[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+#[cfg(any(
+    feature = "boring",
+    all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+))]
 impl ClientConfig {
     /// Build a client configuration from the common Rama TLS client configuration: the peer
     /// identity to trust, the protocols to offer and everything else TLS decides, with the
@@ -796,11 +814,23 @@ impl ClientConfig {
     /// comes from here and from the server name given there.
     pub fn try_from_rama_tls(
         config: &rama_tls::client::TlsClientConfig,
-        options: crypto::rustls::TlsOptions,
-    ) -> Result<Self, crypto::rustls::TlsConfigError> {
-        Ok(Self::new(Arc::new(
-            crypto::rustls::QuicClientConfig::from_rama(config, configured_provider(), options)?,
-        )))
+        options: crypto::config::TlsOptions,
+    ) -> Result<Self, crypto::config::TlsConfigError> {
+        match options.resolve_backend()? {
+            #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+            rama_tls::TlsBackend::Rustls => Ok(Self::new(Arc::new(
+                crypto::rustls::QuicClientConfig::from_rama(
+                    config,
+                    configured_provider(),
+                    options,
+                )?,
+            ))),
+            #[cfg(feature = "boring")]
+            rama_tls::TlsBackend::Boring => Ok(Self::new(Arc::new(
+                crypto::boring::QuicClientConfig::from_rama(config, options)?,
+            ))),
+            backend => Err(crypto::config::TlsConfigError::BackendUnavailable(backend)),
+        }
     }
 
     #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]

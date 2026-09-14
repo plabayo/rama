@@ -448,7 +448,7 @@ tls = [
 aws-lc = ["rama-crypto?/aws-lc", "rama-tls-rustls?/aws-lc", "rama-quic?/aws-lc"]
 ring = ["rama-crypto?/ring", "rama-tls-rustls?/ring", "rama-quic?/ring"]
 rustls = ["tls", "dep:rama-tls-rustls", "rama-quic?/rustls"]
-boring = ["tls", "dep:rama-tls-boring"]
+boring = ["tls", "dep:rama-tls-boring", "rama-quic?/boring"]
 cli = [
     "std",
     "dep:base64",

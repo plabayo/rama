@@ -1,0 +1,355 @@
+use super::*;
+use crate::proto::{
+    Side,
+    crypto::{
+        self, ClientConfig as _, HandshakeEvent, ServerConfig as _, Session, config::TlsOptions,
+    },
+    shared::ConnectionId,
+    transport_parameters::TransportParameters,
+};
+use rama_core::bytes::BytesMut;
+use rama_tls::{
+    client::{TlsClientConfig, TlsServerCertPins},
+    server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
+};
+use std::sync::Arc;
+
+fn configs() -> (TlsClientConfig, TlsServerConfig) {
+    let auth = ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).unwrap();
+    let alpn = || {
+        [rama_net::tls::ApplicationProtocol::from(
+            b"rama-boring-test".as_slice(),
+        )]
+        .into_iter()
+        .collect()
+    };
+    let client = TlsClientConfig::new()
+        .with_alpn(alpn())
+        .with_server_cert_pins(TlsServerCertPins::new(auth.cert_chain[0].clone()))
+        .try_with_server_trust_anchors([auth.cert_chain.last().unwrap().clone()])
+        .unwrap();
+    (
+        client,
+        TlsServerConfig::new()
+            .with_alpn(alpn())
+            .with_server_auth(auth),
+    )
+}
+
+fn params(side: Side) -> TransportParameters {
+    TransportParameters {
+        initial_src_cid: Some(ConnectionId::new(&[if side.is_client() { 1 } else { 2 }])),
+        ..TransportParameters::default()
+    }
+}
+
+fn transfer(from: &mut dyn Session, to: &mut dyn Session) -> bool {
+    let mut progress = false;
+    while let Some(event) = from.poll_handshake().unwrap() {
+        progress = true;
+        if let HandshakeEvent::Data(level, bytes) = event {
+            for fragment in bytes.chunks(17) {
+                to.read_handshake(level, fragment).unwrap();
+            }
+        }
+    }
+    progress
+}
+
+fn handshake(client: &mut dyn Session, server: &mut dyn Session) {
+    for _ in 0..32 {
+        let progress = transfer(client, server) | transfer(server, client);
+        if !progress {
+            assert!(!client.is_handshaking());
+            assert!(!server.is_handshaking());
+            return;
+        }
+    }
+    panic!("TLS handshake did not settle");
+}
+
+fn check_session(client: &mut dyn Session, server: &mut dyn Session, resumed: bool) {
+    handshake(client, server);
+    for session in [&*client, &*server] {
+        assert_eq!(
+            session.negotiated_alpn(),
+            Some(b"rama-boring-test".as_slice())
+        );
+        assert_eq!(session.handshake_summary().unwrap().resumed, Some(resumed));
+    }
+    assert!(client.peer_certificates().is_some());
+    let mut a = [0; 32];
+    let mut b = [0; 32];
+    client
+        .export_keying_material(&mut a, b"rama\0\xff", b"context")
+        .unwrap();
+    server
+        .export_keying_material(&mut b, b"rama\0\xff", b"context")
+        .unwrap();
+    assert_eq!(a, b);
+    for number in 1..=3 {
+        let client_keys = client.next_1rtt_keys().unwrap().unwrap();
+        let server_keys = server.next_1rtt_keys().unwrap().unwrap();
+        let mut packet = b"headbody".to_vec();
+        packet.resize(24, 0);
+        client_keys.local.encrypt(number, &mut packet, 4).unwrap();
+        let mut payload = BytesMut::from(&packet[4..]);
+        server_keys
+            .remote
+            .decrypt(number, &packet[..4], &mut payload)
+            .unwrap();
+        assert_eq!(&payload[..], b"body");
+        packet[4..8].copy_from_slice(b"body");
+        server_keys.local.encrypt(number, &mut packet, 4).unwrap();
+        let mut payload = BytesMut::from(&packet[4..]);
+        client_keys
+            .remote
+            .decrypt(number, &packet[..4], &mut payload)
+            .unwrap();
+        assert_eq!(&payload[..], b"body");
+    }
+}
+
+#[test]
+fn full_resumed_and_early_handshakes() {
+    let (client, server) = configs();
+    let options = TlsOptions::default().with_early_data(true);
+    let client: Arc<dyn crypto::ClientConfig> =
+        Arc::new(QuicClientConfig::from_rama(&client, options).unwrap());
+    let server: Arc<dyn crypto::ServerConfig> =
+        Arc::new(QuicServerConfig::from_rama(&server, options).unwrap());
+    for resumed in [false, true] {
+        let mut c = client
+            .clone()
+            .start_session(1, "localhost", &params(Side::Client))
+            .unwrap();
+        let mut s = server
+            .clone()
+            .start_session(1, &params(Side::Server))
+            .unwrap();
+        assert_eq!(c.early_crypto().is_some(), resumed);
+        check_session(&mut *c, &mut *s, resumed);
+        assert_eq!(c.early_data_accepted(), Some(resumed));
+    }
+}
+
+#[test]
+fn changed_transport_settings_reject_early_data_without_losing_resumption() {
+    let (client, server) = configs();
+    let options = TlsOptions::default().with_early_data(true);
+    let client = Arc::new(QuicClientConfig::from_rama(&client, options).unwrap());
+    let server = Arc::new(QuicServerConfig::from_rama(&server, options).unwrap());
+    let mut server_params = params(Side::Server);
+    server_params.initial_max_data = crate::VarInt::from_u32(1024);
+    for resumed in [false, true] {
+        if resumed {
+            server_params.initial_max_data = crate::VarInt::from_u32(512);
+        }
+        let mut c = client
+            .clone()
+            .start_session(1, "localhost", &params(Side::Client))
+            .unwrap();
+        let mut s = server.clone().start_session(1, &server_params).unwrap();
+        assert_eq!(c.early_crypto().is_some(), resumed);
+        if resumed {
+            assert_eq!(
+                c.transport_parameters().unwrap().unwrap().initial_max_data,
+                crate::VarInt::from_u32(1024)
+            );
+        }
+        check_session(&mut *c, &mut *s, resumed);
+        assert_eq!(c.early_data_accepted(), Some(false));
+        assert_eq!(
+            c.transport_parameters().unwrap().unwrap().initial_max_data,
+            server_params.initial_max_data
+        );
+    }
+}
+
+#[test]
+fn ticket_cache_belongs_to_the_client_configuration() {
+    let (client_tls, server_tls) = configs();
+    let options = TlsOptions::default().with_early_data(true);
+    let client = Arc::new(QuicClientConfig::from_rama(&client_tls, options).unwrap());
+    let server = Arc::new(QuicServerConfig::from_rama(&server_tls, options).unwrap());
+    let mut c = client
+        .clone()
+        .start_session(1, "localhost", &params(Side::Client))
+        .unwrap();
+    let mut s = server
+        .clone()
+        .start_session(1, &params(Side::Server))
+        .unwrap();
+    check_session(&mut *c, &mut *s, false);
+    let other = Arc::new(QuicClientConfig::from_rama(&client_tls, options).unwrap());
+    let mut c = other
+        .start_session(1, "localhost", &params(Side::Client))
+        .unwrap();
+    let mut s = server.start_session(1, &params(Side::Server)).unwrap();
+    assert!(c.early_crypto().is_none());
+    check_session(&mut *c, &mut *s, false);
+    let c = client
+        .start_session(1, "another.example", &params(Side::Client))
+        .unwrap();
+    assert!(c.early_crypto().is_none());
+    assert!(c.transport_parameters().unwrap().is_none());
+}
+
+#[test]
+fn boring_requires_explicit_alpn() {
+    use crate::proto::crypto::config::{AlpnPolicy, TlsConfigError};
+    for (policy, out_of_band) in [
+        (AlpnPolicy::Require, false),
+        (AlpnPolicy::OutOfBandAgreement, true),
+    ] {
+        let result = QuicClientConfig::from_rama(
+            &TlsClientConfig::new(),
+            TlsOptions::default().with_alpn(policy),
+        );
+        assert!(matches!(
+            (result, out_of_band),
+            (Err(TlsConfigError::AlpnRequired), false)
+                | (Err(TlsConfigError::UnsupportedOutOfBandAgreement), true)
+        ));
+    }
+}
+
+#[cfg(all(feature = "rustls", any(feature = "ring", feature = "aws-lc")))]
+#[test]
+fn both_directions_interoperate_with_rustls() {
+    use crate::proto::crypto::rustls;
+    for boring_client in [true, false] {
+        let (client, server) = configs();
+        let options = TlsOptions::default().with_early_data(true);
+        let client: Arc<dyn crypto::ClientConfig> = if boring_client {
+            Arc::new(QuicClientConfig::from_rama(&client, options).unwrap())
+        } else {
+            Arc::new(
+                rustls::QuicClientConfig::from_rama(
+                    &client,
+                    rustls::configured_provider(),
+                    options,
+                )
+                .unwrap(),
+            )
+        };
+        let server: Arc<dyn crypto::ServerConfig> = if boring_client {
+            Arc::new(
+                rustls::QuicServerConfig::from_rama(
+                    &server,
+                    rustls::configured_provider(),
+                    options,
+                )
+                .unwrap(),
+            )
+        } else {
+            Arc::new(QuicServerConfig::from_rama(&server, options).unwrap())
+        };
+        for resumed in [false, true] {
+            let mut c = client
+                .clone()
+                .start_session(1, "localhost", &params(Side::Client))
+                .unwrap();
+            let mut s = server
+                .clone()
+                .start_session(1, &params(Side::Server))
+                .unwrap();
+            assert_eq!(c.early_crypto().is_some(), resumed);
+            check_session(&mut *c, &mut *s, resumed);
+            assert_eq!(c.early_data_accepted(), Some(resumed));
+        }
+    }
+}
+
+#[tokio::test]
+async fn udp_endpoints_exchange_streams_datagrams_and_early_data() {
+    use crate::{ClientConfig, Endpoint, ServerConfig, VarInt};
+    use rama_core::{bytes::Bytes, rt::Executor};
+    use rama_tls::TlsBackend;
+    use std::{net::UdpSocket, time::Duration};
+
+    let pairs = [
+        (TlsBackend::Boring, TlsBackend::Boring),
+        #[cfg(all(feature = "rustls", any(feature = "ring", feature = "aws-lc")))]
+        (TlsBackend::Boring, TlsBackend::Rustls),
+        #[cfg(all(feature = "rustls", any(feature = "ring", feature = "aws-lc")))]
+        (TlsBackend::Rustls, TlsBackend::Boring),
+    ];
+    for (client_backend, server_backend) in pairs {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let (client_tls, server_tls) = configs();
+            let options = TlsOptions::default().with_early_data(true);
+            let client_config =
+                ClientConfig::try_from_rama_tls(&client_tls, options.with_backend(client_backend))
+                    .unwrap();
+            let server_config =
+                ServerConfig::try_from_rama_tls(&server_tls, options.with_backend(server_backend))
+                    .unwrap();
+            let client = Endpoint::new_client_with_std_socket(
+                Executor::new(),
+                UdpSocket::bind("127.0.0.1:0").unwrap(),
+            )
+            .unwrap();
+            let server = Endpoint::new_server_with_std_socket(
+                Executor::new(),
+                server_config,
+                UdpSocket::bind("127.0.0.1:0").unwrap(),
+            )
+            .unwrap();
+            for resumed in [false, true] {
+                let connecting = client
+                    .connect_with(
+                        client_config.clone(),
+                        server.local_addr().unwrap(),
+                        "localhost",
+                    )
+                    .unwrap();
+                let (client_conn, server_conn) = if resumed {
+                    let (connection, accepted) = connecting.into_0rtt().unwrap();
+                    let mut stream = connection.open_uni().await.unwrap();
+                    stream.write_all(b"early request").await.unwrap();
+                    stream.finish().unwrap();
+                    let peer = server.accept().await.unwrap().await.unwrap();
+                    assert!(accepted.await.unwrap());
+                    let mut stream = peer.accept_uni().await.unwrap();
+                    assert_eq!(stream.read_to_end(32).await.unwrap(), b"early request");
+                    (connection, peer)
+                } else {
+                    let (connection, peer) =
+                        tokio::join!(connecting, async { server.accept().await.unwrap().await });
+                    (connection.unwrap(), peer.unwrap())
+                };
+                client_conn.handshake_confirmed().await.unwrap();
+                server_conn.handshake_confirmed().await.unwrap();
+                for conn in [&client_conn, &server_conn] {
+                    assert_eq!(conn.handshake_data().unwrap().resumed, Some(resumed));
+                }
+                assert!(client_conn.force_key_update());
+                assert!(server_conn.force_key_update());
+                for (sender, receiver) in
+                    [(&client_conn, &server_conn), (&server_conn, &client_conn)]
+                {
+                    sender
+                        .send_datagram(Bytes::from_static(b"datagram"))
+                        .unwrap();
+                    assert_eq!(&receiver.read_datagram().await.unwrap()[..], b"datagram");
+                    let mut send = sender.open_uni().await.unwrap();
+                    send.write_all(b"stream after key update").await.unwrap();
+                    send.finish().unwrap();
+                    let mut recv = receiver.accept_uni().await.unwrap();
+                    assert_eq!(
+                        recv.read_to_end(64).await.unwrap(),
+                        b"stream after key update"
+                    );
+                }
+                client_conn.close(VarInt::from_u32(0), b"done");
+                server_conn.closed().await;
+            }
+            tokio::join!(client.shutdown(), server.shutdown());
+        })
+        .await
+        .unwrap_or_else(|_| {
+            panic!("endpoint exchange timed out: {client_backend:?}/{server_backend:?}")
+        });
+    }
+}

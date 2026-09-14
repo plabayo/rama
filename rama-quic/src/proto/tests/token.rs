@@ -406,7 +406,7 @@ impl crypto::ServerConfig for FailingRetryIntegrity {
         &self,
         version: u32,
         cid: &ConnectionId,
-    ) -> Result<crypto::Keys, crypto::UnsupportedVersion> {
+    ) -> Result<crypto::Keys, crypto::InitialKeysError> {
         self.0.initial_keys(version, cid)
     }
     fn retry_tag(

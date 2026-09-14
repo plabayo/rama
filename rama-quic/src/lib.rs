@@ -33,7 +33,7 @@ pub mod qlog;
 
 // Engine types that are part of the public transport API. The runtime facade
 // (endpoints, connections, streams) is Rama-owned and lives in `driver`.
-#[cfg(any(feature = "aws-lc", feature = "ring"))]
+#[cfg(any(feature = "aws-lc", feature = "ring", feature = "boring"))]
 pub use proto::AddressTokenKey;
 pub use proto::{
     AckFrequencyConfig, ApplicationClose, BloomTokenLog, Chunk, ClientConfig, ClosedStream,
@@ -56,7 +56,7 @@ pub use proto::{KEY_MATERIAL_SIZE, StatelessResetKey};
 /// no Rustls type appears in any signature here.
 pub mod tls {
     pub use crate::proto::crypto::config::{
-        AlpnPolicy, NoInitialCipherSuite, TlsConfigError, TlsOptions,
+        AlpnPolicy, NoInitialCipherSuite, TlsBackend, TlsConfigError, TlsOptions,
     };
 }
 

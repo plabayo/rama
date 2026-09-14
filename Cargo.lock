@@ -4762,6 +4762,7 @@ dependencies = [
  "rama-crypto",
  "rama-net",
  "rama-tls",
+ "rama-tls-boring",
  "rama-tls-rustls",
  "rama-udp",
  "rama-utils",
@@ -4773,6 +4774,7 @@ dependencies = [
  "slab",
  "tokio",
  "tracing-subscriber",
+ "zeroize",
 ]
 
 [[package]]

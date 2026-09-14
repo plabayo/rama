@@ -6554,7 +6554,7 @@ async fn an_accept_error_wakes_the_parked_endpoint_to_send_its_response() {
             &self,
             version: u32,
             cid: &crate::proto::ConnectionId,
-        ) -> Result<crate::proto::crypto::Keys, crate::proto::crypto::UnsupportedVersion> {
+        ) -> Result<crate::proto::crypto::Keys, crate::proto::crypto::InitialKeysError> {
             self.0.initial_keys(version, cid)
         }
         fn retry_tag(
