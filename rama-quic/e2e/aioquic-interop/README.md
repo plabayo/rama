@@ -57,7 +57,7 @@ requires them to be the pinned ones, so an environment left from an older lockfi
 what it actually is. Nothing is skipped when a prerequisite is absent: a missing `uv` fails the
 run with the command to fix it.
 
-CI runs exactly these through `just test-quic-interop-aioquic`, in the
+CI runs exactly these through `just rama-quic/test-interop-aioquic`, in the
 `test-quic-interop-peers` job. The project is not part of the workspace, so `cargo test` at the
 repository root does not reach it.
 

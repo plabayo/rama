@@ -20,16 +20,16 @@ it.
 
 ## Running
 
-One sequence per peer, from the repository root. Each also works from its own directory.
+Run one sequence per peer from the repository root:
 
 ```
-just test-quic-interop-quinn
-just test-quic-interop-quiche
-just test-quic-interop-aioquic
+just rama-quic/test-interop-quinn
+just rama-quic/test-interop-quiche
+just rama-quic/test-interop-aioquic
 ```
 
-`just qa-quic-interop-lint` runs formatting and Clippy across the shared library and all three
-peers; `just test-quic-interop` runs everything in the order CI does.
+`just rama-quic/qa-interop-lint` runs formatting and Clippy across the shared library and all three
+peers; `just rama-quic/test-interop` runs everything in the order CI does.
 
 ### What each peer needs
 
@@ -38,7 +38,7 @@ peers; `just test-quic-interop` runs everything in the order CI does.
   the first build is slow and a missing toolchain fails the build rather than skipping it.
 - **aioquic**: [`uv`](https://docs.astral.sh/uv/) on `PATH`. `uv.lock` pins the dependency
   graph and `.python-version` pins the interpreter (CPython 3.12). `just
-  test-quic-interop-aioquic` runs `uv sync --frozen` first; the harness also runs it once per
+  rama-quic/test-interop-aioquic` runs `uv sync --frozen` first; the harness also runs it once per
   test binary whether or not an environment exists, so one left from an older lockfile cannot
   be used, and fails with the command to fix it when `uv` is absent.
 

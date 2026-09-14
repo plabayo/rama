@@ -479,15 +479,15 @@ jobs:
         working-directory: rama-quic/e2e/aioquic-interop
         run: uv sync --frozen
       - name: Formatting and lints for the shared scenarios and every peer
-        run: just qa-quic-interop-lint
+        run: just rama-quic/qa-interop-lint
       - name: Shared scenario library
-        run: just test-quic-interop-common
+        run: just rama-quic/test-interop-common
       - name: Quinn interoperability
-        run: just test-quic-interop-quinn
+        run: just rama-quic/test-interop-quinn
       - name: quiche interoperability
-        run: just test-quic-interop-quiche
+        run: just rama-quic/test-interop-quiche
       - name: aioquic interoperability
-        run: just test-quic-interop-aioquic
+        run: just rama-quic/test-interop-aioquic
 
   test-quic-interop-runner:
     runs-on: ubuntu-24.04

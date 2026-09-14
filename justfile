@@ -287,43 +287,7 @@ qa-dial9:
     cargo check -p rama-core -p rama-http -p rama-ws -p rama-net -p rama-net-apple-networkextension -p rama-dns -p rama-tls-rustls -p rama-tls-boring -p rama-socks5 -p rama --features dial9 --all-targets
     cargo clippy -p rama-core -p rama-http -p rama-ws -p rama-net -p rama-net-apple-networkextension -p rama-dns -p rama-tls-rustls -p rama-tls-boring -p rama-socks5 -p rama --features dial9 --all-targets
     cargo nextest run -p rama-core -p rama-http -p rama-ws -p rama-net -p rama-net-apple-networkextension -p rama-dns -p rama-socks5 --features dial9
-    # rama-quic needs a provider named alongside dial9
-    cargo clippy -p rama-quic --features dial9,rustls,ring --all-targets
-    cargo nextest run -p rama-quic --features dial9,rustls,ring
-
-# QUIC interop peers: standalone projects, outside the workspace, each with its own lockfile.
-# quiche builds BoringSSL (needs cmake and a C++ compiler); aioquic needs uv.
-quic-interop-dirs := "rama-quic/e2e/interop-common rama-quic/e2e/quinn-interop rama-quic/e2e/quiche-interop rama-quic/e2e/aioquic-interop"
-
-# formatting and lints for the shared scenarios and all three peers
-qa-quic-interop-lint:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    for dir in {{quic-interop-dirs}}; do
-        echo "== $dir"
-        (cd "$dir" && cargo fmt --all --check)
-        (cd "$dir" && cargo clippy --all-targets --locked -- -D warnings)
-    done
-
-# The locked Python environment the aioquic peer runs from.
-quic-interop-aioquic-env:
-    cd rama-quic/e2e/aioquic-interop && uv sync --frozen
-
-# the shared scenario library's own tests; the peers depend on it but do not run these
-test-quic-interop-common:
-    cd rama-quic/e2e/interop-common && cargo test --locked
-
-test-quic-interop-quinn:
-    cd rama-quic/e2e/quinn-interop && cargo test --locked --tests
-
-test-quic-interop-quiche:
-    cd rama-quic/e2e/quiche-interop && cargo test --locked --tests
-
-test-quic-interop-aioquic: quic-interop-aioquic-env
-    cd rama-quic/e2e/aioquic-interop && cargo test --locked --tests
-
-# Everything the CI job runs, in the same order.
-test-quic-interop: qa-quic-interop-lint test-quic-interop-common test-quic-interop-quinn test-quic-interop-quiche test-quic-interop-aioquic
+    just rama-quic/qa-dial9
 
 # `qa-dial9` under `--cfg tokio_unstable`, where dial9 gets its full task coverage.
 qa-dial9-tokio-unstable:
@@ -563,26 +527,11 @@ mdbook-serve:
 publish *ARGS:
     cargo publish --workspace {{ARGS}}
 
-update-deps: update-deps-quic-interop
+update-deps:
     @cargo install cargo-edit --locked
     cargo upgrade --incompatible && cargo update && cargo generate-lockfile
     just ./ffi/apple/examples/transparent_proxy/update-deps
-
-# the standalone QUIC interop projects, each with its own lockfile,
-# plus the aioquic python env (`uv add` keeps its exact pin, `uv lock --upgrade` would not)
-update-deps-quic-interop:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    cargo install cargo-edit --locked
-    for dir in {{quic-interop-dirs}}; do
-        echo "== $dir"
-        (cd "$dir" && cargo upgrade --incompatible && cargo update && cargo generate-lockfile)
-    done
-    cd rama-quic/e2e/aioquic-interop && uv add --bounds exact --preview-features add-bounds --upgrade-package aioquic aioquic
+    just rama-quic/update-deps
 
 oss-endpoint-healthcheck:
     bash rama-fp/infra/scripts/remote-healthcheck.sh
-
-# Run the pinned independent QUIC interop matrix (Rama client and server).
-test-quic-interop-runner *ARGS:
-    bash {{justfile_directory()}}/rama-quic/e2e/interop-runner/run.sh {{ARGS}}

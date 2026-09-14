@@ -1,0 +1,77 @@
+set windows-shell := ["powershell.exe", "-NoLogo", "-Command"]
+
+# Match the root warning policy and optional dial9 instrumentation.
+export RUSTFLAGS := \
+    (if env_var_or_default("ALLOW_WARNINGS", "false") == "true" { \
+        "" \
+    } else { \
+        "-D warnings" \
+    }) + (if env_var_or_default("TOKIO_UNSTABLE", "false") == "true" { \
+        " --cfg tokio_unstable" \
+    } else { \
+        "" \
+    })
+
+export RUSTDOCFLAGS := \
+    if env_var_or_default("ALLOW_WARNINGS", "false") == "true" { \
+        "" \
+    } else { \
+        "-D warnings" \
+    }
+export RUST_LOG := "debug"
+
+# QUIC requires an explicit TLS provider alongside dial9.
+qa-dial9:
+    @command -v cargo-nextest >/dev/null || cargo install cargo-nextest --locked
+    cargo clippy -p rama-quic --features dial9,rustls,ring --all-targets
+    cargo nextest run -p rama-quic --features dial9,rustls,ring
+
+# QUIC interop peers: standalone projects, outside the workspace, each with its own lockfile.
+# quiche builds BoringSSL (needs cmake and a C++ compiler); aioquic needs uv.
+interop-dirs := "e2e/interop-common e2e/quinn-interop e2e/quiche-interop e2e/aioquic-interop"
+
+# formatting and lints for the shared scenarios and all three peers
+qa-interop-lint:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for dir in {{interop-dirs}}; do
+        echo "== $dir"
+        (cd "$dir" && cargo fmt --all --check)
+        (cd "$dir" && cargo clippy --all-targets --locked -- -D warnings)
+    done
+
+# The locked Python environment the aioquic peer runs from.
+interop-aioquic-env:
+    cd e2e/aioquic-interop && uv sync --frozen
+
+# the shared scenario library's own tests; the peers depend on it but do not run these
+test-interop-common:
+    cd e2e/interop-common && cargo test --locked
+
+test-interop-quinn:
+    cd e2e/quinn-interop && cargo test --locked --tests
+
+test-interop-quiche:
+    cd e2e/quiche-interop && cargo test --locked --tests
+
+test-interop-aioquic: interop-aioquic-env
+    cd e2e/aioquic-interop && cargo test --locked --tests
+
+# Everything the CI job runs, in the same order.
+test-interop: qa-interop-lint test-interop-common test-interop-quinn test-interop-quiche test-interop-aioquic
+
+# the standalone QUIC interop projects, each with its own lockfile,
+# plus the aioquic python env (`uv add` keeps its exact pin, `uv lock --upgrade` would not)
+update-deps:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo install cargo-edit --locked
+    for dir in {{interop-dirs}}; do
+        echo "== $dir"
+        (cd "$dir" && cargo upgrade --incompatible && cargo update && cargo generate-lockfile)
+    done
+    cd e2e/aioquic-interop && uv add --bounds exact --preview-features add-bounds --upgrade-package aioquic aioquic
+
+# Run the pinned independent QUIC interop matrix (Rama client and server).
+test-interop-runner *ARGS:
+    bash {{justfile_directory()}}/e2e/interop-runner/run.sh {{ARGS}}

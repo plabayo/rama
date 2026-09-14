@@ -20,7 +20,7 @@ stacks share is the wire.
 cargo test --locked
 ```
 
-CI runs these through `just test-quic-interop-quiche`, in the `test-quic-interop-peers` job. The
+CI runs these through `just rama-quic/test-interop-quiche`, in the `test-quic-interop-peers` job. The
 project is not part of the workspace, so `cargo test` at the repository root does not reach it.
 
 ## What is covered

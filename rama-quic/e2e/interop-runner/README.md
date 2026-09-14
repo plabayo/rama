@@ -27,11 +27,11 @@ macOS, install `openssl@3` and prepend `$(brew --prefix openssl@3)/bin` to
 From the repository root:
 
 ```sh
-just test-quic-interop-runner
+just rama-quic/test-interop-runner
 # Reuse an already built image:
-just test-quic-interop-runner --skip-build --image glendc/rama-quic-interop:local
+just rama-quic/test-interop-runner --skip-build --image glendc/rama-quic-interop:local
 # Shorter diagnostic subset; this does NOT satisfy the full default gate:
-just test-quic-interop-runner --skip-build --tests handshake,transfer,retry
+just rama-quic/test-interop-runner --skip-build --tests handshake,transfer,retry
 ```
 
 The default builds `linux/amd64`; on Apple silicon, pass `--platform linux/arm64`
