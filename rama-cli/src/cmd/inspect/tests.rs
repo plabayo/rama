@@ -220,7 +220,16 @@ fn har_requests_copy_as_a_curl_command_for_this_platform() {
     assert_eq!(item.label, "curl");
 
     let command = item.text().unwrap();
-    assert!(command.starts_with("curl "), "command: {command}");
+    // the export targets the shell the command will be pasted into: a plain
+    // invocation on unix, and PowerShell's resolution of the real curl on windows
+    if cfg!(windows) {
+        assert!(
+            command.starts_with("& (Get-Command curl"),
+            "command: {command}",
+        );
+    } else {
+        assert!(command.starts_with("curl "), "command: {command}");
+    }
     assert!(
         command.contains("https://example.test/api/login?next=%2Fhome"),
         "command: {command}",
