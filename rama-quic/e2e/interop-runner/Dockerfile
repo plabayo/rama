@@ -4,9 +4,10 @@ FROM rust:1.96-bookworm@sha256:a339861ae23e9abb272cea45dfafde21760d2ce6577a70f8a
 WORKDIR /src
 COPY . .
 ARG TARGETARCH
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,id=quic-interop-target-${TARGETARCH},target=/build \
+# Separate platform caches and serialize concurrent writers to each cache.
+RUN --mount=type=cache,id=quic-interop-registry-${TARGETARCH},target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=quic-interop-git-${TARGETARCH},target=/usr/local/cargo/git,sharing=locked \
+    --mount=type=cache,id=quic-interop-target-${TARGETARCH},target=/build,sharing=locked \
     CARGO_TARGET_DIR=/build cargo build --locked --release --features rustls-ring \
       --manifest-path rama-quic/e2e/interop-runner/Cargo.toml --bins && \
     mkdir /out && \
