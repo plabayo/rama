@@ -485,15 +485,20 @@ jobs:
         working-directory: rama-quic/e2e/aioquic-interop
         run: uv sync --frozen
       - name: Shared scenario library
+        if: ${{ !cancelled() }}
         run: just rama-quic/qa-interop-common ${{ matrix.backend }}
       - name: Quinn interoperability
+        if: ${{ !cancelled() }}
         run: just rama-quic/qa-interop-quinn ${{ matrix.backend }}
       - name: quiche interoperability
+        if: ${{ !cancelled() }}
         run: just rama-quic/qa-interop-quiche ${{ matrix.backend }}
       - name: aioquic interoperability
+        if: ${{ !cancelled() }}
         run: just rama-quic/qa-interop-aioquic ${{ matrix.backend }}
 
       - name: Runner endpoint and result gates
+        if: ${{ !cancelled() }}
         env:
           PYTHON: ${{ github.workspace }}/rama-quic/e2e/aioquic-interop/.venv/${{ runner.os == 'Windows' && 'Scripts/python.exe' || 'bin/python' }}
         run: just rama-quic/qa-interop-runner ${{ matrix.backend }}

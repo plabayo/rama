@@ -5,7 +5,7 @@
 
 mod common;
 
-use std::net::SocketAddr;
+use std::{net::SocketAddr, sync::Arc};
 
 use common::{quinn_client_config, quinn_server_config};
 use interop_common::{
@@ -14,7 +14,7 @@ use interop_common::{
     names::{identity_for, name_cases, rama_client_side, rama_server_side},
     support::{localhost, localhost_v6},
 };
-use rama::{crypto::pki_types::CertificateDer, utils::octets};
+use rama::{crypto::pki_types::CertificateDer, net::socket::core as socket, utils::octets};
 
 const PEER: &str = "quinn";
 const READ_CAP: usize = octets::kib(64);
@@ -96,7 +96,28 @@ async fn quinn_asks(
     addr: SocketAddr,
 ) {
     let (what, deadline) = (&run.what, run.deadline);
-    let mut client = quinn::Endpoint::client(bound_like(addr)).expect("the quinn client binds");
+    // These cases use one address family. Bind IPv6-only on loopback instead of using
+    // the dual-stack socket created by Quinn's convenience client.
+    let bind = bound_like(addr);
+    let socket = socket::Socket::new(
+        socket::Domain::for_address(bind),
+        socket::Type::DGRAM,
+        Some(socket::Protocol::UDP),
+    )
+    .expect("the quinn client socket is created");
+    if bind.is_ipv6() {
+        socket
+            .set_only_v6(true)
+            .expect("the quinn client uses only IPv6");
+    }
+    socket.bind(&bind.into()).expect("the quinn client binds");
+    let mut client = quinn::Endpoint::new(
+        quinn::EndpointConfig::default(),
+        None,
+        socket.into(),
+        Arc::new(quinn::TokioRuntime),
+    )
+    .expect("the quinn client endpoint is created");
     client.set_default_client_config(quinn_client_config(anchor));
     let asked = run
         .scenario
@@ -141,8 +162,9 @@ fn received_name(what: &str, conn: &quinn::Connection) -> Option<String> {
 
 /// A local address on the same socket family as `peer`.
 fn bound_like(peer: SocketAddr) -> SocketAddr {
-    match peer.is_ipv6() {
-        true => localhost_v6(),
-        false => localhost(),
+    if peer.is_ipv6() {
+        localhost_v6()
+    } else {
+        localhost()
     }
 }
