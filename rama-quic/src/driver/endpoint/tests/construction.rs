@@ -2,7 +2,7 @@
 
 use super::super::*;
 use super::lifecycle::{configs, exchange, handshake};
-use rama_net::socket::SocketOptions;
+use rama_net::socket::{SocketOptions, core as socket};
 use rama_udp::{DatagramError, DatagramFeature, DatagramSocket as _, UdpSocketConfig};
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 
@@ -76,23 +76,41 @@ async fn a_caller_prepared_socket_carries_data() {
     tokio::join!(client.shutdown(), server.shutdown());
 }
 
-/// An option the caller set explicitly reaches the socket and its refusal is the caller's error:
-/// `IPV6_V6ONLY` cannot be set on an IPv4 socket, so the bind fails and no endpoint exists. The
-/// same value requested as best effort is left to the platform, and for an IPv4 address it is not
-/// requested at all, so that bind succeeds.
+/// Strict requests preserve the platform's result; best-effort IPv6 requests skip IPv4 sockets.
 #[tokio::test]
-async fn an_explicit_option_is_strict_and_a_best_effort_one_is_not() {
+async fn an_explicit_option_preserves_the_platform_result_and_best_effort_skips_ipv4() {
+    let probe = socket::Socket::new(
+        socket::Domain::IPV4,
+        socket::Type::DGRAM,
+        Some(socket::Protocol::UDP),
+    )
+    .unwrap();
+    let platform = probe.set_only_v6(true);
+    drop(probe);
+
     let mut options = SocketOptions::default_udp();
     options.only_v6 = Some(true);
     let strict = UdpSocketConfig::default().with_socket_options(options);
-    let error = Endpoint::build(rama_core::rt::Executor::new())
+    let result = Endpoint::build(rama_core::rt::Executor::new())
         .bind_address_with_socket_config(localhost_v4(), strict)
-        .await
-        .expect_err("the option cannot be applied to an IPv4 socket");
-    assert!(
-        matches!(error, DatagramError::Io(_)),
-        "the platform's own error is kept: {error:?}"
-    );
+        .await;
+    match platform {
+        Ok(()) => {
+            let endpoint = result.expect("the platform accepts the explicit option");
+            let address = endpoint.local_addr().unwrap();
+            assert_eq!(address.ip(), Ipv4Addr::LOCALHOST);
+            assert_ne!(address.port(), 0);
+            endpoint.shutdown().await;
+        }
+        Err(expected) => {
+            let DatagramError::Io(actual) = result.expect_err("the platform refuses the option")
+            else {
+                panic!("socket option refusal must preserve its I/O error");
+            };
+            assert_eq!(actual.kind(), expected.kind());
+            assert_eq!(actual.raw_os_error(), expected.raw_os_error());
+        }
+    }
 
     let mut options = SocketOptions::default_udp();
     options.only_v6_best_effort = Some(true);
@@ -101,7 +119,9 @@ async fn an_explicit_option_is_strict_and_a_best_effort_one_is_not() {
         .bind_address_with_socket_config(localhost_v4(), best_effort)
         .await
         .expect("a best-effort option does not fail an IPv4 bind");
-    assert!(endpoint.local_addr().unwrap().is_ipv4());
+    let address = endpoint.local_addr().unwrap();
+    assert_eq!(address.ip(), Ipv4Addr::LOCALHOST);
+    assert_ne!(address.port(), 0);
     endpoint.shutdown().await;
 }
 

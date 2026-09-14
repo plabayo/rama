@@ -9,6 +9,11 @@
 //! The writer consumes JSON bytes without filesystem I/O. File/device throughput depends on
 //! the destination and must be measured separately. The direct baseline uses the same owned
 //! event schema and encoder, not the historical inline implementation. Run on an otherwise idle machine.
+//!
+//! Register these measurements only when debug assertions are disabled. Debug CI runs
+//! ignored tests too; the public allocation benchmarks live in `benches/quic_qlog.rs`.
+
+#![cfg(not(debug_assertions))]
 
 use std::{
     borrow::Cow,
@@ -599,13 +604,8 @@ fn history_expiry_case() -> Measurement {
 }
 
 #[test]
-#[expect(
-    clippy::assertions_on_constants,
-    reason = "ignored benchmark must reject debug execution, but still compile in debug tests"
-)]
 #[ignore = "release microbenchmarks; run explicitly on an otherwise idle machine"]
 fn qlog_performance() {
-    assert!(!cfg!(debug_assertions), "run this benchmark with --release");
     eprintln!(
         "qlog release microbenchmarks: one warmup + {SAMPLES} samples; bytes consumed in memory, no disk I/O"
     );
