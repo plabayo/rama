@@ -1,10 +1,10 @@
 //! Protocol-neutral UDP module for Rama.
 //!
-//! Existing applications can keep using the reexported Tokio [`UdpSocket`] and
-//! simple bind helpers. Packet-oriented protocols can use the runtime-neutral
+//! Applications use the reexported Tokio [`UdpSocket`] and the simple bind
+//! helpers. Packet-oriented protocols use the runtime-neutral
 //! [`DatagramSocket`] and [`DatagramSender`] traits, with [`UdpPacketSocket`]
-//! as the Tokio-backed implementation. A deterministic in-memory backend is
-//! available from `test_utils` when its feature is enabled.
+//! as the Tokio-backed implementation. `test_utils` provides a deterministic
+//! in-memory backend when its feature is enabled.
 //!
 //! This crate reports socket implementation limits and ancillary capabilities.
 //! It does not infer a path MTU or provide congestion control, retransmission,
@@ -34,7 +34,7 @@ pub use batch::{DatagramSender, DatagramSenderExt, DatagramSocket, DatagramSocke
 mod meta;
 pub use meta::{
     DatagramCapabilities, DatagramError, DatagramFeature, DatagramMetadata, EcnCodepoint,
-    MAX_UDP_PAYLOAD_IPV4, MAX_UDP_PAYLOAD_IPV6, ReceiveTimestamp,
+    MAX_UDP_PAYLOAD_IPV4, MAX_UDP_PAYLOAD_IPV6, ReceiveTimestamp, SendFailure,
 };
 
 #[cfg(any(test, feature = "test-utils"))]

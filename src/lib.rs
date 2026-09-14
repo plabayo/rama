@@ -51,6 +51,11 @@ pub use ::rama_udp as udp;
 #[doc(inline)]
 pub use ::rama_unix as unix;
 
+#[cfg(all(feature = "std", feature = "quic"))]
+#[cfg_attr(docsrs, doc(cfg(all(feature = "std", feature = "quic"))))]
+#[doc(inline)]
+pub use ::rama_quic as quic;
+
 #[cfg(feature = "std")]
 pub mod telemetry;
 

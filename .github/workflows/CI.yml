@@ -38,6 +38,8 @@ jobs:
       - name: check
         run: |
           cargo check --workspace --all-targets --all-features
+      - name: check fuzz targets
+        run: RUSTFLAGS="${RUSTFLAGS} --cfg fuzzing" cargo check -p rama-fuzz --all-targets
 
   precheck-docs:
     runs-on: ubuntu-latest
@@ -166,6 +168,9 @@ jobs:
         run: cargo nextest run --all-features --workspace
       - name: Run tests (--no-default--features)
         run: cargo nextest run --no-default-features --workspace
+      - name: Run crypto backend tests
+        shell: bash
+        run: bash scripts/test-crypto.sh all --profile ci
       - name: Run doc tests (cargo test)
         run: cargo test --doc --all-features --workspace
       - name: Run example tests (cargo test)
@@ -191,6 +196,11 @@ jobs:
           resource_monitor=$!
           trap 'kill "$resource_monitor" 2>/dev/null || true; wait "$resource_monitor" 2>/dev/null || true' EXIT
           time cargo nextest run --profile ci --all-features --workspace --run-ignored=only
+      # The only ignored test whose interrupt path is Windows-specific.
+      - name: Run the relay interrupt test
+        if: startsWith(matrix.os, 'windows')
+        timeout-minutes: 60
+        run: cargo nextest run --profile ci --all-features --package rama-examples --test integration --run-ignored=only -E 'test(an_interrupted_relay_stops_its_peers_and_exits)'
       # MITM revocation gate. Linux: hermetic staple matrix (curl --cert-status,
       # incl. the no-staple negative) + proxy-hosted CRL (openssl -crl_check) and
       # OCSP (openssl ocsp) endpoint acceptance + a real-crates.io curl/cargo leg.
@@ -413,6 +423,120 @@ jobs:
             rm -f "$RAMA_ICAP_ORACLE_PROJECT_FILE"
           fi
           just icap-oracle-down
+
+  # The QUIC interoperability peers are separate cargo projects with their own lockfiles, so
+  # each upstream implementation resolves its own dependencies and none of them reach the
+  # workspace. They are built and run here rather than in the workspace jobs for that reason.
+  test-quic-interop-qa:
+    name: test-quic-interop-qa-${{ matrix.backend }}-${{ matrix.toolchain }}-${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    needs:
+      - precheck-rust
+      - precheck-docs
+    strategy:
+      fail-fast: false
+      matrix:
+        backend:
+          - rustls-ring
+          - rustls-aws-lc
+        toolchain:
+          - stable
+          - "1.96.0"
+        os:
+          - ubuntu-latest
+          - macos-15
+          - windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          components: clippy, rustfmt
+      - uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
+        if: runner.os == 'Windows'
+      # quiche builds BoringSSL with CMake and the runner's C++ toolchain.
+      - name: Install the C toolchain quiche builds BoringSSL with
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends cmake
+      - name: Show the C toolchain quiche will use
+        if: runner.os != 'Windows'
+        run: |
+          cmake --version
+          cc --version
+      # aioquic runs as a real peer process from a locked Python environment.
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+      - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
+        with:
+          tool: just
+      - uses: ./.github/actions/rust-cache
+        with:
+          key: ${{ matrix.os }}-${{ matrix.toolchain }}-quic-interop-peers-${{ matrix.backend }}
+          env-vars: "RUST_TOOLCHAIN=${{ matrix.toolchain }}"
+          workspaces: |
+            rama-quic/e2e/interop-common
+            rama-quic/e2e/quinn-interop
+            rama-quic/e2e/quiche-interop
+            rama-quic/e2e/aioquic-interop
+            rama-quic/e2e/interop-runner
+      - name: Build the aioquic peer's locked environment
+        working-directory: rama-quic/e2e/aioquic-interop
+        run: uv sync --frozen
+      - name: Shared scenario library
+        if: ${{ !cancelled() }}
+        run: just rama-quic/qa-interop-common ${{ matrix.backend }}
+      - name: Quinn interoperability
+        if: ${{ !cancelled() }}
+        run: just rama-quic/qa-interop-quinn ${{ matrix.backend }}
+      - name: quiche interoperability
+        if: ${{ !cancelled() }}
+        run: just rama-quic/qa-interop-quiche ${{ matrix.backend }}
+      - name: aioquic interoperability
+        if: ${{ !cancelled() }}
+        run: just rama-quic/qa-interop-aioquic ${{ matrix.backend }}
+
+      - name: Runner endpoint and result gates
+        if: ${{ !cancelled() }}
+        env:
+          PYTHON: ${{ github.workspace }}/rama-quic/e2e/aioquic-interop/.venv/${{ runner.os == 'Windows' && 'Scripts/python.exe' || 'bin/python' }}
+        run: just rama-quic/qa-interop-runner ${{ matrix.backend }}
+
+  test-quic-interop-runner:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    needs:
+      - precheck-rust
+      - precheck-docs
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install packet analysis tools
+        run: |
+          sudo add-apt-repository --yes ppa:wireshark-dev/stable
+          sudo apt-get update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends tshark python3-venv
+          sudo modprobe ip6table_filter
+          tshark --version
+          docker compose version
+      - name: Set up Docker Engine
+        uses: docker/setup-docker-action@77e84dbf09b47d1e29270283c22f16145aa85ca1 # v5.4.0
+        with:
+          version: v29.3.0
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
+        with:
+          tool: just
+      - name: Test both roles against quic-go and ngtcp2
+        run: just rama-quic/test-interop-runner --artifacts "$RUNNER_TEMP/quic-interop"
+      - name: Retain interop reports and diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: quic-interop-runner
+          path: ${{ runner.temp }}/quic-interop
+          if-no-files-found: warn
+          retention-days: 7
 
   check-rama-icap-feature-boundaries:
     runs-on: ubuntu-latest
@@ -972,6 +1096,8 @@ jobs:
       - test-rust-base
       - check-rama-icap-feature-boundaries
       - test-icap-oracle
+      - test-quic-interop-qa
+      - test-quic-interop-runner
       - test-ffi-apple-example-transparent-proxy-e2e
       - test-rama-apple-ne-swift-ffi
       - test-fastcgi-php
@@ -990,6 +1116,12 @@ jobs:
       - semver-checks
     if: github.ref == 'refs/heads/main'
     steps:
+      - name: Set up emulation for the interop endpoint image
+        uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a
+        with:
+          platforms: arm64
+      - name: Set up Docker buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
       - name: Login to Docker Hub
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
@@ -1002,6 +1134,14 @@ jobs:
           push: true
           tags: glendc/rama:edge
           file: rama-cli/infra/Dockerfile
+
+      - name: Build and push QUIC interop endpoints
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: glendc/rama-quic-interop:edge
+          file: rama-quic/e2e/interop-runner/Dockerfile
 
   deploy-rama-fp-fly:
     runs-on: ubuntu-latest

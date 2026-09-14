@@ -223,6 +223,8 @@ Other locations that demonstrate how to make and run a Transparent Proxy:
   - `res_nsearch` on gnu/bsd
   - `getaddrinfo` on other Linux platforms,
   - and tokio's basic `lookup_host` on everything else
+- [`quic_client_server.rs`](./src/quic_client_server.rs) - Authenticated QUIC client and server on one shared graceful runtime, exchanging a bidirectional request and a unidirectional upload
+- [`quic_terminating_relay.rs`](./src/quic_terminating_relay.rs) - Terminating QUIC relay: presents its own identity downstream and authenticates the origin upstream, carrying client-initiated bidirectional streams
 - [`tcp_listener_fd_passing.rs`](./src/tcp_listener_fd_passing.rs) - FD passing via SCM_RIGHTS for zero-downtime restarts (Unix-only)
 - [`tcp_listener_hello.rs`](./src/tcp_listener_hello.rs) - Basic TCP listener example
 - [`tcp_listener_layers.rs`](./src/tcp_listener_layers.rs) - TCP listener with layers

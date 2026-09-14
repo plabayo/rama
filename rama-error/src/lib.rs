@@ -179,6 +179,8 @@ mod chain;
 pub use chain::{error_chain, error_chain_with};
 
 mod ext;
+#[cfg(target_has_atomic = "ptr")]
+pub use ext::arc::ArcError;
 pub use ext::{BoxErrorExt, ErrorContext, ErrorExt};
 
 pub mod extra {

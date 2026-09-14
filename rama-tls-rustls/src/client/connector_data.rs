@@ -62,113 +62,129 @@ impl TryFrom<RustlsTlsConnectorConfig<'_>> for ClientConfig {
 
     fn try_from(value: RustlsTlsConnectorConfig<'_>) -> Result<Self, Self::Error> {
         crate::ensure_default_crypto_provider();
+        build_client_config(&value, None)
+    }
+}
 
-        let server_verify_mode = value.verify.map(|verify| verify.0).unwrap_or_default();
+pub(super) fn build_client_config(
+    value: &RustlsTlsConnectorConfig<'_>,
+    provider: Option<Arc<rustls::crypto::CryptoProvider>>,
+) -> Result<ClientConfig, BoxError> {
+    let server_verify_mode = value.verify.map(|verify| verify.0).unwrap_or_default();
 
-        if server_verify_mode == ServerVerifyMode::Disable {
-            if value.server_trust.is_some() {
-                tracing::debug!(
-                    "rustls connector: server trust policy ignored: server verification is disabled"
-                );
-            }
+    if server_verify_mode == ServerVerifyMode::Disable {
+        if value.server_trust.is_some() {
+            tracing::debug!(
+                "rustls connector: server trust policy ignored: server verification is disabled"
+            );
+        }
+        if value.verifier.is_some() {
+            tracing::debug!(
+                "rustls connector: custom certificate verifier ignored: server verification is disabled"
+            );
+        }
+    }
+
+    let root_certs = match (server_verify_mode, value.server_trust) {
+        (ServerVerifyMode::Auto, Some(trust)) => {
             if value.verifier.is_some() {
                 tracing::debug!(
-                    "rustls connector: custom certificate verifier ignored: server verification is disabled"
+                    "rustls connector: server trust policy ignored: custom certificate verifier takes precedence"
                 );
+                client_root_certs()
+            } else {
+                rustls_root_certs(trust)?
             }
         }
+        _ => client_root_certs(),
+    };
 
-        let root_certs = match (server_verify_mode, value.server_trust) {
-            (ServerVerifyMode::Auto, Some(trust)) => {
-                if value.verifier.is_some() {
-                    tracing::debug!(
-                        "rustls connector: server trust policy ignored: custom certificate verifier takes precedence"
-                    );
-                    client_root_certs()
-                } else {
-                    rustls_root_certs(trust)?
+    // Map common protocol versions to rustls, rustls only models TLS 1.2/1.3,
+    // anything else (incl. GREASE) is dropped. Empty = all supported versions.
+    let versions: Vec<&'static rustls::SupportedProtocolVersion> = value
+        .versions
+        .map(|v| {
+            v.0.iter()
+                .filter_map(|pv| (*pv).rama_try_into().ok())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let versions = if versions.is_empty() {
+        ALL_VERSIONS
+    } else {
+        &versions
+    };
+    let builder = match provider {
+        Some(provider) => {
+            ClientConfig::builder_with_provider(provider).with_protocol_versions(versions)?
+        }
+        None => ClientConfig::builder_with_protocol_versions(versions),
+    };
+    let provider = builder.crypto_provider().clone();
+
+    let builder = builder.with_root_certificates(root_certs.clone());
+    let mut client_config = match value.client_auth.map(|auth| &auth.0) {
+        Some(client_auth) => {
+            let (cert_chain, private_key) = rustls_client_auth(client_auth)?;
+            builder.with_client_auth_cert(cert_chain, private_key)?
+        }
+        None => builder.with_no_client_auth(),
+    };
+
+    match (server_verify_mode, value.server_cert_pins) {
+        (ServerVerifyMode::Disable, Some(pins)) => {
+            let signature_verifier =
+                WebPkiServerVerifier::builder_with_provider(client_root_certs(), provider)
+                    .build()?;
+            client_config.dangerous().set_certificate_verifier(Arc::new(
+                PinnedServerCertVerifier::pin_only(pins.clone(), signature_verifier),
+            ));
+        }
+        (ServerVerifyMode::Disable, None) => {
+            client_config
+                .dangerous()
+                .set_certificate_verifier(Arc::new(NoServerCertVerifier::default()));
+        }
+        (ServerVerifyMode::Auto, Some(pins)) => {
+            let child = match value.verifier {
+                Some(verifier) => verifier.0.clone(),
+                None => {
+                    WebPkiServerVerifier::builder_with_provider(root_certs, provider).build()?
                 }
-            }
-            _ => client_root_certs(),
-        };
-
-        // Map common protocol versions to rustls, rustls only models TLS 1.2/1.3,
-        // anything else (incl. GREASE) is dropped. Empty = all supported versions.
-        let versions: Vec<&'static rustls::SupportedProtocolVersion> = value
-            .versions
-            .map(|v| {
-                v.0.iter()
-                    .filter_map(|pv| (*pv).rama_try_into().ok())
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let builder = if versions.is_empty() {
-            Self::builder_with_protocol_versions(ALL_VERSIONS)
-        } else {
-            Self::builder_with_protocol_versions(&versions)
-        };
-
-        let builder = builder.with_root_certificates(root_certs.clone());
-        let mut client_config = match value.client_auth.map(|auth| &auth.0) {
-            Some(client_auth) => {
-                let (cert_chain, private_key) = rustls_client_auth(client_auth)?;
-                builder.with_client_auth_cert(cert_chain, private_key)?
-            }
-            None => builder.with_no_client_auth(),
-        };
-
-        match (server_verify_mode, value.server_cert_pins) {
-            (ServerVerifyMode::Disable, Some(pins)) => {
-                let signature_verifier =
-                    WebPkiServerVerifier::builder(client_root_certs()).build()?;
-                client_config.dangerous().set_certificate_verifier(Arc::new(
-                    PinnedServerCertVerifier::pin_only(pins.clone(), signature_verifier),
-                ));
-            }
-            (ServerVerifyMode::Disable, None) => {
+            };
+            client_config.dangerous().set_certificate_verifier(Arc::new(
+                PinnedServerCertVerifier::new(pins.clone(), child),
+            ));
+        }
+        (ServerVerifyMode::Auto, None) => {
+            if let Some(verifier) = value.verifier {
                 client_config
                     .dangerous()
-                    .set_certificate_verifier(Arc::new(NoServerCertVerifier::default()));
-            }
-            (ServerVerifyMode::Auto, Some(pins)) => {
-                let child = match value.verifier {
-                    Some(verifier) => verifier.0.clone(),
-                    None => WebPkiServerVerifier::builder(root_certs).build()?,
-                };
-                client_config.dangerous().set_certificate_verifier(Arc::new(
-                    PinnedServerCertVerifier::new(pins.clone(), child),
-                ));
-            }
-            (ServerVerifyMode::Auto, None) => {
-                if let Some(verifier) = value.verifier {
-                    client_config
-                        .dangerous()
-                        .set_certificate_verifier(verifier.0.clone());
-                }
+                    .set_certificate_verifier(verifier.0.clone());
             }
         }
-
-        if let Some(alpn) = value.alpn {
-            client_config.alpn_protocols = alpn
-                .0
-                .iter()
-                .map(|proto| proto.as_bytes().to_vec())
-                .collect();
-        }
-
-        if let Some(keylog) = value.keylog
-            && let Some(sink) = open_intent_sink(&keylog.0)?
-        {
-            client_config.key_log = Arc::new(RamaKeyLog::new(sink));
-        }
-
-        if let Some(modify) = value.modify {
-            client_config = modify.apply(client_config)?;
-        }
-
-        Ok(client_config)
     }
+
+    if let Some(alpn) = value.alpn {
+        client_config.alpn_protocols = alpn
+            .0
+            .iter()
+            .map(|proto| proto.as_bytes().to_vec())
+            .collect();
+    }
+
+    if let Some(keylog) = value.keylog
+        && let Some(sink) = open_intent_sink(&keylog.0)?
+    {
+        client_config.key_log = Arc::new(RamaKeyLog::new(sink));
+    }
+
+    if let Some(modify) = value.modify {
+        client_config = modify.apply(client_config)?;
+    }
+
+    Ok(client_config)
 }
 
 fn rustls_root_certs(trust: &TlsServerTrust) -> Result<Arc<RootCertStore>, BoxError> {

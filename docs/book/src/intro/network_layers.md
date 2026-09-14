@@ -51,6 +51,12 @@ Here are some examples that demonstrate working with transport layer services:
   a minimal example demonstrating a TCP listener that responds with a hello message;
 - [/examples/src/tcp_nd_json.rs](https://github.com/plabayo/rama/tree/main/examples/src/tcp_nd_json.rs):
   example demonstrating how to serve a ndjson (Newline Delimited JSON) stream of data over TCP
+- [/examples/src/quic_client_server.rs](https://github.com/plabayo/rama/tree/main/examples/src/quic_client_server.rs):
+  an authenticated QUIC client and server on one shared graceful runtime, with a bidirectional
+  request and a unidirectional upload;
+- [/examples/src/quic_terminating_relay.rs](https://github.com/plabayo/rama/tree/main/examples/src/quic_terminating_relay.rs):
+  a terminating QUIC relay, presenting its own identity to the client and authenticating the
+  origin itself, carrying client-initiated bidirectional streams between them;
 - [/examples/src/udp_codec.rs](https://github.com/plabayo/rama/tree/main/examples/src/udp_codec.rs):
   an example showing how to work with UDP using codecs for message framing;
 - [/examples/src/udp_over_tcp.rs](https://github.com/plabayo/rama/tree/main/examples/src/udp_over_tcp.rs):

@@ -1,0 +1,109 @@
+set windows-shell := ["powershell.exe", "-NoLogo", "-Command"]
+
+# Match the root warning policy and optional dial9 instrumentation.
+export RUSTFLAGS := \
+    (if env_var_or_default("ALLOW_WARNINGS", "false") == "true" { \
+        "" \
+    } else { \
+        "-D warnings" \
+    }) + (if env_var_or_default("TOKIO_UNSTABLE", "false") == "true" { \
+        " --cfg tokio_unstable" \
+    } else { \
+        "" \
+    })
+
+export RUSTDOCFLAGS := \
+    if env_var_or_default("ALLOW_WARNINGS", "false") == "true" { \
+        "" \
+    } else { \
+        "-D warnings" \
+    }
+export RUST_LOG := "debug"
+export PYTHON := env_var_or_default("PYTHON", "python3")
+
+# QUIC requires an explicit TLS provider alongside dial9.
+qa-dial9:
+    @command -v cargo-nextest >/dev/null || cargo install cargo-nextest --locked
+    cargo clippy -p rama-quic --features dial9,rustls,ring --all-targets
+    cargo nextest run -p rama-quic --features dial9,rustls,ring
+
+# QUIC interop peers: standalone projects, outside the workspace, each with its own lockfile.
+# quiche builds BoringSSL (needs cmake and a C++ compiler); aioquic needs uv.
+interop-peer-dirs := "e2e/interop-common e2e/quinn-interop e2e/quiche-interop e2e/aioquic-interop"
+interop-dirs := interop-peer-dirs + " e2e/interop-runner"
+
+# Check formatting and lints for the shared scenarios and all peer projects.
+qa-interop-lint BACKEND: (_lint-interop "e2e/interop-common" BACKEND) (_lint-interop "e2e/quinn-interop" BACKEND) (_lint-interop "e2e/quiche-interop" BACKEND) (_lint-interop "e2e/aioquic-interop" BACKEND)
+
+[private]
+_lint-interop DIR BACKEND:
+    cargo fmt --manifest-path {{DIR}}/Cargo.toml --all --check
+    cargo clippy --manifest-path {{DIR}}/Cargo.toml --all-targets --locked --features {{BACKEND}} -- -D warnings
+
+# The locked Python environment the aioquic peer runs from.
+[working-directory: 'e2e/aioquic-interop']
+interop-aioquic-env:
+    uv sync --frozen
+
+# the shared scenario library's own tests; the peers depend on it but do not run these
+[working-directory: 'e2e/interop-common']
+test-interop-common BACKEND:
+    cargo test --locked --features {{BACKEND}}
+
+[working-directory: 'e2e/quinn-interop']
+test-interop-quinn BACKEND:
+    cargo test --locked --features {{BACKEND}} --tests
+
+[working-directory: 'e2e/quiche-interop']
+test-interop-quiche BACKEND:
+    cargo test --locked --features {{BACKEND}} --tests
+
+[working-directory: 'e2e/aioquic-interop']
+test-interop-aioquic BACKEND: interop-aioquic-env
+    cargo test --locked --features {{BACKEND}} --tests
+
+# Formatting, Clippy, and tests for each standalone peer project.
+qa-interop-common BACKEND: (_lint-interop "e2e/interop-common" BACKEND) (test-interop-common BACKEND)
+
+qa-interop-quinn BACKEND: (_lint-interop "e2e/quinn-interop" BACKEND) (test-interop-quinn BACKEND)
+
+qa-interop-quiche BACKEND: (_lint-interop "e2e/quiche-interop" BACKEND) (test-interop-quiche BACKEND)
+
+qa-interop-aioquic BACKEND: (_lint-interop "e2e/aioquic-interop" BACKEND) (test-interop-aioquic BACKEND)
+
+# The complete peer CI checks.
+test-interop BACKEND: (qa-interop-common BACKEND) (qa-interop-quinn BACKEND) (qa-interop-quiche BACKEND) (qa-interop-aioquic BACKEND)
+
+# All standalone projects with both supported Rama TLS backends, without Docker.
+qa-interop: qa-interop-rustls-ring qa-interop-rustls-aws-lc
+
+qa-interop-rustls-ring: (_qa-interop "rustls-ring")
+
+qa-interop-rustls-aws-lc: (_qa-interop "rustls-aws-lc")
+
+[private]
+_qa-interop BACKEND: (test-interop BACKEND) (qa-interop-runner BACKEND)
+
+# the standalone QUIC interop projects, each with its own lockfile,
+# plus the aioquic python env (`uv add` keeps its exact pin, `uv lock --upgrade` would not)
+update-deps:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo install cargo-edit --locked
+    for dir in {{interop-dirs}}; do
+        echo "== $dir"
+        (cd "$dir" && cargo upgrade --incompatible && cargo update && cargo generate-lockfile)
+    done
+    cd e2e/aioquic-interop && uv add --bounds exact --preview-features add-bounds --upgrade-package aioquic aioquic
+
+# Check endpoint binaries and Python gates; POSIX signal tests select supported hosts.
+[working-directory: 'e2e/interop-runner']
+qa-interop-runner BACKEND:
+    cargo fmt -- --check
+    cargo clippy --locked --all-targets --features {{BACKEND}} -- -D warnings
+    cargo test --locked --features {{BACKEND}}
+    {{if os_family() == "windows" { "& $env:PYTHON" } else { '"$PYTHON"' } }} -m unittest discover -s . -p 'test_*.py'
+
+# Run the pinned independent QUIC interop matrix (Rama client and server).
+test-interop-runner *ARGS:
+    bash {{justfile_directory()}}/e2e/interop-runner/run.sh {{ARGS}}

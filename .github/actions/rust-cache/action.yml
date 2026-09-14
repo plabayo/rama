@@ -17,6 +17,10 @@ inputs:
     description: Whether to cache ~/.cargo/bin (forwarded to rust-cache)
     required: false
     default: "true"
+  workspaces:
+    description: Workspace directories and their target dirs (forwarded to rust-cache), for projects outside the root workspace
+    required: false
+    default: ""
 
 runs:
   using: composite
@@ -33,6 +37,9 @@ runs:
           env-vars: ${{ inputs.env-vars }}
           save-if: ${{ inputs.save-if }}
           cache-bin: ${{ inputs.cache-bin }}
+          # This inner mapping is itself a YAML string, so a multi-line value has to be a
+          # quoted scalar or its later lines land unindented.
+          workspaces: ${{ toJSON(inputs.workspaces) }}
 
     - name: Rust cache
       if: runner.os != 'Windows'
@@ -42,3 +49,4 @@ runs:
         env-vars: ${{ inputs.env-vars }}
         save-if: ${{ inputs.save-if }}
         cache-bin: ${{ inputs.cache-bin }}
+        workspaces: ${{ inputs.workspaces }}

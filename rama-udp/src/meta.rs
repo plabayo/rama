@@ -281,6 +281,11 @@ impl fmt::Display for DatagramFeature {
 pub enum DatagramError {
     /// Operating-system or runtime I/O error.
     Io(io::Error),
+    /// A validated segmented send was rejected by the socket's offload implementation.
+    ///
+    /// No segment was accepted. Query capabilities before retrying as ordinary datagrams.
+    /// The original socket error is retained; other I/O failures are not classified this way.
+    SegmentationRejected(io::Error),
     /// A requested feature is not available on this socket.
     Unsupported(DatagramFeature),
     /// An unsegmented payload exceeds the implementation ceiling.
@@ -328,6 +333,7 @@ impl fmt::Display for DatagramError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(error) => write!(f, "datagram I/O failed: {error}"),
+            Self::SegmentationRejected(error) => write!(f, "UDP segmentation rejected: {error}"),
             Self::Unsupported(feature) => write!(f, "unsupported datagram feature: {feature}"),
             Self::PayloadTooLarge { len, max } => {
                 write!(
@@ -365,9 +371,100 @@ impl fmt::Display for DatagramError {
 impl Error for DatagramError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::Io(error) => Some(error),
+            Self::Io(error) | Self::SegmentationRejected(error) => Some(error),
             _ => None,
         }
+    }
+}
+
+/// Coarse classification of a failed send.
+///
+/// Callers use it to decide whether one datagram was lost, the request itself was
+/// invalid, or the socket can no longer be used at all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SendFailure {
+    /// Only this datagram was refused; the socket stays usable.
+    ///
+    /// Covers destination and path feedback such as unreachable networks, filtered
+    /// destinations and transient resource shortages.
+    Datagram,
+    /// The network stack rejected the datagram as too large for the destination path or
+    /// interface. Smaller datagrams to the same destination can still succeed.
+    TooLarge,
+    /// The descriptor or a requested feature is invalid for this socket; retrying the same
+    /// descriptor cannot succeed.
+    Descriptor,
+    /// The socket itself can no longer send.
+    Socket,
+}
+
+impl DatagramError {
+    /// Classify this error for a sender's failure policy.
+    #[must_use]
+    pub fn send_failure(&self) -> SendFailure {
+        match self {
+            Self::Io(error) => classify_send_io_error(error),
+            Self::Closed => SendFailure::Socket,
+            Self::SegmentationRejected(_)
+            | Self::Unsupported(_)
+            | Self::PayloadTooLarge { .. }
+            | Self::InvalidSegmentSize { .. }
+            | Self::TooManySegments { .. }
+            | Self::SourceAddressFamilyMismatch { .. }
+            | Self::ReceiveSlotMismatch { .. }
+            | Self::EmptyReceiveBatch => SendFailure::Descriptor,
+        }
+    }
+}
+
+fn classify_send_io_error(error: &io::Error) -> SendFailure {
+    if is_message_too_large(error) {
+        return SendFailure::TooLarge;
+    }
+    if is_socket_unusable(error) {
+        return SendFailure::Socket;
+    }
+    match error.kind() {
+        io::ErrorKind::InvalidInput | io::ErrorKind::Unsupported => SendFailure::Descriptor,
+        io::ErrorKind::NotConnected | io::ErrorKind::BrokenPipe => SendFailure::Socket,
+        _ => SendFailure::Datagram,
+    }
+}
+
+// Raw codes stay in the socket layer: the standard error kinds do not model them.
+fn is_message_too_large(error: &io::Error) -> bool {
+    #[cfg(unix)]
+    {
+        error.raw_os_error() == Some(libc::EMSGSIZE)
+    }
+    #[cfg(windows)]
+    {
+        error.raw_os_error() == Some(windows_sys::Win32::Networking::WinSock::WSAEMSGSIZE)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = error;
+        false
+    }
+}
+
+fn is_socket_unusable(error: &io::Error) -> bool {
+    #[cfg(unix)]
+    {
+        matches!(error.raw_os_error(), Some(libc::EBADF | libc::ENOTSOCK))
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Networking::WinSock::{WSAEBADF, WSAENOTSOCK, WSAESHUTDOWN};
+        matches!(
+            error.raw_os_error(),
+            Some(WSAEBADF | WSAENOTSOCK | WSAESHUTDOWN)
+        )
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = error;
+        false
     }
 }
 
@@ -456,5 +553,65 @@ mod tests {
         let error = DatagramError::from(io::Error::other("socket closed"));
         assert_eq!(error.to_string(), "datagram I/O failed: socket closed");
         assert_eq!(error.source().unwrap().to_string(), "socket closed");
+    }
+
+    #[test]
+    fn send_failures_classify_descriptor_socket_and_datagram_errors() {
+        assert_eq!(
+            DatagramError::Unsupported(DatagramFeature::SendSourceIp).send_failure(),
+            SendFailure::Descriptor
+        );
+        assert_eq!(
+            DatagramError::TooManySegments { count: 2, max: 1 }.send_failure(),
+            SendFailure::Descriptor
+        );
+        assert_eq!(
+            DatagramError::SegmentationRejected(io::Error::other("x")).send_failure(),
+            SendFailure::Descriptor
+        );
+        assert_eq!(DatagramError::Closed.send_failure(), SendFailure::Socket);
+        for kind in [
+            io::ErrorKind::PermissionDenied,
+            io::ErrorKind::NetworkUnreachable,
+            io::ErrorKind::HostUnreachable,
+            io::ErrorKind::ConnectionRefused,
+            io::ErrorKind::AddrNotAvailable,
+            io::ErrorKind::OutOfMemory,
+            io::ErrorKind::Other,
+        ] {
+            assert_eq!(
+                DatagramError::Io(io::Error::from(kind)).send_failure(),
+                SendFailure::Datagram,
+                "{kind:?}"
+            );
+        }
+        for kind in [io::ErrorKind::InvalidInput, io::ErrorKind::Unsupported] {
+            assert_eq!(
+                DatagramError::Io(io::Error::from(kind)).send_failure(),
+                SendFailure::Descriptor,
+                "{kind:?}"
+            );
+        }
+        for kind in [io::ErrorKind::NotConnected, io::ErrorKind::BrokenPipe] {
+            assert_eq!(
+                DatagramError::Io(io::Error::from(kind)).send_failure(),
+                SendFailure::Socket,
+                "{kind:?}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn send_failures_classify_native_unix_codes() {
+        let raw = |code| DatagramError::Io(io::Error::from_raw_os_error(code)).send_failure();
+        assert_eq!(raw(libc::EMSGSIZE), SendFailure::TooLarge);
+        assert_eq!(raw(libc::EBADF), SendFailure::Socket);
+        assert_eq!(raw(libc::ENOTSOCK), SendFailure::Socket);
+        assert_eq!(raw(libc::ENETUNREACH), SendFailure::Datagram);
+        assert_eq!(raw(libc::EHOSTUNREACH), SendFailure::Datagram);
+        assert_eq!(raw(libc::EPERM), SendFailure::Datagram);
+        assert_eq!(raw(libc::ENOBUFS), SendFailure::Datagram);
+        assert_eq!(raw(libc::EINVAL), SendFailure::Descriptor);
     }
 }

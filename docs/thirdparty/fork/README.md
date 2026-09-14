@@ -52,6 +52,18 @@ as a distant relative.
     - Type: MIT
     - Copy: [./licenses/http-body-util](./licenses/http-body-util)
 
+### quinn-rs
+
+- <https://github.com/quinn-rs/quinn/tree/b826169972971a4a18a7a7d32694d7d90483068b>
+  - QUIC transport adapted into `rama-quic`, reusing Rama's UDP, TLS, runtime and
+    utilities while preserving useful upstream structure.
+  - License:
+    - Original: <https://github.com/quinn-rs/quinn/blob/b826169972971a4a18a7a7d32694d7d90483068b/LICENSE-MIT>
+      and <https://github.com/quinn-rs/quinn/blob/b826169972971a4a18a7a7d32694d7d90483068b/LICENSE-APACHE>
+    - Type: MIT OR Apache-2.0 (Copyright (c) 2018 The quinn Developers)
+    - Copy: [./licenses/quinn/LICENSE-MIT](./licenses/quinn/LICENSE-MIT),
+      [./licenses/quinn/LICENSE-APACHE](./licenses/quinn/LICENSE-APACHE)
+
 ### tower-rs
 
 - <https://github.com/tower-rs/tower/tree/df06d70dbea345facbffb5881fe8647f53bf424d>

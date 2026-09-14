@@ -20,6 +20,29 @@ pub struct RustlsTlsAcceptorConfig<'a> {
     pub dynamic: Option<&'a RustlsDynamicConfig>,
 }
 
+impl RustlsTlsAcceptorConfig<'_> {
+    /// Build a native TLS server configuration using the supplied cryptographic provider.
+    ///
+    /// This does not read or install the process-wide default provider. Certificate
+    /// verification uses the same provider. The modify hook runs last and may replace
+    /// the configuration, including its provider.
+    ///
+    /// A full asynchronous dynamic configuration cannot be represented by a static
+    /// configuration and returns an error. A certificate resolver can be installed
+    /// through the modify hook.
+    pub fn try_into_server_config_with_provider(
+        self,
+        provider: Arc<crate::dep::rustls::crypto::CryptoProvider>,
+    ) -> Result<ServerConfig, BoxError> {
+        if self.dynamic.is_some() {
+            return Err(BoxError::from(
+                "a dynamic TLS configuration requires the asynchronous TLS acceptor",
+            ));
+        }
+        super::acceptor_data::build_server_config(&self, Some(provider))
+    }
+}
+
 /// Rustls-specific setters.
 pub trait RustlsServerConfigExt: Sized {
     rama_utils::macros::generate_set_and_with! {

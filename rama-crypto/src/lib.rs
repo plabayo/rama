@@ -30,6 +30,8 @@ pub mod cert;
 #[cfg_attr(docsrs, doc(cfg(feature = "aws-lc")))]
 pub mod jose;
 
+pub mod hmac;
+
 pub mod pki_types {
     //! Pki types used by rama. Currently this is a re-export of the [`rustls-pki-types`][rustls_pki_types] crate.
     //!
@@ -61,6 +63,17 @@ pub mod dep {
 
         #[doc(inline)]
         pub use aws_lc_rs::*;
+    }
+
+    #[cfg(feature = "ring")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "ring")))]
+    pub mod ring {
+        //! Re-export of the [`ring`] crate.
+        //!
+        //! [`ring`]: https://docs.rs/ring
+
+        #[doc(inline)]
+        pub use ring::*;
     }
 
     #[cfg(feature = "boring")]

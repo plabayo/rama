@@ -29,6 +29,7 @@ synchronous applications use the same composed stacks at their boundary.
 | [`icap`] | Internet Content Adaptation Protocol (ICAP) |
 | [`proxy`] | Proxy primitives, SOCKS5, HAProxy PROXY protocol |
 | [`tcp`], [`udp`], `unix` | Transport listeners, connectors, and streams |
+| [`quic`] | QUIC endpoints, connections, ordered streams, and unreliable datagrams |
 | [`tls`] | TLS abstractions, Rustls, BoringSSL, ACME |
 | [`dns`] | DNS resolvers and related types |
 | [`net`] | Network addresses, sockets, forwarding, fingerprints |

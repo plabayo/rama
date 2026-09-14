@@ -1,5 +1,7 @@
 use core::fmt;
 
+#[cfg(target_has_atomic = "ptr")]
+pub(super) mod arc;
 #[cfg(feature = "std")]
 mod backtrace;
 

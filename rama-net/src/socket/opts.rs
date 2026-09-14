@@ -740,6 +740,14 @@ pub struct SocketOptions {
     /// and receive packets from an IPv4-mapped IPv6 address.
     pub only_v6: Option<bool>,
 
+    /// The `IPV6_V6ONLY` value to request when the platform may refuse it, for an IPv6 domain.
+    ///
+    /// The value is the one requested, as [`only_v6`](Self::only_v6) is: `Some(false)` asks for a
+    /// dual-stack socket. A platform that refuses the option leaves the socket as it is and the
+    /// refusal is traced; socket creation continues. [`only_v6`](Self::only_v6) takes precedence
+    /// and stays strict, so a refusal there fails.
+    pub only_v6_best_effort: Option<bool>,
+
     #[cfg(not(any(
         target_os = "dragonfly",
         target_os = "fuchsia",
@@ -1197,7 +1205,16 @@ impl SocketOptions {
             socket.set_unicast_hops_v6(hops)?;
         }
         if let Some(only_v6) = self.only_v6 {
-            socket.set_only_v6(only_v6)?;
+            set_only_v6(&socket, only_v6)?;
+        } else if domain == Domain::IPv6
+            && let Some(only_v6) = self.only_v6_best_effort
+            && let Err(error) = set_only_v6(&socket, only_v6)
+        {
+            rama_core::telemetry::tracing::debug!(
+                %error,
+                only_v6,
+                "the platform refused the requested IPV6_V6ONLY value; keeping the socket as it is"
+            );
         }
 
         #[cfg(not(any(
@@ -1339,5 +1356,117 @@ impl SocketOptions {
         }
 
         Ok(socket)
+    }
+}
+
+/// Request `IPV6_V6ONLY`. A test may make this refuse, so the suppression of a platform's refusal
+/// can be exercised where no platform refuses it.
+fn set_only_v6(socket: &Socket, only_v6: bool) -> io::Result<()> {
+    #[cfg(test)]
+    if tests::refusing_only_v6() {
+        return Err(io::Error::from(io::ErrorKind::InvalidInput));
+    }
+    socket.set_only_v6(only_v6)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::cell::Cell;
+    use std::net::{Ipv4Addr, Ipv6Addr};
+
+    std::thread_local! {
+        // Socket construction is synchronous; refusal must not affect concurrent tests.
+        static REFUSE_ONLY_V6: Cell<bool> = const { Cell::new(false) };
+    }
+
+    pub(super) fn refusing_only_v6() -> bool {
+        REFUSE_ONLY_V6.get()
+    }
+
+    fn udp_options(address: SocketAddr) -> SocketOptions {
+        let mut options = SocketOptions::default_udp();
+        options.address = Some(address.into());
+        options
+    }
+
+    fn v6() -> SocketAddr {
+        SocketAddr::new(Ipv6Addr::LOCALHOST.into(), 0)
+    }
+
+    fn v4() -> SocketAddr {
+        SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0)
+    }
+
+    /// The requested value is the one applied, whether it is asked for strictly or as best effort.
+    #[test]
+    fn the_requested_only_v6_value_is_applied() {
+        // A specific IPv6 bind can force IPV6_V6ONLY on Linux. Test the option on a wildcard.
+        for requested in [true, false] {
+            let mut options = udp_options(SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), 0));
+            options.only_v6 = Some(requested);
+            let socket = options.try_build_socket(Domain::IPv6).unwrap();
+            assert_eq!(socket.only_v6().unwrap(), requested, "strict {requested}");
+
+            let mut options = udp_options(SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), 0));
+            options.only_v6_best_effort = Some(requested);
+            let socket = options.try_build_socket(Domain::IPv6).unwrap();
+            assert_eq!(
+                socket.only_v6().unwrap(),
+                requested,
+                "best effort {requested}"
+            );
+        }
+    }
+
+    /// The strict field wins when both are set, and its value is the one on the socket.
+    #[test]
+    fn a_strict_only_v6_takes_precedence_over_the_best_effort_one() {
+        let mut options = udp_options(v6());
+        options.only_v6 = Some(true);
+        options.only_v6_best_effort = Some(false);
+        let socket = options.try_build_socket(Domain::IPv6).unwrap();
+        assert!(socket.only_v6().unwrap());
+    }
+
+    /// Best-effort requests preserve the socket on refusal; strict requests return the error.
+    #[test]
+    fn a_refused_best_effort_only_v6_keeps_the_socket_and_a_strict_one_does_not() {
+        REFUSE_ONLY_V6.set(true);
+        let mut options = udp_options(v6());
+        options.only_v6_best_effort = Some(false);
+        let best_effort = options.try_build_socket(Domain::IPv6);
+        options.only_v6 = Some(false);
+        let strict = options.try_build_socket(Domain::IPv6);
+        REFUSE_ONLY_V6.set(false);
+
+        let socket = best_effort.expect("the refusal does not fail socket creation");
+        let address = socket.local_addr().unwrap().as_socket().unwrap();
+        assert_eq!(address.ip(), v6().ip(), "the requested address is bound");
+        assert_ne!(address.port(), 0, "the socket has an assigned port");
+        assert_eq!(
+            strict.expect_err("a refused strict request fails").kind(),
+            io::ErrorKind::InvalidInput,
+            "the strict request preserves the option error"
+        );
+        assert!(
+            options.try_build_socket(Domain::IPv6).is_ok(),
+            "a supported strict request succeeds"
+        );
+    }
+
+    /// The best-effort request is for an IPv6 socket only: on an IPv4 one it is not attempted, so
+    /// it cannot fail there.
+    #[test]
+    fn the_best_effort_request_is_skipped_for_an_ipv4_socket() {
+        REFUSE_ONLY_V6.set(true);
+        let mut options = udp_options(v4());
+        options.only_v6_best_effort = Some(true);
+        let built = options.try_build_socket(Domain::IPv4);
+        REFUSE_ONLY_V6.set(false);
+        assert!(
+            built.is_ok(),
+            "the option is never asked for, so the seam cannot refuse it"
+        );
     }
 }

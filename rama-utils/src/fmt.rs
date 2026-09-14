@@ -140,6 +140,66 @@ mod tests {
     use super::*;
 
     #[test]
+    fn hex_appends_to_reused_string_with_both_cases() {
+        let bytes: crate::std::vec::Vec<_> = (0u8..=255).collect();
+        let mut output = String::with_capacity(1100);
+        output.push_str("key=");
+        let allocation = output.as_ptr();
+        write!(&mut output, "{:x}/{:X}", hex(&bytes), hex(&bytes)).unwrap();
+        assert_eq!(output.as_ptr(), allocation);
+        assert_eq!(
+            output,
+            format!("key={}/{}", hex(&bytes), hex(&bytes).with_upper_case())
+        );
+        assert_eq!(
+            format!("{:#x}/{:#X}/{}", hex(&[0xAB]), hex(&[0xAB]), hex(&[0xAB])),
+            "0xab/0xAB/ab"
+        );
+        assert_eq!(
+            format!("{:x}/{:X}/{:#x}", hex(&[]), hex(&[]), hex(&[])),
+            "//0x"
+        );
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn hex_appends_to_reused_byte_buffer() {
+        use std::io::Write as _;
+        let mut output = Vec::with_capacity(32);
+        output.extend_from_slice(b"key=");
+        let allocation = output.as_ptr();
+        write!(&mut output, "{:x}", hex(&[0xCA, 0xFE])).unwrap();
+        assert_eq!(output, b"key=cafe");
+        assert_eq!(output.as_ptr(), allocation);
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn hex_preserves_writer_errors_after_partial_output() {
+        use std::io::{self, Write as _};
+        struct FailsAfterPrefix(Vec<u8>);
+        impl io::Write for FailsAfterPrefix {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                let remaining = 3 - self.0.len();
+                if remaining == 0 {
+                    return Err(io::Error::new(io::ErrorKind::BrokenPipe, "writer closed"));
+                }
+                let written = remaining.min(bytes.len());
+                self.0.extend_from_slice(&bytes[..written]);
+                Ok(written)
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut output = FailsAfterPrefix(Vec::new());
+        let error = write!(&mut output, "{:x}", hex(&[0xCA, 0xFE])).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+        assert_eq!(error.to_string(), "writer closed");
+        assert_eq!(output.0, b"caf");
+    }
+
+    #[test]
     fn formats_with_requested_capacity() {
         let output = format_with_capacity(32, format_args!("hello {value}", value = 42));
 

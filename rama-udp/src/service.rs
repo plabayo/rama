@@ -9,7 +9,7 @@ use rama_net::{
     },
 };
 
-use crate::{DatagramError, DatagramFeature, DatagramSocket as _, UdpPacketSocket};
+use crate::{DatagramError, DatagramFeature, DatagramSocket as _, UdpPacketSocket, UdpSocket};
 
 /// Configuration shared by UDP packet-socket factories.
 #[derive(Debug, Clone)]
@@ -48,6 +48,38 @@ impl UdpSocketConfig {
     #[must_use]
     pub fn required_features(&self) -> &[DatagramFeature] {
         &self.required_features
+    }
+
+    /// Wrap a socket the caller bound, as if this configuration had created it.
+    ///
+    /// Only the packet metadata this configuration asks for is set up, and the features it
+    /// requires are validated; socket options the caller applied are left as they are and none of
+    /// this configuration's [`SocketOptions`] are applied to an already bound socket. A socket
+    /// whose capabilities do not meet a required feature is refused, and the socket is dropped
+    /// with the error rather than returned.
+    pub fn wrap_core(
+        &self,
+        socket: rama_net::socket::core::Socket,
+    ) -> Result<UdpPacketSocket, DatagramError> {
+        self.wrap_std(socket.into())
+    }
+
+    /// The same for a standard socket. See [`wrap_core`](Self::wrap_core).
+    pub fn wrap_std(&self, socket: std::net::UdpSocket) -> Result<UdpPacketSocket, DatagramError> {
+        let socket = UdpPacketSocket::from_std(socket, self.receive_original_destination)?;
+        self.validate_capabilities(socket.capabilities())?;
+        Ok(socket)
+    }
+
+    /// The same for a Tokio socket. See [`wrap_core`](Self::wrap_core).
+    ///
+    /// The socket is already registered with the runtime by its owner, which is also who put it in
+    /// non-blocking mode: `tokio::net::UdpSocket::from_std` requires that of its caller and does
+    /// not do it. Only the metadata setup happens here.
+    pub fn wrap_tokio(&self, socket: UdpSocket) -> Result<UdpPacketSocket, DatagramError> {
+        let socket = UdpPacketSocket::from_registered(socket, self.receive_original_destination)?;
+        self.validate_capabilities(socket.capabilities())?;
+        Ok(socket)
     }
 
     fn validate_capabilities(
@@ -130,9 +162,8 @@ impl UdpSocketFactory {
         options.r#type = Type::Datagram;
         options.protocol = Some(Protocol::UDP);
         let socket = options.try_build_socket(Domain::from(address))?;
-        let socket =
-            UdpPacketSocket::from_std(socket.into(), self.config.receive_original_destination)?;
-        self.config.validate_capabilities(socket.capabilities())?;
+        let mut socket = self.config.wrap_core(socket)?;
+        socket.cache_bound_address()?;
         Ok(socket)
     }
 }
@@ -183,5 +214,44 @@ mod tests {
             ..crate::DatagramCapabilities::portable()
         };
         config.validate_capabilities(capabilities).unwrap();
+    }
+
+    /// Wrapping a socket the caller bound sets up the metadata the configuration asks for and
+    /// validates what it requires, through both entries. Where the platform provides
+    /// transparent-proxy original destinations the feature is reported; where it does not, the
+    /// requirement is refused by name.
+    #[tokio::test]
+    async fn wrapping_requests_the_configured_metadata() {
+        let feature = DatagramFeature::ReceiveOriginalDestination;
+        let config = UdpSocketConfig::default().with_required_feature(feature);
+
+        let bound = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        check_wrapped(feature, config.wrap_std(bound));
+
+        let bound = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        bound.set_nonblocking(true).unwrap();
+        let registered = crate::UdpSocket::from_std(bound).unwrap();
+        check_wrapped(feature, config.wrap_tokio(registered));
+    }
+
+    fn check_wrapped(feature: DatagramFeature, wrapped: Result<UdpPacketSocket, DatagramError>) {
+        match wrapped {
+            Ok(socket) => {
+                assert!(
+                    socket.capabilities().supports(feature),
+                    "a socket that satisfied the requirement reports the feature"
+                );
+            }
+            Err(DatagramError::Unsupported(refused)) => {
+                assert_eq!(refused, feature, "the refusal names the feature");
+                #[cfg(any(target_os = "android", target_os = "linux"))]
+                panic!("this platform sets the original-destination options when asked");
+            }
+            Err(other) => panic!(
+                "an unexpected error: the metadata setup turns a refused socket option into a \
+                 capability the socket does not have, so a required feature is refused by name \
+                 rather than as an error: {other:?}"
+            ),
+        }
     }
 }

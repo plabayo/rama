@@ -1,0 +1,106 @@
+#![cfg(all(
+    feature = "dial9",
+    feature = "rustls",
+    any(feature = "aws-lc", feature = "ring")
+))]
+#![expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "an integration test's fixtures fail the test by panicking; the workspace allows this inside test functions and this file is one, but its helpers are not #[test] themselves"
+)]
+#![expect(
+    clippy::print_stdout,
+    reason = "what the recorder wrote is the observation this test exists to make, and an assertion only shows its message when it fails"
+)]
+//! An endpoint built through the public API on a runtime a dial9 recorder is attached to.
+//!
+//! What this establishes is that the public construction path spawns through the shared
+//! utilities rather than around them: the endpoint's tasks are created inside the recorder's
+//! session, and the recorder has something to show for it afterwards.
+
+mod runtime;
+
+use std::net::{Ipv4Addr, SocketAddr};
+
+use rama_core::{
+    rt::{Executor, OwnedRuntime},
+    telemetry::dial9::{
+        Dial9Handle, Dial9HandleTokioExt as _, DiskBuffer, TokioAttachOptions, recorder_or_disabled,
+    },
+};
+use rama_quic::Endpoint;
+use rama_utils::octets;
+
+use runtime::{Identities, connect, exchange, serve_one};
+
+#[test]
+fn an_endpoint_built_on_a_recorded_runtime_is_traced() {
+    let temp_dir = rama_utils::fs::tempdir().unwrap();
+    let writer = DiskBuffer::builder()
+        .base_path(temp_dir.path())
+        .max_file_size(octets::mib_u64(1))
+        .max_total_size(octets::mib_u64(4))
+        .build();
+    let recorder = recorder_or_disabled(writer).build();
+    assert!(
+        recorder.handle().is_enabled(),
+        "expected an enabled recorder; is another recorder alive in this process?"
+    );
+    let mut builder = tokio::runtime::Builder::new_multi_thread();
+    builder.worker_threads(2).enable_all();
+    let tokio_runtime = recorder
+        .handle()
+        .attach_tokio_runtime(builder, TokioAttachOptions::default())
+        .unwrap();
+    let owned = OwnedRuntime::from_dial9((recorder, tokio_runtime));
+
+    owned.block_on(async {
+        assert!(
+            Dial9Handle::current().is_enabled(),
+            "the endpoints below are built inside the recorder's session"
+        );
+        let identities = Identities::new();
+        let localhost = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0);
+        let server = Endpoint::build(Executor::new())
+            .with_server_config(identities.server_config())
+            .bind_address(localhost)
+            .await
+            .expect("the server binds");
+        let addr = server.local_addr().unwrap();
+        let client = Endpoint::build(Executor::new())
+            .bind_address(localhost)
+            .await
+            .expect("the client binds");
+
+        let serving = rama_core::rt::spawn({
+            let server = server.clone();
+            async move { serve_one(&server).await }
+        });
+        let connection = connect(&client, &identities, addr).await;
+        exchange(&connection, b"recorded").await;
+        drop(connection);
+        serving.await.unwrap();
+        tokio::join!(server.shutdown(), client.shutdown());
+    });
+
+    owned.shutdown_bounded(std::time::Duration::from_secs(5));
+    let written: Vec<_> = std::fs::read_dir(temp_dir.path())
+        .unwrap()
+        .map(|entry| entry.unwrap())
+        .collect();
+    let bytes: u64 = written
+        .iter()
+        .map(|entry| entry.metadata().unwrap().len())
+        .sum();
+    assert!(
+        !written.is_empty() && bytes > 0,
+        "the recorder wrote trace data for the session: {} files, {bytes} bytes",
+        written.len()
+    );
+    // Visible with `--no-capture`, so what the run actually recorded can be read off rather
+    // than inferred from the assertion passing.
+    println!(
+        "dial9 recorded {} file(s), {bytes} bytes, for an endpoint built through the public API",
+        written.len()
+    );
+}

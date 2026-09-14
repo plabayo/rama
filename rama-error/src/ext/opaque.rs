@@ -63,7 +63,7 @@ impl From<Infallible> for OpaqueError {
 }
 
 #[derive(Clone, Copy)]
-struct StaticStrError(&'static str);
+pub(super) struct StaticStrError(pub(super) &'static str);
 
 impl fmt::Debug for StaticStrError {
     #[inline(always)]

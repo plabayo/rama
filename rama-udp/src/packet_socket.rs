@@ -1,16 +1,15 @@
 //! Tokio-backed implementation of the protocol-neutral datagram traits.
 
 use std::{
-    future::Future,
     io::{self, IoSliceMut},
-    net::{SocketAddr, SocketAddrV6},
+    net::{IpAddr, SocketAddr, SocketAddrV6},
     num::NonZeroUsize,
-    pin::Pin,
     sync::Arc,
     task::{Context, Poll, ready},
 };
 
 use tokio::io::Interest;
+use tokio_util::sync::ReusableBoxFuture;
 
 use rama_net::{
     address::{SocketAddress, ip::IntoCanonicalIpAddr as _},
@@ -29,6 +28,7 @@ pub struct UdpPacketSocket {
     io: Arc<UdpSocket>,
     state: Arc<sys::UdpSocketState>,
     socket_is_ipv6: bool,
+    cached_bound_address: Option<SocketAddr>,
 }
 
 impl UdpPacketSocket {
@@ -39,21 +39,45 @@ impl UdpPacketSocket {
         crate::UdpSocketFactory::default().bind(address).await
     }
 
-    /// Wrap an existing Tokio UDP socket and enable best-effort packet metadata.
-    pub fn from_socket(socket: UdpSocket) -> Result<Self, DatagramError> {
+    /// Wrap a socket already registered with the runtime, with the metadata a configuration asks
+    /// for.
+    ///
+    /// Reached through [`UdpSocketConfig::wrap_tokio`](crate::UdpSocketConfig::wrap_tokio), which
+    /// also validates the features that configuration requires.
+    pub(crate) fn from_registered(
+        socket: UdpSocket,
+        receive_original_destination: bool,
+    ) -> Result<Self, DatagramError> {
         let socket_is_ipv6 = socket.local_addr()?.is_ipv6();
-        let state = sys::UdpSocketState::new((&socket).into(), false)?;
+        let state = sys::UdpSocketState::new((&socket).into(), receive_original_destination)?;
         Ok(Self {
             io: Arc::new(socket),
             state: Arc::new(state),
             socket_is_ipv6,
+            cached_bound_address: None,
         })
     }
 
+    /// Wrap an existing Tokio UDP socket and enable best-effort packet metadata.
+    pub fn from_socket(socket: UdpSocket) -> Result<Self, DatagramError> {
+        Self::from_registered(socket, false)
+    }
+
+    /// Wrap a bound socket with the metadata a configuration asks for.
+    ///
+    /// Reached through [`UdpSocketConfig::wrap_std`](crate::UdpSocketConfig::wrap_std), which
+    /// also validates the features that configuration requires.
     pub(crate) fn from_std(
         socket: std::net::UdpSocket,
         receive_original_destination: bool,
     ) -> Result<Self, DatagramError> {
+        // Registration needs a runtime. Reported here, before the socket is handed to Tokio,
+        // which panics instead.
+        if tokio::runtime::Handle::try_current().is_err() {
+            return Err(DatagramError::Io(io::Error::other(
+                "no async runtime found",
+            )));
+        }
         socket.set_nonblocking(true)?;
         let socket_is_ipv6 = socket.local_addr()?.is_ipv6();
         let state = sys::UdpSocketState::new((&socket).into(), receive_original_destination)?;
@@ -62,7 +86,22 @@ impl UdpPacketSocket {
             io: Arc::new(io),
             state: Arc::new(state),
             socket_is_ipv6,
+            cached_bound_address: None,
         })
+    }
+
+    // Only factory-created sockets have no caller-retained aliases that could change their
+    // bound address. Externally wrapped sockets must keep querying the live address.
+    pub(crate) fn cache_bound_address(&mut self) -> Result<(), DatagramError> {
+        self.cached_bound_address = Some(self.io.local_addr()?);
+        Ok(())
+    }
+
+    fn receive_bound_address(&self) -> io::Result<SocketAddr> {
+        match self.cached_bound_address {
+            Some(address) => Ok(address),
+            None => self.io.local_addr(),
+        }
     }
 
     fn current_capabilities(&self) -> DatagramCapabilities {
@@ -112,15 +151,13 @@ impl DatagramSocket for UdpPacketSocket {
             });
             match result {
                 Ok(received) => {
-                    let bound = match self.io.local_addr() {
+                    let bound = match self.receive_bound_address() {
                         Ok(address) => address,
                         Err(error) => return Poll::Ready(Err(error.into())),
                     };
                     for index in 0..received {
                         let raw = raw_metadata[index];
-                        let local = SocketAddr::new(raw.dst_ip.unwrap_or(bound.ip()), bound.port())
-                            .into_canonical_ip_addr()
-                            .into();
+                        let local = receive_local_address(bound, raw.dst_ip);
                         let segment_size = receive_segment_size(raw);
                         metadata[index] = DatagramMetadata {
                             len: raw.len,
@@ -164,14 +201,18 @@ impl Socket for UdpPacketSocket {
     }
 }
 
-type WritableFuture = Pin<Box<dyn Future<Output = io::Result<()>> + Send + 'static>>;
+// Construct every replacement through the same function so its layout always matches
+// the future already stored in the reusable allocation.
+async fn wait_writable(io: Arc<UdpSocket>) -> io::Result<()> {
+    io.writable().await
+}
 
 /// Send handle for a [`UdpPacketSocket`].
 pub struct UdpPacketSender {
     io: Arc<UdpSocket>,
     state: Arc<sys::UdpSocketState>,
     socket_is_ipv6: bool,
-    writable: Option<WritableFuture>,
+    writable: Option<ReusableBoxFuture<'static, io::Result<()>>>,
 }
 
 impl std::fmt::Debug for UdpPacketSender {
@@ -202,18 +243,13 @@ impl DatagramSender for UdpPacketSender {
         };
 
         loop {
-            if self.writable.is_none() {
-                let io = self.io.clone();
-                self.writable = Some(Box::pin(async move { io.writable().await }));
-            }
-            let Some(writable) = self.writable.as_mut() else {
-                return Poll::Ready(Err(io::Error::other(
-                    "failed to construct UDP write-readiness future",
-                )
-                .into()));
-            };
-            let readiness = ready!(writable.as_mut().poll(cx));
-            self.writable = None;
+            let writable = self
+                .writable
+                .get_or_insert_with(|| ReusableBoxFuture::new(wait_writable(self.io.clone())));
+            let readiness = ready!(writable.poll(cx));
+            // Keep pending registrations intact and reuse the allocation only after completion.
+            // Reset errors too: no completed future may be polled a second time.
+            writable.set(wait_writable(self.io.clone()));
             if let Err(error) = readiness {
                 return Poll::Ready(Err(error.into()));
             }
@@ -227,6 +263,13 @@ impl DatagramSender for UdpPacketSender {
             match result {
                 Ok(()) => return Poll::Ready(Ok(())),
                 Err(error) if is_would_block(&error) => {}
+                Err(error)
+                    if datagram.segment_size().is_some()
+                        && self.state.max_gso_segments() == 1
+                        && is_segmentation_rejection(&error) =>
+                {
+                    return Poll::Ready(Err(DatagramError::SegmentationRejected(error)));
+                }
                 Err(error) => return Poll::Ready(Err(error.into())),
             }
         }
@@ -250,10 +293,38 @@ fn sys_destination(destination: SocketAddress, socket_is_ipv6: bool) -> SocketAd
     }
 }
 
+fn receive_local_address(bound: SocketAddr, destination_ip: Option<IpAddr>) -> SocketAddress {
+    SocketAddr::new(destination_ip.unwrap_or(bound.ip()), bound.port())
+        .into_canonical_ip_addr()
+        .into()
+}
+
 fn receive_segment_size(metadata: sys::RecvMeta) -> Option<NonZeroUsize> {
     (metadata.stride < metadata.original_len)
         .then(|| NonZeroUsize::new(metadata.stride))
         .flatten()
+}
+
+// Keep platform error classification in the socket backend. A shared capability decrease
+// alone is insufficient: a different sender may have triggered that decrease concurrently.
+fn is_segmentation_rejection(error: &io::Error) -> bool {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        matches!(error.raw_os_error(), Some(libc::EIO | libc::EINVAL))
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Networking::WinSock::{WSAEINVAL, WSAENOPROTOOPT, WSAEOPNOTSUPP};
+        matches!(
+            error.raw_os_error(),
+            Some(WSAEINVAL | WSAENOPROTOOPT | WSAEOPNOTSUPP)
+        )
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android", windows)))]
+    {
+        let _ = error;
+        false
+    }
 }
 
 fn is_would_block(error: &io::Error) -> bool {
@@ -286,8 +357,12 @@ fn capabilities(state: &sys::UdpSocketState) -> DatagramCapabilities {
 #[cfg(test)]
 mod tests {
     use std::{
+        future::Future,
         io::IoSliceMut,
         net::{IpAddr, Ipv4Addr, SocketAddr},
+        sync::atomic::{AtomicBool, Ordering},
+        task::{Wake, Waker},
+        time::Duration,
     };
 
     use super::*;
@@ -341,6 +416,81 @@ mod tests {
     #[tokio::test]
     async fn ipv6_single_and_batch_loopback() {
         loopback_batch(true).await;
+    }
+
+    #[tokio::test]
+    async fn factory_cache_preserves_bound_and_wildcard_receive_metadata() {
+        for address in ["127.0.0.1:0", "[::1]:0", "0.0.0.0:0", "[::]:0"] {
+            let mut receiver = UdpPacketSocket::bind(address).await.unwrap();
+            let bound = receiver.io.local_addr().unwrap();
+            assert_eq!(receiver.cached_bound_address, Some(bound));
+            assert_ne!(bound.port(), 0);
+            let sender_address = if bound.is_ipv6() {
+                "[::1]:0"
+            } else {
+                "127.0.0.1:0"
+            };
+            let sender_socket = UdpPacketSocket::bind(sender_address).await.unwrap();
+            let destination =
+                SocketAddress::new(sender_socket.local_addr().unwrap().ip_addr, bound.port());
+            tokio::time::timeout(Duration::from_secs(5), async {
+                sender_socket
+                    .create_sender()
+                    .send(SendDatagram::new(destination, b"cached"))
+                    .await
+                    .unwrap();
+                let mut buffer = [0; 8];
+                let metadata = receiver.recv(&mut buffer).await.unwrap();
+                assert_eq!(&buffer[..metadata.len], b"cached");
+                assert_eq!(metadata.local.port, bound.port());
+                if receiver.capabilities().receive_local_ip {
+                    assert_eq!(metadata.local, destination);
+                } else {
+                    // Best-effort ancillary data can still provide an address even when the
+                    // platform does not advertise this capability for every address family.
+                    assert!(
+                        metadata.local == destination
+                            || metadata.local == receiver.local_addr().unwrap()
+                    );
+                }
+            })
+            .await
+            .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn wrapped_socket_alias_updates_receive_address_fallback() {
+        for wrap_tokio in [false, true] {
+            let original = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+            let alias = original.try_clone().unwrap();
+            let socket = if wrap_tokio {
+                original.set_nonblocking(true).unwrap();
+                UdpPacketSocket::from_socket(UdpSocket::from_std(original).unwrap()).unwrap()
+            } else {
+                crate::UdpSocketConfig::default()
+                    .wrap_std(original)
+                    .unwrap()
+            };
+            assert!(socket.cached_bound_address.is_none());
+            assert!(
+                socket
+                    .receive_bound_address()
+                    .unwrap()
+                    .ip()
+                    .is_unspecified()
+            );
+            let peer = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+            alias.connect(peer.local_addr().unwrap()).unwrap();
+            let changed = alias.local_addr().unwrap();
+            assert!(changed.ip().is_loopback());
+            assert_eq!(SocketAddr::from(socket.local_addr().unwrap()), changed);
+
+            // Exercise the same fallback construction used when a receive supplies no dst_ip.
+            // Kernels with destination ancillary data would otherwise hide a stale bound IP.
+            let fallback = receive_local_address(socket.receive_bound_address().unwrap(), None);
+            assert_eq!(SocketAddr::from(fallback), changed);
+        }
     }
 
     #[cfg(windows)]
@@ -456,6 +606,144 @@ mod tests {
             .unwrap();
         let metadata = receiver.recv(&mut buffer).await.unwrap();
         assert_eq!(&buffer[..metadata.len], b"after");
+    }
+
+    #[derive(Default)]
+    struct SendWake {
+        woken: AtomicBool,
+        notification: tokio::sync::Notify,
+    }
+
+    impl Wake for SendWake {
+        fn wake(self: Arc<Self>) {
+            self.wake_by_ref();
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.woken.store(true, Ordering::Relaxed);
+            self.notification.notify_one();
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn pending_senders_wake_independently_after_other_senders_are_dropped() {
+        // Register synchronously, then poll every sender before the reactor can publish readiness.
+        let mut receiver =
+            UdpPacketSocket::from_std(std::net::UdpSocket::bind("127.0.0.1:0").unwrap(), false)
+                .unwrap();
+        let socket =
+            UdpPacketSocket::from_std(std::net::UdpSocket::bind("127.0.0.1:0").unwrap(), false)
+                .unwrap();
+        let destination = receiver.local_addr().unwrap();
+        let mut senders: Vec<_> = (0_u8..32)
+            .map(|payload| {
+                (
+                    payload,
+                    Some(socket.create_sender()),
+                    Arc::new(SendWake::default()),
+                )
+            })
+            .collect();
+
+        for (payload, sender, wake) in &mut senders {
+            let sender = sender.as_mut().unwrap();
+            assert!(sender.writable.is_none());
+            let waker = Waker::from(wake.clone());
+            assert!(
+                sender
+                    .poll_send(
+                        &mut Context::from_waker(&waker),
+                        &SendDatagram::new(destination, &[*payload]),
+                    )
+                    .is_pending()
+            );
+        }
+        for (payload, sender, _) in &mut senders {
+            if *payload % 3 == 0 {
+                *sender = None;
+            }
+        }
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            for (payload, sender, wake) in &mut senders {
+                let Some(sender) = sender else {
+                    continue;
+                };
+                // The notification must come from this handle's registered waker.
+                wake.notification.notified().await;
+                sender
+                    .send(SendDatagram::new(destination, &[*payload]))
+                    .await
+                    .unwrap();
+                let mut buffer = [0; 1];
+                let metadata = receiver.recv(&mut buffer).await.unwrap();
+                assert_eq!(metadata.len, 1);
+                assert_eq!(buffer, [*payload]);
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancelled_pending_send_uses_replacement_payload_and_waker() {
+        let mut receiver =
+            UdpPacketSocket::from_std(std::net::UdpSocket::bind("127.0.0.1:0").unwrap(), false)
+                .unwrap();
+        let socket =
+            UdpPacketSocket::from_std(std::net::UdpSocket::bind("127.0.0.1:0").unwrap(), false)
+                .unwrap();
+        let destination = receiver.local_addr().unwrap();
+        let mut sender = socket.create_sender();
+        let cancelled_wake = Arc::new(SendWake::default());
+        let replacement_wake = Arc::new(SendWake::default());
+        {
+            let waker = Waker::from(cancelled_wake.clone());
+            let mut cancelled =
+                std::pin::pin!(sender.send(SendDatagram::new(destination, b"cancelled")));
+            assert!(
+                cancelled
+                    .as_mut()
+                    .poll(&mut Context::from_waker(&waker))
+                    .is_pending()
+            );
+        }
+
+        // Moving the handle must preserve the pinned registration, and repolling must update it.
+        let mut sender = sender;
+        {
+            let waker = Waker::from(replacement_wake.clone());
+            let mut replacement =
+                std::pin::pin!(sender.send(SendDatagram::new(destination, b"replacement")));
+            assert!(
+                replacement
+                    .as_mut()
+                    .poll(&mut Context::from_waker(&waker))
+                    .is_pending()
+            );
+            tokio::time::timeout(Duration::from_secs(5), async {
+                replacement_wake.notification.notified().await;
+                assert!(!cancelled_wake.woken.load(Ordering::Relaxed));
+                replacement.await.unwrap();
+            })
+            .await
+            .unwrap();
+        }
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            // A subsequent send exercises resetting the completed reusable future too.
+            sender
+                .send(SendDatagram::new(destination, b"following"))
+                .await
+                .unwrap();
+            for expected in [b"replacement".as_slice(), b"following".as_slice()] {
+                let mut buffer = [0; 16];
+                let metadata = receiver.recv(&mut buffer).await.unwrap();
+                assert_eq!(&buffer[..metadata.len], expected);
+            }
+        })
+        .await
+        .unwrap();
     }
 
     async fn roundtrip_ancillary_metadata(ipv6: bool) {

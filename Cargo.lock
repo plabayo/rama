@@ -1743,6 +1743,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "fastbloom"
+version = "0.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ef975e30683b2d965054bb0a836f8973857c4ebf6acf274fe46617cd285060d8"
+dependencies = [
+ "foldhash 0.2.0",
+ "libm",
+ "portable-atomic",
+ "siphasher",
+]
+
+[[package]]
 name = "fastrand"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2794,6 +2806,12 @@ checksum = "ff9840bcc50b71349309900da0ce7279aa336ae71d73250b07998932c7d97c25"
 dependencies = [
  "hashbrown 0.17.1",
 ]
+
+[[package]]
+name = "lru-slab"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
 name = "mac_address"
@@ -4046,6 +4064,7 @@ dependencies = [
  "rama-net-apple-xpc",
  "rama-pac",
  "rama-proxy",
+ "rama-quic",
  "rama-socks5",
  "rama-tcp",
  "rama-tls",
@@ -4172,6 +4191,7 @@ dependencies = [
  "ahash",
  "aws-lc-rs",
  "base64 0.23.1",
+ "hmac",
  "openssl-probe",
  "parking_lot",
  "rama-boring",
@@ -4179,7 +4199,9 @@ dependencies = [
  "rama-inspect",
  "rama-net",
  "rama-utils",
+ "rand 0.10.2",
  "rcgen",
+ "ring",
  "rustls-pki-types",
  "schannel",
  "security-framework",
@@ -4269,11 +4291,13 @@ dependencies = [
 name = "rama-fuzz"
 version = "0.5.0"
 dependencies = [
+ "arbitrary",
  "h2-support",
  "libfuzzer-sys",
  "rama",
  "rama-http-core",
  "rama-js",
+ "rama-quic",
  "serde_json",
  "tokio",
 ]
@@ -4580,7 +4604,6 @@ dependencies = [
  "rama-net",
  "rama-utils",
  "serde",
- "serde_json",
  "tokio",
  "tracing-subscriber",
  "wasmtime",
@@ -4728,6 +4751,33 @@ dependencies = [
  "tokio",
  "unicode-normalization",
  "venndb",
+]
+
+[[package]]
+name = "rama-quic"
+version = "0.5.0"
+dependencies = [
+ "ahash",
+ "arbitrary",
+ "fastbloom",
+ "lru-slab",
+ "parking_lot",
+ "pin-project-lite",
+ "rama-core",
+ "rama-crypto",
+ "rama-net",
+ "rama-tls",
+ "rama-tls-rustls",
+ "rama-udp",
+ "rama-utils",
+ "rand 0.10.2",
+ "rand_pcg",
+ "rustc-hash",
+ "serde",
+ "serde_json",
+ "slab",
+ "tokio",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -5056,6 +5106,15 @@ checksum = "6a8615d50dcf34fa31f7ab52692afec947c4dd0ab803cc87cb3b0b4570ff7463"
 dependencies = [
  "num-traits",
  "rand 0.9.5",
+]
+
+[[package]]
+name = "rand_pcg"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "caa0f4137e1c0a72f4c651489402276c8e8e1cf081f3b0ba156d2cbeef09e86a"
+dependencies = [
+ "rand_core 0.10.1",
 ]
 
 [[package]]

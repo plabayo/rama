@@ -38,24 +38,6 @@ const INITIAL_WR_CAPACITY: usize = kib(8);
 /// been [`UdpSocket::connect`]-ed to a single peer. The peer address is
 /// implicit on every send and recv, so the frame type is just the codec's
 /// `Item` / sink input — no `SocketAddr` tuple.
-///
-/// # Example
-///
-/// ```no_run
-/// use std::net::Ipv4Addr;
-/// use rama_udp::{ConnectedUdpFramed, bind_udp_socket_with_connect};
-/// use tokio_util::codec::BytesCodec;
-///
-/// # async fn _example() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-/// let socket = bind_udp_socket_with_connect(
-///     (Ipv4Addr::LOCALHOST, 51820),
-///     None,
-/// ).await?;
-/// let framed = ConnectedUdpFramed::new(socket, BytesCodec::new());
-/// // `framed` is now Stream<Item = io::Result<BytesMut>> + Sink<Bytes, Error = io::Error>.
-/// # Ok(())
-/// # }
-/// ```
 #[derive(Debug)]
 pub struct ConnectedUdpFramed<C> {
     socket: UdpSocket,

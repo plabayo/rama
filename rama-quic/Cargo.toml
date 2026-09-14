@@ -1,0 +1,73 @@
+[package]
+name = "rama-quic"
+description = "QUIC (RFC 9000) transport for rama"
+version = { workspace = true }
+license = { workspace = true }
+edition = { workspace = true }
+repository = { workspace = true }
+keywords = ["io", "async", "quic", "network", "rama"]
+categories = ["asynchronous", "network-programming", "web-programming"]
+authors = { workspace = true }
+rust-version = { workspace = true }
+
+[package.metadata.cargo-public-api-crates]
+allowed = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+rustc-args = ["--cfg", "tokio_unstable"]
+# native C deps can't cross-compile in the docs.rs builder; linux-only docs
+targets = ["x86_64-unknown-linux-gnu"]
+
+[features]
+default = []
+# Optional TLS 1.3 handshake adapter built on rama-tls-rustls.
+rustls = ["dep:rama-tls-rustls"]
+# Crypto providers (shared through rama-crypto); at least one is needed to
+# derive keys and establish connections. Forwarded to the Rustls adapter when
+# that is enabled too.
+aws-lc = ["rama-crypto/aws-lc", "rama-tls-rustls?/aws-lc"]
+ring = ["rama-crypto/ring", "rama-tls-rustls?/ring"]
+# Deterministic in-memory sockets and engine simulator helpers for tests.
+test-utils = ["rama-udp/test-utils"]
+# Byte-oriented hooks used by the workspace fuzz crate only.
+arbitrary = ["dep:arbitrary"]
+# Optional [dial9] runtime telemetry: driver tasks go through Rama's shared
+# spawn path, so an attached recorder tracks them. No recorder is created here.
+#
+# [dial9]: https://github.com/dial9-rs/dial9
+dial9 = ["rama-core/dial9", "rama-net/dial9", "rama-tls-rustls?/dial9"]
+
+[dependencies]
+ahash = { workspace = true }
+arbitrary = { workspace = true, optional = true }
+fastbloom = { workspace = true }
+lru-slab = { workspace = true }
+parking_lot = { workspace = true }
+pin-project-lite = { workspace = true }
+rama-core = { workspace = true, features = ["std"] }
+rama-crypto = { workspace = true }
+rama-net = { workspace = true, features = ["std"] }
+rama-tls = { workspace = true }
+rama-tls-rustls = { workspace = true, optional = true }
+rama-udp = { workspace = true }
+rama-utils = { workspace = true, features = ["std"] }
+# CSPRNG (`StdRng` seeded from the OS) for connection IDs, tokens and reset
+# keys; rama has no shared cryptographic RNG reexport.
+rand = { workspace = true }
+rand_pcg = { workspace = true }
+rustc-hash = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+slab = { workspace = true }
+tokio = { workspace = true, features = ["macros", "net", "rt", "sync", "time"] }
+
+[dev-dependencies]
+rama-udp = { workspace = true, features = ["test-utils"] }
+rand = { workspace = true }
+tokio = { workspace = true, features = ["macros", "net", "rt", "rt-multi-thread", "sync", "test-util", "time"] }
+tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
+
+[lints]
+workspace = true

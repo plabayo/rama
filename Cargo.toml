@@ -66,6 +66,7 @@ members = [
     "rama-net-apple-xpc",
     "rama-pac",
     "rama-proxy",
+    "rama-quic",
     "rama-socks5",
     "rama-tcp",
     "rama-tls",
@@ -101,6 +102,7 @@ rust-version = "1.96.0"
 
 [workspace.dependencies]
 ahash = "0.8"
+arbitrary = { version = "1", features = ["derive"] }
 arc-swap = "1.9"
 async-compression = "0.4"
 asynk-strim = { version = "0.1" }
@@ -128,6 +130,7 @@ dial9 = { version = "0.5.0", default-features = false, features = ["tokio"] }
 dial9-trace-format = "0.5.0"
 divan = "0.1"
 escargot = "0.5"
+fastbloom = { version = "0.17", default-features = false }
 flate2 = "1.1"
 flume = "0.12"
 fnv = "1.0"
@@ -136,6 +139,7 @@ futures-channel = "0.3"
 futures-core = { version = "0.3", default-features = false }
 futures-util = { version = "0.3", default-features = false }
 hickory-resolver = { version = "0.26.3", default-features = false, features = ["tokio", "system-config", "serde"] }
+hmac = "0.13"
 honggfuzz = "0.5"
 http = "1" # interop-only (rama-http-hyperium / rama-tower); native rama Uri handles CONNECT, so no version pin needed
 http-body = "1" # interop-only (rama-http-hyperium body bridge)
@@ -154,6 +158,7 @@ jni = "0.22"
 libc = "0.2"
 libfuzzer-sys = "0.4"
 loom = "0.7"
+lru-slab = "0.1.2"
 md5 = "0.8"
 memchr = "2.8"
 memmap2 = "0.9"
@@ -213,6 +218,7 @@ rama-net-apple-networkextension = { version = "0.5.0", path = "./rama-net-apple-
 rama-net-apple-xpc = { version = "0.5.0", path = "./rama-net-apple-xpc", default-features = false }
 rama-pac = { version = "0.5.0", path = "./rama-pac", default-features = false }
 rama-proxy = { version = "0.5.0", path = "./rama-proxy", default-features = false }
+rama-quic = { version = "0.5.0", path = "./rama-quic", default-features = false }
 rama-socks5 = { version = "0.5.0", path = "./rama-socks5", default-features = false }
 rama-tcp = { version = "0.5.0", path = "./rama-tcp", default-features = false }
 rama-tls = { version = "0.5.0", path = "./rama-tls", default-features = false }
@@ -228,11 +234,14 @@ rama-unix = { version = "0.5.0", path = "./rama-unix", default-features = false 
 rama-utils = { version = "0.5.0", path = "./rama-utils", default-features = false }
 rama-ws = { version = "0.5.0", path = "./rama-ws", default-features = false }
 rand = "0.10"
+rand_pcg = "0.10"
 ratatui = "0.30"
 rawzip = { version = "0.5" }
 rcgen = { version = "0.14", default-features = false, features = ["pem", "x509-parser"] }
 regex = { version = "1.13", default-features = false }
 regex-automata = { version = "0.4.18", default-features = false, features = ["hybrid", "meta", "perf", "std"] }
+ring = "0.17"
+rustc-hash = "2"
 rustls = { version = "0.23", default-features = false, features = ["logging", "std", "tls12"] }
 rustls-pki-types = "^1"
 rustversion = "1.0"
@@ -415,7 +424,7 @@ std = [
     "rama-net?/std",
     "rama-utils/std",
 ]
-test-utils = ["rama-net?/test-utils", "rama-udp?/test-utils"]
+test-utils = ["rama-net?/test-utils", "rama-udp?/test-utils", "rama-quic?/test-utils"]
 compression = [
     "std",
     "http",
@@ -436,9 +445,9 @@ tls = [
     "dep:base64",
     "dep:serde",
 ]
-aws-lc = ["rama-crypto?/aws-lc", "rama-tls-rustls?/aws-lc"]
-ring = ["rama-crypto?/ring", "rama-tls-rustls?/ring"]
-rustls = ["tls", "dep:rama-tls-rustls"]
+aws-lc = ["rama-crypto?/aws-lc", "rama-tls-rustls?/aws-lc", "rama-quic?/aws-lc"]
+ring = ["rama-crypto?/ring", "rama-tls-rustls?/ring", "rama-quic?/ring"]
+rustls = ["tls", "dep:rama-tls-rustls", "rama-quic?/rustls"]
 boring = ["tls", "dep:rama-tls-boring"]
 cli = [
     "std",
@@ -471,6 +480,9 @@ dns = ["std", "net", "dep:rama-dns", "rama-socks5?/dns"]
 dns-hickory = ["dns", "rama-dns/hickory"]
 tcp = ["std", "net", "dep:rama-tcp"]
 udp = ["std", "net", "dep:rama-udp"]
+# QUIC v1 transport (Rustls, TLS 1.3) on top of `udp`; pick a crypto
+# provider with `ring` and/or `aws-lc`.
+quic = ["std", "udp", "dep:rama-quic"]
 ws = ["std", "dep:rama-ws", "http"]
 js = ["std", "dep:rama-js"]
 js-disk-cache = ["js", "rama-js/disk-cache", "rama-pac?/js-disk-cache"]
@@ -559,6 +571,7 @@ dial9 = [
     "rama-tls-boring?/dial9",
     "rama-socks5?/dial9",
     "rama-ws?/dial9",
+    "rama-quic?/dial9",
 ]
 
 [dependencies]
@@ -588,6 +601,7 @@ rama-net-apple-networkextension = { workspace = true, optional = true }
 rama-net-apple-xpc = { workspace = true, optional = true }
 rama-pac = { workspace = true, optional = true }
 rama-proxy = { workspace = true, optional = true }
+rama-quic = { workspace = true, optional = true }
 rama-socks5 = { workspace = true, optional = true }
 rama-tcp = { workspace = true, optional = true }
 rama-tls = { workspace = true, optional = true }
@@ -665,6 +679,26 @@ harness = false
 [[bench]]
 name = "sse_parser"
 required-features = ["http-full"]
+harness = false
+
+[[bench]]
+name = "udp_packet"
+required-features = ["udp"]
+harness = false
+
+[[bench]]
+name = "quic_layers"
+required-features = ["quic", "test-utils"]
+harness = false
+
+[[bench]]
+name = "quic_transport"
+required-features = ["quic", "rustls", "aws-lc"]
+harness = false
+
+[[bench]]
+name = "quic_qlog"
+required-features = ["quic"]
 harness = false
 
 [[bench]]

@@ -32,6 +32,16 @@ path = "src/acme_tls_challenge_using_rustls.rs"
 required-features = ["http-full", "rustls", "acme"]
 
 [[bin]]
+name = "quic_terminating_relay"
+path = "src/quic_terminating_relay.rs"
+required-features = ["quic", "rustls", "ring"]
+
+[[bin]]
+name = "quic_client_server"
+path = "src/quic_client_server.rs"
+required-features = ["quic", "rustls", "ring"]
+
+[[bin]]
 name = "autobahn_client"
 path = "src/autobahn_client.rs"
 required-features = ["http-full"]
@@ -513,6 +523,7 @@ default = []
 cli = ["rama/cli"]
 tcp = ["rama/tcp"]
 udp = ["rama/udp"]
+quic = ["rama/quic"]
 dns = ["rama/dns"]
 unix = ["rama/unix"]
 http-full = ["rama/http-full", "dns", "compression"]

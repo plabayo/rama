@@ -54,8 +54,13 @@ deny:
     @cargo install cargo-deny
     cargo deny --workspace --all-features check
 
+# Fuzz-only code is checked separately with `check-fuzz`.
 check:
     cargo check --workspace --all-targets --all-features
+
+# type check for the fuzz targets, without nightly or a sanitizer
+check-fuzz:
+    RUSTFLAGS="--cfg fuzzing" cargo check -p rama-fuzz --all-targets
 
 check-crate CRATE:
     cargo check -p {{CRATE}} --all-targets --all-features
@@ -209,6 +214,12 @@ hack:
 test *ARGS:
     @command -v cargo-nextest >/dev/null || cargo install cargo-nextest --locked
     cargo nextest run --all-features --workspace {{ARGS}}
+    bash scripts/test-crypto.sh all {{ARGS}}
+
+# Run crypto and TLS tests with each backend isolated (or choose rustcrypto/ring/aws-lc/boring).
+test-crypto BACKEND="all" *ARGS:
+    @command -v cargo-nextest >/dev/null || cargo install cargo-nextest --locked
+    bash scripts/test-crypto.sh {{BACKEND}} {{ARGS}}
 
 test-no-default-features *ARGS:
     @command -v cargo-nextest >/dev/null || cargo install cargo-nextest --locked
@@ -260,7 +271,7 @@ test-loom:
     @command -v cargo-nextest >/dev/null || cargo install cargo-nextest --locked
     RUSTFLAGS="--cfg loom -Dwarnings" cargo nextest run --all-features -p rama-utils
 
-qq: sort-check fmt-check check check-nostd clippy doc extra-checks
+qq: sort-check fmt-check check check-fuzz check-nostd clippy doc extra-checks
 
 qa: qq docsrs-metadata-check test test-no-default-features test-doc deny
 
@@ -276,6 +287,7 @@ qa-dial9:
     cargo check -p rama-core -p rama-http -p rama-ws -p rama-net -p rama-net-apple-networkextension -p rama-dns -p rama-tls-rustls -p rama-tls-boring -p rama-socks5 -p rama --features dial9 --all-targets
     cargo clippy -p rama-core -p rama-http -p rama-ws -p rama-net -p rama-net-apple-networkextension -p rama-dns -p rama-tls-rustls -p rama-tls-boring -p rama-socks5 -p rama --features dial9 --all-targets
     cargo nextest run -p rama-core -p rama-http -p rama-ws -p rama-net -p rama-net-apple-networkextension -p rama-dns -p rama-socks5 --features dial9
+    just rama-quic/qa-dial9
 
 # `qa-dial9` under `--cfg tokio_unstable`, where dial9 gets its full task coverage.
 qa-dial9-tokio-unstable:
@@ -519,6 +531,7 @@ update-deps:
     @cargo install cargo-edit --locked
     cargo upgrade --incompatible && cargo update && cargo generate-lockfile
     just ./ffi/apple/examples/transparent_proxy/update-deps
+    just rama-quic/update-deps
 
 oss-endpoint-healthcheck:
     bash rama-fp/infra/scripts/remote-healthcheck.sh
