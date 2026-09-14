@@ -43,33 +43,36 @@ fn params(side: Side) -> TransportParameters {
     }
 }
 
-fn transfer(from: &mut dyn Session, to: &mut dyn Session) -> bool {
+fn transfer(from: &mut dyn Session, to: &mut dyn Session) -> Result<bool, crate::TransportError> {
     let mut progress = false;
-    while let Some(event) = from.poll_handshake().unwrap() {
+    while let Some(event) = from.poll_handshake()? {
         progress = true;
         if let HandshakeEvent::Data(level, bytes) = event {
             for fragment in bytes.chunks(17) {
-                to.read_handshake(level, fragment).unwrap();
+                to.read_handshake(level, fragment)?;
             }
         }
     }
-    progress
+    Ok(progress)
 }
 
-fn handshake(client: &mut dyn Session, server: &mut dyn Session) {
+fn handshake(
+    client: &mut dyn Session,
+    server: &mut dyn Session,
+) -> Result<(), crate::TransportError> {
     for _ in 0..32 {
-        let progress = transfer(client, server) | transfer(server, client);
+        let progress = transfer(client, server)? | transfer(server, client)?;
         if !progress {
             assert!(!client.is_handshaking());
             assert!(!server.is_handshaking());
-            return;
+            return Ok(());
         }
     }
     panic!("TLS handshake did not settle");
 }
 
 fn check_session(client: &mut dyn Session, server: &mut dyn Session, resumed: bool) {
-    handshake(client, server);
+    handshake(client, server).unwrap();
     for session in [&*client, &*server] {
         assert_eq!(
             session.negotiated_alpn(),
@@ -211,6 +214,89 @@ fn boring_requires_explicit_alpn() {
             (Err(TlsConfigError::AlpnRequired), false)
                 | (Err(TlsConfigError::UnsupportedOutOfBandAgreement), true)
         ));
+    }
+}
+
+#[test]
+fn client_authentication_is_verified_and_retained_on_resumption() {
+    use rama_crypto::{
+        dep::rcgen,
+        pki_types::{CertificateDer, PrivatePkcs8KeyDer},
+    };
+    use rama_tls::{
+        TlsBackend,
+        client::{ClientAuth, ClientAuthData},
+        server::ClientVerifyMode,
+    };
+
+    let identity = |name: &str| {
+        let key = rcgen::KeyPair::generate().unwrap();
+        let mut params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+        params
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, name);
+        params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ClientAuth];
+        let cert = params.self_signed(&key).unwrap();
+        ClientAuthData {
+            private_key: PrivatePkcs8KeyDer::from(key.serialize_der()).into(),
+            cert_chain: vec![CertificateDer::from(cert.der().to_vec())],
+        }
+    };
+    let trusted = identity("trusted client");
+    let stranger = identity("untrusted client");
+    for (client_backend, server_backend) in [
+        (TlsBackend::Boring, TlsBackend::Boring),
+        #[cfg(all(feature = "rustls", any(feature = "ring", feature = "aws-lc")))]
+        (TlsBackend::Rustls, TlsBackend::Boring),
+        #[cfg(all(feature = "rustls", any(feature = "ring", feature = "aws-lc")))]
+        (TlsBackend::Boring, TlsBackend::Rustls),
+    ] {
+        let (base_client, server) = configs();
+        let server =
+            server.with_client_verify(ClientVerifyMode::ClientAuth(trusted.cert_chain.clone()));
+        let server = crate::ServerConfig::try_from_rama_tls(
+            &server,
+            TlsOptions::default().with_backend(server_backend),
+        )
+        .unwrap()
+        .crypto;
+        for (identity, accepted) in [
+            (Some(trusted.clone()), true),
+            (Some(stranger.clone()), false),
+            (None, false),
+        ] {
+            let mut client = base_client.clone();
+            if let Some(identity) = identity {
+                client = client.with_client_auth(ClientAuth::Single(identity));
+            }
+            let client = crate::ClientConfig::try_from_rama_tls(
+                &client,
+                TlsOptions::default().with_backend(client_backend),
+            )
+            .unwrap()
+            .crypto;
+            for resumed in [false, true] {
+                let mut c = client
+                    .clone()
+                    .start_session(1, "localhost", &params(Side::Client))
+                    .unwrap();
+                let mut s = server
+                    .clone()
+                    .start_session(1, &params(Side::Server))
+                    .unwrap();
+                if accepted {
+                    check_session(&mut *c, &mut *s, resumed);
+                    assert_eq!(s.peer_certificates().unwrap(), trusted.cert_chain);
+                } else {
+                    let error = handshake(&mut *c, &mut *s).unwrap_err();
+                    assert!(
+                        matches!(error.code().tls_alert(), Some(48 | 116)),
+                        "unexpected client-auth failure: {error:?}"
+                    );
+                    break;
+                }
+            }
+        }
     }
 }
 
