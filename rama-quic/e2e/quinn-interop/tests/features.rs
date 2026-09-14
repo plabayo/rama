@@ -166,10 +166,14 @@ async fn a_key_update_does_not_disturb_the_traffic_around_it() {
         .expect("the peer reported it");
 
     let updates = conn.stats().key_updates;
-    assert!(
-        conn.force_key_update(),
-        "an established connection with no update in flight starts one"
-    );
+    // Peer delivery can precede the client's handshake confirmation. Wait for the
+    // public key-update gate, as the shared key scenarios do.
+    interop_common::keys::ask_when_ready(
+        "the client can update its keys",
+        interop_common::support::Deadline::of(LIMIT),
+        &conn,
+    )
+    .await;
     assert_eq!(
         conn.stats().key_updates,
         updates + 1,

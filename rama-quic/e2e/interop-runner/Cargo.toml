@@ -16,9 +16,13 @@ path = "src/bin/client.rs"
 name = "rama-quic-interop-server"
 path = "src/bin/server.rs"
 
+[features]
+rustls-ring = ["rama/rustls", "rama/ring"]
+rustls-aws-lc = ["rama/rustls", "rama/aws-lc"]
+
 [dependencies]
 clap = { version = "4.6", features = ["derive", "env"] }
-rama = { path = "../../..", default-features = false, features = ["std", "quic", "rustls", "ring"] }
+rama = { path = "../../..", default-features = false, features = ["std", "quic"] }
 tokio = { version = "1", features = ["full"] }
 
 [dev-dependencies]

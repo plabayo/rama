@@ -427,8 +427,8 @@ jobs:
   # The QUIC interoperability peers are separate cargo projects with their own lockfiles, so
   # each upstream implementation resolves its own dependencies and none of them reach the
   # workspace. They are built and run here rather than in the workspace jobs for that reason.
-  test-quic-interop-peers:
-    name: test-quic-interop-peers-${{ matrix.toolchain }}-${{ matrix.os }}
+  test-quic-interop-qa:
+    name: test-quic-interop-qa-${{ matrix.backend }}-${{ matrix.toolchain }}-${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     needs:
@@ -437,27 +437,32 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        backend:
+          - rustls-ring
+          - rustls-aws-lc
         toolchain:
           - stable
           - "1.96.0"
         os:
           - ubuntu-latest
           - macos-15
+          - windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: ${{ matrix.toolchain }}
           components: clippy, rustfmt
-      # quiche vendors and builds BoringSSL, which needs cmake and a C++ toolchain. Both
-      # runner images carry one; installing it explicitly on Linux keeps a change in the
-      # image from turning into a mysterious build failure.
+      - uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
+        if: runner.os == 'Windows'
+      # quiche builds BoringSSL with CMake and the runner's C++ toolchain.
       - name: Install the C toolchain quiche builds BoringSSL with
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends cmake
       - name: Show the C toolchain quiche will use
+        if: runner.os != 'Windows'
         run: |
           cmake --version
           cc --version
@@ -468,26 +473,30 @@ jobs:
           tool: just
       - uses: ./.github/actions/rust-cache
         with:
-          key: ${{ matrix.os }}-${{ matrix.toolchain }}-quic-interop-peers
+          key: ${{ matrix.os }}-${{ matrix.toolchain }}-quic-interop-peers-${{ matrix.backend }}
           env-vars: "RUST_TOOLCHAIN=${{ matrix.toolchain }}"
           workspaces: |
             rama-quic/e2e/interop-common
             rama-quic/e2e/quinn-interop
             rama-quic/e2e/quiche-interop
             rama-quic/e2e/aioquic-interop
+            rama-quic/e2e/interop-runner
       - name: Build the aioquic peer's locked environment
         working-directory: rama-quic/e2e/aioquic-interop
         run: uv sync --frozen
-      - name: Formatting and lints for the shared scenarios and every peer
-        run: just rama-quic/qa-interop-lint
       - name: Shared scenario library
-        run: just rama-quic/test-interop-common
+        run: just rama-quic/qa-interop-common ${{ matrix.backend }}
       - name: Quinn interoperability
-        run: just rama-quic/test-interop-quinn
+        run: just rama-quic/qa-interop-quinn ${{ matrix.backend }}
       - name: quiche interoperability
-        run: just rama-quic/test-interop-quiche
+        run: just rama-quic/qa-interop-quiche ${{ matrix.backend }}
       - name: aioquic interoperability
-        run: just rama-quic/test-interop-aioquic
+        run: just rama-quic/qa-interop-aioquic ${{ matrix.backend }}
+
+      - name: Runner endpoint and result gates
+        env:
+          PYTHON: ${{ github.workspace }}/rama-quic/e2e/aioquic-interop/.venv/${{ runner.os == 'Windows' && 'Scripts/python.exe' || 'bin/python' }}
+        run: just rama-quic/qa-interop-runner ${{ matrix.backend }}
 
   test-quic-interop-runner:
     runs-on: ubuntu-24.04
@@ -497,10 +506,6 @@ jobs:
       - precheck-docs
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
-        with:
-          toolchain: "1.96.0"
-          components: clippy, rustfmt
       - name: Install packet analysis tools
         run: |
           sudo add-apt-repository --yes ppa:wireshark-dev/stable
@@ -514,18 +519,11 @@ jobs:
         with:
           version: v29.3.0
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
-      - uses: ./.github/actions/rust-cache
+      - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
         with:
-          key: linux-quic-interop-runner
-          workspaces: rama-quic/e2e/interop-runner
-      - name: Check endpoint code and result gate
-        run: |
-          cargo fmt --manifest-path rama-quic/e2e/interop-runner/Cargo.toml -- --check
-          cargo clippy --locked --manifest-path rama-quic/e2e/interop-runner/Cargo.toml --all-targets -- -D warnings
-          cargo test --locked --manifest-path rama-quic/e2e/interop-runner/Cargo.toml
-          python3 -m unittest discover -s rama-quic/e2e/interop-runner -p 'test_*.py'
+          tool: just
       - name: Test both roles against quic-go and ngtcp2
-        run: bash rama-quic/e2e/interop-runner/run.sh --artifacts "$RUNNER_TEMP/quic-interop"
+        run: just rama-quic/test-interop-runner --artifacts "$RUNNER_TEMP/quic-interop"
       - name: Retain interop reports and diagnostics
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -1093,7 +1091,7 @@ jobs:
       - test-rust-base
       - check-rama-icap-feature-boundaries
       - test-icap-oracle
-      - test-quic-interop-peers
+      - test-quic-interop-qa
       - test-quic-interop-runner
       - test-ffi-apple-example-transparent-proxy-e2e
       - test-rama-apple-ne-swift-ffi

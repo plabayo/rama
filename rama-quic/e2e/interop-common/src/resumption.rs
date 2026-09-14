@@ -24,6 +24,7 @@ use rama::{
     tls::{
         client::TlsClientConfig,
         rustls::{
+            client::RustlsClientConfigExt,
             dep::rustls::server::{ServerSessionMemoryCache, StoresServerSessions},
             server::RustlsServerConfigExt,
         },
@@ -284,7 +285,8 @@ pub fn rama_client_config_for(
     let tls = TlsClientConfig::new()
         .with_alpn(smallvec![alpn()])
         .try_with_server_trust_anchors([anchor])
-        .expect("the trust anchor is accepted");
+        .expect("the trust anchor is accepted")
+        .with_modify_rustls_config(crate::backend::verify_client);
     ClientConfig::try_from_rama_tls(
         &tls,
         TlsOptions::default().with_early_data(scenario.offers_early_data),
@@ -553,7 +555,7 @@ pub fn rama_resuming_server_config(
         .with_server_auth(identity.clone())
         .with_modify_rustls_config(move |mut native| {
             native.session_storage = sessions.clone();
-            Ok(native)
+            crate::backend::verify_server(native)
         });
     ServerConfig::try_from_rama_tls(&tls, TlsOptions::default().with_early_data(early_data))
         .expect("the server config is built")

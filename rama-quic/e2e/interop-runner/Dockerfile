@@ -7,7 +7,7 @@ ARG TARGETARCH
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,id=quic-interop-target-${TARGETARCH},target=/build \
-    CARGO_TARGET_DIR=/build cargo build --locked --release \
+    CARGO_TARGET_DIR=/build cargo build --locked --release --features rustls-ring \
       --manifest-path rama-quic/e2e/interop-runner/Cargo.toml --bins && \
     mkdir /out && \
     cp /build/release/rama-quic-interop-client /build/release/rama-quic-interop-server /out/

@@ -1,5 +1,10 @@
 //! HTTP/0.9 file transfer endpoints for the QUIC interop runner, using `hq-interop`.
 
+#[cfg(all(feature = "rustls-ring", feature = "rustls-aws-lc"))]
+compile_error!("select exactly one Rama TLS backend: rustls-ring or rustls-aws-lc");
+#[cfg(not(any(feature = "rustls-ring", feature = "rustls-aws-lc")))]
+compile_error!("select a Rama TLS backend: rustls-ring or rustls-aws-lc");
+
 pub mod client;
 pub mod server;
 

@@ -1,21 +1,15 @@
-//! Unix subprocess checks of file transfers, container shutdown signals, and TLS diagnostics.
-
-#![cfg(unix)]
+//! Subprocess checks of file transfers and TLS diagnostics, plus Unix shutdown signals.
 
 use rama::{
     crypto::dep::rcgen,
     utils::{fs::TempDir, octets},
 };
-use std::{
-    collections::BTreeSet,
-    fs,
-    path::Path,
-    process::{ExitStatus, Stdio},
-    time::Duration,
-};
+use std::{collections::BTreeSet, fs, path::Path, process::Stdio, time::Duration};
+#[cfg(unix)]
+use tokio::process::Child;
 use tokio::{
     io::{AsyncBufReadExt as _, AsyncReadExt as _, BufReader},
-    process::{Child, Command},
+    process::Command,
 };
 
 #[tokio::test]
@@ -96,8 +90,20 @@ async fn runner_file_transfer_and_retry() {
         .await
         .unwrap()
         .unwrap();
-        let status = signal_and_wait(&mut server, "TERM").await;
-        assert_eq!(status.code(), Some(0), "server did not exit gracefully");
+        #[cfg(unix)]
+        {
+            let status = signal_and_wait(&mut server, "TERM").await;
+            assert_eq!(status.code(), Some(0), "server did not exit gracefully");
+        }
+        #[cfg(not(unix))]
+        {
+            // Transfers and the client's normal shutdown have finished. Terminate and reap
+            // the long-running server; POSIX signal/drain assertions are covered on Unix.
+            tokio::time::timeout(Duration::from_secs(15), server.kill())
+                .await
+                .expect("server termination completes within its deadline")
+                .expect("terminate and reap server");
+        }
         let server_logs = server_logs.await.unwrap();
         assert!(
             output.status.success(),
@@ -119,11 +125,13 @@ async fn runner_file_transfer_and_retry() {
             );
         }
         assert_complete_qlog(&root.join("qlog/rama-client.sqlog"));
+        #[cfg(unix)]
         assert_complete_qlog(&root.join("server-qlog/rama-server.sqlog"));
     }
 }
 
-async fn signal_and_wait(process: &mut Child, signal: &str) -> ExitStatus {
+#[cfg(unix)]
+async fn signal_and_wait(process: &mut Child, signal: &str) -> std::process::ExitStatus {
     let id = process.id().expect("child is running");
     let status = Command::new("kill")
         .arg(format!("-{signal}"))
@@ -207,6 +215,7 @@ fn assert_complete_qlog(path: &Path) {
     );
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn interrupted_client_drains_qlog_and_reports_failure() {
     for signal in ["TERM", "INT"] {

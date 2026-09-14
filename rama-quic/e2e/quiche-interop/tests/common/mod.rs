@@ -27,6 +27,7 @@ use rama::{
     quic::{ClientConfig, Connection, Endpoint, ServerConfig, tls::TlsOptions},
     tls::{
         client::TlsClientConfig,
+        rustls::{client::RustlsClientConfigExt as _, server::RustlsServerConfigExt as _},
         server::{ServerAuthData, TlsServerConfig},
     },
     utils::{collections::smallvec::smallvec, fs::TempDir},
@@ -153,7 +154,8 @@ impl Identity {
 pub fn rama_server_config(identity: &Identity) -> ServerConfig {
     let tls = TlsServerConfig::new()
         .with_alpn(smallvec![shared_alpn()])
-        .with_server_auth(identity.auth.clone());
+        .with_server_auth(identity.auth.clone())
+        .with_modify_rustls_config(interop_common::backend::verify_server);
     ServerConfig::try_from_rama_tls(&tls, TlsOptions::default())
         .expect("the server config is built")
 }
@@ -165,7 +167,8 @@ pub fn rama_client_config_with_early_data(identity: &Identity) -> ClientConfig {
     let tls = TlsClientConfig::new()
         .with_alpn(smallvec![shared_alpn()])
         .try_with_server_trust_anchors([anchor])
-        .expect("the trust anchor is accepted");
+        .expect("the trust anchor is accepted")
+        .with_modify_rustls_config(interop_common::backend::verify_client);
     ClientConfig::try_from_rama_tls(&tls, TlsOptions::default().with_early_data(true))
         .expect("the client config is built")
 }
@@ -175,7 +178,8 @@ pub fn rama_client_config(identity: &Identity) -> ClientConfig {
     let tls = TlsClientConfig::new()
         .with_alpn(smallvec![shared_alpn()])
         .try_with_server_trust_anchors([anchor])
-        .expect("the trust anchor is accepted");
+        .expect("the trust anchor is accepted")
+        .with_modify_rustls_config(interop_common::backend::verify_client);
     ClientConfig::try_from_rama_tls(&tls, TlsOptions::default())
         .expect("the client config is built")
 }

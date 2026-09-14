@@ -8,11 +8,15 @@ version = "0.0.0"
 edition = "2024"
 publish = false
 
+[features]
+rustls-ring = ["rama/rustls", "rama/ring", "interop-common/rustls-ring"]
+rustls-aws-lc = ["rama/rustls", "rama/aws-lc", "interop-common/rustls-aws-lc"]
+
 [dependencies]
 
 [dev-dependencies]
-rama = { path = "../../..", features = ["quic", "rustls", "ring", "udp"] }
-interop-common = { package = "rama-quic-interop-common", path = "../interop-common" }
+rama = { path = "../../..", default-features = false, features = ["std", "quic", "udp"] }
+interop-common = { package = "rama-quic-interop-common", path = "../interop-common", default-features = false }
 # Default features vendor and build BoringSSL, so quiche's TLS provider is its own. `qlog` is
 # quiche's own record of what it did with each packet, which the close cases read.
 quiche = { version = "0.29", features = ["qlog"] }

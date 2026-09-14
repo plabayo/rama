@@ -41,13 +41,13 @@ Cold, on a new checkout:
 
 ```
 uv sync --frozen
-cargo test --locked
+cargo test --locked --features rustls-ring
 ```
 
 Warm, once `.venv` exists:
 
 ```
-cargo test --locked
+cargo test --locked --features rustls-ring
 ```
 
 The test harness runs `uv sync --frozen` itself, once per test binary and under a five-minute
@@ -57,8 +57,8 @@ requires them to be the pinned ones, so an environment left from an older lockfi
 what it actually is. Nothing is skipped when a prerequisite is absent: a missing `uv` fails the
 run with the command to fix it.
 
-CI runs exactly these through `just rama-quic/test-interop-aioquic`, in the
-`test-quic-interop-peers` job. The project is not part of the workspace, so `cargo test` at the
+CI runs exactly these through `just rama-quic/qa-interop-aioquic rustls-ring`, in the
+`test-quic-interop-qa` job. The project is not part of the workspace, so `cargo test` at the
 repository root does not reach it.
 
 The controlled-child tests around the setup runner use `kill -0` and are compiled on Unix

@@ -5,6 +5,12 @@
 //! asserts lives here, so every peer is held to the same expectations; what the peer read comes
 //! back through its adapter.
 
+#[cfg(all(feature = "rustls-ring", feature = "rustls-aws-lc"))]
+compile_error!("select exactly one Rama TLS backend: rustls-ring or rustls-aws-lc");
+#[cfg(not(any(feature = "rustls-ring", feature = "rustls-aws-lc")))]
+compile_error!("select a Rama TLS backend: rustls-ring or rustls-aws-lc");
+
+pub mod backend;
 pub mod backpressure;
 pub mod close;
 pub mod datagram;

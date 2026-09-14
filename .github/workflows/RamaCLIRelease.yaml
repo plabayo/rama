@@ -456,7 +456,7 @@ jobs:
             target/${{ matrix.target }}/release/*.sha256 \
             --clobber
 
-  release-rama-cli-docker:
+  release-rama-docker:
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_docker }}
     runs-on: ubuntu-latest
     steps:

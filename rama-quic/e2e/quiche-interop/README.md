@@ -17,10 +17,10 @@ stacks share is the wire.
 ## Running
 
 ```
-cargo test --locked
+cargo test --locked --features rustls-ring
 ```
 
-CI runs these through `just rama-quic/test-interop-quiche`, in the `test-quic-interop-peers` job. The
+CI runs these through `just rama-quic/qa-interop-quiche rustls-ring`, in the `test-quic-interop-qa` job. The
 project is not part of the workspace, so `cargo test` at the repository root does not reach it.
 
 ## What is covered
