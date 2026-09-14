@@ -99,7 +99,7 @@ impl Shared {
     fn drain(&self) {
         let _previous = self
             .state
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |state| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |state| {
                 (state < RecorderState::Draining as u8).then_some(RecorderState::Draining as u8)
             });
         self.stop.notify_one();
@@ -354,7 +354,7 @@ impl QlogRecorder {
         }
         if shared
             .events
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                 (count < shared.limits.max_queued_events).then(|| count + 1)
             })
             .is_err()
@@ -365,7 +365,7 @@ impl QlogRecorder {
         let bytes = shared.limits.max_event_bytes;
         if shared
             .bytes
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |used| {
                 used.checked_add(bytes)
                     .filter(|total| *total <= shared.limits.max_queued_bytes)
             })
