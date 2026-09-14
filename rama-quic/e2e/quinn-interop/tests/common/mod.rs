@@ -375,6 +375,40 @@ impl Deaf {
             waker.wake();
         }
     }
+
+    /// Attempt a resume without waiting for an in-flight read's critical section.
+    pub fn try_read_again(&self) -> bool {
+        let waiting = {
+            let Some(mut state) = self.state.try_lock() else {
+                return false;
+            };
+            state.deaf = false;
+            state.waiting.take()
+        };
+        if let Some(waker) = waiting {
+            waker.wake();
+        }
+        true
+    }
+
+    /// Test seam immediately after observing a pause, before registering the reader.
+    pub fn poll_recv_at_registration(
+        &self,
+        cx: &mut Context,
+        bufs: &mut [IoSliceMut<'_>],
+        meta: &mut [RecvMeta],
+        before_register: impl FnOnce(),
+    ) -> Poll<io::Result<usize>> {
+        {
+            let mut state = self.state.lock();
+            if state.deaf {
+                before_register();
+                state.waiting = Some(cx.waker().clone());
+                return Poll::Pending;
+            }
+        }
+        self.inner.poll_recv(cx, bufs, meta)
+    }
 }
 
 impl AsyncUdpSocket for Deaf {
@@ -392,15 +426,7 @@ impl AsyncUdpSocket for Deaf {
         bufs: &mut [IoSliceMut<'_>],
         meta: &mut [RecvMeta],
     ) -> Poll<io::Result<usize>> {
-        {
-            // Held across both, and released before the socket below is touched.
-            let mut state = self.state.lock();
-            if state.deaf {
-                state.waiting = Some(cx.waker().clone());
-                return Poll::Pending;
-            }
-        }
-        self.inner.poll_recv(cx, bufs, meta)
+        self.poll_recv_at_registration(cx, bufs, meta, || {})
     }
 
     fn local_addr(&self) -> io::Result<SocketAddr> {
