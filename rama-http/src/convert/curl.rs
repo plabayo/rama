@@ -157,6 +157,18 @@ pub enum CurlScriptCompatibility {
     PowerShell,
 }
 
+impl CurlScriptCompatibility {
+    /// The shell target of the platform this binary runs on.
+    #[must_use]
+    pub const fn native() -> Self {
+        if cfg!(windows) {
+            Self::PowerShell
+        } else {
+            Self::Unix
+        }
+    }
+}
+
 /// How a request payload is referenced by an exported curl command string.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[non_exhaustive]

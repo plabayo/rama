@@ -45,6 +45,7 @@ rama = { version = "0.5.0", path = "..", features = [
     "js-disk-cache",
     "pac",
     "proxy-full",
+    "quic",
     "opentelemetry",
     "mmap",
 ] }
@@ -52,7 +53,7 @@ ratatui = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 terminal-prompt = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal"] }
 tokio-postgres = { workspace = true, features = ["with-serde_json-1", "with-jiff-0_2"] }
 tui-logger = { workspace = true }
 

@@ -4586,6 +4586,7 @@ dependencies = [
 name = "rama-inspect"
 version = "0.5.0"
 dependencies = [
+ "jiff",
  "parking_lot",
  "rama-core",
  "rama-utils",
@@ -4761,6 +4762,7 @@ dependencies = [
  "ahash",
  "arbitrary",
  "fastbloom",
+ "jiff",
  "lru-slab",
  "parking_lot",
  "pin-project-lite",

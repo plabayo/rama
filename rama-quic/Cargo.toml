@@ -43,6 +43,7 @@ dial9 = ["rama-core/dial9", "rama-net/dial9", "rama-tls-rustls?/dial9"]
 ahash = { workspace = true }
 arbitrary = { workspace = true, optional = true }
 fastbloom = { workspace = true }
+jiff = { workspace = true }
 lru-slab = { workspace = true }
 parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }

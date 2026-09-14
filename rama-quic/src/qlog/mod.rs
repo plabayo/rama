@@ -33,7 +33,9 @@
 mod config;
 pub mod event;
 mod output;
+pub mod reader;
 mod recorder;
+pub mod schema;
 mod sink;
 pub use sink::{Filtered, QlogFilter, QlogSink};
 
