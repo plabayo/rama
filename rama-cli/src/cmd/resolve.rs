@@ -36,7 +36,7 @@ use rama::{
 };
 
 pub async fn run(cfg: ResolveCommand) -> Result<(), BoxError> {
-    match cfg.trace.as_deref() {
+    let _tracing = match cfg.trace.as_deref() {
         Some(path) => crate::trace::init_tracing_file(path),
         None => crate::trace::init_tracing_file(
             &home_dir()

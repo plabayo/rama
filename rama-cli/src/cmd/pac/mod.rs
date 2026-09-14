@@ -93,7 +93,8 @@ pub async fn run(command: PacCommand) -> Result<(), BoxError> {
                     .context("parse static javascript cache log filter")
             })
             .transpose()?;
-            crate::trace::init_tracing_with_overrides(default_level, cache_worker_override)?;
+            let _tracing =
+                crate::trace::init_tracing_with_overrides(default_level, cache_worker_override)?;
             eval::run(config, command.verbose).await
         }
         PacSubcommand::Generate(config) => generate::run(config),

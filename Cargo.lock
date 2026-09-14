@@ -4137,6 +4137,7 @@ dependencies = [
  "bb8",
  "bb8-postgres",
  "clap",
+ "dial9",
  "hickory-resolver",
  "itertools 0.15.0",
  "jiff",
