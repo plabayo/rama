@@ -10,12 +10,39 @@ use crate::proto::{
 use rama_core::bytes::BytesMut;
 use rama_tls::{
     client::{TlsClientConfig, TlsServerCertPins},
-    server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
+    server::{
+        CertificateIdentity, GeneratedServerAuthConfig, LeafCertConfig, LeafCertRequest,
+        SelfSignedCaConfig, ServerAuthData, TlsServerConfig,
+    },
 };
 use std::sync::Arc;
 
 fn configs() -> (TlsClientConfig, TlsServerConfig) {
-    let auth = ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).unwrap();
+    configs_for([rama_net::address::Domain::from_static("localhost")])
+}
+
+/// The same pair, with a leaf certificate naming every host the test connects to. Server
+/// identity is verified as usual, so a test that needs several names has to ask for them.
+fn configs_for(
+    hosts: impl IntoIterator<Item = rama_net::address::Domain>,
+) -> (TlsClientConfig, TlsServerConfig) {
+    configs_from(generated_auth(hosts))
+}
+
+/// A CA and a leaf signed by it, naming `hosts`. Kept separate so a test can hold on to the
+/// chain it expects the peer to report.
+fn generated_auth(hosts: impl IntoIterator<Item = rama_net::address::Domain>) -> ServerAuthData {
+    ServerAuthData::new_generated(GeneratedServerAuthConfig::GeneratedCa {
+        ca: SelfSignedCaConfig::default(),
+        leaf: LeafCertRequest {
+            config: LeafCertConfig::default(),
+            identities: hosts.into_iter().map(CertificateIdentity::Dns).collect(),
+        },
+    })
+    .unwrap()
+}
+
+fn configs_from(auth: ServerAuthData) -> (TlsClientConfig, TlsServerConfig) {
     let alpn = || {
         [rama_net::tls::ApplicationProtocol::from(
             b"rama-boring-test".as_slice(),
@@ -90,6 +117,20 @@ fn check_session(client: &mut dyn Session, server: &mut dyn Session, resumed: bo
         .export_keying_material(&mut b, b"rama\0\xff", b"context")
         .unwrap();
     assert_eq!(a, b);
+    // Both sides agreeing proves nothing on its own: an exporter that wrote nothing would
+    // leave both buffers untouched and agree just as well.
+    assert_ne!(
+        a, [0; 32],
+        "the exporter must write the material it derives"
+    );
+    let mut other = [0; 32];
+    client
+        .export_keying_material(&mut other, b"rama\0\xff", b"other context")
+        .unwrap();
+    assert_ne!(
+        a, other,
+        "a different context must derive different material"
+    );
     for number in 1..=3 {
         let client_keys = client.next_1rtt_keys().unwrap().unwrap();
         let server_keys = server.next_1rtt_keys().unwrap().unwrap();
@@ -196,6 +237,253 @@ fn ticket_cache_belongs_to_the_client_configuration() {
         .unwrap();
     assert!(c.early_crypto().is_none());
     assert!(c.transport_parameters().unwrap().is_none());
+}
+
+/// BoringSSL hands a client a peer chain that already starts with the leaf, and a server one
+/// that does not, so the leaf is added separately and any copy of it in the chain is dropped.
+/// The chain reported to the application must therefore be the one the peer actually sent,
+/// with no repeated leaf. Only the server's own chain is checked elsewhere, and a server never
+/// takes the branch that drops the copy.
+#[test]
+fn a_peer_chain_is_reported_without_a_repeated_leaf() {
+    let auth = generated_auth([rama_net::address::Domain::from_static("localhost")]);
+    let expected = auth.cert_chain.clone();
+    assert!(
+        expected.len() > 1,
+        "a single-certificate chain could not show a repeated leaf"
+    );
+    let (client_tls, server_tls) = configs_from(auth);
+    let options = TlsOptions::default();
+    let client = Arc::new(QuicClientConfig::from_rama(&client_tls, options).unwrap());
+    let server = Arc::new(QuicServerConfig::from_rama(&server_tls, options).unwrap());
+    let mut c = client
+        .start_session(1, "localhost", &params(Side::Client))
+        .unwrap();
+    let mut s = server.start_session(1, &params(Side::Server)).unwrap();
+    handshake(&mut *c, &mut *s).unwrap();
+    assert_eq!(c.peer_certificates().unwrap(), expected);
+}
+
+/// A server learns the name and the application protocol from the ClientHello, and reports
+/// them then, so the application can act on them while the handshake is still running. Waiting
+/// for the handshake to finish would be too late to be useful.
+#[test]
+fn a_server_reports_its_handshake_data_before_the_handshake_finishes() {
+    let (client_tls, server_tls) = configs();
+    let options = TlsOptions::default();
+    let client = Arc::new(QuicClientConfig::from_rama(&client_tls, options).unwrap());
+    let server = Arc::new(QuicServerConfig::from_rama(&server_tls, options).unwrap());
+    let mut c = client
+        .start_session(1, "localhost", &params(Side::Client))
+        .unwrap();
+    let mut s = server.start_session(1, &params(Side::Server)).unwrap();
+
+    // The client's first flight only, so the handshake cannot have completed.
+    let mut reported = false;
+    while let Some(event) = c.poll_handshake().unwrap() {
+        if let HandshakeEvent::Data(level, bytes) = event {
+            reported |= s.read_handshake(level, &bytes).unwrap();
+        }
+    }
+    assert!(
+        reported,
+        "the ClientHello alone must produce the server's handshake data"
+    );
+    assert!(
+        s.is_handshaking(),
+        "the handshake must still be running when that data is reported"
+    );
+    assert_eq!(s.negotiated_alpn(), Some(b"rama-boring-test".as_slice()));
+
+    // Reported once only; the rest of the handshake adds nothing new to report.
+    let mut again = false;
+    for _ in 0..32 {
+        let progress = transfer(&mut *s, &mut *c).unwrap();
+        while let Some(event) = c.poll_handshake().unwrap() {
+            if let HandshakeEvent::Data(level, bytes) = event {
+                again |= s.read_handshake(level, &bytes).unwrap();
+            }
+        }
+        if !progress && !c.is_handshaking() && !s.is_handshaking() {
+            break;
+        }
+    }
+    assert!(!again, "handshake data must be reported exactly once");
+}
+
+/// The same contract on a client, which never receives a server name and so rests entirely on
+/// the negotiated protocol. It must report once the server has chosen one, while its own
+/// handshake is still running.
+#[test]
+fn a_client_reports_its_handshake_data_before_the_handshake_finishes() {
+    let (client_tls, server_tls) = configs();
+    let options = TlsOptions::default();
+    let client = Arc::new(QuicClientConfig::from_rama(&client_tls, options).unwrap());
+    let server = Arc::new(QuicServerConfig::from_rama(&server_tls, options).unwrap());
+    let mut c = client
+        .start_session(1, "localhost", &params(Side::Client))
+        .unwrap();
+    let mut s = server.start_session(1, &params(Side::Server)).unwrap();
+
+    let mut reported_while_handshaking = false;
+    let mut reports = 0;
+    for _ in 0..32 {
+        let mut progress = false;
+        while let Some(event) = c.poll_handshake().unwrap() {
+            progress = true;
+            if let HandshakeEvent::Data(level, bytes) = event {
+                for fragment in bytes.chunks(17) {
+                    s.read_handshake(level, fragment).unwrap();
+                }
+            }
+        }
+        while let Some(event) = s.poll_handshake().unwrap() {
+            progress = true;
+            if let HandshakeEvent::Data(level, bytes) = event {
+                // Fragmented, so the protocol arrives before the handshake can complete.
+                for fragment in bytes.chunks(17) {
+                    if c.read_handshake(level, fragment).unwrap() {
+                        reports += 1;
+                        reported_while_handshaking |= c.is_handshaking();
+                    }
+                }
+            }
+        }
+        if !progress {
+            break;
+        }
+    }
+    assert!(!c.is_handshaking() && !s.is_handshaking());
+    assert_eq!(reports, 1, "handshake data must be reported exactly once");
+    assert!(
+        reported_while_handshaking,
+        "the client must report as soon as the protocol is agreed, not once it has finished"
+    );
+}
+
+/// QUIC runs on TLS 1.3 only (RFC 9001 §4.2), so a configuration that rules it out is
+/// refused on both sides. An empty list leaves the choice to the backend, which this pins to
+/// TLS 1.3 itself, and is therefore accepted.
+#[test]
+fn boring_requires_tls13() {
+    use crate::proto::crypto::config::TlsConfigError;
+    use rama_tls::{ProtocolVersion, TlsSupportedVersions};
+
+    let (client, server) = configs();
+    let options = TlsOptions::default();
+    QuicClientConfig::from_rama(&client, options).unwrap();
+    QuicServerConfig::from_rama(&server, options).unwrap();
+
+    client.insert(TlsSupportedVersions(vec![ProtocolVersion::TLSv1_2]));
+    server.insert(TlsSupportedVersions(vec![ProtocolVersion::TLSv1_2]));
+    assert!(matches!(
+        QuicClientConfig::from_rama(&client, options),
+        Err(TlsConfigError::Tls13Required)
+    ));
+    assert!(matches!(
+        QuicServerConfig::from_rama(&server, options),
+        Err(TlsConfigError::Tls13Required)
+    ));
+
+    // Naming TLS 1.3, alone or alongside an older version, is what the check looks for.
+    for versions in [
+        vec![ProtocolVersion::TLSv1_3],
+        vec![ProtocolVersion::TLSv1_2, ProtocolVersion::TLSv1_3],
+        vec![],
+    ] {
+        client.insert(TlsSupportedVersions(versions.clone()));
+        server.insert(TlsSupportedVersions(versions));
+        QuicClientConfig::from_rama(&client, options).unwrap();
+        QuicServerConfig::from_rama(&server, options).unwrap();
+    }
+}
+
+/// RFC 9001 §5.8: a Retry packet carries an integrity tag over the original destination
+/// connection ID and the packet itself. A client that accepted one without checking would let
+/// any off-path observer redirect its handshake.
+#[test]
+fn a_retry_packet_is_accepted_only_with_its_own_integrity_tag() {
+    let (client, _) = configs();
+    let config = Arc::new(QuicClientConfig::from_rama(&client, TlsOptions::default()).unwrap());
+    let session = config
+        .start_session(1, "localhost", &params(Side::Client))
+        .unwrap();
+
+    let cid = ConnectionId::new(&[1, 2, 3, 4, 5, 6, 7, 8]);
+    let header = b"retry-pseudo-header".as_slice();
+    let token = b"opaque-retry-token".as_slice();
+    let mut pseudo = header.to_vec();
+    pseudo.extend_from_slice(token);
+    let mut payload = token.to_vec();
+    payload.extend_from_slice(&super::packet::retry_tag(&cid, &pseudo).unwrap());
+    assert!(session.is_valid_retry(&cid, header, &payload));
+
+    // One flipped bit anywhere in the token or the tag fails authentication.
+    for index in 0..payload.len() {
+        let mut corrupt = payload.clone();
+        corrupt[index] ^= 1;
+        assert!(
+            !session.is_valid_retry(&cid, header, &corrupt),
+            "a Retry corrupted at byte {index} must be refused"
+        );
+    }
+    // So does a tag computed over a different identity or a different header.
+    assert!(!session.is_valid_retry(&ConnectionId::new(&[9; 8]), header, &payload));
+    assert!(!session.is_valid_retry(&cid, b"other-pseudo-header", &payload));
+    // A payload shorter than the tag has nothing to verify.
+    for len in 0..16 {
+        assert!(
+            !session.is_valid_retry(&cid, header, &payload[..len]),
+            "a {len}-byte Retry payload must be refused"
+        );
+    }
+}
+
+/// The client ticket cache is bounded. Once it is full the oldest entry makes room for the
+/// newest, rather than the cache growing for the life of the configuration. Checking only the
+/// most recent host would also pass against a cache that kept a single entry, so this pins a
+/// host behind it as well.
+#[test]
+fn a_full_ticket_cache_evicts_its_oldest_entry() {
+    const HANDSHAKES: usize = 80;
+
+    let host = |index: usize| format!("host{index}.example");
+    let (client_tls, server_tls) = configs_for(
+        (0..HANDSHAKES).map(|index| rama_net::address::Domain::try_from(host(index)).unwrap()),
+    );
+    let options = TlsOptions::default().with_early_data(true);
+    let client = Arc::new(QuicClientConfig::from_rama(&client_tls, options).unwrap());
+    let server = Arc::new(QuicServerConfig::from_rama(&server_tls, options).unwrap());
+
+    // More tickets than the cache holds, so its earliest entries are pushed out. Each
+    // handshake issues at least one ticket, so the exact count per handshake does not matter.
+    for index in 0..HANDSHAKES {
+        let mut c = client
+            .clone()
+            .start_session(1, &host(index), &params(Side::Client))
+            .unwrap();
+        let mut s = server
+            .clone()
+            .start_session(1, &params(Side::Server))
+            .unwrap();
+        handshake(&mut *c, &mut *s).unwrap();
+    }
+
+    let recent = client
+        .clone()
+        .start_session(1, &host(HANDSHAKES - 2), &params(Side::Client))
+        .unwrap();
+    assert!(
+        recent.transport_parameters().unwrap().is_some(),
+        "a recent host must still be cached"
+    );
+    let oldest = client
+        .start_session(1, &host(0), &params(Side::Client))
+        .unwrap();
+    assert!(
+        oldest.transport_parameters().unwrap().is_none(),
+        "the oldest host must have been evicted"
+    );
 }
 
 #[test]

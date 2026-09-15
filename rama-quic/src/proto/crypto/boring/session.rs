@@ -234,6 +234,10 @@ impl TlsSession {
                     }
                     let space = space(level)?;
                     let index = space as usize;
+                    // Only the 1-RTT secrets are kept: they seed every later key phase in
+                    // `next_1rtt_keys`. Both endpoints deriving updates from the same wrong
+                    // secret would still agree, so only a peer that is not this backend can
+                    // tell that the wrong one was kept.
                     if space == SpaceId::Data {
                         if write {
                             self.local_secret = Some(secret);
@@ -382,6 +386,10 @@ impl crypto::Session for TlsSession {
         } else {
             self.drive()?;
         }
+        // Any one of these means there is something to report, and the earliest one wins: a
+        // server learns the name and the protocol together from the ClientHello, while a
+        // client only ever learns the protocol. A finished handshake is the backstop for a
+        // session that agreed neither.
         let ready = self.inner.ssl().selected_alpn_protocol().is_some()
             || self.server_name.is_some()
             || self.inner.ssl().is_init_finished();

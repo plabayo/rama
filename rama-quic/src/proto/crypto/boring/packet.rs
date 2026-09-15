@@ -532,4 +532,53 @@ mod tests {
             );
         }
     }
+
+    /// `Secret::new` is the only guard on a traffic secret's length. The suite table and the
+    /// derivation it feeds are pinned by `each_suite_derives_with_the_hash_its_code_point_names`;
+    /// what is left is that a secret of any other length is refused rather than expanded.
+    #[test]
+    fn a_traffic_secret_must_match_its_suite_hash_length() {
+        for id in [0x1301u16, 0x1302, 0x1303] {
+            let suite = Suite::from_id(id).unwrap();
+            let len = suite.digest().size();
+            Secret::new(suite, &vec![3; len]).unwrap();
+            for wrong in [0, len - 1, len + 1, 2 * len] {
+                assert!(
+                    Secret::new(suite, &vec![3; wrong]).is_err(),
+                    "{id:#06x} accepted a {wrong}-byte secret"
+                );
+            }
+        }
+    }
+
+    /// RFC 9001 §5.4.1: header protection masks the low five bits of a short header's first
+    /// byte but only the low four of a long header's, so a short header's second reserved bit
+    /// is protected too. A sample whose mask byte happens to clear that bit cannot tell the two
+    /// policies apart, so this checks several and requires that one of them could.
+    #[test]
+    fn header_protection_masks_a_fifth_bit_only_for_short_headers() {
+        let key = HeaderKey::Aes(AesEncryptKey::new(&[0x2a; 16]).unwrap());
+        let mut distinguishing = 0;
+        for seed in 0..16u8 {
+            let sample = [seed; 16];
+            let mask = key.mask(&sample);
+            distinguishing += usize::from(mask[0] & 0x10 != 0);
+            // A short header sets 0x40 and clears 0x80; a long header sets both.
+            for (first, protected) in [(0x42u8, 0x1fu8), (0xc3, 0x0f)] {
+                let mut packet = vec![0; 21];
+                packet[0] = first;
+                packet[5..21].copy_from_slice(&sample);
+                key.apply(1, &mut packet, false);
+                assert_eq!(
+                    packet[0] ^ first,
+                    mask[0] & protected,
+                    "first byte {first:#04x}"
+                );
+            }
+        }
+        assert!(
+            distinguishing > 0,
+            "no sample set the bit that separates the two masks, so this proved nothing"
+        );
+    }
 }
