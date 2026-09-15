@@ -162,7 +162,7 @@ impl ConcurrentTracker for ConcurrentCounter {
         // worker on a per-request cache line for what is a single increment.
         let admitted = self
             .current
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                 (current < self.max).then_some(current + 1)
             })
             .is_ok();
