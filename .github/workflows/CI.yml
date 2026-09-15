@@ -130,7 +130,7 @@ jobs:
           - windows-latest
     runs-on: ${{ matrix.os }}
     concurrency:
-      group: ${{ startsWith(matrix.os, 'macos') && (matrix.toolchain == 'stable' && 'rama-macos-slot-2' || 'rama-macos-slot-1') || startsWith(matrix.os, 'windows') && ('rama-windows-slot-2') || format('rama-linux-check-{0}-{1}', github.run_id, strategy.job-index) }}
+      group: ${{ startsWith(matrix.os, 'macos') && (matrix.toolchain == 'stable' && 'rama-macos-slot-2' || 'rama-macos-slot-4') || startsWith(matrix.os, 'windows') && ('rama-windows-slot-2') || format('rama-linux-check-{0}-{1}', github.run_id, strategy.job-index) }}
       cancel-in-progress: false
       queue: max
     needs:
@@ -501,7 +501,7 @@ jobs:
     name: test-quic-interop-qa-${{ matrix.backends }}-${{ matrix.toolchain }}-${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     concurrency:
-      group: ${{ startsWith(matrix.os, 'macos') && ('rama-macos-slot-2') || startsWith(matrix.os, 'windows') && (matrix.toolchain == 'stable' && 'rama-windows-slot-3' || 'rama-windows-slot-2') || format('rama-linux-quic-{0}-{1}', github.run_id, strategy.job-index) }}
+      group: ${{ startsWith(matrix.os, 'macos') && (matrix.toolchain == 'stable' && 'rama-macos-slot-3' || 'rama-macos-slot-4') || startsWith(matrix.os, 'windows') && (matrix.toolchain == 'stable' && 'rama-windows-slot-3' || 'rama-windows-slot-2') || format('rama-linux-quic-{0}-{1}', github.run_id, strategy.job-index) }}
       cancel-in-progress: false
       queue: max
     timeout-minutes: 120
@@ -929,7 +929,7 @@ jobs:
       - meta-lints
     runs-on: ${{ matrix.os }}
     concurrency:
-      group: ${{ startsWith(matrix.os, 'macos') && (matrix.os == 'macos-15-intel' && 'rama-macos-slot-0' || 'rama-macos-slot-1') || startsWith(matrix.os, 'windows') && ('rama-windows-slot-2') || format('rama-linux-tier2-{0}-{1}', github.run_id, strategy.job-index) }}
+      group: ${{ startsWith(matrix.os, 'macos') && (matrix.os == 'macos-15-intel' && 'rama-macos-slot-3' || 'rama-macos-slot-4') || startsWith(matrix.os, 'windows') && ('rama-windows-slot-2') || format('rama-linux-tier2-{0}-{1}', github.run_id, strategy.job-index) }}
       cancel-in-progress: false
       queue: max
     env:

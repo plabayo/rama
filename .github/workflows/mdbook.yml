@@ -81,7 +81,7 @@ jobs:
     needs: precheck
     runs-on: macos-latest
     concurrency:
-      group: rama-macos-slot-2
+      group: rama-macos-slot-4
       cancel-in-progress: false
       queue: max
     steps:

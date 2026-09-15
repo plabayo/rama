@@ -267,7 +267,7 @@ jobs:
     needs: precheck
     runs-on: macos-latest
     concurrency:
-      group: rama-macos-slot-2
+      group: rama-macos-slot-3
       cancel-in-progress: false
       queue: max
     timeout-minutes: 120
@@ -296,7 +296,7 @@ jobs:
     needs: precheck
     runs-on: macos-latest
     concurrency:
-      group: rama-macos-slot-0
+      group: rama-macos-slot-4
       cancel-in-progress: false
       queue: max
     timeout-minutes: 60
