@@ -53,7 +53,7 @@ required-features = ["opentelemetry"]
 opentelemetry = ["rama/opentelemetry"]
 
 [dependencies]
-base64 = { workspace = true }
+base64 = { workspace = true, default-features = true }
 rama = { workspace = true, features = ["grpc-full"] }
 tokio = { workspace = true, features = ["full"] }
 
@@ -64,7 +64,7 @@ rama = { workspace = true, features = ["grpc"] }
 parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
 static_assertions = { workspace = true }
-tracing = { workspace = true }
+tracing = { workspace = true, default-features = true }
 tracing-test = { workspace = true }
 trybuild = { workspace = true }
 

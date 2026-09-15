@@ -36,7 +36,7 @@ futures-core = { workspace = true }
 httparse = { workspace = true }
 itoa = { workspace = true }
 md5 = { workspace = true }
-memchr = { workspace = true }
+memchr = { workspace = true, default-features = true }
 mime = { workspace = true }
 mime_guess = { workspace = true }
 parking_lot = { workspace = true }
