@@ -74,6 +74,8 @@ jobs:
           env-vars: RUST_TOOLCHAIN
           cache-bin: false
 
+      - uses: ./.github/actions/sccache
+
       - name: Install Zig
         if: contains(matrix.target.name, 'unknown-linux-musl')
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
@@ -108,6 +110,8 @@ jobs:
           # cross aborts before building unless package metadata warnings are
           # explicitly allowed.
           CROSS_NO_WARNINGS: "0"
+          # The host wrapper is not installed inside cross containers.
+          RUSTC_WRAPPER: ""
         run: |
           cross build --release -p rama-cli --target "${{ matrix.target.name }}"
 
@@ -196,6 +200,8 @@ jobs:
           env-vars: RUST_TOOLCHAIN
           cache-bin: false
 
+      - uses: ./.github/actions/sccache
+
       - name: Build and Sign
         run: |
           bash ./rama-cli/scripts/build_and_sign_macos.sh "${{ matrix.target }}"
@@ -283,6 +289,8 @@ jobs:
         with:
           env-vars: RUST_TOOLCHAIN
           cache-bin: false
+
+      - uses: ./.github/actions/sccache
 
       - name: Build release (Windows)
         shell: bash
@@ -391,6 +399,8 @@ jobs:
         with:
           env-vars: RUST_TOOLCHAIN
           cache-bin: false
+
+      - uses: ./.github/actions/sccache
 
       - name: Build release (Windows)
         shell: bash

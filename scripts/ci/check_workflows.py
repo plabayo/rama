@@ -14,7 +14,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 SLOTS = {
-    "macos": {f"rama-macos-slot-{i}" for i in range(3)},
+    "macos": {f"rama-macos-slot-{i}" for i in range(5)},
     "windows": {f"rama-windows-slot-{i}" for i in range(4)},
 }
 
@@ -93,9 +93,10 @@ def validate(workflow, path):
                 assert concurrency.get("cancel-in-progress") is False, (path, name, "cancellation")
                 assert concurrency.get("queue") == "max", (path, name, "lossy queue")
                 # Different PR/main runs must resolve to the same finite slot set.
-                for run_id in (1, 2, 3):
-                    group = expression(concurrency.get("group"), row, index, run_id)
-                    assert group in slots, (path, name, row, group)
+                groups = {expression(concurrency.get("group"), row, index, run_id)
+                          for run_id in (1, 2, 3, 1001)}
+                assert len(groups) == 1, (path, name, row, "run-specific slot", groups)
+                assert groups <= slots, (path, name, row, groups)
     if path.name == "CI.yml":
         checks = {name for name in jobs if not name.startswith("deploy-") and name != "ci-success"}
         assert set(jobs["ci-success"]["needs"]) == checks, "CI success must cover every check"

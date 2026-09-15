@@ -32,7 +32,7 @@ csv = ["dep:tokio", "tokio/fs", "dep:base64"]
 
 [dependencies]
 arc-swap = { workspace = true, optional = true }
-base64 = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true, default-features = true }
 rama-core = { workspace = true, features = ["std"] }
 rama-net = { workspace = true, features = ["std"] }
 rama-utils = { workspace = true, features = ["std"] }
@@ -43,7 +43,7 @@ unicode-normalization = { workspace = true }
 venndb = { workspace = true, optional = true }
 
 [dev-dependencies]
-itertools = { workspace = true }
+itertools = { workspace = true, default-features = true }
 rama-http-types = { workspace = true }
 rama-net = { workspace = true, features = ["std"] }
 serde_html_form = { workspace = true }

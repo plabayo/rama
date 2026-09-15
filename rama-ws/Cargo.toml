@@ -33,7 +33,7 @@ compression = ["dep:flate2"]
 dial9 = ["rama-core/dial9", "rama-http/dial9"]
 
 [dependencies]
-base64 = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true, default-features = true }
 flate2 = { workspace = true, features = ["zlib"], optional = true }
 jiff = { workspace = true, optional = true }
 parking_lot = { workspace = true, optional = true }
