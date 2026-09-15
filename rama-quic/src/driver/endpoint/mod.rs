@@ -741,8 +741,11 @@ impl EndpointDriver {
     /// outside the lock, which this method never holds when it returns.
     fn poll_locked(&self, cx: &mut Context, retired: &mut Vec<Socket>) -> io::Result<Option<bool>> {
         let mut endpoint = self.0.state.lock();
-        if endpoint.driver.is_none() {
-            endpoint.driver = Some(cx.waker().clone());
+        // The task polling the driver may change; a waker kept from an earlier poll would wake
+        // the wrong one.
+        match endpoint.driver.as_mut() {
+            Some(waker) => waker.clone_from(cx.waker()),
+            None => endpoint.driver = Some(cx.waker().clone()),
         }
 
         let now = now();

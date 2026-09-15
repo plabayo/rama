@@ -242,8 +242,12 @@ impl Connecting {
         // Taking &mut self allows us to use a single oneshot channel rather than dealing with
         // potentially many tasks waiting on the same event. It's a bit of a hack, but keeps things
         // simple.
-        if let Some(x) = self.handshake_data_ready.take() {
+        //
+        // The receiver is kept until it has answered, so a call cancelled while waiting leaves the
+        // next one waiting too rather than reading metadata the session does not have yet.
+        if let Some(x) = self.handshake_data_ready.as_mut() {
             let _handshake = x.await;
+            self.handshake_data_ready = None;
         }
         let conn = self.connection_ref();
         let inner = conn.state.lock();

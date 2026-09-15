@@ -391,6 +391,8 @@ impl RecvStream {
             ReadStatus::Readable(read) => Poll::Ready(Ok(Some(read))),
             ReadStatus::Finished(read) => {
                 self.all_data_read = true;
+                // Nothing will wake this stream again; a waker left from an earlier pass is stale.
+                conn.blocked_readers.remove(&self.stream);
                 Poll::Ready(Ok(read))
             }
             ReadStatus::Failed(read, ProtoReadError::Blocked) => {
@@ -408,6 +410,7 @@ impl RecvStream {
                 None => {
                     self.all_data_read = true;
                     self.reset = Some(error_code);
+                    conn.blocked_readers.remove(&self.stream);
                     Poll::Ready(Err(ReadError::Reset(error_code)))
                 }
                 done => {
