@@ -168,7 +168,33 @@ pub(crate) mod fuzzing {
         ConnectionIdParser, FixedLengthConnectionIdParser, PartialDecode,
     };
     pub use crate::proto::transport_parameters::TransportParameters;
-    pub use rama_core::bytes::{BufMut, BytesMut};
+    pub use rama_core::bytes::{BufMut, Bytes, BytesMut};
+
+    use crate::proto::{
+        TransportError,
+        frame::{Frame, Iter},
+    };
+
+    /// Decode `payload` as the frames of one received packet, up to its end or the first
+    /// frame it rejects, walking every ACK range as loss detection would. Answers how many
+    /// frames it decoded.
+    pub fn decode_frames(payload: Bytes) -> Result<usize, TransportError> {
+        let mut decoded = 0;
+        for frame in Iter::new(payload)? {
+            if let Frame::Ack(ack) = frame? {
+                // Ranges are decoded lazily from bytes `Iter` only scanned: each must sit strictly
+                // below the one before it.
+                let mut floor = None;
+                for range in ack.iter() {
+                    assert!(range.start() <= range.end());
+                    assert!(floor.is_none_or(|floor| *range.end() < floor));
+                    floor = Some(*range.start());
+                }
+            }
+            decoded += 1;
+        }
+        Ok(decoded)
+    }
 
     #[cfg(feature = "arbitrary")]
     use arbitrary::{Arbitrary, Result, Unstructured};

@@ -814,6 +814,46 @@ mod tests {
         assert_eq!(error.reason(), format!("TLS error: {source}"));
     }
 
+    /// RFC 9001 §6.6 and Appendix B, as this backend's provider reports them for every TLS 1.3
+    /// suite it offers: the AES-GCM suites stop at 2^23 packets per key and 2^52 forgeries per
+    /// connection; ChaCha20-Poly1305 at 2^36 forgeries, with a confidentiality limit beyond the
+    /// 2^62 packets a connection can number. Both directions of a key set answer alike.
+    #[test]
+    fn packet_keys_report_the_rfc_9001_aead_limits() {
+        let provider = configured_provider();
+        let mut suites = Vec::new();
+        for suite in &provider.cipher_suites {
+            let Some(quic) = suite.tls13().and_then(|tls13| tls13.quic_suite()) else {
+                continue;
+            };
+            let (confidentiality, integrity) = match suite.suite() {
+                CipherSuite::TLS13_AES_128_GCM_SHA256 | CipherSuite::TLS13_AES_256_GCM_SHA384 => {
+                    (1 << 23..=1 << 23, 1 << 52)
+                }
+                CipherSuite::TLS13_CHACHA20_POLY1305_SHA256 => (1 << 62..=u64::MAX, 1 << 36),
+                other => panic!("an unexpected QUIC suite: {other:?}"),
+            };
+            let keys = quic.keys(&[1, 2, 3, 4, 5, 6, 7, 8], rustls::Side::Client, Version::V1);
+            for key in [&*keys.local.packet, &*keys.remote.packet] {
+                assert!(
+                    confidentiality.contains(&key.confidentiality_limit()),
+                    "{:?}: {} packets per key",
+                    suite.suite(),
+                    key.confidentiality_limit()
+                );
+                assert_eq!(key.integrity_limit(), integrity, "{:?}", suite.suite());
+            }
+            suites.push(suite.suite());
+        }
+        for expected in [
+            CipherSuite::TLS13_AES_128_GCM_SHA256,
+            CipherSuite::TLS13_AES_256_GCM_SHA384,
+            CipherSuite::TLS13_CHACHA20_POLY1305_SHA256,
+        ] {
+            assert!(suites.contains(&expected), "{expected:?} is offered");
+        }
+    }
+
     /// The contract the handshake summary rests on: a name this backend validated as a DNS name
     /// reads as a domain. Rustls checks label shape, length and the 253-octet total, and a
     /// domain's rules are no stricter. Each of these has to be accepted by both, so a backend

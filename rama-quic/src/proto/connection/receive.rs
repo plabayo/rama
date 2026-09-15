@@ -123,6 +123,12 @@ impl Connection {
         partial_decode: PartialDecode,
     ) {
         let info = DropInfo::partial(&partial_decode);
+        if self.state.is_drained() {
+            // Nothing is left to do with a packet, and one that failed to authenticate would be
+            // counted against a limit that already ended the connection (RFC 9001 §6.6).
+            self.qlog_packet_dropped(now, info, DropReason::Rejected);
+            return;
+        }
         let reject_early_data = self.side.is_client() && partial_decode.is_0rtt();
         // Established is entered only after TLS completion. Only an aborted
         // handshake in a closed state needs a backend query on this path.

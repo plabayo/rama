@@ -462,72 +462,13 @@ report-code-lines:
         | grep -v target | tr -d ' ' | grep -v '^$' | grep -v '^//' \
         | wc -l
 
-fuzz-ua:
-    cargo +nightly fuzz run ua_parse -- -max_len=131072
+# Fuzzing lives in `fuzz/justfile`: `just fuzz/` lists its recipes and, for one target,
+# `just fuzz/quic 60` runs it for a minute. Only the pre-release gates are mirrored here.
+fuzz-60s:
+    just fuzz/all-60s
 
-fuzz-ua-60s:
-    cargo +nightly fuzz run ua_parse -- -max_len=131072 -max_total_time=60
-
-fuzz-http-headers-x-robots-tag:
-    cargo +nightly fuzz run http_header_x_robots_tag -- -max_len=131072
-
-fuzz-http-headers-x-robots-tag-60s:
-    cargo +nightly fuzz run http_header_x_robots_tag -- -max_len=131072 -max_total_time=60
-
-fuzz-http-header-map:
-    cargo +nightly fuzz run http_header_map -- -max_len=131072
-
-fuzz-http-header-map-60s:
-    cargo +nightly fuzz run http_header_map -- -max_len=131072 -max_total_time=60
-
-fuzz-icap-seeds-check:
-    @for seed in fuzz/corpus-seeds/icap_codec_roundtrip/*; do if [ "$(wc -c < "$seed")" -lt 38 ]; then echo "unreachable structured ICAP seed: $seed" >&2; exit 1; fi; done
-
-fuzz-icap: fuzz-icap-seeds-check
-    mkdir -p fuzz/corpus/icap_codec fuzz/corpus/icap_codec_roundtrip
-    cargo +nightly fuzz run icap_codec fuzz/corpus/icap_codec fuzz/corpus-seeds/icap_codec -- -dict=fuzz/dictionaries/icap.dict -max_len=65536 -timeout=5
-    cargo +nightly fuzz run icap_codec_roundtrip fuzz/corpus/icap_codec_roundtrip fuzz/corpus-seeds/icap_codec_roundtrip -- -max_len=64 -timeout=5
-
-fuzz-icap-60s: fuzz-icap-seeds-check
-    mkdir -p fuzz/corpus/icap_codec fuzz/corpus/icap_codec_roundtrip
-    cargo +nightly fuzz run icap_codec fuzz/corpus/icap_codec fuzz/corpus-seeds/icap_codec -- -dict=fuzz/dictionaries/icap.dict -max_len=65536 -timeout=5 -max_total_time=60
-    cargo +nightly fuzz run icap_codec_roundtrip fuzz/corpus/icap_codec_roundtrip fuzz/corpus-seeds/icap_codec_roundtrip -- -max_len=64 -timeout=5 -max_total_time=60
-
-# Sustained pre-release ICAP fuzzing. Override the durations for a shorter
-# local pass while keeping the release defaults visible and reproducible.
-fuzz-icap-release RAW_SECONDS="21600" ROUNDTRIP_SECONDS="7200": fuzz-icap-seeds-check
-    mkdir -p fuzz/corpus/icap_codec fuzz/corpus/icap_codec_roundtrip
-    cargo +nightly fuzz run -j 4 icap_codec fuzz/corpus/icap_codec fuzz/corpus-seeds/icap_codec -- -dict=fuzz/dictionaries/icap.dict -max_len=65536 -timeout=5 -max_total_time={{RAW_SECONDS}}
-    cargo +nightly fuzz run -j 4 icap_codec_roundtrip fuzz/corpus/icap_codec_roundtrip fuzz/corpus-seeds/icap_codec_roundtrip -- -max_len=64 -timeout=5 -max_total_time={{ROUNDTRIP_SECONDS}}
-
-fuzz-dns-txt-rr:
-    cargo +nightly fuzz run dns_txt_rr -- -max_len=4096
-
-fuzz-dns-txt-rr-60s:
-    cargo +nightly fuzz run dns_txt_rr -- -max_len=4096 -max_total_time=60
-
-fuzz-h2-main:
-    # cargo install honggfuzz
-    cd rama-http-core/tests/h2-fuzz && \
-        HFUZZ_RUN_ARGS="-t 1" cargo hfuzz run h2-fuzz
-
-fuzz-h2-client:
-    cargo +nightly fuzz run h2_client
-
-fuzz-h2-hpack:
-    cargo +nightly fuzz run h2_hpack
-
-fuzz-h2-e2e:
-    cargo +nightly fuzz run h2_e2e
-
-fuzz-h2-60s:
-    cargo +nightly fuzz run h2_client -- -max_total_time=60
-    cargo +nightly fuzz run h2_hpack -- -max_total_time=60
-    cargo +nightly fuzz run h2_e2e -- -max_total_time=60
-
-fuzz-60s: fuzz-ua-60s fuzz-h2-60s fuzz-http-headers-x-robots-tag-60s fuzz-http-header-map-60s fuzz-icap-60s
-
-fuzz-full: fuzz-60s fuzz-h2-main
+fuzz-full:
+    just fuzz/full
 
 bench *ARGS:
     cargo bench --features=http-full,rustls,aws-lc,boring,socks5,ua,udp,quic,test-utils,rss {{ARGS}}

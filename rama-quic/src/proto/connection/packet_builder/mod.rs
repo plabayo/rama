@@ -8,9 +8,9 @@ use rand::RngExt;
 use super::{Connection, spaces::SentPacket};
 
 use crate::proto::{
-    ConnectionId, Instant, TransportError, TransportErrorCode,
+    ConnectionId, Instant, TransportError,
     connection::ConnectionSide,
-    frame::{self, Close},
+    frame::Close,
     packet::{FIXED_BIT, Header, InitialHeader, LongType, PacketNumber, PartialEncode, SpaceId},
 };
 
@@ -76,16 +76,13 @@ impl PacketBuilder {
             )
             .confidentiality_limit();
         if sent_with_keys.saturating_add(1) == confidentiality_limit {
-            // The budget covers one more packet, which is spent on saying why the connection is
-            // ending.
-            conn.close_inner(
-                now,
-                Close::Connection(frame::ConnectionClose {
-                    error_code: TransportErrorCode::AEAD_LIMIT_REACHED,
-                    frame_type: None,
-                    reason: Bytes::from_static(b"confidentiality limit reached"),
-                }),
-            )
+            // The budget covers one more packet: this one, which `poll_transmit` turns into the
+            // close once the connection is closed here. The application is told the cause too.
+            let error = TransportError::AEAD_LIMIT_REACHED("confidentiality limit reached");
+            conn.close_inner(now, Close::Connection(error.clone().into()));
+            if conn.error.is_none() {
+                conn.error = Some(error.into());
+            }
         } else if sent_with_keys >= confidentiality_limit {
             // No budget remains, so nothing more is encrypted with these keys.
             conn.kill(

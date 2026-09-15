@@ -189,10 +189,17 @@ pub trait PacketKey: Send + Sync {
     ) -> Result<(), CryptoError>;
     /// The length of the AEAD tag appended to packets on encryption
     fn tag_len(&self) -> usize;
-    /// Maximum number of packets that may be sent using a single key
+    /// Maximum number of packets that may be sent using a single key (RFC 9001 §6.6)
+    ///
+    /// Counted per key: a key update starts the new phase at zero. The last packet of the
+    /// budget carries the close, and nothing is protected past it. Routine updates begin
+    /// 10,000 packets short of this value.
     fn confidentiality_limit(&self) -> u64;
     /// Maximum number of incoming packets that may fail decryption before the connection must be
-    /// abandoned
+    /// abandoned (RFC 9001 §6.6)
+    ///
+    /// Counted for the whole connection, across every key it has used. Once exceeded, the
+    /// connection ends and processes no further packets.
     fn integrity_limit(&self) -> u64;
 }
 

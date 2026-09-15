@@ -353,6 +353,34 @@ mod tests {
         assert_eq!(&payload[..], &[1]);
     }
 
+    /// RFC 9001 §6.6 and Appendix B: the AES-GCM suites stop at 2^23 packets per key and
+    /// 2^52 forgeries per connection; ChaCha20-Poly1305 at 2^36 forgeries, with a
+    /// confidentiality limit beyond the 2^62 packets a connection can number. The Initial keys
+    /// are AES-128-GCM keys and answer as such.
+    #[test]
+    fn packet_keys_report_the_rfc_9001_aead_limits() {
+        for (suite, confidentiality, integrity) in [
+            (Suite::Aes128Gcm, 1 << 23, 1 << 52),
+            (Suite::Aes256Gcm, 1 << 23, 1 << 52),
+            (Suite::ChaCha20Poly1305, 1 << 62, 1 << 36),
+        ] {
+            let secret = Secret::new(suite, &vec![7; suite.digest().size()]).unwrap();
+            for key in [
+                secret.packet_key().unwrap(),
+                secret.updated().unwrap().packet_key().unwrap(),
+            ] {
+                assert_eq!(key.confidentiality_limit(), confidentiality);
+                assert_eq!(key.integrity_limit(), integrity);
+            }
+        }
+        let keys =
+            initial_keys(&ConnectionId::new(&[1, 2, 3, 4, 5, 6, 7, 8]), Side::Client).unwrap();
+        for key in [&keys.local.packet, &keys.remote.unwrap().packet] {
+            assert_eq!(key.confidentiality_limit(), 1 << 23);
+            assert_eq!(key.integrity_limit(), 1 << 52);
+        }
+    }
+
     #[test]
     fn all_suites_authenticate_header_number_and_payload() {
         for suite in [Suite::Aes128Gcm, Suite::Aes256Gcm, Suite::ChaCha20Poly1305] {

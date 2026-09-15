@@ -26,6 +26,7 @@ pub(crate) use util::Pair;
 use util::*;
 
 mod admission;
+mod aead_limits;
 mod closing;
 mod datagrams;
 mod loss_config;

@@ -211,3 +211,35 @@ fn client_does_not_decrypt_zero_rtt_while_resuming() {
     pair.client_conn_mut(client)
         .assert_early_packet_is_not_decrypted(now, packet);
 }
+
+/// RFC 9001 §6: TLS KeyUpdate has no place in QUIC, where keys change through the key phase
+/// bit instead. A session that is handed one, at the level it would arrive at, refuses it with
+/// the `unexpected_message` alert as a crypto error (0x010a), on both sides and whichever
+/// backend is behind the session.
+#[test]
+fn a_tls_key_update_message_is_refused_as_an_unexpected_message() {
+    let _guard = subscribe();
+    let mut pair = Pair::default();
+    let (client, server) = pair.connect();
+    pair.drive();
+    // HandshakeType key_update (24), three-byte length, KeyUpdateRequest update_not_requested.
+    const KEY_UPDATE: [u8; 5] = [0x18, 0x00, 0x00, 0x01, 0x00];
+    let client_error = pair
+        .client_conn_mut(client)
+        .crypto_session_mut()
+        .read_handshake(SpaceId::Data, &KEY_UPDATE)
+        .expect_err("the client session refuses a KeyUpdate");
+    let server_error = pair
+        .server_conn_mut(server)
+        .crypto_session_mut()
+        .read_handshake(SpaceId::Data, &KEY_UPDATE)
+        .expect_err("the server session refuses a KeyUpdate");
+    for (side, error) in [("client", client_error), ("server", server_error)] {
+        assert_eq!(
+            error.code(),
+            TransportErrorCode::crypto(10),
+            "{side}: unexpected_message, as a crypto error: {error}"
+        );
+        assert_eq!(error.code().as_u64(), 0x010a, "{side}");
+    }
+}

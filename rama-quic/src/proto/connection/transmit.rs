@@ -404,6 +404,9 @@ impl Connection {
                 ack_eliciting,
                 self,
             )?);
+            // The builder closes the connection when this is the last packet its keys may
+            // protect (RFC 9001 §6.6). That packet then says why, instead of what was pending.
+            let close = close || self.close;
             coalesce = coalesce && !builder.short_header;
 
             // https://tools.ietf.org/html/draft-ietf-quic-transport-34#section-14.1

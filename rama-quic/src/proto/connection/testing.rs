@@ -2,7 +2,7 @@
 //!
 //! Every item here is `cfg(test)`, so none of it is built into a release.
 
-use std::net::SocketAddr;
+use std::{mem, net::SocketAddr};
 
 use crate::proto::{
     Instant,
@@ -10,6 +10,7 @@ use crate::proto::{
         Connection, ConnectionError, paths::Challenge, preferred::PreferredAddressState,
         spaces::PacketNumberFilter, timer::Timer,
     },
+    crypto::{self, PacketKey},
     packet::SpaceId,
     shared::ConnectionId,
 };
@@ -256,6 +257,75 @@ impl Connection {
     #[cfg(test)]
     pub(crate) fn set_key_phase_size(&mut self, packets: u64) {
         self.key_phase_size = packets;
+    }
+
+    /// Tests: wrap the 1-RTT packet keys in use and those prepared for the next phase, so a
+    /// limit of the test's choosing stands in for the AEAD's own.
+    #[cfg(test)]
+    pub(crate) fn wrap_one_rtt_packet_keys(
+        &mut self,
+        wrap: &dyn Fn(Box<dyn PacketKey>) -> Box<dyn PacketKey>,
+    ) {
+        struct Absent;
+        impl PacketKey for Absent {
+            fn encrypt(&self, _: u64, _: &mut [u8], _: usize) -> Result<(), crypto::CryptoError> {
+                Err(crypto::CryptoError)
+            }
+            fn decrypt(
+                &self,
+                _: u64,
+                _: &[u8],
+                _: &mut rama_core::bytes::BytesMut,
+            ) -> Result<(), crypto::CryptoError> {
+                Err(crypto::CryptoError)
+            }
+            fn tag_len(&self) -> usize {
+                16
+            }
+            fn confidentiality_limit(&self) -> u64 {
+                0
+            }
+            fn integrity_limit(&self) -> u64 {
+                0
+            }
+        }
+        fn swap(
+            slot: &mut Box<dyn PacketKey>,
+            wrap: &dyn Fn(Box<dyn PacketKey>) -> Box<dyn PacketKey>,
+        ) {
+            let key = mem::replace(slot, Box::new(Absent));
+            *slot = wrap(key);
+        }
+        let keys = self.spaces[SpaceId::Data]
+            .crypto
+            .as_mut()
+            .expect("1-RTT keys are installed");
+        swap(&mut keys.local.packet, wrap);
+        if let Some(remote) = keys.remote.as_mut() {
+            swap(&mut remote.packet, wrap);
+        }
+        if let Some(next) = self.next_crypto.as_mut() {
+            swap(&mut next.local, wrap);
+            swap(&mut next.remote, wrap);
+        }
+    }
+
+    /// Tests: how many received packets have failed authentication over the connection's life.
+    #[cfg(test)]
+    pub(crate) fn authentication_failures(&self) -> u64 {
+        self.authentication_failures
+    }
+
+    /// Tests: how many received packets have authenticated.
+    #[cfg(test)]
+    pub(crate) fn authenticated_packets(&self) -> u64 {
+        self.total_authed_packets
+    }
+
+    /// Tests: the TLS session, to hand it what the peer's CRYPTO frames would carry.
+    #[cfg(test)]
+    pub(crate) fn crypto_session_mut(&mut self) -> &mut dyn crypto::Session {
+        &mut *self.crypto
     }
 
     /// Tests: how far this client got with the server's preferred address.
