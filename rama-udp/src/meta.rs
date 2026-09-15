@@ -614,4 +614,27 @@ mod tests {
         assert_eq!(raw(libc::ENOBUFS), SendFailure::Datagram);
         assert_eq!(raw(libc::EINVAL), SendFailure::Descriptor);
     }
+
+    /// The Winsock counterpart of the native Unix codes. `WSAESHUTDOWN` has no
+    /// Unix equivalent here: a shut-down Winsock socket can no longer send, so
+    /// it retires the socket rather than failing only this datagram.
+    #[cfg(windows)]
+    #[test]
+    fn send_failures_classify_native_windows_codes() {
+        use windows_sys::Win32::Networking::WinSock::{
+            WSAEACCES, WSAEBADF, WSAEHOSTUNREACH, WSAEINVAL, WSAEMSGSIZE, WSAENETUNREACH,
+            WSAENOBUFS, WSAENOTSOCK, WSAESHUTDOWN,
+        };
+
+        let raw = |code| DatagramError::Io(io::Error::from_raw_os_error(code)).send_failure();
+        assert_eq!(raw(WSAEMSGSIZE), SendFailure::TooLarge);
+        assert_eq!(raw(WSAEBADF), SendFailure::Socket);
+        assert_eq!(raw(WSAENOTSOCK), SendFailure::Socket);
+        assert_eq!(raw(WSAESHUTDOWN), SendFailure::Socket);
+        assert_eq!(raw(WSAENETUNREACH), SendFailure::Datagram);
+        assert_eq!(raw(WSAEHOSTUNREACH), SendFailure::Datagram);
+        assert_eq!(raw(WSAEACCES), SendFailure::Datagram);
+        assert_eq!(raw(WSAENOBUFS), SendFailure::Datagram);
+        assert_eq!(raw(WSAEINVAL), SendFailure::Descriptor);
+    }
 }

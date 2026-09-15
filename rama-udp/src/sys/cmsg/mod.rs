@@ -123,14 +123,15 @@ impl<'a, M: MsgHdr> Iterator for Iter<'a, M> {
         // established by `Iter::new`.
         self.cmsg = unsafe { self.hdr.cmsg_nxt_hdr(current).as_ref() };
 
-        #[cfg(target_vendor = "apple")]
-        {
-            // On MacOS < 14 CMSG_NXTHDR might continuously return a zeroed cmsg. In
-            // such case, return `None` instead, thus indicating the end of
-            // the cmsghdr chain.
-            if current.len() < size_of::<M::ControlMessage>() {
-                return None;
-            }
+        // A native length that cannot cover its own header is malformed, and
+        // both platforms keep walking such an entry forever: on MacOS < 14
+        // CMSG_NXTHDR might continuously return a zeroed cmsg, and the Winsock
+        // rule advances by the aligned length, so a zero never leaves the
+        // current entry. End the cmsghdr chain instead.
+        #[cfg(any(target_vendor = "apple", windows))]
+        if current.len() < size_of::<M::ControlMessage>() {
+            self.cmsg = None;
+            return None;
         }
 
         Some(current)
@@ -169,59 +170,99 @@ pub(crate) trait CMsgHdr {
 #[cfg(unix)]
 pub(crate) const LEN: usize = 256;
 
-#[cfg(all(test, unix))]
+#[cfg(all(test, any(unix, windows)))]
 mod tests {
     use super::*;
 
-    fn message_header(control: &mut Aligned<[u8; LEN]>, len: usize) -> libc::msghdr {
+    const TEST_LEN: usize = 256;
+
+    #[cfg(unix)]
+    use libc::{cmsghdr as NativeCMsgHdr, msghdr as NativeMsgHdr};
+    #[cfg(windows)]
+    use windows_sys::Win32::Networking::WinSock::{
+        CMSGHDR as NativeCMsgHdr, WSABUF, WSAMSG as NativeMsgHdr,
+    };
+
+    #[cfg(unix)]
+    const TEST_LEVEL: c_int = libc::IPPROTO_IP;
+    #[cfg(unix)]
+    const TEST_TYPE: c_int = libc::IP_TTL;
+    #[cfg(windows)]
+    const TEST_LEVEL: c_int = windows_sys::Win32::Networking::WinSock::IPPROTO_IP as c_int;
+    #[cfg(windows)]
+    const TEST_TYPE: c_int = windows_sys::Win32::Networking::WinSock::IP_TTL as c_int;
+
+    #[cfg(unix)]
+    fn message_header(control: &mut Aligned<[u8; TEST_LEN]>, len: usize) -> NativeMsgHdr {
         // SAFETY: all-zero is a valid empty `msghdr`; the test initializes the
         // control pointer and length before passing it to the cmsg helpers.
-        let mut header: libc::msghdr = unsafe { std::mem::zeroed() };
+        let mut header: NativeMsgHdr = unsafe { std::mem::zeroed() };
         header.msg_control = control.0.as_mut_ptr().cast();
         header.msg_controllen = len as _;
         header
     }
 
+    #[cfg(windows)]
+    fn message_header(control: &mut Aligned<[u8; TEST_LEN]>, len: usize) -> NativeMsgHdr {
+        // SAFETY: all-zero is a valid empty `WSAMSG`; the test initializes the
+        // control buffer and its length before passing it to the cmsg helpers.
+        let mut header: NativeMsgHdr = unsafe { std::mem::zeroed() };
+        header.Control = WSABUF {
+            buf: control.0.as_mut_ptr(),
+            len: len as _,
+        };
+        header
+    }
+
+    /// A zeroed native control-message header, for tests that write its fields
+    /// themselves instead of walking a buffer the operating system filled in.
+    fn zeroed_control_message() -> NativeCMsgHdr {
+        // SAFETY: the native header contains only integer fields, for which
+        // zero is a valid initialized value.
+        unsafe { std::mem::zeroed() }
+    }
+
     #[test]
     fn encoder_writes_data_and_finalizes_the_encoded_length() {
-        let mut control = Aligned([0; LEN]);
-        let mut header = message_header(&mut control, LEN);
+        let mut control = Aligned([0; TEST_LEN]);
+        let mut header = message_header(&mut control, TEST_LEN);
         let value = 0x1234_5678_u32;
-        let expected = <libc::cmsghdr as CMsgHdr>::cmsg_space(size_of_val(&value));
+        let expected = <NativeCMsgHdr as CMsgHdr>::cmsg_space(size_of_val(&value));
 
         // SAFETY: `message_header` points at the aligned, writable `control`
         // buffer, whose full capacity is recorded in the header.
         let mut encoder = unsafe { Encoder::new(&mut header) };
-        encoder.push(libc::IPPROTO_IP, libc::IP_TTL, value).unwrap();
+        encoder.push(TEST_LEVEL, TEST_TYPE, value).unwrap();
         drop(encoder);
         assert_eq!(header.control_len(), expected);
 
         // SAFETY: the encoder initialized the control-message chain and
         // finalized its reported length without outliving the backing buffer.
         let mut messages = unsafe { Iter::new(&header) };
+        let message = messages.next().unwrap();
+        assert_eq!(message.cmsg_level as c_int, TEST_LEVEL);
+        assert_eq!(message.cmsg_type as c_int, TEST_TYPE);
         // SAFETY: `messages` walks the live control buffer initialized above.
-        let decoded = unsafe { decode::<u32, _>(messages.next().unwrap()) };
+        let decoded = unsafe { decode::<u32, _>(message) };
         assert_eq!(decoded.unwrap(), value);
         assert!(messages.next().is_none());
     }
 
     #[test]
     fn encoder_rejects_capacity_that_only_fits_the_header() {
-        let mut control = Aligned([0; LEN]);
-        let mut header = message_header(&mut control, size_of::<libc::cmsghdr>());
+        let mut control = Aligned([0; TEST_LEN]);
+        let mut header = message_header(&mut control, size_of::<NativeCMsgHdr>());
 
         // SAFETY: the backing allocation is larger than the deliberately
         // restricted reported capacity and stays live for the encoder.
         let mut encoder = unsafe { Encoder::new(&mut header) };
-        assert!(encoder.push(libc::IPPROTO_IP, libc::IP_TTL, 1_u32).is_err());
+        assert!(encoder.push(TEST_LEVEL, TEST_TYPE, 1_u32).is_err());
     }
 
     #[test]
     fn decode_rejects_a_payload_with_the_wrong_native_length() {
-        // SAFETY: `cmsghdr` contains only integer fields, for which zero is a
-        // valid initialized value; the test sets its length before use.
-        let mut cmsg: libc::cmsghdr = unsafe { std::mem::zeroed() };
-        cmsg.set(0, 0, <libc::cmsghdr as CMsgHdr>::cmsg_len(size_of::<u8>()));
+        let mut cmsg = zeroed_control_message();
+        cmsg.set(0, 0, <NativeCMsgHdr as CMsgHdr>::cmsg_len(size_of::<u8>()));
 
         // SAFETY: the header is initialized and its mismatched length makes
         // `decode` reject it before reading a payload.
@@ -229,23 +270,84 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     }
 
-    #[cfg(target_vendor = "apple")]
+    /// A payload length always leaves room for the header it follows, and the
+    /// space it occupies never shrinks below that length.
     #[test]
-    fn apple_iterator_rejects_short_headers_but_accepts_the_boundary() {
-        let mut control = Aligned([0; LEN]);
-        let header_len = size_of::<libc::cmsghdr>();
+    fn native_lengths_stay_consistent_with_the_header_they_describe() {
+        let header = size_of::<NativeCMsgHdr>();
+        for payload in [0, 1, 4, 8, 20] {
+            let len = <NativeCMsgHdr as CMsgHdr>::cmsg_len(payload);
+            let space = <NativeCMsgHdr as CMsgHdr>::cmsg_space(payload);
+            assert!(len >= header + payload, "cmsg_len({payload}) = {len}");
+            assert!(space >= len, "cmsg_space({payload}) = {space} < {len}");
+        }
+    }
+
+    /// Both platforms can be asked to walk an entry whose native length does
+    /// not even cover its own header: MacOS < 14 by returning a zeroed cmsg,
+    /// and Winsock because the chain advances by that length alone. Neither
+    /// may loop on it, and a length exactly at the boundary still decodes.
+    #[cfg(any(target_vendor = "apple", windows))]
+    #[test]
+    fn iterator_ends_on_a_header_too_short_to_advance_the_chain() {
+        let mut control = Aligned([0; TEST_LEN]);
+        let header_len = size_of::<NativeCMsgHdr>();
         let header = message_header(&mut control, header_len);
-        // SAFETY: the header points at aligned storage for a complete
-        // `cmsghdr`, and the test writes only that header.
+        // SAFETY: the header points at aligned storage for a complete native
+        // control message, and the test writes only that header.
         unsafe { header.cmsg_first_hdr().as_mut().unwrap() }.set(0, 0, 0);
         // SAFETY: the native header and its backing buffer remain initialized
         // and live for the iterator.
-        assert!(unsafe { Iter::new(&header) }.next().is_none());
+        let mut messages = unsafe { Iter::new(&header) };
+        assert!(messages.next().is_none());
+        // A fused end: re-polling must not resume walking the same entry.
+        assert!(messages.next().is_none());
 
         // SAFETY: the same initialized control buffer is still live.
         unsafe { header.cmsg_first_hdr().as_mut().unwrap() }.set(0, 0, header_len);
         // SAFETY: as above; this time `cmsg_len` is exactly the valid lower
         // boundary for a native header.
         assert!(unsafe { Iter::new(&header) }.next().is_some());
+    }
+
+    /// Unix walks the chain with the platform's own `CMSG_NXTHDR`, but the
+    /// Winsock rule is a hand-written port of `WSA_CMSG_NXTHDR`. A following
+    /// entry belongs to the chain once the buffer covers its complete header,
+    /// and one byte short of that it does not: a receive that read metadata
+    /// into the last entry would otherwise drop or invent it.
+    #[cfg(windows)]
+    #[test]
+    fn the_chain_reaches_the_last_header_the_buffer_completely_covers() {
+        let payload = 0x1234_5678_u32;
+        let header_len = size_of::<NativeCMsgHdr>();
+        let second = <NativeCMsgHdr as CMsgHdr>::cmsg_space(size_of_val(&payload));
+        let covered = second + header_len;
+
+        for (control_len, reachable) in [(covered, true), (covered - 1, false)] {
+            let mut control = Aligned([0; TEST_LEN]);
+            // SAFETY: `control` is aligned for and far larger than one native
+            // header, which is all this writes.
+            let first = unsafe { &mut *control.0.as_mut_ptr().cast::<NativeCMsgHdr>() };
+            first.set(
+                TEST_LEVEL,
+                TEST_TYPE,
+                <NativeCMsgHdr as CMsgHdr>::cmsg_len(size_of_val(&payload)),
+            );
+            // SAFETY: `second` is an aligned offset within `control`, leaving
+            // room there for a second complete native header.
+            let next = unsafe { &mut *control.0[second..].as_mut_ptr().cast::<NativeCMsgHdr>() };
+            next.set(TEST_LEVEL, TEST_TYPE, header_len);
+            let header = message_header(&mut control, control_len);
+
+            // SAFETY: the chain above is initialized and stays live for the
+            // iterator, which never reads past the reported control length.
+            let mut messages = unsafe { Iter::new(&header) };
+            assert!(messages.next().is_some(), "control_len {control_len}");
+            assert_eq!(
+                messages.next().is_some(),
+                reachable,
+                "control_len {control_len}"
+            );
+        }
     }
 }
