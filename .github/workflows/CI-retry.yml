@@ -23,8 +23,10 @@ jobs:
         run: |
           run_url="repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}"
 
+          # The aggregate gate also fails after an infrastructure loss. Classify
+          # the underlying jobs so its synthetic failure does not prevent retry.
           mapfile -t failed_jobs < <(gh api "${run_url}/jobs?per_page=100" \
-            --jq '.jobs[] | select(.conclusion == "failure") | "\(.id)\t\(.name)"')
+            --jq '.jobs[] | select(.conclusion == "failure" and .name != "CI success") | "\(.id)\t\(.name)"')
 
           if [[ ${#failed_jobs[@]} -eq 0 ]]; then
             echo "no failed jobs found; not retrying"

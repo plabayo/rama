@@ -32,16 +32,30 @@ permissions:
   contents: read
 
 concurrency:
-  group: "pages"
-  cancel-in-progress: false
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  precheck:
+    runs-on: ubuntu-latest
+    env:
+      RUSTUP_TOOLCHAIN: stable
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: stable
+          components: rustfmt
+      - name: Check formatting before reserving platform runners
+        run: bash scripts/ci/check-format.sh
+
   # ---- Per-target rustdoc builds ------------------------------------------
   # Each job runs `cargo +${RUSTDOC_TOOLCHAIN} doc --all-features --no-deps -p rama`
   # for one target and uploads its `target/[<triple>/]doc/` tree as an artifact.
   # The merge `build` job assembles them into a single site.
 
   doc-linux:
+    needs: precheck
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -64,7 +78,12 @@ jobs:
           retention-days: 1
 
   doc-macos:
+    needs: precheck
     runs-on: macos-latest
+    concurrency:
+      group: rama-macos-slot-2
+      cancel-in-progress: false
+      queue: max
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
@@ -86,7 +105,12 @@ jobs:
           retention-days: 1
 
   doc-windows:
+    needs: precheck
     runs-on: windows-latest
+    concurrency:
+      group: rama-windows-slot-3
+      cancel-in-progress: false
+      queue: max
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2

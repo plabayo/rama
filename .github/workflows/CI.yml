@@ -21,10 +21,14 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
+# Scarce runners share repository-wide slots with Pages, unstable CI, and releases.
+# Keep group names independent of workflow/ref; see scripts/ci/README.md.
+
 jobs:
   precheck-rust:
     runs-on: ubuntu-latest
     env:
+      RUSTUP_TOOLCHAIN: stable
       RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -33,8 +37,9 @@ jobs:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - uses: ./.github/actions/rust-cache
         with:
-          env-vars: "RUST_TOOLCHAIN=${{ env.RUST_TOOLCHAIN }}"
+          env-vars: RUST_TOOLCHAIN
           key: ubuntu-latest-${{ env.RUST_TOOLCHAIN }}
+          shared-key: linux-stable-check-v1
       - name: check
         run: |
           cargo check --workspace --all-targets --all-features
@@ -57,8 +62,55 @@ jobs:
         run: |
           ./scripts/extra-checks.sh
 
-  check-rust:
+  precheck-fmt:
+    runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
+      matrix:
+        toolchain: [stable, "1.96.0"]
+    env:
+      RUSTUP_TOOLCHAIN: ${{ matrix.toolchain }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          components: rustfmt
+      - name: Workspace and standalone project formatting
+        run: bash scripts/ci/check-format.sh
+
+  meta-lints:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: ${{env.RUST_TOOLCHAIN}}
+      - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
+        with:
+          tool: cargo-sort
+      - name: cargo sort (dependencies)
+        run: cargo sort --workspace --grouped --check
+      - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
+        with:
+          tool: actionlint@1.7.12,cargo-hack@0.6.45
+      - name: Validate workflow scheduling and gates
+        run: |
+          python3 -m pip install --user PyYAML==6.0.3
+          python3 scripts/ci/check_workflows.py
+          python3 scripts/ci/check_feature_coverage.py
+          python3 -m unittest discover -s scripts/ci -p 'test_*.py'
+          # 1.7.12 predates GitHub's queue property. check_workflows.py validates it.
+          actionlint -ignore 'unexpected key "queue" for "concurrency" section'
+      - name: cargo deny
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          rust-version: ${{env.RUST_TOOLCHAIN}}
+
+  check-rust:
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
       matrix:
         toolchain:
           - 1.96.0 # MSRV
@@ -68,9 +120,15 @@ jobs:
           - macos-latest
           - windows-latest
     runs-on: ${{ matrix.os }}
+    concurrency:
+      group: ${{ startsWith(matrix.os, 'macos') && (matrix.toolchain == 'stable' && 'rama-macos-slot-2' || 'rama-macos-slot-1') || startsWith(matrix.os, 'windows') && ('rama-windows-slot-2') || format('rama-linux-check-{0}-{1}', github.run_id, strategy.job-index) }}
+      cancel-in-progress: false
+      queue: max
     needs:
       - precheck-rust
       - precheck-docs
+      - precheck-fmt
+      - meta-lints
     env:
       RUSTUP_TOOLCHAIN: ${{ matrix.toolchain }}
       RUSTFLAGS: -D warnings
@@ -84,26 +142,41 @@ jobs:
           components: clippy, rustfmt
       - uses: ./.github/actions/rust-cache
         with:
-          env-vars: "RUST_TOOLCHAIN=${{ matrix.toolchain }}"
+          env-vars: RUST_TOOLCHAIN
           key: ${{ matrix.os }}-${{ matrix.toolchain }}
-      - name: clippy
-        run: |
-          cargo clippy --workspace --all-targets --all-features
+          shared-key: ${{ matrix.os == 'ubuntu-latest' && matrix.toolchain == 'stable' && 'linux-stable-check-v1' || '' }}
       - name: rustfmt
         run: |
           cargo fmt --all --check
+      - name: clippy
+        run: |
+          cargo clippy --workspace --all-targets --all-features
+      - name: doc
+        if: ${{ !cancelled() && matrix.toolchain == 'stable' && matrix.os != 'ubuntu-latest' }}
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: |
+          cargo doc --all-features --no-deps --workspace --exclude rama-cli --exclude rama-net-apple-xpc
+          cargo doc --all-features --no-deps -p rama-cli
+      - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
+        if: ${{ !cancelled() && matrix.toolchain == 'stable' && matrix.os == 'macos-latest' }}
+        with:
+          tool: just
+      - name: Run Apple XPC QA checks
+        if: ${{ !cancelled() && matrix.toolchain == 'stable' && matrix.os == 'macos-latest' }}
+        run: just qa-xpc-apple
 
   doc-rust:
     strategy:
       matrix:
         os:
           - ubuntu-latest
-          - macos-latest
-          - windows-latest
     runs-on: ${{ matrix.os }}
     needs:
       - precheck-rust
       - precheck-docs
+      - precheck-fmt
+      - meta-lints
     env:
       RUSTFLAGS: -D warnings
       RUSTDOCFLAGS: -D warnings
@@ -116,7 +189,7 @@ jobs:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - uses: ./.github/actions/rust-cache
         with:
-          env-vars: "RUST_TOOLCHAIN=${{ env.RUST_TOOLCHAIN }}"
+          env-vars: RUST_TOOLCHAIN
           key: ${{ matrix.os }}-${{ env.RUST_TOOLCHAIN }}-doc
       - name: doc
         run: |
@@ -138,11 +211,17 @@ jobs:
           - windows-11-arm
     name: test-rust-base-${{ matrix.toolchain }}-${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    concurrency:
+      group: ${{ startsWith(matrix.os, 'macos') && (matrix.os == 'macos-15-intel' && 'rama-macos-slot-0' || 'rama-macos-slot-1') || startsWith(matrix.os, 'windows') && (matrix.os == 'windows-11-arm' && 'rama-windows-slot-1' || 'rama-windows-slot-0') || format('rama-linux-native-{0}-{1}', github.run_id, strategy.job-index) }}
+      cancel-in-progress: false
+      queue: max
     # Intel macOS needs more time to compile both feature sets and examples.
     timeout-minutes: ${{ matrix.os == 'macos-15-intel' && 360 || 240 }}
     needs:
       - precheck-rust
       - precheck-docs
+      - precheck-fmt
+      - meta-lints
     env:
       RUSTFLAGS: -D warnings
     steps:
@@ -152,17 +231,20 @@ jobs:
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: ${{ matrix.toolchain }}
-          targets: ${{ matrix.target }}
           components: clippy, rustfmt
       - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
         with:
           tool: nextest
       - uses: ./.github/actions/rust-cache
         with:
-          key: ${{ matrix.os }}-${{ matrix.toolchain }}-${{ matrix.target }}
-          env-vars: "RUST_TOOLCHAIN=${{ matrix.toolchain }}"
+          key: ${{ matrix.os }}-${{ matrix.toolchain }}-
+          env-vars: RUST_TOOLCHAIN
+      - name: Build run tests (cargo test)
+        run: cargo nextest run --all-features --workspace --no-run
       - name: Run tests (cargo test)
         run: cargo nextest run --all-features --workspace
+      - name: Build run tests (--no-default--features)
+        run: cargo nextest run --no-default-features --workspace --no-run
       - name: Run tests (--no-default--features)
         run: cargo nextest run --no-default-features --workspace
       - name: Run crypto backend tests
@@ -221,6 +303,8 @@ jobs:
     needs:
       - precheck-rust
       - precheck-docs
+      - precheck-fmt
+      - meta-lints
     env:
       RUSTFLAGS: -D warnings
     steps:
@@ -235,16 +319,22 @@ jobs:
       - uses: ./.github/actions/rust-cache
         with:
           key: ubuntu-latest-${{ env.RUST_TOOLCHAIN }}-datastar-sdk
-          env-vars: "RUST_TOOLCHAIN=${{ env.RUST_TOOLCHAIN }}"
+          env-vars: RUST_TOOLCHAIN
       - name: Run official Datastar SDK test suite
         run: ./scripts/test-datastar-sdk.sh
 
   test-ffi-apple-example-transparent-proxy-e2e:
     runs-on: macos-latest
-    timeout-minutes: 90
+    concurrency:
+      group: rama-macos-slot-2
+      cancel-in-progress: false
+      queue: max
+    timeout-minutes: 180
     needs:
       - precheck-rust
       - precheck-docs
+      - precheck-fmt
+      - meta-lints
     env:
       RUSTFLAGS: -D warnings
     steps:
@@ -255,16 +345,22 @@ jobs:
       - uses: ./.github/actions/rust-cache
         with:
           key: macos-latest-${{ env.RUST_TOOLCHAIN }}-apple-transparent-proxy-e2e
-          env-vars: "RUST_TOOLCHAIN=${{ env.RUST_TOOLCHAIN }}"
+          env-vars: RUST_TOOLCHAIN
+          workspaces: |
+            ffi/apple/examples/transparent_proxy/tproxy_rs
+            ffi/apple/examples/transparent_proxy/tproxy_ffi_e2e
       - name: Install Apple Rust targets
         run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
-      - name: Install just
-        run: brew install just
+      - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
+        with:
+          tool: just,nextest,cargo-sort
       - name: Install Apple example build and lint tools
         run: brew install xcodegen shellcheck
       - name: Run transparent proxy Apple QA
+        if: ${{ !cancelled() }}
         run: just qa-ffi-apple
       - name: Run transparent proxy Apple FFI e2e tests
+        if: ${{ !cancelled() }}
         run: just test-e2e-ffi-apple
       - name: Rerun Swift FFI battery under lldb on failure
         if: failure()
@@ -278,27 +374,8 @@ jobs:
             -o "quit" \
             -- "$(xcrun --find xctest)" \
             .build/arm64-apple-macosx/debug/RamaAppleNetworkExtensionPackageTests.xctest
-
-  test-rama-apple-ne-swift-ffi:
-    runs-on: macos-latest
-    timeout-minutes: 90
-    needs:
-      - precheck-rust
-      - precheck-docs
-    env:
-      RUSTFLAGS: -D warnings
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
-        with:
-          toolchain: ${{env.RUST_TOOLCHAIN}}
-      - uses: ./.github/actions/rust-cache
-        with:
-          key: macos-latest-${{ env.RUST_TOOLCHAIN }}-apple-ne-swift-ffi
-          env-vars: "RUST_TOOLCHAIN=${{ env.RUST_TOOLCHAIN }}"
-      - name: Install just
-        run: brew install just
       - name: Run RamaAppleNetworkExtension Swift FFI tests
+        if: ${{ !cancelled() }}
         run: just test-e2e-ffi-swift
       - name: Rerun Swift FFI battery under lldb on failure
         if: failure()
@@ -313,36 +390,19 @@ jobs:
             -- "$(xcrun --find xctest)" \
             .build/arm64-apple-macosx/debug/RamaAppleNetworkExtensionPackageTests.xctest
       - name: Run Swift-side ThreadSanitizer battery
+        if: ${{ !cancelled() }}
         run: just ./ffi/apple/examples/transparent_proxy/run-tproxy-ffi-e2e-swift-tsan
       - name: Build Release products and run optimized Swift FFI tests
+        if: ${{ !cancelled() }}
         run: just ./ffi/apple/examples/transparent_proxy/run-tproxy-ffi-e2e-swift-release
-
-  test-rama-apple-xpc:
-    runs-on: macos-latest
-    needs:
-      - precheck-rust
-      - precheck-docs
-    env:
-      RUSTFLAGS: -D warnings
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
-        with:
-          toolchain: ${{env.RUST_TOOLCHAIN}}
-      - uses: ./.github/actions/rust-cache
-        with:
-          key: macos-latest-${{ env.RUST_TOOLCHAIN }}-apple-xpc
-          env-vars: "RUST_TOOLCHAIN=${{ env.RUST_TOOLCHAIN }}"
-      - name: Install just
-        run: brew install just
-      - name: Run Apple XPC QA checks
-        run: just qa-xpc-apple
 
   test-rama-dial9:
     runs-on: ubuntu-latest
     needs:
       - precheck-rust
       - precheck-docs
+      - precheck-fmt
+      - meta-lints
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
@@ -351,11 +411,11 @@ jobs:
           components: clippy
       - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
         with:
-          tool: just
+          tool: just,nextest
       - uses: ./.github/actions/rust-cache
         with:
           key: ubuntu-latest-${{ env.RUST_TOOLCHAIN }}-dial9
-          env-vars: "RUST_TOOLCHAIN=${{ env.RUST_TOOLCHAIN }}"
+          env-vars: RUST_TOOLCHAIN
       - name: Run dial9 QA checks
         run: just qa-dial9
 
@@ -364,6 +424,8 @@ jobs:
     needs:
       - precheck-rust
       - precheck-docs
+      - precheck-fmt
+      - meta-lints
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
@@ -375,7 +437,7 @@ jobs:
       - uses: ./.github/actions/rust-cache
         with:
           key: ubuntu-latest-${{ env.RUST_TOOLCHAIN }}-fastcgi-php
-          env-vars: "RUST_TOOLCHAIN=${{ env.RUST_TOOLCHAIN }}"
+          env-vars: RUST_TOOLCHAIN
       - name: Install php-fpm and jq
         run: |
           sudo apt-get update
@@ -390,6 +452,8 @@ jobs:
     needs:
       - precheck-rust
       - precheck-docs
+      - precheck-fmt
+      - meta-lints
     env:
       RUSTFLAGS: -D warnings
     steps:
@@ -403,7 +467,7 @@ jobs:
       - uses: ./.github/actions/rust-cache
         with:
           key: ubuntu-latest-${{ env.RUST_TOOLCHAIN }}-icap-oracle
-          env-vars: "RUST_TOOLCHAIN=${{ env.RUST_TOOLCHAIN }}"
+          env-vars: RUST_TOOLCHAIN
       - name: Run pinned c-icap interoperability matrix
         env:
           RAMA_ICAP_ORACLE_PROJECT_FILE: ${{ runner.temp }}/rama-icap-oracle-project
@@ -425,25 +489,46 @@ jobs:
   # each upstream implementation resolves its own dependencies and none of them reach the
   # workspace. They are built and run here rather than in the workspace jobs for that reason.
   test-quic-interop-qa:
-    name: test-quic-interop-qa-${{ matrix.backend }}-${{ matrix.toolchain }}-${{ matrix.os }}
+    name: test-quic-interop-qa-${{ matrix.backends }}-${{ matrix.toolchain }}-${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    concurrency:
+      group: ${{ startsWith(matrix.os, 'macos') && ('rama-macos-slot-2') || startsWith(matrix.os, 'windows') && (matrix.toolchain == 'stable' && 'rama-windows-slot-3' || 'rama-windows-slot-2') || format('rama-linux-quic-{0}-{1}', github.run_id, strategy.job-index) }}
+      cancel-in-progress: false
+      queue: max
+    timeout-minutes: 120
     needs:
       - precheck-rust
       - precheck-docs
+      - precheck-fmt
+      - meta-lints
     strategy:
       fail-fast: false
       matrix:
-        backend:
-          - rustls-ring
-          - rustls-aws-lc
-        toolchain:
-          - stable
-          - "1.96.0"
-        os:
-          - ubuntu-latest
-          - macos-15
-          - windows-latest
+        include:
+          - os: ubuntu-latest
+            toolchain: stable
+            backends: rustls-ring
+          - os: ubuntu-latest
+            toolchain: stable
+            backends: rustls-aws-lc
+          - os: ubuntu-latest
+            toolchain: "1.96.0"
+            backends: rustls-ring
+          - os: ubuntu-latest
+            toolchain: "1.96.0"
+            backends: rustls-aws-lc
+          - os: macos-15
+            toolchain: stable
+            backends: both
+          - os: macos-15
+            toolchain: "1.96.0"
+            backends: both
+          - os: windows-latest
+            toolchain: stable
+            backends: both
+          - os: windows-latest
+            toolchain: "1.96.0"
+            backends: both
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
@@ -470,8 +555,8 @@ jobs:
           tool: just
       - uses: ./.github/actions/rust-cache
         with:
-          key: ${{ matrix.os }}-${{ matrix.toolchain }}-quic-interop-peers-${{ matrix.backend }}
-          env-vars: "RUST_TOOLCHAIN=${{ matrix.toolchain }}"
+          key: ${{ matrix.os }}-${{ matrix.toolchain }}-quic-interop-peers-${{ matrix.backends }}
+          env-vars: RUST_TOOLCHAIN
           workspaces: |
             rama-quic/e2e/interop-common
             rama-quic/e2e/quinn-interop
@@ -481,24 +566,41 @@ jobs:
       - name: Build the aioquic peer's locked environment
         working-directory: rama-quic/e2e/aioquic-interop
         run: uv sync --frozen
-      - name: Shared scenario library
-        if: ${{ !cancelled() }}
-        run: just rama-quic/qa-interop-common ${{ matrix.backend }}
-      - name: Quinn interoperability
-        if: ${{ !cancelled() }}
-        run: just rama-quic/qa-interop-quinn ${{ matrix.backend }}
-      - name: quiche interoperability
-        if: ${{ !cancelled() }}
-        run: just rama-quic/qa-interop-quiche ${{ matrix.backend }}
-      - name: aioquic interoperability
-        if: ${{ !cancelled() }}
-        run: just rama-quic/qa-interop-aioquic ${{ matrix.backend }}
-
-      - name: Runner endpoint and result gates
-        if: ${{ !cancelled() }}
+      # Separate steps preserve the existing keep-going diagnostics across peers and backends.
+      - name: Shared scenario library (rustls-ring)
+        if: ${{ !cancelled() && (matrix.backends == 'both' || matrix.backends == 'rustls-ring') }}
+        run: just rama-quic/qa-interop-common rustls-ring
+      - name: Quinn interoperability (rustls-ring)
+        if: ${{ !cancelled() && (matrix.backends == 'both' || matrix.backends == 'rustls-ring') }}
+        run: just rama-quic/qa-interop-quinn rustls-ring
+      - name: quiche interoperability (rustls-ring)
+        if: ${{ !cancelled() && (matrix.backends == 'both' || matrix.backends == 'rustls-ring') }}
+        run: just rama-quic/qa-interop-quiche rustls-ring
+      - name: aioquic interoperability (rustls-ring)
+        if: ${{ !cancelled() && (matrix.backends == 'both' || matrix.backends == 'rustls-ring') }}
+        run: just rama-quic/qa-interop-aioquic rustls-ring
+      - name: Runner endpoint and result gates (rustls-ring)
+        if: ${{ !cancelled() && (matrix.backends == 'both' || matrix.backends == 'rustls-ring') }}
         env:
           PYTHON: ${{ github.workspace }}/rama-quic/e2e/aioquic-interop/.venv/${{ runner.os == 'Windows' && 'Scripts/python.exe' || 'bin/python' }}
-        run: just rama-quic/qa-interop-runner ${{ matrix.backend }}
+        run: just rama-quic/qa-interop-runner rustls-ring
+      - name: Shared scenario library (rustls-aws-lc)
+        if: ${{ !cancelled() && (matrix.backends == 'both' || matrix.backends == 'rustls-aws-lc') }}
+        run: just rama-quic/qa-interop-common rustls-aws-lc
+      - name: Quinn interoperability (rustls-aws-lc)
+        if: ${{ !cancelled() && (matrix.backends == 'both' || matrix.backends == 'rustls-aws-lc') }}
+        run: just rama-quic/qa-interop-quinn rustls-aws-lc
+      - name: quiche interoperability (rustls-aws-lc)
+        if: ${{ !cancelled() && (matrix.backends == 'both' || matrix.backends == 'rustls-aws-lc') }}
+        run: just rama-quic/qa-interop-quiche rustls-aws-lc
+      - name: aioquic interoperability (rustls-aws-lc)
+        if: ${{ !cancelled() && (matrix.backends == 'both' || matrix.backends == 'rustls-aws-lc') }}
+        run: just rama-quic/qa-interop-aioquic rustls-aws-lc
+      - name: Runner endpoint and result gates (rustls-aws-lc)
+        if: ${{ !cancelled() && (matrix.backends == 'both' || matrix.backends == 'rustls-aws-lc') }}
+        env:
+          PYTHON: ${{ github.workspace }}/rama-quic/e2e/aioquic-interop/.venv/${{ runner.os == 'Windows' && 'Scripts/python.exe' || 'bin/python' }}
+        run: just rama-quic/qa-interop-runner rustls-aws-lc
 
   test-quic-interop-runner:
     runs-on: ubuntu-24.04
@@ -506,6 +608,8 @@ jobs:
     needs:
       - precheck-rust
       - precheck-docs
+      - precheck-fmt
+      - meta-lints
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install packet analysis tools
@@ -540,6 +644,8 @@ jobs:
     needs:
       - precheck-rust
       - precheck-docs
+      - precheck-fmt
+      - meta-lints
     env:
       RUSTFLAGS: -D warnings
     steps:
@@ -551,7 +657,7 @@ jobs:
       - uses: ./.github/actions/rust-cache
         with:
           key: ubuntu-latest-${{ env.RUST_TOOLCHAIN }}-icap-features
-          env-vars: "RUST_TOOLCHAIN=${{ env.RUST_TOOLCHAIN }}"
+          env-vars: RUST_TOOLCHAIN
       - name: Test the package without features
         run: cargo test --locked -p rama-icap --no-default-features
       - name: Check each opt-in feature boundary
@@ -578,6 +684,8 @@ jobs:
     needs:
       - precheck-rust
       - precheck-docs
+      - precheck-fmt
+      - meta-lints
     env:
       RUSTFLAGS: -D warnings
     steps:
@@ -589,7 +697,7 @@ jobs:
       - uses: ./.github/actions/rust-cache
         with:
           key: ${{ matrix.os }}-${{ matrix.toolchain }}-${{ matrix.target }}
-          env-vars: "RUST_TOOLCHAIN=${{ matrix.toolchain }}"
+          env-vars: RUST_TOOLCHAIN
       - name: Install Zig
         if: contains(matrix.target, 'unknown-linux-musl')
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
@@ -660,42 +768,26 @@ jobs:
             exit "$rc"
           fi
 
-  test-rust-linux-gnu-cross-host:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-latest
-            rust-toolchain: stable
-            rust-target: x86_64-unknown-linux-gnu
-            zig-target: x86_64-unknown-linux-gnu.2.17
-            just-recipe: test-zigbuild-linux-gnu
-          - os: macos-latest
-            rust-toolchain: stable
-            rust-target: aarch64-unknown-linux-gnu
-            zig-target: aarch64-unknown-linux-gnu.2.17
-            just-recipe: test-zigbuild-linux-gnu-native-dns
-          - os: windows-latest
-            rust-toolchain: stable-x86_64-pc-windows-gnu
-            rust-target: x86_64-unknown-linux-gnu
-            zig-target: x86_64-unknown-linux-gnu.2.17
-            just-recipe: test-zigbuild-linux-gnu-cli
-    name: test-rust-linux-gnu-cross-host-${{ matrix.os }}-${{ matrix.rust-target }}
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 240
+  test-rust-linux-gnu-cross-macos:
+    runs-on: macos-latest
+    concurrency:
+      group: rama-macos-slot-2
+      cancel-in-progress: false
+      queue: max
+    timeout-minutes: 360
     needs:
       - precheck-rust
       - precheck-docs
+      - precheck-fmt
+      - meta-lints
     env:
-      RUSTUP_TOOLCHAIN: ${{ matrix.rust-toolchain }}
+      RUSTUP_TOOLCHAIN: stable
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
-        if: startsWith(matrix.os, 'windows')
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
-          toolchain: ${{ matrix.rust-toolchain }}
-          targets: ${{ matrix.rust-target }}
+          toolchain: stable
+          targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu
       - name: Install Zig
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
@@ -708,13 +800,15 @@ jobs:
           tool: just
       - uses: ./.github/actions/rust-cache
         with:
-          key: linux-gnu-cross-${{ matrix.os }}-${{ matrix.rust-toolchain }}-${{ matrix.zig-target }}
-          env-vars: "RUST_TOOLCHAIN=${{ matrix.rust-toolchain }}"
+          key: linux-gnu-cross-macos-stable-both
+          env-vars: RUST_TOOLCHAIN
       # The just recipes are also the documented local developer entry points.
       - name: Cross-link Linux GNU coverage
-        run: just ${{ matrix.just-recipe }} ${{ matrix.zig-target }}
+        run: just test-zigbuild-linux-gnu x86_64-unknown-linux-gnu.2.17
+      - name: Cross-link Linux GNU native DNS on AArch64
+        if: ${{ !cancelled() }}
+        run: just test-zigbuild-linux-gnu-native-dns aarch64-unknown-linux-gnu.2.17
       - name: Upload the cross-built Rama CLI
-        if: matrix.just-recipe == 'test-zigbuild-linux-gnu'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: rama-cli-linux-x86_64-gnu-glibc-2.17
@@ -722,9 +816,48 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  test-rust-linux-gnu-cross-windows:
+    runs-on: windows-latest
+    concurrency:
+      group: rama-windows-slot-2
+      cancel-in-progress: false
+      queue: max
+    timeout-minutes: 240
+    needs:
+      - precheck-rust
+      - precheck-docs
+      - precheck-fmt
+      - meta-lints
+    env:
+      RUSTUP_TOOLCHAIN: stable-x86_64-pc-windows-gnu
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: stable-x86_64-pc-windows-gnu
+          targets: x86_64-unknown-linux-gnu
+      - name: Install Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.15.2
+      - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
+        with:
+          tool: cargo-zigbuild@0.23.3
+      - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
+        with:
+          tool: just
+      - uses: ./.github/actions/rust-cache
+        with:
+          key: linux-gnu-cross-windows-latest-stable-x86_64-pc-windows-gnu-x86_64-unknown-linux-gnu.2.17
+          env-vars: RUST_TOOLCHAIN
+      # The just recipes are also the documented local developer entry points.
+      - name: Cross-link Linux GNU coverage
+        run: just test-zigbuild-linux-gnu-cli x86_64-unknown-linux-gnu.2.17
+
   test-rust-linux-gnu-cross-smoke:
     runs-on: ubuntu-latest
-    needs: test-rust-linux-gnu-cross-host
+    needs: test-rust-linux-gnu-cross-macos
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
@@ -780,7 +913,13 @@ jobs:
     needs:
       - precheck-rust
       - precheck-docs
+      - precheck-fmt
+      - meta-lints
     runs-on: ${{ matrix.os }}
+    concurrency:
+      group: ${{ startsWith(matrix.os, 'macos') && (matrix.os == 'macos-15-intel' && 'rama-macos-slot-0' || 'rama-macos-slot-1') || startsWith(matrix.os, 'windows') && ('rama-windows-slot-2') || format('rama-linux-tier2-{0}-{1}', github.run_id, strategy.job-index) }}
+      cancel-in-progress: false
+      queue: max
     env:
       RUSTFLAGS: -D warnings
     steps:
@@ -790,7 +929,7 @@ jobs:
           toolchain: ${{ matrix.rust }}
       - uses: ./.github/actions/rust-cache
         with:
-          env-vars: "RUST_TOOLCHAIN=${{ matrix.rust }}"
+          env-vars: RUST_TOOLCHAIN
           key: ${{ matrix.os }}-${{ matrix.rust }}-${{ matrix.target }}
       - run: rustup target add ${{ matrix.target }}
       - name: Configure Android toolchain env
@@ -809,23 +948,25 @@ jobs:
           TRIPLE="${{ matrix.target }}"
           TARGET_UPPER="$(echo "${TRIPLE}" | tr '[:lower:]-' '[:upper:]_')"
           TARGET_LOWER_UNDERSCORES="$(echo "${TRIPLE}" | tr '-' '_' | tr '[:upper:]' '[:lower:]')"
-          NDK_TRIPLE="$(echo "${TRIPLE}" | sed 's/^armv7/armv7a/')"
+          NDK_TRIPLE="${TRIPLE/#armv7/armv7a}"
 
           CC_PATH="${TOOLCHAIN}/${NDK_TRIPLE}${ANDROID_API}-clang"
           CXX_PATH="${TOOLCHAIN}/${NDK_TRIPLE}${ANDROID_API}-clang++"
           AR_PATH="${TOOLCHAIN}/llvm-ar"
 
-          echo "CARGO_TARGET_${TARGET_UPPER}_LINKER=${CXX_PATH}" >> "$GITHUB_ENV"
+          {
+            echo "CARGO_TARGET_${TARGET_UPPER}_LINKER=${CXX_PATH}"
 
-          # Target specific for cc-rs style
-          echo "CC_${TARGET_LOWER_UNDERSCORES}=${CC_PATH}" >> "$GITHUB_ENV"
-          echo "CXX_${TARGET_LOWER_UNDERSCORES}=${CXX_PATH}" >> "$GITHUB_ENV"
-          echo "AR_${TARGET_LOWER_UNDERSCORES}=${AR_PATH}" >> "$GITHUB_ENV"
+            # Target specific for cc-rs style
+            echo "CC_${TARGET_LOWER_UNDERSCORES}=${CC_PATH}"
+            echo "CXX_${TARGET_LOWER_UNDERSCORES}=${CXX_PATH}"
+            echo "AR_${TARGET_LOWER_UNDERSCORES}=${AR_PATH}"
 
-          # Also set generic vars in case your Config only reads CC/CXX/AR
-          echo "CC=${CC_PATH}" >> "$GITHUB_ENV"
-          echo "CXX=${CXX_PATH}" >> "$GITHUB_ENV"
-          echo "AR=${AR_PATH}" >> "$GITHUB_ENV"
+            # Also set generic vars in case your Config only reads CC/CXX/AR
+            echo "CC=${CC_PATH}"
+            echo "CXX=${CXX_PATH}"
+            echo "AR=${AR_PATH}"
+          } >> "$GITHUB_ENV"
       - name: check
         env: ${{ matrix.custom_env }}
         run: |
@@ -842,6 +983,8 @@ jobs:
     needs:
       - precheck-rust
       - precheck-docs
+      - precheck-fmt
+      - meta-lints
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
@@ -850,10 +993,10 @@ jobs:
           components: clippy
       - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
         with:
-          tool: just
+          tool: just,nextest
       - uses: ./.github/actions/rust-cache
         with:
-          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
+          env-vars: RUST_TOOLCHAIN
           key: ubuntu-latest-${{env.RUST_TOOLCHAIN}}-dial9-tokio-unstable
       # The recipe sets `--cfg tokio_unstable`, setting RUSTFLAGS here would
       # not survive the justfile's own `export RUSTFLAGS`.
@@ -865,6 +1008,8 @@ jobs:
     needs:
       - precheck-rust
       - precheck-docs
+      - precheck-fmt
+      - meta-lints
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
@@ -875,18 +1020,24 @@ jobs:
           tool: nextest
       - uses: ./.github/actions/rust-cache
         with:
-          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
+          env-vars: RUST_TOOLCHAIN
           key: ubuntu-latest-${{env.RUST_TOOLCHAIN}}-loom
       - name: Run Loom tests (rama-utils)
         run: |
           RUSTFLAGS="--cfg loom -Dwarnings" \
             cargo nextest run --all-features -p rama-utils
 
-  cargo-hack-base:
+  cargo-hack:
+    strategy:
+      fail-fast: false
+      matrix:
+        partition: [1, 2]
     runs-on: ubuntu-latest
     needs:
       - precheck-rust
       - precheck-docs
+      - precheck-fmt
+      - meta-lints
     env:
       RUSTFLAGS: -D warnings
     steps:
@@ -896,66 +1047,18 @@ jobs:
           toolchain: ${{env.RUST_TOOLCHAIN}}
       - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
         with:
-          tool: cargo-hack
+          tool: cargo-hack@0.6.45
       - uses: ./.github/actions/rust-cache
         with:
-          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
-          key: ubuntu-latest-${{env.RUST_TOOLCHAIN}}-cargo-hack-base
+          env-vars: RUST_TOOLCHAIN
+          key: ubuntu-latest-${{env.RUST_TOOLCHAIN}}-cargo-hack-${{ matrix.partition }}
       - name: install protoc
         run: |
           sudo apt-get update
           sudo apt-get install --yes protobuf-compiler
           protoc --version
-      - name: cargo hack check without dial9
-        run: cargo hack check --each-feature --exclude-features dial9 --exclude-all-features --no-dev-deps --workspace
-
-  # Every feature combination, dial9 included
-  cargo-hack-dial9:
-    runs-on: ubuntu-latest
-    needs:
-      - precheck-rust
-      - precheck-docs
-    env:
-      RUSTFLAGS: -D warnings
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
-        with:
-          toolchain: ${{env.RUST_TOOLCHAIN}}
-      - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
-        with:
-          tool: cargo-hack
-      - uses: ./.github/actions/rust-cache
-        with:
-          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
-          key: ubuntu-latest-${{env.RUST_TOOLCHAIN}}-cargo-hack-dial9
-      - name: install protoc
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes protobuf-compiler
-          protoc --version
-      - name: cargo hack check with dial9
-        run: cargo hack check --each-feature --no-dev-deps --workspace
-
-  meta-lints:
-    runs-on: ubuntu-latest
-    needs:
-      - precheck-rust
-      - precheck-docs
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
-        with:
-          toolchain: ${{env.RUST_TOOLCHAIN}}
-      - name: cargo deny
-        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
-        with:
-          rust-version: ${{env.RUST_TOOLCHAIN}}
-      - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
-        with:
-          tool: cargo-sort
-      - name: cargo sort (dependencies)
-        run: cargo sort --workspace --grouped --check
+      - name: Check every individual feature, including dial9
+        run: cargo hack check --each-feature --no-dev-deps --workspace --partition ${{ matrix.partition }}/2
 
   test-rust-e2e-release:
     strategy:
@@ -970,6 +1073,8 @@ jobs:
     needs:
       - precheck-rust
       - precheck-docs
+      - precheck-fmt
+      - meta-lints
     env:
       RUSTFLAGS: -D warnings
     steps:
@@ -986,7 +1091,7 @@ jobs:
       - uses: ./.github/actions/rust-cache
         with:
           key: ${{ matrix.os }}-${{ matrix.toolchain }}-release
-          env-vars: "RUST_TOOLCHAIN=${{ matrix.toolchain }}"
+          env-vars: RUST_TOOLCHAIN
       - name: Run tests in release mode (--ignored)
         timeout-minutes: 110
         run: |
@@ -1004,6 +1109,8 @@ jobs:
     needs:
       - precheck-rust
       - precheck-docs
+      - precheck-fmt
+      - meta-lints
     # The server suite usually takes ~12-22m.
     timeout-minutes: 90
     env:
@@ -1016,7 +1123,7 @@ jobs:
       - uses: ./.github/actions/rust-cache
         with:
           key: ubuntu-latest-${{ env.RUST_TOOLCHAIN }}-autobahn-server
-          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
+          env-vars: RUST_TOOLCHAIN
       - name: Verify jq
         run: jq --version
       - name: Run autobahn ws server test-suite
@@ -1030,6 +1137,8 @@ jobs:
     needs:
       - precheck-rust
       - precheck-docs
+      - precheck-fmt
+      - meta-lints
     # The client suite usually takes ~7-13m, but overloaded hosted runners
     # have occasionally made it exceed 25m.
     timeout-minutes: 90
@@ -1043,7 +1152,7 @@ jobs:
       - uses: ./.github/actions/rust-cache
         with:
           key: ubuntu-latest-${{ env.RUST_TOOLCHAIN }}-autobahn-client
-          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
+          env-vars: RUST_TOOLCHAIN
       - name: Verify jq
         run: jq --version
       - name: Run autobahn ws client test-suite
@@ -1057,6 +1166,8 @@ jobs:
     needs:
       - precheck-rust
       - precheck-docs
+      - precheck-fmt
+      - meta-lints
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
@@ -1071,6 +1182,8 @@ jobs:
     needs:
       - precheck-rust
       - precheck-docs
+      - precheck-fmt
+      - meta-lints
     env:
       # The released 0.4 baseline still depends on dial9 0.3, which only
       # compiles with Tokio's unstable APIs (the workspace config used to
@@ -1084,33 +1197,49 @@ jobs:
         with:
           rust-toolchain: ${{env.RUST_TOOLCHAIN}}
 
-  deploy-rama-cli-docker:
+  ci-success:
+    name: CI success
     runs-on: ubuntu-latest
+    if: ${{ !cancelled() }}
     needs:
-      - precheck-rust-tier2
+      - precheck-rust
+      - precheck-docs
       - check-rust
       - doc-rust
       - test-rust-base
-      - check-rama-icap-feature-boundaries
+      - test-datastar-sdk
+      - test-ffi-apple-example-transparent-proxy-e2e
+      - test-rama-dial9
+      - test-fastcgi-php
       - test-icap-oracle
       - test-quic-interop-qa
       - test-quic-interop-runner
-      - test-ffi-apple-example-transparent-proxy-e2e
-      - test-rama-apple-ne-swift-ffi
-      - test-fastcgi-php
+      - check-rama-icap-feature-boundaries
       - test-rust-linux-musl
       - test-rust-linux-gnu-cross-smoke
-      - test-rama-apple-xpc
+      - precheck-rust-tier2
       - test-dial9-tokio-unstable
       - test-loom
-      - cargo-hack-base
-      - cargo-hack-dial9
       - meta-lints
       - test-rust-e2e-release
       - test-ws-autobahn-server
       - test-ws-autobahn-client
       - test-spec-h2
       - semver-checks
+      - test-rust-linux-gnu-cross-macos
+      - test-rust-linux-gnu-cross-windows
+      - cargo-hack
+      - precheck-fmt
+    steps:
+      - name: Require every CI job to succeed
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS" | jq -e 'all(.[]; .result == "success")'
+
+  deploy-rama-cli-docker:
+    runs-on: ubuntu-latest
+    needs: ci-success
     if: github.ref == 'refs/heads/main'
     steps:
       - name: Set up emulation for the interop endpoint image

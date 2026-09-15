@@ -24,6 +24,19 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  precheck:
+    runs-on: ubuntu-latest
+    env:
+      RUSTUP_TOOLCHAIN: beta
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: beta
+          components: rustfmt
+      - name: Check formatting before reserving platform runners
+        run: bash scripts/ci/check-format.sh
+
   check-rust:
     strategy:
       matrix:
@@ -33,7 +46,12 @@ jobs:
           - ubuntu-latest
           - macos-latest
           - windows-latest
+    needs: precheck
     runs-on: ${{ matrix.os }}
+    concurrency:
+      group: ${{ startsWith(matrix.os, 'macos') && ('rama-macos-slot-2') || startsWith(matrix.os, 'windows') && ('rama-windows-slot-2') || format('rama-linux-beta-check-{0}-{1}', github.run_id, strategy.job-index) }}
+      cancel-in-progress: false
+      queue: max
     env:
       RUSTUP_TOOLCHAIN: ${{ matrix.toolchain }}
       RUSTFLAGS: -D warnings
@@ -47,14 +65,14 @@ jobs:
           components: clippy, rustfmt
       - uses: ./.github/actions/rust-cache
         with:
-          env-vars: "RUST_TOOLCHAIN=${{ matrix.toolchain }}"
+          env-vars: RUST_TOOLCHAIN
           key: ${{ matrix.os }}-${{ matrix.toolchain }}
-      - name: clippy
-        run: |
-          cargo clippy --workspace --all-targets --all-features
       - name: rustfmt
         run: |
           cargo fmt --all --check
+      - name: clippy
+        run: |
+          cargo clippy --workspace --all-targets --all-features
 
   test-rust:
     name: test-rust-${{ matrix.toolchain }}-${{ matrix.profile }}-${{ matrix.os }}
@@ -78,7 +96,12 @@ jobs:
             cargo_profile_args: --release
             # Match regular Release CI's cap on concurrent rustc processes.
             cargo_build_args: --build-jobs 2
+    needs: precheck
     runs-on: ${{ matrix.os }}
+    concurrency:
+      group: ${{ startsWith(matrix.os, 'macos') && (matrix.profile == 'debug' && 'rama-macos-slot-0' || 'rama-macos-slot-1') || startsWith(matrix.os, 'windows') && (matrix.profile == 'debug' && 'rama-windows-slot-0' || 'rama-windows-slot-1') || format('rama-linux-beta-test-{0}-{1}', github.run_id, strategy.job-index) }}
+      cancel-in-progress: false
+      queue: max
     # Cover all three step budgets plus at least 20m for setup and cleanup.
     # Windows debug also needs room for its ~80m ignored compiletest suite.
     timeout-minutes: ${{ matrix.os == 'macos-latest' && matrix.profile == 'release' && 270 || matrix.os == 'windows-latest' && 240 || 210 }}
@@ -97,7 +120,7 @@ jobs:
           tool: nextest
       - uses: ./.github/actions/rust-cache
         with:
-          env-vars: "RUST_TOOLCHAIN=${{ matrix.toolchain }}"
+          env-vars: RUST_TOOLCHAIN
           key: ${{ matrix.os }}-${{ matrix.toolchain }}-test-${{ matrix.profile }}
       - name: Build tests (${{ matrix.profile }})
         # A cold macOS release build already took 108m on a successful run.
@@ -177,7 +200,7 @@ jobs:
           components: clippy
       - uses: ./.github/actions/rust-cache
         with:
-          env-vars: "RUST_TOOLCHAIN=beta"
+          env-vars: RUST_TOOLCHAIN
           key: ubuntu-latest-beta
       - name: cargo clippy --fix
         # Don't fail the job on remaining (unfixable) lints — we still
@@ -239,7 +262,12 @@ jobs:
             --body "${pr_body}"
 
   test-ffi-apple-example-transparent-proxy-e2e-sanitizers:
+    needs: precheck
     runs-on: macos-latest
+    concurrency:
+      group: rama-macos-slot-2
+      cancel-in-progress: false
+      queue: max
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -252,6 +280,10 @@ jobs:
       - uses: ./.github/actions/rust-cache
         with:
           key: macos-latest-nightly-apple-transparent-proxy-e2e-sanitizers
+          workspaces: |
+            ffi/apple/examples/transparent_proxy/tproxy_rs
+            ffi/apple/examples/transparent_proxy/tproxy_rs -> target/asan
+            ffi/apple/examples/transparent_proxy/tproxy_ffi_e2e -> target/asan
       - name: Install just
         run: brew install just
       - name: Run transparent proxy FFI stress tests under ASan and Swift TSan
@@ -259,7 +291,12 @@ jobs:
         run: just test-e2e-sanitizers
 
   test-ffi-apple-ne-miri:
+    needs: precheck
     runs-on: macos-latest
+    concurrency:
+      group: rama-macos-slot-0
+      cancel-in-progress: false
+      queue: max
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -276,6 +313,7 @@ jobs:
         run: just miri-apple-ne-ffi
 
   fuzz-rust:
+    needs: precheck
     runs-on: ubuntu-latest
     env:
       # cargo-fuzz builds with `-Zsanitizer=address`, which is
@@ -302,7 +340,7 @@ jobs:
       - uses: ./.github/actions/rust-cache
         with:
           key: ubuntu-latest-nightly-fuzz
-          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_NIGHTLY}}"
+          env-vars: RUST_TOOLCHAIN
       - name: Install cargo-fuzz
         uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
         with:
@@ -364,6 +402,7 @@ jobs:
   docsrs-emulation:
     # Linux is the docs.rs build host. cargo-docs-rs applies each crate's
     # docs.rs metadata and cross-compiles every declared documentation target.
+    needs: precheck
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -377,7 +416,7 @@ jobs:
       - uses: ./.github/actions/rust-cache
         with:
           key: ubuntu-latest-nightly-docsrs-emulation
-          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_NIGHTLY}}"
+          env-vars: RUST_TOOLCHAIN
       - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
         with:
           tool: cargo-docs-rs@1.0.4
@@ -393,7 +432,12 @@ jobs:
         os:
           - macos-latest
           - windows-latest
+    needs: precheck
     runs-on: ${{ matrix.os }}
+    concurrency:
+      group: ${{ startsWith(matrix.os, 'macos') && ('rama-macos-slot-2') || startsWith(matrix.os, 'windows') && ('rama-windows-slot-3') || format('rama-linux-edge-docs-{0}-{1}', github.run_id, strategy.job-index) }}
+      cancel-in-progress: false
+      queue: max
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -408,7 +452,7 @@ jobs:
       - uses: ./.github/actions/rust-cache
         with:
           key: ${{ matrix.os }}-nightly-edge-docs
-          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_NIGHTLY}}"
+          env-vars: RUST_TOOLCHAIN
       - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
         with:
           tool: cargo-docs-rs@1.0.4
@@ -419,7 +463,12 @@ jobs:
   refresh-docsrs-bindings:
     name: refresh docs.rs Apple bindings
     if: github.ref == 'refs/heads/main'
+    needs: precheck
     runs-on: macos-latest
+    concurrency:
+      group: rama-macos-slot-1
+      cancel-in-progress: false
+      queue: max
     timeout-minutes: 60
     permissions:
       contents: write
@@ -435,7 +484,7 @@ jobs:
       - uses: ./.github/actions/rust-cache
         with:
           key: macos-latest-nightly-docsrs-bindings
-          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_NIGHTLY}}"
+          env-vars: RUST_TOOLCHAIN
       - name: Generate docs.rs Apple bindings
         env:
           RAMA_UPDATE_DOCSRS_BINDINGS: ${{ github.run_id }}
