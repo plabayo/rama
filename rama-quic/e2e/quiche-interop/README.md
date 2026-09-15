@@ -23,7 +23,7 @@ cargo test --locked --features rustls-ring
 Use `--features boring` to run Rama with its own prefixed BoringSSL library alongside
 quiche's independent native library, or `--features rustls-aws-lc` for Rustls with AWS-LC.
 
-CI runs these through `just rama-quic/qa-interop-quiche rustls-ring`, in the `test-quic-interop-qa` job. The
+CI runs these through `just rama-quic/qa-interop-quiche BACKEND` for all three backends, in the `test-quic-interop-qa` job. The
 project is not part of the workspace, so `cargo test` at the repository root does not reach it.
 
 ## What is covered

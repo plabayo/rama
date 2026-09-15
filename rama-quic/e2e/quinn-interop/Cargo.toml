@@ -9,7 +9,7 @@ edition = "2024"
 publish = false
 
 [features]
-boring = ["rama/boring", "rama/rustls", "rama/ring", "interop-common/boring"]
+boring = ["rama/boring", "interop-common/boring"]
 rustls-ring = ["rama/rustls", "rama/ring", "interop-common/rustls-ring"]
 rustls-aws-lc = ["rama/rustls", "rama/aws-lc", "interop-common/rustls-aws-lc"]
 
@@ -17,7 +17,7 @@ rustls-aws-lc = ["rama/rustls", "rama/aws-lc", "interop-common/rustls-aws-lc"]
 
 [dev-dependencies]
 rama = { path = "../../..", default-features = false, features = ["std", "quic"] }
-interop-common = { package = "rama-quic-interop-common", path = "../interop-common", default-features = false }
+interop-common = { package = "rama-quic-interop-common", path = "../interop-common", default-features = false, features = ["peer-rustls"] }
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }

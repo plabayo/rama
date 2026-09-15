@@ -86,7 +86,10 @@ This transport-first model is also part of why Rama's [gRPC support](./http/grpc
 QUIC needs the `quic` feature and a TLS provider: either `boring`, or `rustls` together with
 `ring` or `aws-lc`. Select an implementation with `TlsOptions::with_backend`; automatic
 selection prefers Rustls when both are available. It is built on [rama-udp][rama-udp], so
-the socket options and packet features of that layer apply to it.
+the socket options and packet features of that layer apply to it. Boring builds do not require
+Rustls, ring, or AWS-LC. Applications can also implement the interfaces in
+`rama::quic::tls::provider` and construct `ClientConfig` and `ServerConfig` with their own
+TLS 1.3 and packet-crypto provider, without enabling a built-in backend.
 
 For the connection-oriented streams there are also connectors to make it easy to establish connections in bigger stacks
 (e.g. http within tls on top of tcp):

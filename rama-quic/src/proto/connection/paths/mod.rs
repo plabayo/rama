@@ -856,7 +856,10 @@ mod tests {
         assert_eq!(popped, 16);
     }
 
-    #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+    #[cfg(any(
+        feature = "boring",
+        all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+    ))]
     #[test]
     fn off_path_responses_respect_their_own_receive_credit() {
         let mut pair = crate::proto::tests::Pair::default();

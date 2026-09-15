@@ -12,6 +12,11 @@ server cannot resume while rejecting offered early data; that case remains expli
 unsupported in the shared inventory. Boring rejects early data by changing
 the transport context bound to a ticket while retaining its native ticket keys.
 
+`just rama-quic/qa-boring-isolation` checks dependency trees, including test fixtures.
+Boring runs exclude the Rustls engine, ring, and AWS-LC from Rama's dependencies.
+Quinn's own Rustls peer is checked separately from Rama's dependency subtree.
+The Docker runner accepts `--backend` with the same three choices.
+
 - [Shared scenarios](interop-common/)
 - [Quinn](quinn-interop/)
 - [quiche](quiche-interop/)

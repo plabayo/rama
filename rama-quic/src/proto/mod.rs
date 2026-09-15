@@ -18,7 +18,10 @@ pub(crate) mod coding;
 mod constant_time;
 mod range_set;
 #[cfg(test)]
-#[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+#[cfg(any(
+    feature = "boring",
+    all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+))]
 mod tests;
 pub(crate) mod transport_parameters;
 mod varint;
@@ -38,11 +41,38 @@ pub(crate) use crate::proto::connection::{
     Chunks, Connection, Event, FinishError, ReadError, ReadableError, SendDatagramError,
     SendStream, StreamEvent, WriteError,
 };
-#[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
-pub(crate) use crate::proto::connection::{Datagrams, Streams};
-#[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+#[cfg(all(
+    test,
+    any(
+        feature = "boring",
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        )
+    )
+))]
+pub(crate) use crate::proto::connection::{Datagrams, StreamResourceUsage, Streams};
+#[cfg(all(
+    test,
+    any(
+        feature = "boring",
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        )
+    )
+))]
 pub(crate) use crate::proto::endpoint::AcceptError;
-#[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+#[cfg(all(
+    test,
+    any(
+        feature = "boring",
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        )
+    )
+))]
 pub(crate) use crate::proto::frame::Datagram;
 #[cfg(feature = "test-utils")]
 pub(crate) use connection::benchmarks;
@@ -89,6 +119,7 @@ pub(crate) use crate::proto::endpoint::{
 pub use crate::proto::crypto::{ExportKeyingMaterialError, NegotiatedTlsParameters};
 
 mod packet;
+pub use packet::SpaceId;
 
 mod shared;
 pub(crate) use crate::proto::shared::{ConnectionEvent, EndpointEvent};
@@ -107,7 +138,16 @@ pub use crate::proto::cid_generator::{
 
 mod token;
 use token::ResetToken;
-#[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+#[cfg(all(
+    test,
+    any(
+        feature = "boring",
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        )
+    )
+))]
 pub(crate) use token::ResetToken as TestResetToken;
 pub use token::{NoneTokenLog, NoneTokenStore, TokenLog, TokenReuseError, TokenStore};
 

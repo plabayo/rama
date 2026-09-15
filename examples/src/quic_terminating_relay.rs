@@ -31,6 +31,8 @@
 //! It needs an origin to relay to, and the certificate that origin presents.
 //!
 //! ```sh
+//! Select `quic,boring`, `quic,rustls,ring`, or `quic,rustls,aws-lc` for the TLS backend.
+//!
 //! cargo run -p rama-examples --bin quic_terminating_relay --features=quic,rustls,ring -- \
 //!     --upstream 127.0.0.1:62000 --upstream-ca origin-cert.pem \
 //!     --cert relay-cert.pem --key relay-key.pem

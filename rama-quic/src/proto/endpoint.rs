@@ -205,8 +205,8 @@ impl Endpoint {
                         }
                     }
                     Installed::Refreshed => {}
-                    // No room, so there is no route. Saying so is the only honest answer: an
-                    // acknowledgement would open the gate onto a route that does not exist.
+                    // Refuse installation when full: acknowledging it would permit use of
+                    // a route that does not exist.
                     Installed::Full => {
                         return Some(ConnectionEvent(ConnectionEventInner::ResetRouteRefused(
                             remote, seq, generation,
@@ -605,7 +605,6 @@ impl Endpoint {
                         "ignoring initial packet version {:#x} unsupported by cryptographic layer",
                         header.version
                     ),
-                    #[cfg(feature = "boring")]
                     crypto::InitialKeysError::Crypto(error) => {
                         debug!(%error, "unable to derive Initial packet keys")
                     }
@@ -1242,7 +1241,13 @@ impl Endpoint {
         self.connections.len()
     }
 
-    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+    #[cfg(all(
+        test,
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        )
+    ))]
     /// Counter for the number of bytes currently used
     /// in the buffers for Initial and 0-RTT messages for pending incoming connections
     pub(crate) fn incoming_buffer_bytes(&self) -> u64 {

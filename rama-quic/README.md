@@ -42,7 +42,17 @@ The reasons behind the creation of rama can be read in [the "Why Rama" chapter](
 QUIC v1 (RFC 9000) transport for Rama: client, server and combined endpoints,
 streams, DATAGRAM, resumption and 0-RTT, migration, loss recovery, congestion
 control and path MTU discovery, on top of `rama-udp` sockets and the common
-`rama-tls` configuration (Rustls, TLS 1.3).
+`rama-tls` configuration (TLS 1.3 through BoringSSL or Rustls).
+
+Choose `boring` for BoringSSL alone, `rustls,ring` for Rustls with ring, or
+`rustls,aws-lc` for Rustls with AWS-LC. The `boring` feature does not require
+ring, AWS-LC, or the Rustls engine. `rustls-pki-types` remains the shared
+certificate/key representation used throughout Rama.
+
+Applications can supply their own TLS 1.3 and packet protection through
+`tls::provider::{ClientConfig, ServerConfig, Session}`. Pass the configurations to
+`ClientConfig::new` and `ServerConfig::new`; the latter accepts a custom token key.
+No built-in TLS or crypto feature is needed for this API.
 
 Crate used by the end-user `rama` crate.
 

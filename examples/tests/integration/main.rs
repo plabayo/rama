@@ -11,9 +11,21 @@
 
 mod utils;
 
-#[cfg(all(feature = "quic", feature = "rustls", feature = "ring"))]
+#[cfg(all(
+    feature = "quic",
+    any(
+        feature = "boring",
+        all(feature = "rustls", any(feature = "ring", feature = "aws-lc"))
+    )
+))]
 mod quic_client_server;
-#[cfg(all(feature = "quic", feature = "rustls", feature = "ring"))]
+#[cfg(all(
+    feature = "quic",
+    any(
+        feature = "boring",
+        all(feature = "rustls", any(feature = "ring", feature = "aws-lc"))
+    )
+))]
 mod quic_terminating_relay;
 
 #[cfg(all(feature = "fastcgi", feature = "http-full"))]

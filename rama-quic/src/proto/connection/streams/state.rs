@@ -154,6 +154,29 @@ pub struct StreamsState {
 }
 
 impl StreamsState {
+    #[cfg(all(
+        test,
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        )
+    ))]
+    pub(super) fn resource_usage(&self) -> super::StreamResourceUsage {
+        super::StreamResourceUsage {
+            sent_offset: self.data_sent,
+            peer_credit: self.max_data,
+            unacknowledged_bytes: self.unacked_data,
+            received_offset: self.data_recvd,
+            retained_receive_bytes: self
+                .recv
+                .values()
+                .flatten()
+                .filter_map(StreamRecv::as_open_recv)
+                .map(|recv| recv.assembler.retained_bytes())
+                .sum(),
+        }
+    }
+
     #[cfg_attr(
         not(fuzzing),
         expect(

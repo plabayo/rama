@@ -2,6 +2,7 @@
 //! configuration is its adapter's business; what is shared is the identity it presents or
 //! trusts, and the protocol both ends must agree on.
 
+use crate::backend::VerifyBackend as _;
 use std::{
     fs,
     net::{Ipv4Addr, Ipv6Addr},
@@ -11,12 +12,10 @@ use std::{
 use rama::{
     crypto::{
         cert::{CertificateIdentity, CertificateSubject, LeafCertRequest, SelfSignedCaConfig},
-        dep::rcgen,
-        pki_types::{CertificateDer, PrivatePkcs8KeyDer},
+        pki_types::CertificateDer,
     },
     net::{address::Domain, tls::ApplicationProtocol},
     quic::{ClientConfig, ServerConfig},
-    tls::rustls::{client::RustlsClientConfigExt as _, server::RustlsServerConfigExt as _},
     tls::{
         client::TlsClientConfig,
         server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
@@ -111,7 +110,7 @@ pub fn rama_server_config(identity: &Identity) -> ServerConfig {
     let tls = TlsServerConfig::new()
         .with_alpn(smallvec![alpn()])
         .with_server_auth(identity.clone())
-        .with_modify_rustls_config(crate::backend::verify_server);
+        .verify_backend();
     ServerConfig::try_from_rama_tls(&tls, crate::backend::options())
         .expect("the server config is built")
 }
@@ -122,7 +121,7 @@ pub fn rama_client_config(anchor: CertificateDer<'static>) -> ClientConfig {
         .with_alpn(smallvec![alpn()])
         .try_with_server_trust_anchors([anchor])
         .expect("the trust anchor is accepted")
-        .with_modify_rustls_config(crate::backend::verify_client);
+        .verify_backend();
     ClientConfig::try_from_rama_tls(&tls, crate::backend::options())
         .expect("the client config is built")
 }
@@ -163,67 +162,47 @@ impl IssuedIdentities {
     pub fn generate() -> Self {
         let directory =
             TempDir::with_prefix("rama-quic-interop-issued-").expect("a directory of our own");
-        let authority_key = rcgen::KeyPair::generate().expect("a key pair");
-        let mut authority = rcgen::CertificateParams::default();
-        authority.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
-        authority.key_usages = vec![
-            rcgen::KeyUsagePurpose::KeyCertSign,
-            rcgen::KeyUsagePurpose::CrlSign,
-            rcgen::KeyUsagePurpose::DigitalSignature,
-        ];
-        authority.distinguished_name = {
-            let mut name = rcgen::DistinguishedName::new();
-            name.push(rcgen::DnType::CommonName, "rama quic interop issuer");
-            name
-        };
-        let authority_cert = authority
-            .self_signed(&authority_key)
+        let authority =
+            rama::crypto::cert::CertificateAuthorityData::generate(SelfSignedCaConfig {
+                subject: CertificateSubject {
+                    common_name: Some("rama quic interop issuer".into()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
             .expect("the authority is generated");
-        let issuer = rcgen::Issuer::from_params(&authority, &authority_key);
-        let authority_pem = authority_cert.pem();
         let authority_path = directory.path().join("issuer.pem");
-        fs::write(&authority_path, &authority_pem).expect("the authority is written");
-
+        let anchor = authority.certificate_chain()[0].clone();
+        fs::write(&authority_path, pem("CERTIFICATE", anchor.as_ref()))
+            .expect("the authority is written");
         let for_name = Self::issue(
             directory.path(),
             "name",
-            rcgen::SanType::DnsName(SERVER_NAME.try_into().expect("the name fits a certificate")),
-            &issuer,
-            &authority_pem,
-            authority_cert.der(),
+            CertificateIdentity::Dns(SERVER_NAME.parse().unwrap()),
+            &authority,
         );
         let for_address = Self::issue(
             directory.path(),
             "address",
-            rcgen::SanType::IpAddress(Ipv4Addr::LOCALHOST.into()),
-            &issuer,
-            &authority_pem,
-            authority_cert.der(),
+            CertificateIdentity::Ip(Ipv4Addr::LOCALHOST.into()),
+            &authority,
         );
         let for_another_name = Self::issue(
             directory.path(),
             "another-name",
-            rcgen::SanType::DnsName(
-                ANOTHER_NAME
-                    .try_into()
-                    .expect("the name fits a certificate"),
-            ),
-            &issuer,
-            &authority_pem,
-            authority_cert.der(),
+            CertificateIdentity::Dns(ANOTHER_NAME.parse().unwrap()),
+            &authority,
         );
         let for_another_address = Self::issue(
             directory.path(),
             "another-address",
-            rcgen::SanType::IpAddress(Ipv4Addr::new(127, 0, 0, 2).into()),
-            &issuer,
-            &authority_pem,
-            authority_cert.der(),
+            CertificateIdentity::Ip(Ipv4Addr::new(127, 0, 0, 2).into()),
+            &authority,
         );
         let issued = Self {
             directory,
             authority: authority_path,
-            anchor: authority_cert.der().clone(),
+            anchor,
             for_name,
             for_address,
             for_another_name,
@@ -248,31 +227,18 @@ impl IssuedIdentities {
     fn issue(
         directory: &Path,
         which: &str,
-        identity: rcgen::SanType,
-        issuer: &rcgen::Issuer<'_, impl rcgen::SigningKey>,
-        authority_pem: &str,
-        authority_der: &CertificateDer<'static>,
+        identity: CertificateIdentity,
+        issuer: &rama::crypto::cert::CertificateAuthorityData,
     ) -> IssuedIdentity {
-        let key = rcgen::KeyPair::generate().expect("a key pair");
-        let mut params = rcgen::CertificateParams::default();
-        params.subject_alt_names = vec![identity];
-        let certificate = params
-            .signed_by(&key, issuer)
-            .expect("the leaf is issued under the authority");
+        let (chain, key) = issuer
+            .issue_leaf(LeafCertRequest::new(identity))
+            .expect("the leaf is issued");
+        let auth = Identity::new(chain, key);
         let certificate_path = directory.join(format!("{which}.pem"));
         let key_path = directory.join(format!("{which}-key.pem"));
-        fs::write(
-            &certificate_path,
-            format!("{}{authority_pem}", certificate.pem()),
-        )
-        .expect("the chain is written");
-        fs::write(&key_path, key.serialize_pem()).expect("the key is written");
+        write_pem(&auth, &certificate_path, &key_path);
         IssuedIdentity {
-            // rcgen serialises the key as PKCS#8, so it is named as such rather than guessed at.
-            auth: Identity::new(
-                vec![certificate.der().clone(), authority_der.clone()],
-                PrivatePkcs8KeyDer::from(key.serialize_der()).into(),
-            ),
+            auth,
             certificate: certificate_path,
             key: key_path,
         }
@@ -289,4 +255,33 @@ impl IssuedIdentities {
 #[must_use]
 pub fn path_of(path: &Path) -> &str {
     path.to_str().expect("a printable path")
+}
+
+fn pem(label: &str, der: &[u8]) -> String {
+    use base64::Engine as _;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(der);
+    let mut result = format!("-----BEGIN {label}-----\n");
+    for line in encoded.as_bytes().chunks(64) {
+        result.push_str(std::str::from_utf8(line).unwrap());
+        result.push('\n');
+    }
+    result.push_str(&format!("-----END {label}-----\n"));
+    result
+}
+
+pub fn write_pem(identity: &Identity, certificate: &Path, key: &Path) {
+    use rama::crypto::pki_types::PrivateKeyDer;
+    let certificates: String = identity
+        .cert_chain
+        .iter()
+        .map(|cert| pem("CERTIFICATE", cert.as_ref()))
+        .collect();
+    let label = match &identity.private_key {
+        PrivateKeyDer::Pkcs1(_) => "RSA PRIVATE KEY",
+        PrivateKeyDer::Sec1(_) => "EC PRIVATE KEY",
+        PrivateKeyDer::Pkcs8(_) => "PRIVATE KEY",
+        _ => panic!("unsupported private key format"),
+    };
+    fs::write(certificate, certificates).expect("the certificate chain is written");
+    fs::write(key, pem(label, identity.private_key.secret_der())).expect("the key is written");
 }

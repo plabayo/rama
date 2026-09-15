@@ -29,7 +29,7 @@ use crate::driver::{
     Instant, now,
     udp::{Sender, Socket, proto_ecn},
 };
-#[cfg(all(test, any(feature = "aws-lc", feature = "ring")))]
+#[cfg(all(test, any(feature = "boring", feature = "aws-lc", feature = "ring")))]
 use crate::proto::{self as proto};
 use crate::proto::{
     ClientConfig, ConnectError, ConnectionError, ConnectionHandle, DatagramEvent, EndpointEvent,
@@ -190,7 +190,16 @@ impl Endpoint {
     }
 
     /// Tests: the addresses this endpoint still advertises as preferred.
-    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+    #[cfg(all(
+        test,
+        any(
+            feature = "boring",
+            all(
+                feature = "rustls",
+                any(feature = "boring", feature = "aws-lc", feature = "ring")
+            )
+        )
+    ))]
     pub(crate) fn advertised_preferred(&self) -> Vec<SocketAddr> {
         self.inner.state.lock().inner.advertised_preferred()
     }
@@ -957,14 +966,32 @@ impl EndpointInner {
 impl EndpointRef {
     /// Tests: stop applying route installations, so a datagram that needs one can be observed
     /// waiting instead of leaving.
-    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+    #[cfg(all(
+        test,
+        any(
+            feature = "boring",
+            all(
+                feature = "rustls",
+                any(feature = "boring", feature = "aws-lc", feature = "ring")
+            )
+        )
+    ))]
     pub(crate) fn hold_route_installs(&self) {
         self.0.state.lock().hold_route_installs = true;
     }
 
     /// Tests: answer the route installations put aside with a refusal, as a full routing table
     /// does, so the connection fails rather than waiting for a route that cannot exist.
-    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+    #[cfg(all(
+        test,
+        any(
+            feature = "boring",
+            all(
+                feature = "rustls",
+                any(feature = "boring", feature = "aws-lc", feature = "ring")
+            )
+        )
+    ))]
     pub(crate) fn refuse_route_installs(&self) {
         let mut state = self.0.state.lock();
         state.hold_route_installs = false;
@@ -981,7 +1008,16 @@ impl EndpointRef {
 
     /// Tests: apply the route installations put aside, and hand each connection the
     /// acknowledgement the endpoint answers with, as it would have received it otherwise.
-    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+    #[cfg(all(
+        test,
+        any(
+            feature = "boring",
+            all(
+                feature = "rustls",
+                any(feature = "boring", feature = "aws-lc", feature = "ring")
+            )
+        )
+    ))]
     pub(crate) fn release_route_installs(&self) {
         let mut state = self.0.state.lock();
         state.hold_route_installs = false;
@@ -1334,7 +1370,7 @@ impl State {
     }
 
     /// Queue a stateless response on the active socket (tests).
-    #[cfg(all(test, any(feature = "aws-lc", feature = "ring")))]
+    #[cfg(all(test, any(feature = "boring", feature = "aws-lc", feature = "ring")))]
     fn respond_active(&mut self, transmit: proto::Transmit, response_buffer: &[u8]) {
         let Some(id) = self.sockets.live().map(SocketRegistry::active_id) else {
             return;
@@ -1342,7 +1378,7 @@ impl State {
         self.respond(id, transmit, response_buffer);
     }
 
-    #[cfg(all(test, any(feature = "aws-lc", feature = "ring")))]
+    #[cfg(all(test, any(feature = "boring", feature = "aws-lc", feature = "ring")))]
     /// Queue a stateless response on socket `on` and wake the driver to send it.
     fn respond(&mut self, on: SocketId, transmit: proto::Transmit, response_buffer: &[u8]) {
         self.sockets.respond(on, transmit, response_buffer);
@@ -1867,7 +1903,7 @@ struct PollProgress {
     error: Option<io::Error>,
 }
 
-#[cfg(all(test, any(feature = "aws-lc", feature = "ring")))]
+#[cfg(all(test, any(feature = "boring", feature = "aws-lc", feature = "ring")))]
 impl PollProgress {
     /// Tests: the poll as a result, discarding progress when the socket failed.
     fn into_result(self) -> io::Result<Self> {
@@ -1879,5 +1915,5 @@ impl PollProgress {
 }
 
 #[cfg(test)]
-#[cfg(any(feature = "ring", feature = "aws-lc"))]
+#[cfg(any(feature = "boring", feature = "ring", feature = "aws-lc"))]
 mod tests;

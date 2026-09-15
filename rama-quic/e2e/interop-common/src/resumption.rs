@@ -10,28 +10,21 @@
 //! Every payload is an echo of bytes the case names, so a payload sent twice after a refusal
 //! carries no side effect the second time.
 
-use std::{
-    net::SocketAddr,
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
-};
+use crate::backend::VerifyBackend as _;
+use std::{net::SocketAddr, sync::Arc};
 
+#[cfg(not(feature = "boring"))]
+use rama::tls::rustls::server::RustlsServerConfigExt;
 use rama::{
     crypto::pki_types::CertificateDer,
     quic::{ClientConfig, Connection, Endpoint, ServerConfig, StoppedError},
-    tls::{
-        client::TlsClientConfig,
-        rustls::{
-            client::RustlsClientConfigExt,
-            dep::rustls::server::{ServerSessionMemoryCache, StoresServerSessions},
-            server::RustlsServerConfigExt,
-        },
-        server::TlsServerConfig,
-    },
+    tls::{client::TlsClientConfig, server::TlsServerConfig},
     utils::{collections::smallvec::smallvec, octets},
 };
+#[cfg(any(not(feature = "boring"), feature = "peer-rustls"))]
+use rustls::server::{ServerSessionMemoryCache, StoresServerSessions};
+#[cfg(any(not(feature = "boring"), feature = "peer-rustls"))]
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::{
     close::CloseObservation,
@@ -286,7 +279,7 @@ pub fn rama_client_config_for(
         .with_alpn(smallvec![alpn()])
         .try_with_server_trust_anchors([anchor])
         .expect("the trust anchor is accepted")
-        .with_modify_rustls_config(crate::backend::verify_client);
+        .verify_backend();
     ClientConfig::try_from_rama_tls(
         &tls,
         crate::backend::options().with_early_data(scenario.offers_early_data),
@@ -470,6 +463,7 @@ pub const PROTOCOL: &[u8] = ALPN;
 /// (`rustls/src/server/tls13.rs`), so a lookup that found something is not a resumption. The
 /// resumption is [`ResumptionObservation::rama`], read from the handshake itself.
 #[derive(Debug)]
+#[cfg(any(not(feature = "boring"), feature = "peer-rustls"))]
 pub struct RecordingSessions {
     inner: Arc<dyn StoresServerSessions>,
     stored: AtomicUsize,
@@ -477,6 +471,7 @@ pub struct RecordingSessions {
     missed: AtomicUsize,
 }
 
+#[cfg(any(not(feature = "boring"), feature = "peer-rustls"))]
 impl RecordingSessions {
     #[must_use]
     pub fn new() -> Arc<Self> {
@@ -511,6 +506,7 @@ impl RecordingSessions {
     }
 }
 
+#[cfg(any(not(feature = "boring"), feature = "peer-rustls"))]
 impl StoresServerSessions for RecordingSessions {
     fn put(&self, key: Vec<u8>, value: Vec<u8>) -> bool {
         let stored = self.inner.put(key, value);
@@ -545,6 +541,7 @@ impl StoresServerSessions for RecordingSessions {
 /// The store is installed through `with_modify_rustls_config`, the hook Rama already offers for
 /// reaching the native configuration, so nothing here goes around the public surface.
 #[must_use]
+#[cfg(not(feature = "boring"))]
 pub fn rama_resuming_server_config(
     identity: &Identity,
     sessions: Arc<RecordingSessions>,

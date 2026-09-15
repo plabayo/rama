@@ -73,6 +73,14 @@ pub(crate) use lifecycle::{Event, SideArgs};
 pub use lifecycle::State;
 pub(crate) use paths::RttEstimator;
 pub(crate) use preferred::PreferredAddressState;
+#[cfg(all(
+    test,
+    any(
+        feature = "boring",
+        all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+    )
+))]
+pub(crate) use streams::StreamResourceUsage;
 pub(crate) use streams::{
     Chunks, FinishError, ReadError, ReadableError, RecvStream, StreamEvent, WriteError,
 };

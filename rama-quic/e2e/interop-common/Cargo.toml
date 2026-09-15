@@ -9,11 +9,15 @@ edition = "2024"
 publish = false
 
 [features]
-boring = ["rama/boring", "rama/rustls", "rama/ring"]
-rustls-ring = ["rama/rustls", "rama/ring"]
-rustls-aws-lc = ["rama/rustls", "rama/aws-lc"]
+boring = ["rama/boring"]
+peer-rustls = ["dep:rustls", "rustls/ring"]
+rustls-ring = ["rama/rustls", "rama/ring", "dep:rustls"]
+rustls-aws-lc = ["rama/rustls", "rama/aws-lc", "dep:rustls"]
 
 [dependencies]
 rama = { path = "../../..", default-features = false, features = ["std", "quic"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 sha2 = "0.11"
+
+base64 = "0.22"
+rustls = { version = "0.23", default-features = false, features = ["std"], optional = true }

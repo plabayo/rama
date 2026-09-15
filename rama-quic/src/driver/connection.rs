@@ -37,7 +37,13 @@ use crate::proto::{
 };
 
 /// Tests: the bytes a connection keeps allocated for sending, split by where they are.
-#[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+#[cfg(all(
+    test,
+    any(
+        feature = "boring",
+        all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+    )
+))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RetainedSend {
     /// The engine's write buffer, reused across descriptors.
@@ -97,7 +103,13 @@ pub struct Connecting {
 impl Connecting {
     /// Tests: hold or release this (server-side) connection's HANDSHAKE_DONE before the
     /// handshake completes, so the peer can be observed complete but unconfirmed.
-    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+    #[cfg(all(
+        test,
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        )
+    ))]
     pub(crate) fn hold_handshake_done(&self, hold: bool) {
         if let Some(conn) = &self.conn {
             let conn = &mut *conn.state.lock();
@@ -333,7 +345,13 @@ impl EndpointLink {
     }
 
     /// A link to no endpoint, for driving a connection in isolation.
-    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+    #[cfg(all(
+        test,
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        )
+    ))]
     pub(crate) fn detached(handle: ConnectionHandle) -> Self {
         Self {
             endpoint: Weak::new(),
@@ -874,7 +892,13 @@ impl Connection {
     }
 
     /// Tests: hold or release the server's HANDSHAKE_DONE (see the engine seam).
-    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+    #[cfg(all(
+        test,
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        )
+    ))]
     pub(crate) fn hold_handshake_done(&self, hold: bool) {
         let conn = &mut *self.0.state.lock();
         conn.inner.hold_handshake_done(hold);
@@ -882,20 +906,38 @@ impl Connection {
     }
 
     /// The destination connection ID this connection currently puts on the wire (tests).
-    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+    #[cfg(all(
+        test,
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        )
+    ))]
     pub(crate) fn active_dcid(&self) -> Vec<u8> {
         self.0.state.lock().inner.active_rem_cid().to_vec()
     }
 
     /// Tests: whether a datagram carrying the active connection ID has gone out since the last
     /// switch, which is what makes that identifier one this connection has used.
-    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+    #[cfg(all(
+        test,
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        )
+    ))]
     pub(crate) fn active_cid_confirmed(&self) -> bool {
         self.0.state.lock().inner.active_cid_confirmed()
     }
 
     /// Tests: whether a datagram carrying the identifier numbered `seq` has gone out.
-    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+    #[cfg(all(
+        test,
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        )
+    ))]
     pub(crate) fn cid_confirmed(&self, seq: u64) -> bool {
         self.0.state.lock().inner.cid_confirmed(seq)
     }
@@ -907,7 +949,13 @@ impl Connection {
     /// route its identifier needs is not installed; this does not distinguish the two. A test
     /// that needs to know which must arrange one of them, as the route tests do by holding
     /// installation on a socket that is otherwise writable.
-    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+    #[cfg(all(
+        test,
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        )
+    ))]
     pub(crate) fn held_transmit(&self) -> Option<(Vec<u8>, std::net::SocketAddr, Option<u64>)> {
         let state = self.0.state.lock();
         let held = state.buffered_transmit.as_ref()?;
@@ -917,27 +965,51 @@ impl Connection {
 
     /// Tests: run send passes with a smaller allowance, so the end of a pass is reachable
     /// without arranging twenty datagrams.
-    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+    #[cfg(all(
+        test,
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        )
+    ))]
     pub(crate) fn set_pass_allowance(&self, datagrams: usize) {
         self.0.state.lock().pass_allowance = Some(datagrams);
     }
 
     /// Tests: how many send passes this connection has run.
-    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+    #[cfg(all(
+        test,
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        )
+    ))]
     pub(crate) fn send_passes(&self) -> u64 {
         self.0.state.lock().passes
     }
 
     /// Tests: passes that spent their allowance without advancing, and so asked for no further
     /// turn.
-    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+    #[cfg(all(
+        test,
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        )
+    ))]
     pub(crate) fn allowance_parked_without_progress(&self) -> u64 {
         self.0.state.lock().allowance_parked_without_progress
     }
 
     /// Tests: passes that spent their allowance on descriptors that were already waiting and put
     /// bytes on the wire — those that asked for another turn, and those that parked instead.
-    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+    #[cfg(all(
+        test,
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        )
+    ))]
     pub(crate) fn retry_allowance_ends(&self) -> (u64, u64) {
         let state = self.0.state.lock();
         (state.retry_allowance_asked, state.retry_allowance_parked)
@@ -945,7 +1017,13 @@ impl Connection {
 
     /// Tests: the datagram waiting on the handle kept aside for another path, with the address
     /// that handle serves.
-    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+    #[cfg(all(
+        test,
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        )
+    ))]
     pub(crate) fn aside_transmit(&self) -> Option<(std::net::SocketAddr, Vec<u8>, Option<u64>)> {
         let state = self.0.state.lock();
         let slot = state.aside.as_ref()?;
@@ -955,26 +1033,50 @@ impl Connection {
     }
 
     /// Tests: the local address of the handle kept aside for another path, if one is held.
-    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+    #[cfg(all(
+        test,
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        )
+    ))]
     pub(crate) fn aside_address(&self) -> Option<std::net::SocketAddr> {
         self.0.state.lock().aside.as_ref().map(|slot| slot.serves)
     }
 
     /// Tests: make the next attempt to take a descriptor's bytes out of the send buffer find
     /// nothing there, so the retirement path can be observed.
-    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+    #[cfg(all(
+        test,
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        )
+    ))]
     pub(crate) fn fail_next_ownership(&self) {
         self.0.state.lock().fail_ownership = true;
     }
 
     /// Tests: the descriptors this connection offered to its sender, oldest first.
-    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+    #[cfg(all(
+        test,
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        )
+    ))]
     pub(crate) fn descriptors(&self) -> Vec<Descriptor> {
         self.0.state.lock().descriptors.iter().cloned().collect()
     }
 
     /// Tests: how many times this connection has been told a datagram reached the network.
-    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+    #[cfg(all(
+        test,
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        )
+    ))]
     pub(crate) fn cid_sent_calls(&self) -> u64 {
         self.0.state.lock().inner.cid_sent_calls()
     }
@@ -982,14 +1084,26 @@ impl Connection {
     /// Tests: whether the identifier numbered `seq` may be sent to `remote` — that is, whether
     /// its route is installed, which is a different question from whether anything has been sent
     /// with it.
-    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+    #[cfg(all(
+        test,
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        )
+    ))]
     pub(crate) fn send_permit(&self, seq: u64, remote: std::net::SocketAddr) -> SendPermit {
         self.0.state.lock().inner.may_send_cid(seq, remote)
     }
 
     /// Tests: whether a datagram carrying the identifier numbered `seq` has gone out towards
     /// `remote`, which is what RFC 9000 §10.3.1 ties recognition to.
-    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+    #[cfg(all(
+        test,
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        )
+    ))]
     pub(crate) fn cid_confirmed_to(&self, seq: u64, remote: std::net::SocketAddr) -> bool {
         self.0.state.lock().inner.cid_confirmed_to(seq, remote)
     }
@@ -1002,7 +1116,13 @@ impl Connection {
     /// bound they stay under is the one [`Held`] documents: a descriptor's worth is at most
     /// [`MAX_TRANSMIT_SEGMENTS`] datagrams of at most the path's largest payload, and at most
     /// four descriptors' worth is kept.
-    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+    #[cfg(all(
+        test,
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        )
+    ))]
     pub(crate) fn retained_send_bytes(&self) -> RetainedSend {
         let state = self.0.state.lock();
         let held = [
@@ -1028,21 +1148,39 @@ impl Connection {
     /// path put there, and a `Vec` may allocate past what was asked of it, so a bound over a
     /// connection's life takes the largest payload the test saw and allows for that growth.
     /// [`RETAINED_DESCRIPTORS`] and [`MAX_TRANSMIT_SEGMENTS`] are the other two terms.
-    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+    #[cfg(all(
+        test,
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        )
+    ))]
     pub(crate) fn max_datagram_payload(&self) -> usize {
         self.0.state.lock().inner.max_datagram_payload() as usize
     }
 
     /// Tests: how many datagrams were given up because their identifier may never be sent again.
     /// A datagram merely waiting for its route is not one of them.
-    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+    #[cfg(all(
+        test,
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        )
+    ))]
     pub(crate) fn stale_transmits(&self) -> u64 {
         self.0.state.lock().stale_transmits
     }
 
     /// Tests: how many datagrams were given up because this endpoint owns no socket that could
     /// send from the local address their path names.
-    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+    #[cfg(all(
+        test,
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        )
+    ))]
     pub(crate) fn unowned_paths(&self) -> u64 {
         self.0.state.lock().unowned_paths
     }
@@ -1050,7 +1188,13 @@ impl Connection {
     /// Tests: whether a datagram naming `local` would leave from the handle this connection
     /// sends on — because that is the handle's own address, or because the endpoint said the
     /// socket behind it covers that address.
-    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+    #[cfg(all(
+        test,
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        )
+    ))]
     pub(crate) fn sends_from_for(&self, local: std::net::SocketAddr) -> bool {
         matches!(
             self.0.state.lock().station_for(Some(local)),
@@ -1059,19 +1203,37 @@ impl Connection {
     }
 
     /// Tests: the local address this connection sends from, as its send handle reports it.
-    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+    #[cfg(all(
+        test,
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        )
+    ))]
     pub(crate) fn sending_from(&self) -> Option<std::net::SocketAddr> {
         self.0.state.lock().socket.as_ref().map(Sender::local_addr)
     }
 
     /// Tests: the sequence number of the connection ID this side is addressing its peer with.
-    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+    #[cfg(all(
+        test,
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        )
+    ))]
     pub(crate) fn active_dcid_seq(&self) -> u64 {
         self.0.state.lock().inner.active_rem_cid_seq()
     }
 
     /// Tests: have the peer retire every connection ID we issued below `v`, issuing replacements.
-    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+    #[cfg(all(
+        test,
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        )
+    ))]
     pub(crate) fn rotate_local_cid(&self, v: u64) {
         let conn = &mut *self.0.state.lock();
         conn.inner
@@ -1080,7 +1242,13 @@ impl Connection {
     }
 
     /// The destination connection ID set aside for a candidate path, if any (tests).
-    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+    #[cfg(all(
+        test,
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        )
+    ))]
     pub(crate) fn reserved_dcid(&self) -> Option<Vec<u8>> {
         self.0
             .state
@@ -3014,7 +3182,13 @@ pub(crate) const MAX_TRANSMIT_DATAGRAMS: usize = 20;
 /// How many descriptors' worth of bytes a connection keeps at once: the one on the handle it
 /// sends from, the one on the handle kept aside, the one waiting for a station, and the buffer
 /// the engine writes the next one into. See [`Held`].
-#[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+#[cfg(all(
+    test,
+    any(
+        feature = "boring",
+        all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+    )
+))]
 pub(crate) const RETAINED_DESCRIPTORS: usize = 4;
 
 /// The maximum amount of datagrams that are sent in a single transmit
@@ -3025,13 +3199,15 @@ pub(crate) const RETAINED_DESCRIPTORS: usize = 4;
 pub(crate) const MAX_TRANSMIT_SEGMENTS: usize = 10;
 
 #[cfg(test)]
-#[cfg(all(feature = "rustls", any(feature = "ring", feature = "aws-lc")))]
+#[cfg(any(
+    feature = "boring",
+    all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+))]
 mod tests {
     use super::*;
     use crate::driver::Instant;
     use crate::proto::ReceiveQueueLimits;
     use rama_net::address::SocketAddress;
-    use rama_tls_rustls::dep::rustls::RootCertStore;
     use rama_udp::{
         DatagramCapabilities, DatagramError, DatagramMetadata, DatagramSender, DatagramSocket,
     };
@@ -3132,12 +3308,7 @@ mod tests {
         crate::driver::queue::BoundedSender<QueuedPacket>,
         crate::proto::Endpoint,
     ) {
-        let cert =
-            rama_crypto::dep::rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
-        let mut roots = RootCertStore::empty();
-        roots.add(cert.cert.into()).unwrap();
-        let mut config =
-            crate::proto::ClientConfig::with_root_certificates(Arc::new(roots)).unwrap();
+        let mut config = crate::test_helpers::client(&crate::test_helpers::identity());
         if let Some(sink) = sink {
             config.transport =
                 Arc::new(crate::proto::TransportConfig::default().with_qlog_sink(sink));

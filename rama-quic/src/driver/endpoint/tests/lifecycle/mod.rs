@@ -8,9 +8,6 @@ use crate::driver::endpoint::*;
 use crate::driver::lifecycle::ShutdownOutcome;
 use crate::driver::queue::{MIN_RETAINED, QUIET_DRAINS_BEFORE_SHRINK};
 use crate::driver::sockets::MAX_RETAINED_SOCKETS;
-use crate::proto::crypto::rustls::{
-    QuicClientConfig, QuicServerConfig, TlsOptions, configured_provider,
-};
 use crate::proto::{CongestionControl, RetryRefused, TransportConfig};
 use rama_crypto::hmac::HmacSha2;
 use rama_tls::{
@@ -38,14 +35,8 @@ pub(super) fn configs() -> (ClientConfig, ServerConfig) {
         .with_alpn(alpn())
         .with_server_auth(auth);
     (
-        ClientConfig::new(Arc::new(
-            QuicClientConfig::from_rama(&client, configured_provider(), TlsOptions::default())
-                .unwrap(),
-        )),
-        ServerConfig::with_crypto(Arc::new(
-            QuicServerConfig::from_rama(&server, configured_provider(), TlsOptions::default())
-                .unwrap(),
-        )),
+        ClientConfig::try_from_rama_tls(&client, crate::test_helpers::options()).unwrap(),
+        ServerConfig::try_from_rama_tls(&server, crate::test_helpers::options()).unwrap(),
     )
 }
 
@@ -2362,6 +2353,151 @@ async fn bulk_transmit_yields_at_the_quota_and_lets_another_connection_progress(
         "a poll that stopped at the bound did not wake its task: {at_bound:?}"
     );
     tokio::join!(client.shutdown(), server.shutdown());
+}
+
+/// An application that keeps its stream open without reading exhausts receive credit.
+/// Other connections keep transferring, and reading again wakes the original writer.
+#[tokio::test]
+async fn a_non_reading_peer_bounds_resources_and_recovers_while_other_connections_progress() {
+    const CREDIT: u32 = octets::kib_u32(32);
+    const SEND_WINDOW: u64 = octets::kib_u64(64);
+
+    fn resource_probe(endpoint: &Endpoint) -> impl Fn() -> proto::StreamResourceUsage + use<> {
+        let state = endpoint.inner.state.lock();
+        assert_eq!(state.recv_state.connections.channels.len(), 1);
+        let inner = state
+            .recv_state
+            .connections
+            .channels
+            .values()
+            .next()
+            .unwrap()
+            .inner
+            .clone();
+        move || inner.state.lock().inner.streams().resource_usage()
+    }
+
+    tokio::time::timeout(Duration::from_secs(20), async {
+        let (mut client_config, mut server_config) = configs();
+        let transport = Arc::new(
+            TransportConfig::default()
+                .with_receive_window(CREDIT.into())
+                .with_stream_receive_window(CREDIT.into())
+                .with_send_window(SEND_WINDOW),
+        );
+        client_config.set_transport_config(transport.clone());
+        server_config.set_transport_config(transport);
+        let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+        let client = endpoint(None, Executor::new(), Duration::from_secs(1));
+        let (bulk, peer) = tokio::join!(
+            client
+                .connect_with(
+                    client_config.clone(),
+                    server.local_addr().unwrap(),
+                    "localhost"
+                )
+                .unwrap(),
+            async { server.accept().await.unwrap().await.unwrap() }
+        );
+        let bulk = bulk.unwrap();
+        let client_usage = resource_probe(&client);
+        let server_usage = resource_probe(&server);
+        let payload: Vec<u8> = (0..octets::kib(256)).map(|i| (i % 251) as u8).collect();
+        let mut send = bulk.open_uni().await.unwrap();
+        send.write_all(&payload[..CREDIT as usize]).await.unwrap();
+        let mut recv = peer.accept_uni().await.unwrap();
+        // Receipt and acknowledgement distinguish peer credit from congestion or local buffering.
+        wait_until(|| {
+            server_usage().received_offset == u64::from(CREDIT)
+                && client_usage().unacknowledged_bytes == 0
+        })
+        .await;
+        let (blocked_tx, blocked_rx) = tokio::sync::oneshot::channel();
+        let writer = tokio::spawn({
+            let payload = payload.clone();
+            async move {
+                {
+                    let mut write = std::pin::pin!(send.write_all(&payload[CREDIT as usize..]));
+                    std::future::poll_fn(|cx| {
+                        assert!(
+                            write.as_mut().poll(cx).is_pending(),
+                            "unread credit must block the writer"
+                        );
+                        Poll::Ready(())
+                    })
+                    .await;
+                    blocked_tx.send(()).unwrap();
+                    write.await.unwrap();
+                }
+                send.finish().unwrap();
+            }
+        });
+        blocked_rx.await.unwrap();
+        let assert_bounds = || {
+            let client_resources = client_usage();
+            assert_eq!(client_resources.sent_offset, u64::from(CREDIT));
+            assert_eq!(client_resources.peer_credit, u64::from(CREDIT));
+            assert!(client_resources.unacknowledged_bytes <= SEND_WINDOW);
+            let server_resources = server_usage();
+            assert_eq!(server_resources.received_offset, u64::from(CREDIT));
+            assert!(server_resources.retained_receive_bytes >= CREDIT as usize);
+            // The assembler compacts when allocation overhead exceeds 1.5 times buffered bytes.
+            assert!(
+                server_resources.retained_receive_bytes <= CREDIT as usize * 5 / 2,
+                "receive allocation: {server_resources:?}"
+            );
+            for conn in [&bulk, &peer] {
+                let held = conn.retained_send_bytes();
+                let mtu = conn.max_datagram_payload();
+                assert!(held.buffer <= 2 * MAX_TRANSMIT_SEGMENTS * mtu);
+                assert!(held.owned <= (RETAINED_DESCRIPTORS - 1) * MAX_TRANSMIT_SEGMENTS * mtu);
+                assert!(held.slots < RETAINED_DESCRIPTORS);
+            }
+        };
+        assert_bounds();
+        // Keep every competing connection alive on the same pair of endpoint drivers.
+        let mut others = Vec::new();
+        for round in 0..3u8 {
+            let (other, other_peer) = tokio::join!(
+                client
+                    .connect_with(
+                        client_config.clone(),
+                        server.local_addr().unwrap(),
+                        "localhost"
+                    )
+                    .unwrap(),
+                async { server.accept().await.unwrap().await.unwrap() }
+            );
+            let other = other.unwrap();
+            let message = vec![round; octets::kib(4)];
+            let mut other_send = other.open_uni().await.unwrap();
+            other_send.write_all(&message).await.unwrap();
+            other_send.finish().unwrap();
+            let mut other_recv = other_peer.accept_uni().await.unwrap();
+            assert_eq!(
+                other_recv.read_to_end(message.len()).await.unwrap(),
+                message
+            );
+            assert!(!writer.is_finished(), "the unread writer remains blocked");
+            assert_bounds();
+            others.push((other, other_peer));
+            assert_eq!(server.open_connections(), others.len() + 1);
+            assert_eq!(client.stats().retained_sockets, 1);
+            assert_eq!(server.stats().retained_sockets, 1);
+        }
+        let received = recv.read_to_end(payload.len()).await.unwrap();
+        writer.await.unwrap();
+        assert_eq!(received, payload);
+        wait_until(|| client_usage().unacknowledged_bytes == 0).await;
+        assert_eq!(
+            server_usage().retained_receive_bytes,
+            0,
+            "reading releases the receive allocation"
+        );
+        tokio::join!(client.shutdown(), server.shutdown());
+    })
+    .await
+    .expect("credit recovery and independent connections complete");
 }
 
 /// The endpoint driver's own deadline decision: while an admission is queued and its

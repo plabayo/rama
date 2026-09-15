@@ -2,8 +2,7 @@
 //!
 //! The protocol logic is contained in types that abstract over the actual
 //! cryptographic protocol used. This module contains the traits used for this
-//! abstraction layer as well as a single implementation of these traits that uses
-//! *ring* and rustls to implement the TLS protocol support.
+//! abstraction layer, with built-in adapters for Rustls and BoringSSL.
 //!
 //! Note that usage of any protocol (version) other than TLS 1.3 does not conform to any
 //! published versions of the specification, and will not be supported in QUIC v1.
@@ -32,7 +31,7 @@ pub(crate) mod ring_like;
 pub(crate) mod rustls;
 
 /// A cryptographic session (commonly TLS)
-pub(crate) trait Session: Send + Sync + 'static {
+pub trait Session: Send + Sync + 'static {
     /// Create the initial set of keys given the client's initial destination ConnectionId
     fn initial_keys(&self, dst_cid: &ConnectionId, side: Side) -> Result<Keys, TransportError>;
 
@@ -80,7 +79,7 @@ pub(crate) trait Session: Send + Sync + 'static {
     /// to send to the peer. This method will only return `true` the first time that
     /// handshake data is available. Future calls will always return false.
     ///
-    /// On success, returns `true` iff `self.handshake_data()` has been populated.
+    /// On success, returns `true` when `handshake_summary()` first becomes available.
     fn read_handshake(&mut self, level: SpaceId, buf: &[u8]) -> Result<bool, TransportError>;
 
     /// The peer's QUIC transport parameters
@@ -112,43 +111,37 @@ pub(crate) trait Session: Send + Sync + 'static {
 }
 
 /// A pair of keys for bidirectional communication
-pub(crate) struct KeyPair<T> {
+pub struct KeyPair<T> {
     /// Key for encrypting data
-    pub(crate) local: T,
+    pub local: T,
     /// Key for decrypting data
-    pub(crate) remote: T,
+    pub remote: T,
 }
 
 /// Packet and header protection for one direction.
-pub(crate) struct DirectionalKeys {
-    pub(crate) header: Box<dyn HeaderKey>,
-    pub(crate) packet: Box<dyn PacketKey>,
+pub struct DirectionalKeys {
+    pub header: Box<dyn HeaderKey>,
+    pub packet: Box<dyn PacketKey>,
 }
 
 /// Write keys become available before read keys on a TLS server.
-pub(crate) struct Keys {
-    pub(crate) local: DirectionalKeys,
-    pub(crate) remote: Option<DirectionalKeys>,
+pub struct Keys {
+    pub local: DirectionalKeys,
+    pub remote: Option<DirectionalKeys>,
 }
 
-#[cfg_attr(
-    not(any(
-        feature = "boring",
-        all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
-    )),
-    expect(
-        dead_code,
-        reason = "handshake events are constructed by enabled TLS backends"
-    )
-)]
-pub(crate) enum HandshakeEvent {
+/// Ordered TLS output and packet-key installation events.
+pub enum HandshakeEvent {
+    /// Handshake bytes to send at this encryption level before subsequent events.
     Data(SpaceId, Vec<u8>),
+    /// Install write keys and any already available read keys for this level.
     Keys(SpaceId, Keys),
+    /// Install read keys that became available after the write keys.
     ReadKeys(SpaceId, DirectionalKeys),
 }
 
 /// Client-side configuration for the crypto protocol
-pub(crate) trait ClientConfig: Send + Sync {
+pub trait ClientConfig: Send + Sync {
     /// Start a client session with this configuration
     fn start_session(
         self: Arc<Self>,
@@ -159,7 +152,7 @@ pub(crate) trait ClientConfig: Send + Sync {
 }
 
 /// Server-side configuration for the crypto protocol
-pub(crate) trait ServerConfig: Send + Sync {
+pub trait ServerConfig: Send + Sync {
     /// Create the initial set of keys given the client's initial destination ConnectionId
     fn initial_keys(&self, version: u32, dst_cid: &ConnectionId) -> Result<Keys, InitialKeysError>;
 
@@ -184,7 +177,7 @@ pub(crate) trait ServerConfig: Send + Sync {
 }
 
 /// Keys used to protect packet payloads
-pub(crate) trait PacketKey: Send + Sync {
+pub trait PacketKey: Send + Sync {
     /// Encrypt the packet payload with the given packet number
     fn encrypt(&self, packet: u64, buf: &mut [u8], header_len: usize) -> Result<(), CryptoError>;
     /// Decrypt the packet payload with the given packet number
@@ -204,7 +197,7 @@ pub(crate) trait PacketKey: Send + Sync {
 }
 
 /// Keys used to protect packet headers
-pub(crate) trait HeaderKey: Send + Sync {
+pub trait HeaderKey: Send + Sync {
     /// Decrypt the given packet's header
     fn decrypt(&self, pn_offset: usize, packet: &mut [u8]);
     /// Encrypt the given packet's header
@@ -256,7 +249,7 @@ rama_utils::macros::error::static_str_error! {
 }
 
 /// A pseudo random key for HKDF
-pub(crate) trait HandshakeTokenKey: Send + Sync {
+pub trait HandshakeTokenKey: Send + Sync {
     /// Derive AEAD using hkdf
     ///
     /// Fails when the provider cannot expand or load the derived key.
@@ -264,7 +257,7 @@ pub(crate) trait HandshakeTokenKey: Send + Sync {
 }
 
 /// A key for sealing data with AEAD-based algorithms
-pub(crate) trait AeadKey {
+pub trait AeadKey {
     /// Method for sealing message `data`
     fn seal(&self, data: &mut Vec<u8>, additional_data: &[u8]) -> Result<(), CryptoError>;
     /// Method for opening a sealed message `data`
@@ -280,17 +273,16 @@ rama_utils::macros::error::static_str_error! {
     ///
     /// Generic crypto errors.
     #[derive(Copy)]
-    pub(crate) struct CryptoError;
+    pub struct CryptoError;
 }
 
 /// Error indicating that the specified QUIC version is not supported
 #[derive(Debug)]
-pub(crate) struct UnsupportedVersion;
+pub struct UnsupportedVersion;
 
 #[derive(Debug)]
-pub(crate) enum InitialKeysError {
+pub enum InitialKeysError {
     UnsupportedVersion,
-    #[cfg(feature = "boring")]
     Crypto(rama_core::error::BoxError),
 }
 

@@ -1,15 +1,7 @@
 use rama_core::bytes::{Bytes, BytesMut};
 use rama_core::telemetry::tracing::info;
 use rama_crypto::hmac::HmacSha2;
-#[cfg(all(feature = "aws-lc", not(feature = "ring")))]
-use rama_tls_rustls::dep::rustls::crypto::aws_lc_rs::default_provider;
-#[cfg(feature = "ring")]
-use rama_tls_rustls::dep::rustls::crypto::ring::default_provider;
-use rama_tls_rustls::dep::rustls::{
-    AlertDescription, RootCertStore,
-    pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer},
-    server::WebPkiClientVerifier,
-};
+use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer};
 use rama_utils::octets;
 use rand::Rng;
 use rustc_hash::FxHashMap;
@@ -25,7 +17,6 @@ use crate::proto::{
     Duration, Instant,
     cid_generator::{ConnectionIdGenerator, RandomConnectionIdGenerator},
     connection::PreferredAddressState,
-    crypto::rustls::QuicServerConfig,
     frame::FrameStruct,
     packet::{Header, InitialHeader, PacketNumber},
     transport_parameters::TransportParameters,
@@ -187,6 +178,8 @@ fn lifecycle() {
     assert_eq!(pair.server.known_cids(), 0);
 }
 
+// The Rustls adapter additionally supports the pre-RFC transport-parameter codepoint.
+#[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 #[test]
 fn draft_version_compat() {
     let _guard = subscribe();
@@ -866,29 +859,17 @@ fn reject_self_signed_server_cert() {
     let mut pair = Pair::default();
     info!("connecting");
 
-    // Create a self-signed certificate with a different distinguished name than the default one,
-    // such that path building cannot confuse the default root the server is using and the one
-    // the client is trusting (in which case we'd get a different error).
-    let mut cert = rama_crypto::dep::rcgen::CertificateParams::new(["localhost".into()]).unwrap();
-    let mut issuer = rama_crypto::dep::rcgen::DistinguishedName::new();
-    issuer.push(
-        rama_crypto::dep::rcgen::DnType::OrganizationName,
-        "Rama's House of Certificates",
-    );
-    cert.distinguished_name = issuer;
-    let cert = cert
-        .self_signed(&rama_crypto::dep::rcgen::KeyPair::generate().unwrap())
-        .unwrap();
-    let client_ch = pair.begin_connect(client_config_with_certs(vec![cert.into()]));
+    let cert = crate::test_helpers::untrusted_identity();
+    let client_ch = pair.begin_connect(client_config_with_certs(cert.cert_chain));
 
     pair.drive();
 
     match pair.client_conn_mut(client_ch).poll() {
         Some(Event::ConnectionLost {
             reason: ConnectionError::TransportError(ref error),
-        }) if error.code == TransportErrorCode::crypto(AlertDescription::UnknownCA.into()) => {}
+        }) if error.code == crate::test_helpers::untrusted_certificate_error() => {}
         other => panic!(
-            "assertion failed: `{other:?}` does not match `Some(Event::ConnectionLost {{ reason: ConnectionError::TransportError(ref error)}}) if error.code == TransportErrorCode::crypto(AlertDescription::UnknownCA.into())`"
+            "assertion failed: `{other:?}` does not match `Some(Event::ConnectionLost {{ reason: ConnectionError::TransportError(ref error)}}) if error.code == crate::test_helpers::untrusted_certificate_error()`"
         ),
     }
 }
@@ -897,35 +878,23 @@ fn reject_self_signed_server_cert() {
 fn reject_missing_client_cert() {
     let _guard = subscribe();
 
-    let mut store = RootCertStore::empty();
-    // `WebPkiClientVerifier` requires a non-empty store, so we stick our own certificate into it
-    // because it's convenient.
-    store.add(CERTIFIED_KEY.cert.der().clone()).unwrap();
-
-    let key = PrivatePkcs8KeyDer::from(CERTIFIED_KEY.signing_key.serialize_der());
-    let cert = CERTIFIED_KEY.cert.der().clone();
-
-    let provider = Arc::new(default_provider());
-    let config =
-        rama_tls_rustls::dep::rustls::ServerConfig::builder_with_provider(provider.clone())
-            .with_protocol_versions(&[&rama_tls_rustls::dep::rustls::version::TLS13])
-            .unwrap()
-            .with_client_cert_verifier(
-                WebPkiClientVerifier::builder_with_provider(Arc::new(store), provider)
-                    .build()
-                    .unwrap(),
-            )
-            .with_single_cert(vec![cert], PrivateKeyDer::from(key))
-            .unwrap();
-    let config = QuicServerConfig::try_from(config).unwrap();
-
+    let tls = rama_tls::server::TlsServerConfig::new()
+        .with_server_auth(CERTIFIED_KEY.clone())
+        .with_alpn([b"rama-quic-test".as_slice().into()].into_iter().collect())
+        .with_client_verify(rama_tls::server::ClientVerifyMode::ClientAuth(
+            CERTIFIED_KEY.cert_chain.clone(),
+        ));
+    let server_config =
+        ServerConfig::try_from_rama_tls(&tls, crate::test_helpers::options()).unwrap();
     let mut pair = Pair::new(
         Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
-        ServerConfig::with_crypto(Arc::new(config)),
+        server_config,
     );
 
     info!("connecting");
-    let client_ch = pair.begin_connect(client_config());
+    let client_ch = pair.begin_connect(ClientConfig::new(Arc::new(client_crypto_with_alpn(vec![
+        b"rama-quic-test".to_vec(),
+    ]))));
     pair.drive();
 
     // The client completes the connection, but finds it immediately closed
@@ -942,10 +911,9 @@ fn reject_missing_client_cert() {
     match pair.client_conn_mut(client_ch).poll() {
         Some(Event::ConnectionLost {
             reason: ConnectionError::ConnectionClosed(ref close),
-        }) if close.error_code
-            == TransportErrorCode::crypto(AlertDescription::CertificateRequired.into()) => {}
+        }) if close.error_code == TransportErrorCode::crypto(116) => {}
         other => panic!(
-            "assertion failed: `{other:?}` does not match `Some(Event::ConnectionLost {{ reason: ConnectionError::ConnectionClosed(ref close)}}) if close.error_code == TransportErrorCode::crypto(AlertDescription::CertificateRequired.into())`"
+            "assertion failed: `{other:?}` does not match `Some(Event::ConnectionLost {{ reason: ConnectionError::ConnectionClosed(ref close)}}) if close.error_code == TransportErrorCode::crypto(116)`"
         ),
     }
 
@@ -960,10 +928,9 @@ fn reject_missing_client_cert() {
     match pair.server_conn_mut(server_ch).poll() {
         Some(Event::ConnectionLost {
             reason: ConnectionError::TransportError(ref error),
-        }) if error.code
-            == TransportErrorCode::crypto(AlertDescription::CertificateRequired.into()) => {}
+        }) if error.code == TransportErrorCode::crypto(116) => {}
         other => panic!(
-            "assertion failed: `{other:?}` does not match `Some(Event::ConnectionLost {{ reason: ConnectionError::TransportError(ref error)}}) if error.code == TransportErrorCode::crypto(AlertDescription::CertificateRequired.into())`"
+            "assertion failed: `{other:?}` does not match `Some(Event::ConnectionLost {{ reason: ConnectionError::TransportError(ref error)}}) if error.code == TransportErrorCode::crypto(116)`"
         ),
     }
 }
@@ -1114,6 +1081,7 @@ fn zero_rtt_happypath() {
     assert_eq!(pair.client_conn_mut(client_ch).stats().path.lost_packets, 0);
 }
 
+#[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 #[test]
 fn zero_rtt_rejection() {
     let _guard = subscribe();
@@ -1407,6 +1375,7 @@ fn alpn_success() {
     );
 }
 
+#[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 #[test]
 fn server_alpn_unset() {
     let _guard = subscribe();
@@ -1428,6 +1397,7 @@ fn server_alpn_unset() {
     }
 }
 
+#[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 #[test]
 fn client_alpn_unset() {
     let _guard = subscribe();
@@ -3681,18 +3651,18 @@ fn server_can_send_3_inital_packets() {
 
 /// Generate a big fat certificate that can't fit inside the initial anti-amplification limit
 fn big_cert_and_key() -> (CertificateDer<'static>, PrivateKeyDer<'static>) {
-    let cert = rama_crypto::dep::rcgen::generate_simple_self_signed(
-        Some("localhost".into())
-            .into_iter()
-            .chain((0..1000).map(|x| format!("foo_{x}")))
-            .collect::<Vec<_>>(),
-    )
-    .unwrap();
-
-    (
-        cert.cert.into(),
-        PrivateKeyDer::Pkcs8(cert.signing_key.serialize_der().into()),
-    )
+    let request = rama_tls::server::LeafCertRequest {
+        identities: std::iter::once(rama_crypto::cert::CertificateIdentity::Dns(
+            "localhost".parse().unwrap(),
+        ))
+        .chain((0..1000).map(|i| {
+            rama_crypto::cert::CertificateIdentity::Dns(format!("foo-{i}").parse().unwrap())
+        }))
+        .collect(),
+        ..Default::default()
+    };
+    let auth = rama_tls::server::ServerAuthData::new_self_signed_leaf(request).unwrap();
+    (auth.cert_chain[0].clone(), auth.private_key)
 }
 
 #[test]
@@ -5268,7 +5238,7 @@ fn application_close_in_initial_is_rejected() {
 /// The default `aws-lc` provider prefers a post-quantum key exchange, which roughly doubles the
 /// ClientHello. Sequence tests pin a classic key exchange (`test_provider`); this test keeps the
 /// production provider and checks the large handshake flight still completes and carries data.
-#[cfg(all(feature = "aws-lc", not(feature = "ring")))]
+#[cfg(all(feature = "rustls", feature = "aws-lc", not(feature = "ring")))]
 #[test]
 fn post_quantum_handshake_and_transfer() {
     let _guard = subscribe();
@@ -5344,7 +5314,7 @@ fn post_quantum_handshake_and_transfer() {
 
 /// IANA `NamedGroup` codes used by the key-exchange assertions
 const X25519: u16 = 0x001d;
-#[cfg(all(feature = "aws-lc", not(feature = "ring")))]
+#[cfg(all(feature = "rustls", feature = "aws-lc", not(feature = "ring")))]
 const X25519MLKEM768: u16 = 0x11ec;
 
 /// The simulator fixtures pin a classic key exchange so packet sequences stay provider independent

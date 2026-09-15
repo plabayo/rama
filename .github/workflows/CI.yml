@@ -438,6 +438,13 @@ jobs:
           - boring
           - rustls-ring
           - rustls-aws-lc
+        include:
+          - backend: boring
+            quic-features: boring
+          - backend: rustls-ring
+            quic-features: rustls,ring
+          - backend: rustls-aws-lc
+            quic-features: rustls,aws-lc
         toolchain:
           - stable
           - "1.96.0"
@@ -458,7 +465,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends cmake
+          sudo apt-get install --yes --no-install-recommends cmake clang libclang-dev
       - name: Show the C toolchain quiche will use
         if: runner.os != 'Windows'
         run: |
@@ -479,6 +486,36 @@ jobs:
             rama-quic/e2e/quiche-interop
             rama-quic/e2e/aioquic-interop
             rama-quic/e2e/interop-runner
+      - name: Isolated QUIC library tests and lints
+        run: just rama-quic/qa-backend ${{ matrix.quic-features }}
+      - name: Isolated crypto tests
+        run: cargo test -p rama-crypto --no-default-features --features ${{ matrix.backend == 'boring' && 'boring' || matrix.backend == 'rustls-ring' && 'ring' || 'aws-lc' }} --locked
+      - name: QUIC examples with the selected backend
+        run: cargo test -p rama-examples --no-default-features --features quic,${{ matrix.quic-features }} --test integration quic_ --locked -- --include-ignored
+      - name: Concurrent QUIC transfers with the selected backend
+        run: cargo test -p rama-quic --no-default-features --features ${{ matrix.quic-features }} --test many_connections --locked -- --include-ignored
+      - name: QUIC benchmark with the selected backend
+        run: cargo check --bench quic_transport --no-default-features --features quic,${{ matrix.quic-features }} --locked
+      - name: Custom TLS provider without built-in backends
+        if: matrix.backend == 'boring'
+        run: just rama-quic/qa-custom-provider
+      - name: Boring dependency isolation including test fixtures
+        if: matrix.backend == 'boring'
+        run: just rama-quic/qa-boring-isolation
+      - name: QUIC backend combinations
+        if: matrix.backend == 'boring' && matrix.os == 'ubuntu-latest' && matrix.toolchain == 'stable'
+        shell: bash
+        run: |
+          for features in ring aws-lc ring,aws-lc rustls boring,rustls boring,ring boring,aws-lc boring,ring,aws-lc boring,rustls,ring boring,rustls,aws-lc rustls,ring,aws-lc boring,rustls,ring,aws-lc; do
+            just rama-quic/qa-backend "$features"
+          done
+      - name: QUIC dial9 with the selected backend
+        if: matrix.os == 'ubuntu-latest' && matrix.toolchain == 'stable'
+        env:
+          RUSTFLAGS: --cfg tokio_unstable
+        run: |
+          cargo test -p rama-quic --no-default-features --features dial9,${{ matrix.quic-features }} --lib dial9 --locked
+          cargo test -p rama-quic --no-default-features --features dial9,${{ matrix.quic-features }} --test dial9_runtime --locked
       - name: Build the aioquic peer's locked environment
         working-directory: rama-quic/e2e/aioquic-interop
         run: uv sync --frozen
@@ -502,6 +539,10 @@ jobs:
         run: just rama-quic/qa-interop-runner ${{ matrix.backend }}
 
   test-quic-interop-runner:
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: [boring, rustls-ring, rustls-aws-lc]
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     needs:
@@ -526,12 +567,12 @@ jobs:
         with:
           tool: just
       - name: Test both roles against quic-go and ngtcp2
-        run: just rama-quic/test-interop-runner --artifacts "$RUNNER_TEMP/quic-interop"
+        run: just rama-quic/test-interop-runner --backend ${{ matrix.backend }} --artifacts "$RUNNER_TEMP/quic-interop"
       - name: Retain interop reports and diagnostics
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: quic-interop-runner
+          name: quic-interop-runner-${{ matrix.backend }}
           path: ${{ runner.temp }}/quic-interop
           if-no-files-found: warn
           retention-days: 7

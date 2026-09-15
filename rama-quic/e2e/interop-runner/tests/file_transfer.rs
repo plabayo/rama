@@ -20,9 +20,12 @@ async fn runner_file_transfer_and_retry() {
         let www = root.join("www");
         let downloads = root.join("downloads");
         fs::create_dir(&www).unwrap();
-        let identity = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
-        fs::write(root.join("cert.pem"), identity.cert.pem()).unwrap();
-        fs::write(root.join("priv.key"), identity.signing_key.serialize_pem()).unwrap();
+        let identity = interop_common::identity::server_identity();
+        interop_common::identity::write_pem(
+            &identity,
+            &root.join("cert.pem"),
+            &root.join("priv.key"),
+        );
         let payload = vec![0x5a; octets::mib(2)];
         fs::write(www.join("large.bin"), &payload).unwrap();
         fs::write(www.join("empty.bin"), []).unwrap();

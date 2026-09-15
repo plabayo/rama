@@ -1,7 +1,13 @@
 //! The handshake: crypto progression, the packet spaces and keys it installs and discards,
 //! the peer's transport parameters, and 0-RTT.
 
-#[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+#[cfg(all(
+    test,
+    any(
+        feature = "boring",
+        all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+    )
+))]
 mod failure_tests;
 
 use crate::qlog::event::negotiation::KeyChangeTrigger;

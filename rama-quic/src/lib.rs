@@ -5,7 +5,8 @@
 //! part of this crate's public API.
 //!
 //! UDP I/O is provided by [`rama_udp`]; TLS 1.3 comes from the common
-//! [`rama_tls`] configuration converted through `rama-tls-rustls`.
+//! [`rama_tls`] configuration converted through `rama-tls-rustls` or `rama-tls-boring`.
+//! Custom TLS implementations can use [`tls::provider`].
 //!
 //! # Rama
 //!
@@ -27,6 +28,15 @@
 #[cfg(feature = "test-utils")]
 #[doc(hidden)]
 pub mod benchmarks;
+
+#[cfg(all(
+    test,
+    any(
+        feature = "boring",
+        all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+    )
+))]
+mod test_helpers;
 
 mod proto;
 pub mod qlog;
@@ -55,6 +65,28 @@ pub use proto::{KEY_MATERIAL_SIZE, StatelessResetKey};
 /// carries only what QUIC adds to it. The provider behind it follows this crate's features, and
 /// no Rustls type appears in any signature here.
 pub mod tls {
+    /// Interfaces for supplying a QUIC TLS 1.3 implementation.
+    ///
+    /// Implement [`provider::ClientConfig`] and [`provider::ServerConfig`] and pass them to
+    /// [`crate::ClientConfig::new`] and [`crate::ServerConfig::new`]. The latter also
+    /// accepts a custom address-token key, so no built-in crypto feature is required.
+    /// A provider encodes local [`provider::TransportParameters`] into its TLS extension and
+    /// decodes its peer's extension with [`provider::TransportParameters::read`].
+    ///
+    /// Sessions must preserve the order of [`provider::HandshakeEvent`] values, distinguish read
+    /// and write keys, and report TLS failures through Rama's transport error types.
+    pub mod provider {
+        pub use crate::proto::SpaceId as EncryptionLevel;
+        pub use crate::proto::crypto::{
+            AeadKey, ClientConfig, CryptoError, DirectionalKeys, ExportKeyingMaterialError,
+            HandshakeEvent, HandshakeTokenKey, HeaderKey, InitialKeysError, KeyPair, Keys,
+            PacketKey, ServerConfig, Session, UnsupportedVersion,
+        };
+        pub use crate::proto::transport_parameters::{
+            Error as TransportParametersError, TransportParameters,
+        };
+    }
+
     pub use crate::proto::crypto::config::{
         AlpnPolicy, NoInitialCipherSuite, TlsBackend, TlsConfigError, TlsOptions,
     };

@@ -11,7 +11,6 @@ use std::net::SocketAddr;
 use rama::{
     net::address::Domain,
     quic::{Connection, ConnectionError, Endpoint},
-    tls::rustls::dep::rustls::AlertDescription,
     utils::octets,
 };
 
@@ -137,7 +136,7 @@ impl Mismatch {
 /// it (`ssl/ssl_x509.cc`), and aioquic raises `AlertBadCertificate` (`aioquic/tls.py`).
 #[must_use]
 pub fn identity_alert() -> u64 {
-    0x100 + u64::from(u8::from(AlertDescription::BadCertificate))
+    0x100 + u64::from(crate::backend::BAD_CERTIFICATE)
 }
 
 /// The probe the control carries, so acceptance means a working connection and not merely a
@@ -203,7 +202,7 @@ pub async fn rama_client_refuses_the_identity(run: &CaseRun<Mismatch>, peer_addr
     // The wire carries the alert; the cause below is what went wrong locally.
     assert_eq!(
         error.code().tls_alert(),
-        Some(u8::from(AlertDescription::BadCertificate)),
+        Some(crate::backend::BAD_CERTIFICATE),
         "{what}: unexpected TLS alert ({})",
         error.reason()
     );

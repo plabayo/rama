@@ -9,6 +9,8 @@
 //! # Run the example
 //!
 //! ```sh
+//! Select `quic,boring`, `quic,rustls,ring`, or `quic,rustls,aws-lc` for the TLS backend.
+//!
 //! cargo run -p rama-examples --bin quic_client_server --features=quic,rustls,ring
 //! ```
 //!

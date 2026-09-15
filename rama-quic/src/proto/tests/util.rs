@@ -10,19 +10,19 @@ use std::{
     sync::{Arc, LazyLock},
 };
 
+#[cfg(not(all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))))]
+use super::crypto::boring::{QuicClientConfig, QuicServerConfig};
+#[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+use super::crypto::rustls::{QuicClientConfig, QuicServerConfig, configured_provider};
+use super::*;
+use crate::proto::{Duration, Instant};
 use ahash::{HashMap, HashSet};
 use parking_lot::Mutex;
 use rama_core::bytes::BytesMut;
 use rama_core::telemetry::tracing::{info_span, trace};
-use rama_tls_rustls::dep::rustls::{
-    KeyLogFile,
-    client::WebPkiServerVerifier,
-    pki_types::{CertificateDer, PrivateKeyDer},
-};
-
-use super::crypto::rustls::{QuicClientConfig, QuicServerConfig, configured_provider};
-use super::*;
-use crate::proto::{Duration, Instant};
+use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer};
+#[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+use rama_tls_rustls::dep::rustls::{KeyLogFile, client::WebPkiServerVerifier};
 
 pub(super) const DEFAULT_MTU: usize = 1452;
 
@@ -924,6 +924,7 @@ pub(super) fn server_crypto_with_cert(
     server_crypto_inner(Some((cert, key)), None)
 }
 
+#[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 fn server_crypto_inner(
     identity: Option<(CertificateDer<'static>, PrivateKeyDer<'static>)>,
     alpn: Option<Vec<Vec<u8>>>,
@@ -931,6 +932,7 @@ fn server_crypto_inner(
     server_crypto_with_provider(test_provider(), identity, alpn)
 }
 
+#[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 pub(super) fn server_crypto_with_provider(
     provider: Arc<rama_tls_rustls::dep::rustls::crypto::CryptoProvider>,
     identity: Option<(CertificateDer<'static>, PrivateKeyDer<'static>)>,
@@ -938,8 +940,8 @@ pub(super) fn server_crypto_with_provider(
 ) -> QuicServerConfig {
     let (cert, key) = identity.unwrap_or_else(|| {
         (
-            CERTIFIED_KEY.cert.der().clone(),
-            PrivateKeyDer::Pkcs8(CERTIFIED_KEY.signing_key.serialize_der().into()),
+            CERTIFIED_KEY.cert_chain[0].clone(),
+            CERTIFIED_KEY.private_key.clone_key(),
         )
     });
 
@@ -962,6 +964,7 @@ pub(super) fn server_crypto_with_provider(
 /// The simulator tests assert exact packet/event sequences, which depend on handshake flight
 /// sizes; post-quantum key shares (preferred by the `aws-lc` provider) roughly double the
 /// ClientHello and would make those sequences provider dependent.
+#[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 pub(super) fn test_provider() -> Arc<rama_tls_rustls::dep::rustls::crypto::CryptoProvider> {
     let mut provider = Arc::unwrap_or_clone(configured_provider());
     #[cfg(all(feature = "aws-lc", not(feature = "ring")))]
@@ -1005,6 +1008,7 @@ pub(super) fn client_crypto_with_alpn(protocols: Vec<Vec<u8>>) -> QuicClientConf
     client_crypto_inner(None, Some(protocols))
 }
 
+#[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 fn client_crypto_inner(
     certs: Option<Vec<CertificateDer<'static>>>,
     alpn: Option<Vec<Vec<u8>>>,
@@ -1012,13 +1016,14 @@ fn client_crypto_inner(
     client_crypto_with_provider(test_provider(), certs, alpn)
 }
 
+#[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 pub(super) fn client_crypto_with_provider(
     provider: Arc<rama_tls_rustls::dep::rustls::crypto::CryptoProvider>,
     certs: Option<Vec<CertificateDer<'static>>>,
     alpn: Option<Vec<Vec<u8>>>,
 ) -> QuicClientConfig {
     let mut roots = rama_tls_rustls::dep::rustls::RootCertStore::empty();
-    for cert in certs.unwrap_or_else(|| vec![CERTIFIED_KEY.cert.der().clone()]) {
+    for cert in certs.unwrap_or_else(|| vec![CERTIFIED_KEY.cert_chain[0].clone()]) {
         roots.add(cert).unwrap();
     }
 
@@ -1119,8 +1124,46 @@ pub(crate) static SERVER_PORTS: LazyLock<Mutex<RangeFrom<u16>>> =
     LazyLock::new(|| Mutex::new(4433..));
 pub(crate) static CLIENT_PORTS: LazyLock<Mutex<RangeFrom<u16>>> =
     LazyLock::new(|| Mutex::new(44433..));
-pub(crate) static CERTIFIED_KEY: LazyLock<
-    rama_crypto::dep::rcgen::CertifiedKey<rama_crypto::dep::rcgen::KeyPair>,
-> = LazyLock::new(|| {
-    rama_crypto::dep::rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap()
-});
+pub(crate) static CERTIFIED_KEY: LazyLock<rama_tls::server::ServerAuthData> =
+    LazyLock::new(crate::test_helpers::identity);
+
+#[cfg(not(all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))))]
+fn server_crypto_inner(
+    identity: Option<(CertificateDer<'static>, PrivateKeyDer<'static>)>,
+    alpn: Option<Vec<Vec<u8>>>,
+) -> QuicServerConfig {
+    let identity = identity.map_or_else(
+        || CERTIFIED_KEY.clone(),
+        |(cert, key)| rama_tls::server::ServerAuthData::new(vec![cert], key),
+    );
+    let tls = rama_tls::server::TlsServerConfig::new()
+        .with_server_auth(identity)
+        .with_alpn(
+            alpn.unwrap_or_else(|| vec![b"rama-quic-test".to_vec()])
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+        );
+    QuicServerConfig::from_rama(&tls, crate::test_helpers::options()).unwrap()
+}
+
+#[cfg(not(all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))))]
+fn client_crypto_inner(
+    certs: Option<Vec<CertificateDer<'static>>>,
+    alpn: Option<Vec<Vec<u8>>>,
+) -> QuicClientConfig {
+    use rama_tls_boring::client::BoringClientConfigExt;
+    let tls = rama_tls::client::TlsClientConfig::new()
+        .with_supported_groups(vec![rama_tls::SupportedGroup::X25519])
+        .with_alpn(
+            alpn.unwrap_or_else(|| vec![b"rama-quic-test".to_vec()])
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+        )
+        .try_with_server_trust_anchors(
+            certs.unwrap_or_else(|| vec![CERTIFIED_KEY.cert_chain[0].clone()]),
+        )
+        .unwrap();
+    QuicClientConfig::from_rama(&tls, crate::test_helpers::options()).unwrap()
+}

@@ -36,7 +36,7 @@ use interop_common::{
     scenario::SERVER_NAME,
     support::{Deadline, Peer, localhost},
 };
-use rama::{crypto::pki_types::CertificateDer, tls::rustls::dep::rustls, utils::octets};
+use rama::{crypto::pki_types::CertificateDer, utils::octets};
 
 const PEER: &str = "quinn";
 const READ_CAP: usize = octets::mib(1);

@@ -17,11 +17,9 @@ use super::{
     ApplicationClose, ConnectionError, ConnectionHandle, Dir, Event, Ipv6Addr, TransportConfig,
     VarInt, big_cert_and_key, subscribe, util::*,
 };
-use rama_crypto::dep::rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair};
-use rama_tls_rustls::dep::rustls::AlertDescription;
 
 use crate::proto::{
-    DEFAULT_SUPPORTED_VERSIONS, MIN_INITIAL_SIZE, TransportErrorCode,
+    DEFAULT_SUPPORTED_VERSIONS, MIN_INITIAL_SIZE,
     packet::{FixedLengthConnectionIdParser, PartialDecode},
     shared::{ConnectionEvent, ConnectionEventInner, DatagramConnectionEvent},
 };
@@ -436,12 +434,8 @@ fn a_protocol_error_close_answers_on_the_pass_that_decided_it() {
 
     // A certificate from an issuer the client does not trust, distinct from the default root so
     // the failure is the anchor and not path building.
-    let mut cert = CertificateParams::new(["localhost".into()]).unwrap();
-    let mut issuer = DistinguishedName::new();
-    issuer.push(DnType::OrganizationName, "Rama's House of Certificates");
-    cert.distinguished_name = issuer;
-    let cert = cert.self_signed(&KeyPair::generate().unwrap()).unwrap();
-    let client_ch = pair.begin_connect(client_config_with_certs(vec![cert.into()]));
+    let identity = crate::test_helpers::untrusted_identity();
+    let client_ch = pair.begin_connect(client_config_with_certs(identity.cert_chain));
 
     pair.drive_client();
     let mut outcome = None;
@@ -460,7 +454,7 @@ fn a_protocol_error_close_answers_on_the_pass_that_decided_it() {
     match outcome {
         Some(Event::ConnectionLost {
             reason: ConnectionError::TransportError(ref error),
-        }) if error.code == TransportErrorCode::crypto(AlertDescription::UnknownCA.into()) => {}
+        }) if error.code == crate::test_helpers::untrusted_certificate_error() => {}
         other => panic!("the client stopped on the certificate check, not {other:?}"),
     }
     assert!(
@@ -480,8 +474,7 @@ fn a_protocol_error_close_answers_on_the_pass_that_decided_it() {
     }
     match told {
         Some(ConnectionError::ConnectionClosed(ref close))
-            if close.error_code
-                == TransportErrorCode::crypto(AlertDescription::UnknownCA.into()) => {}
+            if close.error_code == crate::test_helpers::untrusted_certificate_error() => {}
         other => panic!("the peer was told why, not {other:?}"),
     }
 }

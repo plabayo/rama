@@ -1,4 +1,7 @@
-#![cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+#![cfg(any(
+    feature = "boring",
+    all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+))]
 #![expect(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -16,10 +19,6 @@ use std::{
     time::Duration,
 };
 
-#[cfg(all(feature = "aws-lc", not(feature = "ring")))]
-use rama_crypto::dep::aws_lc_rs::digest;
-#[cfg(feature = "ring")]
-use rama_crypto::dep::ring::digest;
 use rama_crypto::pki_types::CertificateDer;
 use rama_net::tls::ApplicationProtocol;
 use rama_quic::{ClientConfig, Endpoint, ServerConfig, TransportConfig, tls::TlsOptions};
@@ -28,6 +27,7 @@ use rama_tls::{
     server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
 };
 use rama_utils::{collections::smallvec::smallvec, octets};
+use sha2::{Digest as _, Sha256};
 use tokio::runtime::Builder;
 
 const ALPN: &[u8] = b"many-connections";
@@ -175,7 +175,7 @@ fn payload(index: usize) -> Vec<u8> {
     for (offset, byte) in data[DIGEST + 8..].iter_mut().enumerate() {
         *byte = (offset as u8) ^ seed;
     }
-    let hash = digest::digest(&digest::SHA256, &data[DIGEST..]);
+    let hash = Sha256::digest(&data[DIGEST..]);
     data[..DIGEST].copy_from_slice(hash.as_ref());
     data
 }
@@ -184,7 +184,7 @@ fn payload(index: usize) -> Vec<u8> {
 fn check(data: &[u8]) -> usize {
     let (carried, rest) = data.split_at_checked(DIGEST).expect("a digest prefix");
     assert_eq!(
-        digest::digest(&digest::SHA256, rest).as_ref(),
+        &Sha256::digest(rest)[..],
         carried,
         "the payload arrived as it was sent"
     );

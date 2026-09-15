@@ -37,7 +37,7 @@ arbitrary = ["dep:arbitrary"]
 # spawn path, so an attached recorder tracks them. No recorder is created here.
 #
 # [dial9]: https://github.com/dial9-rs/dial9
-dial9 = ["rama-core/dial9", "rama-net/dial9", "rama-tls-rustls?/dial9"]
+dial9 = ["rama-core/dial9", "rama-net/dial9", "rama-tls-rustls?/dial9", "rama-tls-boring?/dial9"]
 
 [dependencies]
 ahash = { workspace = true }
@@ -67,6 +67,7 @@ tokio = { workspace = true, features = ["macros", "net", "rt", "sync", "time"] }
 zeroize = { workspace = true, optional = true }
 
 [dev-dependencies]
+sha2 = { workspace = true }
 rama-udp = { workspace = true, features = ["test-utils"] }
 rand = { workspace = true }
 tokio = { workspace = true, features = ["macros", "net", "rt", "rt-multi-thread", "sync", "test-util", "time"] }

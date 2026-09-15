@@ -340,8 +340,8 @@ pub struct ServerConfig {
 }
 
 impl ServerConfig {
-    /// Create a default config with a particular handshake token key
-    pub(crate) fn new(
+    /// Create a server with a custom TLS implementation and address-token key.
+    pub fn new(
         crypto: Arc<dyn crypto::ServerConfig>,
         token_key: Arc<dyn HandshakeTokenKey>,
     ) -> Self {
@@ -384,7 +384,7 @@ impl ServerConfig {
         }
     }
 
-    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+    #[cfg(test)]
     /// Private key used to authenticate data included in handshake tokens
     pub(crate) fn token_key(&mut self, value: Arc<dyn HandshakeTokenKey>) -> &mut Self {
         self.token_key = value;
@@ -564,7 +564,7 @@ impl ServerConfig {
     /// Create a server config with the given [`crypto::ServerConfig`]
     ///
     /// Uses a randomized handshake token key.
-    pub(crate) fn with_crypto(crypto: Arc<dyn crypto::ServerConfig>) -> Self {
+    pub fn with_crypto(crypto: Arc<dyn crypto::ServerConfig>) -> Self {
         use rand::Rng;
 
         let rng = &mut rand::rng();
@@ -748,7 +748,7 @@ pub enum PreferredAddressPolicy {
 
 impl ClientConfig {
     /// Create a default config with a particular cryptographic config
-    pub(crate) fn new(crypto: Arc<dyn crypto::ClientConfig>) -> Self {
+    pub fn new(crypto: Arc<dyn crypto::ClientConfig>) -> Self {
         Self {
             transport: Default::default(),
             crypto,

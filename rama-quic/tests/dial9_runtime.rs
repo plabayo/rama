@@ -1,7 +1,9 @@
 #![cfg(all(
     feature = "dial9",
-    feature = "rustls",
-    any(feature = "aws-lc", feature = "ring")
+    any(
+        feature = "boring",
+        all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+    )
 ))]
 #![expect(
     clippy::unwrap_used,

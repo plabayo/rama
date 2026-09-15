@@ -335,5 +335,11 @@ impl PacketBuilder {
     }
 }
 
-#[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+#[cfg(all(
+    test,
+    any(
+        feature = "boring",
+        all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+    )
+))]
 mod tests;

@@ -301,16 +301,13 @@ fn invalid_receive_length_returns_error_instead_of_indexing_past_buffer() {
     assert_eq!(error.kind(), io::ErrorKind::InvalidData);
 }
 
-#[cfg(feature = "rustls")]
+#[cfg(any(
+    feature = "boring",
+    all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+))]
 #[test]
 fn stateless_response_uses_actual_local_address_not_original_destination() {
-    let cert =
-        rama_crypto::dep::rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
-    let server = ServerConfig::with_single_cert(
-        vec![cert.cert.into()],
-        rama_crypto::pki_types::PrivatePkcs8KeyDer::from(cert.signing_key.serialize_der()).into(),
-    )
-    .unwrap();
+    let server = crate::test_helpers::server(&crate::test_helpers::identity());
     let mut endpoint = proto::Endpoint::new(
         Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
         Some(Arc::new(server)),
@@ -488,7 +485,10 @@ fn response_queued_between_polls_wakes_the_endpoint() {
     assert_eq!(captured.lock().len(), 1);
 }
 
-#[cfg(feature = "rustls")]
+#[cfg(any(
+    feature = "boring",
+    all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+))]
 pub(super) fn version_negotiation_probe() -> Vec<u8> {
     let mut packet = vec![
         0x80, 0x0a, 0x1a, 0x2a, 0x3a, 4, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0,
@@ -497,16 +497,13 @@ pub(super) fn version_negotiation_probe() -> Vec<u8> {
     packet
 }
 
-#[cfg(feature = "rustls")]
+#[cfg(any(
+    feature = "boring",
+    all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+))]
 #[test]
 fn saturated_endpoint_budget_drops_packets_before_engine_work() {
-    let cert =
-        rama_crypto::dep::rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
-    let server = ServerConfig::with_single_cert(
-        vec![cert.cert.into()],
-        rama_crypto::pki_types::PrivatePkcs8KeyDer::from(cert.signing_key.serialize_der()).into(),
-    )
-    .unwrap();
+    let server = crate::test_helpers::server(&crate::test_helpers::identity());
     let mut endpoint = proto::Endpoint::new(
         Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
         Some(Arc::new(server)),
@@ -610,16 +607,13 @@ fn refused_stateless_response_keeps_the_endpoint_driver_running() {
 /// Received local-address metadata is preserved (C5); when the sender cannot honor the
 /// selected source on a wildcard bind, only that response fails and nothing is sent with a
 /// silently substituted default source.
-#[cfg(feature = "rustls")]
+#[cfg(any(
+    feature = "boring",
+    all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+))]
 #[test]
 fn unsupported_required_source_fails_the_response_without_substitution_or_endpoint_loss() {
-    let cert =
-        rama_crypto::dep::rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
-    let server = ServerConfig::with_single_cert(
-        vec![cert.cert.into()],
-        rama_crypto::pki_types::PrivatePkcs8KeyDer::from(cert.signing_key.serialize_der()).into(),
-    )
-    .unwrap();
+    let server = crate::test_helpers::server(&crate::test_helpers::identity());
     let packet = version_negotiation_probe();
     let meta = metadata(packet.len(), None);
     let captured = Captured::default();
@@ -1835,10 +1829,19 @@ async fn receive_queue_limits_must_hold_one_datagram_and_one_attempt() {
     ReceiveQueueLimits::new(1, 0).unwrap_err();
 }
 
-// Both of these build a real TLS configuration, so they need rustls and a provider.
-#[cfg(all(feature = "rustls", any(feature = "ring", feature = "aws-lc")))]
+// These suites establish real TLS connections.
+#[cfg(any(
+    feature = "boring",
+    all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+))]
 mod construction;
-#[cfg(all(feature = "rustls", any(feature = "ring", feature = "aws-lc")))]
+#[cfg(any(
+    feature = "boring",
+    all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+))]
 mod lifecycle;
-#[cfg(all(feature = "rustls", any(feature = "ring", feature = "aws-lc")))]
+#[cfg(any(
+    feature = "boring",
+    all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+))]
 mod preferred;

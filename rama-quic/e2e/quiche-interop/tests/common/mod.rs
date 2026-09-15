@@ -10,6 +10,7 @@
     reason = "shared support for several integration test binaries, each using part of it"
 )]
 
+use interop_common::backend::VerifyBackend as _;
 use std::{
     future::Future,
     mem,
@@ -19,14 +20,9 @@ use std::{
 };
 
 use rama::{
-    crypto::{
-        dep::rcgen,
-        pki_types::{CertificateDer, PrivatePkcs8KeyDer},
-    },
     quic::{ClientConfig, Connection, Endpoint, ServerConfig},
     tls::{
         client::TlsClientConfig,
-        rustls::{client::RustlsClientConfigExt as _, server::RustlsServerConfigExt as _},
         server::{ServerAuthData, TlsServerConfig},
     },
     utils::{collections::smallvec::smallvec, fs::TempDir},
@@ -67,26 +63,16 @@ pub struct Identity {
 }
 
 impl Identity {
-    /// Self-signed identity for `name` with a distinct issuer name, so a client trusting
+    /// Identity for `name` with a distinct issuer name, so a client trusting
     /// another anchor finds no issuer for it.
     pub fn generate_from_a_stranger(name: &str, issuer: &str) -> Self {
-        let mut params = rcgen::CertificateParams::new([name.to_owned()])
-            .expect("the name is usable in a certificate");
-        let mut distinguished = rcgen::DistinguishedName::new();
-        distinguished.push(rcgen::DnType::OrganizationName, issuer.to_owned());
-        params.distinguished_name = distinguished;
-        let key = rcgen::KeyPair::generate().expect("a key pair");
-        let certificate = params.self_signed(&key).expect("an identity is generated");
-        Self::written(
-            &certificate.pem(),
-            &key.serialize_pem(),
-            certificate.der().clone(),
-            &key,
-        )
+        let mut request = rama::tls::server::LeafCertRequest::new(
+            rama::crypto::cert::CertificateIdentity::Dns(name.parse().unwrap()),
+        );
+        request.config.subject.organisation_name = Some(issuer.to_owned());
+        Self::written(Self::issued(request).unwrap())
     }
 
-    /// The identity a name case needs: one for the name the client will ask for, or one
-    /// carrying the loopback address when it will send no name at all.
     pub fn generate_for(name: Option<&str>) -> Self {
         match name {
             Some(name) => Self::generate(name),
@@ -94,62 +80,56 @@ impl Identity {
         }
     }
 
-    /// An identity valid for the loopback address, for a client that names an address rather
-    /// than a host. The address goes in the subject alternative name as an address, not as a
-    /// DNS name, which is what a verifier looks for when the client named an address.
     pub fn generate_for_loopback() -> Self {
-        let mut params = rcgen::CertificateParams::default();
-        params.subject_alt_names = vec![rcgen::SanType::IpAddress(Ipv4Addr::LOCALHOST.into())];
-        let key = rcgen::KeyPair::generate().expect("a key pair");
-        let certificate = params.self_signed(&key).expect("an identity is generated");
         Self::written(
-            &certificate.pem(),
-            &key.serialize_pem(),
-            certificate.der().clone(),
-            &key,
+            Self::issued(rama::tls::server::LeafCertRequest::new(
+                rama::crypto::cert::CertificateIdentity::Ip(Ipv4Addr::LOCALHOST.into()),
+            ))
+            .unwrap(),
         )
     }
 
     pub fn generate(name: &str) -> Self {
-        let generated = rcgen::generate_simple_self_signed(vec![name.to_owned()])
-            .expect("an identity is generated");
-        Self::written(
-            &generated.cert.pem(),
-            &generated.signing_key.serialize_pem(),
-            generated.cert.der().clone(),
-            &generated.signing_key,
-        )
+        let identity = match name.parse::<std::net::IpAddr>() {
+            Ok(address) => rama::crypto::cert::CertificateIdentity::Ip(address),
+            Err(_) => rama::crypto::cert::CertificateIdentity::Dns(name.parse().unwrap()),
+        };
+        Self::written(Self::issued(rama::tls::server::LeafCertRequest::new(identity)).unwrap())
     }
 
-    /// Put an identity on disk for a peer that reads PEM files, and keep it in Rama's own types
-    /// for this side.
-    fn written(
-        certificate_pem: &str,
-        key_pem: &str,
-        der: CertificateDer<'static>,
-        key: &rcgen::KeyPair,
-    ) -> Self {
-        let directory =
-            TempDir::with_prefix("rama-quiche-interop-").expect("a directory of our own");
-        let certificate = directory.path().join("cert.pem");
-        let key_path = directory.path().join("key.pem");
-        std::fs::write(&certificate, certificate_pem).expect("the certificate is written");
-        std::fs::write(&key_path, key_pem).expect("the key is written");
-        // rcgen serialises the key as PKCS#8, so it is named as such rather than guessed at.
-        let auth = ServerAuthData::new(
-            vec![der],
-            PrivatePkcs8KeyDer::from(key.serialize_der()).into(),
-        );
-        Self {
-            directory,
-            certificate,
-            key: key_path,
-            auth,
-        }
+    // quiche's verifier expects a CA trust anchor for generated fixtures.
+    fn issued(
+        leaf: rama::tls::server::LeafCertRequest,
+    ) -> Result<ServerAuthData, rama::error::BoxError> {
+        let ca = rama::crypto::cert::SelfSignedCaConfig {
+            subject: rama::crypto::cert::CertificateSubject {
+                organisation_name: leaf.config.subject.organisation_name.clone(),
+                common_name: Some("quiche interop issuer".into()),
+            },
+            ..Default::default()
+        };
+        ServerAuthData::new_generated(rama::tls::server::GeneratedServerAuthConfig::GeneratedCa {
+            ca,
+            leaf,
+        })
     }
 
     fn path(path: &Path) -> &str {
         path.to_str().expect("a printable path")
+    }
+
+    fn written(auth: ServerAuthData) -> Self {
+        let directory =
+            TempDir::with_prefix("rama-quiche-interop-").expect("a directory of our own");
+        let certificate = directory.path().join("cert.pem");
+        let key = directory.path().join("key.pem");
+        interop_common::identity::write_pem(&auth, &certificate, &key);
+        Self {
+            directory,
+            certificate,
+            key,
+            auth,
+        }
     }
 }
 
@@ -157,7 +137,7 @@ pub fn rama_server_config(identity: &Identity) -> ServerConfig {
     let tls = TlsServerConfig::new()
         .with_alpn(smallvec![shared_alpn()])
         .with_server_auth(identity.auth.clone())
-        .with_modify_rustls_config(interop_common::backend::verify_server);
+        .verify_backend();
     ServerConfig::try_from_rama_tls(&tls, interop_common::backend::options())
         .expect("the server config is built")
 }
@@ -170,7 +150,7 @@ pub fn rama_client_config_with_early_data(identity: &Identity) -> ClientConfig {
         .with_alpn(smallvec![shared_alpn()])
         .try_with_server_trust_anchors([anchor])
         .expect("the trust anchor is accepted")
-        .with_modify_rustls_config(interop_common::backend::verify_client);
+        .verify_backend();
     ClientConfig::try_from_rama_tls(
         &tls,
         interop_common::backend::options().with_early_data(true),
@@ -184,7 +164,7 @@ pub fn rama_client_config(identity: &Identity) -> ClientConfig {
         .with_alpn(smallvec![shared_alpn()])
         .try_with_server_trust_anchors([anchor])
         .expect("the trust anchor is accepted")
-        .with_modify_rustls_config(interop_common::backend::verify_client);
+        .verify_backend();
     ClientConfig::try_from_rama_tls(&tls, interop_common::backend::options())
         .expect("the client config is built")
 }

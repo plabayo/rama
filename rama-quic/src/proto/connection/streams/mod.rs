@@ -33,6 +33,23 @@ mod state;
 )]
 pub use state::StreamsState;
 
+/// Stream resource counters used by driver tests.
+#[cfg(all(
+    test,
+    any(
+        feature = "boring",
+        all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+    )
+))]
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct StreamResourceUsage {
+    pub sent_offset: u64,
+    pub peer_credit: u64,
+    pub unacknowledged_bytes: u64,
+    pub received_offset: u64,
+    pub retained_receive_bytes: usize,
+}
+
 /// Access to streams
 #[cfg_attr(
     not(fuzzing),
@@ -105,12 +122,30 @@ impl<'a> Streams<'a> {
         Some(StreamId::new(!self.state.side, dir, x))
     }
 
+    /// Tests: stream flow control and retained receive storage.
+    #[cfg(all(
+        test,
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        )
+    ))]
+    pub(crate) fn resource_usage(&self) -> StreamResourceUsage {
+        self.state.resource_usage()
+    }
+
     #[cfg(fuzzing)]
     pub fn state(&mut self) -> &mut StreamsState {
         self.state
     }
 
-    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+    #[cfg(all(
+        test,
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        )
+    ))]
     /// The number of streams that may have unacknowledged data.
     pub(crate) fn send_streams(&self) -> usize {
         self.state.send_streams

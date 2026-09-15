@@ -13,6 +13,10 @@ pub struct TlsOptions {
 }
 
 impl TlsOptions {
+    #[cfg(any(
+        feature = "boring",
+        all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+    ))]
     pub(crate) fn resolve_backend(self) -> Result<TlsBackend, TlsConfigError> {
         let rustls = cfg!(all(
             feature = "rustls",

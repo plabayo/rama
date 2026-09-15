@@ -220,7 +220,18 @@ fn boring_requires_explicit_alpn() {
 #[test]
 fn client_authentication_is_verified_and_retained_on_resumption() {
     use rama_crypto::{
-        dep::rcgen,
+        dep::boring::{
+            asn1::Asn1Time,
+            bn::BigNum,
+            ec::{EcGroup, EcKey},
+            hash::MessageDigest,
+            nid::Nid,
+            pkey::PKey,
+            x509::{
+                X509, X509NameBuilder,
+                extension::{BasicConstraints, ExtendedKeyUsage, KeyUsage},
+            },
+        },
         pki_types::{CertificateDer, PrivatePkcs8KeyDer},
     };
     use rama_tls::{
@@ -230,16 +241,32 @@ fn client_authentication_is_verified_and_retained_on_resumption() {
     };
 
     let identity = |name: &str| {
-        let key = rcgen::KeyPair::generate().unwrap();
-        let mut params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
-        params
-            .distinguished_name
-            .push(rcgen::DnType::CommonName, name);
-        params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ClientAuth];
-        let cert = params.self_signed(&key).unwrap();
+        let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap();
+        let key = PKey::from_ec_key(EcKey::generate(&group).unwrap()).unwrap();
+        let mut subject = X509NameBuilder::new().unwrap();
+        subject.append_entry_by_nid(Nid::COMMONNAME, name).unwrap();
+        let subject = subject.build();
+        let mut cert = X509::builder().unwrap();
+        cert.set_version(2).unwrap();
+        cert.set_serial_number(&BigNum::from_u32(1).unwrap().to_asn1_integer().unwrap())
+            .unwrap();
+        cert.set_subject_name(&subject).unwrap();
+        cert.set_issuer_name(&subject).unwrap();
+        cert.set_pubkey(&key).unwrap();
+        cert.set_not_before(&Asn1Time::days_from_now(0).unwrap())
+            .unwrap();
+        cert.set_not_after(&Asn1Time::days_from_now(1).unwrap())
+            .unwrap();
+        cert.append_extension(&BasicConstraints::new().critical().build().unwrap())
+            .unwrap();
+        cert.append_extension(&KeyUsage::new().digital_signature().build().unwrap())
+            .unwrap();
+        cert.append_extension(&ExtendedKeyUsage::new().client_auth().build().unwrap())
+            .unwrap();
+        cert.sign(&key, MessageDigest::sha256()).unwrap();
         ClientAuthData {
-            private_key: PrivatePkcs8KeyDer::from(key.serialize_der()).into(),
-            cert_chain: vec![CertificateDer::from(cert.der().to_vec())],
+            private_key: PrivatePkcs8KeyDer::from(key.private_key_to_der_pkcs8().unwrap()).into(),
+            cert_chain: vec![CertificateDer::from(cert.build().to_der().unwrap())],
         }
     };
     let trusted = identity("trusted client");

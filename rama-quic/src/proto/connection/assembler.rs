@@ -29,6 +29,17 @@ impl Assembler {
         Self::default()
     }
 
+    #[cfg(all(
+        test,
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        )
+    ))]
+    pub(super) fn retained_bytes(&self) -> usize {
+        self.allocated
+    }
+
     /// Reset to the initial state
     pub(super) fn reinit(&mut self) {
         let old_data = mem::take(&mut self.data);
