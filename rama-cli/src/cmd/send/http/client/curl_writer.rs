@@ -74,11 +74,7 @@ impl Service<Request> for CurlWriter {
             .await
             .context("rama: (curl-writer) collect req payload")?
             .to_bytes();
-        let compatibility = if cfg!(windows) {
-            curl::CurlScriptCompatibility::PowerShell
-        } else {
-            curl::CurlScriptCompatibility::Unix
-        };
+        let compatibility = curl::CurlScriptCompatibility::native();
         let curl_cmd = curl::try_cmd_string_for_request_parts_and_payload_with_options(
             &parts,
             &payload,

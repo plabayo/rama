@@ -4,6 +4,7 @@
 //! directly to AsyncWrite. Keep this traversal in parity with the schema's Serialize mapping.
 
 use super::TraceInfo;
+use crate::qlog::schema;
 use crate::qlog::{
     QlogEventView,
     event::{
@@ -50,13 +51,16 @@ impl super::QlogEncoder for AsyncJsonSeqEncoder {
     ) -> io::Result<()> {
         let mut retrying = RetryInterrupted::new(output);
         let output = &mut retrying;
-        output.write_all(b"\x1e").await?;
+        output.write_all(&[schema::RECORD_SEPARATOR]).await?;
         let mut object = Object::new(output).await?;
         object
-            .text("file_schema", "urn:ietf:params:qlog:file:sequential")
+            .text("file_schema", schema::FILE_SCHEMA_SEQUENTIAL)
             .await?;
         object
-            .text("serialization_format", "application/qlog+json-seq")
+            .text(
+                "serialization_format",
+                schema::SERIALIZATION_FORMAT_JSON_SEQ,
+            )
             .await?;
         metadata(&mut object, info).await?;
         object.key("trace").await?;
@@ -84,7 +88,7 @@ impl super::QlogEncoder for AsyncJsonSeqEncoder {
     ) -> io::Result<()> {
         let mut retrying = RetryInterrupted::new(output);
         let output = &mut retrying;
-        output.write_all(b"\x1e").await?;
+        output.write_all(&[schema::RECORD_SEPARATOR]).await?;
         let mut object = Object::new(output).await?;
         let time = event
             .time
