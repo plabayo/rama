@@ -93,7 +93,16 @@ jobs:
         run: cargo sort --workspace --grouped --check
       - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
         with:
-          tool: actionlint@1.7.12,cargo-hack@0.6.45
+          tool: cargo-hack@0.6.45
+      - name: Install actionlint
+        run: |
+          archive="$RUNNER_TEMP/actionlint.tar.gz"
+          curl --fail --location --retry 3 \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz \
+            --output "$archive"
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  $archive" | sha256sum --check
+          tar -xzf "$archive" -C "$HOME/.cargo/bin" actionlint
+          actionlint --version
       - name: Validate workflow scheduling and gates
         run: |
           python3 -m pip install --user PyYAML==6.0.3
