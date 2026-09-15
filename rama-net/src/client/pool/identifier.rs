@@ -32,7 +32,7 @@ impl BasicConnIdentifier {
 }
 
 /// Connection identity produced by [`BasicConnIdentifier`].
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct BasicConnId {
     pub protocol: Option<Protocol>,

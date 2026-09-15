@@ -5,7 +5,10 @@ use rama_boring::{
     pkey::{PKey, Private},
     x509::X509,
 };
-use rama_core::{error::BoxError, telemetry::tracing};
+use rama_core::{
+    error::{BoxError, ErrorContext as _},
+    telemetry::tracing,
+};
 use rama_tls::server::SelfSignedCaConfig;
 use rama_utils::collections::non_empty_vec;
 
@@ -68,11 +71,21 @@ impl InMemoryBoringMitmCertIssuer {
 impl BoringMitmCertIssuer for InMemoryBoringMitmCertIssuer {
     type Error = BoxError;
 
-    #[inline(always)]
     async fn issue_mitm_x509_cert(&self, original: X509) -> Result<MitmIssuedCert, Self::Error> {
+        // Key generation and signing take milliseconds (seconds for large RSA):
+        // keep that off the runtime workers so other connections keep flowing.
+        let issuer = self.clone();
+        tokio::task::spawn_blocking(move || issuer.issue_blocking(&original))
+            .await
+            .context("join mitm cert issuance task")?
+    }
+}
+
+impl InMemoryBoringMitmCertIssuer {
+    fn issue_blocking(&self, original: &X509) -> Result<MitmIssuedCert, BoxError> {
         let extra_extensions = match &self.revocation {
             Some(revocation) => revocation.leaf_extensions(&MitmRevocationCtx {
-                original: &original,
+                original,
                 issuer_ca: &self.ca_crt,
             })?,
             None => Vec::new(),
@@ -80,7 +93,7 @@ impl BoringMitmCertIssuer for InMemoryBoringMitmCertIssuer {
 
         let (crt, key) =
             rama_crypto::cert::boring::self_signed_server_auth_mirror_cert_with_extensions(
-                &original,
+                original,
                 &self.ca_crt,
                 &self.ca_key,
                 &extra_extensions,
@@ -90,7 +103,7 @@ impl BoringMitmCertIssuer for InMemoryBoringMitmCertIssuer {
         // mirror strips it, so a strict client would otherwise have nothing to
         // check). Signed by the issuing CA — root or intermediate, though an
         // intermediate's own hop isn't covered. Best-effort: never block issuance.
-        let ocsp_staple = if upstream_advertised_revocation(&original) {
+        let ocsp_staple = if upstream_advertised_revocation(original) {
             match crate::server::utils::build_mitm_leaf_ocsp_response(
                 &crt,
                 &self.ca_crt,
@@ -146,6 +159,7 @@ mod tests {
     };
     use rama_net::uri::Uri;
     use rama_tls::server::{CertificateKeyKind, CertificateSubject, SelfSignedCaConfig};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use tokio::io::duplex;
     use x509_ocsp::{BasicOcspResponse, CertStatus, OcspResponse, OcspResponseStatus};
     use x509_ocsp_der::{Decode, Encode};
@@ -355,6 +369,40 @@ mod tests {
     /// A self-signed "upstream" certificate advertising `revocation`.
     fn upstream_cert(revocation: Revocation) -> X509 {
         upstream_identity(revocation).1
+    }
+
+    /// Minting a leaf is CPU work; it has to leave the runtime worker free so
+    /// other tasks keep being polled meanwhile. On a current-thread runtime the
+    /// ticker only advances if issuance yields, which inline key generation
+    /// never does.
+    #[tokio::test(flavor = "current_thread")]
+    async fn issuance_keeps_runtime_worker_free() {
+        let ticks = Arc::new(AtomicUsize::new(0));
+        let stop = Arc::new(AtomicBool::new(false));
+        let ticker = tokio::spawn({
+            let ticks = ticks.clone();
+            let stop = stop.clone();
+            async move {
+                while !stop.load(Ordering::Relaxed) {
+                    ticks.fetch_add(1, Ordering::Relaxed);
+                    tokio::task::yield_now().await;
+                }
+            }
+        });
+
+        let issuer = mitm_ca(CertificateKeyKind::EcP256);
+        issuer
+            .issue_mitm_x509_cert(upstream_cert(Revocation::None))
+            .await
+            .expect("issue mirrored leaf");
+        let ticks_during_issuance = ticks.load(Ordering::Relaxed);
+        stop.store(true, Ordering::Relaxed);
+        ticker.await.expect("join ticker");
+
+        assert!(
+            ticks_during_issuance > 0,
+            "issuance blocked the runtime worker: no other task was polled"
+        );
     }
 
     /// Full mirror + issue flow, end to end, across CA key kinds and the
@@ -601,5 +649,87 @@ mod tests {
 
         relay_task.await.unwrap().expect("relay handshake ok");
         upstream.await.unwrap().expect("upstream server ok");
+    }
+
+    /// Repeat connections to one upstream reuse a single cached ingress
+    /// acceptor; a different upstream cert gets its own entry.
+    #[tokio::test]
+    async fn relay_reuses_cached_acceptor_per_upstream_cert() {
+        use crate::client::TlsConnectorData;
+        use crate::proxy::mitm::TlsMitmRelay;
+        use rama_core::{ServiceInput, io::BridgeIo};
+        use rama_tls::client::{ServerVerifyMode, TlsClientConfig};
+
+        fn upstream_acceptor(revocation: Revocation) -> SslAcceptor {
+            let (key, x509) = upstream_identity(revocation);
+            let mut up = SslAcceptor::mozilla_intermediate_v5(SslMethod::tls_server()).unwrap();
+            up.set_certificate(&x509).unwrap();
+            up.set_private_key(&key).unwrap();
+            up.build()
+        }
+
+        async fn handshake_through(
+            relay: &TlsMitmRelay<InMemoryBoringMitmCertIssuer>,
+            upstream: &SslAcceptor,
+        ) {
+            let (client_io, relay_ingress) = duplex(1 << 16);
+            let (relay_egress, upstream_io) = duplex(1 << 16);
+            let upstream = upstream.clone();
+            let server =
+                tokio::spawn(
+                    async move { rama_boring_tokio::accept(&upstream, upstream_io).await },
+                );
+            let egress_cd = TlsConnectorData::try_from(
+                &TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable),
+            )
+            .expect("egress connector data");
+            let relayed = relay.handshake(
+                BridgeIo(
+                    ServiceInput::new(relay_ingress),
+                    ServiceInput::new(relay_egress),
+                ),
+                Some(egress_cd),
+            );
+            let mut conn = SslConnector::builder(SslMethod::tls_client()).unwrap();
+            conn.set_verify(SslVerifyMode::NONE);
+            let mut cfg = conn.build().configure().unwrap();
+            cfg.set_verify_hostname(false);
+            let client = rama_boring_tokio::connect(cfg, Some("upstream.example"), client_io);
+            let (relayed, client) = tokio::join!(relayed, client);
+            relayed.expect("relay handshake");
+            client.expect("client handshake");
+            server.await.unwrap().expect("upstream handshake");
+        }
+
+        let (ca_crt, ca_key) = generate_certificate_authority_x509(&ca_config(
+            "rama-mitm-relay-ca.example",
+            Some("Rama"),
+            CertificateKeyKind::default(),
+        ))
+        .expect("self-signed MITM CA");
+        let relay = TlsMitmRelay::new_in_memory(ca_crt, ca_key);
+        let acceptors = relay
+            .acceptors
+            .clone()
+            .expect("acceptor cache on by default");
+
+        let first = upstream_acceptor(Revocation::None);
+        handshake_through(&relay, &first).await;
+        handshake_through(&relay, &first).await;
+        acceptors.run_pending_tasks().await;
+        assert_eq!(
+            acceptors.entry_count(),
+            1,
+            "same upstream cert: one acceptor"
+        );
+
+        let second = upstream_acceptor(Revocation::None);
+        handshake_through(&relay, &second).await;
+        acceptors.run_pending_tasks().await;
+        assert_eq!(
+            acceptors.entry_count(),
+            2,
+            "new upstream cert: new acceptor"
+        );
     }
 }

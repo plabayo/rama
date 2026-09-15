@@ -18,7 +18,7 @@ pub mod proxy;
 pub mod stunnel;
 
 pub async fn run(cfg: ServeCommand) -> Result<(), BoxError> {
-    crate::trace::init_tracing(if cfg.verbose {
+    let _tracing = crate::trace::init_tracing(if cfg.verbose {
         LevelFilter::DEBUG
     } else {
         LevelFilter::INFO

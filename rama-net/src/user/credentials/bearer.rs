@@ -1,4 +1,8 @@
-use core::{fmt, str::FromStr};
+use core::{
+    fmt,
+    hash::{Hash, Hasher},
+    str::FromStr,
+};
 
 use crate::std::string::String;
 
@@ -23,6 +27,13 @@ impl PartialEq for Bearer {
     // Regression: `tests::regression_bearer_constant_time_eq`.
     fn eq(&self, other: &Self) -> bool {
         ct_eq_bytes(self.0.as_bytes(), other.0.as_bytes())
+    }
+}
+
+impl Hash for Bearer {
+    // Agrees with `PartialEq`: equal token bytes hash equally.
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.0.as_bytes().hash(state);
     }
 }
 

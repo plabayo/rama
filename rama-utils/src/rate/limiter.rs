@@ -4,7 +4,10 @@ use parking_lot::Mutex;
 use std::{
     future::Future,
     pin::Pin,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
     task::{Context, Poll},
     time::Duration,
 };
@@ -38,13 +41,25 @@ pub struct RateLimiter {
 /// polled, so callers can safely create it before checking the bucket.
 #[derive(Debug)]
 #[must_use = "futures do nothing unless awaited or polled"]
-pub struct RefundWait(Pin<Box<OwnedNotified>>);
+pub struct RefundWait {
+    notified: Pin<Box<OwnedNotified>>,
+    inner: Arc<Inner>,
+}
 
 impl RefundWait {
-    fn new(notify: Arc<Notify>) -> Self {
-        let mut notified = Box::pin(notify.notified_owned());
+    fn new(inner: Arc<Inner>) -> Self {
+        // Count first, then register: a refund that observes the count also
+        // landed in the bucket before the caller's next `try_acquire`.
+        inner.waiters.fetch_add(1, Ordering::SeqCst);
+        let mut notified = Box::pin(inner.refunds.clone().notified_owned());
         notified.as_mut().enable();
-        Self(notified)
+        Self { notified, inner }
+    }
+}
+
+impl Drop for RefundWait {
+    fn drop(&mut self) {
+        self.inner.waiters.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -52,7 +67,7 @@ impl Future for RefundWait {
     type Output = ();
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.0.as_mut().poll(cx)
+        self.notified.as_mut().poll(cx)
     }
 }
 
@@ -63,6 +78,10 @@ struct Inner {
     rate: Rate,
     burst: u64,
     refunds: Arc<Notify>,
+    /// Registered [`RefundWait`]s, so a refund with nobody waiting (the
+    /// common case: every IO op refunds its unused quantum) skips the
+    /// `notify_waiters` broadcast.
+    waiters: AtomicUsize,
 }
 
 impl RateLimiter {
@@ -92,6 +111,7 @@ impl RateLimiter {
                 bucket: Mutex::new(bucket),
                 epoch: Instant::now(),
                 refunds: Arc::new(Notify::new()),
+                waiters: AtomicUsize::new(0),
             }),
         }
     }
@@ -140,9 +160,7 @@ impl RateLimiter {
         let mut remaining = n;
         while remaining > 0 {
             let want = remaining.min(self.inner.burst);
-            let refunded = self.inner.refunds.clone().notified_owned();
-            tokio::pin!(refunded);
-            refunded.as_mut().enable();
+            let mut refunded = self.notified_on_refund();
             match self.try_acquire(want) {
                 Acquire::Granted => {
                     remaining -= want;
@@ -150,7 +168,7 @@ impl RateLimiter {
                 Acquire::RetryAt(at) => {
                     tokio::select! {
                         () = tokio::time::sleep_until(self.deadline(at)) => {}
-                        () = refunded.as_mut() => {}
+                        () = &mut refunded => {}
                     }
                 }
                 Acquire::Never => {
@@ -167,7 +185,9 @@ impl RateLimiter {
     /// burst capacity.
     pub fn refund(&self, n: u64) {
         self.inner.bucket.lock().refund(n);
-        if n > 0 {
+        // A waiter registers before it re-checks the bucket, so one that misses
+        // this broadcast still sees the refund on its next `try_acquire`.
+        if n > 0 && self.inner.waiters.load(Ordering::SeqCst) > 0 {
             self.inner.refunds.notify_waiters();
         }
     }
@@ -178,7 +198,7 @@ impl RateLimiter {
     /// [`try_acquire`][Self::try_acquire], so a concurrent refund cannot land
     /// between observing a deficit and registering for notification.
     pub fn notified_on_refund(&self) -> RefundWait {
-        RefundWait::new(self.inner.refunds.clone())
+        RefundWait::new(self.inner.clone())
     }
 
     /// Turn an [`Acquire::RetryAt`] instant into a timer deadline,

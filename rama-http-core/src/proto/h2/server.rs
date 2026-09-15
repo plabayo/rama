@@ -496,7 +496,7 @@ where
                             );
                         }
                         let send_stream = reply!(me, res, false);
-                        let (h2_up, up_task) = super::upgrade::pair(
+                        let h2_up = super::upgrade::upgraded(
                             send_stream,
                             connect_parts.recv_stream,
                             connect_parts.ping,
@@ -504,7 +504,6 @@ where
                         connect_parts
                             .pending
                             .fulfill(Upgraded::new(h2_up, Bytes::new()));
-                        self.exec.spawn_task(up_task);
                         return Poll::Ready(Ok(()));
                     }
 

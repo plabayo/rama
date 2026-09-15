@@ -1,8 +1,11 @@
 use std::{num::NonZeroU64, sync::Arc, time::Duration};
 
-use moka::sync::Cache;
+use moka::future::Cache;
 use rama_boring::x509::X509;
-use rama_core::telemetry::tracing;
+use rama_core::{
+    error::{ArcError, BoxError},
+    telemetry::tracing,
+};
 
 use super::{BoringMitmCertIssuer, MitmIssuedCert};
 
@@ -63,29 +66,38 @@ impl<T> CachedBoringMitmCertIssuer<T> {
     }
 }
 
-impl<T: BoringMitmCertIssuer> BoringMitmCertIssuer for CachedBoringMitmCertIssuer<T> {
-    type Error = T::Error;
+impl<T> BoringMitmCertIssuer for CachedBoringMitmCertIssuer<T>
+where
+    T: BoringMitmCertIssuer<Error: Into<BoxError>>,
+{
+    type Error = BoxError;
 
-    #[inline(always)]
     async fn issue_mitm_x509_cert(&self, original: X509) -> Result<MitmIssuedCert, Self::Error> {
         let signature = original.signature().as_slice();
 
-        if let Some(issued) = self.cache.get(signature) {
+        if let Some(issued) = self.cache.get(signature).await {
             tracing::debug!(
                 "reuse cached x509 cert pair for MITM boring crt issuer (signature: 0x{signature:x?}"
             );
             return Ok(issued);
         }
 
-        let signature = Arc::from(signature);
-        let issued = self.issuer.issue_mitm_x509_cert(original).await?;
-
-        tracing::debug!(
-            "cached newly issued x509 cert pair for MITM boring crt issuer (signature: 0x{signature:x?}; return copy"
-        );
-
-        self.cache.insert(signature, issued.clone());
-
-        Ok(issued)
+        // Concurrent misses for one upstream cert share a single issuance:
+        // moka runs the init future once and hands every waiter the result.
+        let signature: Arc<[u8]> = Arc::from(signature);
+        self.cache
+            .try_get_with(signature.clone(), async {
+                let issued = self
+                    .issuer
+                    .issue_mitm_x509_cert(original)
+                    .await
+                    .map_err(|err| ArcError::from_box_error(err.into()))?;
+                tracing::debug!(
+                    "cached newly issued x509 cert pair for MITM boring crt issuer (signature: 0x{signature:x?}"
+                );
+                Ok::<_, ArcError>(issued)
+            })
+            .await
+            .map_err(|err: Arc<ArcError>| -> BoxError { ArcError::clone(&err).into() })
     }
 }

@@ -276,16 +276,20 @@ macro_rules! __root_span {
                 $($fields)*
             );
 
-            src_span.add_link_with_attributes(
-                span.context().span().span_context().clone(),
-                vec![KeyValue::new("opentracing.ref_type", "child_of")],
-            );
+            // Linking allocates and walks the OTel context: skip it for a
+            // span the subscriber filtered out (the common case per connection).
+            if !span.is_disabled() {
+                src_span.add_link_with_attributes(
+                    span.context().span().span_context().clone(),
+                    vec![KeyValue::new("opentracing.ref_type", "child_of")],
+                );
 
-            span.follows_from(src_span);
-            span.add_link_with_attributes(
-                get_active_span(|span| span.span_context().clone()),
-                vec![KeyValue::new("opentracing.ref_type", "follows_from")],
-            );
+                span.follows_from(&src_span);
+                span.add_link_with_attributes(
+                    get_active_span(|span| span.span_context().clone()),
+                    vec![KeyValue::new("opentracing.ref_type", "follows_from")],
+                );
+            }
 
             span
         }

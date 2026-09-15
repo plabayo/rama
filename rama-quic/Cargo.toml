@@ -16,7 +16,6 @@ allowed = []
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
-rustc-args = ["--cfg", "tokio_unstable"]
 # native C deps can't cross-compile in the docs.rs builder; linux-only docs
 targets = ["x86_64-unknown-linux-gnu"]
 

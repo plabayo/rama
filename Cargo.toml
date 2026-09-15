@@ -19,7 +19,6 @@ resolver = "3"
 
 [package.metadata.docs.rs]
 all-features = true
-rustc-args = ["--cfg", "tokio_unstable"]
 rustdoc-args = ["--cfg", "docsrs"]
 # native C deps can't cross-compile in the docs.rs builder; linux-only docs
 targets = ["x86_64-unknown-linux-gnu"]
@@ -760,4 +759,16 @@ harness = false
 name = "e2e_http_client_server"
 path = "benches/e2e_http_client_server.rs"
 required-features = ["http-full", "rustls", "aws-lc", "boring", "socks5"]
+harness = false
+
+[[bench]]
+name = "h2_tunnel"
+path = "benches/h2_tunnel.rs"
+required-features = ["http-full"]
+harness = false
+
+[[bench]]
+name = "tls_mitm_issue"
+path = "benches/tls_mitm_issue.rs"
+required-features = ["boring", "crypto"]
 harness = false

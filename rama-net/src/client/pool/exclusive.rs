@@ -192,7 +192,9 @@ impl<C, ID> LruDropPool<C, ID> {
     /// this pool.
     pub fn retire(&self) {
         self.retired.store(true, Ordering::Release);
-        self.storage.lock().clear();
+        // take, not clear: the sockets close after the lock is released
+        let idle = std::mem::take(&mut *self.storage.lock());
+        drop(idle);
     }
 
     generate_set_and_with! {
@@ -276,6 +278,11 @@ where
                 .record(active_connection_delay_nanoseconds, metric_attrs);
         };
 
+        // Connections leaving the pool release their slot right away, but the
+        // socket itself (TLS teardown, `close(2)`) only drops once the storage
+        // lock is released.
+        let mut doomed: Vec<C> = Vec::new();
+
         let mut storage = self.storage.lock();
         if self.retired.load(Ordering::Acquire) {
             return Err(BoxError::from_static_str(
@@ -299,7 +306,9 @@ where
                 trace!(
                     "LRU connection pool: idle timeout was triggered, dropping connections with index {idx:?} and later"
                 );
-                storage.drain(idx..);
+                for pooled_conn in storage.drain(idx..) {
+                    park(pooled_conn, &mut doomed);
+                }
             }
         }
 
@@ -317,13 +326,14 @@ where
                 .get_ref::<ConnectionHealthWatcher>()
                 && watcher.health() == ConnectionHealth::Broken
             {
+                park(pooled_conn, &mut doomed);
                 continue;
             }
 
             return Some((idx, pooled_conn));
         };
 
-        if let Some((idx, pooled_conn)) = get_conn() {
+        let result = if let Some((idx, pooled_conn)) = get_conn() {
             trace!("LRU connection pool: connection #{idx} found for given id {id:?}");
 
             #[cfg(feature = "opentelemetry")]
@@ -332,7 +342,7 @@ where
                 metrics.reused_connections.add(1, metric_attrs);
             }
 
-            return Ok(ConnectionResult::Connection(LeasedConnection {
+            Ok(ConnectionResult::Connection(LeasedConnection {
                 active_slot,
                 pooled_conn: ManuallyDrop::new(pooled_conn),
                 pooled_conn_taken: false,
@@ -340,32 +350,45 @@ where
                 got_response: AtomicBool::new(false),
                 failed_or_cancelled: AtomicBool::new(false),
                 drop_connection_if_no_response: self.drop_connection_if_no_response,
-            }));
-        }
-
-        let pool_slot = match self.total_slots.clone().try_acquire_owned() {
-            Ok(permit) => PoolSlot(permit),
-            Err(err) => {
-                // By poping from back when we have no new Poolslot available we implement LRU drop policy
-                trace!(
-                    error = %err,
-                    "LRU connection pool: evicting lru connection (#{id:?}) to create a new one"
-                );
-                #[cfg(feature = "opentelemetry")]
-                if let Some((metrics, metric_attrs)) = &metrics {
-                    metrics.evicted_connections.add(1, metric_attrs);
+            }))
+        } else {
+            let pool_slot = match self.total_slots.clone().try_acquire_owned() {
+                Ok(permit) => Ok(PoolSlot(permit)),
+                Err(err) => {
+                    // By poping from back when we have no new Poolslot available we implement LRU drop policy
+                    trace!(
+                        error = %err,
+                        "LRU connection pool: evicting lru connection (#{id:?}) to create a new one"
+                    );
+                    #[cfg(feature = "opentelemetry")]
+                    if let Some((metrics, metric_attrs)) = &metrics {
+                        metrics.evicted_connections.add(1, metric_attrs);
+                    }
+                    storage
+                        .pop_back()
+                        .context("get least recently used connection from storage")
+                        .map(|evicted| {
+                            // the slot transfers to the caller, the socket drops later
+                            let PooledConnection {
+                                pool_slot, conn, ..
+                            } = evicted;
+                            doomed.push(conn);
+                            pool_slot
+                        })
                 }
-                storage
-                    .pop_back()
-                    .context("get least recently used connection from storage")?
-                    .pool_slot
-            }
+            };
+
+            pool_slot.map(|pool_slot| {
+                trace!(
+                    "LRU connection pool: no connection for given id {id:?} found, returning create permit"
+                );
+                ConnectionResult::CreatePermit((active_slot, pool_slot))
+            })
         };
 
-        trace!(
-            "LRU connection pool: no connection for given id {id:?} found, returning create permit"
-        );
-        Ok(ConnectionResult::CreatePermit((active_slot, pool_slot)))
+        drop(storage);
+        drop(doomed);
+        result
     }
 
     async fn create(&self, id: ID, conn: C, permit: Self::CreatePermit) -> Self::Connection {
@@ -395,6 +418,16 @@ where
         }
     }
 }
+/// Free a discarded connection's pool slot now and park the connection itself
+/// for dropping outside the storage lock.
+fn park<C, ID>(pooled_conn: PooledConnection<C, ID>, doomed: &mut Vec<C>) {
+    let PooledConnection {
+        conn, pool_slot, ..
+    } = pooled_conn;
+    drop(pool_slot);
+    doomed.push(conn);
+}
+
 impl<C: Debug, ID: Debug> Debug for PooledConnection<C, ID> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PooledConnection")

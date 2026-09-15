@@ -11,7 +11,7 @@ use rama_core::extensions::Extension;
 /// processed an exchanged [`ProxyCredential`].
 pub struct DpiProxyCredential(pub ProxyCredential);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 /// Proxy credentials.
 pub enum ProxyCredential {
     /// [`Basic`]` credentials.
