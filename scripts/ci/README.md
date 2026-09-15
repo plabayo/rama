@@ -121,13 +121,22 @@ The cache includes the root workspace as well as standalone peer workspaces.
 
 ## Verification
 
-Run from the repository root with Python/PyYAML 6.0.3, cargo-hack 0.6.45,
-actionlint 1.7.12, Bash, and jq available:
+This directory's `justfile` holds the policy checks; `meta-lints` runs the same recipe.
+Invoke it from the repository root, where `just scripts/ci/` lists every recipe:
 
 ```sh
-python3 scripts/ci/check_workflows.py
-python3 -m unittest discover -s scripts/ci -p 'test_*.py'
-python3 scripts/ci/check_feature_coverage.py
+just scripts/ci/qa
+```
+
+`qa` bundles `check-workflows`, `check-features` and `test`, each runnable on its own.
+They execute in this directory's own locked environment: `pyproject.toml` declares PyYAML,
+`uv.lock` pins its graph, and `.python-version` pins the interpreter uv selects, so they
+never depend on whichever Python the machine or the runner image ships. That needs `uv`
+installed, and `check-features` also needs cargo-hack 0.6.45.
+
+The remaining checks need actionlint 1.7.12, Bash, and jq:
+
+```sh
 bash scripts/ci/check-format.sh
 actionlint -ignore 'unexpected key "queue" for "concurrency" section'
 ```
