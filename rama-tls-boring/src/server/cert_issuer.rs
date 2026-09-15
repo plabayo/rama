@@ -2,7 +2,7 @@ use crate::core::{
     pkey::{PKey, Private},
     x509::X509,
 };
-use moka::sync::Cache;
+use moka::future::Cache;
 use parking_lot::Mutex;
 use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext as _, ErrorExt as _};
 use rama_net::address::Domain;
@@ -394,8 +394,8 @@ mod tests {
         assert!(!Arc::ptr_eq(&original.runtime, &with_new_kind.runtime));
     }
 
-    #[test]
-    fn cache_ttl_distinguishes_unbounded_immediate_and_expiring_entries() {
+    #[tokio::test]
+    async fn cache_ttl_distinguishes_unbounded_immediate_and_expiring_entries() {
         let max_size = NonZeroU64::new(8).expect("non-zero cache size");
         let unbounded = ServerCertIssuerRuntime::new(&CacheKind::MemCache {
             max_size,
@@ -425,8 +425,8 @@ mod tests {
         .cert_cache
         .expect("immediate-expiry cache");
         assert_eq!(immediate.policy().time_to_live(), Some(Duration::ZERO));
-        immediate.insert(identity.clone(), issued.clone());
-        assert!(immediate.get(&identity).is_none());
+        immediate.insert(identity.clone(), issued.clone()).await;
+        assert!(immediate.get(&identity).await.is_none());
 
         let ttl = Duration::from_millis(200);
         let expiring = ServerCertIssuerRuntime::new(&CacheKind::MemCache {
@@ -436,10 +436,10 @@ mod tests {
         .cert_cache
         .expect("expiring cache");
         assert_eq!(expiring.policy().time_to_live(), Some(ttl));
-        expiring.insert(identity.clone(), issued);
-        assert!(expiring.get(&identity).is_some());
-        std::thread::sleep(Duration::from_millis(400));
-        assert!(expiring.get(&identity).is_none());
+        expiring.insert(identity.clone(), issued).await;
+        assert!(expiring.get(&identity).await.is_some());
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        assert!(expiring.get(&identity).await.is_none());
     }
 
     #[test]

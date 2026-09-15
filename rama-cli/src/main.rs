@@ -11,7 +11,10 @@
 )]
 
 use clap::{Parser, Subcommand};
-use rama::error::{BoxError, ErrorContext as _};
+use rama::{
+    error::{BoxError, ErrorContext as _},
+    rt::OwnedRuntime,
+};
 
 use crate::utils::error::ErrorWithExitCode;
 
@@ -46,6 +49,7 @@ struct Cli {
     reason = "Subcommand variants vary in size; reordering would change CLI semantics"
 )]
 enum CliCommands {
+    Inspect(cmd::inspect::InspectCommand),
     Pac(cmd::pac::PacCommand),
     Resolve(cmd::resolve::ResolveCommand),
     Send(cmd::send::SendCommand),
@@ -73,8 +77,42 @@ fn with_subcommand_typo_tip(err: clap::Error) -> clap::Error {
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<(), BoxError> {
+const WORKER_THREAD_NAME: &str = "rama-worker";
+
+/// The CLI's runtime: a multi-thread scheduler built explicitly so its workers
+/// are recognisable in process listings and, with the `dial9` feature and
+/// `DIAL9_ENABLED` set, a recorder is attached for runtime telemetry.
+fn build_runtime() -> std::io::Result<OwnedRuntime> {
+    #[cfg(feature = "dial9")]
+    if dial9_enabled_from_env() {
+        let (recorder, runtime) = dial9::recorder_from_env_with(|builder| {
+            builder.enable_all().thread_name(WORKER_THREAD_NAME);
+        })?;
+        if recorder.handle().is_enabled() {
+            return Ok(OwnedRuntime::from_dial9((recorder, runtime)));
+        }
+        // the environment resolved to telemetry-off after all
+        drop((recorder, runtime));
+    }
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_name(WORKER_THREAD_NAME)
+        .build()?;
+    Ok(OwnedRuntime::from_tokio(runtime))
+}
+
+#[cfg(feature = "dial9")]
+fn dial9_enabled_from_env() -> bool {
+    std::env::var("DIAL9_ENABLED").is_ok_and(|value| {
+        !matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "" | "f" | "false" | "0" | "n" | "no" | "off"
+        )
+    })
+}
+
+fn main() -> Result<(), BoxError> {
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(err) => match err.kind() {
@@ -96,9 +134,10 @@ async fn main() -> Result<(), BoxError> {
         }
     };
 
+    let runtime = build_runtime().context("build tokio runtime")?;
     // Keep command futures off Windows' smaller process-main stack.
-    let result = rama::rt::spawn(run(cmds))
-        .await
+    let result = runtime
+        .block_on(async { rama::rt::spawn(run(cmds)).await })
         .context("join CLI command task")?;
 
     #[allow(clippy::exit, reason = "CLI: explicit exit code propagation")]
@@ -116,6 +155,7 @@ async fn main() -> Result<(), BoxError> {
 
 async fn run(cmds: CliCommands) -> Result<(), BoxError> {
     match cmds {
+        CliCommands::Inspect(cfg) => Box::pin(cmd::inspect::run(cfg)).await,
         CliCommands::Pac(cfg) => Box::pin(cmd::pac::run(cfg)).await,
         CliCommands::Resolve(cfg) => Box::pin(cmd::resolve::run(cfg)).await,
         CliCommands::Send(cfg) => Box::pin(cmd::send::run(cfg)).await,

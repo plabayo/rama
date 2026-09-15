@@ -9,6 +9,7 @@ authors = { workspace = true }
 rust-version = { workspace = true }
 
 [dependencies]
+jiff = { workspace = true }
 parking_lot = { workspace = true }
 rama-core = { workspace = true, features = ["std"] }
 rama-utils = { workspace = true, features = ["std"] }

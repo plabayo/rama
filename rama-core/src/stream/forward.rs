@@ -13,7 +13,10 @@
 //!
 //! See [`crate::Service`] for the service abstraction this plugs into.
 
-use core::pin::Pin;
+use core::{
+    pin::Pin,
+    sync::atomic::{AtomicU64, Ordering},
+};
 use std::time::Duration;
 
 use futures::{Sink, SinkExt, Stream, StreamExt};
@@ -235,8 +238,22 @@ where
     EA: Into<BoxError> + Send,
     EB: Into<BoxError> + Send,
 {
-    let (mut a_sink, mut a_stream) = a.split();
-    let (mut b_sink, mut b_stream) = b.split();
+    let (a_sink, a_stream) = a.split();
+    let (b_sink, b_stream) = b.split();
+
+    // Progress counter: bumped on every successful forward. The idle arm
+    // re-checks this against `last_progress` before declaring a timeout,
+    // to absorb the race where idle fires in the same select tick that a
+    // forward also became ready.
+    let progress = AtomicU64::new(0);
+    let mut last_progress: u64 = 0;
+
+    // Each direction is one long-lived future so a backpressured sink on one
+    // side never stops the other side, the idle timer, or shutdown from being
+    // polled: no `select!` arm below awaits anything of its own.
+    let a_to_b = pump(a_stream, b_sink, &progress, "b");
+    let b_to_a = pump(b_stream, a_sink, &progress, "a");
+    tokio::pin!(a_to_b, b_to_a);
 
     let mut a_done = false;
     let mut b_done = false;
@@ -250,12 +267,6 @@ where
 
     let mut idle: Option<Pin<Box<tokio::time::Sleep>>> =
         idle_timeout.map(|d| Box::pin(tokio::time::sleep(d)));
-    // Progress counter: bumped on every successful forward. The idle arm
-    // re-checks this against `last_progress` before declaring a timeout,
-    // to absorb the race where idle fires in the same select tick that a
-    // forward also became ready.
-    let mut progress: u64 = 0;
-    let mut last_progress: u64 = 0;
 
     let result = loop {
         if a_done && b_done {
@@ -281,7 +292,8 @@ where
             () = cancelled => break Ok(BridgeCloseReason::Shutdown),
             () = idle_tick => {
                 // Re-check the progress counter: a forward may have
-                // completed in the same poll cycle that idle fired.
+                // completed since the timer was armed.
+                let progress = progress.load(Ordering::Relaxed);
                 if progress != last_progress {
                     last_progress = progress;
                     if let (Some(d), Some(s)) = (idle_timeout, idle.as_mut()) {
@@ -292,56 +304,26 @@ where
                 break Ok(BridgeCloseReason::IdleTimeout);
             }
 
-            item = a_stream.next(), if !a_done => match item {
-                Some(Ok(t)) => {
-                    if let Err(e) = b_sink.send(t).await {
-                        break Err((BridgeCloseReason::WriteErrorRight, e.into_box_error()));
-                    }
-                    progress = progress.wrapping_add(1);
-                    if let (Some(d), Some(s)) = (idle_timeout, idle.as_mut()) {
-                        s.as_mut().reset(tokio::time::Instant::now() + d);
-                    }
-                }
-                Some(Err(e)) => break Err((BridgeCloseReason::ReadErrorLeft, e.into_box_error())),
-                None => {
+            end = &mut a_to_b, if !a_done => match end {
+                PumpEnd::Eof => {
                     if !b_done {
                         first_eof = BridgeCloseReason::PeerEofLeft;
                     }
                     a_done = true;
-                    if let Err(err) = b_sink.close().await {
-                        tracing::debug!(
-                            target: "rama_core::stream::forward",
-                            error = %err.into_box_error(),
-                            "stream forward bridge: error while half-closing `b` after `a` EOF",
-                        );
-                    }
                 }
+                PumpEnd::ReadError(e) => break Err((BridgeCloseReason::ReadErrorLeft, e)),
+                PumpEnd::WriteError(e) => break Err((BridgeCloseReason::WriteErrorRight, e)),
             },
 
-            item = b_stream.next(), if !b_done => match item {
-                Some(Ok(t)) => {
-                    if let Err(e) = a_sink.send(t).await {
-                        break Err((BridgeCloseReason::WriteErrorLeft, e.into_box_error()));
-                    }
-                    progress = progress.wrapping_add(1);
-                    if let (Some(d), Some(s)) = (idle_timeout, idle.as_mut()) {
-                        s.as_mut().reset(tokio::time::Instant::now() + d);
-                    }
-                }
-                Some(Err(e)) => break Err((BridgeCloseReason::ReadErrorRight, e.into_box_error())),
-                None => {
+            end = &mut b_to_a, if !b_done => match end {
+                PumpEnd::Eof => {
                     if !a_done {
                         first_eof = BridgeCloseReason::PeerEofRight;
                     }
                     b_done = true;
-                    if let Err(err) = a_sink.close().await {
-                        tracing::debug!(
-                            target: "rama_core::stream::forward",
-                            error = %err.into_box_error(),
-                            "stream forward bridge: error while half-closing `a` after `b` EOF",
-                        );
-                    }
                 }
+                PumpEnd::ReadError(e) => break Err((BridgeCloseReason::ReadErrorRight, e)),
+                PumpEnd::WriteError(e) => break Err((BridgeCloseReason::WriteErrorLeft, e)),
             },
         }
     };
@@ -363,6 +345,51 @@ where
                 "stream forward bridge closed with error",
             );
             Err(err)
+        }
+    }
+}
+
+/// How one direction of the bridge ended.
+enum PumpEnd {
+    /// The source stream ended; the destination sink was half-closed.
+    Eof,
+    ReadError(BoxError),
+    WriteError(BoxError),
+}
+
+/// Pump items from `stream` into `sink` until EOF or an error, bumping
+/// `progress` per forwarded item and half-closing `sink` on EOF.
+async fn pump<S, K, T, ES, EK>(
+    mut stream: S,
+    mut sink: K,
+    progress: &AtomicU64,
+    sink_name: &'static str,
+) -> PumpEnd
+where
+    S: Stream<Item = Result<T, ES>> + Unpin,
+    K: Sink<T, Error = EK> + Unpin,
+    ES: Into<BoxError>,
+    EK: Into<BoxError>,
+{
+    loop {
+        match stream.next().await {
+            Some(Ok(item)) => {
+                if let Err(err) = sink.send(item).await {
+                    return PumpEnd::WriteError(err.into_box_error());
+                }
+                progress.fetch_add(1, Ordering::Relaxed);
+            }
+            Some(Err(err)) => return PumpEnd::ReadError(err.into_box_error()),
+            None => {
+                if let Err(err) = sink.close().await {
+                    tracing::debug!(
+                        target: "rama_core::stream::forward",
+                        error = %err.into_box_error(),
+                        "stream forward bridge: error while half-closing `{sink_name}` after peer EOF",
+                    );
+                }
+                return PumpEnd::Eof;
+            }
         }
     }
 }
@@ -450,6 +477,91 @@ mod tests {
     }
 
     impl<T> Unpin for DuplexEndpoint<T> {}
+
+    /// A [`DuplexEndpoint`] whose sink never becomes ready: a peer that has
+    /// stopped reading while its own writes keep flowing.
+    struct StalledSink<T>(DuplexEndpoint<T>);
+
+    impl<T> Stream for StalledSink<T> {
+        type Item = Result<T, std::io::Error>;
+        fn poll_next(
+            mut self: Pin<&mut Self>,
+            cx: &mut core::task::Context<'_>,
+        ) -> core::task::Poll<Option<Self::Item>> {
+            Pin::new(&mut self.0).poll_next(cx)
+        }
+    }
+
+    impl<T> Sink<T> for StalledSink<T> {
+        type Error = std::io::Error;
+        fn poll_ready(
+            self: Pin<&mut Self>,
+            _cx: &mut core::task::Context<'_>,
+        ) -> core::task::Poll<Result<(), Self::Error>> {
+            core::task::Poll::Pending
+        }
+        fn start_send(self: Pin<&mut Self>, _item: T) -> Result<(), Self::Error> {
+            Err(std::io::Error::other("poll_ready never resolves"))
+        }
+        fn poll_flush(
+            self: Pin<&mut Self>,
+            _cx: &mut core::task::Context<'_>,
+        ) -> core::task::Poll<Result<(), Self::Error>> {
+            core::task::Poll::Pending
+        }
+        fn poll_close(
+            self: Pin<&mut Self>,
+            _cx: &mut core::task::Context<'_>,
+        ) -> core::task::Poll<Result<(), Self::Error>> {
+            core::task::Poll::Pending
+        }
+    }
+
+    impl<T> Unpin for StalledSink<T> {}
+
+    /// A backpressured `a -> b` write must not stop `b -> a` items, or the
+    /// shutdown signal, from being served: the two directions are independent
+    /// futures rather than `select!` arms that await inside their body.
+    #[tokio::test]
+    async fn backpressured_direction_does_not_stall_the_other() {
+        use crate::graceful::Shutdown;
+
+        let (mut a_user, a_proxy) = duplex_pair::<u32>();
+        let (mut b_user, b_proxy) = duplex_pair::<u32>();
+
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let shutdown = Shutdown::new(async move {
+            _ = rx.await;
+        });
+        let svc = StreamForwardService::new().with_shutdown_guard(shutdown.guard());
+        let task = tokio::spawn(async move {
+            svc.serve(StreamBridge::new(a_proxy, StalledSink(b_proxy)))
+                .await
+                .unwrap()
+        });
+
+        // `a -> b` now blocks forever inside `b_sink.send`.
+        a_user.send(1).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        // ... while `b -> a` must keep flowing.
+        b_user.send(10).await.unwrap();
+        let r = tokio::time::timeout(Duration::from_secs(2), a_user.next())
+            .await
+            .expect("b -> a stalled behind the backpressured a -> b direction")
+            .unwrap()
+            .unwrap();
+        assert_eq!(r, 10);
+
+        // ... and shutdown must still be observed.
+        tx.send(()).unwrap();
+        let reason = tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .expect("shutdown stalled behind the backpressured direction")
+            .unwrap();
+        assert_eq!(reason, BridgeCloseReason::Shutdown);
+        drop(shutdown);
+    }
 
     #[tokio::test]
     async fn forwards_in_both_directions() {

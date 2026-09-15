@@ -15,7 +15,6 @@ allowed = []
 
 [package.metadata.docs.rs]
 all-features = true
-rustc-args = ["--cfg", "tokio_unstable"]
 rustdoc-args = ["--cfg", "docsrs"]
 # native C deps can't cross-compile in the docs.rs builder; linux-only docs
 targets = ["x86_64-unknown-linux-gnu"]
@@ -37,7 +36,7 @@ dial9 = { workspace = true, optional = true }
 dial9-trace-format = { workspace = true, optional = true }
 flate2 = { workspace = true, optional = true }
 itertools = { workspace = true }
-moka = { workspace = true, features = ["sync"] }
+moka = { workspace = true, features = ["future", "sync"] }
 parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
 rama-boring = { workspace = true }

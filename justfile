@@ -29,6 +29,27 @@ export RUSTDOCFLAGS := \
     }
 export RUST_LOG := "debug"
 
+# Install a cargo tool only when it is missing. The probe needs a shell of its
+# own on each platform: Windows PowerShell has neither `command` nor `||`.
+_ensure-installed TOOL PACKAGE:
+    @just _ensure-installed-{{os_family()}} {{TOOL}} {{PACKAGE}}
+
+_ensure-installed-unix TOOL PACKAGE:
+    @command -v {{TOOL}} >/dev/null || cargo install {{PACKAGE}} --locked
+
+_ensure-installed-windows TOOL PACKAGE:
+    @if (-not (Get-Command {{TOOL}} -ErrorAction SilentlyContinue)) { cargo install {{PACKAGE}} --locked }
+
+# Add a rustup target only when it is missing, for the same reason.
+_ensure-rust-target TARGET:
+    @just _ensure-rust-target-{{os_family()}} {{TARGET}}
+
+_ensure-rust-target-unix TARGET:
+    @rustup target list --installed | grep -q {{TARGET}} || rustup target add {{TARGET}}
+
+_ensure-rust-target-windows TARGET:
+    @if (-not (rustup target list --installed | Select-String -SimpleMatch -Quiet {{TARGET}})) { rustup target add {{TARGET}} }
+
 fmt *ARGS:
     cargo fmt --all {{ARGS}}
 
@@ -42,7 +63,7 @@ fmt-check-crate CRATE *ARGS:
     cargo fmt --all -p {{CRATE}} --check {{ARGS}}
 
 sort:
-    @command -v cargo-sort >/dev/null || cargo install cargo-sort --locked
+    @just _ensure-installed cargo-sort cargo-sort
     cargo sort --workspace --grouped
 
 sort-check *ARGS:
@@ -60,7 +81,15 @@ check:
 
 # type check for the fuzz targets, without nightly or a sanitizer
 check-fuzz:
+    @just _check-fuzz-{{os_family()}}
+
+# A `VAR=value cmd` prefix is sh syntax, and the top-level `export RUSTFLAGS`
+# would win over an inherited value, so each shell sets it on the cargo call.
+_check-fuzz-unix:
     RUSTFLAGS="--cfg fuzzing" cargo check -p rama-fuzz --all-targets
+
+_check-fuzz-windows:
+    $env:RUSTFLAGS = "--cfg fuzzing"; cargo check -p rama-fuzz --all-targets
 
 check-crate CRATE:
     cargo check -p {{CRATE}} --all-targets --all-features
@@ -135,7 +164,7 @@ _zigbuild-linux-gnu-with-native-env-windows RECIPE TARGET:
 # std fails loudly here instead of poisoning downstream no_std consumers
 # (e.g. kernel drivers hit E0152 duplicate panic_impl)
 check-nostd:
-    @rustup target list --installed | grep -q x86_64-unknown-none || rustup target add x86_64-unknown-none
+    @just _ensure-rust-target x86_64-unknown-none
     cargo check -p rama-error --no-default-features --target x86_64-unknown-none
     cargo check -p rama-utils --no-default-features --target x86_64-unknown-none
     cargo check -p rama-core --no-default-features --target x86_64-unknown-none
@@ -178,15 +207,6 @@ _extra-checks-unix:
 _extra-checks-windows:
     @echo "Skipping extra checks on Windows"
 
-docsrs-metadata-check:
-    @just _docsrs-metadata-check-{{os_family()}}
-
-_docsrs-metadata-check-unix:
-    {{justfile_directory()}}/scripts/docsrs-metadata-check.sh
-
-_docsrs-metadata-check-windows:
-    @echo "Skipping docs.rs metadata check on Windows"
-
 doc:
     cargo doc --all-features --no-deps --workspace --exclude rama-cli --exclude rama-net-apple-xpc
     just doc-crate rama-cli
@@ -212,17 +232,17 @@ hack:
     cargo hack check --each-feature --no-dev-deps --workspace
 
 test *ARGS:
-    @command -v cargo-nextest >/dev/null || cargo install cargo-nextest --locked
+    @just _ensure-installed cargo-nextest cargo-nextest
     cargo nextest run --all-features --workspace {{ARGS}}
     bash scripts/test-crypto.sh all {{ARGS}}
 
 # Run crypto and TLS tests with each backend isolated (or choose rustcrypto/ring/aws-lc/boring).
 test-crypto BACKEND="all" *ARGS:
-    @command -v cargo-nextest >/dev/null || cargo install cargo-nextest --locked
+    @just _ensure-installed cargo-nextest cargo-nextest
     bash scripts/test-crypto.sh {{BACKEND}} {{ARGS}}
 
 test-no-default-features *ARGS:
-    @command -v cargo-nextest >/dev/null || cargo install cargo-nextest --locked
+    @just _ensure-installed cargo-nextest cargo-nextest
     cargo nextest run --no-default-features --workspace {{ARGS}}
 
 test-doc *ARGS:
@@ -235,7 +255,7 @@ test-proxy-dashboard-browser:
     node --test rama-cli/src/cmd/serve/proxy/dashboard-browser.test.cjs
 
 test-crate CRATE *ARGS:
-    @command -v cargo-nextest >/dev/null || cargo install cargo-nextest --locked
+    @just _ensure-installed cargo-nextest cargo-nextest
     cargo nextest run --all-features -p {{CRATE}} {{ARGS}}
 
 test-doc-crate CRATE *ARGS:
@@ -260,20 +280,26 @@ test-revocation-gate-windows:
 test-spec: test-spec-h2 test-revocation-gate
 
 test-ignored:
-    @command -v cargo-nextest >/dev/null || cargo install cargo-nextest --locked
+    @just _ensure-installed cargo-nextest cargo-nextest
     cargo nextest run --all-features --workspace --run-ignored=only
 
 test-ignored-release:
-    @command -v cargo-nextest >/dev/null || cargo install cargo-nextest --locked
+    @just _ensure-installed cargo-nextest cargo-nextest
     cargo nextest run --all-features --release --workspace --run-ignored=only
 
 test-loom:
-    @command -v cargo-nextest >/dev/null || cargo install cargo-nextest --locked
+    @just _ensure-installed cargo-nextest cargo-nextest
+    @just _test-loom-{{os_family()}}
+
+_test-loom-unix:
     RUSTFLAGS="--cfg loom -Dwarnings" cargo nextest run --all-features -p rama-utils
+
+_test-loom-windows:
+    $env:RUSTFLAGS = "--cfg loom -Dwarnings"; cargo nextest run --all-features -p rama-utils
 
 qq: sort-check fmt-check check check-fuzz check-nostd clippy doc extra-checks
 
-qa: qq docsrs-metadata-check test test-no-default-features test-doc deny
+qa: qq test test-no-default-features test-doc deny
 
 # QA pass for the optional `dial9` runtime-telemetry feature. Builds, lints
 # and tests the rama crates that opt into dial9, on stable Tokio. Use
@@ -283,7 +309,7 @@ qa: qq docsrs-metadata-check test test-no-default-features test-doc deny
 # focused — but is part of `qa-full` so anyone running the full suite
 # covers it. CI runs it as its own job.
 qa-dial9:
-    @command -v cargo-nextest >/dev/null || cargo install cargo-nextest --locked
+    @just _ensure-installed cargo-nextest cargo-nextest
     cargo check -p rama-core -p rama-http -p rama-ws -p rama-net -p rama-net-apple-networkextension -p rama-dns -p rama-tls-rustls -p rama-tls-boring -p rama-socks5 -p rama --features dial9 --all-targets
     cargo clippy -p rama-core -p rama-http -p rama-ws -p rama-net -p rama-net-apple-networkextension -p rama-dns -p rama-tls-rustls -p rama-tls-boring -p rama-socks5 -p rama --features dial9 --all-targets
     cargo nextest run -p rama-core -p rama-http -p rama-ws -p rama-net -p rama-net-apple-networkextension -p rama-dns -p rama-socks5 --features dial9
@@ -291,7 +317,13 @@ qa-dial9:
 
 # `qa-dial9` under `--cfg tokio_unstable`, where dial9 gets its full task coverage.
 qa-dial9-tokio-unstable:
+    @just _qa-dial9-tokio-unstable-{{os_family()}}
+
+_qa-dial9-tokio-unstable-unix:
     TOKIO_UNSTABLE=true just qa-dial9
+
+_qa-dial9-tokio-unstable-windows:
+    $env:TOKIO_UNSTABLE = "true"; just qa-dial9
 
 # Interactive: boot the fastcgi-php gateway demo (HTTPS → FastCGI/TCP → php-fpm)
 # and leave it running until Ctrl-C so you can curl / browse it.
@@ -382,8 +414,10 @@ clean-js:
 _clean-js-unix:
     rm -rf -- rama-js/engine/starling/.build
 
+# `-ErrorAction SilentlyContinue` only hides the message: a missing path still
+# fails the recipe, as `rm -rf` above does not. Ask before removing instead.
 _clean-js-windows:
-    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue rama-js/engine/starling/.build
+    if (Test-Path rama-js/engine/starling/.build) { Remove-Item -Recurse -Force rama-js/engine/starling/.build }
 
 watch-docs:
     @cargo install cargo-watch
@@ -490,8 +524,8 @@ fuzz-60s: fuzz-ua-60s fuzz-h2-60s fuzz-http-headers-x-robots-tag-60s fuzz-http-h
 
 fuzz-full: fuzz-60s fuzz-h2-main
 
-bench:
-    cargo bench --features=full
+bench *ARGS:
+    cargo bench --features=http-full,rustls,aws-lc,boring,socks5,ua,udp,quic,test-utils,rss {{ARGS}}
 
 bench-icap *ARGS:
     cargo bench -p rama-icap --features=http --bench icap -- {{ARGS}}

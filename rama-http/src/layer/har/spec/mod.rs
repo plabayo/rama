@@ -34,8 +34,9 @@ mod websocket;
 pub use websocket::{WebSocketMessage, WebSocketMessageOpcode, WebSocketMessageType};
 
 mod mime_serde {
+    use rama_core::telemetry::tracing;
     use rama_http_types::mime::Mime;
-    use serde::{Deserialize, Deserializer, Serializer, de::Error};
+    use serde::{Deserialize, Deserializer, Serializer};
     use std::{borrow::Cow, str::FromStr};
 
     #[expect(clippy::ref_option)]
@@ -50,15 +51,22 @@ mod mime_serde {
         }
     }
 
+    /// A recorded archive is third-party input: Chrome writes `x-unknown` for a
+    /// WebSocket entry, and one unparsable media type must not cost the file.
     pub(super) fn deserialize<'de, D>(d: D) -> Result<Option<Mime>, D::Error>
     where
         D: Deserializer<'de>,
     {
         let opt = <Option<Cow<'de, str>>>::deserialize(d)?;
-        if let Some(s) = opt {
-            Mime::from_str(&s).map_err(Error::custom).map(Some)
-        } else {
-            Ok(None)
+        let Some(s) = opt else {
+            return Ok(None);
+        };
+        match Mime::from_str(&s) {
+            Ok(mime) => Ok(Some(mime)),
+            Err(err) => {
+                tracing::debug!("ignore unparsable HAR mime type {s}: {err:?}");
+                Ok(None)
+            }
         }
     }
 }
@@ -157,6 +165,23 @@ fn into_har_headers(header_map: HeaderMap) -> Vec<Header> {
 pub struct LogFile {
     /// The HAR log data.
     pub log: Log,
+}
+
+/// Whether `input` plausibly starts an HAR file, for content-based detection.
+///
+/// This only inspects the head of the input; deserializing [`LogFile`] does the
+/// real validation.
+#[must_use]
+pub fn looks_like_har(input: &[u8]) -> bool {
+    let input = input.strip_prefix(b"\xef\xbb\xbf").unwrap_or(input);
+    let Some(start) = input.iter().position(|byte| !byte.is_ascii_whitespace()) else {
+        return false;
+    };
+    if input[start] != b'{' {
+        return false;
+    }
+    let head = &input[start..input.len().min(start + 4096)];
+    head.windows(5).any(|window| window == br#""log""#)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1088,6 +1113,25 @@ mod tests {
                 .all(|header| header.name != crate::header::AUTHORIZATION.as_str())
         );
         assert_eq!(request.headers_size, -1);
+    }
+
+    #[test]
+    fn an_unparsable_mime_type_does_not_cost_the_entry() {
+        let content: Content =
+            serde_json::from_str(r#"{"size": 0, "mimeType": "x-unknown", "text": "still here"}"#)
+                .expect("an archive with Chrome's websocket mime type still deserializes");
+        assert!(content.mime_type.is_none());
+        assert_eq!(content.text.as_deref(), Some("still here"));
+    }
+
+    #[test]
+    fn har_detection_only_accepts_a_json_object_naming_a_log() {
+        assert!(looks_like_har(HAR_LOG_FILE_EXAMPLE.as_bytes()));
+        assert!(looks_like_har(b"\xef\xbb\xbf\n  {\"log\": {}}"));
+        assert!(!looks_like_har(b"{\"traces\": []}"));
+        assert!(!looks_like_har(b"[{\"log\": {}}]"));
+        assert!(!looks_like_har(b""));
+        assert!(!looks_like_har(&[0x1e, b'{']));
     }
 
     #[test]

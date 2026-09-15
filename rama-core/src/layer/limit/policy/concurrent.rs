@@ -25,7 +25,7 @@
 
 use super::{Policy, PolicyOutput, PolicyResult};
 use crate::std::sync::Arc;
-use parking_lot::Mutex;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use rama_utils::backoff::Backoff;
 
 /// A [`Policy`] that limits the number of concurrent inputs.
@@ -139,7 +139,7 @@ pub trait ConcurrentTracker: Send + Sync + 'static {
 #[derive(Debug, Clone)]
 pub struct ConcurrentCounter {
     max: usize,
-    current: Arc<Mutex<usize>>,
+    current: Arc<AtomicUsize>,
 }
 
 impl ConcurrentCounter {
@@ -148,7 +148,7 @@ impl ConcurrentCounter {
     pub fn new(max: usize) -> Self {
         Self {
             max,
-            current: Arc::new(Mutex::new(0)),
+            current: Arc::new(AtomicUsize::new(0)),
         }
     }
 }
@@ -158,9 +158,15 @@ impl ConcurrentTracker for ConcurrentCounter {
     type Error = LimitReached;
 
     fn try_access(&self) -> Result<Self::Guard, Self::Error> {
-        let mut current = self.current.lock();
-        if *current < self.max {
-            *current += 1;
+        // Lock-free admission: a contended mutex here would stall every
+        // worker on a per-request cache line for what is a single increment.
+        let admitted = self
+            .current
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                (current < self.max).then_some(current + 1)
+            })
+            .is_ok();
+        if admitted {
             Ok(ConcurrentCounterGuard {
                 current: self.current.clone(),
             })
@@ -173,13 +179,12 @@ impl ConcurrentTracker for ConcurrentCounter {
 /// The guard for [`ConcurrentCounter`] that releases the concurrent input limit.
 #[derive(Debug)]
 pub struct ConcurrentCounterGuard {
-    current: Arc<Mutex<usize>>,
+    current: Arc<AtomicUsize>,
 }
 
 impl Drop for ConcurrentCounterGuard {
     fn drop(&mut self) {
-        let mut current = self.current.lock();
-        *current -= 1;
+        self.current.fetch_sub(1, Ordering::AcqRel);
     }
 }
 

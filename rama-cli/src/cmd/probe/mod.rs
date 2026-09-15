@@ -8,7 +8,7 @@ pub mod tcp;
 pub mod tls;
 
 pub async fn run(cfg: ProbeCommand) -> Result<(), BoxError> {
-    crate::trace::init_tracing(if cfg.verbose {
+    let _tracing = crate::trace::init_tracing(if cfg.verbose {
         LevelFilter::DEBUG
     } else {
         LevelFilter::INFO

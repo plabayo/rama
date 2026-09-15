@@ -25,13 +25,13 @@ use super::*;
 
 /// Captured connections may have different TLS profiles even for the same route.
 /// Reuse connections only within one source; untracked exchanges stay isolated.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Extension)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Extension)]
 enum ReplaySource {
     Connection(u64),
     Exchange(u64),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct ReplayPoolId {
     http: HttpConnId,
     source: ReplaySource,

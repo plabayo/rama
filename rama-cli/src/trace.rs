@@ -11,7 +11,9 @@ use rama::{
             trace::TracerProvider,
         },
         tracing::{
-            self, Level, layer,
+            self, Level,
+            appender::{NonBlocking, NonBlockingBuilder, WorkerGuard},
+            layer,
             subscriber::{
                 EnvFilter, Layer as _,
                 filter::{self, Directive},
@@ -24,16 +26,40 @@ use rama::{
     tls::client::TlsClientConfig,
 };
 
-use std::{fs::OpenOptions, io::IsTerminal as _, path::Path};
+use std::{
+    fs::OpenOptions,
+    io::{IsTerminal as _, Write},
+    path::Path,
+};
 
-pub fn init_tracing(default_directive: impl Into<Directive>) -> Result<(), BoxError> {
+/// Keeps the tracing writer thread alive; dropping it flushes pending records.
+///
+/// Hold it for the lifetime of the command.
+#[must_use = "dropping the guard stops the tracing writer thread"]
+#[derive(Debug)]
+pub struct TracingGuard {
+    _worker: WorkerGuard,
+}
+
+/// Write records on a dedicated thread. A `write(2)` per event on a runtime
+/// worker stalls that worker whenever the reader of stderr (or the disk) is
+/// slow; non-lossy, so a full buffer applies backpressure instead of dropping.
+fn dedicated_writer<W: Write + Send + 'static>(writer: W) -> (NonBlocking, TracingGuard) {
+    let (writer, worker) = NonBlockingBuilder::default()
+        .lossy(false)
+        .thread_name("rama-tracing")
+        .finish(writer);
+    (writer, TracingGuard { _worker: worker })
+}
+
+pub fn init_tracing(default_directive: impl Into<Directive>) -> Result<TracingGuard, BoxError> {
     init_tracing_with_overrides(default_directive, [])
 }
 
 pub fn init_tracing_with_overrides(
     default_directive: impl Into<Directive>,
     overrides: impl IntoIterator<Item = Directive>,
-) -> Result<(), BoxError> {
+) -> Result<TracingGuard, BoxError> {
     let default_directive = default_directive.into();
     let overrides: Vec<_> = overrides.into_iter().collect();
     if std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").is_ok() {
@@ -43,21 +69,25 @@ pub fn init_tracing_with_overrides(
     }
 }
 
-fn init_default(default_directive: Directive, overrides: &[Directive]) -> Result<(), BoxError> {
+fn init_default(
+    default_directive: Directive,
+    overrides: &[Directive],
+) -> Result<TracingGuard, BoxError> {
+    let ansi = std::io::stderr().is_terminal();
+    let (stderr, guard) = dedicated_writer(std::io::stderr());
     tracing::subscriber::registry()
-        .with(
-            fmt::layer()
-                .with_ansi(std::io::stderr().is_terminal())
-                .with_writer(std::io::stderr),
-        )
+        .with(fmt::layer().with_ansi(ansi).with_writer(stderr))
         .with(env_filter(default_directive, overrides))
         .try_init()
         .context("try init (default) tracing subscriber")?;
 
-    Ok(())
+    Ok(guard)
 }
 
-fn init_structured(default_directive: Directive, overrides: &[Directive]) -> Result<(), BoxError> {
+fn init_structured(
+    default_directive: Directive,
+    overrides: &[Directive],
+) -> Result<TracingGuard, BoxError> {
     let svc = EasyHttpWebClient::connector_builder()
         .with_default_transport_connector()
         .with_default_dns_connector()
@@ -88,12 +118,14 @@ fn init_structured(default_directive: Directive, overrides: &[Directive]) -> Res
     let tracer = provider.tracer("rama-cli");
     let telemetry = layer().with_tracer(tracer);
 
+    let ansi = std::io::stderr().is_terminal();
+    let (stderr, guard) = dedicated_writer(std::io::stderr());
     tracing::subscriber::registry()
         .with(telemetry)
         .with(
             tracing::subscriber::fmt::Layer::new()
-                .with_ansi(std::io::stderr().is_terminal())
-                .with_writer(std::io::stderr)
+                .with_ansi(ansi)
+                .with_writer(stderr)
                 .json()
                 .flatten_event(true),
         )
@@ -101,7 +133,7 @@ fn init_structured(default_directive: Directive, overrides: &[Directive]) -> Res
         .try_init()
         .context("try init (structured) tracing subscriber")?;
 
-    Ok(())
+    Ok(guard)
 }
 
 fn env_filter(default_directive: Directive, overrides: &[Directive]) -> EnvFilter {
@@ -113,7 +145,7 @@ fn env_filter(default_directive: Directive, overrides: &[Directive]) -> EnvFilte
     )
 }
 
-pub fn init_tracing_file(path: &Path) -> Result<(), BoxError> {
+pub fn init_tracing_file(path: &Path) -> Result<TracingGuard, BoxError> {
     if let Some(parent_dir) = path.parent() {
         std::fs::create_dir_all(parent_dir)
             .context("create dirs for tracing file")
@@ -126,6 +158,7 @@ pub fn init_tracing_file(path: &Path) -> Result<(), BoxError> {
         .open(path)
         .context("open log file")?;
 
+    let (log_file, guard) = dedicated_writer(log_file);
     tracing::subscriber::registry()
         .with(
             fmt::layer()
@@ -135,5 +168,5 @@ pub fn init_tracing_file(path: &Path) -> Result<(), BoxError> {
         )
         .init();
 
-    Ok(())
+    Ok(guard)
 }

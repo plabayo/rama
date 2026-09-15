@@ -90,8 +90,10 @@ clean-xcode:
 _clean-xcode-unix:
     rm -rf -- ./.xcode-derived ./tproxy_app/RamaTransparentProxyExample.xcodeproj
 
+# `-ErrorAction SilentlyContinue` only hides the message: a missing path still
+# fails the recipe, as `rm -rf` above does not. Ask before removing instead.
 _clean-xcode-windows:
-    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue ./.xcode-derived, ./tproxy_app/RamaTransparentProxyExample.xcodeproj
+    foreach ($path in './.xcode-derived', './tproxy_app/RamaTransparentProxyExample.xcodeproj') { if (Test-Path $path) { Remove-Item -Recurse -Force $path } }
 
 clippy *ARGS:
     cd ./tproxy_rs && cargo clippy --all-targets --all-features {{ARGS}}
