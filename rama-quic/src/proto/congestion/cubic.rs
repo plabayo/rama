@@ -301,13 +301,10 @@ mod tests {
 
         // The controller computes w_max with this very expression, so the two agree bit for
         // bit; the comparison is of one calculation against itself, not of two estimates.
-        #[expect(clippy::float_cmp, reason = "the same expression on both sides")]
-        {
-            assert_eq!(
-                cubic.cubic_state.w_max,
-                window as f64 * (1.0 + BETA_CUBIC) / 2.0
-            );
-        }
+        assert_eq!(
+            cubic.cubic_state.w_max.to_bits(),
+            (window as f64 * (1.0 + BETA_CUBIC) / 2.0).to_bits()
+        );
         assert_eq!(cubic.ssthresh, (window as f64 * BETA_CUBIC) as u64);
         assert_eq!(cubic.window, cubic.ssthresh);
     }
