@@ -1,8 +1,8 @@
 //! Runner client: bounded concurrent downloads over one connection, or one per request.
 
 use crate::{
-    ALPN, BUFFER_SIZE, REQUEST_LIMIT, STREAM_LIMIT, TestCase, check_alpn, relative_path,
-    shutdown_endpoint, transport,
+    ALPN, BUFFER_SIZE, REQUEST_LIMIT, STREAM_LIMIT, TestCase, check_alpn, log_connection_stats,
+    relative_path, shutdown_endpoint, transport,
 };
 use clap::Parser;
 use rama::{
@@ -126,6 +126,7 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
                     .await?;
                 check_alpn(&connection)?;
                 download(connection.clone(), request, args.downloads.clone()).await?;
+                log_connection_stats(&connection);
                 connection.close(0_u32.into(), b"done");
             }
         } else {
@@ -151,6 +152,7 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
             while let Some(result) = tasks.join_next().await {
                 result.context("download task failed")??;
             }
+            log_connection_stats(&connection);
             connection.close(0_u32.into(), b"done");
         }
         Ok::<_, BoxError>(())

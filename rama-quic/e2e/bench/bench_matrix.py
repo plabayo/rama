@@ -422,7 +422,8 @@ def role_options(spec, role):
     return options, (entrypoint[1:] if entrypoint else [])
 
 
-def start_server(spec, certs, volume, testcase, args):
+def start_server(spec, certs, volume, testcase, args, label="server"):
+    save_logs(args, label)
     quiet("rm", "-f", f"{PREFIX}-server")
     options, trailing = role_options(spec, "server")
     docker("run", "-d", "--name", f"{PREFIX}-server", "--cap-add", "NET_ADMIN",
@@ -442,7 +443,16 @@ def parse_docker_time(text):
     return base + int(fraction) / 1e9
 
 
-def run_client(spec, certs, testcase, names, args, expect_bytes):
+def save_logs(args, label):
+    """Keep a container's output under `--logs` so endpoint counters can be read after a run."""
+    if not args.logs or label.endswith(".none"):
+        return
+    args.logs.mkdir(parents=True, exist_ok=True)
+    logs = docker("logs", f"{PREFIX}-{label.split('.')[0]}", check=False)
+    (args.logs / f"{label}.log").write_text((logs.stdout or "") + (logs.stderr or ""))
+
+
+def run_client(spec, certs, testcase, names, args, expect_bytes, label="client"):
     """One client run: its process lifetime from the container's own timestamps, the bytes it
     downloaded, and whether they were the right ones."""
     downloads = f"{PREFIX}-downloads"
@@ -472,6 +482,7 @@ def run_client(spec, certs, testcase, names, args, expect_bytes):
     elif code != 0:
         logs = docker("logs", "--tail", "5", name, check=False)
         sample["error"] = (logs.stderr or logs.stdout).strip()[-400:] or f"exit {code}"
+    save_logs(args, label)
     quiet("rm", "-f", name)
     if "error" in sample:
         return sample
@@ -513,12 +524,15 @@ def run_matrix(args):
     try:
         certs, volume, expected = prepare_content(lock, args, workdir)
         start_network(args)
+        previous = "none"
         for server in names:
             for client in names:
                 handshake_seconds = None
                 for case_name in order:
                     case = cases[case_name]
-                    start_server(images[server], certs, volume, case["testcase"], args)
+                    start_server(images[server], certs, volume, case["testcase"], args,
+                                 label=f"server.{previous}")
+                    previous = f"{case_name}.{client}.{server}"
                     files = expected[case_name]
                     samples = []
                     runs = args.repeat + 1  # the first is a warm-up
@@ -526,7 +540,7 @@ def run_matrix(args):
                         runs = args.handshake_runs + 1
                     for index in range(runs):
                         sample = run_client(images[client], certs, case["testcase"], files["names"],
-                                            args, files["bytes"])
+                                            args, files["bytes"], label=f"client.{previous}.{index}")
                         if index > 0:
                             samples.append(sample)
                         if sample.get("error") == "unsupported" or (index == 0 and not sample["ok"]):
@@ -545,6 +559,7 @@ def run_matrix(args):
                     print(f"{case_name:10} client={client:20} server={server:20} {shown:>8} {case['unit']}"
                           f"  {problem[:80]}", flush=True)
     finally:
+        save_logs(args, f"server.{previous}")
         stop_network()
         quiet("volume", "rm", "-f", f"{PREFIX}-www", f"{PREFIX}-downloads")
         shutil.rmtree(workdir, ignore_errors=True)
@@ -577,6 +592,8 @@ def main():
     parser.add_argument("--platform", default=None, help="docker platform; defaults to the daemon's")
     parser.add_argument("--rama-tag", default=None, help="tag suffix of the local Rama images; defaults to the platform's architecture")
     parser.add_argument("--build-rama", action="store_true", help="rebuild the Rama images even when present")
+    parser.add_argument("--logs", type=Path, default=None,
+                        help="keep every client and server container log in this directory")
     parser.add_argument("--out", type=Path, default=ROOT / "target/quic-bench", help="directory for the JSON report")
     parser.add_argument("--svg", default=str(HERE / "graph"),
                         help="directory for the SVG heat-maps; pass 'none' to write no charts")

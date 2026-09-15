@@ -34,6 +34,8 @@ just rama-quic/bench-matrix --implementations rama-boring,quinn --set bulk.size=
 just rama-quic/bench-matrix --cases bulk,parallel --repeat 5
 # re-render tables and SVGs from a saved report
 just rama-quic/bench-matrix-report target/quic-bench/<stamp>.json
+# keep every container's log; the Rama endpoints print their loss and queue counters there
+just rama-quic/bench-matrix --implementations rama-boring --cases parallel --logs target/quic-bench/logs
 ```
 
 ## Cases

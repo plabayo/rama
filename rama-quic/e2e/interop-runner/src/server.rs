@@ -1,8 +1,8 @@
 //! Runner server: serve bounded HTTP/0.9 request lines from the mounted document root.
 
 use crate::{
-    ALPN, BUFFER_SIZE, REQUEST_LIMIT, STREAM_LIMIT, TestCase, check_alpn, relative_path,
-    shutdown_endpoint, transport,
+    ALPN, BUFFER_SIZE, REQUEST_LIMIT, STREAM_LIMIT, TestCase, check_alpn, log_connection_stats,
+    relative_path, shutdown_endpoint, transport,
 };
 use clap::Parser;
 use rama::{
@@ -161,6 +161,7 @@ async fn serve_connection(connection: Connection, root: Arc<PathBuf>) -> Result<
     }
     requests.abort_all();
     while requests.join_next().await.is_some() {}
+    log_connection_stats(&connection);
     Ok(())
 }
 

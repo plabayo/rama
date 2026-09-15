@@ -115,11 +115,36 @@ async fn transport(executor: Executor, role: &str) -> Result<Arc<TransportConfig
     Ok(Arc::new(config))
 }
 
+/// One line of transport counters per connection, so a benchmark run shows loss and queue drops.
+fn log_connection_stats(connection: &Connection) {
+    let stats = connection.stats();
+    tracing::info!(
+        rtt_ms = stats.path.rtt.as_millis() as u64,
+        cwnd = stats.path.cwnd,
+        sent_packets = stats.path.sent_packets,
+        lost_packets = stats.path.lost_packets,
+        congestion_events = stats.path.congestion_events,
+        rx_datagrams = stats.udp_rx.datagrams,
+        rx_ios = stats.udp_rx.ios,
+        tx_datagrams = stats.udp_tx.datagrams,
+        tx_ios = stats.udp_tx.ios,
+        "connection finished"
+    );
+}
+
 /// Join every transport producer before the shared shutdown drains the qlog recorder.
 async fn shutdown_endpoint(
     endpoint: &Endpoint,
     outcome: Result<(), BoxError>,
 ) -> Result<(), BoxError> {
+    let stats = endpoint.stats();
+    tracing::info!(
+        received_datagrams = stats.received_datagrams,
+        dropped_packets = stats.dropped_packets,
+        queue_peak_datagrams = stats.receive_queue.peak_datagrams,
+        queue_peak_bytes = stats.receive_queue.peak_bytes,
+        "endpoint finished"
+    );
     match endpoint.shutdown().await {
         ShutdownOutcome::Drained => {}
         ShutdownOutcome::Forced => {
