@@ -113,8 +113,15 @@ class WorkflowPolicyTests(unittest.TestCase):
                     command = f"cargo test -p rama-quic --no-default-features --features dial9,{features} {selector} --locked"
                     expected = row["os"] == "ubuntu-latest" and row["toolchain"] == "stable" and backend in selected
                     self.assertEqual(sum(command in text.splitlines() for text in commands), int(expected))
-            for command in ("just rama-quic/qa-custom-provider", "just rama-quic/qa-boring-isolation"):
-                self.assertEqual(commands.count(command), int("boring" in selected))
+            # Compiling without a built-in backend is host-specific, so every cell runs it.
+            self.assertEqual(commands.count("just rama-quic/qa-custom-provider"),
+                             int("boring" in selected))
+            # The isolation check only reads the locked dependency graph, so one Linux cell
+            # covers it and the scarce macOS/Windows hosts need no Python interpreter.
+            expected_isolation = (row["os"] == "ubuntu-latest" and row["toolchain"] == "stable"
+                                  and "boring" in selected)
+            self.assertEqual(commands.count("just rama-quic/qa-boring-isolation"),
+                             int(expected_isolation))
         self.assertEqual(sum(r["os"].startswith("macos") for r in rows), 2)
         self.assertEqual(sum(r["os"].startswith("windows") for r in rows), 2)
 

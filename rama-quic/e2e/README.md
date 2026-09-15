@@ -26,3 +26,6 @@ The Docker runner accepts `--backend` with the same three choices.
   built-in Rama backends disabled; `just rama-quic/qa-interop-gnutls`.
 
 Dependency updates, root formatting, and `just qa-full` include all these projects.
+The GnuTLS project is POSIX-only, as its C bridge needs GnuTLS headers and its
+fixtures need `certtool`; `just rama-quic/qa-interop-gnutls` reports that it is
+skipping and succeeds on Windows, so `qa-full` still runs there.

@@ -194,10 +194,7 @@ impl Endpoint {
         test,
         any(
             feature = "boring",
-            all(
-                feature = "rustls",
-                any(feature = "boring", feature = "aws-lc", feature = "ring")
-            )
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
         )
     ))]
     pub(crate) fn advertised_preferred(&self) -> Vec<SocketAddr> {
@@ -973,10 +970,7 @@ impl EndpointRef {
         test,
         any(
             feature = "boring",
-            all(
-                feature = "rustls",
-                any(feature = "boring", feature = "aws-lc", feature = "ring")
-            )
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
         )
     ))]
     pub(crate) fn hold_route_installs(&self) {
@@ -989,10 +983,7 @@ impl EndpointRef {
         test,
         any(
             feature = "boring",
-            all(
-                feature = "rustls",
-                any(feature = "boring", feature = "aws-lc", feature = "ring")
-            )
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
         )
     ))]
     pub(crate) fn refuse_route_installs(&self) {
@@ -1015,10 +1006,7 @@ impl EndpointRef {
         test,
         any(
             feature = "boring",
-            all(
-                feature = "rustls",
-                any(feature = "boring", feature = "aws-lc", feature = "ring")
-            )
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
         )
     ))]
     pub(crate) fn release_route_installs(&self) {

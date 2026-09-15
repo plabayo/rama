@@ -19,7 +19,9 @@ export RUSTDOCFLAGS := \
         "-D warnings" \
     }
 export RUST_LOG := "debug"
-export PYTHON := env_var_or_default("PYTHON", "python3")
+# `python3` is the POSIX spelling; Windows installers ship `python` and the
+# `python3` name there is usually the App Execution Alias stub, which fails.
+export PYTHON := env_var_or_default("PYTHON", if os_family() == "windows" { "python" } else { "python3" })
 
 # Install a cargo tool only when it is missing, as the root justfile does: the
 # probe needs a shell of its own on each platform, since Windows PowerShell has
@@ -140,9 +142,19 @@ qa-interop-runner BACKEND:
 test-interop-runner *ARGS:
     bash {{justfile_directory()}}/e2e/interop-runner/run.sh {{ARGS}}
 
-# External TLS implementation: GnuTLS headers/library and certtool, plus the locked aioquic peer.
 # GNUTLS_DIR selects a native installation prefix when pkg-config is unavailable.
-qa-interop-gnutls: interop-aioquic-env qa-gnutls-isolation
+# The C bridge needs GnuTLS headers and the fixtures need `certtool`, neither of which the
+# Windows toolchain provides, so this is a no-op there and `qa-full` stays runnable.
+# External TLS implementation (POSIX only): GnuTLS headers/library and certtool, plus the locked aioquic peer.
+qa-interop-gnutls:
+    @just _qa-interop-gnutls-{{os_family()}}
+
+[private]
+_qa-interop-gnutls-windows:
+    @echo "Skipping GnuTLS interop: it needs GnuTLS headers and certtool (POSIX only)."
+
+[private]
+_qa-interop-gnutls-unix: interop-aioquic-env qa-gnutls-isolation
     cargo fmt --manifest-path e2e/gnutls-interop/Cargo.toml --all --check
     cargo clippy --manifest-path e2e/gnutls-interop/Cargo.toml --all-targets --locked -- -D warnings
     cargo test --manifest-path e2e/gnutls-interop/Cargo.toml --locked

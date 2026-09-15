@@ -268,7 +268,122 @@ impl crypto::HeaderKey for HeaderKey {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proto::crypto::PacketKey as _;
+    use crate::proto::crypto::{HeaderKey as _, PacketKey as _};
+
+    /// HMAC (RFC 2104) over one of the TLS 1.3 hashes. Written out here rather than taken
+    /// from the crypto backend, so the expectations below come from an implementation
+    /// independent of the one under test.
+    fn hmac(hash_len: usize, key: &[u8], message: &[u8]) -> Vec<u8> {
+        use sha2::{Digest as _, Sha256, Sha384};
+        let block_len = if hash_len == 48 { 128 } else { 64 };
+        // TLS 1.3 traffic secrets are one hash long, always shorter than the block.
+        assert!(key.len() <= block_len);
+        let mut padded = vec![0; block_len];
+        padded[..key.len()].copy_from_slice(key);
+        let round = |pad: u8, tail: &[u8]| {
+            let mut input: Vec<u8> = padded.iter().map(|byte| byte ^ pad).collect();
+            input.extend_from_slice(tail);
+            if hash_len == 48 {
+                Sha384::digest(&input).to_vec()
+            } else {
+                Sha256::digest(&input).to_vec()
+            }
+        };
+        round(0x5c, &round(0x36, message))
+    }
+
+    /// HKDF-Expand-Label (RFC 8446, section 7.1) with an empty context, built here so that a
+    /// wrong hash, label encoding or output length cannot agree with itself.
+    fn expand_label(hash_len: usize, secret: &[u8], label: &[u8], output: &mut [u8]) {
+        let mut info = u16::try_from(output.len()).unwrap().to_be_bytes().to_vec();
+        info.push(u8::try_from(6 + label.len()).unwrap());
+        info.extend_from_slice(b"tls13 ");
+        info.extend_from_slice(label);
+        info.push(0);
+        let mut previous = Vec::new();
+        let mut written = 0;
+        for counter in 1..=u8::MAX {
+            if written == output.len() {
+                break;
+            }
+            let mut message = previous;
+            message.extend_from_slice(&info);
+            message.push(counter);
+            let block = hmac(hash_len, secret, &message);
+            let take = block.len().min(output.len() - written);
+            output[written..written + take].copy_from_slice(&block[..take]);
+            written += take;
+            previous = block;
+        }
+    }
+
+    /// RFC 8446 appendix B.4 names the hash in each cipher suite and RFC 9001 section 5.1
+    /// derives the QUIC keys with it. A suite that expanded with the wrong hash would still
+    /// agree with itself, so the round-trip tests below cannot observe it; neither can the
+    /// handshake tests, which only reach whichever suite BoringSSL's preference picks on the
+    /// host CPU. Pin the table and the derived material against the independent expansion.
+    #[test]
+    fn each_suite_derives_with_the_hash_its_code_point_names() {
+        for (id, hash_len, key_len) in [
+            (0x1301_u16, 32_usize, 16_usize),
+            (0x1302, 48, 32),
+            (0x1303, 32, 32),
+        ] {
+            let suite = Suite::from_id(id).expect("a supported QUIC cipher suite");
+            assert_eq!(suite.digest().size(), hash_len);
+            assert_eq!(suite.aead().key_len(), key_len);
+
+            let bytes = vec![0x0b; hash_len];
+            let secret = Secret::new(suite, &bytes).unwrap();
+
+            let mut updated = vec![0; hash_len];
+            expand_label(hash_len, &bytes, b"quic ku", &mut updated);
+            assert_eq!(*secret.updated().unwrap().bytes, updated);
+
+            let mut iv = [0; 12];
+            expand_label(hash_len, &bytes, b"quic iv", &mut iv);
+            let packet_key = secret.packet_key().unwrap();
+            assert_eq!(*packet_key.iv, iv);
+
+            // The AEAD and header keys are opaque, so compare what they produce against keys
+            // built from independently expanded material.
+            let mut key = vec![0; key_len];
+            expand_label(hash_len, &bytes, b"quic key", &mut key);
+            let expected = PacketKey {
+                suite,
+                key: aead::AeadKey::new(suite.aead(), &key).unwrap(),
+                iv: Zeroizing::new(iv),
+            };
+            let (mut actual_packet, mut expected_packet) = ([0x33; 24], [0x33; 24]);
+            packet_key.encrypt(7, &mut actual_packet, 4).unwrap();
+            expected.encrypt(7, &mut expected_packet, 4).unwrap();
+            assert_eq!(actual_packet, expected_packet);
+
+            let mut hp = Zeroizing::new([0; 32]);
+            expand_label(hash_len, &bytes, b"quic hp", &mut hp[..key_len]);
+            let expected = match suite {
+                Suite::ChaCha20Poly1305 => HeaderKey::ChaCha(hp),
+                _ => HeaderKey::Aes(AesEncryptKey::new(&hp[..key_len]).unwrap()),
+            };
+            let (mut actual_packet, mut expected_packet) = ([0x33; 24], [0x33; 24]);
+            secret
+                .directional_keys()
+                .unwrap()
+                .header
+                .encrypt(1, &mut actual_packet);
+            expected.encrypt(1, &mut expected_packet);
+            assert_eq!(actual_packet, expected_packet);
+        }
+    }
+
+    /// QUIC uses only the three TLS 1.3 AEAD suites; anything else must be refused rather
+    /// than silently treated as one of them.
+    #[test]
+    fn unsupported_cipher_suites_are_refused() {
+        for id in [0x0000, 0x1300, 0x1304, 0x1305, 0x00ff, 0xc02b, 0xffff] {
+            assert!(Suite::from_id(id).is_err(), "{id:#06x} is not a QUIC suite");
+        }
+    }
 
     fn hex(input: &str) -> Vec<u8> {
         input

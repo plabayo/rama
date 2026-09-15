@@ -589,8 +589,11 @@ jobs:
       - name: Custom TLS provider without built-in backends
         if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'boring') }}
         run: just rama-quic/qa-custom-provider
+      # A `cargo tree --locked` dependency-graph assertion, so its result cannot differ by
+      # host or toolchain: one Linux cell covers it. Keeping it off the scarce macOS/Windows
+      # runners also keeps this job free of a Python interpreter requirement there.
       - name: Boring dependency isolation including test fixtures
-        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'boring') }}
+        if: ${{ !cancelled() && matrix.backends == 'boring' && matrix.os == 'ubuntu-latest' && matrix.toolchain == 'stable' }}
         run: just rama-quic/qa-boring-isolation
       - name: QUIC backend combinations
         if: ${{ !cancelled() && matrix.backends == 'boring' && matrix.os == 'ubuntu-latest' && matrix.toolchain == 'stable' }}

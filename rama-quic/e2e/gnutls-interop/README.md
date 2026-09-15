@@ -18,5 +18,7 @@ just rama-quic/qa-interop-gnutls
 
 On macOS, install Homebrew `gnutls` and prefix that command with
 `GNUTLS_DIR="$(brew --prefix gnutls)"`. Otherwise the build uses `pkg-config`.
+On Windows the recipe reports that it is skipping and succeeds, so that `qa-full`
+remains runnable; CI covers this project on Linux.
 The recipe prepares the pinned aioquic environment and runs isolation checks,
 formatting, Clippy, tests, and rustdoc. Certificates are generated per test.
