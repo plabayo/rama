@@ -8808,32 +8808,33 @@ fn a_deferred_peer_move_follows_the_latest_candidate() {
     exhaust_server_cids(&mut pair, client_ch, server_ch);
     let current = pair.server_conn_mut(server_ch).remote_address();
 
-    let first = SocketAddr::new(
-        Ipv4Addr::new(127, 0, 0, 1).into(),
-        CLIENT_PORTS.lock().next().unwrap(),
-    );
-    pair.client.addr = first;
-    assert!(pair.client_migrate_local_address(client_ch));
-    pair.drive_client();
-    pair.server.drive(pair.time, first);
-    assert!(pair.server_conn_mut(server_ch).deferred_move_pending());
-    pair.server.outbound.clear();
-
-    let second = SocketAddr::new(
-        Ipv4Addr::new(127, 0, 0, 1).into(),
-        CLIENT_PORTS.lock().next().unwrap(),
-    );
-    pair.client.addr = second;
-    assert!(pair.client_migrate_local_address(client_ch));
-    pair.drive_client();
-    pair.server.drive(pair.time, second);
-    assert!(pair.server_conn_mut(server_ch).deferred_move_pending());
-    assert_eq!(pair.server_conn_mut(server_ch).remote_address(), current);
-    pair.server.outbound.clear();
+    let mut latest = current;
+    for index in 0..40 {
+        latest = SocketAddr::new(
+            Ipv4Addr::LOCALHOST.into(),
+            CLIENT_PORTS.lock().next().unwrap(),
+        );
+        pair.client.addr = latest;
+        if index == 0 {
+            assert!(pair.client_migrate_local_address(client_ch));
+        } else {
+            pair.client_conn_mut(client_ch).ping();
+        }
+        pair.drive_client();
+        assert!(
+            !pair.server.inbound.is_empty(),
+            "candidate {index} actually sent a packet"
+        );
+        pair.server.drive(pair.time, latest);
+        assert!(pair.server_conn_mut(server_ch).deferred_move_pending());
+        assert_eq!(pair.server_conn_mut(server_ch).remote_address(), current);
+        assert!(!pair.server_conn_mut(server_ch).can_migrate_locally());
+        pair.server.outbound.clear();
+    }
 
     pair.client.release_held_identifiers();
-    settle_checking_server_destinations(&mut pair, &[current, second]);
-    assert_eq!(pair.server_conn_mut(server_ch).remote_address(), second);
+    settle_checking_server_destinations(&mut pair, &[current, latest]);
+    assert_eq!(pair.server_conn_mut(server_ch).remote_address(), latest);
     assert!(!pair.server_conn_mut(server_ch).deferred_move_pending());
     assert!(!pair.server_conn_mut(server_ch).is_closed());
     assert!(!pair.client_conn_mut(client_ch).is_closed());

@@ -1111,7 +1111,7 @@ mod tests {
     // `write_plain_alert`) and their wire-format pins live in
     // `mitm::alert::tests` alongside the implementation.
 
-    /// `reason_is_cert_trust_signal` is the load-bearing classifier for
+    /// `reason_is_cert_trust_signal` is the classifier for
     /// the [`CertTrust`] bucket — the only one that flips an SNI into
     /// a permanent MITM-bypass exception in downstream policy. Edits
     /// to the substring list silently change the classification of

@@ -112,7 +112,8 @@ backend feature union or workspace merge is used to save compilation.
 The separate GnuTLS project runs on Linux with stable/MSRV, behind the same early
 and final gates. It enables no built-in Rama backend. QUIC jobs retain isolated
 library, crypto, example, heavy-transfer, benchmark, and peer checks on every
-host/toolchain/backend; dial9 and remaining feature combinations run on Linux stable.
+host/toolchain/backend; dial9, receive-window stress and remaining feature combinations
+run on Linux stable. Stress steps have a 15-minute timeout and also run via `just qa-full`.
 The cache includes the root workspace as well as standalone peer workspaces.
 
 ## Verification

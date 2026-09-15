@@ -22,7 +22,12 @@
 
 mod runtime;
 
-use std::net::{Ipv4Addr, SocketAddr};
+use std::{
+    collections::BTreeSet,
+    net::{Ipv4Addr, SocketAddr},
+};
+
+use dial9::{analysis::analysis_events::Dial9Event, format::Decoder};
 
 use rama_core::{
     rt::{Executor, OwnedRuntime},
@@ -99,10 +104,55 @@ fn an_endpoint_built_on_a_recorded_runtime_is_traced() {
         "the recorder wrote trace data for the session: {} files, {bytes} bytes",
         written.len()
     );
-    // Visible with `--no-capture`, so what the run actually recorded can be read off rather
-    // than inferred from the assertion passing.
+    let mut driver_tasks = BTreeSet::new();
+    let mut polled_tasks = BTreeSet::new();
+    let mut parks = 0;
+    for entry in &written {
+        let data = std::fs::read(entry.path()).unwrap();
+        Decoder::new(&data)
+            .expect("a valid trace header")
+            .for_each_event(|raw| {
+                match raw
+                    .deserialize::<Dial9Event>()
+                    .expect("a valid runtime event")
+                {
+                    Dial9Event::PollStartEvent(event) => {
+                        polled_tasks.insert(event.task_id);
+                        if event
+                            .spawn_loc
+                            .replace('\\', "/")
+                            .contains("rama-quic/src/driver/")
+                        {
+                            driver_tasks.insert(event.task_id);
+                        }
+                    }
+                    Dial9Event::TaskSpawnEvent(event) => {
+                        if event
+                            .spawn_loc
+                            .replace('\\', "/")
+                            .contains("rama-quic/src/driver/")
+                        {
+                            driver_tasks.insert(event.task_id);
+                        }
+                    }
+                    Dial9Event::WorkerParkEvent(_) => parks += 1,
+                    _ => {}
+                }
+            })
+            .expect("the complete trace decodes");
+    }
+    assert!(parks > 0, "the runtime recorded worker park events");
+    assert!(
+        driver_tasks.len() >= 4,
+        "both endpoint and connection drivers were identified: {driver_tasks:?}"
+    );
+    assert!(
+        driver_tasks.is_subset(&polled_tasks),
+        "each recorded QUIC driver was polled"
+    );
     println!(
-        "dial9 recorded {} file(s), {bytes} bytes, for an endpoint built through the public API",
-        written.len()
+        "dial9: {} QUIC drivers, {} polled tasks, {parks} worker parks, {bytes} bytes",
+        driver_tasks.len(),
+        polled_tasks.len()
     );
 }

@@ -14,7 +14,22 @@ use crate::proto::{
     shared::ConnectionId,
 };
 
+#[cfg(test)]
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct EmissionState {
+    pub mtu: u16,
+    pub loss_probes: u32,
+}
+
 impl Connection {
+    #[cfg(test)]
+    pub(crate) fn emission_state(&self) -> EmissionState {
+        EmissionState {
+            mtu: self.path.current_mtu(),
+            loss_probes: self.spaces[SpaceId::Data].loss_probes,
+        }
+    }
+
     /// Tests: hand the connection a PATH_RESPONSE naming `token`, as a duplicate or a
     /// delayed copy would arrive.
     #[cfg(test)]

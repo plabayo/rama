@@ -372,3 +372,93 @@ fn qlog_lost_probe_retains_identity_after_path_reset() {
         .expect("the dropped outstanding probe must be declared lost");
     assert_eq!(loss["data"]["is_mtu_probe_packet"], true);
 }
+
+#[test]
+fn packet_sizes_follow_the_mtu_at_emission_during_discovery_and_pto() {
+    let _guard = subscribe();
+    let capture = Capture::default();
+    let mut pair = Pair::default();
+    let mut config = client_config();
+    config.transport = capture.transport(pair.time);
+    let (client_ch, server_ch) = pair.connect_with(config);
+    pair.drive();
+    assert_eq!(
+        pair.client_conn_mut(client_ch).stats().path.current_mtu,
+        1452
+    );
+
+    // A changed path restarts discovery at 1200 while stream data remains queued.
+    let now = pair.time;
+    pair.client_conn_mut(client_ch).path_changed(now);
+    let stream = pair.client_streams(client_ch).open(Dir::Uni).unwrap();
+    let payload = vec![0x53; octets::kib(8)];
+    pair.client_send(client_ch, stream).write(&payload).unwrap();
+    pair.client_send(client_ch, stream).finish().unwrap();
+    let mut ordinary = 0;
+    let mut discovery = 0;
+    let mut recovery = 0;
+    for _ in 0..128 {
+        capture.clear();
+        let now = pair.time;
+        let conn = pair.client_conn_mut(client_ch);
+        let before = conn.emission_state();
+        let mut buffer = Vec::new();
+        if let Some(transmit) = conn.poll_transmit(now, 1, &mut buffer) {
+            let after = pair.client_conn_mut(client_ch).emission_state();
+            let events = capture.events("quic:packet_sent");
+            assert_eq!(events.len(), 1, "one confirmed 1-RTT packet per datagram");
+            let packet = &events[0]["data"];
+            assert_eq!(packet["raw"]["length"], transmit.size);
+            assert_eq!(buffer.len(), transmit.size);
+            if packet["is_mtu_probe_packet"] == true {
+                discovery += 1;
+                assert!(transmit.size > usize::from(before.mtu));
+                assert!(transmit.size <= 1452);
+                assert_eq!(before.loss_probes, after.loss_probes);
+            } else {
+                assert!(
+                    transmit.size <= usize::from(before.mtu),
+                    "ordinary/PTO packet exceeds its emission-time MTU: {before:?}, {} bytes",
+                    transmit.size
+                );
+                if after.loss_probes < before.loss_probes {
+                    recovery += 1;
+                } else {
+                    ordinary += 1;
+                }
+            }
+            // This simulated path drops the packet after emission; no ACK is delivered.
+        } else {
+            let deadline = pair
+                .client_conn_mut(client_ch)
+                .poll_timeout()
+                .expect("loss recovery has a deadline");
+            pair.time = pair.time.max(deadline);
+            let now = pair.time;
+            pair.client_conn_mut(client_ch).handle_timeout(now);
+        }
+        if ordinary > 0 && discovery > 0 && recovery > 0 {
+            break;
+        }
+    }
+    assert!(
+        ordinary > 0 && discovery > 0 && recovery > 0,
+        "observed ordinary={ordinary}, MTUD={discovery}, PTO={recovery}"
+    );
+    pair.drive();
+    assert_eq!(
+        pair.server_streams(server_ch).accept(Dir::Uni),
+        Some(stream)
+    );
+    let mut recv = pair.server_recv(server_ch, stream);
+    let mut chunks = recv.read(true).unwrap();
+    let mut received = Vec::new();
+    while let Some(chunk) = chunks.next(payload.len()).unwrap() {
+        received.extend_from_slice(&chunk.bytes);
+    }
+    let _transmit = chunks.finalize();
+    assert_eq!(
+        received, payload,
+        "traffic recovers after the dropped packets"
+    );
+}

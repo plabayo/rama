@@ -486,6 +486,7 @@ fn stress_both_windows() {
 }
 
 fn run_echo(args: &EchoArgs) {
+    let args = *args;
     let _guard = subscribe();
     let runtime = rt_basic();
     let handle = {
@@ -532,7 +533,9 @@ fn run_echo(args: &EchoArgs) {
         client.set_default_client_config(client_config);
 
         let handle = runtime.spawn(async move {
-            let incoming = server.accept().await.unwrap();
+            let incoming = echo_phase(&args, "server accept", server.accept())
+                .await
+                .unwrap();
 
             // Note for anyone modifying the platform support in this test:
             // If `local_ip` gets available on additional platforms - which
@@ -552,30 +555,47 @@ fn run_echo(args: &EchoArgs) {
                 assert_eq!(None, incoming.local_ip());
             }
 
-            let new_conn = incoming.await.unwrap();
-            tokio::spawn(async move {
-                while let Ok(stream) = new_conn.accept_bi().await {
-                    tokio::spawn(echo(stream));
-                }
-            });
-            server.wait_idle().await;
+            let new_conn = echo_phase(&args, "server handshake", incoming)
+                .await
+                .unwrap();
+            for index in 0..args.nr_streams {
+                let stream = echo_phase(
+                    &args,
+                    &format!("server accept stream {index}"),
+                    new_conn.accept_bi(),
+                )
+                .await
+                .unwrap();
+                echo_phase(&args, &format!("server echo stream {index}"), echo(stream)).await;
+            }
+            echo_phase(&args, "server connection close", new_conn.closed()).await;
+            drop(new_conn);
+            echo_phase(&args, "server shutdown", server.shutdown()).await;
         });
 
         info!("connecting from {} to {}", args.client_addr, server_addr);
         runtime.block_on(
             async move {
-                let new_conn = client
-                    .connect(server_addr, "localhost")
-                    .unwrap()
-                    .await
-                    .expect("connect");
+                let new_conn = echo_phase(
+                    &args,
+                    "client handshake",
+                    client.connect(server_addr, "localhost").unwrap(),
+                )
+                .await
+                .expect("connect");
 
                 /// This is just an arbitrary number to generate deterministic test data
                 const SEED: u64 = 0x12345678;
 
                 for i in 0..args.nr_streams {
                     eprintln!("Opening stream {i}");
-                    let (mut send, mut recv) = new_conn.open_bi().await.expect("stream open");
+                    let (mut send, mut recv) = echo_phase(
+                        &args,
+                        &format!("client open stream {i}"),
+                        new_conn.open_bi(),
+                    )
+                    .await
+                    .expect("stream open");
                     let msg = gen_data(args.stream_size, SEED);
 
                     let send_task = async {
@@ -584,20 +604,38 @@ fn run_echo(args: &EchoArgs) {
                     };
                     let recv_task = async { recv.read_to_end(usize::MAX).await.expect("read") };
 
-                    let (_, data) = tokio::join!(send_task, recv_task);
+                    let (_, data) =
+                        echo_phase(&args, &format!("client transfer stream {i}"), async {
+                            tokio::join!(send_task, recv_task)
+                        })
+                        .await;
 
                     assert_eq!(data[..], msg[..], "Data mismatch");
                 }
                 new_conn.close(0u32.into(), b"done");
-                client.wait_idle().await;
+                drop(new_conn);
+                echo_phase(&args, "client shutdown", client.shutdown()).await;
             }
             .instrument(error_span!("client")),
         );
         handle
     };
-    runtime.block_on(handle).unwrap();
+    runtime
+        .block_on(echo_phase(&args, "server task join", handle))
+        .unwrap();
 }
 
+async fn echo_phase<T>(
+    args: &EchoArgs,
+    phase: &str,
+    future: impl std::future::IntoFuture<Output = T>,
+) -> T {
+    tokio::time::timeout(Duration::from_secs(15), future)
+        .await
+        .unwrap_or_else(|_| panic!("echo timed out during {phase}: {args:?}"))
+}
+
+#[derive(Debug, Clone, Copy)]
 struct EchoArgs {
     client_addr: SocketAddr,
     server_addr: SocketAddr,

@@ -396,7 +396,10 @@ test-e2e-ffi-swift:
 
 test-ffi-apple-full: qa-ffi-apple test-e2e-ffi-apple test-e2e-ffi-swift qa-xpc-apple
 
-qa-full: qa qa-quic-interop qa-dial9 qa-dial9-tokio-unstable hack test-ignored test-ignored-release test-loom fuzz-60s check-links
+qa-quic-stress:
+    just rama-quic/qa-stress
+
+qa-full: qa qa-quic-stress qa-quic-interop qa-dial9 qa-dial9-tokio-unstable hack test-ignored test-ignored-release test-loom fuzz-60s check-links
 
 bench-e2e-http-client-server *ARGS:
     ./scripts/bench/e2e_http_client_server.py {{ARGS}}

@@ -160,3 +160,9 @@ fmt-interop *ARGS:
     done
 
 fmt-check-interop: (fmt-interop "--check")
+
+# Receive-window stress cases are ignored by ordinary library test runs.
+qa-stress-backend FEATURES:
+    cargo test -p rama-quic --no-default-features --features {{FEATURES}} --lib stress_ --locked -- --ignored --test-threads=1
+
+qa-stress: (qa-stress-backend "boring") (qa-stress-backend "rustls,ring") (qa-stress-backend "rustls,aws-lc")

@@ -612,6 +612,10 @@ jobs:
       - name: Concurrent QUIC transfers (boring)
         if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'boring') }}
         run: cargo test -p rama-quic --no-default-features --features boring --test many_connections --locked -- --include-ignored
+      - name: QUIC receive-window stress (boring)
+        timeout-minutes: 15
+        if: ${{ !cancelled() && matrix.backends == 'boring' && matrix.os == 'ubuntu-latest' && matrix.toolchain == 'stable' }}
+        run: just rama-quic/qa-stress-backend boring
       - name: QUIC benchmark (boring)
         if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'boring') }}
         run: cargo check --bench quic_transport --no-default-features --features quic,boring --locked
@@ -651,6 +655,10 @@ jobs:
       - name: Concurrent QUIC transfers (rustls-ring)
         if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-ring') }}
         run: cargo test -p rama-quic --no-default-features --features rustls,ring --test many_connections --locked -- --include-ignored
+      - name: QUIC receive-window stress (rustls-ring)
+        timeout-minutes: 15
+        if: ${{ !cancelled() && matrix.backends == 'rustls-ring' && matrix.os == 'ubuntu-latest' && matrix.toolchain == 'stable' }}
+        run: just rama-quic/qa-stress-backend rustls,ring
       - name: QUIC benchmark (rustls-ring)
         if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-ring') }}
         run: cargo check --bench quic_transport --no-default-features --features quic,rustls,ring --locked
@@ -690,6 +698,10 @@ jobs:
       - name: Concurrent QUIC transfers (rustls-aws-lc)
         if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-aws-lc') }}
         run: cargo test -p rama-quic --no-default-features --features rustls,aws-lc --test many_connections --locked -- --include-ignored
+      - name: QUIC receive-window stress (rustls-aws-lc)
+        timeout-minutes: 15
+        if: ${{ !cancelled() && matrix.backends == 'rustls-aws-lc' && matrix.os == 'ubuntu-latest' && matrix.toolchain == 'stable' }}
+        run: just rama-quic/qa-stress-backend rustls,aws-lc
       - name: QUIC benchmark (rustls-aws-lc)
         if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-aws-lc') }}
         run: cargo check --bench quic_transport --no-default-features --features quic,rustls,aws-lc --locked

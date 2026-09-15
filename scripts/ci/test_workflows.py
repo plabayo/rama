@@ -107,6 +107,8 @@ class WorkflowPolicyTests(unittest.TestCase):
                 for command in required:
                     with self.subTest(row=row, command=command):
                         self.assertEqual(commands.count(command), int(backend in selected))
+                expected_stress = row["os"] == "ubuntu-latest" and row["toolchain"] == "stable" and backend in selected
+                self.assertEqual(commands.count(f"just rama-quic/qa-stress-backend {features}"), int(expected_stress))
                 for selector in ("--lib dial9", "--test dial9_runtime"):
                     command = f"cargo test -p rama-quic --no-default-features --features dial9,{features} {selector} --locked"
                     expected = row["os"] == "ubuntu-latest" and row["toolchain"] == "stable" and backend in selected

@@ -4762,6 +4762,7 @@ version = "0.5.0"
 dependencies = [
  "ahash",
  "arbitrary",
+ "dial9",
  "fastbloom",
  "jiff",
  "lru-slab",
