@@ -52,7 +52,10 @@ certificate/key representation used throughout Rama.
 Applications can supply their own TLS 1.3 and packet protection through
 `tls::provider::{ClientConfig, ServerConfig, Session}`. Pass the configurations to
 `ClientConfig::new` and `ServerConfig::new`; the latter accepts a custom token key.
-No built-in TLS or crypto feature is needed for this API.
+No built-in TLS or crypto feature is needed for this API. The root `rama` crate's
+`quic` feature also enables the shared `tls` types without selecting a backend.
+The [external GnuTLS interop project](e2e/gnutls-interop/) exercises this interface
+against aioquic in both roles with all built-in Rama backends disabled.
 
 Crate used by the end-user `rama` crate.
 

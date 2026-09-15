@@ -479,9 +479,9 @@ dns = ["std", "net", "dep:rama-dns", "rama-socks5?/dns"]
 dns-hickory = ["dns", "rama-dns/hickory"]
 tcp = ["std", "net", "dep:rama-tcp"]
 udp = ["std", "net", "dep:rama-udp"]
-# QUIC v1 transport (Rustls, TLS 1.3) on top of `udp`; pick a crypto
-# provider with `ring` and/or `aws-lc`.
-quic = ["std", "udp", "dep:rama-quic"]
+# QUIC v1 transport over `udp`, with backend-neutral TLS types. Select a built-in
+# TLS/crypto backend explicitly, or supply an external provider.
+quic = ["std", "udp", "tls", "dep:rama-quic"]
 ws = ["std", "dep:rama-ws", "http"]
 js = ["std", "dep:rama-js"]
 js-disk-cache = ["js", "rama-js/disk-cache", "rama-pac?/js-disk-cache"]

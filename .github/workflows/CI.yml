@@ -538,6 +538,36 @@ jobs:
           PYTHON: ${{ github.workspace }}/rama-quic/e2e/aioquic-interop/.venv/${{ runner.os == 'Windows' && 'Scripts/python.exe' || 'bin/python' }}
         run: just rama-quic/qa-interop-runner ${{ matrix.backend }}
 
+  test-quic-external-gnutls:
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain: [stable, "1.96.0"]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    needs: [precheck-rust, precheck-docs]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          components: clippy, rustfmt
+      - name: Install GnuTLS development library and certificate tool
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libgnutls28-dev gnutls-bin pkg-config
+          certtool --version
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+      - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
+        with:
+          tool: just
+      - uses: ./.github/actions/rust-cache
+        with:
+          key: ubuntu-24.04-${{ matrix.toolchain }}-quic-external-gnutls
+          workspaces: rama-quic/e2e/gnutls-interop
+      - name: Real external TLS provider without Rama native backends
+        run: just rama-quic/qa-interop-gnutls
+
   test-quic-interop-runner:
     strategy:
       fail-fast: false
@@ -1137,6 +1167,7 @@ jobs:
       - test-icap-oracle
       - test-quic-interop-qa
       - test-quic-interop-runner
+      - test-quic-external-gnutls
       - test-ffi-apple-example-transparent-proxy-e2e
       - test-rama-apple-ne-swift-ffi
       - test-fastcgi-php

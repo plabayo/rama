@@ -60,7 +60,7 @@ qa-boring-isolation:
 # QUIC interop peers: standalone projects, outside the workspace, each with its own lockfile.
 # quiche builds BoringSSL (needs cmake and a C++ compiler); aioquic needs uv.
 interop-peer-dirs := "e2e/interop-common e2e/quinn-interop e2e/quiche-interop e2e/aioquic-interop"
-interop-dirs := interop-peer-dirs + " e2e/interop-runner"
+interop-dirs := interop-peer-dirs + " e2e/interop-runner e2e/gnutls-interop"
 
 # Check formatting and lints for the shared scenarios and all peer projects.
 qa-interop-lint BACKEND: (_lint-interop "e2e/interop-common" BACKEND) (_lint-interop "e2e/quinn-interop" BACKEND) (_lint-interop "e2e/quiche-interop" BACKEND) (_lint-interop "e2e/aioquic-interop" BACKEND)
@@ -105,7 +105,7 @@ qa-interop-aioquic BACKEND: (_lint-interop "e2e/aioquic-interop" BACKEND) (test-
 test-interop BACKEND: (qa-interop-common BACKEND) (qa-interop-quinn BACKEND) (qa-interop-quiche BACKEND) (qa-interop-aioquic BACKEND)
 
 # All standalone projects with each supported Rama TLS backend, without Docker.
-qa-interop: qa-interop-boring qa-interop-rustls-ring qa-interop-rustls-aws-lc
+qa-interop: qa-interop-boring qa-interop-rustls-ring qa-interop-rustls-aws-lc qa-interop-gnutls
 
 qa-interop-boring: (_qa-interop "boring")
 
@@ -139,3 +139,24 @@ qa-interop-runner BACKEND:
 # Run the pinned independent QUIC interop matrix (Rama client and server).
 test-interop-runner *ARGS:
     bash {{justfile_directory()}}/e2e/interop-runner/run.sh {{ARGS}}
+
+# External TLS implementation: GnuTLS headers/library and certtool, plus the locked aioquic peer.
+# GNUTLS_DIR selects a native installation prefix when pkg-config is unavailable.
+qa-interop-gnutls: interop-aioquic-env qa-gnutls-isolation
+    cargo fmt --manifest-path e2e/gnutls-interop/Cargo.toml --all --check
+    cargo clippy --manifest-path e2e/gnutls-interop/Cargo.toml --all-targets --locked -- -D warnings
+    cargo test --manifest-path e2e/gnutls-interop/Cargo.toml --locked
+    cargo doc --manifest-path e2e/gnutls-interop/Cargo.toml --no-deps --locked
+
+qa-gnutls-isolation:
+    {{if os_family() == "windows" { "& $env:PYTHON" } else { '"$PYTHON"' } }} check_backend_isolation.py --external-only
+
+# Standalone projects are not included in cargo fmt --workspace.
+fmt-interop *ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for dir in {{interop-dirs}}; do
+        cargo fmt --manifest-path "$dir/Cargo.toml" --all {{ARGS}}
+    done
+
+fmt-check-interop: (fmt-interop "--check")

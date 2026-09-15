@@ -52,12 +52,14 @@ _ensure-rust-target-windows TARGET:
 
 fmt *ARGS:
     cargo fmt --all {{ARGS}}
+    just rama-quic/fmt-interop {{ARGS}}
 
 fmt-crate CRATE *ARGS:
     cargo fmt --all -p {{CRATE}} {{ARGS}}
 
 fmt-check *ARGS:
     cargo fmt --all --check {{ARGS}}
+    just rama-quic/fmt-interop --check {{ARGS}}
 
 fmt-check-crate CRATE *ARGS:
     cargo fmt --all -p {{CRATE}} --check {{ARGS}}
@@ -394,7 +396,7 @@ test-e2e-ffi-swift:
 
 test-ffi-apple-full: qa-ffi-apple test-e2e-ffi-apple test-e2e-ffi-swift qa-xpc-apple
 
-qa-full: qa qa-dial9 qa-dial9-tokio-unstable hack test-ignored test-ignored-release test-loom fuzz-60s check-links
+qa-full: qa qa-quic-interop qa-dial9 qa-dial9-tokio-unstable hack test-ignored test-ignored-release test-loom fuzz-60s check-links
 
 bench-e2e-http-client-server *ARGS:
     ./scripts/bench/e2e_http_client_server.py {{ARGS}}
@@ -569,3 +571,7 @@ update-deps:
 
 oss-endpoint-healthcheck:
     bash rama-fp/infra/scripts/remote-healthcheck.sh
+
+# Native QUIC peer prerequisites are documented in rama-quic/e2e.
+qa-quic-interop:
+    just rama-quic/qa-interop

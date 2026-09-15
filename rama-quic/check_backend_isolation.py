@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
-"""Reject accidental native TLS/crypto dependencies in Boring-only consumers."""
+"""Reject native TLS/crypto dependency leaks in Boring and external-provider consumers."""
 from pathlib import Path
 import subprocess
 import re
 
 ROOT = Path(__file__).resolve().parent.parent
-FORBIDDEN = {"ring", "aws-lc-rs", "aws-lc-sys", "rustls", "rama-tls-rustls"}
+FORBIDDEN = {"ring", "aws-lc-rs", "aws-lc-sys", "aws-lc-fips-sys", "rustls", "rama-tls-rustls"}
 
 
-def check(arguments, subtree=None, features="boring"):
+def check(arguments, subtree=None, features="boring", forbidden=FORBIDDEN, label="Boring"):
+    feature_args = ["--features", features] if features else []
     result = subprocess.check_output(
-        ["cargo", "tree", *arguments, "--no-default-features", "--features", features,
+        ["cargo", "tree", *arguments, "--no-default-features", *feature_args,
          "--edges", "normal,build,dev", "--prefix", "depth", "--format", "{p}", "--locked", "--no-dedupe"],
         cwd=ROOT, text=True,
     )
@@ -29,13 +30,30 @@ def check(arguments, subtree=None, features="boring"):
             packages.add(package)
     if not found:
         raise RuntimeError(f"{arguments}: missing dependency subtree {subtree}")
-    unexpected = sorted(packages & FORBIDDEN)
+    unexpected = sorted(packages & forbidden)
     if unexpected:
-        raise RuntimeError(f"{arguments}: Boring-only build includes {unexpected}")
-    print(f"Boring isolation verified: {' '.join(arguments)}")
+        raise RuntimeError(f"{arguments}: {label} build includes {unexpected}")
+    print(f"{label} isolation verified: {' '.join(arguments)}")
+
+
+def check_external_provider():
+    check(
+        ["--manifest-path", "rama-quic/e2e/gnutls-interop/Cargo.toml"],
+        features=None,
+        forbidden=FORBIDDEN | {"boring", "boring-sys", "rama-boring", "rama-boring-sys", "rama-tls-boring"},
+        label="External GnuTLS provider",
+    )
 
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--external-only", action="store_true")
+    options = parser.parse_args()
+    check_external_provider()
+    if options.external_only:
+        raise SystemExit(0)
     for package in ("rama-crypto", "rama-quic"):
         check(["--package", package])
     for package in ("rama", "rama-examples"):
