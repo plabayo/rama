@@ -558,7 +558,10 @@ jobs:
           cmake --version
           cc --version
       # aioquic runs as a real peer process from a locked Python environment.
-      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          # Preserve the cache pruning policy from setup-uv v6.
+          prune-cache: true
       - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
         with:
           tool: just

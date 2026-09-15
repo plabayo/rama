@@ -1,6 +1,5 @@
 [package]
 name = "rama"
-readme = "README.md"
 documentation = "https://docs.rs/rama"
 description = "modular service framework"
 # We use examples/ as standalone crate, disable this so cargo doesn't also pick this up as examples here
@@ -107,7 +106,6 @@ async-compression = "0.4"
 asynk-strim = { version = "0.1" }
 atomic-waker = "1.1"
 aws-lc-rs = { version = "1.18", features = ["bindgen"] }
-aws-lc-sys = { version = "0.45", features = ["bindgen"] }
 base64 = "0.23"
 bb8 = "0.9"
 bb8-postgres = "0.9"
@@ -124,7 +122,6 @@ compression-core = "0.4"
 const_format = "0.2"
 core-foundation = "0.10"
 csv = "1.4"
-derive_more = "2.1"
 dial9 = { version = "0.5.0", default-features = false, features = ["tokio"] }
 dial9-trace-format = "0.5.0"
 divan = "0.1"
@@ -133,10 +130,8 @@ fastbloom = { version = "0.17", default-features = false }
 flate2 = "1.1"
 flume = "0.12"
 fnv = "1.0"
-futures = "0.3"
 futures-channel = "0.3"
 futures-core = { version = "0.3", default-features = false }
-futures-util = { version = "0.3", default-features = false }
 hickory-resolver = { version = "0.26.3", default-features = false, features = ["tokio", "system-config", "serde"] }
 hmac = "0.13"
 honggfuzz = "0.5"
@@ -156,7 +151,6 @@ jiff = { version = "0.2.37", features = ["serde"] }
 jni = "0.22"
 libc = "0.2"
 libfuzzer-sys = "0.4"
-loom = "0.7"
 lru-slab = "0.1.3"
 md5 = "0.8"
 memchr = "2.8"
@@ -285,14 +279,12 @@ turmoil = "0.7"
 unicode-normalization = "0.1"
 uuid = "1.26"
 venndb = "0.6"
-walkdir = "2.5"
 want = "0.3"
 wasmtime = { version = "48.0.2", default-features = false }
 webpki-root-certs = "1.0"
 webpki-roots = "1.0"
 wildcard = "0.3"
 windows-sys = "0.61"
-x509-cert = "0.3"
 x509-ocsp = "0.2"
 x509-ocsp-der = { package = "der", version = "0.7" }
 x509-parser = { version = "0.18", default-features = false }
