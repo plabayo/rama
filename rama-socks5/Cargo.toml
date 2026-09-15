@@ -47,6 +47,7 @@ tokio = { workspace = true }
 
 [dev-dependencies]
 parking_lot = { workspace = true }
+rama-net = { workspace = true, features = ["test-utils"] }
 tokio-test = { workspace = true }
 
 [lints]

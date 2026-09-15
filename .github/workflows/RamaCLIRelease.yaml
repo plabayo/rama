@@ -71,7 +71,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
+          env-vars: RUST_TOOLCHAIN
           cache-bin: false
 
       - name: Install Zig
@@ -161,6 +161,10 @@ jobs:
     permissions:
       contents: write
     runs-on: macos-latest
+    concurrency:
+      group: ${{ matrix.target == 'x86_64-apple-darwin' && 'rama-macos-slot-0' || 'rama-macos-slot-1' }}
+      cancel-in-progress: false
+      queue: max
     env:
       RUST_BACKTRACE: full
     strategy:
@@ -189,7 +193,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
+          env-vars: RUST_TOOLCHAIN
           cache-bin: false
 
       - name: Build and Sign
@@ -253,6 +257,10 @@ jobs:
     permissions:
       contents: write
     runs-on: windows-latest
+    concurrency:
+      group: rama-windows-slot-0
+      cancel-in-progress: false
+      queue: max
     env:
       RUST_BACKTRACE: full
     strategy:
@@ -273,7 +281,7 @@ jobs:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          env-vars: "RUST_TOOLCHAIN=${{ env.RUST_TOOLCHAIN }}"
+          env-vars: RUST_TOOLCHAIN
           cache-bin: false
 
       - name: Build release (Windows)
@@ -357,6 +365,10 @@ jobs:
     permissions:
       contents: write
     runs-on: windows-11-arm
+    concurrency:
+      group: rama-windows-slot-1
+      cancel-in-progress: false
+      queue: max
     env:
       RUST_BACKTRACE: full
     strategy:
@@ -377,7 +389,7 @@ jobs:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          env-vars: "RUST_TOOLCHAIN=${{ env.RUST_TOOLCHAIN }}"
+          env-vars: RUST_TOOLCHAIN
           cache-bin: false
 
       - name: Build release (Windows)

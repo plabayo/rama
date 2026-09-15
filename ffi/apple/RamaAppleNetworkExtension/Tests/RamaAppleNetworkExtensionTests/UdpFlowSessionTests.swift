@@ -338,8 +338,11 @@ final class UdpFlowSessionTests: XCTestCase {
         fx.session.testProbeAcknowledger = { id in
             acknowledged.withLock { $0.append(id) }
         }
-        var retained = fx.session.testFillGlobalIngressStaging()
-        XCTAssertNotNil(retained)
+        var staging = fx.session.testFillGlobalIngressStaging()
+        // Keep the holder alive: its deinit cancellation can drive grants
+        // synchronously and mask the asynchronous capacity-release path.
+        defer { withExtendedLifetime(staging.holder) {} }
+        XCTAssertNotNil(staging.batch)
         fx.session.ctx.requestReadWithProbe?(61)
         fx.session.ctx.requestReadWithProbe?(62)
         fx.session.flowQueue.sync {}
@@ -351,7 +354,23 @@ final class UdpFlowSessionTests: XCTestCase {
             fx.flow.pendingReadCount, 0,
             "a hot source must stop reading while Swift staging remains full")
 
-        retained = nil
+        let coordinatorStarted = DispatchSemaphore(value: 0)
+        let releaseCoordinator = DispatchSemaphore(value: 0)
+        staging.budget.testBlockCoordinatorQueue(
+            started: coordinatorStarted, until: releaseCoordinator)
+        XCTAssertEqual(coordinatorStarted.wait(timeout: .now() + 30), .success)
+
+        staging.batch = nil
+        fx.session.flowQueue.sync {}
+        XCTAssertEqual(
+            fx.flow.pendingReadCount, 0,
+            "draining the flow queue cannot flush the coordinator's capacity wake")
+        XCTAssertEqual(staging.budget.testGrantCount, 0)
+
+        releaseCoordinator.signal()
+        // Capacity release queues the coordinator first; only its delivery
+        // queues the replacement read. Observe both hops in that order.
+        staging.budget.testDrainCoordinatorQueue()
         fx.session.flowQueue.sync {}
         XCTAssertEqual(fx.flow.pendingReadCount, 1)
         XCTAssertEqual(fx.session.ctx.readState, .reading)
@@ -368,8 +387,11 @@ final class UdpFlowSessionTests: XCTestCase {
         fx.session.testProbeAcknowledger = { id in
             acknowledged.withLock { $0.append(id) }
         }
-        var retained = fx.session.testFillGlobalIngressStaging()
-        XCTAssertNotNil(retained)
+        var staging = fx.session.testFillGlobalIngressStaging()
+        // Keep the holder alive: its deinit cancellation can drive grants
+        // synchronously and mask the asynchronous capacity-release path.
+        defer { withExtendedLifetime(staging.holder) {} }
+        XCTAssertNotNil(staging.batch)
         fx.session.ctx.requestReadWithProbe?(81)
         fx.session.ctx.requestReadWithProbe?(82)
         fx.session.flowQueue.sync {}
@@ -387,16 +409,19 @@ final class UdpFlowSessionTests: XCTestCase {
         }
         XCTAssertEqual(blockerStarted.wait(timeout: .now() + 30), .success)
 
-        // Queue terminal teardown first. Releasing capacity then installs a
-        // provisional grant and queues its resume behind that teardown. Once
+        // Queue terminal teardown first. Wait for the capacity coordinator to
+        // install a provisional grant and queue its resume behind teardown. Once
         // the queue drains, close must cancel the grant, ACK the parked probe,
         // and make the stale resume incapable of starting an Apple read.
         fx.session.ctx.terminate?(nil)
-        retained = nil
+        staging.batch = nil
+        staging.budget.testDrainCoordinatorQueue()
+        XCTAssertEqual(staging.budget.testGrantCount, 1)
         releaseBlocker.signal()
         fx.session.flowQueue.sync {}
 
         XCTAssertEqual(acknowledged.withLock { $0 }, [81, 82])
+        XCTAssertEqual(staging.budget.testGrantCount, 0)
         XCTAssertEqual(fx.session.ctx.readState, .closed)
         XCTAssertFalse(fx.session.testStagingCapacityWaiting)
         XCTAssertEqual(fx.flow.pendingReadCount, 0)

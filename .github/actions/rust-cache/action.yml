@@ -5,6 +5,10 @@ inputs:
   key:
     description: Cache key suffix
     required: true
+  shared-key:
+    description: Complete cache family prefix shared across jobs (replaces key and the job ID when set)
+    required: false
+    default: ""
   env-vars:
     description: Extra env vars to include in the cache key (space-separated names)
     required: false
@@ -34,6 +38,7 @@ runs:
         attempt_delay: 5000
         with: |
           key: ${{ inputs.key }}
+          shared-key: ${{ inputs.shared-key }}
           env-vars: ${{ inputs.env-vars }}
           save-if: ${{ inputs.save-if }}
           cache-bin: ${{ inputs.cache-bin }}
@@ -46,6 +51,7 @@ runs:
       uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       with:
         key: ${{ inputs.key }}
+        shared-key: ${{ inputs.shared-key }}
         env-vars: ${{ inputs.env-vars }}
         save-if: ${{ inputs.save-if }}
         cache-bin: ${{ inputs.cache-bin }}

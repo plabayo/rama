@@ -64,23 +64,29 @@ pub(super) mod gso {
     static SUPPORTED_BY_CURRENT_KERNEL: OnceLock<bool> = OnceLock::new();
 
     fn supported_by_current_kernel() -> bool {
-        let kernel_version_string = match kernel_version_string() {
-            Ok(kernel_version_string) => kernel_version_string,
+        match kernel_version_string() {
+            Ok(release) => supported_by_kernel_release(&release),
             Err(_e) => {
                 crate::log::warn!("GSO disabled: uname returned {_e}");
-                return false;
+                false
             }
-        };
+        }
+    }
 
-        let Some(kernel_version) = KernelVersion::from_str(&kernel_version_string) else {
-            crate::log::warn!(
-                "GSO disabled: failed to parse kernel version ({kernel_version_string})"
-            );
+    /// Whether `release`, as `uname` reports it, is at or past the kernel that
+    /// added UDP GSO.
+    ///
+    /// Separate from [`supported_by_current_kernel`] so the boundary is decided
+    /// by a release string a test can choose, rather than by whichever kernel
+    /// the tests happen to run on.
+    fn supported_by_kernel_release(release: &str) -> bool {
+        let Some(kernel_version) = KernelVersion::from_str(release) else {
+            crate::log::warn!("GSO disabled: failed to parse kernel version ({release})");
             return false;
         };
 
         if kernel_version < SUPPORTED_SINCE {
-            crate::log::info!("GSO disabled: kernel too old ({kernel_version_string}); need 4.18+",);
+            crate::log::info!("GSO disabled: kernel too old ({release}); need 4.18+");
             return false;
         }
 
@@ -133,6 +139,31 @@ pub(super) mod gso {
     #[cfg(test)]
     mod test {
         use super::*;
+
+        /// The kernel that introduced UDP GSO is the boundary itself: the
+        /// release before it is refused and that release is already accepted.
+        /// Getting this off by one either loses segmentation offload on every
+        /// 4.18 kernel or asks a 4.17 one for an option it does not have.
+        #[test]
+        fn gso_support_starts_at_the_kernel_release_that_added_it() {
+            assert!(!supported_by_kernel_release("3.19.8"));
+            assert!(!supported_by_kernel_release("4.17.19-generic"));
+            assert!(supported_by_kernel_release("4.18.0-generic"));
+            assert!(supported_by_kernel_release("6.8.0-59-generic"));
+        }
+
+        /// A release no version can be read from disables the feature rather
+        /// than assuming it is there, which would push the failure out to a
+        /// `sendmsg` the kernel cannot honour.
+        #[test]
+        fn a_kernel_release_that_cannot_be_read_disables_gso() {
+            for release in ["", "linux", "6", "6.x", "-generic"] {
+                assert!(
+                    !supported_by_kernel_release(release),
+                    "unreadable release {release:?}"
+                );
+            }
+        }
 
         #[test]
         fn parse_current_kernel_version_release_string() {

@@ -51,7 +51,7 @@ qa-backend FEATURES:
 
 # A custom implementation must compile without any built-in TLS/packet provider.
 qa-custom-provider:
-    cargo test -p rama-quic --no-default-features --test custom_tls --locked
+    cargo test -p rama-quic --no-default-features --locked
     cargo clippy -p rama-quic --no-default-features --all-targets --locked -- -D warnings
 
 qa-boring-isolation:

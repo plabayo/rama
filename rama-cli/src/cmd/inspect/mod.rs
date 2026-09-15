@@ -130,7 +130,7 @@ pub(crate) struct Limits {
 }
 
 pub async fn run(cfg: InspectCommand) -> Result<(), BoxError> {
-    crate::trace::init_tracing(if cfg.verbose {
+    let _tracing = crate::trace::init_tracing(if cfg.verbose {
         LevelFilter::DEBUG
     } else {
         LevelFilter::WARN

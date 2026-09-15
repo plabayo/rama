@@ -1,1 +1,6 @@
 fuzz/corpus-seeds/** binary
+
+# Capture fixtures are byte-framed formats (qlog json-seq frames records with
+# 0x1e/LF): never let a checkout rewrite their line endings.
+rama-cli/tests/fixtures/*.har -text
+rama-cli/tests/fixtures/*.qlog -text
