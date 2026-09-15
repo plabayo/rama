@@ -2,6 +2,10 @@ name: Rust cache
 description: Rust dependency caching with GitHub-managed restore and post-job save hooks.
 
 inputs:
+  sccache:
+    description: Enable host compiler caching (disable when another tool owns the wrapper)
+    required: false
+    default: "true"
   key:
     description: Cache key suffix
     required: true
@@ -40,3 +44,7 @@ runs:
         save-if: ${{ inputs.save-if }}
         cache-bin: ${{ inputs.cache-bin }}
         workspaces: ${{ inputs.workspaces }}
+    # Activate the wrapper after restore to preserve dependency-cache keys.
+    - name: Rust compiler cache
+      if: inputs.sccache == 'true'
+      uses: ./.github/actions/sccache

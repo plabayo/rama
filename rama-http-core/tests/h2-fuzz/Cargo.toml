@@ -14,3 +14,7 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [target.'cfg(not(windows))'.dependencies]
 honggfuzz = { workspace = true }
+
+# Keep the fuzz harness's existing lint policy; panics and unwraps expose failures
+# to the fuzzer rather than following the production crates' error policy.
+[lints]

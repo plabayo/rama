@@ -1,0 +1,17 @@
+name: Rust compiler cache
+description: Cache host Rust compilation through GitHub Actions storage.
+
+runs:
+  using: composite
+  steps:
+    - name: Install sccache
+      uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+      with:
+        version: v0.18.0
+    - name: Enable compiler cache
+      shell: bash
+      run: |
+        echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+        echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+        echo "CARGO_INCREMENTAL=0" >> "$GITHUB_ENV"
+        echo "SCCACHE_IGNORE_SERVER_IO_ERROR=1" >> "$GITHUB_ENV"

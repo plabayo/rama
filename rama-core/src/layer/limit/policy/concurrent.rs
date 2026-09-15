@@ -160,18 +160,26 @@ impl ConcurrentTracker for ConcurrentCounter {
     fn try_access(&self) -> Result<Self::Guard, Self::Error> {
         // Lock-free admission: a contended mutex here would stall every
         // worker on a per-request cache line for what is a single increment.
-        let admitted = self
-            .current
-            .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-                (current < self.max).then_some(current + 1)
-            })
-            .is_ok();
-        if admitted {
-            Ok(ConcurrentCounterGuard {
-                current: self.current.clone(),
-            })
-        } else {
-            Err(LimitReached)
+        // Use the underlying CAS loop so this also works on our MSRV, before
+        // fetch_update was renamed to try_update.
+        let mut current = self.current.load(Ordering::Acquire);
+        loop {
+            if current >= self.max {
+                return Err(LimitReached);
+            }
+            match self.current.compare_exchange_weak(
+                current,
+                current + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    return Ok(ConcurrentCounterGuard {
+                        current: self.current.clone(),
+                    });
+                }
+                Err(observed) => current = observed,
+            }
         }
     }
 }

@@ -18,3 +18,7 @@ tokio = { workspace = true, features = ["time"] }
 tokio-test = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["fmt"] }
 tracing-tree = { workspace = true }
+
+# These legacy test helpers intentionally keep their own lint policy: assertions,
+# panics and unwraps are part of their test API, unlike production crates.
+[lints]

@@ -61,7 +61,7 @@ asynk-strim = { workspace = true }
 bytes = { workspace = true }
 dial9 = { workspace = true, optional = true }
 dial9-trace-format = { workspace = true, optional = true }
-futures = { version = "0.3", default-features = false, features = ["alloc", "async-await"] }
+futures = { workspace = true, default-features = false, features = ["alloc", "async-await"] }
 opentelemetry = { workspace = true, optional = true }
 opentelemetry-semantic-conventions = { workspace = true, optional = true }
 opentelemetry_sdk = { workspace = true, optional = true, features = ["metrics", "logs"] }
@@ -76,7 +76,7 @@ tokio = { workspace = true, features = ["macros", "fs", "io-std", "rt", "rt-mult
 tokio-graceful = { workspace = true, optional = true }
 tokio-stream = { workspace = true, features = ["full"], optional = true }
 tokio-util = { workspace = true, features = ["codec", "io", "io-util"], optional = true }
-tracing = { version = "0.1", default-features = false, features = ["attributes"] }
+tracing = { workspace = true, default-features = false, features = ["attributes"] }
 tracing-appender = { workspace = true, features = ["parking_lot"], optional = true }
 tracing-opentelemetry = { workspace = true, optional = true }
 

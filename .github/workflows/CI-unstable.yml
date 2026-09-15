@@ -201,6 +201,8 @@ jobs:
       - uses: ./.github/actions/rust-cache
         with:
           env-vars: RUST_TOOLCHAIN
+          # Source rewriting should always execute the compiler directly.
+          sccache: "false"
           key: ubuntu-latest-beta
       - name: cargo clippy --fix
         # Don't fail the job on remaining (unfixable) lints — we still
@@ -265,7 +267,7 @@ jobs:
     needs: precheck
     runs-on: macos-latest
     concurrency:
-      group: rama-macos-slot-2
+      group: rama-macos-slot-3
       cancel-in-progress: false
       queue: max
     timeout-minutes: 120
@@ -294,7 +296,7 @@ jobs:
     needs: precheck
     runs-on: macos-latest
     concurrency:
-      group: rama-macos-slot-0
+      group: rama-macos-slot-4
       cancel-in-progress: false
       queue: max
     timeout-minutes: 60
@@ -306,6 +308,8 @@ jobs:
           components: miri, rust-src
       - uses: ./.github/actions/rust-cache
         with:
+          # Miri manages its own compiler wrapper and sysroot.
+          sccache: "false"
           key: macos-latest-nightly-apple-ne-miri
       - name: Install just
         run: brew install just
