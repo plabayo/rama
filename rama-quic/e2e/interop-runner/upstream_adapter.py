@@ -10,6 +10,7 @@ checkout = Path(sys.argv.pop(1)).resolve()
 os.chdir(checkout)
 sys.path.insert(0, str(checkout))
 import interop  # noqa: E402
+import pyshark.capture.capture  # noqa: E402
 import run  # noqa: E402
 import testcase  # noqa: E402
 
@@ -40,6 +41,21 @@ def cleanup_dir(directory):
     )
 
 
+def close_ignoring_tshark_exit(self):
+    # Upstream tolerates pyshark dying mid-iteration on a pcap cut short
+    # (`trace.py::_get_packets`, pyshark#390), but the `cap.close()` right
+    # after it sits outside that guard: the same truncated capture makes
+    # tshark exit non-zero, which pyshark only reports at close, discarding
+    # packets it had already parsed and failing the whole role. Lossy cases
+    # (transferloss, longrtt) produce cut-short captures routinely.
+    try:
+        _pyshark_close(self)
+    except pyshark.capture.capture.TSharkCrashException as err:
+        logging.debug("ignoring tshark exit status at capture close: %s", err)
+
+
 interop.InteropRunner._copy_logs = copy_logs
 testcase.docker_cleanup_dir = cleanup_dir
+_pyshark_close = pyshark.capture.capture.Capture.close
+pyshark.capture.capture.Capture.close = close_ignoring_tshark_exit
 sys.exit(run.main())
