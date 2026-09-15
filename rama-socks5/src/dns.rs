@@ -208,4 +208,78 @@ mod tests {
 
         assert!(matches!(ip, IpAddr::V4(_)));
     }
+
+    /// Answers for one family only, so the race has to keep waiting after the
+    /// first lookup finishes empty-handed.
+    struct OnlyIpv6Resolver;
+
+    impl DnsAddressResolver for OnlyIpv6Resolver {
+        type Error = Infallible;
+
+        fn lookup_ipv4(
+            &self,
+            _: Domain,
+        ) -> impl Stream<Item = Result<Ipv4Addr, Self::Error>> + Send + '_ {
+            stream::empty()
+        }
+
+        fn lookup_ipv6(
+            &self,
+            _: Domain,
+        ) -> impl Stream<Item = Result<Ipv6Addr, Self::Error>> + Send + '_ {
+            stream::once(std::future::ready(Ok(Ipv6Addr::LOCALHOST)))
+        }
+    }
+
+    /// The preferred family is the one that has no answer, and it finishes
+    /// first because it also gets the head start. Returning its `None` would
+    /// fail a name the other family resolves perfectly well.
+    #[tokio::test]
+    async fn a_family_with_no_answer_leaves_the_race_to_the_other() {
+        let resolver = BoxDnsAddressResolver::new(OnlyIpv6Resolver);
+
+        let ip = race_resolve_dual(
+            &resolver,
+            Domain::example(),
+            DnsResolveIpMode::DualPreferIpV4,
+        )
+        .await
+        .expect("the answering family decides the race");
+
+        assert!(matches!(ip, IpAddr::V6(_)));
+    }
+
+    struct NeitherFamilyResolver;
+
+    impl DnsAddressResolver for NeitherFamilyResolver {
+        type Error = Infallible;
+
+        fn lookup_ipv4(
+            &self,
+            _: Domain,
+        ) -> impl Stream<Item = Result<Ipv4Addr, Self::Error>> + Send + '_ {
+            stream::empty()
+        }
+
+        fn lookup_ipv6(
+            &self,
+            _: Domain,
+        ) -> impl Stream<Item = Result<Ipv6Addr, Self::Error>> + Send + '_ {
+            stream::empty()
+        }
+    }
+
+    /// Once both families are done with nothing to show, the race ends. A miss
+    /// here hangs the caller on two futures that will never complete again.
+    #[tokio::test]
+    async fn a_dual_race_that_nobody_answers_resolves_to_nothing() {
+        for mode in [DnsResolveIpMode::Dual, DnsResolveIpMode::DualPreferIpV4] {
+            let resolver = BoxDnsAddressResolver::new(NeitherFamilyResolver);
+            assert_eq!(
+                race_resolve_dual(&resolver, Domain::example(), mode).await,
+                None,
+                "{mode:?}"
+            );
+        }
+    }
 }
