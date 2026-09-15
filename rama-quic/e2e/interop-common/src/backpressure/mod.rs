@@ -14,7 +14,7 @@ use rama::{
 };
 
 use crate::{
-    identity::{anchor_of, rama_client_config},
+    identity::{anchor_of, rama_client_config, rama_server_config},
     registry::{Case, CaseRun},
     scenario::{Chunk, Received, SERVER_NAME, exchange},
     support::{Deadline, digest, localhost, payload},
@@ -23,9 +23,8 @@ use crate::{
 /// A peer that can be made to stop reading its socket, and to start again.
 ///
 /// Every pinned peer can be withheld and let go; what an adapter may not have is a way to do
-/// it while the case is sending, and one that does not says so rather than running a weaker
-/// case. The same goes for the role: this family is written for the side that opens the
-/// connection, and running it the other way needs an adapter that can pause its own client.
+/// it while Rama keeps sending. Pauses must be acknowledged after QUIC input stops,
+/// for both peer roles.
 pub trait Ears {
     /// Stop reading. Nothing is acknowledged from here on.
     fn deaf(&mut self) -> impl Future<Output = ()> + Send;
@@ -114,7 +113,7 @@ impl Sent {
     }
 }
 
-/// A Rama client that has filled, cancelled and carried on, and not yet closed.
+/// A Rama endpoint that has filled, cancelled and carried on, and not yet closed.
 #[derive(Debug)]
 pub struct Filled {
     pub endpoint: Endpoint,
@@ -161,6 +160,53 @@ pub async fn rama_client_fills_and_cancels<E: Ears>(
         )
         .await
         .expect("the handshake completes");
+    fills_and_cancels(run, endpoint, connection, ears).await
+}
+
+/// Bind before starting the independent client, with the same send budget as the client case.
+pub async fn bind_backpressure_server(run: &CaseRun<BackpressureScenario>) -> Endpoint {
+    let transport = TransportConfig::default().with_datagram_send_buffer_size(run.scenario.buffer);
+    let config = rama_server_config(&run.identity).with_transport_config(Arc::new(transport));
+    run.deadline
+        .wait(
+            &run.what,
+            Endpoint::bind_server(rama::rt::Executor::new(), config, localhost()),
+        )
+        .await
+        .expect("the Rama server binds")
+}
+
+/// Fill and cancel on an accepted connection, then initiate the recovery stream from the server.
+pub async fn rama_server_fills_and_cancels<E: Ears>(
+    run: &CaseRun<BackpressureScenario>,
+    endpoint: Endpoint,
+    ears: &mut E,
+) -> Filled {
+    let incoming = run
+        .deadline
+        .wait(&run.what, endpoint.accept())
+        .await
+        .expect("the independent client arrives");
+    let connection = run
+        .deadline
+        .wait(&run.what, incoming)
+        .await
+        .expect("the handshake completes");
+    fills_and_cancels(run, endpoint, connection, ears).await
+}
+
+async fn fills_and_cancels<E: Ears>(
+    run: &CaseRun<BackpressureScenario>,
+    endpoint: Endpoint,
+    connection: Connection,
+    ears: &mut E,
+) -> Filled {
+    let CaseRun {
+        what,
+        deadline,
+        scenario,
+        ..
+    } = run;
     let limit = connection
         .max_datagram_size()
         .expect("the peer offered the extension");

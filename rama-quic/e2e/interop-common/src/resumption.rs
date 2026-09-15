@@ -280,11 +280,13 @@ pub fn rama_client_config_for(
         .try_with_server_trust_anchors([anchor])
         .expect("the trust anchor is accepted")
         .verify_backend();
-    ClientConfig::try_from_rama_tls(
-        &tls,
-        crate::backend::options().with_early_data(scenario.offers_early_data),
-    )
-    .expect("the client config is built")
+    let options = crate::backend::options();
+    let options = if scenario.offers_early_data {
+        options.with_early_data(true)
+    } else {
+        options
+    };
+    ClientConfig::try_from_rama_tls(&tls, options).expect("the client config is built")
 }
 
 /// The first connection: an exchange after the handshake, which is when the session ticket
@@ -381,6 +383,10 @@ pub async fn rama_client_resumes(
         }
         connection
     } else {
+        let attempt = attempt
+            .into_0rtt()
+            .err()
+            .expect("default TLS options refuse early data even with a resumable ticket");
         deadline
             .wait(what, attempt)
             .await

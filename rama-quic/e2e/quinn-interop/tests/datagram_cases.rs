@@ -8,7 +8,9 @@ use common::{Deaf, answer, bound_socket, exchange, quinn_client_config, quinn_se
 use interop_common::{
     BackpressureScenario, CaseRun, DatagramObservation, DatagramScenario, Ears, Peer, Received,
     Role, UnsupportedObservation, UnsupportedScenario,
-    backpressure::rama_client_fills_and_cancels,
+    backpressure::{
+        bind_backpressure_server, rama_client_fills_and_cancels, rama_server_fills_and_cancels,
+    },
     backpressure_cases,
     datagram::{rama_client_side, rama_server_side},
     datagram_cases, for_each_case,
@@ -294,65 +296,83 @@ impl Ears for Muted {
 /// cancels the send that has no room, and carries on once it is reading again.
 #[tokio::test]
 async fn backpressure_cases_rama_client() {
-    for_each_case(
-        PEER,
-        Role::RamaClient,
-        backpressure_cases(),
-        |run| async move {
-            let runtime = quinn::default_runtime().expect("an async runtime");
-            let socket = Deaf::around(
-                runtime
-                    .wrap_udp_socket(bound_socket())
-                    .expect("the socket is wrapped"),
-            );
-            let mut config = quinn_server_config(&run.identity);
-            config.transport_config(advertising(BOUNDARY_FRAME));
-            let server = quinn::Endpoint::new_with_abstract_socket(
-                quinn::EndpointConfig::default(),
-                Some(config),
-                socket.clone(),
-                runtime,
-            )
-            .expect("the quinn server binds");
-            let addr = server.local_addr().expect("its address");
-            let (reports, mut arriving) = tokio::sync::mpsc::unbounded_channel();
-            let peer = Peer::spawn({
-                let run = run.clone();
-                async move { quinn_stalls(&run, server, reports).await }
-            });
+    backpressure(Role::RamaClient).await;
+}
 
-            let mut ears = Muted(socket);
-            let filled = rama_client_fills_and_cancels(&run, addr, &mut ears).await;
+#[tokio::test]
+async fn backpressure_cases_rama_server() {
+    backpressure(Role::RamaServer).await;
+}
 
-            // Read until the peer has the one sent once there was room, so the connection is
-            // not closed while it is still catching up, then close and read what is left.
-            // Datagrams are unordered, so the marker bounds the wait rather than ending it.
-            let mut reports = Vec::new();
-            loop {
-                let report = run
-                    .deadline
-                    .wait(&run.what, arriving.recv())
-                    .await
-                    .expect("the peer is still reporting");
-                let resumed = filled.sent.resumed(&report);
-                reports.push(report);
-                if resumed {
-                    break;
-                }
+async fn backpressure(role: Role) {
+    for_each_case(PEER, role, backpressure_cases(), |run| async move {
+        let runtime = quinn::default_runtime().expect("an async runtime");
+        let socket = Deaf::around(
+            runtime
+                .wrap_udp_socket(bound_socket())
+                .expect("the socket is wrapped"),
+        );
+        let mut config = quinn_server_config(&run.identity);
+        config.transport_config(advertising(BOUNDARY_FRAME));
+        let server = quinn::Endpoint::new_with_abstract_socket(
+            quinn::EndpointConfig::default(),
+            Some(config),
+            socket.clone(),
+            runtime,
+        )
+        .expect("the quinn server binds");
+        let (reports, mut arriving) = tokio::sync::mpsc::unbounded_channel();
+        let mut ears = Muted(socket);
+        let (peer, filled) = match role {
+            Role::RamaClient => {
+                let addr = server.local_addr().expect("its address");
+                let peer = Peer::spawn({
+                    let run = run.clone();
+                    async move { quinn_stalls(&run, server, reports, None).await }
+                });
+                let filled = rama_client_fills_and_cancels(&run, addr, &mut ears).await;
+                (peer, filled)
             }
-            let sent = filled.sent.clone();
-            filled.close(&run.what, run.deadline).await;
-            run.deadline
-                .wait(&run.what, async {
-                    while let Some(report) = arriving.recv().await {
-                        reports.push(report);
-                    }
-                })
-                .await;
-            peer.join(&run.what, run.deadline).await;
-            sent.account_for(&run.what, &reports);
-        },
-    )
+            Role::RamaServer => {
+                let endpoint = bind_backpressure_server(&run).await;
+                let address = endpoint.local_addr().unwrap();
+                let peer = Peer::spawn({
+                    let run = run.clone();
+                    async move { quinn_stalls(&run, server, reports, Some(address)).await }
+                });
+                let filled = rama_server_fills_and_cancels(&run, endpoint, &mut ears).await;
+                (peer, filled)
+            }
+        };
+
+        // Read until the peer has the one sent once there was room, so the connection is
+        // not closed while it is still catching up, then close and read what is left.
+        // Datagrams are unordered, so the marker bounds the wait rather than ending it.
+        let mut reports = Vec::new();
+        loop {
+            let report = run
+                .deadline
+                .wait(&run.what, arriving.recv())
+                .await
+                .expect("the peer is still reporting");
+            let resumed = filled.sent.resumed(&report);
+            reports.push(report);
+            if resumed {
+                break;
+            }
+        }
+        let sent = filled.sent.clone();
+        filled.close(&run.what, run.deadline).await;
+        run.deadline
+            .wait(&run.what, async {
+                while let Some(report) = arriving.recv().await {
+                    reports.push(report);
+                }
+            })
+            .await;
+        peer.join(&run.what, run.deadline).await;
+        sent.account_for(&run.what, &reports);
+    })
     .await;
 }
 
@@ -362,16 +382,29 @@ async fn quinn_stalls(
     run: &CaseRun<BackpressureScenario>,
     server: quinn::Endpoint,
     reports: tokio::sync::mpsc::UnboundedSender<Received>,
+    connect_to: Option<SocketAddr>,
 ) {
     let (what, deadline) = (&run.what, run.deadline);
-    let attempt = deadline
-        .wait(what, server.accept())
-        .await
-        .expect("an attempt arrives");
-    let conn = deadline
-        .wait(what, attempt)
-        .await
-        .expect("the handshake completes");
+    let conn = if let Some(address) = connect_to {
+        let mut config = quinn_client_config(anchor_of(&run.identity));
+        config.transport_config(advertising(BOUNDARY_FRAME));
+        deadline
+            .wait(
+                what,
+                server.connect_with(config, address, SERVER_NAME).unwrap(),
+            )
+            .await
+            .unwrap()
+    } else {
+        let attempt = deadline
+            .wait(what, server.accept())
+            .await
+            .expect("an attempt arrives");
+        deadline
+            .wait(what, attempt)
+            .await
+            .expect("the handshake completes")
+    };
     let reading = {
         let conn = conn.clone();
         async move {

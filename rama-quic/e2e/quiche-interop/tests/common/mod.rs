@@ -445,7 +445,7 @@ impl Quiche {
 
     /// Send everything the connection has to send. A datagram the socket refuses fails the test:
     /// a lost send would otherwise look like a peer that never answered.
-    async fn flush(&mut self, deadline: Deadline) {
+    pub async fn flush(&mut self, deadline: Deadline) {
         let mut out = [0u8; SEND_DATAGRAM];
         loop {
             let (written, info) = match self.connection.send(&mut out) {
