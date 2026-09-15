@@ -931,7 +931,10 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
 
         func testCloseIngressStaging() { ingressStaging.close() }
 
-        func testFillGlobalIngressStaging() -> UdpIngressStagedBatch? {
+        func testFillGlobalIngressStaging() -> (
+            batch: UdpIngressStagedBatch?, budget: UdpIngressGenerationStagingBudget,
+            holder: UdpIngressFlowStaging
+        ) {
             let flowPolicy = effectiveRuntimePolicy.udpIngressStaging
             let policy = UdpIngressStagingPolicy(
                 maxItemsPerFlow: flowPolicy.maxItemsPerFlow,
@@ -941,10 +944,14 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
             let budget = UdpIngressGenerationStagingBudget(policy: policy)
             ingressStaging = UdpIngressFlowStaging(generation: budget)
             let holder = UdpIngressFlowStaging(generation: budget)
-            return holder.stage(
-                datagrams: [Data(count: flowPolicy.maxBytesPerFlow)],
-                endpoints: nil
-            ).batch
+            return (
+                holder.stage(
+                    datagrams: [Data(count: flowPolicy.maxBytesPerFlow)],
+                    endpoints: nil
+                ).batch,
+                budget,
+                holder
+            )
         }
 
         func testWaitForIngressStagingCapacity(
