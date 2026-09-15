@@ -1082,3 +1082,348 @@ pub(crate) fn retry_if_interrupted(mut f: impl FnMut() -> isize) -> io::Result<i
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Native storage for one address family, written through the same layout
+    /// the kernel uses when it fills `msg_name`.
+    fn storage_v4(addr: Ipv4Addr, port: u16) -> libc::sockaddr_storage {
+        // SAFETY: all-zero is a valid `sockaddr_storage`, whose fields are
+        // integers and address bytes.
+        let mut storage: libc::sockaddr_storage = unsafe { mem::zeroed() };
+        // SAFETY: `sockaddr_storage` is defined to be large enough and
+        // sufficiently aligned for any address family, `sockaddr_in` included.
+        let sin = unsafe { &mut *(&raw mut storage).cast::<libc::sockaddr_in>() };
+        sin.sin_family = libc::AF_INET as _;
+        sin.sin_port = port.to_be();
+        sin.sin_addr.s_addr = u32::from_ne_bytes(addr.octets());
+        storage
+    }
+
+    fn storage_v6(
+        addr: Ipv6Addr,
+        port: u16,
+        flowinfo: u32,
+        scope_id: u32,
+    ) -> libc::sockaddr_storage {
+        // SAFETY: as in `storage_v4`.
+        let mut storage: libc::sockaddr_storage = unsafe { mem::zeroed() };
+        // SAFETY: `sockaddr_storage` is also aligned and sized for
+        // `sockaddr_in6`.
+        let sin6 = unsafe { &mut *(&raw mut storage).cast::<libc::sockaddr_in6>() };
+        sin6.sin6_family = libc::AF_INET6 as _;
+        sin6.sin6_port = port.to_be();
+        sin6.sin6_addr.s6_addr = addr.octets();
+        sin6.sin6_flowinfo = flowinfo;
+        sin6.sin6_scope_id = scope_id;
+        storage
+    }
+
+    /// Reinterpret storage written by [`storage_v4`] as the `sockaddr_in`
+    /// payload the kernel puts in an original-destination control message.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    fn sockaddr_in_payload(storage: &libc::sockaddr_storage) -> libc::sockaddr_in {
+        // SAFETY: `storage_v4` wrote a complete `sockaddr_in` into storage that
+        // is aligned and large enough for one.
+        unsafe { *(&raw const *storage).cast::<libc::sockaddr_in>() }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    fn sockaddr_in6_payload(storage: &libc::sockaddr_storage) -> libc::sockaddr_in6 {
+        // SAFETY: as above, for the storage written by `storage_v6`.
+        unsafe { *(&raw const *storage).cast::<libc::sockaddr_in6>() }
+    }
+
+    /// Encode control messages into `control` and decode them the way a receive
+    /// does, so the platform's own `cmsghdr` layout and chain walk are what is
+    /// under test rather than a hand-rolled stand-in.
+    fn decode_with(
+        control: &mut cmsg::Aligned<[u8; cmsg::LEN]>,
+        name: libc::sockaddr_storage,
+        len: usize,
+        original_len: usize,
+        push: impl FnOnce(&mut cmsg::Encoder<'_, libc::msghdr>),
+    ) -> io::Result<RecvMeta> {
+        // SAFETY: all-zero is a valid empty `msghdr`; the control pointer and
+        // length written below describe `control`, which outlives this call.
+        let mut hdr: libc::msghdr = unsafe { mem::zeroed() };
+        hdr.msg_control = control.0.as_mut_ptr().cast();
+        hdr.msg_controllen = cmsg::LEN as _;
+        {
+            // SAFETY: `hdr`'s control buffer is `control`: aligned for
+            // `cmsghdr`, writable for its whole reported length, and passed to
+            // no system call while the encoder lives.
+            let mut encoder = unsafe { cmsg::Encoder::new(&mut hdr) };
+            push(&mut encoder);
+        }
+        decode_recv(&MaybeUninit::new(name), &hdr, len, original_len, false)
+    }
+
+    fn loopback_name() -> libc::sockaddr_storage {
+        storage_v4(Ipv4Addr::LOCALHOST, 443)
+    }
+
+    /// A port is carried in network order and an address as its four octets, so
+    /// a peer that is not a palindrome in either would survive a byte-order
+    /// mistake in only one direction.
+    #[test]
+    fn the_peer_address_decodes_from_native_v4_storage() {
+        let addr = decode_socket_addr(&storage_v4(Ipv4Addr::new(192, 0, 2, 7), 0x1234)).unwrap();
+        assert_eq!(
+            addr,
+            SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(192, 0, 2, 7), 0x1234))
+        );
+    }
+
+    /// The v6 form carries two more fields, and a scope identifier is what makes
+    /// a link-local reply reach the right interface.
+    #[test]
+    fn the_peer_address_decodes_from_native_v6_storage() {
+        let ip: Ipv6Addr = "2001:db8::7".parse().unwrap();
+        let addr = decode_socket_addr(&storage_v6(ip, 0x1234, 7, 9)).unwrap();
+        assert_eq!(addr, SocketAddr::V6(SocketAddrV6::new(ip, 0x1234, 7, 9)));
+    }
+
+    #[test]
+    fn an_address_family_that_is_not_ip_is_rejected() {
+        // SAFETY: all-zero is a valid `sockaddr_storage`.
+        let mut storage: libc::sockaddr_storage = unsafe { mem::zeroed() };
+        storage.ss_family = libc::AF_UNIX as _;
+        let error = decode_socket_addr(&storage).unwrap_err();
+        assert!(
+            error.to_string().contains(&libc::AF_UNIX.to_string()),
+            "the refusal names the family it got: {error}"
+        );
+    }
+
+    /// Without a segmentation control message the read is one datagram, and
+    /// every optional piece of metadata stays absent rather than defaulting to
+    /// a value a caller could mistake for one the kernel reported.
+    #[test]
+    fn a_receive_without_control_messages_reports_one_whole_datagram() {
+        let mut control = cmsg::Aligned([0; cmsg::LEN]);
+        let meta = decode_with(&mut control, loopback_name(), 1200, 1200, |_| {}).unwrap();
+
+        assert_eq!(meta.len, 1200);
+        assert_eq!(meta.stride, 1200);
+        assert!(!meta.truncated);
+        assert_eq!(meta.ecn, None);
+        assert_eq!(meta.dst_ip, None);
+        assert_eq!(meta.interface_index, None);
+        assert_eq!(meta.original_destination, None);
+        assert_eq!(meta.timestamp, None);
+    }
+
+    /// Truncation is inferred from the lengths even when the receive call did
+    /// not flag it, and the stride stays the datagram's original length so a
+    /// truncated entry is never mistaken for several segments.
+    #[test]
+    fn a_datagram_longer_than_the_buffer_is_reported_as_truncated() {
+        let mut control = cmsg::Aligned([0; cmsg::LEN]);
+        let meta = decode_with(&mut control, loopback_name(), 512, 1200, |_| {}).unwrap();
+
+        assert!(meta.truncated);
+        assert_eq!(meta.len, 512);
+        assert_eq!(meta.original_len, 1200);
+        assert_eq!(meta.stride, 1200);
+    }
+
+    #[test]
+    fn the_ecn_codepoint_decodes_from_the_v4_traffic_class() {
+        let mut control = cmsg::Aligned([0; cmsg::LEN]);
+        let meta = decode_with(&mut control, loopback_name(), 1, 1, |encoder| {
+            encoder
+                .push(libc::IPPROTO_IP, libc::IP_TOS, 0b10_u8)
+                .unwrap();
+        })
+        .unwrap();
+
+        assert_eq!(meta.ecn, Some(EcnCodepoint::Ect0));
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn the_v4_packet_info_control_message_reports_the_local_address_and_interface() {
+        let mut control = cmsg::Aligned([0; cmsg::LEN]);
+        // SAFETY: all-zero is a valid `in_pktinfo`, whose fields are an index
+        // and two addresses.
+        let mut pktinfo: libc::in_pktinfo = unsafe { mem::zeroed() };
+        pktinfo.ipi_ifindex = 3;
+        pktinfo.ipi_addr.s_addr = u32::from_ne_bytes([198, 51, 100, 5]);
+
+        let meta = decode_with(&mut control, loopback_name(), 1, 1, |encoder| {
+            encoder
+                .push(libc::IPPROTO_IP, libc::IP_PKTINFO, pktinfo)
+                .unwrap();
+        })
+        .unwrap();
+
+        assert_eq!(
+            meta.dst_ip,
+            Some(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 5)))
+        );
+        assert_eq!(meta.interface_index, Some(3));
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn the_v6_packet_info_control_message_reports_the_local_address_and_interface() {
+        let mut control = cmsg::Aligned([0; cmsg::LEN]);
+        let local: Ipv6Addr = "2001:db8::5".parse().unwrap();
+        // SAFETY: all-zero is a valid `in6_pktinfo`.
+        let mut pktinfo: libc::in6_pktinfo = unsafe { mem::zeroed() };
+        pktinfo.ipi6_addr.s6_addr = local.octets();
+        pktinfo.ipi6_ifindex = 4;
+
+        let meta = decode_with(&mut control, loopback_name(), 1, 1, |encoder| {
+            encoder
+                .push(libc::IPPROTO_IPV6, libc::IPV6_PKTINFO, pktinfo)
+                .unwrap();
+        })
+        .unwrap();
+
+        assert_eq!(meta.dst_ip, Some(IpAddr::V6(local)));
+        assert_eq!(meta.interface_index, Some(4));
+    }
+
+    /// The transparent-proxy path: `IP_RECVORIGDSTADDR` is how a redirected
+    /// datagram still names the address the client aimed at, so both the
+    /// address and the network-order port have to survive.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn the_v4_original_destination_control_message_decodes_its_address_and_port() {
+        let mut control = cmsg::Aligned([0; cmsg::LEN]);
+        let original = sockaddr_in_payload(&storage_v4(Ipv4Addr::new(203, 0, 113, 9), 8443));
+
+        let meta = decode_with(&mut control, loopback_name(), 1, 1, |encoder| {
+            encoder
+                .push(libc::IPPROTO_IP, IP_RECV_ORIGINAL_DESTINATION, original)
+                .unwrap();
+        })
+        .unwrap();
+
+        assert_eq!(
+            meta.original_destination,
+            Some(SocketAddr::V4(SocketAddrV4::new(
+                Ipv4Addr::new(203, 0, 113, 9),
+                8443
+            )))
+        );
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn the_v6_original_destination_control_message_decodes_its_address_and_port() {
+        let mut control = cmsg::Aligned([0; cmsg::LEN]);
+        let ip: Ipv6Addr = "2001:db8::9".parse().unwrap();
+        let original = sockaddr_in6_payload(&storage_v6(ip, 8443, 3, 5));
+
+        let meta = decode_with(&mut control, loopback_name(), 1, 1, |encoder| {
+            encoder
+                .push(libc::IPPROTO_IPV6, IPV6_RECV_ORIGINAL_DESTINATION, original)
+                .unwrap();
+        })
+        .unwrap();
+
+        assert_eq!(
+            meta.original_destination,
+            Some(SocketAddr::V6(SocketAddrV6::new(ip, 8443, 3, 5)))
+        );
+    }
+
+    /// A coalesced read carries its segment size in a control message, which is
+    /// what splits the buffer back into datagrams. Without it the whole read
+    /// would be handed on as a single oversized datagram.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn a_gro_control_message_reports_the_segment_size_of_a_coalesced_read() {
+        let mut control = cmsg::Aligned([0; cmsg::LEN]);
+        let meta = decode_with(&mut control, loopback_name(), 4000, 4000, |encoder| {
+            encoder
+                .push(libc::SOL_UDP, libc::UDP_GRO, 1200 as libc::c_int)
+                .unwrap();
+        })
+        .unwrap();
+
+        assert_eq!(meta.stride, 1200);
+        assert_eq!(meta.len, 4000);
+        assert!(!meta.truncated);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn a_timestamp_control_message_decodes_seconds_and_nanoseconds() {
+        let mut control = cmsg::Aligned([0; cmsg::LEN]);
+        // SAFETY: all-zero is a valid `timespec`, whose two fields are integers.
+        let mut ts: libc::timespec = unsafe { mem::zeroed() };
+        ts.tv_sec = 1_700_000_000;
+        ts.tv_nsec = 123_456_789;
+
+        let meta = decode_with(&mut control, loopback_name(), 1, 1, |encoder| {
+            encoder
+                .push(libc::SOL_SOCKET, libc::SCM_TIMESTAMPNS, ts)
+                .unwrap();
+        })
+        .unwrap();
+
+        assert_eq!(
+            meta.timestamp,
+            Some(Duration::new(1_700_000_000, 123_456_789))
+        );
+    }
+
+    /// A kernel puts several control messages in one buffer, and each is found
+    /// by walking the chain from the one before it. Mixed payload sizes make
+    /// that walk depend on the platform's own alignment padding, so a single
+    /// receive carrying all three has to yield all three.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn every_control_message_in_one_chain_is_decoded() {
+        let mut control = cmsg::Aligned([0; cmsg::LEN]);
+        // SAFETY: all-zero is a valid `in_pktinfo`.
+        let mut pktinfo: libc::in_pktinfo = unsafe { mem::zeroed() };
+        pktinfo.ipi_ifindex = 11;
+        pktinfo.ipi_addr.s_addr = u32::from_ne_bytes([198, 51, 100, 5]);
+
+        let meta = decode_with(&mut control, loopback_name(), 2400, 2400, |encoder| {
+            // One byte, then a struct, then an int: each following entry starts
+            // at the padded offset the previous one's length rounds up to.
+            encoder
+                .push(libc::IPPROTO_IP, libc::IP_TOS, 0b11_u8)
+                .unwrap();
+            encoder
+                .push(libc::IPPROTO_IP, libc::IP_PKTINFO, pktinfo)
+                .unwrap();
+            encoder
+                .push(libc::SOL_UDP, libc::UDP_GRO, 1200 as libc::c_int)
+                .unwrap();
+        })
+        .unwrap();
+
+        assert_eq!(meta.ecn, Some(EcnCodepoint::Ce));
+        assert_eq!(
+            meta.dst_ip,
+            Some(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 5)))
+        );
+        assert_eq!(meta.interface_index, Some(11));
+        assert_eq!(meta.stride, 1200);
+    }
+
+    /// A payload too short for the type its level and type name is refused
+    /// rather than read past its end, and the refusal reaches the caller of the
+    /// receive instead of yielding partly decoded metadata.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn a_control_message_whose_payload_is_too_short_for_its_type_is_rejected() {
+        let mut control = cmsg::Aligned([0; cmsg::LEN]);
+        let error = decode_with(&mut control, loopback_name(), 1, 1, |encoder| {
+            // `UDP_GRO` carries a `c_int`; one byte must not be read as one.
+            encoder.push(libc::SOL_UDP, libc::UDP_GRO, 0_u8).unwrap();
+        })
+        .unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+}

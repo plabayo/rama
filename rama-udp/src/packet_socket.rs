@@ -905,4 +905,108 @@ mod tests {
         }
         assert_eq!(segments, expected);
     }
+
+    /// The transparent-proxy option is requested with a numeric constant this
+    /// crate defines itself rather than one `libc` exposes, so only a running
+    /// kernel can confirm it is the right one. Enabling it has to be accepted,
+    /// reported as a capability, and deliver the address the datagram was
+    /// actually addressed to.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[tokio::test]
+    async fn original_destination_metadata_arrives_from_the_kernel() {
+        for address in ["127.0.0.1:0", "[::1]:0"] {
+            let config = crate::UdpSocketConfig::new().with_receive_original_destination(true);
+            let mut receiver = crate::UdpSocketFactory::new(config)
+                .bind(address)
+                .await
+                .unwrap();
+            assert!(
+                receiver.capabilities().receive_original_destination,
+                "the kernel accepted the option for {address}"
+            );
+
+            let destination = receiver.local_addr().unwrap();
+            let sender_socket = UdpPacketSocket::bind(address).await.unwrap();
+            let mut sender = sender_socket.create_sender();
+            sender
+                .send(SendDatagram::new(destination, b"origdst"))
+                .await
+                .unwrap();
+
+            let mut buffer = [0; 8];
+            let metadata = receiver.recv(&mut buffer).await.unwrap();
+            assert_eq!(&buffer[..metadata.len], b"origdst", "{address}");
+            assert_eq!(
+                metadata.original_destination,
+                Some(destination),
+                "{address}"
+            );
+        }
+    }
+
+    /// Linux turns on `SO_TIMESTAMPNS` for every packet socket, so each receive
+    /// carries a kernel receive time on the Unix-epoch timeline. A control
+    /// message decoded on the wrong timeline, or with its seconds and
+    /// nanoseconds swapped, lands far outside the interval around the send.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[tokio::test]
+    async fn a_kernel_receive_timestamp_accompanies_each_datagram() {
+        let (mut receiver, sender_socket) = bind_pair(false).await;
+        assert!(receiver.capabilities().receive_timestamp);
+
+        let epoch = std::time::UNIX_EPOCH;
+        let before = std::time::SystemTime::now().duration_since(epoch).unwrap();
+        let destination = receiver.local_addr().unwrap();
+        let mut sender = sender_socket.create_sender();
+        sender
+            .send(SendDatagram::new(destination, b"stamped"))
+            .await
+            .unwrap();
+
+        let mut buffer = [0; 8];
+        let metadata = receiver.recv(&mut buffer).await.unwrap();
+        let after = std::time::SystemTime::now().duration_since(epoch).unwrap();
+
+        let Some(ReceiveTimestamp::UnixEpoch(stamp)) = metadata.timestamp else {
+            panic!(
+                "a Linux receive reports a Unix-epoch timestamp, got {:?}",
+                metadata.timestamp
+            );
+        };
+        assert!(
+            (before..=after).contains(&stamp),
+            "{stamp:?} is outside {before:?}..={after:?}"
+        );
+    }
+
+    /// Linux is the platform whose offload and path-MTU controls Rama actually
+    /// turns on, and each one reaches callers only through this snapshot. A
+    /// kernel that quietly refuses one degrades every segmented send or
+    /// coalesced receive to the portable fallback, and nothing else in the
+    /// suite would notice: the loopback tests pass either way.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[tokio::test]
+    async fn the_offload_capabilities_linux_enables_are_all_reported() {
+        let socket = UdpPacketSocket::bind("127.0.0.1:0").await.unwrap();
+        let capabilities = socket.capabilities();
+
+        assert!(
+            capabilities.max_send_segments > 1,
+            "UDP_SEGMENT has been available since kernel 4.18, got {}",
+            capabilities.max_send_segments
+        );
+        assert!(
+            capabilities.max_receive_segments > 1,
+            "UDP_GRO has been available since kernel 5.0, got {}",
+            capabilities.max_receive_segments
+        );
+        assert!(
+            !capabilities.may_fragment,
+            "IP_MTU_DISCOVER forbids fragmenting an outgoing datagram on Linux"
+        );
+        assert!(capabilities.receive_ecn, "IP_RECVTOS");
+        assert!(capabilities.receive_local_ip, "IP_PKTINFO");
+        assert!(capabilities.receive_interface, "IP_PKTINFO");
+        assert!(capabilities.receive_timestamp, "SO_TIMESTAMPNS");
+    }
 }
