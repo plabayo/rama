@@ -3,10 +3,7 @@
 mod common;
 
 use common::endpoint_command;
-use rama::{
-    crypto::dep::rcgen,
-    utils::{fs::TempDir, octets},
-};
+use rama::utils::{fs::TempDir, octets};
 use std::{collections::BTreeSet, fs, path::Path, process::Stdio, time::Duration};
 #[cfg(unix)]
 use tokio::process::Child;

@@ -9,7 +9,7 @@ use rama::{
     error::{BoxError, ErrorContext as _},
     graceful::{Shutdown, default_signal},
     net::{tls::ApplicationProtocol, uri::Uri},
-    quic::{ClientConfig, Connection, Endpoint, tls::TlsOptions},
+    quic::{ClientConfig, Connection, Endpoint},
     rt::Executor,
     telemetry::tracing,
     tls::{
@@ -116,7 +116,7 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
         .with_alpn(smallvec![ApplicationProtocol::from(ALPN)])
         .with_keylog(KeyLogIntent::Environment)
         .with_server_verify(ServerVerifyMode::Disable);
-    let config = ClientConfig::try_from_rama_tls(&tls, TlsOptions::default())?
+    let config = ClientConfig::try_from_rama_tls(&tls, crate::tls_options())?
         .with_transport_config(transport(executor, "client").await?);
     let batch = tokio::time::timeout(Duration::from_secs(args.timeout_seconds), async {
         if testcase == TestCase::MultiConnect {

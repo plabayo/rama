@@ -74,8 +74,10 @@ qa-interop-aioquic BACKEND: (_lint-interop "e2e/aioquic-interop" BACKEND) (test-
 # The complete peer CI checks.
 test-interop BACKEND: (qa-interop-common BACKEND) (qa-interop-quinn BACKEND) (qa-interop-quiche BACKEND) (qa-interop-aioquic BACKEND)
 
-# All standalone projects with both supported Rama TLS backends, without Docker.
-qa-interop: qa-interop-rustls-ring qa-interop-rustls-aws-lc
+# All standalone projects with each supported Rama TLS backend, without Docker.
+qa-interop: qa-interop-boring qa-interop-rustls-ring qa-interop-rustls-aws-lc
+
+qa-interop-boring: (_qa-interop "boring")
 
 qa-interop-rustls-ring: (_qa-interop "rustls-ring")
 

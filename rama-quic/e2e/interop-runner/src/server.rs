@@ -10,7 +10,7 @@ use rama::{
     error::{BoxError, ErrorContext as _},
     graceful::{Shutdown, default_signal},
     net::{socket::SocketOptions, tls::ApplicationProtocol},
-    quic::{Connection, Endpoint, RecvStream, SendStream, ServerConfig, tls::TlsOptions},
+    quic::{Connection, Endpoint, RecvStream, SendStream, ServerConfig},
     rt::Executor,
     telemetry::tracing,
     tls::{
@@ -76,7 +76,7 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
         .with_alpn(smallvec![ApplicationProtocol::from(ALPN)])
         .with_keylog(KeyLogIntent::Environment)
         .with_server_auth(auth);
-    let config = ServerConfig::try_from_rama_tls(&tls, TlsOptions::default())?
+    let config = ServerConfig::try_from_rama_tls(&tls, crate::tls_options())?
         .with_transport_config(transport(executor.clone(), "server").await?);
     let mut socket_options = SocketOptions::default_udp();
     if args.listen.is_ipv6() {

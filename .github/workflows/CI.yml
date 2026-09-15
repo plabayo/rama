@@ -438,6 +438,7 @@ jobs:
       fail-fast: false
       matrix:
         backend:
+          - boring
           - rustls-ring
           - rustls-aws-lc
         toolchain:

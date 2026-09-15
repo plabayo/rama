@@ -571,10 +571,14 @@ pub struct RamaResumptionConfigs {
 
 impl RamaResumptionConfigs {
     pub fn new(identity: &Identity) -> Self {
+        Self::new_with_early_data(identity, true)
+    }
+
+    pub fn new_with_early_data(identity: &Identity, early_data: bool) -> Self {
         #[cfg(not(feature = "boring"))]
         let sessions = RecordingSessions::new();
         #[cfg(not(feature = "boring"))]
-        let warming = rama_resuming_server_config(identity, sessions.clone(), true);
+        let warming = rama_resuming_server_config(identity, sessions.clone(), early_data);
         #[cfg(feature = "boring")]
         let warming = {
             let tls = TlsServerConfig::new()
@@ -582,7 +586,7 @@ impl RamaResumptionConfigs {
                 .with_server_auth(identity.clone());
             let mut config = ServerConfig::try_from_rama_tls(
                 &tls,
-                crate::backend::options().with_early_data(true),
+                crate::backend::options().with_early_data(early_data),
             )
             .unwrap();
             config.set_transport_config(Arc::new(
@@ -604,6 +608,13 @@ impl RamaResumptionConfigs {
     }
 
     pub fn after_warmup(&self, what: &str) {
+        self.check_warmup(what);
+        #[cfg(not(feature = "boring"))]
+        self.sessions.forget_offers();
+    }
+
+    /// Validate warm-up without resetting counters when the peer already started resuming.
+    pub fn check_warmup(&self, what: &str) {
         #[cfg(not(feature = "boring"))]
         {
             assert!(
@@ -611,7 +622,6 @@ impl RamaResumptionConfigs {
                 "{what}: no session stored: {}",
                 self.sessions.detail()
             );
-            self.sessions.forget_offers();
         }
         #[cfg(feature = "boring")]
         let _ = what; // Stateless ticket issuance is proved by the second handshake resuming.

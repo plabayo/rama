@@ -1,9 +1,15 @@
 //! HTTP/0.9 file transfer endpoints for the QUIC interop runner, using `hq-interop`.
 
-#[cfg(all(feature = "rustls-ring", feature = "rustls-aws-lc"))]
-compile_error!("select exactly one Rama TLS backend: rustls-ring or rustls-aws-lc");
-#[cfg(not(any(feature = "rustls-ring", feature = "rustls-aws-lc")))]
-compile_error!("select a Rama TLS backend: rustls-ring or rustls-aws-lc");
+#[cfg(any(
+    all(feature = "rustls-ring", feature = "rustls-aws-lc"),
+    all(
+        feature = "boring",
+        any(feature = "rustls-ring", feature = "rustls-aws-lc")
+    ),
+))]
+compile_error!("select exactly one Rama TLS backend: boring, rustls-ring or rustls-aws-lc");
+#[cfg(not(any(feature = "boring", feature = "rustls-ring", feature = "rustls-aws-lc")))]
+compile_error!("select a Rama TLS backend: boring, rustls-ring or rustls-aws-lc");
 
 pub mod client;
 pub mod server;
@@ -22,6 +28,14 @@ use rama::{
     utils::octets,
 };
 use std::{path::Path, process::ExitCode, sync::Arc};
+
+fn tls_options() -> rama::quic::tls::TlsOptions {
+    rama::quic::tls::TlsOptions::default().with_backend(if cfg!(feature = "boring") {
+        rama::tls::TlsBackend::Boring
+    } else {
+        rama::tls::TlsBackend::Rustls
+    })
+}
 
 const ALPN: &[u8] = b"hq-interop";
 const REQUEST_LIMIT: usize = octets::kib(4);
@@ -113,7 +127,9 @@ async fn shutdown_endpoint(
 }
 
 fn check_alpn(connection: &Connection) -> Result<(), BoxError> {
-    if connection.handshake_data().and_then(|data| data.application_layer_protocol)
+    if connection
+        .handshake_data()
+        .and_then(|data| data.application_layer_protocol)
         != Some(ApplicationProtocol::from(ALPN))
     {
         return Err("peer did not negotiate hq-interop".into());

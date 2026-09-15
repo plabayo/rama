@@ -123,11 +123,17 @@ async fn early_data_is_offered_and_accepted() {
             .expect("the handshake completes"),
         "the client was told its early data was accepted"
     );
-    let second = peer.expect("handshake", deadline).await;
+    // A server can deliver 0-RTT before its handshake completes.
+    let first = peer.event("handshake or early stream", deadline).await;
+    let next = peer.event("handshake or early stream", deadline).await;
+    let (second, reported) = match (first.name(), next.name()) {
+        ("handshake", "stream") => (first, next),
+        ("stream", "handshake") => (next, first),
+        _ => panic!("expected one handshake and one early stream: {first:?}, {next:?}"),
+    };
     assert!(second.resumed(), "the server resumed the session");
     assert!(second.early(), "and accepted the early data");
 
-    let reported = peer.expect("stream", deadline).await;
     assert_eq!(
         reported.len(),
         early.len(),
