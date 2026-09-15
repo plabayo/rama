@@ -1,7 +1,11 @@
 name: Rust cache
-description: Swatinem/rust-cache wrapped with retry on Windows (both restore and save legs are flaky there due to tar issues).
+description: Rust dependency caching with GitHub-managed restore and post-job save hooks.
 
 inputs:
+  sccache:
+    description: Enable host compiler caching (disable when another tool owns the wrapper)
+    required: false
+    default: "true"
   key:
     description: Cache key suffix
     required: true
@@ -29,25 +33,9 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Rust cache (Windows, with retry)
-      if: runner.os == 'Windows'
-      uses: Wandalen/wretry.action@e68c23e6309f2871ca8ae4763e7629b9c258e1ea # v3.8.0
-      with:
-        action: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        attempt_limit: 3
-        attempt_delay: 5000
-        with: |
-          key: ${{ inputs.key }}
-          shared-key: ${{ inputs.shared-key }}
-          env-vars: ${{ inputs.env-vars }}
-          save-if: ${{ inputs.save-if }}
-          cache-bin: ${{ inputs.cache-bin }}
-          # This inner mapping is itself a YAML string, so a multi-line value has to be a
-          # quoted scalar or its later lines land unindented.
-          workspaces: ${{ toJSON(inputs.workspaces) }}
-
+    # Keep the action visible to GitHub so its post-if condition and save hook
+    # use the real job status. The former Windows retry wrapper skipped saves.
     - name: Rust cache
-      if: runner.os != 'Windows'
       uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       with:
         key: ${{ inputs.key }}
@@ -56,3 +44,7 @@ runs:
         save-if: ${{ inputs.save-if }}
         cache-bin: ${{ inputs.cache-bin }}
         workspaces: ${{ inputs.workspaces }}
+    # Activate the wrapper after restore to preserve dependency-cache keys.
+    - name: Rust compiler cache
+      if: inputs.sccache == 'true'
+      uses: ./.github/actions/sccache

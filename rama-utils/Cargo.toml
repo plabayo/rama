@@ -40,10 +40,10 @@ std = [
 
 [dependencies]
 # Keep the shared byte serializer usable with alloc-only builds.
-base64 = { version = "0.23", default-features = false, features = ["alloc"] }
+base64 = { workspace = true, default-features = false, features = ["alloc"] }
 const_format = { workspace = true }
-# no workspace inherit: default features (std) must stay off for no_std builds
-memchr = { version = "2.8", default-features = false }
+# Keep default features (std) off for no_std builds.
+memchr = { workspace = true, default-features = false }
 parking_lot = { workspace = true, optional = true }
 pin-project-lite = { workspace = true }
 rama-macros = { workspace = true }
@@ -52,8 +52,8 @@ serde = { workspace = true, features = ["derive"] }
 smallvec = { workspace = true, features = ["serde", "const_generics", "const_new"] }
 smol_str = { workspace = true, features = ["serde"] }
 tokio = { workspace = true, features = ["fs", "time", "macros", "sync"], optional = true }
-# no workspace inherit: default features (std) must stay off for no_std builds
-tracing = { version = "0.1", default-features = false }
+# Keep default features (std) off for no_std builds.
+tracing = { workspace = true, default-features = false }
 wildcard = { workspace = true }
 
 [dev-dependencies]
@@ -65,7 +65,7 @@ tokio = { workspace = true, features = ["fs", "io-util", "time", "macros", "sync
 trybuild = { workspace = true }
 
 [target.'cfg(loom)'.dev-dependencies]
-loom = "0.7"
+loom = { workspace = true }
 
 [lints]
 workspace = true

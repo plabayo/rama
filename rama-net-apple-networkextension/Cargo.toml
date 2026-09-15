@@ -41,7 +41,7 @@ rama-core = { workspace = true, features = ["std"] }
 rama-net = { workspace = true, features = ["std"] }
 rama-utils = { workspace = true, features = ["std"] }
 tokio = { workspace = true, features = ["io-util", "net", "rt-multi-thread", "sync"] }
-tracing = { workspace = true }
+tracing = { workspace = true, default-features = true }
 zeroize = { workspace = true }
 
 [build-dependencies]

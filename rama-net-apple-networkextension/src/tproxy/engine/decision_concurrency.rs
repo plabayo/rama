@@ -34,7 +34,7 @@ impl DecisionConcurrencyGate {
     /// Reserve one policy-decision slot.
     ///
     /// Successful flows pay one atomic RMW here and one in `Drop`; there is no
-    /// mutex, wait queue, allocation, or per-packet involvement. `fetch_update`
+    /// mutex, wait queue, allocation, or per-packet involvement. `try_update`
     /// prevents even a transient accepted count above the configured limit.
     pub(super) fn try_acquire(self: &Arc<Self>) -> Option<DecisionPermit> {
         let _previous = self

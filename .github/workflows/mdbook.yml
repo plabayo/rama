@@ -81,7 +81,7 @@ jobs:
     needs: precheck
     runs-on: macos-latest
     concurrency:
-      group: rama-macos-slot-2
+      group: rama-macos-slot-4
       cancel-in-progress: false
       queue: max
     steps:
@@ -107,6 +107,10 @@ jobs:
   doc-windows:
     needs: precheck
     runs-on: windows-latest
+    env:
+      # sccache expands rustc response files beyond Windows' command limit with
+      # Cargo's new per-crate layout. Remove when mozilla/sccache#2789 ships.
+      __CARGO_TEMPORARY_BUILD_DIR_NEW_LAYOUT_OPT_OUT: "1"
     concurrency:
       group: rama-windows-slot-3
       cancel-in-progress: false
@@ -120,7 +124,7 @@ jobs:
       - uses: ./.github/actions/rust-cache
         with:
           key: doc-windows
-          env-vars: RUSTDOC_TOOLCHAIN
+          env-vars: RUSTDOC_TOOLCHAIN __CARGO_TEMPORARY_BUILD_DIR_NEW_LAYOUT_OPT_OUT
           cache-bin: "false"
       - name: cargo doc (windows)
         run: cargo +${{ env.RUSTDOC_TOOLCHAIN }} doc --all-features --no-deps -p rama

@@ -42,6 +42,26 @@ class WorkflowPolicyTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             validate(self.workflow, self.path)
 
+    def test_extra_macos_slot(self):
+        job = self.workflow["jobs"]["test-rust-linux-gnu-cross-macos"]
+        job["concurrency"]["group"] = "rama-macos-slot-5"
+        with self.assertRaises(AssertionError):
+            validate(self.workflow, self.path)
+
+    def test_long_macos_jobs_use_five_slots(self):
+        jobs = self.workflow["jobs"]
+        assignments = [
+            ("test-rust-base", {"os": "macos-15-intel", "toolchain": "stable"}),
+            ("test-rust-base", {"os": "macos-15", "toolchain": "stable"}),
+            ("test-rust-linux-gnu-cross-macos", {}),
+        ]
+        quic = next(name for name in jobs if name.startswith("test-quic-interop-qa"))
+        assignments.extend((quic, {"os": "macos-15", "toolchain": toolchain})
+                           for toolchain in ("stable", "1.96.0"))
+        groups = {expression(jobs[name]["concurrency"]["group"], row)
+                  for name, row in assignments}
+        self.assertEqual(groups, {f"rama-macos-slot-{i}" for i in range(5)})
+
     def test_new_job_cannot_bypass_final_gate(self):
         self.workflow["jobs"]["new-test"] = copy.deepcopy(self.workflow["jobs"]["test-loom"])
         with self.assertRaises(AssertionError):

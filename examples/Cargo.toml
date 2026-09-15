@@ -547,10 +547,10 @@ net-apple-xpc = ["rama/net-apple-xpc"]
 
 [dependencies]
 ahash = { workspace = true }
-base64 = { workspace = true }
+base64 = { workspace = true, default-features = true }
 clap = { workspace = true }
 indexmap = { workspace = true, features = ["serde"] }
-itertools = { workspace = true }
+itertools = { workspace = true, default-features = true }
 itoa = { workspace = true }
 jiff = { workspace = true }
 libc = { workspace = true }
