@@ -6222,6 +6222,79 @@ async fn switching_to_an_identifier_is_not_using_it_until_a_datagram_leaves() {
     tokio::join!(client.shutdown(), server.shutdown());
 }
 
+/// A replacement endpoint has no connection state; only the persisted reset key lets it
+/// terminate connections established by its predecessor.
+#[tokio::test]
+async fn a_restarted_endpoint_uses_its_configured_reset_key() {
+    use crate::proto::{HashedConnectionIdGenerator, StatelessResetKey};
+
+    let (client_config, server_config) = configs();
+    let mut config = EndpointConfig::try_with_rand_key().unwrap();
+    config
+        .set_stateless_reset_key(StatelessResetKey::from_seed(&[0x71; 32]))
+        .set_cid_generator(Arc::new(|| {
+            Box::new(HashedConnectionIdGenerator::from_key(7))
+        }));
+    let (socket, old_log) = recording_socket();
+    let server = endpoint_with(config.clone(), Some(server_config), socket);
+    let addr = server.local_addr().unwrap();
+    let client = endpoint(None, Executor::new(), Duration::from_secs(1));
+    let connecting = client
+        .connect_with(client_config, addr, "localhost")
+        .unwrap();
+    let incoming = server.accept().await.unwrap();
+    let (c, s) = handshake(connecting, incoming).await;
+    exchange(&c, &s, b"before restart").await;
+
+    // Suppress shutdown traffic to model losing the endpoint without notifying its peer.
+    old_log.lock().blackhole = true;
+    drop(s);
+    server.shutdown().await;
+    drop(server);
+    assert!(c.close_reason().is_none());
+
+    for preserved in [false, true] {
+        let mut restarted_config = config.clone();
+        if !preserved {
+            restarted_config.set_stateless_reset_key(StatelessResetKey::from_seed(&[0x29; 32]));
+        }
+        let (socket, resets) = recording_socket_from(std::net::UdpSocket::bind(addr).unwrap());
+        let restarted = endpoint_with(restarted_config, None, socket);
+        let received_before = client.stats().received_datagrams;
+        c.send_datagram(vec![0x5a; 256].into()).unwrap();
+        wait_for(
+            "replacement endpoint sent a response",
+            Duration::from_secs(2),
+            || !resets.lock().sent.is_empty(),
+        )
+        .await;
+        if preserved {
+            let reason = tokio::time::timeout(Duration::from_secs(2), c.closed())
+                .await
+                .expect("the preserved reset key terminates the old connection");
+            assert!(matches!(reason, ConnectionError::Reset), "{reason:?}");
+        } else {
+            wait_for(
+                "client processed the foreign reset",
+                Duration::from_secs(2),
+                || {
+                    client.stats().received_datagrams > received_before
+                        && c.driver_stats().receive_queue.queued_datagrams == 0
+                },
+            )
+            .await;
+            assert!(
+                c.close_reason().is_none(),
+                "a changed key cannot reset the old connection"
+            );
+        }
+        restarted.shutdown().await;
+        drop(restarted);
+    }
+    drop(c);
+    client.shutdown().await;
+}
+
 /// A stateless reset for `cid` under `key`, shaped like the server's.
 fn stateless_reset_for(key: &HmacSha2, cid: &[u8]) -> Vec<u8> {
     let mut datagram = vec![0x40u8];
