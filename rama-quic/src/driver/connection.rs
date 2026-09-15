@@ -580,7 +580,13 @@ fn offer(
 #[derive(Debug)]
 pub(crate) enum Control {
     Proto(crate::proto::ConnectionEvent),
-    Close { error_code: VarInt, reason: Bytes },
+    /// Close the connection. `abandon` is set when the endpoint itself is shutting down: the
+    /// connection then leaves its closing period as soon as the peer has been told.
+    Close {
+        error_code: VarInt,
+        reason: Bytes,
+        abandon: bool,
+    },
     Rebind(Sender),
 }
 
@@ -1842,6 +1848,7 @@ impl ConnectionRef {
                 error: None,
                 socket: Some(socket),
                 send_buffer: Vec::new(),
+                abandon_close: false,
                 buffered_transmit: None,
                 deferred: None,
                 transmits_offered: 0,
@@ -1928,7 +1935,14 @@ impl ConnectionInner {
         let conn = &mut *self.state.lock();
         match message {
             Control::Proto(event) => conn.inner.handle_event(event),
-            Control::Close { error_code, reason } => conn.close(error_code, reason, &self.shared),
+            Control::Close {
+                error_code,
+                reason,
+                abandon,
+            } => {
+                conn.abandon_close |= abandon;
+                conn.close(error_code, reason, &self.shared);
+            }
             Control::Rebind(socket) => {
                 // A connection that may never send from the new address (a server, or a client
                 // whose peer disabled migration) keeps its socket and hands the offer back at
@@ -2176,6 +2190,9 @@ pub(crate) struct State {
     #[cfg(test)]
     fail_ownership: bool,
     send_buffer: Vec<u8>,
+    /// The endpoint is shutting down: once the peer has been told of the close and nothing is
+    /// left to send, the closing period is not waited out (RFC 9000 §10.2).
+    abandon_close: bool,
     /// We buffer a transmit when the underlying I/O would block, with the name of the attempt it
     /// belongs to, so the sender cannot apply what it accepted to a different descriptor.
     buffered_transmit: Option<Held>,
@@ -2238,6 +2255,13 @@ impl State {
         // If a timer expires, there might be more to transmit. When we transmit something, we
         // might need to reset a timer. Hence, we must loop until neither happens.
         keep_going |= self.drive_timer(cx);
+        if self.abandon_close
+            && self.buffered_transmit.is_none()
+            && self.deferred.is_none()
+            && self.inner.close_announced()
+        {
+            self.inner.abandon_close(now());
+        }
         self.forward_endpoint_events();
         self.forward_app_events(shared);
 

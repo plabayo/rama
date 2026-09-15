@@ -209,7 +209,7 @@ async fn serve_file(
     if !file.metadata().await?.is_file() {
         return Err("requested path is not a regular file".into());
     }
-    let mut buffer = [0_u8; BUFFER_SIZE];
+    let mut buffer = vec![0_u8; BUFFER_SIZE];
     loop {
         let count = file
             .read(&mut buffer)

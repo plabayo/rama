@@ -903,6 +903,9 @@ async fn graceful_executor_joins_without_guard_cycles() {
     let _rebound = std::net::UdpSocket::bind(addr).unwrap();
 }
 
+/// An attempt nobody answers still puts a close on the wire when the endpoint shuts down, and
+/// leaves as soon as it has (RFC 9000 §10.2), so even a 1 ms budget is not exceeded; the
+/// attempt's unpolled future learns it was closed locally.
 #[tokio::test]
 async fn forced_shutdown_joins_an_unpolled_connection_attempt() {
     let mut client_config = configs().0;
@@ -919,7 +922,7 @@ async fn forced_shutdown_joins_an_unpolled_connection_attempt() {
     let outcome = tokio::time::timeout(Duration::from_secs(1), endpoint.shutdown())
         .await
         .unwrap();
-    assert_eq!(outcome, ShutdownOutcome::Forced);
+    assert_eq!(outcome, ShutdownOutcome::Drained);
     assert!(matches!(
         connecting.await,
         Err(ConnectionError::LocallyClosed)
@@ -3552,8 +3555,17 @@ async fn an_unanswered_retry_route_expires_on_its_own_and_shutdown_releases_it_e
         .await
         .unwrap()
         .unwrap();
+    let before_close = server.stats().received_datagrams;
     drop(connecting);
     client.shutdown().await;
+    // The client's close went to A on its way out; it belongs to the pending attempt, and a
+    // Retry issued before it is taken in would meet it as a fresh attempt holding A instead.
+    wait_for(
+        "the client's close reaches A",
+        Duration::from_secs(2),
+        || server.stats().received_datagrams > before_close,
+    )
+    .await;
     server.rebind_abstract(loopback_socket()).unwrap();
     let addr_b = server.local_addr().unwrap();
     let retried_at = Instant::now();
@@ -3586,8 +3598,15 @@ async fn an_unanswered_retry_route_expires_on_its_own_and_shutdown_releases_it_e
         .await
         .unwrap()
         .unwrap();
+    let before_close = server.stats().received_datagrams;
     drop(connecting);
     client.shutdown().await;
+    wait_for(
+        "the client's close reaches A",
+        Duration::from_secs(2),
+        || server.stats().received_datagrams > before_close,
+    )
+    .await;
     server.rebind_abstract(loopback_socket()).unwrap();
     let addr_b = server.local_addr().unwrap();
     incoming.retry().unwrap();

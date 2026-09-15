@@ -40,7 +40,9 @@ fn tls_options() -> rama::quic::tls::TlsOptions {
 const ALPN: &[u8] = b"hq-interop";
 const REQUEST_LIMIT: usize = octets::kib(4);
 const STREAM_LIMIT: usize = 64;
-const BUFFER_SIZE: usize = octets::kib(16);
+/// Bytes moved per read on either side. Larger reads mean fewer trips through the connection's
+/// lock and the blocking file pool, which is what bounds a client pulling many streams at once.
+const BUFFER_SIZE: usize = octets::kib(256);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TestCase {
@@ -81,12 +83,19 @@ pub fn init_tracing() {
         .init();
 }
 
+/// Set to shrink the receive windows to 64 KiB per stream and 256 KiB per connection, so a
+/// transfer of any size forces stream- and connection-level window updates. The default windows
+/// are Rama's own, which is what a benchmark of this endpoint should see.
+pub const SMALL_WINDOWS: &str = "RAMA_INTEROP_SMALL_WINDOWS";
+
 async fn transport(executor: Executor, role: &str) -> Result<Arc<TransportConfig>, BoxError> {
-    // Force stream- and connection-level window updates during runner transfers.
-    let mut config = TransportConfig::default()
-        .with_stream_receive_window(octets::kib_u32(64).into())
-        .with_receive_window(octets::kib_u32(256).into())
-        .with_max_concurrent_bidi_streams((STREAM_LIMIT as u32).into());
+    let mut config =
+        TransportConfig::default().with_max_concurrent_bidi_streams((STREAM_LIMIT as u32).into());
+    if std::env::var_os(SMALL_WINDOWS).is_some() {
+        config = config
+            .with_stream_receive_window(octets::kib_u32(64).into())
+            .with_receive_window(octets::kib_u32(256).into());
+    }
     if let Some(directory) = std::env::var_os("QLOGDIR") {
         let directory = Path::new(&directory);
         tokio::fs::create_dir_all(directory)

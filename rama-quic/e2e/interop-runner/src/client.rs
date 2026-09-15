@@ -183,7 +183,9 @@ async fn download(
         .open(directory.join(&request.filename))
         .await
         .context("create download file")?;
-    let mut buffer = [0_u8; BUFFER_SIZE];
+    // A read gathers what has arrived into one buffer, so each file write carries as much as
+    // possible; reading chunk by chunk would hand the file one packet's worth at a time.
+    let mut buffer = vec![0_u8; BUFFER_SIZE];
     let mut bytes = 0_u64;
     while let Some(count) = recv.read(&mut buffer).await.context("receive file data")? {
         file.write_all(&buffer[..count])

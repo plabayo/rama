@@ -332,7 +332,7 @@ impl Endpoint {
                 {
                     let mut state = inner.state.lock();
                     state.shutdown = true;
-                    state.close(VarInt::from_u32(0), &Bytes::new(), &inner.shared);
+                    state.close(VarInt::from_u32(0), &Bytes::new(), &inner.shared, true);
                 }
                 if tokio::time::timeout(shutdown_budget, lifecycle.join())
                     .await
@@ -622,10 +622,18 @@ impl Endpoint {
             error_code,
             &Bytes::copy_from_slice(reason),
             &self.inner.shared,
+            false,
         );
     }
 
     /// Stop the endpoint and join all drivers, releasing sockets even with retained handles.
+    ///
+    /// Connections still open are closed. A connection leaves as soon as its peer has been
+    /// told, that is once its CONNECTION_CLOSE went out or the peer's own close arrived; the
+    /// closing period that would otherwise follow (RFC 9000 §10.2) only serves to answer late
+    /// packets, which a stopping endpoint will not do. A peer whose copy of the close was lost
+    /// waits out its idle timeout instead. To give every close the full closing period first,
+    /// call [`close()`](Self::close) and then [`wait_idle()`](Self::wait_idle) before this.
     pub async fn shutdown(&self) -> ShutdownOutcome {
         self.inner.shared.lifecycle.request();
         self.inner.shared.lifecycle.completed().await
@@ -1240,13 +1248,20 @@ pub(crate) struct Shared {
 }
 
 impl State {
-    fn close(&mut self, error_code: VarInt, reason: &Bytes, shared: &Shared) {
-        if self.recv_state.connections.close.is_none() {
-            self.recv_state.connections.close = Some((error_code, reason.clone()));
+    fn close(&mut self, error_code: VarInt, reason: &Bytes, shared: &Shared, abandon: bool) {
+        let first = self.recv_state.connections.close.is_none();
+        if first {
+            self.recv_state.connections.close = Some((error_code, reason.clone(), abandon));
+        } else if abandon && let Some(close) = self.recv_state.connections.close.as_mut() {
+            close.2 = true;
+        }
+        // A shutdown after a plain close still lets every connection leave early.
+        if first || abandon {
             for channel in self.recv_state.connections.channels.values() {
                 channel.inner.control(Control::Close {
                     error_code,
                     reason: reason.clone(),
+                    abandon,
                 });
             }
         }
@@ -1497,7 +1512,8 @@ struct ConnectionSet {
     channels: FxHashMap<ConnectionHandle, ConnectionChannel>,
     connection_limits: ReceiveQueueLimits,
     /// Set if the endpoint has been manually closed
-    close: Option<(VarInt, Bytes)>,
+    /// The close every connection is given, and whether it leaves its closing period early.
+    close: Option<(VarInt, Bytes, bool)>,
 }
 
 impl ConnectionSet {
@@ -1515,10 +1531,11 @@ impl ConnectionSet {
         let (connecting, driver) =
             Connecting::new(handle, conn, link, receiver, socket, budget.clone());
         let inner = connecting.inner();
-        if let Some((error_code, ref reason)) = self.close {
+        if let Some((error_code, ref reason, abandon)) = self.close {
             inner.control(Control::Close {
                 error_code,
                 reason: reason.clone(),
+                abandon,
             });
         }
         self.channels.insert(

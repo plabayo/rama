@@ -29,7 +29,8 @@ async fn runner_file_transfer_and_retry() {
         let payload = vec![0x5a; octets::mib(2)];
         fs::write(www.join("large.bin"), &payload).unwrap();
         fs::write(www.join("empty.bin"), []).unwrap();
-        // More than one advertised stream window catches missing MAX_STREAMS updates.
+        // More than one advertised stream window catches missing MAX_STREAMS updates, and the
+        // small byte windows force MAX_DATA and MAX_STREAM_DATA updates on a 2 MiB file.
         let count = if testcase == "transfer" { 130 } else { 2 };
         let mut names = vec!["large.bin".to_owned(), "empty.bin".to_owned()];
         for index in 0..count {
@@ -41,6 +42,7 @@ async fn runner_file_transfer_and_retry() {
             "CARGO_BIN_EXE_rama-quic-interop-server"
         )))
         .env("TESTCASE", testcase)
+        .env(rama_quic_interop_runner::SMALL_WINDOWS, "1")
         .env("CERTS", root)
         .env("WWW", &www)
         .env("SSLKEYLOGFILE", root.join("server.keys"))
@@ -83,6 +85,7 @@ async fn runner_file_transfer_and_retry() {
                 "CARGO_BIN_EXE_rama-quic-interop-client"
             )))
             .env("TESTCASE", testcase)
+            .env(rama_quic_interop_runner::SMALL_WINDOWS, "1")
             .env("REQUESTS", requests)
             .env("DOWNLOADS", &downloads)
             .env("SSLKEYLOGFILE", root.join("client.keys"))
