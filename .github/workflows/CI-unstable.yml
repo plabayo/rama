@@ -201,6 +201,8 @@ jobs:
       - uses: ./.github/actions/rust-cache
         with:
           env-vars: RUST_TOOLCHAIN
+          # Source rewriting should always execute the compiler directly.
+          sccache: "false"
           key: ubuntu-latest-beta
       - name: cargo clippy --fix
         # Don't fail the job on remaining (unfixable) lints — we still
@@ -306,6 +308,8 @@ jobs:
           components: miri, rust-src
       - uses: ./.github/actions/rust-cache
         with:
+          # Miri manages its own compiler wrapper and sysroot.
+          sccache: "false"
           key: macos-latest-nightly-apple-ne-miri
       - name: Install just
         run: brew install just

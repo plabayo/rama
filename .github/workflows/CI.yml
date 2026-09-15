@@ -1182,6 +1182,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
+      - uses: ./.github/actions/sccache
       - name: h2spec
         run: |
           bash rama-http-core/ci/h2spec.sh -F
