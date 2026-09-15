@@ -561,6 +561,25 @@ impl ServerConfig {
     }
 }
 
+#[cfg(not(any(
+    feature = "boring",
+    all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+)))]
+impl ServerConfig {
+    /// Build a server configuration from the common Rama TLS server configuration.
+    ///
+    /// No built-in TLS backend is compiled in, so this reports the backend asked for as
+    /// unavailable; a [`crypto::ServerConfig`] of your own goes through [`Self::new`].
+    pub fn try_from_rama_tls(
+        _config: &rama_tls::server::TlsServerConfig,
+        options: crypto::config::TlsOptions,
+    ) -> Result<Self, crypto::config::TlsConfigError> {
+        Err(crypto::config::TlsConfigError::BackendUnavailable(
+            options.backend,
+        ))
+    }
+}
+
 #[cfg(any(feature = "aws-lc", feature = "ring", feature = "boring"))]
 impl ServerConfig {
     /// Create a server config with the given [`crypto::ServerConfig`]
@@ -846,6 +865,25 @@ impl ClientConfig {
     }
 }
 
+#[cfg(not(any(
+    feature = "boring",
+    all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+)))]
+impl ClientConfig {
+    /// Build a client configuration from the common Rama TLS client configuration.
+    ///
+    /// No built-in TLS backend is compiled in, so this reports the backend asked for as
+    /// unavailable; a [`crypto::ClientConfig`] of your own goes through [`Self::new`].
+    pub fn try_from_rama_tls(
+        _config: &rama_tls::client::TlsClientConfig,
+        options: crypto::config::TlsOptions,
+    ) -> Result<Self, crypto::config::TlsConfigError> {
+        Err(crypto::config::TlsConfigError::BackendUnavailable(
+            options.backend,
+        ))
+    }
+}
+
 impl fmt::Debug for ClientConfig {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt.debug_struct("ClientConfig")
@@ -909,6 +947,40 @@ pub struct StdSystemTime;
 impl TimeSource for StdSystemTime {
     fn now(&self) -> SystemTime {
         SystemTime::now()
+    }
+}
+
+#[cfg(all(
+    test,
+    not(any(
+        feature = "boring",
+        all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+    ))
+))]
+mod backendless_tests {
+    use super::*;
+    use crate::proto::crypto::config::{TlsConfigError, TlsOptions};
+
+    /// Without a built-in backend the shared-configuration constructors exist and say which
+    /// backend was asked for, so a build gets a runtime report rather than a missing method.
+    #[test]
+    fn rama_tls_configs_report_the_missing_backend() {
+        let options = TlsOptions::default().with_backend(rama_tls::TlsBackend::Boring);
+        assert!(matches!(
+            ClientConfig::try_from_rama_tls(&rama_tls::client::TlsClientConfig::new(), options),
+            Err(TlsConfigError::BackendUnavailable(
+                rama_tls::TlsBackend::Boring
+            ))
+        ));
+        assert!(matches!(
+            ServerConfig::try_from_rama_tls(
+                &rama_tls::server::TlsServerConfig::new(),
+                TlsOptions::default()
+            ),
+            Err(TlsConfigError::BackendUnavailable(
+                rama_tls::TlsBackend::Auto
+            ))
+        ));
     }
 }
 
