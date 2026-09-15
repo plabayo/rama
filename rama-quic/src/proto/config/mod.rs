@@ -129,9 +129,11 @@ impl EndpointConfig {
             grease_quic_bit: true,
             min_reset_interval: Duration::from_millis(20),
             handshake_timeout: Duration::from_secs(10),
+            // One Linux receive pass hands over up to 32 messages of 64 GRO segments each; a
+            // queue that holds a full pass never drops what the kernel already delivered.
             connection_receive_queue: ReceiveQueueLimits {
-                datagrams: 256,
-                bytes: octets::kib(512),
+                datagrams: octets::kib(2),
+                bytes: octets::mib(4),
             },
             endpoint_receive_queue: ReceiveQueueLimits {
                 datagrams: octets::kib(8),
@@ -163,7 +165,7 @@ impl EndpointConfig {
         /// Bound each connection's queue of received packets awaiting its driver, and the
         /// aggregate storage across the endpoint including queued incoming connection attempts.
         ///
-        /// Defaults to 256 datagrams / 512 KiB per connection and 8192 datagrams / 16 MiB per
+        /// Defaults to 2048 datagrams / 4 MiB per connection and 8192 datagrams / 16 MiB per
         /// endpoint. Each queued datagram is charged its retained capacity plus a fixed
         /// per-message overhead. A saturated queue drops and counts further packets; protocol
         /// stream buffers and pending-handshake buffers have their own limits. The endpoint

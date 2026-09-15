@@ -66,7 +66,8 @@ pub use crate::driver::connection::{
     SendDatagram, SendDatagramError, ZeroRttAccepted,
 };
 pub use crate::driver::endpoint::{
-    Accept, DEFAULT_SHUTDOWN_BUDGET, Endpoint, EndpointBuilder, EndpointStats,
+    Accept, DEFAULT_SHUTDOWN_BUDGET, DEFAULT_SOCKET_BUFFER_SIZE, Endpoint, EndpointBuilder,
+    EndpointStats,
 };
 pub use crate::driver::incoming::{Incoming, IncomingFuture, RetryError};
 pub use crate::driver::lifecycle::ShutdownOutcome;

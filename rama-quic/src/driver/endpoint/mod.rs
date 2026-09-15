@@ -875,11 +875,25 @@ async fn bind_advertised(
     Ok((Some(server_config), sockets))
 }
 
-/// The socket configuration a client binds with: Rama's UDP defaults, plus a request for a
+/// The kernel receive and send buffer an endpoint asks for on the sockets it binds itself.
+///
+/// QUIC arrives in bursts of coalesced datagrams and the endpoint drains its socket from one
+/// task; the platform's default of a few hundred KiB is under a millisecond of a fast transfer
+/// and drops packets before the endpoint sees them. This floor is best effort: a platform limit
+/// caps it silently and a bind never fails on it (see `UdpSocketConfig::with_min_buffer_size`).
+/// Pass a `UdpSocketConfig` of your own to bind without it.
+pub const DEFAULT_SOCKET_BUFFER_SIZE: usize = octets::mib(7);
+
+/// Rama's UDP defaults with the endpoint's buffer floor.
+pub(crate) fn default_socket_config() -> UdpSocketConfig {
+    UdpSocketConfig::default().with_min_buffer_size(DEFAULT_SOCKET_BUFFER_SIZE)
+}
+
+/// The socket configuration a client binds with: the endpoint defaults, plus a request for a
 /// dual-stack socket on an IPv6 address that the platform may refuse. A refusal leaves the
 /// platform's own `IPV6_V6ONLY` default in place and the socket bound.
 fn client_socket_config(address: SocketAddress) -> UdpSocketConfig {
-    let mut config = UdpSocketConfig::default();
+    let mut config = default_socket_config();
     if address.ip_addr.is_ipv6() {
         let mut options = config.socket_options().clone();
         options.only_v6_best_effort = Some(false);
