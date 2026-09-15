@@ -202,10 +202,14 @@ impl Peer {
 
     pub async fn event(&mut self, name: &str) -> Value {
         loop {
-            let line = within(self.lines.next_line())
-                .await
-                .unwrap()
-                .expect("peer JSON event");
+            // A peer that fails before the awaited event reports it as its last line; show
+            // that report instead of a bare end of output.
+            let Some(line) = within(self.lines.next_line()).await.unwrap() else {
+                panic!(
+                    "peer output ended before the {name:?} event; events seen: {:?}",
+                    self.events
+                );
+            };
             let event: Value = serde_json::from_str(&line).unwrap();
             self.events.push(event.clone());
             if event["event"] == name {
