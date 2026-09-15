@@ -831,3 +831,118 @@ fn retry_across_keys(
     pair.drive();
     (pair, client_ch)
 }
+
+/// A copy of an Initial that already produced an attempt, arriving after that attempt was
+/// answered with a Retry or refused, is routed like any other first packet rather than to
+/// endpoint state that is gone. Both orders are covered: the original before the token, and
+/// the token-bearing Initial itself while its attempt is refused.
+#[test]
+fn a_duplicate_initial_after_retry_or_refusal_is_a_fresh_attempt() {
+    let _guard = subscribe();
+    let mut pair = Pair::default();
+    pair.server.handle_incoming = Box::new(validate_incoming);
+    let client_ch = pair.begin_connect(client_config());
+    pair.drive_client();
+    let first_initial = pair
+        .server
+        .inbound
+        .front()
+        .expect("the client's first Initial is on the wire")
+        .clone();
+
+    // The first Initial has no token: the server answers with a Retry.
+    pair.drive_server();
+    assert_eq!(pair.server.retries_sent, 1);
+
+    // The same Initial again, as a duplicate or a replay would arrive.
+    let now = pair.time;
+    pair.server.inbound.push_back(Inbound {
+        at: now,
+        ..first_initial
+    });
+    pair.drive_server();
+    assert_eq!(
+        pair.server.retries_sent, 2,
+        "the duplicate is a new attempt without a token, answered with another Retry"
+    );
+    assert_eq!(pair.server.known_connections(), 0);
+
+    // The client acts on the first Retry only (RFC 9000 §17.2.5.2) and completes the handshake.
+    pair.drive();
+    let server_ch = pair.server.assert_accept();
+    assert!(!pair.client_conn_mut(client_ch).is_handshaking());
+    assert_eq!(pair.server.retries_sent, 2);
+    assert!(!pair.server_conn_mut(server_ch).is_closed());
+    let now = pair.time;
+    pair.client_conn_mut(client_ch)
+        .close(now, VarInt(0), Bytes::new());
+    pair.drive();
+
+    // Now the token-bearing Initial: its attempt is held, its duplicate arrives, and the attempt
+    // is refused. The duplicate presents the same token and becomes an attempt of its own.
+    let mut pair = Pair::default();
+    pair.server.handle_incoming = Box::new(|incoming| {
+        if incoming.remote_address_validated() {
+            IncomingConnectionBehavior::Wait
+        } else {
+            IncomingConnectionBehavior::Retry
+        }
+    });
+    let client_ch = pair.begin_connect(client_config());
+    pair.drive_client();
+    pair.drive_server();
+    assert_eq!(pair.server.retries_sent, 1);
+    // The client takes in the Retry; pacing holds the Initial it calls for until its slot.
+    pair.drive_client();
+    for _ in 0..8 {
+        if !pair.server.inbound.is_empty() {
+            break;
+        }
+        let at = pair
+            .client
+            .next_wakeup()
+            .expect("the client has a send pending");
+        pair.time = pair.time.max(at);
+        pair.drive_client();
+    }
+    let with_token = pair
+        .server
+        .inbound
+        .front()
+        .expect("the client's Initial with the Retry token is on the wire")
+        .clone();
+    pair.drive_server();
+    assert_eq!(pair.server.waiting_incoming.len(), 1, "the attempt is held");
+
+    let now = pair.time;
+    pair.server.inbound.push_back(Inbound {
+        at: now,
+        ..with_token
+    });
+    let held = pair.server.waiting_incoming.remove(0);
+    pair.server.reject(held);
+    pair.drive_server();
+    assert_eq!(
+        pair.server.waiting_incoming.len(),
+        1,
+        "the duplicate is an attempt of its own once the first is gone"
+    );
+    let duplicate = pair.server.waiting_incoming.remove(0);
+    assert!(duplicate.remote_address_validated());
+    pair.server.reject(duplicate);
+    pair.drive();
+
+    assert_eq!(pair.server.known_connections(), 0);
+    assert_eq!(pair.server.known_cids(), 0);
+    let mut told = None;
+    while let Some(event) = pair.client_conn_mut(client_ch).poll() {
+        if let Event::ConnectionLost { reason } = event {
+            told = Some(reason);
+        }
+    }
+    match told {
+        Some(ConnectionError::ConnectionClosed(close))
+            if close.error_code == TransportErrorCode::CONNECTION_REFUSED => {}
+        other => panic!("the client learns it was refused, not {other:?}"),
+    }
+}

@@ -159,3 +159,44 @@ fn an_unsendable_datagram_does_not_evict_queued_data() {
         assert!(pair.server_datagrams(server_ch).recv().is_none());
     }
 }
+
+/// The receive queue is bounded by what holding a datagram costs, entry included, so a peer that
+/// sends empty DATAGRAM frames cannot grow it past the window: the oldest are dropped instead
+/// and the connection carries on.
+#[test]
+fn empty_datagrams_cannot_grow_the_receive_queue_past_the_window() {
+    let _guard = subscribe();
+    const WINDOW: usize = 512;
+    const COUNT: usize = 1_000;
+    let server = ServerConfig {
+        transport: Arc::new(TransportConfig {
+            datagram_receive_buffer_size: Some(WINDOW),
+            ..TransportConfig::default()
+        }),
+        ..server_config()
+    };
+    let mut pair = Pair::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        server,
+    );
+    let (client_ch, server_ch) = pair.connect();
+
+    for _ in 0..COUNT {
+        pair.client_datagrams(client_ch)
+            .send(Bytes::new(), true)
+            .expect("an empty datagram is sendable");
+    }
+    pair.drive();
+
+    let mut drained = 0;
+    while pair.server_datagrams(server_ch).recv().is_some() {
+        drained += 1;
+    }
+    let fits = WINDOW / size_of::<frame::Datagram>();
+    assert!(
+        drained <= fits,
+        "{drained} empty datagrams were queued where at most {fits} fit the window"
+    );
+    assert!(drained > 0, "the window still holds some of them");
+    assert!(!pair.server_conn_mut(server_ch).is_closed());
+}

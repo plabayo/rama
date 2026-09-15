@@ -1073,6 +1073,32 @@ mod test {
         assert_eq!(error.frame, Some(FrameType::NEW_CONNECTION_ID));
     }
 
+    /// RFC 9000 §12.4: a frame type this endpoint does not know is a FRAME_ENCODING_ERROR. The
+    /// decoder reports it and stops; nothing after it is decoded and nothing panics.
+    #[test]
+    fn an_unknown_frame_type_is_a_frame_encoding_error_and_ends_decoding() {
+        for ty in [0x20u64, 0x21, 0x2f, 0x32, 0x4000, 0x3fff_ffff_ffff_ffff] {
+            let mut buf = Vec::new();
+            buf.write(FrameType::PING);
+            buf.write_var(ty);
+            buf.write(FrameType::PING);
+            let mut iter = Iter::new(Bytes::from(buf)).unwrap();
+            assert!(matches!(iter.next(), Some(Ok(Frame::Ping))));
+            let invalid = iter
+                .next()
+                .expect("the unknown frame is reported")
+                .expect_err("as invalid");
+            assert_eq!(invalid.ty, Some(FrameType(ty)));
+            assert_eq!(invalid.reason, "invalid frame ID");
+            let error = crate::proto::TransportError::from(invalid);
+            assert_eq!(
+                error.code,
+                crate::proto::TransportErrorCode::FRAME_ENCODING_ERROR
+            );
+            assert!(iter.next().is_none(), "nothing after it is decoded");
+        }
+    }
+
     #[test]
     fn application_close_respects_budget_for_every_error_code_width() {
         for code in [

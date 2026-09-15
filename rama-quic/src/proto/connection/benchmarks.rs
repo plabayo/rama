@@ -155,7 +155,7 @@ impl SendRecovery {
         assert_eq!(self.consumed, emitted * PAYLOAD.len());
         assert!(self.input.is_empty());
         assert!(self.inner.is_fully_acked());
-        assert_eq!(self.inner.unacked(), 0);
+        assert_eq!(self.inner.buffered(), 0);
         assert!(!self.inner.has_unsent_data());
     }
 }

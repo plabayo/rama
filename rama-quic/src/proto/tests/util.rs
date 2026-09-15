@@ -413,7 +413,7 @@ pub(super) struct TestEndpoint {
 }
 
 /// A datagram waiting for an endpoint's receive path.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(super) struct Inbound {
     pub(super) at: Instant,
     pub(super) ecn: Option<EcnCodepoint>,
