@@ -781,6 +781,27 @@ mod tests {
     }
 
     #[test]
+    fn final_mtu_step_at_the_minimum_change_requires_acknowledgement() {
+        for step in [1, 20, 31] {
+            let upper = 1200 + 2 * step;
+            for accepted in [false, true] {
+                let mut config = MtuDiscoveryConfig::default();
+                config.set_upper_bound(upper).set_minimum_change(step);
+                let mut mtud = MtuDiscovery::new(1200, 1200, None, config);
+                let link_limit = if accepted { upper } else { upper - 1 };
+                let probes = drive_to_completion(&mut mtud, Instant::now(), link_limit);
+                assert!(completed(&mtud));
+                assert_eq!(probes[0], 1200 + step);
+                assert!(
+                    probes.contains(&upper),
+                    "the final step must be attempted: {probes:?}"
+                );
+                assert_eq!(mtud.current_mtu, if accepted { upper } else { 1200 + step });
+            }
+        }
+    }
+
+    #[test]
     fn mtu_discovery_with_1500_limit() {
         let mut mtud = default_mtud();
 

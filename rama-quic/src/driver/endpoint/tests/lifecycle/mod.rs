@@ -2848,6 +2848,60 @@ async fn mtu_discovery_probes_search_above_the_confirmed_mtu_within_the_configur
     tokio::join!(client.shutdown(), server.shutdown());
 }
 
+#[tokio::test]
+async fn mtu_discovery_respects_a_smaller_peer_receive_limit_on_the_wire() {
+    const PEER_LIMIT: u16 = 1300;
+    let (mut client_config, server_config) = configs();
+    let mut transport = TransportConfig::default();
+    let mut discovery = crate::proto::MtuDiscoveryConfig::default();
+    discovery.set_upper_bound(9000);
+    transport.maybe_set_mtu_discovery_config(Some(discovery));
+    client_config.set_transport_config(Arc::new(transport));
+    let mut server_endpoint_config = EndpointConfig::try_with_rand_key().unwrap();
+    server_endpoint_config
+        .max_udp_payload_size(PEER_LIMIT)
+        .unwrap();
+    let server = endpoint_with(
+        server_endpoint_config,
+        Some(server_config),
+        loopback_socket(),
+    );
+    let (socket, log) = recording_socket();
+    let client = endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), None, socket);
+    let connecting = client
+        .connect_with(client_config, server.local_addr().unwrap(), "localhost")
+        .unwrap();
+    let incoming = tokio::time::timeout(Duration::from_secs(2), server.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    let (c, s) = handshake(connecting, incoming).await;
+    assert!(
+        drive_until(&c, &s, Duration::from_secs(5), || {
+            c.stats().path.current_mtu == PEER_LIMIT
+        })
+        .await,
+        "discovery reaches the peer's receive limit"
+    );
+    exchange(&c, &s, &vec![0x62; 8192]).await;
+    {
+        let log = log.lock();
+        assert!(
+            log.sent
+                .iter()
+                .any(|datagram| datagram.bytes.len() == usize::from(PEER_LIMIT))
+        );
+        assert!(
+            log.sent
+                .iter()
+                .all(|datagram| datagram.bytes.len() <= usize::from(PEER_LIMIT)),
+            "all actual UDP datagrams, including probes, respect the advertised limit"
+        );
+    }
+    drop((c, s));
+    tokio::join!(client.shutdown(), server.shutdown());
+}
+
 /// The engine's write buffer is reused after the confirmed MTU collapses. The path learns a
 /// larger MTU, then loses it to a black hole, and the buffer keeps the storage the larger
 /// datagrams needed instead of shrinking to what is now being sent.
