@@ -4891,7 +4891,13 @@ fn offers(log: &Mutex<SegmentLog>) -> String {
 /// This fails if `drive_transmit` reports `cid_sent` only when the sender returns `Ready(Ok)`.
 #[tokio::test]
 async fn an_accepted_prefix_is_reported_before_its_descriptor_completes() {
-    let (client_config, server_config) = configs();
+    let (mut client_config, server_config) = configs();
+    // This window disables pacing so RTT cannot prevent the segmented descriptor we inspect.
+    client_config.set_transport_config(Arc::new(
+        TransportConfig::default()
+            .try_with_initial_congestion_window(u64::from(u32::MAX) + 1)
+            .unwrap(),
+    ));
     let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
     let (socket, log, segments) = segmenting_socket(1);
     let client = endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), None, socket);
