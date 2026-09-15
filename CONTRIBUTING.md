@@ -137,3 +137,21 @@ will also succeed. The difference still though is that GitHub Action will also r
 
 - Tier 1 platforms: MacOS, Linux and Windows
 - Tier 2 platforms: Android and iOS
+
+### Extra tools for the checks outside `just qa`
+
+Some recipes need more than the above. Install these when you run them:
+
+- `uv` (<https://docs.astral.sh/uv/getting-started/installation/>) — every
+  Python environment in the repository is locked with it, so `just scripts/ci/qa`,
+  the QUIC aioquic interop peer and the `rama-fp` profile generator all use it
+  instead of the machine's own Python.
+- `cargo-hack` — for the feature-coverage check in `just scripts/ci/qa`.
+- `libgnutls28-dev`, `gnutls-bin` and `pkg-config` — only for the QUIC
+  external-provider interop project (`rama-quic/e2e/gnutls-interop`), which
+  proves a TLS implementation outside rama can drive the QUIC transport. On
+  Debian/Ubuntu:
+
+  ```sh
+  sudo apt-get install --yes libgnutls28-dev gnutls-bin pkg-config
+  ```
