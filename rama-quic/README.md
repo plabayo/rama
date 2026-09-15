@@ -67,3 +67,16 @@ Learn more about `rama`:
 
 - Github: <https://github.com/plabayo/rama>
 - Book: <https://ramaproxy.org/book/>
+
+## Benchmarks
+
+Every pairing of QUIC implementations, measured through the public interop-runner endpoint
+images on one host: rows are clients, columns are servers, Rama appears once per TLS
+backend. Each chart names the host's OS, CPU count, the UTC time and the Rama commit it was
+produced from. `just rama-quic/bench-matrix` regenerates them; see
+[e2e/bench](e2e/bench/) for the cases and how the numbers are taken.
+
+![handshake](e2e/bench/graph/handshake.svg)
+![bulk](e2e/bench/graph/bulk.svg)
+![parallel](e2e/bench/graph/parallel.svg)
+![small](e2e/bench/graph/small.svg)
