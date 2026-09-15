@@ -1458,6 +1458,11 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
             }
             deliver(deliveries)
         }
+        /// Wait for already-enqueued capacity wakes and their grant deliveries.
+        /// This is a queue barrier, not a drain of future timers or scan turns.
+        func testDrainCoordinatorQueue() {
+            coordinatorQueue.sync {}
+        }
         func testBlockCoordinatorQueue(
             started: DispatchSemaphore, until allowed: DispatchSemaphore
         ) {
