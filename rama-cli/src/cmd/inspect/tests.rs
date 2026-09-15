@@ -438,6 +438,12 @@ fn the_viewer_quits_and_offers_a_copy_for_a_request() {
         screen.contains("copy the selected entry"),
         "screen:\n{screen}"
     );
+    // OSC 52 is fire-and-forget: the viewer must state the caveat rather than
+    // imply every terminal copied.
+    assert!(
+        screen.contains("needs a terminal that allows it"),
+        "screen:\n{screen}"
+    );
 }
 
 #[test]

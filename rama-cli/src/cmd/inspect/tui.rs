@@ -22,6 +22,8 @@ use ratatui::{
     },
 };
 
+use tokio::sync::mpsc;
+
 use super::util;
 
 /// Open the viewer and run it until the user quits.
@@ -53,6 +55,7 @@ struct App {
 
 impl App {
     async fn event_loop(&mut self) -> Result<(), BoxError> {
+        let mut events = spawn_input_reader()?;
         let mut needs_redraw = true;
         loop {
             if needs_redraw {
@@ -63,8 +66,17 @@ impl App {
                 needs_redraw = false;
             }
 
-            if event::poll(Duration::ZERO).context("poll terminal events")? {
-                match event::read().context("read terminal event")? {
+            // Park until the reader thread has something. An idle viewer then
+            // costs no wakeups at all, where polling on a tick costs them for
+            // as long as the capture stays open.
+            let Some(event) = events.recv().await else {
+                return Ok(());
+            };
+            // Drain whatever queued up behind it before drawing again, so a
+            // held key or a resize storm redraws once instead of once per event.
+            let mut next = Some(event);
+            while let Some(event) = next.take() {
+                match event.context("read terminal event")? {
                     Event::Key(key) if key.kind == KeyEventKind::Press => {
                         match self.state.on_key(key) {
                             Action::Quit => return Ok(()),
@@ -79,13 +91,20 @@ impl App {
                     Event::Resize(_, _) => needs_redraw = true,
                     _ => {}
                 }
+                next = events.try_recv().ok();
             }
-            tokio::time::sleep(Duration::from_millis(16)).await;
         }
     }
 
     /// Copy through OSC 52, the one clipboard channel a terminal offers without
     /// a platform integration; it also crosses ssh and multiplexers.
+    ///
+    /// The sequence is fire-and-forget: no terminal acknowledges it, and a
+    /// terminal that does not implement it (the legacy Windows console) or
+    /// that refuses it by default (tmux without `set-clipboard on`, xterm
+    /// without `allowWindowOps`) is indistinguishable from one that copied.
+    /// So the status says what was actually done rather than claiming a
+    /// clipboard the viewer cannot observe.
     fn copy_selected(&mut self) -> Result<(), BoxError> {
         let Some(item) = self
             .state
@@ -102,12 +121,54 @@ impl App {
                 write!(out, "\x1b]52;c;{}\x07", BASE64.encode(text.as_bytes()))
                     .context("write clipboard escape")?;
                 out.flush().context("flush clipboard escape")?;
-                self.state.status = Some(format!("copied {} to the clipboard", item.label));
+                self.state.status = Some(format!("sent {} to the clipboard (OSC 52)", item.label));
             }
             Err(error) => self.state.status = Some(format!("cannot copy {}: {error}", item.label)),
         }
         Ok(())
     }
+}
+
+/// How long the reader thread parks on the console before re-checking whether
+/// the viewer has quit.
+const INPUT_POLL_TIMEOUT: Duration = Duration::from_millis(100);
+
+/// Read terminal events on a dedicated thread and hand them to the event loop.
+///
+/// `crossterm`'s reader is blocking, which leaves two options: block a runtime
+/// worker on console input, or tick. Ticking is what the viewer used to do, and
+/// it costs a wakeup 60 times a second for as long as a capture stays open --
+/// on a laptop that is the difference between an idle process and one that
+/// keeps the CPU out of its low-power states. A thread parks on the console
+/// handle instead, so an idle viewer is genuinely idle.
+fn spawn_input_reader() -> Result<mpsc::UnboundedReceiver<std::io::Result<Event>>, BoxError> {
+    let (tx, rx) = mpsc::unbounded_channel();
+    // Detached on purpose: the thread holds nothing the viewer needs back, and
+    // it observes the dropped receiver within one poll timeout.
+    std::thread::Builder::new()
+        .name("rama-inspect-input".to_owned())
+        .spawn(move || {
+            while !tx.is_closed() {
+                // A timeout rather than a blocking `read`, so quitting is not
+                // waiting on a keypress that may never come.
+                match event::poll(INPUT_POLL_TIMEOUT) {
+                    Ok(false) => {}
+                    Ok(true) => {
+                        let event = event::read();
+                        let failed = event.is_err();
+                        if tx.send(event).is_err() || failed {
+                            return;
+                        }
+                    }
+                    Err(err) => {
+                        _ = tx.send(Err(err));
+                        return;
+                    }
+                }
+            }
+        })
+        .context("spawn terminal input reader")?;
+    Ok(rx)
 }
 
 /// What the event loop must do after a key press.
@@ -549,6 +610,7 @@ fn render_help(frame: &mut Frame) {
         "h / l / ← / →     pan the time window",
         "0                 show the whole capture",
         "c                 copy the selected entry (OSC 52)",
+        "                  needs a terminal that allows it",
         "q / esc           quit",
     ];
     let area = frame.area();
