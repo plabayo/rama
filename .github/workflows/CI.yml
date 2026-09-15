@@ -1287,7 +1287,7 @@ jobs:
     needs: deploy-rama-cli-docker
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: superfly/flyctl-actions/setup-flyctl@fc53c09e1bc3be6f54706524e3b82c4f462f77be # 1.5
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # Node 24
       - run: |
           cd rama-fp/infra/deployments/fp
           flyctl scale count app_secure=1 app_insecure=1 --yes
@@ -1300,7 +1300,7 @@ jobs:
     needs: deploy-rama-cli-docker
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: superfly/flyctl-actions/setup-flyctl@fc53c09e1bc3be6f54706524e3b82c4f462f77be # 1.5
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # Node 24
       - run: |
           cd rama-fp/infra/deployments/fp-h1
           flyctl scale count app_secure=1 app_insecure=1 --yes
@@ -1313,7 +1313,7 @@ jobs:
     needs: deploy-rama-cli-docker
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: superfly/flyctl-actions/setup-flyctl@fc53c09e1bc3be6f54706524e3b82c4f462f77be # 1.5
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # Node 24
       - run: |
           cd rama-fp/infra/deployments/ipv4
           flyctl scale count app_secure=1 app_insecure=1 --yes
@@ -1326,7 +1326,7 @@ jobs:
     needs: deploy-rama-cli-docker
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: superfly/flyctl-actions/setup-flyctl@fc53c09e1bc3be6f54706524e3b82c4f462f77be # 1.5
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # Node 24
       - run: |
           cd rama-fp/infra/deployments/ipv6
           flyctl scale count app_secure=1 app_insecure=1 --yes
@@ -1339,7 +1339,7 @@ jobs:
     needs: deploy-rama-cli-docker
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: superfly/flyctl-actions/setup-flyctl@fc53c09e1bc3be6f54706524e3b82c4f462f77be # 1.5
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # Node 24
       - run: |
           cd rama-fp/infra/deployments/echo
           flyctl scale count app_secure=1 app_insecure=1 --yes
@@ -1352,7 +1352,7 @@ jobs:
     needs: deploy-rama-cli-docker
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: superfly/flyctl-actions/setup-flyctl@fc53c09e1bc3be6f54706524e3b82c4f462f77be # 1.5
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # Node 24
       - run: |
           cd rama-fp/infra/deployments/http-test
           flyctl scale count app_secure=1 app_insecure=1 --yes
