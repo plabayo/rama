@@ -75,8 +75,8 @@ impl Identity {
                 String::from_utf8_lossy(&output.stderr)
             );
         };
-        // RSA: certtool 3.8.3 (Ubuntu 24.04) writes EC private scalars without their leading
-        // zero bytes, which pyca/cryptography refuses to load on the aioquic side.
+        // RSA: about half the EC keys certtool 3.8.3 (Ubuntu 24.04) writes are refused by
+        // pyca/cryptography 50 on the aioquic side ("private key value is too short").
         for output in [&ca_key, &key] {
             run(&[
                 "--generate-privkey",
