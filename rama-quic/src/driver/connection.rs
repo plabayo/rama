@@ -2972,8 +2972,8 @@ pub enum SendDatagramError {
     Disabled,
     /// The datagram is larger than the connection can currently accommodate
     ///
-    /// Indicates that the path MTU minus overhead or the limit advertised by the peer has been
-    /// exceeded.
+    /// Exceeds the path MTU minus overhead, the peer's advertised limit, or the configured send
+    /// buffer budget including queue-entry overhead.
     TooLarge,
     /// The connection was lost
     ConnectionLost(ConnectionError),

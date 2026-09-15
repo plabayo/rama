@@ -3309,7 +3309,8 @@ fn datagram_send_buffer_overflow() {
             panic!("assertion failed: `{other:?}` does not match `Some(Event::DatagramReceived)`")
         }
     }
-    for i in 7..10u8 {
+    // The budget holds two entries including their metadata.
+    for i in 8..10u8 {
         assert_eq!(
             pair.server_datagrams(server_ch).recv().unwrap(),
             vec![i; LEN]

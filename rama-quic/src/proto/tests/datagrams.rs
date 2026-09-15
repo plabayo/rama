@@ -94,3 +94,68 @@ fn tiny_peer_datagram_limits_never_emit_an_oversized_frame() {
         assert!(!pair.server_conn_mut(server_ch).is_closed());
     }
 }
+
+#[test]
+fn dropping_old_datagrams_makes_room_for_the_new_entry_in_both_roles() {
+    const PAYLOAD: usize = 64;
+    let budget = 2 * (PAYLOAD + size_of::<crate::proto::frame::Datagram>());
+    let transport = Arc::new(TransportConfig {
+        datagram_send_buffer_size: budget,
+        ..TransportConfig::default()
+    });
+    let mut server = server_config();
+    server.transport = transport.clone();
+    let mut client = client_config();
+    client.transport = transport;
+    let mut pair = Pair::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        server,
+    );
+    let (client_ch, server_ch) = pair.connect_with(client);
+    for marker in 1..=3 {
+        pair.client_datagrams(client_ch)
+            .send(vec![marker; PAYLOAD].into(), true)
+            .unwrap();
+        pair.server_datagrams(server_ch)
+            .send(vec![marker; PAYLOAD].into(), true)
+            .unwrap();
+    }
+    pair.drive();
+    for marker in 2..=3 {
+        assert_eq!(
+            pair.client_datagrams(client_ch).recv().unwrap().as_ref(),
+            vec![marker; PAYLOAD]
+        );
+        assert_eq!(
+            pair.server_datagrams(server_ch).recv().unwrap().as_ref(),
+            vec![marker; PAYLOAD]
+        );
+    }
+    assert!(pair.client_datagrams(client_ch).recv().is_none());
+    assert!(pair.server_datagrams(server_ch).recv().is_none());
+}
+
+#[test]
+fn an_unsendable_datagram_does_not_evict_queued_data() {
+    for drop_oldest in [false, true] {
+        let mut pair = Pair::default();
+        let mut client = client_config();
+        client.transport = Arc::new(TransportConfig {
+            datagram_send_buffer_size: 64 + size_of::<crate::proto::frame::Datagram>(),
+            ..TransportConfig::default()
+        });
+        let (client_ch, server_ch) = pair.connect_with(client);
+        let queued = Bytes::from_static(b"keep this datagram");
+        pair.client_datagrams(client_ch)
+            .send(queued.clone(), drop_oldest)
+            .unwrap();
+        assert_eq!(
+            pair.client_datagrams(client_ch)
+                .send(vec![0; 65].into(), drop_oldest),
+            Err(SendDatagramError::TooLarge),
+        );
+        pair.drive();
+        assert_eq!(pair.server_datagrams(server_ch).recv(), Some(queued));
+        assert!(pair.server_datagrams(server_ch).recv().is_none());
+    }
+}
