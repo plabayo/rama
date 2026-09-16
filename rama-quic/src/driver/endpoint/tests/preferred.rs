@@ -952,12 +952,14 @@ async fn a_part_sent_descriptor_stays_with_its_handle_when_the_path_moves() {
     }
     // The move retires that identifier, and a retired one is gone from the queue: it may never
     // be sent again and the queue no longer answers for what was sent with it. So the report
-    // above is the observation that counts, and asking again here would prove nothing.
-    assert_eq!(
-        s.send_permit(carried, peer),
-        crate::proto::SendPermit::Obsolete,
-        "the identifier the prefix carried is retired by the move"
-    );
+    // above is the observation that counts, and asking again here would prove nothing. The
+    // retirement lands with the peer's frames that follow the move, so it is waited for.
+    wait_for(
+        "the identifier the prefix carried is retired by the move",
+        Duration::from_secs(20),
+        || s.send_permit(carried, peer) == crate::proto::SendPermit::Obsolete,
+    )
+    .await;
     assert!(
         !s.cid_confirmed_to(carried, peer),
         "and the queue no longer answers for it"
