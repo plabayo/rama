@@ -53,6 +53,7 @@
 //! - <https://github.com/jpopesculian/eventsource-stream/tree/3d46f1c758f9ee4681e9da0427556d24c53f9c01>:
 //!   - Licensed under MIT OR Apache-2.0, owned by Julian Popescu <jpopesculian@gmail.com>
 
+mod decoder;
 mod event;
 mod event_data;
 mod event_stream;
@@ -60,6 +61,7 @@ mod parser;
 
 #[doc(inline)]
 pub use {
+    decoder::{EventDecoder, Events, OnIncompleteLine},
     event::{Event, EventBuildError},
     event_data::{
         EventDataJsonReader, EventDataLineReader, EventDataMultiLineReader, EventDataRead,
@@ -67,6 +69,59 @@ pub use {
     },
     event_stream::EventStream,
 };
+
+/// Build an [`Event`] for tests, shared by the decoder and stream suites.
+#[cfg(test)]
+macro_rules! test_event {
+    (
+        $data:expr,
+        $(event = $name:literal,)*
+        $(id = $id:literal,)*
+        $(comment = $comment:literal,)*
+    ) => {
+        {
+            #[allow(unused_mut)]
+            let mut event = $crate::sse::Event {
+                data: Some($data),
+                ..Default::default()
+            };
+            $(
+                event.try_set_event($name).unwrap();
+            )*
+            $(
+                event.try_set_id($id).unwrap();
+            )*
+            $(
+                event.try_set_comment($comment).unwrap();
+            )*
+            event
+        }
+    };
+    (
+        @,
+        $(event = $name:literal,)*
+        $(id = $id:literal,)*
+        $(comment = $comment:literal,)*
+    ) => {
+        {
+            #[allow(unused_mut)]
+            let mut event = <$crate::sse::Event<String>>::default();
+            $(
+                event.try_set_event($name).unwrap();
+            )*
+            $(
+                event.try_set_id($id).unwrap();
+            )*
+            $(
+                event.try_set_comment($comment).unwrap();
+            )*
+            event
+        }
+    };
+}
+
+#[cfg(test)]
+pub(crate) use test_event;
 
 pub mod server;
 
