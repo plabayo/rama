@@ -9,6 +9,7 @@ use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext as _, ErrorExt a
 use rama_core::futures::stream::Stream;
 use rama_core::futures::task::{Context, Poll};
 use rama_core::telemetry::tracing;
+use rama_utils::macros::generate_set_and_with;
 use rama_utils::str::smol_str::SmolStr;
 use std::collections::VecDeque;
 use std::fmt;
@@ -194,6 +195,8 @@ struct DecodeState<T: EventDataRead> {
     /// events decoded but not yet yielded (a single chunk can complete several)
     ready: VecDeque<Event<T>>,
     last_event_id: Option<SmolStr>,
+    /// longest line accepted; `None` leaves memory to a body-wide limit
+    max_line_len: Option<usize>,
 }
 
 impl<T> fmt::Debug for DecodeState<T>
@@ -210,6 +213,7 @@ where
             .field("builder", &self.builder)
             .field("ready", &self.ready)
             .field("last_event_id", &self.last_event_id)
+            .field("max_line_len", &self.max_line_len)
             .finish()
     }
 }
@@ -224,6 +228,7 @@ impl<T: EventDataRead> Default for DecodeState<T> {
             builder: EventBuilder::default(),
             ready: VecDeque::new(),
             last_event_id: None,
+            max_line_len: None,
         }
     }
 }
@@ -295,6 +300,7 @@ impl<T: EventDataRead> DecodeState<T> {
 
     /// Extend `carry` while validating only bytes not already known valid.
     fn extend_carry(&mut self, bytes: &[u8]) -> Result<(), BoxError> {
+        self.check_line_len(self.carry.len() + bytes.len())?;
         let validate_from = self.carry_valid_up_to;
         self.carry.extend_from_slice(bytes);
         match std::str::from_utf8(&self.carry[validate_from..]) {
@@ -452,6 +458,7 @@ impl<T: EventDataRead> DecodeState<T> {
             return Err(err);
         }
 
+        self.check_line_len(bytes.len() - start + utf8_tail.len())?;
         self.carry.extend_from_slice(&bytes[start..]);
         self.carry.extend_from_slice(utf8_tail);
         self.carry_valid_up_to = bytes.len() - start;
@@ -460,10 +467,129 @@ impl<T: EventDataRead> DecodeState<T> {
 
     #[inline]
     fn handle_line(&mut self, line: &str) -> Result<(), BoxError> {
+        self.check_line_len(line.len())?;
         self.builder.add(parse_line(line))?;
         if self.builder.is_complete {
             let event = self.builder.try_dispatch()?;
             self.ready.push_back(event);
+        }
+        Ok(())
+    }
+
+    #[inline]
+    fn check_line_len(&self, len: usize) -> Result<(), BoxError> {
+        match self.max_line_len {
+            Some(max) if len > max => Err(BoxError::from_static_str(
+                "sse line exceeds the configured max line length",
+            )),
+            _ => Ok(()),
+        }
+    }
+
+    /// Hand every queued event to `on_event`, moving the last-event-ID checkpoint
+    /// as each one is yielded, same as [`EventStream`] does.
+    fn drain_ready(&mut self, on_event: &mut impl FnMut(Event<T>)) {
+        while let Some(event) = self.ready.pop_front() {
+            if let Some(id) = event.id() {
+                self.last_event_id = Some(SmolStr::new(id));
+            }
+            on_event(event);
+        }
+    }
+}
+
+/// Push-driven SSE decoder: the synchronous core of [`EventStream`].
+///
+/// For code that sees body chunks go past rather than owning the body as a
+/// stream, e.g. a proxy inspecting a response while forwarding it unchanged.
+/// Chunks may split lines, UTF-8 sequences and CRLF pairs anywhere.
+///
+/// Like [`EventStream`] it adds no limit by default; set
+/// [`max_line_len`](Self::with_max_line_len) to bound memory on untrusted input.
+pub struct EventDecoder<T: EventDataRead = String> {
+    state: DecodeState<T>,
+    failed: bool,
+}
+
+impl<T> fmt::Debug for EventDecoder<T>
+where
+    T: EventDataRead + fmt::Debug,
+    T::Reader: fmt::Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EventDecoder")
+            .field("state", &self.state)
+            .field("failed", &self.failed)
+            .finish()
+    }
+}
+
+impl<T: EventDataRead> Default for EventDecoder<T> {
+    fn default() -> Self {
+        Self {
+            state: DecodeState::default(),
+            failed: false,
+        }
+    }
+}
+
+impl<T: EventDataRead> EventDecoder<T> {
+    /// Create a decoder with no line length limit.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    generate_set_and_with! {
+        /// Fail decoding once a single line grows past `max` bytes.
+        pub fn max_line_len(mut self, max: Option<usize>) -> Self {
+            self.state.max_line_len = max;
+            self
+        }
+    }
+
+    /// Decode one body chunk, handing each event it completes to `on_event`.
+    ///
+    /// An error is fatal: the byte stream can no longer be interpreted
+    /// reliably, and every later call returns an error too.
+    pub fn decode(
+        &mut self,
+        mut chunk: &[u8],
+        mut on_event: impl FnMut(Event<T>),
+    ) -> Result<(), BoxError> {
+        self.ensure_usable()?;
+        while !chunk.is_empty() {
+            let consumed = self.state.feed(chunk).inspect_err(|_| self.failed = true)?;
+            self.state.drain_ready(&mut on_event);
+            if consumed == 0 {
+                self.failed = true;
+                return Err(BoxError::from_static_str(
+                    "SSE decoder made no progress on a non-empty chunk",
+                ));
+            }
+            chunk = &chunk[consumed..];
+        }
+        Ok(())
+    }
+
+    /// The body ended: an unterminated trailing line is discarded, per the
+    /// WHATWG event stream model, after checking it is valid UTF-8.
+    pub fn finish(&mut self) -> Result<(), BoxError> {
+        self.ensure_usable()?;
+        self.state.finish().inspect_err(|_| self.failed = true)
+    }
+
+    /// The id of the last event handed out that carried one.
+    #[must_use]
+    pub fn last_event_id(&self) -> Option<&str> {
+        self.state.last_event_id.as_deref()
+    }
+
+    fn ensure_usable(&self) -> Result<(), BoxError> {
+        if self.failed {
+            return Err(BoxError::from_static_str(
+                "SSE decoder already failed on earlier input",
+            ));
         }
         Ok(())
     }
@@ -1345,5 +1471,104 @@ data: test
         assert_eq!(events.len(), 2);
         assert!(events[0].data().is_none());
         assert_eq!(events[1].data().map(|d| d.0.clone()), Some(json!({"v": 2})),);
+    }
+
+    fn decode_in_chunks<T: EventDataRead>(
+        decoder: &mut EventDecoder<T>,
+        input: &[u8],
+        chunk_size: usize,
+    ) -> Result<Vec<Event<T>>, BoxError> {
+        let mut events = Vec::new();
+        for chunk in input.chunks(chunk_size) {
+            decoder.decode(chunk, |event| events.push(event))?;
+        }
+        decoder.finish()?;
+        Ok(events)
+    }
+
+    #[test]
+    fn decoder_yields_the_same_events_wherever_chunks_split() {
+        let input = "\u{feff}event: a\r\ndata: one\r\n\r\ndata: t\u{00e9}o\ndata: lines\n\nid: 3\rdata: three\r\r";
+        let whole = decode_in_chunks(
+            &mut EventDecoder::<String>::new(),
+            input.as_bytes(),
+            usize::MAX,
+        )
+        .unwrap();
+        assert_eq!(
+            whole,
+            vec![
+                event!("one".to_owned(), event = "a",),
+                event!("t\u{00e9}o\nlines".to_owned(),),
+                event!("three".to_owned(), id = "3",),
+            ],
+        );
+        for chunk_size in [1, 2, 3, 5, 8] {
+            let events = decode_in_chunks(
+                &mut EventDecoder::<String>::new(),
+                input.as_bytes(),
+                chunk_size,
+            )
+            .unwrap();
+            assert_eq!(events, whole, "chunk size {chunk_size}");
+        }
+    }
+
+    #[test]
+    fn decoder_delivers_every_event_of_a_chunk_past_the_ready_cap() {
+        let input = "data: x\n\n".repeat(READY_EVENTS_SOFT_CAP * 3 + 1);
+        let events = decode_in_chunks(
+            &mut EventDecoder::<String>::new(),
+            input.as_bytes(),
+            usize::MAX,
+        )
+        .unwrap();
+        assert_eq!(events.len(), READY_EVENTS_SOFT_CAP * 3 + 1);
+    }
+
+    #[test]
+    fn decoder_decodes_json_data() {
+        let mut decoder = EventDecoder::<JsonEventData<serde_json::Value>>::new();
+        let events = decode_in_chunks(&mut decoder, b"data: {\"v\":1}\n\n", 4).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].data().map(|d| d.0.clone()), Some(json!({"v": 1})));
+    }
+
+    #[test]
+    fn decoder_discards_an_unterminated_trailing_line_on_finish() {
+        let mut decoder = EventDecoder::<String>::new();
+        let events = decode_in_chunks(&mut decoder, b"data: a\n\ndata: cut", usize::MAX).unwrap();
+        assert_eq!(events, vec![event!("a".to_owned(),)]);
+    }
+
+    #[test]
+    fn decoder_tracks_the_last_event_id_it_handed_out() {
+        let mut decoder = EventDecoder::<String>::new();
+        decode_in_chunks(&mut decoder, b"id: 7\ndata: a\n\ndata: b\n\n", 3).unwrap();
+        assert_eq!(decoder.last_event_id(), Some("7"));
+    }
+
+    #[test]
+    fn decoder_rejects_a_line_past_the_limit_whether_carried_or_whole() {
+        let long_line = format!("data: {}\n\n", "x".repeat(64));
+        for chunk_size in [usize::MAX, 4] {
+            let mut decoder = EventDecoder::<String>::new().with_max_line_len(32);
+            assert!(
+                decode_in_chunks(&mut decoder, long_line.as_bytes(), chunk_size).is_err(),
+                "chunk size {chunk_size}",
+            );
+        }
+
+        let mut decoder = EventDecoder::<String>::new().with_max_line_len(32);
+        let events = decode_in_chunks(&mut decoder, b"data: fits\n\n", 2).unwrap();
+        assert_eq!(events, vec![event!("fits".to_owned(),)]);
+    }
+
+    #[test]
+    fn decoder_stays_failed_after_an_error() {
+        let mut decoder = EventDecoder::<String>::new();
+        assert!(decoder.decode(b"data: \xff\n\n", |_| {}).is_err());
+        assert!(decoder.decode(b"data: fine\n\n", |_| {}).is_err());
+        assert!(decoder.finish().is_err());
     }
 }

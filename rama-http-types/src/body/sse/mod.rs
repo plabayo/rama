@@ -65,7 +65,7 @@ pub use {
         EventDataJsonReader, EventDataLineReader, EventDataMultiLineReader, EventDataRead,
         EventDataStringReader, EventDataWrite, JsonEventData,
     },
-    event_stream::EventStream,
+    event_stream::{EventDecoder, EventStream},
 };
 
 pub mod server;
