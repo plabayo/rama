@@ -43,13 +43,18 @@ impl Datagrams<'_> {
         if data.len() > max {
             return Err(SendDatagramError::TooLarge);
         }
+        let needed = data.len().saturating_add(size_of::<Datagram>());
+        let available = self
+            .conn
+            .config
+            .datagram_send_buffer_size
+            .checked_sub(needed)
+            .ok_or(SendDatagramError::TooLarge)?;
         if drop {
-            while self.conn.datagrams.outgoing.memory_used()
-                > self.conn.config.datagram_send_buffer_size
-            {
+            while self.conn.datagrams.outgoing.memory_used() > available {
                 #[expect(
                     clippy::expect_used,
-                    reason = "the loop condition `memory_used() > datagram_send_buffer_size` cannot hold for an empty queue, which uses no memory"
+                    reason = "an empty queue uses zero memory and cannot exceed available space"
                 )]
                 let prev = self
                     .conn
@@ -59,23 +64,9 @@ impl Datagrams<'_> {
                     .expect("datagrams.outgoing.payload_bytes desynchronized");
                 trace!(len = prev.data.len(), "dropping outgoing datagram");
             }
-        } else {
-            let needed = data.len().saturating_add(size_of::<Datagram>());
-            if needed > self.conn.config.datagram_send_buffer_size {
-                // Can never fit the configured buffer, so waiting for space would stall forever
-                return Err(SendDatagramError::TooLarge);
-            }
-            if self
-                .conn
-                .datagrams
-                .outgoing
-                .memory_used()
-                .saturating_add(needed)
-                > self.conn.config.datagram_send_buffer_size
-            {
-                self.conn.datagrams.send_blocked = true;
-                return Err(SendDatagramError::Blocked(data));
-            }
+        } else if self.conn.datagrams.outgoing.memory_used() > available {
+            self.conn.datagrams.send_blocked = true;
+            return Err(SendDatagramError::Blocked(data));
         }
         self.conn.datagrams.outgoing.push_back(Datagram { data });
         Ok(())

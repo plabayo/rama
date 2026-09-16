@@ -9,11 +9,15 @@
 use std::net::SocketAddr;
 
 use rama::{
-    crypto::pki_types::ServerName,
     net::address::Domain,
     quic::{Connection, ConnectionError, Endpoint},
-    tls::rustls::dep::rustls::{self, AlertDescription, CertificateError},
     utils::octets,
+};
+
+#[cfg(not(feature = "boring"))]
+use rama::{
+    crypto::pki_types::ServerName,
+    tls::rustls::dep::rustls::{self, CertificateError},
 };
 
 use crate::{
@@ -132,7 +136,7 @@ impl Mismatch {
 /// it (`ssl/ssl_x509.cc`), and aioquic raises `AlertBadCertificate` (`aioquic/tls.py`).
 #[must_use]
 pub fn identity_alert() -> u64 {
-    0x100 + u64::from(u8::from(AlertDescription::BadCertificate))
+    0x100 + u64::from(crate::backend::BAD_CERTIFICATE)
 }
 
 /// The probe the control carries, so acceptance means a working connection and not merely a
@@ -198,37 +202,42 @@ pub async fn rama_client_refuses_the_identity(run: &CaseRun<Mismatch>, peer_addr
     // The wire carries the alert; the cause below is what went wrong locally.
     assert_eq!(
         error.code().tls_alert(),
-        Some(u8::from(AlertDescription::BadCertificate)),
+        Some(crate::backend::BAD_CERTIFICATE),
         "{what}: unexpected TLS alert ({})",
         error.reason()
     );
     // The anchor is trusted, so this must be the identity check and not the issuer.
-    let cause = error
-        .cause()
-        .and_then(|cause| cause.downcast_ref::<rustls::Error>())
-        .unwrap_or_else(|| panic!("{what}: a rustls cause was due: {:?}", error.cause()));
-    let rustls::Error::InvalidCertificate(CertificateError::NotValidForNameContext {
-        expected,
-        presented,
-    }) = cause
-    else {
-        panic!("{what}: the identity check was due, not {cause:?}");
-    };
-    // Compared as an identity rather than as text: an address is not spelled the same way in
-    // the debug output as it is in the request.
-    let wanted = ServerName::try_from(asked.as_str())
-        .unwrap_or_else(|_| panic!("{what}: the request is a usable identity"))
-        .to_owned();
-    assert_eq!(
-        *expected, wanted,
-        "{what}: the context names the identity that was asked for"
-    );
-    // What the certificate is valid for is what the control asks for.
-    let carried = scenario.matching_request(peer_addr);
-    assert!(
-        presented.iter().any(|name| name.contains(&carried)),
-        "{what}: the certificate did not carry {carried}: {presented:?}"
-    );
+    #[cfg(feature = "boring")]
+    crate::backend::assert_certificate_failure(error);
+    #[cfg(not(feature = "boring"))]
+    {
+        let cause = error
+            .cause()
+            .and_then(|cause| cause.downcast_ref::<rustls::Error>())
+            .unwrap_or_else(|| panic!("{what}: a rustls cause was due: {:?}", error.cause()));
+        let rustls::Error::InvalidCertificate(CertificateError::NotValidForNameContext {
+            expected,
+            presented,
+        }) = cause
+        else {
+            panic!("{what}: the identity check was due, not {cause:?}");
+        };
+        // Compared as an identity rather than as text: an address is not spelled the same way in
+        // the debug output as it is in the request.
+        let wanted = ServerName::try_from(asked.as_str())
+            .unwrap_or_else(|_| panic!("{what}: the request is a usable identity"))
+            .to_owned();
+        assert_eq!(
+            *expected, wanted,
+            "{what}: the context names the identity that was asked for"
+        );
+        // What the certificate is valid for is what the control asks for.
+        let carried = scenario.matching_request(peer_addr);
+        assert!(
+            presented.iter().any(|name| name.contains(&carried)),
+            "{what}: the certificate did not carry {carried}: {presented:?}"
+        );
+    }
     deadline.wait(what, client.wait_idle()).await;
 }
 
@@ -444,7 +453,7 @@ pub async fn rama_server_side(run: &CaseRun<NameScenario>) -> (Endpoint, SocketA
                 run.what
             );
             assert_eq!(
-                settled.protocol.as_ref(),
+                settled.application_layer_protocol.as_ref(),
                 Some(&alpn()),
                 "{}: unexpected negotiated protocol",
                 run.what

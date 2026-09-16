@@ -5,6 +5,7 @@
     reason = "shared support for several integration test binaries, each using part of it"
 )]
 
+use interop_common::backend::VerifyBackend as _;
 use std::{
     io::{self, IoSliceMut},
     net::{Ipv4Addr, SocketAddr},
@@ -28,10 +29,9 @@ use rama::{
         cert::{CertificateIdentity, CertificateSubject, LeafCertRequest, SelfSignedCaConfig},
         pki_types::CertificateDer,
     },
-    quic::{ClientConfig, ServerConfig, tls::TlsOptions},
+    quic::{ClientConfig, ServerConfig},
     tls::{
         client::TlsClientConfig,
-        rustls::{client::RustlsClientConfigExt as _, server::RustlsServerConfigExt as _},
         server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
     },
     utils::{collections::smallvec::smallvec, octets},
@@ -145,8 +145,8 @@ pub fn rama_server_config(auth: &ServerAuthData) -> ServerConfig {
     let tls = TlsServerConfig::new()
         .with_alpn(smallvec![shared_alpn()])
         .with_server_auth(auth.clone())
-        .with_modify_rustls_config(interop_common::backend::verify_server);
-    ServerConfig::try_from_rama_tls(&tls, TlsOptions::default())
+        .verify_backend();
+    ServerConfig::try_from_rama_tls(&tls, interop_common::backend::options())
         .expect("the server config is built")
 }
 
@@ -155,8 +155,8 @@ pub fn rama_client_config(anchor: CertificateDer<'static>) -> ClientConfig {
         .with_alpn(smallvec![shared_alpn()])
         .try_with_server_trust_anchors([anchor])
         .expect("the trust anchor is accepted")
-        .with_modify_rustls_config(interop_common::backend::verify_client);
-    ClientConfig::try_from_rama_tls(&tls, TlsOptions::default())
+        .verify_backend();
+    ClientConfig::try_from_rama_tls(&tls, interop_common::backend::options())
         .expect("the client config is built")
 }
 
@@ -375,6 +375,40 @@ impl Deaf {
             waker.wake();
         }
     }
+
+    /// Attempt a resume without waiting for an in-flight read's critical section.
+    pub fn try_read_again(&self) -> bool {
+        let waiting = {
+            let Some(mut state) = self.state.try_lock() else {
+                return false;
+            };
+            state.deaf = false;
+            state.waiting.take()
+        };
+        if let Some(waker) = waiting {
+            waker.wake();
+        }
+        true
+    }
+
+    /// Test seam immediately after observing a pause, before registering the reader.
+    pub fn poll_recv_at_registration(
+        &self,
+        cx: &mut Context,
+        bufs: &mut [IoSliceMut<'_>],
+        meta: &mut [RecvMeta],
+        before_register: impl FnOnce(),
+    ) -> Poll<io::Result<usize>> {
+        {
+            let mut state = self.state.lock();
+            if state.deaf {
+                before_register();
+                state.waiting = Some(cx.waker().clone());
+                return Poll::Pending;
+            }
+        }
+        self.inner.poll_recv(cx, bufs, meta)
+    }
 }
 
 impl AsyncUdpSocket for Deaf {
@@ -392,15 +426,7 @@ impl AsyncUdpSocket for Deaf {
         bufs: &mut [IoSliceMut<'_>],
         meta: &mut [RecvMeta],
     ) -> Poll<io::Result<usize>> {
-        {
-            // Held across both, and released before the socket below is touched.
-            let mut state = self.state.lock();
-            if state.deaf {
-                state.waiting = Some(cx.waker().clone());
-                return Poll::Pending;
-            }
-        }
-        self.inner.poll_recv(cx, bufs, meta)
+        self.poll_recv_at_registration(cx, bufs, meta, || {})
     }
 
     fn local_addr(&self) -> io::Result<SocketAddr> {

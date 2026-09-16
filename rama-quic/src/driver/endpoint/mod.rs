@@ -29,7 +29,7 @@ use crate::driver::{
     Instant, now,
     udp::{Sender, Socket, proto_ecn},
 };
-#[cfg(all(test, any(feature = "aws-lc", feature = "ring")))]
+#[cfg(all(test, any(feature = "boring", feature = "aws-lc", feature = "ring")))]
 use crate::proto::{self as proto};
 use crate::proto::{
     ClientConfig, ConnectError, ConnectionError, ConnectionHandle, DatagramEvent, EndpointEvent,
@@ -190,7 +190,13 @@ impl Endpoint {
     }
 
     /// Tests: the addresses this endpoint still advertises as preferred.
-    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+    #[cfg(all(
+        test,
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        )
+    ))]
     pub(crate) fn advertised_preferred(&self) -> Vec<SocketAddr> {
         self.inner.state.lock().inner.advertised_preferred()
     }
@@ -326,7 +332,7 @@ impl Endpoint {
                 {
                     let mut state = inner.state.lock();
                     state.shutdown = true;
-                    state.close(VarInt::from_u32(0), &Bytes::new(), &inner.shared);
+                    state.close(VarInt::from_u32(0), &Bytes::new(), &inner.shared, true);
                 }
                 if tokio::time::timeout(shutdown_budget, lifecycle.join())
                     .await
@@ -616,10 +622,18 @@ impl Endpoint {
             error_code,
             &Bytes::copy_from_slice(reason),
             &self.inner.shared,
+            false,
         );
     }
 
     /// Stop the endpoint and join all drivers, releasing sockets even with retained handles.
+    ///
+    /// Connections still open are closed. A connection leaves as soon as its peer has been
+    /// told, that is once its CONNECTION_CLOSE went out or the peer's own close arrived; the
+    /// closing period that would otherwise follow (RFC 9000 §10.2) only serves to answer late
+    /// packets, which a stopping endpoint will not do. A peer whose copy of the close was lost
+    /// waits out its idle timeout instead. To give every close the full closing period first,
+    /// call [`close()`](Self::close) and then [`wait_idle()`](Self::wait_idle) before this.
     pub async fn shutdown(&self) -> ShutdownOutcome {
         self.inner.shared.lifecycle.request();
         self.inner.shared.lifecycle.completed().await
@@ -732,8 +746,11 @@ impl EndpointDriver {
     /// outside the lock, which this method never holds when it returns.
     fn poll_locked(&self, cx: &mut Context, retired: &mut Vec<Socket>) -> io::Result<Option<bool>> {
         let mut endpoint = self.0.state.lock();
-        if endpoint.driver.is_none() {
-            endpoint.driver = Some(cx.waker().clone());
+        // The task polling the driver may change; a waker kept from an earlier poll would wake
+        // the wrong one.
+        match endpoint.driver.as_mut() {
+            Some(waker) => waker.clone_from(cx.waker()),
+            None => endpoint.driver = Some(cx.waker().clone()),
         }
 
         let now = now();
@@ -858,11 +875,25 @@ async fn bind_advertised(
     Ok((Some(server_config), sockets))
 }
 
-/// The socket configuration a client binds with: Rama's UDP defaults, plus a request for a
+/// The kernel receive and send buffer an endpoint asks for on the sockets it binds itself.
+///
+/// QUIC arrives in bursts of coalesced datagrams and the endpoint drains its socket from one
+/// task; the platform's default of a few hundred KiB is under a millisecond of a fast transfer
+/// and drops packets before the endpoint sees them. This floor is best effort: a platform limit
+/// caps it silently and a bind never fails on it (see `UdpSocketConfig::with_min_buffer_size`).
+/// Pass a `UdpSocketConfig` of your own to bind without it.
+pub const DEFAULT_SOCKET_BUFFER_SIZE: usize = octets::mib(7);
+
+/// Rama's UDP defaults with the endpoint's buffer floor.
+pub(crate) fn default_socket_config() -> UdpSocketConfig {
+    UdpSocketConfig::default().with_min_buffer_size(DEFAULT_SOCKET_BUFFER_SIZE)
+}
+
+/// The socket configuration a client binds with: the endpoint defaults, plus a request for a
 /// dual-stack socket on an IPv6 address that the platform may refuse. A refusal leaves the
 /// platform's own `IPV6_V6ONLY` default in place and the socket bound.
 fn client_socket_config(address: SocketAddress) -> UdpSocketConfig {
-    let mut config = UdpSocketConfig::default();
+    let mut config = default_socket_config();
     if address.ip_addr.is_ipv6() {
         let mut options = config.socket_options().clone();
         options.only_v6_best_effort = Some(false);
@@ -957,14 +988,26 @@ impl EndpointInner {
 impl EndpointRef {
     /// Tests: stop applying route installations, so a datagram that needs one can be observed
     /// waiting instead of leaving.
-    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+    #[cfg(all(
+        test,
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        )
+    ))]
     pub(crate) fn hold_route_installs(&self) {
         self.0.state.lock().hold_route_installs = true;
     }
 
     /// Tests: answer the route installations put aside with a refusal, as a full routing table
     /// does, so the connection fails rather than waiting for a route that cannot exist.
-    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+    #[cfg(all(
+        test,
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        )
+    ))]
     pub(crate) fn refuse_route_installs(&self) {
         let mut state = self.0.state.lock();
         state.hold_route_installs = false;
@@ -981,7 +1024,13 @@ impl EndpointRef {
 
     /// Tests: apply the route installations put aside, and hand each connection the
     /// acknowledgement the endpoint answers with, as it would have received it otherwise.
-    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+    #[cfg(all(
+        test,
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        )
+    ))]
     pub(crate) fn release_route_installs(&self) {
         let mut state = self.0.state.lock();
         state.hold_route_installs = false;
@@ -1086,10 +1135,11 @@ impl EndpointInner {
         } else {
             state.stats.refused_handshakes += 1;
             let mut response_buffer = Vec::new();
-            let transmit = state.inner.refuse(incoming, &mut response_buffer);
-            state
-                .sockets
-                .respond(received_on, transmit, &response_buffer);
+            if let Some(transmit) = state.inner.refuse(incoming, &mut response_buffer) {
+                state
+                    .sockets
+                    .respond(received_on, transmit, &response_buffer);
+            }
         }
         let retired = state.sockets.release(lease, now());
         state.wake_driver();
@@ -1212,13 +1262,20 @@ pub(crate) struct Shared {
 }
 
 impl State {
-    fn close(&mut self, error_code: VarInt, reason: &Bytes, shared: &Shared) {
-        if self.recv_state.connections.close.is_none() {
-            self.recv_state.connections.close = Some((error_code, reason.clone()));
+    fn close(&mut self, error_code: VarInt, reason: &Bytes, shared: &Shared, abandon: bool) {
+        let first = self.recv_state.connections.close.is_none();
+        if first {
+            self.recv_state.connections.close = Some((error_code, reason.clone(), abandon));
+        } else if abandon && let Some(close) = self.recv_state.connections.close.as_mut() {
+            close.2 = true;
+        }
+        // A shutdown after a plain close still lets every connection leave early.
+        if first || abandon {
             for channel in self.recv_state.connections.channels.values() {
                 channel.inner.control(Control::Close {
                     error_code,
                     reason: reason.clone(),
+                    abandon,
                 });
             }
         }
@@ -1333,7 +1390,7 @@ impl State {
     }
 
     /// Queue a stateless response on the active socket (tests).
-    #[cfg(all(test, any(feature = "aws-lc", feature = "ring")))]
+    #[cfg(all(test, any(feature = "boring", feature = "aws-lc", feature = "ring")))]
     fn respond_active(&mut self, transmit: proto::Transmit, response_buffer: &[u8]) {
         let Some(id) = self.sockets.live().map(SocketRegistry::active_id) else {
             return;
@@ -1341,7 +1398,7 @@ impl State {
         self.respond(id, transmit, response_buffer);
     }
 
-    #[cfg(all(test, any(feature = "aws-lc", feature = "ring")))]
+    #[cfg(all(test, any(feature = "boring", feature = "aws-lc", feature = "ring")))]
     /// Queue a stateless response on socket `on` and wake the driver to send it.
     fn respond(&mut self, on: SocketId, transmit: proto::Transmit, response_buffer: &[u8]) {
         self.sockets.respond(on, transmit, response_buffer);
@@ -1469,7 +1526,8 @@ struct ConnectionSet {
     channels: FxHashMap<ConnectionHandle, ConnectionChannel>,
     connection_limits: ReceiveQueueLimits,
     /// Set if the endpoint has been manually closed
-    close: Option<(VarInt, Bytes)>,
+    /// The close every connection is given, and whether it leaves its closing period early.
+    close: Option<(VarInt, Bytes, bool)>,
 }
 
 impl ConnectionSet {
@@ -1487,10 +1545,11 @@ impl ConnectionSet {
         let (connecting, driver) =
             Connecting::new(handle, conn, link, receiver, socket, budget.clone());
         let inner = connecting.inner();
-        if let Some((error_code, ref reason)) = self.close {
+        if let Some((error_code, ref reason, abandon)) = self.close {
             inner.control(Control::Close {
                 error_code,
                 reason: reason.clone(),
+                abandon,
             });
         }
         self.channels.insert(
@@ -1765,9 +1824,11 @@ impl RecvState {
                             ) {
                                 Some(DatagramEvent::NewConnection(incoming)) => {
                                     if self.connections.close.is_some() {
-                                        let transmit =
-                                            endpoint.refuse(incoming, &mut response_buffer);
-                                        respond(transmit, &response_buffer, socket);
+                                        if let Some(transmit) =
+                                            endpoint.refuse(incoming, &mut response_buffer)
+                                        {
+                                            respond(transmit, &response_buffer, socket);
+                                        }
                                     } else if permit.widen(INCOMING_OVERHEAD - PACKET_OVERHEAD) {
                                         // Charged until the application takes the attempt; it is
                                         // queued by the caller once this socket is released.
@@ -1864,7 +1925,7 @@ struct PollProgress {
     error: Option<io::Error>,
 }
 
-#[cfg(all(test, any(feature = "aws-lc", feature = "ring")))]
+#[cfg(all(test, any(feature = "boring", feature = "aws-lc", feature = "ring")))]
 impl PollProgress {
     /// Tests: the poll as a result, discarding progress when the socket failed.
     fn into_result(self) -> io::Result<Self> {
@@ -1876,5 +1937,5 @@ impl PollProgress {
 }
 
 #[cfg(test)]
-#[cfg(any(feature = "ring", feature = "aws-lc"))]
+#[cfg(any(feature = "boring", feature = "ring", feature = "aws-lc"))]
 mod tests;

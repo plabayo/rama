@@ -33,6 +33,23 @@ mod state;
 )]
 pub use state::StreamsState;
 
+/// Stream resource counters used by driver tests.
+#[cfg(all(
+    test,
+    any(
+        feature = "boring",
+        all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+    )
+))]
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct StreamResourceUsage {
+    pub sent_offset: u64,
+    pub peer_credit: u64,
+    pub unacknowledged_bytes: u64,
+    pub received_offset: u64,
+    pub retained_receive_bytes: usize,
+}
+
 /// Access to streams
 #[cfg_attr(
     not(fuzzing),
@@ -105,12 +122,30 @@ impl<'a> Streams<'a> {
         Some(StreamId::new(!self.state.side, dir, x))
     }
 
+    /// Tests: stream flow control and retained receive storage.
+    #[cfg(all(
+        test,
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        )
+    ))]
+    pub(crate) fn resource_usage(&self) -> StreamResourceUsage {
+        self.state.resource_usage()
+    }
+
     #[cfg(fuzzing)]
     pub fn state(&mut self) -> &mut StreamsState {
         self.state
     }
 
-    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+    #[cfg(all(
+        test,
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        )
+    ))]
     /// The number of streams that may have unacknowledged data.
     pub(crate) fn send_streams(&self) -> usize {
         self.state.send_streams
@@ -308,7 +343,7 @@ impl<'a> SendStream<'a> {
         let was_pending = stream.is_pending();
         let written = stream.write(source, limit)?;
         self.state.data_sent += written.bytes as u64;
-        self.state.unacked_data += written.bytes as u64;
+        self.state.buffered_data += written.bytes as u64;
         trace!(stream = %self.id, "wrote {} bytes", written.bytes);
         if !was_pending {
             self.state.pending.push_pending(self.id, stream.priority);
@@ -383,7 +418,7 @@ impl<'a> SendStream<'a> {
         // Restore the portion of the send window consumed by the data that we aren't about to
         // send. We leave flow control alone because the peer's responsible for issuing additional
         // credit based on the final offset communicated in the RESET_STREAM frame we send.
-        self.state.unacked_data -= stream.pending.unacked();
+        self.state.buffered_data -= stream.pending.buffered();
         stream.reset();
         self.pending.reset_stream.push((self.id, error_code));
 

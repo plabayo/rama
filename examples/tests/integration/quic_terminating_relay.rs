@@ -19,7 +19,7 @@ use std::{
 
 use rama::{
     crypto::{
-        dep::rcgen,
+        pem::PemEncode as _,
         pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject as _},
     },
     error::BoxError,
@@ -72,12 +72,14 @@ struct Identity {
 
 impl Identity {
     fn generate(directory: &TempDir, name: &str) -> Self {
-        let generated = rcgen::generate_simple_self_signed(vec!["localhost".to_owned()])
-            .expect("an identity is generated");
+        let generated =
+            ServerAuthData::new_self_signed_leaf(rama::tls::server::LeafCertRequest::default())
+                .expect("an identity is generated");
         let certificate = directory.path().join(format!("{name}-cert.pem"));
         let key = directory.path().join(format!("{name}-key.pem"));
-        fs::write(&certificate, generated.cert.pem()).expect("the certificate is written");
-        fs::write(&key, generated.signing_key.serialize_pem()).expect("the key is written");
+        fs::write(&certificate, generated.cert_chain[0].to_pem())
+            .expect("the certificate is written");
+        fs::write(&key, generated.private_key.to_pem()).expect("the key is written");
         let anchor = CertificateDer::from_pem_file(&certificate).expect("it reads back");
         Self {
             certificate,
@@ -212,7 +214,7 @@ impl Relay {
         // released for something else to take.
         let mut process = utils::ExampleRunner::capturing(
             "quic_terminating_relay",
-            Some("quic,rustls,ring"),
+            None,
             [
                 "--listen".to_owned(),
                 localhost().to_string(),

@@ -554,7 +554,10 @@ async fn rejected_recovery_snapshot_is_retried_and_unchanged_metrics_remain_supp
     recorder.shutdown().await.unwrap();
 }
 
-#[cfg(all(feature = "rustls", any(feature = "ring", feature = "aws-lc")))]
+#[cfg(any(
+    feature = "boring",
+    all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+))]
 #[tokio::test]
 async fn rejected_lifecycle_events_do_not_commit_connection_logging_state() {
     let mut pair = crate::proto::tests::util::Pair::default();
@@ -813,7 +816,10 @@ fn post_build_recovery_snapshot_rejection_retries_complete_snapshot() {
     );
 }
 
-#[cfg(all(feature = "rustls", any(feature = "ring", feature = "aws-lc")))]
+#[cfg(any(
+    feature = "boring",
+    all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+))]
 #[tokio::test]
 async fn migration_with_unusable_fallback_does_not_log_abandonment() {
     use crate::proto::connection::migration::{PrevCid, PreviousPath};

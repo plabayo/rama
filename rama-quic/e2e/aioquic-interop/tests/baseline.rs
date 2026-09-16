@@ -26,6 +26,8 @@ fn scenario_arguments(run: &CaseRun<StreamScenario>) -> Vec<String> {
     [
         ("--up-seed", usize::from(scenario.up.seed)),
         ("--up-length", scenario.up.len),
+        ("--down-seed", usize::from(scenario.down.seed)),
+        ("--down-length", scenario.down.len),
         ("--question-seed", usize::from(scenario.question.seed)),
         ("--question-length", scenario.question.len),
         ("--answer-seed", usize::from(scenario.answer.seed)),
@@ -78,6 +80,7 @@ async fn stream_cases_rama_client() {
             let observed = PeerObservation {
                 protocol: Some(handshake.alpn().as_bytes().to_vec()),
                 up: Some((up.reported(), true)),
+                down: None,
                 question: Some((question.reported(), true)),
                 answer: None,
                 closed: ended.name() == "ended",
@@ -115,11 +118,14 @@ async fn stream_cases_rama_server() {
 
             let handshake = peer.expect("handshake", run.deadline).await;
             peer.expect("connected", run.deadline).await;
+            let down = peer.expect("stream", run.deadline).await;
+            assert_eq!(down.id(), 3, "the server initiated the uni stream");
             let answer = peer.expect("stream", run.deadline).await;
             let ended = peer.expect("ended", run.deadline).await;
             let observed = PeerObservation {
                 protocol: Some(handshake.alpn().as_bytes().to_vec()),
                 up: None,
+                down: Some((down.reported(), true)),
                 question: None,
                 answer: Some((answer.reported(), true)),
                 closed: ended.name() == "ended",

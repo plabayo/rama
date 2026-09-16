@@ -125,7 +125,10 @@ impl Loopback {
                         },);
                     for connection in [&client_connection, &server_connection] {
                         assert_eq!(
-                            connection.handshake_data().unwrap().protocol,
+                            connection
+                                .handshake_data()
+                                .unwrap()
+                                .application_layer_protocol,
                             Some(ApplicationProtocol::from(ALPN))
                         );
                     }

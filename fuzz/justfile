@@ -1,0 +1,82 @@
+# The workspace fuzz targets, run with `cargo fuzz` on nightly.
+#
+# Invoke from the repository root as `just fuzz/<recipe>`; `just fuzz/` lists them. Every
+# recipe that takes `SECONDS` runs each of its targets for that long, and 0 runs until
+# interrupted. Type checking the targets stays with the root `check-fuzz`.
+#
+# Recipes run from the repository root, so corpus and dictionary paths read as `fuzz/...`.
+# CI pins the build triple through `RAMA_FUZZ_TARGET`; locally the host's is used.
+
+set working-directory := '..'
+
+target := env("RAMA_FUZZ_TARGET", "")
+target-flag := if target == "" { "" } else { "--target " + target }
+
+[private]
+default:
+    @just --list --justfile {{ justfile() }}
+
+# One run of one target; libFuzzer options follow the `--`.
+[private]
+_run TARGET SECONDS *ARGS:
+    cargo +nightly fuzz run {{ target-flag }} {{ TARGET }} -- -max_total_time={{ SECONDS }} {{ ARGS }}
+
+ua SECONDS="0": (_run "ua_parse" SECONDS "-max_len=131072")
+
+http-headers-x-robots-tag SECONDS="0": (_run "http_header_x_robots_tag" SECONDS "-max_len=131072")
+
+http-header-map SECONDS="0": (_run "http_header_map" SECONDS "-max_len=131072")
+
+dns-txt-rr SECONDS="0": (_run "dns_txt_rr" SECONDS "-max_len=4096")
+
+uri-parse SECONDS="0": (_run "uri_parse" SECONDS "-max_len=65534")
+
+uri-resolve SECONDS="0": (_run "uri_resolve" SECONDS "-max_len=65534")
+
+js-value-boundary SECONDS="0": (_run "js_value_boundary" SECONDS "-max_len=16384")
+
+# A structured ICAP seed shorter than its fixed header cannot reach the roundtrip target.
+icap-seeds-check:
+    @for seed in fuzz/corpus-seeds/icap_codec_roundtrip/*; do if [ "$(wc -c < "$seed")" -lt 38 ]; then echo "unreachable structured ICAP seed: $seed" >&2; exit 1; fi; done
+
+icap SECONDS="0": icap-seeds-check
+    mkdir -p fuzz/corpus/icap_codec fuzz/corpus/icap_codec_roundtrip
+    cargo +nightly fuzz run {{ target-flag }} icap_codec fuzz/corpus/icap_codec fuzz/corpus-seeds/icap_codec -- -dict=fuzz/dictionaries/icap.dict -max_len=65536 -timeout=5 -max_total_time={{ SECONDS }}
+    cargo +nightly fuzz run {{ target-flag }} icap_codec_roundtrip fuzz/corpus/icap_codec_roundtrip fuzz/corpus-seeds/icap_codec_roundtrip -- -max_len=64 -timeout=5 -max_total_time={{ SECONDS }}
+
+# Sustained pre-release ICAP fuzzing; override the durations for a shorter local pass.
+icap-release RAW_SECONDS="21600" ROUNDTRIP_SECONDS="7200": icap-seeds-check
+    mkdir -p fuzz/corpus/icap_codec fuzz/corpus/icap_codec_roundtrip
+    cargo +nightly fuzz run {{ target-flag }} -j 4 icap_codec fuzz/corpus/icap_codec fuzz/corpus-seeds/icap_codec -- -dict=fuzz/dictionaries/icap.dict -max_len=65536 -timeout=5 -max_total_time={{ RAW_SECONDS }}
+    cargo +nightly fuzz run {{ target-flag }} -j 4 icap_codec_roundtrip fuzz/corpus/icap_codec_roundtrip fuzz/corpus-seeds/icap_codec_roundtrip -- -max_len=64 -timeout=5 -max_total_time={{ ROUNDTRIP_SECONDS }}
+
+# The honggfuzz h2 harness (`cargo install honggfuzz`).
+h2-main:
+    cd rama-http-core/tests/h2-fuzz && \
+        HFUZZ_RUN_ARGS="-t 1" cargo hfuzz run h2-fuzz
+
+h2-client SECONDS="0": (_run "h2_client" SECONDS)
+
+h2-hpack SECONDS="0": (_run "h2_hpack" SECONDS)
+
+h2-e2e SECONDS="0": (_run "h2_e2e" SECONDS)
+
+h2 SECONDS="0": (h2-client SECONDS) (h2-hpack SECONDS) (h2-e2e SECONDS)
+
+# QUIC wire decoding and stream state.
+quic-packet SECONDS="0": (_run "quic_packet" SECONDS "-max_len=4096 -timeout=10")
+
+quic-frame SECONDS="0": (_run "quic_frame" SECONDS "-max_len=4096 -timeout=10")
+
+quic-params SECONDS="0": (_run "quic_params" SECONDS "-max_len=4096 -timeout=10")
+
+quic-streamid SECONDS="0": (_run "quic_streamid" SECONDS "-max_len=4096 -timeout=10")
+
+quic-streams SECONDS="0": (_run "quic_streams" SECONDS "-max_len=4096 -timeout=10")
+
+quic SECONDS="0": (quic-packet SECONDS) (quic-frame SECONDS) (quic-params SECONDS) (quic-streamid SECONDS) (quic-streams SECONDS)
+
+# The pre-release smoke pass: a minute per target.
+all-60s: (ua "60") (h2 "60") (http-headers-x-robots-tag "60") (http-header-map "60") (icap "60") (quic "60")
+
+full: all-60s h2-main

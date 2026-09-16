@@ -377,17 +377,24 @@ impl ExampleRunner {
         envs: impl IntoIterator<Item = (&'static str, &'static str)>,
         capture: bool,
     ) -> Self {
-        let mut command = escargot::CargoBuild::new()
-            .arg(format!(
-                "--features=cli,tcp,http-full,proxy-full,{}",
-                extra_features.unwrap_or_default()
-            ))
-            .bin(example_name.as_ref())
-            .manifest_path(examples_manifest_path())
-            .target_dir(examples_target_dir())
-            .run()
-            .unwrap()
-            .command();
+        // QUIC tests must execute the binary built with this test's selected backend.
+        let mut command = match example_name.as_ref() {
+            #[cfg(all(feature = "quic", feature = "tls"))]
+            "quic_terminating_relay" => {
+                std::process::Command::new(env!("CARGO_BIN_EXE_quic_terminating_relay"))
+            }
+            _ => escargot::CargoBuild::new()
+                .arg(format!(
+                    "--features=cli,tcp,http-full,proxy-full,{}",
+                    extra_features.unwrap_or_default()
+                ))
+                .bin(example_name.as_ref())
+                .manifest_path(examples_manifest_path())
+                .target_dir(examples_target_dir())
+                .run()
+                .unwrap()
+                .command(),
+        };
         command
             .current_dir(workspace_root())
             .env(

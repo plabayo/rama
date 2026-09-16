@@ -29,6 +29,17 @@ impl Assembler {
         Self::default()
     }
 
+    #[cfg(all(
+        test,
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        )
+    ))]
+    pub(super) fn retained_bytes(&self) -> usize {
+        self.allocated
+    }
+
     /// Reset to the initial state
     pub(super) fn reinit(&mut self) {
         let old_data = mem::take(&mut self.data);
@@ -947,6 +958,37 @@ mod test {
         assert!(
             max_len > MAX_CHUNKS,
             "buffer compacted on every frame (max observed len {max_len})"
+        );
+    }
+
+    /// Five STREAM frames, two of them empty, read unordered. An empty frame must not leave a
+    /// zero-width entry in the set of received offsets; one that did made a later frame's
+    /// duplicate scan stop early and hand back inconsistent overlaps, which panicked in `insert`.
+    #[test]
+    fn empty_unordered_frames_leave_the_received_set_consistent() {
+        let mut x = Assembler::new();
+        x.ensure_ordering(false).unwrap();
+        x.insert(3, Bytes::new(), 0).unwrap();
+        x.insert(6, Bytes::from_static(b"6789"), 4).unwrap();
+        x.insert(5, Bytes::new(), 0).unwrap();
+        x.insert(2, Bytes::from_static(b"23456"), 5).unwrap();
+        x.insert(0, Bytes::from_static(b"0123"), 4).unwrap();
+        let mut seen = vec![None; 10];
+        while let Some(chunk) = x.read(usize::MAX, false) {
+            for (i, byte) in chunk.bytes.iter().enumerate() {
+                let slot = &mut seen[chunk.offset as usize + i];
+                assert!(
+                    slot.is_none(),
+                    "offset {} delivered twice",
+                    chunk.offset as usize + i
+                );
+                *slot = Some(*byte);
+            }
+        }
+        assert_eq!(
+            seen.into_iter().collect::<Option<Vec<u8>>>().as_deref(),
+            Some(b"0123456789".as_slice()),
+            "every byte is delivered exactly once"
         );
     }
 

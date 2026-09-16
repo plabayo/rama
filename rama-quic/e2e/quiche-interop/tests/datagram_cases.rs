@@ -9,8 +9,12 @@ mod common;
 
 use common::{Identity, Quiche, quiche_client_config, quiche_server_config, with_datagrams};
 use interop_common::{
-    CaseRun, DatagramObservation, DatagramScenario, Deadline, Peer, Received, Role, Unsupported,
-    UnsupportedObservation, UnsupportedScenario, backpressure_cases,
+    BackpressureScenario, CaseRun, DatagramObservation, DatagramScenario, Deadline, Ears, Peer,
+    Received, Role, UnsupportedObservation, UnsupportedScenario,
+    backpressure::{
+        bind_backpressure_server, rama_client_fills_and_cancels, rama_server_fills_and_cancels,
+    },
+    backpressure_cases,
     datagram::{rama_client_side, rama_server_side},
     datagram_cases, for_each_case,
     scenario::SERVER_NAME,
@@ -234,31 +238,184 @@ async fn nothing_arrived(peer: &mut Quiche, deadline: Deadline) -> Option<Receiv
     }
 }
 
-/// Why the backpressure case does not run against this peer yet. quiche can be withheld and
-/// then driven again — that is what a pause is — but this adapter drives its connection from
-/// the case's own task, so it has nothing to implement `Ears` against. The gap is here, not
-/// in the peer.
-const THIS_ADAPTER_HAS_NO_PAUSE: &str = "this adapter drives the peer from the case's own task, so it has no reader to pause; \
-     the peer itself can be withheld and driven again";
-
-/// The backpressure case needs a peer that can stop reading while this side keeps sending.
 #[tokio::test]
 async fn backpressure_cases_rama_client() {
-    for_each_case(
-        PEER,
-        Role::RamaClient,
-        backpressure_cases(),
-        |_run| async move {
-            // Visible with `cargo test -- --nocapture`.
-            println!(
-                "{}",
-                Unsupported {
-                    case: "datagram-no-room",
-                    peer: PEER,
-                    reason: THIS_ADAPTER_HAS_NO_PAUSE,
+    backpressure(Role::RamaClient).await;
+}
+
+#[tokio::test]
+async fn backpressure_cases_rama_server() {
+    backpressure(Role::RamaServer).await;
+}
+
+struct ReadControl {
+    paused: bool,
+    acknowledged: tokio::sync::oneshot::Sender<()>,
+}
+
+struct Controls {
+    sender: tokio::sync::mpsc::Sender<ReadControl>,
+    deadline: Deadline,
+}
+
+impl Controls {
+    async fn set_paused(&mut self, paused: bool) {
+        let (acknowledged, received) = tokio::sync::oneshot::channel();
+        self.deadline
+            .wait(
+                "set quiche read state",
+                self.sender.send(ReadControl {
+                    paused,
+                    acknowledged,
+                }),
+            )
+            .await
+            .expect("the quiche driver is running");
+        self.deadline
+            .wait("quiche acknowledged read state", received)
+            .await
+            .unwrap();
+    }
+}
+
+impl Ears for Controls {
+    async fn deaf(&mut self) {
+        self.set_paused(true).await;
+    }
+
+    async fn hear(&mut self) {
+        self.set_paused(false).await;
+    }
+}
+
+struct ControlledPeer {
+    ears: Controls,
+    reports: tokio::sync::mpsc::UnboundedReceiver<Received>,
+    task: Peer<()>,
+}
+
+fn controlled_peer(
+    run: CaseRun<BackpressureScenario>,
+    starting: impl std::future::Future<Output = Quiche> + Send + 'static,
+) -> ControlledPeer {
+    let (sender, mut controls) = tokio::sync::mpsc::channel::<ReadControl>(1);
+    let (reports, arriving) = tokio::sync::mpsc::unbounded_channel();
+    let deadline = run.deadline;
+    let task = Peer::spawn(async move {
+        let mut peer = starting.await;
+        peer.drive_until(&run.what, deadline, |connection| {
+            connection.is_established()
+        })
+        .await;
+        let stream = match run.role {
+            Role::RamaClient => 0,
+            Role::RamaServer => 1,
+        };
+        let mut carried = Vec::new();
+        let mut echoed = false;
+        let mut paused = false;
+        loop {
+            // Complete sends before accepting a pause: extracting a quiche packet
+            // then cancelling send_to would silently discard that packet.
+            if !paused {
+                peer.flush(deadline).await;
+            }
+            while peer.connection().dgram_recv_queue_len() != 0 {
+                let bytes = peer.read_datagram(READ_CAP, deadline).await;
+                reports
+                    .send(Received::Bytes(bytes))
+                    .expect("the test reads reports");
+            }
+            while peer.connection().stream_readable(stream) {
+                let mut chunk = [0; 4096];
+                match peer.connection().stream_recv(stream, &mut chunk) {
+                    Ok((size, fin)) => {
+                        assert!(!echoed, "the recovery stream ended already");
+                        carried.extend_from_slice(&chunk[..size]);
+                        assert!(carried.len() <= run.scenario.carried.len);
+                        if fin {
+                            assert_eq!(carried, run.scenario.carried.bytes());
+                            peer.write_stream(stream, &carried, deadline).await;
+                            echoed = true;
+                        }
+                    }
+                    Err(quiche::Error::Done) => break,
+                    Err(error) => panic!("recovery stream: {error}"),
                 }
-            );
-        },
-    )
+            }
+            if peer.connection().is_closed() {
+                assert!(
+                    echoed,
+                    "the recovery stream completed with exact bytes and FIN"
+                );
+                break;
+            }
+            tokio::select! {
+                biased;
+                command = controls.recv() => {
+                    let command = command.expect("the test retains read controls until close");
+                    paused = command.paused;
+                    command.acknowledged.send(()).expect("the test awaits the read state");
+                }
+                () = peer.receive(deadline), if !paused => {}
+                () = tokio::time::sleep_until(deadline.at()) => panic!("quiche pause exceeded the scenario deadline"),
+            }
+        }
+    });
+    ControlledPeer {
+        ears: Controls { sender, deadline },
+        reports: arriving,
+        task,
+    }
+}
+
+async fn backpressure(role: Role) {
+    for_each_case(PEER, role, backpressure_cases(), |run| async move {
+        let identity = Identity::generate(SERVER_NAME);
+        let run = run.with_identity(identity.auth.clone());
+        let (mut peer, filled) = match role {
+            Role::RamaClient => {
+                let (address, accepting) = Quiche::bind_server(
+                    with_datagrams(quiche_server_config(&identity)),
+                    run.deadline,
+                )
+                .await;
+                let mut peer = controlled_peer(run.clone(), accepting);
+                let filled = rama_client_fills_and_cancels(&run, address, &mut peer.ears).await;
+                (peer, filled)
+            }
+            Role::RamaServer => {
+                let endpoint = bind_backpressure_server(&run).await;
+                let address = endpoint.local_addr().unwrap();
+                let config = with_datagrams(quiche_client_config(&identity));
+                let deadline = run.deadline;
+                let mut peer = controlled_peer(run.clone(), async move {
+                    Quiche::connect(address, SERVER_NAME, config, deadline).await
+                });
+                let filled = rama_server_fills_and_cancels(&run, endpoint, &mut peer.ears).await;
+                (peer, filled)
+            }
+        };
+        let mut reports = Vec::new();
+        loop {
+            let report = run
+                .deadline
+                .wait(&run.what, peer.reports.recv())
+                .await
+                .unwrap();
+            let resumed = filled.sent.resumed(&report);
+            reports.push(report);
+            if resumed {
+                break;
+            }
+        }
+        let sent = filled.sent.clone();
+        filled.close(&run.what, run.deadline).await;
+        while let Some(report) = run.deadline.wait(&run.what, peer.reports.recv()).await {
+            reports.push(report);
+        }
+        peer.task.join(&run.what, run.deadline).await;
+        sent.account_for(&run.what, &reports);
+    })
     .await;
 }

@@ -177,6 +177,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "quic_frame"
+path = "fuzz_targets/quic_frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "quic_streamid"
 path = "fuzz_targets/quic_streamid.rs"
 test = false

@@ -1379,6 +1379,8 @@ mod tests {
                         protocol_version: rama_tls::ProtocolVersion::TLSv1_3,
                         application_layer_protocol: None,
                         peer_certificate_chain: None,
+                        server_name: None,
+                        resumed: None,
                     });
                 Ok::<_, Infallible>(established)
             }
@@ -1691,6 +1693,8 @@ mod tests {
                             rama_net::tls::ApplicationProtocol::HTTP_2,
                         ),
                         peer_certificate_chain: None,
+                        server_name: None,
+                        resumed: None,
                     });
                 Ok::<_, Infallible>(established)
             }
@@ -1731,6 +1735,8 @@ mod tests {
                             protocol_version: rama_tls::ProtocolVersion::TLSv1_3,
                             application_layer_protocol: negotiated.clone(),
                             peer_certificate_chain: None,
+                            server_name: None,
+                            resumed: None,
                         });
                     established
                 },
@@ -1786,6 +1792,8 @@ mod tests {
                             rama_net::tls::ApplicationProtocol::HTTP_2,
                         ),
                         peer_certificate_chain: None,
+                        server_name: None,
+                        resumed: None,
                     });
                 established
             },

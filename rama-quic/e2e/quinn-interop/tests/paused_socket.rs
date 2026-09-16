@@ -66,6 +66,34 @@ fn read(socket: &Deaf, waker: &Arc<Counting>) -> Poll<usize> {
         .map(|taken| taken.expect("the socket is readable"))
 }
 
+#[tokio::test]
+async fn a_resume_between_the_pause_check_and_registration_cannot_lose_the_wake() {
+    let (socket, _) = paused_over_a_counted_socket();
+    socket.stop_reading();
+    let counter = Arc::new(Counting::default());
+    let waker = Waker::from(counter.clone());
+    let mut buffer = [0; 2048];
+    let mut bufs = [IoSliceMut::new(&mut buffer)];
+    let mut meta = [RecvMeta::default()];
+    let resumed = std::cell::Cell::new(false);
+    let result = socket.poll_recv_at_registration(
+        &mut Context::from_waker(&waker),
+        &mut bufs,
+        &mut meta,
+        || resumed.set(socket.try_read_again()),
+    );
+    assert!(result.is_pending());
+    // A resume blocked by the read's lock completes as soon as that read releases it.
+    if !resumed.get() {
+        socket.read_again();
+    }
+    assert_eq!(
+        counter.wakes(),
+        1,
+        "the resumed reader must be scheduled again"
+    );
+}
+
 /// A resume wakes the read that is waiting on the pause.
 #[tokio::test]
 async fn a_resume_wakes_a_read_that_the_pause_left_waiting() {

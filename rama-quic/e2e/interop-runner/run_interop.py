@@ -116,6 +116,12 @@ def inspect_image(reference, platform):
     return info
 
 
+def verify_image_backend(info, requested):
+    selected = ((info.get("Config") or {}).get("Labels") or {}).get("org.ramaproxy.quic.tls-backend")
+    if selected != requested:
+        raise RuntimeError(f"Rama image backend {selected!r} does not match requested {requested!r}")
+
+
 def preflight():
     if sys.version_info < (3, 10):
         raise RuntimeError("Python >=3.10 required by upstream; set PYTHON=/path/to/python3.12")
@@ -168,6 +174,7 @@ def preflight():
 def main():
     lock = json.loads((HERE / "runner.lock.json").read_text())
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--backend", choices=["boring", "rustls-ring", "rustls-aws-lc"], default="rustls-ring")
     parser.add_argument("--image", default="glendc/rama-quic-interop:local")
     parser.add_argument("--skip-build", action="store_true", help="use an already built local image")
     parser.add_argument("--artifacts", type=Path, help="new directory for this run; must not exist")
@@ -188,7 +195,7 @@ def main():
     shutil.copy2(HERE / "runner.lock.json", artifacts)
     shutil.copy2(HERE / "requirements.lock", artifacts)
     manifest = {"project": project, "cases": cases, "full_gate": cases == lock["cases"],
-                "platform": args.platform, "image": args.image, "roles": {}}
+                "platform": args.platform, "image": args.image, "backend": args.backend, "roles": {}}
     env = os.environ.copy()
     env.update(COMPOSE_PROJECT_NAME=project, DOCKER_DEFAULT_PLATFORM=args.platform,
                RAMA_CLEANUP_IMAGE=lock["cleanup"], COMPOSE_ANSI="never")
@@ -205,7 +212,7 @@ def main():
         manifest["rama_status"] = output(["git", "status", "--short"], cwd=ROOT)
         if not args.skip_build:
             execute(["docker", "build", "--platform", args.platform, "--tag", args.image,
-                     "--file", HERE / "Dockerfile", ROOT])
+                     "--build-arg", f"TLS_BACKEND={args.backend}", "--file", HERE / "Dockerfile", ROOT])
         images = {"rama": args.image, "simulator": lock["simulator"],
                   "cleanup": lock["cleanup"], **lock["peers"]}
         manifest["images"] = {}
@@ -213,6 +220,8 @@ def main():
             if name != "rama":
                 execute(["docker", "pull", "--platform", args.platform, ref])
             manifest["images"][name] = inspect_image(ref, args.platform)
+            if name == "rama":
+                verify_image_backend(manifest["images"][name], args.backend)
         execute(["git", "init", checkout])
         execute(["git", "-C", checkout, "remote", "add", "origin", lock["repository"]])
         execute(["git", "-C", checkout, "fetch", "--depth=1", "origin", lock["revision"]])

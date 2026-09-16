@@ -486,10 +486,10 @@ impl PartialEncode {
         buf: &mut [u8],
         header_crypto: &dyn crypto::HeaderKey,
         crypto: Option<(u64, &dyn crypto::PacketKey)>,
-    ) {
+    ) -> Result<(), crypto::CryptoError> {
         let Self { header_len, pn, .. } = self;
         let Some((pn_len, write_len)) = pn else {
-            return;
+            return Ok(());
         };
 
         let pn_pos = header_len - pn_len;
@@ -501,7 +501,7 @@ impl PartialEncode {
         }
 
         if let Some((number, crypto)) = crypto {
-            crypto.encrypt(number, buf, header_len);
+            crypto.encrypt(number, buf, header_len)?;
         }
 
         debug_assert!(
@@ -510,6 +510,7 @@ impl PartialEncode {
             pn_pos + 4 + header_crypto.sample_size()
         );
         header_crypto.encrypt(pn_pos, buf);
+        Ok(())
     }
 }
 
@@ -941,7 +942,7 @@ const KEY_PHASE_BIT: u8 = 0x04;
 
 /// Packet number space identifiers
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
-pub(crate) enum SpaceId {
+pub enum SpaceId {
     /// Unprotected packets, used to bootstrap the handshake
     Initial = 0,
     Handshake = 1,
@@ -993,25 +994,29 @@ mod tests {
         }
     }
 
-    // The vectors are checked against rustls's own initial keys, so this needs rustls and a
-    // provider; the rest of this module's coverage does not.
-    #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+    // Packet encoding is identical for every TLS backend.
+    #[cfg(any(
+        feature = "boring",
+        all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+    ))]
     #[test]
     #[expect(clippy::print_stdout, reason = "debug output of a test")]
     fn header_encoding() {
-        use crate::proto::Side;
-        use crate::proto::crypto::rustls::{initial_keys, initial_suite_from_provider};
-        #[cfg(all(feature = "aws-lc", not(feature = "ring")))]
-        use rama_tls_rustls::dep::rustls::crypto::aws_lc_rs::default_provider;
-        #[cfg(feature = "ring")]
-        use rama_tls_rustls::dep::rustls::crypto::ring::default_provider;
-        use rama_tls_rustls::dep::rustls::quic::Version;
-
+        use crate::proto::{Side, transport_parameters::TransportParameters};
         let dcid = ConnectionId::new(&[0x06, 0xb8, 0x58, 0xec, 0x6f, 0x80, 0x45, 0x2b]);
-        let provider = default_provider();
-
-        let suite = initial_suite_from_provider(&std::sync::Arc::new(provider)).unwrap();
-        let client = initial_keys(Version::V1, dcid, Side::Client, &suite);
+        let config = crate::test_helpers::client(&crate::test_helpers::identity());
+        let session = config
+            .crypto
+            .start_session(
+                1,
+                "localhost",
+                &TransportParameters {
+                    initial_src_cid: Some(dcid),
+                    ..TransportParameters::default()
+                },
+            )
+            .unwrap();
+        let client = session.initial_keys(&dcid, Side::Client).unwrap();
         let mut buf = Vec::new();
         let header = Header::Initial(InitialHeader {
             number: PacketNumber::U8(0),
@@ -1022,12 +1027,14 @@ mod tests {
         });
         let encode = header.encode(&mut buf);
         let header_len = buf.len();
-        buf.resize(header_len + 16 + client.packet.local.tag_len(), 0);
-        encode.finish(
-            &mut buf,
-            &*client.header.local,
-            Some((0, &*client.packet.local)),
-        );
+        buf.resize(header_len + 16 + client.local.packet.tag_len(), 0);
+        encode
+            .finish(
+                &mut buf,
+                &*client.local.header,
+                Some((0, &*client.local.packet)),
+            )
+            .unwrap();
 
         println!("{}", rama_utils::fmt::hex(&buf));
         let expected: [u8; 51] = rama_utils::hex::decode(concat!(
@@ -1037,7 +1044,7 @@ mod tests {
         .expect("valid initial packet test vector");
         assert_eq!(buf[..], expected[..]);
 
-        let server = initial_keys(Version::V1, dcid, Side::Server, &suite);
+        let server = session.initial_keys(&dcid, Side::Server).unwrap();
         let supported_versions = crate::proto::DEFAULT_SUPPORTED_VERSIONS.to_vec();
         let decode = PartialDecode::new(
             buf.as_slice().into(),
@@ -1047,7 +1054,9 @@ mod tests {
         )
         .unwrap()
         .0;
-        let mut packet = decode.finish(Some(&*server.header.remote)).unwrap();
+        let mut packet = decode
+            .finish(Some(&*server.remote.as_ref().unwrap().header))
+            .unwrap();
         assert_eq!(
             packet.header_data[..],
             [
@@ -1056,8 +1065,10 @@ mod tests {
             ][..]
         );
         server
-            .packet
             .remote
+            .as_ref()
+            .unwrap()
+            .packet
             .decrypt(0, &packet.header_data, &mut packet.payload)
             .unwrap();
         assert_eq!(packet.payload[..], [0; 16]);

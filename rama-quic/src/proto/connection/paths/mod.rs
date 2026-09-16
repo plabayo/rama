@@ -288,6 +288,13 @@ impl PathData {
             .congestion_factory()
             .build(now, config.get_initial_mtu());
         self.mtud.reset(config.get_initial_mtu(), config.min_mtu);
+        // A budget spent on the old path would hold back the first sends on the new one.
+        self.pacing = Pacer::new(
+            self.rtt.get(),
+            self.congestion.initial_window(),
+            self.current_mtu(),
+            now,
+        );
     }
 
     /// Indicates whether we're a server that hasn't validated the peer's address and hasn't
@@ -676,6 +683,47 @@ mod challenge_tests;
 mod tests {
     use super::*;
 
+    /// A path reset starts pacing afresh: a budget exhausted on the path being left would
+    /// otherwise delay the first sends on the new one.
+    #[test]
+    fn reset_refreshes_pacer_budget() {
+        let now = Instant::now();
+        let config = TransportConfig::default();
+        let mut path = PathData::new(addr(4433), None, true, None, 0, now, &config);
+        let mtu = path.current_mtu();
+        let window = path.congestion.window();
+        for _ in 0..1000 {
+            if path
+                .pacing
+                .delay(path.rtt.get(), mtu.into(), mtu, window, now)
+                .is_some()
+            {
+                break;
+            }
+            path.pacing.on_transmit(mtu);
+        }
+        assert!(
+            path.pacing
+                .delay(path.rtt.get(), mtu.into(), mtu, window, now)
+                .is_some(),
+            "the budget is spent"
+        );
+
+        path.reset(now, &config);
+
+        assert_eq!(
+            path.pacing.delay(
+                path.rtt.get(),
+                path.current_mtu().into(),
+                path.current_mtu(),
+                path.congestion.window(),
+                now
+            ),
+            None,
+            "and the reset path may send at once"
+        );
+    }
+
     #[test]
     fn qlog_recovery_snapshot_is_only_allocated_when_recording() {
         let now = Instant::now();
@@ -856,7 +904,10 @@ mod tests {
         assert_eq!(popped, 16);
     }
 
-    #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+    #[cfg(any(
+        feature = "boring",
+        all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+    ))]
     #[test]
     fn off_path_responses_respect_their_own_receive_credit() {
         let mut pair = crate::proto::tests::Pair::default();

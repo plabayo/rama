@@ -77,6 +77,9 @@ async fn quiche_answers(run: &CaseRun<StreamScenario>, server: &mut Quiche) -> P
     let protocol = server.connection().application_proto().to_vec();
 
     let received = server.read_stream(UNI, READ_CAP, deadline).await;
+    server
+        .write_stream(3, &run.scenario.down.bytes(), deadline)
+        .await;
     let asked = server.read_stream(BI, READ_CAP, deadline).await;
     server
         .write_stream(BI, &run.scenario.answer.bytes(), deadline)
@@ -87,6 +90,7 @@ async fn quiche_answers(run: &CaseRun<StreamScenario>, server: &mut Quiche) -> P
     PeerObservation {
         protocol: Some(protocol),
         up: Some((Received::Bytes(received), true)),
+        down: None,
         question: Some((Received::Bytes(asked), true)),
         answer: None,
         closed: server.connection().is_closed(),
@@ -103,6 +107,7 @@ async fn quiche_asks(run: &CaseRun<StreamScenario>, client: &mut Quiche) -> Peer
     client
         .write_stream(UNI, &run.scenario.up.bytes(), deadline)
         .await;
+    let down = client.read_stream(3, READ_CAP, deadline).await;
     client
         .write_stream(BI, &run.scenario.question.bytes(), deadline)
         .await;
@@ -111,6 +116,7 @@ async fn quiche_asks(run: &CaseRun<StreamScenario>, client: &mut Quiche) -> Peer
     PeerObservation {
         protocol: Some(protocol),
         up: None,
+        down: Some((Received::Bytes(down), true)),
         question: None,
         answer: Some((Received::Bytes(heard), true)),
         closed: client.connection().is_closed(),

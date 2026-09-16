@@ -21,8 +21,10 @@ use rama_tls_rustls::dep::rustls::{
 use crate::proto::{
     ConnectError, ConnectionId, Side, TransportError, TransportErrorCode,
     crypto::{
-        self, CryptoError, ExportKeyingMaterialError, HeaderKey, KeyPair, Keys, UnsupportedVersion,
+        self, CryptoError, DirectionalKeys, ExportKeyingMaterialError, HandshakeEvent, HeaderKey,
+        KeyPair, Keys, UnsupportedVersion,
     },
+    packet::SpaceId,
     transport_parameters::TransportParameters,
 };
 
@@ -45,7 +47,10 @@ fn received_server_name(name: &str) -> Result<Domain, TransportError> {
 }
 
 mod config;
-pub use config::{AlpnPolicy, TlsConfigError, TlsOptions};
+pub(crate) use super::config::NoInitialCipherSuite;
+use config::AlpnPolicy;
+#[cfg(test)]
+pub(crate) use config::TlsOptions;
 
 /// A rustls TLS session
 pub(crate) struct TlsSession {
@@ -55,11 +60,49 @@ pub(crate) struct TlsSession {
     /// The name the peer asked for, converted once when the backend first has it.
     server_name: Option<Domain>,
     next_secrets: Option<Secrets>,
+    write_level: SpaceId,
+    output: std::collections::VecDeque<HandshakeEvent>,
     inner: Connection,
     suite: Suite,
 }
 
 impl TlsSession {
+    fn collect_output(&mut self) {
+        let mut bytes = Vec::new();
+        let change = self.inner.write_hs(&mut bytes);
+        if !bytes.is_empty() {
+            self.output
+                .push_back(HandshakeEvent::Data(self.write_level, bytes));
+        }
+        if let Some(change) = change {
+            let (level, keys) = match change {
+                KeyChange::Handshake { keys } => (SpaceId::Handshake, keys),
+                KeyChange::OneRtt { keys, next } => {
+                    self.next_secrets = Some(next);
+                    (SpaceId::Data, keys)
+                }
+            };
+            self.write_level = level;
+            self.output.push_back(HandshakeEvent::Keys(
+                level,
+                Keys {
+                    local: DirectionalKeys {
+                        header: Box::new(keys.local.header),
+                        packet: Box::new(keys.local.packet),
+                    },
+                    remote: None,
+                },
+            ));
+            self.output.push_back(HandshakeEvent::ReadKeys(
+                level,
+                DirectionalKeys {
+                    header: Box::new(keys.remote.header),
+                    packet: Box::new(keys.remote.packet),
+                },
+            ));
+        }
+    }
+
     fn side(&self) -> Side {
         match self.inner {
             Connection::Client(_) => Side::Client,
@@ -69,8 +112,8 @@ impl TlsSession {
 }
 
 impl crypto::Session for TlsSession {
-    fn initial_keys(&self, dst_cid: &ConnectionId, side: Side) -> Keys {
-        initial_keys(self.version, *dst_cid, side, &self.suite)
+    fn initial_keys(&self, dst_cid: &ConnectionId, side: Side) -> Result<Keys, TransportError> {
+        Ok(initial_keys(self.version, *dst_cid, side, &self.suite))
     }
 
     #[cfg(test)]
@@ -88,13 +131,16 @@ impl crypto::Session for TlsSession {
         }
     }
 
-    fn handshake_summary(&self) -> Option<crate::proto::crypto::HandshakeSummary> {
+    fn handshake_summary(&self) -> Option<rama_tls::client::NegotiatedTlsParameters> {
         if !self.got_handshake_data {
             return None;
         }
-        Some(crate::proto::crypto::HandshakeSummary {
+        Some(rama_tls::client::NegotiatedTlsParameters {
+            protocol_version: rama_tls::ProtocolVersion::TLSv1_3,
+            // QUIC exposes the chain separately through `peer_certificates`.
+            peer_certificate_chain: None,
             // Read afresh: the protocol can still be settling when the name is already known.
-            protocol: self.inner.alpn_protocol().map(ApplicationProtocol::from),
+            application_layer_protocol: self.inner.alpn_protocol().map(ApplicationProtocol::from),
             server_name: self.server_name.clone(),
             // The session's own answer, once it has one. A resumption is the whole handshake
             // having taken up a session, not a session having been looked up.
@@ -131,7 +177,7 @@ impl crypto::Session for TlsSession {
         self.inner.is_handshaking()
     }
 
-    fn read_handshake(&mut self, buf: &[u8]) -> Result<bool, TransportError> {
+    fn read_handshake(&mut self, _level: SpaceId, buf: &[u8]) -> Result<bool, TransportError> {
         self.inner.read_hs(buf).map_err(|e| {
             if let Some(alert) = self.inner.alert() {
                 TransportError {
@@ -144,6 +190,8 @@ impl crypto::Session for TlsSession {
                 TransportError::PROTOCOL_VIOLATION(format!("TLS error: {e}")).with_cause(e)
             }
         })?;
+        // Drain each TLS transition before processing bytes from the next encryption level.
+        self.collect_output();
         if !self.inner.is_handshaking()
             && self.alpn_policy == AlpnPolicy::Require
             && self.inner.alpn_protocol().is_none()
@@ -184,34 +232,25 @@ impl crypto::Session for TlsSession {
         }
     }
 
-    fn write_handshake(&mut self, buf: &mut Vec<u8>) -> Option<Keys> {
-        let keys = match self.inner.write_hs(buf)? {
-            KeyChange::Handshake { keys } => keys,
-            KeyChange::OneRtt { keys, next } => {
-                self.next_secrets = Some(next);
-                keys
-            }
-        };
-
-        Some(Keys {
-            header: KeyPair {
-                local: Box::new(keys.local.header),
-                remote: Box::new(keys.remote.header),
-            },
-            packet: KeyPair {
-                local: Box::new(keys.local.packet),
-                remote: Box::new(keys.remote.packet),
-            },
-        })
+    fn poll_handshake(&mut self) -> Result<Option<HandshakeEvent>, TransportError> {
+        if let Some(event) = self.output.pop_front() {
+            return Ok(Some(event));
+        }
+        self.collect_output();
+        Ok(self.output.pop_front())
     }
 
-    fn next_1rtt_keys(&mut self) -> Option<KeyPair<Box<dyn crypto::PacketKey>>> {
-        let secrets = self.next_secrets.as_mut()?;
+    fn next_1rtt_keys(
+        &mut self,
+    ) -> Result<Option<KeyPair<Box<dyn crypto::PacketKey>>>, TransportError> {
+        let Some(secrets) = self.next_secrets.as_mut() else {
+            return Ok(None);
+        };
         let keys = secrets.next_packet_keys();
-        Some(KeyPair {
+        Ok(Some(KeyPair {
             local: Box::new(keys.local),
             remote: Box::new(keys.remote),
-        })
+        }))
     }
 
     fn is_valid_retry(&self, orig_dst_cid: &ConnectionId, header: &[u8], payload: &[u8]) -> bool {
@@ -416,6 +455,8 @@ impl crypto::ClientConfig for QuicClientConfig {
             got_handshake_data: false,
             server_name: None,
             next_secrets: None,
+            write_level: SpaceId::Initial,
+            output: Default::default(),
             inner: rama_tls_rustls::dep::rustls::quic::Connection::Client(
                 rama_tls_rustls::dep::rustls::quic::ClientConnection::new(
                     self.inner.clone(),
@@ -452,30 +493,6 @@ impl TryFrom<Arc<rama_tls_rustls::dep::rustls::ClientConfig>> for QuicClientConf
         })
     }
 }
-
-/// The initial cipher suite (AES-128-GCM-SHA256) is not available
-///
-/// A configuration built with its own initial cipher suite must use
-/// `TLS13_AES_128_GCM_SHA256`. When the cipher suite is derived from a config's
-/// [`CryptoProvider`][provider], that provider must reference a cipher suite with the same ID.
-///
-/// [provider]: rama_tls_rustls::dep::rustls::crypto::CryptoProvider
-#[derive(Clone, Debug)]
-pub struct NoInitialCipherSuite {
-    /// Whether the initial cipher suite was supplied by the caller
-    specific: bool,
-}
-
-impl std::fmt::Display for NoInitialCipherSuite {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        f.write_str(match self.specific {
-            true => "invalid cipher suite specified",
-            false => "no initial cipher suite found",
-        })
-    }
-}
-
-impl std::error::Error for NoInitialCipherSuite {}
 
 /// A QUIC-compatible TLS server configuration
 ///
@@ -599,6 +616,8 @@ impl crypto::ServerConfig for QuicServerConfig {
             got_handshake_data: false,
             server_name: None,
             next_secrets: None,
+            write_level: SpaceId::Initial,
+            output: Default::default(),
             inner: rama_tls_rustls::dep::rustls::quic::Connection::Server(
                 rama_tls_rustls::dep::rustls::quic::ServerConnection::new(
                     self.inner.clone(),
@@ -615,12 +634,17 @@ impl crypto::ServerConfig for QuicServerConfig {
         &self,
         version: u32,
         dst_cid: &ConnectionId,
-    ) -> Result<Keys, UnsupportedVersion> {
+    ) -> Result<Keys, crypto::InitialKeysError> {
         let version = interpret_version(version)?;
         Ok(initial_keys(version, *dst_cid, Side::Server, &self.initial))
     }
 
-    fn retry_tag(&self, version: u32, orig_dst_cid: &ConnectionId, packet: &[u8]) -> [u8; 16] {
+    fn retry_tag(
+        &self,
+        version: u32,
+        orig_dst_cid: &ConnectionId,
+        packet: &[u8],
+    ) -> Result<[u8; 16], CryptoError> {
         // Safe: `start_session()` is never called if `initial_keys()` rejected `version`
         #[expect(
             clippy::unwrap_used,
@@ -643,22 +667,11 @@ impl crypto::ServerConfig for QuicServerConfig {
         pseudo_packet.extend_from_slice(packet);
 
         let nonce = aead::Nonce::assume_unique_for_key(nonce);
-        #[expect(
-            clippy::unwrap_used,
-            reason = "the Retry integrity keys are 16-byte constants"
-        )]
-        let key = aead::LessSafeKey::new(aead::UnboundKey::new(&aead::AES_128_GCM, &key).unwrap());
-
-        #[expect(
-            clippy::unwrap_used,
-            reason = "sealing an empty in-place buffer with AAD cannot fail for a valid key"
-        )]
-        let tag = key
-            .seal_in_place_separate_tag(nonce, aead::Aad::from(pseudo_packet), &mut [])
-            .unwrap();
+        let key = aead::LessSafeKey::new(aead::UnboundKey::new(&aead::AES_128_GCM, &key)?);
+        let tag = key.seal_in_place_separate_tag(nonce, aead::Aad::from(pseudo_packet), &mut [])?;
         let mut result = [0; 16];
         result.copy_from_slice(tag.as_ref());
-        result
+        Ok(result)
     }
 }
 
@@ -703,27 +716,26 @@ pub(crate) fn initial_keys(
     };
     let keys = suite.keys(&dst_cid, side, version);
     Keys {
-        header: KeyPair {
-            local: Box::new(keys.local.header),
-            remote: Box::new(keys.remote.header),
+        local: DirectionalKeys {
+            header: Box::new(keys.local.header),
+            packet: Box::new(keys.local.packet),
         },
-        packet: KeyPair {
-            local: Box::new(keys.local.packet),
-            remote: Box::new(keys.remote.packet),
-        },
+        remote: Some(DirectionalKeys {
+            header: Box::new(keys.remote.header),
+            packet: Box::new(keys.remote.packet),
+        }),
     }
 }
 
 impl crypto::PacketKey for Box<dyn PacketKey> {
-    fn encrypt(&self, packet: u64, buf: &mut [u8], header_len: usize) {
+    fn encrypt(&self, packet: u64, buf: &mut [u8], header_len: usize) -> Result<(), CryptoError> {
         let (header, payload_tag) = buf.split_at_mut(header_len);
         let (payload, tag_storage) = payload_tag.split_at_mut(payload_tag.len() - self.tag_len());
-        #[expect(
-            clippy::unwrap_used,
-            reason = "`payload` excludes the `tag_len()` bytes the caller reserved, so rustls always has room for the tag"
-        )]
-        let tag = self.encrypt_in_place(packet, &*header, payload).unwrap();
+        let tag = self
+            .encrypt_in_place(packet, &*header, payload)
+            .map_err(|_error| CryptoError)?;
         tag_storage.copy_from_slice(tag.as_ref());
+        Ok(())
     }
 
     fn decrypt(
@@ -787,7 +799,9 @@ mod tests {
             .unwrap();
 
         // An oversized handshake header fails in rustls's deframer before an alert is set.
-        let error = session.read_handshake(&[2, 0xff, 0xff, 0xff]).unwrap_err();
+        let error = session
+            .read_handshake(SpaceId::Initial, &[2, 0xff, 0xff, 0xff])
+            .unwrap_err();
         assert_eq!(error.code(), TransportErrorCode::PROTOCOL_VIOLATION);
         let source = error
             .source()
@@ -798,6 +812,46 @@ mod tests {
             rustls::Error::InvalidMessage(rustls::InvalidMessage::HandshakePayloadTooLarge)
         ));
         assert_eq!(error.reason(), format!("TLS error: {source}"));
+    }
+
+    /// RFC 9001 §6.6 and Appendix B, as this backend's provider reports them for every TLS 1.3
+    /// suite it offers: the AES-GCM suites stop at 2^23 packets per key and 2^52 forgeries per
+    /// connection; ChaCha20-Poly1305 at 2^36 forgeries, with a confidentiality limit beyond the
+    /// 2^62 packets a connection can number. Both directions of a key set answer alike.
+    #[test]
+    fn packet_keys_report_the_rfc_9001_aead_limits() {
+        let provider = configured_provider();
+        let mut suites = Vec::new();
+        for suite in &provider.cipher_suites {
+            let Some(quic) = suite.tls13().and_then(|tls13| tls13.quic_suite()) else {
+                continue;
+            };
+            let (confidentiality, integrity) = match suite.suite() {
+                CipherSuite::TLS13_AES_128_GCM_SHA256 | CipherSuite::TLS13_AES_256_GCM_SHA384 => {
+                    (1 << 23..=1 << 23, 1 << 52)
+                }
+                CipherSuite::TLS13_CHACHA20_POLY1305_SHA256 => (1 << 62..=u64::MAX, 1 << 36),
+                other => panic!("an unexpected QUIC suite: {other:?}"),
+            };
+            let keys = quic.keys(&[1, 2, 3, 4, 5, 6, 7, 8], rustls::Side::Client, Version::V1);
+            for key in [&*keys.local.packet, &*keys.remote.packet] {
+                assert!(
+                    confidentiality.contains(&key.confidentiality_limit()),
+                    "{:?}: {} packets per key",
+                    suite.suite(),
+                    key.confidentiality_limit()
+                );
+                assert_eq!(key.integrity_limit(), integrity, "{:?}", suite.suite());
+            }
+            suites.push(suite.suite());
+        }
+        for expected in [
+            CipherSuite::TLS13_AES_128_GCM_SHA256,
+            CipherSuite::TLS13_AES_256_GCM_SHA384,
+            CipherSuite::TLS13_CHACHA20_POLY1305_SHA256,
+        ] {
+            assert!(suites.contains(&expected), "{expected:?} is offered");
+        }
     }
 
     /// The contract the handshake summary rests on: a name this backend validated as a DNS name

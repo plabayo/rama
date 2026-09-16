@@ -7,7 +7,9 @@ use std::{sync::Arc, time::Duration};
 
 use common::*;
 use rama::quic::{ConnectionError, Endpoint, FrameType};
-use rustls::{AlertDescription, CertificateError};
+use rustls::AlertDescription;
+#[cfg(not(feature = "boring"))]
+use rustls::CertificateError;
 
 // The baseline stream scenario in both roles moved to `baseline.rs`, where it runs from the
 // shared `interop-common` definition; what remains here is Quinn-specific.
@@ -63,6 +65,9 @@ async fn a_rama_client_refuses_a_server_it_does_not_trust() {
         "the alert says the issuer is not one it trusts: {}",
         error.reason()
     );
+    #[cfg(feature = "boring")]
+    interop_common::backend::assert_certificate_failure(error);
+    #[cfg(not(feature = "boring"))]
     assert!(
         error
             .cause()

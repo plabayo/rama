@@ -416,22 +416,20 @@ impl fmt::Display for ResetToken {
 }
 
 #[cfg(test)]
-#[cfg(any(feature = "aws-lc", feature = "ring"))]
+#[cfg(any(feature = "boring", feature = "aws-lc", feature = "ring"))]
 mod test {
     use super::*;
-    #[cfg(all(feature = "aws-lc", not(feature = "ring")))]
-    use rama_crypto::dep::aws_lc_rs::hkdf;
-    #[cfg(feature = "ring")]
-    use rama_crypto::dep::ring::hkdf;
 
     fn token_round_trip(payload: TokenPayload) -> TokenPayload {
         let rng = &mut rand::rng();
         let token = Token::new(payload, rng);
         let mut master_key = [0; 64];
         rng.fill_bytes(&mut master_key);
-        let prk = hkdf::Salt::new(hkdf::HKDF_SHA256, &[]).extract(&master_key);
-        let encoded = token.encode(&prk).unwrap();
-        let decoded = Token::decode(&prk, &encoded).expect("token didn't decrypt / decode");
+        let prk = crate::AddressTokenKey::try_from_bytes(&master_key)
+            .unwrap()
+            .into_key();
+        let encoded = token.encode(&*prk).unwrap();
+        let decoded = Token::decode(&*prk, &encoded).expect("token didn't decrypt / decode");
         assert_eq!(token.nonce, decoded.nonce);
         decoded.payload
     }
@@ -489,7 +487,9 @@ mod test {
         let rng = &mut rand::rng();
         let mut master_key = [0; 64];
         rng.fill_bytes(&mut master_key);
-        let prk = hkdf::Salt::new(hkdf::HKDF_SHA256, &[]).extract(&master_key);
+        let prk = crate::AddressTokenKey::try_from_bytes(&master_key)
+            .unwrap()
+            .into_key();
         let token = Token::new(
             TokenPayload::Validation {
                 ip: std::net::Ipv4Addr::LOCALHOST.into(),
@@ -497,27 +497,27 @@ mod test {
             },
             rng,
         );
-        let encoded = token.encode(&prk).unwrap();
+        let encoded = token.encode(&*prk).unwrap();
         // Shorter than the 16-byte nonce tail, exactly the tail, and every truncation.
         for len in 0..encoded.len() {
             assert!(
-                Token::decode(&prk, &encoded[..len]).is_none(),
+                Token::decode(&*prk, &encoded[..len]).is_none(),
                 "{len} of {} bytes must not decode",
                 encoded.len()
             );
         }
-        assert!(Token::decode(&prk, &[]).is_none());
+        assert!(Token::decode(&*prk, &[]).is_none());
         // One flipped bit anywhere fails authentication or the nonce derivation.
         for i in 0..encoded.len() {
             let mut corrupt = encoded.clone();
             corrupt[i] ^= 0x01;
-            assert!(Token::decode(&prk, &corrupt).is_none(), "bit flip at {i}");
+            assert!(Token::decode(&*prk, &corrupt).is_none(), "bit flip at {i}");
         }
         // Trailing bytes after a valid token are a decoding error.
         let mut extended = encoded.clone();
         extended.push(0);
-        assert!(Token::decode(&prk, &extended).is_none());
-        assert!(Token::decode(&prk, &encoded).is_some());
+        assert!(Token::decode(&*prk, &extended).is_none());
+        assert!(Token::decode(&*prk, &encoded).is_some());
     }
 
     #[test]
@@ -581,7 +581,9 @@ mod test {
         let mut master_key = [0; 64];
         rng.fill_bytes(&mut master_key);
 
-        let prk = hkdf::Salt::new(hkdf::HKDF_SHA256, &[]).extract(&master_key);
+        let prk = crate::AddressTokenKey::try_from_bytes(&master_key)
+            .unwrap()
+            .into_key();
 
         let mut invalid_token = Vec::new();
 
@@ -590,6 +592,6 @@ mod test {
         invalid_token.put_slice(&random_data);
 
         // Assert: garbage sealed data returns err
-        assert!(Token::decode(&prk, &invalid_token).is_none());
+        assert!(Token::decode(&*prk, &invalid_token).is_none());
     }
 }

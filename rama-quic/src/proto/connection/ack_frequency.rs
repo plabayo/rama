@@ -188,6 +188,37 @@ mod tests {
         );
     }
 
+    /// The largest peer minimum the transport parameters admit, 16,383 ms in microseconds, still
+    /// leaves the request's lower bound at or below its upper bound, at any RTT.
+    #[test]
+    fn the_largest_admissible_peer_minimum_still_yields_a_request() {
+        let params = TransportParameters {
+            max_ack_delay: 16_383u32.into(),
+            min_ack_delay: Some(16_383_000u32.into()),
+            ..TransportParameters::default()
+        };
+        let mut wire = Vec::new();
+        params.write(&mut wire);
+        let params =
+            TransportParameters::read(crate::proto::Side::Client, &mut wire.as_slice()).unwrap();
+        let state = AckFrequencyState::new(Duration::from_millis(25));
+        for rtt in [Duration::ZERO, Duration::from_millis(5), Duration::MAX] {
+            for config in [
+                AckFrequencyConfig::default(),
+                AckFrequencyConfig {
+                    max_ack_delay: Some(Duration::from_millis(1)),
+                    ..AckFrequencyConfig::default()
+                },
+            ] {
+                assert_eq!(
+                    state.candidate_max_ack_delay(rtt, &config, &params),
+                    Duration::from_micros(16_383_000),
+                    "rtt {rtt:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn requested_delays_stay_within_the_wire_limit() {
         let state = AckFrequencyState::new(Duration::from_millis(25));

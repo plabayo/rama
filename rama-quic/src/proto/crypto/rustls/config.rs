@@ -1,96 +1,14 @@
-use super::{NoInitialCipherSuite, QuicClientConfig, QuicServerConfig, rustls};
-use rama_core::error::BoxError;
+pub(crate) use super::super::config::{AlpnPolicy, TlsConfigError, TlsOptions};
+use super::{QuicClientConfig, QuicServerConfig, rustls};
 use rama_tls::{
     ProtocolVersion, TlsSupportedVersions, client::TlsClientConfig, server::TlsServerConfig,
 };
 use rama_tls_rustls::{client::RustlsTlsConnectorConfig, server::RustlsTlsAcceptorConfig};
-use std::{fmt, sync::Arc};
-
-/// How the application protocol is agreed for a connection.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum AlpnPolicy {
-    /// Require a nonempty ALPN offer and a negotiated protocol on both peers.
-    #[default]
-    Require,
-    /// The application has explicitly agreed the protocol through another mechanism.
-    OutOfBandAgreement,
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-pub struct TlsOptions {
-    pub(crate) alpn: AlpnPolicy,
-    /// Enable replayable early application data. Applications must opt in deliberately.
-    pub(crate) early_data: bool,
-}
-
-impl TlsOptions {
-    rama_utils::macros::generate_set_and_with! {
-        /// How the application protocol is agreed for connections built with this configuration.
-        pub fn alpn(mut self, policy: AlpnPolicy) -> Self {
-            self.alpn = policy;
-            self
-        }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Allow early application data, which a peer may replay. Off unless asked for.
-        pub fn early_data(mut self, allowed: bool) -> Self {
-            self.early_data = allowed;
-            self
-        }
-    }
-}
-
-#[derive(Debug)]
-pub enum TlsConfigError {
-    Tls13Required,
-    AlpnRequired,
-    InvalidAlpn,
-    UnsupportedDynamicConfig,
-    EarlyDataNotEnabled,
-    NoInitialCipherSuite(NoInitialCipherSuite),
-    InvalidConfiguration(BoxError),
-}
-
-impl fmt::Display for TlsConfigError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Tls13Required => f.write_str("QUIC requires TLS 1.3"),
-            Self::AlpnRequired => f.write_str("QUIC requires ALPN unless another protocol agreement is explicit"),
-            Self::InvalidAlpn => f.write_str("invalid ALPN protocol list"),
-            Self::UnsupportedDynamicConfig => f.write_str("asynchronous per-ClientHello TLS configuration is not supported by this QUIC backend"),
-            Self::EarlyDataNotEnabled => f.write_str("TLS configuration enables early data without QUIC application opt-in"),
-            Self::NoInitialCipherSuite(error) => error.fmt(f),
-            Self::InvalidConfiguration(error) => write!(f, "invalid QUIC TLS configuration: {error}"),
-        }
-    }
-}
-
-impl std::error::Error for TlsConfigError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::NoInitialCipherSuite(error) => Some(error),
-            Self::InvalidConfiguration(error) => Some(error.as_ref()),
-            _ => None,
-        }
-    }
-}
-
-impl From<BoxError> for TlsConfigError {
-    fn from(error: BoxError) -> Self {
-        Self::InvalidConfiguration(error)
-    }
-}
+use std::sync::Arc;
 
 /// Carry a backend error as the cause, without that conversion being part of this crate's API.
 fn invalid_configuration(error: rustls::Error) -> TlsConfigError {
     TlsConfigError::InvalidConfiguration(Box::new(error))
-}
-
-impl From<NoInitialCipherSuite> for TlsConfigError {
-    fn from(error: NoInitialCipherSuite) -> Self {
-        Self::NoInitialCipherSuite(error)
-    }
 }
 
 impl QuicClientConfig {
@@ -171,29 +89,19 @@ fn validate_versions(versions: Option<&TlsSupportedVersions>) -> Result<(), TlsC
 }
 
 fn validate_alpn(protocols: &[Vec<u8>], policy: AlpnPolicy) -> Result<(), TlsConfigError> {
-    if protocols.is_empty() && policy == AlpnPolicy::Require {
-        return Err(TlsConfigError::AlpnRequired);
-    }
-    let mut total = 0usize;
-    for protocol in protocols {
-        if protocol.is_empty() || protocol.len() > 255 {
-            return Err(TlsConfigError::InvalidAlpn);
+    rama_tls::alpn::validate_alpn(protocols.iter().map(Vec::as_slice), policy).map_err(|error| {
+        match error {
+            rama_tls::alpn::AlpnError::Required => TlsConfigError::AlpnRequired,
+            rama_tls::alpn::AlpnError::Invalid => TlsConfigError::InvalidAlpn,
         }
-        total = total
-            .checked_add(protocol.len() + 1)
-            .ok_or(TlsConfigError::InvalidAlpn)?;
-    }
-    // The extension's two-byte list length is part of its u16-sized body.
-    if total > usize::from(u16::MAX) - 2 {
-        return Err(TlsConfigError::InvalidAlpn);
-    }
-    Ok(())
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::proto::crypto::rustls::configured_provider;
+    use rama_core::error::BoxError;
     use rama_tls::server::{GeneratedServerAuthConfig, ServerAuthData};
     use rama_tls_rustls::{client::RustlsClientConfigExt, server::RustlsServerConfigExt};
 
@@ -402,22 +310,20 @@ mod tests {
                 .unwrap();
             let mut server = Arc::new(server).start_session(1, &params).unwrap();
             let mut rejected = None;
-            for _ in 0..16 {
-                let mut bytes = Vec::new();
-                client.write_handshake(&mut bytes);
-                if !bytes.is_empty()
-                    && let Err(error) = server.read_handshake(&bytes)
-                {
-                    rejected = Some((Side::Server, error));
-                    break;
-                }
-                bytes.clear();
-                server.write_handshake(&mut bytes);
-                if !bytes.is_empty()
-                    && let Err(error) = client.read_handshake(&bytes)
-                {
-                    rejected = Some((Side::Client, error));
-                    break;
+            'handshake: for _ in 0..16 {
+                for side in [Side::Server, Side::Client] {
+                    let (sender, receiver) = match side {
+                        Side::Server => (&mut client, &mut server),
+                        Side::Client => (&mut server, &mut client),
+                    };
+                    while let Some(event) = sender.poll_handshake().unwrap() {
+                        if let crate::proto::crypto::HandshakeEvent::Data(level, bytes) = event
+                            && let Err(error) = receiver.read_handshake(level, &bytes)
+                        {
+                            rejected = Some((side, error));
+                            break 'handshake;
+                        }
+                    }
                 }
             }
             let (side, error) = rejected.expect("missing ALPN was accepted");

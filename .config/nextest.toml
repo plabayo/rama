@@ -14,3 +14,18 @@ slow-timeout = { period = "60s", terminate-after = 3 }
 # Give those processes the runner instead of competing with the ignored suite.
 filter = 'test(/^cli::cli_tests::serve_proxy::test_mitm_capture_export_and_direct_cli_emulation$/)'
 threads-required = "num-test-threads"
+
+[[profile.ci.overrides]]
+# The H2 hammer saturates every core with its own runtime; a current-thread test next to it
+# can go seconds without being scheduled and miss its own deadline.
+filter = 'test(/^h2::hammer::hammer_client_concurrency$/)'
+threads-required = "num-test-threads"
+
+[[profile.ci.overrides]]
+# A QUIC regression usually surfaces as a connection that never establishes, which blocks
+# the test rather than failing it: mutation runs over the packet-protection code turn into
+# hangs, not failures. Cap those the way the H2 suite is capped, so one stuck test cannot
+# hold a scarce runner for the job's whole timeout. The stress and heavy-transfer cases are
+# deliberately long and have their own CI steps, so they keep the default budget.
+filter = 'package(rama-quic) - (test(/^driver::tests::stress_/) + binary(many_connections))'
+slow-timeout = { period = "60s", terminate-after = 5 }

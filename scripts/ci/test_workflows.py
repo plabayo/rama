@@ -1,6 +1,8 @@
 """Regression checks for scheduling mistakes that can silently lose CI coverage."""
 
 import copy
+import itertools
+import re
 import subprocess
 import unittest
 
@@ -91,16 +93,87 @@ class WorkflowPolicyTests(unittest.TestCase):
     def test_quic_platform_backend_and_toolchain_coverage(self):
         job = self.workflow["jobs"]["test-quic-interop-qa"]
         rows = matrix_rows(job["strategy"]["matrix"])
-        backends = ("rustls-ring", "rustls-aws-lc")
+        backends = ("boring", "rustls-ring", "rustls-aws-lc")
         coverage = {(r["os"], r["toolchain"], b) for r in rows
-                    for b in (backends if r["backends"] == "both" else (r["backends"],))}
+                    for b in (backends if r["backends"] == "all" else (r["backends"],))}
         self.assertEqual(coverage, {(os, toolchain, backend)
                                    for os in ("ubuntu-latest", "macos-15", "windows-latest")
                                    for toolchain in ("stable", "1.96.0") for backend in backends})
-        for backend in backends:
-            for peer in ("common", "quinn", "quiche", "aioquic", "runner"):
-                command = f"just rama-quic/qa-interop-{peer} {backend}"
-                self.assertEqual(sum(s.get("run") == command for s in job["steps"]), 1)
+        # Check actual step conditions, not just matrix labels: every row must run
+        # each assigned backend separately, including after another step fails.
+        for row in rows:
+            selected = backends if row["backends"] == "all" else (row["backends"],)
+            commands = []
+            for step in job["steps"]:
+                condition = step.get("if", "")
+                if "matrix.backends" not in condition:
+                    continue
+                self.assertIn("!cancelled()", condition)
+                if expression(condition.replace("!cancelled() && ", ""), row):
+                    commands.append(step.get("run"))
+            for backend, features, crypto in (
+                ("boring", "boring", "boring"),
+                ("rustls-ring", "rustls,ring", "ring"),
+                ("rustls-aws-lc", "rustls,aws-lc", "aws-lc"),
+            ):
+                required = [
+                    f"just rama-quic/qa-backend {features}",
+                    f"cargo test -p rama-crypto --no-default-features --features {crypto} --locked",
+                    f"cargo test -p rama-examples --no-default-features --features quic,{features} --test integration quic_ --locked -- --include-ignored",
+                    f"cargo test -p rama-quic --no-default-features --features {features} --test many_connections --locked -- --include-ignored",
+                    f"cargo check --bench quic_transport --no-default-features --features quic,{features} --locked",
+                ] + [f"just rama-quic/qa-interop-{peer} {backend}"
+                     for peer in ("common", "quinn", "quiche", "aioquic", "runner")]
+                for command in required:
+                    with self.subTest(row=row, command=command):
+                        self.assertEqual(commands.count(command), int(backend in selected))
+                expected_stress = row["os"] == "ubuntu-latest" and row["toolchain"] == "stable" and backend in selected
+                self.assertEqual(commands.count(f"just rama-quic/qa-stress-backend {features}"), int(expected_stress))
+                for selector in ("--lib dial9", "--test dial9_runtime"):
+                    command = f"cargo test -p rama-quic --no-default-features --features dial9,{features} {selector} --locked"
+                    expected = row["os"] == "ubuntu-latest" and row["toolchain"] == "stable" and backend in selected
+                    self.assertEqual(sum(command in text.splitlines() for text in commands), int(expected))
+            # Compiling without a built-in backend is host-specific, so every cell runs it.
+            self.assertEqual(commands.count("just rama-quic/qa-custom-provider"),
+                             int("boring" in selected))
+            # The isolation check only reads the locked dependency graph, so one Linux cell
+            # covers it and the scarce macOS/Windows hosts need no Python interpreter.
+            expected_isolation = (row["os"] == "ubuntu-latest" and row["toolchain"] == "stable"
+                                  and "boring" in selected)
+            self.assertEqual(commands.count("just rama-quic/qa-boring-isolation"),
+                             int(expected_isolation))
+        self.assertEqual(sum(r["os"].startswith("macos") for r in rows), 2)
+        self.assertEqual(sum(r["os"].startswith("windows") for r in rows), 2)
+
+    def test_quic_feature_combinations(self):
+        job = self.workflow["jobs"]["test-quic-interop-qa"]
+        step = next(step for step in job["steps"] if step.get("name") == "QUIC backend combinations")
+        rows = matrix_rows(job["strategy"]["matrix"])
+        self.assertEqual([row for row in rows if expression(
+            step["if"].replace("!cancelled() && ", ""), row)],
+            [{"os": "ubuntu-latest", "toolchain": "stable", "backends": "boring"}])
+        combinations = re.search(r"for features in (.*); do", step["run"])[1].split()
+        actual = {frozenset(features.split(",")) for features in combinations}
+        actual |= {frozenset(), frozenset({"boring"}), frozenset({"rustls", "ring"}),
+                   frozenset({"rustls", "aws-lc"})}
+        expected = {frozenset(combination) for size in range(5)
+                    for combination in itertools.combinations(("boring", "rustls", "ring", "aws-lc"), size)}
+        self.assertEqual(actual, expected)
+        self.assertIn("cargo test -p rama-quic --no-default-features --locked",
+                      (ROOT / "rama-quic/justfile").read_text())
+
+    def test_quic_external_provider_and_docker_coverage(self):
+        jobs = self.workflow["jobs"]
+        external = jobs["test-quic-external-gnutls"]
+        self.assertEqual(external["runs-on"], "ubuntu-24.04")
+        self.assertEqual(matrix_rows(external["strategy"]["matrix"]),
+                         [{"toolchain": "stable"}, {"toolchain": "1.96.0"}])
+        self.assertEqual(sum(s.get("run") == "just rama-quic/qa-interop-gnutls"
+                             for s in external["steps"]), 1)
+        self.assertIn("rama-quic/e2e/gnutls-interop", (ROOT / "scripts/ci/check-format.sh").read_text())
+        runner = jobs["test-quic-interop-runner"]
+        self.assertEqual({r["backend"] for r in matrix_rows(runner["strategy"]["matrix"])},
+                         {"boring", "rustls-ring", "rustls-aws-lc"})
 
     def test_cross_target_coverage(self):
         jobs = self.workflow["jobs"]

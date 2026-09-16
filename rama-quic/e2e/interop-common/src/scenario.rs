@@ -51,12 +51,12 @@ impl Chunk {
     }
 }
 
-/// What a case sends: a unidirectional upload, then a bidirectional question answered with
-/// different bytes. These three are the only source of the payloads; every peer, in this
-/// process or another, derives its bytes from them.
+/// Unidirectional payloads in both directions, followed by a bidirectional exchange.
+/// Every peer derives its payloads from these parameters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StreamScenario {
     pub up: Chunk,
+    pub down: Chunk,
     pub question: Chunk,
     pub answer: Chunk,
 }
@@ -115,6 +115,8 @@ pub struct PeerObservation {
     /// The unidirectional payload the peer read, and whether it read it to the end of the
     /// stream.
     pub up: Option<(Received, bool)>,
+    /// Server-initiated unidirectional stream, read through FIN by the client.
+    pub down: Option<(Received, bool)>,
     /// The question the peer read, and whether that stream ended.
     pub question: Option<(Received, bool)>,
     /// The answer the peer read, and whether that stream ended. Only the end that receives the
@@ -152,6 +154,12 @@ impl PeerObservation {
             }
             // The peer sent the upload and the question, and received the answer.
             Role::RamaServer => {
+                let (down, down_ended) = self
+                    .down
+                    .as_ref()
+                    .expect("the peer read the server uni stream");
+                down.check(what, "server uni stream", scenario.down);
+                assert!(down_ended, "{what}: the server uni stream ended with FIN");
                 let (answer, answer_ended) =
                     self.answer.as_ref().expect("the peer read the answer");
                 answer.check(what, "answer", scenario.answer);
@@ -201,7 +209,7 @@ pub async fn rama_client_side(run: &CaseRun<StreamScenario>, peer_addr: SocketAd
         .handshake_data()
         .expect("the handshake settled something");
     assert_eq!(
-        settled.protocol,
+        settled.application_layer_protocol,
         Some(alpn()),
         "{what}: the protocol both sides agreed on"
     );
@@ -278,7 +286,7 @@ pub async fn rama_server_side(run: &CaseRun<StreamScenario>) -> (Endpoint, Socke
                 .handshake_data()
                 .expect("the handshake settled something");
             assert_eq!(
-                settled.protocol,
+                settled.application_layer_protocol,
                 Some(alpn()),
                 "{}: the protocol both sides agreed on",
                 run.what
@@ -316,6 +324,16 @@ async fn upload_and_ask(run: &CaseRun<StreamScenario>, conn: &Connection) {
         .expect("the payload is written");
     uni.finish().expect("the uni stream ends");
 
+    let mut down = deadline
+        .wait(what, conn.accept_uni())
+        .await
+        .expect("the server initiated a uni stream");
+    let bytes = deadline
+        .wait(what, down.read_to_end(READ_CAP))
+        .await
+        .expect("the server uni stream ended");
+    Received::Bytes(bytes).check(what, "server uni stream", scenario.down);
+    // The client opens its question only after consuming the server's stream and FIN.
     let (mut send, mut recv) = deadline
         .wait(what, conn.open_bi())
         .await
@@ -350,6 +368,15 @@ async fn take_and_answer(run: &CaseRun<StreamScenario>, conn: &Connection) {
         .expect("the uni stream completes");
     Received::Bytes(received).check(what, "upload", scenario.up);
 
+    let mut down = deadline
+        .wait(what, conn.open_uni())
+        .await
+        .expect("the server opens a uni stream");
+    deadline
+        .wait(what, down.write_all(&scenario.down.bytes()))
+        .await
+        .expect("the server uni payload is written");
+    down.finish().expect("the server uni stream ends");
     let (mut send, mut recv) = deadline
         .wait(what, conn.accept_bi())
         .await

@@ -66,7 +66,13 @@ impl PacketBudget {
         })))
     }
 
-    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+    #[cfg(all(
+        test,
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        )
+    ))]
     pub(crate) fn limits(&self) -> ReceiveQueueLimits {
         self.0.lock().limits
     }
@@ -230,7 +236,13 @@ impl<T> BoundedDeque<T> {
     }
 
     /// Lower (or raise) the entry limit; a test seam for forcing storage refusal.
-    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+    #[cfg(all(
+        test,
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        )
+    ))]
     pub(crate) fn set_limit(&mut self, limit: usize) {
         self.limit = limit;
     }
@@ -305,7 +317,13 @@ impl<T> BoundedSender<T> {
     }
 
     /// Tests can inspect the processing lock boundary without waiting on that lock.
-    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+    #[cfg(all(
+        test,
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        )
+    ))]
     pub(super) fn is_unlocked(&self) -> bool {
         self.shared.try_lock().is_some()
     }

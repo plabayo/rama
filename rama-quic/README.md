@@ -42,7 +42,20 @@ The reasons behind the creation of rama can be read in [the "Why Rama" chapter](
 QUIC v1 (RFC 9000) transport for Rama: client, server and combined endpoints,
 streams, DATAGRAM, resumption and 0-RTT, migration, loss recovery, congestion
 control and path MTU discovery, on top of `rama-udp` sockets and the common
-`rama-tls` configuration (Rustls, TLS 1.3).
+`rama-tls` configuration (TLS 1.3 through BoringSSL or Rustls).
+
+Choose `boring` for BoringSSL alone, `rustls,ring` for Rustls with ring, or
+`rustls,aws-lc` for Rustls with AWS-LC. The `boring` feature does not require
+ring, AWS-LC, or the Rustls engine. `rustls-pki-types` remains the shared
+certificate/key representation used throughout Rama.
+
+Applications can supply their own TLS 1.3 and packet protection through
+`tls::provider::{ClientConfig, ServerConfig, Session}`. Pass the configurations to
+`ClientConfig::new` and `ServerConfig::new`; the latter accepts a custom token key.
+No built-in TLS or crypto feature is needed for this API. The root `rama` crate's
+`quic` feature also enables the shared `tls` types without selecting a backend.
+The [external GnuTLS interop project](e2e/gnutls-interop/) exercises this interface
+against aioquic in both roles with all built-in Rama backends disabled.
 
 Crate used by the end-user `rama` crate.
 
@@ -54,3 +67,16 @@ Learn more about `rama`:
 
 - Github: <https://github.com/plabayo/rama>
 - Book: <https://ramaproxy.org/book/>
+
+## Benchmarks
+
+Every pairing of QUIC implementations, measured through the public interop-runner endpoint
+images on one host: rows are clients, columns are servers, Rama appears once per TLS
+backend. Each chart names the host's OS, CPU count, the UTC time and the Rama commit it was
+produced from. `just rama-quic/bench-matrix` regenerates them; see
+[e2e/bench](e2e/bench/) for the cases and how the numbers are taken.
+
+![handshake](e2e/bench/graph/handshake.svg)
+![bulk](e2e/bench/graph/bulk.svg)
+![parallel](e2e/bench/graph/parallel.svg)
+![small](e2e/bench/graph/small.svg)

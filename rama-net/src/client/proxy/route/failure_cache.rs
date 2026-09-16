@@ -616,7 +616,8 @@ mod tests {
     }
 
     async fn within_test_timeout<F: Future>(future: F) -> F::Output {
-        tokio::time::timeout(Duration::from_secs(5), future)
+        // Generous: only a stuck operation pays it, and a starved CI runner must not.
+        tokio::time::timeout(Duration::from_secs(30), future)
             .await
             .expect("concurrent failure-cache test operation should complete")
     }

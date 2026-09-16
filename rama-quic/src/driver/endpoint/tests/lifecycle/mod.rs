@@ -8,9 +8,6 @@ use crate::driver::endpoint::*;
 use crate::driver::lifecycle::ShutdownOutcome;
 use crate::driver::queue::{MIN_RETAINED, QUIET_DRAINS_BEFORE_SHRINK};
 use crate::driver::sockets::MAX_RETAINED_SOCKETS;
-use crate::proto::crypto::rustls::{
-    QuicClientConfig, QuicServerConfig, TlsOptions, configured_provider,
-};
 use crate::proto::{CongestionControl, RetryRefused, TransportConfig};
 use rama_crypto::hmac::HmacSha2;
 use rama_tls::{
@@ -38,14 +35,8 @@ pub(super) fn configs() -> (ClientConfig, ServerConfig) {
         .with_alpn(alpn())
         .with_server_auth(auth);
     (
-        ClientConfig::new(Arc::new(
-            QuicClientConfig::from_rama(&client, configured_provider(), TlsOptions::default())
-                .unwrap(),
-        )),
-        ServerConfig::with_crypto(Arc::new(
-            QuicServerConfig::from_rama(&server, configured_provider(), TlsOptions::default())
-                .unwrap(),
-        )),
+        ClientConfig::try_from_rama_tls(&client, crate::test_helpers::options()).unwrap(),
+        ServerConfig::try_from_rama_tls(&server, crate::test_helpers::options()).unwrap(),
     )
 }
 
@@ -912,6 +903,9 @@ async fn graceful_executor_joins_without_guard_cycles() {
     let _rebound = std::net::UdpSocket::bind(addr).unwrap();
 }
 
+/// An attempt nobody answers still puts a close on the wire when the endpoint shuts down, and
+/// leaves as soon as it has (RFC 9000 §10.2), so even a 1 ms budget is not exceeded; the
+/// attempt's unpolled future learns it was closed locally.
 #[tokio::test]
 async fn forced_shutdown_joins_an_unpolled_connection_attempt() {
     let mut client_config = configs().0;
@@ -928,7 +922,7 @@ async fn forced_shutdown_joins_an_unpolled_connection_attempt() {
     let outcome = tokio::time::timeout(Duration::from_secs(1), endpoint.shutdown())
         .await
         .unwrap();
-    assert_eq!(outcome, ShutdownOutcome::Forced);
+    assert_eq!(outcome, ShutdownOutcome::Drained);
     assert!(matches!(
         connecting.await,
         Err(ConnectionError::LocallyClosed)
@@ -2364,6 +2358,151 @@ async fn bulk_transmit_yields_at_the_quota_and_lets_another_connection_progress(
     tokio::join!(client.shutdown(), server.shutdown());
 }
 
+/// An application that keeps its stream open without reading exhausts receive credit.
+/// Other connections keep transferring, and reading again wakes the original writer.
+#[tokio::test]
+async fn a_non_reading_peer_bounds_resources_and_recovers_while_other_connections_progress() {
+    const CREDIT: u32 = octets::kib_u32(32);
+    const SEND_WINDOW: u64 = octets::kib_u64(64);
+
+    fn resource_probe(endpoint: &Endpoint) -> impl Fn() -> proto::StreamResourceUsage + use<> {
+        let state = endpoint.inner.state.lock();
+        assert_eq!(state.recv_state.connections.channels.len(), 1);
+        let inner = state
+            .recv_state
+            .connections
+            .channels
+            .values()
+            .next()
+            .unwrap()
+            .inner
+            .clone();
+        move || inner.state.lock().inner.streams().resource_usage()
+    }
+
+    tokio::time::timeout(Duration::from_secs(20), async {
+        let (mut client_config, mut server_config) = configs();
+        let transport = Arc::new(
+            TransportConfig::default()
+                .with_receive_window(CREDIT.into())
+                .with_stream_receive_window(CREDIT.into())
+                .with_send_window(SEND_WINDOW),
+        );
+        client_config.set_transport_config(transport.clone());
+        server_config.set_transport_config(transport);
+        let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+        let client = endpoint(None, Executor::new(), Duration::from_secs(1));
+        let (bulk, peer) = tokio::join!(
+            client
+                .connect_with(
+                    client_config.clone(),
+                    server.local_addr().unwrap(),
+                    "localhost"
+                )
+                .unwrap(),
+            async { server.accept().await.unwrap().await.unwrap() }
+        );
+        let bulk = bulk.unwrap();
+        let client_usage = resource_probe(&client);
+        let server_usage = resource_probe(&server);
+        let payload: Vec<u8> = (0..octets::kib(256)).map(|i| (i % 251) as u8).collect();
+        let mut send = bulk.open_uni().await.unwrap();
+        send.write_all(&payload[..CREDIT as usize]).await.unwrap();
+        let mut recv = peer.accept_uni().await.unwrap();
+        // Receipt and acknowledgement distinguish peer credit from congestion or local buffering.
+        wait_until(|| {
+            server_usage().received_offset == u64::from(CREDIT)
+                && client_usage().unacknowledged_bytes == 0
+        })
+        .await;
+        let (blocked_tx, blocked_rx) = tokio::sync::oneshot::channel();
+        let writer = tokio::spawn({
+            let payload = payload.clone();
+            async move {
+                {
+                    let mut write = std::pin::pin!(send.write_all(&payload[CREDIT as usize..]));
+                    std::future::poll_fn(|cx| {
+                        assert!(
+                            write.as_mut().poll(cx).is_pending(),
+                            "unread credit must block the writer"
+                        );
+                        Poll::Ready(())
+                    })
+                    .await;
+                    blocked_tx.send(()).unwrap();
+                    write.await.unwrap();
+                }
+                send.finish().unwrap();
+            }
+        });
+        blocked_rx.await.unwrap();
+        let assert_bounds = || {
+            let client_resources = client_usage();
+            assert_eq!(client_resources.sent_offset, u64::from(CREDIT));
+            assert_eq!(client_resources.peer_credit, u64::from(CREDIT));
+            assert!(client_resources.unacknowledged_bytes <= SEND_WINDOW);
+            let server_resources = server_usage();
+            assert_eq!(server_resources.received_offset, u64::from(CREDIT));
+            assert!(server_resources.retained_receive_bytes >= CREDIT as usize);
+            // The assembler compacts when allocation overhead exceeds 1.5 times buffered bytes.
+            assert!(
+                server_resources.retained_receive_bytes <= CREDIT as usize * 5 / 2,
+                "receive allocation: {server_resources:?}"
+            );
+            for conn in [&bulk, &peer] {
+                let held = conn.retained_send_bytes();
+                let mtu = conn.max_datagram_payload();
+                assert!(held.buffer <= 2 * MAX_TRANSMIT_SEGMENTS * mtu);
+                assert!(held.owned <= (RETAINED_DESCRIPTORS - 1) * MAX_TRANSMIT_SEGMENTS * mtu);
+                assert!(held.slots < RETAINED_DESCRIPTORS);
+            }
+        };
+        assert_bounds();
+        // Keep every competing connection alive on the same pair of endpoint drivers.
+        let mut others = Vec::new();
+        for round in 0..3u8 {
+            let (other, other_peer) = tokio::join!(
+                client
+                    .connect_with(
+                        client_config.clone(),
+                        server.local_addr().unwrap(),
+                        "localhost"
+                    )
+                    .unwrap(),
+                async { server.accept().await.unwrap().await.unwrap() }
+            );
+            let other = other.unwrap();
+            let message = vec![round; octets::kib(4)];
+            let mut other_send = other.open_uni().await.unwrap();
+            other_send.write_all(&message).await.unwrap();
+            other_send.finish().unwrap();
+            let mut other_recv = other_peer.accept_uni().await.unwrap();
+            assert_eq!(
+                other_recv.read_to_end(message.len()).await.unwrap(),
+                message
+            );
+            assert!(!writer.is_finished(), "the unread writer remains blocked");
+            assert_bounds();
+            others.push((other, other_peer));
+            assert_eq!(server.open_connections(), others.len() + 1);
+            assert_eq!(client.stats().retained_sockets, 1);
+            assert_eq!(server.stats().retained_sockets, 1);
+        }
+        let received = recv.read_to_end(payload.len()).await.unwrap();
+        writer.await.unwrap();
+        assert_eq!(received, payload);
+        wait_until(|| client_usage().unacknowledged_bytes == 0).await;
+        assert_eq!(
+            server_usage().retained_receive_bytes,
+            0,
+            "reading releases the receive allocation"
+        );
+        tokio::join!(client.shutdown(), server.shutdown());
+    })
+    .await
+    .expect("credit recovery and independent connections complete");
+}
+
 /// The endpoint driver's own deadline decision: while an admission is queued and its
 /// handshake deadline lies ahead, a poll must not wake itself (no busy re-poll); at the
 /// deadline the timer wakes the task and the poll expires and releases the attempt.
@@ -2848,14 +2987,68 @@ async fn mtu_discovery_probes_search_above_the_confirmed_mtu_within_the_configur
     tokio::join!(client.shutdown(), server.shutdown());
 }
 
+#[tokio::test]
+async fn mtu_discovery_respects_a_smaller_peer_receive_limit_on_the_wire() {
+    const PEER_LIMIT: u16 = 1300;
+    let (mut client_config, server_config) = configs();
+    let mut transport = TransportConfig::default();
+    let mut discovery = crate::proto::MtuDiscoveryConfig::default();
+    discovery.set_upper_bound(9000);
+    transport.maybe_set_mtu_discovery_config(Some(discovery));
+    client_config.set_transport_config(Arc::new(transport));
+    let mut server_endpoint_config = EndpointConfig::try_with_rand_key().unwrap();
+    server_endpoint_config
+        .max_udp_payload_size(PEER_LIMIT)
+        .unwrap();
+    let server = endpoint_with(
+        server_endpoint_config,
+        Some(server_config),
+        loopback_socket(),
+    );
+    let (socket, log) = recording_socket();
+    let client = endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), None, socket);
+    let connecting = client
+        .connect_with(client_config, server.local_addr().unwrap(), "localhost")
+        .unwrap();
+    let incoming = tokio::time::timeout(Duration::from_secs(2), server.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    let (c, s) = handshake(connecting, incoming).await;
+    assert!(
+        drive_until(&c, &s, Duration::from_secs(5), || {
+            c.stats().path.current_mtu == PEER_LIMIT
+        })
+        .await,
+        "discovery reaches the peer's receive limit"
+    );
+    exchange(&c, &s, &vec![0x62; 8192]).await;
+    {
+        let log = log.lock();
+        assert!(
+            log.sent
+                .iter()
+                .any(|datagram| datagram.bytes.len() == usize::from(PEER_LIMIT))
+        );
+        assert!(
+            log.sent
+                .iter()
+                .all(|datagram| datagram.bytes.len() <= usize::from(PEER_LIMIT)),
+            "all actual UDP datagrams, including probes, respect the advertised limit"
+        );
+    }
+    drop((c, s));
+    tokio::join!(client.shutdown(), server.shutdown());
+}
+
 /// The engine's write buffer is reused after the confirmed MTU collapses. The path learns a
 /// larger MTU, then loses it to a black hole, and the buffer keeps the storage the larger
 /// datagrams needed instead of shrinking to what is now being sent.
 ///
 /// The bound checked alongside is composed here rather than read off the connection: the buffer
 /// holds capacity a former, larger path put there, so the term is the largest payload observed
-/// rather than the current one, and a `Vec` grows by doubling. This scenario need not fill a
-/// segmented buffer; storage near the bound is the segmented case.
+/// rather than the current one. A segmented descriptor is held after one accepted segment
+/// while the path ceiling falls; its remaining bytes must be recovered and delivered.
 #[tokio::test]
 async fn the_write_buffer_is_reused_after_the_confirmed_mtu_collapses() {
     // A descriptor is at most this many datagrams of at most the payload the path admits; a
@@ -2865,23 +3058,22 @@ async fn the_write_buffer_is_reused_after_the_confirmed_mtu_collapses() {
     fn buffer_bound(payload: usize) -> usize {
         2 * MAX_TRANSMIT_SEGMENTS * payload
     }
+
     fn owned_bound(payload: usize) -> usize {
         (RETAINED_DESCRIPTORS - 1) * MAX_TRANSMIT_SEGMENTS * payload
     }
 
     let (mut client_config, mut server_config) = configs();
-    let mut transport = crate::TransportConfig::default();
+    let mut transport = crate::TransportConfig::default()
+        .try_with_initial_congestion_window(u64::from(u32::MAX) + 1)
+        .unwrap();
     transport.set_max_idle_timeout(Duration::from_secs(3).try_into().unwrap());
     let transport = Arc::new(transport);
     client_config.set_transport_config(transport.clone());
     server_config.set_transport_config(transport);
     let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
-    let threshold = Arc::new(AtomicUsize::new(usize::MAX));
-    let client = faulty_endpoint_with_threshold(
-        None,
-        Arc::new(Mutex::new(VecDeque::new())),
-        threshold.clone(),
-    );
+    let (socket, log, segments) = segmenting_socket(1);
+    let client = endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), None, socket);
     let connecting = client
         .connect_with(client_config, server.local_addr().unwrap(), "localhost")
         .unwrap();
@@ -2903,32 +3095,44 @@ async fn the_write_buffer_is_reused_after_the_confirmed_mtu_collapses() {
     assert!(learned, "the search must reach the upper bound on loopback");
     widest = widest.max(client_conn.max_datagram_payload());
 
-    let payload = vec![0x42u8; octets::kib(64)];
-    let transfer = |conn: &crate::driver::connection::Connection,
-                    peer: &crate::driver::connection::Connection,
-                    payload: Vec<u8>| {
-        let conn = conn.clone();
-        let peer = peer.clone();
-        async move {
-            let mut send = conn.open_uni().await.unwrap();
-            send.write_all(&payload).await.unwrap();
-            send.finish().unwrap();
-            let mut recv = peer.accept_uni().await.unwrap();
-            let got = recv.read_to_end(payload.len()).await.unwrap();
-            assert_eq!(got, payload, "every byte, in order");
-        }
-    };
-    tokio::time::timeout(
-        Duration::from_secs(10),
-        transfer(&client_conn, &server_conn, payload.clone()),
+    segments.arm();
+    let payload: Vec<u8> = (0..octets::kib(64)).map(|i| (i % 251) as u8).collect();
+    let mut send = client_conn.open_uni().await.unwrap();
+    send.write_all(&payload).await.unwrap();
+    send.finish().unwrap();
+    wait_for(
+        "a segmented descriptor has an accepted prefix and a pending suffix",
+        Duration::from_secs(5),
+        || {
+            let log = log.lock();
+            log.rejected.is_some() && log.fallback().len() == 1
+        },
     )
-    .await
-    .expect("the transfer completes at the learned MTU");
+    .await;
+    let held = client_conn.held_transmit().expect("the suffix is retained");
+    let descriptor_bytes = {
+        let log = log.lock();
+        let (descriptor, size) = log.rejected.as_ref().unwrap();
+        assert_eq!(*size, 1452, "segmentation uses the learned MTU");
+        assert!(
+            descriptor.bytes.len() >= 3 * size,
+            "a real multi-segment offer"
+        );
+        assert_eq!(
+            held.0, descriptor.bytes,
+            "the partially accepted descriptor remains owned"
+        );
+        descriptor.bytes.len()
+    };
     widest = widest.max(client_conn.max_datagram_payload());
     let peak = client_conn.retained_send_bytes();
     assert!(
-        peak.buffer >= 1452,
-        "the buffer held a datagram of the learned size, not just a handshake packet: {peak:?}"
+        peak.buffer >= descriptor_bytes,
+        "the reusable allocation held the complete descriptor: {peak:?}"
+    );
+    assert!(
+        peak.owned <= owned_bound(widest) && peak.slots < RETAINED_DESCRIPTORS,
+        "descriptor copies remain bounded while the partial send borrows the write buffer: {peak:?}"
     );
     assert!(
         peak.buffer <= buffer_bound(widest),
@@ -2939,13 +3143,18 @@ async fn the_write_buffer_is_reused_after_the_confirmed_mtu_collapses() {
 
     // The path now admits 1300 bytes at most, so the learned size black-holes and the MTU
     // collapses under what the buffer already holds.
-    threshold.store(1300, Ordering::Relaxed);
-    tokio::time::timeout(
-        Duration::from_secs(10),
-        transfer(&client_conn, &server_conn, payload),
-    )
-    .await
-    .expect("black-hole detection must restore progress");
+    log.lock().payload_ceiling = Some(1300);
+    open_segment_hold(&log);
+    let mut recv = server_conn.accept_uni().await.unwrap();
+    let received =
+        tokio::time::timeout(Duration::from_secs(10), recv.read_to_end(payload.len() + 1))
+            .await
+            .expect("black-hole detection must restore progress")
+            .expect("the stream completes");
+    assert_eq!(
+        received, payload,
+        "the accepted prefix and recovered suffix arrive exactly once"
+    );
     let path = client_conn.stats().path;
     assert!(path.black_holes_detected >= 1);
     assert!(
@@ -3346,8 +3555,17 @@ async fn an_unanswered_retry_route_expires_on_its_own_and_shutdown_releases_it_e
         .await
         .unwrap()
         .unwrap();
+    let before_close = server.stats().received_datagrams;
     drop(connecting);
     client.shutdown().await;
+    // The client's close went to A on its way out; it belongs to the pending attempt, and a
+    // Retry issued before it is taken in would meet it as a fresh attempt holding A instead.
+    wait_for(
+        "the client's close reaches A",
+        Duration::from_secs(2),
+        || server.stats().received_datagrams > before_close,
+    )
+    .await;
     server.rebind_abstract(loopback_socket()).unwrap();
     let addr_b = server.local_addr().unwrap();
     let retried_at = Instant::now();
@@ -3380,8 +3598,15 @@ async fn an_unanswered_retry_route_expires_on_its_own_and_shutdown_releases_it_e
         .await
         .unwrap()
         .unwrap();
+    let before_close = server.stats().received_datagrams;
     drop(connecting);
     client.shutdown().await;
+    wait_for(
+        "the client's close reaches A",
+        Duration::from_secs(2),
+        || server.stats().received_datagrams > before_close,
+    )
+    .await;
     server.rebind_abstract(loopback_socket()).unwrap();
     let addr_b = server.local_addr().unwrap();
     incoming.retry().unwrap();
@@ -3993,11 +4218,15 @@ pub(super) struct SegmentLog {
     pub(super) sent: Vec<SentDatagram>,
     /// Sends stay pending once this many fallback datagrams were accepted, until `open`.
     hold_after: usize,
+    /// Limit the fallback hold to one peer, allowing unrelated connections to send.
+    pub(super) hold_destination: Option<SocketAddress>,
     open: bool,
     wakers: Vec<Waker>,
     /// Errors reported after part of a short descriptor was already accepted.
     /// While set, plain datagrams are recorded as sent but never reach the network.
     blackhole: bool,
+    /// Simulated path ceiling: larger datagrams leave the sender but do not reach the peer.
+    payload_ceiling: Option<usize>,
     /// While set, datagrams for this destination are not accepted and the sender is told to wait.
     blocked: Option<SocketAddress>,
     /// While set, this many more datagrams are accepted and then the sender is told to wait. It
@@ -4209,7 +4438,13 @@ impl<S: DatagramSender> DatagramSender for SegmentingSender<S> {
                 rama_udp::DatagramFeature::Segmentation,
             )));
         }
-        if log.rejected.is_some() && !log.open && log.fallback().len() >= log.hold_after {
+        if log.rejected.is_some()
+            && !log.open
+            && log.fallback().len() >= log.hold_after
+            && log
+                .hold_destination
+                .is_none_or(|destination| destination == datagram.destination())
+        {
             log.wakers.push(cx.waker().clone());
             return Poll::Pending;
         }
@@ -4220,7 +4455,11 @@ impl<S: DatagramSender> DatagramSender for SegmentingSender<S> {
             )
             .into()));
         }
-        if log.blackhole {
+        if log.blackhole
+            || log
+                .payload_ceiling
+                .is_some_and(|ceiling| datagram.payload().len() > ceiling)
+        {
             log.sent.push(SentDatagram::of(datagram));
             log.spend_credit();
             return Poll::Ready(Ok(()));
@@ -4255,7 +4494,7 @@ pub(super) fn segmenting_socket(
     segmenting_socket_from(std_socket, hold_after)
 }
 
-fn segmenting_socket_from(
+pub(super) fn segmenting_socket_from(
     std_socket: std::net::UdpSocket,
     hold_after: usize,
 ) -> (Socket, Arc<Mutex<SegmentLog>>, Arc<Segments>) {
@@ -4891,7 +5130,13 @@ fn offers(log: &Mutex<SegmentLog>) -> String {
 /// This fails if `drive_transmit` reports `cid_sent` only when the sender returns `Ready(Ok)`.
 #[tokio::test]
 async fn an_accepted_prefix_is_reported_before_its_descriptor_completes() {
-    let (client_config, server_config) = configs();
+    let (mut client_config, server_config) = configs();
+    // This window disables pacing so RTT cannot prevent the segmented descriptor we inspect.
+    client_config.set_transport_config(Arc::new(
+        TransportConfig::default()
+            .try_with_initial_congestion_window(u64::from(u32::MAX) + 1)
+            .unwrap(),
+    ));
     let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
     let (socket, log, segments) = segmenting_socket(1);
     let client = endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), None, socket);
@@ -6216,6 +6461,79 @@ async fn switching_to_an_identifier_is_not_using_it_until_a_datagram_leaves() {
     tokio::join!(client.shutdown(), server.shutdown());
 }
 
+/// A replacement endpoint has no connection state; only the persisted reset key lets it
+/// terminate connections established by its predecessor.
+#[tokio::test]
+async fn a_restarted_endpoint_uses_its_configured_reset_key() {
+    use crate::proto::{HashedConnectionIdGenerator, StatelessResetKey};
+
+    let (client_config, server_config) = configs();
+    let mut config = EndpointConfig::try_with_rand_key().unwrap();
+    config
+        .set_stateless_reset_key(StatelessResetKey::from_seed(&[0x71; 32]))
+        .set_cid_generator(Arc::new(|| {
+            Box::new(HashedConnectionIdGenerator::from_key(7))
+        }));
+    let (socket, old_log) = recording_socket();
+    let server = endpoint_with(config.clone(), Some(server_config), socket);
+    let addr = server.local_addr().unwrap();
+    let client = endpoint(None, Executor::new(), Duration::from_secs(1));
+    let connecting = client
+        .connect_with(client_config, addr, "localhost")
+        .unwrap();
+    let incoming = server.accept().await.unwrap();
+    let (c, s) = handshake(connecting, incoming).await;
+    exchange(&c, &s, b"before restart").await;
+
+    // Suppress shutdown traffic to model losing the endpoint without notifying its peer.
+    old_log.lock().blackhole = true;
+    drop(s);
+    server.shutdown().await;
+    drop(server);
+    assert!(c.close_reason().is_none());
+
+    for preserved in [false, true] {
+        let mut restarted_config = config.clone();
+        if !preserved {
+            restarted_config.set_stateless_reset_key(StatelessResetKey::from_seed(&[0x29; 32]));
+        }
+        let (socket, resets) = recording_socket_from(std::net::UdpSocket::bind(addr).unwrap());
+        let restarted = endpoint_with(restarted_config, None, socket);
+        let received_before = client.stats().received_datagrams;
+        c.send_datagram(vec![0x5a; 256].into()).unwrap();
+        wait_for(
+            "replacement endpoint sent a response",
+            Duration::from_secs(2),
+            || !resets.lock().sent.is_empty(),
+        )
+        .await;
+        if preserved {
+            let reason = tokio::time::timeout(Duration::from_secs(2), c.closed())
+                .await
+                .expect("the preserved reset key terminates the old connection");
+            assert!(matches!(reason, ConnectionError::Reset), "{reason:?}");
+        } else {
+            wait_for(
+                "client processed the foreign reset",
+                Duration::from_secs(2),
+                || {
+                    client.stats().received_datagrams > received_before
+                        && c.driver_stats().receive_queue.queued_datagrams == 0
+                },
+            )
+            .await;
+            assert!(
+                c.close_reason().is_none(),
+                "a changed key cannot reset the old connection"
+            );
+        }
+        restarted.shutdown().await;
+        drop(restarted);
+    }
+    drop(c);
+    client.shutdown().await;
+}
+
 /// A stateless reset for `cid` under `key`, shaped like the server's.
 fn stateless_reset_for(key: &HmacSha2, cid: &[u8]) -> Vec<u8> {
     let mut datagram = vec![0x40u8];
@@ -6554,7 +6872,7 @@ async fn an_accept_error_wakes_the_parked_endpoint_to_send_its_response() {
             &self,
             version: u32,
             cid: &crate::proto::ConnectionId,
-        ) -> Result<crate::proto::crypto::Keys, crate::proto::crypto::UnsupportedVersion> {
+        ) -> Result<crate::proto::crypto::Keys, crate::proto::crypto::InitialKeysError> {
             self.0.initial_keys(version, cid)
         }
         fn retry_tag(
@@ -6562,7 +6880,7 @@ async fn an_accept_error_wakes_the_parked_endpoint_to_send_its_response() {
             version: u32,
             cid: &crate::proto::ConnectionId,
             packet: &[u8],
-        ) -> [u8; 16] {
+        ) -> Result<[u8; 16], crate::proto::crypto::CryptoError> {
             self.0.retry_tag(version, cid, packet)
         }
         fn start_session(
@@ -6631,4 +6949,144 @@ async fn an_accept_error_wakes_the_parked_endpoint_to_send_its_response() {
     })
     .await
     .expect("both endpoints release their drivers");
+}
+
+#[tokio::test]
+async fn retained_sockets_are_bounded_across_address_families_while_another_connection_progresses()
+{
+    let (client_config, server_config) = configs();
+    let server_v4 = Endpoint::bind_server(
+        Executor::new(),
+        server_config.clone(),
+        "127.0.0.1:0".parse::<std::net::SocketAddr>().unwrap(),
+    )
+    .await
+    .unwrap();
+    let server_v6 = Endpoint::bind_server(
+        Executor::new(),
+        server_config.clone(),
+        "[::1]:0".parse::<std::net::SocketAddr>().unwrap(),
+    )
+    .await
+    .unwrap();
+    let control_server = Endpoint::bind_server(
+        Executor::new(),
+        server_config,
+        "[::1]:0".parse::<std::net::SocketAddr>().unwrap(),
+    )
+    .await
+    .unwrap();
+    let mut pending = Vec::new();
+    let mut held_logs = Vec::new();
+    let mut client = None;
+    for index in 0..MAX_RETAINED_SOCKETS {
+        let ipv6 = index % 2 == 1;
+        let bind = if ipv6 { "[::1]:0" } else { "127.0.0.1:0" };
+        let destination = if ipv6 {
+            server_v6.local_addr().unwrap()
+        } else {
+            server_v4.local_addr().unwrap()
+        };
+        let (socket, log, _) =
+            segmenting_socket_from(std::net::UdpSocket::bind(bind).unwrap(), usize::MAX);
+        block_segments_for(&log, SocketAddress::from(destination));
+        if let Some(endpoint) = &client {
+            let endpoint: &Endpoint = endpoint;
+            endpoint.rebind_abstract(socket).unwrap();
+        } else {
+            client = Some(endpoint_with(
+                EndpointConfig::try_with_rand_key().unwrap(),
+                None,
+                socket,
+            ));
+        }
+        let endpoint = client.as_ref().unwrap();
+        pending.push(
+            endpoint
+                .connect_with(client_config.clone(), destination, "localhost")
+                .unwrap(),
+        );
+        wait_for(
+            "the Initial waits on its own socket",
+            Duration::from_secs(3),
+            || !log.lock().wakers.is_empty(),
+        )
+        .await;
+        assert_eq!(endpoint.stats().retained_sockets, index + 1);
+        held_logs.push(log);
+    }
+    let client = client.unwrap();
+    let before = client.local_addrs();
+    assert!(before.iter().any(SocketAddr::is_ipv4) && before.iter().any(SocketAddr::is_ipv6));
+    let refused = client.rebind_abstract(recording_socket().0).unwrap_err();
+    assert_eq!(refused.kind(), io::ErrorKind::QuotaExceeded);
+    assert_eq!(client.local_addrs(), before);
+
+    let control = client
+        .connect_with(
+            client_config,
+            control_server.local_addr().unwrap(),
+            "localhost",
+        )
+        .unwrap();
+    let incoming = control_server.accept().await.unwrap();
+    let (c, s) = handshake(control, incoming).await;
+    exchange(&c, &s, b"progress with eight retained mixed-family sockets").await;
+    assert_eq!(client.stats().retained_sockets, MAX_RETAINED_SOCKETS);
+    assert!(
+        held_logs.iter().all(|log| {
+            let log = log.lock();
+            log.sent
+                .iter()
+                .all(|packet| Some(packet.destination) != log.blocked)
+        }),
+        "all original handshakes remain held"
+    );
+
+    let accept = |server: Endpoint| async move {
+        let mut connections = Vec::new();
+        for _ in 0..MAX_RETAINED_SOCKETS / 2 {
+            connections.push(server.accept().await.unwrap().await.unwrap());
+        }
+        connections
+    };
+    let mut accepting = tokio::task::JoinSet::new();
+    accepting.spawn(accept(server_v4.clone()));
+    accepting.spawn(accept(server_v6.clone()));
+    for log in &held_logs {
+        unblock_segments(log);
+    }
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let mut connections = Vec::new();
+        for attempt in pending {
+            connections.push(attempt.await.unwrap());
+        }
+        while let Some(result) = accepting.join_next().await {
+            connections.extend(result.unwrap());
+        }
+        for connection in &connections {
+            connection.close(0u32.into(), b"done");
+        }
+    })
+    .await
+    .expect("both address families complete their held handshakes");
+    wait_for(
+        "retiring sockets drain after their connections close",
+        Duration::from_secs(5),
+        || client.stats().retained_sockets == 1,
+    )
+    .await;
+    exchange(
+        &s,
+        &c,
+        b"the independent connection still works after drain",
+    )
+    .await;
+    drop((c, s));
+    tokio::join!(
+        client.shutdown(),
+        control_server.shutdown(),
+        server_v4.shutdown(),
+        server_v6.shutdown()
+    );
 }

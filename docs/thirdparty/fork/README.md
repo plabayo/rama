@@ -54,12 +54,17 @@ as a distant relative.
 
 ### quinn-rs
 
-- <https://github.com/quinn-rs/quinn/tree/b826169972971a4a18a7a7d32694d7d90483068b>
+- <https://github.com/quinn-rs/quinn/tree/769ef759a35dda0362117bb83a933069f97ba953>
   - QUIC transport adapted into `rama-quic`, reusing Rama's UDP, TLS, runtime and
     utilities while preserving useful upstream structure.
+  - reviewed against upstream `main` (`769ef75`, 2026-09-14): every quinn-proto security
+    advisory through that date and every behavioural fix are present or ported; not carried
+    over are DATA_BLOCKED/STREAM_DATA_BLOCKED emission, the pending-incoming server-config
+    snapshot, the DATAGRAM-instead-of-PING tail-loss probe, and the assembler's sorted
+    `VecDeque` storage, which are functional or performance choices rather than fixes.
   - License:
-    - Original: <https://github.com/quinn-rs/quinn/blob/b826169972971a4a18a7a7d32694d7d90483068b/LICENSE-MIT>
-      and <https://github.com/quinn-rs/quinn/blob/b826169972971a4a18a7a7d32694d7d90483068b/LICENSE-APACHE>
+    - Original: <https://github.com/quinn-rs/quinn/blob/769ef759a35dda0362117bb83a933069f97ba953/LICENSE-MIT>
+      and <https://github.com/quinn-rs/quinn/blob/769ef759a35dda0362117bb83a933069f97ba953/LICENSE-APACHE>
     - Type: MIT OR Apache-2.0 (Copyright (c) 2018 The quinn Developers)
     - Copy: [./licenses/quinn/LICENSE-MIT](./licenses/quinn/LICENSE-MIT),
       [./licenses/quinn/LICENSE-APACHE](./licenses/quinn/LICENSE-APACHE)

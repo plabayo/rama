@@ -1,5 +1,5 @@
 use std::fmt;
-#[cfg(any(feature = "aws-lc", feature = "ring"))]
+#[cfg(any(feature = "aws-lc", feature = "ring", feature = "boring"))]
 use std::sync::Arc;
 
 #[cfg(all(feature = "aws-lc", not(feature = "ring")))]
@@ -8,7 +8,7 @@ use rama_crypto::dep::aws_lc_rs::hkdf;
 use rama_crypto::dep::ring::hkdf;
 use rama_crypto::hmac::HmacSha2;
 
-#[cfg(any(feature = "aws-lc", feature = "ring"))]
+#[cfg(any(feature = "aws-lc", feature = "ring", feature = "boring"))]
 use crate::proto::{config::ConfigError, crypto::HandshakeTokenKey};
 
 /// Bytes of secret material accepted by the fixed-size key constructors.
@@ -55,18 +55,16 @@ impl fmt::Debug for StatelessResetKey {
 /// generates one. The same secrecy applies as for [`StatelessResetKey`].
 ///
 /// The material is derived with HKDF-SHA256 whichever provider is compiled in.
-#[cfg(any(feature = "aws-lc", feature = "ring"))]
+#[cfg(any(feature = "aws-lc", feature = "ring", feature = "boring"))]
 #[derive(Clone)]
 pub struct AddressTokenKey(Arc<dyn HandshakeTokenKey>);
 
-#[cfg(any(feature = "aws-lc", feature = "ring"))]
+#[cfg(any(feature = "aws-lc", feature = "ring", feature = "boring"))]
 impl AddressTokenKey {
     /// Construct a key from a seed of [`KEY_MATERIAL_SIZE`] bytes.
     #[must_use]
     pub fn from_seed(seed: &[u8; KEY_MATERIAL_SIZE]) -> Self {
-        Self(Arc::new(
-            hkdf::Salt::new(hkdf::HKDF_SHA256, &[]).extract(seed),
-        ))
+        Self::from_material(seed)
     }
 
     /// Construct a key from at least [`KEY_MATERIAL_SIZE`] bytes of secret material.
@@ -76,9 +74,15 @@ impl AddressTokenKey {
         if material.len() < KEY_MATERIAL_SIZE {
             return Err(ConfigError::KeyMaterialTooShort);
         }
-        Ok(Self(Arc::new(
-            hkdf::Salt::new(hkdf::HKDF_SHA256, &[]).extract(material),
-        )))
+        Ok(Self::from_material(material))
+    }
+
+    pub(super) fn from_material(material: &[u8]) -> Self {
+        #[cfg(any(feature = "aws-lc", feature = "ring"))]
+        let key = hkdf::Salt::new(hkdf::HKDF_SHA256, &[]).extract(material);
+        #[cfg(not(any(feature = "aws-lc", feature = "ring")))]
+        let key = crate::proto::crypto::boring::token::TokenKey::from_material(material);
+        Self(Arc::new(key))
     }
 
     pub(crate) fn into_key(self) -> Arc<dyn HandshakeTokenKey> {
@@ -86,7 +90,7 @@ impl AddressTokenKey {
     }
 }
 
-#[cfg(any(feature = "aws-lc", feature = "ring"))]
+#[cfg(any(feature = "aws-lc", feature = "ring", feature = "boring"))]
 impl fmt::Debug for AddressTokenKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("AddressTokenKey")
@@ -118,7 +122,7 @@ mod tests {
         );
     }
 
-    #[cfg(any(feature = "aws-lc", feature = "ring"))]
+    #[cfg(any(feature = "aws-lc", feature = "ring", feature = "boring"))]
     #[test]
     fn address_token_key_validates_material_and_hides_it() {
         let short = [0x5a; KEY_MATERIAL_SIZE - 1];
@@ -132,7 +136,7 @@ mod tests {
         assert_eq!(format!("{key:?}"), "AddressTokenKey");
     }
 
-    #[cfg(any(feature = "aws-lc", feature = "ring"))]
+    #[cfg(any(feature = "aws-lc", feature = "ring", feature = "boring"))]
     #[test]
     fn address_tokens_are_the_same_on_every_provider() {
         let sealing = AddressTokenKey::from_seed(&[0x4b; KEY_MATERIAL_SIZE]).into_key();

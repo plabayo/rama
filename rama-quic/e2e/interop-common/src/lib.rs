@@ -5,10 +5,16 @@
 //! asserts lives here, so every peer is held to the same expectations; what the peer read comes
 //! back through its adapter.
 
-#[cfg(all(feature = "rustls-ring", feature = "rustls-aws-lc"))]
-compile_error!("select exactly one Rama TLS backend: rustls-ring or rustls-aws-lc");
-#[cfg(not(any(feature = "rustls-ring", feature = "rustls-aws-lc")))]
-compile_error!("select a Rama TLS backend: rustls-ring or rustls-aws-lc");
+#[cfg(any(
+    all(feature = "rustls-ring", feature = "rustls-aws-lc"),
+    all(
+        feature = "boring",
+        any(feature = "rustls-ring", feature = "rustls-aws-lc")
+    )
+))]
+compile_error!("select exactly one Rama TLS backend: boring, rustls-ring or rustls-aws-lc");
+#[cfg(not(any(feature = "boring", feature = "rustls-ring", feature = "rustls-aws-lc")))]
+compile_error!("select a Rama TLS backend: boring, rustls-ring or rustls-aws-lc");
 
 pub mod backend;
 pub mod backpressure;
@@ -43,8 +49,8 @@ pub use registry::{
     Case, CaseRun, Role, Unsupported, for_each_case, for_each_case_within, stream_cases,
 };
 pub use resumption::{
-    Arrival, Expected, RecordingSessions, Reported, ResumptionObservation, ResumptionScenario,
-    ServerReport, Verdict, resumption_cases,
+    Arrival, Expected, Reported, ResumptionObservation, ResumptionScenario, ServerReport, Verdict,
+    resumption_cases,
 };
 pub use scenario::{
     ANOTHER_ADDRESS, ANOTHER_NAME, Chunk, PeerObservation, Received, SERVER_NAME, StreamScenario,
@@ -53,3 +59,6 @@ pub use serving::{ServerOutcome, expect_outcome, rama_probe_server};
 pub use support::{Deadline, Peer, digest, localhost, payload};
 pub use trust::{TrustObservation, TrustScenario, trust_cases};
 pub use unsupported::{UnsupportedObservation, UnsupportedScenario, unsupported_cases};
+
+#[cfg(any(not(feature = "boring"), feature = "peer-rustls"))]
+pub use resumption::RecordingSessions;

@@ -34,16 +34,14 @@ pub struct Error {
 
 impl Error {
     /// Preserve a local failure underlying a transport shutdown.
-    pub(crate) fn with_cause(
-        mut self,
-        cause: impl std::error::Error + Send + Sync + 'static,
-    ) -> Self {
+    #[must_use]
+    pub fn with_cause(mut self, cause: impl std::error::Error + Send + Sync + 'static) -> Self {
         self.cause = Some(ArcError::new(cause));
         self
     }
 
     /// Construct an error with a code and a reason
-    pub(crate) fn new(code: Code, reason: impl Into<Cow<'static, str>>) -> Self {
+    pub fn new(code: Code, reason: impl Into<Cow<'static, str>>) -> Self {
         Self {
             code,
             frame: None,
@@ -125,7 +123,8 @@ pub struct Code(u64);
 
 impl Code {
     /// Create QUIC error code from TLS alert code
-    pub(crate) fn crypto(code: u8) -> Self {
+    #[must_use]
+    pub fn crypto(code: u8) -> Self {
         Self(0x100 | u64::from(code))
     }
 

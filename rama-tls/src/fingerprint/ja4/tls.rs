@@ -645,6 +645,8 @@ mod tests {
                     protocol_version: negotiated_protocol_version,
                     application_layer_protocol: None,
                     peer_certificate_chain: None,
+                    server_name: None,
+                    resumed: None,
                 });
             }
 

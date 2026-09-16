@@ -2,8 +2,7 @@
 //!
 //! The protocol logic is contained in types that abstract over the actual
 //! cryptographic protocol used. This module contains the traits used for this
-//! abstraction layer as well as a single implementation of these traits that uses
-//! *ring* and rustls to implement the TLS protocol support.
+//! abstraction layer, with built-in adapters for Rustls and BoringSSL.
 //!
 //! Note that usage of any protocol (version) other than TLS 1.3 does not conform to any
 //! published versions of the specification, and will not be supported in QUIC v1.
@@ -12,12 +11,17 @@ use std::{str, sync::Arc};
 
 use rama_core::bytes::BytesMut;
 use rama_crypto::pki_types::CertificateDer;
-use rama_net::{address::Domain, tls::ApplicationProtocol};
+pub use rama_tls::client::NegotiatedTlsParameters;
 
 use crate::proto::{
-    ConnectError, Side, TransportError, shared::ConnectionId,
+    ConnectError, Side, TransportError, packet::SpaceId, shared::ConnectionId,
     transport_parameters::TransportParameters,
 };
+
+pub(crate) mod config;
+
+#[cfg(feature = "boring")]
+pub(crate) mod boring;
 
 /// Cryptography interface based on *ring*
 #[cfg(any(feature = "aws-lc", feature = "ring"))]
@@ -26,33 +30,14 @@ pub(crate) mod ring_like;
 #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 pub(crate) mod rustls;
 
-/// Negotiated ALPN and received server name reported by the TLS backend.
-///
-/// Available once the session has the data, which is before the handshake is confirmed.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct HandshakeSummary {
-    /// The application protocol both sides agreed on (RFC 7301), when ALPN was used.
-    pub protocol: Option<ApplicationProtocol>,
-    /// The name the client sent in its SNI extension, when it sent one. It is what the peer
-    /// said, not an identity a certificate was verified against, and the backend may have
-    /// canonicalised its case. `None` on a client, and on a server whose peer sent no SNI,
-    /// which includes a client connecting to an IP address (RFC 6066 §3).
-    pub server_name: Option<Domain>,
-    /// Whether the handshake resumed a session rather than doing a full one.
-    ///
-    /// `None` until the backend has decided, which can be after the rest of this summary is
-    /// available: the two are read separately. Both ends report it once it is known.
-    pub resumed: Option<bool>,
-}
-
 /// A cryptographic session (commonly TLS)
-pub(crate) trait Session: Send + Sync + 'static {
+pub trait Session: Send + Sync + 'static {
     /// Create the initial set of keys given the client's initial destination ConnectionId
-    fn initial_keys(&self, dst_cid: &ConnectionId, side: Side) -> Keys;
+    fn initial_keys(&self, dst_cid: &ConnectionId, side: Side) -> Result<Keys, TransportError>;
 
     /// What the handshake has settled, when the session has it. `None` until the connection
     /// emits `HandshakeDataReady`.
-    fn handshake_summary(&self) -> Option<HandshakeSummary> {
+    fn handshake_summary(&self) -> Option<NegotiatedTlsParameters> {
         None
     }
 
@@ -90,26 +75,23 @@ pub(crate) trait Session: Send + Sync + 'static {
     /// Read bytes of handshake data
     ///
     /// This should be called with the contents of `CRYPTO` frames. If it returns `Ok`, the
-    /// caller should call `write_handshake()` to check if the crypto protocol has anything
+    /// caller should call `poll_handshake()` to check if the crypto protocol has anything
     /// to send to the peer. This method will only return `true` the first time that
     /// handshake data is available. Future calls will always return false.
     ///
-    /// On success, returns `true` iff `self.handshake_data()` has been populated.
-    fn read_handshake(&mut self, buf: &[u8]) -> Result<bool, TransportError>;
+    /// On success, returns `true` when `handshake_summary()` first becomes available.
+    fn read_handshake(&mut self, level: SpaceId, buf: &[u8]) -> Result<bool, TransportError>;
 
     /// The peer's QUIC transport parameters
     ///
     /// These are only available after the first flight from the peer has been received.
     fn transport_parameters(&self) -> Result<Option<TransportParameters>, TransportError>;
 
-    /// Writes handshake bytes into the given buffer and optionally returns the negotiated keys
-    ///
-    /// When the handshake proceeds to the next phase, this method will return a new set of
-    /// keys to encrypt data with.
-    fn write_handshake(&mut self, buf: &mut Vec<u8>) -> Option<Keys>;
+    /// Drain ordered handshake output and directional key changes.
+    fn poll_handshake(&mut self) -> Result<Option<HandshakeEvent>, TransportError>;
 
     /// Compute keys for the next key update
-    fn next_1rtt_keys(&mut self) -> Option<KeyPair<Box<dyn PacketKey>>>;
+    fn next_1rtt_keys(&mut self) -> Result<Option<KeyPair<Box<dyn PacketKey>>>, TransportError>;
 
     /// Verify the integrity of a retry packet
     fn is_valid_retry(&self, orig_dst_cid: &ConnectionId, header: &[u8], payload: &[u8]) -> bool;
@@ -129,23 +111,37 @@ pub(crate) trait Session: Send + Sync + 'static {
 }
 
 /// A pair of keys for bidirectional communication
-pub(crate) struct KeyPair<T> {
+pub struct KeyPair<T> {
     /// Key for encrypting data
-    pub(crate) local: T,
+    pub local: T,
     /// Key for decrypting data
-    pub(crate) remote: T,
+    pub remote: T,
 }
 
-/// A complete set of keys for a certain packet space
-pub(crate) struct Keys {
-    /// Header protection keys
-    pub(crate) header: KeyPair<Box<dyn HeaderKey>>,
-    /// Packet protection keys
-    pub(crate) packet: KeyPair<Box<dyn PacketKey>>,
+/// Packet and header protection for one direction.
+pub struct DirectionalKeys {
+    pub header: Box<dyn HeaderKey>,
+    pub packet: Box<dyn PacketKey>,
+}
+
+/// Write keys become available before read keys on a TLS server.
+pub struct Keys {
+    pub local: DirectionalKeys,
+    pub remote: Option<DirectionalKeys>,
+}
+
+/// Ordered TLS output and packet-key installation events.
+pub enum HandshakeEvent {
+    /// Handshake bytes to send at this encryption level before subsequent events.
+    Data(SpaceId, Vec<u8>),
+    /// Install write keys and any already available read keys for this level.
+    Keys(SpaceId, Keys),
+    /// Install read keys that became available after the write keys.
+    ReadKeys(SpaceId, DirectionalKeys),
 }
 
 /// Client-side configuration for the crypto protocol
-pub(crate) trait ClientConfig: Send + Sync {
+pub trait ClientConfig: Send + Sync {
     /// Start a client session with this configuration
     fn start_session(
         self: Arc<Self>,
@@ -156,18 +152,19 @@ pub(crate) trait ClientConfig: Send + Sync {
 }
 
 /// Server-side configuration for the crypto protocol
-pub(crate) trait ServerConfig: Send + Sync {
+pub trait ServerConfig: Send + Sync {
     /// Create the initial set of keys given the client's initial destination ConnectionId
-    fn initial_keys(
-        &self,
-        version: u32,
-        dst_cid: &ConnectionId,
-    ) -> Result<Keys, UnsupportedVersion>;
+    fn initial_keys(&self, version: u32, dst_cid: &ConnectionId) -> Result<Keys, InitialKeysError>;
 
     /// Generate the integrity tag for a retry packet
     ///
     /// Never called if `initial_keys` rejected `version`.
-    fn retry_tag(&self, version: u32, orig_dst_cid: &ConnectionId, packet: &[u8]) -> [u8; 16];
+    fn retry_tag(
+        &self,
+        version: u32,
+        orig_dst_cid: &ConnectionId,
+        packet: &[u8],
+    ) -> Result<[u8; 16], CryptoError>;
 
     /// Start a server session with this configuration
     ///
@@ -180,9 +177,9 @@ pub(crate) trait ServerConfig: Send + Sync {
 }
 
 /// Keys used to protect packet payloads
-pub(crate) trait PacketKey: Send + Sync {
+pub trait PacketKey: Send + Sync {
     /// Encrypt the packet payload with the given packet number
-    fn encrypt(&self, packet: u64, buf: &mut [u8], header_len: usize);
+    fn encrypt(&self, packet: u64, buf: &mut [u8], header_len: usize) -> Result<(), CryptoError>;
     /// Decrypt the packet payload with the given packet number
     fn decrypt(
         &self,
@@ -192,21 +189,63 @@ pub(crate) trait PacketKey: Send + Sync {
     ) -> Result<(), CryptoError>;
     /// The length of the AEAD tag appended to packets on encryption
     fn tag_len(&self) -> usize;
-    /// Maximum number of packets that may be sent using a single key
+    /// Maximum number of packets that may be sent using a single key (RFC 9001 §6.6)
+    ///
+    /// Counted per key: a key update starts the new phase at zero. The last packet of the
+    /// budget carries the close, and nothing is protected past it. Routine updates begin
+    /// 10,000 packets short of this value.
     fn confidentiality_limit(&self) -> u64;
     /// Maximum number of incoming packets that may fail decryption before the connection must be
-    /// abandoned
+    /// abandoned (RFC 9001 §6.6)
+    ///
+    /// Counted for the whole connection, across every key it has used. Once exceeded, the
+    /// connection ends and processes no further packets.
     fn integrity_limit(&self) -> u64;
 }
 
 /// Keys used to protect packet headers
-pub(crate) trait HeaderKey: Send + Sync {
+pub trait HeaderKey: Send + Sync {
     /// Decrypt the given packet's header
     fn decrypt(&self, pn_offset: usize, packet: &mut [u8]);
     /// Encrypt the given packet's header
     fn encrypt(&self, pn_offset: usize, packet: &mut [u8]);
     /// The sample size used for this key's algorithm
     fn sample_size(&self) -> usize;
+}
+
+impl<T: PacketKey + ?Sized> PacketKey for Arc<T> {
+    fn encrypt(&self, packet: u64, buf: &mut [u8], header_len: usize) -> Result<(), CryptoError> {
+        (**self).encrypt(packet, buf, header_len)
+    }
+    fn decrypt(
+        &self,
+        packet: u64,
+        header: &[u8],
+        payload: &mut BytesMut,
+    ) -> Result<(), CryptoError> {
+        (**self).decrypt(packet, header, payload)
+    }
+    fn tag_len(&self) -> usize {
+        (**self).tag_len()
+    }
+    fn confidentiality_limit(&self) -> u64 {
+        (**self).confidentiality_limit()
+    }
+    fn integrity_limit(&self) -> u64 {
+        (**self).integrity_limit()
+    }
+}
+
+impl<T: HeaderKey + ?Sized> HeaderKey for Arc<T> {
+    fn decrypt(&self, pn_offset: usize, packet: &mut [u8]) {
+        (**self).decrypt(pn_offset, packet);
+    }
+    fn encrypt(&self, pn_offset: usize, packet: &mut [u8]) {
+        (**self).encrypt(pn_offset, packet);
+    }
+    fn sample_size(&self) -> usize {
+        (**self).sample_size()
+    }
 }
 
 rama_utils::macros::error::static_str_error! {
@@ -217,7 +256,7 @@ rama_utils::macros::error::static_str_error! {
 }
 
 /// A pseudo random key for HKDF
-pub(crate) trait HandshakeTokenKey: Send + Sync {
+pub trait HandshakeTokenKey: Send + Sync {
     /// Derive AEAD using hkdf
     ///
     /// Fails when the provider cannot expand or load the derived key.
@@ -225,7 +264,7 @@ pub(crate) trait HandshakeTokenKey: Send + Sync {
 }
 
 /// A key for sealing data with AEAD-based algorithms
-pub(crate) trait AeadKey {
+pub trait AeadKey {
     /// Method for sealing message `data`
     fn seal(&self, data: &mut Vec<u8>, additional_data: &[u8]) -> Result<(), CryptoError>;
     /// Method for opening a sealed message `data`
@@ -241,12 +280,24 @@ rama_utils::macros::error::static_str_error! {
     ///
     /// Generic crypto errors.
     #[derive(Copy)]
-    pub(crate) struct CryptoError;
+    pub struct CryptoError;
 }
 
 /// Error indicating that the specified QUIC version is not supported
 #[derive(Debug)]
-pub(crate) struct UnsupportedVersion;
+pub struct UnsupportedVersion;
+
+#[derive(Debug)]
+pub enum InitialKeysError {
+    UnsupportedVersion,
+    Crypto(rama_core::error::BoxError),
+}
+
+impl From<UnsupportedVersion> for InitialKeysError {
+    fn from(_: UnsupportedVersion) -> Self {
+        Self::UnsupportedVersion
+    }
+}
 
 impl From<UnsupportedVersion> for ConnectError {
     fn from(_: UnsupportedVersion) -> Self {

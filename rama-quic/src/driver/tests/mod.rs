@@ -1,9 +1,8 @@
-#![cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+#![cfg(any(
+    feature = "boring",
+    all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+))]
 
-#[cfg(all(feature = "aws-lc", not(feature = "ring")))]
-use rama_tls_rustls::dep::rustls::crypto::aws_lc_rs::default_provider;
-#[cfg(feature = "ring")]
-use rama_tls_rustls::dep::rustls::crypto::ring::default_provider;
 use rama_utils::octets;
 
 use std::{
@@ -21,14 +20,11 @@ use std::{
 };
 
 use crate::driver::{Duration, Instant};
-use crate::proto::{RandomConnectionIdGenerator, crypto::rustls::QuicClientConfig};
+use crate::proto::RandomConnectionIdGenerator;
+use crate::test_helpers;
 use rama_core::bytes::Bytes;
 use rama_core::telemetry::tracing::Instrument as _;
 use rama_core::telemetry::tracing::{error_span, info};
-use rama_tls_rustls::dep::rustls::{
-    RootCertStore,
-    pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer},
-};
 use rand::{Rng, SeedableRng, rngs::StdRng};
 use tokio::time::{sleep, timeout};
 use tokio::{
@@ -37,10 +33,11 @@ use tokio::{
 };
 use tracing_subscriber::EnvFilter;
 
-use super::{ClientConfig, Endpoint, EndpointConfig, RecvStream, SendStream, TransportConfig};
+use super::{Endpoint, EndpointConfig, RecvStream, SendStream, TransportConfig};
 
 mod closing;
 mod owned;
+#[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 mod resumption;
 
 /// A loopback address to bind on, for a fixture that lets the endpoint make its own socket.
@@ -59,14 +56,9 @@ fn handshake_timeout() {
         ))
         .unwrap();
 
-    // Avoid NoRootAnchors error
-    let cert =
-        rama_crypto::dep::rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
-    let mut roots = RootCertStore::empty();
-    roots.add(cert.cert.into()).unwrap();
+    let identity = test_helpers::identity();
 
-    let mut client_config =
-        crate::driver::ClientConfig::with_root_certificates(Arc::new(roots)).unwrap();
+    let mut client_config = test_helpers::client(&identity);
     const IDLE_TIMEOUT: Duration = Duration::from_millis(500);
     let mut transport_config = crate::driver::TransportConfig::default();
     transport_config
@@ -98,11 +90,7 @@ fn handshake_timeout() {
 async fn close_endpoint() {
     let _guard = subscribe();
 
-    // Avoid NoRootAnchors error
-    let cert =
-        rama_crypto::dep::rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
-    let mut roots = RootCertStore::empty();
-    roots.add(cert.cert.into()).unwrap();
+    let identity = test_helpers::identity();
 
     let mut endpoint = Endpoint::bind_client(
         rama_core::rt::Executor::new(),
@@ -110,8 +98,7 @@ async fn close_endpoint() {
     )
     .await
     .unwrap();
-    endpoint
-        .set_default_client_config(ClientConfig::with_root_certificates(Arc::new(roots)).unwrap());
+    endpoint.set_default_client_config(test_helpers::client(&identity));
 
     let conn = endpoint
         .connect(
@@ -295,15 +282,14 @@ fn endpoint_with_config(transport_config: TransportConfig) -> Endpoint {
 
 /// Constructs endpoints suitable for connecting to themselves and each other
 struct EndpointFactory {
-    cert: rama_crypto::dep::rcgen::CertifiedKey<rama_crypto::dep::rcgen::KeyPair>,
+    identity: rama_tls::server::ServerAuthData,
     endpoint_config: EndpointConfig,
 }
 
 impl EndpointFactory {
     fn new() -> Self {
         Self {
-            cert: rama_crypto::dep::rcgen::generate_simple_self_signed(vec!["localhost".into()])
-                .unwrap(),
+            identity: test_helpers::identity(),
             endpoint_config: EndpointConfig::try_with_rand_key().unwrap(),
         }
     }
@@ -313,15 +299,10 @@ impl EndpointFactory {
     }
 
     fn endpoint_with_config(&self, transport_config: TransportConfig) -> Endpoint {
-        let key = PrivateKeyDer::Pkcs8(self.cert.signing_key.serialize_der().into());
         let transport_config = Arc::new(transport_config);
-        let mut server_config =
-            crate::driver::ServerConfig::with_single_cert(vec![self.cert.cert.der().clone()], key)
-                .unwrap();
+        let mut server_config = test_helpers::server(&self.identity);
         server_config.set_transport_config(transport_config.clone());
 
-        let mut roots = rama_tls_rustls::dep::rustls::RootCertStore::empty();
-        roots.add(self.cert.cert.der().clone()).unwrap();
         let mut endpoint = Endpoint::build(rama_core::rt::Executor::new())
             .with_config(self.endpoint_config.clone())
             .maybe_with_server_config(Some(server_config))
@@ -329,7 +310,7 @@ impl EndpointFactory {
                 UdpSocket::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0)).unwrap(),
             )
             .unwrap();
-        let mut client_config = ClientConfig::with_root_certificates(Arc::new(roots)).unwrap();
+        let mut client_config = test_helpers::client(&self.identity);
         client_config.set_transport_config(transport_config);
         endpoint.set_default_client_config(client_config);
 
@@ -505,6 +486,7 @@ fn stress_both_windows() {
 }
 
 fn run_echo(args: &EchoArgs) {
+    let args = *args;
     let _guard = subscribe();
     let runtime = rt_basic();
     let handle = {
@@ -522,12 +504,8 @@ fn run_echo(args: &EchoArgs) {
 
         // We don't use the `endpoint` helper here because we want two different endpoints with
         // different addresses.
-        let cert =
-            rama_crypto::dep::rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
-        let key = PrivatePkcs8KeyDer::from(cert.signing_key.serialize_der());
-        let cert = CertificateDer::from(cert.cert);
-        let mut server_config =
-            crate::driver::ServerConfig::with_single_cert(vec![cert.clone()], key.into()).unwrap();
+        let identity = test_helpers::identity();
+        let mut server_config = test_helpers::server(&identity);
 
         server_config.transport = transport_config.clone();
         let server_sock = UdpSocket::bind(args.server_addr).unwrap();
@@ -541,17 +519,6 @@ fn run_echo(args: &EchoArgs) {
                 .unwrap()
         };
 
-        let mut roots = rama_tls_rustls::dep::rustls::RootCertStore::empty();
-        roots.add(cert).unwrap();
-        let mut client_crypto = rama_tls_rustls::dep::rustls::ClientConfig::builder_with_provider(
-            default_provider().into(),
-        )
-        .with_safe_default_protocol_versions()
-        .unwrap()
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-        client_crypto.key_log = Arc::new(rama_tls_rustls::dep::rustls::KeyLogFile::new());
-
         let mut client = {
             let _guard = error_span!("client").entered();
             runtime
@@ -561,13 +528,14 @@ fn run_echo(args: &EchoArgs) {
                 ))
                 .unwrap()
         };
-        let mut client_config =
-            ClientConfig::new(Arc::new(QuicClientConfig::try_from(client_crypto).unwrap()));
+        let mut client_config = test_helpers::client(&identity);
         client_config.set_transport_config(transport_config);
         client.set_default_client_config(client_config);
 
         let handle = runtime.spawn(async move {
-            let incoming = server.accept().await.unwrap();
+            let incoming = echo_phase(&args, "server accept", server.accept())
+                .await
+                .unwrap();
 
             // Note for anyone modifying the platform support in this test:
             // If `local_ip` gets available on additional platforms - which
@@ -587,30 +555,47 @@ fn run_echo(args: &EchoArgs) {
                 assert_eq!(None, incoming.local_ip());
             }
 
-            let new_conn = incoming.await.unwrap();
-            tokio::spawn(async move {
-                while let Ok(stream) = new_conn.accept_bi().await {
-                    tokio::spawn(echo(stream));
-                }
-            });
-            server.wait_idle().await;
+            let new_conn = echo_phase(&args, "server handshake", incoming)
+                .await
+                .unwrap();
+            for index in 0..args.nr_streams {
+                let stream = echo_phase(
+                    &args,
+                    &format!("server accept stream {index}"),
+                    new_conn.accept_bi(),
+                )
+                .await
+                .unwrap();
+                echo_phase(&args, &format!("server echo stream {index}"), echo(stream)).await;
+            }
+            echo_phase(&args, "server connection close", new_conn.closed()).await;
+            drop(new_conn);
+            echo_phase(&args, "server shutdown", server.shutdown()).await;
         });
 
         info!("connecting from {} to {}", args.client_addr, server_addr);
         runtime.block_on(
             async move {
-                let new_conn = client
-                    .connect(server_addr, "localhost")
-                    .unwrap()
-                    .await
-                    .expect("connect");
+                let new_conn = echo_phase(
+                    &args,
+                    "client handshake",
+                    client.connect(server_addr, "localhost").unwrap(),
+                )
+                .await
+                .expect("connect");
 
                 /// This is just an arbitrary number to generate deterministic test data
                 const SEED: u64 = 0x12345678;
 
                 for i in 0..args.nr_streams {
                     eprintln!("Opening stream {i}");
-                    let (mut send, mut recv) = new_conn.open_bi().await.expect("stream open");
+                    let (mut send, mut recv) = echo_phase(
+                        &args,
+                        &format!("client open stream {i}"),
+                        new_conn.open_bi(),
+                    )
+                    .await
+                    .expect("stream open");
                     let msg = gen_data(args.stream_size, SEED);
 
                     let send_task = async {
@@ -619,20 +604,38 @@ fn run_echo(args: &EchoArgs) {
                     };
                     let recv_task = async { recv.read_to_end(usize::MAX).await.expect("read") };
 
-                    let (_, data) = tokio::join!(send_task, recv_task);
+                    let (_, data) =
+                        echo_phase(&args, &format!("client transfer stream {i}"), async {
+                            tokio::join!(send_task, recv_task)
+                        })
+                        .await;
 
                     assert_eq!(data[..], msg[..], "Data mismatch");
                 }
                 new_conn.close(0u32.into(), b"done");
-                client.wait_idle().await;
+                drop(new_conn);
+                echo_phase(&args, "client shutdown", client.shutdown()).await;
             }
             .instrument(error_span!("client")),
         );
         handle
     };
-    runtime.block_on(handle).unwrap();
+    runtime
+        .block_on(echo_phase(&args, "server task join", handle))
+        .unwrap();
 }
 
+async fn echo_phase<T>(
+    args: &EchoArgs,
+    phase: &str,
+    future: impl std::future::IntoFuture<Output = T>,
+) -> T {
+    tokio::time::timeout(Duration::from_secs(15), future)
+        .await
+        .unwrap_or_else(|_| panic!("echo timed out during {phase}: {args:?}"))
+}
+
+#[derive(Debug, Clone, Copy)]
 struct EchoArgs {
     client_addr: SocketAddr,
     server_addr: SocketAddr,
@@ -712,13 +715,7 @@ fn rt_threaded() -> Runtime {
 async fn rebind_recv() {
     let _guard = subscribe();
 
-    let cert =
-        rama_crypto::dep::rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
-    let key = PrivatePkcs8KeyDer::from(cert.signing_key.serialize_der());
-    let cert = CertificateDer::from(cert.cert);
-
-    let mut roots = rama_tls_rustls::dep::rustls::RootCertStore::empty();
-    roots.add(cert.clone()).unwrap();
+    let identity = test_helpers::identity();
 
     let mut client = Endpoint::bind_client(
         rama_core::rt::Executor::new(),
@@ -726,7 +723,7 @@ async fn rebind_recv() {
     )
     .await
     .unwrap();
-    let mut client_config = ClientConfig::with_root_certificates(Arc::new(roots)).unwrap();
+    let mut client_config = test_helpers::client(&identity);
     client_config.set_transport_config(Arc::new({
         let mut cfg = TransportConfig::default();
         cfg.set_max_concurrent_uni_streams(1u32.into());
@@ -734,8 +731,7 @@ async fn rebind_recv() {
     }));
     client.set_default_client_config(client_config);
 
-    let server_config =
-        crate::driver::ServerConfig::with_single_cert(vec![cert.clone()], key.into()).unwrap();
+    let server_config = test_helpers::server(&identity);
     let server = {
         let _guard = rama_core::telemetry::tracing::error_span!("server").entered();
         Endpoint::bind_server(
@@ -1143,14 +1139,7 @@ async fn rejected_early_handles_leave_replacement_streams_untouched() {
         endpoint.wait_idle().await;
 
         // The same identity with a fresh session store rejects the client's cached early data.
-        let key = PrivateKeyDer::Pkcs8(factory.cert.signing_key.serialize_der().into());
-        endpoint.set_server_config(Some(
-            crate::driver::ServerConfig::with_single_cert(
-                vec![factory.cert.cert.der().clone()],
-                key,
-            )
-            .unwrap(),
-        ));
+        endpoint.set_server_config(Some(test_helpers::server(&factory.identity)));
         let (client, accepted) = endpoint
             .connect(addr, "localhost")
             .unwrap()

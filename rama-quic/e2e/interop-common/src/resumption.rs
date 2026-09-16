@@ -10,28 +10,21 @@
 //! Every payload is an echo of bytes the case names, so a payload sent twice after a refusal
 //! carries no side effect the second time.
 
-use std::{
-    net::SocketAddr,
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
-};
+use crate::backend::VerifyBackend as _;
+use std::{net::SocketAddr, sync::Arc};
 
+#[cfg(not(feature = "boring"))]
+use rama::tls::rustls::server::RustlsServerConfigExt;
 use rama::{
     crypto::pki_types::CertificateDer,
-    quic::{ClientConfig, Connection, Endpoint, ServerConfig, StoppedError, tls::TlsOptions},
-    tls::{
-        client::TlsClientConfig,
-        rustls::{
-            client::RustlsClientConfigExt,
-            dep::rustls::server::{ServerSessionMemoryCache, StoresServerSessions},
-            server::RustlsServerConfigExt,
-        },
-        server::TlsServerConfig,
-    },
+    quic::{ClientConfig, Connection, Endpoint, ServerConfig, StoppedError},
+    tls::{client::TlsClientConfig, server::TlsServerConfig},
     utils::{collections::smallvec::smallvec, octets},
 };
+#[cfg(any(not(feature = "boring"), feature = "peer-rustls"))]
+use rustls::server::{ServerSessionMemoryCache, StoresServerSessions};
+#[cfg(any(not(feature = "boring"), feature = "peer-rustls"))]
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::{
     close::CloseObservation,
@@ -286,12 +279,14 @@ pub fn rama_client_config_for(
         .with_alpn(smallvec![alpn()])
         .try_with_server_trust_anchors([anchor])
         .expect("the trust anchor is accepted")
-        .with_modify_rustls_config(crate::backend::verify_client);
-    ClientConfig::try_from_rama_tls(
-        &tls,
-        TlsOptions::default().with_early_data(scenario.offers_early_data),
-    )
-    .expect("the client config is built")
+        .verify_backend();
+    let options = crate::backend::options();
+    let options = if scenario.offers_early_data {
+        options.with_early_data(true)
+    } else {
+        options
+    };
+    ClientConfig::try_from_rama_tls(&tls, options).expect("the client config is built")
 }
 
 /// The first connection: an exchange after the handshake, which is when the session ticket
@@ -388,6 +383,10 @@ pub async fn rama_client_resumes(
         }
         connection
     } else {
+        let attempt = attempt
+            .into_0rtt()
+            .err()
+            .expect("default TLS options refuse early data even with a resumable ticket");
         deadline
             .wait(what, attempt)
             .await
@@ -470,6 +469,7 @@ pub const PROTOCOL: &[u8] = ALPN;
 /// (`rustls/src/server/tls13.rs`), so a lookup that found something is not a resumption. The
 /// resumption is [`ResumptionObservation::rama`], read from the handshake itself.
 #[derive(Debug)]
+#[cfg(any(not(feature = "boring"), feature = "peer-rustls"))]
 pub struct RecordingSessions {
     inner: Arc<dyn StoresServerSessions>,
     stored: AtomicUsize,
@@ -477,6 +477,7 @@ pub struct RecordingSessions {
     missed: AtomicUsize,
 }
 
+#[cfg(any(not(feature = "boring"), feature = "peer-rustls"))]
 impl RecordingSessions {
     #[must_use]
     pub fn new() -> Arc<Self> {
@@ -511,6 +512,7 @@ impl RecordingSessions {
     }
 }
 
+#[cfg(any(not(feature = "boring"), feature = "peer-rustls"))]
 impl StoresServerSessions for RecordingSessions {
     fn put(&self, key: Vec<u8>, value: Vec<u8>) -> bool {
         let stored = self.inner.put(key, value);
@@ -545,6 +547,7 @@ impl StoresServerSessions for RecordingSessions {
 /// The store is installed through `with_modify_rustls_config`, the hook Rama already offers for
 /// reaching the native configuration, so nothing here goes around the public surface.
 #[must_use]
+#[cfg(not(feature = "boring"))]
 pub fn rama_resuming_server_config(
     identity: &Identity,
     sessions: Arc<RecordingSessions>,
@@ -557,8 +560,110 @@ pub fn rama_resuming_server_config(
             native.session_storage = sessions.clone();
             crate::backend::verify_server(native)
         });
-    ServerConfig::try_from_rama_tls(&tls, TlsOptions::default().with_early_data(early_data))
+    ServerConfig::try_from_rama_tls(&tls, crate::backend::options().with_early_data(early_data))
         .expect("the server config is built")
+}
+
+/// Server configurations for the shared verdicts, retaining the backend's native ticket state.
+pub struct RamaResumptionConfigs {
+    warming: ServerConfig,
+    identity: Identity,
+    #[cfg(not(feature = "boring"))]
+    sessions: Arc<RecordingSessions>,
+}
+
+impl RamaResumptionConfigs {
+    pub fn new(identity: &Identity) -> Self {
+        Self::new_with_early_data(identity, true)
+    }
+
+    pub fn new_with_early_data(identity: &Identity, early_data: bool) -> Self {
+        #[cfg(not(feature = "boring"))]
+        let sessions = RecordingSessions::new();
+        #[cfg(not(feature = "boring"))]
+        let warming = rama_resuming_server_config(identity, sessions.clone(), early_data);
+        #[cfg(feature = "boring")]
+        let warming = {
+            let tls = TlsServerConfig::new()
+                .with_alpn(smallvec![alpn()])
+                .with_server_auth(identity.clone());
+            let mut config = ServerConfig::try_from_rama_tls(
+                &tls,
+                crate::backend::options().with_early_data(early_data),
+            )
+            .unwrap();
+            config.set_transport_config(Arc::new(
+                rama::quic::TransportConfig::default()
+                    .with_receive_window(rama::quic::VarInt::from(65536u32)),
+            ));
+            config
+        };
+        Self {
+            warming,
+            identity: identity.clone(),
+            #[cfg(not(feature = "boring"))]
+            sessions,
+        }
+    }
+
+    pub fn warming(&self) -> ServerConfig {
+        self.warming.clone()
+    }
+
+    pub fn after_warmup(&self, what: &str) {
+        self.check_warmup(what);
+        #[cfg(not(feature = "boring"))]
+        self.sessions.forget_offers();
+    }
+
+    /// Validate warm-up without resetting counters when the peer already started resuming.
+    pub fn check_warmup(&self, what: &str) {
+        #[cfg(not(feature = "boring"))]
+        {
+            assert!(
+                self.sessions.kept_a_session(),
+                "{what}: no session stored: {}",
+                self.sessions.detail()
+            );
+        }
+        #[cfg(feature = "boring")]
+        let _ = what; // Stateless ticket issuance is proved by the second handshake resuming.
+    }
+
+    pub fn resuming(&self, verdict: Verdict) -> (ServerConfig, impl Fn() -> String) {
+        #[cfg(not(feature = "boring"))]
+        {
+            let sessions = if verdict == Verdict::NotResumed {
+                RecordingSessions::new()
+            } else {
+                self.sessions.clone()
+            };
+            let config = rama_resuming_server_config(
+                &self.identity,
+                sessions.clone(),
+                verdict != Verdict::EarlyDataRefused,
+            );
+            (config, move || sessions.detail())
+        }
+        #[cfg(feature = "boring")]
+        {
+            let mut config = if verdict == Verdict::NotResumed {
+                Self::new(&self.identity).warming
+            } else {
+                self.warming.clone()
+            };
+            if verdict == Verdict::EarlyDataRefused {
+                // Preserve ticket keys but change their bound transport context to reject 0-RTT.
+                config.set_transport_config(Arc::new(
+                    rama::quic::TransportConfig::default()
+                        .with_receive_window(rama::quic::VarInt::from(131072u32)),
+                ));
+            }
+            (config, || {
+                "native stateless tickets; verdict checked from the handshake".into()
+            })
+        }
+    }
 }
 
 /// What Rama's server made of one connection: the payloads it read, and whether its own

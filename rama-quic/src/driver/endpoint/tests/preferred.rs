@@ -4,7 +4,7 @@ use super::super::*;
 use super::lifecycle::{
     SegmentLog, block_segments_for, breakable_segmenting_socket, breakable_socket, close_receive,
     configs, endpoint_with, exchange, fail_receiver, handshake, open_receive, open_segment_hold,
-    recording_socket, segmenting_socket, unblock_segments, uncredit_segments, wait_for,
+    recording_socket, segmenting_socket_from, unblock_segments, uncredit_segments, wait_for,
 };
 use super::{DropObserver, TestSocket, probe_socket};
 use crate::driver::connection::{MAX_TRANSMIT_SEGMENTS, Outcome, RETAINED_DESCRIPTORS};
@@ -766,7 +766,13 @@ async fn a_datagram_waiting_on_a_candidate_handle_leaves_when_that_socket_is_rea
 #[tokio::test]
 async fn a_part_sent_descriptor_stays_with_its_handle_when_the_path_moves() {
     let (client_config, mut server_config) = configs();
-    let (listener, listener_log, segments) = segmenting_socket(1);
+    server_config.set_transport_config(Arc::new(
+        crate::TransportConfig::default()
+            .try_with_initial_congestion_window(u64::from(u32::MAX) + 1)
+            .unwrap(),
+    ));
+    let (listener, listener_log, segments) =
+        segmenting_socket_from(std::net::UdpSocket::bind("0.0.0.0:0").unwrap(), 1);
     let (advertised, advertised_log) = recording_socket();
     let advertised_addr = advertised.local_addr();
     let SocketAddr::V4(advertised_v4) = advertised_addr else {
@@ -781,14 +787,21 @@ async fn a_part_sent_descriptor_stays_with_its_handle_when_the_path_moves() {
         Some(server_config),
         listener,
     );
-    let initial = server.local_addr().unwrap();
+    let initial = SocketAddr::new(
+        Ipv4Addr::LOCALHOST.into(),
+        server.local_addr().unwrap().port(),
+    );
     server.advertise_abstract(advertised).unwrap();
 
     let client = Endpoint::bind_client(rama_core::rt::Executor::new(), localhost_v4())
         .await
         .unwrap();
-    let (c, s) = connect_through(&client, &server, client_config, initial).await;
+    let (c, s) = connect_through(&client, &server, client_config.clone(), initial).await;
     exchange(&s, &c, b"before").await;
+    assert!(
+        s.sends_from_for(initial),
+        "the wildcard handle covers the concrete path"
+    );
     // Receiving application data does not imply that NEW_CONNECTION_ID arrived. The server
     // replaces CID 0 when it does; settle that transition before holding a descriptor for a move.
     wait_for(
@@ -797,6 +810,7 @@ async fn a_part_sent_descriptor_stays_with_its_handle_when_the_path_moves() {
         || s.active_dcid_seq() != 0,
     )
     .await;
+    listener_log.lock().hold_destination = Some(SocketAddress::from(client.local_addr().unwrap()));
     segments.arm();
 
     // A payload offered as one segmented descriptor, held after one accepted segment.
@@ -836,6 +850,21 @@ async fn a_part_sent_descriptor_stays_with_its_handle_when_the_path_moves() {
         }),
         "the partial send itself reported its CID before the descriptor completed"
     );
+    {
+        let log = listener_log.lock();
+        let prefix = &log.fallback()[0];
+        assert_eq!(
+            prefix.source,
+            Some(initial.ip()),
+            "the wildcard sender uses the concrete source"
+        );
+        assert_eq!(prefix.destination, SocketAddress::from(peer));
+        assert!(log.segmented_offers.iter().any(|count| *count >= 3));
+    }
+    let retained = s.retained_send_bytes();
+    let widest = s.max_datagram_payload();
+    assert!(retained.buffer <= 2 * MAX_TRANSMIT_SEGMENTS * widest);
+    assert!(retained.owned <= (RETAINED_DESCRIPTORS - 1) * MAX_TRANSMIT_SEGMENTS * widest);
     let carried = held_cid.expect("it carries an identifier");
     // The prefix that left carries this descriptor's own identifier, and it is reported as used
     // towards the peer at that moment (RFC 9000 §10.3.1) — before the move, while the queue can
@@ -843,6 +872,35 @@ async fn a_part_sent_descriptor_stays_with_its_handle_when_the_path_moves() {
     assert!(
         s.cid_confirmed_to(carried, peer),
         "the prefix that left reported the identifier it carried"
+    );
+
+    // A second connection on the same endpoint progresses while the first suffix is held.
+    let other = Endpoint::bind_client(rama_core::rt::Executor::new(), localhost_v4())
+        .await
+        .unwrap();
+    let (other_client, other_server) =
+        connect_through(&other, &server, client_config, initial).await;
+    exchange(&other_client, &other_server, b"independent client traffic").await;
+    exchange(&other_server, &other_client, b"independent server traffic").await;
+    assert_eq!(
+        listener_log
+            .lock()
+            .fallback()
+            .iter()
+            .filter(|packet| packet.destination == SocketAddress::from(peer))
+            .count(),
+        1,
+        "the original suffix has not been released"
+    );
+    assert_eq!(
+        server.stats().retained_sockets,
+        2,
+        "listener and advertised socket remain bounded"
+    );
+    assert!(
+        s.held_transmit().is_some_and(|held| held.0 == held_bytes)
+            || s.aside_transmit().is_some_and(|held| held.1 == held_bytes),
+        "the original descriptor remains retained during the independent exchanges"
     );
 
     // Now the probes are delivered and the move completes while that descriptor is still waiting
@@ -894,12 +952,14 @@ async fn a_part_sent_descriptor_stays_with_its_handle_when_the_path_moves() {
     }
     // The move retires that identifier, and a retired one is gone from the queue: it may never
     // be sent again and the queue no longer answers for what was sent with it. So the report
-    // above is the observation that counts, and asking again here would prove nothing.
-    assert_eq!(
-        s.send_permit(carried, peer),
-        crate::proto::SendPermit::Obsolete,
-        "the identifier the prefix carried is retired by the move"
-    );
+    // above is the observation that counts, and asking again here would prove nothing. The
+    // retirement lands with the peer's frames that follow the move, so it is waited for.
+    wait_for(
+        "the identifier the prefix carried is retired by the move",
+        Duration::from_secs(20),
+        || s.send_permit(carried, peer) == crate::proto::SendPermit::Obsolete,
+    )
+    .await;
     assert!(
         !s.cid_confirmed_to(carried, peer),
         "and the queue no longer answers for it"
@@ -916,8 +976,15 @@ async fn a_part_sent_descriptor_stays_with_its_handle_when_the_path_moves() {
         0,
         "no datagram wanted a socket the endpoint did not have"
     );
-    drop((c, s));
-    tokio::join!(client.shutdown(), server.shutdown());
+    exchange(&c, &s, b"after the pending move").await;
+    wait_for(
+        "the partial descriptor drained",
+        Duration::from_secs(5),
+        || s.retained_send_bytes().slots == 0,
+    )
+    .await;
+    drop((c, s, other_client, other_server));
+    tokio::join!(client.shutdown(), other.shutdown(), server.shutdown());
 }
 
 /// The identifier gate holds on the candidate path as it does on the path in use. The answer to a
@@ -1107,6 +1174,8 @@ async fn a_descriptor_whose_bytes_are_gone_is_retired_rather_than_carried() {
     let (client_config, mut server_config) = configs();
     let (listener, _listener_log) = recording_socket();
     let (advertised, advertised_log) = recording_socket();
+    // Keep the first candidate probe unread until the ownership fault is armed.
+    close_receive(&advertised_log);
     let advertised_addr = advertised.local_addr();
     let SocketAddr::V4(advertised_v4) = advertised_addr else {
         panic!("the fixture binds an IPv4 loopback socket");
@@ -1133,15 +1202,19 @@ async fn a_descriptor_whose_bytes_are_gone_is_retired_rather_than_carried() {
     let (c, s) = connect_through(&client, &server, client_config, initial).await;
 
     // From here, the next attempt to take a descriptor's bytes finds nothing where they were.
+    assert!(s.aside_transmit().is_none());
     s.fail_next_ownership();
+    open_receive(&advertised_log);
 
     // Traffic on the path in use, so the engine keeps writing into the same buffer.
-    let mut round = 0u8;
-    while s.stale_transmits() == 0 && round < 40 {
-        exchange(&c, &s, b"while a descriptor loses its bytes").await;
-        exchange(&s, &c, b"and the engine writes more").await;
-        round += 1;
-    }
+    exchange(&c, &s, b"while a descriptor loses its bytes").await;
+    exchange(&s, &c, b"and the engine writes more").await;
+    wait_for(
+        "the armed ownership attempt retires its descriptor",
+        Duration::from_secs(5),
+        || s.stale_transmits() != 0,
+    )
+    .await;
     assert_eq!(
         s.stale_transmits(),
         1,

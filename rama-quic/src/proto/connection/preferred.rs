@@ -137,7 +137,7 @@ impl Connection {
         // An endpoint expands a datagram carrying a PATH_CHALLENGE to the smallest allowed
         // maximum datagram size.
         builder.pad_to(MIN_INITIAL_SIZE);
-        builder.finish(self, now, buf);
+        builder.finish(self, now, buf)?;
         self.stats.udp_tx.on_sent(1, buf.len());
         let local = self.path.local;
         let candidate = self.candidate.as_mut()?;

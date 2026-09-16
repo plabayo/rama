@@ -197,6 +197,7 @@ context.
 Rama crates in this repository:
 
 - [`rama`](https://crates.io/crates/rama): top-level crate
+- [`rama-cli`](https://crates.io/crates/rama-cli): command-line tool for Rama
 - [`rama-error`](https://crates.io/crates/rama-error): error utilities for rama and its users
 - [`rama-macros`](https://crates.io/crates/rama-macros): contains the procedural macros used by `rama`
 - [`rama-utils`](https://crates.io/crates/rama-utils): utilities crate for rama
@@ -211,10 +212,13 @@ Rama crates in this repository:
 - [`rama-unix`](https://crates.io/crates/rama-unix): Unix (domain) socket support for rama
 - [`rama-tcp`](https://crates.io/crates/rama-tcp): TCP support for rama
 - [`rama-udp`](https://crates.io/crates/rama-udp): UDP support for rama
+- [`rama-quic`](https://crates.io/crates/rama-quic): QUIC transport support for rama
+- [`rama-tls`](https://crates.io/crates/rama-tls): shared TLS configuration and types for rama
 - [`rama-tls-acme`](https://crates.io/crates/rama-tls-acme): ACME support for rama
 - [`rama-tls-boring`](https://crates.io/crates/rama-tls-boring): [Boring](https://github.com/plabayo/rama-boring) TLS support for rama
 - [`rama-tls-rustls`](https://crates.io/crates/rama-tls-rustls): [Rustls](https://github.com/rustls/rustls) support for rama
 - [`rama-proxy`](https://crates.io/crates/rama-proxy): proxy types and utilities for rama
+- [`rama-inspect`](https://crates.io/crates/rama-inspect): protocol-independent inspection, interception, and streaming capture storage
 - [`rama-socks5`](https://crates.io/crates/rama-socks5): SOCKS5 support for rama
 - [`rama-fastcgi`](https://crates.io/crates/rama-fastcgi): FastCGI support for rama
 - [`rama-haproxy`](https://crates.io/crates/rama-haproxy): rama HAProxy support

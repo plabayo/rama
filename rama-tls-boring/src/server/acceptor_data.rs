@@ -10,7 +10,7 @@ use moka::future::Cache;
 use parking_lot::Mutex;
 use rama_boring::ssl::{ClientHello, NameType, SslAcceptorBuilder, SslRef};
 use rama_boring_tokio::{AsyncSelectCertError, BoxSelectCertFinish};
-use rama_core::conversion::RamaTryFrom;
+use rama_core::conversion::{RamaTryFrom, RamaTryInto};
 use rama_core::error::{ArcError, BoxError, BoxErrorExt as _, ErrorContext, ErrorExt as _};
 use rama_core::telemetry::tracing;
 use rama_crypto::dep::x509_parser::nom::AsBytes;
@@ -96,6 +96,34 @@ pub struct TlsAcceptorData {
     pub(super) config: TlsConfig,
 }
 
+impl TlsAcceptorData {
+    /// Prepare a server context with a fixed identity, without starting a transport.
+    /// Certificate issuers require the asynchronous acceptor path and are rejected here.
+    pub fn into_static_acceptor_builder(self) -> Result<SslAcceptorBuilder, BoxError> {
+        let mut builder = self.config.acceptor_builder()?;
+        let TlsCertSourceKind::InMemory(cert) = self.config.cert_source.kind else {
+            return Err(BoxError::from_static_str(
+                "static TLS context requires a fixed server identity",
+            ));
+        };
+        install_identity(&mut builder, &cert)?;
+        Ok(builder)
+    }
+}
+
+fn install_identity(builder: &mut SslAcceptorBuilder, cert: &IssuedCert) -> Result<(), BoxError> {
+    for (index, certificate) in cert.cert_chain.iter().enumerate() {
+        if index == 0 {
+            builder.set_certificate(certificate)?;
+        } else {
+            builder.add_extra_chain_cert(certificate.clone())?;
+        }
+    }
+    builder.set_private_key(&cert.key)?;
+    builder.check_private_key()?;
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct TlsConfig {
     /// source for certs
@@ -110,6 +138,74 @@ pub(super) struct TlsConfig {
     pub(super) client_cert_chain: Option<Vec<X509>>,
     /// store client certificate chain if true and client provided this
     pub store_client_certificate_chain: bool,
+}
+
+impl TlsConfig {
+    pub(super) fn acceptor_builder(&self) -> Result<SslAcceptorBuilder, BoxError> {
+        use rama_boring::{
+            ssl::{AlpnError, SslAcceptor, SslMethod, SslVerifyMode},
+            x509::{store::X509StoreBuilder, verify::X509VerifyFlags},
+        };
+        use rama_tls::keylog::{KeyLogSink, open_intent_sink};
+        let mut builder = SslAcceptor::mozilla_intermediate_v5(SslMethod::tls_server())?;
+        builder.set_grease_enabled(true);
+        for (version, minimum) in [
+            (self.protocol_versions.iter().flatten().min(), true),
+            (self.protocol_versions.iter().flatten().max(), false),
+        ] {
+            if let Some(version) = version {
+                let version = (*version).rama_try_into().map_err(|v| {
+                    BoxError::from_static_str("invalid TLS protocol version")
+                        .context_field("version", v)
+                })?;
+                if minimum {
+                    builder.set_min_proto_version(Some(version))?;
+                } else {
+                    builder.set_max_proto_version(Some(version))?;
+                }
+            }
+        }
+        if let Some(certs) = &self.client_cert_chain {
+            let mut store = X509StoreBuilder::new()?;
+            store.try_set_flags(X509VerifyFlags::PARTIAL_CHAIN)?;
+            for cert in certs {
+                builder.add_client_ca(cert)?;
+                store.add_cert(cert.clone())?;
+            }
+            builder.set_cert_store(store.build());
+            builder.set_verify(SslVerifyMode::PEER | SslVerifyMode::FAIL_IF_NO_PEER_CERT);
+        }
+        if let Some(protocols) = self.alpn_protocols.clone() {
+            builder.set_alpn_select_callback(move |_, offered| {
+                let mut reader = std::io::Cursor::new(offered);
+                loop {
+                    let start = reader.position() as usize;
+                    match ApplicationProtocol::decode_wire_format(&mut reader) {
+                        Ok(protocol) if protocols.contains(&protocol) => {
+                            return Ok(&offered[start + 1..reader.position() as usize]);
+                        }
+                        Ok(_) => (),
+                        Err(error) => {
+                            return Err(if error.kind() == std::io::ErrorKind::UnexpectedEof {
+                                AlpnError::NOACK
+                            } else {
+                                AlpnError::ALERT_FATAL
+                            });
+                        }
+                    }
+                }
+            });
+        }
+        if let Some(sink) = open_intent_sink(&self.keylog_intent)? {
+            builder.set_keylog_callback(move |_, line| {
+                let mut output = String::with_capacity(line.len() + 1);
+                output.push_str(line);
+                output.push('\n');
+                sink.write_line(&output);
+            });
+        }
+        Ok(builder)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -147,23 +243,7 @@ impl TlsCertSource {
     ) -> Result<SslAcceptorBuilder, BoxError> {
         match self.kind {
             TlsCertSourceKind::InMemory(issued_cert) => {
-                for (i, ca_cert) in issued_cert.cert_chain.iter().enumerate() {
-                    if i == 0 {
-                        builder
-                            .set_certificate(ca_cert.as_ref())
-                            .context("build boring ssl acceptor: set Leaf CA certificate (x509)")?;
-                    } else {
-                        builder.add_extra_chain_cert(ca_cert.clone()).context(
-                            "build boring ssl acceptor: add extra chain certificate (x509)",
-                        )?;
-                    }
-                }
-                builder
-                    .set_private_key(issued_cert.key.as_ref())
-                    .context("build boring ssl acceptor: set private key")?;
-                builder
-                    .check_private_key()
-                    .context("build boring ssl acceptor: check private key")?;
+                install_identity(&mut builder, &issued_cert)?;
 
                 if let Some(maybe_client_hello) = maybe_client_hello {
                     let cb_maybe_client_hello = maybe_client_hello.clone();

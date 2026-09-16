@@ -1,0 +1,35 @@
+# The CI scheduling, gating and feature-coverage policy checks.
+#
+# Invoke from the repository root as `just scripts/ci/<recipe>`; `just scripts/ci/` lists them.
+# Recipes run from the repository root, so paths read as `scripts/ci/...`.
+#
+# The Python checks run in this directory's own locked environment: pyproject.toml declares
+# PyYAML, uv.lock pins its graph and .python-version pins the interpreter uv selects, so they
+# never depend on whichever Python the machine or the runner image happens to ship. That needs
+# `uv` installed; see CONTRIBUTING.md.
+
+set working-directory := '../..'
+
+# rama's own tracing level, which the root justfile exports, is read by uv as well and would
+# bury these checks' output. Clearing it here covers both a direct call and one that inherits
+# the root's environment.
+export RUST_LOG := ""
+
+[private]
+default:
+    @just --list --justfile {{ justfile() }}
+
+# Every policy check, as `meta-lints` runs them. Needs cargo-hack for the feature verifier.
+qa: check-workflows check-features test
+
+# Runner budgets, concurrency slots and the required-gate graph.
+check-workflows:
+    uv run --frozen --project scripts/ci python scripts/ci/check_workflows.py
+
+# Every original cargo-hack feature check still runs across the two partitions.
+check-features:
+    uv run --frozen --project scripts/ci python scripts/ci/check_feature_coverage.py
+
+# The policy checker's own unit tests.
+test:
+    uv run --frozen --project scripts/ci python -m unittest discover -s scripts/ci -p 'test_*.py'

@@ -82,6 +82,13 @@ async fn quinn_answers(run: &CaseRun<StreamScenario>, server: quinn::Endpoint) -
         .expect("the uni stream completes");
     observed.up = Some((Received::Bytes(received), true));
 
+    let mut down = deadline.wait(what, conn.open_uni()).await.unwrap();
+    deadline
+        .wait(what, down.write_all(&run.scenario.down.bytes()))
+        .await
+        .unwrap();
+    down.finish().unwrap();
+
     let (mut send, mut recv) = deadline
         .wait(what, conn.accept_bi())
         .await
@@ -135,6 +142,13 @@ async fn quinn_asks(
         .await
         .expect("the payload is written");
     uni.finish().expect("the uni stream ends");
+
+    let mut down = deadline.wait(what, conn.accept_uni()).await.unwrap();
+    let bytes = deadline
+        .wait(what, down.read_to_end(READ_CAP))
+        .await
+        .unwrap();
+    observed.down = Some((Received::Bytes(bytes), true));
 
     let (mut send, mut recv) = deadline
         .wait(what, conn.open_bi())

@@ -88,7 +88,7 @@ jobs:
           toolchain: ${{env.RUST_TOOLCHAIN}}
       - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
         with:
-          tool: cargo-sort
+          tool: cargo-sort,just
       - name: cargo sort (dependencies)
         run: cargo sort --workspace --grouped --check
       - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
@@ -103,14 +103,12 @@ jobs:
           echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  $archive" | sha256sum --check
           tar -xzf "$archive" -C "$HOME/.cargo/bin" actionlint
           actionlint --version
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
       - name: Validate workflow scheduling and gates
-        run: |
-          python3 -m pip install --user PyYAML==6.0.3
-          python3 scripts/ci/check_workflows.py
-          python3 scripts/ci/check_feature_coverage.py
-          python3 -m unittest discover -s scripts/ci -p 'test_*.py'
-          # 1.7.12 predates GitHub's queue property. check_workflows.py validates it.
-          actionlint -ignore 'unexpected key "queue" for "concurrency" section'
+        run: just scripts/ci/qa
+      - name: actionlint
+        # 1.7.12 predates GitHub's queue property. check_workflows.py validates it.
+        run: actionlint -ignore 'unexpected key "queue" for "concurrency" section'
       - name: cargo deny
         uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
@@ -504,7 +502,11 @@ jobs:
       group: ${{ startsWith(matrix.os, 'macos') && (matrix.toolchain == 'stable' && 'rama-macos-slot-3' || 'rama-macos-slot-4') || startsWith(matrix.os, 'windows') && (matrix.toolchain == 'stable' && 'rama-windows-slot-3' || 'rama-windows-slot-2') || format('rama-linux-quic-{0}-{1}', github.run_id, strategy.job-index) }}
       cancel-in-progress: false
       queue: max
-    timeout-minutes: 120
+    # Scarce hosts run three isolated backends sequentially, including examples.
+    timeout-minutes: ${{ matrix.backends == 'all' && 240 || 120 }}
+    env:
+      RUSTUP_TOOLCHAIN: ${{ matrix.toolchain }}
+      RUSTFLAGS: -D warnings
     needs:
       - precheck-rust
       - precheck-docs
@@ -516,6 +518,12 @@ jobs:
         include:
           - os: ubuntu-latest
             toolchain: stable
+            backends: boring
+          - os: ubuntu-latest
+            toolchain: "1.96.0"
+            backends: boring
+          - os: ubuntu-latest
+            toolchain: stable
             backends: rustls-ring
           - os: ubuntu-latest
             toolchain: stable
@@ -528,16 +536,16 @@ jobs:
             backends: rustls-aws-lc
           - os: macos-15
             toolchain: stable
-            backends: both
+            backends: all
           - os: macos-15
             toolchain: "1.96.0"
-            backends: both
+            backends: all
           - os: windows-latest
             toolchain: stable
-            backends: both
+            backends: all
           - os: windows-latest
             toolchain: "1.96.0"
-            backends: both
+            backends: all
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
@@ -551,7 +559,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends cmake
+          sudo apt-get install --yes --no-install-recommends cmake clang libclang-dev
       - name: Show the C toolchain quiche will use
         if: runner.os != 'Windows'
         run: |
@@ -570,6 +578,7 @@ jobs:
           key: ${{ matrix.os }}-${{ matrix.toolchain }}-quic-interop-peers-${{ matrix.backends }}
           env-vars: RUST_TOOLCHAIN
           workspaces: |
+            .
             rama-quic/e2e/interop-common
             rama-quic/e2e/quinn-interop
             rama-quic/e2e/quiche-interop
@@ -578,43 +587,192 @@ jobs:
       - name: Build the aioquic peer's locked environment
         working-directory: rama-quic/e2e/aioquic-interop
         run: uv sync --frozen
-      # Separate steps preserve the existing keep-going diagnostics across peers and backends.
+      - name: Custom TLS provider without built-in backends
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'boring') }}
+        run: just rama-quic/qa-custom-provider
+      # A `cargo tree --locked` dependency-graph assertion, so its result cannot differ by
+      # host or toolchain: one Linux cell covers it. Keeping it off the scarce macOS/Windows
+      # runners also keeps this job free of a Python interpreter requirement there.
+      - name: Boring dependency isolation including test fixtures
+        if: ${{ !cancelled() && matrix.backends == 'boring' && matrix.os == 'ubuntu-latest' && matrix.toolchain == 'stable' }}
+        run: just rama-quic/qa-boring-isolation
+      - name: QUIC backend combinations
+        if: ${{ !cancelled() && matrix.backends == 'boring' && matrix.os == 'ubuntu-latest' && matrix.toolchain == 'stable' }}
+        shell: bash
+        run: |
+          for features in ring aws-lc ring,aws-lc rustls boring,rustls boring,ring boring,aws-lc boring,ring,aws-lc boring,rustls,ring boring,rustls,aws-lc rustls,ring,aws-lc boring,rustls,ring,aws-lc; do
+            just rama-quic/qa-backend "$features"
+          done
+      # Independent steps keep collecting failures without combining backend features.
+      - name: Isolated QUIC library tests and lints (boring)
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'boring') }}
+        run: just rama-quic/qa-backend boring
+      - name: Isolated crypto tests (boring)
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'boring') }}
+        run: cargo test -p rama-crypto --no-default-features --features boring --locked
+      - name: QUIC examples (boring)
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'boring') }}
+        run: cargo test -p rama-examples --no-default-features --features quic,boring --test integration quic_ --locked -- --include-ignored
+      - name: Concurrent QUIC transfers (boring)
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'boring') }}
+        run: cargo test -p rama-quic --no-default-features --features boring --test many_connections --locked -- --include-ignored
+      - name: QUIC receive-window stress (boring)
+        timeout-minutes: 15
+        if: ${{ !cancelled() && matrix.backends == 'boring' && matrix.os == 'ubuntu-latest' && matrix.toolchain == 'stable' }}
+        run: just rama-quic/qa-stress-backend boring
+      - name: QUIC benchmark (boring)
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'boring') }}
+        run: cargo check --bench quic_transport --no-default-features --features quic,boring --locked
+      - name: QUIC dial9 (boring)
+        if: ${{ !cancelled() && matrix.backends == 'boring' && matrix.os == 'ubuntu-latest' && matrix.toolchain == 'stable' }}
+        env:
+          RUSTFLAGS: --cfg tokio_unstable -D warnings
+        run: |
+          cargo test -p rama-quic --no-default-features --features dial9,boring --lib dial9 --locked
+          cargo test -p rama-quic --no-default-features --features dial9,boring --test dial9_runtime --locked
+      - name: Shared scenario library (boring)
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'boring') }}
+        run: just rama-quic/qa-interop-common boring
+      - name: Quinn interoperability (boring)
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'boring') }}
+        run: just rama-quic/qa-interop-quinn boring
+      - name: quiche interoperability (boring)
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'boring') }}
+        run: just rama-quic/qa-interop-quiche boring
+      - name: aioquic interoperability (boring)
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'boring') }}
+        run: just rama-quic/qa-interop-aioquic boring
+      - name: Runner endpoint and result gates (boring)
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'boring') }}
+        env:
+          PYTHON: ${{ github.workspace }}/rama-quic/e2e/aioquic-interop/.venv/${{ runner.os == 'Windows' && 'Scripts/python.exe' || 'bin/python' }}
+        run: just rama-quic/qa-interop-runner boring
+      - name: Isolated QUIC library tests and lints (rustls-ring)
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-ring') }}
+        run: just rama-quic/qa-backend rustls,ring
+      - name: Isolated crypto tests (rustls-ring)
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-ring') }}
+        run: cargo test -p rama-crypto --no-default-features --features ring --locked
+      - name: QUIC examples (rustls-ring)
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-ring') }}
+        run: cargo test -p rama-examples --no-default-features --features quic,rustls,ring --test integration quic_ --locked -- --include-ignored
+      - name: Concurrent QUIC transfers (rustls-ring)
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-ring') }}
+        run: cargo test -p rama-quic --no-default-features --features rustls,ring --test many_connections --locked -- --include-ignored
+      - name: QUIC receive-window stress (rustls-ring)
+        timeout-minutes: 15
+        if: ${{ !cancelled() && matrix.backends == 'rustls-ring' && matrix.os == 'ubuntu-latest' && matrix.toolchain == 'stable' }}
+        run: just rama-quic/qa-stress-backend rustls,ring
+      - name: QUIC benchmark (rustls-ring)
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-ring') }}
+        run: cargo check --bench quic_transport --no-default-features --features quic,rustls,ring --locked
+      - name: QUIC dial9 (rustls-ring)
+        if: ${{ !cancelled() && matrix.backends == 'rustls-ring' && matrix.os == 'ubuntu-latest' && matrix.toolchain == 'stable' }}
+        env:
+          RUSTFLAGS: --cfg tokio_unstable -D warnings
+        run: |
+          cargo test -p rama-quic --no-default-features --features dial9,rustls,ring --lib dial9 --locked
+          cargo test -p rama-quic --no-default-features --features dial9,rustls,ring --test dial9_runtime --locked
       - name: Shared scenario library (rustls-ring)
-        if: ${{ !cancelled() && (matrix.backends == 'both' || matrix.backends == 'rustls-ring') }}
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-ring') }}
         run: just rama-quic/qa-interop-common rustls-ring
       - name: Quinn interoperability (rustls-ring)
-        if: ${{ !cancelled() && (matrix.backends == 'both' || matrix.backends == 'rustls-ring') }}
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-ring') }}
         run: just rama-quic/qa-interop-quinn rustls-ring
       - name: quiche interoperability (rustls-ring)
-        if: ${{ !cancelled() && (matrix.backends == 'both' || matrix.backends == 'rustls-ring') }}
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-ring') }}
         run: just rama-quic/qa-interop-quiche rustls-ring
       - name: aioquic interoperability (rustls-ring)
-        if: ${{ !cancelled() && (matrix.backends == 'both' || matrix.backends == 'rustls-ring') }}
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-ring') }}
         run: just rama-quic/qa-interop-aioquic rustls-ring
       - name: Runner endpoint and result gates (rustls-ring)
-        if: ${{ !cancelled() && (matrix.backends == 'both' || matrix.backends == 'rustls-ring') }}
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-ring') }}
         env:
           PYTHON: ${{ github.workspace }}/rama-quic/e2e/aioquic-interop/.venv/${{ runner.os == 'Windows' && 'Scripts/python.exe' || 'bin/python' }}
         run: just rama-quic/qa-interop-runner rustls-ring
+      - name: Isolated QUIC library tests and lints (rustls-aws-lc)
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-aws-lc') }}
+        run: just rama-quic/qa-backend rustls,aws-lc
+      - name: Isolated crypto tests (rustls-aws-lc)
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-aws-lc') }}
+        run: cargo test -p rama-crypto --no-default-features --features aws-lc --locked
+      - name: QUIC examples (rustls-aws-lc)
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-aws-lc') }}
+        run: cargo test -p rama-examples --no-default-features --features quic,rustls,aws-lc --test integration quic_ --locked -- --include-ignored
+      - name: Concurrent QUIC transfers (rustls-aws-lc)
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-aws-lc') }}
+        run: cargo test -p rama-quic --no-default-features --features rustls,aws-lc --test many_connections --locked -- --include-ignored
+      - name: QUIC receive-window stress (rustls-aws-lc)
+        timeout-minutes: 15
+        if: ${{ !cancelled() && matrix.backends == 'rustls-aws-lc' && matrix.os == 'ubuntu-latest' && matrix.toolchain == 'stable' }}
+        run: just rama-quic/qa-stress-backend rustls,aws-lc
+      - name: QUIC benchmark (rustls-aws-lc)
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-aws-lc') }}
+        run: cargo check --bench quic_transport --no-default-features --features quic,rustls,aws-lc --locked
+      - name: QUIC dial9 (rustls-aws-lc)
+        if: ${{ !cancelled() && matrix.backends == 'rustls-aws-lc' && matrix.os == 'ubuntu-latest' && matrix.toolchain == 'stable' }}
+        env:
+          RUSTFLAGS: --cfg tokio_unstable -D warnings
+        run: |
+          cargo test -p rama-quic --no-default-features --features dial9,rustls,aws-lc --lib dial9 --locked
+          cargo test -p rama-quic --no-default-features --features dial9,rustls,aws-lc --test dial9_runtime --locked
       - name: Shared scenario library (rustls-aws-lc)
-        if: ${{ !cancelled() && (matrix.backends == 'both' || matrix.backends == 'rustls-aws-lc') }}
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-aws-lc') }}
         run: just rama-quic/qa-interop-common rustls-aws-lc
       - name: Quinn interoperability (rustls-aws-lc)
-        if: ${{ !cancelled() && (matrix.backends == 'both' || matrix.backends == 'rustls-aws-lc') }}
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-aws-lc') }}
         run: just rama-quic/qa-interop-quinn rustls-aws-lc
       - name: quiche interoperability (rustls-aws-lc)
-        if: ${{ !cancelled() && (matrix.backends == 'both' || matrix.backends == 'rustls-aws-lc') }}
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-aws-lc') }}
         run: just rama-quic/qa-interop-quiche rustls-aws-lc
       - name: aioquic interoperability (rustls-aws-lc)
-        if: ${{ !cancelled() && (matrix.backends == 'both' || matrix.backends == 'rustls-aws-lc') }}
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-aws-lc') }}
         run: just rama-quic/qa-interop-aioquic rustls-aws-lc
       - name: Runner endpoint and result gates (rustls-aws-lc)
-        if: ${{ !cancelled() && (matrix.backends == 'both' || matrix.backends == 'rustls-aws-lc') }}
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-aws-lc') }}
         env:
           PYTHON: ${{ github.workspace }}/rama-quic/e2e/aioquic-interop/.venv/${{ runner.os == 'Windows' && 'Scripts/python.exe' || 'bin/python' }}
         run: just rama-quic/qa-interop-runner rustls-aws-lc
 
+  test-quic-external-gnutls:
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain: [stable, "1.96.0"]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    needs: [precheck-rust, precheck-docs, precheck-fmt, meta-lints]
+    env:
+      RUSTUP_TOOLCHAIN: ${{ matrix.toolchain }}
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          components: clippy, rustfmt
+      - name: Install GnuTLS development library and certificate tool
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libgnutls28-dev gnutls-bin pkg-config
+          certtool --version
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+      - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
+        with:
+          tool: just
+      - uses: ./.github/actions/rust-cache
+        with:
+          key: ubuntu-24.04-${{ matrix.toolchain }}-quic-external-gnutls
+          env-vars: RUST_TOOLCHAIN
+          workspaces: rama-quic/e2e/gnutls-interop
+      - name: Real external TLS provider without Rama native backends
+        run: just rama-quic/qa-interop-gnutls
+
   test-quic-interop-runner:
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: [boring, rustls-ring, rustls-aws-lc]
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     needs:
@@ -641,12 +799,12 @@ jobs:
         with:
           tool: just
       - name: Test both roles against quic-go and ngtcp2
-        run: just rama-quic/test-interop-runner --artifacts "$RUNNER_TEMP/quic-interop"
+        run: just rama-quic/test-interop-runner --backend ${{ matrix.backend }} --artifacts "$RUNNER_TEMP/quic-interop"
       - name: Retain interop reports and diagnostics
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: quic-interop-runner
+          name: quic-interop-runner-${{ matrix.backend }}
           path: ${{ runner.temp }}/quic-interop
           if-no-files-found: warn
           retention-days: 7
@@ -1227,6 +1385,7 @@ jobs:
       - test-icap-oracle
       - test-quic-interop-qa
       - test-quic-interop-runner
+      - test-quic-external-gnutls
       - check-rama-icap-feature-boundaries
       - test-rust-linux-musl
       - test-rust-linux-gnu-cross-smoke

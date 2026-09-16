@@ -14,8 +14,8 @@
 //!
 //! # What it bounds
 //!
-//! - active client connections, and concurrent relayed streams per connection, each by a
-//!   permit taken before any work starts;
+//! - active client connections, refused past the limit, and concurrent relayed streams per
+//!   connection, each by a permit taken before any upstream work starts;
 //! - the copy buffer, a fixed size in both directions.
 //!
 //! # What it preserves
@@ -31,6 +31,8 @@
 //! It needs an origin to relay to, and the certificate that origin presents.
 //!
 //! ```sh
+//! Select `quic,boring`, `quic,rustls,ring`, or `quic,rustls,aws-lc` for the TLS backend.
+//!
 //! cargo run -p rama-examples --bin quic_terminating_relay --features=quic,rustls,ring -- \
 //!     --upstream 127.0.0.1:62000 --upstream-ca origin-cert.pem \
 //!     --cert relay-cert.pem --key relay-key.pem
@@ -409,18 +411,14 @@ async fn carry(
         let Ok((down_send, down_recv)) = accepted else {
             break Ok(());
         };
-        let Ok(permit) = streams.clone().try_acquire_owned() else {
-            tracing::warn!("relay: at its stream limit for this connection");
-            continue;
-        };
-        // A credit-starved stream owns only its permit. The connection loop keeps accepting
-        // and observing peers while this worker watches the individual stream for cancellation.
+        // The connection loop keeps accepting and observing peers while this worker waits for
+        // a permit and upstream credit, watching the individual stream for cancellation.
         let upstream = upstream.clone();
+        let streams = streams.clone();
         relaying.push(spawn(async move {
-            if let Err(error) = open_and_relay(down_send, down_recv, &upstream).await {
+            if let Err(error) = open_and_relay(down_send, down_recv, &upstream, streams).await {
                 tracing::warn!("relay: a stream ended early: {error}");
             }
-            drop(permit);
         }));
     };
     // The upstream is closed first, so a stream still waiting on it is released and the joins
@@ -430,16 +428,25 @@ async fn carry(
     outcome.and(joined)
 }
 
-/// Wait for upstream credit without retaining a request its client has cancelled.
+/// Wait for a permit and upstream credit without retaining a request its client has cancelled.
+///
+/// A stream past the limit waits rather than being refused: the permit of a stream the client
+/// just cancelled comes back a moment after that cancellation was seen. How many can wait is
+/// bounded by the bidirectional streams this side lets the client open.
 async fn open_and_relay(
     mut down_send: SendStream,
     mut down_recv: RecvStream,
     upstream: &Connection,
+    streams: Arc<Semaphore>,
 ) -> Result<(), BoxError> {
     let mut finished_receiving = false;
+    let mut permit = None;
     let pair = loop {
         tokio::select! {
-            opened = upstream.open_bi() => break opened?,
+            taken = streams.clone().acquire_owned(), if permit.is_none() => {
+                permit = Some(taken.context("the relay is closing its stream permits")?);
+            }
+            opened = upstream.open_bi(), if permit.is_some() => break opened?,
             stopped = down_send.stopped() => {
                 drop(down_send.reset(RELAY_CANCELLED.into()));
                 drop(down_recv.stop(RELAY_CANCELLED.into()));
@@ -460,7 +467,9 @@ async fn open_and_relay(
             }
         }
     };
-    relay_stream(down_send, down_recv, pair.0, pair.1).await
+    let outcome = relay_stream(down_send, down_recv, pair.0, pair.1).await;
+    drop(permit);
+    outcome
 }
 
 /// Not sent while the relay is stopping: both connections are closed by their endpoints then,
