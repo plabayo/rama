@@ -87,9 +87,14 @@ QUIC needs the `quic` feature and a TLS provider: either `boring`, or `rustls` t
 `ring` or `aws-lc`. Select an implementation with `TlsOptions::with_backend`; automatic
 selection prefers Rustls when both are available. It is built on [rama-udp][rama-udp], so
 the socket options and packet features of that layer apply to it. Boring builds do not require
-Rustls, ring, or AWS-LC. Applications can also implement the interfaces in
-`rama::quic::tls::provider` and construct `ClientConfig` and `ServerConfig` with their own
-TLS 1.3 and packet-crypto provider, without enabling a built-in backend.
+Rustls, ring, or AWS-LC.
+
+You can also bring your own TLS. The traits in `rama::quic::tls::provider` describe what
+QUIC needs from a TLS 1.3 implementation and its packet protection; implement them for the
+library of your choice and pass the result to `ClientConfig::new` and `ServerConfig::new`,
+with only the `quic` feature enabled. The
+[GnuTLS interop project](https://github.com/plabayo/rama/tree/main/rama-quic/e2e/gnutls-interop)
+is a complete example: it drives QUIC with GnuTLS, in both roles, against aioquic.
 
 For the connection-oriented streams there are also connectors to make it easy to establish connections in bigger stacks
 (e.g. http within tls on top of tcp):
@@ -126,6 +131,8 @@ Rama doesn’t just support networking—it *is* networking, from transport to a
     streams between them.
     It relays neither unidirectional nor server-initiated streams. It needs an origin to
     relay to and that origin's certificate
+  - [/rama-quic/e2e/gnutls-interop](https://github.com/plabayo/rama/tree/main/rama-quic/e2e/gnutls-interop):
+    QUIC with your own TLS provider, here GnuTLS, through `rama::quic::tls::provider`
 - UDP:
   - [/examples/src/udp_codec.rs](https://github.com/plabayo/rama/blob/main/examples/src/udp_codec.rs):
     an example which leverages `BytesCodec` to create a UDP client and server which speak a custom protocol

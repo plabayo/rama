@@ -12,6 +12,7 @@ use std::{
 use rama::{
     crypto::{
         cert::{CertificateIdentity, CertificateSubject, LeafCertRequest, SelfSignedCaConfig},
+        pem::PemEncode,
         pki_types::CertificateDer,
     },
     net::{address::Domain, tls::ApplicationProtocol},
@@ -173,8 +174,7 @@ impl IssuedIdentities {
             .expect("the authority is generated");
         let authority_path = directory.path().join("issuer.pem");
         let anchor = authority.certificate_chain()[0].clone();
-        fs::write(&authority_path, pem("CERTIFICATE", anchor.as_ref()))
-            .expect("the authority is written");
+        fs::write(&authority_path, anchor.to_pem()).expect("the authority is written");
         let for_name = Self::issue(
             directory.path(),
             "name",
@@ -257,31 +257,8 @@ pub fn path_of(path: &Path) -> &str {
     path.to_str().expect("a printable path")
 }
 
-fn pem(label: &str, der: &[u8]) -> String {
-    use base64::Engine as _;
-    let encoded = base64::engine::general_purpose::STANDARD.encode(der);
-    let mut result = format!("-----BEGIN {label}-----\n");
-    for line in encoded.as_bytes().chunks(64) {
-        result.push_str(std::str::from_utf8(line).unwrap());
-        result.push('\n');
-    }
-    result.push_str(&format!("-----END {label}-----\n"));
-    result
-}
-
 pub fn write_pem(identity: &Identity, certificate: &Path, key: &Path) {
-    use rama::crypto::pki_types::PrivateKeyDer;
-    let certificates: String = identity
-        .cert_chain
-        .iter()
-        .map(|cert| pem("CERTIFICATE", cert.as_ref()))
-        .collect();
-    let label = match &identity.private_key {
-        PrivateKeyDer::Pkcs1(_) => "RSA PRIVATE KEY",
-        PrivateKeyDer::Sec1(_) => "EC PRIVATE KEY",
-        PrivateKeyDer::Pkcs8(_) => "PRIVATE KEY",
-        _ => panic!("unsupported private key format"),
-    };
+    let certificates: String = identity.cert_chain.iter().map(PemEncode::to_pem).collect();
     fs::write(certificate, certificates).expect("the certificate chain is written");
-    fs::write(key, pem(label, identity.private_key.secret_der())).expect("the key is written");
+    fs::write(key, identity.private_key.to_pem()).expect("the key is written");
 }

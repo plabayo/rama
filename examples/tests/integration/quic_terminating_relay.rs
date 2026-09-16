@@ -18,7 +18,10 @@ use std::{
 };
 
 use rama::{
-    crypto::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject as _},
+    crypto::{
+        pem::PemEncode as _,
+        pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject as _},
+    },
     error::BoxError,
     net::tls::ApplicationProtocol,
     quic::{
@@ -74,19 +77,9 @@ impl Identity {
                 .expect("an identity is generated");
         let certificate = directory.path().join(format!("{name}-cert.pem"));
         let key = directory.path().join(format!("{name}-key.pem"));
-        fs::write(
-            &certificate,
-            pem("CERTIFICATE", generated.cert_chain[0].as_ref()),
-        )
-        .expect("the certificate is written");
-        let label = match generated.private_key {
-            PrivateKeyDer::Pkcs1(_) => "RSA PRIVATE KEY",
-            PrivateKeyDer::Sec1(_) => "EC PRIVATE KEY",
-            PrivateKeyDer::Pkcs8(_) => "PRIVATE KEY",
-            _ => panic!("unsupported generated key format"),
-        };
-        fs::write(&key, pem(label, generated.private_key.secret_der()))
-            .expect("the key is written");
+        fs::write(&certificate, generated.cert_chain[0].to_pem())
+            .expect("the certificate is written");
+        fs::write(&key, generated.private_key.to_pem()).expect("the key is written");
         let anchor = CertificateDer::from_pem_file(&certificate).expect("it reads back");
         Self {
             certificate,
@@ -94,18 +87,6 @@ impl Identity {
             anchor,
         }
     }
-}
-
-fn pem(label: &str, der: &[u8]) -> String {
-    use base64::Engine as _;
-    let encoded = base64::engine::general_purpose::STANDARD.encode(der);
-    let mut pem = format!("-----BEGIN {label}-----\n");
-    for line in encoded.as_bytes().chunks(64) {
-        pem.push_str(str::from_utf8(line).expect("base64 is ASCII"));
-        pem.push('\n');
-    }
-    pem.push_str(&format!("-----END {label}-----\n"));
-    pem
 }
 
 fn transport(window: Option<u32>, bidi: Option<u32>) -> Arc<TransportConfig> {

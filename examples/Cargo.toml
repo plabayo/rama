@@ -34,12 +34,12 @@ required-features = ["http-full", "rustls", "acme"]
 [[bin]]
 name = "quic_terminating_relay"
 path = "src/quic_terminating_relay.rs"
-required-features = ["quic", "tls"]
+required-features = ["quic"]
 
 [[bin]]
 name = "quic_client_server"
 path = "src/quic_client_server.rs"
-required-features = ["quic", "tls"]
+required-features = ["quic"]
 
 [[bin]]
 name = "autobahn_client"

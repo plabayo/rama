@@ -32,6 +32,8 @@ pub mod jose;
 
 pub mod hmac;
 
+pub mod pem;
+
 pub mod pki_types {
     //! Pki types used by rama. Currently this is a re-export of the [`rustls-pki-types`][rustls_pki_types] crate.
     //!

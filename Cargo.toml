@@ -686,7 +686,7 @@ harness = false
 
 [[bench]]
 name = "quic_transport"
-required-features = ["quic", "tls"]
+required-features = ["quic"]
 harness = false
 
 [[bench]]
