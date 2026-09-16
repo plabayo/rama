@@ -19,7 +19,9 @@ export RUSTDOCFLAGS := \
         "-D warnings" \
     }
 export RUST_LOG := "debug"
-export PYTHON := env_var_or_default("PYTHON", "python3")
+# `python3` is the POSIX spelling; Windows installers ship `python` and the
+# `python3` name there is usually the App Execution Alias stub, which fails.
+export PYTHON := env_var_or_default("PYTHON", if os_family() == "windows" { "python" } else { "python3" })
 
 # Install a cargo tool only when it is missing, as the root justfile does: the
 # probe needs a shell of its own on each platform, since Windows PowerShell has
@@ -37,15 +39,30 @@ _ensure-installed-windows TOOL PACKAGE:
     @if (-not (Get-Command {{TOOL}} -ErrorAction SilentlyContinue)) { cargo install {{PACKAGE}} --locked }
 
 # QUIC requires an explicit TLS provider alongside dial9.
-qa-dial9:
+qa-dial9: (qa-dial9-backend "boring") (qa-dial9-backend "rustls,ring") (qa-dial9-backend "rustls,aws-lc")
+
+qa-dial9-backend FEATURES:
     @just _ensure-installed cargo-nextest cargo-nextest
-    cargo clippy -p rama-quic --features dial9,rustls,ring --all-targets
-    cargo nextest run -p rama-quic --features dial9,rustls,ring
+    cargo clippy -p rama-quic --no-default-features --features dial9,{{FEATURES}} --all-targets
+    cargo nextest run -p rama-quic --no-default-features --features dial9,{{FEATURES}}
+
+# Isolated library tests, lints, and external-provider integration tests.
+qa-backend FEATURES:
+    cargo test -p rama-quic --no-default-features --features {{FEATURES}} --locked
+    cargo clippy -p rama-quic --no-default-features --features {{FEATURES}} --all-targets --locked -- -D warnings
+
+# A custom implementation must compile without any built-in TLS/packet provider.
+qa-custom-provider:
+    cargo test -p rama-quic --no-default-features --locked
+    cargo clippy -p rama-quic --no-default-features --all-targets --locked -- -D warnings
+
+qa-boring-isolation:
+    {{if os_family() == "windows" { "& $env:PYTHON" } else { '"$PYTHON"' } }} check_backend_isolation.py
 
 # QUIC interop peers: standalone projects, outside the workspace, each with its own lockfile.
 # quiche builds BoringSSL (needs cmake and a C++ compiler); aioquic needs uv.
 interop-peer-dirs := "e2e/interop-common e2e/quinn-interop e2e/quiche-interop e2e/aioquic-interop"
-interop-dirs := interop-peer-dirs + " e2e/interop-runner"
+interop-dirs := interop-peer-dirs + " e2e/interop-runner e2e/gnutls-interop"
 
 # Check formatting and lints for the shared scenarios and all peer projects.
 qa-interop-lint BACKEND: (_lint-interop "e2e/interop-common" BACKEND) (_lint-interop "e2e/quinn-interop" BACKEND) (_lint-interop "e2e/quiche-interop" BACKEND) (_lint-interop "e2e/aioquic-interop" BACKEND)
@@ -89,8 +106,10 @@ qa-interop-aioquic BACKEND: (_lint-interop "e2e/aioquic-interop" BACKEND) (test-
 # The complete peer CI checks.
 test-interop BACKEND: (qa-interop-common BACKEND) (qa-interop-quinn BACKEND) (qa-interop-quiche BACKEND) (qa-interop-aioquic BACKEND)
 
-# All standalone projects with both supported Rama TLS backends, without Docker.
-qa-interop: qa-interop-rustls-ring qa-interop-rustls-aws-lc
+# All standalone projects with each supported Rama TLS backend, without Docker.
+qa-interop: qa-interop-boring qa-interop-rustls-ring qa-interop-rustls-aws-lc qa-interop-gnutls
+
+qa-interop-boring: (_qa-interop "boring")
 
 qa-interop-rustls-ring: (_qa-interop "rustls-ring")
 
@@ -122,3 +141,56 @@ qa-interop-runner BACKEND:
 # Run the pinned independent QUIC interop matrix (Rama client and server).
 test-interop-runner *ARGS:
     bash {{justfile_directory()}}/e2e/interop-runner/run.sh {{ARGS}}
+
+# The client x server benchmark matrix over the interop endpoint images. Docker is the only
+# prerequisite: Rama images are built when missing, peers are pulled, certificates and served
+# files are made in containers. `just bench-matrix --help` lists the knobs; a quick look is
+# `just bench-matrix --implementations rama-boring,quinn --set bulk.size=256M --repeat 1`.
+bench-matrix *ARGS:
+    {{if os_family() == "windows" { "& $env:PYTHON" } else { '"$PYTHON"' } }} e2e/bench/bench_matrix.py {{ARGS}}
+
+# Re-render the tables and SVGs from a saved JSON report.
+bench-matrix-report REPORT *ARGS:
+    {{if os_family() == "windows" { "& $env:PYTHON" } else { '"$PYTHON"' } }} e2e/bench/bench_matrix.py --report {{REPORT}} {{ARGS}}
+
+# The unit tests of the benchmark script's pure parts.
+[working-directory: 'e2e/bench']
+qa-bench-matrix:
+    {{if os_family() == "windows" { "& $env:PYTHON" } else { '"$PYTHON"' } }} -m unittest discover -s . -p 'test_*.py'
+
+# GNUTLS_DIR selects a native installation prefix when pkg-config is unavailable.
+# The C bridge needs GnuTLS headers and the fixtures need `certtool`, neither of which the
+# Windows toolchain provides, so this is a no-op there and `qa-full` stays runnable.
+# External TLS implementation (POSIX only): GnuTLS headers/library and certtool, plus the locked aioquic peer.
+qa-interop-gnutls:
+    @just _qa-interop-gnutls-{{os_family()}}
+
+[private]
+_qa-interop-gnutls-windows:
+    @echo "Skipping GnuTLS interop: it needs GnuTLS headers and certtool (POSIX only)."
+
+[private]
+_qa-interop-gnutls-unix: interop-aioquic-env qa-gnutls-isolation
+    cargo fmt --manifest-path e2e/gnutls-interop/Cargo.toml --all --check
+    cargo clippy --manifest-path e2e/gnutls-interop/Cargo.toml --all-targets --locked -- -D warnings
+    cargo test --manifest-path e2e/gnutls-interop/Cargo.toml --locked
+    cargo doc --manifest-path e2e/gnutls-interop/Cargo.toml --no-deps --locked
+
+qa-gnutls-isolation:
+    {{if os_family() == "windows" { "& $env:PYTHON" } else { '"$PYTHON"' } }} check_backend_isolation.py --external-only
+
+# Standalone projects are not included in cargo fmt --workspace.
+fmt-interop *ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for dir in {{interop-dirs}}; do
+        cargo fmt --manifest-path "$dir/Cargo.toml" --all {{ARGS}}
+    done
+
+fmt-check-interop: (fmt-interop "--check")
+
+# Receive-window stress cases are ignored by ordinary library test runs.
+qa-stress-backend FEATURES:
+    cargo test -p rama-quic --no-default-features --features {{FEATURES}} --lib stress_ --locked -- --ignored --test-threads=1
+
+qa-stress: (qa-stress-backend "boring") (qa-stress-backend "rustls,ring") (qa-stress-backend "rustls,aws-lc")

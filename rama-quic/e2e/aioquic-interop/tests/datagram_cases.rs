@@ -12,7 +12,9 @@ mod common;
 use common::*;
 use interop_common::{
     DatagramObservation, DatagramScenario, Deadline, Ears, Role, UnsupportedObservation,
-    backpressure::rama_client_fills_and_cancels,
+    backpressure::{
+        bind_backpressure_server, rama_client_fills_and_cancels, rama_server_fills_and_cancels,
+    },
     backpressure_cases,
     datagram::{rama_client_side, rama_server_side},
     datagram_cases, for_each_case_within,
@@ -266,80 +268,116 @@ impl Ears for Orders<'_> {
 /// send that has no room, and carries on once it is reading again.
 #[tokio::test]
 async fn backpressure_cases_rama_client() {
+    backpressure(Role::RamaClient).await;
+}
+
+#[tokio::test]
+async fn backpressure_cases_rama_server() {
+    backpressure(Role::RamaServer).await;
+}
+
+async fn backpressure(role: Role) {
     prepare().await;
-    for_each_case_within(
-        PEER,
-        Role::RamaClient,
-        backpressure_cases(),
-        LIMIT,
-        |run| async move {
-            let identity = Identity::generate(SERVER_NAME);
-            let run = run.with_identity(identity.auth.clone());
-            let mut peer = AioQuic::spawn(
-                "server",
-                &[
-                    "--cert",
-                    identity.certificate(),
-                    "--key",
-                    identity.key(),
-                    "--datagram-frame",
-                    &FRAME.to_string(),
-                    "--orders",
-                ],
-            )
-            .await;
-            let addr = peer.listening(run.deadline).await;
+    for_each_case_within(PEER, role, backpressure_cases(), LIMIT, |run| async move {
+        let identity = Identity::generate(SERVER_NAME);
+        let run = run.with_identity(identity.auth.clone());
+        let (mut peer, filled) = match role {
+            Role::RamaClient => {
+                let mut peer = AioQuic::spawn(
+                    "server",
+                    &[
+                        "--cert",
+                        identity.certificate(),
+                        "--key",
+                        identity.key(),
+                        "--datagram-frame",
+                        &FRAME.to_string(),
+                        "--orders",
+                    ],
+                )
+                .await;
+                let address = peer.listening(run.deadline).await;
+                let filled = rama_client_fills_and_cancels(
+                    &run,
+                    address,
+                    &mut Orders {
+                        peer: &mut peer,
+                        deadline: run.deadline,
+                        greeted: false,
+                    },
+                )
+                .await;
+                (peer, filled)
+            }
+            Role::RamaServer => {
+                let endpoint = bind_backpressure_server(&run).await;
+                let port = endpoint.local_addr().unwrap().port().to_string();
+                let mut peer = AioQuic::spawn(
+                    "backpressure-client",
+                    &[
+                        "--ca",
+                        identity.certificate(),
+                        "--port",
+                        &port,
+                        "--datagram-frame",
+                        &FRAME.to_string(),
+                    ],
+                )
+                .await;
+                let filled = rama_server_fills_and_cancels(
+                    &run,
+                    endpoint,
+                    &mut Orders {
+                        peer: &mut peer,
+                        deadline: run.deadline,
+                        greeted: false,
+                    },
+                )
+                .await;
+                (peer, filled)
+            }
+        };
 
-            let filled = {
-                let mut ears = Orders {
-                    peer: &mut peer,
-                    deadline: run.deadline,
-                    greeted: false,
-                };
-                rama_client_fills_and_cancels(&run, addr, &mut ears).await
-            };
-
-            // Read until the child has the one sent once there was room, so the connection is
-            // not closed while it is still catching up, then close and read the rest. What
-            // the child reports and in what order is not fixed here: datagrams are unordered
-            // and the exchange may be reported among them, so each line is taken for what it
-            // says.
-            let mut reports = Vec::new();
-            let mut carried = false;
-            loop {
-                let event = peer.event(&run.what, run.deadline).await;
-                match event.name() {
-                    "datagram" => {
-                        let report = event.reported();
-                        let resumed = filled.sent.resumed(&report);
-                        reports.push(report);
-                        if resumed {
-                            break;
-                        }
+        // Read until the child has the one sent once there was room, so the connection is
+        // not closed while it is still catching up, then close and read the rest. What
+        // the child reports and in what order is not fixed here: datagrams are unordered
+        // and the exchange may be reported among them, so each line is taken for what it
+        // says.
+        let mut reports = Vec::new();
+        let mut carried = false;
+        loop {
+            let event = peer.event(&run.what, run.deadline).await;
+            match event.name() {
+                "datagram" => {
+                    let report = event.reported();
+                    let resumed = filled.sent.resumed(&report);
+                    reports.push(report);
+                    if resumed {
+                        break;
                     }
-                    "stream" => carried = true,
-                    other => panic!("{}: the child said {other} mid-case", run.what),
                 }
+                "stream" => carried = true,
+                other => panic!("{}: the child said {other} mid-case", run.what),
             }
-            let sent = filled.sent.clone();
-            filled.close(&run.what, run.deadline).await;
-            loop {
-                let event = peer.event(&run.what, run.deadline).await;
-                match event.name() {
-                    "datagram" => reports.push(event.reported()),
-                    "stream" => carried = true,
-                    "ended" => break,
-                    other => panic!("{}: the child said {other} as it ended", run.what),
-                }
+        }
+        let sent = filled.sent.clone();
+        filled.close(&run.what, run.deadline).await;
+        loop {
+            let event = peer.event(&run.what, run.deadline).await;
+            match event.name() {
+                "datagram" => reports.push(event.reported()),
+                "stream" => carried = true,
+                "ended" => break,
+                other => panic!("{}: the child said {other} as it ended", run.what),
             }
-            peer.finished(run.deadline).await;
-            assert!(
-                carried,
-                "{}: the exchange after the stall was carried",
-                run.what
-            );
-            sent.account_for(&run.what, &reports);
-        },
-    )
+        }
+        peer.finished(run.deadline).await;
+        assert!(
+            carried,
+            "{}: the exchange after the stall was carried",
+            run.what
+        );
+        sent.account_for(&run.what, &reports);
+    })
     .await;
 }

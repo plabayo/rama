@@ -185,8 +185,8 @@ quickcheck_macros = "1.2"
 quote = "1.0"
 radix_trie = "0.3"
 rama = { version = "0.5.0", path = ".", default-features = false }
-rama-boring = { version = "0.6.8", default-features = false }
-rama-boring-tokio = { version = "0.6.8", default-features = false }
+rama-boring = { version = "0.6.9", default-features = false }
+rama-boring-tokio = { version = "0.6.9", default-features = false }
 rama-core = { version = "0.5.0", path = "./rama-core", default-features = false }
 rama-crypto = { version = "0.5.0", path = "./rama-crypto", default-features = false }
 rama-dns = { version = "0.5.0", path = "./rama-dns", default-features = false }
@@ -441,7 +441,7 @@ tls = [
 aws-lc = ["rama-crypto?/aws-lc", "rama-tls-rustls?/aws-lc", "rama-quic?/aws-lc"]
 ring = ["rama-crypto?/ring", "rama-tls-rustls?/ring", "rama-quic?/ring"]
 rustls = ["tls", "dep:rama-tls-rustls", "rama-quic?/rustls"]
-boring = ["tls", "dep:rama-tls-boring"]
+boring = ["tls", "dep:rama-tls-boring", "rama-quic?/boring"]
 cli = [
     "std",
     "dep:base64",
@@ -473,9 +473,9 @@ dns = ["std", "net", "dep:rama-dns", "rama-socks5?/dns"]
 dns-hickory = ["dns", "rama-dns/hickory"]
 tcp = ["std", "net", "dep:rama-tcp"]
 udp = ["std", "net", "dep:rama-udp"]
-# QUIC v1 transport (Rustls, TLS 1.3) on top of `udp`; pick a crypto
-# provider with `ring` and/or `aws-lc`.
-quic = ["std", "udp", "dep:rama-quic"]
+# QUIC v1 transport over `udp`, with backend-neutral TLS types. Select a built-in
+# TLS/crypto backend explicitly, or supply an external provider.
+quic = ["std", "udp", "tls", "dep:rama-quic"]
 ws = ["std", "dep:rama-ws", "http"]
 js = ["std", "dep:rama-js"]
 js-disk-cache = ["js", "rama-js/disk-cache", "rama-pac?/js-disk-cache"]
@@ -686,7 +686,7 @@ harness = false
 
 [[bench]]
 name = "quic_transport"
-required-features = ["quic", "rustls", "aws-lc"]
+required-features = ["quic", "tls"]
 harness = false
 
 [[bench]]

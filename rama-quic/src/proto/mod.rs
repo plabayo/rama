@@ -18,7 +18,10 @@ pub(crate) mod coding;
 mod constant_time;
 mod range_set;
 #[cfg(test)]
-#[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+#[cfg(any(
+    feature = "boring",
+    all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+))]
 mod tests;
 pub(crate) mod transport_parameters;
 mod varint;
@@ -38,11 +41,38 @@ pub(crate) use crate::proto::connection::{
     Chunks, Connection, Event, FinishError, ReadError, ReadableError, SendDatagramError,
     SendStream, StreamEvent, WriteError,
 };
-#[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
-pub(crate) use crate::proto::connection::{Datagrams, Streams};
-#[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+#[cfg(all(
+    test,
+    any(
+        feature = "boring",
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        )
+    )
+))]
+pub(crate) use crate::proto::connection::{Datagrams, StreamResourceUsage, Streams};
+#[cfg(all(
+    test,
+    any(
+        feature = "boring",
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        )
+    )
+))]
 pub(crate) use crate::proto::endpoint::AcceptError;
-#[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+#[cfg(all(
+    test,
+    any(
+        feature = "boring",
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        )
+    )
+))]
 pub(crate) use crate::proto::frame::Datagram;
 #[cfg(feature = "test-utils")]
 pub(crate) use connection::benchmarks;
@@ -51,7 +81,7 @@ pub(crate) use connection::benchmarks;
 pub(crate) use connection::qlog::ConnectionQlog;
 
 mod config;
-#[cfg(any(feature = "aws-lc", feature = "ring"))]
+#[cfg(any(feature = "aws-lc", feature = "ring", feature = "boring"))]
 pub use config::AddressTokenKey;
 pub use config::{
     AckFrequencyConfig, ClientConfig, ConfigError, CongestionControl, EndpointConfig, IdleTimeout,
@@ -86,9 +116,10 @@ pub(crate) use crate::proto::endpoint::{
     ConnectionHandle, DatagramEvent, Endpoint, Incoming, RetryError,
 };
 
-pub use crate::proto::crypto::{ExportKeyingMaterialError, HandshakeSummary};
+pub use crate::proto::crypto::{ExportKeyingMaterialError, NegotiatedTlsParameters};
 
 mod packet;
+pub use packet::SpaceId;
 
 mod shared;
 pub(crate) use crate::proto::shared::{ConnectionEvent, EndpointEvent};
@@ -107,7 +138,16 @@ pub use crate::proto::cid_generator::{
 
 mod token;
 use token::ResetToken;
-#[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+#[cfg(all(
+    test,
+    any(
+        feature = "boring",
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        )
+    )
+))]
 pub(crate) use token::ResetToken as TestResetToken;
 pub use token::{NoneTokenLog, NoneTokenStore, TokenLog, TokenReuseError, TokenStore};
 
@@ -128,7 +168,33 @@ pub(crate) mod fuzzing {
         ConnectionIdParser, FixedLengthConnectionIdParser, PartialDecode,
     };
     pub use crate::proto::transport_parameters::TransportParameters;
-    pub use rama_core::bytes::{BufMut, BytesMut};
+    pub use rama_core::bytes::{BufMut, Bytes, BytesMut};
+
+    use crate::proto::{
+        TransportError,
+        frame::{Frame, Iter},
+    };
+
+    /// Decode `payload` as the frames of one received packet, up to its end or the first
+    /// frame it rejects, walking every ACK range as loss detection would. Answers how many
+    /// frames it decoded.
+    pub fn decode_frames(payload: Bytes) -> Result<usize, TransportError> {
+        let mut decoded = 0;
+        for frame in Iter::new(payload)? {
+            if let Frame::Ack(ack) = frame? {
+                // Ranges are decoded lazily from bytes `Iter` only scanned: each must sit strictly
+                // below the one before it.
+                let mut floor = None;
+                for range in ack.iter() {
+                    assert!(range.start() <= range.end());
+                    assert!(floor.is_none_or(|floor| *range.end() < floor));
+                    floor = Some(*range.start());
+                }
+            }
+            decoded += 1;
+        }
+        Ok(decoded)
+    }
 
     #[cfg(feature = "arbitrary")]
     use arbitrary::{Arbitrary, Result, Unstructured};

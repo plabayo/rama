@@ -1,6 +1,6 @@
 use super::*;
 
-struct FailingClient;
+struct FailingClient(bool);
 impl crypto::ClientConfig for FailingClient {
     fn start_session(
         self: Arc<Self>,
@@ -8,20 +8,29 @@ impl crypto::ClientConfig for FailingClient {
         _: &str,
         _: &TransportParameters,
     ) -> Result<Box<dyn crypto::Session>, ConnectError> {
-        Err(ConnectError::Crypto(failure()))
+        if self.0 {
+            Ok(Box::new(FailingInitialKeys))
+        } else {
+            Err(ConnectError::Crypto(failure()))
+        }
     }
 }
 
-struct FailingServer(Arc<dyn crypto::ServerConfig>);
+struct FailingServer(Arc<dyn crypto::ServerConfig>, bool);
 impl crypto::ServerConfig for FailingServer {
     fn initial_keys(
         &self,
         version: u32,
         cid: &ConnectionId,
-    ) -> Result<crypto::Keys, crypto::UnsupportedVersion> {
+    ) -> Result<crypto::Keys, crypto::InitialKeysError> {
         self.0.initial_keys(version, cid)
     }
-    fn retry_tag(&self, version: u32, cid: &ConnectionId, packet: &[u8]) -> [u8; 16] {
+    fn retry_tag(
+        &self,
+        version: u32,
+        cid: &ConnectionId,
+        packet: &[u8],
+    ) -> Result<[u8; 16], crypto::CryptoError> {
         self.0.retry_tag(version, cid, packet)
     }
     fn start_session(
@@ -29,7 +38,56 @@ impl crypto::ServerConfig for FailingServer {
         _: u32,
         _: &TransportParameters,
     ) -> Result<Box<dyn crypto::Session>, TransportError> {
+        if self.1 {
+            Ok(Box::new(FailingInitialKeys))
+        } else {
+            Err(failure())
+        }
+    }
+}
+
+struct FailingInitialKeys;
+impl crypto::Session for FailingInitialKeys {
+    fn initial_keys(&self, _: &ConnectionId, _: Side) -> Result<crypto::Keys, TransportError> {
         Err(failure())
+    }
+    fn early_crypto(&self) -> Option<(Box<dyn crypto::HeaderKey>, Box<dyn crypto::PacketKey>)> {
+        None
+    }
+    fn early_data_accepted(&self) -> Option<bool> {
+        None
+    }
+    fn is_handshaking(&self) -> bool {
+        true
+    }
+    fn read_handshake(
+        &mut self,
+        _: crate::proto::packet::SpaceId,
+        _: &[u8],
+    ) -> Result<bool, TransportError> {
+        Err(failure())
+    }
+    fn transport_parameters(&self) -> Result<Option<TransportParameters>, TransportError> {
+        Err(failure())
+    }
+    fn poll_handshake(&mut self) -> Result<Option<crypto::HandshakeEvent>, TransportError> {
+        Err(failure())
+    }
+    fn next_1rtt_keys(
+        &mut self,
+    ) -> Result<Option<crypto::KeyPair<Box<dyn crypto::PacketKey>>>, TransportError> {
+        Err(failure())
+    }
+    fn is_valid_retry(&self, _: &ConnectionId, _: &[u8], _: &[u8]) -> bool {
+        false
+    }
+    fn export_keying_material(
+        &self,
+        _: &mut [u8],
+        _: &[u8],
+        _: &[u8],
+    ) -> Result<(), crypto::ExportKeyingMaterialError> {
+        Err(crypto::ExportKeyingMaterialError)
     }
 }
 
@@ -41,65 +99,69 @@ fn failure() -> TransportError {
 #[test]
 fn failed_client_session_releases_reserved_cid() {
     use std::error::Error as _;
-    let mut endpoint = Endpoint::new(
-        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
-        None,
-        true,
-        None,
-    );
-    let config = ClientConfig::new(Arc::new(FailingClient));
-    for _ in 0..3 {
-        let error = endpoint
-            .connect(
-                Instant::now(),
-                config.clone(),
-                "127.0.0.1:443".parse().unwrap(),
-                "localhost",
-            )
-            .err()
-            .unwrap();
-        let source = error
-            .source()
-            .unwrap()
-            .source()
-            .unwrap()
-            .downcast_ref::<std::io::Error>()
-            .unwrap();
-        assert_eq!(source.kind(), std::io::ErrorKind::PermissionDenied);
-        assert_eq!(endpoint.known_cids(), 0);
-        assert_eq!(endpoint.open_connections(), 0);
+    for initial_keys in [false, true] {
+        let mut endpoint = Endpoint::new(
+            Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+            None,
+            true,
+            None,
+        );
+        let config = ClientConfig::new(Arc::new(FailingClient(initial_keys)));
+        for _ in 0..3 {
+            let error = endpoint
+                .connect(
+                    Instant::now(),
+                    config.clone(),
+                    "127.0.0.1:443".parse().unwrap(),
+                    "localhost",
+                )
+                .err()
+                .unwrap();
+            let source = error
+                .source()
+                .unwrap()
+                .source()
+                .unwrap()
+                .downcast_ref::<std::io::Error>()
+                .unwrap();
+            assert_eq!(source.kind(), std::io::ErrorKind::PermissionDenied);
+            assert_eq!(endpoint.known_cids(), 0);
+            assert_eq!(endpoint.open_connections(), 0);
+        }
     }
 }
 
 #[test]
 fn failed_server_session_releases_reserved_and_preferred_cids() {
     use std::error::Error as _;
-    let mut config = server_config();
-    config.crypto = Arc::new(FailingServer(config.crypto));
-    config.preferred_address_v4 = Some("127.0.0.1:444".parse().unwrap());
-    let mut pair = Pair::new(
-        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
-        config,
-    );
-    for _ in 0..3 {
-        let client = pair.begin_connect(client_config());
-        pair.drive();
-        let error = pair.server.assert_accept_error();
-        let source = error
-            .source()
-            .unwrap()
-            .source()
-            .unwrap()
-            .downcast_ref::<std::io::Error>()
-            .unwrap();
-        assert_eq!(source.kind(), std::io::ErrorKind::PermissionDenied);
-        assert_eq!(pair.server.known_cids(), 0);
-        assert_eq!(pair.server.open_connections(), 0);
-        assert!(
-            matches!(pair.client_conn_mut(client).poll(), Some(Event::ConnectionLost {
+    for initial_keys in [false, true] {
+        let mut config = server_config();
+        config.crypto = Arc::new(FailingServer(config.crypto, initial_keys));
+        config.preferred_address_v4 = Some("127.0.0.1:444".parse().unwrap());
+        let mut pair = Pair::new(
+            Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+            config,
+        );
+        for _ in 0..3 {
+            let client = pair.begin_connect(client_config());
+            pair.drive();
+            let error = pair.server.assert_accept_error();
+            let source = error
+                .source()
+                .unwrap()
+                .source()
+                .unwrap()
+                .downcast_ref::<std::io::Error>()
+                .unwrap();
+            assert_eq!(source.kind(), std::io::ErrorKind::PermissionDenied);
+            assert_eq!(pair.server.known_cids(), 0);
+            assert_eq!(pair.server.open_connections(), 0);
+            assert!(
+                matches!(pair.client_conn_mut(client).poll(), Some(Event::ConnectionLost {
             reason: ConnectionError::ConnectionClosed(error),
         }) if error.error_code == TransportErrorCode::INTERNAL_ERROR)
-        );
+            );
+        }
     }
 }
 #[test]
@@ -148,4 +210,36 @@ fn client_does_not_decrypt_zero_rtt_while_resuming() {
     let now = pair.time;
     pair.client_conn_mut(client)
         .assert_early_packet_is_not_decrypted(now, packet);
+}
+
+/// RFC 9001 §6: TLS KeyUpdate has no place in QUIC, where keys change through the key phase
+/// bit instead. A session that is handed one, at the level it would arrive at, refuses it with
+/// the `unexpected_message` alert as a crypto error (0x010a), on both sides and whichever
+/// backend is behind the session.
+#[test]
+fn a_tls_key_update_message_is_refused_as_an_unexpected_message() {
+    let _guard = subscribe();
+    let mut pair = Pair::default();
+    let (client, server) = pair.connect();
+    pair.drive();
+    // HandshakeType key_update (24), three-byte length, KeyUpdateRequest update_not_requested.
+    const KEY_UPDATE: [u8; 5] = [0x18, 0x00, 0x00, 0x01, 0x00];
+    let client_error = pair
+        .client_conn_mut(client)
+        .crypto_session_mut()
+        .read_handshake(SpaceId::Data, &KEY_UPDATE)
+        .expect_err("the client session refuses a KeyUpdate");
+    let server_error = pair
+        .server_conn_mut(server)
+        .crypto_session_mut()
+        .read_handshake(SpaceId::Data, &KEY_UPDATE)
+        .expect_err("the server session refuses a KeyUpdate");
+    for (side, error) in [("client", client_error), ("server", server_error)] {
+        assert_eq!(
+            error.code(),
+            TransportErrorCode::crypto(10),
+            "{side}: unexpected_message, as a crypto error: {error}"
+        );
+        assert_eq!(error.code().as_u64(), 0x010a, "{side}");
+    }
 }

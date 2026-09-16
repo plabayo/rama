@@ -168,6 +168,9 @@ impl core::fmt::Display for RetryError {
             }
             RetryRefused::NoServerConfig => f.write_str("retry requires a server configuration"),
             RetryRefused::TokenSealing => f.write_str("the retry token could not be sealed"),
+            RetryRefused::IntegrityProtection => {
+                f.write_str("the retry packet could not be authenticated")
+            }
             RetryRefused::LifetimeUnrepresentable => f.write_str(
                 "the configured retry token lifetime cannot be represented on the clock",
             ),

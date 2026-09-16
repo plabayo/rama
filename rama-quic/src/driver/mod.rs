@@ -50,7 +50,13 @@ mod udp;
 mod work_limiter;
 
 /// Names the driver's own tests reach for through this module.
-#[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+#[cfg(all(
+    test,
+    any(
+        feature = "boring",
+        all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+    )
+))]
 pub(crate) use crate::proto::{ClientConfig, ConnectionError, ServerConfig, TransportConfig};
 pub(crate) use crate::proto::{EndpointConfig, VarInt};
 pub(crate) use std::time::{Duration, Instant};
@@ -60,7 +66,8 @@ pub use crate::driver::connection::{
     SendDatagram, SendDatagramError, ZeroRttAccepted,
 };
 pub use crate::driver::endpoint::{
-    Accept, DEFAULT_SHUTDOWN_BUDGET, Endpoint, EndpointBuilder, EndpointStats,
+    Accept, DEFAULT_SHUTDOWN_BUDGET, DEFAULT_SOCKET_BUFFER_SIZE, Endpoint, EndpointBuilder,
+    EndpointStats,
 };
 pub use crate::driver::incoming::{Incoming, IncomingFuture, RetryError};
 pub use crate::driver::lifecycle::ShutdownOutcome;

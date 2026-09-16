@@ -123,25 +123,36 @@ impl Connection {
         discarded: bool,
         trigger: Option<KeyChangeTrigger>,
     ) {
-        let key_types = match space {
-            SpaceId::Initial => [KeyType::ClientInitialSecret, KeyType::ServerInitialSecret],
-            SpaceId::Handshake => [
-                KeyType::ClientHandshakeSecret,
-                KeyType::ServerHandshakeSecret,
-            ],
-            SpaceId::Data => [KeyType::ClientOneRttSecret, KeyType::ServerOneRttSecret],
-        };
-        for key_type in key_types {
-            self.qlog_key(
-                now,
-                KeyChange {
-                    key_type,
-                    key_phase: (space == SpaceId::Data).then_some(self.stats.key_updates),
-                    trigger,
-                },
-                discarded,
-            );
+        for client in [true, false] {
+            self.qlog_directional_key_change(now, space, client, discarded, trigger);
         }
+    }
+
+    pub(in crate::proto::connection) fn qlog_directional_key_change(
+        &self,
+        now: Instant,
+        space: SpaceId,
+        client: bool,
+        discarded: bool,
+        trigger: Option<KeyChangeTrigger>,
+    ) {
+        let key_type = match (space, client) {
+            (SpaceId::Initial, true) => KeyType::ClientInitialSecret,
+            (SpaceId::Initial, false) => KeyType::ServerInitialSecret,
+            (SpaceId::Handshake, true) => KeyType::ClientHandshakeSecret,
+            (SpaceId::Handshake, false) => KeyType::ServerHandshakeSecret,
+            (SpaceId::Data, true) => KeyType::ClientOneRttSecret,
+            (SpaceId::Data, false) => KeyType::ServerOneRttSecret,
+        };
+        self.qlog_key(
+            now,
+            KeyChange {
+                key_type,
+                key_phase: (space == SpaceId::Data).then_some(self.stats.key_updates),
+                trigger,
+            },
+            discarded,
+        );
     }
 
     pub(in crate::proto::connection) fn qlog_zero_rtt_key(&self, now: Instant, discarded: bool) {

@@ -16,7 +16,7 @@ use tokio::time::timeout;
 
 use crate::{
     driver::{ClientConfig, Endpoint, ServerConfig},
-    proto::crypto::rustls::TlsOptions,
+    tls::TlsOptions,
 };
 
 use super::{owned::Owned, subscribe};

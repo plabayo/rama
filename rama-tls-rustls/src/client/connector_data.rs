@@ -86,6 +86,10 @@ pub(super) fn build_client_config(
     }
 
     let root_certs = match (server_verify_mode, value.server_trust) {
+        // Nothing checks a chain against roots here, so the system store is not even loaded.
+        (ServerVerifyMode::Disable, _) if value.server_cert_pins.is_none() => {
+            Arc::new(RootCertStore::empty())
+        }
         (ServerVerifyMode::Auto, Some(trust)) => {
             if value.verifier.is_some() {
                 tracing::debug!(

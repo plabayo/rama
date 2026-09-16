@@ -44,6 +44,11 @@ uv sync --frozen
 cargo test --locked --features rustls-ring
 ```
 
+Select `boring`, `rustls-ring`, or `rustls-aws-lc` for Rama. The aioquic peer always
+uses its own Python TLS implementation. Boring runs the same scenarios, including
+both-role resumption and certificate failures. Early stream delivery may precede
+the handshake event; tests require both events without imposing their order.
+
 Warm, once `.venv` exists:
 
 ```
@@ -57,7 +62,7 @@ requires them to be the pinned ones, so an environment left from an older lockfi
 what it actually is. Nothing is skipped when a prerequisite is absent: a missing `uv` fails the
 run with the command to fix it.
 
-CI runs exactly these through `just rama-quic/qa-interop-aioquic rustls-ring`, in the
+CI runs these for each backend through `just rama-quic/qa-interop-aioquic BACKEND`, in the
 `test-quic-interop-qa` job. The project is not part of the workspace, so `cargo test` at the
 repository root does not reach it.
 

@@ -9,6 +9,7 @@ edition = "2024"
 publish = false
 
 [features]
+boring = ["rama/boring", "interop-common/boring"]
 rustls-ring = ["rama/rustls", "rama/ring", "interop-common/rustls-ring"]
 rustls-aws-lc = ["rama/rustls", "rama/aws-lc", "interop-common/rustls-aws-lc"]
 

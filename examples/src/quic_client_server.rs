@@ -9,6 +9,8 @@
 //! # Run the example
 //!
 //! ```sh
+//! Select `quic,boring`, `quic,rustls,ring`, or `quic,rustls,aws-lc` for the TLS backend.
+//!
 //! cargo run -p rama-examples --bin quic_client_server --features=quic,rustls,ring
 //! ```
 //!
@@ -154,7 +156,9 @@ async fn main() -> Result<(), BoxError> {
     let settled = connection
         .handshake_data()
         .ok_or("the handshake settled nothing")?;
-    let negotiated = settled.protocol.ok_or("no protocol was negotiated")?;
+    let negotiated = settled
+        .application_layer_protocol
+        .ok_or("no protocol was negotiated")?;
     if negotiated != ApplicationProtocol::from(ALPN) {
         return Err(
             BoxError::from_static_str("the client negotiated an unexpected protocol")
@@ -241,7 +245,9 @@ async fn serve(server: &Endpoint) -> Result<(), BoxError> {
     let settled = connection
         .handshake_data()
         .ok_or("the handshake settled nothing")?;
-    let negotiated = settled.protocol.ok_or("no protocol was negotiated")?;
+    let negotiated = settled
+        .application_layer_protocol
+        .ok_or("no protocol was negotiated")?;
     if negotiated != ApplicationProtocol::from(ALPN) {
         return Err(
             BoxError::from_static_str("the server negotiated an unexpected protocol")

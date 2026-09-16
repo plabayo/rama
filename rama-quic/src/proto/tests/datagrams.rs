@@ -94,3 +94,109 @@ fn tiny_peer_datagram_limits_never_emit_an_oversized_frame() {
         assert!(!pair.server_conn_mut(server_ch).is_closed());
     }
 }
+
+#[test]
+fn dropping_old_datagrams_makes_room_for_the_new_entry_in_both_roles() {
+    const PAYLOAD: usize = 64;
+    let budget = 2 * (PAYLOAD + size_of::<crate::proto::frame::Datagram>());
+    let transport = Arc::new(TransportConfig {
+        datagram_send_buffer_size: budget,
+        ..TransportConfig::default()
+    });
+    let mut server = server_config();
+    server.transport = transport.clone();
+    let mut client = client_config();
+    client.transport = transport;
+    let mut pair = Pair::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        server,
+    );
+    let (client_ch, server_ch) = pair.connect_with(client);
+    for marker in 1..=3 {
+        pair.client_datagrams(client_ch)
+            .send(vec![marker; PAYLOAD].into(), true)
+            .unwrap();
+        pair.server_datagrams(server_ch)
+            .send(vec![marker; PAYLOAD].into(), true)
+            .unwrap();
+    }
+    pair.drive();
+    for marker in 2..=3 {
+        assert_eq!(
+            pair.client_datagrams(client_ch).recv().unwrap().as_ref(),
+            vec![marker; PAYLOAD]
+        );
+        assert_eq!(
+            pair.server_datagrams(server_ch).recv().unwrap().as_ref(),
+            vec![marker; PAYLOAD]
+        );
+    }
+    assert!(pair.client_datagrams(client_ch).recv().is_none());
+    assert!(pair.server_datagrams(server_ch).recv().is_none());
+}
+
+#[test]
+fn an_unsendable_datagram_does_not_evict_queued_data() {
+    for drop_oldest in [false, true] {
+        let mut pair = Pair::default();
+        let mut client = client_config();
+        client.transport = Arc::new(TransportConfig {
+            datagram_send_buffer_size: 64 + size_of::<crate::proto::frame::Datagram>(),
+            ..TransportConfig::default()
+        });
+        let (client_ch, server_ch) = pair.connect_with(client);
+        let queued = Bytes::from_static(b"keep this datagram");
+        pair.client_datagrams(client_ch)
+            .send(queued.clone(), drop_oldest)
+            .unwrap();
+        assert_eq!(
+            pair.client_datagrams(client_ch)
+                .send(vec![0; 65].into(), drop_oldest),
+            Err(SendDatagramError::TooLarge),
+        );
+        pair.drive();
+        assert_eq!(pair.server_datagrams(server_ch).recv(), Some(queued));
+        assert!(pair.server_datagrams(server_ch).recv().is_none());
+    }
+}
+
+/// The receive queue is bounded by what holding a datagram costs, entry included, so a peer that
+/// sends empty DATAGRAM frames cannot grow it past the window: the oldest are dropped instead
+/// and the connection carries on.
+#[test]
+fn empty_datagrams_cannot_grow_the_receive_queue_past_the_window() {
+    let _guard = subscribe();
+    const WINDOW: usize = 512;
+    const COUNT: usize = 1_000;
+    let server = ServerConfig {
+        transport: Arc::new(TransportConfig {
+            datagram_receive_buffer_size: Some(WINDOW),
+            ..TransportConfig::default()
+        }),
+        ..server_config()
+    };
+    let mut pair = Pair::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        server,
+    );
+    let (client_ch, server_ch) = pair.connect();
+
+    for _ in 0..COUNT {
+        pair.client_datagrams(client_ch)
+            .send(Bytes::new(), true)
+            .expect("an empty datagram is sendable");
+    }
+    pair.drive();
+
+    let mut drained = 0;
+    while pair.server_datagrams(server_ch).recv().is_some() {
+        drained += 1;
+    }
+    let fits = WINDOW / size_of::<frame::Datagram>();
+    assert!(
+        drained <= fits,
+        "{drained} empty datagrams were queued where at most {fits} fit the window"
+    );
+    assert!(drained > 0, "the window still holds some of them");
+    assert!(!pair.server_conn_mut(server_ch).is_closed());
+}

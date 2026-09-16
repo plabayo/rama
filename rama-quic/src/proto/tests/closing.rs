@@ -17,11 +17,9 @@ use super::{
     ApplicationClose, ConnectionError, ConnectionHandle, Dir, Event, Ipv6Addr, TransportConfig,
     VarInt, big_cert_and_key, subscribe, util::*,
 };
-use rama_crypto::dep::rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair};
-use rama_tls_rustls::dep::rustls::AlertDescription;
 
 use crate::proto::{
-    DEFAULT_SUPPORTED_VERSIONS, MIN_INITIAL_SIZE, TransportErrorCode,
+    DEFAULT_SUPPORTED_VERSIONS, MIN_INITIAL_SIZE,
     packet::{FixedLengthConnectionIdParser, PartialDecode},
     shared::{ConnectionEvent, ConnectionEventInner, DatagramConnectionEvent},
 };
@@ -436,12 +434,8 @@ fn a_protocol_error_close_answers_on_the_pass_that_decided_it() {
 
     // A certificate from an issuer the client does not trust, distinct from the default root so
     // the failure is the anchor and not path building.
-    let mut cert = CertificateParams::new(["localhost".into()]).unwrap();
-    let mut issuer = DistinguishedName::new();
-    issuer.push(DnType::OrganizationName, "Rama's House of Certificates");
-    cert.distinguished_name = issuer;
-    let cert = cert.self_signed(&KeyPair::generate().unwrap()).unwrap();
-    let client_ch = pair.begin_connect(client_config_with_certs(vec![cert.into()]));
+    let identity = crate::test_helpers::untrusted_identity();
+    let client_ch = pair.begin_connect(client_config_with_certs(identity.cert_chain));
 
     pair.drive_client();
     let mut outcome = None;
@@ -460,7 +454,7 @@ fn a_protocol_error_close_answers_on_the_pass_that_decided_it() {
     match outcome {
         Some(Event::ConnectionLost {
             reason: ConnectionError::TransportError(ref error),
-        }) if error.code == TransportErrorCode::crypto(AlertDescription::UnknownCA.into()) => {}
+        }) if error.code == crate::test_helpers::untrusted_certificate_error() => {}
         other => panic!("the client stopped on the certificate check, not {other:?}"),
     }
     assert!(
@@ -480,8 +474,7 @@ fn a_protocol_error_close_answers_on_the_pass_that_decided_it() {
     }
     match told {
         Some(ConnectionError::ConnectionClosed(ref close))
-            if close.error_code
-                == TransportErrorCode::crypto(AlertDescription::UnknownCA.into()) => {}
+            if close.error_code == crate::test_helpers::untrusted_certificate_error() => {}
         other => panic!("the peer was told why, not {other:?}"),
     }
 }
@@ -1108,4 +1101,66 @@ fn feed_the_server_from_elsewhere(
         hand_to_the_server(pair, server_ch, datagram, elsewhere());
     }
     received
+}
+
+/// RFC 9000 §10.2: a connection may leave its closing period early, but only once the peer has
+/// been told. Before the close went out there is nothing to abandon; after it, the connection
+/// drains at once and tells the endpoint so, without waiting for the close timer.
+#[test]
+fn the_closing_period_can_be_abandoned_once_the_close_went_out() {
+    let _guard = subscribe();
+    let mut pair = Pair::default();
+    let (client_ch, server_ch) = pair.connect();
+    pair.drive();
+    let now = pair.time;
+
+    assert!(
+        !pair.client_conn_mut(client_ch).close_announced(),
+        "an open connection has announced nothing"
+    );
+    assert!(!pair.client_conn_mut(client_ch).abandon_close(now));
+
+    pair.client_conn_mut(client_ch)
+        .close(now, VarInt(7), Bytes::from_static(b"leaving"));
+    assert!(
+        !pair.client_conn_mut(client_ch).close_announced(),
+        "closed, but the close has not gone out yet"
+    );
+    assert!(
+        !pair.client_conn_mut(client_ch).abandon_close(now),
+        "so the period cannot be abandoned yet"
+    );
+
+    pair.drive_client();
+    assert!(pair.client_conn_mut(client_ch).close_announced());
+    assert!(pair.client_conn_mut(client_ch).abandon_close(now));
+    assert!(pair.client_conn_mut(client_ch).is_drained());
+    assert!(
+        pair.client_conn_mut(client_ch)
+            .poll_endpoint_events()
+            .is_some_and(|event| event.is_drained()),
+        "the endpoint is told the connection is gone"
+    );
+    assert!(
+        !pair.client_conn_mut(client_ch).abandon_close(now),
+        "only once"
+    );
+
+    // The close that went out still reaches the peer, which then drains; the clock does not
+    // move, so its own period has not run out.
+    pair.drive_server();
+    let mut told = None;
+    while let Some(event) = pair.server_conn_mut(server_ch).poll() {
+        if let Event::ConnectionLost { reason } = event {
+            told = Some(reason);
+        }
+    }
+    match told {
+        Some(ConnectionError::ApplicationClosed(close)) if close.error_code == VarInt(7) => {}
+        other => panic!("the peer learns of the close: {other:?}"),
+    }
+    // A draining connection was told by its peer, so it may leave too.
+    let now = pair.time;
+    assert!(pair.server_conn_mut(server_ch).close_announced());
+    assert!(pair.server_conn_mut(server_ch).abandon_close(now));
 }

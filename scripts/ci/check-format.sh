@@ -9,7 +9,8 @@ for project in \
   rama-quic/e2e/quinn-interop \
   rama-quic/e2e/quiche-interop \
   rama-quic/e2e/aioquic-interop \
-  rama-quic/e2e/interop-runner
+  rama-quic/e2e/interop-runner \
+  rama-quic/e2e/gnutls-interop
 do
   cargo fmt --manifest-path "$project/Cargo.toml" --all --check
 done

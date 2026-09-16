@@ -15,6 +15,7 @@ use rama_udp::{DatagramError, UdpPacketSocket, UdpSocketConfig, UdpSocketFactory
 
 use crate::driver::{
     EndpointConfig,
+    endpoint::default_socket_config,
     endpoint::{Endpoint, bind_advertised},
     udp::Socket,
 };
@@ -78,16 +79,18 @@ impl EndpointBuilder {
     /// Bind the address, and the addresses this endpoint advertises as preferred with it.
     ///
     /// The advertised sockets are bound before the endpoint exists, so it advertises the
-    /// addresses its sockets have, including ports the platform assigned.
+    /// addresses its sockets have, including ports the platform assigned. The sockets get
+    /// Rama's UDP defaults and the buffer floor of
+    /// [`DEFAULT_SOCKET_BUFFER_SIZE`](crate::DEFAULT_SOCKET_BUFFER_SIZE).
     pub async fn bind_address(
         self,
         address: impl Into<SocketAddress>,
     ) -> Result<Endpoint, DatagramError> {
-        self.bind_address_with_socket_config(address, UdpSocketConfig::default())
+        self.bind_address_with_socket_config(address, default_socket_config())
             .await
     }
 
-    /// Same as [`Self::bind_address`] but with custom [`UdpSocketConfig`].
+    /// Same as [`Self::bind_address`] but with a custom [`UdpSocketConfig`], applied as given.
     pub async fn bind_address_with_socket_config(
         self,
         address: impl Into<SocketAddress>,

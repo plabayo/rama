@@ -40,6 +40,8 @@ mod imp;
 mod imp;
 
 pub(crate) use imp::UdpSocketState;
+#[cfg(any(target_os = "linux", target_os = "android"))]
+pub(crate) use imp::set_socket_option;
 pub(crate) const BATCH_SIZE: usize = imp::BATCH_SIZE;
 
 #[derive(Debug, Copy, Clone)]

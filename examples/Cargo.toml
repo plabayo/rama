@@ -34,12 +34,12 @@ required-features = ["http-full", "rustls", "acme"]
 [[bin]]
 name = "quic_terminating_relay"
 path = "src/quic_terminating_relay.rs"
-required-features = ["quic", "rustls", "ring"]
+required-features = ["quic", "tls"]
 
 [[bin]]
 name = "quic_client_server"
 path = "src/quic_client_server.rs"
-required-features = ["quic", "rustls", "ring"]
+required-features = ["quic", "tls"]
 
 [[bin]]
 name = "autobahn_client"
@@ -523,7 +523,7 @@ default = []
 cli = ["rama/cli"]
 tcp = ["rama/tcp"]
 udp = ["rama/udp"]
-quic = ["rama/quic"]
+quic = ["rama/quic", "tls"]
 dns = ["rama/dns"]
 unix = ["rama/unix"]
 http-full = ["rama/http-full", "dns", "compression"]

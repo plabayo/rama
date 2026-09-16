@@ -75,19 +75,18 @@ just qa-ffi-apple
 just test-e2e-ffi-apple
 ```
 
-Additional hardening checks are opt-in because they need nightly toolchains,
-sanitizers, or mutation-testing runtimes:
+Additional hardening checks are opt-in because they need nightly toolchains or
+sanitizers:
 
 ```sh
 just miri-apple-ne-ffi
-just mutants-apple-ne-ffi
 cd ffi/apple/examples/transparent_proxy && just test-e2e-sanitizers
 ```
 
-Use the targeted Miri and mutation recipes for pure Rust FFI/config work before
-running the heavier Apple e2e sanitizer suite. The sanitizer recipe exercises
-the Swift/C/Rust bridge under ASan and TSan and is the best fit for callback
-lifetime, cancel/free, and cross-thread ownership changes.
+Use the targeted Miri recipe for pure Rust FFI/config work before running the
+heavier Apple e2e sanitizer suite. The sanitizer recipe exercises the Swift/C/Rust
+bridge under ASan and TSan and is the best fit for callback lifetime, cancel/free,
+and cross-thread ownership changes.
 
 ## Swift Package
 

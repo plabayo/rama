@@ -11,13 +11,13 @@ mod common;
 
 use common::*;
 use interop_common::{
-    Arrival, CloseObservation, Expected, RecordingSessions, Reported, ResumptionObservation,
-    ResumptionScenario, Role, Unsupported, Verdict, for_each_case_within,
+    Arrival, CloseObservation, Expected, Reported, ResumptionObservation, ResumptionScenario, Role,
+    Unsupported, Verdict, for_each_case_within,
     identity::anchor_of,
     registry::CaseRun,
     resumption::{
-        rama_client, rama_client_config_for, rama_client_resumes, rama_client_warms_up,
-        rama_resuming_server_config, rama_server_reading, resumption_cases,
+        RamaResumptionConfigs, rama_client, rama_client_config_for, rama_client_resumes,
+        rama_client_warms_up, rama_server_reading, resumption_cases,
     },
     scenario::SERVER_NAME,
 };
@@ -143,16 +143,21 @@ async fn ticketing_server(identity: &Identity, connections: u8) -> AioQuic {
 /// event and fails the count rather than going unnoticed.
 async fn observe(run: &CaseRun<ResumptionScenario>, peer: &mut AioQuic) -> ResumptionObservation {
     let (what, deadline) = (&run.what, run.deadline);
-    let handshake = peer.expect("handshake", deadline).await;
+    let mut handshake = None;
     let mut received = Vec::new();
     let ended = loop {
         let event = peer.event(what, deadline).await;
         match event.name() {
+            "handshake" => assert!(
+                handshake.replace(event).is_none(),
+                "{what}: duplicate handshake event"
+            ),
             "stream" => received.push(event.reported()),
             "ended" => break event,
             other => panic!("{what}: the peer reported {other} on the second connection"),
         }
     };
+    let handshake = handshake.expect("the connection completed its handshake before closing");
     ResumptionObservation {
         // Filled in by the caller from Rama's own side.
         rama: None,
@@ -174,7 +179,7 @@ async fn observe(run: &CaseRun<ResumptionScenario>, peer: &mut AioQuic) -> Resum
 ///
 /// The child runs both connections, so the ticket the first is given is the one the second
 /// offers. It says what it was told about each handshake, and Rama's own handshake says
-/// whether it resumed, through `HandshakeSummary::resumed`; the two are checked against each
+/// whether it resumed, through `NegotiatedTlsParameters::resumed`; the two are checked against each
 /// other.
 #[tokio::test]
 async fn resumption_cases_rama_server() {
@@ -189,7 +194,10 @@ async fn resumption_cases_rama_server() {
             // server, so aioquic's server never having a way to is beside the point.
             let served = Identity::generate(SERVER_NAME);
             let run = run.with_identity(served.auth.clone());
-            let sessions = RecordingSessions::new();
+            let configs = RamaResumptionConfigs::new_with_early_data(
+                &run.identity,
+                run.scenario.offers_early_data,
+            );
             // This client offers early data whenever its ticket allows any — `tls.py` puts the
             // extension in the hello from the ticket alone, with no say for the application — so
             // the case that offers none is a session issued without early data rather than a
@@ -197,36 +205,17 @@ async fn resumption_cases_rama_server() {
             // it keeps carries early keys for the child to offer.
             let (warming, warm_addr, warmed) = rama_server_reading(
                 &run,
-                rama_resuming_server_config(
-                    &run.identity,
-                    sessions.clone(),
-                    run.scenario.offers_early_data,
-                ),
+                configs.warming(),
                 vec![Expected {
                     chunk: run.scenario.warm,
                     arrival: Arrival::Bi,
                 }],
             )
             .await;
-            // The second server, bound before the child starts so both ports can be given to it.
-            // What it changes about the first is one thing, named by the case: the store it looks
-            // in, or whether it takes early data at all.
-            let (store, early_data) = match run.scenario.verdict {
-                Verdict::NotResumed => (RecordingSessions::new(), true),
-                Verdict::EarlyDataRefused => (sessions.clone(), false),
-                Verdict::EarlyDataAccepted | Verdict::ResumedWithoutEarlyData => {
-                    (sessions.clone(), true)
-                }
-            };
-            // Kept, so the diagnostics come from the store this server actually used and not
-            // from the one the warm-up filled.
-            let active = store.clone();
-            let (resuming, resume_addr, serving) = rama_server_reading(
-                &run,
-                rama_resuming_server_config(&run.identity, store, early_data),
-                run.scenario.expected(),
-            )
-            .await;
+            // Bind both endpoints before the child starts its two connections.
+            let (config, active) = configs.resuming(run.scenario.verdict);
+            let (resuming, resume_addr, serving) =
+                rama_server_reading(&run, config, run.scenario.expected()).await;
 
             let mut arguments = vec![
                 "--ca".to_owned(),
@@ -252,10 +241,6 @@ async fn resumption_cases_rama_server() {
                     run.scenario.early.len.to_string(),
                 ]);
             }
-            // The child runs both connections on its own clock, so the offers are forgotten
-            // before it starts rather than between its connections: what is counted from here on
-            // is the second attempt, the first having nothing to offer.
-            sessions.forget_offers();
             let borrowed: Vec<&str> = arguments.iter().map(String::as_str).collect();
             let mut peer = AioQuic::spawn("resuming-client", &borrowed).await;
 
@@ -288,12 +273,7 @@ async fn resumption_cases_rama_server() {
                 run.what
             );
             run.deadline.wait(&run.what, warming.wait_idle()).await;
-            assert!(
-                sessions.kept_a_session(),
-                "{}: the first connection left a session behind ({})",
-                run.what,
-                sessions.detail()
-            );
+            configs.check_warmup(&run.what);
 
             // The ticket witness, which the child states for itself before it offers anything.
             let ticket = peer.expect("ticket", run.deadline).await;
@@ -320,7 +300,7 @@ async fn resumption_cases_rama_server() {
                 report.resumed,
                 "{}: the child and rama's own handshake agree on the resumption ({})",
                 run.what,
-                active.detail()
+                active()
             );
             let observed = ResumptionObservation {
                 rama: report.resumed,
@@ -330,7 +310,7 @@ async fn resumption_cases_rama_server() {
                 // Rama serves here, so the close this role sees is the peer's own, which the
                 // peer chooses rather than the case.
                 closed: None,
-                detail: Some(active.detail()),
+                detail: Some(active()),
             };
             let withheld = observed.check(&run.what, &run.scenario);
             assert!(

@@ -8,9 +8,9 @@ use rand::RngExt;
 use super::{Connection, spaces::SentPacket};
 
 use crate::proto::{
-    ConnectionId, Instant, TransportError, TransportErrorCode,
+    ConnectionId, Instant, TransportError,
     connection::ConnectionSide,
-    frame::{self, Close},
+    frame::Close,
     packet::{FIXED_BIT, Header, InitialHeader, LongType, PacketNumber, PartialEncode, SpaceId},
 };
 
@@ -72,20 +72,17 @@ impl PacketBuilder {
             .as_ref()
             .map_or_else(
                 || &conn.zero_rtt_crypto.as_ref().unwrap().packet,
-                |keys| &keys.packet.local,
+                |keys| &keys.local.packet,
             )
             .confidentiality_limit();
         if sent_with_keys.saturating_add(1) == confidentiality_limit {
-            // The budget covers one more packet, which is spent on saying why the connection is
-            // ending.
-            conn.close_inner(
-                now,
-                Close::Connection(frame::ConnectionClose {
-                    error_code: TransportErrorCode::AEAD_LIMIT_REACHED,
-                    frame_type: None,
-                    reason: Bytes::from_static(b"confidentiality limit reached"),
-                }),
-            )
+            // The budget covers one more packet: this one, which `poll_transmit` turns into the
+            // close once the connection is closed here. The application is told the cause too.
+            let error = TransportError::AEAD_LIMIT_REACHED("confidentiality limit reached");
+            conn.close_inner(now, Close::Connection(error.clone().into()));
+            if conn.error.is_none() {
+                conn.error = Some(error.into());
+            }
         } else if sent_with_keys >= confidentiality_limit {
             // No budget remains, so nothing more is encrypted with these keys.
             conn.kill(
@@ -147,8 +144,8 @@ impl PacketBuilder {
 
         let (sample_size, tag_len) = if let Some(ref crypto) = space.crypto {
             (
-                crypto.header.local.sample_size(),
-                crypto.packet.local.tag_len(),
+                crypto.local.header.sample_size(),
+                crypto.local.packet.tag_len(),
             )
         } else if space_id == SpaceId::Data {
             let zero_rtt = conn.zero_rtt_crypto.as_ref().unwrap();
@@ -207,7 +204,7 @@ impl PacketBuilder {
         conn: &mut Connection,
         sent: Option<SentFrames>,
         buffer: &mut Vec<u8>,
-    ) {
+    ) -> Option<()> {
         let ack_eliciting = self.ack_eliciting;
         let exact_number = self.exact_number;
         let space_id = self.space;
@@ -215,8 +212,8 @@ impl PacketBuilder {
         let is_mtu_probe_packet =
             space_id == SpaceId::Data && conn.path.mtud.in_flight_mtu_probe() == Some(exact_number);
         let datagram_start = self.datagram_start;
-        let (size, padded) = self.finish(conn, now, buffer);
-        let Some(sent) = sent else { return };
+        let (size, padded) = self.finish(conn, now, buffer)?;
+        let Some(sent) = sent else { return Some(()) };
 
         // What a challenge in this datagram can prove is decided by how large the datagram
         // turned out, after every padding decision (RFC 9000 §8.2.1). Only the first datagram
@@ -261,6 +258,7 @@ impl PacketBuilder {
             conn.set_loss_detection_timer(now);
             conn.path.pacing.on_transmit(size);
         }
+        Some(())
     }
 
     /// Encrypt packet, returning the length of the packet and whether padding was added
@@ -274,7 +272,7 @@ impl PacketBuilder {
         conn: &mut Connection,
         now: Instant,
         buffer: &mut Vec<u8>,
-    ) -> (usize, bool) {
+    ) -> Option<(usize, bool)> {
         let pad = buffer.len() < self.min_size;
         if pad {
             trace!("PADDING * {}", self.min_size - buffer.len());
@@ -283,7 +281,7 @@ impl PacketBuilder {
 
         let space = &conn.spaces[self.space];
         let (header_crypto, packet_crypto) = if let Some(ref crypto) = space.crypto {
-            (&*crypto.header.local, &*crypto.packet.local)
+            (&*crypto.local.header, &*crypto.local.packet)
         } else if self.space == SpaceId::Data {
             let zero_rtt = conn.zero_rtt_crypto.as_ref().unwrap();
             (&*zero_rtt.header, &*zero_rtt.packet)
@@ -300,11 +298,20 @@ impl PacketBuilder {
         buffer.resize(buffer.len() + packet_crypto.tag_len(), 0);
         let encode_start = self.partial_encode.start;
         let packet_buf = &mut buffer[encode_start..];
-        self.partial_encode.finish(
+        if let Err(error) = self.partial_encode.finish(
             packet_buf,
             header_crypto,
             Some((self.exact_number, packet_crypto)),
-        );
+        ) {
+            buffer.clear();
+            conn.kill(
+                now,
+                crate::proto::TransportError::INTERNAL_ERROR("packet encryption failed")
+                    .with_cause(error)
+                    .into(),
+            );
+            return None;
+        }
 
         let len = buffer.len() - encode_start;
         if self.space == SpaceId::Handshake {
@@ -321,9 +328,15 @@ impl PacketBuilder {
             conn.trace_cid,
         );
 
-        (len, pad)
+        Some((len, pad))
     }
 }
 
-#[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+#[cfg(all(
+    test,
+    any(
+        feature = "boring",
+        all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+    )
+))]
 mod tests;

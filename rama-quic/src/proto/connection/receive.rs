@@ -123,6 +123,12 @@ impl Connection {
         partial_decode: PartialDecode,
     ) {
         let info = DropInfo::partial(&partial_decode);
+        if self.state.is_drained() {
+            // Nothing is left to do with a packet, and one that failed to authenticate would be
+            // counted against a limit that already ended the connection (RFC 9001 §6.6).
+            self.qlog_packet_dropped(now, info, DropReason::Rejected);
+            return;
+        }
         let reject_early_data = self.side.is_client() && partial_decode.is_0rtt();
         // Established is entered only after TLS completion. Only an aborted
         // handshake in a closed state needs a backend query on this path.
@@ -222,8 +228,8 @@ impl Connection {
                     .crypto
                     .as_ref()
                     .unwrap()
-                    .packet
                     .local
+                    .packet
                     .integrity_limit();
                 if self.authentication_failures > integrity_limit {
                     Err(TransportError::AEAD_LIMIT_REACHED("integrity limit violated").into())
@@ -499,7 +505,7 @@ impl Connection {
 
                 self.discard_space(now, SpaceId::Initial); // Make sure we clean up after any retransmitted Initials
                 self.spaces[SpaceId::Initial] = PacketSpace {
-                    crypto: Some(self.crypto.initial_keys(&rem_cid, self.side.side())),
+                    crypto: Some(self.crypto.initial_keys(&rem_cid, self.side.side())?),
                     next_packet_number: self.spaces[SpaceId::Initial].next_packet_number,
                     crypto_offset: client_hello.len() as u64,
                     ..PacketSpace::new(now)
@@ -785,7 +791,8 @@ impl Connection {
 
         if result.incoming_key_update {
             trace!("key update authenticated");
-            self.update_keys(now, Some((result.number, now)), true);
+            self.update_keys(now, Some((result.number, now)), true)
+                .map_err(Some)?;
             self.set_key_discard_timer(now, packet.header.space());
         }
 

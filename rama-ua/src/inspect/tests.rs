@@ -164,6 +164,8 @@ async fn captured_tls_and_native_fingerprints_are_shared_per_connection() {
                             rama_net::tls::ApplicationProtocol::HTTP_2,
                         ),
                         peer_certificate_chain: None,
+                        server_name: None,
+                        resumed: None,
                     })
                     .body(Body::empty())
                     .unwrap(),

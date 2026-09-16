@@ -1,10 +1,11 @@
 //! Socket configuration and Rama service integration.
 
-use rama_core::{Service, error::BoxError};
+use rama_core::{Service, error::BoxError, telemetry::tracing};
 use rama_net::{
     address::SocketAddress,
     socket::{
         SocketOptions,
+        core::Socket,
         opts::{Domain, Protocol, Type},
     },
 };
@@ -17,6 +18,7 @@ pub struct UdpSocketConfig {
     socket_options: SocketOptions,
     required_features: Vec<DatagramFeature>,
     receive_original_destination: bool,
+    min_buffer_size: Option<usize>,
 }
 
 impl UdpSocketConfig {
@@ -103,6 +105,26 @@ impl UdpSocketConfig {
     }
 
     rama_utils::macros::generate_set_and_with! {
+        /// Ask for at least this many bytes of kernel receive and send buffer (`SO_RCVBUF`,
+        /// `SO_SNDBUF`) on the sockets this configuration binds, as far as the platform allows.
+        ///
+        /// A platform limit (`net.core.rmem_max` on Linux, `kern.ipc.maxsockbuf` on macOS) caps
+        /// the request without failing the bind; on Linux the cap is lifted with the `*FORCE`
+        /// options when the process holds `CAP_NET_ADMIN`. A buffer given an explicit size in
+        /// [`SocketOptions`] is left to that size. Wrapped sockets are not resized.
+        pub fn min_buffer_size(mut self, bytes: Option<usize>) -> Self {
+            self.min_buffer_size = bytes;
+            self
+        }
+    }
+
+    /// The buffer floor [`Self::with_min_buffer_size`] asks for.
+    #[must_use]
+    pub fn min_buffer_size(&self) -> Option<usize> {
+        self.min_buffer_size
+    }
+
+    rama_utils::macros::generate_set_and_with! {
         /// Require `feature`, failing socket creation when it is unavailable.
         pub fn required_feature(mut self, feature: DatagramFeature) -> Self {
             if !self.required_features.contains(&feature) {
@@ -122,7 +144,79 @@ impl Default for UdpSocketConfig {
             socket_options: SocketOptions::default_udp(),
             required_features: Vec::new(),
             receive_original_destination: false,
+            min_buffer_size: None,
         }
+    }
+}
+
+/// Which kernel buffer of a socket to grow.
+#[derive(Debug, Clone, Copy)]
+enum Buffer {
+    Receive,
+    Send,
+}
+
+impl Buffer {
+    fn get(self, socket: &Socket) -> std::io::Result<usize> {
+        match self {
+            Self::Receive => socket.recv_buffer_size(),
+            Self::Send => socket.send_buffer_size(),
+        }
+    }
+
+    fn set(self, socket: &Socket, bytes: usize) -> std::io::Result<()> {
+        match self {
+            Self::Receive => socket.set_recv_buffer_size(bytes),
+            Self::Send => socket.set_send_buffer_size(bytes),
+        }
+    }
+
+    /// Lift the platform cap for a privileged process; anything refused is left as it was.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    fn force(self, socket: &Socket, bytes: usize) {
+        let name = match self {
+            Self::Receive => libc::SO_RCVBUFFORCE,
+            Self::Send => libc::SO_SNDBUFFORCE,
+        };
+        // The kernel takes the value as a C int; a request past that is simply not forceable.
+        let Ok(value) = libc::c_int::try_from(bytes) else {
+            return;
+        };
+        drop(crate::sys::set_socket_option(
+            socket,
+            libc::SOL_SOCKET,
+            name,
+            value,
+        ));
+    }
+}
+
+/// Grow one buffer of `socket` towards `wanted` bytes: the platform may cap the request, a
+/// request over the platform's maximum is halved until one is taken, and a privileged process
+/// lifts the cap. The size read back is what the kernel accounts with, so a Linux socket that
+/// reports the doubled value counts as satisfied.
+fn grow_buffer(socket: &Socket, buffer: Buffer, wanted: usize) {
+    let before = buffer.get(socket).unwrap_or(0);
+    if before >= wanted {
+        return;
+    }
+    let mut request = wanted;
+    while request > before && buffer.set(socket, request).is_err() {
+        request /= 2;
+    }
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    if buffer.get(socket).unwrap_or(0) < wanted {
+        buffer.force(socket, wanted);
+    }
+    let after = buffer.get(socket).unwrap_or(0);
+    if after < wanted {
+        tracing::debug!(
+            ?buffer,
+            before,
+            after,
+            wanted,
+            "udp socket buffer stays under the requested floor: the platform limit applies"
+        );
     }
 }
 
@@ -162,6 +256,14 @@ impl UdpSocketFactory {
         options.r#type = Type::Datagram;
         options.protocol = Some(Protocol::UDP);
         let socket = options.try_build_socket(Domain::from(address))?;
+        if let Some(wanted) = self.config.min_buffer_size {
+            if options.recv_buffer_size.is_none() {
+                grow_buffer(&socket, Buffer::Receive, wanted);
+            }
+            if options.send_buffer_size.is_none() {
+                grow_buffer(&socket, Buffer::Send, wanted);
+            }
+        }
         let mut socket = self.config.wrap_core(socket)?;
         socket.cache_bound_address()?;
         Ok(socket)
@@ -214,6 +316,30 @@ mod tests {
             ..crate::DatagramCapabilities::portable()
         };
         config.validate_capabilities(capabilities).unwrap();
+    }
+
+    /// A buffer floor never shrinks a socket's buffers, grows them as far as the platform allows
+    /// and leaves an explicitly sized buffer alone.
+    #[tokio::test]
+    async fn a_buffer_floor_grows_the_kernel_buffers_best_effort() {
+        let socket = Socket::new(Domain::IPv4.into(), Type::Datagram.into(), None).unwrap();
+        let before = socket.recv_buffer_size().unwrap();
+        grow_buffer(&socket, Buffer::Receive, before * 2);
+        assert!(socket.recv_buffer_size().unwrap() >= before);
+        grow_buffer(&socket, Buffer::Send, 1);
+        assert!(
+            socket.send_buffer_size().unwrap() > 1,
+            "a floor below the size changes nothing"
+        );
+
+        let address: SocketAddress = "127.0.0.1:0".parse().unwrap();
+        let mut options = SocketOptions::default_udp();
+        options.recv_buffer_size = Some(before);
+        let config = UdpSocketConfig::default()
+            .with_socket_options(options)
+            .with_min_buffer_size(before * 4);
+        assert_eq!(config.min_buffer_size(), Some(before * 4));
+        UdpSocketFactory::new(config).bind(address).await.unwrap();
     }
 
     /// Wrapping a socket the caller bound sets up the metadata the configuration asks for and

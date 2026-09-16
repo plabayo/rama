@@ -321,6 +321,11 @@ impl Iterator for Replace<'_> {
 
 impl Drop for Replace<'_> {
     fn drop(&mut self) {
+        // An empty range touched nothing, and a zero-width entry would break the invariant that
+        // no two entries can be merged.
+        if self.range.is_empty() {
+            return;
+        }
         // Ensure we drain all remaining overlapping ranges
         for _ in &mut *self {}
         // Insert the final aggregate range
@@ -338,6 +343,21 @@ mod tests {
         reason = "the tests build one-element range vectors on purpose"
     )]
     use super::*;
+
+    /// An empty range replaces nothing and must leave nothing behind: an entry of zero width
+    /// would break the invariant that no two entries can be merged, and later replacements
+    /// would stop short at it.
+    #[test]
+    fn replace_empty() {
+        let mut set = RangeSet::new();
+        set.replace(3..3);
+        assert!(set.is_empty());
+        set.replace(6..10);
+        set.replace(5..5);
+        assert_eq!(set.len(), 1);
+        assert_eq!(set.replace(2..7).collect::<Vec<_>>(), &[6..7]);
+        assert_eq!(set.0, [(2, 10)].into_iter().collect());
+    }
 
     #[test]
     fn replace_contained() {

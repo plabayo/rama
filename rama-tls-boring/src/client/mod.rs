@@ -30,7 +30,9 @@ pub use config::{
 
 mod connector_data;
 #[doc(inline)]
-pub use connector_data::{ConnectorConfigClientAuth, TlsConnectorData};
+pub use connector_data::{
+    ConnectorConfigClientAuth, TlsConnectorContext, TlsConnectorContextBuilder, TlsConnectorData,
+};
 
 #[cfg(feature = "ua")]
 mod emulate_ua;

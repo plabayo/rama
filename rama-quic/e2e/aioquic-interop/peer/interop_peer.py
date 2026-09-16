@@ -24,6 +24,7 @@ from aioquic.quic.events import (
     ConnectionTerminated,
     DatagramFrameReceived,
     HandshakeCompleted,
+    StreamDataReceived,
 )
 
 # What a stream may carry. A peer that sends more is a fault, not a larger test.
@@ -140,6 +141,10 @@ async def run_server(arguments):
                         serving["protocol"], timeout=arguments.validation_wait
                     ),
                 )
+            if stream_id == 2 and arguments.down_length is not None:
+                _, download = await serving["protocol"].create_stream(is_unidirectional=True)
+                download.write(shared_payload(arguments.down_seed, arguments.down_length))
+                download.write_eof()
             # Bidirectional streams have ids that are multiples of four here, so those are the
             # ones that can be answered. A shared scenario asks for an answer of its own rather
             # than an echo, named by the two numbers it follows from.
@@ -272,11 +277,25 @@ async def run_client(arguments):
     if arguments.datagrams == 0:
         echoes.set()
 
+    down = bytearray()
+    down_finished = asyncio.get_running_loop().create_future()
+
     class Watched(Closes):
         """A client connection: it reports what it sees and does not answer datagrams, so a
         test that echoes on the other side sees one round trip rather than a loop."""
 
         def quic_event_received(self, event):
+            if (isinstance(event, StreamDataReceived) and event.stream_id == 3
+                    and arguments.down_length is not None):
+                if down_finished.done():
+                    raise RuntimeError("server uni stream continued after FIN")
+                down.extend(event.data)
+                if len(down) > STREAM_LIMIT:
+                    raise RuntimeError("server uni stream exceeds read budget")
+                if event.end_stream:
+                    say(event="stream", id=3, len=len(down), sha256=digest(down))
+                    down_finished.set_result(None)
+                return
             if isinstance(event, HandshakeCompleted):
                 say(event="handshake", alpn=event.alpn_protocol)
             elif isinstance(event, DatagramFrameReceived):
@@ -327,6 +346,9 @@ async def run_client(arguments):
             uni_writer.write(up)
             uni_writer.write_eof()
 
+            if arguments.down_length is not None:
+                await down_finished
+
             reader, writer = await client.create_stream()
             writer.write(question)
             writer.write_eof()
@@ -354,6 +376,60 @@ async def run_client(arguments):
         client.close()
         await client.wait_closed()
     say(event="done")
+
+
+async def run_backpressure_client(arguments):
+    """Accept a server-initiated recovery stream while stdin controls socket reads."""
+    loop = asyncio.get_running_loop()
+    quiet = loop.create_future()
+    tasks = set()
+
+    def stop(error=None):
+        if not quiet.done():
+            if error is None:
+                quiet.set_result(None)
+            else:
+                quiet.set_exception(error)
+
+    def handle(reader, writer):
+        async def echo():
+            received = await read_stream(reader)
+            say(event="stream", id=writer.get_extra_info("stream_id"),
+                len=len(received), sha256=digest(received))
+            writer.write(received)
+            writer.write_eof()
+
+        task = asyncio.create_task(echo())
+        tasks.add(task)
+
+        def completed(done):
+            tasks.discard(done)
+            if not done.cancelled() and done.exception() is not None:
+                stop(done.exception())
+
+        task.add_done_callback(completed)
+
+    class Watched(Closes):
+        def quic_event_received(self, event):
+            if isinstance(event, HandshakeCompleted):
+                say(event="handshake", alpn=event.alpn_protocol)
+            elif isinstance(event, DatagramFrameReceived):
+                report_datagram(self, event, echo=False)
+            elif isinstance(event, ConnectionTerminated):
+                say(event="ended", **terminated(event, self.arrived))
+                stop()
+            super().quic_event_received(event)
+
+    async with connect(arguments.host, arguments.port,
+                       configuration=client_configuration(arguments),
+                       create_protocol=Watched, stream_handler=handle) as client:
+        take_orders(loop, client, stop, {"protocol": client})
+        try:
+            await quiet
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
 
 async def run_resuming_client(arguments):
@@ -905,6 +981,7 @@ def take_orders(loop, server, stop, serving):
 ROLES = {
     "server": run_server,
     "client": run_client,
+    "backpressure-client": run_backpressure_client,
     "resuming-client": run_resuming_client,
     "key-client": run_key_client,
     "close-client": run_close_client,
@@ -931,6 +1008,8 @@ def main():
     # and is not the same thing.
     parser.add_argument("--up-seed", type=int, default=None)
     parser.add_argument("--up-length", type=int, default=None)
+    parser.add_argument("--down-seed", type=int, default=None)
+    parser.add_argument("--down-length", type=int, default=None)
     parser.add_argument("--question-seed", type=int, default=None)
     parser.add_argument("--question-length", type=int, default=None)
     parser.add_argument("--answer-seed", type=int, default=None)

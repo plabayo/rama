@@ -353,36 +353,18 @@ jobs:
         uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
         with:
           tool: just
+      # Every smoke goes through `fuzz/justfile`, the same recipes developers run locally;
+      # `RAMA_FUZZ_TARGET` above supplies the pinned triple.
       - name: fuzz — ua_parse
-        run: |
-          cargo +nightly fuzz run ua_parse --target ${{ env.RAMA_FUZZ_TARGET }} -- -max_len=131072 -max_total_time=30
+        run: just fuzz/ua 30
       - name: fuzz — http_header_x_robots_tag
+        run: just fuzz/http-headers-x-robots-tag 30
+      - name: fuzz — uri
         run: |
-          cargo +nightly fuzz run http_header_x_robots_tag --target ${{ env.RAMA_FUZZ_TARGET }} -- -max_len=131072 -max_total_time=30
-      - name: fuzz — uri_parse
-        run: |
-          cargo +nightly fuzz run uri_parse --target ${{ env.RAMA_FUZZ_TARGET }} -- -max_len=65534 -max_total_time=30
-      - name: fuzz — uri_resolve
-        run: |
-          cargo +nightly fuzz run uri_resolve --target ${{ env.RAMA_FUZZ_TARGET }} -- -max_len=65534 -max_total_time=30
-      - name: fuzz — icap codec
-        run: |
-          just fuzz-icap-seeds-check
-          mkdir -p fuzz/corpus/icap_codec
-          cargo +nightly fuzz run icap_codec \
-            fuzz/corpus/icap_codec \
-            fuzz/corpus-seeds/icap_codec \
-            --target ${{ env.RAMA_FUZZ_TARGET }} -- \
-            -dict=fuzz/dictionaries/icap.dict \
-            -max_len=65536 -timeout=5 -max_total_time=300
-      - name: fuzz — icap codec roundtrip
-        run: |
-          mkdir -p fuzz/corpus/icap_codec_roundtrip
-          cargo +nightly fuzz run icap_codec_roundtrip \
-            fuzz/corpus/icap_codec_roundtrip \
-            fuzz/corpus-seeds/icap_codec_roundtrip \
-            --target ${{ env.RAMA_FUZZ_TARGET }} -- \
-            -max_len=64 -timeout=5 -max_total_time=300
+          just fuzz/uri-parse 30
+          just fuzz/uri-resolve 30
+      - name: fuzz — icap codec and roundtrip
+        run: just fuzz/icap 300
       - name: Upload ICAP fuzz corpus and failures
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -395,13 +377,11 @@ jobs:
             fuzz/artifacts/icap_codec
             fuzz/artifacts/icap_codec_roundtrip
       - name: fuzz — javascript boundaries
-        run: |
-          cargo +nightly fuzz run js_value_boundary --target ${{ env.RAMA_FUZZ_TARGET }} -- -max_len=16384 -max_total_time=30
+        run: just fuzz/js-value-boundary 30
       - name: fuzz — h2
-        run: |
-          cargo +nightly fuzz run h2_client --target ${{ env.RAMA_FUZZ_TARGET }} -- -max_total_time=30
-          cargo +nightly fuzz run h2_e2e --target ${{ env.RAMA_FUZZ_TARGET }} -- -max_total_time=30
-          cargo +nightly fuzz run h2_hpack --target ${{ env.RAMA_FUZZ_TARGET }} -- -max_total_time=30
+        run: just fuzz/h2 30
+      - name: fuzz — quic
+        run: just fuzz/quic 30
 
   docsrs-emulation:
     # Linux is the docs.rs build host. cargo-docs-rs applies each crate's

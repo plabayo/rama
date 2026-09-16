@@ -75,6 +75,28 @@ impl Connection {
     }
 
     /// Terminate the connection instantly, without sending a close packet
+    /// Whether the peer has been told this connection is closing: a CONNECTION_CLOSE went out,
+    /// or the peer's own close arrived and the connection is draining (RFC 9000 §10.2.2).
+    pub(crate) fn close_announced(&self) -> bool {
+        matches!(self.state, State::Draining)
+            || (self.state.is_closed() && self.stats.frame_tx.connection_close > 0)
+    }
+
+    /// Leave the closing or draining period at once, which RFC 9000 §10.2 permits. The period
+    /// exists to answer late packets and repeat the close; an endpoint that is stopping will do
+    /// neither, so nothing is lost by not waiting it out. Refused until the peer has been told,
+    /// and answers whether there was a period to leave.
+    pub(crate) fn abandon_close(&mut self, now: Instant) -> bool {
+        if !self.close_announced() || self.state.is_drained() {
+            return false;
+        }
+        self.timers.stop(Timer::Close);
+        self.state = State::Drained;
+        self.qlog_observe_state(now);
+        self.endpoint_events.push_back(EndpointEventInner::Drained);
+        true
+    }
+
     pub(super) fn kill(&mut self, now: Instant, reason: ConnectionError) {
         self.qlog_connection_error(now, &reason);
         self.close_common();

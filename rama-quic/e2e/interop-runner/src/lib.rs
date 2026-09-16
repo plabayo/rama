@@ -1,9 +1,15 @@
 //! HTTP/0.9 file transfer endpoints for the QUIC interop runner, using `hq-interop`.
 
-#[cfg(all(feature = "rustls-ring", feature = "rustls-aws-lc"))]
-compile_error!("select exactly one Rama TLS backend: rustls-ring or rustls-aws-lc");
-#[cfg(not(any(feature = "rustls-ring", feature = "rustls-aws-lc")))]
-compile_error!("select a Rama TLS backend: rustls-ring or rustls-aws-lc");
+#[cfg(any(
+    all(feature = "rustls-ring", feature = "rustls-aws-lc"),
+    all(
+        feature = "boring",
+        any(feature = "rustls-ring", feature = "rustls-aws-lc")
+    ),
+))]
+compile_error!("select exactly one Rama TLS backend: boring, rustls-ring or rustls-aws-lc");
+#[cfg(not(any(feature = "boring", feature = "rustls-ring", feature = "rustls-aws-lc")))]
+compile_error!("select a Rama TLS backend: boring, rustls-ring or rustls-aws-lc");
 
 pub mod client;
 pub mod server;
@@ -23,10 +29,20 @@ use rama::{
 };
 use std::{path::Path, process::ExitCode, sync::Arc};
 
+fn tls_options() -> rama::quic::tls::TlsOptions {
+    rama::quic::tls::TlsOptions::default().with_backend(if cfg!(feature = "boring") {
+        rama::tls::TlsBackend::Boring
+    } else {
+        rama::tls::TlsBackend::Rustls
+    })
+}
+
 const ALPN: &[u8] = b"hq-interop";
 const REQUEST_LIMIT: usize = octets::kib(4);
 const STREAM_LIMIT: usize = 64;
-const BUFFER_SIZE: usize = octets::kib(16);
+/// Bytes moved per read on either side. Larger reads mean fewer trips through the connection's
+/// lock and the blocking file pool, which is what bounds a client pulling many streams at once.
+const BUFFER_SIZE: usize = octets::kib(256);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TestCase {
@@ -67,12 +83,19 @@ pub fn init_tracing() {
         .init();
 }
 
+/// Set to shrink the receive windows to 64 KiB per stream and 256 KiB per connection, so a
+/// transfer of any size forces stream- and connection-level window updates. The default windows
+/// are Rama's own, which is what a benchmark of this endpoint should see.
+pub const SMALL_WINDOWS: &str = "RAMA_INTEROP_SMALL_WINDOWS";
+
 async fn transport(executor: Executor, role: &str) -> Result<Arc<TransportConfig>, BoxError> {
-    // Force stream- and connection-level window updates during runner transfers.
-    let mut config = TransportConfig::default()
-        .with_stream_receive_window(octets::kib_u32(64).into())
-        .with_receive_window(octets::kib_u32(256).into())
-        .with_max_concurrent_bidi_streams((STREAM_LIMIT as u32).into());
+    let mut config =
+        TransportConfig::default().with_max_concurrent_bidi_streams((STREAM_LIMIT as u32).into());
+    if std::env::var_os(SMALL_WINDOWS).is_some() {
+        config = config
+            .with_stream_receive_window(octets::kib_u32(64).into())
+            .with_receive_window(octets::kib_u32(256).into());
+    }
     if let Some(directory) = std::env::var_os("QLOGDIR") {
         let directory = Path::new(&directory);
         tokio::fs::create_dir_all(directory)
@@ -92,11 +115,36 @@ async fn transport(executor: Executor, role: &str) -> Result<Arc<TransportConfig
     Ok(Arc::new(config))
 }
 
+/// One line of transport counters per connection, so a benchmark run shows loss and queue drops.
+fn log_connection_stats(connection: &Connection) {
+    let stats = connection.stats();
+    tracing::info!(
+        rtt_ms = stats.path.rtt.as_millis() as u64,
+        cwnd = stats.path.cwnd,
+        sent_packets = stats.path.sent_packets,
+        lost_packets = stats.path.lost_packets,
+        congestion_events = stats.path.congestion_events,
+        rx_datagrams = stats.udp_rx.datagrams,
+        rx_ios = stats.udp_rx.ios,
+        tx_datagrams = stats.udp_tx.datagrams,
+        tx_ios = stats.udp_tx.ios,
+        "connection finished"
+    );
+}
+
 /// Join every transport producer before the shared shutdown drains the qlog recorder.
 async fn shutdown_endpoint(
     endpoint: &Endpoint,
     outcome: Result<(), BoxError>,
 ) -> Result<(), BoxError> {
+    let stats = endpoint.stats();
+    tracing::info!(
+        received_datagrams = stats.received_datagrams,
+        dropped_packets = stats.dropped_packets,
+        queue_peak_datagrams = stats.receive_queue.peak_datagrams,
+        queue_peak_bytes = stats.receive_queue.peak_bytes,
+        "endpoint finished"
+    );
     match endpoint.shutdown().await {
         ShutdownOutcome::Drained => {}
         ShutdownOutcome::Forced => {
@@ -113,7 +161,9 @@ async fn shutdown_endpoint(
 }
 
 fn check_alpn(connection: &Connection) -> Result<(), BoxError> {
-    if connection.handshake_data().and_then(|data| data.protocol)
+    if connection
+        .handshake_data()
+        .and_then(|data| data.application_layer_protocol)
         != Some(ApplicationProtocol::from(ALPN))
     {
         return Err("peer did not negotiate hq-interop".into());

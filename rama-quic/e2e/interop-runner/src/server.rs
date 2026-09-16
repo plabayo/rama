@@ -1,8 +1,8 @@
 //! Runner server: serve bounded HTTP/0.9 request lines from the mounted document root.
 
 use crate::{
-    ALPN, BUFFER_SIZE, REQUEST_LIMIT, STREAM_LIMIT, TestCase, check_alpn, relative_path,
-    shutdown_endpoint, transport,
+    ALPN, BUFFER_SIZE, REQUEST_LIMIT, STREAM_LIMIT, TestCase, check_alpn, log_connection_stats,
+    relative_path, shutdown_endpoint, transport,
 };
 use clap::Parser;
 use rama::{
@@ -10,7 +10,7 @@ use rama::{
     error::{BoxError, ErrorContext as _},
     graceful::{Shutdown, default_signal},
     net::{socket::SocketOptions, tls::ApplicationProtocol},
-    quic::{Connection, Endpoint, RecvStream, SendStream, ServerConfig, tls::TlsOptions},
+    quic::{Connection, Endpoint, RecvStream, SendStream, ServerConfig},
     rt::Executor,
     telemetry::tracing,
     tls::{
@@ -76,7 +76,7 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
         .with_alpn(smallvec![ApplicationProtocol::from(ALPN)])
         .with_keylog(KeyLogIntent::Environment)
         .with_server_auth(auth);
-    let config = ServerConfig::try_from_rama_tls(&tls, TlsOptions::default())?
+    let config = ServerConfig::try_from_rama_tls(&tls, crate::tls_options())?
         .with_transport_config(transport(executor.clone(), "server").await?);
     let mut socket_options = SocketOptions::default_udp();
     if args.listen.is_ipv6() {
@@ -161,6 +161,7 @@ async fn serve_connection(connection: Connection, root: Arc<PathBuf>) -> Result<
     }
     requests.abort_all();
     while requests.join_next().await.is_some() {}
+    log_connection_stats(&connection);
     Ok(())
 }
 
@@ -209,7 +210,7 @@ async fn serve_file(
     if !file.metadata().await?.is_file() {
         return Err("requested path is not a regular file".into());
     }
-    let mut buffer = [0_u8; BUFFER_SIZE];
+    let mut buffer = vec![0_u8; BUFFER_SIZE];
     loop {
         let count = file
             .read(&mut buffer)

@@ -43,13 +43,116 @@ use rama_tls::CertificateCompressionAlgorithm;
 
 use rama_tls::keylog::{KeyLogSink, open_intent_sink};
 
-/// /// The resolved native boringssl config consumed by [`super::TlsConnector`].
+/// The resolved native BoringSSL config consumed by [`super::TlsConnector`].
 pub struct TlsConnectorData {
     pub config: ConnectConfiguration,
     pub store_server_certificate_chain: bool,
     pub server_name: Option<Host>,
     pub server_verify_mode: ServerVerifyMode,
     pub server_cert_pins: Option<TlsServerCertPins>,
+}
+
+/// Shared client configuration, including native context callbacks and session state.
+#[derive(Clone, Debug)]
+pub struct TlsConnectorContext {
+    connector: rama_boring::ssl::SslConnector,
+    options: ConnectorOptions,
+}
+
+/// Configures a reusable client TLS context before it is shared.
+pub struct TlsConnectorContextBuilder {
+    pub config: rama_boring::ssl::SslConnectorBuilder,
+    options: ConnectorOptions,
+}
+
+impl fmt::Debug for TlsConnectorContextBuilder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TlsConnectorContextBuilder")
+            .field("server_name", &self.options.server_name)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ConnectorOptions {
+    store_server_certificate_chain: bool,
+    server_name: Option<Host>,
+    server_verify_mode: ServerVerifyMode,
+    server_cert_pins: Option<TlsServerCertPins>,
+    alps: Option<(Vec<ApplicationProtocol>, bool)>,
+    record_size_limit: Option<u16>,
+    delegated_credential_schemes: Option<Vec<SslSignatureAlgorithm>>,
+    encrypted_client_hello: bool,
+}
+
+impl TlsConnectorContextBuilder {
+    pub fn build(self) -> TlsConnectorContext {
+        TlsConnectorContext {
+            connector: self.config.build(),
+            options: self.options,
+        }
+    }
+}
+
+impl TlsConnectorContext {
+    /// Create independent connection state while retaining the shared native context.
+    pub fn configure(&self) -> Result<TlsConnectorData, BoxError> {
+        let mut cfg = self
+            .connector
+            .configure()
+            .context("create ssl connector configuration")?;
+        if let Some((alps_list, new_codepoint)) = &self.options.alps {
+            cfg.set_alps_use_new_codepoint(*new_codepoint);
+            for app_proto in alps_list {
+                cfg.add_application_settings(app_proto.as_bytes())
+                    .context("set alps application settings")?;
+            }
+        }
+        if let Some(limit) = self.options.record_size_limit {
+            cfg.set_record_size_limit(limit)
+                .context("set record size limit")?;
+        }
+        if let Some(schemes) = &self.options.delegated_credential_schemes {
+            cfg.set_delegated_credential_schemes(schemes)
+                .context("set delegated credential schemes")?;
+        }
+        if self.options.encrypted_client_hello {
+            cfg.set_enable_ech_grease(true);
+        }
+        Ok(TlsConnectorData {
+            config: cfg,
+            store_server_certificate_chain: self.options.store_server_certificate_chain,
+            server_name: self.options.server_name.clone(),
+            server_verify_mode: self.options.server_verify_mode,
+            server_cert_pins: self.options.server_cert_pins.clone(),
+        })
+    }
+}
+
+impl TlsConnectorData {
+    /// Prepare one TLS session, including peer identity verification and certificate pins.
+    /// The caller selects its transport and starts the handshake.
+    pub fn into_ssl(mut self) -> Result<rama_boring::ssl::Ssl, BoxError> {
+        if self.server_verify_mode == ServerVerifyMode::Auto && self.server_name.is_none() {
+            return Err(BoxError::from_static_str(
+                "server identity required when server verification is enabled",
+            ));
+        }
+        super::connector::configure_server_cert_pins(
+            &mut self.config,
+            self.server_verify_mode,
+            self.server_cert_pins,
+            self.server_name.as_ref(),
+        );
+        let identity = self
+            .server_name
+            .as_ref()
+            .map(super::connector::server_identity_for)
+            .transpose()?;
+        self.config
+            .into_ssl(identity.as_deref())
+            .context("prepare boring client TLS session")
+    }
 }
 
 impl std::fmt::Debug for TlsConnectorData {
@@ -79,6 +182,26 @@ impl TryFrom<&TlsClientConfig> for TlsConnectorData {
 }
 
 impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorData {
+    type Error = BoxError;
+
+    fn try_from(value: BoringTlsConnectorConfig<'_>) -> Result<Self, Self::Error> {
+        TlsConnectorContextBuilder::try_from(value)?
+            .build()
+            .configure()
+    }
+}
+
+impl TryFrom<&TlsClientConfig> for TlsConnectorContextBuilder {
+    type Error = BoxError;
+
+    fn try_from(value: &TlsClientConfig) -> Result<Self, Self::Error> {
+        Self::try_from(BoringTlsConnectorConfig::from_extensions(
+            value.as_extensions(),
+        ))
+    }
+}
+
+impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorContextBuilder {
     type Error = BoxError;
 
     fn try_from(value: BoringTlsConnectorConfig<'_>) -> Result<Self, Self::Error> {
@@ -397,49 +520,23 @@ impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorData {
             }
         }
 
-        trace!("boring connector: build SSL connector config");
-        let mut cfg = cfg_builder
-            .build()
-            .configure()
-            .context("create ssl connector configuration")?;
-
-        if let Some((alps_list, new_codepoint)) = &alps {
-            trace!("boring connector: set ALPS config");
-            cfg.set_alps_use_new_codepoint(*new_codepoint);
-            for app_proto in alps_list {
-                cfg.add_application_settings(app_proto.as_bytes())
-                    .context("set alps application settings")?;
-            }
-        }
-
-        if let Some(limit) = record_size_limit {
-            trace!("boring connector: setting record size limit");
-            cfg.set_record_size_limit(limit)
-                .context("set record size limit")?;
-        }
-
-        if let Some(schemes) = &delegated_credential_schemes {
-            trace!("boring connector: setting delegated credential schemes");
-            cfg.set_delegated_credential_schemes(schemes)
-                .context("set delegated credential schemas")?;
-        }
-
-        if encrypted_client_hello {
-            trace!("boring connector: enabling ech grease");
-            cfg.set_enable_ech_grease(true);
-        }
-
         trace!(
             ?server_name,
             "boring connector: return SSL connector config for server"
         );
 
         Ok(Self {
-            config: cfg,
-            store_server_certificate_chain,
-            server_name,
-            server_verify_mode,
-            server_cert_pins,
+            config: cfg_builder,
+            options: ConnectorOptions {
+                store_server_certificate_chain,
+                server_name,
+                server_verify_mode,
+                server_cert_pins,
+                alps,
+                record_size_limit,
+                delegated_credential_schemes,
+                encrypted_client_hello,
+            },
         })
     }
 }
@@ -773,6 +870,53 @@ mod tests {
         TlsServerTrustAnchors, TlsServerVerify, TlsStoreServerCertChain,
     };
     use rama_tls::{CipherSuite, ProtocolVersion, SignatureScheme};
+
+    #[test]
+    fn shared_context_keeps_connection_configuration_independent() {
+        let config = TlsClientConfig::new().with_server_name(Host::from_static("one.example"));
+        let mut builder = TlsConnectorContextBuilder::try_from(&config).unwrap();
+        builder
+            .config
+            .set_max_proto_version(Some(SslVersion::TLS1_3))
+            .unwrap();
+        let context = builder.build();
+        let shared = context.clone();
+        let mut first = context.configure().unwrap();
+        first
+            .config
+            .set_max_proto_version(Some(SslVersion::TLS1_2))
+            .unwrap();
+        first.server_name = Some(Host::from_static("two.example"));
+        let second = shared.configure().unwrap();
+        assert!(std::ptr::eq(
+            first.config.ssl_context(),
+            second.config.ssl_context()
+        ));
+        assert_eq!(second.config.max_proto_version(), Some(SslVersion::TLS1_3));
+        assert_eq!(second.server_verify_mode, ServerVerifyMode::Auto);
+        let first = first.into_ssl().unwrap();
+        let second = second.into_ssl().unwrap();
+        assert_eq!(
+            first.servername(rama_boring::ssl::NameType::HOST_NAME),
+            Some("two.example")
+        );
+        assert_eq!(
+            second.servername(rama_boring::ssl::NameType::HOST_NAME),
+            Some("one.example")
+        );
+    }
+
+    #[test]
+    fn shared_context_still_requires_each_verified_connection_identity() {
+        let context = TlsConnectorContextBuilder::try_from(&TlsClientConfig::new())
+            .unwrap()
+            .build();
+        context.configure().unwrap().into_ssl().unwrap_err();
+        let mut named = context.configure().unwrap();
+        named.server_name = Some(Host::from_static("example.com"));
+        named.into_ssl().unwrap();
+        context.configure().unwrap().into_ssl().unwrap_err();
+    }
 
     #[test]
     fn build_from_common_pieces() {

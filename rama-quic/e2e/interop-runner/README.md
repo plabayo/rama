@@ -76,13 +76,14 @@ packet captures and qlog output.
 ## Validation and CI
 
 ```sh
+just rama-quic/qa-interop-runner boring
 just rama-quic/qa-interop-runner rustls-ring
 just rama-quic/qa-interop-runner rustls-aws-lc
 ```
 
 This runs formatting, Clippy, Rust tests, and the Python gate tests without
 Docker on Linux, macOS, and Windows. POSIX process-group tests run only on Unix. CI calls the same recipes on all three platforms. The Docker
-image and matrix currently use `rustls-ring`.
+image defaults to `rustls-ring`; `--backend boring` or `--backend rustls-aws-lc` selects another backend. CI runs all three. The runner verifies the image backend label, including with `--skip-build`.
 
 CI needs a Linux runner with the prerequisites above (Ubuntu's stock tshark
 may need upgrading). Build the image, invoke `run.sh --skip-build` with

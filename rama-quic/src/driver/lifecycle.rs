@@ -141,19 +141,37 @@ impl Lifecycle {
         self.reserve().submit(future);
     }
 
-    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+    #[cfg(all(
+        test,
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        )
+    ))]
     pub(crate) fn pending_submissions(&self) -> usize {
         self.0.tasks.lock().pending
     }
 
     /// Install a closure that runs before every submission's runtime call (test seam for
     /// pausing a submitter between registration and tracking).
-    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+    #[cfg(all(
+        test,
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        )
+    ))]
     pub(crate) fn set_submit_hook(&self, hook: Option<Arc<dyn Fn() + Send + Sync>>) {
         *self.0.submit_hook.lock() = hook;
     }
 
-    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+    #[cfg(all(
+        test,
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+        )
+    ))]
     pub(crate) fn set_submit_wrapper(&self, wrapper: Option<SubmitWrapper>) {
         *self.0.submit_wrapper.lock() = wrapper;
     }

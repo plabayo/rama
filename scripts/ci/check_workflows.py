@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check CI admission and gating invariants (requires PyYAML).
+"""Check CI admission and gating invariants (run via `just scripts/ci/qa`, which supplies PyYAML).
 
 This intentionally evaluates only the expression subset used for runs-on and
 concurrency groups. Unknown syntax fails closed instead of guessing a runner.

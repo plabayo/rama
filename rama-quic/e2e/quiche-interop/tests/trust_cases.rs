@@ -12,7 +12,7 @@ use interop_common::{
     serving::{ServerOutcome, expect_outcome, rama_probe_server},
     trust::{rama_client_accepts, rama_client_refuses, trust_cases},
 };
-use rama::{tls::rustls::dep::rustls::AlertDescription, utils::octets};
+use rama::utils::octets;
 
 const PEER: &str = "quiche";
 const UNI_READ: usize = octets::kib(64);
@@ -105,7 +105,7 @@ async fn trust_cases_rama_server() {
         // alert's own number (RFC 9001 §4.8), so unknown_ca (48) is 0x130.
         assert_eq!(
             client.ended_on_a_tls_alert(),
-            Some(0x100 + u64::from(u8::from(AlertDescription::UnknownCA))),
+            Some(0x100 + u64::from(interop_common::backend::UNKNOWN_CA)),
             "{}: quiche reports the issuer alert",
             run.what
         );

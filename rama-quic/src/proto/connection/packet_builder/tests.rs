@@ -44,7 +44,9 @@ fn a_challenge_is_sized_by_its_own_datagram_not_the_buffer_before_it() {
         challenge: Some(token),
         ..SentFrames::default()
     };
-    builder.finish_and_track(now, conn, Some(sent), &mut buf);
+    builder
+        .finish_and_track(now, conn, Some(sent), &mut buf)
+        .unwrap();
 
     assert!(
         buf.len() > usize::from(MIN_INITIAL_SIZE),

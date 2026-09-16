@@ -11,6 +11,8 @@ pub(super) struct SendBuffer {
     unacked_segments: VecDeque<Segment>,
     /// Total size of `unacked_segments`
     unacked_len: usize,
+    /// Acknowledged bytes removed from the first segment's view but still held by its allocation
+    front_trimmed: usize,
     /// The first offset that hasn't been written by the application, i.e. the offset past the end of `unacked`
     offset: u64,
     /// The first offset that hasn't been sent
@@ -79,12 +81,14 @@ impl SendBuffer {
                 if front.data.len() <= to_advance {
                     to_advance -= front.data.len();
                     self.unacked_segments.pop_front();
+                    self.front_trimmed = 0;
 
                     if self.unacked_segments.len() * 4 < self.unacked_segments.capacity() {
                         self.unacked_segments.shrink_to_fit();
                     }
                 } else {
                     front.data.advance(to_advance);
+                    self.front_trimmed += to_advance;
                     to_advance = 0;
                 }
             }
@@ -212,9 +216,19 @@ impl SendBuffer {
         self.unsent != self.offset || !self.retransmits.is_empty()
     }
 
-    /// Compute the amount of data that hasn't been acknowledged
-    pub(super) fn unacked(&self) -> u64 {
-        self.unacked_len as u64 - self.acks.iter().map(|x| x.end - x.start).sum::<u64>()
+    /// Bytes still retained from application writes, including acknowledged data whose
+    /// allocation has not been released yet
+    pub(super) fn buffered(&self) -> u64 {
+        (self.unacked_len + self.front_trimmed) as u64
+    }
+
+    /// Release abandoned data while preserving the final offset for RESET_STREAM
+    pub(super) fn discard(&mut self) {
+        *self = Self {
+            offset: self.offset,
+            unsent: self.offset,
+            ..Self::default()
+        };
     }
 }
 
@@ -513,6 +527,8 @@ mod tests {
         buf: SendBuffer,
         bytes: Vec<u8>,
         acked: Vec<bool>,
+        /// Where each write ended: a segment is released only once acknowledged whole.
+        segment_ends: Vec<usize>,
     }
 
     impl SendModel {
@@ -522,6 +538,7 @@ mod tests {
                 .extend((start..start + len).map(|index| (index * 37 + index / 7) as u8));
             self.acked.resize(self.bytes.len(), false);
             self.buf.write(Bytes::copy_from_slice(&self.bytes[start..]));
+            self.segment_ends.push(self.bytes.len());
         }
 
         fn ack(&mut self, range: Range<usize>) {
@@ -558,9 +575,23 @@ mod tests {
             let end = self.bytes.len();
             let base = self.acked.iter().position(|acked| !acked).unwrap_or(end);
             assert_eq!(self.buf.offset(), end as u64);
-            assert_eq!(
-                self.buf.unacked(),
-                self.acked.iter().filter(|acked| !**acked).count() as u64
+            // Retained: everything from the start of the segment holding the first unacknowledged
+            // byte, since acknowledged bytes ahead of it are still held by their allocations.
+            let retained = if base == end {
+                0
+            } else {
+                let segment_start = self
+                    .segment_ends
+                    .iter()
+                    .copied()
+                    .filter(|&segment_end| segment_end <= base)
+                    .max()
+                    .unwrap_or(0);
+                end - segment_start
+            };
+            assert_eq!(self.buf.buffered(), retained as u64);
+            assert!(
+                self.buf.buffered() >= self.acked.iter().filter(|acked| !**acked).count() as u64
             );
             assert_eq!(self.buf.is_fully_acked(), base == end);
             for start in 0..=end + 1 {

@@ -55,6 +55,10 @@ pub fn stream_cases() -> Vec<Case<StreamScenario>> {
                     seed: 0x11,
                     len: octets::kib(64),
                 },
+                down: Chunk {
+                    seed: 0x91,
+                    len: octets::kib(12),
+                },
                 question: Chunk {
                     seed: 0x22,
                     len: octets::kib(4),
@@ -73,6 +77,10 @@ pub fn stream_cases() -> Vec<Case<StreamScenario>> {
                 up: Chunk {
                     seed: 0x44,
                     len: octets::kib(3),
+                },
+                down: Chunk {
+                    seed: 0xa2,
+                    len: 993,
                 },
                 question: Chunk {
                     seed: 0x55,

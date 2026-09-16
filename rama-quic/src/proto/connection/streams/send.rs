@@ -86,6 +86,8 @@ impl Send {
     pub(super) fn reset(&mut self) {
         if let SendState::DataSent { .. } | SendState::Ready = self.state {
             self.state = SendState::ResetSent;
+            self.pending.discard();
+            self.fin_pending = false;
         }
     }
 

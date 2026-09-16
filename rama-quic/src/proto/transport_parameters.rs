@@ -6,13 +6,6 @@
 //! contained in this modules should generally only be referred to by custom
 //! implementations of the `crypto::Session` trait.
 
-#![cfg_attr(
-    not(all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))),
-    allow(
-        dead_code,
-        reason = "without a TLS backend and a crypto provider nothing can drive a handshake, so the code that serves one has no caller"
-    )
-)]
 use std::{
     convert::TryFrom,
     net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6},
@@ -74,7 +67,6 @@ macro_rules! make_struct {
     {$($(#[$doc:meta])* $name:ident ($id:ident) = $default:expr,)*} => {
         /// Transport parameters used to negotiate connection-level preferences between peers
         #[derive(Debug, Copy, Clone, Eq, PartialEq)]
-        #[cfg_attr(not(fuzzing), expect(unreachable_pub, reason = "reachable through `fuzzing` under cfg(fuzzing)"))]
         pub struct TransportParameters {
             $($(#[$doc])* pub(crate) $name : VarInt,)*
 
@@ -326,7 +318,7 @@ impl From<UnexpectedEnd> for Error {
 
 impl TransportParameters {
     /// Encode `TransportParameters` into buffer
-    pub(crate) fn write<W: BufMut>(&self, w: &mut W) {
+    pub fn write<W: BufMut>(&self, w: &mut W) {
         for idx in self
             .write_order
             .as_ref()
@@ -423,14 +415,7 @@ impl TransportParameters {
         }
     }
 
-    /// Decode `TransportParameters` from buffer
-    #[cfg_attr(
-        not(fuzzing),
-        expect(
-            unreachable_pub,
-            reason = "reachable through `fuzzing` under cfg(fuzzing)"
-        )
-    )]
+    /// Decode the peer's transport parameters. `side` is the local endpoint's role.
     pub fn read<R: Buf>(side: Side, r: &mut R) -> Result<Self, Error> {
         // Initialize to protocol-specified defaults
         let mut params = Self::default();

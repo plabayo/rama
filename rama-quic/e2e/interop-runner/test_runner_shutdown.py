@@ -10,7 +10,18 @@ import time
 import unittest
 from unittest.mock import Mock, call, patch
 
-from run_interop import compose_override, inspect_image, preflight, run_managed, snapshot_container_logs
+from run_interop import compose_override, inspect_image, preflight, run_managed, snapshot_container_logs, verify_image_backend
+
+
+class BackendSelectionTests(unittest.TestCase):
+    def test_matching_image_backend(self):
+        for backend in ("boring", "rustls-ring", "rustls-aws-lc"):
+            verify_image_backend({"Config": {"Labels": {"org.ramaproxy.quic.tls-backend": backend}}}, backend)
+
+    def test_wrong_or_unlabelled_images_are_rejected(self):
+        for config in ({}, {"Labels": None}, {"Labels": {"org.ramaproxy.quic.tls-backend": "rustls-ring"}}):
+            with self.subTest(config=config), self.assertRaisesRegex(RuntimeError, "does not match requested"):
+                verify_image_backend({"Config": config}, "boring")
 
 
 class PrerequisiteTests(unittest.TestCase):

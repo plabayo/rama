@@ -1,4 +1,7 @@
-#![cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+#![cfg(any(
+    feature = "boring",
+    all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+))]
 #![expect(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -121,10 +124,11 @@ async fn a_pending_accept_ends_with_the_application() {
     );
 }
 
-/// A shutdown budget of zero on an endpoint with a live connection: the drivers cannot have
-/// finished in the instant the budget allows, so the shutdown forces them and still joins.
+/// A shutdown budget of zero on an endpoint with a live connection joins at once either way:
+/// forced when a driver was still running as the budget ran out, or drained when the close the
+/// shutdown gave the connection went out on that driver's next turn and let it leave first.
 #[tokio::test]
-async fn a_zero_budget_forces_a_live_endpoint() {
+async fn a_zero_budget_joins_a_live_endpoint_at_once() {
     let identities = Identities::new();
     let server = Endpoint::build(Executor::new())
         .with_server_config(identities.server_config())
@@ -150,10 +154,9 @@ async fn a_zero_budget_forces_a_live_endpoint() {
     let outcome = tokio::time::timeout(LIMIT, server.shutdown())
         .await
         .expect("the shutdown joined");
-    assert_eq!(
-        outcome,
-        ShutdownOutcome::Forced,
-        "a zero budget gives the drivers no time, so they are forced"
+    assert!(
+        matches!(outcome, ShutdownOutcome::Forced | ShutdownOutcome::Drained),
+        "a zero budget waits for nothing: {outcome:?}"
     );
     drop(connection);
     // The server was forced mid-connection, so its task ends without finishing its work. What

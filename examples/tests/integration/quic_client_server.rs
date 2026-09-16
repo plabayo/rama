@@ -12,7 +12,11 @@ use super::utils;
 async fn test_quic_client_server() {
     utils::init_tracing();
 
-    let exit_status = utils::ExampleRunner::run("quic_client_server").await;
+    let exit_status = tokio::process::Command::new(env!("CARGO_BIN_EXE_quic_client_server"))
+        .kill_on_drop(true)
+        .status()
+        .await
+        .unwrap();
     assert!(
         exit_status.success(),
         "the example completed its exchange and its shutdown joined: {exit_status}"
