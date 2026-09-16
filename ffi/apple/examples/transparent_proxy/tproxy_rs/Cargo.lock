@@ -110,7 +110,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
- "synstructure",
+ "synstructure 0.13.2",
 ]
 
 [[package]]
@@ -738,13 +738,13 @@ dependencies = [
 
 [[package]]
 name = "derive-where"
-version = "1.6.1"
+version = "1.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d08b3a0bcc0d079199cd476b2cae8435016ec11d1c0986c6901c5ac223041534"
+checksum = "2e2b94854e8576378ccda7c8de8a66ed8b4e8acbd2c50ec3418ea6c8aaf4b567"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.5",
 ]
 
 [[package]]
@@ -1920,7 +1920,7 @@ dependencies = [
  "quote",
  "str_inflector",
  "syn 2.0.119",
- "synstructure",
+ "synstructure 0.13.2",
 ]
 
 [[package]]
@@ -2569,9 +2569,9 @@ dependencies = [
 
 [[package]]
 name = "rama-boring"
-version = "0.6.8"
+version = "0.6.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4bf149c9fd6100914e0f7f527f27cc8f7a4514090df35df7283ace3b4f244cfb"
+checksum = "7936d2b89fa48eb6098530e23c9cfd825b38b750e32d6203deba2bafb86f6203"
 dependencies = [
  "bitflags 2.13.2",
  "foreign-types",
@@ -2582,9 +2582,9 @@ dependencies = [
 
 [[package]]
 name = "rama-boring-sys"
-version = "0.6.8"
+version = "0.6.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1ed7bbe1130aa53e8e4cd7996e472a4814f7253f3246137d5514a6fd492919fb"
+checksum = "8440a4fe75f5c2de85ad5add30dca491453ecf17d2bddda68b6aa203ef8a8a28"
 dependencies = [
  "bindgen 0.72.1",
  "cmake",
@@ -2594,9 +2594,9 @@ dependencies = [
 
 [[package]]
 name = "rama-boring-tokio"
-version = "0.6.8"
+version = "0.6.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "134f0f4a7f8f63fa30e6b0ab13ea13e53ba0f2866cfbd9fd566b2ff00260b6e9"
+checksum = "e82e4d7d5f44fefa51c96598fff5e51a60e802911baf2c164ead87533c2d3720"
 dependencies = [
  "rama-boring",
  "rama-boring-sys",
@@ -3017,6 +3017,7 @@ version = "0.5.0"
 dependencies = [
  "ahash",
  "fastbloom",
+ "jiff",
  "lru-slab",
  "parking_lot",
  "pin-project-lite",
@@ -3024,6 +3025,7 @@ dependencies = [
  "rama-crypto",
  "rama-net",
  "rama-tls",
+ "rama-tls-boring",
  "rama-tls-rustls",
  "rama-udp",
  "rama-utils",
@@ -3034,6 +3036,7 @@ dependencies = [
  "serde_json",
  "slab",
  "tokio",
+ "zeroize",
 ]
 
 [[package]]
@@ -3788,6 +3791,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "synstructure"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "901704edd0dfe137f1987838ee4f259e4e063c31371bdb423f7ae38ec6f77f02"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.5",
+]
+
+[[package]]
 name = "tagptr"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4513,14 +4527,14 @@ dependencies = [
 
 [[package]]
 name = "yoke-derive"
-version = "0.8.2"
+version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "de844c262c8848816172cef550288e7dc6c7b7814b4ee56b3e1553f275f1858e"
+checksum = "33811428bee40dbceb6d545e95754741d17a6aef9a4849f0fd62e2ba4f412a78"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.119",
- "synstructure",
+ "syn 3.0.5",
+ "synstructure 0.14.0",
 ]
 
 [[package]]
@@ -4554,14 +4568,14 @@ dependencies = [
 
 [[package]]
 name = "zerofrom-derive"
-version = "0.1.7"
+version = "0.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "11532158c46691caf0f2593ea8358fed6bbf68a0315e80aae9bd41fbade684a1"
+checksum = "f75b4683f6c7f45248d4d64056a24298c6281e0993356d7d1b4a1a962ef10d4a"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.119",
- "synstructure",
+ "syn 3.0.5",
+ "synstructure 0.14.0",
 ]
 
 [[package]]
@@ -4605,9 +4619,9 @@ dependencies = [
 
 [[package]]
 name = "zlib-rs"
-version = "0.6.7"
+version = "0.6.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "34b31d188d9d685a4f9c7b46d6e36631b07058d2cfe190267adce54dc230bf12"
+checksum = "b268e58e7c693d7c271f93ffc4ba3b380412554231c85bf61ca7af91042a4112"
 
 [[package]]
 name = "zmij"
