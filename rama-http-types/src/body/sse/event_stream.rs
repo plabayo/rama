@@ -17,20 +17,14 @@ const POLL_BYTES_SOFT_CAP: usize = rama_utils::octets::mib(1);
 const POLL_UPSTREAM_ITEMS_SOFT_CAP: usize = 64;
 
 pin_project! {
-    /// A Stream of SSE's used by the client.
+    /// Decode a stream of byte chunks into SSE events.
     ///
-    /// Stream plumbing around an [`EventDecoder`]: it pushes body chunks in
-    /// and yields the events that come out. Use the decoder directly where
-    /// the bytes are not yours to own as a stream, e.g. a proxy inspecting
-    /// an SSE body while forwarding it.
+    /// Wraps [`EventDecoder`], which can also inspect borrowed chunks directly.
     ///
-    /// `EventStream` adds no limit by default. For untrusted HTTP input,
-    /// apply a body-wide [`BodyLimit`] or wrap the body with
-    /// [`Body::limited`] before converting it into this stream. That limit
-    /// is cumulative, so an intentionally long-lived SSE stream terminates
-    /// once its body budget is exhausted. Per-line and per-event limits are
-    /// available with [`max_line_len`](Self::with_max_line_len) and
-    /// [`max_event_len`](Self::with_max_event_len).
+    /// Input is unlimited by default. Set [`max_line_len`](Self::with_max_line_len)
+    /// and [`max_event_len`](Self::with_max_event_len) for limits per line and event.
+    /// [`BodyLimit`] or [`Body::limited`] instead caps the entire body, terminating
+    /// even a long-lived stream once that budget is exhausted.
     ///
     /// [`BodyLimit`]: crate::BodyLimit
     /// [`Body::limited`]: crate::Body::limited
@@ -101,7 +95,7 @@ impl<S, T: EventDataRead> EventStream<S, T> {
     }
 
     generate_set_and_with! {
-        /// Hand the bytes of an unterminated trailing line to `cb`, once,
+        /// Pass a nonempty buffered partial line to `cb` at most once,
         /// when the body ends or the stream is dropped.
         ///
         /// See [`EventDecoder::with_on_incomplete`].

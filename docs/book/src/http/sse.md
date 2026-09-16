@@ -76,7 +76,7 @@ Unlike the browser’s `EventSource` API which only allows you to *receive* stri
 
 > There is no opinionated `EventSource` abstraction in Rama. Instead, you interact directly with typed event streams — giving you full control over framing, backpressure, and logic.
 
-> Decoding is decoupled from the transport: `EventStream` consumes a body as a stream, while the [`EventDecoder`](https://ramaproxy.org/docs/rama/http/sse/struct.EventDecoder.html) it is built on takes bytes from wherever you have them — letting a proxy read events off a response it forwards unchanged, without owning the body.
+> `EventStream` decodes a stream of body chunks. [`EventDecoder`](https://ramaproxy.org/docs/rama/http/sse/struct.EventDecoder.html) accepts borrowed chunks directly, so a proxy can inspect events while forwarding the body unchanged.
 
 ### Examples
 

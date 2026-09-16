@@ -313,7 +313,7 @@ impl<T: EventDataRead> DecodeState<T> {
     /// Extend `carry` while validating only bytes not already known valid.
     fn extend_carry(&mut self, bytes: &[u8]) -> Result<(), BoxError> {
         if self.limited {
-            self.check_line_len(self.carry.len() + bytes.len())?;
+            self.check_limits(self.carry.len() + bytes.len())?;
         }
         let validate_from = self.carry_valid_up_to;
         self.carry.extend_from_slice(bytes);
@@ -474,7 +474,7 @@ impl<T: EventDataRead> DecodeState<T> {
         }
 
         if self.limited {
-            self.check_line_len(self.carry.len() + bytes.len() - start + utf8_tail.len())?;
+            self.check_limits(self.carry.len() + bytes.len() - start + utf8_tail.len())?;
         }
         self.carry.extend_from_slice(&bytes[start..]);
         self.carry.extend_from_slice(utf8_tail);
@@ -486,6 +486,7 @@ impl<T: EventDataRead> DecodeState<T> {
     fn handle_line(&mut self, line: &str) -> Result<(), BoxError> {
         if self.limited {
             self.check_limits(line.len())?;
+            self.event_len += line.len();
         }
         self.builder.add(parse_line(line))?;
         if self.builder.is_complete {
@@ -498,12 +499,12 @@ impl<T: EventDataRead> DecodeState<T> {
         Ok(())
     }
 
-    /// Account one line against both limits; only called while `limited`.
-    fn check_limits(&mut self, len: usize) -> Result<(), BoxError> {
+    /// Check a complete or partial line against both limits without counting
+    /// it toward `event_len` until `handle_line` accepts the complete line.
+    fn check_limits(&self, len: usize) -> Result<(), BoxError> {
         self.check_line_len(len)?;
-        self.event_len += len;
         if let Some(max) = self.max_event_len
-            && self.event_len > max
+            && self.event_len.saturating_add(len) > max
         {
             return Err(
                 BoxError::from_static_str("sse event exceeds the max event length")
@@ -551,10 +552,8 @@ enum Status {
 
 /// Push-driven decoder turning raw SSE bytes into [`Event`]s.
 ///
-/// Useful where the bytes are not yours to own as a stream: a proxy
-/// inspecting an SSE response while forwarding it unchanged sees each body
-/// chunk pass by, and can push a copy here instead of writing its own line
-/// splitter. [`EventStream`] is this decoder plus stream plumbing.
+/// Push borrowed chunks to inspect an SSE body while forwarding it unchanged.
+/// Use [`EventStream`] to decode a stream of chunks instead.
 ///
 /// Push a chunk, drain what it completed, repeat, and call
 /// [`finish`](Self::finish) once the body ends:
@@ -577,19 +576,18 @@ enum Status {
 /// # }
 /// ```
 ///
-/// Chunks may split lines, UTF-8 sequences and CRLF pairs anywhere; only the
-/// bytes of a line that straddles a chunk boundary are ever copied.
+/// Chunks may split lines, UTF-8 sequences and CRLF pairs anywhere.
+/// Partial lines and undecoded chunk tails are buffered.
 ///
-/// [`finish`](Self::finish) is optional. Events dispatch on the blank line
-/// and never at the end of the body, so a caller with no end-of-body signal
-/// — a frame callback, say — can drop the decoder instead. To still see the
-/// unterminated trailing line such a body leaves behind, register
-/// [`on_incomplete`](Self::with_on_incomplete), which fires on drop too.
+/// Events dispatch on blank lines. [`finish`](Self::finish) is optional;
+/// it checks trailing UTF-8 without dispatching an event.
+/// [`on_incomplete`](Self::with_on_incomplete) receives the buffered partial
+/// line on finish or drop.
 ///
-/// Like [`EventStream`] the decoder adds no limit by default. For untrusted
-/// input set [`max_line_len`](Self::with_max_line_len) and
-/// [`max_event_len`](Self::with_max_event_len), which bound memory per line
-/// and per event where a body-wide limit cannot.
+/// Input is unlimited by default. For untrusted input, set
+/// [`max_line_len`](Self::with_max_line_len) and
+/// [`max_event_len`](Self::with_max_event_len). These limits do not cap the
+/// undecoded backlog; drain events between pushes.
 ///
 /// [`EventStream`]: super::EventStream
 pub struct EventDecoder<T: EventDataRead = String> {
@@ -654,9 +652,9 @@ impl<T: EventDataRead> EventDecoder<T> {
     }
 
     generate_set_and_with! {
-        /// Fail decoding once the lines accumulated into one event —
-        /// its data payloads, comments and field values — grow past
-        /// `max` bytes.
+        /// Fail decoding once an event exceeds `max` raw line bytes.
+        /// Includes field names, separators, comments, unknown fields and
+        /// partial lines; excludes line terminators. Resets per event.
         pub fn max_event_len(mut self, max: Option<usize>) -> Self {
             self.state.max_event_len = max;
             self.state.limited = self.state.max_line_len.is_some() || self.state.max_event_len.is_some();
@@ -665,14 +663,11 @@ impl<T: EventDataRead> EventDecoder<T> {
     }
 
     generate_set_and_with! {
-        /// Hand the bytes of an unterminated trailing line to `cb`, once,
-        /// when the stream ends — at [`finish`](Self::finish), or otherwise
-        /// when the decoder is dropped, which is how a caller with no
-        /// end-of-body signal still gets to see them.
+        /// Pass a nonempty buffered partial line to `cb` at most once,
+        /// on [`finish`](Self::finish) or drop.
         ///
-        /// The bytes are handed over as they arrived, which for a body that
-        /// stopped mid-sequence is not valid UTF-8. Nothing is handed over
-        /// when the stream ended on a line terminator, as it should.
+        /// Bytes may contain invalid UTF-8. Completed lines from an unfinished
+        /// event and undrained input are excluded.
         pub fn on_incomplete(mut self, cb: Option<OnIncompleteLine>) -> Self {
             self.on_incomplete = cb;
             self
@@ -698,13 +693,11 @@ impl<T: EventDataRead> EventDecoder<T> {
 
     /// Push one chunk of the event stream into the decoder.
     ///
-    /// The entire chunk is accepted: whatever a soft cap stopped the decoder
-    /// from decoding right away is buffered, so drain with
-    /// [`events`](Self::events) between pushes to keep that buffer empty.
+    /// Undecoded bytes are buffered. Drain with [`events`](Self::events)
+    /// between pushes to keep the backlog empty.
     ///
-    /// Decode errors are reported by [`next_event`](Self::next_event), after
-    /// the events that completed before them. An error from this method means
-    /// the decoder itself is no longer usable.
+    /// Decode errors surface through [`next_event`](Self::next_event) after
+    /// preceding events. This method returns an error if already finished or failed.
     pub fn push(&mut self, chunk: &[u8]) -> Result<(), BoxError> {
         match self.status {
             Status::Open => (),
@@ -726,6 +719,14 @@ impl<T: EventDataRead> EventDecoder<T> {
 
         // undecoded input first: the decoder may not see bytes out of order
         if self.backlog_offset < self.backlog.len() {
+            let remaining = self.backlog.len() - self.backlog_offset;
+            if self.backlog_offset >= remaining {
+                // Reclaim consumed input even if the backlog never empties.
+                // Copy no more than we consumed, keeping compaction amortized linear.
+                self.backlog.copy_within(self.backlog_offset.., 0);
+                self.backlog.truncate(remaining);
+                self.backlog_offset = 0;
+            }
             self.backlog.extend_from_slice(chunk);
             return Ok(());
         }
@@ -791,14 +792,11 @@ impl<T: EventDataRead> EventDecoder<T> {
         }
     }
 
-    /// The event stream ended: an unterminated trailing line is discarded,
-    /// per the WHATWG event stream model, after checking it is valid UTF-8.
+    /// End input and validate trailing UTF-8 without dispatching an event.
     ///
-    /// Optional, and never a source of events: it reports a body that ended
-    /// mid-UTF-8-sequence and releases the partial line the decoder held,
-    /// handing it to [`on_incomplete`](Self::with_on_incomplete) if set.
-    /// Drain with [`events`](Self::events) first: finishing with input left
-    /// undecoded is an error.
+    /// Releases the buffered partial line, passing it to
+    /// [`on_incomplete`](Self::with_on_incomplete) if set, even if validation fails.
+    /// Drain [`events`](Self::events) first; undecoded input is a fatal error.
     pub fn finish(&mut self) -> Result<(), BoxError> {
         if let Some(err) = self.pending_error.take() {
             return Err(err);
@@ -1087,6 +1085,44 @@ mod tests {
             events.last().and_then(Event::data),
             Some(&"last".to_owned())
         );
+    }
+
+    #[test]
+    fn partial_drains_keep_backlog_bounded_and_preserve_order() {
+        let mut decoder = EventDecoder::<String>::new();
+        let initial: String = (0..100).map(|i| format!("data: {i:06}\n\n")).collect();
+        decoder.push(initial.as_bytes()).unwrap();
+        let mut expected = 0;
+        for _ in 0..50 {
+            let event = decoder.next_event().unwrap().unwrap();
+            assert_eq!(event.data().unwrap(), &format!("{expected:06}"));
+            expected += 1;
+        }
+
+        // The consumer keeps a constant lag of 50 events, so the backlog
+        // never empties, but retained input must not grow with total traffic.
+        for batch in 0..200 {
+            let start = 100 + batch * 50;
+            let input: String = (start..start + 50)
+                .map(|i| format!("data: {i:06}\n\n"))
+                .collect();
+            decoder.push(input.as_bytes()).unwrap();
+            for _ in 0..50 {
+                let event = decoder.next_event().unwrap().unwrap();
+                assert_eq!(event.data().unwrap(), &format!("{expected:06}"));
+                expected += 1;
+            }
+            assert!(decoder.backlog.len() <= initial.len() * 3);
+        }
+
+        let mut remaining = 0;
+        for event in decoder.events() {
+            assert_eq!(event.unwrap().data().unwrap(), &format!("{expected:06}"));
+            expected += 1;
+            remaining += 1;
+        }
+        assert_eq!(remaining, 50);
+        decoder.finish().unwrap();
     }
 
     #[test]
@@ -1389,6 +1425,42 @@ mod tests {
         let input = "data: fits\n\n".repeat(16);
         let events = decode_in_chunks(&mut decoder, input.as_bytes(), 3).unwrap();
         assert_eq!(events.len(), 16);
+    }
+
+    #[test]
+    fn the_event_limit_includes_unterminated_lines() {
+        for input in ["data: 01234567890123456789", "data: 1234567890\ndata: x"] {
+            for chunk_size in 1..=input.len() {
+                for max_line_len in [None, Some(1024)] {
+                    let mut decoder = EventDecoder::<String>::new()
+                        .with_max_event_len(16)
+                        .maybe_with_max_line_len(max_line_len);
+                    let mut failed = false;
+                    for chunk in input.as_bytes().chunks(chunk_size) {
+                        decoder.push(chunk).unwrap();
+                        if decoder.next_event().is_err() {
+                            failed = true;
+                            break;
+                        }
+                    }
+                    assert!(failed, "input {input:?}, chunk size {chunk_size}");
+                    assert!(decoder.state.carry.len() <= 16);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn partial_lines_are_counted_once_and_limits_reset_per_event() {
+        let event = "data: é\r\ndata: 🚀\r\n\r\n";
+        let input = event.repeat(3);
+        let event_len = "data: é".len() + "data: 🚀".len();
+        for chunk_size in 1..=input.len() {
+            let mut decoder = EventDecoder::<String>::new().with_max_event_len(event_len);
+            let events = decode_in_chunks(&mut decoder, input.as_bytes(), chunk_size).unwrap();
+            assert_eq!(events.len(), 3);
+            assert!(events.iter().all(|event| event.data().unwrap() == "é\n🚀"));
+        }
     }
 
     #[test]
