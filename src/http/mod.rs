@@ -37,8 +37,8 @@ pub use ::rama_http_core as core;
 )]
 pub mod client;
 
-#[cfg(feature = "http-full")]
-#[cfg_attr(docsrs, doc(cfg(feature = "http-full")))]
+#[cfg(feature = "http-backend")]
+#[cfg_attr(docsrs, doc(cfg(feature = "http-backend")))]
 #[doc(inline)]
 pub use ::rama_http_backend::server;
 #[cfg(feature = "ws")]
