@@ -13,10 +13,13 @@ use rama_json::path::JsonPath;
 use rama_json::tokenizer::DEFAULT_MAX_BUFFERED_BYTES;
 
 use crate::body::{Frame, SizeHint, StreamingBody};
+use crate::layer::util::stream_body::{IntoHandler, OnEnd, fire_on_end, poll_passthrough_frame};
 
-/// Completion hook, handed the finalized handler once capture ends.
-/// `Send + Sync` so the body keeps satisfying [`Body::new`](crate::Body::new).
-type OnEnd<H> = Box<dyn FnOnce(H) + Send + Sync>;
+impl<H: CaptureHandler> IntoHandler<H> for JsonCapturer<H> {
+    fn finish_handler(self) -> H {
+        self.into_handler()
+    }
+}
 
 pin_project! {
     /// A body that feeds the inner body's bytes through a
@@ -107,16 +110,6 @@ impl<B, H> JsonCaptureBody<B, H> {
     }
 }
 
-/// Hands the spent capturer's handler to the hook, if one is installed.
-fn fire_on_end<H: CaptureHandler>(
-    capturer: &mut Option<JsonCapturer<H>>,
-    on_end: &mut Option<OnEnd<H>>,
-) {
-    if let (Some(capturer), Some(on_end)) = (capturer.take(), on_end.take()) {
-        on_end(capturer.into_handler());
-    }
-}
-
 impl<B, H> StreamingBody for JsonCaptureBody<B, H>
 where
     B: StreamingBody<Error: Into<BoxError>>,
@@ -136,14 +129,7 @@ where
         }
 
         let Some(capturer) = this.capturer.as_mut() else {
-            return match ready!(this.inner.as_mut().poll_frame(cx)) {
-                Some(Ok(frame)) => Poll::Ready(Some(Ok(normalize_frame(frame)))),
-                Some(Err(err)) => Poll::Ready(Some(Err(err.into()))),
-                None => {
-                    *this.done = true;
-                    Poll::Ready(None)
-                }
-            };
+            return poll_passthrough_frame(this.inner.as_mut(), cx, this.done);
         };
 
         match ready!(this.inner.as_mut().poll_frame(cx)) {
@@ -181,16 +167,5 @@ where
 
     fn size_hint(&self) -> SizeHint {
         self.inner.size_hint()
-    }
-}
-
-/// Normalizes a frame's data type to [`Bytes`], preserving trailers.
-fn normalize_frame<D: Buf>(frame: Frame<D>) -> Frame<Bytes> {
-    match frame.into_data() {
-        Ok(mut data) => Frame::data(data.copy_to_bytes(data.remaining())),
-        Err(frame) => match frame.into_trailers() {
-            Ok(trailers) => Frame::trailers(trailers),
-            Err(_) => Frame::data(Bytes::new()),
-        },
     }
 }
