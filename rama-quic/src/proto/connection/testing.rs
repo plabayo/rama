@@ -269,7 +269,7 @@ impl Connection {
         struct Absent;
         impl PacketKey for Absent {
             fn encrypt(&self, _: u64, _: &mut [u8], _: usize) -> Result<(), crypto::CryptoError> {
-                Err(crypto::CryptoError)
+                Err(crypto::CryptoError::new())
             }
             fn decrypt(
                 &self,
@@ -277,7 +277,7 @@ impl Connection {
                 _: &[u8],
                 _: &mut rama_core::bytes::BytesMut,
             ) -> Result<(), crypto::CryptoError> {
-                Err(crypto::CryptoError)
+                Err(crypto::CryptoError::new())
             }
             fn tag_len(&self) -> usize {
                 16

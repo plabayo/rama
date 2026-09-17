@@ -87,10 +87,10 @@ struct FailedEncryption;
 impl PacketKey for FailedEncryption {
     fn encrypt(&self, _: u64, buffer: &mut [u8], _: usize) -> Result<(), crypto::CryptoError> {
         buffer.fill(0x42);
-        Err(crypto::CryptoError)
+        Err(crypto::CryptoError::new())
     }
     fn decrypt(&self, _: u64, _: &[u8], _: &mut BytesMut) -> Result<(), crypto::CryptoError> {
-        Err(crypto::CryptoError)
+        Err(crypto::CryptoError::new())
     }
     fn tag_len(&self) -> usize {
         16

@@ -524,7 +524,7 @@ impl Connection {
         let ConnectionSide::Server { server_config } = &self.side else {
             return;
         };
-        let new_tokens = &mut self.spaces[SpaceId::Data as usize].pending.new_tokens;
+        let new_tokens = &mut self.spaces[SpaceId::Data].pending.new_tokens;
         new_tokens.clear();
         for _ in 0..server_config.validation_token.sent {
             new_tokens.push(self.path.remote);

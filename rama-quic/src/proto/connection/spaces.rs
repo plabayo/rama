@@ -287,16 +287,20 @@ impl PacketSpace {
     }
 }
 
-impl Index<SpaceId> for [PacketSpace; 3] {
+/// The three packet-number spaces, indexed by [`SpaceId`]. A local newtype because `SpaceId`
+/// now lives in `rama-quic-proto`, so the trait impls could not target a bare array.
+pub(super) struct PacketSpaces(pub(super) [PacketSpace; 3]);
+
+impl Index<SpaceId> for PacketSpaces {
     type Output = PacketSpace;
     fn index(&self, space: SpaceId) -> &PacketSpace {
-        &self.as_ref()[space as usize]
+        &self.0[space as usize]
     }
 }
 
-impl IndexMut<SpaceId> for [PacketSpace; 3] {
+impl IndexMut<SpaceId> for PacketSpaces {
     fn index_mut(&mut self, space: SpaceId) -> &mut PacketSpace {
-        &mut self.as_mut()[space as usize]
+        &mut self.0[space as usize]
     }
 }
 

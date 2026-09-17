@@ -194,7 +194,7 @@ impl crypto::PacketKey for PacketKey {
         let (header, payload) = buffer.split_at_mut(header_len);
         self.key
             .seal_in_place(&self.nonce(packet), header, payload)
-            .map_err(|_error| CryptoError)
+            .map_err(|_error| CryptoError::new())
     }
 
     fn decrypt(
@@ -206,7 +206,7 @@ impl crypto::PacketKey for PacketKey {
         let len = self
             .key
             .open_in_place(&self.nonce(packet), header, payload)
-            .map_err(|_error| CryptoError)?
+            .map_err(|_error| CryptoError::new())?
             .len();
         payload.truncate(len);
         Ok(())

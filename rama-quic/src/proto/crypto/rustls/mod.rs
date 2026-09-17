@@ -90,8 +90,8 @@ impl TlsSession {
                 level,
                 Keys {
                     local: DirectionalKeys {
-                        header: Box::new(keys.local.header),
-                        packet: Box::new(keys.local.packet),
+                        header: Box::new(RustlsHeaderKey(keys.local.header)),
+                        packet: Box::new(RustlsPacketKey(keys.local.packet)),
                     },
                     remote: None,
                 },
@@ -99,8 +99,8 @@ impl TlsSession {
             self.output.push_back(HandshakeEvent::ReadKeys(
                 level,
                 DirectionalKeys {
-                    header: Box::new(keys.remote.header),
-                    packet: Box::new(keys.remote.packet),
+                    header: Box::new(RustlsHeaderKey(keys.remote.header)),
+                    packet: Box::new(RustlsPacketKey(keys.remote.packet)),
                 },
             ));
         }
@@ -173,7 +173,10 @@ impl crypto::Session for TlsSession {
 
     fn early_crypto(&self) -> Option<(Box<dyn HeaderKey>, Box<dyn crypto::PacketKey>)> {
         let keys = self.inner.zero_rtt_keys()?;
-        Some((Box::new(keys.header), Box::new(keys.packet)))
+        Some((
+            Box::new(RustlsHeaderKey(keys.header)),
+            Box::new(RustlsPacketKey(keys.packet)),
+        ))
     }
 
     fn early_data_accepted(&self) -> Option<bool> {
@@ -254,8 +257,8 @@ impl crypto::Session for TlsSession {
         };
         let keys = secrets.next_packet_keys();
         Ok(Some(KeyPair {
-            local: Box::new(keys.local),
-            remote: Box::new(keys.remote),
+            local: Box::new(RustlsPacketKey(keys.local)),
+            remote: Box::new(RustlsPacketKey(keys.remote)),
         }))
     }
 
@@ -324,7 +327,12 @@ fn retry_wire(version: Version) -> &'static crate::proto::version::Wire {
     .expect("a version with a wire image")
 }
 
-impl crypto::HeaderKey for Box<dyn HeaderProtectionKey> {
+/// Local wrappers so this crate can implement the `rama-quic-proto` key traits for the backend's
+/// own key types; the orphan rule forbids implementing a foreign trait for a foreign type.
+struct RustlsHeaderKey(Box<dyn HeaderProtectionKey>);
+struct RustlsPacketKey(Box<dyn PacketKey>);
+
+impl crypto::HeaderKey for RustlsHeaderKey {
     #[expect(
         clippy::unwrap_used,
         reason = "the sample has `sample_size()` bytes and the first byte plus at most four packet-number bytes are the only inputs rustls checks"
@@ -333,12 +341,13 @@ impl crypto::HeaderKey for Box<dyn HeaderProtectionKey> {
         let (header, sample) = packet.split_at_mut(pn_offset + 4);
         let (first, rest) = header.split_at_mut(1);
         let pn_end = Ord::min(pn_offset + 3, rest.len());
-        self.decrypt_in_place(
-            &sample[..self.sample_size()],
-            &mut first[0],
-            &mut rest[pn_offset - 1..pn_end],
-        )
-        .unwrap();
+        self.0
+            .decrypt_in_place(
+                &sample[..self.sample_size()],
+                &mut first[0],
+                &mut rest[pn_offset - 1..pn_end],
+            )
+            .unwrap();
     }
 
     #[expect(
@@ -349,16 +358,17 @@ impl crypto::HeaderKey for Box<dyn HeaderProtectionKey> {
         let (header, sample) = packet.split_at_mut(pn_offset + 4);
         let (first, rest) = header.split_at_mut(1);
         let pn_end = Ord::min(pn_offset + 3, rest.len());
-        self.encrypt_in_place(
-            &sample[..self.sample_size()],
-            &mut first[0],
-            &mut rest[pn_offset - 1..pn_end],
-        )
-        .unwrap();
+        self.0
+            .encrypt_in_place(
+                &sample[..self.sample_size()],
+                &mut first[0],
+                &mut rest[pn_offset - 1..pn_end],
+            )
+            .unwrap();
     }
 
     fn sample_size(&self) -> usize {
-        self.sample_len()
+        self.0.sample_len()
     }
 }
 
@@ -781,7 +791,7 @@ impl crypto::ServerConfig for QuicServerConfig {
     ) -> Result<[u8; 16], CryptoError> {
         let wire = interpret_version(version)
             .map(retry_wire)
-            .map_err(|_error| CryptoError)?;
+            .map_err(|_error| CryptoError::new())?;
 
         let mut pseudo_packet = Vec::with_capacity(packet.len() + orig_dst_cid.len() + 1);
         pseudo_packet.push(orig_dst_cid.len() as u8);
@@ -789,9 +799,13 @@ impl crypto::ServerConfig for QuicServerConfig {
         pseudo_packet.extend_from_slice(packet);
 
         let nonce = aead::Nonce::assume_unique_for_key(wire.retry_nonce);
-        let key =
-            aead::LessSafeKey::new(aead::UnboundKey::new(&aead::AES_128_GCM, &wire.retry_key)?);
-        let tag = key.seal_in_place_separate_tag(nonce, aead::Aad::from(pseudo_packet), &mut [])?;
+        let key = aead::LessSafeKey::new(
+            aead::UnboundKey::new(&aead::AES_128_GCM, &wire.retry_key)
+                .map_err(|_error| CryptoError::new())?,
+        );
+        let tag = key
+            .seal_in_place_separate_tag(nonce, aead::Aad::from(pseudo_packet), &mut [])
+            .map_err(|_error| CryptoError::new())?;
         let mut result = [0; 16];
         result.copy_from_slice(tag.as_ref());
         Ok(result)
@@ -840,23 +854,24 @@ pub(crate) fn initial_keys(
     let keys = suite.keys(&dst_cid, side, version);
     Keys {
         local: DirectionalKeys {
-            header: Box::new(keys.local.header),
-            packet: Box::new(keys.local.packet),
+            header: Box::new(RustlsHeaderKey(keys.local.header)),
+            packet: Box::new(RustlsPacketKey(keys.local.packet)),
         },
         remote: Some(DirectionalKeys {
-            header: Box::new(keys.remote.header),
-            packet: Box::new(keys.remote.packet),
+            header: Box::new(RustlsHeaderKey(keys.remote.header)),
+            packet: Box::new(RustlsPacketKey(keys.remote.packet)),
         }),
     }
 }
 
-impl crypto::PacketKey for Box<dyn PacketKey> {
+impl crypto::PacketKey for RustlsPacketKey {
     fn encrypt(&self, packet: u64, buf: &mut [u8], header_len: usize) -> Result<(), CryptoError> {
         let (header, payload_tag) = buf.split_at_mut(header_len);
         let (payload, tag_storage) = payload_tag.split_at_mut(payload_tag.len() - self.tag_len());
         let tag = self
+            .0
             .encrypt_in_place(packet, &*header, payload)
-            .map_err(|_error| CryptoError)?;
+            .map_err(|_error| CryptoError::new())?;
         tag_storage.copy_from_slice(tag.as_ref());
         Ok(())
     }
@@ -868,7 +883,7 @@ impl crypto::PacketKey for Box<dyn PacketKey> {
         payload: &mut BytesMut,
     ) -> Result<(), CryptoError> {
         // The backend reports only that it failed, which is all `CryptoError` says.
-        let Ok(plain) = self.decrypt_in_place(packet, header, payload.as_mut()) else {
+        let Ok(plain) = self.0.decrypt_in_place(packet, header, payload.as_mut()) else {
             return Err(CryptoError::new());
         };
         let plain_len = plain.len();
@@ -877,15 +892,15 @@ impl crypto::PacketKey for Box<dyn PacketKey> {
     }
 
     fn tag_len(&self) -> usize {
-        (**self).tag_len()
+        self.0.tag_len()
     }
 
     fn confidentiality_limit(&self) -> u64 {
-        (**self).confidentiality_limit()
+        self.0.confidentiality_limit()
     }
 
     fn integrity_limit(&self) -> u64 {
-        (**self).integrity_limit()
+        self.0.integrity_limit()
     }
 }
 

@@ -117,8 +117,8 @@ pub(crate) use crate::proto::endpoint::{
 
 pub use crate::proto::crypto::{ExportKeyingMaterialError, NegotiatedTlsParameters};
 
-pub(crate) mod packet;
 pub use packet::SpaceId;
+pub(crate) use rama_quic_proto::packet;
 
 mod shared;
 pub(crate) use crate::proto::shared::{ConnectionEvent, EndpointEvent};

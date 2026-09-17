@@ -56,4 +56,9 @@ pub use transport_error::{Code as TransportErrorCode, Error as TransportError};
 
 pub mod frame;
 
+pub mod crypto;
+
+#[cfg(feature = "std")]
+pub mod packet;
+
 pub mod profile;

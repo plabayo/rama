@@ -283,8 +283,8 @@ impl crypto::ServerConfig for QuicServerConfig {
         cid: &ConnectionId,
         packet: &[u8],
     ) -> Result<[u8; 16], crypto::CryptoError> {
-        let wire = packet::wire(version).ok_or(crypto::CryptoError)?;
-        packet::retry_tag(wire, cid, packet).map_err(|_error| crypto::CryptoError)
+        let wire = packet::wire(version).ok_or(crypto::CryptoError::new())?;
+        packet::retry_tag(wire, cid, packet).map_err(|_error| crypto::CryptoError::new())
     }
     fn start_session(
         self: Arc<Self>,

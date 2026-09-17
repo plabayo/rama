@@ -410,7 +410,7 @@ impl crypto::ServerConfig for FailingRetryIntegrity {
         _: &ConnectionId,
         _: &[u8],
     ) -> Result<[u8; 16], crypto::CryptoError> {
-        Err(crypto::CryptoError)
+        Err(crypto::CryptoError::new())
     }
     fn start_session(
         self: Arc<Self>,

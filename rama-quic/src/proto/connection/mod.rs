@@ -96,7 +96,7 @@ use migration::{DeferredMigration, PATH_CIDS, PathCid, PrevPath};
 use packet_crypto::{PrevCrypto, ZeroRttCrypto};
 use paths::{PathData, PathResponses};
 use preferred::PreferredCandidate;
-use spaces::{PacketNumberFilter, PacketSpace, SentPacket};
+use spaces::{PacketNumberFilter, PacketSpace, PacketSpaces, SentPacket};
 #[cfg(not(fuzzing))]
 use streams::StreamsState;
 use timer::{Timer, TimerTable};
@@ -228,7 +228,7 @@ pub(crate) struct Connection {
     /// Outgoing spin bit state
     spin: bool,
     /// Packet number spaces: initial, handshake, 1-RTT
-    spaces: [PacketSpace; 3],
+    spaces: PacketSpaces,
     /// Highest usable packet number space
     highest_space: SpaceId,
     /// 1-RTT keys used prior to a key update
@@ -400,7 +400,7 @@ impl Connection {
             endpoint_events: VecDeque::new(),
             spin_enabled: config.allow_spin && rng.random_ratio(7, 8),
             spin: false,
-            spaces: [initial_space, PacketSpace::new(now), PacketSpace::new(now)],
+            spaces: PacketSpaces([initial_space, PacketSpace::new(now), PacketSpace::new(now)]),
             highest_space: SpaceId::Initial,
             prev_crypto: None,
             next_crypto: None,
@@ -471,7 +471,7 @@ impl Connection {
                     .into(),
             });
         let first_packet_number = this.config.wire.packetization.first_packet_number();
-        for space in &mut this.spaces {
+        for space in &mut this.spaces.0 {
             space.next_packet_number = first_packet_number;
         }
         this.qlog_connection_started(now);

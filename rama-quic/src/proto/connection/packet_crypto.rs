@@ -2,7 +2,7 @@ use rama_core::telemetry::tracing::{debug, trace};
 
 use crate::proto::Instant;
 use crate::proto::ResetToken;
-use crate::proto::connection::{qlog::drops::DropReason, spaces::PacketSpace};
+use crate::proto::connection::{qlog::drops::DropReason, spaces::PacketSpaces};
 use crate::proto::crypto::{HeaderKey, KeyPair, Keys, PacketKey};
 use crate::proto::packet::{Packet, PartialDecode, SpaceId};
 use crate::proto::{RESET_TOKEN_SIZE, TransportError, Version};
@@ -10,7 +10,7 @@ use crate::proto::{RESET_TOKEN_SIZE, TransportError, Version};
 /// Removes header protection of a packet, or returns the reason the packet was dropped
 pub(super) fn unprotect_header(
     partial_decode: PartialDecode,
-    spaces: &[PacketSpace; 3],
+    spaces: &PacketSpaces,
     zero_rtt_crypto: Option<&ZeroRttCrypto>,
     original_initial: Option<(Version, &Keys)>,
     stateless_reset_tokens: &[Option<ResetToken>],
@@ -87,7 +87,7 @@ pub(super) struct UnprotectHeaderResult {
 )]
 pub(super) fn decrypt_packet_body(
     packet: &mut Packet,
-    spaces: &[PacketSpace; 3],
+    spaces: &PacketSpaces,
     zero_rtt_crypto: Option<&ZeroRttCrypto>,
     original_initial: Option<(Version, &Keys)>,
     conn_key_phase: bool,
