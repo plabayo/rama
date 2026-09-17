@@ -1,11 +1,12 @@
-use std::{borrow::Cow, fmt};
+use alloc::borrow::Cow;
+use core::fmt;
 
 use rama_core::{
     bytes::{Buf, BufMut},
     error::ArcError,
 };
 
-use crate::proto::{
+use crate::{
     coding::{self, BufExt, BufMutExt},
     frame::FrameType,
 };
@@ -19,23 +20,23 @@ use crate::proto::{
 #[non_exhaustive]
 pub struct Error {
     /// Type of error
-    pub(crate) code: Code,
+    pub code: Code,
     /// Frame type that triggered the error
-    pub(crate) frame: Option<FrameType>,
+    pub frame: Option<FrameType>,
     /// Human-readable explanation of the reason, which is what goes on the wire in
     /// CONNECTION_CLOSE. A literal is borrowed for the life of the program and costs nothing;
     /// text built at the point of failure is owned. Local diagnostics live in `cause` and never
     /// reach the peer.
-    pub(crate) reason: Cow<'static, str>,
+    pub reason: Cow<'static, str>,
     /// An underlying TLS or local runtime failure, shared: this error is cloned for every
     /// stream, waiter and close reason that reports it, and the cause is rarely cloneable.
-    pub(crate) cause: Option<ArcError>,
+    pub cause: Option<ArcError>,
 }
 
 impl Error {
     /// Preserve a local failure underlying a transport shutdown.
     #[must_use]
-    pub fn with_cause(mut self, cause: impl std::error::Error + Send + Sync + 'static) -> Self {
+    pub fn with_cause(mut self, cause: impl core::error::Error + Send + Sync + 'static) -> Self {
         self.cause = Some(ArcError::new(cause));
         self
     }
@@ -98,8 +99,8 @@ impl fmt::Display for Error {
     }
 }
 
-impl std::error::Error for Error {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+impl core::error::Error for Error {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         // The sharing is how this error keeps its cause, not a step in the chain: what follows
         // the transport error is the failure itself, as it was before it was shared.
         self.cause.as_ref().map(ArcError::as_error)
@@ -160,13 +161,9 @@ impl From<Code> for u64 {
 macro_rules! errors {
     {$($name:ident($val:expr) $desc:expr;)*} => {
         #[expect(non_snake_case, reason = "constructors are named after the RFC 9000 error codes")]
-        #[expect(
-            dead_code,
-            reason = "the whole RFC 9000 §20 code set is generated; this endpoint does not raise every one of them itself"
-        )]
         impl Error {
             $(
-            pub(crate) fn $name<T>(reason: T) -> Self where T: Into<Cow<'static, str>> {
+            pub fn $name<T>(reason: T) -> Self where T: Into<Cow<'static, str>> {
                 Self {
                     code: Code::$name,
                     frame: None,
@@ -228,7 +225,7 @@ errors! {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proto::frame::ConnectionClose;
+    use crate::frame::ConnectionClose;
 
     /// A literal reason is borrowed all the way to the frame. The frame's bytes are the same
     /// bytes as the literal, which a copy would not be.

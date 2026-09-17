@@ -11,8 +11,7 @@ use crate::proto::{
     connection::{Connection, ConnectionError, ConnectionSide},
     frame::Close,
     packet::SpaceId,
-    shared::{ConnectionId, EndpointEventInner},
-    token::ResetToken,
+    shared::{ConnectionId, EndpointEventInner, ResetToken},
 };
 
 #[cfg(test)]

@@ -6538,7 +6538,7 @@ async fn a_restarted_endpoint_uses_its_configured_reset_key() {
 fn stateless_reset_for(key: &HmacSha2, cid: &[u8]) -> Vec<u8> {
     let mut datagram = vec![0x40u8];
     datagram.extend_from_slice(&[0xab; 40]);
-    datagram.extend_from_slice(&crate::proto::TestResetToken::new(
+    datagram.extend_from_slice(&crate::proto::reset_token(
         key,
         crate::proto::ConnectionId::new(cid),
     ));

@@ -1,5 +1,9 @@
-use std::{
-    borrow::Cow,
+use alloc::{
+    borrow::{Cow, ToOwned},
+    string::String,
+    vec::Vec,
+};
+use core::{
     fmt::{self, Write},
     mem,
     ops::{Range, RangeInclusive},
@@ -8,7 +12,7 @@ use std::{
 use rama_core::bytes::{Buf, BufMut, Bytes};
 use rama_utils::collections::smallvec::SmallVec;
 
-use crate::proto::{
+use crate::{
     Dir, MAX_CID_SIZE, RESET_TOKEN_SIZE, ResetToken, StreamId, TransportError, TransportErrorCode,
     VarInt,
     coding::{self, BufExt, BufMutExt, UnexpectedEnd},
@@ -55,7 +59,7 @@ impl coding::Codec for FrameType {
     }
 }
 
-pub(crate) trait FrameStruct {
+pub trait FrameStruct {
     /// Smallest number of bytes this type of frame is guaranteed to fit within.
     const SIZE_BOUND: usize;
 }
@@ -63,7 +67,7 @@ pub(crate) trait FrameStruct {
 macro_rules! frame_types {
     {$($name:ident = $val:expr,)*} => {
         impl FrameType {
-            $(pub(crate) const $name: FrameType = FrameType($val);)*
+            $(pub const $name: FrameType = FrameType($val);)*
         }
 
         impl fmt::Debug for FrameType {
@@ -147,7 +151,7 @@ const STREAM_TYS: RangeInclusive<u64> = RangeInclusive::new(0x08, 0x0f);
 const DATAGRAM_TYS: RangeInclusive<u64> = RangeInclusive::new(0x30, 0x31);
 
 #[derive(Debug)]
-pub(crate) enum Frame {
+pub enum Frame {
     Padding,
     Ping,
     Ack(Ack),
@@ -174,7 +178,7 @@ pub(crate) enum Frame {
 }
 
 impl Frame {
-    pub(crate) fn ty(&self) -> FrameType {
+    pub fn ty(&self) -> FrameType {
         match *self {
             Self::Padding => FrameType::PADDING,
             Self::ResetStream(_) => FrameType::RESET_STREAM,
@@ -214,26 +218,26 @@ impl Frame {
         }
     }
 
-    pub(crate) fn is_ack_eliciting(&self) -> bool {
+    pub fn is_ack_eliciting(&self) -> bool {
         !matches!(*self, Self::Ack(_) | Self::Padding | Self::Close(_))
     }
 }
 
 #[derive(Clone, Debug)]
-pub(crate) enum Close {
+pub enum Close {
     Connection(ConnectionClose),
     Application(ApplicationClose),
 }
 
 impl Close {
-    pub(crate) fn encode<W: BufMut>(&self, out: &mut W, max_len: usize) {
+    pub fn encode<W: BufMut>(&self, out: &mut W, max_len: usize) {
         match *self {
             Self::Connection(ref x) => x.encode(out, max_len),
             Self::Application(ref x) => x.encode(out, max_len),
         }
     }
 
-    pub(crate) fn is_transport_layer(&self) -> bool {
+    pub fn is_transport_layer(&self) -> bool {
         matches!(*self, Self::Connection(_))
     }
 }
@@ -258,11 +262,11 @@ impl From<ApplicationClose> for Close {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConnectionClose {
     /// Class of error as encoded in the specification
-    pub(crate) error_code: TransportErrorCode,
+    pub error_code: TransportErrorCode,
     /// Type of frame that caused the close
-    pub(crate) frame_type: Option<FrameType>,
+    pub frame_type: Option<FrameType>,
     /// Human-readable reason for the close
-    pub(crate) reason: Bytes,
+    pub reason: Bytes,
 }
 
 impl ConnectionClose {
@@ -316,7 +320,7 @@ impl FrameStruct for ConnectionClose {
 }
 
 impl ConnectionClose {
-    pub(crate) fn encode<W: BufMut>(&self, out: &mut W, max_len: usize) {
+    pub fn encode<W: BufMut>(&self, out: &mut W, max_len: usize) {
         out.write(FrameType::CONNECTION_CLOSE); // 1 byte
         out.write(self.error_code); // <= 8 bytes
         let ty = self.frame_type.map_or(0, |x| x.0);
@@ -340,9 +344,9 @@ impl ConnectionClose {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApplicationClose {
     /// Application-specific reason code
-    pub(crate) error_code: VarInt,
+    pub error_code: VarInt,
     /// Human-readable reason for the close
-    pub(crate) reason: Bytes,
+    pub reason: Bytes,
 }
 
 impl ApplicationClose {
@@ -379,7 +383,7 @@ impl FrameStruct for ApplicationClose {
 }
 
 impl ApplicationClose {
-    pub(crate) fn encode<W: BufMut>(&self, out: &mut W, max_len: usize) {
+    pub fn encode<W: BufMut>(&self, out: &mut W, max_len: usize) {
         out.write(FrameType::APPLICATION_CLOSE); // 1 byte
         out.write(self.error_code); // <= 8 bytes
         #[expect(clippy::unwrap_used, reason = "reason lengths are below 2^62")]
@@ -394,11 +398,11 @@ impl ApplicationClose {
 }
 
 #[derive(Clone, Eq, PartialEq)]
-pub(crate) struct Ack {
-    pub(crate) largest: u64,
-    pub(crate) delay: u64,
-    pub(crate) additional: Bytes,
-    pub(crate) ecn: Option<EcnCounts>,
+pub struct Ack {
+    pub largest: u64,
+    pub delay: u64,
+    pub additional: Bytes,
+    pub ecn: Option<EcnCounts>,
 }
 
 impl fmt::Debug for Ack {
@@ -434,7 +438,7 @@ impl<'a> IntoIterator for &'a Ack {
 }
 
 impl Ack {
-    pub(crate) fn encode<W: BufMut>(
+    pub fn encode<W: BufMut>(
         delay: u64,
         ranges: &ArrayRangeSet,
         ecn: Option<&EcnCounts>,
@@ -469,19 +473,19 @@ impl Ack {
         }
     }
 
-    pub(crate) fn iter(&self) -> AckIter<'_> {
+    pub fn iter(&self) -> AckIter<'_> {
         self.into_iter()
     }
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub(crate) struct EcnCounts {
-    pub(crate) ect0: u64,
-    pub(crate) ect1: u64,
-    pub(crate) ce: u64,
+pub struct EcnCounts {
+    pub ect0: u64,
+    pub ect1: u64,
+    pub ce: u64,
 }
 
-impl std::ops::AddAssign<EcnCodepoint> for EcnCounts {
+impl core::ops::AddAssign<EcnCodepoint> for EcnCounts {
     fn add_assign(&mut self, rhs: EcnCodepoint) {
         match rhs {
             EcnCodepoint::Ect0 => {
@@ -498,13 +502,13 @@ impl std::ops::AddAssign<EcnCodepoint> for EcnCounts {
 }
 
 impl EcnCounts {
-    pub(crate) const ZERO: Self = Self {
+    pub const ZERO: Self = Self {
         ect0: 0,
         ect1: 0,
         ce: 0,
     };
 
-    pub(crate) fn encode<W: BufMut>(&self, out: &mut W) {
+    pub fn encode<W: BufMut>(&self, out: &mut W) {
         out.write_var(self.ect0);
         out.write_var(self.ect1);
         out.write_var(self.ce);
@@ -512,11 +516,11 @@ impl EcnCounts {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct Stream {
-    pub(crate) id: StreamId,
-    pub(crate) offset: u64,
-    pub(crate) fin: bool,
-    pub(crate) data: Bytes,
+pub struct Stream {
+    pub id: StreamId,
+    pub offset: u64,
+    pub fin: bool,
+    pub data: Bytes,
 }
 
 impl FrameStruct for Stream {
@@ -525,10 +529,10 @@ impl FrameStruct for Stream {
 
 /// Metadata from a stream frame
 #[derive(Debug, Clone)]
-pub(crate) struct StreamMeta {
-    pub(crate) id: StreamId,
-    pub(crate) offsets: Range<u64>,
-    pub(crate) fin: bool,
+pub struct StreamMeta {
+    pub id: StreamId,
+    pub offsets: Range<u64>,
+    pub fin: bool,
 }
 
 // This manual implementation exists because `Default` is not implemented for `StreamId`
@@ -543,7 +547,7 @@ impl Default for StreamMeta {
 }
 
 impl StreamMeta {
-    pub(crate) fn encode<W: BufMut>(&self, length: bool, out: &mut W) {
+    pub fn encode<W: BufMut>(&self, length: bool, out: &mut W) {
         let mut ty = *STREAM_TYS.start();
         if self.offsets.start != 0 {
             ty |= 0x04;
@@ -567,18 +571,18 @@ impl StreamMeta {
 
 /// A vector of [`StreamMeta`] with optimization for the single element case
 /// STREAM frame metadata of one packet; one frame per packet is the common case
-pub(crate) type StreamMetaVec = SmallVec<[StreamMeta; 1]>;
+pub type StreamMetaVec = SmallVec<[StreamMeta; 1]>;
 
 #[derive(Debug, Clone)]
-pub(crate) struct Crypto {
-    pub(crate) offset: u64,
-    pub(crate) data: Bytes,
+pub struct Crypto {
+    pub offset: u64,
+    pub data: Bytes,
 }
 
 impl Crypto {
-    pub(crate) const SIZE_BOUND: usize = 17;
+    pub const SIZE_BOUND: usize = 17;
 
-    pub(crate) fn encode<W: BufMut>(&self, out: &mut W) {
+    pub fn encode<W: BufMut>(&self, out: &mut W) {
         out.write(FrameType::CRYPTO);
         out.write_var(self.offset);
         out.write_var(self.data.len() as u64);
@@ -587,30 +591,30 @@ impl Crypto {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct NewToken {
-    pub(crate) token: Bytes,
+pub struct NewToken {
+    pub token: Bytes,
 }
 
 impl NewToken {
-    pub(crate) fn encode<W: BufMut>(&self, out: &mut W) {
+    pub fn encode<W: BufMut>(&self, out: &mut W) {
         out.write(FrameType::NEW_TOKEN);
         out.write_var(self.token.len() as u64);
         out.put_slice(&self.token);
     }
 
     #[expect(clippy::unwrap_used, reason = "token lengths are below 2^62")]
-    pub(crate) fn size(&self) -> usize {
+    pub fn size(&self) -> usize {
         1 + VarInt::from_u64(self.token.len() as u64).unwrap().size() + self.token.len()
     }
 }
 
-pub(crate) struct Iter {
+pub struct Iter {
     bytes: Bytes,
     last_ty: Option<FrameType>,
 }
 
 impl Iter {
-    pub(crate) fn new(payload: Bytes) -> Result<Self, TransportError> {
+    pub fn new(payload: Bytes) -> Result<Self, TransportError> {
         if payload.is_empty() {
             // "An endpoint MUST treat receipt of a packet containing no frames as a
             // connection error of type PROTOCOL_VIOLATION."
@@ -815,9 +819,9 @@ impl Iterator for Iter {
 }
 
 #[derive(Debug)]
-pub(crate) struct InvalidFrame {
-    pub(crate) ty: Option<FrameType>,
-    pub(crate) reason: &'static str,
+pub struct InvalidFrame {
+    pub ty: Option<FrameType>,
+    pub reason: &'static str,
 }
 
 impl From<InvalidFrame> for TransportError {
@@ -865,7 +869,7 @@ impl From<UnexpectedEnd> for IterErr {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct AckIter<'a> {
+pub struct AckIter<'a> {
     largest: u64,
     data: &'a [u8],
 }
@@ -895,19 +899,12 @@ impl Iterator for AckIter<'_> {
     }
 }
 
-#[cfg_attr(
-    not(fuzzing),
-    expect(
-        unreachable_pub,
-        reason = "reachable through `fuzzing` under cfg(fuzzing)"
-    )
-)]
 #[cfg_attr(feature = "arbitrary", derive(Arbitrary))]
 #[derive(Debug, Copy, Clone)]
 pub struct ResetStream {
-    pub(crate) id: StreamId,
-    pub(crate) error_code: VarInt,
-    pub(crate) final_offset: VarInt,
+    pub id: StreamId,
+    pub error_code: VarInt,
+    pub final_offset: VarInt,
 }
 
 impl FrameStruct for ResetStream {
@@ -915,7 +912,7 @@ impl FrameStruct for ResetStream {
 }
 
 impl ResetStream {
-    pub(crate) fn encode<W: BufMut>(&self, out: &mut W) {
+    pub fn encode<W: BufMut>(&self, out: &mut W) {
         out.write(FrameType::RESET_STREAM); // 1 byte
         out.write(self.id); // <= 8 bytes
         out.write(self.error_code); // <= 8 bytes
@@ -924,9 +921,9 @@ impl ResetStream {
 }
 
 #[derive(Debug, Copy, Clone)]
-pub(crate) struct StopSending {
-    pub(crate) id: StreamId,
-    pub(crate) error_code: VarInt,
+pub struct StopSending {
+    pub id: StreamId,
+    pub error_code: VarInt,
 }
 
 impl FrameStruct for StopSending {
@@ -934,7 +931,7 @@ impl FrameStruct for StopSending {
 }
 
 impl StopSending {
-    pub(crate) fn encode<W: BufMut>(&self, out: &mut W) {
+    pub fn encode<W: BufMut>(&self, out: &mut W) {
         out.write(FrameType::STOP_SENDING); // 1 byte
         out.write(self.id); // <= 8 bytes
         out.write(self.error_code) // <= 8 bytes
@@ -942,15 +939,15 @@ impl StopSending {
 }
 
 #[derive(Debug, Copy, Clone)]
-pub(crate) struct NewConnectionId {
-    pub(crate) sequence: u64,
-    pub(crate) retire_prior_to: u64,
-    pub(crate) id: ConnectionId,
-    pub(crate) reset_token: ResetToken,
+pub struct NewConnectionId {
+    pub sequence: u64,
+    pub retire_prior_to: u64,
+    pub id: ConnectionId,
+    pub reset_token: ResetToken,
 }
 
 impl NewConnectionId {
-    pub(crate) fn encode<W: BufMut>(&self, out: &mut W) {
+    pub fn encode<W: BufMut>(&self, out: &mut W) {
         out.write(FrameType::NEW_CONNECTION_ID);
         out.write_var(self.sequence);
         out.write_var(self.retire_prior_to);
@@ -965,13 +962,13 @@ impl FrameStruct for NewConnectionId {
 }
 
 /// Smallest number of bytes this type of frame is guaranteed to fit within.
-pub(crate) const RETIRE_CONNECTION_ID_SIZE_BOUND: usize = 9;
+pub const RETIRE_CONNECTION_ID_SIZE_BOUND: usize = 9;
 
 /// An unreliable datagram
 #[derive(Debug, Clone)]
-pub(crate) struct Datagram {
+pub struct Datagram {
     /// Payload
-    pub(crate) data: Bytes,
+    pub data: Bytes,
 }
 
 /// A datagram as it arrived, with the bytes it occupied on the wire: the type, the length
@@ -981,9 +978,9 @@ pub(crate) struct Datagram {
 /// The measurement belongs to the arrival, not to the datagram, and is dropped once the
 /// frame has been checked against what this side advertised.
 #[derive(Debug, Clone)]
-pub(crate) struct ArrivedDatagram {
-    pub(crate) datagram: Datagram,
-    pub(crate) encoded: usize,
+pub struct ArrivedDatagram {
+    pub datagram: Datagram,
+    pub encoded: usize,
 }
 
 impl FrameStruct for Datagram {
@@ -991,7 +988,7 @@ impl FrameStruct for Datagram {
 }
 
 impl Datagram {
-    pub(crate) fn encode(&self, length: bool, out: &mut Vec<u8>) {
+    pub fn encode(&self, length: bool, out: &mut Vec<u8>) {
         out.write(FrameType(*DATAGRAM_TYS.start() | u64::from(length))); // 1 byte
         if length {
             // Safe to unwrap because we check length sanity before queueing datagrams
@@ -1008,7 +1005,7 @@ impl Datagram {
         clippy::unwrap_used,
         reason = "datagram payloads are bounded by the negotiated frame size, far below 2^62"
     )]
-    pub(crate) fn size(&self, length: bool) -> usize {
+    pub fn size(&self, length: bool) -> usize {
         1 + if length {
             VarInt::from_u64(self.data.len() as u64).unwrap().size()
         } else {
@@ -1018,15 +1015,15 @@ impl Datagram {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub(crate) struct AckFrequency {
-    pub(crate) sequence: VarInt,
-    pub(crate) ack_eliciting_threshold: VarInt,
-    pub(crate) request_max_ack_delay: VarInt,
-    pub(crate) reordering_threshold: VarInt,
+pub struct AckFrequency {
+    pub sequence: VarInt,
+    pub ack_eliciting_threshold: VarInt,
+    pub request_max_ack_delay: VarInt,
+    pub reordering_threshold: VarInt,
 }
 
 impl AckFrequency {
-    pub(crate) fn encode<W: BufMut>(&self, buf: &mut W) {
+    pub fn encode<W: BufMut>(&self, buf: &mut W) {
         buf.write(FrameType::ACK_FREQUENCY);
         buf.write(self.sequence);
         buf.write(self.ack_eliciting_threshold);
@@ -1038,7 +1035,7 @@ impl AckFrequency {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::proto::coding::Codec;
+    use crate::coding::Codec;
 
     fn frames(buf: Vec<u8>) -> Vec<Frame> {
         Iter::new(Bytes::from(buf))
@@ -1065,11 +1062,8 @@ mod test {
             .expect("one frame")
             .expect_err("the frame is refused");
         assert_eq!(invalid.ty, Some(FrameType::NEW_CONNECTION_ID));
-        let error = crate::proto::TransportError::from(invalid);
-        assert_eq!(
-            error.code,
-            crate::proto::TransportErrorCode::FRAME_ENCODING_ERROR
-        );
+        let error = crate::TransportError::from(invalid);
+        assert_eq!(error.code, crate::TransportErrorCode::FRAME_ENCODING_ERROR);
         assert_eq!(error.frame, Some(FrameType::NEW_CONNECTION_ID));
     }
 
@@ -1090,11 +1084,8 @@ mod test {
                 .expect_err("as invalid");
             assert_eq!(invalid.ty, Some(FrameType(ty)));
             assert_eq!(invalid.reason, "invalid frame ID");
-            let error = crate::proto::TransportError::from(invalid);
-            assert_eq!(
-                error.code,
-                crate::proto::TransportErrorCode::FRAME_ENCODING_ERROR
-            );
+            let error = crate::TransportError::from(invalid);
+            assert_eq!(error.code, crate::TransportErrorCode::FRAME_ENCODING_ERROR);
             assert!(iter.next().is_none(), "nothing after it is decoded");
         }
     }

@@ -1,10 +1,10 @@
 use rama_core::telemetry::tracing::{debug, trace};
 
 use crate::proto::Instant;
+use crate::proto::ResetToken;
 use crate::proto::connection::{qlog::drops::DropReason, spaces::PacketSpace};
 use crate::proto::crypto::{HeaderKey, KeyPair, Keys, PacketKey};
 use crate::proto::packet::{Packet, PartialDecode, SpaceId};
-use crate::proto::token::ResetToken;
 use crate::proto::{RESET_TOKEN_SIZE, TransportError, Version};
 
 /// Removes header protection of a packet, or returns the reason the packet was dropped

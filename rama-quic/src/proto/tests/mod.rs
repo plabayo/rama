@@ -13,6 +13,7 @@ use std::{
 };
 
 use super::*;
+use crate::proto::token::reset_token;
 use crate::proto::{
     Duration, Instant,
     cid_generator::{ConnectionIdGenerator, RandomConnectionIdGenerator},
@@ -352,8 +353,8 @@ fn stateless_reset_with_a_foreign_key_is_ignored() {
         reset.extend_from_slice(&token);
         reset
     };
-    let foreign = build_reset(ResetToken::new(&foreign_key, dst_cid));
-    let genuine = ResetToken::new(&real_key_copy, dst_cid);
+    let foreign = build_reset(reset_token(&foreign_key, dst_cid));
+    let genuine = reset_token(&real_key_copy, dst_cid);
     assert_ne!(
         &foreign[foreign.len() - 16..],
         &genuine[..],
@@ -608,7 +609,7 @@ fn a_configured_stateless_reset_key_is_what_the_issued_tokens_come_from() {
     pair.client.inbound.push_back(Inbound::plain(
         pair.time,
         None,
-        build_reset(ResetToken::new(&elsewhere, dst_cid))
+        build_reset(reset_token(&elsewhere, dst_cid))
             .as_slice()
             .into(),
     ));
@@ -622,7 +623,7 @@ fn a_configured_stateless_reset_key_is_what_the_issued_tokens_come_from() {
     pair.client.inbound.push_back(Inbound::plain(
         pair.time,
         None,
-        build_reset(ResetToken::new(&configured, dst_cid))
+        build_reset(reset_token(&configured, dst_cid))
             .as_slice()
             .into(),
     ));
@@ -7291,7 +7292,7 @@ fn routed_reset_for(
     let mut reset = vec![0x40; 1];
     reset.extend_from_slice(&dcid);
     reset.extend_from_slice(&[0xab; 32]);
-    reset.extend_from_slice(&ResetToken::new(key, cid));
+    reset.extend_from_slice(&reset_token(key, cid));
     reset
 }
 
@@ -7820,7 +7821,7 @@ fn an_endpoint_with_no_room_refuses_the_route_and_indexes_nothing() {
 fn stateless_reset_for(key: &HmacSha2, cid: ConnectionId) -> Vec<u8> {
     let mut reset = vec![0x40; 1];
     reset.extend_from_slice(&[0xab; 40]);
-    reset.extend_from_slice(&ResetToken::new(key, cid));
+    reset.extend_from_slice(&reset_token(key, cid));
     reset
 }
 
@@ -7925,7 +7926,7 @@ fn a_reset_for_an_identifier_the_peer_retired_is_not_ours() {
     let server_addr = pair.server.addr;
     let retired = pair.client_conn_mut(client_ch).active_rem_cid();
     let retired_seq = pair.client_conn_mut(client_ch).active_rem_cid_seq();
-    let retired_token = ResetToken::new(&key, retired);
+    let retired_token = reset_token(&key, retired);
     assert!(
         pair.server
             .endpoint
@@ -8132,7 +8133,7 @@ fn a_reset_token_counts_only_once_its_connection_id_is_used() {
         .first()
         .expect("the server issued spare connection IDs");
     let reset = stateless_reset_for(&key, next);
-    let token = ResetToken::new(&key, next);
+    let token = reset_token(&key, next);
     let server_addr = pair.server.addr;
 
     // Unused: the endpoint holds no route for that identifier at that address.
@@ -8215,7 +8216,7 @@ fn a_reset_for_the_previous_paths_connection_id_counts_until_that_id_is_retired(
     // old address resets us.
     let (mut pair, key, _client_ch, server_ch, old_addr, old_cid) = setup();
     pair.server.outbound.clear();
-    let old_token = ResetToken::new(&key, old_cid);
+    let old_token = reset_token(&key, old_cid);
     assert_eq!(
         pair.server.endpoint.reset_route_for(old_addr, old_token),
         Some(server_ch),
@@ -8237,7 +8238,7 @@ fn a_reset_for_the_previous_paths_connection_id_counts_until_that_id_is_retired(
     assert_eq!(
         pair.server
             .endpoint
-            .reset_route_for(old_addr, ResetToken::new(&key, old_cid)),
+            .reset_route_for(old_addr, reset_token(&key, old_cid)),
         None,
         "retiring the identifier released the route its token arrived by"
     );

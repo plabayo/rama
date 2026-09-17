@@ -1111,18 +1111,18 @@ mod backendless_tests {
 #[cfg(test)]
 mod endpoint_key_tests {
     use super::*;
-    use crate::proto::token::ResetToken;
+    use crate::proto::token::reset_token;
 
     #[test]
     fn generated_endpoint_keys_are_independent_and_clones_keep_the_key() {
         let first = EndpointConfig::try_with_rand_key().unwrap();
         let second = EndpointConfig::try_with_rand_key().unwrap();
         let cid = ConnectionId::new(&[1, 2, 3, 4]);
-        let token = ResetToken::new(&first.reset_key, cid);
-        assert_ne!(token, ResetToken::new(&second.reset_key, cid));
+        let token = reset_token(&first.reset_key, cid);
+        assert_ne!(token, reset_token(&second.reset_key, cid));
         assert_eq!(
-            ResetToken::new(&first.clone().reset_key, cid),
-            ResetToken::new(&first.reset_key, cid)
+            reset_token(&first.clone().reset_key, cid),
+            reset_token(&first.reset_key, cid)
         );
     }
 
@@ -1136,8 +1136,8 @@ mod endpoint_key_tests {
             let first = EndpointConfig::new(key.clone());
             let restarted = EndpointConfig::new(key);
             assert_eq!(
-                ResetToken::new(&first.reset_key, cid),
-                ResetToken::new(&restarted.reset_key, cid)
+                reset_token(&first.reset_key, cid),
+                reset_token(&restarted.reset_key, cid)
             );
         }
     }

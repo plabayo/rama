@@ -1,5 +1,4 @@
 use std::{
-    fmt,
     mem::size_of,
     net::{IpAddr, SocketAddr},
 };
@@ -9,11 +8,11 @@ use rama_crypto::hmac::HmacSha2;
 use rand::{Rng, RngExt};
 
 use crate::proto::{
-    Duration, RESET_TOKEN_SIZE, ServerConfig, SystemTime, UNIX_EPOCH, Version,
+    ConnectionId, Duration, RESET_TOKEN_SIZE, ResetToken, ServerConfig, SystemTime, UNIX_EPOCH,
+    Version,
     coding::{BufExt, BufMutExt},
     crypto::{CryptoError, HandshakeTokenKey},
     packet::InitialHeader,
-    shared::ConnectionId,
 };
 
 /// An address-validation token a client keeps for its next connection to the same server,
@@ -454,52 +453,13 @@ fn decode_unix_secs<B: Buf>(buf: &mut B) -> Option<SystemTime> {
     Some(UNIX_EPOCH + Duration::from_secs(buf.get::<u64>().ok()?))
 }
 
-/// Stateless reset token
-///
-/// Used for an endpoint to securely communicate that it has lost state for a connection.
-#[expect(
-    clippy::derived_hash_with_manual_eq,
-    reason = "the manual PartialEq compares the same bytes the derived Hash uses"
-)]
-#[derive(Debug, Copy, Clone, Hash)]
-pub(crate) struct ResetToken([u8; RESET_TOKEN_SIZE]);
-
-impl ResetToken {
-    pub(crate) fn new(key: &HmacSha2, id: ConnectionId) -> Self {
-        let mut signature = vec![0; key.signature_len()];
-        key.sign(&id, &mut signature);
-        // TODO: Server ID??
-        let mut result = [0; RESET_TOKEN_SIZE];
-        result.copy_from_slice(&signature[..RESET_TOKEN_SIZE]);
-        result.into()
-    }
-}
-
-impl PartialEq for ResetToken {
-    fn eq(&self, other: &Self) -> bool {
-        crate::proto::constant_time::eq(&self.0, &other.0)
-    }
-}
-
-impl Eq for ResetToken {}
-
-impl From<[u8; RESET_TOKEN_SIZE]> for ResetToken {
-    fn from(x: [u8; RESET_TOKEN_SIZE]) -> Self {
-        Self(x)
-    }
-}
-
-impl std::ops::Deref for ResetToken {
-    type Target = [u8];
-    fn deref(&self) -> &[u8] {
-        &self.0
-    }
-}
-
-impl fmt::Display for ResetToken {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        rama_utils::fmt::hex(&self.0).write_to(f)
-    }
+/// Derive the stateless reset token for `id` from the endpoint's reset key (RFC 9000 §10.3).
+pub(crate) fn reset_token(key: &HmacSha2, id: ConnectionId) -> ResetToken {
+    let mut signature = vec![0; key.signature_len()];
+    key.sign(&id, &mut signature);
+    let mut result = [0; RESET_TOKEN_SIZE];
+    result.copy_from_slice(&signature[..RESET_TOKEN_SIZE]);
+    result.into()
 }
 
 #[cfg(test)]
@@ -546,18 +506,18 @@ mod test {
             0xc5, 0xf7, 0x14, 0xcc, 0x23, 0x28, 0x46, 0x1c, 0x20, 0x65, 0x56, 0x9b, 0x9d, 0x5a,
             0x23, 0xa7,
         ];
-        let token = ResetToken::new(&key, cid);
+        let token = reset_token(&key, cid);
         assert_eq!(
             &token[..],
             &KEY_CID[..],
             "independent HMAC-SHA256(key, cid) prefix"
         );
-        assert_eq!(&ResetToken::new(&key, other_cid)[..], &KEY_OTHER_CID[..]);
-        assert_eq!(&ResetToken::new(&other_key, cid)[..], &OTHER_KEY_CID[..]);
+        assert_eq!(&reset_token(&key, other_cid)[..], &KEY_OTHER_CID[..]);
+        assert_eq!(&reset_token(&other_key, cid)[..], &OTHER_KEY_CID[..]);
         // Equality follows the bytes, not the identity of the value.
-        assert_eq!(token, ResetToken::new(&key, cid));
-        assert_ne!(token, ResetToken::new(&key, other_cid));
-        assert_ne!(token, ResetToken::new(&other_key, cid));
+        assert_eq!(token, reset_token(&key, cid));
+        assert_ne!(token, reset_token(&key, other_cid));
+        assert_ne!(token, reset_token(&other_key, cid));
         let mut flipped = [0u8; RESET_TOKEN_SIZE];
         flipped.copy_from_slice(&token);
         flipped[15] ^= 0x80;

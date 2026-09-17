@@ -1,4 +1,4 @@
-use std::ops::Range;
+use core::ops::Range;
 
 use rama_utils::collections::smallvec::SmallVec;
 
@@ -17,7 +17,7 @@ use rama_utils::collections::smallvec::SmallVec;
 /// of ranges is usually very low (since ACK numbers are in consecutive fashion
 /// unless reordering or packet loss occur).
 #[derive(Debug, Default)]
-pub(crate) struct ArrayRangeSet(SmallVec<[Range<u64>; ARRAY_RANGE_SET_INLINE_CAPACITY]>);
+pub struct ArrayRangeSet(SmallVec<[Range<u64>; ARRAY_RANGE_SET_INLINE_CAPACITY]>);
 
 /// The capacity of elements directly stored in [`ArrayRangeSet`]
 ///
@@ -33,24 +33,24 @@ impl Clone for ArrayRangeSet {
 }
 
 impl ArrayRangeSet {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Default::default()
     }
 
-    pub(crate) fn iter(&self) -> impl DoubleEndedIterator<Item = Range<u64>> + '_ {
+    pub fn iter(&self) -> impl DoubleEndedIterator<Item = Range<u64>> + '_ {
         self.0.iter().cloned()
     }
 
-    pub(crate) fn elts(&self) -> impl Iterator<Item = u64> + '_ {
+    pub fn elts(&self) -> impl Iterator<Item = u64> + '_ {
         self.iter().flatten()
     }
 
-    pub(crate) fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.0.len()
     }
 
     #[cfg(test)]
-    pub(crate) fn contains(&self, x: u64) -> bool {
+    pub fn contains(&self, x: u64) -> bool {
         for range in self.0.iter() {
             if range.start > x {
                 // We only get here if there was no prior range that contained x
@@ -63,7 +63,7 @@ impl ArrayRangeSet {
     }
 
     #[cfg(test)]
-    pub(crate) fn subtract(&mut self, other: &Self) {
+    pub fn subtract(&mut self, other: &Self) {
         // TODO: This can potentially be made more efficient, since the we know
         // individual ranges are not overlapping, and the next range must start
         // after the last one finished
@@ -72,11 +72,11 @@ impl ArrayRangeSet {
         }
     }
 
-    pub(crate) fn insert_one(&mut self, x: u64) -> bool {
+    pub fn insert_one(&mut self, x: u64) -> bool {
         self.insert(x..x + 1)
     }
 
-    pub(crate) fn insert(&mut self, x: Range<u64>) -> bool {
+    pub fn insert(&mut self, x: Range<u64>) -> bool {
         let mut result = false;
 
         if x.is_empty() {
@@ -138,7 +138,7 @@ impl ArrayRangeSet {
         true
     }
 
-    pub(crate) fn remove(&mut self, x: Range<u64>) -> bool {
+    pub fn remove(&mut self, x: Range<u64>) -> bool {
         let mut result = false;
 
         if x.is_empty() {
@@ -182,11 +182,11 @@ impl ArrayRangeSet {
         result
     }
 
-    pub(crate) fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 
-    pub(crate) fn pop_min(&mut self) -> Option<Range<u64>> {
+    pub fn pop_min(&mut self) -> Option<Range<u64>> {
         if !self.0.is_empty() {
             Some(self.0.remove(0))
         } else {
@@ -195,11 +195,11 @@ impl ArrayRangeSet {
     }
 
     #[cfg(test)]
-    pub(crate) fn min(&self) -> Option<u64> {
+    pub fn min(&self) -> Option<u64> {
         self.iter().next().map(|x| x.start)
     }
 
-    pub(crate) fn max(&self) -> Option<u64> {
+    pub fn max(&self) -> Option<u64> {
         self.iter().next_back().map(|x| x.end - 1)
     }
 }

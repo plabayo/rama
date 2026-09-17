@@ -100,7 +100,7 @@ impl fmt::Debug for AddressTokenKey {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proto::{RESET_TOKEN_SIZE, shared::ConnectionId, token::ResetToken};
+    use crate::proto::{ConnectionId, RESET_TOKEN_SIZE, token::reset_token};
 
     #[test]
     fn reset_key_debug_hides_secret_material() {
@@ -111,7 +111,7 @@ mod tests {
     #[test]
     fn reset_tokens_are_the_same_on_every_provider() {
         let reset = StatelessResetKey::from_seed(&[0x4b; KEY_MATERIAL_SIZE]).into_key();
-        let token = ResetToken::new(&reset, ConnectionId::new(&[0x01, 0x02, 0x03, 0x04]));
+        let token = reset_token(&reset, ConnectionId::new(&[0x01, 0x02, 0x03, 0x04]));
         assert_eq!(
             &token[..],
             &[

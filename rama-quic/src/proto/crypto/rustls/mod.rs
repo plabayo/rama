@@ -190,12 +190,8 @@ impl crypto::Session for TlsSession {
     fn read_handshake(&mut self, _level: SpaceId, buf: &[u8]) -> Result<bool, TransportError> {
         self.inner.read_hs(buf).map_err(|e| {
             if let Some(alert) = self.inner.alert() {
-                TransportError {
-                    code: TransportErrorCode::crypto(alert.into()),
-                    frame: None,
-                    reason: e.to_string().into(),
-                    cause: Some(rama_core::error::ArcError::new(e)),
-                }
+                TransportError::new(TransportErrorCode::crypto(alert.into()), e.to_string())
+                    .with_cause(e)
             } else {
                 TransportError::PROTOCOL_VIOLATION(format!("TLS error: {e}")).with_cause(e)
             }

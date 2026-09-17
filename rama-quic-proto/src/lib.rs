@@ -43,4 +43,17 @@ pub use varint::{VarInt, VarIntBoundsExceeded};
 pub mod version;
 pub use version::Version;
 
+pub mod constant_time;
+pub mod range_set;
+
+mod shared;
+pub use shared::{
+    ConnectionId, Dir, EcnCodepoint, InvalidCid, RESET_TOKEN_SIZE, ResetToken, Side, StreamId,
+};
+
+mod transport_error;
+pub use transport_error::{Code as TransportErrorCode, Error as TransportError};
+
+pub mod frame;
+
 pub mod profile;

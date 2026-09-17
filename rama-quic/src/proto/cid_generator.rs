@@ -2,7 +2,7 @@ use std::hash::Hasher;
 
 use rand::{Rng, RngExt};
 
-use crate::proto::{ConfigError, Duration, MAX_CID_SIZE, shared::ConnectionId};
+use crate::proto::{ConfigError, ConnectionId, Duration, InvalidCid, MAX_CID_SIZE};
 
 /// Generates connection IDs for incoming connections
 pub trait ConnectionIdGenerator: Send + Sync {
@@ -34,12 +34,6 @@ pub trait ConnectionIdGenerator: Send + Sync {
 /// own state.
 pub type ConnectionIdGeneratorFactory =
     std::sync::Arc<dyn Fn() -> Box<dyn ConnectionIdGenerator> + Send + Sync>;
-
-rama_utils::macros::error::static_str_error! {
-    #[doc = "connection ID was not recognized by the connection ID generator"]
-    #[derive(Copy)]
-    pub struct InvalidCid;
-}
 
 /// Generates purely random connection IDs of a specified length
 ///
