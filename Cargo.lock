@@ -4795,6 +4795,7 @@ version = "0.5.0"
 dependencies = [
  "arbitrary",
  "rama-core",
+ "rama-tls",
  "rama-utils",
  "rand 0.10.2",
  "serde",

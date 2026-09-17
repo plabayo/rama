@@ -3,7 +3,7 @@
 //! These are the abstract keys the packet codec uses to remove or apply protection. The actual
 //! key derivation and AEAD live in the engine's TLS backends, which implement these traits.
 
-use alloc::sync::Arc;
+use alloc::{boxed::Box, sync::Arc};
 
 use rama_core::bytes::BytesMut;
 
@@ -76,6 +76,41 @@ impl<T: PacketKey + ?Sized> PacketKey for Arc<T> {
 }
 
 impl<T: HeaderKey + ?Sized> HeaderKey for Arc<T> {
+    fn decrypt(&self, pn_offset: usize, packet: &mut [u8]) {
+        (**self).decrypt(pn_offset, packet);
+    }
+    fn encrypt(&self, pn_offset: usize, packet: &mut [u8]) {
+        (**self).encrypt(pn_offset, packet);
+    }
+    fn sample_size(&self) -> usize {
+        (**self).sample_size()
+    }
+}
+
+impl<T: PacketKey + ?Sized> PacketKey for Box<T> {
+    fn encrypt(&self, packet: u64, buf: &mut [u8], header_len: usize) -> Result<(), CryptoError> {
+        (**self).encrypt(packet, buf, header_len)
+    }
+    fn decrypt(
+        &self,
+        packet: u64,
+        header: &[u8],
+        payload: &mut BytesMut,
+    ) -> Result<(), CryptoError> {
+        (**self).decrypt(packet, header, payload)
+    }
+    fn tag_len(&self) -> usize {
+        (**self).tag_len()
+    }
+    fn confidentiality_limit(&self) -> u64 {
+        (**self).confidentiality_limit()
+    }
+    fn integrity_limit(&self) -> u64 {
+        (**self).integrity_limit()
+    }
+}
+
+impl<T: HeaderKey + ?Sized> HeaderKey for Box<T> {
     fn decrypt(&self, pn_offset: usize, packet: &mut [u8]) {
         (**self).decrypt(pn_offset, packet);
     }

@@ -20,12 +20,14 @@ targets = ["x86_64-unknown-linux-gnu"]
 
 [features]
 default = ["std"]
-std = ["rama-core/std", "rama-utils/std"]
+std = ["rama-core/std", "rama-utils/std", "dep:rama-tls"]
 arbitrary = ["dep:arbitrary"]
 
 [dependencies]
 rama-core = { workspace = true }
 rama-utils = { workspace = true }
+# Only the std capture pipeline needs it, to peek a ClientHello; kept out of no_std builds.
+rama-tls = { workspace = true, optional = true }
 rand = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 arbitrary = { workspace = true, optional = true }
