@@ -134,15 +134,31 @@ fn name_rejects_invalid_compression_without_looping() {
         assert!(error.to_string().contains(expected), "got: {error}");
     }
 
-    let mut pointer_chain = vec![0];
-    let mut previous = 0_u16;
-    for _ in 0..1_024 {
-        pointer_chain.extend_from_slice(&(0xc000 | previous).to_be_bytes());
-        previous = u16::try_from(pointer_chain.len() - 2).unwrap();
-    }
-    let (root, consumed) = Name::from_message(&pointer_chain, usize::from(previous)).unwrap();
+    // A chain of pointers that only ever refers to an earlier pointer still
+    // terminates, and is accepted up to a fixed budget so that a message full
+    // of such names cannot cost work quadratic in its size.
+    let pointer_chain = |depth: usize| {
+        let mut wire = vec![0];
+        let mut previous = 0_u16;
+        for _ in 0..depth {
+            wire.extend_from_slice(&(0xc000 | previous).to_be_bytes());
+            previous = u16::try_from(wire.len() - 2).unwrap();
+        }
+        (wire, usize::from(previous))
+    };
+
+    let (within_budget, top) = pointer_chain(128);
+    let (root, consumed) = Name::from_message(&within_budget, top).unwrap();
     assert!(root.is_root());
     assert_eq!(consumed, 2);
+
+    let (over_budget, top) = pointer_chain(129);
+    assert_eq!(
+        Name::from_message(&over_budget, top)
+            .unwrap_err()
+            .to_string(),
+        "DNS name follows too many compression pointers"
+    );
 
     // A pointer can be backwards from its own location while still cycling
     // back to labels already consumed in the same encoded name.
@@ -1302,6 +1318,43 @@ fn message_parse_abandons_the_answer_section_when_a_question_fails() {
             "DNS question 1 has an invalid name: DNS compression pointer does not refer to a prior name occurrence"
         )
     );
+}
+
+#[test]
+fn message_parse_bounds_a_names_compression_pointer_chain() {
+    // A first opaque record carries, in its RDATA, a root label followed by a
+    // chain of pointers each aimed at the previous one. A later record whose
+    // owner name enters that chain must not be walked without limit, or a
+    // message packed with such names would cost work quadratic in its size.
+    let rdata_start = MessageHeader::WIRE_LEN + 11; // root name + fixed record fields
+    let mut rdata = vec![0x00];
+    let mut previous = rdata_start as u16;
+    for _ in 0..129 {
+        let here = (rdata_start + rdata.len()) as u16;
+        rdata.extend_from_slice(&(0xc000 | previous).to_be_bytes());
+        previous = here;
+    }
+    let chain_top = previous;
+
+    let mut body = record_wire(b"\0", RecordType::A, DNS_CLASS_CH, 0, &rdata);
+    body.extend(record_wire(
+        &(0xc000 | chain_top).to_be_bytes(),
+        RecordType::A,
+        DNS_CLASS_IN,
+        30,
+        &[192, 0, 2, 1],
+    ));
+    let wire = dns_message(0, 0x8180, [0, 2, 0, 0], &body);
+
+    assert_eq!(
+        Message::parse_strict(&wire).unwrap_err().to_string(),
+        "DNS answer 1 has an invalid owner name: DNS name follows too many compression pointers"
+    );
+
+    // Lenient parsing keeps the opaque record and stops at the offending one.
+    let partial = Message::parse(&wire).unwrap();
+    assert!(!partial.is_complete());
+    assert_eq!(partial.answers().len(), 1);
 }
 
 #[test]
