@@ -4,7 +4,7 @@ name: CI-retry
 # is dead by then, hence this companion workflow instead of an in-CI retry
 on:
   workflow_run:
-    workflows: [CI]
+    workflows: [CI, "CI (daily platforms)"]
     types: [completed]
 
 permissions:
@@ -26,7 +26,7 @@ jobs:
           # The aggregate gate also fails after an infrastructure loss. Classify
           # the underlying jobs so its synthetic failure does not prevent retry.
           mapfile -t failed_jobs < <(gh api "${run_url}/jobs?per_page=100" \
-            --jq '.jobs[] | select(.conclusion == "failure" and .name != "CI success") | "\(.id)\t\(.name)"')
+            --jq '.jobs[] | select(.conclusion == "failure" and .name != "CI success" and .name != "Daily platforms success") | "\(.id)\t\(.name)"')
 
           if [[ ${#failed_jobs[@]} -eq 0 ]]; then
             echo "no failed jobs found; not retrying"

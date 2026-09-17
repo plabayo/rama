@@ -1,0 +1,537 @@
+name: CI (daily platforms)
+
+# Secondary platforms and non-Linux QUIC MSRV coverage run daily or on demand.
+# Shared job steps are kept in sync with CI.yml by scripts/ci/test_workflows.py.
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: stable
+  RUST_TOOLCHAIN_MSRV: 1.96.0
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+  SEGMENT_DOWNLOAD_TIMEOUT_MINS: 5
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+      timezone: Europe/Brussels
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+# Use the same repository-wide runner slots as regular CI and releases.
+jobs:
+  precheck-rust:
+    runs-on: ubuntu-latest
+    env:
+      RUSTUP_TOOLCHAIN: stable
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: ./.github/actions/rust-cache
+        with:
+          env-vars: RUST_TOOLCHAIN
+          key: ubuntu-latest-${{ env.RUST_TOOLCHAIN }}
+          shared-key: linux-stable-check-v1
+      - name: check
+        run: |
+          cargo check --workspace --all-targets --all-features
+      - name: check fuzz targets
+        run: RUSTFLAGS="${RUSTFLAGS} --cfg fuzzing" cargo check -p rama-fuzz --all-targets
+
+  test-rust-base:
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain:
+          - stable
+        os:
+          - macos-15-intel
+          - windows-11-arm
+    name: test-rust-base-${{ matrix.toolchain }}-${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    concurrency:
+      group: ${{ startsWith(matrix.os, 'macos') && (matrix.os == 'macos-15-intel' && 'rama-macos-slot-0' || 'rama-macos-slot-1') || startsWith(matrix.os, 'windows') && (matrix.os == 'windows-11-arm' && 'rama-windows-slot-1' || 'rama-windows-slot-0') || format('rama-linux-native-{0}-{1}', github.run_id, strategy.job-index) }}
+      cancel-in-progress: false
+      queue: max
+    # Intel macOS needs more time to compile both feature sets and examples.
+    timeout-minutes: ${{ matrix.os == 'macos-15-intel' && 360 || 240 }}
+    needs: precheck-rust
+    env:
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
+        if: startsWith(matrix.os, 'windows')
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          components: clippy, rustfmt
+      - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
+        with:
+          tool: nextest
+      - uses: ./.github/actions/rust-cache
+        with:
+          key: ${{ matrix.os }}-${{ matrix.toolchain }}-
+          env-vars: RUST_TOOLCHAIN
+      - name: Build run tests (cargo test)
+        run: cargo nextest run --all-features --workspace --no-run
+      - name: Run tests (cargo test)
+        run: cargo nextest run --all-features --workspace
+      - name: Build run tests (--no-default--features)
+        run: cargo nextest run --no-default-features --workspace --no-run
+      - name: Run tests (--no-default--features)
+        run: cargo nextest run --no-default-features --workspace
+      - name: Run crypto backend tests
+        shell: bash
+        run: bash scripts/test-crypto.sh all --profile ci
+      - name: Run doc tests (cargo test)
+        run: cargo test --doc --all-features --workspace
+      - name: Run example tests (cargo test)
+        run: |
+          cargo nextest run --all-features --examples --workspace --no-tests=pass
+          cargo nextest run --all-features --bins --package rama-examples --no-tests=pass
+      - name: Run ignored tests
+        if: matrix.os == 'ubuntu-latest' || matrix.os == 'macos-15'
+        timeout-minutes: ${{ matrix.os == 'macos-15' && 90 || 60 }}
+        shell: bash
+        run: |
+          df -h "$GITHUB_WORKSPACE"
+          case "$RUNNER_OS" in
+            Linux)
+              free -m
+              stdbuf -oL vmstat -w -t 30 &
+              ;;
+            macOS)
+              sysctl hw.ncpu hw.memsize vm.swapusage
+              top -l 0 -s 30 -n 10 -o mem -stats pid,command,cpu,mem &
+              ;;
+          esac
+          resource_monitor=$!
+          trap 'kill "$resource_monitor" 2>/dev/null || true; wait "$resource_monitor" 2>/dev/null || true' EXIT
+          time cargo nextest run --profile ci --all-features --workspace --run-ignored=only
+      # The only ignored test whose interrupt path is Windows-specific.
+      - name: Run the relay interrupt test
+        if: startsWith(matrix.os, 'windows')
+        timeout-minutes: 60
+        run: cargo nextest run --profile ci --all-features --package rama-examples --test integration --run-ignored=only -E 'test(an_interrupted_relay_stops_its_peers_and_exits)'
+      # MITM revocation gate. Linux: hermetic staple matrix (curl --cert-status,
+      # incl. the no-staple negative) + proxy-hosted CRL (openssl -crl_check) and
+      # OCSP (openssl ocsp) endpoint acceptance + a real-crates.io curl/cargo leg.
+      # Windows: cargo through the CONNECT proxy to real crates.io for each
+      # leaf-revocation mode (crl, ocsp, both) with re-pointed CRL/AIA pointers,
+      # where schannel enforces revocation (the customer scenario libcurl +
+      # schannel can't resolve via a staple).
+      - name: MITM revocation gate (curl + openssl + cargo)
+        if: matrix.os == 'ubuntu-latest'
+        env:
+          OCSP_GATE_REQUIRE: "1"
+        run: bash scripts/ocsp-relay-gate.sh
+      - name: MITM revocation gate (cargo / schannel)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: ./scripts/ocsp-relay-gate.ps1
+
+  test-quic-interop-qa:
+    name: test-quic-interop-qa-${{ matrix.backends }}-${{ matrix.toolchain }}-${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    concurrency:
+      group: ${{ startsWith(matrix.os, 'macos') && (matrix.toolchain == 'stable' && 'rama-macos-slot-3' || 'rama-macos-slot-4') || startsWith(matrix.os, 'windows') && (matrix.toolchain == 'stable' && 'rama-windows-slot-3' || 'rama-windows-slot-2') || format('rama-linux-quic-{0}-{1}', github.run_id, strategy.job-index) }}
+      cancel-in-progress: false
+      queue: max
+    # Scarce hosts run three isolated backends sequentially, including examples.
+    timeout-minutes: ${{ matrix.backends == 'all' && 240 || 120 }}
+    env:
+      RUSTUP_TOOLCHAIN: ${{ matrix.toolchain }}
+      RUSTFLAGS: -D warnings
+    needs: precheck-rust
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            toolchain: "1.96.0"
+            backends: all
+          - os: windows-latest
+            toolchain: "1.96.0"
+            backends: all
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          components: clippy, rustfmt
+      - uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
+        if: runner.os == 'Windows'
+      # quiche builds BoringSSL with CMake and the runner's C++ toolchain.
+      - name: Install the C toolchain quiche builds BoringSSL with
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends cmake clang libclang-dev
+      - name: Show the C toolchain quiche will use
+        if: runner.os != 'Windows'
+        run: |
+          cmake --version
+          cc --version
+      # aioquic runs as a real peer process from a locked Python environment.
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          # Preserve the cache pruning policy from setup-uv v6.
+          prune-cache: true
+      - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
+        with:
+          tool: just
+      - uses: ./.github/actions/rust-cache
+        with:
+          key: ${{ matrix.os }}-${{ matrix.toolchain }}-quic-interop-peers-${{ matrix.backends }}
+          env-vars: RUST_TOOLCHAIN
+          workspaces: |
+            .
+            rama-quic/e2e/interop-common
+            rama-quic/e2e/quinn-interop
+            rama-quic/e2e/quiche-interop
+            rama-quic/e2e/aioquic-interop
+            rama-quic/e2e/interop-runner
+      - name: Build the aioquic peer's locked environment
+        working-directory: rama-quic/e2e/aioquic-interop
+        run: uv sync --frozen
+      - name: Custom TLS provider without built-in backends
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'boring') }}
+        run: just rama-quic/qa-custom-provider
+      # A `cargo tree --locked` dependency-graph assertion, so its result cannot differ by
+      # host or toolchain: one Linux cell covers it. Keeping it off the scarce macOS/Windows
+      # runners also keeps this job free of a Python interpreter requirement there.
+      - name: Boring dependency isolation including test fixtures
+        if: ${{ !cancelled() && matrix.backends == 'boring' && matrix.os == 'ubuntu-latest' && matrix.toolchain == 'stable' }}
+        run: just rama-quic/qa-boring-isolation
+      - name: QUIC backend combinations
+        if: ${{ !cancelled() && matrix.backends == 'boring' && matrix.os == 'ubuntu-latest' && matrix.toolchain == 'stable' }}
+        shell: bash
+        run: |
+          for features in ring aws-lc ring,aws-lc rustls boring,rustls boring,ring boring,aws-lc boring,ring,aws-lc boring,rustls,ring boring,rustls,aws-lc rustls,ring,aws-lc boring,rustls,ring,aws-lc; do
+            just rama-quic/qa-backend "$features"
+          done
+      # Independent steps keep collecting failures without combining backend features.
+      - name: Isolated QUIC library tests and lints (boring)
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'boring') }}
+        run: just rama-quic/qa-backend boring
+      - name: Isolated crypto tests (boring)
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'boring') }}
+        run: cargo test -p rama-crypto --no-default-features --features boring --locked
+      - name: QUIC examples (boring)
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'boring') }}
+        run: cargo test -p rama-examples --no-default-features --features quic,boring --test integration quic_ --locked -- --include-ignored
+      - name: Concurrent QUIC transfers (boring)
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'boring') }}
+        run: cargo test -p rama-quic --no-default-features --features boring --test many_connections --locked -- --include-ignored
+      - name: QUIC receive-window stress (boring)
+        timeout-minutes: 15
+        if: ${{ !cancelled() && matrix.backends == 'boring' && matrix.os == 'ubuntu-latest' && matrix.toolchain == 'stable' }}
+        run: just rama-quic/qa-stress-backend boring
+      - name: QUIC benchmark (boring)
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'boring') }}
+        run: cargo check --bench quic_transport --no-default-features --features quic,boring --locked
+      - name: QUIC dial9 (boring)
+        if: ${{ !cancelled() && matrix.backends == 'boring' && matrix.os == 'ubuntu-latest' && matrix.toolchain == 'stable' }}
+        env:
+          RUSTFLAGS: --cfg tokio_unstable -D warnings
+        run: |
+          cargo test -p rama-quic --no-default-features --features dial9,boring --lib dial9 --locked
+          cargo test -p rama-quic --no-default-features --features dial9,boring --test dial9_runtime --locked
+      - name: Shared scenario library (boring)
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'boring') }}
+        run: just rama-quic/qa-interop-common boring
+      - name: Quinn interoperability (boring)
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'boring') }}
+        run: just rama-quic/qa-interop-quinn boring
+      - name: quiche interoperability (boring)
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'boring') }}
+        run: just rama-quic/qa-interop-quiche boring
+      - name: aioquic interoperability (boring)
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'boring') }}
+        run: just rama-quic/qa-interop-aioquic boring
+      - name: Runner endpoint and result gates (boring)
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'boring') }}
+        env:
+          PYTHON: ${{ github.workspace }}/rama-quic/e2e/aioquic-interop/.venv/${{ runner.os == 'Windows' && 'Scripts/python.exe' || 'bin/python' }}
+        run: just rama-quic/qa-interop-runner boring
+      - name: Isolated QUIC library tests and lints (rustls-ring)
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-ring') }}
+        run: just rama-quic/qa-backend rustls,ring
+      - name: Isolated crypto tests (rustls-ring)
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-ring') }}
+        run: cargo test -p rama-crypto --no-default-features --features ring --locked
+      - name: QUIC examples (rustls-ring)
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-ring') }}
+        run: cargo test -p rama-examples --no-default-features --features quic,rustls,ring --test integration quic_ --locked -- --include-ignored
+      - name: Concurrent QUIC transfers (rustls-ring)
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-ring') }}
+        run: cargo test -p rama-quic --no-default-features --features rustls,ring --test many_connections --locked -- --include-ignored
+      - name: QUIC receive-window stress (rustls-ring)
+        timeout-minutes: 15
+        if: ${{ !cancelled() && matrix.backends == 'rustls-ring' && matrix.os == 'ubuntu-latest' && matrix.toolchain == 'stable' }}
+        run: just rama-quic/qa-stress-backend rustls,ring
+      - name: QUIC benchmark (rustls-ring)
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-ring') }}
+        run: cargo check --bench quic_transport --no-default-features --features quic,rustls,ring --locked
+      - name: QUIC dial9 (rustls-ring)
+        if: ${{ !cancelled() && matrix.backends == 'rustls-ring' && matrix.os == 'ubuntu-latest' && matrix.toolchain == 'stable' }}
+        env:
+          RUSTFLAGS: --cfg tokio_unstable -D warnings
+        run: |
+          cargo test -p rama-quic --no-default-features --features dial9,rustls,ring --lib dial9 --locked
+          cargo test -p rama-quic --no-default-features --features dial9,rustls,ring --test dial9_runtime --locked
+      - name: Shared scenario library (rustls-ring)
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-ring') }}
+        run: just rama-quic/qa-interop-common rustls-ring
+      - name: Quinn interoperability (rustls-ring)
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-ring') }}
+        run: just rama-quic/qa-interop-quinn rustls-ring
+      - name: quiche interoperability (rustls-ring)
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-ring') }}
+        run: just rama-quic/qa-interop-quiche rustls-ring
+      - name: aioquic interoperability (rustls-ring)
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-ring') }}
+        run: just rama-quic/qa-interop-aioquic rustls-ring
+      - name: Runner endpoint and result gates (rustls-ring)
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-ring') }}
+        env:
+          PYTHON: ${{ github.workspace }}/rama-quic/e2e/aioquic-interop/.venv/${{ runner.os == 'Windows' && 'Scripts/python.exe' || 'bin/python' }}
+        run: just rama-quic/qa-interop-runner rustls-ring
+      - name: Isolated QUIC library tests and lints (rustls-aws-lc)
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-aws-lc') }}
+        run: just rama-quic/qa-backend rustls,aws-lc
+      - name: Isolated crypto tests (rustls-aws-lc)
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-aws-lc') }}
+        run: cargo test -p rama-crypto --no-default-features --features aws-lc --locked
+      - name: QUIC examples (rustls-aws-lc)
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-aws-lc') }}
+        run: cargo test -p rama-examples --no-default-features --features quic,rustls,aws-lc --test integration quic_ --locked -- --include-ignored
+      - name: Concurrent QUIC transfers (rustls-aws-lc)
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-aws-lc') }}
+        run: cargo test -p rama-quic --no-default-features --features rustls,aws-lc --test many_connections --locked -- --include-ignored
+      - name: QUIC receive-window stress (rustls-aws-lc)
+        timeout-minutes: 15
+        if: ${{ !cancelled() && matrix.backends == 'rustls-aws-lc' && matrix.os == 'ubuntu-latest' && matrix.toolchain == 'stable' }}
+        run: just rama-quic/qa-stress-backend rustls,aws-lc
+      - name: QUIC benchmark (rustls-aws-lc)
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-aws-lc') }}
+        run: cargo check --bench quic_transport --no-default-features --features quic,rustls,aws-lc --locked
+      - name: QUIC dial9 (rustls-aws-lc)
+        if: ${{ !cancelled() && matrix.backends == 'rustls-aws-lc' && matrix.os == 'ubuntu-latest' && matrix.toolchain == 'stable' }}
+        env:
+          RUSTFLAGS: --cfg tokio_unstable -D warnings
+        run: |
+          cargo test -p rama-quic --no-default-features --features dial9,rustls,aws-lc --lib dial9 --locked
+          cargo test -p rama-quic --no-default-features --features dial9,rustls,aws-lc --test dial9_runtime --locked
+      - name: Shared scenario library (rustls-aws-lc)
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-aws-lc') }}
+        run: just rama-quic/qa-interop-common rustls-aws-lc
+      - name: Quinn interoperability (rustls-aws-lc)
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-aws-lc') }}
+        run: just rama-quic/qa-interop-quinn rustls-aws-lc
+      - name: quiche interoperability (rustls-aws-lc)
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-aws-lc') }}
+        run: just rama-quic/qa-interop-quiche rustls-aws-lc
+      - name: aioquic interoperability (rustls-aws-lc)
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-aws-lc') }}
+        run: just rama-quic/qa-interop-aioquic rustls-aws-lc
+      - name: Runner endpoint and result gates (rustls-aws-lc)
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-aws-lc') }}
+        env:
+          PYTHON: ${{ github.workspace }}/rama-quic/e2e/aioquic-interop/.venv/${{ runner.os == 'Windows' && 'Scripts/python.exe' || 'bin/python' }}
+        run: just rama-quic/qa-interop-runner rustls-aws-lc
+
+  precheck-rust-tier2:
+    strategy:
+      matrix:
+        include:
+          - thing: x86_64-ios
+            target: x86_64-apple-ios
+            os: macos-15-intel
+            rust: stable
+            custom_env:
+              IPHONEOS_DEPLOYMENT_TARGET: 17.5
+    needs: precheck-rust
+    runs-on: ${{ matrix.os }}
+    concurrency:
+      group: ${{ startsWith(matrix.os, 'macos') && (matrix.os == 'macos-15-intel' && 'rama-macos-slot-3' || 'rama-macos-slot-4') || startsWith(matrix.os, 'windows') && ('rama-windows-slot-2') || format('rama-linux-tier2-{0}-{1}', github.run_id, strategy.job-index) }}
+      cancel-in-progress: false
+      queue: max
+    env:
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: ${{ matrix.rust }}
+      - uses: ./.github/actions/rust-cache
+        with:
+          env-vars: RUST_TOOLCHAIN
+          key: ${{ matrix.os }}-${{ matrix.rust }}-${{ matrix.target }}
+      - run: rustup target add ${{ matrix.target }}
+      - name: Configure Android toolchain env
+        if: endsWith(matrix.thing, '-android')
+        shell: bash
+        run: |
+          ANDROID_API=21
+
+          # Normalize NDK env vars
+          echo "ANDROID_NDK_HOME=${ANDROID_NDK_HOME:-$ANDROID_NDK}" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK=${ANDROID_NDK:-$ANDROID_NDK_HOME}" >> "$GITHUB_ENV"
+
+          TOOLCHAIN="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          echo "${TOOLCHAIN}" >> "$GITHUB_PATH"
+
+          TRIPLE="${{ matrix.target }}"
+          TARGET_UPPER="$(echo "${TRIPLE}" | tr '[:lower:]-' '[:upper:]_')"
+          TARGET_LOWER_UNDERSCORES="$(echo "${TRIPLE}" | tr '-' '_' | tr '[:upper:]' '[:lower:]')"
+          NDK_TRIPLE="${TRIPLE/#armv7/armv7a}"
+
+          CC_PATH="${TOOLCHAIN}/${NDK_TRIPLE}${ANDROID_API}-clang"
+          CXX_PATH="${TOOLCHAIN}/${NDK_TRIPLE}${ANDROID_API}-clang++"
+          AR_PATH="${TOOLCHAIN}/llvm-ar"
+
+          {
+            echo "CARGO_TARGET_${TARGET_UPPER}_LINKER=${CXX_PATH}"
+
+            # Target specific for cc-rs style
+            echo "CC_${TARGET_LOWER_UNDERSCORES}=${CC_PATH}"
+            echo "CXX_${TARGET_LOWER_UNDERSCORES}=${CXX_PATH}"
+            echo "AR_${TARGET_LOWER_UNDERSCORES}=${AR_PATH}"
+
+            # Also set generic vars in case your Config only reads CC/CXX/AR
+            echo "CC=${CC_PATH}"
+            echo "CXX=${CXX_PATH}"
+            echo "AR=${AR_PATH}"
+          } >> "$GITHUB_ENV"
+      - name: check
+        env: ${{ matrix.custom_env }}
+        run: |
+          cargo check --workspace --target ${{ matrix.target }} --all-features
+      - name: Build tests
+        env: ${{ matrix.custom_env }}
+        # We `build` because we want the linker to verify we are cross-compiling correctly for check-only targets.
+        run: |
+          cargo build --target ${{ matrix.target }} --tests --all-features
+
+  test-rust-linux-gnu-cross-macos:
+    runs-on: macos-latest
+    concurrency:
+      group: rama-macos-slot-2
+      cancel-in-progress: false
+      queue: max
+    timeout-minutes: 360
+    needs: precheck-rust
+    env:
+      RUSTUP_TOOLCHAIN: stable
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: stable
+          targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu
+      - name: Install Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.15.2
+      - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
+        with:
+          tool: cargo-zigbuild@0.23.3
+      - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
+        with:
+          tool: just
+      - uses: ./.github/actions/rust-cache
+        with:
+          key: linux-gnu-cross-macos-stable-both
+          env-vars: RUST_TOOLCHAIN
+      # The just recipes are also the documented local developer entry points.
+      - name: Cross-link Linux GNU coverage
+        run: just test-zigbuild-linux-gnu x86_64-unknown-linux-gnu.2.17
+      - name: Cross-link Linux GNU native DNS on AArch64
+        if: ${{ !cancelled() }}
+        run: just test-zigbuild-linux-gnu-native-dns aarch64-unknown-linux-gnu.2.17
+      - name: Upload the cross-built Rama CLI
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rama-cli-linux-x86_64-gnu-glibc-2.17
+          path: target/x86_64-unknown-linux-gnu/debug/rama
+          if-no-files-found: error
+          retention-days: 1
+
+  test-rust-linux-gnu-cross-windows:
+    runs-on: windows-latest
+    concurrency:
+      group: rama-windows-slot-2
+      cancel-in-progress: false
+      queue: max
+    timeout-minutes: 240
+    needs: precheck-rust
+    env:
+      RUSTUP_TOOLCHAIN: stable-x86_64-pc-windows-gnu
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: stable-x86_64-pc-windows-gnu
+          targets: x86_64-unknown-linux-gnu
+      - name: Install Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.15.2
+      - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
+        with:
+          tool: cargo-zigbuild@0.23.3
+      - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
+        with:
+          tool: just
+      - uses: ./.github/actions/rust-cache
+        with:
+          key: linux-gnu-cross-windows-latest-stable-x86_64-pc-windows-gnu-x86_64-unknown-linux-gnu.2.17
+          env-vars: RUST_TOOLCHAIN
+      # The just recipes are also the documented local developer entry points.
+      - name: Cross-link Linux GNU coverage
+        run: just test-zigbuild-linux-gnu-cli x86_64-unknown-linux-gnu.2.17
+
+  test-rust-linux-gnu-cross-smoke:
+    runs-on: ubuntu-latest
+    needs: test-rust-linux-gnu-cross-macos
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
+        with:
+          tool: just
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: rama-cli-linux-x86_64-gnu-glibc-2.17
+          path: target/x86_64-unknown-linux-gnu/debug
+      - name: Start the cross-built Rama CLI on Linux
+        run: just test-zigbuild-linux-gnu-smoke
+
+  ci-success:
+    name: Daily platforms success
+    runs-on: ubuntu-latest
+    if: ${{ !cancelled() }}
+    needs:
+      - precheck-rust
+      - test-rust-base
+      - test-quic-interop-qa
+      - precheck-rust-tier2
+      - test-rust-linux-gnu-cross-macos
+      - test-rust-linux-gnu-cross-windows
+      - test-rust-linux-gnu-cross-smoke
+    steps:
+      - name: Require every daily check to succeed
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS" | jq -e 'all(.[]; .result == "success")'
