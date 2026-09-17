@@ -2,10 +2,11 @@
 //! enforces, whichever backend supplies them.
 
 use super::*;
-use crate::proto::{
+use crate::proto::shared::{ConnectionEvent, ConnectionEventInner, DatagramConnectionEvent};
+use rama_quic_proto::{
+    Dir, TransportError, TransportErrorCode,
     crypto::{CryptoError, PacketKey},
     packet::{FixedLengthConnectionIdParser, PartialDecode},
-    shared::{ConnectionEvent, ConnectionEventInner, DatagramConnectionEvent},
 };
 
 /// The provider's key, reporting limits of the test's choosing.

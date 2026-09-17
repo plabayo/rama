@@ -6,14 +6,12 @@ use std::{
 };
 
 use crate::proto::{
-    ClosedStream, ConnectionError, FinishError, StreamId, WriteError as ProtoWriteError, Written,
+    ClosedStream, ConnectionError, FinishError, WriteError as ProtoWriteError, Written,
 };
 use rama_core::bytes::Bytes;
+use rama_quic_proto::{StreamId, VarInt};
 
-use crate::driver::{
-    VarInt,
-    connection::{ConnectionRef, State},
-};
+use crate::driver::connection::{ConnectionRef, State};
 
 /// A stream that can only be used to send data
 ///

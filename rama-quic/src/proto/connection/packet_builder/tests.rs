@@ -1,9 +1,9 @@
 use crate::proto::{
     MIN_INITIAL_SIZE,
     connection::{packet_builder::PacketBuilder, transmit::SentFrames},
-    packet::SpaceId,
     tests::util::Pair,
 };
+use rama_quic_proto::packet::SpaceId;
 
 /// A datagram's size is its own, not the buffer's.
 ///

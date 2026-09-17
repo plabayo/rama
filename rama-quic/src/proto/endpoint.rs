@@ -26,25 +26,29 @@ use rama_tls::{
 };
 
 use crate::proto::{
-    Duration, INITIAL_MTU, Instant, MAX_CID_SIZE, MIN_INITIAL_SIZE, RESET_TOKEN_SIZE, ResetToken,
-    Side, Transmit, TransportConfig, TransportError, Version,
+    Duration, INITIAL_MTU, Instant, MIN_INITIAL_SIZE, Transmit, TransportConfig,
     cid_generator::ConnectionIdGenerator,
     cid_queue::{CidQueue, RemCid},
-    coding::BufMutExt,
     config::{ClientConfig, EndpointConfig, ServerConfig},
     connection::{Connection, ConnectionError, SideArgs},
     crypto::{self, Keys},
+    shared::{
+        ConnectionEvent, ConnectionEventInner, DatagramConnectionEvent, EndpointEvent,
+        EndpointEventInner, IssuedCid,
+    },
+    token::{IncomingToken, Token, TokenPayload, reset_token},
+    transport_parameters::{self},
+};
+use rama_quic_proto::{
+    ConnectionId, EcnCodepoint, MAX_CID_SIZE, RESET_TOKEN_SIZE, ResetToken, Side, TransportError,
+    Version,
+    coding::BufMutExt,
     frame,
     packet::{
         FixedLengthConnectionIdParser, Header, InitialHeader, InitialPacket, PacketDecodeError,
         PacketNumber, PartialDecode, ProtectedInitialHeader,
     },
-    shared::{
-        ConnectionEvent, ConnectionEventInner, ConnectionId, DatagramConnectionEvent, EcnCodepoint,
-        EndpointEvent, EndpointEventInner, IssuedCid,
-    },
-    token::{IncomingToken, Token, TokenPayload, reset_token},
-    transport_parameters::{self, PreferredAddress, TransportParameters},
+    transport_parameters::{PreferredAddress, TransportParameters},
 };
 
 /// The main entry point to the library

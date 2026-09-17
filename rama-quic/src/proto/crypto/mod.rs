@@ -10,13 +10,16 @@
 use std::{str, sync::Arc};
 
 use rama_crypto::pki_types::CertificateDer;
-pub use rama_quic_proto::crypto::{CryptoError, HeaderKey, PacketKey};
 pub use rama_tls::client::NegotiatedTlsParameters;
 
-use crate::proto::{
-    ConnectError, Side, TransportError, Version, packet::SpaceId, shared::ConnectionId,
+use rama_quic_proto::{
+    ConnectionId, Side, TransportError, Version,
+    crypto::{CryptoError, HeaderKey, PacketKey},
+    packet::SpaceId,
     transport_parameters::TransportParameters,
 };
+
+use crate::proto::ConnectError;
 
 pub(crate) mod config;
 

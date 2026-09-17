@@ -6,7 +6,7 @@ use std::{
 
 use rama_core::bytes::{Buf, Bytes, BytesMut};
 
-use crate::proto::range_set::RangeSet;
+use rama_quic_proto::range_set::RangeSet;
 
 /// Helper to assemble unordered stream frames into an ordered stream
 #[derive(Debug, Default)]

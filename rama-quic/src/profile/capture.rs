@@ -4,12 +4,13 @@
 //! module supplies the Initial keys from the engine's TLS backend and offers the convenience entry
 //! point the profile tests read a flight through.
 
-pub use rama_quic_proto::capture::*;
-
-use crate::proto::{
+use rama_quic_proto::{
     ConnectionId, Side, Version,
-    crypto::{HeaderKey, PacketKey, ServerConfig as CryptoServerConfig},
+    capture::*,
+    crypto::{HeaderKey, PacketKey},
 };
+
+use crate::proto::crypto::ServerConfig as CryptoServerConfig;
 
 /// Bridges a crypto [`ServerConfig`](CryptoServerConfig) to the [`KeyProvider`] seam by deriving
 /// Initial keys from the destination connection ID (RFC 9001 §5.2). A passive observer and the

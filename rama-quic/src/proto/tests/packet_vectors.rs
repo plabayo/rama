@@ -5,9 +5,10 @@ use rama_core::bytes::Bytes;
 use rama_quic_proto::{
     ConnectionId, Side, Version,
     packet::{FixedLengthConnectionIdParser, Header, InitialHeader, PacketNumber, PartialDecode},
+    transport_parameters::TransportParameters,
 };
 
-use crate::proto::{DEFAULT_SUPPORTED_VERSIONS, transport_parameters::TransportParameters};
+use crate::proto::DEFAULT_SUPPORTED_VERSIONS;
 
 #[test]
 #[expect(clippy::print_stdout, reason = "debug output of a test")]

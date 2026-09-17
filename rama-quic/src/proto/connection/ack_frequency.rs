@@ -1,8 +1,10 @@
-use crate::proto::Duration;
-use crate::proto::connection::spaces::PendingAcks;
-use crate::proto::frame::AckFrequency;
-use crate::proto::transport_parameters::TransportParameters;
-use crate::proto::{AckFrequencyConfig, TIMER_GRANULARITY, TransportError, VarInt};
+use rama_quic_proto::{
+    TransportError, VarInt, frame::AckFrequency, transport_parameters::TransportParameters,
+};
+
+use crate::proto::{
+    AckFrequencyConfig, Duration, TIMER_GRANULARITY, connection::spaces::PendingAcks,
+};
 
 /// State associated to ACK frequency
 pub(super) struct AckFrequencyState {
@@ -177,7 +179,7 @@ mod tests {
         let mut wire = Vec::new();
         params.write(&mut wire);
         let params =
-            TransportParameters::read(crate::proto::Side::Client, &mut wire.as_slice()).unwrap();
+            TransportParameters::read(rama_quic_proto::Side::Client, &mut wire.as_slice()).unwrap();
         let state = AckFrequencyState::new(Duration::from_millis(25));
         assert_eq!(
             state.candidate_max_ack_delay(
@@ -201,7 +203,7 @@ mod tests {
         let mut wire = Vec::new();
         params.write(&mut wire);
         let params =
-            TransportParameters::read(crate::proto::Side::Client, &mut wire.as_slice()).unwrap();
+            TransportParameters::read(rama_quic_proto::Side::Client, &mut wire.as_slice()).unwrap();
         let state = AckFrequencyState::new(Duration::from_millis(25));
         for rtt in [Duration::ZERO, Duration::from_millis(5), Duration::MAX] {
             for config in [
@@ -267,7 +269,7 @@ mod tests {
             } else {
                 assert_eq!(
                     result.unwrap_err().code(),
-                    crate::proto::TransportErrorCode::PROTOCOL_VIOLATION
+                    rama_quic_proto::TransportErrorCode::PROTOCOL_VIOLATION
                 );
             }
         }

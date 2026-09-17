@@ -1,8 +1,7 @@
 use std::{collections::VecDeque, ops::Range};
 
 use rama_core::bytes::{Buf, Bytes};
-
-use crate::proto::{VarInt, range_set::RangeSet};
+use rama_quic_proto::{VarInt, range_set::RangeSet};
 
 /// Buffer of outgoing retransmittable stream data
 #[derive(Default, Debug)]

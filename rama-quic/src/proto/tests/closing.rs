@@ -9,6 +9,7 @@
 use std::{collections::VecDeque, mem, net::SocketAddr, sync::Arc};
 
 use crate::proto::Duration;
+use rama_quic_proto::packet::{FixedLengthConnectionIdParser, PartialDecode};
 
 use rama_core::bytes::Bytes;
 use rama_utils::octets;
@@ -20,7 +21,6 @@ use super::{
 
 use crate::proto::{
     DEFAULT_SUPPORTED_VERSIONS, MIN_INITIAL_SIZE,
-    packet::{FixedLengthConnectionIdParser, PartialDecode},
     shared::{ConnectionEvent, ConnectionEventInner, DatagramConnectionEvent},
 };
 

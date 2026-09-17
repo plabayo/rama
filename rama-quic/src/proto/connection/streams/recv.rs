@@ -7,7 +7,7 @@ use super::state::get_or_insert_recv;
 use super::{ClosedStream, Retransmits, ShouldTransmit, StreamId, StreamsState};
 use crate::proto::connection::assembler::{Assembler, Chunk, IllegalOrderedRead};
 use crate::proto::connection::streams::state::StreamRecv;
-use crate::proto::{TransportError, VarInt, frame};
+use rama_quic_proto::{TransportError, VarInt, frame};
 
 #[derive(Debug, Default)]
 pub(super) struct Recv {
@@ -495,7 +495,7 @@ impl Default for RecvState {
 mod tests {
     use rama_core::bytes::Bytes;
 
-    use crate::proto::{Dir, Side};
+    use rama_quic_proto::{Dir, Side};
 
     use super::*;
 

@@ -477,7 +477,7 @@ tcp = ["std", "net", "dep:rama-tcp"]
 udp = ["std", "net", "dep:rama-udp"]
 # QUIC v1 transport over `udp`, with backend-neutral TLS types. Select a built-in
 # TLS/crypto backend explicitly, or supply an external provider.
-quic = ["std", "udp", "tls", "dep:rama-quic"]
+quic = ["std", "udp", "tls", "dep:rama-quic", "dep:rama-quic-proto"]
 ws = ["std", "dep:rama-ws", "http"]
 js = ["std", "dep:rama-js"]
 js-disk-cache = ["js", "rama-js/disk-cache", "rama-pac?/js-disk-cache"]
@@ -597,6 +597,7 @@ rama-net-apple-xpc = { workspace = true, optional = true }
 rama-pac = { workspace = true, optional = true }
 rama-proxy = { workspace = true, optional = true }
 rama-quic = { workspace = true, optional = true }
+rama-quic-proto = { workspace = true, optional = true }
 rama-socks5 = { workspace = true, optional = true }
 rama-tcp = { workspace = true, optional = true }
 rama-tls = { workspace = true, optional = true }

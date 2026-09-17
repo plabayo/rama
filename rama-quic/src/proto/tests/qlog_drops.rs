@@ -1,8 +1,9 @@
 use super::qlog::Capture;
 use super::*;
-use crate::proto::{
+use crate::proto::shared::{ConnectionEvent, ConnectionEventInner, DatagramConnectionEvent};
+use rama_quic_proto::{
+    ConnectionId, Dir, TransportError, TransportErrorCode, VarInt,
     packet::{FixedLengthConnectionIdParser, PartialDecode},
-    shared::{ConnectionEvent, ConnectionEventInner, DatagramConnectionEvent},
 };
 
 fn traced_client(pair: &Pair, capture: &Capture) -> ClientConfig {

@@ -8,11 +8,8 @@ use rama_core::{
     telemetry::tracing::{debug, trace},
 };
 
-use crate::profile::PaddingPlacement;
 use crate::proto::{
-    Duration, INITIAL_MTU, Instant, MAX_CID_SIZE, MIN_INITIAL_SIZE, TIMER_GRANULARITY, Transmit,
-    TransportErrorCode, VarInt,
-    coding::BufMutExt as _,
+    Duration, INITIAL_MTU, Instant, MIN_INITIAL_SIZE, TIMER_GRANULARITY, Transmit,
     connection::{
         Connection, State,
         migration::{PrevCid, PrevPath},
@@ -22,9 +19,13 @@ use crate::proto::{
         streams::StreamsState,
         timer::Timer,
     },
+};
+use rama_quic_proto::{
+    EcnCodepoint, MAX_CID_SIZE, TransportErrorCode, VarInt,
+    coding::BufMutExt as _,
     frame::{self, FrameStruct, StreamMetaVec},
     packet::{PacketNumber, SpaceId},
-    shared::EcnCodepoint,
+    profile::PaddingPlacement,
 };
 
 impl Connection {

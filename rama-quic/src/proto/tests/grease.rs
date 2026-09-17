@@ -6,7 +6,8 @@ use std::time::SystemTime;
 use parking_lot::Mutex;
 
 use super::*;
-use crate::proto::{StoredToken, TimeSource, UNIX_EPOCH, Version, token::TokenStore};
+use crate::proto::{StoredToken, TimeSource, UNIX_EPOCH, token::TokenStore};
+use rama_quic_proto::{VarInt, Version, packet};
 
 /// A clock a test moves by hand.
 struct Clock(Mutex<SystemTime>);

@@ -12,10 +12,10 @@ use super::{
     PendingStreamsQueue, Recv, Retransmits, Send, SendState, ShouldTransmit, StreamEvent,
     StreamHalf, ThinRetransmits,
 };
-use crate::proto::{
+use crate::proto::connection::stats::FrameStats;
+use rama_quic_proto::{
     Dir, MAX_STREAM_COUNT, Side, StreamId, TransportError, VarInt,
     coding::BufMutExt,
-    connection::stats::FrameStats,
     frame::{self, FrameStruct, StreamMetaVec},
     transport_parameters::TransportParameters,
 };
@@ -1140,10 +1140,11 @@ pub(super) fn get_or_insert_recv(
 mod tests {
     use super::*;
     use crate::proto::{
-        ReadableError, RecvStream, SendStream, TransportErrorCode, WriteError,
-        connection::State as ConnState, connection::Streams,
+        ReadableError, RecvStream, SendStream, WriteError, connection::State as ConnState,
+        connection::Streams,
     };
     use rama_core::bytes::Bytes;
+    use rama_quic_proto::TransportErrorCode;
     use rama_utils::octets;
 
     fn make(side: Side) -> StreamsState {

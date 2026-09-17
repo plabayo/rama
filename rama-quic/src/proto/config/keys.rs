@@ -100,7 +100,8 @@ impl fmt::Debug for AddressTokenKey {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proto::{ConnectionId, RESET_TOKEN_SIZE, token::reset_token};
+    use crate::proto::token::reset_token;
+    use rama_quic_proto::{ConnectionId, RESET_TOKEN_SIZE};
 
     #[test]
     fn reset_key_debug_hides_secret_material() {

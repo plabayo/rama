@@ -1,5 +1,6 @@
 use super::qlog::Capture;
 use super::*;
+use rama_quic_proto::VarInt;
 
 impl Capture {
     fn assert_handshake_starts_on_first_handshake_packet(&self) {

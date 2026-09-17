@@ -1,6 +1,7 @@
 use rama_core::bytes::Bytes;
 
-use crate::proto::{VarInt, connection::send_buffer::SendBuffer, frame};
+use crate::proto::connection::send_buffer::SendBuffer;
+use rama_quic_proto::{VarInt, frame};
 
 #[derive(Debug)]
 pub(super) struct Send {

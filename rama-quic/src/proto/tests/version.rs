@@ -2,9 +2,9 @@
 //! provider traits so every TLS backend is held to them, and a v2 handshake end to end.
 
 use rama_core::bytes::BytesMut;
+use rama_quic_proto::{ConnectionId, Dir, Side, VarInt, Version, version::LongKind};
 
 use super::*;
-use crate::proto::{Version, version::LongKind};
 
 /// Non-empty parameters: BoringSSL refuses to start a QUIC session without any.
 fn client_params(cid: ConnectionId) -> TransportParameters {
@@ -204,7 +204,7 @@ fn a_v1_only_server_negotiates_a_v2_client_down() {
 
 // ---- RFC 9368 compatible version negotiation -------------------------------------------------
 
-use crate::proto::version::{ClientVersionPolicy, ServerVersionPolicy, VersionPreference};
+use rama_quic_proto::version::{ClientVersionPolicy, ServerVersionPolicy, VersionPreference};
 
 fn server_preferring(versions: Vec<Version>) -> ServerConfig {
     let mut config = server_config();

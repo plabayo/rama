@@ -3,7 +3,7 @@
 //! Views borrow variable-size data during synchronous delivery. Conversion to owned data is
 //! explicit; compact packet, address, connection ID, and tuple values need no heap storage.
 
-use crate::ConnectionId;
+use rama_quic_proto::ConnectionId;
 use serde::{Serialize, Serializer, ser::SerializeSeq};
 use std::fmt;
 

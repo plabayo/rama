@@ -2,6 +2,14 @@
 //! first, and what an authenticated packet settles.
 
 use crate::qlog::event::negotiation::KeyChangeTrigger;
+use rama_quic_proto::{
+    EcnCodepoint, TransportError, TransportErrorCode, Version,
+    frame::{self, Close, Frame},
+    packet::{
+        FixedLengthConnectionIdParser, Header, InitialHeader, LongType, Packet, PartialDecode,
+        SpaceId,
+    },
+};
 use std::{mem, net::SocketAddr};
 
 use rama_core::{
@@ -10,7 +18,7 @@ use rama_core::{
 };
 
 use crate::proto::{
-    Frame, Instant, TransportError, TransportErrorCode, Version,
+    Instant,
     connection::{
         Connection, ConnectionError, ConnectionSide, Event, State, packet_crypto,
         qlog::drops::{DropInfo, DropReason},
@@ -18,12 +26,7 @@ use crate::proto::{
         state,
         timer::Timer,
     },
-    frame::{self, Close},
-    packet::{
-        FixedLengthConnectionIdParser, Header, InitialHeader, LongType, Packet, PartialDecode,
-        SpaceId,
-    },
-    shared::{EcnCodepoint, EndpointEventInner},
+    shared::EndpointEventInner,
 };
 
 #[cfg(test)]
@@ -97,10 +100,10 @@ impl Connection {
                 Err(e) => {
                     trace!("malformed header: {}", e);
                     let reason = match e {
-                        crate::proto::packet::PacketDecodeError::UnsupportedVersion { .. } => {
-                            DropReason::Unsupported
-                        }
-                        crate::proto::packet::PacketDecodeError::InvalidHeader(_) => {
+                        rama_quic_proto::packet::PacketDecodeError::UnsupportedVersion {
+                            ..
+                        } => DropReason::Unsupported,
+                        rama_quic_proto::packet::PacketDecodeError::InvalidHeader(_) => {
                             DropReason::Invalid
                         }
                     };

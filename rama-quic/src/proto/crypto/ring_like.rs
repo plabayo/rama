@@ -3,7 +3,8 @@ use rama_crypto::dep::aws_lc_rs::{aead, error, hkdf};
 #[cfg(feature = "ring")]
 use rama_crypto::dep::ring::{aead, error, hkdf};
 
-use crate::proto::crypto::{self, CryptoError};
+use crate::proto::crypto::{self};
+use rama_quic_proto::crypto::CryptoError;
 
 // The backend's own error carries no detail this crate keeps, so every failure maps to the
 // opaque `CryptoError`. (`CryptoError` lives in `rama-quic-proto`, so a `From` impl here would

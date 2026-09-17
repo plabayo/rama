@@ -3,14 +3,18 @@
 
 use rama_core::error::BoxError;
 use rama_quic::{
-    ClientConfig, ConnectError, ConnectionId, Endpoint, ServerConfig, Side, TransportError,
-    TransportErrorCode,
+    ClientConfig, ConnectError, Endpoint, ServerConfig,
     tls::provider::{
-        AeadKey, ClientConfig as ClientProvider, CryptoError, EncryptionLevel,
-        ExportKeyingMaterialError, HandshakeEvent, HandshakeTokenKey, HeaderKey, InitialKeysError,
-        KeyPair, Keys, PacketKey, ServerConfig as ServerProvider, Session, TransportParameters,
+        AeadKey, ClientConfig as ClientProvider, ExportKeyingMaterialError, HandshakeEvent,
+        HandshakeTokenKey, InitialKeysError, KeyPair, Keys, ServerConfig as ServerProvider,
+        Session,
     },
-    version::Version,
+};
+use rama_quic_proto::{
+    ConnectionId, Side, TransportError, TransportErrorCode, Version,
+    crypto::{CryptoError, HeaderKey, PacketKey},
+    packet::SpaceId as EncryptionLevel,
+    transport_parameters::TransportParameters,
 };
 use std::sync::{
     Arc,

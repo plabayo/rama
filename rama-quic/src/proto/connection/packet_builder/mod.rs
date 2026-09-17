@@ -9,12 +9,12 @@ use rand::RngExt;
 
 use super::{Connection, spaces::SentPacket};
 
-use crate::profile::InitialFlightLayout;
-use crate::proto::{
-    ConnectionId, Instant, TransportError,
-    connection::ConnectionSide,
+use crate::proto::{Instant, connection::ConnectionSide};
+use rama_quic_proto::{
+    ConnectionId, TransportError,
     frame::Close,
     packet::{FIXED_BIT, Header, InitialHeader, LongType, PacketNumber, PartialEncode, SpaceId},
+    profile::InitialFlightLayout,
 };
 
 pub(super) struct PacketBuilder {
@@ -324,7 +324,7 @@ impl PacketBuilder {
             buffer.clear();
             conn.kill(
                 now,
-                crate::proto::TransportError::INTERNAL_ERROR("packet encryption failed")
+                rama_quic_proto::TransportError::INTERNAL_ERROR("packet encryption failed")
                     .with_cause(error)
                     .into(),
             );

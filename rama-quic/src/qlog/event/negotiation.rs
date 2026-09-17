@@ -1,7 +1,7 @@
 //! Version, ALPN, transport parameter, and traffic-key event data.
 
 use super::Initiator;
-use crate::ConnectionId;
+use rama_quic_proto::ConnectionId;
 use serde::{Serialize, Serializer, ser::SerializeSeq};
 use std::borrow::Cow;
 
@@ -63,7 +63,7 @@ pub struct Version(
 #[derive(Clone, Debug)]
 pub enum VersionListView<'a> {
     /// Version identifiers stored as host-order integers.
-    Host(Cow<'a, [crate::version::Version]>),
+    Host(Cow<'a, [rama_quic_proto::Version]>),
 
     /// Version identifiers stored as network-order four-byte values.
     Network(Cow<'a, [[u8; 4]]>),
@@ -107,7 +107,7 @@ impl VersionListView<'_> {
         match self {
             Self::Host(Cow::Borrowed(values)) => values
                 .len()
-                .saturating_mul(size_of::<crate::version::Version>()),
+                .saturating_mul(size_of::<rama_quic_proto::Version>()),
             Self::Network(Cow::Borrowed(values)) => {
                 values.len().saturating_mul(size_of::<[u8; 4]>())
             }
@@ -120,7 +120,7 @@ impl VersionListView<'_> {
         match self {
             Self::Host(Cow::Owned(values)) => values
                 .capacity()
-                .saturating_mul(size_of::<crate::version::Version>()),
+                .saturating_mul(size_of::<rama_quic_proto::Version>()),
             Self::Network(Cow::Owned(values)) => {
                 values.capacity().saturating_mul(size_of::<[u8; 4]>())
             }

@@ -2,9 +2,10 @@ use rama_utils::octets;
 use std::{fmt, sync::Arc};
 
 use crate::proto::{
-    ConfigError, Duration, INITIAL_MTU, MAX_UDP_PAYLOAD, VarInt, VarIntBoundsExceeded, congestion,
+    ConfigError, Duration, INITIAL_MTU, MAX_UDP_PAYLOAD, congestion,
     connection::qlog::ConnectionQlog,
 };
+use rama_quic_proto::{VarInt, VarIntBoundsExceeded};
 
 /// The smallest initial congestion window this crate accepts: two datagrams of the size every
 /// QUIC path carries (RFC 9000 §14.1). It is a policy floor, not a protocol one; a window of
@@ -110,7 +111,8 @@ impl TransportConfig {
         ///
         /// ```
         /// # use std::{convert::TryInto, time::Duration};
-        /// # use rama_quic::{TransportConfig, VarInt, VarIntBoundsExceeded};
+        /// # use rama_quic::TransportConfig;
+        /// # use rama_quic_proto::{VarInt, VarIntBoundsExceeded};
         /// # fn main() -> Result<(), VarIntBoundsExceeded> {
         /// let mut config = TransportConfig::default();
         ///
@@ -868,7 +870,8 @@ impl Default for MtuDiscoveryConfig {
 ///
 /// ```
 /// # use std::{convert::TryFrom, time::Duration};
-/// # use rama_quic::{IdleTimeout, VarIntBoundsExceeded, VarInt};
+/// # use rama_quic::IdleTimeout;
+/// # use rama_quic_proto::{VarInt, VarIntBoundsExceeded};
 /// # fn main() -> Result<(), VarIntBoundsExceeded> {
 /// // A `VarInt`-encoded value in milliseconds
 /// let timeout = IdleTimeout::from(VarInt::from(10_000u32));

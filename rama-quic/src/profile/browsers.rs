@@ -8,7 +8,7 @@
 
 use std::time::Duration;
 
-use crate::proto::version::{ClientVersionPolicy, ReservedVersionGrease, Version};
+use rama_quic_proto::version::{ClientVersionPolicy, ReservedVersionGrease, Version};
 
 use super::{
     ConnectionIdProfile, GreaseParameter, InitialFlightLayout, OpaqueParameter, PacketNumberLength,

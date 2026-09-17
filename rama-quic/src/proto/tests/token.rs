@@ -347,7 +347,10 @@ impl TimeSource for FakeTimeSource {
     }
 }
 
-use crate::proto::crypto::{AeadKey, CryptoError, HandshakeTokenKey};
+use crate::proto::crypto::{AeadKey, HandshakeTokenKey};
+use rama_quic_proto::{
+    ConnectionId, Dir, TransportError, TransportErrorCode, VarInt, crypto::CryptoError,
+};
 
 /// Where a failing token-key provider gives up.
 #[derive(Debug, Clone, Copy)]
@@ -409,8 +412,8 @@ impl crypto::ServerConfig for FailingRetryIntegrity {
         _: Version,
         _: &ConnectionId,
         _: &[u8],
-    ) -> Result<[u8; 16], crypto::CryptoError> {
-        Err(crypto::CryptoError::new())
+    ) -> Result<[u8; 16], rama_quic_proto::crypto::CryptoError> {
+        Err(rama_quic_proto::crypto::CryptoError::new())
     }
     fn start_session(
         self: Arc<Self>,

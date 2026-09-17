@@ -102,6 +102,7 @@ mod tests {
     use super::*;
     use crate::proto::crypto::rustls::configured_provider;
     use rama_core::error::BoxError;
+    use rama_quic_proto::{Side, transport_parameters::TransportParameters};
     use rama_tls::server::{GeneratedServerAuthConfig, ServerAuthData};
     use rama_tls_rustls::{client::RustlsClientConfigExt, server::RustlsServerConfigExt};
 
@@ -282,11 +283,7 @@ mod tests {
 
     #[test]
     fn both_roles_reject_a_completed_handshake_without_required_alpn() {
-        use crate::proto::{
-            Side,
-            crypto::{ClientConfig as _, ServerConfig as _},
-            transport_parameters::TransportParameters,
-        };
+        use crate::proto::crypto::{ClientConfig as _, ServerConfig as _};
         for strict_side in [Side::Client, Side::Server] {
             let (client, server) = configs();
             client.insert(rama_net::tls::TlsAlpn(Default::default()));
@@ -306,10 +303,10 @@ mod tests {
             }
             let params = TransportParameters::default();
             let mut client = Arc::new(client)
-                .start_session(crate::proto::Version::V1, "localhost", &params)
+                .start_session(rama_quic_proto::Version::V1, "localhost", &params)
                 .unwrap();
             let mut server = Arc::new(server)
-                .start_session(crate::proto::Version::V1, &params)
+                .start_session(rama_quic_proto::Version::V1, &params)
                 .unwrap();
             let mut rejected = None;
             'handshake: for _ in 0..16 {
@@ -378,7 +375,7 @@ mod tests {
 
     #[test]
     fn validation_does_not_consume_application_session_tickets() {
-        use crate::proto::{crypto::ClientConfig as _, transport_parameters::TransportParameters};
+        use crate::proto::crypto::ClientConfig as _;
         use std::sync::atomic::Ordering;
         let (client, _) = configs();
         let store = Arc::new(SessionStore::default());
@@ -393,7 +390,7 @@ mod tests {
         assert_eq!(store.reads.load(Ordering::Relaxed), 0);
         Arc::new(client)
             .start_session(
-                crate::proto::Version::V1,
+                rama_quic_proto::Version::V1,
                 "localhost",
                 &TransportParameters::default(),
             )
@@ -406,7 +403,6 @@ mod tests {
         use crate::proto::{
             ConnectError,
             crypto::{ClientConfig as _, ServerConfig as _},
-            transport_parameters::TransportParameters,
         };
         let (client, server) = configs();
         let mut client =
@@ -425,11 +421,11 @@ mod tests {
         Arc::make_mut(&mut server.inner).max_early_data_size = 23;
         let params = TransportParameters::default();
         assert!(matches!(
-            Arc::new(client).start_session(crate::proto::Version::V1, "localhost", &params),
+            Arc::new(client).start_session(rama_quic_proto::Version::V1, "localhost", &params),
             Err(ConnectError::Crypto(_))
         ));
         let error = Arc::new(server)
-            .start_session(crate::proto::Version::V1, &params)
+            .start_session(rama_quic_proto::Version::V1, &params)
             .err()
             .unwrap();
         assert!(
@@ -519,8 +515,9 @@ mod tests {
     async fn authenticated_common_tls_over_quic_streams() {
         use crate::{
             driver::Endpoint,
-            proto::{ClientConfig, ServerConfig, VarInt},
+            proto::{ClientConfig, ServerConfig},
         };
+        use rama_quic_proto::VarInt;
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             for policy in [AlpnPolicy::Require, AlpnPolicy::OutOfBandAgreement] {
                 let (client_tls, server_tls) = configs();

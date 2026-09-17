@@ -1,5 +1,6 @@
 use super::qlog::Capture;
 use super::*;
+use rama_quic_proto::{Dir, TransportErrorCode};
 
 #[test]
 fn qlog_paths_follow_actual_migration_and_mtu_changes() {

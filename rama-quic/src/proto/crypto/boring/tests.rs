@@ -1,13 +1,9 @@
 use super::*;
-use crate::proto::{
-    Side, Version,
-    crypto::{
-        self, ClientConfig as _, HandshakeEvent, ServerConfig as _, Session, config::TlsOptions,
-    },
-    shared::ConnectionId,
-    transport_parameters::TransportParameters,
+use crate::proto::crypto::{
+    self, ClientConfig as _, HandshakeEvent, ServerConfig as _, Session, config::TlsOptions,
 };
 use rama_core::bytes::BytesMut;
+use rama_quic_proto::{ConnectionId, Side, Version, transport_parameters::TransportParameters};
 use rama_tls::{
     client::{TlsClientConfig, TlsServerCertPins},
     server::{
@@ -70,7 +66,10 @@ fn params(side: Side) -> TransportParameters {
     }
 }
 
-fn transfer(from: &mut dyn Session, to: &mut dyn Session) -> Result<bool, crate::TransportError> {
+fn transfer(
+    from: &mut dyn Session,
+    to: &mut dyn Session,
+) -> Result<bool, rama_quic_proto::TransportError> {
     let mut progress = false;
     while let Some(event) = from.poll_handshake()? {
         progress = true;
@@ -86,7 +85,7 @@ fn transfer(from: &mut dyn Session, to: &mut dyn Session) -> Result<bool, crate:
 fn handshake(
     client: &mut dyn Session,
     server: &mut dyn Session,
-) -> Result<(), crate::TransportError> {
+) -> Result<(), rama_quic_proto::TransportError> {
     for _ in 0..32 {
         let progress = transfer(client, server)? | transfer(server, client)?;
         if !progress {
@@ -184,10 +183,10 @@ fn changed_transport_settings_reject_early_data_without_losing_resumption() {
     let client = Arc::new(QuicClientConfig::from_rama(&client, options).unwrap());
     let server = Arc::new(QuicServerConfig::from_rama(&server, options).unwrap());
     let mut server_params = params(Side::Server);
-    server_params.initial_max_data = crate::VarInt::from_u32(1024);
+    server_params.initial_max_data = rama_quic_proto::VarInt::from_u32(1024);
     for resumed in [false, true] {
         if resumed {
-            server_params.initial_max_data = crate::VarInt::from_u32(512);
+            server_params.initial_max_data = rama_quic_proto::VarInt::from_u32(512);
         }
         let mut c = client
             .clone()
@@ -201,7 +200,7 @@ fn changed_transport_settings_reject_early_data_without_losing_resumption() {
         if resumed {
             assert_eq!(
                 c.transport_parameters().unwrap().unwrap().initial_max_data,
-                crate::VarInt::from_u32(1024)
+                rama_quic_proto::VarInt::from_u32(1024)
             );
         }
         check_session(&mut *c, &mut *s, resumed);
@@ -482,7 +481,7 @@ fn a_retry_packet_is_accepted_only_with_its_own_integrity_tag() {
     pseudo.extend_from_slice(token);
     let mut payload = token.to_vec();
     payload.extend_from_slice(
-        &super::packet::retry_tag(&crate::proto::version::V1_WIRE, &cid, &pseudo).unwrap(),
+        &super::packet::retry_tag(&rama_quic_proto::version::V1_WIRE, &cid, &pseudo).unwrap(),
     );
     assert!(session.is_valid_retry(&cid, header, &payload));
 
@@ -732,8 +731,9 @@ fn both_directions_interoperate_with_rustls() {
 
 #[tokio::test]
 async fn udp_endpoints_exchange_streams_datagrams_and_early_data() {
-    use crate::{ClientConfig, Endpoint, ServerConfig, VarInt};
+    use crate::{ClientConfig, Endpoint, ServerConfig};
     use rama_core::{bytes::Bytes, rt::Executor};
+    use rama_quic_proto::VarInt;
     use rama_tls::TlsBackend;
     use std::{net::UdpSocket, time::Duration};
 

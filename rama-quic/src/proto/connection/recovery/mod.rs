@@ -6,12 +6,10 @@ use std::cmp;
 use rama_core::telemetry::tracing::{debug, error, trace};
 
 use crate::proto::{
-    Duration, Instant, TIMER_GRANULARITY, TransportError,
+    Duration, Instant, TIMER_GRANULARITY,
     connection::{Connection, Event, spaces::SentPacket, timer::Timer},
-    frame,
-    packet::SpaceId,
-    range_set::ArrayRangeSet,
 };
+use rama_quic_proto::{TransportError, frame, packet::SpaceId, range_set::ArrayRangeSet};
 
 impl Connection {
     /// Returns the next time at which `handle_timeout` should be called

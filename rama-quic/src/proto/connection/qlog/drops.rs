@@ -3,12 +3,10 @@
 pub(crate) use crate::qlog::event::drops::DropReason;
 use crate::qlog::event::drops::{DropHeader, DropPacketType, PacketDropped};
 
+use rama_quic_proto::packet::{Header, LongType, Packet, PartialDecode, SpaceId};
+
 use super::event::RawInfo;
-use crate::proto::{
-    Instant,
-    connection::Connection,
-    packet::{Header, LongType, Packet, PartialDecode, SpaceId},
-};
+use crate::proto::{Instant, connection::Connection};
 
 /// Only authenticated, expanded packet numbers are recorded. An undecodable header is omitted.
 #[derive(Clone, Copy)]

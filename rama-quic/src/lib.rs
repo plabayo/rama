@@ -48,32 +48,16 @@ pub mod qlog;
 #[cfg(any(feature = "aws-lc", feature = "ring", feature = "boring"))]
 pub use proto::AddressTokenKey;
 pub use proto::{
-    AckFrequencyConfig, ApplicationClose, BloomTokenLog, Chunk, ClientConfig, ClosedStream,
-    ConfigError, CongestionControl, ConnectError, ConnectionClose, ConnectionError, ConnectionId,
-    ConnectionIdGenerator, ConnectionIdGeneratorFactory, ConnectionStats, Dir, EcnCodepoint,
-    EndpointConfig, ExportKeyingMaterialError, FrameStats, FrameType, HashedConnectionIdGenerator,
-    IdleTimeout, InvalidCid, MAX_CID_SIZE, MIN_INITIAL_CONGESTION_WINDOW, MtuDiscoveryConfig,
-    NegotiatedTlsParameters, NoneTokenLog, NoneTokenStore, PathStats, PreferredAddressPolicy,
-    RandomConnectionIdGenerator, ReceiveQueueLimits, RetryRefused, ServerConfig, Side,
-    StdSystemTime, StoredToken, StreamId, TimeSource, TokenLog, TokenMemoryCache, TokenReuseError,
-    TokenStore, TransportConfig, TransportError, TransportErrorCode, UdpStats,
-    ValidationTokenConfig, VarInt, VarIntBoundsExceeded, Written,
+    AckFrequencyConfig, BloomTokenLog, Chunk, ClientConfig, ClosedStream, ConfigError,
+    CongestionControl, ConnectError, ConnectionError, ConnectionIdGenerator,
+    ConnectionIdGeneratorFactory, ConnectionStats, EndpointConfig, ExportKeyingMaterialError,
+    FrameStats, HashedConnectionIdGenerator, IdleTimeout, MIN_INITIAL_CONGESTION_WINDOW,
+    MtuDiscoveryConfig, NegotiatedTlsParameters, NoneTokenLog, NoneTokenStore, PathStats,
+    PreferredAddressPolicy, RandomConnectionIdGenerator, ReceiveQueueLimits, RetryRefused,
+    ServerConfig, StdSystemTime, StoredToken, TimeSource, TokenLog, TokenMemoryCache,
+    TokenReuseError, TokenStore, TransportConfig, UdpStats, ValidationTokenConfig, Written,
 };
 pub use proto::{KEY_MATERIAL_SIZE, StatelessResetKey};
-
-/// QUIC protocol versions.
-///
-/// Version 1 (RFC 9000) and version 2 (RFC 9369) are both implemented. RFC 9368 version
-/// negotiation decides which one a connection uses.
-pub mod version {
-    pub use crate::proto::{
-        DEFAULT_SUPPORTED_VERSIONS, Version,
-        version::{
-            ClientVersionPolicy, ReservedVersionGrease, ServerVersionPolicy, VersionInformation,
-            VersionInformationError, VersionPolicyError, VersionPreference,
-        },
-    };
-}
 
 /// TLS for QUIC: how a connection's identity and application protocol are configured.
 ///
@@ -92,14 +76,10 @@ pub mod tls {
     /// Sessions must preserve the order of [`provider::HandshakeEvent`] values, distinguish read
     /// and write keys, and report TLS failures through Rama's transport error types.
     pub mod provider {
-        pub use crate::proto::SpaceId as EncryptionLevel;
         pub use crate::proto::crypto::{
-            AeadKey, ClientConfig, CryptoError, DirectionalKeys, ExportKeyingMaterialError,
-            HandshakeEvent, HandshakeTokenKey, HeaderKey, InitialKeysError, KeyPair, Keys,
-            PacketKey, ServerConfig, Session, UnsupportedVersion,
-        };
-        pub use rama_quic_proto::transport_parameters::{
-            Error as TransportParametersError, TransportParameters,
+            AeadKey, ClientConfig, DirectionalKeys, ExportKeyingMaterialError, HandshakeEvent,
+            HandshakeTokenKey, InitialKeysError, KeyPair, Keys, ServerConfig, Session,
+            UnsupportedVersion,
         };
     }
 

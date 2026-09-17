@@ -13,8 +13,9 @@
 
 use std::net::SocketAddr;
 
+use rama_quic_proto::{EcnCodepoint, Version};
+
 pub(crate) mod cid_queue;
-pub(crate) use rama_quic_proto::{coding, constant_time, range_set};
 #[cfg(test)]
 #[cfg(any(
     feature = "boring",
@@ -22,10 +23,7 @@ pub(crate) use rama_quic_proto::{coding, constant_time, range_set};
 ))]
 mod tests;
 pub(crate) mod transport_parameters;
-pub(crate) use rama_quic_proto::version;
-pub use rama_quic_proto::version::Version;
 
-pub use rama_quic_proto::{VarInt, VarIntBoundsExceeded};
 mod bloom_token_log;
 pub use bloom_token_log::BloomTokenLog;
 
@@ -62,17 +60,6 @@ pub(crate) use crate::proto::connection::{Datagrams, StreamResourceUsage, Stream
     )
 ))]
 pub(crate) use crate::proto::endpoint::AcceptError;
-#[cfg(all(
-    test,
-    any(
-        feature = "boring",
-        any(
-            feature = "boring",
-            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
-        )
-    )
-))]
-pub(crate) use crate::proto::frame::Datagram;
 #[cfg(feature = "test-utils")]
 pub(crate) use connection::benchmarks;
 
@@ -91,8 +78,6 @@ pub use config::{KEY_MATERIAL_SIZE, StatelessResetKey};
 
 pub(crate) mod crypto;
 
-pub(crate) use rama_quic_proto::frame;
-
 /// Whether a datagram carrying a particular connection ID may go to a particular address.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SendPermit {
@@ -105,8 +90,6 @@ pub(crate) enum SendPermit {
     /// of the datagram that has not already left is dropped.
     Obsolete,
 }
-use crate::proto::frame::Frame;
-pub use crate::proto::frame::{ApplicationClose, ConnectionClose, FrameType};
 
 mod endpoint;
 pub use crate::proto::endpoint::ConnectError;
@@ -117,14 +100,8 @@ pub(crate) use crate::proto::endpoint::{
 
 pub use crate::proto::crypto::{ExportKeyingMaterialError, NegotiatedTlsParameters};
 
-pub use packet::SpaceId;
-pub(crate) use rama_quic_proto::packet;
-
 mod shared;
 pub(crate) use crate::proto::shared::{ConnectionEvent, EndpointEvent};
-pub use rama_quic_proto::{ConnectionId, EcnCodepoint, InvalidCid};
-
-pub use rama_quic_proto::{TransportError, TransportErrorCode};
 
 pub(crate) mod congestion;
 
@@ -135,18 +112,6 @@ pub use crate::proto::cid_generator::{
 };
 
 mod token;
-pub(crate) use rama_quic_proto::ResetToken;
-#[cfg(all(
-    test,
-    any(
-        feature = "boring",
-        any(
-            feature = "boring",
-            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
-        )
-    )
-))]
-pub(crate) use rama_quic_proto::ResetToken as TestResetToken;
 #[cfg(test)]
 pub(crate) use token::reset_token;
 pub use token::{NoneTokenLog, NoneTokenStore, StoredToken, TokenLog, TokenReuseError, TokenStore};
@@ -163,14 +128,14 @@ pub(crate) use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 pub(crate) mod fuzzing {
     pub use crate::proto::connection::{Retransmits, State as ConnectionState, StreamsState};
     pub use crate::proto::connection::{SendStream, Streams};
-    pub use crate::proto::frame::ResetStream;
-    pub use crate::proto::packet::{
+    pub use rama_core::bytes::{BufMut, Bytes, BytesMut};
+    pub use rama_quic_proto::frame::ResetStream;
+    pub use rama_quic_proto::packet::{
         ConnectionIdParser, FixedLengthConnectionIdParser, PartialDecode,
     };
-    pub use rama_core::bytes::{BufMut, Bytes, BytesMut};
     pub use rama_quic_proto::transport_parameters::TransportParameters;
 
-    use crate::proto::{
+    use rama_quic_proto::{
         TransportError,
         frame::{Frame, Iter},
     };
@@ -239,7 +204,7 @@ pub(crate) mod fuzzing {
 ///
 /// Draft versions remain decodable for explicit test fixtures but are not offered as
 /// product support.
-pub const DEFAULT_SUPPORTED_VERSIONS: &[Version] = &[Version::V1, Version::V2];
+pub(crate) const DEFAULT_SUPPORTED_VERSIONS: &[Version] = &[Version::V1, Version::V2];
 
 /// Pre-standard draft versions 29 through 34, kept only for explicit tests.
 #[cfg(test)]
@@ -251,8 +216,6 @@ pub(crate) const DRAFT_VERSIONS: &[Version] = &[
     Version::from_u32(0xff00_0021),
     Version::from_u32(0xff00_0022),
 ];
-
-pub use rama_quic_proto::{Dir, Side, StreamId};
 
 #[derive(Debug)]
 #[must_use]
@@ -280,11 +243,8 @@ pub(crate) struct Transmit {
 
 /// The maximum number of CIDs we bother to issue per connection
 const LOC_CID_COUNT: u64 = 8;
-pub use rama_quic_proto::MAX_CID_SIZE;
-pub(crate) use rama_quic_proto::RESET_TOKEN_SIZE;
 pub(crate) const MIN_INITIAL_SIZE: u16 = 1200;
 /// <https://www.rfc-editor.org/rfc/rfc9000.html#name-datagram-size>
 pub(crate) const INITIAL_MTU: u16 = 1200;
 const MAX_UDP_PAYLOAD: u16 = 65527;
 const TIMER_GRANULARITY: Duration = Duration::from_millis(1);
-pub(crate) use rama_quic_proto::MAX_STREAM_COUNT;

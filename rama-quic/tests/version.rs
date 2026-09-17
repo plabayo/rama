@@ -14,7 +14,8 @@ mod runtime;
 use std::net::{Ipv4Addr, SocketAddr};
 
 use rama_core::rt::Executor;
-use rama_quic::{Endpoint, version::Version};
+use rama_quic::Endpoint;
+use rama_quic_proto::Version;
 use runtime::Identities;
 
 async fn loopback_endpoint(server: Option<rama_quic::ServerConfig>) -> Endpoint {
@@ -134,7 +135,7 @@ async fn an_offer_without_a_common_version_ends_the_attempt() {
 /// looks like a downgrade, and the client refuses the connection.
 #[tokio::test]
 async fn a_restart_that_the_servers_deployed_list_contradicts_is_refused() {
-    use rama_quic::version::ServerVersionPolicy;
+    use rama_quic_proto::version::ServerVersionPolicy;
 
     let identities = Identities::new();
     let mut config = identities.server_config();
@@ -164,7 +165,7 @@ async fn a_restart_that_the_servers_deployed_list_contradicts_is_refused() {
     match error {
         rama_quic::ConnectionError::TransportError(error) => assert_eq!(
             error.code(),
-            rama_quic::TransportErrorCode::VERSION_NEGOTIATION_ERROR
+            rama_quic_proto::TransportErrorCode::VERSION_NEGOTIATION_ERROR
         ),
         other => panic!("expected a version negotiation error, got {other:?}"),
     }

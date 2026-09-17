@@ -1,7 +1,7 @@
 //! Network tuple, migration, and recovery configuration event data.
 
 use super::{Initiator, TupleId};
-use crate::ConnectionId;
+use rama_quic_proto::ConnectionId;
 use serde::Serialize;
 use std::net::{Ipv4Addr, Ipv6Addr};
 

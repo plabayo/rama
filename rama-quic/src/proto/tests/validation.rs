@@ -21,7 +21,8 @@ use super::{
     util::{CLIENT_PORTS, Pair},
 };
 
-use crate::proto::{Duration, MIN_INITIAL_SIZE, TransportErrorCode, connection::ConnectionError};
+use crate::proto::{Duration, MIN_INITIAL_SIZE, connection::ConnectionError};
+use rama_quic_proto::TransportErrorCode;
 
 /// Move the client to a fresh address and put its ping on the wire, without letting the
 /// server answer yet. Answers the address it moved to.

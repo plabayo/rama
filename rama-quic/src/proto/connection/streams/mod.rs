@@ -7,11 +7,8 @@ use rama_core::bytes::Bytes;
 use rama_core::telemetry::tracing::trace;
 
 use super::spaces::{Retransmits, ThinRetransmits};
-use crate::proto::{
-    Dir, StreamId, VarInt,
-    connection::streams::state::{get_or_insert_recv, get_or_insert_send},
-    frame,
-};
+use crate::proto::connection::streams::state::{get_or_insert_recv, get_or_insert_send};
+use rama_quic_proto::{Dir, StreamId, VarInt, frame};
 
 mod recv;
 use recv::Recv;

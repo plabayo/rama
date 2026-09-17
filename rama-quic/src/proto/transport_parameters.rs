@@ -4,19 +4,15 @@
 //! [`rama_quic_proto::transport_parameters`]; this module only maps the engine's typed config into
 //! an outgoing [`TransportParameters`] and derives engine-local CID limits.
 
-pub(crate) use rama_quic_proto::transport_parameters::*;
+use rama_quic_proto::{ConnectionId, VarInt, profile::GreaseParameter, transport_parameters::*};
 
 use rand::Rng;
 
-use crate::{
-    profile::GreaseParameter,
-    proto::{
-        LOC_CID_COUNT, TIMER_GRANULARITY, VarInt,
-        cid_generator::ConnectionIdGenerator,
-        cid_queue::CidQueue,
-        config::{EndpointConfig, ServerConfig, TransportConfig},
-        shared::ConnectionId,
-    },
+use crate::proto::{
+    LOC_CID_COUNT, TIMER_GRANULARITY,
+    cid_generator::ConnectionIdGenerator,
+    cid_queue::CidQueue,
+    config::{EndpointConfig, ServerConfig, TransportConfig},
 };
 
 /// Build the outgoing transport parameters for a connection from its typed configuration and wire

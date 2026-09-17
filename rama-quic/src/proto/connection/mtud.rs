@@ -1,5 +1,6 @@
-use crate::proto::{Instant, MAX_UDP_PAYLOAD, MtuDiscoveryConfig, packet::SpaceId};
+use crate::proto::{Instant, MAX_UDP_PAYLOAD, MtuDiscoveryConfig};
 use rama_core::telemetry::tracing::trace;
+use rama_quic_proto::packet::SpaceId;
 use std::cmp;
 
 /// Implements Datagram Packetization Layer Path Maximum Transmission Unit Discovery
@@ -554,7 +555,7 @@ mod tests {
     use super::*;
     use crate::proto::Duration;
     use crate::proto::MAX_UDP_PAYLOAD;
-    use crate::proto::packet::SpaceId;
+    use rama_quic_proto::packet::SpaceId;
 
     fn default_mtud() -> MtuDiscovery {
         let config = MtuDiscoveryConfig::default();

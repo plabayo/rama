@@ -12,10 +12,8 @@ use rama_core::telemetry::tracing::trace;
 use ahash::{HashMap, HashMapExt as _};
 use parking_lot::Mutex;
 
-use crate::proto::{
-    Version,
-    token::{StoredToken, TokenStore},
-};
+use crate::proto::token::{StoredToken, TokenStore};
+use rama_quic_proto::Version;
 
 /// `TokenStore` implementation that stores up to `N` tokens per server name for up to a
 /// limited number of server names, in-memory

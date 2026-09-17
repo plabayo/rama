@@ -7,12 +7,12 @@ use std::{
 
 use crate::proto::{
     Chunk, Chunks, ClosedStream, ConnectionError, ReadError as ProtoReadError, ReadableError,
-    StreamId,
 };
 use rama_core::bytes::Bytes;
+use rama_quic_proto::{StreamId, VarInt};
 use tokio::io::ReadBuf;
 
-use crate::driver::{VarInt, connection::ConnectionRef};
+use crate::driver::connection::ConnectionRef;
 
 /// A stream that can only be used to receive data
 ///

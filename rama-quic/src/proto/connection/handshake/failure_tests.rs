@@ -1,8 +1,11 @@
 use super::*;
 use crate::proto::{
-    ConnectionId, Side, TransportErrorCode, Version,
-    crypto::{ExportKeyingMaterialError, HeaderKey, PacketKey, Session},
+    crypto::{ExportKeyingMaterialError, Session},
     tests::Pair,
+};
+use rama_quic_proto::{
+    ConnectionId, Side, TransportErrorCode, Version,
+    crypto::{HeaderKey, PacketKey},
 };
 
 struct FailedKeyUpdate {
@@ -85,12 +88,22 @@ fn failed_key_derivation_closes_without_rotating_or_counting_an_update() {
 struct FailedEncryption;
 
 impl PacketKey for FailedEncryption {
-    fn encrypt(&self, _: u64, buffer: &mut [u8], _: usize) -> Result<(), crypto::CryptoError> {
+    fn encrypt(
+        &self,
+        _: u64,
+        buffer: &mut [u8],
+        _: usize,
+    ) -> Result<(), rama_quic_proto::crypto::CryptoError> {
         buffer.fill(0x42);
-        Err(crypto::CryptoError::new())
+        Err(rama_quic_proto::crypto::CryptoError::new())
     }
-    fn decrypt(&self, _: u64, _: &[u8], _: &mut BytesMut) -> Result<(), crypto::CryptoError> {
-        Err(crypto::CryptoError::new())
+    fn decrypt(
+        &self,
+        _: u64,
+        _: &[u8],
+        _: &mut BytesMut,
+    ) -> Result<(), rama_quic_proto::crypto::CryptoError> {
+        Err(rama_quic_proto::crypto::CryptoError::new())
     }
     fn tag_len(&self) -> usize {
         16

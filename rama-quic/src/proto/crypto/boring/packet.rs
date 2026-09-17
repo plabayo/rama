@@ -5,10 +5,10 @@ use rama_core::{
 use rama_crypto::dep::boring::{aead, aes::AesEncryptKey, chacha, hash::MessageDigest, hkdf};
 use zeroize::Zeroizing;
 
-use crate::proto::{
-    Side, Version,
-    crypto::{self, CryptoError, DirectionalKeys, Keys},
-    shared::ConnectionId,
+use crate::proto::crypto::{self, DirectionalKeys, Keys};
+use rama_quic_proto::{
+    ConnectionId, Side, Version,
+    crypto::CryptoError,
     version::{Labels, Wire},
 };
 
@@ -288,8 +288,11 @@ impl crypto::HeaderKey for HeaderKey {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proto::crypto::{HeaderKey as _, PacketKey as _};
-    use crate::proto::version::V1_WIRE;
+
+    use rama_quic_proto::{
+        crypto::{HeaderKey as _, PacketKey as _},
+        version::V1_WIRE,
+    };
 
     /// HMAC (RFC 2104) over one of the TLS 1.3 hashes. Written out here rather than taken
     /// from the crypto backend, so the expectations below come from an implementation
@@ -470,7 +473,7 @@ mod tests {
     /// `quicv2` labels.
     #[test]
     fn rfc9369_chacha_short_header_and_key_update() {
-        use crate::proto::version::V2_WIRE;
+        use rama_quic_proto::version::V2_WIRE;
         let secret = Secret::new(
             Suite::ChaCha20Poly1305,
             &hex("9ac312a7f877468ebe69422748ad00a15443f18203a07d6060f688f30f21632b"),

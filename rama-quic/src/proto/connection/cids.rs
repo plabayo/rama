@@ -6,17 +6,16 @@ use std::{net::SocketAddr, ops::Range};
 use rama_core::telemetry::tracing::debug;
 
 use crate::proto::{
-    Instant, TransportError,
+    Instant,
     cid_queue::{CidQueue, OwnedRemotes, Retired, RouteDelta},
     connection::{Connection, ConnectionError, ConnectionSide},
-    frame::Close,
-    packet::SpaceId,
-    shared::{ConnectionId, EndpointEventInner, ResetToken},
+    shared::EndpointEventInner,
     transport_parameters,
 };
+use rama_quic_proto::{ConnectionId, ResetToken, TransportError, frame::Close, packet::SpaceId};
 
 #[cfg(test)]
-use crate::proto::frame;
+use rama_quic_proto::frame;
 
 impl Connection {
     /// The identifier this endpoint's generator made for the handshake. Later ones are issued

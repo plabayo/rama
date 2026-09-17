@@ -4,7 +4,8 @@ use rama_crypto::{
 };
 use zeroize::Zeroizing;
 
-use crate::proto::crypto::{AeadKey, CryptoError, HandshakeTokenKey};
+use crate::proto::crypto::{AeadKey, HandshakeTokenKey};
+use rama_quic_proto::crypto::CryptoError;
 
 pub(crate) struct TokenKey(Zeroizing<[u8; 32]>);
 

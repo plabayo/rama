@@ -22,7 +22,8 @@ use std::{
 };
 
 use rama_core::rt::{Executor, spawn};
-use rama_quic::{Endpoint, ReadError, VarInt, WriteError};
+use rama_quic::{Endpoint, ReadError, WriteError};
+use rama_quic_proto::VarInt;
 
 use runtime::{Identities, connect};
 

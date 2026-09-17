@@ -20,7 +20,7 @@ use rustc_hash::FxHashMap;
 use tokio::sync::{Notify, futures::Notified, oneshot};
 
 use crate::driver::{
-    Duration, IO_LOOP_BOUND, QueuedPacket, VarInt,
+    Duration, IO_LOOP_BOUND, QueuedPacket,
     endpoint::{EndpointInner, LocalSocket},
     now,
     queue::{BoundedReceiver, PacketBudget, PacketQueueStats},
@@ -31,10 +31,10 @@ use crate::driver::{
     udp::{FailureLog, Sender},
 };
 use crate::proto::{
-    ConnectionError, ConnectionHandle, ConnectionId, ConnectionStats, Dir, EndpointEvent, Event,
-    NegotiatedTlsParameters, SendDatagramError as ProtoSendDatagramError, SendPermit, Side,
-    StreamEvent, StreamId,
+    ConnectionError, ConnectionHandle, ConnectionStats, EndpointEvent, Event,
+    NegotiatedTlsParameters, SendDatagramError as ProtoSendDatagramError, SendPermit, StreamEvent,
 };
+use rama_quic_proto::{ConnectionId, Dir, Side, StreamId, VarInt};
 
 /// Tests: the bytes a connection keeps allocated for sending, split by where they are.
 #[cfg(all(
@@ -206,7 +206,7 @@ impl Connecting {
     /// Version Negotiation packets and checks the server's `version_information` against it.
     fn restart_after_version_negotiation(
         &mut self,
-        offered: Vec<crate::proto::Version>,
+        offered: Vec<rama_quic_proto::Version>,
     ) -> Result<(), ConnectionError> {
         let mismatch = |offered| ConnectionError::VersionMismatch { offered };
         let Some(restart) = self.restart.take() else {
@@ -226,7 +226,7 @@ impl Connecting {
             .connect_with(config, restart.addr, &restart.server_name)
             .map_err(|error| {
                 ConnectionError::from(
-                    crate::proto::TransportError::INTERNAL_ERROR(
+                    rama_quic_proto::TransportError::INTERNAL_ERROR(
                         "restart after Version Negotiation failed",
                     )
                     .with_cause(error),
@@ -328,7 +328,7 @@ impl Connecting {
                     .handshake_summary()
                     .ok_or_else(|| {
                         inner.error.clone().unwrap_or_else(|| {
-                            crate::proto::TransportError::INTERNAL_ERROR(
+                            rama_quic_proto::TransportError::INTERNAL_ERROR(
                                 "TLS session did not provide handshake metadata",
                             )
                             .into()
@@ -425,8 +425,10 @@ impl Future for ZeroRttAccepted {
 }
 
 fn handshake_driver_stopped() -> ConnectionError {
-    crate::proto::TransportError::INTERNAL_ERROR("QUIC handshake driver stopped without a result")
-        .into()
+    rama_quic_proto::TransportError::INTERNAL_ERROR(
+        "QUIC handshake driver stopped without a result",
+    )
+    .into()
 }
 
 /// The endpoint side of a connection's control path.
@@ -819,7 +821,7 @@ impl Drop for ConnectionDriver {
             conn.packets.close();
             if conn.error.is_none() {
                 conn.terminate(
-                    crate::proto::TransportError::INTERNAL_ERROR("QUIC driver stopped").into(),
+                    rama_quic_proto::TransportError::INTERNAL_ERROR("QUIC driver stopped").into(),
                     &self.conn.shared,
                 );
             }
@@ -1504,13 +1506,13 @@ impl Connection {
 
     /// The QUIC version this connection runs in: the client's first flight version, or the
     /// compatible version the server moved it to (RFC 9368).
-    pub fn version(&self) -> crate::proto::Version {
+    pub fn version(&self) -> rama_quic_proto::Version {
         self.0.state.lock().inner.version()
     }
 
     /// The QUIC version of the client's first flight, which differs from [`Self::version`]
     /// only after compatible version negotiation moved the connection (RFC 9368 §2.3).
-    pub fn original_version(&self) -> crate::proto::Version {
+    pub fn original_version(&self) -> rama_quic_proto::Version {
         self.0.state.lock().inner.original_version()
     }
 
@@ -2356,8 +2358,9 @@ impl State {
         keep_going |= match self.drive_transmit(cx) {
             Ok(keep_going) => keep_going,
             Err(error) => {
-                let reason = crate::proto::TransportError::INTERNAL_ERROR("QUIC UDP send failed")
-                    .with_cause(error);
+                let reason =
+                    rama_quic_proto::TransportError::INTERNAL_ERROR("QUIC UDP send failed")
+                        .with_cause(error);
                 self.terminate(reason.into(), shared);
                 return Poll::Ready(Ok(()));
             }
@@ -2386,7 +2389,7 @@ impl State {
         }
         if self.error.is_none() {
             self.terminate(
-                crate::proto::TransportError::INTERNAL_ERROR(
+                rama_quic_proto::TransportError::INTERNAL_ERROR(
                     "QUIC engine drained without a close reason",
                 )
                 .into(),
@@ -3034,8 +3037,8 @@ impl State {
                 }
                 Poll::Ready(None) => {
                     return Err(ConnectionError::TransportError(
-                        crate::proto::TransportError::new(
-                            crate::proto::TransportErrorCode::INTERNAL_ERROR,
+                        rama_quic_proto::TransportError::new(
+                            rama_quic_proto::TransportErrorCode::INTERNAL_ERROR,
                             "endpoint driver future was dropped",
                         ),
                     ));
@@ -3169,7 +3172,7 @@ impl State {
 
     /// The local socket failed and this connection has no address it may send from any more.
     fn lose_path(&mut self, shared: &Shared) {
-        let reason = crate::proto::TransportError::INTERNAL_ERROR(
+        let reason = rama_quic_proto::TransportError::INTERNAL_ERROR(
             "QUIC local socket failed and this connection may not migrate now",
         )
         .with_cause(io::Error::new(

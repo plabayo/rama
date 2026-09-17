@@ -4,13 +4,12 @@
 //! about loss recovery or reassembly changes; only the arrangement an observer sees does.
 
 use rama_core::bytes::Bytes;
-use rand::{Rng, RngExt, seq::SliceRandom as _};
-
-use crate::proto::{
+use rama_quic_proto::{
     VarInt,
     coding::BufMutExt,
     frame::{self, Frame, FrameType},
 };
+use rand::{Rng, RngExt, seq::SliceRandom as _};
 
 /// A CRYPTO fragment as it will be written.
 struct Fragment {

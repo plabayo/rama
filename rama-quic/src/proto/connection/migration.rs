@@ -11,7 +11,7 @@ use rama_core::telemetry::tracing::{debug, trace};
 use rand::RngExt;
 
 use crate::proto::{
-    Instant, TransportError,
+    Instant,
     connection::{
         Connection, ConnectionSide,
         paths::{Challenge, PathData},
@@ -19,9 +19,8 @@ use crate::proto::{
         qlog::path::MigrationState,
         timer::Timer,
     },
-    packet::SpaceId,
-    shared::ConnectionId,
 };
+use rama_quic_proto::{ConnectionId, TransportError, packet::SpaceId};
 
 /// How many times the expanded validation is attempted before the path is given up. Each
 /// attempt costs a full-size datagram, and running out of them abandons the path rather than

@@ -7,11 +7,11 @@ use rama_core::bytes::{Buf, BufMut, Bytes};
 use rama_crypto::hmac::HmacSha2;
 use rand::{Rng, RngExt};
 
-use crate::proto::{
-    ConnectionId, Duration, RESET_TOKEN_SIZE, ResetToken, ServerConfig, SystemTime, UNIX_EPOCH,
-    Version,
+use crate::proto::{Duration, ServerConfig, SystemTime, UNIX_EPOCH, crypto::HandshakeTokenKey};
+use rama_quic_proto::{
+    ConnectionId, RESET_TOKEN_SIZE, ResetToken, Version,
     coding::{BufExt, BufMutExt},
-    crypto::{CryptoError, HandshakeTokenKey},
+    crypto::CryptoError,
     packet::InitialHeader,
 };
 
@@ -485,7 +485,7 @@ mod test {
     /// the reset token is the first 16 bytes of HMAC-SHA256(key, cid).
     #[test]
     fn reset_tokens_are_the_hmac_prefix_and_differ_per_key_and_cid() {
-        use crate::proto::ConnectionId;
+        use rama_quic_proto::ConnectionId;
         let key_bytes: [u8; 32] = std::array::from_fn(|i| i as u8);
         let other_key_bytes: [u8; 32] = std::array::from_fn(|i| i as u8 + 1);
         let key = hkdf_free_hmac(&key_bytes);

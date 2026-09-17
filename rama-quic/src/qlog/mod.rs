@@ -49,7 +49,7 @@ use std::time::Instant;
 #[derive(Debug)]
 pub struct QlogEventView<'a> {
     /// Stable connection group identifier, also available through `Connection::trace_id`.
-    pub group_id: crate::ConnectionId,
+    pub group_id: rama_quic_proto::ConnectionId,
     /// Monotonic observation time; encoders choose its representation relative to the trace epoch.
     pub time: Instant,
     /// Schema-defined fields, including optional path scope.

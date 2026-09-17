@@ -4,7 +4,7 @@
 //! turns one into this engine's [`EndpointConfig`], [`ClientConfig`] and [`ServerConfig`], and
 //! reads a first flight back through [`capture`].
 
-pub(crate) use rama_quic_proto::profile::*;
+use rama_quic_proto::{VarInt, profile::*};
 
 pub mod capture;
 
@@ -29,7 +29,7 @@ mod tests;
 use std::sync::Arc;
 
 use crate::proto::{
-    ClientConfig, ConfigError, EndpointConfig, ServerConfig, TransportConfig, VarInt,
+    ClientConfig, ConfigError, EndpointConfig, ServerConfig, TransportConfig,
     cid_generator::{ConnectionIdGenerator as _, RandomConnectionIdGenerator},
     cid_queue::CidQueue,
 };

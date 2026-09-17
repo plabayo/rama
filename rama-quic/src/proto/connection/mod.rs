@@ -8,14 +8,16 @@ use rama_core::bytes::Bytes;
 use rand::{RngExt, SeedableRng, rngs::StdRng};
 
 use crate::proto::{
-    Dir, Duration, EndpointConfig, Instant, Side, StreamId, TransportError, VarInt, Version,
+    Duration, EndpointConfig, Instant,
     cid_generator::ConnectionIdGenerator,
     cid_queue::CidQueue,
     config::TransportConfig,
-    crypto::{self, KeyPair, PacketKey},
-    packet::SpaceId,
-    shared::{ConnectionId, EndpointEventInner},
-    transport_parameters::TransportParameters,
+    crypto::{self, KeyPair},
+    shared::EndpointEventInner,
+};
+use rama_quic_proto::{
+    ConnectionId, Dir, Side, StreamId, TransportError, VarInt, Version, crypto::PacketKey,
+    packet::SpaceId, transport_parameters::TransportParameters,
 };
 
 mod ack_frequency;

@@ -11,6 +11,12 @@
 mod failure_tests;
 
 use crate::qlog::event::negotiation::KeyChangeTrigger;
+use rama_quic_proto::{
+    EcnCodepoint, TransportError, VarInt, Version, frame,
+    packet::{InitialPacket, SpaceId},
+    transport_parameters::TransportParameters,
+    version::VersionInformation,
+};
 use std::{cmp, mem, net::SocketAddr};
 
 use rama_core::{
@@ -19,18 +25,13 @@ use rama_core::{
 };
 
 use crate::proto::{
-    Duration, Instant, TransportError, VarInt, Version,
+    Duration, Instant,
     connection::{
         Connection, ConnectionError, ConnectionSide, Event, State,
         packet_crypto::{PrevCrypto, ZeroRttCrypto},
         timer::Timer,
     },
     crypto::{self, HandshakeEvent, KeyPair, Keys},
-    frame,
-    packet::{InitialPacket, SpaceId},
-    shared::EcnCodepoint,
-    transport_parameters::TransportParameters,
-    version::VersionInformation,
 };
 
 impl Connection {

@@ -18,7 +18,8 @@ use std::{
 };
 
 use rama_core::rt::{Executor, spawn};
-use rama_quic::{ConnectionError, Endpoint, ShutdownOutcome, VarInt};
+use rama_quic::{ConnectionError, Endpoint, ShutdownOutcome};
+use rama_quic_proto::VarInt;
 use runtime::{Identities, connect, exchange};
 
 fn localhost() -> SocketAddr {

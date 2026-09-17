@@ -1,11 +1,16 @@
 use rama_core::telemetry::tracing::{debug, trace};
 
-use crate::proto::Instant;
-use crate::proto::ResetToken;
-use crate::proto::connection::{qlog::drops::DropReason, spaces::PacketSpaces};
-use crate::proto::crypto::{HeaderKey, KeyPair, Keys, PacketKey};
-use crate::proto::packet::{Packet, PartialDecode, SpaceId};
-use crate::proto::{RESET_TOKEN_SIZE, TransportError, Version};
+use rama_quic_proto::{
+    RESET_TOKEN_SIZE, ResetToken, TransportError, Version,
+    crypto::{HeaderKey, PacketKey},
+    packet::{Packet, PartialDecode, SpaceId},
+};
+
+use crate::proto::{
+    Instant,
+    connection::{qlog::drops::DropReason, spaces::PacketSpaces},
+    crypto::{KeyPair, Keys},
+};
 
 /// Removes header protection of a packet, or returns the reason the packet was dropped
 pub(super) fn unprotect_header(
@@ -53,7 +58,7 @@ pub(super) fn unprotect_header(
     let packet = partial_decode.data();
     let stateless_reset = packet.len() >= RESET_TOKEN_SIZE + 5
         && stateless_reset_tokens.iter().flatten().any(|token| {
-            crate::proto::constant_time::eq(token, &packet[packet.len() - RESET_TOKEN_SIZE..])
+            rama_quic_proto::constant_time::eq(token, &packet[packet.len() - RESET_TOKEN_SIZE..])
         });
 
     match partial_decode.finish(header_crypto) {

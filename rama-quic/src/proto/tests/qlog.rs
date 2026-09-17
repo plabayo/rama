@@ -1,6 +1,7 @@
 use super::*;
 use crate::qlog::QlogConfig;
 use parking_lot::Mutex;
+use rama_quic_proto::{Dir, VarInt, packet};
 use std::{
     io,
     pin::Pin,

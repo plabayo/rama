@@ -1,4 +1,9 @@
 use crate::proto::{Duration, connection::recovery::persistent_congestion_period};
+use rama_quic_proto::{
+    coding::BufMutExt,
+    frame::{self, EcnCounts},
+    packet::SpaceId,
+};
 
 #[test]
 fn persistent_congestion_period_saturates() {
@@ -40,7 +45,6 @@ fn loss_delay_respects_granularity_and_saturates_extreme_factors() {
 
 impl super::Connection {
     pub(crate) fn acknowledge_handshake_for_pto_test(&mut self, now: crate::proto::Instant) {
-        use crate::proto::{coding::BufMutExt, frame, packet::SpaceId};
         let Some((&largest, _)) = self.spaces[SpaceId::Handshake]
             .sent_packets
             .last_key_value()
@@ -143,7 +147,7 @@ impl crate::proto::congestion::Controller for LossRecorder {
 
 impl super::Connection {
     pub(crate) fn assert_mixed_path_loss_is_scoped(&mut self, now: crate::proto::Instant) {
-        use crate::proto::{connection::spaces::SentPacket, packet::SpaceId};
+        use crate::proto::connection::spaces::SentPacket;
         self.replace_recovery_path_for_test(now);
         let recorder = LossRecorder::default();
         self.path.congestion = Box::new(recorder.clone());
@@ -192,7 +196,6 @@ impl super::Connection {
         &mut self,
         now: crate::proto::Instant,
     ) {
-        use crate::proto::{frame::EcnCounts, packet::SpaceId};
         self.replace_recovery_path_for_test(now);
         let recorder = LossRecorder::default();
         self.path.congestion = Box::new(recorder.clone());
@@ -235,11 +238,7 @@ impl super::Connection {
         &mut self,
         now: crate::proto::Instant,
     ) {
-        use crate::proto::{
-            connection::{paths::RttEstimator, spaces::SentPacket},
-            frame,
-            packet::SpaceId,
-        };
+        use crate::proto::connection::{paths::RttEstimator, spaces::SentPacket};
         use rama_core::bytes::Bytes;
 
         self.skip_no_packet_number();
@@ -248,7 +247,7 @@ impl super::Connection {
             .rtt
             .update(Duration::ZERO, Duration::from_millis(50));
         self.ack_frequency.peer_max_ack_delay = Duration::from_millis(25);
-        self.peer_params.ack_delay_exponent = crate::proto::VarInt::from_u32(3);
+        self.peer_params.ack_delay_exponent = rama_quic_proto::VarInt::from_u32(3);
         let packet = self.spaces[SpaceId::Data].get_tx_number();
         self.path.sent(
             packet,

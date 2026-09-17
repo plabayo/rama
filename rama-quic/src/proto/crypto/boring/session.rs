@@ -16,14 +16,13 @@ use std::{collections::VecDeque, sync::Arc};
 use zeroize::Zeroizing;
 
 use super::packet::{self, Secret, Suite};
-use crate::proto::{
-    Side, TransportError, TransportErrorCode, Version,
-    crypto::{
-        self, DirectionalKeys, HandshakeEvent, HeaderKey, KeyPair, Keys, PacketKey,
-        UnsupportedVersion,
-    },
+use crate::proto::crypto::{
+    self, DirectionalKeys, HandshakeEvent, KeyPair, Keys, UnsupportedVersion,
+};
+use rama_quic_proto::{
+    ConnectionId, Side, TransportError, TransportErrorCode, Version,
+    crypto::{HeaderKey, PacketKey},
     packet::SpaceId,
-    shared::ConnectionId,
     transport_parameters::TransportParameters,
     version::Wire,
 };

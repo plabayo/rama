@@ -18,6 +18,14 @@ use crate::proto::{
     Duration, Instant,
     cid_generator::{ConnectionIdGenerator, RandomConnectionIdGenerator},
     connection::PreferredAddressState,
+};
+use rama_quic_proto::{
+    ConnectionId, Dir, RESET_TOKEN_SIZE, ResetToken, ResetToken as TestResetToken, TransportError,
+    TransportErrorCode, VarInt, frame,
+    frame::ApplicationClose,
+    frame::ConnectionClose,
+    frame::Datagram,
+    frame::Frame,
     frame::FrameStruct,
     packet::{Header, InitialHeader, PacketNumber},
     transport_parameters::TransportParameters,
@@ -338,7 +346,7 @@ fn stateless_reset_with_a_foreign_key_is_ignored() {
         .map(|(_, buffer)| buffer.clone())
         .expect("the ping produced a packet");
     assert_eq!(
-        packet[0] & crate::proto::packet::LONG_HEADER_FORM,
+        packet[0] & rama_quic_proto::packet::LONG_HEADER_FORM,
         0,
         "short header expected"
     );
@@ -6476,7 +6484,7 @@ fn a_distant_switch_names_a_bounded_set_of_numbers() {
                 sequence: far,
                 retire_prior_to: 0,
                 id: ConnectionId::new(&[0x6A; 8]),
-                reset_token: ResetToken::from([0x6B; crate::proto::RESET_TOKEN_SIZE]),
+                reset_token: ResetToken::from([0x6B; rama_quic_proto::RESET_TOKEN_SIZE]),
             },
         )
         .expect("a distant identifier is legal");
@@ -6538,7 +6546,7 @@ fn a_distant_retirement_names_a_bounded_set_of_numbers() {
                 sequence: far,
                 retire_prior_to: far,
                 id: ConnectionId::new(&[0x5A; 8]),
-                reset_token: ResetToken::from([0x5B; crate::proto::RESET_TOKEN_SIZE]),
+                reset_token: ResetToken::from([0x5B; rama_quic_proto::RESET_TOKEN_SIZE]),
             },
         )
         .expect("a distant frame is applied rather than closing the connection");
@@ -6577,7 +6585,7 @@ fn a_distant_retirement_names_a_bounded_set_of_numbers() {
                 sequence: late,
                 retire_prior_to: 0,
                 id: ConnectionId::new(&[0x5C; 8]),
-                reset_token: ResetToken::from([0x5D; crate::proto::RESET_TOKEN_SIZE]),
+                reset_token: ResetToken::from([0x5D; rama_quic_proto::RESET_TOKEN_SIZE]),
             },
         )
         .err();
@@ -7387,7 +7395,7 @@ fn a_deferred_protocol_error_is_reported_as_itself() {
     match &reasons[0] {
         ConnectionError::TransportError(error) => assert_eq!(
             error.code,
-            crate::proto::TransportErrorCode::CONNECTION_ID_LIMIT_ERROR,
+            rama_quic_proto::TransportErrorCode::CONNECTION_ID_LIMIT_ERROR,
             "the code the failure carried, not a substitute"
         ),
         other => panic!("expected the original transport error, got {other:?}"),
@@ -7708,7 +7716,7 @@ fn two_connections_on_one_endpoint_keep_their_own_arrivals_and_deadlines() {
     let now = pair.time;
     pair.server_conn_mut(server_a).close(
         now,
-        crate::proto::VarInt::from_u32(0),
+        rama_quic_proto::VarInt::from_u32(0),
         rama_core::bytes::Bytes::new(),
     );
     drive_settled(&mut pair);
@@ -7761,7 +7769,7 @@ fn an_endpoint_with_no_room_refuses_the_route_and_indexes_nothing() {
             Ipv4Addr::new(127, 1, (step / 250) as u8, (step % 250) as u8).into(),
             4433,
         );
-        let token = TestResetToken::from([step as u8; crate::proto::RESET_TOKEN_SIZE]);
+        let token = TestResetToken::from([step as u8; rama_quic_proto::RESET_TOKEN_SIZE]);
         let answer = pair.client.endpoint.handle_event(
             client_ch,
             EndpointEvent(EndpointEventInner::ResetTokenUsed(

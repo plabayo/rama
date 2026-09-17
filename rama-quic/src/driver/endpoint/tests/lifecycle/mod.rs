@@ -8,8 +8,9 @@ use crate::driver::endpoint::*;
 use crate::driver::lifecycle::ShutdownOutcome;
 use crate::driver::queue::{MIN_RETAINED, QUIET_DRAINS_BEFORE_SHRINK};
 use crate::driver::sockets::MAX_RETAINED_SOCKETS;
-use crate::proto::{CongestionControl, RetryRefused, TransportConfig, Version};
+use crate::proto::{CongestionControl, RetryRefused, TransportConfig};
 use rama_crypto::hmac::HmacSha2;
+use rama_quic_proto::Version;
 use rama_tls::{
     client::TlsClientConfig,
     server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
@@ -1619,7 +1620,7 @@ async fn attempts_received_before_rebinding_are_answered_on_their_own_socket() {
         .unwrap_err();
     assert!(
         matches!(error, ConnectionError::ConnectionClosed(ref close)
-            if close.error_code == crate::proto::TransportErrorCode::CONNECTION_REFUSED),
+            if close.error_code == rama_quic_proto::TransportErrorCode::CONNECTION_REFUSED),
         "{error:?}"
     );
 
@@ -1749,7 +1750,7 @@ async fn dropped_and_ignored_attempts_release_their_socket() {
         .unwrap_err();
     assert!(
         matches!(error, ConnectionError::ConnectionClosed(ref close)
-            if close.error_code == crate::proto::TransportErrorCode::CONNECTION_REFUSED),
+            if close.error_code == rama_quic_proto::TransportErrorCode::CONNECTION_REFUSED),
         "{error:?}"
     );
     assert_eq!(server.stats().refused_handshakes, refused_before + 1);
@@ -3792,7 +3793,7 @@ fn assert_local_path_error(error: &ConnectionError) {
     };
     assert_eq!(
         transport.code,
-        crate::proto::TransportErrorCode::INTERNAL_ERROR
+        rama_quic_proto::TransportErrorCode::INTERNAL_ERROR
     );
     assert!(
         transport.reason.contains("may not migrate"),
@@ -4943,7 +4944,7 @@ async fn a_refused_route_closes_the_connection_with_its_cause() {
         ConnectionError::TransportError(error) => {
             assert_eq!(
                 error.code,
-                crate::proto::TransportErrorCode::INTERNAL_ERROR,
+                rama_quic_proto::TransportErrorCode::INTERNAL_ERROR,
                 "{error:?}"
             );
             assert_eq!(
@@ -6540,7 +6541,7 @@ fn stateless_reset_for(key: &HmacSha2, cid: &[u8]) -> Vec<u8> {
     datagram.extend_from_slice(&[0xab; 40]);
     datagram.extend_from_slice(&crate::proto::reset_token(
         key,
-        crate::proto::ConnectionId::new(cid),
+        rama_quic_proto::ConnectionId::new(cid),
     ));
     datagram
 }
@@ -6871,24 +6872,25 @@ async fn an_accept_error_wakes_the_parked_endpoint_to_send_its_response() {
         fn initial_keys(
             &self,
             version: Version,
-            cid: &crate::proto::ConnectionId,
+            cid: &rama_quic_proto::ConnectionId,
         ) -> Result<crate::proto::crypto::Keys, crate::proto::crypto::InitialKeysError> {
             self.0.initial_keys(version, cid)
         }
         fn retry_tag(
             &self,
             version: Version,
-            cid: &crate::proto::ConnectionId,
+            cid: &rama_quic_proto::ConnectionId,
             packet: &[u8],
-        ) -> Result<[u8; 16], crate::proto::crypto::CryptoError> {
+        ) -> Result<[u8; 16], rama_quic_proto::crypto::CryptoError> {
             self.0.retry_tag(version, cid, packet)
         }
         fn start_session(
             self: Arc<Self>,
             _: Version,
-            _: &crate::proto::transport_parameters::TransportParameters,
-        ) -> Result<Box<dyn crate::proto::crypto::Session>, crate::proto::TransportError> {
-            Err(crate::proto::TransportError::INTERNAL_ERROR(
+            _: &rama_quic_proto::transport_parameters::TransportParameters,
+        ) -> Result<Box<dyn crate::proto::crypto::Session>, rama_quic_proto::TransportError>
+        {
+            Err(rama_quic_proto::TransportError::INTERNAL_ERROR(
                 "injected accept failure",
             ))
         }
@@ -6943,7 +6945,7 @@ async fn an_accept_error_wakes_the_parked_endpoint_to_send_its_response() {
         .expect("the peer receives the rejection")
         .unwrap_err();
     assert!(matches!(error, ConnectionError::ConnectionClosed(ref close)
-        if close.error_code == crate::proto::TransportErrorCode::INTERNAL_ERROR));
+        if close.error_code == rama_quic_proto::TransportErrorCode::INTERNAL_ERROR));
     tokio::time::timeout(Duration::from_secs(3), async {
         tokio::join!(client.shutdown(), server.shutdown());
     })

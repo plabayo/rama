@@ -1,11 +1,10 @@
 //! What ends a connection, as the application is told it.
 
-use std::io;
-
-use crate::proto::{
+use rama_quic_proto::{
     TransportError, Version,
     frame::{self, Close},
 };
+use std::io;
 
 /// Reasons why a connection might be lost
 #[derive(Debug, Clone, PartialEq, Eq)]

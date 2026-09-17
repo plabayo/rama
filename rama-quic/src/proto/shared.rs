@@ -3,8 +3,9 @@ use std::ops::Range;
 
 use rama_core::bytes::BytesMut;
 
-pub(crate) use crate::proto::{ConnectionId, EcnCodepoint, ResetToken};
-use crate::proto::{Instant, packet::PartialDecode};
+use rama_quic_proto::{ConnectionId, EcnCodepoint, ResetToken, packet::PartialDecode};
+
+use crate::proto::Instant;
 
 /// Events sent from an Endpoint to a Connection
 #[derive(Debug)]

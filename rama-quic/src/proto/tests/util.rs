@@ -15,12 +15,13 @@ use super::crypto::boring::{QuicClientConfig, QuicServerConfig};
 #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 use super::crypto::rustls::{QuicClientConfig, QuicServerConfig, configured_provider};
 use super::*;
-use crate::proto::{Duration, Instant, Version};
+use crate::proto::{Duration, Instant};
 use ahash::{HashMap, HashSet};
 use parking_lot::Mutex;
 use rama_core::bytes::BytesMut;
 use rama_core::telemetry::tracing::{info_span, trace};
 use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer};
+use rama_quic_proto::{StreamId, Version, packet};
 #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 use rama_tls_rustls::dep::rustls::{self, KeyLogFile, client::WebPkiServerVerifier};
 
@@ -371,7 +372,7 @@ pub(super) struct SentPacket {
 
 impl SentPacket {
     /// The long header kind, read with the type table of the packet's own version.
-    pub(super) fn long_kind(&self) -> Option<crate::proto::version::LongKind> {
+    pub(super) fn long_kind(&self) -> Option<rama_quic_proto::version::LongKind> {
         Some(self.version?.wire()?.long_kind(self.first_byte))
     }
 }
@@ -435,8 +436,8 @@ fn walk_packets(buffer: &[u8]) -> Vec<SentPacket> {
             cursor += 1 + usize::from(*len);
         }
         match wire.long_kind(first_byte) {
-            crate::proto::version::LongKind::Retry => break,
-            crate::proto::version::LongKind::Initial => {
+            rama_quic_proto::version::LongKind::Retry => break,
+            rama_quic_proto::version::LongKind::Initial => {
                 let Some(token_len) = varint(buffer, &mut cursor) else {
                     break;
                 };

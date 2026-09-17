@@ -6,7 +6,7 @@ use std::net::SocketAddr;
 use rama_core::telemetry::tracing::{debug, trace, trace_span};
 
 use crate::proto::{
-    Dir, Frame, Instant, MAX_STREAM_COUNT, StoredToken, TransportError,
+    Instant, StoredToken,
     cid_queue::Retired,
     connection::{
         Connection, ConnectionSide, Event, State,
@@ -14,10 +14,13 @@ use crate::proto::{
         preferred::PreferredAddressState,
         timer::Timer,
     },
-    frame::{self, NewToken},
-    packet::{Packet, SpaceId},
     shared::EndpointEventInner,
     transport_parameters,
+};
+use rama_quic_proto::{
+    Dir, MAX_STREAM_COUNT, TransportError,
+    frame::{self, Frame, NewToken},
+    packet::{Packet, SpaceId},
 };
 
 impl Connection {
@@ -483,11 +486,11 @@ impl Connection {
 ))]
 mod tests {
     use super::*;
-    use crate::proto::{
+    use crate::proto::tests::Pair;
+    use rama_quic_proto::{
         TransportErrorCode, VarInt, Version,
         coding::Codec,
         packet::{Header, LongType, PacketNumber},
-        tests::Pair,
     };
 
     #[test]

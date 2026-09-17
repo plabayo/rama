@@ -6,15 +6,18 @@ use std::mem;
 use rama_core::telemetry::tracing::{trace, warn};
 
 use crate::proto::{
-    Instant, VarInt,
-    coding::BufMutExt as _,
+    Instant,
     connection::{
         Connection, ConnectionSide, Event, spaces::PacketSpace, stats::ConnectionStats,
         transmit::SentFrames,
     },
+    token::{Token, TokenPayload},
+};
+use rama_quic_proto::{
+    VarInt,
+    coding::BufMutExt as _,
     frame::{self, Datagram, FrameStruct, NewConnectionId, NewToken},
     packet::SpaceId,
-    token::{Token, TokenPayload},
     transport_parameters::TransportParameters,
 };
 

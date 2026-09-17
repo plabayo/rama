@@ -11,9 +11,11 @@ use rustc_hash::FxHashSet;
 
 use super::assembler::Assembler;
 use crate::proto::{
-    Dir, Duration, Instant, SocketAddr, StreamId, TransportError, VarInt, cid_queue::CidQueue,
-    connection::StreamsState, crypto::Keys, frame, packet::SpaceId, range_set::ArrayRangeSet,
+    Duration, Instant, SocketAddr, cid_queue::CidQueue, connection::StreamsState, crypto::Keys,
     shared::IssuedCid,
+};
+use rama_quic_proto::{
+    Dir, StreamId, TransportError, VarInt, frame, packet::SpaceId, range_set::ArrayRangeSet,
 };
 
 pub(super) struct PacketSpace {
@@ -1193,7 +1195,7 @@ mod test {
             .expect_err("a range that wide is a protocol error");
         assert_eq!(
             error.code,
-            crate::proto::TransportErrorCode::CONNECTION_ID_LIMIT_ERROR
+            rama_quic_proto::TransportErrorCode::CONNECTION_ID_LIMIT_ERROR
         );
         assert_eq!(pending.retire_cids, before, "a refusal changes nothing");
         // Neither does one that starts inside what is already queued.
@@ -1268,7 +1270,7 @@ mod test {
             .expect_err("the cap is a protocol error");
         assert_eq!(
             error.code,
-            crate::proto::TransportErrorCode::CONNECTION_ID_LIMIT_ERROR
+            rama_quic_proto::TransportErrorCode::CONNECTION_ID_LIMIT_ERROR
         );
         assert_eq!(
             pending.retire_cids.len() as u64,

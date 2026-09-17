@@ -22,11 +22,15 @@ use rama_tls_rustls::dep::rustls::{
 };
 
 use crate::proto::{
-    ConnectError, ConnectionId, Side, TransportError, TransportErrorCode,
+    ConnectError,
     crypto::{
-        self, CryptoError, DirectionalKeys, ExportKeyingMaterialError, HandshakeEvent, HeaderKey,
-        KeyPair, Keys, UnsupportedVersion,
+        self, DirectionalKeys, ExportKeyingMaterialError, HandshakeEvent, KeyPair, Keys,
+        UnsupportedVersion,
     },
+};
+use rama_quic_proto::{
+    ConnectionId, Side, TransportError, TransportErrorCode,
+    crypto::{CryptoError, HeaderKey},
     packet::SpaceId,
     transport_parameters::TransportParameters,
 };
@@ -117,7 +121,7 @@ impl TlsSession {
 impl crypto::Session for TlsSession {
     fn initial_keys(
         &self,
-        version: crate::proto::Version,
+        version: rama_quic_proto::Version,
         dst_cid: &ConnectionId,
         side: Side,
     ) -> Result<Keys, TransportError> {
@@ -309,15 +313,15 @@ impl crypto::Session for TlsSession {
 }
 
 /// Retry integrity constants for a rustls version; rustls derives the packet keys itself.
-fn retry_wire(version: Version) -> &'static crate::proto::version::Wire {
+fn retry_wire(version: Version) -> &'static rama_quic_proto::version::Wire {
     #[expect(
         clippy::expect_used,
         reason = "`interpret_version` maps only versions with a wire image"
     )]
     match version {
-        Version::V1 => crate::proto::Version::V1.wire(),
-        Version::V1Draft => crate::proto::Version::from_u32(0xff00_001d).wire(),
-        Version::V2 => crate::proto::Version::V2.wire(),
+        Version::V1 => rama_quic_proto::Version::V1.wire(),
+        Version::V1Draft => rama_quic_proto::Version::from_u32(0xff00_001d).wire(),
+        Version::V2 => rama_quic_proto::Version::V2.wire(),
         #[expect(
             clippy::unreachable,
             reason = "`interpret_version` only produces the three versions above; the wildcard exists because rustls marks `Version` non-exhaustive"
@@ -394,13 +398,13 @@ pub(crate) struct QuicClientConfig {
     /// `inner` per version other than v1, each with its own session cache: a ticket must not
     /// resume a connection in another version (RFC 9369 §5), and rustls gives no way to scope
     /// the configured store, so v1 keeps it and every other version gets a cache of its own.
-    scoped: Mutex<HashMap<crate::proto::Version, Arc<rustls::ClientConfig>>>,
+    scoped: Mutex<HashMap<rama_quic_proto::Version, Arc<rustls::ClientConfig>>>,
     initial: Suite,
 }
 
 impl QuicClientConfig {
-    fn config_for(&self, version: crate::proto::Version) -> Arc<rustls::ClientConfig> {
-        if version == crate::proto::Version::V1 {
+    fn config_for(&self, version: rama_quic_proto::Version) -> Arc<rustls::ClientConfig> {
+        if version == rama_quic_proto::Version::V1 {
             return self.inner.clone();
         }
         self.scoped
@@ -479,7 +483,7 @@ impl QuicClientConfig {
 impl crypto::ClientConfig for QuicClientConfig {
     fn start_session(
         self: Arc<Self>,
-        version: crate::proto::Version,
+        version: rama_quic_proto::Version,
         server_name: &str,
         params: &TransportParameters,
     ) -> Result<Box<dyn crypto::Session>, ConnectError> {
@@ -548,7 +552,7 @@ pub(crate) struct QuicServerConfig {
     /// (RFC 9369 §5). rustls labels 0-RTT keys with the session's version, but a client sends
     /// 0-RTT only in its original version (RFC 9369 §4.1), so a session moved to another
     /// version refuses early data instead of failing to open it.
-    scoped: Mutex<HashMap<(crate::proto::Version, bool), Arc<rustls::ServerConfig>>>,
+    scoped: Mutex<HashMap<(rama_quic_proto::Version, bool), Arc<rustls::ServerConfig>>>,
     initial: Suite,
 }
 
@@ -556,7 +560,7 @@ pub(crate) struct QuicServerConfig {
 #[derive(Debug)]
 struct VersionedTicketer {
     inner: Arc<dyn rustls::server::ProducesTickets>,
-    version: crate::proto::Version,
+    version: rama_quic_proto::Version,
 }
 
 impl rustls::server::ProducesTickets for VersionedTicketer {
@@ -583,7 +587,7 @@ impl rustls::server::ProducesTickets for VersionedTicketer {
 #[derive(Debug)]
 struct VersionedSessionStorage {
     inner: Arc<dyn rustls::server::StoresServerSessions>,
-    version: crate::proto::Version,
+    version: rama_quic_proto::Version,
 }
 
 impl VersionedSessionStorage {
@@ -612,7 +616,7 @@ impl rustls::server::StoresServerSessions for VersionedSessionStorage {
 impl QuicServerConfig {
     fn config_for(
         &self,
-        version: crate::proto::Version,
+        version: rama_quic_proto::Version,
         early_data: bool,
     ) -> Arc<rustls::ServerConfig> {
         self.scoped
@@ -728,7 +732,7 @@ impl QuicServerConfig {
     fn start_with(
         &self,
         config: Arc<rustls::ServerConfig>,
-        version: crate::proto::Version,
+        version: rama_quic_proto::Version,
         params: &TransportParameters,
     ) -> Result<Box<dyn crypto::Session>, TransportError> {
         let Ok(version) = interpret_version(version) else {
@@ -755,7 +759,7 @@ impl QuicServerConfig {
 impl crypto::ServerConfig for QuicServerConfig {
     fn start_session(
         self: Arc<Self>,
-        version: crate::proto::Version,
+        version: rama_quic_proto::Version,
         params: &TransportParameters,
     ) -> Result<Box<dyn crypto::Session>, TransportError> {
         self.start_with(self.config_for(version, true), version, params)
@@ -767,8 +771,8 @@ impl crypto::ServerConfig for QuicServerConfig {
 
     fn start_negotiated_session(
         self: Arc<Self>,
-        _original: crate::proto::Version,
-        negotiated: crate::proto::Version,
+        _original: rama_quic_proto::Version,
+        negotiated: rama_quic_proto::Version,
         params: &TransportParameters,
     ) -> Result<Box<dyn crypto::Session>, TransportError> {
         self.start_with(self.config_for(negotiated, false), negotiated, params)
@@ -776,7 +780,7 @@ impl crypto::ServerConfig for QuicServerConfig {
 
     fn initial_keys(
         &self,
-        version: crate::proto::Version,
+        version: rama_quic_proto::Version,
         dst_cid: &ConnectionId,
     ) -> Result<Keys, crypto::InitialKeysError> {
         let version = interpret_version(version)?;
@@ -785,7 +789,7 @@ impl crypto::ServerConfig for QuicServerConfig {
 
     fn retry_tag(
         &self,
-        version: crate::proto::Version,
+        version: rama_quic_proto::Version,
         orig_dst_cid: &ConnectionId,
         packet: &[u8],
     ) -> Result<[u8; 16], CryptoError> {
@@ -904,7 +908,7 @@ impl crypto::PacketKey for RustlsPacketKey {
     }
 }
 
-fn interpret_version(version: crate::proto::Version) -> Result<Version, UnsupportedVersion> {
+fn interpret_version(version: rama_quic_proto::Version) -> Result<Version, UnsupportedVersion> {
     match version.as_u32() {
         0xff00_001d..=0xff00_0020 => Ok(Version::V1Draft),
         0x0000_0001 | 0xff00_0021..=0xff00_0022 => Ok(Version::V1),
@@ -935,7 +939,7 @@ mod tests {
         let config = Arc::new(QuicClientConfig::try_from(native).unwrap());
         let mut session = config
             .start_session(
-                crate::proto::Version::V1,
+                rama_quic_proto::Version::V1,
                 "example.com",
                 &TransportParameters::default(),
             )

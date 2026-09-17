@@ -3,13 +3,13 @@ use super::{
     TraceInfo,
     event::{EventFields, EventFieldsView},
 };
-use crate::ConnectionId;
 use parking_lot::Mutex;
 use rama_core::{
     error::{ArcError, ErrorContext as _, ErrorExt as _},
     error_sink::ErrorSink,
     futures::FutureExt as _,
 };
+use rama_quic_proto::ConnectionId;
 #[cfg(test)]
 use std::time::Duration;
 use std::{

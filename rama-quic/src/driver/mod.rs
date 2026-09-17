@@ -49,6 +49,7 @@ mod timer;
 mod udp;
 mod work_limiter;
 
+pub(crate) use crate::proto::EndpointConfig;
 /// Names the driver's own tests reach for through this module.
 #[cfg(all(
     test,
@@ -58,7 +59,6 @@ mod work_limiter;
     )
 ))]
 pub(crate) use crate::proto::{ClientConfig, ConnectionError, ServerConfig, TransportConfig};
-pub(crate) use crate::proto::{EndpointConfig, VarInt};
 pub(crate) use std::time::{Duration, Instant};
 
 pub use crate::driver::connection::{

@@ -11,10 +11,13 @@
 use rama_core::rt::Executor;
 
 use super::browsers::{chrome_153, firefox_156};
-use super::capture::{self, PacketKind};
+use super::capture;
 use super::*;
-use crate::proto::version::Version;
 use crate::{ClientConfig, Endpoint};
+use rama_quic_proto::{
+    capture::{FirstFlight, ObservedFrame, PacketKind, observe},
+    version::Version,
+};
 
 macro_rules! include_fixture {
     ($name:literal) => {
@@ -89,7 +92,7 @@ fn a_capture_reads_back_as_the_client_it_was() {
 fn the_observer_split_needs_no_keys() {
     for name in ["chrome-153-initial-1.hex", "firefox-156-initial-1.hex"] {
         let datagram = hex(name);
-        let observed = capture::observe(&datagram).expect("a datagram splits");
+        let observed = observe(&datagram).expect("a datagram splits");
         let first = &observed.packets[0];
         assert_eq!(first.kind, PacketKind::Initial);
         assert_eq!(first.version, Some(Version::V1));
@@ -102,7 +105,7 @@ fn the_observer_split_needs_no_keys() {
 /// Build a client with a profile, capture the datagrams of its own first flight through a
 /// loopback socket, and return what a server reads from it, together with whether the client's
 /// TLS backend can change version mid-handshake (so the profile's compatible offer stands).
-fn rama_first_flight(profile: &QuicProfile) -> (capture::FirstFlight, bool) {
+fn rama_first_flight(profile: &QuicProfile) -> (FirstFlight, bool) {
     use std::net::{Ipv4Addr, SocketAddr};
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -321,7 +324,7 @@ fn chaos_layout_scatters_crypto_but_keeps_the_client_hello() {
     );
     let ordered_crypto = ordered.frames[0]
         .iter()
-        .filter(|frame| matches!(frame, capture::ObservedFrame::Crypto { .. }))
+        .filter(|frame| matches!(frame, ObservedFrame::Crypto { .. }))
         .count();
     // One CRYPTO frame, then padding, with the padding trailing.
     assert_eq!(ordered_crypto, 1);
@@ -335,12 +338,7 @@ fn chaos_layout_scatters_crypto_but_keeps_the_client_hello() {
         .map(|packet| {
             packet
                 .iter()
-                .filter(|frame| {
-                    matches!(
-                        frame,
-                        capture::ObservedFrame::Crypto { .. } | capture::ObservedFrame::Ping
-                    )
-                })
+                .filter(|frame| matches!(frame, ObservedFrame::Crypto { .. } | ObservedFrame::Ping))
                 .count()
         })
         .sum();

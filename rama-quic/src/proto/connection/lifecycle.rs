@@ -5,13 +5,11 @@ use std::sync::Arc;
 use rama_core::bytes::Bytes;
 
 use crate::proto::{
-    Side, TokenStore, Version,
+    TokenStore,
     config::{PreferredAddressPolicy, ServerConfig, TimeSource},
     connection::{ConnectionError, streams::StreamEvent},
-    frame::Close,
-    shared::ConnectionId,
-    version::ClientVersionPolicy,
 };
+use rama_quic_proto::{ConnectionId, Side, Version, frame::Close, version::ClientVersionPolicy};
 
 /// Fields of `Connection` specific to it being client-side or server-side
 pub(super) enum ConnectionSide {
@@ -201,7 +199,7 @@ impl State {
 pub(super) mod state {
     use rama_core::bytes::Bytes;
 
-    use crate::proto::frame::Close;
+    use rama_quic_proto::frame::Close;
 
     #[cfg_attr(
         not(fuzzing),

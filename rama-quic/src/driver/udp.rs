@@ -553,19 +553,19 @@ pub(crate) fn io_error(error: DatagramError) -> io::Error {
     }
 }
 
-fn udp_ecn(ecn: proto::EcnCodepoint) -> rama_udp::EcnCodepoint {
+fn udp_ecn(ecn: rama_quic_proto::EcnCodepoint) -> rama_udp::EcnCodepoint {
     match ecn {
-        proto::EcnCodepoint::Ect0 => rama_udp::EcnCodepoint::Ect0,
-        proto::EcnCodepoint::Ect1 => rama_udp::EcnCodepoint::Ect1,
-        proto::EcnCodepoint::Ce => rama_udp::EcnCodepoint::Ce,
+        rama_quic_proto::EcnCodepoint::Ect0 => rama_udp::EcnCodepoint::Ect0,
+        rama_quic_proto::EcnCodepoint::Ect1 => rama_udp::EcnCodepoint::Ect1,
+        rama_quic_proto::EcnCodepoint::Ce => rama_udp::EcnCodepoint::Ce,
     }
 }
 
-pub(crate) fn proto_ecn(ecn: rama_udp::EcnCodepoint) -> Option<proto::EcnCodepoint> {
+pub(crate) fn proto_ecn(ecn: rama_udp::EcnCodepoint) -> Option<rama_quic_proto::EcnCodepoint> {
     match ecn {
-        rama_udp::EcnCodepoint::Ect0 => Some(proto::EcnCodepoint::Ect0),
-        rama_udp::EcnCodepoint::Ect1 => Some(proto::EcnCodepoint::Ect1),
-        rama_udp::EcnCodepoint::Ce => Some(proto::EcnCodepoint::Ce),
+        rama_udp::EcnCodepoint::Ect0 => Some(rama_quic_proto::EcnCodepoint::Ect0),
+        rama_udp::EcnCodepoint::Ect1 => Some(rama_quic_proto::EcnCodepoint::Ect1),
+        rama_udp::EcnCodepoint::Ce => Some(rama_quic_proto::EcnCodepoint::Ce),
         rama_udp::EcnCodepoint::NotEct => None,
     }
 }
@@ -696,7 +696,7 @@ mod tests {
     fn transmit(size: usize, segment_size: Option<usize>) -> proto::Transmit {
         proto::Transmit {
             destination: ([127, 0, 0, 2], 443).into(),
-            ecn: Some(proto::EcnCodepoint::Ect0),
+            ecn: Some(rama_quic_proto::EcnCodepoint::Ect0),
             size,
             segment_size,
             local: Some(([127, 0, 0, 1], 0).into()),
@@ -1267,9 +1267,18 @@ mod tests {
     #[test]
     fn ecn_codepoints_map_both_ways() {
         for (proto, udp) in [
-            (proto::EcnCodepoint::Ect0, rama_udp::EcnCodepoint::Ect0),
-            (proto::EcnCodepoint::Ect1, rama_udp::EcnCodepoint::Ect1),
-            (proto::EcnCodepoint::Ce, rama_udp::EcnCodepoint::Ce),
+            (
+                rama_quic_proto::EcnCodepoint::Ect0,
+                rama_udp::EcnCodepoint::Ect0,
+            ),
+            (
+                rama_quic_proto::EcnCodepoint::Ect1,
+                rama_udp::EcnCodepoint::Ect1,
+            ),
+            (
+                rama_quic_proto::EcnCodepoint::Ce,
+                rama_udp::EcnCodepoint::Ce,
+            ),
         ] {
             assert_eq!(udp_ecn(proto), udp);
             assert_eq!(proto_ecn(udp), Some(proto));

@@ -8,11 +8,11 @@ use crate::qlog::event::lifecycle::{
     ConnectionClosedTrigger, ConnectionClosedView as ConnectionClosed, LifecycleEventView as Event,
     ReasonView, TransportErrorName, TupleEndpointInfo,
 };
+use rama_quic_proto::{ConnectionId, frame::Close};
 
 use crate::proto::{
-    ConnectionId, Instant,
+    Instant,
     connection::{Connection, ConnectionError, State},
-    frame::Close,
 };
 
 impl TupleEndpointInfo {
@@ -262,8 +262,9 @@ impl Connection {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proto::{TransportError, TransportErrorCode, VarInt, coding::Codec, frame};
+
     use rama_core::bytes::Bytes;
+    use rama_quic_proto::{TransportError, TransportErrorCode, VarInt, coding::Codec, frame};
     use serde_json::json;
 
     fn peer_close(code: TransportErrorCode) -> frame::ConnectionClose {

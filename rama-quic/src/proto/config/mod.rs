@@ -25,16 +25,18 @@ use crate::proto::crypto::rustls::QuicServerConfig;
 use crate::proto::crypto::rustls::configured_provider;
 use crate::proto::{
     DEFAULT_SUPPORTED_VERSIONS, Duration, RandomConnectionIdGenerator, SystemTime, TokenLog,
-    TokenMemoryCache, TokenStore, VarInt, VarIntBoundsExceeded, Version,
+    TokenMemoryCache, TokenStore,
     cid_generator::{
         ConnectionIdGenerator, ConnectionIdGeneratorFactory, HashedConnectionIdGenerator,
     },
     crypto::{self, HandshakeTokenKey},
-    shared::ConnectionId,
-    version::{ClientVersionPolicy, ServerVersionPolicy, VersionPolicyError},
 };
 #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer};
+use rama_quic_proto::{
+    ConnectionId, VarInt, VarIntBoundsExceeded, Version,
+    version::{ClientVersionPolicy, ServerVersionPolicy, VersionPolicyError},
+};
 #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 use rama_tls_rustls::dep::rustls::{self, client::WebPkiServerVerifier};
 

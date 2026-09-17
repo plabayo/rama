@@ -1,4 +1,5 @@
-use crate::proto::{Duration, VarInt, Version, connection::handshake::negotiate_max_idle_timeout};
+use crate::proto::{Duration, connection::handshake::negotiate_max_idle_timeout};
+use rama_quic_proto::{VarInt, Version, frame, packet::SpaceId};
 
 #[test]
 fn negotiate_max_idle_timeout_commutative() {
@@ -33,7 +34,6 @@ impl super::Connection {
         &mut self,
         now: crate::proto::Instant,
     ) {
-        use crate::proto::{frame, packet::SpaceId};
         use rama_core::bytes::Bytes;
 
         self.skip_no_packet_number();
@@ -68,7 +68,7 @@ impl super::Connection {
         now: crate::proto::Instant,
         packet: rama_core::bytes::BytesMut,
     ) {
-        use crate::proto::packet::{FixedLengthConnectionIdParser, PartialDecode, SpaceId};
+        use rama_quic_proto::packet::{FixedLengthConnectionIdParser, PartialDecode, SpaceId};
         assert!(self.spaces[SpaceId::Data].crypto.is_some() || self.zero_rtt_crypto.is_some());
         let (packet, remaining) = PartialDecode::new(
             packet,

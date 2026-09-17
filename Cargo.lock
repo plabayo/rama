@@ -4066,6 +4066,7 @@ dependencies = [
  "rama-pac",
  "rama-proxy",
  "rama-quic",
+ "rama-quic-proto",
  "rama-socks5",
  "rama-tcp",
  "rama-tls",

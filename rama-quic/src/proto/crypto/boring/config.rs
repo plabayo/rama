@@ -22,13 +22,14 @@ use super::{
     session::{TlsSession, crypto_error},
 };
 use crate::proto::{
-    ConnectError, Side, TransportError, Version,
+    ConnectError,
     crypto::{
         self,
         config::{TlsConfigError, TlsOptions},
     },
-    shared::ConnectionId,
-    transport_parameters::TransportParameters,
+};
+use rama_quic_proto::{
+    ConnectionId, Side, TransportError, Version, transport_parameters::TransportParameters,
 };
 
 struct Ticket {

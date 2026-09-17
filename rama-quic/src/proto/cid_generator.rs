@@ -2,7 +2,8 @@ use std::hash::Hasher;
 
 use rand::{Rng, RngExt};
 
-use crate::proto::{ConfigError, ConnectionId, Duration, InvalidCid, MAX_CID_SIZE};
+use crate::proto::{ConfigError, Duration};
+use rama_quic_proto::{ConnectionId, InvalidCid, MAX_CID_SIZE};
 
 /// Generates connection IDs for incoming connections
 pub trait ConnectionIdGenerator: Send + Sync {

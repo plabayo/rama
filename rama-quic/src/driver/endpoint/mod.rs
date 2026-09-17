@@ -52,8 +52,10 @@ pub use builder::{DEFAULT_SHUTDOWN_BUDGET, EndpointBuilder};
 
 const BATCH_SIZE: usize = 32;
 
+use rama_quic_proto::VarInt;
+
 use crate::driver::{
-    EndpointConfig, IO_LOOP_BOUND, RECV_TIME_BOUND, VarInt,
+    EndpointConfig, IO_LOOP_BOUND, RECV_TIME_BOUND,
     connection::Connecting,
     incoming::Incoming,
     work_limiter::{WorkCycle, WorkLimiter},
