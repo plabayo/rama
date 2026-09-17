@@ -2,12 +2,14 @@ use super::{Event, EventDataRead, EventDecoder, OnIncompleteLine};
 
 use pin_project_lite::pin_project;
 use rama_core::error::BoxError;
+use rama_core::error_sink::ErrorSink;
 use rama_core::futures::stream::Stream;
 use rama_core::futures::task::{Context, Poll};
 use rama_utils::macros::generate_set_and_with;
 use rama_utils::str::smol_str::SmolStr;
 use std::fmt;
 use std::pin::Pin;
+use std::sync::Arc;
 
 /// Cooperative budget for input bytes pushed into the decoder by one
 /// `poll_next` call.
@@ -105,6 +107,28 @@ impl<S, T: EventDataRead> EventStream<S, T> {
         }
     }
 
+    generate_set_and_with! {
+        /// Recover from a decode fault instead of ending the stream, skipping
+        /// to the next event boundary.
+        ///
+        /// See [`EventDecoder::with_lenient`].
+        pub fn lenient(mut self, lenient: bool) -> Self {
+            self.decoder.set_lenient(lenient);
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Route each resync in [`lenient`](Self::with_lenient) mode to an
+        /// [`ErrorSink`].
+        ///
+        /// See [`EventDecoder::with_on_resync`].
+        pub fn on_resync(mut self, sink: Option<Arc<dyn ErrorSink>>) -> Self {
+            self.decoder.maybe_set_on_resync(sink);
+            self
+        }
+    }
+
     /// Set the last event ID of the stream. Useful for initializing the stream with a previous
     /// last event ID
     pub fn try_set_last_event_id(&mut self, id: impl Into<SmolStr>) -> Result<(), BoxError> {
@@ -114,6 +138,14 @@ impl<S, T: EventDataRead> EventStream<S, T> {
     /// Get the last event ID of the stream
     pub fn last_event_id(&self) -> Option<&str> {
         self.decoder.last_event_id()
+    }
+
+    /// How many resyncs have happened in [`lenient`](Self::with_lenient) mode.
+    ///
+    /// See [`EventDecoder::resync_count`].
+    #[must_use]
+    pub fn resync_count(&self) -> usize {
+        self.decoder.resync_count()
     }
 }
 
@@ -586,5 +618,32 @@ data: test
             .with_max_event_len(64);
         let events = stream.try_collect::<Vec<_>>().await.unwrap();
         assert_eq!(events, vec![event!("0123456789".to_owned(),)]);
+    }
+
+    #[tokio::test]
+    async fn lenient_mode_and_its_resync_sink_pass_through_to_the_decoder() {
+        let input = "data: one\n\ndata: 0123456789\n\ndata: three\n\n";
+
+        // strict (the default): the over-long line ends the stream with an error
+        // (the cap fits `data: one`/`data: three` but not the long middle line)
+        let strict = EventStream::<_, String>::new(stream::iter([Ok::<_, Infallible>(input)]))
+            .with_max_line_len(12);
+        strict.try_collect::<Vec<_>>().await.unwrap_err();
+
+        // lenient: the bad event is skipped, the rest arrive, and the sink fires
+        let resyncs = Arc::new(AtomicUsize::new(0));
+        let sink = Arc::clone(&resyncs);
+        let lenient = EventStream::<_, String>::new(stream::iter([Ok::<_, Infallible>(input)]))
+            .with_max_line_len(12)
+            .with_lenient(true)
+            .with_on_resync(Arc::new(move |_err: BoxError| {
+                sink.fetch_add(1, Ordering::Relaxed);
+            }));
+        let events = lenient.try_collect::<Vec<_>>().await.unwrap();
+        assert_eq!(
+            events,
+            vec![event!("one".to_owned(),), event!("three".to_owned(),)]
+        );
+        assert_eq!(1, resyncs.load(Ordering::Relaxed));
     }
 }

@@ -13,12 +13,14 @@ use super::{Event, EventBuildError, EventDataRead};
 
 use memchr::{memchr2, memchr2_iter};
 use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext as _, ErrorExt as _};
+use rama_core::error_sink::ErrorSink;
 use rama_core::telemetry::tracing;
 use rama_utils::macros::generate_set_and_with;
 use rama_utils::str::smol_str::SmolStr;
 use std::collections::VecDeque;
 use std::fmt;
 use std::iter::FusedIterator;
+use std::sync::Arc;
 
 struct EventBuilder<T: EventDataRead> {
     reader: T::Reader,
@@ -202,6 +204,27 @@ struct DecodeState<T: EventDataRead> {
     max_event_len: Option<usize>,
     /// either limit is set: one test per line instead of two
     limited: bool,
+    /// recover from a decode error by skipping to the next event boundary
+    /// instead of failing the whole stream; see [`EventDecoder::with_lenient`]
+    lenient: bool,
+    /// normal decoding, or resynchronising after a lenient-mode fault
+    mode: ScanMode,
+    /// number of resync episodes (one per discarded run), for observability
+    resync_count: usize,
+    /// notified once per resync with the error that triggered it
+    on_resync: Option<Arc<dyn ErrorSink>>,
+}
+
+/// Whether the decoder is decoding normally or, after a lenient-mode fault,
+/// skipping input up to the next event boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScanMode {
+    /// Decoding lines into events.
+    Normal,
+    /// Discarding input up to the next blank line. `saw_content` records
+    /// whether the line currently being skipped already had content, so its
+    /// own terminator is not mistaken for the empty-line boundary.
+    Recovering { saw_content: bool },
 }
 
 impl<T> fmt::Debug for DecodeState<T>
@@ -221,6 +244,10 @@ where
             .field("event_len", &self.event_len)
             .field("max_line_len", &self.max_line_len)
             .field("max_event_len", &self.max_event_len)
+            .field("lenient", &self.lenient)
+            .field("mode", &self.mode)
+            .field("resync_count", &self.resync_count)
+            .field("on_resync", &self.on_resync.is_some())
             .finish()
     }
 }
@@ -239,6 +266,10 @@ impl<T: EventDataRead> Default for DecodeState<T> {
             max_line_len: None,
             max_event_len: None,
             limited: false,
+            lenient: false,
+            mode: ScanMode::Normal,
+            resync_count: 0,
+            on_resync: None,
         }
     }
 }
@@ -353,6 +384,11 @@ impl<T: EventDataRead> DecodeState<T> {
             let end = (offset + block_len).min(input.len());
             let consumed = self.scan_block(&input[offset..end])?;
             if consumed == 0 && end > block_start {
+                if self.lenient {
+                    // recovery always advances on non-empty input, so this is
+                    // unreachable in lenient mode; stop rather than spin.
+                    break;
+                }
                 return Err(BoxError::from_static_str(
                     "SSE decoder made no progress on a non-empty scan block",
                 ));
@@ -366,9 +402,39 @@ impl<T: EventDataRead> DecodeState<T> {
         Ok(offset)
     }
 
-    /// Scan one artificial chunk boundary. The caller grows these blocks
-    /// exponentially until the byte or ready-event cap is reached.
+    #[inline]
+    fn recovering(&self) -> bool {
+        matches!(self.mode, ScanMode::Recovering { .. })
+    }
+
+    /// Scan one block, alternating between normal decoding and recovery. In
+    /// lenient mode a fault starts a resync that this drives to the next event
+    /// boundary before decoding resumes; otherwise the fault propagates.
     fn scan_block(&mut self, input: &[u8]) -> Result<usize, BoxError> {
+        if input.is_empty() {
+            return Ok(0);
+        }
+        let mut base = 0;
+        loop {
+            if self.recovering() {
+                base += self.recover(&input[base..]);
+                if self.recovering() || base >= input.len() {
+                    return Ok(base);
+                }
+            }
+            base += self.scan_block_once(&input[base..])?;
+            // a fault flipped us mid-block: recover the remainder, else done
+            if !self.recovering() {
+                return Ok(base);
+            }
+        }
+    }
+
+    /// Scan one artificial chunk boundary in normal mode. The caller grows
+    /// these blocks exponentially until the byte or ready-event cap is reached.
+    /// On a lenient-mode fault it starts recovery (see [`Self::begin_recovery`])
+    /// and returns the bytes consumed before the fault.
+    fn scan_block_once(&mut self, input: &[u8]) -> Result<usize, BoxError> {
         if input.is_empty() {
             return Ok(0);
         }
@@ -386,11 +452,17 @@ impl<T: EventDataRead> DecodeState<T> {
         if !self.carry.is_empty() {
             match memchr2(b'\r', b'\n', &input[offset..]) {
                 None => {
-                    self.extend_carry(&input[offset..])?;
+                    if let Err(err) = self.extend_carry(&input[offset..]) {
+                        self.absorb(err, true)?;
+                        return Ok(offset);
+                    }
                     return Ok(input.len());
                 }
                 Some(pos) => {
-                    self.extend_carry(&input[offset..offset + pos])?;
+                    if let Err(err) = self.extend_carry(&input[offset..offset + pos]) {
+                        self.absorb(err, true)?;
+                        return Ok(offset);
+                    }
                     let is_cr = input[offset + pos] == b'\r';
                     offset += pos + 1;
                     if is_cr {
@@ -404,8 +476,15 @@ impl<T: EventDataRead> DecodeState<T> {
                     // while keeping the borrow checker happy about `handle_line`
                     let line = std::mem::take(&mut self.carry);
                     let valid_up_to = std::mem::take(&mut self.carry_valid_up_to);
-                    std::str::from_utf8(&line[valid_up_to..])
-                        .map_err(|err| err.context("utf8 error: invalid sse line"))?;
+                    if let Err(err) = std::str::from_utf8(&line[valid_up_to..])
+                        .map_err(|err| err.context("utf8 error: invalid sse line"))
+                    {
+                        self.carry = line;
+                        self.carry.clear();
+                        // the line's terminator was already consumed above
+                        self.absorb(err, false)?;
+                        return Ok(offset);
+                    }
                     debug_assert_eq!(valid_up_to, line.len());
                     // SAFETY: `extend_carry` validated the line incrementally,
                     // and the possible incomplete suffix was checked above.
@@ -414,6 +493,9 @@ impl<T: EventDataRead> DecodeState<T> {
                     self.carry = line;
                     self.carry.clear();
                     result?;
+                    if self.recovering() {
+                        return Ok(offset);
+                    }
                     if self.ready.len() >= READY_EVENTS_SOFT_CAP {
                         return Ok(offset);
                     }
@@ -464,17 +546,27 @@ impl<T: EventDataRead> DecodeState<T> {
             }
             self.handle_line(line)?;
             start = next;
+            if self.recovering() {
+                return Ok(offset + start);
+            }
             if self.ready.len() >= READY_EVENTS_SOFT_CAP {
                 return Ok(offset + start);
             }
         }
 
         if let Some(err) = utf8_err {
-            return Err(err);
+            // the invalid byte is content of the unterminated line at `start`;
+            // recover from it, leaving the valid lines already handled above
+            self.absorb(err, true)?;
+            return Ok(offset + valid.len());
         }
 
-        if self.limited {
-            self.check_limits(self.carry.len() + bytes.len() - start + utf8_tail.len())?;
+        if self.limited
+            && let Err(err) =
+                self.check_limits(self.carry.len() + bytes.len() - start + utf8_tail.len())
+        {
+            self.absorb(err, true)?;
+            return Ok(offset + start);
         }
         self.carry.extend_from_slice(&bytes[start..]);
         self.carry.extend_from_slice(utf8_tail);
@@ -485,18 +577,101 @@ impl<T: EventDataRead> DecodeState<T> {
     #[inline]
     fn handle_line(&mut self, line: &str) -> Result<(), BoxError> {
         if self.limited {
-            self.check_limits(line.len())?;
+            if let Err(err) = self.check_limits(line.len()) {
+                return self.absorb(err, false);
+            }
             self.event_len += line.len();
         }
-        self.builder.add(parse_line(line))?;
+        if let Err(err) = self.builder.add(parse_line(line)) {
+            return self.absorb(err, false);
+        }
         if self.builder.is_complete {
-            let event = self.builder.try_dispatch()?;
-            if self.limited {
-                self.event_len = 0;
+            match self.builder.try_dispatch() {
+                Ok(event) => {
+                    if self.limited {
+                        self.event_len = 0;
+                    }
+                    self.ready.push_back(event);
+                }
+                Err(err) => return self.absorb(err, false),
             }
-            self.ready.push_back(event);
         }
         Ok(())
+    }
+
+    /// In lenient mode turn a decode fault into a resync (see
+    /// [`Self::begin_recovery`]) and report success; otherwise surface it as
+    /// the fatal error it is. `mid_line` says whether the fault left an
+    /// unterminated line still on the wire.
+    fn absorb(&mut self, err: BoxError, mid_line: bool) -> Result<(), BoxError> {
+        if !self.lenient {
+            return Err(err);
+        }
+        self.begin_recovery(err, mid_line);
+        Ok(())
+    }
+
+    /// Drop the partial event being built and enter recovery, which skips
+    /// input up to the next blank line. `mid_line` records whether the fault
+    /// left an unterminated line whose own terminator is therefore not the
+    /// boundary. `pending_cr` is deliberately kept: a CR that ended the
+    /// faulting line is part of its terminator, and [`Self::recover`] must
+    /// pair it with a following LF rather than read that LF as an empty line.
+    fn begin_recovery(&mut self, err: BoxError, mid_line: bool) {
+        self.mode = ScanMode::Recovering {
+            saw_content: mid_line,
+        };
+        self.builder = EventBuilder::default();
+        self.event_len = 0;
+        self.carry.clear();
+        self.carry_valid_up_to = 0;
+        self.resync_count = self.resync_count.saturating_add(1);
+        if let Some(sink) = self.on_resync.as_ref() {
+            sink.sink_error(err);
+        }
+    }
+
+    /// Discard input up to and including the next blank line — the SSE event
+    /// delimiter — then return to normal decoding. A blank line cannot appear
+    /// inside a field or value, and its terminators are ASCII that no UTF-8
+    /// sequence (valid or not) can contain, so the boundary is unambiguous
+    /// even across corruption. Returns the number of bytes consumed.
+    fn recover(&mut self, input: &[u8]) -> usize {
+        let ScanMode::Recovering { mut saw_content } = self.mode else {
+            return 0;
+        };
+        let mut offset = 0;
+        if self.pending_cr {
+            self.pending_cr = false;
+            // the LF half of a CRLF that ended the faulting line
+            if input.first() == Some(&b'\n') {
+                offset += 1;
+            }
+        }
+        while offset < input.len() {
+            let Some(pos) = memchr2(b'\r', b'\n', &input[offset..]) else {
+                // no terminator: the whole rest is line content, discarded
+                self.mode = ScanMode::Recovering { saw_content: true };
+                return input.len();
+            };
+            let is_empty_line = pos == 0 && !saw_content;
+            let is_cr = input[offset + pos] == b'\r';
+            offset += pos + 1;
+            saw_content = false;
+            if is_cr {
+                if offset == input.len() {
+                    self.pending_cr = true;
+                } else if input[offset] == b'\n' {
+                    offset += 1;
+                }
+            }
+            if is_empty_line {
+                self.mode = ScanMode::Normal;
+                return offset;
+            }
+        }
+        self.mode = ScanMode::Recovering { saw_content };
+        input.len()
     }
 
     /// Check a complete or partial line against both limits without counting
@@ -589,6 +764,11 @@ enum Status {
 /// [`max_event_len`](Self::with_max_event_len). These limits do not cap the
 /// undecoded backlog; drain events between pushes.
 ///
+/// A decode error is fatal by default. [`lenient`](Self::with_lenient) mode
+/// instead recovers to the next event boundary, losing only the events around
+/// the fault — useful when observing a stream that must not be blinded by one
+/// bad event.
+///
 /// [`EventStream`]: super::EventStream
 pub struct EventDecoder<T: EventDataRead = String> {
     state: DecodeState<T>,
@@ -672,6 +852,40 @@ impl<T: EventDataRead> EventDecoder<T> {
             self.on_incomplete = cb;
             self
         }
+    }
+
+    generate_set_and_with! {
+        /// Recover from a decode fault instead of failing the whole stream.
+        ///
+        /// When on, a fault drops the event being built and skips to the next
+        /// blank line, then resumes — losing only the events around it, never
+        /// the rest of the stream. Off by default. See
+        /// [`resync_count`](Self::resync_count) and
+        /// [`with_on_resync`](Self::with_on_resync) to observe recovery.
+        pub fn lenient(mut self, lenient: bool) -> Self {
+            self.state.lenient = lenient;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Route each resync in [`lenient`](Self::with_lenient) mode to an
+        /// [`ErrorSink`], which receives the triggering error. Wrap a
+        /// `Fn(BoxError) + Send + Sync` closure in [`Arc`] to use one.
+        pub fn on_resync(mut self, sink: Option<Arc<dyn ErrorSink>>) -> Self {
+            self.state.on_resync = sink;
+            self
+        }
+    }
+
+    /// How many resyncs have happened in [`lenient`](Self::with_lenient) mode.
+    /// Zero when off, and nonzero exactly when recovery occurred — a health
+    /// signal for an otherwise silent stream. Best-effort: the tally can shift
+    /// slightly with how the input is chunked, though the surviving events do
+    /// not.
+    #[must_use]
+    pub fn resync_count(&self) -> usize {
+        self.state.resync_count
     }
 
     /// Set the last event ID, e.g. to initialize the decoder with the
@@ -821,6 +1035,11 @@ impl<T: EventDataRead> EventDecoder<T> {
         self.status = Status::Finished;
         let (line, result) = self.state.finish();
         self.emit_incomplete(line);
+        if self.state.lenient {
+            // a truncated trailing UTF-8 sequence is incomplete input, not a
+            // fatal error, in lenient mode; the bytes still reach on_incomplete
+            return Ok(());
+        }
         result.inspect_err(|_| {
             self.status = Status::Failed;
         })
