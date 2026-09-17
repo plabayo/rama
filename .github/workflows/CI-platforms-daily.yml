@@ -46,6 +46,63 @@ jobs:
       - name: check fuzz targets
         run: RUSTFLAGS="${RUSTFLAGS} --cfg fuzzing" cargo check -p rama-fuzz --all-targets
 
+  # MSRV lint coverage for the scarce macOS and Windows runners. Regular CI keeps
+  # MSRV on Linux and stable on every platform; the per-OS MSRV clippy that is
+  # not OS-specific lives here so it stays off the per-push critical path.
+  check-rust:
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain:
+          - 1.96.0 # MSRV
+        os:
+          - macos-latest
+          - windows-latest
+    runs-on: ${{ matrix.os }}
+    concurrency:
+      group: ${{ startsWith(matrix.os, 'macos') && (matrix.toolchain == 'stable' && 'rama-macos-slot-2' || 'rama-macos-slot-1') || startsWith(matrix.os, 'windows') && (matrix.toolchain == 'stable' && 'rama-windows-slot-4' || 'rama-windows-slot-7') || format('rama-linux-check-{0}-{1}', github.run_id, strategy.job-index) }}
+      cancel-in-progress: false
+      queue: max
+    needs:
+      - precheck-rust
+    env:
+      RUSTUP_TOOLCHAIN: ${{ matrix.toolchain }}
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
+        if: startsWith(matrix.os, 'windows')
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          components: clippy, rustfmt
+      - uses: ./.github/actions/rust-cache
+        with:
+          env-vars: RUST_TOOLCHAIN
+          key: ${{ matrix.os }}-${{ matrix.toolchain }}
+          shared-key: ${{ matrix.os == 'ubuntu-latest' && matrix.toolchain == 'stable' && 'linux-stable-check-v1' || '' }}
+      - name: rustfmt
+        run: |
+          cargo fmt --all --check
+      - name: clippy
+        run: |
+          cargo clippy --workspace --all-targets --all-features
+      - name: doc
+        if: ${{ !cancelled() && matrix.toolchain == 'stable' && matrix.os != 'ubuntu-latest' }}
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: |
+          cargo doc --all-features --no-deps --workspace --exclude rama-cli --exclude rama-net-apple-xpc
+          cargo doc --all-features --no-deps -p rama-cli
+      - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
+        if: ${{ !cancelled() && matrix.toolchain == 'stable' && matrix.os == 'macos-latest' }}
+        with:
+          tool: just
+      - name: Run Apple XPC QA checks
+        if: ${{ !cancelled() && matrix.toolchain == 'stable' && matrix.os == 'macos-latest' }}
+        run: just qa-xpc-apple
+
   test-rust-base:
     strategy:
       fail-fast: false
@@ -58,7 +115,7 @@ jobs:
     name: test-rust-base-${{ matrix.toolchain }}-${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     concurrency:
-      group: ${{ startsWith(matrix.os, 'macos') && (matrix.os == 'macos-15-intel' && 'rama-macos-slot-0' || 'rama-macos-slot-1') || startsWith(matrix.os, 'windows') && (matrix.os == 'windows-11-arm' && 'rama-windows-slot-1' || 'rama-windows-slot-0') || format('rama-linux-native-{0}-{1}', github.run_id, strategy.job-index) }}
+      group: ${{ startsWith(matrix.os, 'macos') && (matrix.os == 'macos-15-intel' && 'rama-macos-slot-0' || 'rama-macos-slot-1') || startsWith(matrix.os, 'windows') && (matrix.os == 'windows-11-arm' && 'rama-windows-slot-1' || 'rama-windows-slot-6') || format('rama-linux-native-{0}-{1}', github.run_id, strategy.job-index) }}
       cancel-in-progress: false
       queue: max
     # Intel macOS needs more time to compile both feature sets and examples.
@@ -143,7 +200,7 @@ jobs:
     name: test-quic-interop-qa-${{ matrix.backends }}-${{ matrix.toolchain }}-${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     concurrency:
-      group: ${{ startsWith(matrix.os, 'macos') && (matrix.toolchain == 'stable' && 'rama-macos-slot-3' || 'rama-macos-slot-4') || startsWith(matrix.os, 'windows') && (matrix.toolchain == 'stable' && 'rama-windows-slot-3' || 'rama-windows-slot-2') || format('rama-linux-quic-{0}-{1}', github.run_id, strategy.job-index) }}
+      group: ${{ startsWith(matrix.os, 'macos') && (matrix.toolchain == 'stable' && 'rama-macos-slot-3' || 'rama-macos-slot-4') || startsWith(matrix.os, 'windows') && (matrix.toolchain == 'stable' && 'rama-windows-slot-5' || 'rama-windows-slot-2') || format('rama-linux-quic-{0}-{1}', github.run_id, strategy.job-index) }}
       cancel-in-progress: false
       queue: max
     # Scarce hosts run three isolated backends sequentially, including examples.
@@ -523,6 +580,7 @@ jobs:
     if: ${{ !cancelled() }}
     needs:
       - precheck-rust
+      - check-rust
       - test-rust-base
       - test-quic-interop-qa
       - precheck-rust-tier2

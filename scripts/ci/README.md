@@ -1,11 +1,14 @@
-CI shares five macOS and four Windows runner slots across workflows. Heavy jobs
-wait for Linux prechecks, and `CI success` gates deployment.
+CI shares five macOS and eight Windows runner slots across workflows. Heavy jobs
+wait for Linux prechecks, and `CI success` gates deployment. Regular CI's per-push
+macOS and Windows jobs sit on their own slots so they do not queue behind the
+daily, docs, unstable, or release workflows.
 
 `CI (daily platforms)` runs at 02:00 Europe/Brussels on `main`, or manually on a
 selected branch. It covers native Intel macOS and Windows ARM tests, Intel iOS,
 Linux GNU cross-builds from macOS and Windows (including the Linux smoke test),
-and QUIC MSRV coverage on macOS and Windows. Regular CI retains stable QUIC
-coverage on all three operating systems and MSRV coverage on Linux.
+QUIC MSRV coverage on macOS and Windows, and the macOS and Windows MSRV clippy
+check. Regular CI retains stable QUIC coverage on all three operating systems,
+MSRV coverage on Linux, and stable clippy on every platform.
 
 The daily workflow has its own success gate and infrastructure retries. Its
 shared job steps and cache settings are checked against regular CI to prevent
