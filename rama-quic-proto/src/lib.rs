@@ -58,7 +58,6 @@ pub mod frame;
 
 pub mod crypto;
 
-#[cfg(feature = "std")]
 pub mod packet;
 
 pub mod transport_parameters;

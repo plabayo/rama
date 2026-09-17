@@ -1,4 +1,5 @@
-use std::{cmp::Ordering, io, ops::Range, str};
+use alloc::vec::Vec;
+use core::{cmp::Ordering, ops::Range};
 
 use rama_core::bytes::{Buf, BufMut, Bytes, BytesMut};
 
@@ -8,6 +9,55 @@ use crate::{
     crypto,
     version::{LongKind, Wire},
 };
+
+/// A no_std stand-in for `std::io::Cursor`: an owned buffer with a read position, offering the
+/// slice of methods the packet decoder needs. Reads through [`Buf`] advance the position, matching
+/// `std::io::Cursor`'s `bytes::Buf` semantics.
+#[derive(Clone, Debug)]
+pub(crate) struct Cursor<T> {
+    inner: T,
+    pos: usize,
+}
+
+impl<T> Cursor<T> {
+    fn new(inner: T) -> Self {
+        Self { inner, pos: 0 }
+    }
+
+    fn position(&self) -> u64 {
+        self.pos as u64
+    }
+
+    fn get_ref(&self) -> &T {
+        &self.inner
+    }
+
+    fn get_mut(&mut self) -> &mut T {
+        &mut self.inner
+    }
+
+    fn into_inner(self) -> T {
+        self.inner
+    }
+}
+
+impl<T: AsRef<[u8]>> Buf for Cursor<T> {
+    fn remaining(&self) -> usize {
+        self.inner.as_ref().len().saturating_sub(self.pos)
+    }
+
+    fn chunk(&self) -> &[u8] {
+        let slice = self.inner.as_ref();
+        &slice[self.pos.min(slice.len())..]
+    }
+
+    fn advance(&mut self, cnt: usize) {
+        // Every reader here checks `remaining()` first, so this only ever moves within the buffer;
+        // a bug that overshoots clamps to the end, and later reads then fail as unexpected end.
+        debug_assert!(cnt <= self.remaining(), "cursor advanced past the end");
+        self.pos = self.inner.as_ref().len().min(self.pos.saturating_add(cnt));
+    }
+}
 
 /// Decodes a QUIC packet's invariant header
 ///
@@ -24,7 +74,7 @@ use crate::{
 #[derive(Clone, Debug)]
 pub struct PartialDecode {
     plain_header: ProtectedHeader,
-    buf: io::Cursor<BytesMut>,
+    buf: Cursor<BytesMut>,
 }
 
 impl PartialDecode {
@@ -35,7 +85,7 @@ impl PartialDecode {
         supported_versions: &[Version],
         grease_quic_bit: bool,
     ) -> Result<(Self, Option<BytesMut>), PacketDecodeError> {
-        let mut buf = io::Cursor::new(bytes);
+        let mut buf = Cursor::new(bytes);
         let plain_header =
             ProtectedHeader::decode(&mut buf, cid_parser, supported_versions, grease_quic_bit)?;
         let dgram_len = buf.get_ref().len();
@@ -215,7 +265,7 @@ impl PartialDecode {
     }
 
     fn decrypt_header(
-        buf: &mut io::Cursor<BytesMut>,
+        buf: &mut Cursor<BytesMut>,
         header_crypto: &dyn crypto::HeaderKey,
     ) -> Result<PacketNumber, PacketDecodeError> {
         let packet_length = buf.get_ref().len();
@@ -590,8 +640,8 @@ impl ProtectedHeader {
     }
 
     /// Decode a plain header from given buffer, with given [`ConnectionIdParser`].
-    pub fn decode(
-        buf: &mut io::Cursor<BytesMut>,
+    pub(crate) fn decode(
+        buf: &mut Cursor<BytesMut>,
         cid_parser: &(impl ConnectionIdParser + ?Sized),
         supported_versions: &[Version],
         grease_quic_bit: bool,
@@ -914,7 +964,7 @@ impl core::fmt::Display for PacketDecodeError {
     }
 }
 
-impl std::error::Error for PacketDecodeError {}
+impl core::error::Error for PacketDecodeError {}
 
 impl From<coding::UnexpectedEnd> for PacketDecodeError {
     fn from(_: coding::UnexpectedEnd) -> Self {
@@ -948,13 +998,12 @@ impl SpaceId {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io;
 
     fn check_pn(typed: PacketNumber, encoded: &[u8]) {
         let mut buf = Vec::new();
         typed.encode(&mut buf);
         assert_eq!(&buf[..], encoded);
-        let decoded = PacketNumber::decode(typed.len(), &mut io::Cursor::new(&buf)).unwrap();
+        let decoded = PacketNumber::decode(typed.len(), &mut Cursor::new(&buf)).unwrap();
         assert_eq!(typed, decoded);
     }
 
