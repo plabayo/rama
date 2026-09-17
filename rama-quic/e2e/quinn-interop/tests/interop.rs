@@ -6,7 +6,7 @@ mod common;
 use std::{sync::Arc, time::Duration};
 
 use common::*;
-use rama::quic::{ConnectionError, Endpoint, FrameType};
+use rama::quic::{ConnectionError, Endpoint, proto::frame::FrameType};
 use rustls::AlertDescription;
 #[cfg(not(feature = "boring"))]
 use rustls::CertificateError;

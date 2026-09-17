@@ -8,9 +8,14 @@ use rama::{
     crypto::pki_types::CertificateDer,
     net::tls::ApplicationProtocol,
     quic::{
-        self, ConnectError, ConnectionId, Side, TransportError, TransportErrorCode,
+        self, ConnectError,
+        proto::{
+            ConnectionId, Side, TransportError, TransportErrorCode, Version,
+            crypto::{CryptoError, HeaderKey, PacketKey},
+            packet::SpaceId as EncryptionLevel,
+            transport_parameters::TransportParameters,
+        },
         tls::provider::{self, *},
-        version::Version,
     },
     tls::{ProtocolVersion, client::NegotiatedTlsParameters},
 };
@@ -272,7 +277,7 @@ impl provider::Session for Session {
         (!self.certificates.is_empty()).then(|| self.certificates.clone())
     }
 
-    fn early_crypto(&self) -> Option<(Box<dyn HeaderKey>, Box<dyn provider::PacketKey>)> {
+    fn early_crypto(&self) -> Option<(Box<dyn HeaderKey>, Box<dyn PacketKey>)> {
         None
     }
 
@@ -313,15 +318,15 @@ impl provider::Session for Session {
 
     fn next_1rtt_keys(
         &mut self,
-    ) -> Result<Option<KeyPair<Box<dyn provider::PacketKey>>>, TransportError> {
+    ) -> Result<Option<KeyPair<Box<dyn PacketKey>>>, TransportError> {
         let (Some(local), Some(remote)) = (&self.local_secret, &self.remote_secret) else {
             return Ok(None);
         };
         let local = local.updated().map_err(failure)?;
         let remote = remote.updated().map_err(failure)?;
         let keys = KeyPair {
-            local: Box::new(local.packet().map_err(failure)?) as Box<dyn provider::PacketKey>,
-            remote: Box::new(remote.packet().map_err(failure)?) as Box<dyn provider::PacketKey>,
+            local: Box::new(local.packet().map_err(failure)?) as Box<dyn PacketKey>,
+            remote: Box::new(remote.packet().map_err(failure)?) as Box<dyn PacketKey>,
         };
         self.local_secret = Some(local);
         self.remote_secret = Some(remote);

@@ -594,7 +594,7 @@ impl RamaResumptionConfigs {
             .unwrap();
             config.set_transport_config(Arc::new(
                 rama::quic::TransportConfig::default()
-                    .with_receive_window(rama::quic::VarInt::from(65536u32)),
+                    .with_receive_window(rama::quic::proto::VarInt::from(65536u32)),
             ));
             config
         };
@@ -656,7 +656,7 @@ impl RamaResumptionConfigs {
                 // Preserve ticket keys but change their bound transport context to reject 0-RTT.
                 config.set_transport_config(Arc::new(
                     rama::quic::TransportConfig::default()
-                        .with_receive_window(rama::quic::VarInt::from(131072u32)),
+                        .with_receive_window(rama::quic::proto::VarInt::from(131072u32)),
                 ));
             }
             (config, || {

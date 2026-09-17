@@ -16,7 +16,7 @@ use common::*;
 #[cfg(not(feature = "boring"))]
 use rama::tls::rustls::dep::rustls::{self, CertificateError};
 use rama::{
-    quic::{ConnectionError, Endpoint, VarInt},
+    quic::{ConnectionError, Endpoint, proto::VarInt},
     utils::octets,
 };
 use std::process::Stdio;

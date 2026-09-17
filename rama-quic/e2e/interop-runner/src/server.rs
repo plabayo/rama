@@ -12,7 +12,7 @@ use rama::{
     net::{socket::SocketOptions, tls::ApplicationProtocol},
     quic::{
         Connection, Endpoint, RecvStream, SendStream, ServerConfig,
-        version::{ServerVersionPolicy, Version, VersionPreference},
+        proto::version::{ServerVersionPolicy, Version, VersionPreference},
     },
     rt::Executor,
     telemetry::tracing,

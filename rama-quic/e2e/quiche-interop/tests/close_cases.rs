@@ -22,7 +22,7 @@ use interop_common::{
 };
 use parking_lot::Mutex;
 use rama::{
-    quic::{Endpoint, VarInt},
+    quic::{Endpoint, proto::VarInt},
     utils::octets,
 };
 use std::{

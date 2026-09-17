@@ -16,12 +16,12 @@ use interop_common::{keys::ask_when_ready, support::Deadline};
 use rama::{
     net::tls::ApplicationProtocol,
     quic::{
-        AddressTokenKey, CongestionControl, Connection, ConnectionId, ConnectionIdGenerator,
-        ConnectionStats, DriverStats, Endpoint, EndpointConfig, EndpointStats, FrameStats,
-        HashedConnectionIdGenerator, InvalidCid, KEY_MATERIAL_SIZE, MAX_CID_SIZE,
-        MIN_INITIAL_CONGESTION_WINDOW, PacketQueueStats, RandomConnectionIdGenerator,
-        ReceiveQueueLimits, RetryRefused, ServerConfig, Side, StatelessResetKey, TransportConfig,
-        ValidationTokenConfig,
+        AddressTokenKey, CongestionControl, Connection, ConnectionIdGenerator, ConnectionStats,
+        DriverStats, Endpoint, EndpointConfig, EndpointStats, FrameStats,
+        HashedConnectionIdGenerator, KEY_MATERIAL_SIZE, MIN_INITIAL_CONGESTION_WINDOW,
+        PacketQueueStats, RandomConnectionIdGenerator, ReceiveQueueLimits, RetryRefused,
+        ServerConfig, StatelessResetKey, TransportConfig, ValidationTokenConfig,
+        proto::{ConnectionId, InvalidCid, MAX_CID_SIZE, Side},
     },
     udp::UdpSocketConfig,
     utils::octets,

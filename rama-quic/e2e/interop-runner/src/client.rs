@@ -11,7 +11,7 @@ use rama::{
     net::{tls::ApplicationProtocol, uri::Uri},
     quic::{
         ClientConfig, Connection, Endpoint,
-        version::{ClientVersionPolicy, Version},
+        proto::version::{ClientVersionPolicy, Version},
     },
     rt::Executor,
     telemetry::tracing,

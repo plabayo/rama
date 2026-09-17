@@ -3,8 +3,11 @@ use crate::native;
 use rama::{
     bytes::BytesMut,
     quic::{
-        ConnectionId, Side,
-        tls::provider::{self, CryptoError, DirectionalKeys, Keys},
+        proto::{
+            ConnectionId, Side,
+            crypto::{self, CryptoError},
+        },
+        tls::provider::{self, DirectionalKeys, Keys},
     },
 };
 use zeroize::Zeroizing;
@@ -126,7 +129,7 @@ impl PacketKey {
     }
 }
 
-impl provider::PacketKey for PacketKey {
+impl crypto::PacketKey for PacketKey {
     fn encrypt(
         &self,
         number: u64,
@@ -191,7 +194,7 @@ impl HeaderKey {
     }
 }
 
-impl provider::HeaderKey for HeaderKey {
+impl crypto::HeaderKey for HeaderKey {
     fn encrypt(&self, offset: usize, packet: &mut [u8]) {
         self.apply(offset, packet, false);
     }

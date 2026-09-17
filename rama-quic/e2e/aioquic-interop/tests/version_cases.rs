@@ -13,7 +13,7 @@ use interop_common::{
     scenario::SERVER_NAME,
     version::{check_peer_version, rama_client_side, rama_server_side, version_cases},
 };
-use rama::quic::version::Version;
+use rama::quic::proto::Version;
 
 const PEER: &str = "aioquic";
 /// A client's first unidirectional stream, and its first bidirectional one.

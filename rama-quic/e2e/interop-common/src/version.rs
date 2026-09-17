@@ -12,7 +12,7 @@ use rama::{
     net::address::Domain,
     quic::{
         ClientConfig, ConfigError, Connection, Endpoint, EndpointConfig, ServerConfig,
-        version::{
+        proto::version::{
             ClientVersionPolicy, ServerVersionPolicy, Version, VersionPolicyError,
             VersionPreference,
         },
