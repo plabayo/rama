@@ -1189,10 +1189,10 @@ mod test {
     fn ack_frequency_coding() {
         let mut buf = Vec::new();
         let original = AckFrequency {
-            sequence: VarInt(42),
-            ack_eliciting_threshold: VarInt(20),
-            request_max_ack_delay: VarInt(50_000),
-            reordering_threshold: VarInt(1),
+            sequence: VarInt::from_u32(42),
+            ack_eliciting_threshold: VarInt::from_u32(20),
+            request_max_ack_delay: VarInt::from_u32(50_000),
+            reordering_threshold: VarInt::from_u32(1),
         };
         original.encode(&mut buf);
         let frames = frames(buf);

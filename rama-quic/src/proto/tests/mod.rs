@@ -155,7 +155,7 @@ fn lifecycle() {
     info!("closing");
     pair.client.connections.get_mut(&client_ch).unwrap().close(
         pair.time,
-        VarInt(42),
+        VarInt::from_u32(42),
         REASON.into(),
     );
     pair.drive();
@@ -163,12 +163,12 @@ fn lifecycle() {
         Some(Event::ConnectionLost {
             reason:
                 ConnectionError::ApplicationClosed(ApplicationClose {
-                    error_code: VarInt(42),
+                    error_code,
                     ref reason,
                 }),
-        }) if reason == REASON => {}
+        }) if reason == REASON && error_code == VarInt::from_u32(42) => {}
         other => panic!(
-            "assertion failed: `{other:?}` does not match `Some(Event::ConnectionLost {{ reason: ConnectionError::ApplicationClosed( ApplicationClose {{ error_code: VarInt(42), ref reason }} )}}) if reason == REASON`"
+            "assertion failed: `{other:?}` does not match `Some(Event::ConnectionLost {{ reason: ConnectionError::ApplicationClosed( ApplicationClose {{ error_code: VarInt::from_u32(42), ref reason }} )}}) if reason == REASON`"
         ),
     }
     match pair.client_conn_mut(client_ch).poll() {
@@ -210,7 +210,7 @@ fn draft_version_compat() {
     info!("closing");
     pair.client.connections.get_mut(&client_ch).unwrap().close(
         pair.time,
-        VarInt(42),
+        VarInt::from_u32(42),
         REASON.into(),
     );
     pair.drive();
@@ -218,12 +218,12 @@ fn draft_version_compat() {
         Some(Event::ConnectionLost {
             reason:
                 ConnectionError::ApplicationClosed(ApplicationClose {
-                    error_code: VarInt(42),
+                    error_code,
                     ref reason,
                 }),
-        }) if reason == REASON => {}
+        }) if reason == REASON && error_code == VarInt::from_u32(42) => {}
         other => panic!(
-            "assertion failed: `{other:?}` does not match `Some(Event::ConnectionLost {{ reason: ConnectionError::ApplicationClosed( ApplicationClose {{ error_code: VarInt(42), ref reason }} )}}) if reason == REASON`"
+            "assertion failed: `{other:?}` does not match `Some(Event::ConnectionLost {{ reason: ConnectionError::ApplicationClosed( ApplicationClose {{ error_code: VarInt::from_u32(42), ref reason }} )}}) if reason == REASON`"
         ),
     }
     match pair.client_conn_mut(client_ch).poll() {
@@ -292,7 +292,7 @@ fn client_stateless_reset() {
     // Send something big enough to allow room for a smaller stateless reset.
     pair.server.connections.get_mut(&server_ch).unwrap().close(
         pair.time,
-        VarInt(42),
+        VarInt::from_u32(42),
         (&[0xab; 128][..]).into(),
     );
     info!("resetting");
@@ -784,7 +784,7 @@ fn reset_stream() {
     pair.drive();
 
     info!("resetting stream");
-    const ERROR: VarInt = VarInt(42);
+    const ERROR: VarInt = VarInt::from_u32(42);
     pair.client_send(client_ch, s).reset(ERROR).unwrap();
     pair.drive();
 
@@ -827,7 +827,7 @@ fn stop_stream() {
     pair.drive();
 
     info!("stopping stream");
-    const ERROR: VarInt = VarInt(42);
+    const ERROR: VarInt = VarInt::from_u32(42);
     pair.server_recv(server_ch, s).stop(ERROR).unwrap();
     pair.drive();
 
@@ -1017,11 +1017,11 @@ fn zero_rtt_happypath() {
     let client_ch = pair.begin_connect(config.clone());
     pair.drive();
     pair.server.assert_accept();
-    pair.client
-        .connections
-        .get_mut(&client_ch)
-        .unwrap()
-        .close(pair.time, VarInt(0), [][..].into());
+    pair.client.connections.get_mut(&client_ch).unwrap().close(
+        pair.time,
+        VarInt::from_u32(0),
+        [][..].into(),
+    );
     pair.drive();
 
     pair.client.addr = SocketAddr::new(
@@ -1130,11 +1130,11 @@ fn zero_rtt_rejection() {
         (0, 0),
         "after the handshake discarded its packet number spaces nothing is outstanding"
     );
-    pair.client
-        .connections
-        .get_mut(&client_ch)
-        .unwrap()
-        .close(pair.time, VarInt(0), [][..].into());
+    pair.client.connections.get_mut(&client_ch).unwrap().close(
+        pair.time,
+        VarInt::from_u32(0),
+        [][..].into(),
+    );
     pair.drive();
     match pair.server_conn_mut(server_ch).poll() {
         Some(Event::ConnectionLost { .. }) => {}
@@ -1230,11 +1230,11 @@ fn test_zero_rtt_incoming_limit<F: FnOnce(&mut ServerConfig)>(configure_server: 
     let client_ch = pair.begin_connect(config.clone());
     pair.drive();
     pair.server.assert_accept();
-    pair.client
-        .connections
-        .get_mut(&client_ch)
-        .unwrap()
-        .close(pair.time, VarInt(0), [][..].into());
+    pair.client.connections.get_mut(&client_ch).unwrap().close(
+        pair.time,
+        VarInt::from_u32(0),
+        [][..].into(),
+    );
     pair.drive();
 
     pair.client.addr = SocketAddr::new(
@@ -2213,11 +2213,11 @@ fn instant_close_1() {
     let mut pair = Pair::default();
     info!("connecting");
     let client_ch = pair.begin_connect(client_config());
-    pair.client
-        .connections
-        .get_mut(&client_ch)
-        .unwrap()
-        .close(pair.time, VarInt(0), Bytes::new());
+    pair.client.connections.get_mut(&client_ch).unwrap().close(
+        pair.time,
+        VarInt::from_u32(0),
+        Bytes::new(),
+    );
     pair.drive();
     let server_ch = pair.server.assert_accept();
     match pair.client_conn_mut(client_ch).poll() {
@@ -2246,11 +2246,11 @@ fn instant_close_2() {
     let client_ch = pair.begin_connect(client_config());
     // Unlike `instant_close`, the server sees a valid Initial packet first.
     pair.drive_client();
-    pair.client
-        .connections
-        .get_mut(&client_ch)
-        .unwrap()
-        .close(pair.time, VarInt(42), Bytes::new());
+    pair.client.connections.get_mut(&client_ch).unwrap().close(
+        pair.time,
+        VarInt::from_u32(42),
+        Bytes::new(),
+    );
     pair.drive();
     match pair.client_conn_mut(client_ch).poll() {
         None => {}
@@ -2287,11 +2287,11 @@ fn instant_server_close() {
     pair.server.drive_incoming(pair.time, pair.client.addr);
     let server_ch = pair.server.assert_accept();
     info!("closing");
-    pair.server
-        .connections
-        .get_mut(&server_ch)
-        .unwrap()
-        .close(pair.time, VarInt(42), Bytes::new());
+    pair.server.connections.get_mut(&server_ch).unwrap().close(
+        pair.time,
+        VarInt::from_u32(42),
+        Bytes::new(),
+    );
     pair.drive();
     match pair.client_conn_mut(server_ch).poll() {
         Some(Event::ConnectionLost {
@@ -2313,7 +2313,7 @@ fn idle_timeout() {
     const IDLE_TIMEOUT: u64 = 100;
     let server = ServerConfig {
         transport: Arc::new(TransportConfig {
-            max_idle_timeout: Some(VarInt(IDLE_TIMEOUT)),
+            max_idle_timeout: Some(VarInt::from_u32(IDLE_TIMEOUT as u32)),
             ..TransportConfig::default()
         }),
         ..server_config()
@@ -2369,7 +2369,7 @@ fn connection_close_sends_acks() {
 
     let time = pair.time;
     pair.server_conn_mut(client_ch)
-        .close(time, VarInt(42), Bytes::new());
+        .close(time, VarInt::from_u32(42), Bytes::new());
 
     pair.drive();
 
@@ -2403,7 +2403,7 @@ fn connection_close_while_congestion_blocked() {
     let close_time = pair.time;
     pair.client.connections.get_mut(&client_ch).unwrap().close(
         pair.time,
-        VarInt(42),
+        VarInt::from_u32(42),
         REASON.into(),
     );
 
@@ -2425,11 +2425,11 @@ fn connection_close_while_congestion_blocked() {
     let (reason, delivered_at) = result.expect("server never learned of the close");
     match reason {
         ConnectionError::ApplicationClosed(ApplicationClose {
-            error_code: VarInt(42),
+            error_code,
             ref reason,
-        }) if reason == REASON => {}
+        }) if reason == REASON && error_code == VarInt::from_u32(42) => {}
         other => panic!(
-            "assertion failed: `{other:?}` does not match `ConnectionError::ApplicationClosed( ApplicationClose {{ error_code: VarInt(42), ref reason }} ) if reason == REASON`"
+            "assertion failed: `{other:?}` does not match `ConnectionError::ApplicationClosed( ApplicationClose {{ error_code: VarInt::from_u32(42), ref reason }} ) if reason == REASON`"
         ),
     }
     // Close packets aren't congestion controlled and the test link has no latency, so the close
@@ -2527,14 +2527,16 @@ fn test_flow_control(config: TransportConfig, window_size: usize) {
     );
     pair.drive();
     info!("resetting");
-    pair.client_send(client_ch, s).reset(VarInt(42)).unwrap();
+    pair.client_send(client_ch, s)
+        .reset(VarInt::from_u32(42))
+        .unwrap();
     pair.drive();
 
     let mut recv = pair.server_recv(server_ch, s);
     let mut chunks = recv.read(true).unwrap();
     assert_eq!(
         chunks.next(usize::MAX).err(),
-        Some(ReadError::Reset(VarInt(42)))
+        Some(ReadError::Reset(VarInt::from_u32(42)))
     );
     let _transmit = chunks.finalize();
 
@@ -2634,7 +2636,7 @@ fn stop_opens_bidi() {
     assert_eq!(pair.client_streams(client_ch).send_streams(), 0);
     let s = pair.client_streams(client_ch).open(Dir::Bi).unwrap();
     assert_eq!(pair.client_streams(client_ch).send_streams(), 1);
-    const ERROR: VarInt = VarInt(42);
+    const ERROR: VarInt = VarInt::from_u32(42);
     pair.client
         .connections
         .get_mut(&server_ch)
@@ -2723,17 +2725,17 @@ fn zero_length_cid() {
     let (client_ch, server_ch) = pair.connect();
     // Ensure we can reconnect after a previous connection is cleaned up
     info!("closing");
-    pair.client
-        .connections
-        .get_mut(&client_ch)
-        .unwrap()
-        .close(pair.time, VarInt(42), Bytes::new());
+    pair.client.connections.get_mut(&client_ch).unwrap().close(
+        pair.time,
+        VarInt::from_u32(42),
+        Bytes::new(),
+    );
     pair.drive();
-    pair.server
-        .connections
-        .get_mut(&server_ch)
-        .unwrap()
-        .close(pair.time, VarInt(42), Bytes::new());
+    pair.server.connections.get_mut(&server_ch).unwrap().close(
+        pair.time,
+        VarInt::from_u32(42),
+        Bytes::new(),
+    );
     pair.connect();
 }
 
@@ -2744,7 +2746,7 @@ fn keep_alive() {
     let server = ServerConfig {
         transport: Arc::new(TransportConfig {
             keep_alive_interval: Some(Duration::from_millis(IDLE_TIMEOUT / 2)),
-            max_idle_timeout: Some(VarInt(IDLE_TIMEOUT)),
+            max_idle_timeout: Some(VarInt::from_u32(IDLE_TIMEOUT as u32)),
             ..TransportConfig::default()
         }),
         ..server_config()
@@ -2986,7 +2988,7 @@ fn stop_before_finish() {
     pair.drive();
 
     info!("stopping stream");
-    const ERROR: VarInt = VarInt(42);
+    const ERROR: VarInt = VarInt::from_u32(42);
     pair.server_recv(server_ch, s).stop(ERROR).unwrap();
     pair.drive();
 
@@ -3016,7 +3018,7 @@ fn stop_during_finish() {
         }
     }
     info!("stopping and finishing stream");
-    const ERROR: VarInt = VarInt(42);
+    const ERROR: VarInt = VarInt::from_u32(42);
     pair.server_recv(server_ch, s).stop(ERROR).unwrap();
     pair.drive_server();
     pair.client_send(client_ch, s).finish().unwrap();
@@ -5073,11 +5075,11 @@ fn handshake_confirmation_no_resumption_shortcut() {
     let mut pair = Pair::default();
     let config = client_config();
     let (ch, _) = pair.connect_with(config.clone());
-    pair.client
-        .connections
-        .get_mut(&ch)
-        .unwrap()
-        .close(pair.time, VarInt(0), [][..].into());
+    pair.client.connections.get_mut(&ch).unwrap().close(
+        pair.time,
+        VarInt::from_u32(0),
+        [][..].into(),
+    );
     pair.drive();
 
     // Resumed connection
@@ -7098,7 +7100,8 @@ fn a_response_on_another_path_validates_the_preferred_address() {
     // As above: this server cannot serve the address it advertised, so the move is the end of
     // what C6a observes here.
     let now = pair.time;
-    pair.client_conn_mut(ch).close(now, VarInt(0), Bytes::new());
+    pair.client_conn_mut(ch)
+        .close(now, VarInt::from_u32(0), Bytes::new());
     drive_settled(&mut pair);
 }
 

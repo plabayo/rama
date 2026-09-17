@@ -535,7 +535,7 @@ impl Default for TransportConfig {
             max_concurrent_bidi_streams: 100u32.into(),
             max_concurrent_uni_streams: 100u32.into(),
             // 30 second default recommended by RFC 9308 § 3.2
-            max_idle_timeout: Some(VarInt(30_000)),
+            max_idle_timeout: Some(VarInt::from_u32(30_000)),
             stream_receive_window: STREAM_RWND.into(),
             stream_receive_window_bidi_remote: None,
             stream_receive_window_uni: None,
@@ -730,9 +730,9 @@ impl AckFrequencyConfig {
 impl Default for AckFrequencyConfig {
     fn default() -> Self {
         Self {
-            ack_eliciting_threshold: VarInt(1),
+            ack_eliciting_threshold: VarInt::from_u32(1),
             max_ack_delay: None,
-            reordering_threshold: VarInt(2),
+            reordering_threshold: VarInt::from_u32(2),
         }
     }
 }

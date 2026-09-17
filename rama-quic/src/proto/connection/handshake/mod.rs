@@ -621,7 +621,7 @@ impl Connection {
 }
 
 pub(super) fn get_max_ack_delay(params: &TransportParameters) -> Duration {
-    Duration::from_micros(params.max_ack_delay.0 * 1000)
+    Duration::from_micros(params.max_ack_delay * 1000)
 }
 
 /// Perform key updates this many packets before the AEAD confidentiality limit.
@@ -637,11 +637,13 @@ const KEY_UPDATE_MARGIN: u64 = 10_000;
 ///
 /// Returns the negotiated idle timeout as a `Duration`, or `None` when both endpoints have opted out of idle timeout.
 pub(super) fn negotiate_max_idle_timeout(x: Option<VarInt>, y: Option<VarInt>) -> Option<Duration> {
+    // A zero or absent value means "no timeout"; otherwise the lower of the two wins.
+    let x = x.map(VarInt::into_inner).filter(|&v| v != 0);
+    let y = y.map(VarInt::into_inner).filter(|&v| v != 0);
     match (x, y) {
-        (Some(VarInt(0)) | None, Some(VarInt(0)) | None) => None,
-        (Some(VarInt(0)) | None, Some(y)) => Some(Duration::from_millis(y.0)),
-        (Some(x), Some(VarInt(0)) | None) => Some(Duration::from_millis(x.0)),
-        (Some(x), Some(y)) => Some(Duration::from_millis(cmp::min(x, y).0)),
+        (None, None) => None,
+        (Some(v), None) | (None, Some(v)) => Some(Duration::from_millis(v)),
+        (Some(a), Some(b)) => Some(Duration::from_millis(cmp::min(a, b))),
     }
 }
 

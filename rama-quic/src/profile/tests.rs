@@ -10,6 +10,7 @@
 
 use rama_core::rt::Executor;
 
+use super::browsers::{chrome_153, firefox_156};
 use super::capture::{self, PacketKind};
 use super::*;
 use crate::proto::version::Version;
@@ -116,16 +117,16 @@ fn rama_first_flight(profile: &QuicProfile) -> (capture::FirstFlight, bool) {
         let server_addr = peer.local_addr().unwrap();
 
         let mut endpoint_config = crate::EndpointConfig::try_with_rand_key().unwrap();
-        profile.apply_to_endpoint(&mut endpoint_config).unwrap();
+        endpoint_config.apply_quic_profile(profile).unwrap();
         let mut client_config = crate::test_helpers::client(&identity);
         // The round trip exercises packetization and parameters; a backend that cannot change
         // version mid-handshake offers only the first flight's version, which the caller knows.
-        let capable = profile.clone().apply_to_client(&mut client_config).is_ok();
+        let capable = client_config.apply_quic_profile(profile).is_ok();
         if !capable {
             let narrowed = profile
                 .clone()
                 .with_versions(profile.versions().clone().narrowed_public());
-            narrowed.apply_to_client(&mut client_config).unwrap();
+            client_config.apply_quic_profile(&narrowed).unwrap();
         }
 
         let client = Endpoint::build(Executor::new())
@@ -255,7 +256,7 @@ fn a_browser_profile_offers_the_parameters_its_capture_did() {
         &hex("chrome-153-initial-1.hex"),
         &hex("chrome-153-initial-2.hex"),
     ]);
-    let (chrome, _capable_chrome) = rama_first_flight(&QuicProfile::chrome_153());
+    let (chrome, _capable_chrome) = rama_first_flight(&chrome_153());
     for id in &chrome_capture {
         assert!(
             chrome.parameters.contains(id) || *id == ParameterId(0x13c2_9813_4672_b34f),
@@ -271,7 +272,7 @@ fn a_browser_profile_offers_the_parameters_its_capture_did() {
         &hex("firefox-156-initial-1.hex"),
         &hex("firefox-156-initial-2.hex"),
     ]);
-    let (firefox, _capable_firefox) = rama_first_flight(&QuicProfile::firefox_156());
+    let (firefox, _capable_firefox) = rama_first_flight(&firefox_156());
     for id in &firefox_capture {
         assert!(
             firefox.parameters.contains(id),
@@ -286,7 +287,7 @@ fn a_browser_profile_offers_the_parameters_its_capture_did() {
 fn a_browser_profile_reproduces_its_captured_shape() {
     // Chrome: v1 only with a greased version first, 8/0 CIDs, 1230-byte datagrams, two-byte
     // packet numbers from one, frame padding, chaos layout, no coalescing.
-    let (chrome, _capable_chrome) = rama_first_flight(&QuicProfile::chrome_153());
+    let (chrome, _capable_chrome) = rama_first_flight(&chrome_153());
     assert_eq!(chrome.version, Version::V1);
     assert_eq!(chrome.dcid_len, 8);
     assert_eq!(chrome.scid_len, 0);
@@ -299,7 +300,7 @@ fn a_browser_profile_reproduces_its_captured_shape() {
     assert!(!chrome.coalesced);
 
     // Firefox: 8/3 CIDs, 1232-byte datagrams padded after the packet, v2 offered before v1.
-    let (firefox, capable) = rama_first_flight(&QuicProfile::firefox_156());
+    let (firefox, capable) = rama_first_flight(&firefox_156());
     assert_eq!(firefox.dcid_len, 8);
     assert_eq!(firefox.scid_len, 3);
     assert!(firefox.datagram_sizes.iter().all(|&size| size == 1232));
@@ -392,8 +393,8 @@ fn invalid_profiles_are_refused() {
 fn the_firefox_profile_needs_a_switch_capable_backend_on_boring() {
     let identity = crate::test_helpers::identity();
     let mut config = boring_client(&identity);
-    QuicProfile::firefox_156()
-        .apply_to_client(&mut config)
+    config
+        .apply_quic_profile(&firefox_156())
         .expect("the firefox profile applies on a switch-capable backend");
 }
 
@@ -426,7 +427,7 @@ fn the_firefox_profile_is_refused_on_a_rustls_client() {
     )
     .unwrap();
     assert!(matches!(
-        QuicProfile::firefox_156().apply_to_client(&mut config),
+        config.apply_quic_profile(&firefox_156()),
         Err(crate::ConfigError::VersionPolicy(_))
     ));
 }

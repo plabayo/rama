@@ -4,12 +4,13 @@
 //! defines version 2 as version 1 with different long-header type bits, Initial salt, HKDF
 //! labels and Retry integrity key. Everything here is a pure function of the version number.
 
-use std::fmt;
+use alloc::{vec, vec::Vec};
+use core::fmt;
 
 use rama_core::bytes::{Buf, BufMut};
 use serde::{Deserialize, Serialize};
 
-use crate::proto::coding::{self, Codec};
+use crate::coding::{self, Codec};
 
 /// A QUIC version number as it appears in long headers (RFC 8999 §5).
 #[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -74,14 +75,14 @@ impl Version {
     }
 
     /// A reserved version to grease a version list with, distinct from `avoid`.
-    pub(crate) const fn grease(avoid: Self) -> Self {
+    pub const fn grease(avoid: Self) -> Self {
         const FIRST: Version = Version(0x0a1a_2a3a);
         const SECOND: Version = Version(0x0a1a_2a4a);
         if avoid.0 == FIRST.0 { SECOND } else { FIRST }
     }
 
     /// The version-specific wire constants, when this crate implements the version.
-    pub(crate) const fn wire(self) -> Option<&'static Wire> {
+    pub const fn wire(self) -> Option<&'static Wire> {
         match self.0 {
             0x0000_0001 | 0xff00_0021..=0xff00_0022 => Some(&V1_WIRE),
             0xff00_001d..=0xff00_0020 => Some(&DRAFT29_WIRE),
@@ -135,16 +136,16 @@ impl Codec for Version {
 /// The HKDF-Expand-Label labels a version uses to derive packet protection material
 /// (RFC 9001 §5.1, §5.4, §6.1; RFC 9369 §3.3.2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Labels {
-    pub(crate) key: &'static [u8],
-    pub(crate) iv: &'static [u8],
-    pub(crate) hp: &'static [u8],
-    pub(crate) ku: &'static [u8],
+pub struct Labels {
+    pub key: &'static [u8],
+    pub iv: &'static [u8],
+    pub hp: &'static [u8],
+    pub ku: &'static [u8],
 }
 
 /// Long header packet kinds, before the version decides how their type bits look.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum LongKind {
+pub enum LongKind {
     Initial,
     ZeroRtt,
     Handshake,
@@ -153,38 +154,13 @@ pub(crate) enum LongKind {
 
 /// Everything about a version's wire image that is not shared by all versions.
 #[derive(Debug)]
-pub(crate) struct Wire {
+pub struct Wire {
     /// Salt for the Initial secret (RFC 9001 §5.2, RFC 9369 §3.3.1).
-    #[cfg_attr(
-        not(feature = "boring"),
-        expect(
-            dead_code,
-            reason = "rustls derives Initial keys from its own salt table"
-        )
-    )]
-    pub(crate) initial_salt: [u8; 20],
-    #[cfg_attr(
-        not(feature = "boring"),
-        expect(dead_code, reason = "rustls derives packet keys with its own labels")
-    )]
-    pub(crate) labels: Labels,
+    pub initial_salt: [u8; 20],
+    pub labels: Labels,
     /// Retry Integrity Tag key and nonce (RFC 9001 §5.8, RFC 9369 §3.3.3).
-    #[cfg_attr(
-        not(any(
-            feature = "boring",
-            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
-        )),
-        expect(dead_code, reason = "only a TLS backend computes Retry tags")
-    )]
-    pub(crate) retry_key: [u8; 16],
-    #[cfg_attr(
-        not(any(
-            feature = "boring",
-            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
-        )),
-        expect(dead_code, reason = "only a TLS backend computes Retry tags")
-    )]
-    pub(crate) retry_nonce: [u8; 12],
+    pub retry_key: [u8; 16],
+    pub retry_nonce: [u8; 12],
     /// Long header type bits for Initial, 0-RTT, Handshake and Retry in that order
     /// (RFC 9000 §17.2, RFC 9369 §3.2).
     long_types: [u8; 4],
@@ -192,12 +168,12 @@ pub(crate) struct Wire {
 
 impl Wire {
     /// The two type bits (already shifted into place) for a long header kind.
-    pub(crate) const fn long_type_bits(&self, kind: LongKind) -> u8 {
+    pub const fn long_type_bits(&self, kind: LongKind) -> u8 {
         self.long_types[kind as usize] << 4
     }
 
     /// The long header kind the two type bits name.
-    pub(crate) fn long_kind(&self, first_byte: u8) -> LongKind {
+    pub fn long_kind(&self, first_byte: u8) -> LongKind {
         let bits = (first_byte & 0x30) >> 4;
         const KINDS: [LongKind; 4] = [
             LongKind::Initial,
@@ -223,7 +199,7 @@ const V1_LABELS: Labels = Labels {
     ku: b"quic ku",
 };
 
-pub(crate) static V1_WIRE: Wire = Wire {
+pub static V1_WIRE: Wire = Wire {
     initial_salt: [
         0x38, 0x76, 0x2c, 0xf7, 0xf5, 0x59, 0x34, 0xb3, 0x4d, 0x17, 0x9a, 0xe6, 0xa4, 0xc8, 0x0c,
         0xad, 0xcc, 0xbb, 0x7f, 0x0a,
@@ -255,7 +231,7 @@ static DRAFT29_WIRE: Wire = Wire {
     long_types: [0b00, 0b01, 0b10, 0b11],
 };
 
-pub(crate) static V2_WIRE: Wire = Wire {
+pub static V2_WIRE: Wire = Wire {
     initial_salt: [
         0x0d, 0xed, 0xe3, 0xde, 0xf7, 0x00, 0xa6, 0xdb, 0x81, 0x93, 0x81, 0xbe, 0x6e, 0x26, 0x9d,
         0xcb, 0xf9, 0xbd, 0x2e, 0xd9,
@@ -349,7 +325,7 @@ pub struct VersionInformation {
 }
 
 impl VersionInformation {
-    pub(crate) fn new(chosen: Version, available: Vec<Version>) -> Self {
+    pub fn new(chosen: Version, available: Vec<Version>) -> Self {
         Self { chosen, available }
     }
 
@@ -367,11 +343,11 @@ impl VersionInformation {
     }
 
     /// The wire size of the value: four bytes per version.
-    pub(crate) fn wire_size(&self) -> usize {
+    pub fn wire_size(&self) -> usize {
         4 * (1 + self.available.len())
     }
 
-    pub(crate) fn write<W: BufMut>(&self, w: &mut W) {
+    pub fn write<W: BufMut>(&self, w: &mut W) {
         self.chosen.encode(w);
         for version in &self.available {
             version.encode(w);
@@ -380,7 +356,7 @@ impl VersionInformation {
 
     /// Parse a value of `len` bytes. RFC 9368 §4 makes a short or misaligned value, a zero
     /// version, or (for a server) a chosen version missing from the list a parsing failure.
-    pub(crate) fn read<B: Buf>(
+    pub fn read<B: Buf>(
         receiver_is_server: bool,
         len: usize,
         r: &mut B,
@@ -451,7 +427,7 @@ impl fmt::Display for VersionPolicyError {
     }
 }
 
-impl std::error::Error for VersionPolicyError {}
+impl core::error::Error for VersionPolicyError {}
 
 fn check_list(versions: &[Version]) -> Result<(), VersionPolicyError> {
     if versions.is_empty() {
@@ -619,7 +595,8 @@ impl ClientVersionPolicy {
 
     /// The policy for an attempt to a server that issued a ticket in `ticket`: the same policy
     /// starting in that version when it is supported and following tickets is on.
-    pub(crate) fn for_ticket(&self, ticket: Option<Version>) -> Self {
+    #[must_use]
+    pub fn for_ticket(&self, ticket: Option<Version>) -> Self {
         match ticket {
             Some(version)
                 if self.resume_in_ticket_version
@@ -642,7 +619,7 @@ impl ClientVersionPolicy {
     }
 
     /// Start in `original`, keeping the rest of the policy and adding `original` to its lists.
-    pub(crate) fn with_original(mut self, original: Version) -> Result<Self, VersionPolicyError> {
+    pub fn with_original(mut self, original: Version) -> Result<Self, VersionPolicyError> {
         check_list(&[original])?;
         self.original = original;
         self.resume_in_ticket_version = false;
@@ -668,21 +645,21 @@ impl ClientVersionPolicy {
     /// The same policy without a compatible switch, for a TLS session that cannot change
     /// version.
     #[must_use]
-    pub(crate) fn narrowed(mut self) -> Self {
+    pub fn narrowed(mut self) -> Self {
         self.compatible = vec![self.original];
         self
     }
 
     /// Every version the endpoint must be able to decode for this policy.
-    pub(crate) fn all_versions(&self) -> impl Iterator<Item = Version> + '_ {
-        std::iter::once(self.original)
+    pub fn all_versions(&self) -> impl Iterator<Item = Version> + '_ {
+        core::iter::once(self.original)
             .chain(self.compatible.iter().copied())
             .chain(self.supported.iter().copied())
     }
 
     /// The version this client would pick from a server's list, by its own preference order,
     /// ignoring reserved versions (RFC 9368 §2.1, §4).
-    pub(crate) fn select(&self, offered: &[Version]) -> Option<Version> {
+    pub fn select(&self, offered: &[Version]) -> Option<Version> {
         self.supported
             .iter()
             .copied()
@@ -691,7 +668,7 @@ impl ClientVersionPolicy {
 
     /// What the client advertises: its original version and, in preference order, what the
     /// first flight is compatible with.
-    pub(crate) fn information(&self, grease: Version) -> VersionInformation {
+    pub fn information(&self, grease: Version) -> VersionInformation {
         let mut available = self.compatible.clone();
         match self.grease {
             ReservedVersionGrease::None => {}
@@ -791,18 +768,18 @@ impl ServerVersionPolicy {
     }
 
     /// Whether this policy can ever pick a version other than the client's.
-    pub(crate) fn may_switch(&self) -> bool {
+    pub fn may_switch(&self) -> bool {
         matches!(self.preference, VersionPreference::Prefer(_))
     }
 
     /// The versions a Version Negotiation packet lists.
-    pub(crate) fn offered<'a>(&'a self, acceptable: &'a [Version]) -> &'a [Version] {
+    pub fn offered<'a>(&'a self, acceptable: &'a [Version]) -> &'a [Version] {
         self.offered.as_deref().unwrap_or(acceptable)
     }
 
     /// The version to continue in, given the client's first flight version and what it says
     /// that flight is compatible with (RFC 9368 §2.3, RFC 9369 §4.1).
-    pub(crate) fn negotiate(
+    pub fn negotiate(
         &self,
         chosen: Version,
         client_available: Option<&[Version]>,
@@ -827,7 +804,7 @@ impl ServerVersionPolicy {
     }
 
     /// What the server advertises: the negotiated version and its fully deployed set.
-    pub(crate) fn information(
+    pub fn information(
         &self,
         negotiated: Version,
         acceptable: &[Version],

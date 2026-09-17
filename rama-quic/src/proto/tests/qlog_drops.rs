@@ -293,7 +293,7 @@ fn replay_after_zero_rtt_key_discard_keeps_early_packet_type() {
     let (first_client, _) = pair.connect_with(config.clone());
     let now = pair.time;
     pair.client_conn_mut(first_client)
-        .close(now, VarInt(0), Bytes::new());
+        .close(now, VarInt::from_u32(0), Bytes::new());
     pair.drive();
     pair.client
         .addr

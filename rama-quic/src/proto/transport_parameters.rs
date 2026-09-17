@@ -177,9 +177,9 @@ impl TransportParameters {
                 .stream_receive_window_uni
                 .unwrap_or(config.stream_receive_window),
             max_udp_payload_size: endpoint_config.max_udp_payload_size,
-            max_idle_timeout: config.max_idle_timeout.unwrap_or(VarInt(0)),
+            max_idle_timeout: config.max_idle_timeout.unwrap_or(VarInt::from_u32(0)),
             max_ack_delay: VarInt::from_u64(config.max_ack_delay.as_millis() as u64)
-                .unwrap_or(VarInt(25)),
+                .unwrap_or(VarInt::from_u32(25)),
             disable_active_migration: server_config.is_some_and(|c| !c.migration),
             active_connection_id_limit: config.active_connection_id_limit.unwrap_or(
                 if cid_gen.cid_len() == 0 {
@@ -200,13 +200,14 @@ impl TransportParameters {
                 VarInt::from_u64(u64::try_from(TIMER_GRANULARITY.as_micros()).unwrap()).unwrap()
             }),
             grease_transport_parameter: match wire.parameters.grease() {
-                GreaseParameter::None => None,
                 GreaseParameter::Random { value_len } => {
                     Some(ReservedTransportParameter::random(rng, *value_len))
                 }
                 GreaseParameter::Fixed { id, value } => {
                     Some(ReservedTransportParameter::fixed(id.0, value))
                 }
+                // `None`, and any future greasing mode this engine does not know, grease nothing.
+                _ => None,
             },
             extra: wire
                 .parameters
@@ -231,38 +232,35 @@ impl TransportParameters {
             })
             .collect();
         slots.extend((0..self.extra.len()).map(WriteSlot::Extra));
-        match order {
-            ParameterOrder::Shuffled => {
-                slots.shuffle(rng);
-                slots
-            }
-            ParameterOrder::Fixed(ids) => {
-                let mut planned: Vec<WriteSlot> = Vec::with_capacity(slots.len());
-                for id in ids {
-                    let slot = if *id == ParameterId::GREASE {
-                        Some(WriteSlot::Grease)
-                    } else if let Ok(known) = TransportParameterId::try_from(id.0) {
-                        Some(WriteSlot::Known(known))
-                    } else {
-                        self.extra
-                            .iter()
-                            .position(|(extra, _)| *extra == id.0)
-                            .map(WriteSlot::Extra)
-                    };
-                    if let Some(slot) = slot
-                        && !planned.contains(&slot)
-                    {
-                        planned.push(slot);
-                    }
-                }
-                let rest: Vec<WriteSlot> = slots
-                    .into_iter()
-                    .filter(|slot| !planned.contains(slot))
-                    .collect();
-                planned.extend(rest);
-                planned
+        // `Shuffled`, and any future ordering, use a fresh shuffle.
+        let ParameterOrder::Fixed(ids) = order else {
+            slots.shuffle(rng);
+            return slots;
+        };
+        let mut planned: Vec<WriteSlot> = Vec::with_capacity(slots.len());
+        for id in ids {
+            let slot = if *id == ParameterId::GREASE {
+                Some(WriteSlot::Grease)
+            } else if let Ok(known) = TransportParameterId::try_from(id.0) {
+                Some(WriteSlot::Known(known))
+            } else {
+                self.extra
+                    .iter()
+                    .position(|(extra, _)| *extra == id.0)
+                    .map(WriteSlot::Extra)
+            };
+            if let Some(slot) = slot
+                && !planned.contains(&slot)
+            {
+                planned.push(slot);
             }
         }
+        let rest: Vec<WriteSlot> = slots
+            .into_iter()
+            .filter(|slot| !planned.contains(slot))
+            .collect();
+        planned.extend(rest);
+        planned
     }
 
     /// Check that these parameters are legal when resuming from
@@ -290,7 +288,9 @@ impl TransportParameters {
     /// Consider both a) the active_connection_id_limit from the other end; and
     /// b) LOC_CID_COUNT used locally
     pub(crate) fn issue_cids_limit(&self) -> u64 {
-        self.active_connection_id_limit.0.min(LOC_CID_COUNT)
+        self.active_connection_id_limit
+            .into_inner()
+            .min(LOC_CID_COUNT)
     }
 }
 
@@ -498,7 +498,7 @@ impl TransportParameters {
                         {$($(#[$doc:meta])* $name:ident ($id:ident) = $default:expr,)*} => {
                             match id {
                                 $(TransportParameterId::$id => {
-                                    if self.$name.0 != $default {
+                                    if self.$name != $default {
                                         w.write_var(id as u64);
                                         w.write(VarInt::try_from(self.$name.size()).unwrap());
                                         w.write(self.$name);
@@ -629,20 +629,20 @@ impl TransportParameters {
         // Semantic validation
 
         // https://www.rfc-editor.org/rfc/rfc9000.html#section-18.2-4.26.1
-        if params.ack_delay_exponent.0 > 20
+        if params.ack_delay_exponent > 20
             // https://www.rfc-editor.org/rfc/rfc9000.html#section-18.2-4.28.1
-            || params.max_ack_delay.0 >= 1 << 14
+            || params.max_ack_delay >= 1 << 14
             // https://www.rfc-editor.org/rfc/rfc9000.html#section-18.2-6.2.1
-            || params.active_connection_id_limit.0 < 2
+            || params.active_connection_id_limit < 2
             // https://www.rfc-editor.org/rfc/rfc9000.html#section-18.2-4.10.1
-            || params.max_udp_payload_size.0 < 1200
+            || params.max_udp_payload_size < 1200
             // https://www.rfc-editor.org/rfc/rfc9000.html#section-4.6-2
-            || params.initial_max_streams_bidi.0 > MAX_STREAM_COUNT
-            || params.initial_max_streams_uni.0 > MAX_STREAM_COUNT
+            || params.initial_max_streams_bidi > MAX_STREAM_COUNT
+            || params.initial_max_streams_uni > MAX_STREAM_COUNT
             // https://www.ietf.org/archive/id/draft-ietf-quic-ack-frequency-08.html#section-3-4
             || params.min_ack_delay.is_some_and(|min_ack_delay| {
                 // min_ack_delay uses microseconds, whereas max_ack_delay uses milliseconds
-                min_ack_delay.0 > params.max_ack_delay.0 * 1_000
+                min_ack_delay > params.max_ack_delay * 1_000
             })
             // https://www.rfc-editor.org/rfc/rfc9000.html#section-18.2-8
             || (side.is_server()
@@ -703,13 +703,13 @@ impl ReservedTransportParameter {
     /// A reserved parameter with this identifier and value on every connection.
     fn fixed(id: u64, value: &[u8]) -> Self {
         Self {
-            id: VarInt::from_u64(id).unwrap_or(VarInt(27)),
+            id: VarInt::from_u64(id).unwrap_or(VarInt::from_u32(27)),
             payload: value.to_vec(),
         }
     }
 
     fn write(&self, w: &mut impl BufMut) {
-        w.write_var(self.id.0);
+        w.write_var(self.id.into_inner());
         w.write_var(self.payload.len() as u64);
         w.put_slice(&self.payload);
     }
@@ -933,7 +933,7 @@ mod test {
         ];
         for rng in &mut rngs {
             let id = ReservedTransportParameter::generate_reserved_id(rng);
-            assert!(id.0 % 31 == 27)
+            assert!(id % 31 == 27)
         }
     }
 
@@ -975,7 +975,7 @@ mod test {
         let mut buf = Vec::new();
         let reserved_parameter = ReservedTransportParameter::random(&mut rand::rng(), None);
         assert!(reserved_parameter.payload.len() < ReservedTransportParameter::MAX_PAYLOAD_LEN);
-        assert!(reserved_parameter.id.0 % 31 == 27);
+        assert!(reserved_parameter.id % 31 == 27);
 
         reserved_parameter.write(&mut buf);
         assert!(!buf.is_empty());
@@ -1081,7 +1081,7 @@ mod test {
             if declared_length == value.len() {
                 let params = result.unwrap();
                 assert_eq!(params.preferred_address, Some(preferred));
-                assert_eq!(params.max_idle_timeout, VarInt(1));
+                assert_eq!(params.max_idle_timeout, VarInt::from_u32(1));
             } else {
                 assert_eq!(result, Err(Error::Malformed), "length {declared_length}");
             }
@@ -1119,7 +1119,7 @@ mod test {
         let illegal_params_builders: Vec<Box<dyn FnMut(&mut TransportParameters)>> = vec![
             Box::new(|t| {
                 // This min_ack_delay is bigger than max_ack_delay!
-                let min_ack_delay = t.max_ack_delay.0 * 1_000 + 1;
+                let min_ack_delay = t.max_ack_delay * 1_000 + 1;
                 t.min_ack_delay = Some(VarInt::from_u64(min_ack_delay).unwrap())
             }),
             Box::new(|t| {

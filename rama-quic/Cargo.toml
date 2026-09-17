@@ -32,7 +32,7 @@ ring = ["rama-crypto/ring", "rama-tls-rustls?/ring"]
 # Deterministic in-memory sockets and engine simulator helpers for tests.
 test-utils = ["rama-udp/test-utils"]
 # Byte-oriented hooks used by the workspace fuzz crate only.
-arbitrary = ["dep:arbitrary"]
+arbitrary = ["dep:arbitrary", "rama-quic-proto/arbitrary"]
 # Optional [dial9] runtime telemetry: driver tasks go through Rama's shared
 # spawn path, so an attached recorder tracks them. No recorder is created here.
 #
@@ -55,6 +55,7 @@ pin-project-lite = { workspace = true }
 rama-core = { workspace = true, features = ["std"] }
 rama-crypto = { workspace = true }
 rama-net = { workspace = true, features = ["std"] }
+rama-quic-proto = { workspace = true, features = ["std"] }
 rama-tls = { workspace = true }
 rama-tls-boring = { workspace = true, optional = true }
 rama-tls-rustls = { workspace = true, optional = true }

@@ -936,8 +936,8 @@ async fn stream_stopped() {
         let stopped1 = tokio::task::spawn(stopped1);
         // verify that both futures resolved
         let (stopped1, stopped2) = tokio::join!(stopped1, stopped2);
-        assert!(matches!(stopped1, Ok(Ok(Some(val))) if val == 42u32.into()));
-        assert!(matches!(stopped2, Ok(Some(val)) if val == 42u32.into()));
+        assert!(matches!(stopped1, Ok(Ok(Some(val))) if val == 42));
+        assert!(matches!(stopped2, Ok(Some(val)) if val == 42));
         // drop the stream
         drop(stream);
         // verify that a future also resolves after dropping the stream

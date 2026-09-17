@@ -144,7 +144,7 @@ fn lost_packets_keep_their_original_encryption_level() {
     let (client_ch, _) = pair.connect_with(config.clone());
     let now = pair.time;
     pair.client_conn_mut(client_ch)
-        .close(now, VarInt(0), Bytes::new());
+        .close(now, VarInt::from_u32(0), Bytes::new());
     pair.drive();
     pair.client
         .addr

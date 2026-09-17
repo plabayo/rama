@@ -14,7 +14,7 @@
 use std::{fmt, net::SocketAddr, ops};
 
 pub(crate) mod cid_queue;
-pub(crate) mod coding;
+pub(crate) use rama_quic_proto::coding;
 mod constant_time;
 mod range_set;
 #[cfg(test)]
@@ -24,11 +24,10 @@ mod range_set;
 ))]
 mod tests;
 pub(crate) mod transport_parameters;
-mod varint;
-pub(crate) mod version;
-pub use version::Version;
+pub(crate) use rama_quic_proto::version;
+pub use rama_quic_proto::version::Version;
 
-pub use varint::{VarInt, VarIntBoundsExceeded};
+pub use rama_quic_proto::{VarInt, VarIntBoundsExceeded};
 mod bloom_token_log;
 pub use bloom_token_log::BloomTokenLog;
 
@@ -369,7 +368,7 @@ impl From<StreamId> for VarInt {
 
 impl From<VarInt> for StreamId {
     fn from(v: VarInt) -> Self {
-        Self(v.0)
+        Self(v.into_inner())
     }
 }
 
@@ -420,12 +419,10 @@ pub(crate) struct Transmit {
 /// The maximum number of CIDs we bother to issue per connection
 const LOC_CID_COUNT: u64 = 8;
 const RESET_TOKEN_SIZE: usize = 16;
-/// The longest connection ID QUIC version 1 carries, in bytes (RFC 9000 §17.2).
-pub const MAX_CID_SIZE: usize = 20;
+pub use rama_quic_proto::MAX_CID_SIZE;
 pub(crate) const MIN_INITIAL_SIZE: u16 = 1200;
 /// <https://www.rfc-editor.org/rfc/rfc9000.html#name-datagram-size>
 pub(crate) const INITIAL_MTU: u16 = 1200;
 const MAX_UDP_PAYLOAD: u16 = 65527;
 const TIMER_GRANULARITY: Duration = Duration::from_millis(1);
-/// Maximum number of streams that can be uniquely identified by a stream ID
-pub(crate) const MAX_STREAM_COUNT: u64 = 1 << 60;
+pub(crate) use rama_quic_proto::MAX_STREAM_COUNT;

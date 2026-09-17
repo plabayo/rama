@@ -1,24 +1,24 @@
 //! Coding related traits.
 
-use std::net::{Ipv4Addr, Ipv6Addr};
+use core::net::{Ipv4Addr, Ipv6Addr};
 
 use rama_core::bytes::{Buf, BufMut};
 
-use crate::proto::VarInt;
+use crate::VarInt;
 
 rama_utils::macros::error::static_str_error! {
     #[doc = "unexpected end of buffer"]
     ///
     /// Error indicating that the provided buffer was too small.
     #[derive(Copy)]
-    pub(crate) struct UnexpectedEnd;
+    pub struct UnexpectedEnd;
 }
 
 /// Coding result type
-pub(crate) type Result<T> = ::std::result::Result<T, UnexpectedEnd>;
+pub type Result<T> = core::result::Result<T, UnexpectedEnd>;
 
 /// Infallible encoding and decoding of QUIC primitives
-pub(crate) trait Codec: Sized {
+pub trait Codec: Sized {
     /// Decode a `Self` from the provided buffer, if the buffer is large enough
     fn decode<B: Buf>(buf: &mut B) -> Result<Self>;
     /// Append the encoding of `self` to the provided buffer
@@ -101,7 +101,7 @@ impl Codec for Ipv6Addr {
     }
 }
 
-pub(crate) trait BufExt {
+pub trait BufExt {
     fn get<T: Codec>(&mut self) -> Result<T>;
     fn get_var(&mut self) -> Result<u64>;
 }
@@ -116,7 +116,7 @@ impl<T: Buf> BufExt for T {
     }
 }
 
-pub(crate) trait BufMutExt {
+pub trait BufMutExt {
     fn write<T: Codec>(&mut self, x: T);
     fn write_var(&mut self, x: u64);
 }

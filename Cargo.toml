@@ -65,6 +65,7 @@ members = [
     "rama-pac",
     "rama-proxy",
     "rama-quic",
+    "rama-quic-proto",
     "rama-socks5",
     "rama-tcp",
     "rama-tls",
@@ -214,6 +215,7 @@ rama-net-apple-xpc = { version = "0.5.0", path = "./rama-net-apple-xpc", default
 rama-pac = { version = "0.5.0", path = "./rama-pac", default-features = false }
 rama-proxy = { version = "0.5.0", path = "./rama-proxy", default-features = false }
 rama-quic = { version = "0.5.0", path = "./rama-quic", default-features = false }
+rama-quic-proto = { version = "0.5.0", path = "./rama-quic-proto", default-features = false }
 rama-socks5 = { version = "0.5.0", path = "./rama-socks5", default-features = false }
 rama-tcp = { version = "0.5.0", path = "./rama-tcp", default-features = false }
 rama-tls = { version = "0.5.0", path = "./rama-tls", default-features = false }

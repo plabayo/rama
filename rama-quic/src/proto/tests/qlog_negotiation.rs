@@ -127,7 +127,7 @@ fn qlog_negotiation_resumption_uses_restored_parameters_and_one_client_early_key
     let (client, _) = pair.connect_with(config.clone());
     let now = pair.time;
     pair.client_conn_mut(client)
-        .close(now, VarInt(0), Bytes::new());
+        .close(now, VarInt::from_u32(0), Bytes::new());
     pair.drive();
     pair.client
         .addr

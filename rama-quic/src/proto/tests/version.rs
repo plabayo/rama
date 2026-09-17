@@ -408,7 +408,7 @@ fn a_resumed_connection_keeps_its_ticket_version_and_its_0rtt() {
     );
     let now = pair.time;
     pair.client_conn_mut(client_ch)
-        .close(now, VarInt(0), [][..].into());
+        .close(now, VarInt::from_u32(0), [][..].into());
     pair.drive();
 
     // The server would now rather have v1, but a resuming client is not moved.
@@ -469,7 +469,7 @@ fn a_ticket_is_not_offered_in_another_version() {
     pair.server.assert_accept();
     let now = pair.time;
     pair.client_conn_mut(client_ch)
-        .close(now, VarInt(0), [][..].into());
+        .close(now, VarInt::from_u32(0), [][..].into());
     pair.drive();
 
     // The same TLS configuration, starting in v2: nothing to resume with.
@@ -485,7 +485,7 @@ fn a_ticket_is_not_offered_in_another_version() {
     pair.server.assert_accept();
     let now = pair.time;
     pair.client_conn_mut(client_ch)
-        .close(now, VarInt(0), [][..].into());
+        .close(now, VarInt::from_u32(0), [][..].into());
     pair.drive();
 
     // Back in v1, the v1 ticket is still there.
@@ -511,7 +511,7 @@ fn a_new_token_validates_only_the_version_that_issued_it() {
     let (client_ch, _) = pair.connect_with(config.clone());
     let now = pair.time;
     pair.client_conn_mut(client_ch)
-        .close(now, VarInt(0), [][..].into());
+        .close(now, VarInt::from_u32(0), [][..].into());
     pair.drive();
 
     // The v1 token is not sent with a v2 first flight, so the address is not validated.
@@ -524,7 +524,7 @@ fn a_new_token_validates_only_the_version_that_issued_it() {
     let (client_ch, _) = pair.connect_with(v2);
     let now = pair.time;
     pair.client_conn_mut(client_ch)
-        .close(now, VarInt(0), [][..].into());
+        .close(now, VarInt::from_u32(0), [][..].into());
     pair.drive();
 
     // In v1 it is, and the server accepts it.
@@ -535,6 +535,6 @@ fn a_new_token_validates_only_the_version_that_issued_it() {
     let (client_ch, _) = pair.connect_with(config);
     let now = pair.time;
     pair.client_conn_mut(client_ch)
-        .close(now, VarInt(0), [][..].into());
+        .close(now, VarInt::from_u32(0), [][..].into());
     pair.drive();
 }

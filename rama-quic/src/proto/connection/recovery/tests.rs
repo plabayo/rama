@@ -248,7 +248,7 @@ impl super::Connection {
             .rtt
             .update(Duration::ZERO, Duration::from_millis(50));
         self.ack_frequency.peer_max_ack_delay = Duration::from_millis(25);
-        self.peer_params.ack_delay_exponent = crate::proto::VarInt(3);
+        self.peer_params.ack_delay_exponent = crate::proto::VarInt::from_u32(3);
         let packet = self.spaces[SpaceId::Data].get_tx_number();
         self.path.sent(
             packet,

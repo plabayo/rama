@@ -121,8 +121,9 @@ impl Connection {
             let ack_delay = if space != SpaceId::Data {
                 Duration::from_micros(0)
             } else {
-                let reported =
-                    Duration::from_micros(ack.delay << self.peer_params.ack_delay_exponent.0);
+                let reported = Duration::from_micros(
+                    ack.delay << self.peer_params.ack_delay_exponent.into_inner(),
+                );
                 if self.handshake_confirmed() {
                     cmp::min(self.ack_frequency.peer_max_ack_delay, reported)
                 } else {

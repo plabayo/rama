@@ -406,9 +406,9 @@ impl Connection {
             next_crypto: None,
             accepted_0rtt: false,
             permit_idle_reset: true,
-            idle_timeout: match config.max_idle_timeout {
-                None | Some(VarInt(0)) => None,
-                Some(dur) => Some(Duration::from_millis(dur.0)),
+            idle_timeout: match config.max_idle_timeout.map(VarInt::into_inner) {
+                None | Some(0) => None,
+                Some(dur) => Some(Duration::from_millis(dur)),
             },
             timers: TimerTable::default(),
             authentication_failures: 0,

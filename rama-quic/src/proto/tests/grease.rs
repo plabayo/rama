@@ -33,7 +33,7 @@ fn reconnect(pair: &mut Pair, config: &ClientConfig) -> ConnectionHandle {
     let (client_ch, _) = pair.connect_with(config.clone());
     let now = pair.time;
     pair.client_conn_mut(client_ch)
-        .close(now, VarInt(0), [][..].into());
+        .close(now, VarInt::from_u32(0), [][..].into());
     pair.drive();
     pair.client.addr = SocketAddr::new(
         Ipv6Addr::LOCALHOST.into(),
@@ -53,7 +53,7 @@ fn a_recent_token_from_a_greasing_server_lets_a_client_grease_early() {
     assert!(!pair.client_conn_mut(first).greases_quic_bit_early());
     let now = pair.time;
     pair.client_conn_mut(first)
-        .close(now, VarInt(0), [][..].into());
+        .close(now, VarInt::from_u32(0), [][..].into());
     pair.drive();
 
     // Six days later the token still qualifies.
@@ -81,7 +81,7 @@ fn a_token_older_than_seven_days_does_not() {
     let (first, _) = pair.connect_with(config.clone());
     let now = pair.time;
     pair.client_conn_mut(first)
-        .close(now, VarInt(0), [][..].into());
+        .close(now, VarInt::from_u32(0), [][..].into());
     pair.drive();
 
     clock.advance(Duration::from_secs(7 * 86_400));

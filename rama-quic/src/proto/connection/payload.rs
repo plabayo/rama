@@ -501,10 +501,10 @@ mod tests {
                     frame::FrameType::IMMEDIATE_ACK.encode(&mut payload);
                 } else {
                     frame::AckFrequency {
-                        sequence: VarInt(1_000),
-                        ack_eliciting_threshold: VarInt(1),
-                        request_max_ack_delay: VarInt(25_000),
-                        reordering_threshold: VarInt(1),
+                        sequence: VarInt::from_u32(1_000),
+                        ack_eliciting_threshold: VarInt::from_u32(1),
+                        request_max_ack_delay: VarInt::from_u32(25_000),
+                        reordering_threshold: VarInt::from_u32(1),
                     }
                     .encode(&mut payload);
                 }
