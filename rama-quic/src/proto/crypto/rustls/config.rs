@@ -306,9 +306,11 @@ mod tests {
             }
             let params = TransportParameters::default();
             let mut client = Arc::new(client)
-                .start_session(1, "localhost", &params)
+                .start_session(crate::proto::Version::V1, "localhost", &params)
                 .unwrap();
-            let mut server = Arc::new(server).start_session(1, &params).unwrap();
+            let mut server = Arc::new(server)
+                .start_session(crate::proto::Version::V1, &params)
+                .unwrap();
             let mut rejected = None;
             'handshake: for _ in 0..16 {
                 for side in [Side::Server, Side::Client] {
@@ -390,7 +392,11 @@ mod tests {
                 .unwrap();
         assert_eq!(store.reads.load(Ordering::Relaxed), 0);
         Arc::new(client)
-            .start_session(1, "localhost", &TransportParameters::default())
+            .start_session(
+                crate::proto::Version::V1,
+                "localhost",
+                &TransportParameters::default(),
+            )
             .unwrap();
         assert!(store.reads.load(Ordering::Relaxed) > 0);
     }
@@ -419,10 +425,13 @@ mod tests {
         Arc::make_mut(&mut server.inner).max_early_data_size = 23;
         let params = TransportParameters::default();
         assert!(matches!(
-            Arc::new(client).start_session(1, "localhost", &params),
+            Arc::new(client).start_session(crate::proto::Version::V1, "localhost", &params),
             Err(ConnectError::Crypto(_))
         ));
-        let error = Arc::new(server).start_session(1, &params).err().unwrap();
+        let error = Arc::new(server)
+            .start_session(crate::proto::Version::V1, &params)
+            .err()
+            .unwrap();
         assert!(
             std::error::Error::source(&error)
                 .unwrap()

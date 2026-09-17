@@ -3,9 +3,10 @@ use std::{cmp::Ordering, io, ops::Range, str};
 use rama_core::bytes::{Buf, BufMut, Bytes, BytesMut};
 
 use crate::proto::{
-    ConnectionId,
+    ConnectionId, Version,
     coding::{self, BufExt, BufMutExt},
     crypto,
+    version::{LongKind, Wire},
 };
 
 /// Decodes a QUIC packet's invariant header
@@ -46,7 +47,7 @@ impl PartialDecode {
     pub fn new(
         bytes: BytesMut,
         cid_parser: &(impl ConnectionIdParser + ?Sized),
-        supported_versions: &[u32],
+        supported_versions: &[Version],
         grease_quic_bit: bool,
     ) -> Result<(Self, Option<BytesMut>), PacketDecodeError> {
         let mut buf = io::Cursor::new(bytes);
@@ -106,6 +107,16 @@ impl PartialDecode {
         match self.plain_header {
             ProtectedHeader::Long { ty, .. } => ty == LongType::ZeroRtt,
             _ => false,
+        }
+    }
+
+    /// The version a long header carries; short headers have none.
+    pub(crate) fn version(&self) -> Option<Version> {
+        match self.plain_header {
+            ProtectedHeader::Initial(ProtectedInitialHeader { version, .. })
+            | ProtectedHeader::Long { version, .. }
+            | ProtectedHeader::Retry { version, .. } => Some(version),
+            ProtectedHeader::Short { .. } | ProtectedHeader::VersionNegotiate { .. } => None,
         }
     }
 
@@ -281,12 +292,12 @@ pub(crate) enum Header {
         dst_cid: ConnectionId,
         src_cid: ConnectionId,
         number: PacketNumber,
-        version: u32,
+        version: Version,
     },
     Retry {
         dst_cid: ConnectionId,
         src_cid: ConnectionId,
-        version: u32,
+        version: Version,
     },
     Short {
         spin: bool,
@@ -312,7 +323,7 @@ impl Header {
                 number,
                 version,
             }) => {
-                w.write(u8::from(LongHeaderType::Initial) | number.tag());
+                w.write(LongHeaderType::Initial.to_byte(version) | number.tag());
                 w.write(version);
                 dst_cid.encode_long(w);
                 src_cid.encode_long(w);
@@ -333,7 +344,7 @@ impl Header {
                 number,
                 version,
             } => {
-                w.write(u8::from(LongHeaderType::Standard(ty)) | number.tag());
+                w.write(LongHeaderType::Standard(ty).to_byte(version) | number.tag());
                 w.write(version);
                 dst_cid.encode_long(w);
                 src_cid.encode_long(w);
@@ -350,7 +361,7 @@ impl Header {
                 ref src_cid,
                 version,
             } => {
-                w.write(u8::from(LongHeaderType::Retry));
+                w.write(LongHeaderType::Retry.to_byte(version));
                 w.write(version);
                 dst_cid.encode_long(w);
                 src_cid.encode_long(w);
@@ -401,6 +412,16 @@ impl Header {
     /// Whether the packet is encrypted on the wire
     pub(crate) fn is_protected(&self) -> bool {
         !matches!(*self, Self::Retry { .. } | Self::VersionNegotiate { .. })
+    }
+
+    /// The version a long header carries; short headers have none.
+    pub(crate) fn version(&self) -> Option<Version> {
+        match *self {
+            Self::Initial(InitialHeader { version, .. })
+            | Self::Long { version, .. }
+            | Self::Retry { version, .. } => Some(version),
+            Self::Short { .. } | Self::VersionNegotiate { .. } => None,
+        }
     }
 
     pub(crate) fn number(&self) -> Option<PacketNumber> {
@@ -530,7 +551,7 @@ pub(crate) enum ProtectedHeader {
         /// Length of the packet payload
         len: u64,
         /// QUIC version
-        version: u32,
+        version: Version,
     },
     /// A Retry packet header
     Retry {
@@ -539,7 +560,7 @@ pub(crate) enum ProtectedHeader {
         /// Source Connection ID
         src_cid: ConnectionId,
         /// QUIC version
-        version: u32,
+        version: Version,
     },
     /// A short packet header, as used during the data phase
     Short {
@@ -591,7 +612,7 @@ impl ProtectedHeader {
     pub(crate) fn decode(
         buf: &mut io::Cursor<BytesMut>,
         cid_parser: &(impl ConnectionIdParser + ?Sized),
-        supported_versions: &[u32],
+        supported_versions: &[Version],
         grease_quic_bit: bool,
     ) -> Result<Self, PacketDecodeError> {
         let first = buf.get::<u8>()?;
@@ -606,7 +627,7 @@ impl ProtectedHeader {
                 dst_cid: cid_parser.parse(buf)?,
             })
         } else {
-            let version = buf.get::<u32>()?;
+            let version = buf.get::<Version>()?;
 
             let dst_cid = ConnectionId::decode_long(buf)
                 .ok_or(PacketDecodeError::InvalidHeader("malformed cid"))?;
@@ -614,7 +635,7 @@ impl ProtectedHeader {
                 .ok_or(PacketDecodeError::InvalidHeader("malformed cid"))?;
 
             // TODO: Support long CIDs for compatibility with future QUIC versions
-            if version == 0 {
+            if version.is_negotiation() {
                 let random = first & !LONG_HEADER_FORM;
                 return Ok(Self::VersionNegotiate {
                     random,
@@ -623,15 +644,18 @@ impl ProtectedHeader {
                 });
             }
 
-            if !supported_versions.contains(&version) {
+            let Some(wire) = version
+                .wire()
+                .filter(|_| supported_versions.contains(&version))
+            else {
                 return Err(PacketDecodeError::UnsupportedVersion {
                     src_cid,
                     dst_cid,
                     version,
                 });
-            }
+            };
 
-            match LongHeaderType::from_byte(first)? {
+            match LongHeaderType::from_byte(first, wire) {
                 LongHeaderType::Initial => {
                     let token_len = buf.get_var()? as usize;
                     let token_start = buf.position() as usize;
@@ -678,7 +702,7 @@ pub(crate) struct ProtectedInitialHeader {
     /// Length of the packet payload
     pub(crate) len: u64,
     /// QUIC version
-    pub(crate) version: u32,
+    pub(crate) version: Version,
 }
 
 #[derive(Clone, Debug)]
@@ -687,7 +711,7 @@ pub(crate) struct InitialHeader {
     pub(crate) src_cid: ConnectionId,
     pub(crate) token: Bytes,
     pub(crate) number: PacketNumber,
-    pub(crate) version: u32,
+    pub(crate) version: Version,
 }
 
 // An encoded packet number
@@ -700,22 +724,34 @@ pub(crate) enum PacketNumber {
 }
 
 impl PacketNumber {
+    pub(crate) fn new(n: u64, largest_acked: u64) -> Self {
+        Self::new_at_least(n, largest_acked, 1)
+    }
+
+    /// Like [`Self::new`], but encoded on at least `min_len` bytes (1 to 4), as a wire profile
+    /// may ask for.
     #[expect(
         clippy::panic,
         reason = "`range` is the distance to the largest acknowledged packet; reaching 2^32 would need billions of unacknowledged packets, which `sent_packets` bounds far below"
     )]
-    pub(crate) fn new(n: u64, largest_acked: u64) -> Self {
+    pub(crate) fn new_at_least(n: u64, largest_acked: u64, min_len: u8) -> Self {
         let range = (n - largest_acked) * 2;
-        if range < 1 << 8 {
-            Self::U8(n as u8)
+        let len = if range < 1 << 8 {
+            1
         } else if range < 1 << 16 {
-            Self::U16(n as u16)
+            2
         } else if range < 1 << 24 {
-            Self::U24(n as u32)
+            3
         } else if range < 1 << 32 {
-            Self::U32(n as u32)
+            4
         } else {
             panic!("packet number too large to encode")
+        };
+        match len.max(min_len.clamp(1, 4)) {
+            1 => Self::U8(n as u8),
+            2 => Self::U16(n as u16),
+            3 => Self::U24(n as u32 & 0x00ff_ffff),
+            _ => Self::U32(n as u32),
         }
     }
 
@@ -851,34 +887,30 @@ pub(crate) enum LongHeaderType {
 }
 
 impl LongHeaderType {
-    fn from_byte(b: u8) -> Result<Self, PacketDecodeError> {
+    fn from_byte(b: u8, wire: &Wire) -> Self {
         debug_assert!(b & LONG_HEADER_FORM != 0, "not a long packet");
-        Ok(match (b & 0x30) >> 4 {
-            0x0 => Self::Initial,
-            0x1 => Self::Standard(LongType::ZeroRtt),
-            0x2 => Self::Standard(LongType::Handshake),
-            0x3 => Self::Retry,
-            #[expect(
-                clippy::unreachable,
-                reason = "two bits yield exactly the four listed values"
-            )]
-            _ => unreachable!(),
-        })
-    }
-}
-
-impl From<LongHeaderType> for u8 {
-    fn from(ty: LongHeaderType) -> Self {
-        match ty {
-            LongHeaderType::Initial => LONG_HEADER_FORM | FIXED_BIT,
-            LongHeaderType::Standard(LongType::ZeroRtt) => {
-                LONG_HEADER_FORM | FIXED_BIT | (0x1 << 4)
-            }
-            LongHeaderType::Standard(LongType::Handshake) => {
-                LONG_HEADER_FORM | FIXED_BIT | (0x2 << 4)
-            }
-            LongHeaderType::Retry => LONG_HEADER_FORM | FIXED_BIT | (0x3 << 4),
+        match wire.long_kind(b) {
+            LongKind::Initial => Self::Initial,
+            LongKind::ZeroRtt => Self::Standard(LongType::ZeroRtt),
+            LongKind::Handshake => Self::Standard(LongType::Handshake),
+            LongKind::Retry => Self::Retry,
         }
+    }
+
+    /// The first byte of a long header of this type in `version`, without packet number bits.
+    #[expect(
+        clippy::expect_used,
+        reason = "headers are only encoded for versions the connection negotiated, which all have a wire image"
+    )]
+    pub(crate) fn to_byte(self, version: Version) -> u8 {
+        let kind = match self {
+            Self::Initial => LongKind::Initial,
+            Self::Standard(LongType::ZeroRtt) => LongKind::ZeroRtt,
+            Self::Standard(LongType::Handshake) => LongKind::Handshake,
+            Self::Retry => LongKind::Retry,
+        };
+        let wire = version.wire().expect("an implemented QUIC version");
+        LONG_HEADER_FORM | FIXED_BIT | wire.long_type_bits(kind)
     }
 }
 
@@ -908,7 +940,7 @@ pub enum PacketDecodeError {
         /// Destination Connection ID
         dst_cid: ConnectionId,
         /// The version that was unsupported
-        version: u32,
+        version: Version,
     },
     /// The packet header is invalid
     InvalidHeader(&'static str),
@@ -918,7 +950,7 @@ impl core::fmt::Display for PacketDecodeError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::UnsupportedVersion { version, .. } => {
-                write!(f, "unsupported version {version:x}")
+                write!(f, "unsupported version {version}")
             }
             Self::InvalidHeader(field0) => write!(f, "invalid header: {field0}"),
         }
@@ -1008,7 +1040,7 @@ mod tests {
         let session = config
             .crypto
             .start_session(
-                1,
+                Version::V1,
                 "localhost",
                 &TransportParameters {
                     initial_src_cid: Some(dcid),
@@ -1016,7 +1048,9 @@ mod tests {
                 },
             )
             .unwrap();
-        let client = session.initial_keys(&dcid, Side::Client).unwrap();
+        let client = session
+            .initial_keys(Version::V1, &dcid, Side::Client)
+            .unwrap();
         let mut buf = Vec::new();
         let header = Header::Initial(InitialHeader {
             number: PacketNumber::U8(0),
@@ -1044,7 +1078,9 @@ mod tests {
         .expect("valid initial packet test vector");
         assert_eq!(buf[..], expected[..]);
 
-        let server = session.initial_keys(&dcid, Side::Server).unwrap();
+        let server = session
+            .initial_keys(Version::V1, &dcid, Side::Server)
+            .unwrap();
         let supported_versions = crate::proto::DEFAULT_SUPPORTED_VERSIONS.to_vec();
         let decode = PartialDecode::new(
             buf.as_slice().into(),

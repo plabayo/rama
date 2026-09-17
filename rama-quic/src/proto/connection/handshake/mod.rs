@@ -19,7 +19,7 @@ use rama_core::{
 };
 
 use crate::proto::{
-    Duration, Instant, TransportError, VarInt,
+    Duration, Instant, TransportError, VarInt, Version,
     connection::{
         Connection, ConnectionError, ConnectionSide, Event, State,
         packet_crypto::{PrevCrypto, ZeroRttCrypto},
@@ -30,6 +30,7 @@ use crate::proto::{
     packet::{InitialPacket, SpaceId},
     shared::EcnCodepoint,
     transport_parameters::TransportParameters,
+    version::VersionInformation,
 };
 
 impl Connection {
@@ -466,11 +467,67 @@ impl Connection {
                 "CID authentication failure",
             ));
         }
+        self.validate_peer_versions(&params)?;
 
         self.qlog_remote_parameters(now, &params);
         self.set_peer_params(now, params);
+        self.peer_params_received = true;
 
         Ok(())
+    }
+
+    /// RFC 9368 §4: the peer's `version_information` must agree with the version in use, and
+    /// a client that reacted to a Version Negotiation packet checks that the server's list
+    /// would have led it to the same version.
+    fn validate_peer_versions(&self, params: &TransportParameters) -> Result<(), TransportError> {
+        match &self.side {
+            ConnectionSide::Server { .. } => {
+                if params
+                    .version_information
+                    .as_ref()
+                    .is_some_and(|info| info.chosen() != self.original_version)
+                {
+                    return Err(TransportError::VERSION_NEGOTIATION_ERROR(
+                        "client's chosen version differs from its first flight",
+                    ));
+                }
+                Ok(())
+            }
+            ConnectionSide::Client {
+                versions,
+                negotiation_offer,
+                ..
+            } => {
+                let info = match (&params.version_information, negotiation_offer) {
+                    (Some(info), _) => info.clone(),
+                    (None, None) => return Ok(()),
+                    // A server that only speaks v1 predates version negotiation (RFC 9368 §8).
+                    (None, Some(_)) if self.version == Version::V1 => {
+                        VersionInformation::new(Version::V1, vec![Version::V1])
+                    }
+                    (None, Some(_)) => {
+                        return Err(TransportError::VERSION_NEGOTIATION_ERROR(
+                            "server sent no version_information after Version Negotiation",
+                        ));
+                    }
+                };
+                if info.chosen() != self.version {
+                    return Err(TransportError::VERSION_NEGOTIATION_ERROR(
+                        "server's chosen version differs from the negotiated version",
+                    ));
+                }
+                if negotiation_offer.is_some() {
+                    let mut would_see = info.available().to_vec();
+                    would_see.push(self.version);
+                    if versions.select(&would_see) != Some(self.version) {
+                        return Err(TransportError::VERSION_NEGOTIATION_ERROR(
+                            "Version Negotiation led to a version the server's list does not justify",
+                        ));
+                    }
+                }
+                Ok(())
+            }
+        }
     }
 
     fn set_peer_params(&mut self, now: Instant, params: TransportParameters) {

@@ -7,13 +7,15 @@ use std::{
 };
 
 use lru_slab::LruSlab;
-use rama_core::bytes::Bytes;
 use rama_core::telemetry::tracing::trace;
 
 use ahash::{HashMap, HashMapExt as _};
 use parking_lot::Mutex;
 
-use crate::proto::token::TokenStore;
+use crate::proto::{
+    Version,
+    token::{StoredToken, TokenStore},
+};
 
 /// `TokenStore` implementation that stores up to `N` tokens per server name for up to a
 /// limited number of server names, in-memory
@@ -31,14 +33,14 @@ impl TokenMemoryCache {
 }
 
 impl TokenStore for TokenMemoryCache {
-    fn insert(&self, server_name: &str, token: Bytes) {
-        trace!(%server_name, "storing token");
-        self.0.lock().store(server_name, token)
+    fn insert(&self, server_name: &str, version: Version, token: StoredToken) {
+        trace!(%server_name, %version, "storing token");
+        self.0.lock().store(server_name, version, token)
     }
 
-    fn take(&self, server_name: &str) -> Option<Bytes> {
-        let token = self.0.lock().take(server_name);
-        trace!(%server_name, found=%token.is_some(), "taking token");
+    fn take(&self, server_name: &str, version: Version) -> Option<StoredToken> {
+        let token = self.0.lock().take(server_name, version);
+        trace!(%server_name, %version, found=%token.is_some(), "taking token");
         token
     }
 }
@@ -55,8 +57,8 @@ impl Default for TokenMemoryCache {
 struct State {
     /// `None` disables the cache: a zero server or token limit stores nothing.
     limits: Option<Limits>,
-    // map from server name to index in lru
-    lookup: HashMap<Arc<str>, u32>,
+    // map from server name and version to index in lru
+    lookup: HashMap<(Arc<str>, Version), u32>,
     lru: LruSlab<CacheEntry>,
 }
 
@@ -81,11 +83,11 @@ impl State {
         }
     }
 
-    fn store(&mut self, server_name: &str, token: Bytes) {
+    fn store(&mut self, server_name: &str, version: Version, token: StoredToken) {
         let Some(limits) = self.limits else {
             return;
         };
-        if let Some(&slot) = self.lookup.get(server_name) {
+        if let Some(&slot) = self.lookup.get(&(Arc::from(server_name), version)) {
             // known server: the entry becomes most recent and takes the newest token
             self.lru
                 .get_mut(slot)
@@ -102,13 +104,14 @@ impl State {
         let server_name = Arc::<str>::from(server_name);
         let slot = self.lru.insert(CacheEntry {
             server_name: server_name.clone(),
+            version,
             tokens: Tokens::single(token),
         });
-        self.lookup.insert(server_name, slot);
+        self.lookup.insert((server_name, version), slot);
     }
 
-    fn take(&mut self, server_name: &str) -> Option<Bytes> {
-        let slot = *self.lookup.get(server_name)?;
+    fn take(&mut self, server_name: &str, version: Version) -> Option<StoredToken> {
+        let slot = *self.lookup.get(&(Arc::from(server_name), version))?;
         // `get_mut` marks the entry most recently used
         match self.lru.get_mut(slot).tokens.pop_oldest() {
             Some(token) => Some(token),
@@ -120,7 +123,9 @@ impl State {
     /// Remove an entry from the slab and the lookup as one operation.
     fn remove_entry(&mut self, slot: u32) -> CacheEntry {
         let entry = self.lru.remove(slot);
-        let removed = self.lookup.remove(&entry.server_name);
+        let removed = self
+            .lookup
+            .remove(&(entry.server_name.clone(), entry.version));
         debug_assert_eq!(removed, Some(slot));
         entry
     }
@@ -130,18 +135,19 @@ impl State {
 #[derive(Debug)]
 struct CacheEntry {
     server_name: Arc<str>,
+    version: Version,
     tokens: Tokens,
 }
 
 /// The tokens of one server, oldest first; structurally never empty.
 #[derive(Debug)]
 struct Tokens {
-    oldest: Bytes,
-    newer: VecDeque<Bytes>,
+    oldest: StoredToken,
+    newer: VecDeque<StoredToken>,
 }
 
 impl Tokens {
-    fn single(token: Bytes) -> Self {
+    fn single(token: StoredToken) -> Self {
         Self {
             oldest: token,
             newer: VecDeque::new(),
@@ -153,7 +159,7 @@ impl Tokens {
     }
 
     /// Append the newest token, evicting the oldest when `max` tokens are already held.
-    fn push_newest(&mut self, token: Bytes, max: NonZeroUsize) {
+    fn push_newest(&mut self, token: StoredToken, max: NonZeroUsize) {
         if self.len() >= max.get() {
             if let Some(next) = self.newer.pop_front() {
                 self.oldest = next
@@ -167,13 +173,13 @@ impl Tokens {
 
     /// Take the oldest token while at least one remains; `None` means the last token can only
     /// leave together with its owner via [`into_last`](Self::into_last).
-    fn pop_oldest(&mut self) -> Option<Bytes> {
+    fn pop_oldest(&mut self) -> Option<StoredToken> {
         let next = self.newer.pop_front()?;
         Some(std::mem::replace(&mut self.oldest, next))
     }
 
     /// Consume the last token.
-    fn into_last(self) -> Bytes {
+    fn into_last(self) -> StoredToken {
         debug_assert!(self.newer.is_empty(), "into_last on a multi-token entry");
         self.oldest
     }
@@ -184,8 +190,13 @@ mod tests {
     use std::collections::VecDeque;
 
     use super::*;
+    use rama_core::bytes::Bytes;
     use rand::prelude::*;
     use rand_pcg::Pcg32;
+
+    fn stored(token: Bytes) -> StoredToken {
+        StoredToken::new(token, crate::proto::UNIX_EPOCH)
+    }
 
     fn new_rng() -> impl Rng {
         Pcg32::new(0xdeadbeefdeadbeef, 0xdeadbeefdeadbeef)
@@ -220,7 +231,7 @@ mod tests {
                             evicted_servers += 1;
                         }
                     }
-                    cache.insert(&server_name.to_string(), token);
+                    cache.insert(&server_name.to_string(), Version::V1, stored(token));
                 } else {
                     let expecting = model.iter().position(|(s, _)| *s == server_name).map(|j| {
                         let (_, mut queue) = model.remove(j);
@@ -231,7 +242,9 @@ mod tests {
                         token
                     });
                     assert_eq!(
-                        cache.take(&server_name.to_string()),
+                        cache
+                            .take(&server_name.to_string(), Version::V1)
+                            .map(|stored| stored.token),
                         expecting,
                         "servers {max_servers} tokens {max_tokens} step {i}"
                     );
@@ -241,7 +254,7 @@ mod tests {
                 assert_eq!(state.lookup.len(), model.len());
                 assert!(state.lru.len() as usize <= max_servers);
                 for (name, queue) in &model {
-                    let slot = state.lookup[name.to_string().as_str()];
+                    let slot = state.lookup[&(Arc::from(name.to_string().as_str()), Version::V1)];
                     assert_eq!(state.lru.peek(slot).tokens.len(), queue.len());
                 }
             }
@@ -269,37 +282,82 @@ mod tests {
     #[test]
     fn take_refreshes_recency_and_slots_are_reused() {
         let cache = TokenMemoryCache::new(2, 2);
-        cache.insert("a", Bytes::from_static(b"a1"));
-        cache.insert("a", Bytes::from_static(b"a2"));
-        cache.insert("b", Bytes::from_static(b"b1"));
+        cache.insert("a", Version::V1, stored(Bytes::from_static(b"a1")));
+        cache.insert("a", Version::V1, stored(Bytes::from_static(b"a2")));
+        cache.insert("b", Version::V1, stored(Bytes::from_static(b"b1")));
         // taking from `a` makes it most recent, so a third server evicts `b`
-        assert_eq!(cache.take("a"), Some(Bytes::from_static(b"a1")));
-        cache.insert("c", Bytes::from_static(b"c1"));
-        assert_eq!(cache.take("b"), None);
-        assert_eq!(cache.take("a"), Some(Bytes::from_static(b"a2")));
         assert_eq!(
-            cache.take("a"),
+            cache.take("a", Version::V1).map(|stored| stored.token),
+            Some(Bytes::from_static(b"a1"))
+        );
+        cache.insert("c", Version::V1, stored(Bytes::from_static(b"c1")));
+        assert_eq!(
+            cache.take("b", Version::V1).map(|stored| stored.token),
+            None
+        );
+        assert_eq!(
+            cache.take("a", Version::V1).map(|stored| stored.token),
+            Some(Bytes::from_static(b"a2"))
+        );
+        assert_eq!(
+            cache.take("a", Version::V1).map(|stored| stored.token),
             None,
             "the last token leaves with its entry"
         );
         let slots: Vec<u32> = cache.0.lock().lookup.values().copied().collect();
         assert_eq!(slots.len(), 1);
         // reinserting `a` reuses a freed slot and the cache keeps working at the limit
-        cache.insert("a", Bytes::from_static(b"a3"));
+        cache.insert("a", Version::V1, stored(Bytes::from_static(b"a3")));
         assert!(cache.0.lock().lru.len() == 2);
-        assert_eq!(cache.take("c"), Some(Bytes::from_static(b"c1")));
-        assert_eq!(cache.take("a"), Some(Bytes::from_static(b"a3")));
+        assert_eq!(
+            cache.take("c", Version::V1).map(|stored| stored.token),
+            Some(Bytes::from_static(b"c1"))
+        );
+        assert_eq!(
+            cache.take("a", Version::V1).map(|stored| stored.token),
+            Some(Bytes::from_static(b"a3"))
+        );
         assert!(cache.0.lock().lru.is_empty());
         assert!(cache.0.lock().lookup.is_empty());
+    }
+
+    /// RFC 9369 §5: a token belongs to the version of the connection that issued it.
+    #[test]
+    fn tokens_are_scoped_by_version() {
+        let cache = TokenMemoryCache::new(4, 2);
+        cache.insert("a", Version::V1, stored(Bytes::from_static(b"one")));
+        cache.insert("a", Version::V2, stored(Bytes::from_static(b"two")));
+        assert_eq!(
+            cache.take("a", Version::V2).map(|stored| stored.token),
+            Some(Bytes::from_static(b"two"))
+        );
+        assert_eq!(
+            cache.take("a", Version::V2).map(|stored| stored.token),
+            None
+        );
+        assert_eq!(
+            cache.take("a", Version::V1).map(|stored| stored.token),
+            Some(Bytes::from_static(b"one"))
+        );
+        assert_eq!(
+            cache.take("a", Version::V1).map(|stored| stored.token),
+            None
+        );
     }
 
     #[test]
     fn single_token_limit_keeps_the_newest() {
         let cache = TokenMemoryCache::new(4, 1);
-        cache.insert("a", Bytes::from_static(b"old"));
-        cache.insert("a", Bytes::from_static(b"new"));
-        assert_eq!(cache.take("a"), Some(Bytes::from_static(b"new")));
-        assert_eq!(cache.take("a"), None);
+        cache.insert("a", Version::V1, stored(Bytes::from_static(b"old")));
+        cache.insert("a", Version::V1, stored(Bytes::from_static(b"new")));
+        assert_eq!(
+            cache.take("a", Version::V1).map(|stored| stored.token),
+            Some(Bytes::from_static(b"new"))
+        );
+        assert_eq!(
+            cache.take("a", Version::V1).map(|stored| stored.token),
+            None
+        );
     }
 
     #[test]
@@ -307,9 +365,9 @@ mod tests {
         // test that this edge case doesn't panic
         let cache = TokenMemoryCache::new(0, 2);
         for i in 0..10 {
-            cache.insert(&i.to_string(), Bytes::from(vec![i]));
+            cache.insert(&i.to_string(), Version::V1, stored(Bytes::from(vec![i])));
             for j in 0..10 {
-                assert!(cache.take(&j.to_string()).is_none());
+                assert!(cache.take(&j.to_string(), Version::V1).is_none());
             }
         }
     }
@@ -319,9 +377,9 @@ mod tests {
         // test that this edge case doesn't panic
         let cache = TokenMemoryCache::new(256, 0);
         for i in 0..10 {
-            cache.insert(&i.to_string(), Bytes::from(vec![i]));
+            cache.insert(&i.to_string(), Version::V1, stored(Bytes::from(vec![i])));
             for j in 0..10 {
-                assert!(cache.take(&j.to_string()).is_none());
+                assert!(cache.take(&j.to_string(), Version::V1).is_none());
             }
         }
     }

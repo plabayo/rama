@@ -193,23 +193,18 @@ fn use_token_then_retry() {
 #[test]
 fn use_same_token_twice() {
     #[derive(Default)]
-    struct EvilTokenStore(Mutex<Bytes>);
+    struct EvilTokenStore(Mutex<Option<StoredToken>>);
 
     impl TokenStore for EvilTokenStore {
-        fn insert(&self, _server_name: &str, token: Bytes) {
+        fn insert(&self, _server_name: &str, _version: Version, token: StoredToken) {
             let mut lock = self.0.lock();
-            if lock.is_empty() {
-                *lock = token;
+            if lock.is_none() {
+                *lock = Some(token);
             }
         }
 
-        fn take(&self, _server_name: &str) -> Option<Bytes> {
-            let lock = self.0.lock();
-            if lock.is_empty() {
-                None
-            } else {
-                Some(lock.clone())
-            }
+        fn take(&self, _server_name: &str, _version: Version) -> Option<StoredToken> {
+            self.0.lock().clone()
         }
     }
 
@@ -404,14 +399,14 @@ struct FailingRetryIntegrity(Arc<dyn crypto::ServerConfig>);
 impl crypto::ServerConfig for FailingRetryIntegrity {
     fn initial_keys(
         &self,
-        version: u32,
+        version: Version,
         cid: &ConnectionId,
     ) -> Result<crypto::Keys, crypto::InitialKeysError> {
         self.0.initial_keys(version, cid)
     }
     fn retry_tag(
         &self,
-        _: u32,
+        _: Version,
         _: &ConnectionId,
         _: &[u8],
     ) -> Result<[u8; 16], crypto::CryptoError> {
@@ -419,7 +414,7 @@ impl crypto::ServerConfig for FailingRetryIntegrity {
     }
     fn start_session(
         self: Arc<Self>,
-        version: u32,
+        version: Version,
         params: &TransportParameters,
     ) -> Result<Box<dyn crypto::Session>, TransportError> {
         self.0.clone().start_session(version, params)

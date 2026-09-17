@@ -296,7 +296,7 @@ fn qlog_received_lengths_match_individual_coalesced_packets() {
             let (packet, rest) = packet::PartialDecode::new(
                 bytes,
                 &packet::FixedLengthConnectionIdParser::new(8),
-                &[1],
+                &[Version::V1],
                 true,
             )
             .unwrap();

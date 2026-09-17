@@ -50,6 +50,9 @@ pub enum TestCase {
     Transfer,
     Retry,
     MultiConnect,
+    /// The client starts in v1 offering v2 and the server moves the connection to v2
+    /// (RFC 9368 §2.3, RFC 9369).
+    V2,
 }
 
 impl TestCase {
@@ -59,7 +62,17 @@ impl TestCase {
             "transfer" => Some(Self::Transfer),
             "retry" => Some(Self::Retry),
             "multiconnect" => Some(Self::MultiConnect),
+            "v2" => Some(Self::V2),
             _ => None,
+        }
+    }
+
+    /// Whether this build's client can run the case. Offering a compatible version needs a TLS
+    /// backend that changes version mid-handshake, which only Boring does.
+    pub fn client_supported(self) -> bool {
+        match self {
+            Self::V2 => cfg!(feature = "boring"),
+            Self::Handshake | Self::Transfer | Self::Retry | Self::MultiConnect => true,
         }
     }
 }

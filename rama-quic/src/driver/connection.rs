@@ -14,7 +14,7 @@ use std::{
 use parking_lot::Mutex;
 use pin_project_lite::pin_project;
 use rama_core::bytes::Bytes;
-use rama_core::telemetry::tracing::{Instrument, Span, debug_span};
+use rama_core::telemetry::tracing::{Instrument, Span, debug, debug_span};
 use rama_udp::SendFailure;
 use rustc_hash::FxHashMap;
 use tokio::sync::{Notify, futures::Notified, oneshot};
@@ -98,6 +98,18 @@ pub struct Connecting {
     conn: Option<ConnectionRef>,
     connected: oneshot::Receiver<Result<bool, ConnectionError>>,
     handshake_data_ready: Option<oneshot::Receiver<()>>,
+    /// What a client attempt needs to try again in another version after a Version
+    /// Negotiation packet (RFC 9368 §2.1). Taken by the one restart an attempt may make.
+    restart: Option<Restart>,
+}
+
+/// The inputs of a client attempt, kept so a Version Negotiation packet can restart it.
+#[derive(Debug)]
+struct Restart {
+    endpoint: crate::driver::Endpoint,
+    config: crate::proto::ClientConfig,
+    addr: SocketAddr,
+    server_name: String,
 }
 
 impl Connecting {
@@ -165,9 +177,66 @@ impl Connecting {
                 conn: Some(conn),
                 connected: on_connected_recv,
                 handshake_data_ready: Some(on_handshake_data_recv),
+                restart: None,
             },
             driver,
         )
+    }
+
+    /// Let this client attempt start over in another version if the server answers with a
+    /// Version Negotiation packet.
+    pub(crate) fn with_restart(
+        mut self,
+        endpoint: crate::driver::Endpoint,
+        config: crate::proto::ClientConfig,
+        addr: SocketAddr,
+        server_name: &str,
+    ) -> Self {
+        self.restart = Some(Restart {
+            endpoint,
+            config,
+            addr,
+            server_name: server_name.into(),
+        });
+        self
+    }
+
+    /// RFC 9368 §2.1: pick a mutually supported version from what the server offered and send
+    /// a new first flight with it. The new attempt remembers the offer, so it ignores further
+    /// Version Negotiation packets and checks the server's `version_information` against it.
+    fn restart_after_version_negotiation(
+        &mut self,
+        offered: Vec<crate::proto::Version>,
+    ) -> Result<(), ConnectionError> {
+        let mismatch = |offered| ConnectionError::VersionMismatch { offered };
+        let Some(restart) = self.restart.take() else {
+            return Err(mismatch(offered));
+        };
+        let Some(version) = restart.config.versions.select(&offered) else {
+            return Err(mismatch(offered));
+        };
+        let mut config = restart.config;
+        config.negotiation_offer = Some(offered.clone());
+        if config.set_version(version).is_err() {
+            return Err(mismatch(offered));
+        }
+        debug!(%version, "restarting after Version Negotiation");
+        let next = restart
+            .endpoint
+            .connect_with(config, restart.addr, &restart.server_name)
+            .map_err(|error| {
+                ConnectionError::from(
+                    crate::proto::TransportError::INTERNAL_ERROR(
+                        "restart after Version Negotiation failed",
+                    )
+                    .with_cause(error),
+                )
+            })?;
+        // The lost attempt's reference goes away here; its connection is already draining.
+        self.conn = next.conn;
+        self.connected = next.connected;
+        self.handshake_data_ready = next.handshake_data_ready;
+        Ok(())
     }
 
     /// Shared state for the endpoint's connection table; not an application reference.
@@ -245,24 +314,34 @@ impl Connecting {
         //
         // The receiver is kept until it has answered, so a call cancelled while waiting leaves the
         // next one waiting too rather than reading metadata the session does not have yet.
-        if let Some(x) = self.handshake_data_ready.as_mut() {
-            let _handshake = x.await;
-            self.handshake_data_ready = None;
+        loop {
+            if let Some(x) = self.handshake_data_ready.as_mut() {
+                let _handshake = x.await;
+                self.handshake_data_ready = None;
+            }
+            let result = {
+                let conn = self.connection_ref();
+                let inner = conn.state.lock();
+                inner
+                    .inner
+                    .crypto_session()
+                    .handshake_summary()
+                    .ok_or_else(|| {
+                        inner.error.clone().unwrap_or_else(|| {
+                            crate::proto::TransportError::INTERNAL_ERROR(
+                                "TLS session did not provide handshake metadata",
+                            )
+                            .into()
+                        })
+                    })
+            };
+            match result {
+                Err(ConnectionError::VersionMismatch { offered }) => {
+                    self.restart_after_version_negotiation(offered)?;
+                }
+                result => return result,
+            }
         }
-        let conn = self.connection_ref();
-        let inner = conn.state.lock();
-        inner
-            .inner
-            .crypto_session()
-            .handshake_summary()
-            .ok_or_else(|| {
-                inner.error.clone().unwrap_or_else(|| {
-                    crate::proto::TransportError::INTERNAL_ERROR(
-                        "TLS session did not provide handshake metadata",
-                    )
-                    .into()
-                })
-            })
     }
 
     /// The local IP address which was used when the peer established
@@ -295,19 +374,38 @@ impl Connecting {
 impl Future for Connecting {
     type Output = Result<Connection, ConnectionError>;
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
-        Pin::new(&mut self.connected).poll(cx).map(|result| {
-            let conn = self.take_connection();
-            match result {
-                Ok(Ok(_)) => Ok(Connection(conn)),
-                Ok(Err(error)) => Err(error),
-                Err(_) => Err(conn
-                    .state
-                    .lock()
-                    .error
-                    .clone()
-                    .unwrap_or_else(handshake_driver_stopped)),
+        loop {
+            let result = match Pin::new(&mut self.connected).poll(cx) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(result) => result,
+            };
+            let outcome = {
+                let conn = self.connection_ref();
+                match result {
+                    Ok(Ok(_)) => Ok(()),
+                    Ok(Err(error)) => Err(error),
+                    Err(_) => Err(conn
+                        .state
+                        .lock()
+                        .error
+                        .clone()
+                        .unwrap_or_else(handshake_driver_stopped)),
+                }
+            };
+            match outcome {
+                Ok(()) => return Poll::Ready(Ok(Connection(self.take_connection()))),
+                Err(ConnectionError::VersionMismatch { offered }) => {
+                    if let Err(error) = self.restart_after_version_negotiation(offered) {
+                        self.take_connection();
+                        return Poll::Ready(Err(error));
+                    }
+                }
+                Err(error) => {
+                    self.take_connection();
+                    return Poll::Ready(Err(error));
+                }
             }
-        })
+        }
     }
 }
 
@@ -1402,6 +1500,18 @@ impl Connection {
     /// Returns connection statistics
     pub fn stats(&self) -> ConnectionStats {
         self.0.state.lock().inner.stats()
+    }
+
+    /// The QUIC version this connection runs in: the client's first flight version, or the
+    /// compatible version the server moved it to (RFC 9368).
+    pub fn version(&self) -> crate::proto::Version {
+        self.0.state.lock().inner.version()
+    }
+
+    /// The QUIC version of the client's first flight, which differs from [`Self::version`]
+    /// only after compatible version negotiation moved the connection (RFC 9368 §2.3).
+    pub fn original_version(&self) -> crate::proto::Version {
+        self.0.state.lock().inner.original_version()
     }
 
     /// Parameters negotiated during the handshake

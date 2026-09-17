@@ -10,6 +10,7 @@ use rama_quic::{
         ExportKeyingMaterialError, HandshakeEvent, HandshakeTokenKey, HeaderKey, InitialKeysError,
         KeyPair, Keys, PacketKey, ServerConfig as ServerProvider, Session, TransportParameters,
     },
+    version::Version,
 };
 use std::sync::{
     Arc,
@@ -27,7 +28,7 @@ impl ClientProvider for Provider {
     )]
     fn start_session(
         self: Arc<Self>,
-        _: u32,
+        _: Version,
         _: &str,
         params: &TransportParameters,
     ) -> Result<Box<dyn Session>, ConnectError> {
@@ -40,17 +41,17 @@ impl ClientProvider for Provider {
 }
 
 impl ServerProvider for Provider {
-    fn initial_keys(&self, _: u32, _: &ConnectionId) -> Result<Keys, InitialKeysError> {
+    fn initial_keys(&self, _: Version, _: &ConnectionId) -> Result<Keys, InitialKeysError> {
         Err(InitialKeysError::Crypto(BoxError::from(
             std::io::Error::other("custom Initial failure"),
         )))
     }
-    fn retry_tag(&self, _: u32, _: &ConnectionId, _: &[u8]) -> Result<[u8; 16], CryptoError> {
+    fn retry_tag(&self, _: Version, _: &ConnectionId, _: &[u8]) -> Result<[u8; 16], CryptoError> {
         Err(CryptoError::new())
     }
     fn start_session(
         self: Arc<Self>,
-        _: u32,
+        _: Version,
         _: &TransportParameters,
     ) -> Result<Box<dyn Session>, TransportError> {
         Ok(Box::new(TestSession))
@@ -58,7 +59,7 @@ impl ServerProvider for Provider {
 }
 
 impl Session for TestSession {
-    fn initial_keys(&self, _: &ConnectionId, _: Side) -> Result<Keys, TransportError> {
+    fn initial_keys(&self, _: Version, _: &ConnectionId, _: Side) -> Result<Keys, TransportError> {
         Err(
             TransportError::new(TransportErrorCode::INTERNAL_ERROR, "custom Initial failure")
                 .with_cause(std::io::Error::other("custom provider cause")),

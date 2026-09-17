@@ -2,7 +2,7 @@
   "repository": "https://github.com/quic-interop/quic-interop-runner.git",
   "revision": "1d6f6554ac8e3b7c4cca0e3d40fd69f661420673",
   "platform": "linux/amd64",
-  "cases": ["handshake", "transfer", "retry", "multiplexing", "longrtt", "transferloss"],
+  "cases": ["handshake", "transfer", "retry", "multiplexing", "longrtt", "transferloss", "v2"],
   "simulator": "martenseemann/quic-network-simulator@sha256:c23d82a55caffe681b1bdae65d4d30d23e1283141a414a7f02ee56cf15f9c6b9",
   "cleanup": "alpine:3.18@sha256:de0eb0b3f2a47ba1eb89389859a9bd88b28e82f5826b6969ad604979713c2d4f",
   "peers": {

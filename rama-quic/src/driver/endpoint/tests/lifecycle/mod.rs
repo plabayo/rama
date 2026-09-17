@@ -8,7 +8,7 @@ use crate::driver::endpoint::*;
 use crate::driver::lifecycle::ShutdownOutcome;
 use crate::driver::queue::{MIN_RETAINED, QUIET_DRAINS_BEFORE_SHRINK};
 use crate::driver::sockets::MAX_RETAINED_SOCKETS;
-use crate::proto::{CongestionControl, RetryRefused, TransportConfig};
+use crate::proto::{CongestionControl, RetryRefused, TransportConfig, Version};
 use rama_crypto::hmac::HmacSha2;
 use rama_tls::{
     client::TlsClientConfig,
@@ -6870,14 +6870,14 @@ async fn an_accept_error_wakes_the_parked_endpoint_to_send_its_response() {
     impl crate::proto::crypto::ServerConfig for FailingServer {
         fn initial_keys(
             &self,
-            version: u32,
+            version: Version,
             cid: &crate::proto::ConnectionId,
         ) -> Result<crate::proto::crypto::Keys, crate::proto::crypto::InitialKeysError> {
             self.0.initial_keys(version, cid)
         }
         fn retry_tag(
             &self,
-            version: u32,
+            version: Version,
             cid: &crate::proto::ConnectionId,
             packet: &[u8],
         ) -> Result<[u8; 16], crate::proto::crypto::CryptoError> {
@@ -6885,7 +6885,7 @@ async fn an_accept_error_wakes_the_parked_endpoint_to_send_its_response() {
         }
         fn start_session(
             self: Arc<Self>,
-            _: u32,
+            _: Version,
             _: &crate::proto::transport_parameters::TransportParameters,
         ) -> Result<Box<dyn crate::proto::crypto::Session>, crate::proto::TransportError> {
             Err(crate::proto::TransportError::INTERNAL_ERROR(

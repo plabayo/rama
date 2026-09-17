@@ -1,6 +1,6 @@
 [package]
 name = "rama-quic"
-description = "QUIC (RFC 9000) transport for rama"
+description = "QUIC v1 and v2 (RFC 9000, RFC 9369) transport for rama"
 version = { workspace = true }
 license = { workspace = true }
 edition = { workspace = true }

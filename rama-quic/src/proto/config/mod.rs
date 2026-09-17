@@ -25,17 +25,18 @@ use crate::proto::crypto::rustls::QuicServerConfig;
 use crate::proto::crypto::rustls::configured_provider;
 use crate::proto::{
     DEFAULT_SUPPORTED_VERSIONS, Duration, RandomConnectionIdGenerator, SystemTime, TokenLog,
-    TokenMemoryCache, TokenStore, VarInt, VarIntBoundsExceeded,
+    TokenMemoryCache, TokenStore, VarInt, VarIntBoundsExceeded, Version,
     cid_generator::{
         ConnectionIdGenerator, ConnectionIdGeneratorFactory, HashedConnectionIdGenerator,
     },
     crypto::{self, HandshakeTokenKey},
     shared::ConnectionId,
+    version::{ClientVersionPolicy, ServerVersionPolicy, VersionPolicyError},
 };
 #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer};
 #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
-use rama_tls_rustls::dep::rustls::client::WebPkiServerVerifier;
+use rama_tls_rustls::dep::rustls::{self, client::WebPkiServerVerifier};
 
 mod keys;
 #[cfg(any(feature = "aws-lc", feature = "ring", feature = "boring"))]
@@ -93,7 +94,7 @@ pub struct EndpointConfig {
     ///
     /// Create a cid generator for local cid in Endpoint struct
     pub(crate) connection_id_generator_factory: ConnectionIdGeneratorFactory,
-    pub(crate) supported_versions: Vec<u32>,
+    pub(crate) supported_versions: Vec<Version>,
     pub(crate) grease_quic_bit: bool,
     /// Minimum interval between outgoing stateless reset packets
     pub(crate) min_reset_interval: Duration,
@@ -237,8 +238,18 @@ impl EndpointConfig {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Override supported QUIC versions
-        pub fn supported_versions(mut self, supported_versions: Vec<u32>) -> Self {
+        /// How this endpoint makes the connection IDs it issues; decides their length.
+        pub fn connection_id_generator_factory(mut self, factory: ConnectionIdGeneratorFactory) -> Self {
+            self.connection_id_generator_factory = factory;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Override the QUIC versions this endpoint accepts and offers.
+        ///
+        /// Defaults to [`DEFAULT_SUPPORTED_VERSIONS`]: version 1 and version 2.
+        pub fn supported_versions(mut self, supported_versions: Vec<Version>) -> Self {
             self.supported_versions = supported_versions;
             self
         }
@@ -339,6 +350,9 @@ pub struct ServerConfig {
     pub(crate) incoming_buffer_size_total: u64,
 
     pub(crate) time_source: Arc<dyn TimeSource>,
+
+    /// Which versions this server offers, reports and prefers (RFC 9368).
+    pub(crate) versions: ServerVersionPolicy,
 }
 
 impl ServerConfig {
@@ -366,6 +380,8 @@ impl ServerConfig {
             incoming_buffer_size_total: 100 << 20,
 
             time_source: Arc::new(StdSystemTime),
+
+            versions: ServerVersionPolicy::new(),
         }
     }
 
@@ -375,6 +391,23 @@ impl ServerConfig {
             self.transport = transport;
             self
         }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// How this server negotiates QUIC versions (RFC 9368): what a Version Negotiation
+        /// packet offers, what it reports as fully deployed, and which compatible version it
+        /// moves a connection to. The versions it accepts at all are the endpoint's
+        /// [`EndpointConfig::supported_versions`].
+        pub fn versions(mut self, versions: ServerVersionPolicy) -> Self {
+            self.versions = versions;
+            self
+        }
+    }
+
+    /// How this server negotiates QUIC versions.
+    #[must_use]
+    pub fn versions_policy(&self) -> &ServerVersionPolicy {
+        &self.versions
     }
 
     rama_utils::macros::generate_set_and_with! {
@@ -554,7 +587,7 @@ impl ServerConfig {
     pub(crate) fn with_single_cert(
         cert_chain: Vec<CertificateDer<'static>>,
         key: PrivateKeyDer<'static>,
-    ) -> Result<Self, rama_tls_rustls::dep::rustls::Error> {
+    ) -> Result<Self, rustls::Error> {
         Ok(Self::with_crypto(Arc::new(QuicServerConfig::new(
             cert_chain, key,
         )?)))
@@ -750,8 +783,15 @@ pub struct ClientConfig {
     /// Provider that populates the destination connection ID of Initial Packets
     pub(crate) initial_dst_cid_provider: Arc<dyn Fn() -> ConnectionId + Send + Sync>,
 
-    /// QUIC protocol version to use
-    pub(crate) version: u32,
+    /// Which version the first flight uses and what the server may negotiate (RFC 9368)
+    pub(crate) versions: ClientVersionPolicy,
+
+    /// The versions a Version Negotiation packet offered, when this attempt reacts to one
+    /// (RFC 9368 §2.1, §4). Set by the endpoint driver on a restart, never by the application.
+    pub(crate) negotiation_offer: Option<Vec<Version>>,
+
+    /// The clock tokens are dated with when received and aged by when reused.
+    pub(crate) time_source: Arc<dyn TimeSource>,
 
     /// What to do with a server's preferred address
     pub(crate) preferred_address_policy: PreferredAddressPolicy,
@@ -770,6 +810,7 @@ pub enum PreferredAddressPolicy {
 impl ClientConfig {
     /// Create a default config with a particular cryptographic config
     pub fn new(crypto: Arc<dyn crypto::ClientConfig>) -> Self {
+        let switchable = crypto.supports_version_switch();
         Self {
             transport: Default::default(),
             crypto,
@@ -777,9 +818,84 @@ impl ClientConfig {
             initial_dst_cid_provider: Arc::new(|| {
                 RandomConnectionIdGenerator::of_max_size().generate_cid()
             }),
-            version: 1,
+            // A session that cannot change version mid-handshake offers only its first
+            // flight's version, so a server never moves it (RFC 9368 §2.3).
+            versions: if switchable {
+                ClientVersionPolicy::default()
+            } else {
+                ClientVersionPolicy::default().narrowed()
+            },
+            negotiation_offer: None,
+            time_source: Arc::new(StdSystemTime),
             preferred_address_policy: PreferredAddressPolicy::default(),
         }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// The clock received tokens are dated with, and aged by when they are reused
+        /// (RFC 9287 §3.1). Defaults to the system clock.
+        pub fn time_source(mut self, time_source: Arc<dyn TimeSource>) -> Self {
+            self.time_source = time_source;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// How the destination connection ID of a first Initial is chosen (RFC 9000 §7.2:
+        /// at least eight bytes of unpredictable value).
+        pub fn initial_dst_cid_provider(
+            mut self,
+            provider: Arc<dyn Fn() -> ConnectionId + Send + Sync>,
+        ) -> Self {
+            self.initial_dst_cid_provider = provider;
+            self
+        }
+    }
+
+    /// How this client negotiates QUIC versions.
+    #[must_use]
+    pub fn versions_policy(&self) -> &ClientVersionPolicy {
+        &self.versions
+    }
+
+    /// The QUIC version of the first flight, keeping the rest of the version policy.
+    ///
+    /// Fails for a version this crate does not implement.
+    pub fn set_version(&mut self, version: Version) -> Result<&mut Self, ConfigError> {
+        let versions = self.versions.clone().with_original(version)?;
+        self.versions = if versions.needs_switch() && !self.crypto.supports_version_switch() {
+            versions.narrowed()
+        } else {
+            versions
+        };
+        Ok(self)
+    }
+
+    /// The QUIC version of the first flight; see [`Self::set_version`].
+    pub fn try_with_version(mut self, version: Version) -> Result<Self, ConfigError> {
+        self.set_version(version)?;
+        Ok(self)
+    }
+
+    /// How this client negotiates QUIC versions (RFC 9368).
+    ///
+    /// Fails when the policy lets a server move the connection to another compatible version
+    /// but the TLS provider cannot change version during the handshake.
+    pub fn set_versions(
+        &mut self,
+        versions: ClientVersionPolicy,
+    ) -> Result<&mut Self, ConfigError> {
+        if versions.needs_switch() && !self.crypto.supports_version_switch() {
+            return Err(VersionPolicyError::SwitchUnsupported.into());
+        }
+        self.versions = versions;
+        Ok(self)
+    }
+
+    /// How this client negotiates QUIC versions; see [`Self::set_versions`].
+    pub fn try_with_versions(mut self, versions: ClientVersionPolicy) -> Result<Self, ConfigError> {
+        self.set_versions(versions)?;
+        Ok(self)
     }
 
     rama_utils::macros::generate_set_and_with! {
@@ -808,14 +924,6 @@ impl ClientConfig {
         /// Defaults to [`TokenMemoryCache`], which is suitable for most internet applications.
         pub fn token_store(mut self, store: Arc<dyn TokenStore>) -> Self {
             self.token_store = store;
-            self
-        }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Set the QUIC version to use
-        pub fn version(mut self, version: u32) -> Self {
-            self.version = version;
             self
         }
     }
@@ -857,8 +965,8 @@ impl ClientConfig {
     #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
     /// Create a client configuration that trusts specified trust anchors
     pub(crate) fn with_root_certificates(
-        roots: Arc<rama_tls_rustls::dep::rustls::RootCertStore>,
-    ) -> Result<Self, rama_tls_rustls::dep::rustls::client::VerifierBuilderError> {
+        roots: Arc<rustls::RootCertStore>,
+    ) -> Result<Self, rustls::client::VerifierBuilderError> {
         Ok(Self::new(Arc::new(crypto::rustls::QuicClientConfig::new(
             WebPkiServerVerifier::builder_with_provider(roots, configured_provider()).build()?,
         ))))
@@ -890,7 +998,7 @@ impl fmt::Debug for ClientConfig {
             .field("transport", &self.transport)
             // crypto not debug
             // token_store not debug
-            .field("version", &self.version)
+            .field("versions", &self.versions)
             .field("preferred_address_policy", &self.preferred_address_policy)
             .finish_non_exhaustive()
     }
@@ -904,6 +1012,8 @@ pub enum ConfigError {
     OutOfBounds,
     /// Key material is shorter than the minimum this crate keys with
     KeyMaterialTooShort,
+    /// A version policy is unusable as configured
+    VersionPolicy(VersionPolicyError),
 }
 
 impl core::fmt::Display for ConfigError {
@@ -913,11 +1023,25 @@ impl core::fmt::Display for ConfigError {
             Self::KeyMaterialTooShort => {
                 f.write_str("key material is shorter than the minimum accepted")
             }
+            Self::VersionPolicy(_) => f.write_str("unusable QUIC version policy"),
         }
     }
 }
 
-impl std::error::Error for ConfigError {}
+impl std::error::Error for ConfigError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::VersionPolicy(error) => Some(error),
+            Self::OutOfBounds | Self::KeyMaterialTooShort => None,
+        }
+    }
+}
+
+impl From<VersionPolicyError> for ConfigError {
+    fn from(error: VersionPolicyError) -> Self {
+        Self::VersionPolicy(error)
+    }
+}
 
 impl From<TryFromIntError> for ConfigError {
     fn from(_: TryFromIntError) -> Self {

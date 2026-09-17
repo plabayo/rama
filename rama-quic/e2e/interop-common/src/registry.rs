@@ -110,6 +110,19 @@ impl<S> CaseRun<S> {
     /// The same case with an identity of the peer's own making, for a peer that needs one in a
     /// form only it can produce — files on disk, say. The payloads are unaffected: they come
     /// from the registry and nowhere else.
+    /// The same case, its deadline and identity, around another scenario: how a case that
+    /// settles something first hands its traffic to the shared stream helpers.
+    #[must_use]
+    pub fn with_scenario<T>(&self, scenario: T) -> CaseRun<T> {
+        CaseRun {
+            what: self.what.clone(),
+            scenario,
+            identity: self.identity.clone(),
+            deadline: self.deadline,
+            role: self.role,
+        }
+    }
+
     #[must_use]
     pub fn with_identity(self, identity: Identity) -> Self {
         Self { identity, ..self }

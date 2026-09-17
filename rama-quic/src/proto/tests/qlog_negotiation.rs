@@ -226,7 +226,7 @@ fn qlog_negotiation_incompatible_versions_record_the_offer_and_close_cause() {
     assert!(matches!(
         connection.poll(),
         Some(Event::ConnectionLost {
-            reason: ConnectionError::VersionMismatch,
+            reason: ConnectionError::VersionMismatch { .. },
         })
     ));
     let versions = capture.events("quic:version_information");
@@ -235,7 +235,7 @@ fn qlog_negotiation_incompatible_versions_record_the_offer_and_close_cause() {
     assert_eq!(
         versions[1]["data"],
         serde_json::json!({
-            "client_versions": ["00000001"],
+            "client_versions": ["00000001", "6b3343cf"],
             "server_versions": ["0a1a2a3a", "4a5a6a7a"]
         })
     );

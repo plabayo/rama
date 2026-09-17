@@ -14,14 +14,18 @@ use std::{
 use rama_core::bytes::{Buf, BufMut};
 use rand::{Rng, RngExt, seq::SliceRandom as _};
 
-use crate::proto::{
-    LOC_CID_COUNT, MAX_CID_SIZE, MAX_STREAM_COUNT, RESET_TOKEN_SIZE, ResetToken, Side,
-    TIMER_GRANULARITY, TransportError, VarInt,
-    cid_generator::ConnectionIdGenerator,
-    cid_queue::CidQueue,
-    coding::{BufExt, BufMutExt, UnexpectedEnd},
-    config::{EndpointConfig, ServerConfig, TransportConfig},
-    shared::ConnectionId,
+use crate::{
+    profile::{GreaseParameter, ParameterId, ParameterOrder},
+    proto::{
+        LOC_CID_COUNT, MAX_CID_SIZE, MAX_STREAM_COUNT, RESET_TOKEN_SIZE, ResetToken, Side,
+        TIMER_GRANULARITY, TransportError, VarInt,
+        cid_generator::ConnectionIdGenerator,
+        cid_queue::CidQueue,
+        coding::{BufExt, BufMutExt, UnexpectedEnd},
+        config::{EndpointConfig, ServerConfig, TransportConfig},
+        shared::ConnectionId,
+        version::VersionInformation,
+    },
 };
 
 // Apply a given macro to a list of all the transport parameters having integer types, along with
@@ -66,7 +70,7 @@ macro_rules! apply_params {
 macro_rules! make_struct {
     {$($(#[$doc:meta])* $name:ident ($id:ident) = $default:expr,)*} => {
         /// Transport parameters used to negotiate connection-level preferences between peers
-        #[derive(Debug, Copy, Clone, Eq, PartialEq)]
+        #[derive(Debug, Clone, Eq, PartialEq)]
         pub struct TransportParameters {
             $($(#[$doc])* pub(crate) $name : VarInt,)*
 
@@ -87,6 +91,8 @@ macro_rules! make_struct {
             /// If a value is provided, it implies that the endpoint supports QUIC Acknowledgement
             /// Frequency
             pub(crate) min_ack_delay: Option<VarInt>,
+            /// The version the endpoint chose and the versions it can work with (RFC 9368 §3)
+            pub(crate) version_information: Option<VersionInformation>,
 
             // Server-only
             /// The value of the Destination Connection ID field from the first Initial packet sent
@@ -104,11 +110,13 @@ macro_rules! make_struct {
             /// When present, it is included during serialization but ignored during deserialization.
             pub(crate) grease_transport_parameter: Option<ReservedTransportParameter>,
 
-            /// Defines the order in which transport parameters are serialized.
+            /// Parameters this crate does not interpret, written as given (a profile's extras).
+            pub(crate) extra: Vec<(u64, Vec<u8>)>,
+
+            /// The order in which transport parameters are serialized, one slot per parameter.
             ///
-            /// This field is initialized only for outgoing `TransportParameters` instances and
-            /// is set to `None` for `TransportParameters` received from a peer.
-            pub(crate) write_order: Option<[u8; TransportParameterId::SUPPORTED.len()]>,
+            /// Set only for outgoing `TransportParameters`; `None` for received ones.
+            pub(crate) write_plan: Option<Vec<WriteSlot>>,
         }
 
         // We deliberately don't implement the `Default` trait, since that would be public, and
@@ -125,13 +133,15 @@ macro_rules! make_struct {
                     initial_src_cid: None,
                     grease_quic_bit: false,
                     min_ack_delay: None,
+                    version_information: None,
 
                     original_dst_cid: None,
                     retry_src_cid: None,
                     stateless_reset_token: None,
                     preferred_address: None,
                     grease_transport_parameter: None,
-                    write_order: None,
+                    extra: Vec::new(),
+                    write_plan: None,
                 }
             }
         }
@@ -153,37 +163,105 @@ impl TransportParameters {
         server_config: Option<&ServerConfig>,
         rng: &mut impl Rng,
     ) -> Self {
-        Self {
+        let wire = &config.wire;
+        let mut this = Self {
             initial_src_cid: Some(initial_src_cid),
             initial_max_streams_bidi: config.max_concurrent_bidi_streams,
             initial_max_streams_uni: config.max_concurrent_uni_streams,
             initial_max_data: config.receive_window,
             initial_max_stream_data_bidi_local: config.stream_receive_window,
-            initial_max_stream_data_bidi_remote: config.stream_receive_window,
-            initial_max_stream_data_uni: config.stream_receive_window,
+            initial_max_stream_data_bidi_remote: config
+                .stream_receive_window_bidi_remote
+                .unwrap_or(config.stream_receive_window),
+            initial_max_stream_data_uni: config
+                .stream_receive_window_uni
+                .unwrap_or(config.stream_receive_window),
             max_udp_payload_size: endpoint_config.max_udp_payload_size,
             max_idle_timeout: config.max_idle_timeout.unwrap_or(VarInt(0)),
+            max_ack_delay: VarInt::from_u64(config.max_ack_delay.as_millis() as u64)
+                .unwrap_or(VarInt(25)),
             disable_active_migration: server_config.is_some_and(|c| !c.migration),
-            active_connection_id_limit: if cid_gen.cid_len() == 0 {
-                2 // i.e. default, i.e. unsent
-            } else {
-                CidQueue::LEN as u32
-            }
-            .into(),
-            max_datagram_frame_size: config
-                .datagram_receive_buffer_size
-                .map(|x| (x.min(u16::MAX.into()) as u16).into()),
-            grease_quic_bit: endpoint_config.grease_quic_bit,
-            min_ack_delay: Some(
-                VarInt::from_u64(u64::try_from(TIMER_GRANULARITY.as_micros()).unwrap()).unwrap(),
+            active_connection_id_limit: config.active_connection_id_limit.unwrap_or(
+                if cid_gen.cid_len() == 0 {
+                    2 // i.e. default, i.e. unsent
+                } else {
+                    CidQueue::LEN as u32
+                }
+                .into(),
             ),
-            grease_transport_parameter: Some(ReservedTransportParameter::random(rng)),
-            write_order: Some({
-                let mut order = std::array::from_fn(|i| i as u8);
-                order.shuffle(rng);
-                order
+            max_datagram_frame_size: match wire.parameters.max_datagram_frame_size() {
+                Some(size) => Some(VarInt::from_u64(size).unwrap_or(VarInt::MAX)),
+                None => config
+                    .datagram_receive_buffer_size
+                    .map(|x| (x.min(u16::MAX.into()) as u16).into()),
+            },
+            grease_quic_bit: endpoint_config.grease_quic_bit,
+            min_ack_delay: wire.parameters.sends_min_ack_delay().then(|| {
+                VarInt::from_u64(u64::try_from(TIMER_GRANULARITY.as_micros()).unwrap()).unwrap()
             }),
+            grease_transport_parameter: match wire.parameters.grease() {
+                GreaseParameter::None => None,
+                GreaseParameter::Random { value_len } => {
+                    Some(ReservedTransportParameter::random(rng, *value_len))
+                }
+                GreaseParameter::Fixed { id, value } => {
+                    Some(ReservedTransportParameter::fixed(id.0, value))
+                }
+            },
+            extra: wire
+                .parameters
+                .extra()
+                .iter()
+                .map(|parameter| (parameter.id.0, parameter.value.clone()))
+                .collect(),
+            write_plan: None,
             ..Self::default()
+        };
+        this.write_plan = Some(this.plan(wire.parameters.order(), rng));
+        this
+    }
+
+    /// The order to write in: the profile's, with what it does not name after it.
+    fn plan(&self, order: &ParameterOrder, rng: &mut impl Rng) -> Vec<WriteSlot> {
+        let mut slots: Vec<WriteSlot> = TransportParameterId::SUPPORTED
+            .iter()
+            .map(|id| match id {
+                TransportParameterId::ReservedTransportParameter => WriteSlot::Grease,
+                id => WriteSlot::Known(*id),
+            })
+            .collect();
+        slots.extend((0..self.extra.len()).map(WriteSlot::Extra));
+        match order {
+            ParameterOrder::Shuffled => {
+                slots.shuffle(rng);
+                slots
+            }
+            ParameterOrder::Fixed(ids) => {
+                let mut planned: Vec<WriteSlot> = Vec::with_capacity(slots.len());
+                for id in ids {
+                    let slot = if *id == ParameterId::GREASE {
+                        Some(WriteSlot::Grease)
+                    } else if let Ok(known) = TransportParameterId::try_from(id.0) {
+                        Some(WriteSlot::Known(known))
+                    } else {
+                        self.extra
+                            .iter()
+                            .position(|(extra, _)| *extra == id.0)
+                            .map(WriteSlot::Extra)
+                    };
+                    if let Some(slot) = slot
+                        && !planned.contains(&slot)
+                    {
+                        planned.push(slot);
+                    }
+                }
+                let rest: Vec<WriteSlot> = slots
+                    .into_iter()
+                    .filter(|slot| !planned.contains(slot))
+                    .collect();
+                planned.extend(rest);
+                planned
+            }
         }
     }
 
@@ -319,18 +397,34 @@ impl From<UnexpectedEnd> for Error {
 impl TransportParameters {
     /// Encode `TransportParameters` into buffer
     pub fn write<W: BufMut>(&self, w: &mut W) {
-        for idx in self
-            .write_order
-            .as_ref()
-            .unwrap_or(&std::array::from_fn(|i| i as u8))
-        {
-            let id = TransportParameterId::SUPPORTED[*idx as usize];
-            match id {
-                TransportParameterId::ReservedTransportParameter => {
-                    if let Some(param) = self.grease_transport_parameter {
+        let canonical: Vec<WriteSlot> = TransportParameterId::SUPPORTED
+            .iter()
+            .map(|id| match id {
+                TransportParameterId::ReservedTransportParameter => WriteSlot::Grease,
+                id => WriteSlot::Known(*id),
+            })
+            .chain((0..self.extra.len()).map(WriteSlot::Extra))
+            .collect();
+        for slot in self.write_plan.as_ref().unwrap_or(&canonical) {
+            let id = match slot {
+                WriteSlot::Grease => {
+                    if let Some(param) = &self.grease_transport_parameter {
                         param.write(w);
                     }
+                    continue;
                 }
+                WriteSlot::Extra(index) => {
+                    if let Some((id, value)) = self.extra.get(*index) {
+                        w.write_var(*id);
+                        w.write_var(value.len() as u64);
+                        w.put_slice(value);
+                    }
+                    continue;
+                }
+                WriteSlot::Known(id) => *id,
+            };
+            match id {
+                TransportParameterId::ReservedTransportParameter => {}
                 TransportParameterId::StatelessResetToken => {
                     if let Some(ref x) = self.stateless_reset_token {
                         w.write_var(id as u64);
@@ -390,6 +484,13 @@ impl TransportParameters {
                         w.write_var(id as u64);
                         w.write_var(x.size() as u64);
                         w.write(x);
+                    }
+                }
+                TransportParameterId::VersionInformation => {
+                    if let Some(ref info) = self.version_information {
+                        w.write_var(id as u64);
+                        w.write_var(info.wire_size() as u64);
+                        info.write(w);
                     }
                 }
                 id => {
@@ -497,6 +598,15 @@ impl TransportParameters {
                     }
                     params.min_ack_delay = Some(read_integer_parameter(len, r)?);
                 }
+                TransportParameterId::VersionInformation => {
+                    if params.version_information.is_some() {
+                        return Err(Error::Malformed);
+                    }
+                    params.version_information = Some(
+                        VersionInformation::read(side.is_server(), len, r)
+                            .map_err(|_error| Error::Malformed)?,
+                    );
+                }
                 _ => {
                     macro_rules! parse {
                         {$($(#[$doc:meta])* $name:ident ($id:ident) = $default:expr,)*} => {
@@ -561,42 +671,47 @@ impl TransportParameters {
 /// It may be included in transport parameters sent to the peer, and should be ignored when received.
 ///
 /// See spec: <https://www.rfc-editor.org/rfc/rfc9000.html#section-18.1>
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub(crate) struct ReservedTransportParameter {
     /// The reserved identifier of the transport parameter
     id: VarInt,
 
-    /// Buffer to store the parameter payload
-    payload: [u8; Self::MAX_PAYLOAD_LEN],
+    /// The parameter payload
+    payload: Vec<u8>,
+}
 
-    /// The number of bytes to include in the wire format from the `payload` buffer
-    payload_len: usize,
+/// One entry of the order transport parameters are written in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WriteSlot {
+    Known(TransportParameterId),
+    Grease,
+    /// An index into `TransportParameters::extra`.
+    Extra(usize),
 }
 
 impl ReservedTransportParameter {
-    /// Generates a transport parameter with a random payload and a reserved ID.
-    fn random(rng: &mut impl Rng) -> Self {
+    /// Generates a transport parameter with a random payload and a reserved ID. The payload is
+    /// `value_len` bytes when given, else up to [`Self::MAX_PAYLOAD_LEN`].
+    fn random(rng: &mut impl Rng, value_len: Option<usize>) -> Self {
         let id = Self::generate_reserved_id(rng);
+        let payload_len = value_len.unwrap_or_else(|| rng.random_range(0..Self::MAX_PAYLOAD_LEN));
+        let mut payload = vec![0u8; payload_len];
+        rng.fill_bytes(&mut payload);
+        Self { id, payload }
+    }
 
-        let payload_len = rng.random_range(0..Self::MAX_PAYLOAD_LEN);
-
-        let payload = {
-            let mut slice = [0u8; Self::MAX_PAYLOAD_LEN];
-            rng.fill_bytes(&mut slice[..payload_len]);
-            slice
-        };
-
+    /// A reserved parameter with this identifier and value on every connection.
+    fn fixed(id: u64, value: &[u8]) -> Self {
         Self {
-            id,
-            payload,
-            payload_len,
+            id: VarInt::from_u64(id).unwrap_or(VarInt(27)),
+            payload: value.to_vec(),
         }
     }
 
     fn write(&self, w: &mut impl BufMut) {
         w.write_var(self.id.0);
-        w.write_var(self.payload_len as u64);
-        w.put_slice(&self.payload[..self.payload_len]);
+        w.write_var(self.payload.len() as u64);
+        w.put_slice(&self.payload);
     }
 
     /// Generates a random reserved identifier of the form `31 * N + 27`, as required by RFC 9000.
@@ -650,6 +765,9 @@ pub(crate) enum TransportParameterId {
     InitialSourceConnectionId = 0x0F,
     RetrySourceConnectionId = 0x10,
 
+    // https://www.rfc-editor.org/rfc/rfc9368.html#section-10.1
+    VersionInformation = 0x11,
+
     // Smallest possible ID of reserved transport parameter https://datatracker.ietf.org/doc/html/rfc9000#section-22.3
     ReservedTransportParameter = 0x1B,
 
@@ -665,7 +783,7 @@ pub(crate) enum TransportParameterId {
 
 impl TransportParameterId {
     /// Array with all supported transport parameter IDs
-    const SUPPORTED: [Self; 21] = [
+    const SUPPORTED: [Self; 22] = [
         Self::MaxIdleTimeout,
         Self::MaxUdpPayloadSize,
         Self::InitialMaxData,
@@ -687,6 +805,7 @@ impl TransportParameterId {
         Self::RetrySourceConnectionId,
         Self::GreaseQuicBit,
         Self::MinAckDelayDraft07,
+        Self::VersionInformation,
     ];
 }
 
@@ -726,6 +845,7 @@ impl TryFrom<u64> for TransportParameterId {
             id if Self::RetrySourceConnectionId == id => Self::RetrySourceConnectionId,
             id if Self::GreaseQuicBit == id => Self::GreaseQuicBit,
             id if Self::MinAckDelayDraft07 == id => Self::MinAckDelayDraft07,
+            id if Self::VersionInformation == id => Self::VersionInformation,
             _ => return Err(()),
         };
         Ok(param)
@@ -853,8 +973,8 @@ mod test {
     #[test]
     fn reserved_transport_parameter_ignored_when_read() {
         let mut buf = Vec::new();
-        let reserved_parameter = ReservedTransportParameter::random(&mut rand::rng());
-        assert!(reserved_parameter.payload_len < ReservedTransportParameter::MAX_PAYLOAD_LEN);
+        let reserved_parameter = ReservedTransportParameter::random(&mut rand::rng(), None);
+        assert!(reserved_parameter.payload.len() < ReservedTransportParameter::MAX_PAYLOAD_LEN);
         assert!(reserved_parameter.id.0 % 31 == 27);
 
         reserved_parameter.write(&mut buf);

@@ -265,6 +265,7 @@ impl Connection {
                 TokenPayload::Validation {
                     ip: remote_addr.ip(),
                     issued: server_config.time_source.now(),
+                    version: self.version,
                 },
                 &mut self.rng,
             );

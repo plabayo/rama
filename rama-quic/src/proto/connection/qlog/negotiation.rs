@@ -202,7 +202,7 @@ impl Connection {
     }
 }
 
-fn version_list(versions: &[u32]) -> Option<VersionListView<'_>> {
+fn version_list(versions: &[crate::proto::Version]) -> Option<VersionListView<'_>> {
     (!versions.is_empty()).then_some(VersionListView::Host(Cow::Borrowed(versions)))
 }
 
@@ -217,7 +217,7 @@ mod tests {
     #[test]
     fn empty_version_lists_are_omitted() {
         let event = Event::VersionInformation(VersionInformationView {
-            client_versions: version_list(&[1, 0x6b3343cf]),
+            client_versions: version_list(&[crate::proto::Version::V1, crate::proto::Version::V2]),
             server_versions: version_list(&[]),
             chosen_version: None,
         });

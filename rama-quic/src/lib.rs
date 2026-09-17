@@ -1,4 +1,5 @@
-//! QUIC v1 (RFC 9000) transport for Rama.
+//! QUIC transport for Rama: version 1 (RFC 9000) and version 2 (RFC 9369), with RFC 9368
+//! version negotiation between them.
 //!
 //! The deterministic protocol engine lives in the private `proto` module and
 //! the asynchronous connection driver in `driver`; only Rama-owned types are
@@ -38,6 +39,7 @@ pub mod benchmarks;
 ))]
 mod test_helpers;
 
+pub mod profile;
 mod proto;
 pub mod qlog;
 
@@ -48,16 +50,30 @@ pub use proto::AddressTokenKey;
 pub use proto::{
     AckFrequencyConfig, ApplicationClose, BloomTokenLog, Chunk, ClientConfig, ClosedStream,
     ConfigError, CongestionControl, ConnectError, ConnectionClose, ConnectionError, ConnectionId,
-    ConnectionIdGenerator, ConnectionIdGeneratorFactory, ConnectionStats,
-    DEFAULT_SUPPORTED_VERSIONS, Dir, EcnCodepoint, EndpointConfig, ExportKeyingMaterialError,
-    FrameStats, FrameType, HashedConnectionIdGenerator, IdleTimeout, InvalidCid, MAX_CID_SIZE,
-    MIN_INITIAL_CONGESTION_WINDOW, MtuDiscoveryConfig, NegotiatedTlsParameters, NoneTokenLog,
-    NoneTokenStore, PathStats, PreferredAddressPolicy, RandomConnectionIdGenerator,
-    ReceiveQueueLimits, RetryRefused, ServerConfig, Side, StdSystemTime, StreamId, TimeSource,
-    TokenLog, TokenMemoryCache, TokenReuseError, TokenStore, TransportConfig, TransportError,
-    TransportErrorCode, UdpStats, ValidationTokenConfig, VarInt, VarIntBoundsExceeded, Written,
+    ConnectionIdGenerator, ConnectionIdGeneratorFactory, ConnectionStats, Dir, EcnCodepoint,
+    EndpointConfig, ExportKeyingMaterialError, FrameStats, FrameType, HashedConnectionIdGenerator,
+    IdleTimeout, InvalidCid, MAX_CID_SIZE, MIN_INITIAL_CONGESTION_WINDOW, MtuDiscoveryConfig,
+    NegotiatedTlsParameters, NoneTokenLog, NoneTokenStore, PathStats, PreferredAddressPolicy,
+    RandomConnectionIdGenerator, ReceiveQueueLimits, RetryRefused, ServerConfig, Side,
+    StdSystemTime, StoredToken, StreamId, TimeSource, TokenLog, TokenMemoryCache, TokenReuseError,
+    TokenStore, TransportConfig, TransportError, TransportErrorCode, UdpStats,
+    ValidationTokenConfig, VarInt, VarIntBoundsExceeded, Written,
 };
 pub use proto::{KEY_MATERIAL_SIZE, StatelessResetKey};
+
+/// QUIC protocol versions.
+///
+/// Version 1 (RFC 9000) and version 2 (RFC 9369) are both implemented. RFC 9368 version
+/// negotiation decides which one a connection uses.
+pub mod version {
+    pub use crate::proto::{
+        DEFAULT_SUPPORTED_VERSIONS, Version,
+        version::{
+            ClientVersionPolicy, ReservedVersionGrease, ServerVersionPolicy, VersionInformation,
+            VersionInformationError, VersionPolicyError, VersionPreference,
+        },
+    };
+}
 
 /// TLS for QUIC: how a connection's identity and application protocol are configured.
 ///

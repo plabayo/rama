@@ -2,16 +2,17 @@ use rama_core::telemetry::tracing::{debug, trace};
 
 use crate::proto::Instant;
 use crate::proto::connection::{qlog::drops::DropReason, spaces::PacketSpace};
-use crate::proto::crypto::{HeaderKey, KeyPair, PacketKey};
+use crate::proto::crypto::{HeaderKey, KeyPair, Keys, PacketKey};
 use crate::proto::packet::{Packet, PartialDecode, SpaceId};
 use crate::proto::token::ResetToken;
-use crate::proto::{RESET_TOKEN_SIZE, TransportError};
+use crate::proto::{RESET_TOKEN_SIZE, TransportError, Version};
 
 /// Removes header protection of a packet, or returns the reason the packet was dropped
 pub(super) fn unprotect_header(
     partial_decode: PartialDecode,
     spaces: &[PacketSpace; 3],
     zero_rtt_crypto: Option<&ZeroRttCrypto>,
+    original_initial: Option<(Version, &Keys)>,
     stateless_reset_tokens: &[Option<ResetToken>],
 ) -> Result<UnprotectHeaderResult, DropReason> {
     let header_crypto = if partial_decode.is_0rtt() {
@@ -21,6 +22,12 @@ pub(super) fn unprotect_header(
             debug!("dropping unexpected 0-RTT packet");
             return Err(DropReason::KeyUnavailable);
         }
+    } else if let Some((version, keys)) = original_initial
+        && partial_decode.is_initial()
+        && partial_decode.version() == Some(version)
+    {
+        // An Initial still in the client's first flight version (RFC 9369 §4.1).
+        keys.remote.as_ref().map(|keys| &*keys.header)
     } else if let Some(space) = partial_decode.space() {
         if let Some(crypto) = spaces[space]
             .crypto
@@ -82,6 +89,7 @@ pub(super) fn decrypt_packet_body(
     packet: &mut Packet,
     spaces: &[PacketSpace; 3],
     zero_rtt_crypto: Option<&ZeroRttCrypto>,
+    original_initial: Option<(Version, &Keys)>,
     conn_key_phase: bool,
     prev_crypto: Option<&PrevCrypto>,
     next_crypto: Option<&KeyPair<Box<dyn PacketKey>>>,
@@ -98,6 +106,11 @@ pub(super) fn decrypt_packet_body(
     let mut crypto_update = false;
     let crypto = if packet.header.is_0rtt() {
         &zero_rtt_crypto.unwrap().packet
+    } else if let Some((version, keys)) = original_initial
+        && space == SpaceId::Initial
+        && packet.header.version() == Some(version)
+    {
+        &keys.remote.as_ref().ok_or(None)?.packet
     } else if packet_key_phase == conn_key_phase || space != SpaceId::Data {
         &spaces[space]
             .crypto

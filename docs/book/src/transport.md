@@ -39,6 +39,13 @@ retransmitted and are bounded by what one packet can hold.
 
 Rama's QUIC is the transport itself. HTTP/3 is not part of it.
 
+It speaks QUIC v1 ([RFC 9000][rfc-9000]) and v2 ([RFC 9369][rfc-9369]) and negotiates
+between them per [RFC 9368][rfc-9368], with downgrade protection. A connection starts in v1
+and accepts both by default; `rama::quic::version::ClientVersionPolicy` and
+`ServerVersionPolicy` change what is offered and accepted. A BoringSSL client can switch
+version mid-handshake, a Rustls one cannot. Address tokens and TLS tickets are scoped to the
+version that issued them.
+
 ## Remote vs Local
 
 Another dimension in transport protocol design is **remote** vs **local** communication:
@@ -154,3 +161,6 @@ Rama doesn’t just support networking—it *is* networking, from transport to a
 [rama-quic]: https://ramaproxy.org/docs/rama/quic/index.html
 [rama-unix]: https://ramaproxy.org/docs/rama/unix/index.html
 [rfc-9221]: https://datatracker.ietf.org/doc/html/rfc9221
+[rfc-9000]: https://datatracker.ietf.org/doc/html/rfc9000
+[rfc-9368]: https://datatracker.ietf.org/doc/html/rfc9368
+[rfc-9369]: https://datatracker.ietf.org/doc/html/rfc9369

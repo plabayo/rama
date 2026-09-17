@@ -8,6 +8,7 @@ use rama_core::{
     telemetry::tracing::{debug, trace},
 };
 
+use crate::profile::PaddingPlacement;
 use crate::proto::{
     Duration, INITIAL_MTU, Instant, MAX_CID_SIZE, MIN_INITIAL_SIZE, TIMER_GRANULARITY, Transmit,
     TransportErrorCode, VarInt,
@@ -407,7 +408,8 @@ impl Connection {
             // The builder closes the connection when this is the last packet its keys may
             // protect (RFC 9001 §6.6). That packet then says why, instead of what was pending.
             let close = close || self.close;
-            coalesce = coalesce && !builder.short_header;
+            coalesce =
+                coalesce && !builder.short_header && self.config.wire.packetization.coalesces();
 
             // https://tools.ietf.org/html/draft-ietf-quic-transport-34#section-14.1
             pad_datagram |=
@@ -541,8 +543,24 @@ impl Connection {
 
         // Finish the last packet
         if let Some(mut builder) = builder_storage {
+            let mut tail_to = None;
             if pad_datagram {
-                builder.pad_to(MIN_INITIAL_SIZE);
+                let size = self
+                    .config
+                    .wire
+                    .packetization
+                    .initial_datagram_size()
+                    .max(MIN_INITIAL_SIZE);
+                match self.config.wire.packetization.padding() {
+                    PaddingPlacement::Frames => builder.pad_to(size),
+                    // Zero bytes after the last packet bring the datagram up to size; a
+                    // receiver drops them as not being a packet (RFC 9000 §12.2). The
+                    // protocol minimum stays inside the packet.
+                    PaddingPlacement::DatagramTail => {
+                        builder.pad_to(MIN_INITIAL_SIZE);
+                        tail_to = Some((datagram_start + usize::from(size)).min(buf_capacity));
+                    }
+                }
             }
 
             // If this datagram is a loss probe and `segment_size` is larger than `INITIAL_MTU`,
@@ -556,6 +574,11 @@ impl Connection {
 
             let last_packet_number = builder.exact_number;
             builder.finish_and_track(now, self, sent_frames, buf)?;
+            if let Some(target) = tail_to
+                && buf.len() < target
+            {
+                buf.resize(target, 0);
+            }
             self.path
                 .congestion
                 .on_sent(now, buf.len() as u64, last_packet_number);

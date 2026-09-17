@@ -104,7 +104,7 @@ impl<'a> ConnectionClosed<'a> {
                 reason: Some(ReasonView::Bytes(Cow::Borrowed(&close.reason))),
                 ..Self::default()
             },
-            ConnectionError::VersionMismatch => Self::internal(
+            ConnectionError::VersionMismatch { .. } => Self::internal(
                 Initiator::Local,
                 ConnectionClosedTrigger::VersionMismatch,
                 "peer doesn't implement any supported version",
@@ -449,7 +449,7 @@ mod tests {
     fn internal_close_causes_have_specific_triggers_without_fabricated_wire_codes() {
         for (error, initiator, trigger, reason) in [
             (
-                ConnectionError::VersionMismatch,
+                ConnectionError::VersionMismatch { offered: vec![] },
                 "local",
                 "version_mismatch",
                 "peer doesn't implement any supported version",

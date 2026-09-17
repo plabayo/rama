@@ -29,6 +29,7 @@ mod admission;
 mod aead_limits;
 mod closing;
 mod datagrams;
+mod grease;
 mod loss_config;
 mod qlog;
 mod qlog_drops;
@@ -38,6 +39,7 @@ mod qlog_paths;
 mod tls;
 mod token;
 mod validation;
+mod version;
 
 #[cfg(all(target_family = "wasm", target_os = "unknown"))]
 use wasm_bindgen_test::wasm_bindgen_test as test;
@@ -85,7 +87,7 @@ fn version_negotiate_server() {
         ]
     );
     assert!(buf[15..].chunks(4).any(|x| {
-        DEFAULT_SUPPORTED_VERSIONS.contains(&u32::from_be_bytes(x.try_into().unwrap()))
+        DEFAULT_SUPPORTED_VERSIONS.contains(&Version::from_be_bytes(x.try_into().unwrap()))
     }));
 }
 
@@ -129,10 +131,10 @@ fn version_negotiate_client() {
     }
     match client_ch.poll() {
         Some(Event::ConnectionLost {
-            reason: ConnectionError::VersionMismatch,
+            reason: ConnectionError::VersionMismatch { .. },
         }) => {}
         other => panic!(
-            "assertion failed: `{other:?}` does not match `Some(Event::ConnectionLost {{ reason: ConnectionError::VersionMismatch, }})`"
+            "assertion failed: `{other:?}` does not match `Some(Event::ConnectionLost {{ reason: ConnectionError::VersionMismatch {{ .. }}, }})`"
         ),
     }
 }
@@ -190,7 +192,9 @@ fn draft_version_compat() {
     let mut endpoint_config = EndpointConfig::try_with_rand_key().unwrap();
     endpoint_config.set_supported_versions([DEFAULT_SUPPORTED_VERSIONS, DRAFT_VERSIONS].concat());
     let mut client_config = client_config();
-    client_config.set_version(0xff00_0020);
+    client_config
+        .set_version(Version::from_u32(0xff00_0020))
+        .unwrap();
 
     let mut pair = Pair::new(Arc::new(endpoint_config), server_config());
     let (client_ch, server_ch) = pair.connect_with(client_config);
@@ -5171,7 +5175,7 @@ fn application_close_in_initial_is_rejected() {
         .expect("client should send an Initial packet");
     let initial = &buf[..transmit.size];
     // Long header: flags(1) version(4) dcid_len(1) dcid scid_len(1) scid ...
-    let version = u32::from_be_bytes(initial[1..5].try_into().unwrap());
+    let version = Version::from_be_bytes(initial[1..5].try_into().unwrap());
     let dcid_len = initial[5] as usize;
     let orig_dst_cid = ConnectionId::new(&initial[6..6 + dcid_len]);
     let scid_len = initial[6 + dcid_len] as usize;

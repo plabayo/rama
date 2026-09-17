@@ -1,4 +1,4 @@
-use crate::proto::{Duration, VarInt, connection::handshake::negotiate_max_idle_timeout};
+use crate::proto::{Duration, VarInt, Version, connection::handshake::negotiate_max_idle_timeout};
 
 #[test]
 fn negotiate_max_idle_timeout_commutative() {
@@ -66,8 +66,13 @@ impl super::Connection {
     ) {
         use crate::proto::packet::{FixedLengthConnectionIdParser, PartialDecode, SpaceId};
         assert!(self.spaces[SpaceId::Data].crypto.is_some() || self.zero_rtt_crypto.is_some());
-        let (packet, remaining) =
-            PartialDecode::new(packet, &FixedLengthConnectionIdParser::new(8), &[1], true).unwrap();
+        let (packet, remaining) = PartialDecode::new(
+            packet,
+            &FixedLengthConnectionIdParser::new(8),
+            &[Version::V1],
+            true,
+        )
+        .unwrap();
         assert!(remaining.is_none());
         let failures = self.authentication_failures;
         let authenticated = self.total_authed_packets;

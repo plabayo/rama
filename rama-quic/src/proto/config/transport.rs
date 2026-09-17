@@ -42,7 +42,12 @@ pub struct TransportConfig {
     pub(crate) max_concurrent_uni_streams: VarInt,
     pub(crate) max_idle_timeout: Option<VarInt>,
     pub(crate) stream_receive_window: VarInt,
+    pub(crate) stream_receive_window_bidi_remote: Option<VarInt>,
+    pub(crate) stream_receive_window_uni: Option<VarInt>,
     pub(crate) receive_window: VarInt,
+    pub(crate) active_connection_id_limit: Option<VarInt>,
+    pub(crate) max_ack_delay: Duration,
+    pub(crate) wire: crate::profile::WireProfile,
     pub(crate) send_window: u64,
     pub(crate) send_fairness: bool,
 
@@ -136,6 +141,53 @@ impl TransportConfig {
             self.stream_receive_window = value;
             self
         }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// The receive window of bidirectional streams the peer opens, when different from
+        /// [`Self::stream_receive_window`], which then applies to locally opened ones.
+        pub fn stream_receive_window_bidi_remote(mut self, value: Option<VarInt>) -> Self {
+            self.stream_receive_window_bidi_remote = value;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// The receive window of unidirectional streams, when different from
+        /// [`Self::stream_receive_window`].
+        pub fn stream_receive_window_uni(mut self, value: Option<VarInt>) -> Self {
+            self.stream_receive_window_uni = value;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// The `active_connection_id_limit` to advertise, when not the one this crate derives
+        /// from how many it can hold. At most that many are honoured.
+        pub fn active_connection_id_limit(mut self, value: Option<VarInt>) -> Self {
+            self.active_connection_id_limit = value;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// How long this endpoint may delay an acknowledgement, advertised as `max_ack_delay`
+        /// and honoured by its ACK timer. Must be below 2^14 ms (RFC 9000 §18.2). Defaults to
+        /// 25 ms.
+        pub fn max_ack_delay(mut self, value: Duration) -> Result<Self, ConfigError> {
+            if value.as_millis() >= 1 << 14 {
+                return Err(ConfigError::OutOfBounds);
+            }
+            self.max_ack_delay = value;
+            Ok(self)
+        }
+    }
+
+    /// The wire profile a connection with this configuration follows.
+    #[must_use]
+    pub(crate) fn with_wire(mut self, wire: crate::profile::WireProfile) -> Self {
+        self.wire = wire;
+        self
     }
 
     rama_utils::macros::generate_set_and_with! {
@@ -485,7 +537,12 @@ impl Default for TransportConfig {
             // 30 second default recommended by RFC 9308 § 3.2
             max_idle_timeout: Some(VarInt(30_000)),
             stream_receive_window: STREAM_RWND.into(),
+            stream_receive_window_bidi_remote: None,
+            stream_receive_window_uni: None,
             receive_window: VarInt::MAX,
+            active_connection_id_limit: None,
+            max_ack_delay: Duration::from_millis(25),
+            wire: crate::profile::WireProfile::default(),
             send_window: (8 * STREAM_RWND).into(),
             send_fairness: true,
 
@@ -524,7 +581,12 @@ impl fmt::Debug for TransportConfig {
             max_concurrent_uni_streams,
             max_idle_timeout,
             stream_receive_window,
+            stream_receive_window_bidi_remote,
+            stream_receive_window_uni,
             receive_window,
+            active_connection_id_limit,
+            max_ack_delay,
+            wire,
             send_window,
             send_fairness,
             packet_threshold,
@@ -554,6 +616,14 @@ impl fmt::Debug for TransportConfig {
             .field("max_concurrent_uni_streams", max_concurrent_uni_streams)
             .field("max_idle_timeout", max_idle_timeout)
             .field("stream_receive_window", stream_receive_window)
+            .field(
+                "stream_receive_window_bidi_remote",
+                stream_receive_window_bidi_remote,
+            )
+            .field("stream_receive_window_uni", stream_receive_window_uni)
+            .field("active_connection_id_limit", active_connection_id_limit)
+            .field("max_ack_delay", max_ack_delay)
+            .field("wire", wire)
             .field("receive_window", receive_window)
             .field("send_window", send_window)
             .field("send_fairness", send_fairness)

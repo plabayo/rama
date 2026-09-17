@@ -63,7 +63,7 @@ pub struct Version(
 #[derive(Clone, Debug)]
 pub enum VersionListView<'a> {
     /// Version identifiers stored as host-order integers.
-    Host(Cow<'a, [u32]>),
+    Host(Cow<'a, [crate::version::Version]>),
 
     /// Version identifiers stored as network-order four-byte values.
     Network(Cow<'a, [[u8; 4]]>),
@@ -105,7 +105,9 @@ impl VersionListView<'_> {
     /// Conservative heap bytes needed when retaining this value, including existing spare capacity.
     pub fn owned_heap_size(&self) -> usize {
         match self {
-            Self::Host(Cow::Borrowed(values)) => values.len().saturating_mul(size_of::<u32>()),
+            Self::Host(Cow::Borrowed(values)) => values
+                .len()
+                .saturating_mul(size_of::<crate::version::Version>()),
             Self::Network(Cow::Borrowed(values)) => {
                 values.len().saturating_mul(size_of::<[u8; 4]>())
             }
@@ -116,7 +118,9 @@ impl VersionListView<'_> {
     /// Retained heap bytes, including spare capacity; excludes borrowed data and allocator metadata.
     pub fn heap_size(&self) -> usize {
         match self {
-            Self::Host(Cow::Owned(values)) => values.capacity().saturating_mul(size_of::<u32>()),
+            Self::Host(Cow::Owned(values)) => values
+                .capacity()
+                .saturating_mul(size_of::<crate::version::Version>()),
             Self::Network(Cow::Owned(values)) => {
                 values.capacity().saturating_mul(size_of::<[u8; 4]>())
             }

@@ -6,7 +6,7 @@ use std::net::SocketAddr;
 use rama_core::telemetry::tracing::{debug, trace, trace_span};
 
 use crate::proto::{
-    Dir, Frame, Instant, MAX_STREAM_COUNT, TransportError,
+    Dir, Frame, Instant, MAX_STREAM_COUNT, StoredToken, TransportError,
     cid_queue::Retired,
     connection::{
         Connection, ConnectionSide, Event, State,
@@ -313,6 +313,7 @@ impl Connection {
                     let ConnectionSide::Client {
                         token_store,
                         server_name,
+                        time_source,
                         ..
                     } = &self.side
                     else {
@@ -322,7 +323,9 @@ impl Connection {
                         return Err(TransportError::FRAME_ENCODING_ERROR("empty token"));
                     }
                     trace!("got new token");
-                    token_store.insert(server_name, token);
+                    let stored = StoredToken::new(token, time_source.now())
+                        .with_peer_greasing_quic_bit(self.peer_params.grease_quic_bit);
+                    token_store.insert(server_name, self.version, stored);
                 }
                 Frame::Datagram(datagram) => {
                     if self
@@ -479,7 +482,7 @@ impl Connection {
 mod tests {
     use super::*;
     use crate::proto::{
-        TransportErrorCode, VarInt,
+        TransportErrorCode, VarInt, Version,
         coding::Codec,
         packet::{Header, LongType, PacketNumber},
         tests::Pair,
@@ -513,7 +516,7 @@ mod tests {
                         dst_cid: conn.handshake_cid,
                         src_cid: conn.orig_rem_cid,
                         number: PacketNumber::U8(0),
-                        version: 1,
+                        version: Version::V1,
                     }
                 } else {
                     Header::Short {

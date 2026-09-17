@@ -17,11 +17,15 @@ use zeroize::Zeroizing;
 
 use super::packet::{self, Secret, Suite};
 use crate::proto::{
-    Side, TransportError, TransportErrorCode,
-    crypto::{self, DirectionalKeys, HandshakeEvent, HeaderKey, KeyPair, Keys, PacketKey},
+    Side, TransportError, TransportErrorCode, Version,
+    crypto::{
+        self, DirectionalKeys, HandshakeEvent, HeaderKey, KeyPair, Keys, PacketKey,
+        UnsupportedVersion,
+    },
     packet::SpaceId,
     shared::ConnectionId,
     transport_parameters::TransportParameters,
+    version::Wire,
 };
 
 enum Event {
@@ -90,6 +94,15 @@ impl QuicMethod for Callbacks {
 pub(super) struct TlsSession {
     inner: QuicConnection,
     side: Side,
+    /// The version whose labels protect this connection; compatible negotiation may move it
+    /// once, before any Handshake key exists.
+    wire: &'static Wire,
+    /// The version 0-RTT keys are labelled with: the client's first flight version, which
+    /// never changes (RFC 9369 §4.1).
+    early_wire: &'static Wire,
+    /// Where a client reports its negotiated version, so its ticket cache files a ticket
+    /// under the version that issued it.
+    negotiated: Option<Arc<Mutex<Version>>>,
     callbacks: Arc<Mutex<Output>>,
     output: VecDeque<HandshakeEvent>,
     write_ready: [bool; 3],
@@ -114,6 +127,8 @@ impl TlsSession {
     pub(super) fn new(
         ssl: Ssl,
         side: Side,
+        wire: &'static Wire,
+        early_wire: &'static Wire,
         params: &TransportParameters,
         early_data: bool,
         remembered: Option<TransportParameters>,
@@ -141,8 +156,11 @@ impl TlsSession {
                 stateless_reset_token: None,
                 preferred_address: None,
                 grease_transport_parameter: None,
-                write_order: None,
-                ..*params
+                extra: Vec::new(),
+                write_plan: None,
+                // Version negotiation is settled per connection, not a transport setting.
+                version_information: None,
+                ..params.clone()
             };
             encoded.clear();
             encoded.extend_from_slice(b"rama-quic-v1");
@@ -155,6 +173,9 @@ impl TlsSession {
         let mut session = Self {
             inner,
             side,
+            wire,
+            early_wire,
+            negotiated: None,
             callbacks,
             output: VecDeque::new(),
             write_ready: [false; 3],
@@ -171,6 +192,10 @@ impl TlsSession {
         };
         session.drive()?;
         Ok(session)
+    }
+
+    pub(super) fn track_version(&mut self, negotiated: Arc<Mutex<Version>>) {
+        self.negotiated = Some(negotiated);
     }
 
     fn tls_error(&self, error: QuicError) -> TransportError {
@@ -219,8 +244,13 @@ impl TlsSession {
                     suite,
                     bytes,
                 } => {
+                    let labels = if level == EncryptionLevel::EarlyData {
+                        &self.early_wire.labels
+                    } else {
+                        &self.wire.labels
+                    };
                     let secret = Suite::from_id(suite)
-                        .and_then(|suite| Secret::new(suite, &bytes))
+                        .and_then(|suite| Secret::new(suite, &bytes, labels))
                         .map_err(crypto_error)?;
                     let keys = secret.directional_keys().map_err(crypto_error)?;
                     if level == EncryptionLevel::EarlyData {
@@ -315,8 +345,33 @@ fn space(level: EncryptionLevel) -> Result<SpaceId, TransportError> {
 }
 
 impl crypto::Session for TlsSession {
-    fn initial_keys(&self, cid: &ConnectionId, side: Side) -> Result<Keys, TransportError> {
-        packet::initial_keys(cid, side).map_err(crypto_error)
+    fn initial_keys(
+        &self,
+        version: Version,
+        cid: &ConnectionId,
+        side: Side,
+    ) -> Result<Keys, TransportError> {
+        let wire = packet::wire(version)
+            .ok_or_else(|| TransportError::INTERNAL_ERROR("unsupported QUIC version"))?;
+        packet::initial_keys(wire, cid, side).map_err(crypto_error)
+    }
+    fn supports_version_switch(&self) -> bool {
+        true
+    }
+    fn switch_version(&mut self, version: Version) -> Result<(), UnsupportedVersion> {
+        // Keys are derived from secrets as they are drained, so re-labelling is free until
+        // the first Handshake secret has been turned into keys.
+        if self.write_ready[SpaceId::Handshake as usize]
+            || self.pending_read[SpaceId::Handshake as usize].is_some()
+            || self.local_secret.is_some()
+        {
+            return Err(UnsupportedVersion);
+        }
+        self.wire = packet::wire(version).ok_or(UnsupportedVersion)?;
+        if let Some(negotiated) = &self.negotiated {
+            *negotiated.lock() = version;
+        }
+        Ok(())
     }
     fn handshake_summary(&self) -> Option<crypto::NegotiatedTlsParameters> {
         self.got_handshake_data
@@ -401,7 +456,11 @@ impl crypto::Session for TlsSession {
         }
     }
     fn transport_parameters(&self) -> Result<Option<TransportParameters>, TransportError> {
-        Ok(self.peer_params.lock().or(self.remembered))
+        Ok(self
+            .peer_params
+            .lock()
+            .clone()
+            .or_else(|| self.remembered.clone()))
     }
     fn poll_handshake(&mut self) -> Result<Option<HandshakeEvent>, TransportError> {
         Ok(self.output.pop_front())
@@ -426,7 +485,8 @@ impl crypto::Session for TlsSession {
         };
         let mut packet = header.to_vec();
         packet.extend_from_slice(&payload[..tag_start]);
-        packet::retry_tag(cid, &packet).is_ok_and(|tag| memcmp::eq(&tag, &payload[tag_start..]))
+        packet::retry_tag(self.wire, cid, &packet)
+            .is_ok_and(|tag| memcmp::eq(&tag, &payload[tag_start..]))
     }
     fn export_keying_material(
         &self,

@@ -3,10 +3,13 @@ use rama_core::{
     telemetry::tracing::{debug, trace, trace_span},
 };
 
+mod chaos;
+
 use rand::RngExt;
 
 use super::{Connection, spaces::SentPacket};
 
+use crate::profile::InitialFlightLayout;
 use crate::proto::{
     ConnectionId, Instant, TransportError,
     connection::ConnectionSide,
@@ -92,6 +95,7 @@ impl PacketBuilder {
             return None;
         }
 
+        let grease_quic_bit = conn.may_grease_quic_bit();
         let space = &mut conn.spaces[space_id];
         let exact_number = match space_id {
             SpaceId::Data => conn.packet_number_filter.allocate(&mut conn.rng, space),
@@ -100,7 +104,11 @@ impl PacketBuilder {
 
         let span = trace_span!("send", space = ?space_id, pn = exact_number).entered();
 
-        let number = PacketNumber::new(exact_number, space.largest_acked_packet.unwrap_or(0));
+        let number = PacketNumber::new_at_least(
+            exact_number,
+            space.largest_acked_packet.unwrap_or(0),
+            conn.config.wire.packetization.min_packet_number_len(),
+        );
         let header = match space_id {
             SpaceId::Data if space.crypto.is_some() => Header::Short {
                 dst_cid,
@@ -112,12 +120,13 @@ impl PacketBuilder {
                 },
                 key_phase: conn.key_phase,
             },
+            // 0-RTT never moves to a negotiated version (RFC 9369 §4.1).
             SpaceId::Data => Header::Long {
                 ty: LongType::ZeroRtt,
                 src_cid: conn.handshake_cid,
                 dst_cid,
                 number,
-                version,
+                version: conn.original_version,
             },
             SpaceId::Handshake => Header::Long {
                 ty: LongType::Handshake,
@@ -138,7 +147,7 @@ impl PacketBuilder {
             }),
         };
         let partial_encode = header.encode(buffer);
-        if conn.peer_params.grease_quic_bit && conn.rng.random() {
+        if grease_quic_bit && conn.rng.random() {
             buffer[partial_encode.start] ^= FIXED_BIT;
         }
 
@@ -277,6 +286,15 @@ impl PacketBuilder {
         if pad {
             trace!("PADDING * {}", self.min_size - buffer.len());
             buffer.resize(self.min_size, 0);
+        }
+        // A client's Initial frames may be rearranged the way the profile asks, before they
+        // are protected (the same bytes, differently laid out).
+        if self.space == SpaceId::Initial
+            && conn.side.is_client()
+            && conn.config.wire.packetization.layout() == InitialFlightLayout::Chaos
+        {
+            let payload_start = self.partial_encode.start + self.partial_encode.header_len;
+            chaos::scramble(&mut buffer[payload_start..], &mut conn.rng);
         }
 
         let space = &conn.spaces[self.space];

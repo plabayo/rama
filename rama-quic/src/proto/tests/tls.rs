@@ -4,7 +4,7 @@ struct FailingClient(bool);
 impl crypto::ClientConfig for FailingClient {
     fn start_session(
         self: Arc<Self>,
-        _: u32,
+        _: Version,
         _: &str,
         _: &TransportParameters,
     ) -> Result<Box<dyn crypto::Session>, ConnectError> {
@@ -20,14 +20,14 @@ struct FailingServer(Arc<dyn crypto::ServerConfig>, bool);
 impl crypto::ServerConfig for FailingServer {
     fn initial_keys(
         &self,
-        version: u32,
+        version: Version,
         cid: &ConnectionId,
     ) -> Result<crypto::Keys, crypto::InitialKeysError> {
         self.0.initial_keys(version, cid)
     }
     fn retry_tag(
         &self,
-        version: u32,
+        version: Version,
         cid: &ConnectionId,
         packet: &[u8],
     ) -> Result<[u8; 16], crypto::CryptoError> {
@@ -35,7 +35,7 @@ impl crypto::ServerConfig for FailingServer {
     }
     fn start_session(
         self: Arc<Self>,
-        _: u32,
+        _: Version,
         _: &TransportParameters,
     ) -> Result<Box<dyn crypto::Session>, TransportError> {
         if self.1 {
@@ -48,7 +48,12 @@ impl crypto::ServerConfig for FailingServer {
 
 struct FailingInitialKeys;
 impl crypto::Session for FailingInitialKeys {
-    fn initial_keys(&self, _: &ConnectionId, _: Side) -> Result<crypto::Keys, TransportError> {
+    fn initial_keys(
+        &self,
+        _: Version,
+        _: &ConnectionId,
+        _: Side,
+    ) -> Result<crypto::Keys, TransportError> {
         Err(failure())
     }
     fn early_crypto(&self) -> Option<(Box<dyn crypto::HeaderKey>, Box<dyn crypto::PacketKey>)> {

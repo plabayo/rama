@@ -59,6 +59,17 @@ async def read_stream(reader):
             raise RuntimeError(f"a stream carried more than {STREAM_LIMIT} bytes")
 
 
+def versions(arguments):
+    """The QUIC versions this peer speaks, most preferred first, as the test asked for them.
+
+    A client starts in the first one (or `--original-version`) and lists them all as
+    compatible; a server accepts them all and, following aioquic, moves a connection to the
+    first of them the client listed."""
+    if arguments.versions is None:
+        return None
+    return [int(version, 0) for version in arguments.versions.split(",")]
+
+
 def client_configuration(arguments):
     configuration = QuicConfiguration(
         is_client=True,
@@ -67,6 +78,10 @@ def client_configuration(arguments):
         server_name=arguments.server_name,
         max_datagram_frame_size=arguments.datagram_frame or None,
     )
+    if versions(arguments) is not None:
+        configuration.supported_versions = versions(arguments)
+    if arguments.original_version is not None:
+        configuration.original_version = int(arguments.original_version, 0)
     configuration.load_verify_locations(cafile=arguments.ca)
     return configuration
 
@@ -78,8 +93,15 @@ def server_configuration(arguments):
         idle_timeout=arguments.idle_timeout,
         max_datagram_frame_size=arguments.datagram_frame or None,
     )
+    if versions(arguments) is not None:
+        configuration.supported_versions = versions(arguments)
     configuration.load_cert_chain(arguments.cert, arguments.key)
     return configuration
+
+
+def negotiated_version(protocol):
+    """The version the connection settled on, as the test compares it."""
+    return f"{protocol._quic._version:#x}"
 
 
 async def run_server(arguments):
@@ -114,6 +136,7 @@ async def run_server(arguments):
             if isinstance(event, HandshakeCompleted):
                 say(
                     event="handshake",
+                    version=negotiated_version(self),
                     alpn=event.alpn_protocol,
                     resumed=event.session_resumed,
                     early=event.early_data_accepted,
@@ -297,7 +320,7 @@ async def run_client(arguments):
                     down_finished.set_result(None)
                 return
             if isinstance(event, HandshakeCompleted):
-                say(event="handshake", alpn=event.alpn_protocol)
+                say(event="handshake", alpn=event.alpn_protocol, version=negotiated_version(self))
             elif isinstance(event, DatagramFrameReceived):
                 report_datagram(self, event, echo=False)
                 counted["datagrams"] += 1
@@ -412,7 +435,7 @@ async def run_backpressure_client(arguments):
     class Watched(Closes):
         def quic_event_received(self, event):
             if isinstance(event, HandshakeCompleted):
-                say(event="handshake", alpn=event.alpn_protocol)
+                say(event="handshake", alpn=event.alpn_protocol, version=negotiated_version(self))
             elif isinstance(event, DatagramFrameReceived):
                 report_datagram(self, event, echo=False)
             elif isinstance(event, ConnectionTerminated):
@@ -452,6 +475,7 @@ async def run_resuming_client(arguments):
             if isinstance(event, HandshakeCompleted):
                 say(
                     event="handshake",
+                    version=negotiated_version(self),
                     alpn=event.alpn_protocol,
                     resumed=event.session_resumed,
                     early=event.early_data_accepted,
@@ -539,7 +563,7 @@ async def run_key_client(arguments):
 
         def quic_event_received(self, event):
             if isinstance(event, HandshakeCompleted):
-                say(event="handshake", alpn=event.alpn_protocol)
+                say(event="handshake", alpn=event.alpn_protocol, version=negotiated_version(self))
             elif isinstance(event, ConnectionTerminated):
                 say(event="ended", **terminated(event, self.arrived))
             super().quic_event_received(event)
@@ -583,7 +607,7 @@ async def run_close_client(arguments):
     class Watched(Closes):
         def quic_event_received(self, event):
             if isinstance(event, HandshakeCompleted):
-                say(event="handshake", alpn=event.alpn_protocol)
+                say(event="handshake", alpn=event.alpn_protocol, version=negotiated_version(self))
             elif isinstance(event, ConnectionTerminated):
                 # This side closes here, so what it reports is a termination of its own.
                 say(event="ended", **terminated(event, self.arrived))
@@ -629,7 +653,7 @@ async def run_moving_client(arguments):
 
         def quic_event_received(self, event):
             if isinstance(event, HandshakeCompleted):
-                say(event="handshake", alpn=event.alpn_protocol)
+                say(event="handshake", alpn=event.alpn_protocol, version=negotiated_version(self))
             elif isinstance(event, ConnectionTerminated):
                 say(event="ended", **terminated(event, self.arrived))
             super().quic_event_received(event)
@@ -1039,6 +1063,10 @@ def main():
     parser.add_argument("--barrier-seed", type=int, default=0)
     parser.add_argument("--barrier-length", type=int, default=0)
     parser.add_argument("--idle-timeout", type=float, default=20.0)
+    parser.add_argument("--versions", default=None,
+                        help="QUIC versions to speak, most preferred first, comma separated")
+    parser.add_argument("--original-version", default=None,
+                        help="the version of a client's first flight, when not the first of --versions")
     parser.add_argument("--connections", type=int, default=1)
     parser.add_argument("--datagram-frame", type=int, default=0)
     parser.add_argument("--datagrams", type=int, default=0)

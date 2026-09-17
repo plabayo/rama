@@ -274,12 +274,13 @@ impl<'a> Chunks<'a> {
         streams: &'a mut StreamsState,
         pending: &'a mut Retransmits,
     ) -> Result<Self, ReadableError> {
+        let window = streams.receive_window_for(id);
         let mut entry = match streams.recv.entry(id) {
             Entry::Occupied(entry) => entry,
             Entry::Vacant(_) => return Err(ReadableError::ClosedStream),
         };
 
-        let recv = get_or_insert_recv(streams.stream_receive_window)(entry.get_mut());
+        let recv = get_or_insert_recv(window)(entry.get_mut());
         if recv.stopped {
             return Err(ReadableError::ClosedStream);
         }
@@ -389,7 +390,7 @@ impl<'a> Chunks<'a> {
 
         // If the stream hasn't finished, we may need to issue stream-level flow control credit
         if let ChunksState::Readable(rs) = state {
-            let (_, max_stream_data) = rs.max_stream_data(self.streams.stream_receive_window);
+            let (_, max_stream_data) = rs.max_stream_data(self.streams.receive_window_for(self.id));
             should_transmit |= max_stream_data.0;
             if max_stream_data.0 {
                 self.pending.max_stream_data.insert(self.id);

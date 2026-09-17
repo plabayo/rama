@@ -10,7 +10,10 @@ use rama::{
     error::{BoxError, ErrorContext as _},
     graceful::{Shutdown, default_signal},
     net::{socket::SocketOptions, tls::ApplicationProtocol},
-    quic::{Connection, Endpoint, RecvStream, SendStream, ServerConfig},
+    quic::{
+        Connection, Endpoint, RecvStream, SendStream, ServerConfig,
+        version::{ServerVersionPolicy, Version, VersionPreference},
+    },
     rt::Executor,
     telemetry::tracing,
     tls::{
@@ -76,8 +79,16 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
         .with_alpn(smallvec![ApplicationProtocol::from(ALPN)])
         .with_keylog(KeyLogIntent::Environment)
         .with_server_auth(auth);
-    let config = ServerConfig::try_from_rama_tls(&tls, crate::tls_options())?
+    let mut config = ServerConfig::try_from_rama_tls(&tls, crate::tls_options())?
         .with_transport_config(transport(executor.clone(), "server").await?);
+    if testcase == TestCase::V2 {
+        // Move a client that offers v2 to it (RFC 9368 §2.3).
+        config.set_versions(
+            ServerVersionPolicy::new()
+                .try_with_preference(VersionPreference::Prefer(vec![Version::V2]))
+                .context("a usable preference")?,
+        );
+    }
     let mut socket_options = SocketOptions::default_udp();
     if args.listen.is_ipv6() {
         socket_options.only_v6 = Some(false);

@@ -10,6 +10,7 @@ use rama::{
     quic::{
         self, ConnectError, ConnectionId, Side, TransportError, TransportErrorCode,
         tls::provider::{self, *},
+        version::Version,
     },
     tls::{ProtocolVersion, client::NegotiatedTlsParameters},
 };
@@ -48,11 +49,11 @@ fn failure(error: GnuTlsError) -> TransportError {
 impl provider::ClientConfig for Client {
     fn start_session(
         self: Arc<Self>,
-        version: u32,
+        version: Version,
         name: &str,
         params: &TransportParameters,
     ) -> Result<Box<dyn provider::Session>, ConnectError> {
-        if version != 1 {
+        if version != Version::V1 {
             return Err(ConnectError::UnsupportedVersion);
         }
         let mut parameters = Vec::new();
@@ -74,8 +75,8 @@ impl provider::ClientConfig for Client {
 }
 
 impl provider::ServerConfig for Server {
-    fn initial_keys(&self, version: u32, cid: &ConnectionId) -> Result<Keys, InitialKeysError> {
-        if version != 1 {
+    fn initial_keys(&self, version: Version, cid: &ConnectionId) -> Result<Keys, InitialKeysError> {
+        if version != Version::V1 {
             return Err(InitialKeysError::UnsupportedVersion);
         }
         packet::initial(cid, Side::Server).map_err(|e| InitialKeysError::Crypto(e.into()))
@@ -83,7 +84,7 @@ impl provider::ServerConfig for Server {
 
     fn retry_tag(
         &self,
-        _: u32,
+        _: Version,
         cid: &ConnectionId,
         packet: &[u8],
     ) -> Result<[u8; 16], CryptoError> {
@@ -92,7 +93,7 @@ impl provider::ServerConfig for Server {
 
     fn start_session(
         self: Arc<Self>,
-        _: u32,
+        _: Version,
         params: &TransportParameters,
     ) -> Result<Box<dyn provider::Session>, TransportError> {
         let mut parameters = Vec::new();
@@ -238,7 +239,18 @@ impl Session {
 }
 
 impl provider::Session for Session {
-    fn initial_keys(&self, cid: &ConnectionId, side: Side) -> Result<Keys, TransportError> {
+    fn initial_keys(
+        &self,
+        version: Version,
+        cid: &ConnectionId,
+        side: Side,
+    ) -> Result<Keys, TransportError> {
+        if version != Version::V1 {
+            return Err(TransportError::new(
+                TransportErrorCode::INTERNAL_ERROR,
+                "GnuTLS fixture speaks QUIC v1 only",
+            ));
+        }
         packet::initial(cid, side).map_err(failure)
     }
 

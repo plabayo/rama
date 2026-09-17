@@ -566,6 +566,11 @@ impl Event {
     pub fn alpn(&self) -> &str {
         self.0["alpn"].as_str().expect("a negotiated protocol")
     }
+
+    /// The QUIC version the peer's connection settled on, as it printed it (hex).
+    pub fn version(&self) -> &str {
+        self.0["version"].as_str().expect("a negotiated version")
+    }
 }
 
 /// The aioquic peer as a child process, with everything it says and everything it owns.

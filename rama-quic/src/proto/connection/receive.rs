@@ -10,7 +10,7 @@ use rama_core::{
 };
 
 use crate::proto::{
-    Frame, Instant, TransportError, TransportErrorCode,
+    Frame, Instant, TransportError, TransportErrorCode, Version,
     connection::{
         Connection, ConnectionError, ConnectionSide, Event, State, packet_crypto,
         qlog::drops::{DropInfo, DropReason},
@@ -87,7 +87,7 @@ impl Connection {
             match PartialDecode::new(
                 data,
                 &FixedLengthConnectionIdParser::new(self.local_cid_state.cid_len()),
-                &[self.version],
+                &self.decodable_versions(),
                 self.endpoint_config.grease_quic_bit,
             ) {
                 Ok((partial_decode, rest)) => {
@@ -147,10 +147,18 @@ impl Connection {
             self.qlog_packet_dropped(now, info, reason);
             return;
         }
+        if let Some(version) = partial_decode.version()
+            && version != self.version
+            && !self.accept_other_version(now, version, &partial_decode)
+        {
+            self.qlog_packet_dropped(now, info, DropReason::Unsupported);
+            return;
+        }
         match packet_crypto::unprotect_header(
             partial_decode,
             &self.spaces,
             self.zero_rtt_crypto.as_ref(),
+            self.original_initial_keys(),
             // A reset is only ours when it comes from an address this identifier was sent to.
             &self.used_reset_tokens(remote),
         ) {
@@ -329,7 +337,7 @@ impl Connection {
                     debug!("closing connection due to transport error: {}", err);
                     State::closed(err)
                 }
-                ConnectionError::VersionMismatch => State::Draining,
+                ConnectionError::VersionMismatch { .. } => State::Draining,
                 #[expect(
                     clippy::unreachable,
                     reason = "`conn_err` was produced by processing one received packet, which only yields peer-driven errors (transport error, close frames, version mismatch, reset)"
@@ -504,8 +512,13 @@ impl Connection {
                 };
 
                 self.discard_space(now, SpaceId::Initial); // Make sure we clean up after any retransmitted Initials
+                self.initial_keys_cid = rem_cid;
                 self.spaces[SpaceId::Initial] = PacketSpace {
-                    crypto: Some(self.crypto.initial_keys(&rem_cid, self.side.side())?),
+                    crypto: Some(self.crypto.initial_keys(
+                        self.version,
+                        &rem_cid,
+                        self.side.side(),
+                    )?),
                     next_packet_number: self.spaces[SpaceId::Initial].next_packet_number,
                     crypto_offset: client_hello.len() as u64,
                     ..PacketSpace::new(now)
@@ -677,24 +690,33 @@ impl Connection {
                 Ok(())
             }
             Header::VersionNegotiate { .. } => {
-                if self.total_authed_packets > 1 {
+                // An attempt that already reacted to one ignores any other (RFC 9368 §4).
+                let reacted = matches!(
+                    self.side,
+                    ConnectionSide::Client {
+                        negotiation_offer: Some(_),
+                        ..
+                    }
+                );
+                if self.total_authed_packets > 1 || reacted {
                     self.qlog_packet_dropped(now, info, DropReason::Rejected);
                     return Ok(());
                 }
-                let supported = packet
+                let offered: Vec<Version> = packet
                     .payload
-                    .chunks(4)
-                    .any(|x| match <[u8; 4]>::try_from(x) {
-                        Ok(version) => self.version == u32::from_be_bytes(version),
-                        Err(_) => false,
-                    });
-                if supported {
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|bytes| Version::from_be_bytes(*bytes))
+                    .collect();
+                // One that lists the version we sent is forged or stale (RFC 9368 §2.1).
+                if offered.contains(&self.original_version) {
                     self.qlog_packet_dropped(now, info, DropReason::Invalid);
                     return Ok(());
                 }
                 self.qlog_version_negotiated(now, &packet.payload);
                 debug!("remote doesn't support our version");
-                Err(ConnectionError::VersionMismatch)
+                Err(ConnectionError::VersionMismatch { offered })
             }
             #[expect(
                 clippy::unreachable,
@@ -773,6 +795,7 @@ impl Connection {
             packet,
             &self.spaces,
             self.zero_rtt_crypto.as_ref(),
+            self.original_initial_keys(),
             self.key_phase,
             self.prev_crypto.as_ref(),
             self.next_crypto.as_ref(),
@@ -797,6 +820,74 @@ impl Connection {
         }
 
         Ok(Some(result.number))
+    }
+
+    /// The versions a received long header may carry: the connection's, and the client's
+    /// original one while the two differ (RFC 9369 §4.1).
+    fn decodable_versions(&self) -> [Version; 2] {
+        [self.version, self.original_version]
+    }
+
+    /// The Initial keys of the original version, keyed by that version, while they are kept.
+    fn original_initial_keys(&self) -> Option<(Version, &crate::proto::crypto::Keys)> {
+        if self.version == self.original_version || self.spaces[SpaceId::Initial].crypto.is_none() {
+            return None;
+        }
+        self.original_initial_crypto
+            .as_ref()
+            .map(|keys| (self.original_version, keys))
+    }
+
+    /// A long header in a version other than the connection's: either the original version,
+    /// which Initial and 0-RTT packets may still carry, or a compatible version the server is
+    /// moving a client to (RFC 9368 §2.3, RFC 9369 §4.1). Returns whether to go on decoding.
+    fn accept_other_version(
+        &mut self,
+        now: Instant,
+        version: Version,
+        partial_decode: &PartialDecode,
+    ) -> bool {
+        if version == self.original_version {
+            // Handshake and 1-RTT packets only exist in the negotiated version.
+            return partial_decode.is_initial() || partial_decode.is_0rtt();
+        }
+        let ConnectionSide::Client { versions, .. } = &self.side else {
+            return false;
+        };
+        if !self.state.is_handshake()
+            || self.version != self.original_version
+            || !versions.compatible().contains(&version)
+            || !(partial_decode.is_initial() || partial_decode.space() == Some(SpaceId::Handshake))
+        {
+            return false;
+        }
+        match self.switch_version(now, version) {
+            Ok(()) => true,
+            Err(error) => {
+                self.kill(now, error.into());
+                false
+            }
+        }
+    }
+
+    /// Move a client to the version the server picked, before any Handshake key exists
+    /// (RFC 9369 §4.1): keys from here on are labelled with it, and the Initial keys of the
+    /// original version stay readable for what the server sent before it switched.
+    fn switch_version(&mut self, now: Instant, version: Version) -> Result<(), TransportError> {
+        self.crypto.switch_version(version).map_err(|_error| {
+            TransportError::INTERNAL_ERROR("TLS session cannot change QUIC version")
+        })?;
+
+        let keys = self
+            .crypto
+            .initial_keys(version, &self.initial_keys_cid, self.side.side())?;
+        self.original_initial_crypto = self.spaces[SpaceId::Initial].crypto.replace(keys);
+
+        debug!(from = %self.version, to = %version, "compatible version negotiation");
+        self.version = version;
+        self.qlog_init_negotiation(now);
+
+        Ok(())
     }
 
     /// Send an IMMEDIATE_ACK frame to the remote endpoint
@@ -827,6 +918,7 @@ impl Connection {
             first_decode.clone(),
             &self.spaces,
             self.zero_rtt_crypto.as_ref(),
+            self.original_initial_keys(),
             &self.used_reset_tokens(self.path.remote),
         )
         .ok()?;
@@ -836,6 +928,7 @@ impl Connection {
             &mut packet,
             &self.spaces,
             self.zero_rtt_crypto.as_ref(),
+            self.original_initial_keys(),
             self.key_phase,
             self.prev_crypto.as_ref(),
             self.next_crypto.as_ref(),

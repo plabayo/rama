@@ -9,7 +9,10 @@ use rama::{
     error::{BoxError, ErrorContext as _},
     graceful::{Shutdown, default_signal},
     net::{tls::ApplicationProtocol, uri::Uri},
-    quic::{ClientConfig, Connection, Endpoint},
+    quic::{
+        ClientConfig, Connection, Endpoint,
+        version::{ClientVersionPolicy, Version},
+    },
     rt::Executor,
     telemetry::tracing,
     tls::{
@@ -116,8 +119,17 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
         .with_alpn(smallvec![ApplicationProtocol::from(ALPN)])
         .with_keylog(KeyLogIntent::Environment)
         .with_server_verify(ServerVerifyMode::Disable);
-    let config = ClientConfig::try_from_rama_tls(&tls, crate::tls_options())?
+    let mut config = ClientConfig::try_from_rama_tls(&tls, crate::tls_options())?
         .with_transport_config(transport(executor, "client").await?);
+    if testcase == TestCase::V2 {
+        // A v1 first flight that prefers v2, for the server to move (RFC 9368 §2.3).
+        config.set_versions(
+            ClientVersionPolicy::new(Version::V1)
+                .context("a usable original version")?
+                .try_with_compatible(vec![Version::V2, Version::V1])
+                .context("a usable compatible list")?,
+        )?;
+    }
     let batch = tokio::time::timeout(Duration::from_secs(args.timeout_seconds), async {
         if testcase == TestCase::MultiConnect {
             for request in requests {

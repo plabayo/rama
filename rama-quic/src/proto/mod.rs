@@ -13,7 +13,7 @@
 
 use std::{fmt, net::SocketAddr, ops};
 
-mod cid_queue;
+pub(crate) mod cid_queue;
 pub(crate) mod coding;
 mod constant_time;
 mod range_set;
@@ -25,6 +25,8 @@ mod range_set;
 mod tests;
 pub(crate) mod transport_parameters;
 mod varint;
+pub(crate) mod version;
+pub use version::Version;
 
 pub use varint::{VarInt, VarIntBoundsExceeded};
 mod bloom_token_log;
@@ -92,7 +94,7 @@ pub use config::{KEY_MATERIAL_SIZE, StatelessResetKey};
 
 pub(crate) mod crypto;
 
-mod frame;
+pub(crate) mod frame;
 
 /// Whether a datagram carrying a particular connection ID may go to a particular address.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -118,7 +120,7 @@ pub(crate) use crate::proto::endpoint::{
 
 pub use crate::proto::crypto::{ExportKeyingMaterialError, NegotiatedTlsParameters};
 
-mod packet;
+pub(crate) mod packet;
 pub use packet::SpaceId;
 
 mod shared;
@@ -130,7 +132,7 @@ pub use crate::proto::transport_error::{Code as TransportErrorCode, Error as Tra
 
 pub(crate) mod congestion;
 
-mod cid_generator;
+pub(crate) mod cid_generator;
 pub use crate::proto::cid_generator::{
     ConnectionIdGenerator, ConnectionIdGeneratorFactory, HashedConnectionIdGenerator, InvalidCid,
     RandomConnectionIdGenerator,
@@ -149,7 +151,7 @@ use token::ResetToken;
     )
 ))]
 pub(crate) use token::ResetToken as TestResetToken;
-pub use token::{NoneTokenLog, NoneTokenStore, TokenLog, TokenReuseError, TokenStore};
+pub use token::{NoneTokenLog, NoneTokenStore, StoredToken, TokenLog, TokenReuseError, TokenStore};
 
 mod token_memory_cache;
 pub use token_memory_cache::TokenMemoryCache;
@@ -235,21 +237,21 @@ pub(crate) mod fuzzing {
     }
 }
 
-/// The QUIC protocol versions advertised and accepted by default: QUIC v1 only.
+/// The QUIC protocol versions accepted by default: version 1 and version 2.
 ///
 /// Draft versions remain decodable for explicit test fixtures but are not offered as
 /// product support.
-pub const DEFAULT_SUPPORTED_VERSIONS: &[u32] = &[0x0000_0001];
+pub const DEFAULT_SUPPORTED_VERSIONS: &[Version] = &[Version::V1, Version::V2];
 
 /// Pre-standard draft versions 29 through 34, kept only for explicit tests.
 #[cfg(test)]
-pub(crate) const DRAFT_VERSIONS: &[u32] = &[
-    0xff00_001d,
-    0xff00_001e,
-    0xff00_001f,
-    0xff00_0020,
-    0xff00_0021,
-    0xff00_0022,
+pub(crate) const DRAFT_VERSIONS: &[Version] = &[
+    Version::from_u32(0xff00_001d),
+    Version::from_u32(0xff00_001e),
+    Version::from_u32(0xff00_001f),
+    Version::from_u32(0xff00_0020),
+    Version::from_u32(0xff00_0021),
+    Version::from_u32(0xff00_0022),
 ];
 
 /// Whether an endpoint was the initiator of a connection
@@ -422,8 +424,8 @@ const RESET_TOKEN_SIZE: usize = 16;
 pub const MAX_CID_SIZE: usize = 20;
 pub(crate) const MIN_INITIAL_SIZE: u16 = 1200;
 /// <https://www.rfc-editor.org/rfc/rfc9000.html#name-datagram-size>
-const INITIAL_MTU: u16 = 1200;
+pub(crate) const INITIAL_MTU: u16 = 1200;
 const MAX_UDP_PAYLOAD: u16 = 65527;
 const TIMER_GRANULARITY: Duration = Duration::from_millis(1);
 /// Maximum number of streams that can be uniquely identified by a stream ID
-const MAX_STREAM_COUNT: u64 = 1 << 60;
+pub(crate) const MAX_STREAM_COUNT: u64 = 1 << 60;

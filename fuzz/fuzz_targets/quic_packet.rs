@@ -3,8 +3,8 @@
 
 use libfuzzer_sys::fuzz_target;
 use rama_quic::{
-    DEFAULT_SUPPORTED_VERSIONS,
     fuzzing::{FixedLengthConnectionIdParser, PacketParams, PartialDecode},
+    version::DEFAULT_SUPPORTED_VERSIONS,
 };
 
 fuzz_target!(|data: PacketParams| {

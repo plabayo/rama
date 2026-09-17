@@ -1,6 +1,6 @@
 use super::*;
 use crate::proto::{
-    ConnectionId, Side, TransportErrorCode,
+    ConnectionId, Side, TransportErrorCode, Version,
     crypto::{ExportKeyingMaterialError, HeaderKey, PacketKey, Session},
     tests::Pair,
 };
@@ -10,7 +10,7 @@ struct FailedKeyUpdate {
 }
 
 impl Session for FailedKeyUpdate {
-    fn initial_keys(&self, _: &ConnectionId, _: Side) -> Result<Keys, TransportError> {
+    fn initial_keys(&self, _: Version, _: &ConnectionId, _: Side) -> Result<Keys, TransportError> {
         Err(TransportError::INTERNAL_ERROR(
             "injected Initial key derivation failure",
         ))

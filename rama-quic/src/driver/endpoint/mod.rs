@@ -437,6 +437,8 @@ impl Endpoint {
             })
             .ok_or(ConnectError::EndpointStopping)?;
         let now = now();
+        // A first attempt may be restarted once in another version (RFC 9368 §2.1).
+        let restart = config.negotiation_offer.is_none().then(|| config.clone());
         let (ch, conn) = match endpoint.inner.connect(now, config, addr, server_name) {
             Ok(registered) => registered,
             Err(error) => {
@@ -464,7 +466,10 @@ impl Endpoint {
         let slot = self.inner.shared.lifecycle.reserve();
         drop(endpoint);
         driver.spawn(slot);
-        Ok(connecting)
+        Ok(match restart {
+            Some(config) => connecting.with_restart(self.clone(), config, addr, server_name),
+            None => connecting,
+        })
     }
 
     /// Bind a new socket through Rama's shared UDP construction and switch to it.

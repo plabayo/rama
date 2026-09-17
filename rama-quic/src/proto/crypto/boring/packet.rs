@@ -6,9 +6,10 @@ use rama_crypto::dep::boring::{aead, aes::AesEncryptKey, chacha, hash::MessageDi
 use zeroize::Zeroizing;
 
 use crate::proto::{
-    Side,
+    Side, Version,
     crypto::{self, CryptoError, DirectionalKeys, Keys},
     shared::ConnectionId,
+    version::{Labels, Wire},
 };
 
 #[derive(Clone, Copy)]
@@ -47,10 +48,16 @@ impl Suite {
 pub(super) struct Secret {
     suite: Suite,
     bytes: Zeroizing<Vec<u8>>,
+    /// The version's HKDF labels: `quic *` for v1, `quicv2 *` for v2 (RFC 9369 §3.3.2).
+    labels: &'static Labels,
 }
 
 impl Secret {
-    pub(super) fn new(suite: Suite, bytes: &[u8]) -> Result<Self, BoxError> {
+    pub(super) fn new(
+        suite: Suite,
+        bytes: &[u8],
+        labels: &'static Labels,
+    ) -> Result<Self, BoxError> {
         if bytes.len() != suite.digest().size() {
             return Err(BoxError::from_static_str(
                 "invalid QUIC traffic secret length",
@@ -59,6 +66,7 @@ impl Secret {
         Ok(Self {
             suite,
             bytes: Zeroizing::new(bytes.to_vec()),
+            labels,
         })
     }
 
@@ -70,18 +78,19 @@ impl Secret {
 
     pub(super) fn updated(&self) -> Result<Self, BoxError> {
         let mut bytes = Zeroizing::new(vec![0; self.bytes.len()]);
-        self.expand(b"quic ku", &mut bytes)?;
+        self.expand(self.labels.ku, &mut bytes)?;
         Ok(Self {
             suite: self.suite,
             bytes,
+            labels: self.labels,
         })
     }
 
     pub(super) fn packet_key(&self) -> Result<PacketKey, BoxError> {
         let mut key = Zeroizing::new(vec![0; self.suite.aead().key_len()]);
         let mut iv = Zeroizing::new([0; 12]);
-        self.expand(b"quic key", &mut key)?;
-        self.expand(b"quic iv", &mut *iv)?;
+        self.expand(self.labels.key, &mut key)?;
+        self.expand(self.labels.iv, &mut *iv)?;
         Ok(PacketKey {
             suite: self.suite,
             key: aead::AeadKey::new(self.suite.aead(), &key)?,
@@ -92,7 +101,7 @@ impl Secret {
     pub(super) fn directional_keys(&self) -> Result<DirectionalKeys, BoxError> {
         let mut key = Zeroizing::new([0; 32]);
         let len = self.suite.aead().key_len();
-        self.expand(b"quic hp", &mut key[..len])?;
+        self.expand(self.labels.hp, &mut key[..len])?;
         let header = match self.suite {
             Suite::ChaCha20Poly1305 => HeaderKey::ChaCha(key),
             _ => HeaderKey::Aes(AesEncryptKey::new(&key[..len]).map_err(|_error| {
@@ -106,20 +115,25 @@ impl Secret {
     }
 }
 
-pub(super) fn initial_keys(cid: &ConnectionId, side: Side) -> Result<Keys, BoxError> {
-    const SALT: [u8; 20] = [
-        0x38, 0x76, 0x2c, 0xf7, 0xf5, 0x59, 0x34, 0xb3, 0x4d, 0x17, 0x9a, 0xe6, 0xa4, 0xc8, 0x0c,
-        0xad, 0xcc, 0xbb, 0x7f, 0x0a,
-    ];
+pub(super) fn initial_keys(
+    wire: &'static Wire,
+    cid: &ConnectionId,
+    side: Side,
+) -> Result<Keys, BoxError> {
     let mut extracted = Zeroizing::new([0; 32]);
-    hkdf::extract(MessageDigest::sha256(), &SALT, cid, &mut *extracted)?;
-    let secret = Secret::new(Suite::Aes128Gcm, &*extracted)?;
+    hkdf::extract(
+        MessageDigest::sha256(),
+        &wire.initial_salt,
+        cid,
+        &mut *extracted,
+    )?;
+    let secret = Secret::new(Suite::Aes128Gcm, &*extracted, &wire.labels)?;
     let mut client = Zeroizing::new([0; 32]);
     let mut server = Zeroizing::new([0; 32]);
     secret.expand(b"client in", &mut *client)?;
     secret.expand(b"server in", &mut *server)?;
-    let client = Secret::new(Suite::Aes128Gcm, &*client)?.directional_keys()?;
-    let server = Secret::new(Suite::Aes128Gcm, &*server)?.directional_keys()?;
+    let client = Secret::new(Suite::Aes128Gcm, &*client, &wire.labels)?.directional_keys()?;
+    let server = Secret::new(Suite::Aes128Gcm, &*server, &wire.labels)?.directional_keys()?;
     let (local, remote) = if side.is_client() {
         (client, server)
     } else {
@@ -131,21 +145,27 @@ pub(super) fn initial_keys(cid: &ConnectionId, side: Side) -> Result<Keys, BoxEr
     })
 }
 
-pub(super) fn retry_tag(cid: &ConnectionId, packet: &[u8]) -> Result<[u8; 16], BoxError> {
-    const KEY: [u8; 16] = [
-        0xbe, 0x0c, 0x69, 0x0b, 0x9f, 0x66, 0x57, 0x5a, 0x1d, 0x76, 0x6b, 0x54, 0xe3, 0x68, 0xc8,
-        0x4e,
-    ];
-    const NONCE: [u8; 12] = [
-        0x46, 0x15, 0x99, 0xd3, 0x5d, 0x63, 0x2b, 0xf2, 0x23, 0x98, 0x25, 0xbb,
-    ];
+pub(super) fn retry_tag(
+    wire: &Wire,
+    cid: &ConnectionId,
+    packet: &[u8],
+) -> Result<[u8; 16], BoxError> {
     let mut aad = Vec::with_capacity(1 + cid.len() + packet.len());
     aad.push(cid.len() as u8);
     aad.extend_from_slice(cid);
     aad.extend_from_slice(packet);
     let mut tag = [0; 16];
-    aead::AeadKey::new(aead::Algorithm::Aes128Gcm, &KEY)?.seal_in_place(&NONCE, &aad, &mut tag)?;
+    aead::AeadKey::new(aead::Algorithm::Aes128Gcm, &wire.retry_key)?.seal_in_place(
+        &wire.retry_nonce,
+        &aad,
+        &mut tag,
+    )?;
     Ok(tag)
+}
+
+/// The wire constants of a version this provider implements.
+pub(super) fn wire(version: Version) -> Option<&'static Wire> {
+    version.wire()
 }
 
 pub(super) struct PacketKey {
@@ -269,6 +289,7 @@ impl crypto::HeaderKey for HeaderKey {
 mod tests {
     use super::*;
     use crate::proto::crypto::{HeaderKey as _, PacketKey as _};
+    use crate::proto::version::V1_WIRE;
 
     /// HMAC (RFC 2104) over one of the TLS 1.3 hashes. Written out here rather than taken
     /// from the crypto backend, so the expectations below come from an implementation
@@ -334,7 +355,7 @@ mod tests {
             assert_eq!(suite.aead().key_len(), key_len);
 
             let bytes = vec![0x0b; hash_len];
-            let secret = Secret::new(suite, &bytes).unwrap();
+            let secret = Secret::new(suite, &bytes, &V1_WIRE.labels).unwrap();
 
             let mut updated = vec![0; hash_len];
             expand_label(hash_len, &bytes, b"quic ku", &mut updated);
@@ -400,7 +421,7 @@ mod tests {
     #[test]
     fn rfc9001_server_initial() {
         let cid = ConnectionId::new(&hex("8394c8f03e515708"));
-        let keys = initial_keys(&cid, Side::Server).unwrap();
+        let keys = initial_keys(&V1_WIRE, &cid, Side::Server).unwrap();
         let header = hex("c1000000010008f067a5502a4262b50040750001");
         let payload = hex(
             "02000000000600405a020000560303ee fce7f7b37ba1d1632e96677825ddf739
@@ -424,7 +445,10 @@ mod tests {
             022f8ef4cdd93795d77d06edbb7aaf2f 58891850abbdca3d20398c276456cbc4 2158407dd074ee"
             )
         );
-        let read = initial_keys(&cid, Side::Client).unwrap().remote.unwrap();
+        let read = initial_keys(&V1_WIRE, &cid, Side::Client)
+            .unwrap()
+            .remote
+            .unwrap();
         read.header.decrypt(header.len() - 2, &mut packet);
         assert_eq!(&packet[..header.len()], header);
         let mut decrypted = BytesMut::from(&packet[header.len()..]);
@@ -437,9 +461,36 @@ mod tests {
         let cid = ConnectionId::new(&hex("8394c8f03e515708"));
         let packet = hex("ff000000010008f067a5502a4262b5746f6b656e");
         assert_eq!(
-            retry_tag(&cid, &packet).unwrap().as_slice(),
+            retry_tag(&V1_WIRE, &cid, &packet).unwrap().as_slice(),
             hex("04a265ba2eff4d829058fb3f0f2496ba")
         );
+    }
+
+    /// RFC 9369 Appendix A.5: the same ChaCha20 secret as RFC 9001, expanded with the
+    /// `quicv2` labels.
+    #[test]
+    fn rfc9369_chacha_short_header_and_key_update() {
+        use crate::proto::version::V2_WIRE;
+        let secret = Secret::new(
+            Suite::ChaCha20Poly1305,
+            &hex("9ac312a7f877468ebe69422748ad00a15443f18203a07d6060f688f30f21632b"),
+            &V2_WIRE.labels,
+        )
+        .unwrap();
+        assert_eq!(
+            *secret.updated().unwrap().bytes,
+            hex("c69374c49e3d2a9466fa689e49d476db5d0dfbc87d32ceeaa6343fd0ae4c7d88")
+        );
+        assert_eq!(
+            *secret.packet_key().unwrap().iv,
+            hex("a6b5bc6ab7dafce30ffff5dd")[..]
+        );
+        let keys = secret.directional_keys().unwrap();
+        let mut packet = hex("4200bff401");
+        packet.resize(21, 0);
+        keys.packet.encrypt(654360564, &mut packet, 4).unwrap();
+        keys.header.encrypt(1, &mut packet);
+        assert_eq!(packet, hex("5558b1c60ae7b6b932bc27d786f4bc2bb20f2162ba"));
     }
 
     #[test]
@@ -447,6 +498,7 @@ mod tests {
         let secret = Secret::new(
             Suite::ChaCha20Poly1305,
             &hex("9ac312a7f877468ebe69422748ad00a15443f18203a07d6060f688f30f21632b"),
+            &V1_WIRE.labels,
         )
         .unwrap();
         assert_eq!(
@@ -479,7 +531,8 @@ mod tests {
             (Suite::Aes256Gcm, 1 << 23, 1 << 52),
             (Suite::ChaCha20Poly1305, 1 << 62, 1 << 36),
         ] {
-            let secret = Secret::new(suite, &vec![7; suite.digest().size()]).unwrap();
+            let secret =
+                Secret::new(suite, &vec![7; suite.digest().size()], &V1_WIRE.labels).unwrap();
             for key in [
                 secret.packet_key().unwrap(),
                 secret.updated().unwrap().packet_key().unwrap(),
@@ -488,8 +541,12 @@ mod tests {
                 assert_eq!(key.integrity_limit(), integrity);
             }
         }
-        let keys =
-            initial_keys(&ConnectionId::new(&[1, 2, 3, 4, 5, 6, 7, 8]), Side::Client).unwrap();
+        let keys = initial_keys(
+            &V1_WIRE,
+            &ConnectionId::new(&[1, 2, 3, 4, 5, 6, 7, 8]),
+            Side::Client,
+        )
+        .unwrap();
         for key in [&keys.local.packet, &keys.remote.unwrap().packet] {
             assert_eq!(key.confidentiality_limit(), 1 << 23);
             assert_eq!(key.integrity_limit(), 1 << 52);
@@ -499,7 +556,8 @@ mod tests {
     #[test]
     fn all_suites_authenticate_header_number_and_payload() {
         for suite in [Suite::Aes128Gcm, Suite::Aes256Gcm, Suite::ChaCha20Poly1305] {
-            let secret = Secret::new(suite, &vec![7; suite.digest().size()]).unwrap();
+            let secret =
+                Secret::new(suite, &vec![7; suite.digest().size()], &V1_WIRE.labels).unwrap();
             let key = secret.packet_key().unwrap();
             let mut packet = vec![0; 24];
             packet[..8].copy_from_slice(b"headbody");
@@ -541,10 +599,10 @@ mod tests {
         for id in [0x1301u16, 0x1302, 0x1303] {
             let suite = Suite::from_id(id).unwrap();
             let len = suite.digest().size();
-            Secret::new(suite, &vec![3; len]).unwrap();
+            Secret::new(suite, &vec![3; len], &V1_WIRE.labels).unwrap();
             for wrong in [0, len - 1, len + 1, 2 * len] {
                 assert!(
-                    Secret::new(suite, &vec![3; wrong]).is_err(),
+                    Secret::new(suite, &vec![3; wrong], &V1_WIRE.labels).is_err(),
                     "{id:#06x} accepted a {wrong}-byte secret"
                 );
             }

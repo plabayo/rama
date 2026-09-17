@@ -24,6 +24,7 @@ use send::{BytesSource, Send, SendState};
 pub(crate) use send::{FinishError, WriteError};
 
 mod state;
+pub(crate) use state::StreamReceiveWindows;
 #[cfg_attr(
     not(fuzzing),
     expect(
@@ -197,11 +198,12 @@ impl RecvStream<'_> {
     /// Discards unread data and notifies the peer to stop transmitting. Once stopped, further
     /// attempts to operate on a stream will yield `ClosedStream` errors.
     pub(crate) fn stop(&mut self, error_code: VarInt) -> Result<(), ClosedStream> {
+        let window = self.state.receive_window_for(self.id);
         let mut entry = match self.state.recv.entry(self.id) {
             hash_map::Entry::Occupied(s) => s,
             hash_map::Entry::Vacant(_) => return Err(ClosedStream::new()),
         };
-        let stream = get_or_insert_recv(self.state.stream_receive_window)(entry.get_mut());
+        let stream = get_or_insert_recv(window)(entry.get_mut());
 
         let (read_credits, stop_sending) = stream.stop()?;
         if stop_sending.should_transmit() {

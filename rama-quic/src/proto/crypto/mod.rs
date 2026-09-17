@@ -14,7 +14,7 @@ use rama_crypto::pki_types::CertificateDer;
 pub use rama_tls::client::NegotiatedTlsParameters;
 
 use crate::proto::{
-    ConnectError, Side, TransportError, packet::SpaceId, shared::ConnectionId,
+    ConnectError, Side, TransportError, Version, packet::SpaceId, shared::ConnectionId,
     transport_parameters::TransportParameters,
 };
 
@@ -32,8 +32,35 @@ pub(crate) mod rustls;
 
 /// A cryptographic session (commonly TLS)
 pub trait Session: Send + Sync + 'static {
-    /// Create the initial set of keys given the client's initial destination ConnectionId
-    fn initial_keys(&self, dst_cid: &ConnectionId, side: Side) -> Result<Keys, TransportError>;
+    /// Create the initial set of keys for `version` given the client's initial destination
+    /// ConnectionId.
+    ///
+    /// `version` is the version of the connection, or the version compatible version
+    /// negotiation (RFC 9368) is moving it to; the salt and labels follow it (RFC 9369 §3.3).
+    fn initial_keys(
+        &self,
+        version: Version,
+        dst_cid: &ConnectionId,
+        side: Side,
+    ) -> Result<Keys, TransportError>;
+
+    /// Whether [`Self::switch_version`] can succeed on this session.
+    ///
+    /// A provider that derives its own packet keys from TLS secrets can re-label them for a
+    /// compatible version; one that receives finished keys cannot. Defaults to `false`.
+    fn supports_version_switch(&self) -> bool {
+        false
+    }
+
+    /// Move the session to a compatible `version` before any Handshake or 1-RTT key is
+    /// derived (RFC 9368 §2.3, RFC 9369 §4.1).
+    ///
+    /// Called at most once, before the handshake keys are drained. Providers that cannot
+    /// switch return [`UnsupportedVersion`]; the transport then never asks them to.
+    fn switch_version(&mut self, version: Version) -> Result<(), UnsupportedVersion> {
+        let _ = version;
+        Err(UnsupportedVersion)
+    }
 
     /// What the handshake has settled, when the session has it. `None` until the connection
     /// emits `HandshakeDataReady`.
@@ -145,23 +172,44 @@ pub trait ClientConfig: Send + Sync {
     /// Start a client session with this configuration
     fn start_session(
         self: Arc<Self>,
-        version: u32,
+        version: Version,
         server_name: &str,
         params: &TransportParameters,
     ) -> Result<Box<dyn Session>, ConnectError>;
+
+    /// Whether sessions from this configuration can switch to a compatible version during
+    /// the handshake. Decides at configuration time whether a version policy that needs a
+    /// switch is usable; defaults to `false`.
+    fn supports_version_switch(&self) -> bool {
+        false
+    }
+
+    /// The version of the newest session ticket held for `server_name`, if the provider can
+    /// tell without consuming it.
+    ///
+    /// A ticket resumes only a connection in the version that issued it (RFC 9369 §5), so a
+    /// client that wants to resume starts in that version. Defaults to `None`.
+    fn resumable_version(&self, server_name: &str) -> Option<Version> {
+        let _ = server_name;
+        None
+    }
 }
 
 /// Server-side configuration for the crypto protocol
 pub trait ServerConfig: Send + Sync {
     /// Create the initial set of keys given the client's initial destination ConnectionId
-    fn initial_keys(&self, version: u32, dst_cid: &ConnectionId) -> Result<Keys, InitialKeysError>;
+    fn initial_keys(
+        &self,
+        version: Version,
+        dst_cid: &ConnectionId,
+    ) -> Result<Keys, InitialKeysError>;
 
     /// Generate the integrity tag for a retry packet
     ///
     /// Never called if `initial_keys` rejected `version`.
     fn retry_tag(
         &self,
-        version: u32,
+        version: Version,
         orig_dst_cid: &ConnectionId,
         packet: &[u8],
     ) -> Result<[u8; 16], CryptoError>;
@@ -171,9 +219,39 @@ pub trait ServerConfig: Send + Sync {
     /// Never called if `initial_keys` rejected `version`.
     fn start_session(
         self: Arc<Self>,
-        version: u32,
+        version: Version,
         params: &TransportParameters,
     ) -> Result<Box<dyn Session>, TransportError>;
+
+    /// Whether [`Self::start_negotiated_session`] is implemented.
+    fn supports_compatible_negotiation(&self) -> bool {
+        false
+    }
+
+    /// Start a server session for a connection the server moves from the client's `original`
+    /// version to the compatible `negotiated` version (RFC 9368 §2.3).
+    ///
+    /// Handshake and 1-RTT keys follow `negotiated`; 0-RTT keys, if the session accepts early
+    /// data at all, follow `original`, which is the only version the client sends 0-RTT in
+    /// (RFC 9369 §4.1). Never called with equal versions, nor when
+    /// [`Self::supports_compatible_negotiation`] is `false`.
+    fn start_negotiated_session(
+        self: Arc<Self>,
+        original: Version,
+        negotiated: Version,
+        params: &TransportParameters,
+    ) -> Result<Box<dyn Session>, TransportError> {
+        let _ = (original, negotiated, params);
+        Err(TransportError::INTERNAL_ERROR(
+            "TLS provider cannot move a connection to another version",
+        ))
+    }
+
+    /// Whether sessions from this configuration can switch to a compatible version during
+    /// the handshake; see [`ClientConfig::supports_version_switch`].
+    fn supports_version_switch(&self) -> bool {
+        false
+    }
 }
 
 /// Keys used to protect packet payloads

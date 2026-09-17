@@ -830,7 +830,10 @@ mod tests {
                     [0, 0, 0, 1],
                     [0xff; 4],
                 ]))),
-                client_versions: Some(VersionListView::Host(Cow::Owned(vec![1, 0x6b3343cf]))),
+                client_versions: Some(VersionListView::Host(Cow::Owned(vec![
+                    crate::proto::Version::V1,
+                    crate::proto::Version::V2,
+                ]))),
                 chosen_version: Some(Version([0, 0, 0, 1])),
             })
             .into(),

@@ -39,10 +39,23 @@ The reasons behind the creation of rama can be read in [the "Why Rama" chapter](
 
 ## rama-quic
 
-QUIC v1 (RFC 9000) transport for Rama: client, server and combined endpoints,
-streams, DATAGRAM, resumption and 0-RTT, migration, loss recovery, congestion
-control and path MTU discovery, on top of `rama-udp` sockets and the common
-`rama-tls` configuration (TLS 1.3 through BoringSSL or Rustls).
+QUIC transport for Rama, version 1 (RFC 9000) and version 2 (RFC 9369): client,
+server and combined endpoints, streams, DATAGRAM, resumption and 0-RTT, migration,
+loss recovery, congestion control and path MTU discovery, on top of `rama-udp`
+sockets and the common `rama-tls` configuration (TLS 1.3 through BoringSSL or
+Rustls).
+
+Both versions are on by default and negotiated per RFC 9368 with downgrade protection:
+a client starts in v1 and, on BoringSSL, offers v2 as a compatible version the server
+may switch to mid-handshake; otherwise the server replies with Version Negotiation and
+the client restarts in a shared version. `version::ClientVersionPolicy` and
+`version::ServerVersionPolicy` control the offer — Rustls clients cannot switch
+mid-handshake, so they offer only their first flight's version. Tickets and address
+tokens are scoped to their issuing version, and the QUIC bit is greased per RFC 9287.
+
+The `profile` module describes the wire image a client presents — version offer,
+transport parameter order, connection ID lengths, datagram size, packet-number and frame
+layout — as a typed, invariant-checked `QuicProfile`.
 
 Choose `boring` for BoringSSL alone, `rustls,ring` for Rustls with ring, or
 `rustls,aws-lc` for Rustls with AWS-LC. The `boring` feature does not require
