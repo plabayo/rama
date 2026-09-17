@@ -44,7 +44,7 @@ use crate::proto::{
         EndpointEvent, EndpointEventInner, IssuedCid,
     },
     token::{IncomingToken, Token, TokenPayload, reset_token},
-    transport_parameters::{PreferredAddress, TransportParameters},
+    transport_parameters::{self, PreferredAddress, TransportParameters},
 };
 
 /// The main entry point to the library
@@ -496,7 +496,7 @@ impl Endpoint {
 
         let ch = ConnectionHandle(self.connections.vacant_key());
         let loc_cid = self.new_cid(ch);
-        let mut params = TransportParameters::new(
+        let mut params = transport_parameters::new(
             &config.transport,
             &self.config,
             self.local_cid_generator.as_ref(),
@@ -844,7 +844,7 @@ impl Endpoint {
 
         let ch = ConnectionHandle(self.connections.vacant_key());
         let loc_cid = self.new_cid(ch);
-        let mut params = TransportParameters::new(
+        let mut params = transport_parameters::new(
             &server_config.transport,
             &self.config,
             self.local_cid_generator.as_ref(),

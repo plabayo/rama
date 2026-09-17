@@ -17,6 +17,7 @@ use crate::proto::{
     frame::{self, NewToken},
     packet::{Packet, SpaceId},
     shared::EndpointEventInner,
+    transport_parameters,
 };
 
 impl Connection {
@@ -298,9 +299,10 @@ impl Connection {
                     self.streams.received_stop_sending(id, error_code);
                 }
                 Frame::RetireConnectionId { sequence } => {
-                    let allow_more_cids = self
-                        .local_cid_state
-                        .on_cid_retirement(sequence, self.peer_params.issue_cids_limit())?;
+                    let allow_more_cids = self.local_cid_state.on_cid_retirement(
+                        sequence,
+                        transport_parameters::issue_cids_limit(&self.peer_params),
+                    )?;
                     self.endpoint_events
                         .push_back(EndpointEventInner::RetireConnectionId(
                             now,

@@ -12,6 +12,7 @@ use crate::proto::{
     frame::Close,
     packet::SpaceId,
     shared::{ConnectionId, EndpointEventInner, ResetToken},
+    transport_parameters,
 };
 
 #[cfg(test)]
@@ -261,7 +262,7 @@ impl Connection {
         }
 
         // Subtract 1 to account for the CID we supplied while handshaking
-        let mut n = self.peer_params.issue_cids_limit() - 1;
+        let mut n = transport_parameters::issue_cids_limit(&self.peer_params) - 1;
         if let ConnectionSide::Server { server_config } = &self.side
             && server_config.has_preferred_address()
         {

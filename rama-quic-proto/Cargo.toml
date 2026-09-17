@@ -26,6 +26,7 @@ arbitrary = ["dep:arbitrary"]
 [dependencies]
 rama-core = { workspace = true }
 rama-utils = { workspace = true }
+rand = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 arbitrary = { workspace = true, optional = true }
 

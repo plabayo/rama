@@ -167,8 +167,8 @@ pub(crate) mod fuzzing {
     pub use crate::proto::packet::{
         ConnectionIdParser, FixedLengthConnectionIdParser, PartialDecode,
     };
-    pub use crate::proto::transport_parameters::TransportParameters;
     pub use rama_core::bytes::{BufMut, Bytes, BytesMut};
+    pub use rama_quic_proto::transport_parameters::TransportParameters;
 
     use crate::proto::{
         TransportError,

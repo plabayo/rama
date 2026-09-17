@@ -98,7 +98,7 @@ pub mod tls {
             HandshakeEvent, HandshakeTokenKey, HeaderKey, InitialKeysError, KeyPair, Keys,
             PacketKey, ServerConfig, Session, UnsupportedVersion,
         };
-        pub use crate::proto::transport_parameters::{
+        pub use rama_quic_proto::transport_parameters::{
             Error as TransportParametersError, TransportParameters,
         };
     }

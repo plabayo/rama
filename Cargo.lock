@@ -4796,6 +4796,7 @@ dependencies = [
  "arbitrary",
  "rama-core",
  "rama-utils",
+ "rand 0.10.2",
  "serde",
 ]
 

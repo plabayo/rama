@@ -61,4 +61,6 @@ pub mod crypto;
 #[cfg(feature = "std")]
 pub mod packet;
 
+pub mod transport_parameters;
+
 pub mod profile;
