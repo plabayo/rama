@@ -4,6 +4,8 @@
 ///
 /// `@U8` and `@U16` enums order variants primarily by numeric protocol value.
 /// Distinct variants sharing a value use a deterministic variant tie-break.
+/// They also expose `variant_name`, the bare mnemonic that `Display` and
+/// `Debug` decorate, for use as a stable label.
 macro_rules! __enum_builder {
     (
         $(#[$m:meta])*
@@ -36,15 +38,37 @@ macro_rules! __enum_builder {
                     ::std::cmp::Ordering::Equal if self != other => match (self, other) {
                         (Self::Unknown(_), _) => ::std::cmp::Ordering::Greater,
                         (_, Self::Unknown(_)) => ::std::cmp::Ordering::Less,
-                        _ => {
-                            let variant_name = |value: &Self| match value {
-                                $(Self::$enum_var => stringify!($enum_var),)*
-                                Self::Unknown(_) => "",
-                            };
-                            variant_name(self).cmp(&variant_name(other))
-                        }
+                        _ => self.known_variant_name().cmp(&other.known_variant_name()),
                     },
                     ordering => ordering,
+                }
+            }
+        }
+
+        impl $enum_name {
+            /// Return this value's variant name, or its decimal number when the
+            /// value is unknown.
+            ///
+            /// Known values borrow their `'static` mnemonic, and
+            /// [`Self::Unknown`] values render their numeric value. Unlike
+            /// `Display` and `Debug` the result is a bare, stable label,
+            /// suitable for log fields, metrics, and telemetry.
+            // NOTE(allow) generated irrespective if there are callers
+            #[allow(dead_code)]
+            #[must_use]
+            $enum_vis fn variant_name(&self) -> ::std::borrow::Cow<'static, str> {
+                match self {
+                    Self::Unknown(value) => ::std::borrow::Cow::Owned(value.to_string()),
+                    known => ::std::borrow::Cow::Borrowed(known.known_variant_name()),
+                }
+            }
+
+            /// Return a known value's variant name, and `""` for
+            /// [`Self::Unknown`], which every caller handles before this.
+            fn known_variant_name(&self) -> &'static str {
+                match self {
+                    $(Self::$enum_var => stringify!($enum_var),)*
+                    Self::Unknown(_) => "",
                 }
             }
         }
@@ -147,15 +171,37 @@ macro_rules! __enum_builder {
                     ::std::cmp::Ordering::Equal if self != other => match (self, other) {
                         (Self::Unknown(_), _) => ::std::cmp::Ordering::Greater,
                         (_, Self::Unknown(_)) => ::std::cmp::Ordering::Less,
-                        _ => {
-                            let variant_name = |value: &Self| match value {
-                                $(Self::$enum_var => stringify!($enum_var),)*
-                                Self::Unknown(_) => "",
-                            };
-                            variant_name(self).cmp(&variant_name(other))
-                        }
+                        _ => self.known_variant_name().cmp(&other.known_variant_name()),
                     },
                     ordering => ordering,
+                }
+            }
+        }
+
+        impl $enum_name {
+            /// Return this value's variant name, or its decimal number when the
+            /// value is unknown.
+            ///
+            /// Known values borrow their `'static` mnemonic, and
+            /// [`Self::Unknown`] values render their numeric value. Unlike
+            /// `Display` and `Debug` the result is a bare, stable label,
+            /// suitable for log fields, metrics, and telemetry.
+            // NOTE(allow) generated irrespective if there are callers
+            #[allow(dead_code)]
+            #[must_use]
+            $enum_vis fn variant_name(&self) -> ::std::borrow::Cow<'static, str> {
+                match self {
+                    Self::Unknown(value) => ::std::borrow::Cow::Owned(value.to_string()),
+                    known => ::std::borrow::Cow::Borrowed(known.known_variant_name()),
+                }
+            }
+
+            /// Return a known value's variant name, and `""` for
+            /// [`Self::Unknown`], which every caller handles before this.
+            fn known_variant_name(&self) -> &'static str {
+                match self {
+                    $(Self::$enum_var => stringify!($enum_var),)*
+                    Self::Unknown(_) => "",
                 }
             }
         }
@@ -523,7 +569,13 @@ pub use ::smol_str::SmolStr as __SmolStr;
 pub use crate::std::{Cow as __Cow, String as __String, Vec as __Vec};
 
 #[cfg(test)]
+// NOTE(expect) the generated helpers carry `#[allow(dead_code)]` for callers
+// that never use them. Expanding the macro inside its own crate is the one
+// place where that is not an external macro, so the lint sees it here.
+#[expect(clippy::allow_attributes)]
 mod tests {
+    use std::borrow::Cow;
+
     use super::enum_builder;
 
     enum_builder! {
@@ -559,5 +611,27 @@ mod tests {
             TestU16::One.cmp(&TestU16::Unknown(1)),
             core::cmp::Ordering::Equal
         );
+    }
+
+    #[test]
+    fn numeric_enum_variant_names_borrow_known_mnemonics_and_number_the_rest() {
+        assert_eq!(TestU8::One.variant_name(), Cow::Borrowed("One"));
+        assert_eq!(TestU8::Maximum.variant_name(), Cow::Borrowed("Maximum"));
+        assert!(matches!(TestU8::One.variant_name(), Cow::Borrowed(_)));
+
+        assert_eq!(TestU8::Unknown(0).variant_name(), "0");
+        assert_eq!(TestU8::Unknown(u8::MAX).variant_name(), "255");
+        assert!(matches!(TestU8::Unknown(1).variant_name(), Cow::Owned(_)));
+        // The number, not the variant sharing its value.
+        assert_ne!(
+            TestU8::Unknown(1).variant_name(),
+            TestU8::One.variant_name()
+        );
+
+        assert_eq!(TestU16::One.variant_name(), Cow::Borrowed("One"));
+        assert_eq!(TestU16::Maximum.variant_name(), Cow::Borrowed("Maximum"));
+        assert_eq!(TestU16::Unknown(0).variant_name(), "0");
+        assert_eq!(TestU16::Unknown(u16::MAX).variant_name(), "65535");
+        assert!(matches!(TestU16::Unknown(1).variant_name(), Cow::Owned(_)));
     }
 }

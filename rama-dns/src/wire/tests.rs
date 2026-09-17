@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     error::Error as _,
     hash::{Hash as _, Hasher},
     net::{Ipv4Addr, Ipv6Addr},
@@ -7,7 +8,7 @@ use std::{
 use rama_core::bytes::Bytes;
 use rama_net::{address::Domain, tls::ApplicationProtocol};
 
-use super::*;
+use super::{message::bounded_capacity, *};
 
 const FOO_EXAMPLE_COM: &[u8] = b"\x03foo\x07example\x03com\x00";
 
@@ -38,6 +39,56 @@ fn txt_strings(txt: &Txt) -> Vec<&[u8]> {
 fn owned_txt_strings(iter: impl ExactSizeIterator<Item = Bytes>) -> Vec<Bytes> {
     let limit = iter.len().saturating_add(1);
     iter.take(limit).collect()
+}
+
+const DNS_CLASS_IN: u16 = 1;
+const DNS_CLASS_CH: u16 = 3;
+
+fn dns_message(id: u16, flags: u16, counts: [u16; 4], sections: &[u8]) -> Vec<u8> {
+    let mut wire = Vec::with_capacity(MessageHeader::WIRE_LEN + sections.len());
+    wire.extend_from_slice(&id.to_be_bytes());
+    wire.extend_from_slice(&flags.to_be_bytes());
+    for count in counts {
+        wire.extend_from_slice(&count.to_be_bytes());
+    }
+    wire.extend_from_slice(sections);
+    wire
+}
+
+fn question_wire(name: &[u8], record_type: RecordType, class: u16) -> Vec<u8> {
+    let mut wire = name.to_vec();
+    wire.extend_from_slice(&u16::from(record_type).to_be_bytes());
+    wire.extend_from_slice(&class.to_be_bytes());
+    wire
+}
+
+fn record_wire(
+    name: &[u8],
+    record_type: RecordType,
+    class: u16,
+    ttl: u32,
+    rdata: &[u8],
+) -> Vec<u8> {
+    let mut wire = question_wire(name, record_type, class);
+    wire.extend_from_slice(&ttl.to_be_bytes());
+    wire.extend_from_slice(&(rdata.len() as u16).to_be_bytes());
+    wire.extend_from_slice(rdata);
+    wire
+}
+
+/// One answer section holding a single record with a root owner name.
+fn one_answer(record_type: RecordType, class: u16, rdata: &[u8]) -> Vec<u8> {
+    dns_message(
+        0,
+        0,
+        [0, 1, 0, 0],
+        &record_wire(b"\0", record_type, class, 0, rdata),
+    )
+}
+
+fn points_into(slice: &[u8], parent: &[u8]) -> bool {
+    let start = parent.as_ptr() as usize;
+    (start..start + parent.len()).contains(&(slice.as_ptr() as usize))
 }
 
 fn binding(priority: u16, target: &[u8], params: &[(u16, &[u8])]) -> Vec<u8> {
@@ -83,15 +134,31 @@ fn name_rejects_invalid_compression_without_looping() {
         assert!(error.to_string().contains(expected), "got: {error}");
     }
 
-    let mut pointer_chain = vec![0];
-    let mut previous = 0_u16;
-    for _ in 0..1_024 {
-        pointer_chain.extend_from_slice(&(0xc000 | previous).to_be_bytes());
-        previous = u16::try_from(pointer_chain.len() - 2).unwrap();
-    }
-    let (root, consumed) = Name::from_message(&pointer_chain, usize::from(previous)).unwrap();
+    // A chain of pointers that only ever refers to an earlier pointer still
+    // terminates, and is accepted up to a fixed budget so that a message full
+    // of such names cannot cost work quadratic in its size.
+    let pointer_chain = |depth: usize| {
+        let mut wire = vec![0];
+        let mut previous = 0_u16;
+        for _ in 0..depth {
+            wire.extend_from_slice(&(0xc000 | previous).to_be_bytes());
+            previous = u16::try_from(wire.len() - 2).unwrap();
+        }
+        (wire, usize::from(previous))
+    };
+
+    let (within_budget, top) = pointer_chain(128);
+    let (root, consumed) = Name::from_message(&within_budget, top).unwrap();
     assert!(root.is_root());
     assert_eq!(consumed, 2);
+
+    let (over_budget, top) = pointer_chain(129);
+    assert_eq!(
+        Name::from_message(&over_budget, top)
+            .unwrap_err()
+            .to_string(),
+        "DNS name follows too many compression pointers"
+    );
 
     // A pointer can be backwards from its own location while still cycling
     // back to labels already consumed in the same encoded name.
@@ -856,4 +923,748 @@ fn parse_errors_are_actionable_and_preserve_their_source() {
         "invalid service binding target name: compressed DNS name is not allowed in this field"
     );
     assert!(error.source().is_some());
+}
+
+#[test]
+fn message_parses_header_questions_and_compressed_typed_answers() {
+    let mut sections = question_wire(FOO_EXAMPLE_COM, RecordType::A, DNS_CLASS_IN);
+    // The CNAME target starts right after this record's compressed owner name
+    // and its fixed fields, and itself points at the question's `example.com`.
+    let cname_target_offset = MessageHeader::WIRE_LEN + sections.len() + 2 + 10;
+    sections.extend(record_wire(
+        b"\xc0\x0c",
+        RecordType::CNAME,
+        DNS_CLASS_IN,
+        300,
+        b"\x03cdn\xc0\x10",
+    ));
+    let alias_owner = (0xc000 | cname_target_offset as u16).to_be_bytes();
+    sections.extend(record_wire(
+        &alias_owner,
+        RecordType::A,
+        DNS_CLASS_IN,
+        60,
+        &[192, 0, 2, 1],
+    ));
+    sections.extend(record_wire(
+        &alias_owner,
+        RecordType::AAAA,
+        DNS_CLASS_IN,
+        60,
+        &[0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+    ));
+    let wire = dns_message(0x1234, 0x8580, [1, 3, 0, 0], &sections);
+
+    let message = Message::parse(&wire).unwrap();
+    assert!(message.is_complete());
+    let header = message.header();
+    assert_eq!(header.id(), 0x1234);
+    assert!(header.is_response());
+    assert_eq!(header.opcode(), 0);
+    assert!(header.is_authoritative());
+    assert!(!header.is_truncated());
+    assert!(header.is_recursion_desired());
+    assert!(header.is_recursion_available());
+    assert!(!header.is_authentic_data());
+    assert!(!header.is_checking_disabled());
+    assert_eq!(header.response_code(), ResponseCode::NoError);
+    assert_eq!(header.question_count(), 1);
+    assert_eq!(header.answer_count(), 3);
+
+    let queried = Name::from_wire(FOO_EXAMPLE_COM).unwrap();
+    let alias = Name::from_wire(b"\x03cdn\x07example\x03com\0").unwrap();
+    let [question] = message.questions() else {
+        panic!("one question: {:?}", message.questions());
+    };
+    assert_eq!(question.name(), &queried);
+    assert_eq!(question.record_type(), RecordType::A);
+    assert_eq!(question.class(), RecordClass::IN);
+
+    let [cname, a, aaaa] = message.answers() else {
+        panic!("three answers: {:?}", message.answers());
+    };
+    assert_eq!(cname.name(), &queried);
+    assert_eq!(cname.record_type(), RecordType::CNAME);
+    assert_eq!(cname.class(), RecordClass::IN);
+    assert_eq!(cname.ttl(), 300);
+    assert_eq!(cname.data(), &RecordData::Cname(alias.clone()));
+
+    assert_eq!(a.name(), &alias);
+    assert_eq!(a.record_type(), RecordType::A);
+    assert_eq!(a.ttl(), 60);
+    assert_eq!(a.data(), &RecordData::A(Ipv4Addr::new(192, 0, 2, 1)));
+
+    assert_eq!(aaaa.name(), &alias);
+    assert_eq!(aaaa.record_type(), RecordType::AAAA);
+    assert_eq!(
+        aaaa.data(),
+        &RecordData::Aaaa("2001:db8::1".parse::<Ipv6Addr>().unwrap())
+    );
+}
+
+#[test]
+fn message_header_reads_each_flag_bit_opcode_rcode_and_count_separately() {
+    let bits: [(u16, fn(&MessageHeader) -> bool); 7] = [
+        (0x8000, MessageHeader::is_response),
+        (0x0400, MessageHeader::is_authoritative),
+        (0x0200, MessageHeader::is_truncated),
+        (0x0100, MessageHeader::is_recursion_desired),
+        (0x0080, MessageHeader::is_recursion_available),
+        (0x0020, MessageHeader::is_authentic_data),
+        (0x0010, MessageHeader::is_checking_disabled),
+    ];
+    for (index, &(mask, _)) in bits.iter().enumerate() {
+        let header = MessageHeader::parse(&dns_message(0, mask, [0; 4], &[])).unwrap();
+        assert_eq!(header.flags(), mask);
+        for (other, &(other_mask, accessor)) in bits.iter().enumerate() {
+            assert_eq!(
+                accessor(&header),
+                index == other,
+                "{mask:#06x}/{other_mask:#06x}"
+            );
+        }
+        // No flag bit leaks into the OPCODE or RCODE fields.
+        assert_eq!(header.opcode(), 0);
+        assert_eq!(header.response_code(), ResponseCode::NoError);
+    }
+
+    for opcode in 0..16_u8 {
+        let flags = u16::from(opcode) << 11;
+        let header = MessageHeader::parse(&dns_message(0, flags, [0; 4], &[])).unwrap();
+        assert_eq!(header.opcode(), opcode);
+        assert_eq!(header.response_code(), ResponseCode::NoError);
+        assert!(!header.is_response());
+    }
+
+    for rcode in 0..16_u8 {
+        let header = MessageHeader::parse(&dns_message(0, u16::from(rcode), [0; 4], &[])).unwrap();
+        assert_eq!(header.response_code(), ResponseCode::from(rcode));
+        assert_eq!(header.opcode(), 0);
+    }
+
+    let header = MessageHeader::parse(&dns_message(0xbeef, 0xffff, [9, 2, 3, 4], &[])).unwrap();
+    assert_eq!(header.id(), 0xbeef);
+    assert_eq!(header.opcode(), 0xf);
+    assert_eq!(header.response_code(), ResponseCode::Unknown(15));
+    assert!(bits.iter().all(|&(_, accessor)| accessor(&header)));
+    assert_eq!(header.question_count(), 9);
+    assert_eq!(header.answer_count(), 2);
+    assert_eq!(header.authority_count(), 3);
+    assert_eq!(header.additional_count(), 4);
+
+    // A header is parseable on its own, without any section octets.
+    let empty = Message::parse(&dns_message(7, 0, [0; 4], &[])).unwrap();
+    assert_eq!(empty.header().id(), 7);
+    assert!(empty.questions().is_empty());
+    assert!(empty.answers().is_empty());
+}
+
+#[test]
+fn message_header_requires_its_twelve_octets() {
+    for len in 0..MessageHeader::WIRE_LEN {
+        let truncated = vec![0; len];
+        let expected = format!("DNS message header requires 12 octets, got {len}");
+        assert_eq!(
+            MessageHeader::parse(&truncated).unwrap_err().to_string(),
+            expected
+        );
+        assert_eq!(
+            Message::parse(&truncated).unwrap_err().to_string(),
+            expected
+        );
+        // Below a header there is nothing to keep, so even the lenient
+        // constructor fails and no partial message comes back.
+        let error = Message::parse_strict(&truncated).unwrap_err();
+        assert_eq!(error.to_string(), expected);
+        assert_eq!(error.partial(), None);
+        assert_eq!(error.into_partial(), None);
+    }
+    MessageHeader::parse(&[0; MessageHeader::WIRE_LEN]).unwrap();
+}
+
+#[test]
+fn message_decodes_known_rdata_and_retains_everything_else_opaquely() {
+    let txt = Txt::try_from_strings([&b"v=spf1 -all"[..]]).unwrap();
+    let https = binding(1, b"\0", &[(u16::from(SvcParamKey::Alpn), b"\x02h2")]);
+    let svcb = binding(0, b"\x03cdn\x07example\x03com\0", &[]);
+    let mail = b"\x00\x0a\x04mail\x07example\x03com\0";
+
+    let mut sections = Vec::new();
+    sections.extend(record_wire(
+        b"\0",
+        RecordType::TXT,
+        DNS_CLASS_IN,
+        1,
+        txt.as_wire(),
+    ));
+    sections.extend(record_wire(
+        b"\0",
+        RecordType::HTTPS,
+        DNS_CLASS_IN,
+        2,
+        &https,
+    ));
+    sections.extend(record_wire(b"\0", RecordType::SVCB, DNS_CLASS_IN, 3, &svcb));
+    sections.extend(record_wire(
+        b"\0",
+        RecordType::NS,
+        DNS_CLASS_IN,
+        4,
+        b"\x02ns\x07example\x03com\0",
+    ));
+    sections.extend(record_wire(
+        b"\0",
+        RecordType::PTR,
+        DNS_CLASS_IN,
+        5,
+        FOO_EXAMPLE_COM,
+    ));
+    sections.extend(record_wire(b"\0", RecordType::MX, DNS_CLASS_IN, 6, mail));
+    sections.extend(record_wire(
+        b"\0",
+        RecordType::A,
+        DNS_CLASS_CH,
+        7,
+        &[192, 0, 2, 9],
+    ));
+    sections.extend(record_wire(
+        b"\0",
+        RecordType::Unknown(65280),
+        DNS_CLASS_IN,
+        u32::MAX,
+        b"private",
+    ));
+    let message = Message::parse(&dns_message(1, 0x8180, [0, 8, 0, 0], &sections)).unwrap();
+
+    let answers = message.answers();
+    assert_eq!(answers.len(), 8);
+    assert!(answers.iter().all(|answer| answer.name().is_root()));
+    assert_eq!(answers[0].data(), &RecordData::Txt(txt));
+    assert_eq!(
+        answers[1].data(),
+        &RecordData::ServiceBinding(ServiceBinding::parse_rdata(&https).unwrap())
+    );
+    assert_eq!(
+        answers[2].data(),
+        &RecordData::ServiceBinding(ServiceBinding::parse_rdata(&svcb).unwrap())
+    );
+    assert_eq!(
+        answers[3].data(),
+        &RecordData::Ns(Name::from_wire(b"\x02ns\x07example\x03com\0").unwrap())
+    );
+    assert_eq!(
+        answers[4].data(),
+        &RecordData::Ptr(Name::from_wire(FOO_EXAMPLE_COM).unwrap())
+    );
+    // MX is not modelled by this wire vocabulary, so its RDATA stays opaque.
+    assert_eq!(answers[5].record_type(), RecordType::MX);
+    assert_eq!(
+        answers[5].data(),
+        &RecordData::Opaque(Bytes::from_static(mail))
+    );
+    // A well-formed A record outside the Internet class is not an address.
+    assert_eq!(answers[6].record_type(), RecordType::A);
+    assert_eq!(answers[6].class(), RecordClass::CH);
+    assert_eq!(
+        answers[6].data(),
+        &RecordData::Opaque(Bytes::from_static(&[192, 0, 2, 9]))
+    );
+    assert_eq!(answers[7].record_type(), RecordType::Unknown(65280));
+    assert_eq!(answers[7].ttl(), u32::MAX);
+    assert_eq!(
+        answers[7].data(),
+        &RecordData::Opaque(Bytes::from_static(b"private"))
+    );
+}
+
+#[test]
+fn message_parses_rdata_names_that_use_compression() {
+    let mut sections = question_wire(FOO_EXAMPLE_COM, RecordType::PTR, DNS_CLASS_IN);
+    sections.extend(record_wire(
+        b"\xc0\x0c",
+        RecordType::PTR,
+        DNS_CLASS_IN,
+        0,
+        b"\xc0\x10",
+    ));
+    let message = Message::parse(&dns_message(0, 0x8180, [1, 1, 0, 0], &sections)).unwrap();
+    assert_eq!(
+        message.answers()[0].data(),
+        &RecordData::Ptr(Name::from_wire(b"\x07example\x03com\0").unwrap())
+    );
+}
+
+#[test]
+fn message_borrows_or_copies_rdata_according_to_its_constructor() {
+    let wire = Bytes::from(one_answer(
+        RecordType::Unknown(65280),
+        DNS_CLASS_IN,
+        b"opaque",
+    ));
+
+    let shared = Message::parse_bytes(&wire).unwrap();
+    let RecordData::Opaque(rdata) = shared.answers()[0].data() else {
+        panic!("opaque RDATA: {:?}", shared.answers()[0]);
+    };
+    assert_eq!(rdata, &Bytes::from_static(b"opaque"));
+    assert!(points_into(rdata, &wire));
+
+    let copied = Message::parse(&wire).unwrap();
+    assert_eq!(copied, shared);
+    let RecordData::Opaque(rdata) = copied.answers()[0].data() else {
+        panic!("opaque RDATA: {:?}", copied.answers()[0]);
+    };
+    assert!(!points_into(rdata, &wire));
+}
+
+#[test]
+fn message_stops_after_the_answer_section() {
+    let mut sections = question_wire(FOO_EXAMPLE_COM, RecordType::A, DNS_CLASS_IN);
+    sections.extend(record_wire(
+        b"\xc0\x0c",
+        RecordType::A,
+        DNS_CLASS_IN,
+        30,
+        &[192, 0, 2, 1],
+    ));
+    // Octets that would fail to parse as a resource record, proving that the
+    // authority and additional sections are never walked.
+    sections.extend_from_slice(b"\xff\xff\xff");
+
+    let message = Message::parse(&dns_message(3, 0x8180, [1, 1, 2, 5], &sections)).unwrap();
+    assert_eq!(message.questions().len(), 1);
+    assert_eq!(message.answers().len(), 1);
+    assert_eq!(message.header().authority_count(), 2);
+    assert_eq!(message.header().additional_count(), 5);
+}
+
+#[test]
+fn message_parse_keeps_every_record_before_the_one_that_fails() {
+    let mut sections = record_wire(b"\0", RecordType::A, DNS_CLASS_IN, 1, &[192, 0, 2, 1]);
+    sections.extend(record_wire(
+        b"\0",
+        RecordType::A,
+        DNS_CLASS_IN,
+        2,
+        &[192, 0, 2],
+    ));
+    sections.extend(record_wire(
+        b"\0",
+        RecordType::A,
+        DNS_CLASS_IN,
+        3,
+        &[192, 0, 2, 3],
+    ));
+    let wire = dns_message(0, 0x8180, [0, 3, 0, 0], &sections);
+
+    let message = Message::parse(&wire).unwrap();
+    assert!(!message.is_complete());
+    assert_eq!(message.header().answer_count(), 3);
+    let [first] = message.answers() else {
+        panic!("one answer: {:?}", message.answers());
+    };
+    assert_eq!(first.ttl(), 1);
+    assert_eq!(first.data(), &RecordData::A(Ipv4Addr::new(192, 0, 2, 1)));
+    let reason = message.incomplete_reason().expect("a reason");
+    assert_eq!(
+        reason.to_string(),
+        "DNS answer 1 has invalid address RDATA: A (0x0001) RDATA must contain exactly 4 octets, got 3"
+    );
+    // The reason a message carries never nests a partial message of its own.
+    assert_eq!(reason.partial(), None);
+
+    // Strict parsing rejects the same message, and hands the partial back.
+    let error = Message::parse_strict(&wire).unwrap_err();
+    assert_eq!(error.to_string(), reason.to_string());
+    assert_eq!(error.partial(), Some(&message));
+    assert_eq!(
+        Message::parse_bytes_strict(&Bytes::from(wire.clone()))
+            .unwrap_err()
+            .to_string(),
+        error.to_string()
+    );
+    assert_eq!(
+        Message::parse_bytes(&Bytes::from(wire)).unwrap(),
+        message,
+        "both constructors agree on where to stop"
+    );
+}
+
+#[test]
+fn message_parse_abandons_the_answer_section_when_a_question_fails() {
+    let mut sections = question_wire(FOO_EXAMPLE_COM, RecordType::A, DNS_CLASS_IN);
+    // A second question whose name points nowhere valid.
+    sections.extend_from_slice(b"\xc0\xff");
+    // A well-formed answer record follows, but the answer section's start
+    // depends on where the questions end, so it is never reached.
+    sections.extend(record_wire(
+        b"\xc0\x0c",
+        RecordType::A,
+        DNS_CLASS_IN,
+        30,
+        &[192, 0, 2, 1],
+    ));
+    let message = Message::parse(&dns_message(0, 0x8180, [2, 1, 0, 0], &sections)).unwrap();
+
+    assert!(!message.is_complete());
+    assert_eq!(message.questions().len(), 1);
+    assert!(message.answers().is_empty());
+    assert_eq!(
+        message
+            .incomplete_reason()
+            .map(ToString::to_string)
+            .as_deref(),
+        Some(
+            "DNS question 1 has an invalid name: DNS compression pointer does not refer to a prior name occurrence"
+        )
+    );
+}
+
+#[test]
+fn message_parse_bounds_a_names_compression_pointer_chain() {
+    // A first opaque record carries, in its RDATA, a root label followed by a
+    // chain of pointers each aimed at the previous one. A later record whose
+    // owner name enters that chain must not be walked without limit, or a
+    // message packed with such names would cost work quadratic in its size.
+    let rdata_start = MessageHeader::WIRE_LEN + 11; // root name + fixed record fields
+    let mut rdata = vec![0x00];
+    let mut previous = rdata_start as u16;
+    for _ in 0..129 {
+        let here = (rdata_start + rdata.len()) as u16;
+        rdata.extend_from_slice(&(0xc000 | previous).to_be_bytes());
+        previous = here;
+    }
+    let chain_top = previous;
+
+    let mut body = record_wire(b"\0", RecordType::A, DNS_CLASS_CH, 0, &rdata);
+    body.extend(record_wire(
+        &(0xc000 | chain_top).to_be_bytes(),
+        RecordType::A,
+        DNS_CLASS_IN,
+        30,
+        &[192, 0, 2, 1],
+    ));
+    let wire = dns_message(0, 0x8180, [0, 2, 0, 0], &body);
+
+    assert_eq!(
+        Message::parse_strict(&wire).unwrap_err().to_string(),
+        "DNS answer 1 has an invalid owner name: DNS name follows too many compression pointers"
+    );
+
+    // Lenient parsing keeps the opaque record and stops at the offending one.
+    let partial = Message::parse(&wire).unwrap();
+    assert!(!partial.is_complete());
+    assert_eq!(partial.answers().len(), 1);
+}
+
+#[test]
+fn message_parse_reports_a_fully_decoded_message_as_complete() {
+    let mut sections = question_wire(FOO_EXAMPLE_COM, RecordType::A, DNS_CLASS_IN);
+    sections.extend(record_wire(
+        b"\xc0\x0c",
+        RecordType::A,
+        DNS_CLASS_IN,
+        30,
+        &[192, 0, 2, 1],
+    ));
+    let wire = dns_message(0, 0x8180, [1, 1, 0, 0], &sections);
+
+    for message in [
+        Message::parse(&wire).unwrap(),
+        Message::parse_strict(&wire).unwrap(),
+        Message::parse_bytes(&Bytes::from(wire.clone())).unwrap(),
+        Message::parse_bytes_strict(&Bytes::from(wire.clone())).unwrap(),
+    ] {
+        assert!(message.is_complete());
+        assert_eq!(message.incomplete_reason(), None);
+        assert_eq!(message.questions().len(), 1);
+        assert_eq!(message.answers().len(), 1);
+    }
+
+    // An empty message declares nothing and is therefore complete.
+    let empty = Message::parse_strict(&dns_message(0, 0, [0; 4], &[])).unwrap();
+    assert!(empty.is_complete());
+}
+
+#[test]
+fn message_parse_strict_rejects_truncated_sections_and_malformed_rdata() {
+    // A second question that the message never encodes.
+    let one_of_two_questions = question_wire(FOO_EXAMPLE_COM, RecordType::A, DNS_CLASS_IN);
+
+    for (wire, expected) in [
+        (
+            dns_message(0, 0, [1, 0, 0, 0], b"\xc0\x0c"),
+            "DNS question 0 has an invalid name: DNS compression pointer does not refer to a prior name occurrence",
+        ),
+        (
+            dns_message(0, 0, [1, 0, 0, 0], b"\0\x00\x01"),
+            "DNS question 0 ends within its QTYPE and QCLASS fields",
+        ),
+        (
+            dns_message(0, 0, [2, 0, 0, 0], &one_of_two_questions),
+            "DNS question 1 has an invalid name: DNS name ends within a label",
+        ),
+        (
+            dns_message(0, 0, [0, 1, 0, 0], b"\xc0\x0c"),
+            "DNS answer 0 has an invalid owner name: DNS compression pointer does not refer to a prior name occurrence",
+        ),
+        (
+            dns_message(0, 0, [0, 1, 0, 0], b"\0\x00\x01\x00\x01\x00\x00\x00\x1e"),
+            "DNS answer 0 ends within its record fields",
+        ),
+        (
+            dns_message(
+                0,
+                0,
+                [0, 1, 0, 0],
+                b"\0\x00\x01\x00\x01\x00\x00\x00\x1e\x00\x05\x00\x02",
+            ),
+            "DNS answer 0 declares 5 RDATA octets but 2 remain",
+        ),
+        (
+            one_answer(RecordType::A, DNS_CLASS_IN, &[192, 0, 2]),
+            "DNS answer 0 has invalid address RDATA: A (0x0001) RDATA must contain exactly 4 octets, got 3",
+        ),
+        (
+            one_answer(RecordType::AAAA, DNS_CLASS_IN, &[0; 4]),
+            "DNS answer 0 has invalid address RDATA: AAAA (0x001c) RDATA must contain exactly 16 octets, got 4",
+        ),
+        (
+            one_answer(RecordType::CNAME, DNS_CLASS_IN, b"\x03cdn\0\0"),
+            "DNS answer 0 declares 6 CNAME RDATA octets but its name uses 5",
+        ),
+        (
+            one_answer(RecordType::NS, DNS_CLASS_IN, b"\x03ns"),
+            "DNS answer 0 has an invalid NS RDATA name: DNS name ends within a label",
+        ),
+        (
+            one_answer(RecordType::TXT, DNS_CLASS_IN, b"\x03ab"),
+            "DNS answer 0 has invalid TXT RDATA: TXT character-string 0 declares 3 octets but only 2 remain",
+        ),
+        (
+            one_answer(RecordType::HTTPS, DNS_CLASS_IN, &[0, 1, 0xc0, 0]),
+            "DNS answer 0 has invalid HTTPS RDATA: invalid service binding target name: compressed DNS name is not allowed in this field",
+        ),
+        (
+            one_answer(RecordType::SVCB, DNS_CLASS_IN, &[0, 1, 0xc0, 0]),
+            "DNS answer 0 has invalid SVCB RDATA: invalid service binding target name: compressed DNS name is not allowed in this field",
+        ),
+    ] {
+        let error = Message::parse_strict(&wire).unwrap_err();
+        assert_eq!(error.to_string(), expected);
+
+        // Each one has an intact header, so the lenient parser keeps what it
+        // decoded and reports the same failure, which the strict error hands
+        // back together with that partial message.
+        let lenient = Message::parse(&wire).unwrap();
+        assert!(!lenient.is_complete());
+        assert_eq!(
+            lenient
+                .incomplete_reason()
+                .map(ToString::to_string)
+                .as_deref(),
+            Some(expected)
+        );
+        assert_eq!(error.partial(), Some(&lenient));
+        assert_eq!(error.into_partial().as_ref(), Some(&lenient));
+    }
+}
+
+#[test]
+fn message_reports_the_failing_answer_index_and_preserves_error_sources() {
+    let mut sections = record_wire(b"\0", RecordType::A, DNS_CLASS_IN, 1, &[192, 0, 2, 1]);
+    sections.extend(record_wire(
+        b"\0",
+        RecordType::A,
+        DNS_CLASS_IN,
+        1,
+        &[192, 0, 2],
+    ));
+    let error = Message::parse_strict(&dns_message(0, 0, [0, 2, 0, 0], &sections)).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "DNS answer 1 has invalid address RDATA: A (0x0001) RDATA must contain exactly 4 octets, got 3"
+    );
+    assert!(error.source().is_some());
+
+    let error = Message::parse_strict(&one_answer(RecordType::CNAME, DNS_CLASS_IN, b"\xc0\x40"))
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .starts_with("DNS answer 0 has an invalid CNAME RDATA name:"),
+        "got: {error}"
+    );
+    assert!(error.source().is_some());
+
+    let error =
+        Message::parse_strict(&one_answer(RecordType::TXT, DNS_CLASS_IN, b"\x03ab")).unwrap_err();
+    assert!(
+        error
+            .source()
+            .is_some_and(|source| source.to_string().starts_with("TXT character-string 0")),
+        "got: {error:?}"
+    );
+
+    let error = Message::parse_strict(&one_answer(
+        RecordType::HTTPS,
+        DNS_CLASS_IN,
+        &[0, 1, 0xc0, 0],
+    ))
+    .unwrap_err();
+    assert!(
+        error.source().is_some_and(|source| source
+            .to_string()
+            .starts_with("invalid service binding target name")),
+        "got: {error:?}"
+    );
+
+    // Structural failures have nothing to chain to.
+    let error = Message::parse_strict(&[0; 4]).unwrap_err();
+    assert!(error.source().is_none());
+    let error = Message::parse_strict(&dns_message(
+        0,
+        0,
+        [0, 1, 0, 0],
+        b"\0\x00\x01\x00\x01\x00\x00\x00\x1e",
+    ))
+    .unwrap_err();
+    assert!(error.source().is_none());
+}
+
+#[test]
+fn message_does_not_trust_counts_that_the_octets_cannot_back() {
+    // A twelve-octet header claiming a full section of each kind must stop on
+    // the first missing question rather than pre-allocating for 65535 of them.
+    let wire = dns_message(0, 0, [u16::MAX; 4], &[]);
+    let expected = "DNS question 0 has an invalid name: DNS name ends within a label";
+    assert_eq!(
+        Message::parse_strict(&wire).unwrap_err().to_string(),
+        expected
+    );
+
+    let lenient = Message::parse(&wire).unwrap();
+    assert!(lenient.questions().is_empty());
+    assert!(lenient.answers().is_empty());
+    assert_eq!(lenient.header().question_count(), u16::MAX);
+
+    let mut sections = question_wire(FOO_EXAMPLE_COM, RecordType::A, DNS_CLASS_IN);
+    sections.extend(record_wire(
+        b"\xc0\x0c",
+        RecordType::A,
+        DNS_CLASS_IN,
+        30,
+        &[192, 0, 2, 1],
+    ));
+    let wire = dns_message(0, 0x8180, [1, u16::MAX, 0, 0], &sections);
+    assert_eq!(
+        Message::parse_strict(&wire).unwrap_err().to_string(),
+        "DNS answer 1 has an invalid owner name: DNS name ends within a label"
+    );
+
+    // The one answer the octets do hold survives the overstated count.
+    let lenient = Message::parse(&wire).unwrap();
+    assert_eq!(lenient.questions().len(), 1);
+    assert_eq!(lenient.answers().len(), 1);
+    assert_eq!(lenient.header().answer_count(), u16::MAX);
+}
+
+#[test]
+fn message_section_capacity_never_exceeds_what_the_octets_could_hold() {
+    // A declared count is only trusted up to the records the octets after the
+    // parse offset could encode, and is never rounded up past it.
+    let message = vec![0; 4096];
+    assert_eq!(bounded_capacity(0, &message, 12, 5), 0);
+    assert_eq!(bounded_capacity(3, &message, 12, 5), 3);
+    assert_eq!(bounded_capacity(u16::MAX, &message, message.len(), 5), 0);
+    assert_eq!(bounded_capacity(u16::MAX, &message, 4092, 5), 0);
+    assert_eq!(bounded_capacity(u16::MAX, &message, 4047, 5), 9);
+    assert_eq!(bounded_capacity(u16::MAX, &message, 4075, 11), 1);
+    assert_eq!(bounded_capacity(u16::MAX, &message, 0, 11), 4096 / 11);
+    // An offset past the end reserves nothing instead of underflowing.
+    assert_eq!(bounded_capacity(u16::MAX, &message, usize::MAX, 5), 0);
+}
+
+#[test]
+fn response_code_covers_the_registry_and_retains_unassigned_values() {
+    let assigned = [
+        (0, ResponseCode::NoError),
+        (1, ResponseCode::FormErr),
+        (2, ResponseCode::ServFail),
+        (3, ResponseCode::NXDomain),
+        (4, ResponseCode::NotImp),
+        (5, ResponseCode::Refused),
+        (6, ResponseCode::YXDomain),
+        (7, ResponseCode::YXRRSet),
+        (8, ResponseCode::NXRRSet),
+        (9, ResponseCode::NotAuth),
+        (10, ResponseCode::NotZone),
+        (11, ResponseCode::DSOTYPENI),
+        (16, ResponseCode::BADVERS),
+        (17, ResponseCode::BADKEY),
+        (18, ResponseCode::BADTIME),
+        (19, ResponseCode::BADMODE),
+        (20, ResponseCode::BADNAME),
+        (21, ResponseCode::BADALG),
+        (22, ResponseCode::BADTRUNC),
+        (23, ResponseCode::BADCOOKIE),
+    ];
+    for (value, code) in assigned {
+        assert_eq!(ResponseCode::from(value), code);
+        assert_eq!(u8::from(code), value);
+    }
+
+    for value in [12, 13, 14, 15, 24, 100, u8::MAX] {
+        assert_eq!(ResponseCode::from(value), ResponseCode::Unknown(value));
+        assert_eq!(u8::from(ResponseCode::Unknown(value)), value);
+    }
+
+    assert_eq!(ResponseCode::NXDomain.to_string(), "NXDomain (0x0003)");
+    assert_eq!(ResponseCode::Unknown(12).to_string(), "Unknown (0x000c)");
+}
+
+#[test]
+fn record_class_covers_the_registry_and_retains_unassigned_values() {
+    let assigned = [
+        (0, RecordClass::Reserved),
+        (1, RecordClass::IN),
+        (3, RecordClass::CH),
+        (4, RecordClass::HS),
+        (254, RecordClass::NONE),
+        (255, RecordClass::ANY),
+        (65535, RecordClass::ReservedMax),
+    ];
+    for (value, class) in assigned {
+        assert_eq!(RecordClass::from(value), class);
+        assert_eq!(u16::from(class), value);
+    }
+
+    for value in [2, 5, 253, 256, 65534] {
+        assert_eq!(RecordClass::from(value), RecordClass::Unknown(value));
+        assert_eq!(u16::from(RecordClass::Unknown(value)), value);
+    }
+
+    assert_eq!(RecordClass::IN.to_string(), "IN (0x0001)");
+}
+
+#[test]
+fn wire_enums_expose_their_mnemonic_without_debug_coupling() {
+    assert_eq!(RecordType::A.variant_name(), "A");
+    assert_eq!(RecordType::HTTPS.variant_name(), "HTTPS");
+    assert_eq!(RecordType::NSAP_PTR.variant_name(), "NSAP_PTR");
+    assert_eq!(RecordType::Unknown(65280).variant_name(), "65280");
+    assert!(matches!(RecordType::A.variant_name(), Cow::Borrowed("A")));
+    assert!(matches!(
+        RecordType::Unknown(65280).variant_name(),
+        Cow::Owned(_)
+    ));
+
+    assert_eq!(ResponseCode::NoError.variant_name(), "NoError");
+    assert_eq!(ResponseCode::NXDomain.variant_name(), "NXDomain");
+    assert_eq!(ResponseCode::BADCOOKIE.variant_name(), "BADCOOKIE");
+    assert_eq!(ResponseCode::Unknown(12).variant_name(), "12");
+
+    assert_eq!(RecordClass::IN.variant_name(), "IN");
+    assert_eq!(RecordClass::Unknown(2).variant_name(), "2");
+    assert_eq!(SvcParamKey::NoDefaultAlpn.variant_name(), "NoDefaultAlpn");
 }

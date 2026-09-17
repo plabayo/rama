@@ -16,6 +16,16 @@ use rama_net::address::{Domain, DomainBuilder, DomainLabels as _};
 #[derive(Clone)]
 pub struct Name(Bytes);
 
+/// Maximum compression pointers followed while decoding one name.
+///
+/// A well-formed name needs at most one pointer per label, and 255 wire octets
+/// hold at most 127 labels, so this bounds every legitimate encoding with room
+/// to spare. It also caps a name whose pointers only chain into more pointers:
+/// the decreasing target ceiling already terminates such a name, but on its own
+/// lets one name traverse as many pointers as the message is long, so a message
+/// full of them costs work quadratic in its size.
+const MAX_COMPRESSION_POINTERS: usize = 128;
+
 impl Name {
     /// Maximum encoded length of a DNS name, including the root label.
     pub const MAX_WIRE_LEN: usize = 255;
@@ -55,13 +65,15 @@ impl Name {
     /// The returned length is the number of message octets occupied by the
     /// encoded name at `offset`; bytes followed through compression pointers
     /// are not included. RFC 1035 compression pointers must refer to prior
-    /// name occurrences. Enforcing a decreasing target ceiling guarantees
-    /// termination without rejecting long valid chains.
+    /// name occurrences. A decreasing target ceiling and a fixed pointer budget
+    /// together guarantee termination in work bounded per name, without
+    /// rejecting long valid chains.
     pub fn from_message(message: &[u8], offset: usize) -> Result<(Self, usize), NameParseError> {
         let mut wire = BytesMut::with_capacity(64);
         let mut cursor = offset;
         let mut encoded_end = None;
         let mut pointer_ceiling = offset;
+        let mut pointers = 0usize;
 
         loop {
             let Some(&label_len) = message.get(cursor) else {
@@ -74,6 +86,12 @@ impl Name {
                         NameParseErrorKind::TruncatedCompressionPointer,
                     ));
                 };
+                pointers += 1;
+                if pointers > MAX_COMPRESSION_POINTERS {
+                    return Err(NameParseError(
+                        NameParseErrorKind::TooManyCompressionPointers,
+                    ));
+                }
                 let target = usize::from(u16::from_be_bytes([label_len & 0x3f, second]));
                 if target >= pointer_ceiling {
                     return Err(NameParseError(
@@ -298,6 +316,7 @@ enum NameParseErrorKind {
     TrailingData,
     TruncatedCompressionPointer,
     NonPriorCompressionPointer,
+    TooManyCompressionPointers,
     InvalidLabelKind,
 }
 
@@ -316,6 +335,9 @@ impl fmt::Display for NameParseError {
             }
             NameParseErrorKind::NonPriorCompressionPointer => {
                 "DNS compression pointer does not refer to a prior name occurrence"
+            }
+            NameParseErrorKind::TooManyCompressionPointers => {
+                "DNS name follows too many compression pointers"
             }
             NameParseErrorKind::InvalidLabelKind => "DNS name uses an unsupported label kind",
         })

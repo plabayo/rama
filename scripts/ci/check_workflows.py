@@ -15,7 +15,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 SLOTS = {
     "macos": {f"rama-macos-slot-{i}" for i in range(5)},
-    "windows": {f"rama-windows-slot-{i}" for i in range(4)},
+    "windows": {f"rama-windows-slot-{i}" for i in range(8)},
 }
 
 

@@ -40,7 +40,7 @@ class WorkflowPolicyTests(unittest.TestCase):
             validate(self.daily, self.daily_path)
 
     def test_extra_slot(self):
-        self.daily["jobs"]["test-rust-linux-gnu-cross-windows"]["concurrency"]["group"] = "rama-windows-slot-4"
+        self.daily["jobs"]["test-rust-linux-gnu-cross-windows"]["concurrency"]["group"] = "rama-windows-slot-8"
         with self.assertRaises(AssertionError):
             validate(self.daily, self.daily_path)
 
@@ -88,10 +88,16 @@ class WorkflowPolicyTests(unittest.TestCase):
         self.assertEqual({(r["os"], r["toolchain"]) for r in daily_rows}, {
             ("macos-15-intel", "stable"), ("windows-11-arm", "stable"),
         })
+        # MSRV clippy on the scarce macOS and Windows runners moved to the daily
+        # workflow; per-push CI keeps MSRV on Linux and stable everywhere.
         rows = matrix_rows(jobs["check-rust"]["strategy"]["matrix"])
         self.assertEqual({(r["os"], r["toolchain"]) for r in rows}, {
-            (os, toolchain) for os in ("ubuntu-latest", "macos-latest", "windows-latest")
-            for toolchain in ("stable", "1.96.0")
+            ("ubuntu-latest", "stable"), ("ubuntu-latest", "1.96.0"),
+            ("macos-latest", "stable"), ("windows-latest", "stable"),
+        })
+        daily_check_rows = matrix_rows(self.daily["jobs"]["check-rust"]["strategy"]["matrix"])
+        self.assertEqual({(r["os"], r["toolchain"]) for r in daily_check_rows}, {
+            ("macos-latest", "1.96.0"), ("windows-latest", "1.96.0"),
         })
 
     def test_quic_platform_backend_and_toolchain_coverage(self):
@@ -238,7 +244,7 @@ class WorkflowPolicyTests(unittest.TestCase):
 
     def test_shared_job_steps_and_cache_settings_do_not_drift(self):
         self.assertEqual(self.workflow["env"], self.daily["env"])
-        for name in ("precheck-rust", "test-rust-base", "test-quic-interop-qa", "precheck-rust-tier2"):
+        for name in ("precheck-rust", "check-rust", "test-rust-base", "test-quic-interop-qa", "precheck-rust-tier2"):
             regular = self.workflow["jobs"][name]
             daily = self.daily["jobs"][name]
             for key in ("steps", "env", "runs-on", "concurrency", "timeout-minutes"):
