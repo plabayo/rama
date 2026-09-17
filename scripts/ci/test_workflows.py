@@ -15,6 +15,8 @@ class WorkflowPolicyTests(unittest.TestCase):
     def setUp(self):
         self.path = ROOT / ".github/workflows/CI.yml"
         self.workflow = yaml.safe_load(self.path.read_text())
+        self.daily_path = self.path.with_name("CI-platforms-daily.yml")
+        self.daily = yaml.safe_load(self.daily_path.read_text())
 
     def test_current_workflows(self):
         for path in (ROOT / ".github/workflows").glob("*"):
@@ -32,34 +34,32 @@ class WorkflowPolicyTests(unittest.TestCase):
             validate(self.workflow, self.path)
 
     def test_run_specific_budget(self):
-        job = self.workflow["jobs"]["test-rust-linux-gnu-cross-macos"]
+        job = self.daily["jobs"]["test-rust-linux-gnu-cross-macos"]
         job["concurrency"]["group"] = "${{ format('rama-macos-slot-{0}', github.run_id) }}"
         with self.assertRaises(AssertionError):
-            validate(self.workflow, self.path)
+            validate(self.daily, self.daily_path)
 
     def test_extra_slot(self):
-        self.workflow["jobs"]["test-rust-linux-gnu-cross-windows"]["concurrency"]["group"] = "rama-windows-slot-4"
+        self.daily["jobs"]["test-rust-linux-gnu-cross-windows"]["concurrency"]["group"] = "rama-windows-slot-4"
         with self.assertRaises(AssertionError):
-            validate(self.workflow, self.path)
+            validate(self.daily, self.daily_path)
 
     def test_extra_macos_slot(self):
-        job = self.workflow["jobs"]["test-rust-linux-gnu-cross-macos"]
+        job = self.daily["jobs"]["test-rust-linux-gnu-cross-macos"]
         job["concurrency"]["group"] = "rama-macos-slot-5"
         with self.assertRaises(AssertionError):
-            validate(self.workflow, self.path)
+            validate(self.daily, self.daily_path)
 
     def test_long_macos_jobs_use_five_slots(self):
-        jobs = self.workflow["jobs"]
         assignments = [
-            ("test-rust-base", {"os": "macos-15-intel", "toolchain": "stable"}),
-            ("test-rust-base", {"os": "macos-15", "toolchain": "stable"}),
-            ("test-rust-linux-gnu-cross-macos", {}),
+            (self.daily, "test-rust-base", {"os": "macos-15-intel", "toolchain": "stable"}),
+            (self.workflow, "test-rust-base", {"os": "macos-15", "toolchain": "stable"}),
+            (self.daily, "test-rust-linux-gnu-cross-macos", {}),
+            (self.workflow, "test-quic-interop-qa", {"os": "macos-15", "toolchain": "stable"}),
+            (self.daily, "test-quic-interop-qa", {"os": "macos-15", "toolchain": "1.96.0"}),
         ]
-        quic = next(name for name in jobs if name.startswith("test-quic-interop-qa"))
-        assignments.extend((quic, {"os": "macos-15", "toolchain": toolchain})
-                           for toolchain in ("stable", "1.96.0"))
-        groups = {expression(jobs[name]["concurrency"]["group"], row)
-                  for name, row in assignments}
+        groups = {expression(workflow["jobs"][name]["concurrency"]["group"], row)
+                  for workflow, name, row in assignments}
         self.assertEqual(groups, {f"rama-macos-slot-{i}" for i in range(5)})
 
     def test_new_job_cannot_bypass_final_gate(self):
@@ -82,7 +82,11 @@ class WorkflowPolicyTests(unittest.TestCase):
         rows = matrix_rows(jobs["test-rust-base"]["strategy"]["matrix"])
         self.assertEqual({(r["os"], r["toolchain"]) for r in rows}, {
             (os, "stable") for os in ("ubuntu-latest", "ubuntu-24.04-arm",
-                                      "macos-15-intel", "macos-15", "windows-latest", "windows-11-arm")
+                                      "macos-15", "windows-latest")
+        })
+        daily_rows = matrix_rows(self.daily["jobs"]["test-rust-base"]["strategy"]["matrix"])
+        self.assertEqual({(r["os"], r["toolchain"]) for r in daily_rows}, {
+            ("macos-15-intel", "stable"), ("windows-11-arm", "stable"),
         })
         rows = matrix_rows(jobs["check-rust"]["strategy"]["matrix"])
         self.assertEqual({(r["os"], r["toolchain"]) for r in rows}, {
@@ -93,6 +97,13 @@ class WorkflowPolicyTests(unittest.TestCase):
     def test_quic_platform_backend_and_toolchain_coverage(self):
         job = self.workflow["jobs"]["test-quic-interop-qa"]
         rows = matrix_rows(job["strategy"]["matrix"])
+        daily_rows = matrix_rows(self.daily["jobs"]["test-quic-interop-qa"]["strategy"]["matrix"])
+        self.assertEqual({(r["os"], r["toolchain"], r["backends"]) for r in daily_rows}, {
+            ("macos-15", "1.96.0", "all"), ("windows-latest", "1.96.0", "all"),
+        })
+        self.assertTrue(all(r["os"] == "ubuntu-latest" or r["toolchain"] == "stable"
+                            for r in rows))
+        rows += daily_rows
         backends = ("boring", "rustls-ring", "rustls-aws-lc")
         coverage = {(r["os"], r["toolchain"], b) for r in rows
                     for b in (backends if r["backends"] == "all" else (r["backends"],))}
@@ -178,6 +189,12 @@ class WorkflowPolicyTests(unittest.TestCase):
     def test_cross_target_coverage(self):
         jobs = self.workflow["jobs"]
         rows = matrix_rows(jobs["precheck-rust-tier2"]["strategy"]["matrix"])
+        self.assertNotIn("x86_64-apple-ios", {r["target"] for r in rows})
+        daily_rows = matrix_rows(self.daily["jobs"]["precheck-rust-tier2"]["strategy"]["matrix"])
+        self.assertEqual({(r["os"], r["target"]) for r in daily_rows}, {
+            ("macos-15-intel", "x86_64-apple-ios"),
+        })
+        rows += daily_rows
         self.assertEqual({(r["os"], r["target"]) for r in rows}, {
             ("ubuntu-latest", "armv7-linux-androideabi"),
             ("ubuntu-latest", "aarch64-linux-android"),
@@ -193,14 +210,62 @@ class WorkflowPolicyTests(unittest.TestCase):
         })
 
     def test_failed_skipped_or_cancelled_check_fails_final_gate(self):
-        command = self.workflow["jobs"]["ci-success"]["steps"][0]["run"]
-        for status in ("success", "failure", "skipped", "cancelled"):
-            with self.subTest(status=status):
-                result = subprocess.run(
-                    ["bash", "-c", command], capture_output=True,
-                    env={"RESULTS": '{"first":{"result":"success"},"second":{"result":"' + status + '"}}'},
-                )
-                self.assertEqual(result.returncode == 0, status == "success")
+        for workflow in (self.workflow, self.daily):
+            command = workflow["jobs"]["ci-success"]["steps"][0]["run"]
+            for status in ("success", "failure", "skipped", "cancelled"):
+                with self.subTest(workflow=workflow["name"], status=status):
+                    result = subprocess.run(
+                        ["bash", "-c", command], capture_output=True,
+                        env={"RESULTS": '{"first":{"result":"success"},"second":{"result":"' + status + '"}}'},
+                    )
+                    self.assertEqual(result.returncode == 0, status == "success")
+
+    def test_daily_jobs_cannot_bypass_gates(self):
+        for mutation in ("final", "precheck"):
+            workflow = copy.deepcopy(self.daily)
+            if mutation == "final":
+                workflow["jobs"]["ci-success"]["needs"].remove("test-rust-base")
+            else:
+                del workflow["jobs"]["test-rust-base"]["needs"]
+            with self.subTest(mutation=mutation), self.assertRaises(AssertionError):
+                validate(workflow, self.daily_path)
+
+    def test_daily_schedule_requires_belgian_timezone(self):
+        triggers = self.daily.get("on", self.daily.get(True))
+        del triggers["schedule"][0]["timezone"]
+        with self.assertRaises(AssertionError):
+            validate(self.daily, self.daily_path)
+
+    def test_shared_job_steps_and_cache_settings_do_not_drift(self):
+        self.assertEqual(self.workflow["env"], self.daily["env"])
+        for name in ("precheck-rust", "test-rust-base", "test-quic-interop-qa", "precheck-rust-tier2"):
+            regular = self.workflow["jobs"][name]
+            daily = self.daily["jobs"][name]
+            for key in ("steps", "env", "runs-on", "concurrency", "timeout-minutes"):
+                with self.subTest(job=name, key=key):
+                    self.assertEqual(regular.get(key), daily.get(key))
+
+    def test_cross_builds_and_artifact_smoke_move_together(self):
+        names = {"test-rust-linux-gnu-cross-macos", "test-rust-linux-gnu-cross-windows",
+                 "test-rust-linux-gnu-cross-smoke"}
+        self.assertTrue(names.isdisjoint(self.workflow["jobs"]))
+        self.assertTrue(names <= self.daily["jobs"].keys())
+        producer = self.daily["jobs"]["test-rust-linux-gnu-cross-macos"]
+        smoke = self.daily["jobs"]["test-rust-linux-gnu-cross-smoke"]
+        self.assertEqual(smoke["needs"], "test-rust-linux-gnu-cross-macos")
+        upload = next(s for s in producer["steps"] if s.get("uses", "").startswith("actions/upload-artifact@"))
+        download = next(s for s in smoke["steps"] if s.get("uses", "").startswith("actions/download-artifact@"))
+        self.assertEqual(upload["with"]["name"], download["with"]["name"])
+
+    def test_infra_retry_covers_both_workflows_and_excludes_their_gates(self):
+        workflow = yaml.safe_load((self.path.parent / "CI-retry.yml").read_text())
+        triggers = workflow.get("on", workflow.get(True))
+        self.assertEqual(set(triggers["workflow_run"]["workflows"]),
+                         {self.workflow["name"], self.daily["name"]})
+        command = workflow["jobs"]["retry-infra-failures"]["steps"][0]["run"]
+        for workflow in (self.workflow, self.daily):
+            name = workflow["jobs"]["ci-success"]["name"]
+            self.assertIn(f'.name != "{name}"', command)
 
     def test_matrix_expansion_does_not_create_phantom_rows(self):
         self.assertEqual(matrix_rows({"include": [{"os": "macos-15"}, {"os": "windows-latest"}]}),
