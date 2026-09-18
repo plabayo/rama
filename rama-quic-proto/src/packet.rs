@@ -175,9 +175,8 @@ impl PartialDecode {
     }
 
     #[expect(
-        clippy::unwrap_used,
         clippy::unreachable,
-        reason = "callers pass `header_crypto` for every header kind that carries a packet number (Initial, Handshake, 0-RTT, 1-RTT); Retry and Version Negotiation have none, and Initial headers were handled by the branch above"
+        reason = "the Initial header is handled by the branch above, so it cannot reach this match"
     )]
     pub fn finish(
         self,
@@ -196,7 +195,12 @@ impl PartialDecode {
             ..
         }) = plain_header
         {
-            let number = Self::decrypt_header(&mut buf, header_crypto.unwrap())?;
+            let number = Self::decrypt_header(
+                &mut buf,
+                header_crypto.ok_or(PacketDecodeError::InvalidHeader(
+                    "missing header protection key",
+                ))?,
+            )?;
             let header_len = buf.position() as usize;
             let mut bytes = buf.into_inner();
 
@@ -226,7 +230,12 @@ impl PartialDecode {
                 ty,
                 dst_cid,
                 src_cid,
-                number: Self::decrypt_header(&mut buf, header_crypto.unwrap())?,
+                number: Self::decrypt_header(
+                    &mut buf,
+                    header_crypto.ok_or(PacketDecodeError::InvalidHeader(
+                        "missing header protection key",
+                    ))?,
+                )?,
                 version,
             },
             ProtectedHeader::Retry {
@@ -239,7 +248,12 @@ impl PartialDecode {
                 version,
             },
             ProtectedHeader::Short { spin, dst_cid, .. } => {
-                let number = Self::decrypt_header(&mut buf, header_crypto.unwrap())?;
+                let number = Self::decrypt_header(
+                    &mut buf,
+                    header_crypto.ok_or(PacketDecodeError::InvalidHeader(
+                        "missing header protection key",
+                    ))?,
+                )?;
                 let key_phase = buf.get_ref()[0] & KEY_PHASE_BIT != 0;
                 Header::Short {
                     spin,
@@ -781,7 +795,7 @@ impl PacketNumber {
         reason = "`range` is the distance to the largest acknowledged packet; reaching 2^32 would need billions of unacknowledged packets, which `sent_packets` bounds far below"
     )]
     pub fn new_at_least(n: u64, largest_acked: u64, min_len: u8) -> Self {
-        let range = (n - largest_acked) * 2;
+        let range = n.saturating_sub(largest_acked) * 2;
         let len = if range < 1 << 8 {
             1
         } else if range < 1 << 16 {

@@ -572,7 +572,7 @@ impl TransportParameters {
             // https://www.ietf.org/archive/id/draft-ietf-quic-ack-frequency-08.html#section-3-4
             || params.min_ack_delay.is_some_and(|min_ack_delay| {
                 // min_ack_delay uses microseconds, whereas max_ack_delay uses milliseconds
-                min_ack_delay > params.max_ack_delay * 1_000
+                min_ack_delay > params.max_ack_delay.into_inner().saturating_mul(1_000)
             })
             // https://www.rfc-editor.org/rfc/rfc9000.html#section-18.2-8
             || (side.is_server()

@@ -330,10 +330,10 @@ impl ConnectionClose {
             reason = "frame types and reason lengths are below 2^62"
         )]
         let max_len = max_len
-            - 1
-            - VarInt::from_u64(self.error_code.into()).unwrap().size()
-            - VarInt::from_u64(ty).unwrap().size()
-            - VarInt::from_u64(self.reason.len() as u64).unwrap().size();
+            .saturating_sub(1)
+            .saturating_sub(VarInt::from_u64(self.error_code.into()).unwrap().size())
+            .saturating_sub(VarInt::from_u64(ty).unwrap().size())
+            .saturating_sub(VarInt::from_u64(self.reason.len() as u64).unwrap().size());
         let actual_len = self.reason.len().min(max_len);
         out.write_var(actual_len as u64); // <= 8 bytes
         out.put_slice(&self.reason[0..actual_len]); // whatever's left
@@ -388,9 +388,9 @@ impl ApplicationClose {
         out.write(self.error_code); // <= 8 bytes
         #[expect(clippy::unwrap_used, reason = "reason lengths are below 2^62")]
         let max_len = max_len
-            - 1
-            - self.error_code.size()
-            - VarInt::from_u64(self.reason.len() as u64).unwrap().size();
+            .saturating_sub(1)
+            .saturating_sub(self.error_code.size())
+            .saturating_sub(VarInt::from_u64(self.reason.len() as u64).unwrap().size());
         let actual_len = self.reason.len().min(max_len);
         out.write_var(actual_len as u64); // <= 8 bytes
         out.put_slice(&self.reason[0..actual_len]); // whatever's left
