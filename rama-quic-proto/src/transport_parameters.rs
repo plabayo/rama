@@ -9,6 +9,8 @@
 use alloc::{vec, vec::Vec};
 use core::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
 
+#[cfg(feature = "arbitrary")]
+use arbitrary::Arbitrary;
 use rama_core::bytes::{Buf, BufMut};
 use rand::{Rng, RngExt, seq::SliceRandom as _};
 
@@ -206,6 +208,19 @@ impl TransportParameters {
             ));
         }
         Ok(())
+    }
+}
+
+#[cfg(feature = "arbitrary")]
+impl<'arbitrary> Arbitrary<'arbitrary> for TransportParameters {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'arbitrary>) -> arbitrary::Result<Self> {
+        Ok(Self {
+            initial_max_streams_bidi: u.arbitrary()?,
+            initial_max_streams_uni: u.arbitrary()?,
+            ack_delay_exponent: u.arbitrary()?,
+            max_udp_payload_size: u.arbitrary()?,
+            ..Self::default()
+        })
     }
 }
 

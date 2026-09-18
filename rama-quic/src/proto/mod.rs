@@ -119,9 +119,6 @@ pub use token::{NoneTokenLog, NoneTokenStore, StoredToken, TokenLog, TokenReuseE
 mod token_memory_cache;
 pub use token_memory_cache::TokenMemoryCache;
 
-#[cfg(feature = "arbitrary")]
-use arbitrary::Arbitrary;
-
 pub(crate) use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[cfg(fuzzing)]
@@ -129,11 +126,6 @@ pub(crate) mod fuzzing {
     pub use crate::proto::connection::{Retransmits, State as ConnectionState, StreamsState};
     pub use crate::proto::connection::{SendStream, Streams};
     pub use rama_core::bytes::{BufMut, Bytes, BytesMut};
-    pub use rama_quic_proto::frame::ResetStream;
-    pub use rama_quic_proto::packet::{
-        ConnectionIdParser, FixedLengthConnectionIdParser, PartialDecode,
-    };
-    pub use rama_quic_proto::transport_parameters::TransportParameters;
 
     use rama_quic_proto::{
         TransportError,
@@ -164,19 +156,6 @@ pub(crate) mod fuzzing {
     #[cfg(feature = "arbitrary")]
     use arbitrary::{Arbitrary, Result, Unstructured};
 
-    #[cfg(feature = "arbitrary")]
-    impl<'arbitrary> Arbitrary<'arbitrary> for TransportParameters {
-        fn arbitrary(u: &mut Unstructured<'arbitrary>) -> Result<Self> {
-            Ok(Self {
-                initial_max_streams_bidi: u.arbitrary()?,
-                initial_max_streams_uni: u.arbitrary()?,
-                ack_delay_exponent: u.arbitrary()?,
-                max_udp_payload_size: u.arbitrary()?,
-                ..Self::default()
-            })
-        }
-    }
-
     #[derive(Debug)]
     pub struct PacketParams {
         pub local_cid_len: usize,
@@ -187,7 +166,7 @@ pub(crate) mod fuzzing {
     #[cfg(feature = "arbitrary")]
     impl<'arbitrary> Arbitrary<'arbitrary> for PacketParams {
         fn arbitrary(u: &mut Unstructured<'arbitrary>) -> Result<Self> {
-            let local_cid_len: usize = u.int_in_range(0..=crate::proto::MAX_CID_SIZE)?;
+            let local_cid_len: usize = u.int_in_range(0..=rama_quic_proto::MAX_CID_SIZE)?;
             let bytes: Vec<u8> = Vec::arbitrary(u)?;
             let mut buf = BytesMut::new();
             buf.put_slice(&bytes[..]);

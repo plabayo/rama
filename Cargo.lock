@@ -4301,6 +4301,7 @@ dependencies = [
  "rama-http-core",
  "rama-js",
  "rama-quic",
+ "rama-quic-proto",
  "serde_json",
  "tokio",
 ]

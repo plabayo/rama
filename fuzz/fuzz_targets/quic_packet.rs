@@ -2,14 +2,15 @@
 #![cfg(fuzzing)]
 
 use libfuzzer_sys::fuzz_target;
-use rama_quic::{
-    fuzzing::{FixedLengthConnectionIdParser, PacketParams, PartialDecode},
-    version::DEFAULT_SUPPORTED_VERSIONS,
+use rama_quic::fuzzing::PacketParams;
+use rama_quic_proto::{
+    Version,
+    packet::{FixedLengthConnectionIdParser, PartialDecode},
 };
 
 fuzz_target!(|data: PacketParams| {
     let len = data.buf.len();
-    let supported_versions = DEFAULT_SUPPORTED_VERSIONS.to_vec();
+    let supported_versions = [Version::V1, Version::V2];
     if let Ok(decoded) = PartialDecode::new(
         data.buf,
         &FixedLengthConnectionIdParser::new(data.local_cid_len),
