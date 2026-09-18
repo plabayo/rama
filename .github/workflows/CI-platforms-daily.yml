@@ -110,7 +110,10 @@ jobs:
       - name: sccache stats
         if: always()
         shell: bash
-        run: command -v sccache >/dev/null 2>&1 && sccache --show-stats || true
+        run: |
+          if command -v sccache >/dev/null 2>&1; then
+            sccache --show-stats || true
+          fi
 
   test-rust-base:
     strategy:
@@ -214,7 +217,10 @@ jobs:
       - name: sccache stats
         if: always()
         shell: bash
-        run: command -v sccache >/dev/null 2>&1 && sccache --show-stats || true
+        run: |
+          if command -v sccache >/dev/null 2>&1; then
+            sccache --show-stats || true
+          fi
 
   test-quic-interop-qa:
     name: test-quic-interop-qa-${{ matrix.backends }}-${{ matrix.toolchain }}-${{ matrix.os }}
