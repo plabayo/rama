@@ -38,6 +38,7 @@ serde = { workspace = true, features = ["derive"] }
 [dev-dependencies]
 # Tests seed a real RNG (`rand::rng()`), which needs the std/OS backend the library omits.
 rand = { workspace = true }
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

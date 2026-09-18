@@ -111,12 +111,36 @@ pub struct OpaqueParameter {
 
 /// How the transport parameters are laid out.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "TransportParameterProfileRepr")]
 pub struct TransportParameterProfile {
     order: ParameterOrder,
     grease: GreaseParameter,
     extra: Vec<OpaqueParameter>,
     min_ack_delay: bool,
     max_datagram_frame_size: Option<u64>,
+}
+
+/// The wire form of a [`TransportParameterProfile`]; deserialization goes through it and the
+/// builder checks, so a parsed value is as valid as a built one.
+#[derive(Deserialize)]
+struct TransportParameterProfileRepr {
+    order: ParameterOrder,
+    grease: GreaseParameter,
+    extra: Vec<OpaqueParameter>,
+    min_ack_delay: bool,
+    max_datagram_frame_size: Option<u64>,
+}
+
+impl TryFrom<TransportParameterProfileRepr> for TransportParameterProfile {
+    type Error = ProfileError;
+    fn try_from(repr: TransportParameterProfileRepr) -> Result<Self, Self::Error> {
+        Self::default()
+            .try_with_order(repr.order)?
+            .try_with_grease(repr.grease)?
+            .try_with_extra(repr.extra)?
+            .try_with_max_datagram_frame_size(repr.max_datagram_frame_size)
+            .map(|profile| profile.with_min_ack_delay(repr.min_ack_delay))
+    }
 }
 
 /// A value this profile cannot hold.
@@ -341,6 +365,7 @@ pub enum PaddingPlacement {
 
 /// How packets and datagrams are formed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "PacketizationProfileRepr")]
 pub struct PacketizationProfile {
     initial_datagram_size: u16,
     packet_number_length: PacketNumberLength,
@@ -348,6 +373,31 @@ pub struct PacketizationProfile {
     layout: InitialFlightLayout,
     padding: PaddingPlacement,
     coalesce: bool,
+}
+
+/// The wire form of a [`PacketizationProfile`]; deserialization goes through it and the builder
+/// checks, so a parsed value is as valid as a built one.
+#[derive(Deserialize)]
+struct PacketizationProfileRepr {
+    initial_datagram_size: u16,
+    packet_number_length: PacketNumberLength,
+    first_packet_number: u64,
+    layout: InitialFlightLayout,
+    padding: PaddingPlacement,
+    coalesce: bool,
+}
+
+impl TryFrom<PacketizationProfileRepr> for PacketizationProfile {
+    type Error = ProfileError;
+    fn try_from(repr: PacketizationProfileRepr) -> Result<Self, Self::Error> {
+        Ok(Self::default()
+            .try_with_initial_datagram_size(repr.initial_datagram_size)?
+            .try_with_packet_number_length(repr.packet_number_length)?
+            .try_with_first_packet_number(repr.first_packet_number)?
+            .with_layout(repr.layout)
+            .with_padding(repr.padding)
+            .with_coalesce(repr.coalesce))
+    }
 }
 
 impl Default for PacketizationProfile {
@@ -424,9 +474,11 @@ impl PacketizationProfile {
         Ok(self)
     }
 
-    /// The first packet number; must leave room to count (RFC 9000 §17.1: below 2^62).
+    /// The first packet number. Since nothing is acknowledged yet, this packet's truncated number
+    /// spans twice its value, and QUIC's largest truncation is four bytes (RFC 9000 §17.1), so it
+    /// must stay below 2^31 to be encodable.
     pub fn try_with_first_packet_number(mut self, first: u64) -> Result<Self, ProfileError> {
-        if first >= 1 << 32 {
+        if first >= 1 << 31 {
             return Err(ProfileError::Limit("first packet number"));
         }
         self.first_packet_number = first;
@@ -467,9 +519,27 @@ impl PacketizationProfile {
 
 /// Connection ID lengths.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "ConnectionIdProfileRepr")]
 pub struct ConnectionIdProfile {
     initial_destination_len: u8,
     local_len: u8,
+}
+
+/// The wire form of a [`ConnectionIdProfile`]; deserialization goes through it and the builder
+/// checks, so a parsed value is as valid as a built one.
+#[derive(Deserialize)]
+struct ConnectionIdProfileRepr {
+    initial_destination_len: u8,
+    local_len: u8,
+}
+
+impl TryFrom<ConnectionIdProfileRepr> for ConnectionIdProfile {
+    type Error = ProfileError;
+    fn try_from(repr: ConnectionIdProfileRepr) -> Result<Self, Self::Error> {
+        Self::default()
+            .try_with_initial_destination_len(repr.initial_destination_len)?
+            .try_with_local_len(repr.local_len)
+    }
 }
 
 impl Default for ConnectionIdProfile {
@@ -520,6 +590,7 @@ impl ConnectionIdProfile {
 
 /// The advertised flow-control and timing limits, as the transport parameters carry them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "TransportLimitsRepr")]
 pub struct TransportLimits {
     pub max_idle_timeout: Duration,
     pub initial_max_data: u64,
@@ -535,6 +606,44 @@ pub struct TransportLimits {
     /// The datagram receive buffer, from which `max_datagram_frame_size` follows; `None`
     /// disables the extension.
     pub datagram_receive_buffer_size: Option<usize>,
+}
+
+/// The wire form of [`TransportLimits`]; deserialization goes through it and the same checks the
+/// builder applies, so a parsed value cannot hold a limit its transport parameter cannot express.
+#[derive(Deserialize)]
+struct TransportLimitsRepr {
+    max_idle_timeout: Duration,
+    initial_max_data: u64,
+    initial_max_stream_data_bidi_local: u64,
+    initial_max_stream_data_bidi_remote: u64,
+    initial_max_stream_data_uni: u64,
+    initial_max_streams_bidi: u64,
+    initial_max_streams_uni: u64,
+    max_ack_delay: Duration,
+    active_connection_id_limit: Option<u64>,
+    max_udp_payload_size: u64,
+    datagram_receive_buffer_size: Option<usize>,
+}
+
+impl TryFrom<TransportLimitsRepr> for TransportLimits {
+    type Error = ProfileError;
+    fn try_from(repr: TransportLimitsRepr) -> Result<Self, Self::Error> {
+        let limits = Self {
+            max_idle_timeout: repr.max_idle_timeout,
+            initial_max_data: repr.initial_max_data,
+            initial_max_stream_data_bidi_local: repr.initial_max_stream_data_bidi_local,
+            initial_max_stream_data_bidi_remote: repr.initial_max_stream_data_bidi_remote,
+            initial_max_stream_data_uni: repr.initial_max_stream_data_uni,
+            initial_max_streams_bidi: repr.initial_max_streams_bidi,
+            initial_max_streams_uni: repr.initial_max_streams_uni,
+            max_ack_delay: repr.max_ack_delay,
+            active_connection_id_limit: repr.active_connection_id_limit,
+            max_udp_payload_size: repr.max_udp_payload_size,
+            datagram_receive_buffer_size: repr.datagram_receive_buffer_size,
+        };
+        limits.check()?;
+        Ok(limits)
+    }
 }
 
 impl TransportLimits {
@@ -601,6 +710,10 @@ impl TransportLimits {
 }
 
 /// A complete wire profile; see the [module documentation](self).
+///
+/// Every field is a type that can only hold values its builder accepts and that validates its own
+/// deserialization, so a `QuicProfile` is valid by construction: there is no separate check to
+/// remember, and none to forget.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QuicProfile {
     versions: ClientVersionPolicy,
@@ -702,5 +815,118 @@ impl QuicProfile {
             self.grease_quic_bit = grease;
             self
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The first packet number stays below what the initial packet's truncated number can encode
+    /// (twice its value, four bytes), so a profile can never make packet building panic.
+    #[test]
+    fn first_packet_number_is_bounded_to_what_the_encoder_can_hold() {
+        assert_eq!(
+            PacketizationProfile::standard()
+                .try_with_first_packet_number((1 << 31) - 1)
+                .unwrap()
+                .first_packet_number(),
+            (1 << 31) - 1
+        );
+        assert_eq!(
+            PacketizationProfile::standard().try_with_first_packet_number(1 << 31),
+            Err(ProfileError::Limit("first packet number"))
+        );
+    }
+
+    /// A valid profile survives a serde round-trip unchanged.
+    #[test]
+    fn a_valid_profile_round_trips_through_serde() {
+        let profile = QuicProfile::standard();
+        let json = serde_json::to_string(&profile).unwrap();
+        assert_eq!(serde_json::from_str::<QuicProfile>(&json).unwrap(), profile);
+    }
+
+    /// Every part validates its own deserialization, so a document holding one value the builder
+    /// would reject fails to parse rather than yielding a profile that misbehaves downstream. A
+    /// bad part is written out structurally, then the parse of that same bytes must fail.
+    #[test]
+    fn deserialization_rejects_an_invalid_value_in_every_part() {
+        fn rejected<T: Serialize + serde::de::DeserializeOwned + fmt::Debug>(bad: &T) {
+            let json = serde_json::to_string(bad).unwrap();
+            serde_json::from_str::<T>(&json).unwrap_err();
+        }
+
+        // A version policy has private fields, so tamper with its serialized form instead: an empty
+        // compatible list is one the builder rejects.
+        let mut raw = serde_json::to_value(ClientVersionPolicy::default()).unwrap();
+        raw["compatible"] = serde_json::json!([]);
+        serde_json::from_value::<ClientVersionPolicy>(raw).unwrap_err();
+
+        rejected(&TransportParameterProfile {
+            // An extra parameter may not reuse an identifier this crate writes itself.
+            extra: alloc::vec![OpaqueParameter {
+                id: ParameterId::MAX_IDLE_TIMEOUT,
+                value: Vec::new(),
+            }],
+            ..TransportParameterProfile::standard()
+        });
+        rejected(&ConnectionIdProfile {
+            local_len: MAX_CID_SIZE as u8 + 1,
+            initial_destination_len: 8,
+        });
+        rejected(&PacketizationProfile {
+            first_packet_number: 1 << 40,
+            ..PacketizationProfile::standard()
+        });
+        rejected(&TransportLimits {
+            // 17 s is past the 2^14 ms the max_ack_delay transport parameter can carry.
+            max_ack_delay: Duration::from_secs(17),
+            ..TransportLimits::standard()
+        });
+        // Each remaining limit check has its own rejected input, so none can be quietly dropped.
+        rejected(&TransportLimits {
+            initial_max_streams_bidi: crate::MAX_STREAM_COUNT + 1,
+            ..TransportLimits::standard()
+        });
+        rejected(&TransportLimits {
+            initial_max_streams_uni: crate::MAX_STREAM_COUNT + 1,
+            ..TransportLimits::standard()
+        });
+        rejected(&TransportLimits {
+            // RFC 9000 §18.2 floors the active_connection_id_limit at 2.
+            active_connection_id_limit: Some(1),
+            ..TransportLimits::standard()
+        });
+        rejected(&TransportLimits {
+            max_udp_payload_size: 1199,
+            ..TransportLimits::standard()
+        });
+        rejected(&TransportLimits {
+            max_udp_payload_size: 65528,
+            ..TransportLimits::standard()
+        });
+
+        // The inclusive boundaries are accepted, which pins the comparisons that guard them: the
+        // largest allowed stream counts and the smallest allowed active_connection_id_limit.
+        let json = serde_json::to_string(&TransportLimits {
+            initial_max_streams_bidi: crate::MAX_STREAM_COUNT,
+            initial_max_streams_uni: crate::MAX_STREAM_COUNT,
+            active_connection_id_limit: Some(2),
+            ..TransportLimits::standard()
+        })
+        .unwrap();
+        serde_json::from_str::<TransportLimits>(&json).unwrap();
+
+        // And an invalid part sunk inside an otherwise-standard profile fails the whole parse.
+        let bad = QuicProfile {
+            limits: TransportLimits {
+                max_ack_delay: Duration::from_secs(17),
+                ..TransportLimits::standard()
+            },
+            ..QuicProfile::standard()
+        };
+        let json = serde_json::to_string(&bad).unwrap();
+        serde_json::from_str::<QuicProfile>(&json).unwrap_err();
     }
 }

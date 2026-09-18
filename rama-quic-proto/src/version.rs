@@ -530,12 +530,35 @@ fn check_list(versions: &[Version]) -> Result<(), VersionPolicyError> {
 /// with a Version Negotiation packet. A TLS provider that cannot change version during the
 /// handshake narrows the compatible set to the original version.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "ClientVersionPolicyRepr")]
 pub struct ClientVersionPolicy {
     original: Version,
     compatible: Vec<Version>,
     supported: Vec<Version>,
     grease: ReservedVersionGrease,
     resume_in_ticket_version: bool,
+}
+
+/// The wire form of a [`ClientVersionPolicy`]; deserialization goes through it and the builder
+/// checks, so a parsed policy has the same list invariants as a built one.
+#[derive(Deserialize)]
+struct ClientVersionPolicyRepr {
+    original: Version,
+    compatible: Vec<Version>,
+    supported: Vec<Version>,
+    grease: ReservedVersionGrease,
+    resume_in_ticket_version: bool,
+}
+
+impl TryFrom<ClientVersionPolicyRepr> for ClientVersionPolicy {
+    type Error = VersionPolicyError;
+    fn try_from(repr: ClientVersionPolicyRepr) -> Result<Self, Self::Error> {
+        Ok(Self::new(repr.original)?
+            .try_with_supported(repr.supported)?
+            .try_with_compatible(repr.compatible)?
+            .with_reserved_version_grease(repr.grease)
+            .with_resume_in_ticket_version(repr.resume_in_ticket_version))
+    }
 }
 
 /// Where a reserved `0x?a?a?a?a` version goes in an advertised version list (RFC 9368 §3).

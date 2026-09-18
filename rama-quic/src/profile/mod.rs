@@ -4,6 +4,7 @@
 //! turns one into this engine's [`EndpointConfig`], [`ClientConfig`] and [`ServerConfig`], and
 //! reads a first flight back through [`capture`].
 
+use rama_core::telemetry::tracing::debug;
 use rama_quic_proto::{VarInt, profile::*};
 
 pub mod capture;
@@ -66,7 +67,14 @@ impl TransportConfig {
     #[must_use]
     pub fn from_quic_profile(profile: &QuicProfile) -> Self {
         let limits = profile.limits();
-        let var = |value: u64| VarInt::from_u64(value).unwrap_or(VarInt::MAX);
+        // A validated profile's limits all fit a varint; only a profile assembled through unchecked
+        // setters can reach here out of range, so clamp rather than panic and leave a breadcrumb.
+        let var = |value: u64| {
+            VarInt::from_u64(value).unwrap_or_else(|error| {
+                debug!(value, %error, "profile limit exceeds a varint; clamping to the maximum");
+                VarInt::MAX
+            })
+        };
         let mut config = Self::default()
             .with_max_concurrent_bidi_streams(var(limits.initial_max_streams_bidi))
             .with_max_concurrent_uni_streams(var(limits.initial_max_streams_uni))
@@ -79,13 +87,16 @@ impl TransportConfig {
         // Initial datagrams cannot exceed the path's current MTU, so a profile that pads them
         // larger raises the starting MTU to match.
         config = config.with_initial_mtu(profile.packetization().initial_datagram_size());
-        #[expect(
-            clippy::expect_used,
-            reason = "`try_with_limits` checked the delay against the parameter's range"
-        )]
-        config
-            .try_set_max_ack_delay(limits.max_ack_delay)
-            .expect("a checked max_ack_delay");
+        // A profile from the builder or from deserialization has a checked delay; this method is
+        // also public and infallible, so an out-of-range one from an unchecked profile is left at
+        // the default rather than made to panic.
+        if let Err(error) = config.try_set_max_ack_delay(limits.max_ack_delay) {
+            debug!(
+                max_ack_delay = ?limits.max_ack_delay,
+                %error,
+                "profile max_ack_delay is out of range; keeping the default"
+            );
+        }
         let idle = u64::try_from(limits.max_idle_timeout.as_millis()).unwrap_or(u64::MAX);
         config.maybe_set_max_idle_timeout(if idle == 0 {
             None
