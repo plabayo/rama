@@ -189,7 +189,10 @@ jobs:
       - name: sccache stats
         if: always()
         shell: bash
-        run: command -v sccache >/dev/null 2>&1 && sccache --show-stats || true
+        run: |
+          if command -v sccache >/dev/null 2>&1; then
+            sccache --show-stats || true
+          fi
 
   doc-rust:
     strategy:
@@ -326,7 +329,10 @@ jobs:
       - name: sccache stats
         if: always()
         shell: bash
-        run: command -v sccache >/dev/null 2>&1 && sccache --show-stats || true
+        run: |
+          if command -v sccache >/dev/null 2>&1; then
+            sccache --show-stats || true
+          fi
 
   test-datastar-sdk:
     runs-on: ubuntu-latest
