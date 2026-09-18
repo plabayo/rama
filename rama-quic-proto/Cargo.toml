@@ -21,7 +21,8 @@ targets = ["x86_64-unknown-linux-gnu"]
 [features]
 default = ["std"]
 std = ["rama-core/std", "rama-utils/std", "dep:rama-tls"]
-arbitrary = ["dep:arbitrary"]
+# `arbitrary`'s derive emits `std`-rooted paths, so it only builds on a `std` crate.
+arbitrary = ["dep:arbitrary", "std"]
 
 [dependencies]
 arbitrary = { workspace = true, optional = true }
