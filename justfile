@@ -180,7 +180,7 @@ check-links:
     lychee .
 
 clippy:
-    cargo clippy --workspace --all-targets --all-features
+    cargo clippy --workspace --all-targets --all-features -- -D warnings
 
 clippy-beta:
     cargo +beta clippy --workspace --all-targets --all-features
