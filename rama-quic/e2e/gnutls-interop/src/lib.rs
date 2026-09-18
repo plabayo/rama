@@ -316,9 +316,7 @@ impl provider::Session for Session {
         Ok(self.output.pop_front())
     }
 
-    fn next_1rtt_keys(
-        &mut self,
-    ) -> Result<Option<KeyPair<Box<dyn PacketKey>>>, TransportError> {
+    fn next_1rtt_keys(&mut self) -> Result<Option<KeyPair<Box<dyn PacketKey>>>, TransportError> {
         let (Some(local), Some(remote)) = (&self.local_secret, &self.remote_secret) else {
             return Ok(None);
         };

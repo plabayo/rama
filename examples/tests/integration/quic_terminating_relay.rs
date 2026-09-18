@@ -26,7 +26,7 @@ use rama::{
     net::tls::ApplicationProtocol,
     quic::{
         ClientConfig, Connection, ConnectionError, Endpoint, ReadError, ReadToEndError, RecvStream,
-        SendStream, ServerConfig, TransportConfig, VarInt, WriteError, tls::TlsOptions,
+        SendStream, ServerConfig, TransportConfig, WriteError, proto::VarInt, tls::TlsOptions,
     },
     rt::{Executor, spawn},
     tls::{
@@ -804,7 +804,7 @@ async fn cancelled_while_waiting_for_credit(reset: bool) {
             .expect("a queued request reset is noticed promptly")
             .unwrap_err();
         assert!(
-            matches!(error, ReadToEndError::Read(ReadError::Reset(code)) if code == RELAY_CANCELLED.into())
+            matches!(error, ReadToEndError::Read(ReadError::Reset(code)) if code == VarInt::from(RELAY_CANCELLED))
         );
     } else {
         recv.stop(CLIENT_STOPPED.into()).unwrap();
@@ -856,7 +856,7 @@ async fn a_stop_after_forwarding_fin_cancels_the_idle_response() {
         .expect("the unacknowledged FIN still observes a stop")
         .unwrap_err();
     assert!(
-        matches!(error, ReadToEndError::Read(ReadError::Reset(code)) if code == RELAY_CANCELLED.into())
+        matches!(error, ReadToEndError::Read(ReadError::Reset(code)) if code == VarInt::from(RELAY_CANCELLED))
     );
     gate.paused.store(false, Ordering::Release);
     carries_another_stream(&connection, &upstream).await;

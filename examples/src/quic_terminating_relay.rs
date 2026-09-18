@@ -69,7 +69,7 @@ use rama::{
     net::tls::ApplicationProtocol,
     quic::{
         ClientConfig, Connection, Endpoint, ReadError, RecvStream, SendStream, ServerConfig,
-        StoppedError, VarInt, tls::TlsOptions,
+        StoppedError, proto::VarInt, tls::TlsOptions,
     },
     rt::{Executor, spawn},
     telemetry::tracing::{

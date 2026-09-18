@@ -621,7 +621,7 @@ pub enum WriteSlot {
 
 impl ReservedTransportParameter {
     /// Generates a transport parameter with a random payload and a reserved ID. The payload is
-    /// `value_len` bytes when given, else up to [`Self::MAX_PAYLOAD_LEN`].
+    /// `value_len` bytes when given, else a random length up to a small fixed maximum.
     pub fn random(rng: &mut impl Rng, value_len: Option<usize>) -> Self {
         let id = Self::generate_reserved_id(rng);
         let payload_len = value_len.unwrap_or_else(|| rng.random_range(0..Self::MAX_PAYLOAD_LEN));

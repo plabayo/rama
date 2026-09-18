@@ -12,7 +12,7 @@
 
 use divan::{AllocProfiler, black_box, counter::ItemsCount};
 use rama::quic::{
-    ConnectionId,
+    proto::ConnectionId,
     qlog::{
         JsonSeqEncoder, QlogConfig, QlogEncoder, QlogEventView, QlogOutput, QlogRecorder, QlogSink,
         QueueLimits, TraceInfo,

@@ -24,13 +24,20 @@ std = ["rama-core/std", "rama-utils/std", "dep:rama-tls"]
 arbitrary = ["dep:arbitrary"]
 
 [dependencies]
+arbitrary = { workspace = true, optional = true }
 rama-core = { workspace = true }
-rama-utils = { workspace = true }
 # Only the std capture pipeline needs it, to peek a ClientHello; kept out of no_std builds.
 rama-tls = { workspace = true, optional = true }
-rand = { workspace = true }
+rama-utils = { workspace = true }
+# Only the trait-level RNG API is used in the library, so it stays no_std (`alloc` for shuffling).
+# Pinned directly rather than inherited because the workspace entry keeps `rand`'s default
+# features (its OS `getrandom` backend), which would break bare-metal `no_std` targets.
+rand = { version = "0.10", default-features = false, features = ["alloc"] }
 serde = { workspace = true, features = ["derive"] }
-arbitrary = { workspace = true, optional = true }
+
+[dev-dependencies]
+# Tests seed a real RNG (`rand::rng()`), which needs the std/OS backend the library omits.
+rand = { workspace = true }
 
 [lints]
 workspace = true

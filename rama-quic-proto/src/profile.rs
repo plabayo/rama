@@ -9,7 +9,7 @@
 //!
 //! [`QuicProfile::standard()`] is what this crate does on its own. The browser profiles were
 //! taken from captures of the named browser versions and are verified against those captures
-//! in this crate's tests; [`capture`] is the parser that reads a first flight back.
+//! in this crate's tests; [`crate::capture`] is the parser that reads a first flight back.
 
 use core::{fmt, time::Duration};
 

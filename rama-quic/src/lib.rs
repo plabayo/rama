@@ -70,8 +70,8 @@ pub mod tls {
     /// Implement [`provider::ClientConfig`] and [`provider::ServerConfig`] and pass them to
     /// [`crate::ClientConfig::new`] and [`crate::ServerConfig::new`]. The latter also
     /// accepts a custom address-token key, so no built-in crypto feature is required.
-    /// A provider encodes local [`provider::TransportParameters`] into its TLS extension and
-    /// decodes its peer's extension with [`provider::TransportParameters::read`].
+    /// A provider encodes local [`rama_quic_proto::transport_parameters::TransportParameters`]
+    /// into its TLS extension and decodes its peer's extension with that type's `read`.
     ///
     /// Sessions must preserve the order of [`provider::HandshakeEvent`] values, distinguish read
     /// and write keys, and report TLS failures through Rama's transport error types.
