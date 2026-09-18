@@ -300,6 +300,7 @@ _test-loom-windows:
     $env:RUSTFLAGS = "--cfg loom -Dwarnings"; cargo nextest run --all-features -p rama-utils
 
 qq: sort-check fmt-check check check-fuzz check-nostd clippy doc extra-checks
+    just rama-quic/qq
 
 qa: qq test test-no-default-features test-doc deny
 
