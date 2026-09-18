@@ -64,12 +64,15 @@ qa-boring-isolation:
 interop-peer-dirs := "e2e/interop-common e2e/quinn-interop e2e/quiche-interop e2e/aioquic-interop"
 interop-dirs := interop-peer-dirs + " e2e/interop-runner e2e/gnutls-interop"
 
-qq:
-    cargo check --manifest-path e2e/interop-common/Cargo.toml --all-targets --locked --features rustls-aws-lc
-    cargo check --manifest-path e2e/quinn-interop/Cargo.toml --all-targets --locked --features rustls-aws-lc
-    cargo check --manifest-path e2e/quiche-interop/Cargo.toml --all-targets --locked --features rustls-aws-lc
-    cargo check --manifest-path e2e/aioquic-interop/Cargo.toml --all-targets --locked --features rustls-aws-lc
-    cargo check --manifest-path e2e/interop-runner/Cargo.toml --all-targets --locked --features rustls-aws-lc
+qq: (_qq-check "e2e/interop-common" "boring") (_qq-check "e2e/interop-common" "rustls-aws-lc") (_qq-check "e2e/quinn-interop" "boring") (_qq-check "e2e/quinn-interop" "rustls-aws-lc") (_qq-check "e2e/quiche-interop" "boring") (_qq-check "e2e/quiche-interop" "rustls-aws-lc") (_qq-check "e2e/aioquic-interop" "boring") (_qq-check "e2e/aioquic-interop" "rustls-aws-lc") (_qq-check "e2e/interop-runner" "boring") (_qq-check "e2e/interop-runner" "rustls-aws-lc")
+
+# Check one interop project against one backend in both profiles. Release matters because the
+# interop-runner ships from a `--release` Docker build, where a `debug_assert!` over
+# `cfg(debug_assertions)` code fails to compile though `check` is clean.
+[private]
+_qq-check DIR FEATURES:
+    cargo check --manifest-path {{DIR}}/Cargo.toml --all-targets --locked --features {{FEATURES}}
+    cargo check --release --manifest-path {{DIR}}/Cargo.toml --all-targets --locked --features {{FEATURES}}
 
 # Check formatting and lints for the shared scenarios and all peer projects.
 qa-interop-lint BACKEND: (_lint-interop "e2e/interop-common" BACKEND) (_lint-interop "e2e/quinn-interop" BACKEND) (_lint-interop "e2e/quiche-interop" BACKEND) (_lint-interop "e2e/aioquic-interop" BACKEND)
