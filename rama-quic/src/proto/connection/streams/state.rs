@@ -1128,7 +1128,14 @@ pub(super) fn get_or_insert_recv(
 ) -> impl FnMut(&mut Option<StreamRecv>) -> &mut Recv {
     move |opt| {
         *opt = opt.take().map(|s| match s {
-            StreamRecv::Free(recv) | StreamRecv::Open(recv) => StreamRecv::Open(recv),
+            // A pooled receiver still carries the window of the stream it last served. Reset it to
+            // this stream's initial limit on activation, or a predecessor with a smaller window
+            // would make us reject data the peer is entitled to send (RFC 9000 §4.1).
+            StreamRecv::Free(mut recv) => {
+                recv.reinit(initial_max_data);
+                StreamRecv::Open(recv)
+            }
+            StreamRecv::Open(recv) => StreamRecv::Open(recv),
         });
         opt.get_or_insert_with(|| StreamRecv::Open(Recv::new(initial_max_data)))
             .as_open_recv_mut()
