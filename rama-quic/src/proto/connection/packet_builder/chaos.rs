@@ -88,23 +88,24 @@ pub(super) fn scramble(payload: &mut [u8], rng: &mut impl Rng) -> bool {
         }
         pieces.push(rest);
     }
-    // Merge back while it does not fit; the original frames fit by construction.
+    // Merge back while it does not fit; the runs, and so the original frames, fit by construction.
+    // Only adjacent contiguous pieces may merge: joining across a gap would place the later bytes
+    // at the wrong CRYPTO offset and corrupt the stream.
     let mut used = pieces.iter().map(Fragment::size).sum::<usize>() + pings;
     while used > total && pieces.len() > 1 {
         pieces.sort_by_key(|piece| piece.offset);
-        let tail = pieces.pop().and_then(|tail| {
-            let head = pieces.pop()?;
-            let mut joined = Vec::with_capacity(head.data.len() + tail.data.len());
-            joined.extend_from_slice(&head.data);
-            joined.extend_from_slice(&tail.data);
-            Some(Fragment {
-                offset: head.offset,
-                data: Bytes::from(joined),
-            })
-        });
-        if let Some(joined) = tail {
-            pieces.push(joined);
-        }
+        let Some(i) = (0..pieces.len() - 1)
+            .find(|&i| pieces[i].offset + pieces[i].data.len() as u64 == pieces[i + 1].offset)
+        else {
+            // Every remaining piece is its own run; nothing contiguous is left to rejoin.
+            return false;
+        };
+        let tail = pieces.remove(i + 1);
+        let head = &mut pieces[i];
+        let mut joined = Vec::with_capacity(head.data.len() + tail.data.len());
+        joined.extend_from_slice(&head.data);
+        joined.extend_from_slice(&tail.data);
+        head.data = Bytes::from(joined);
         used = pieces.iter().map(Fragment::size).sum::<usize>() + pings;
     }
     if used > total {
@@ -201,6 +202,50 @@ mod tests {
             }
             assert!(covered.iter().all(|&c| c), "every CRYPTO byte is covered");
             assert_eq!(stream, data, "the CRYPTO bytes are unchanged");
+        }
+    }
+
+    /// Two CRYPTO frames with a gap between them must keep their bytes at the right offsets even
+    /// when a tight budget forces the merge-back path; a merge across the gap would corrupt them.
+    #[test]
+    fn scramble_preserves_two_non_contiguous_runs() {
+        let mut rng = Pcg32::new(0x0123_4567_89ab_cdef, 0xfeed_face_cafe_beef);
+        let mut expected = vec![None; 1000];
+        let mut payload = Vec::new();
+        for &start in &[0usize, 600] {
+            let data: Vec<u8> = (start..start + 400).map(|i| (i % 251) as u8).collect();
+            for (i, &b) in data.iter().enumerate() {
+                expected[start + i] = Some(b);
+            }
+            frame::Crypto {
+                offset: start as u64,
+                data: Bytes::copy_from_slice(&data),
+            }
+            .encode(&mut payload);
+        }
+        // Barely more room than the two frames occupy, so cutting overflows and forces merge-back.
+        payload.resize(payload.len() + 8, 0);
+        let original = payload.clone();
+
+        for _ in 0..400 {
+            let mut scrambled = original.clone();
+            // The two runs on their own fit, so merge-back can always rejoin enough to succeed;
+            // a version that instead merges across the gap, or bails, would fail here.
+            assert!(scramble(&mut scrambled, &mut rng));
+            assert_eq!(scrambled.len(), original.len());
+            for frame in frame::Iter::new(Bytes::copy_from_slice(&scrambled)).unwrap() {
+                if let Frame::Crypto(crypto) = frame.unwrap() {
+                    let start = crypto.offset as usize;
+                    for (i, &b) in crypto.data.iter().enumerate() {
+                        assert_eq!(
+                            expected[start + i],
+                            Some(b),
+                            "CRYPTO byte at offset {} is wrong",
+                            start + i
+                        );
+                    }
+                }
+            }
         }
     }
 
