@@ -34,8 +34,6 @@ impl super::Connection {
         &mut self,
         now: crate::proto::Instant,
     ) {
-        use rama_core::bytes::Bytes;
-
         self.skip_no_packet_number();
         assert!(self.force_key_update(now));
         self.ping();
@@ -49,15 +47,12 @@ impl super::Connection {
         self.qlog_discard_retired_keys(now);
         assert!(!self.force_key_update(now));
 
+        let mut ranges = rama_quic_proto::range_set::ArrayRangeSet::new();
+        ranges.insert_one(sent);
         self.on_ack_received(
             now + crate::proto::Duration::from_millis(1),
             SpaceId::Data,
-            &frame::Ack {
-                largest: sent,
-                delay: 0,
-                additional: Bytes::from_static(&[0]),
-                ecn: None,
-            },
+            &frame::Ack::from_ranges(0, &ranges, None).unwrap(),
         )
         .unwrap();
         assert!(self.force_key_update(now));

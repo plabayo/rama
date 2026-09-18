@@ -69,8 +69,9 @@ pub(crate) fn new(
             GreaseParameter::Random { value_len } => {
                 Some(ReservedTransportParameter::random(rng, *value_len))
             }
+            // An id that does not fit a varint cannot be greased, so it greases nothing.
             GreaseParameter::Fixed { id, value } => {
-                Some(ReservedTransportParameter::fixed(id.0, value))
+                ReservedTransportParameter::fixed(id.0, value).ok()
             }
             // `None`, and any future greasing mode this engine does not know, grease nothing.
             _ => None,

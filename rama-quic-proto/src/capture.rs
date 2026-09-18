@@ -348,7 +348,7 @@ impl ObservedDatagram {
             )
             .map_err(|_error| CaptureError::Malformed("Initial header"))?;
             let mut packet = decode
-                .finish(Some(header_key))
+                .finish_protected(header_key)
                 .map_err(|_error| CaptureError::Undecryptable)?;
             let number = packet.header.number().ok_or(CaptureError::Undecryptable)?;
             let packet_number_len = number.len() as u8;

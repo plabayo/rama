@@ -69,7 +69,7 @@ fn header_encoding() {
     .unwrap()
     .0;
     let mut packet = decode
-        .finish(Some(&*server.remote.as_ref().unwrap().header))
+        .finish_protected(&*server.remote.as_ref().unwrap().header)
         .unwrap();
     assert_eq!(
         packet.header_data[..],

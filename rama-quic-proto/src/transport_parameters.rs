@@ -16,6 +16,7 @@ use rand::{Rng, RngExt, seq::SliceRandom as _};
 
 use crate::{
     MAX_CID_SIZE, MAX_STREAM_COUNT, RESET_TOKEN_SIZE, ResetToken, Side, TransportError, VarInt,
+    VarIntBoundsExceeded,
     coding::{BufExt, BufMutExt, UnexpectedEnd},
     profile::{ParameterId, ParameterOrder},
     shared::ConnectionId,
@@ -631,11 +632,11 @@ impl ReservedTransportParameter {
     }
 
     /// A reserved parameter with this identifier and value on every connection.
-    pub fn fixed(id: u64, value: &[u8]) -> Self {
-        Self {
-            id: VarInt::from_u64(id).unwrap_or(VarInt::from_u32(27)),
+    pub fn fixed(id: u64, value: &[u8]) -> Result<Self, VarIntBoundsExceeded> {
+        Ok(Self {
+            id: VarInt::from_u64(id)?,
             payload: value.to_vec(),
-        }
+        })
     }
 
     fn write(&self, w: &mut impl BufMut) {

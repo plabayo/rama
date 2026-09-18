@@ -655,10 +655,11 @@ impl Endpoint {
                 .map(DatagramEvent::Response);
         }
 
-        let packet = match event
-            .first_decode
-            .finish(crypto.remote.as_ref().map(|keys| keys.header.as_ref()))
-        {
+        let Some(remote) = crypto.remote.as_ref() else {
+            trace!("initial packet has no remote header protection key");
+            return None;
+        };
+        let packet = match event.first_decode.finish_protected(remote.header.as_ref()) {
             Ok(packet) => packet,
             Err(e) => {
                 trace!("unable to decode initial packet: {}", e);
@@ -1034,7 +1035,7 @@ impl Endpoint {
                     break;
                 };
                 if decode.is_initial()
-                    && let Ok(mut packet) = decode.finish(Some(&*keys.header))
+                    && let Ok(mut packet) = decode.finish_protected(&*keys.header)
                     && let Some(number) = packet.header.number()
                     && keys
                         .packet

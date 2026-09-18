@@ -174,11 +174,28 @@ impl PartialDecode {
         self.buf.get_ref().len()
     }
 
+    /// Finish decoding a header that carries a protected packet number (Initial, Handshake,
+    /// 0-RTT, 1-RTT), removing header protection with `header_crypto`. The key is mandatory, so a
+    /// caller cannot reach a number-bearing header without one.
+    pub fn finish_protected(
+        self,
+        header_crypto: &dyn crypto::HeaderKey,
+    ) -> Result<Packet, PacketDecodeError> {
+        self.finish_inner(Some(header_crypto))
+    }
+
+    /// Finish decoding a header that carries no packet number (Retry, Version Negotiation), which
+    /// needs no key. A number-bearing header handed here is reported as an invalid header rather
+    /// than decoded without protection.
+    pub fn finish_unprotected(self) -> Result<Packet, PacketDecodeError> {
+        self.finish_inner(None)
+    }
+
     #[expect(
         clippy::unreachable,
         reason = "the Initial header is handled by the branch above, so it cannot reach this match"
     )]
-    pub fn finish(
+    fn finish_inner(
         self,
         header_crypto: Option<&dyn crypto::HeaderKey>,
     ) -> Result<Packet, PacketDecodeError> {

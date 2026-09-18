@@ -401,7 +401,10 @@ impl ApplicationClose {
 pub struct Ack {
     pub largest: u64,
     pub delay: u64,
-    pub additional: Bytes,
+    /// The raw range bytes (first-range size, then gap/size pairs); private so every `Ack` is
+    /// either decoded (and validated) or built from a range set via [`Ack::from_ranges`], never
+    /// hand-assembled with bytes that could desync from `largest` and panic on iteration.
+    additional: Bytes,
     pub ecn: Option<EcnCounts>,
 }
 
@@ -438,20 +441,47 @@ impl<'a> IntoIterator for &'a Ack {
 }
 
 impl Ack {
+    /// Build an ACK from a range set, laid out as it will be iterated and encoded, or `None` when
+    /// the set is empty (there is nothing to acknowledge). This is the only way to construct an
+    /// `Ack` outside decoding, so a hand-built one can never carry inconsistent range bytes.
+    pub fn from_ranges(delay: u64, ranges: &ArrayRangeSet, ecn: Option<EcnCounts>) -> Option<Self> {
+        let (largest, additional) = Self::ranges_to_wire(ranges)?;
+        Some(Self {
+            largest,
+            delay,
+            additional: additional.into(),
+            ecn,
+        })
+    }
+
+    /// The largest acknowledged packet and the range bytes an ACK carries for `ranges` (the first
+    /// range's size, then gap/size pairs), or `None` when the set is empty.
+    fn ranges_to_wire(ranges: &ArrayRangeSet) -> Option<(u64, Vec<u8>)> {
+        let mut rest = ranges.iter().rev();
+        let first = rest.next()?;
+        let largest = first.end - 1;
+        let mut additional = Vec::new();
+        additional.write_var(first.end - first.start - 1);
+        let mut prev = first.start;
+        for block in rest {
+            additional.write_var(prev - block.end - 1);
+            additional.write_var(block.end - block.start - 1);
+            prev = block.start;
+        }
+        Some((largest, additional))
+    }
+
     pub fn encode<W: BufMut>(
         delay: u64,
         ranges: &ArrayRangeSet,
         ecn: Option<&EcnCounts>,
         buf: &mut W,
     ) {
-        let mut rest = ranges.iter().rev();
-        #[expect(
-            clippy::unwrap_used,
-            reason = "ACK frames are only encoded for a non-empty range set (`PendingAcks` never yields an empty one)"
-        )]
-        let first = rest.next().unwrap();
-        let largest = first.end - 1;
-        let first_size = first.end - first.start;
+        // A caller only encodes a non-empty ACK (`PendingAcks` gates on `can_send`); an empty
+        // range set writes no frame rather than panicking.
+        let Some((largest, additional)) = Self::ranges_to_wire(ranges) else {
+            return;
+        };
         buf.write(if ecn.is_some() {
             FrameType::ACK_ECN
         } else {
@@ -460,14 +490,7 @@ impl Ack {
         buf.write_var(largest);
         buf.write_var(delay);
         buf.write_var(ranges.len() as u64 - 1);
-        buf.write_var(first_size - 1);
-        let mut prev = first.start;
-        for block in rest {
-            let size = block.end - block.start;
-            buf.write_var(prev - block.end - 1);
-            buf.write_var(size - 1);
-            prev = block.start;
-        }
+        buf.put_slice(&additional);
         if let Some(x) = ecn {
             x.encode(buf)
         }

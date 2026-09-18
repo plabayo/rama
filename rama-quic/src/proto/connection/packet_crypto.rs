@@ -61,7 +61,11 @@ pub(super) fn unprotect_header(
             rama_quic_proto::constant_time::eq(token, &packet[packet.len() - RESET_TOKEN_SIZE..])
         });
 
-    match partial_decode.finish(header_crypto) {
+    let finished = match header_crypto {
+        Some(key) => partial_decode.finish_protected(key),
+        None => partial_decode.finish_unprotected(),
+    };
+    match finished {
         Ok(packet) => Ok(UnprotectHeaderResult {
             packet: Some(packet),
             stateless_reset,

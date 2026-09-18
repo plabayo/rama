@@ -182,28 +182,34 @@ impl ConnectionId {
         Ok(Self::new(bytes))
     }
 
-    /// Construct a cid from a byte slice.
+    /// Construct a cid from a byte slice whose length the caller already knows fits
+    /// [`MAX_CID_SIZE`]. Use [`Self::try_from_bytes`] for untrusted input: this trusts the length
+    /// and, so it cannot become a remote panic, keeps only the first [`MAX_CID_SIZE`] bytes of an
+    /// over-long slice rather than indexing past the identifier.
     #[must_use]
     pub fn new(bytes: &[u8]) -> Self {
         debug_assert!(bytes.len() <= MAX_CID_SIZE);
+        let len = bytes.len().min(MAX_CID_SIZE);
         let mut res = Self {
-            len: bytes.len() as u8,
+            len: len as u8,
             bytes: [0; MAX_CID_SIZE],
         };
-        res.bytes[..bytes.len()].copy_from_slice(bytes);
+        res.bytes[..len].copy_from_slice(&bytes[..len]);
         res
     }
 
     /// Construct a cid by reading `len` bytes from a `Buf`.
     ///
-    /// Callers need to assure that `buf.remaining() >= len`.
+    /// Callers need to assure that `buf.remaining() >= len` and, as with [`Self::new`], that
+    /// `len <= MAX_CID_SIZE`; a larger `len` keeps only the first [`MAX_CID_SIZE`] bytes.
     pub fn from_buf(buf: &mut (impl Buf + ?Sized), len: usize) -> Self {
         debug_assert!(len <= MAX_CID_SIZE);
+        let len = len.min(MAX_CID_SIZE);
         let mut res = Self {
             len: len as u8,
             bytes: [0; MAX_CID_SIZE],
         };
-        buf.copy_to_slice(&mut res[..len]);
+        buf.copy_to_slice(&mut res.bytes[..len]);
         res
     }
 
