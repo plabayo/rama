@@ -163,7 +163,7 @@ fn rama_first_flight(profile: &QuicProfile) -> (FirstFlight, bool) {
             }
         };
         drop(connecting);
-        client.close(0u32.into(), b"done");
+        client.close(0u32, b"done");
         (flight, capable)
     })
 }

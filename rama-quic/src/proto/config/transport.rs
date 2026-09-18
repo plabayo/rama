@@ -86,16 +86,16 @@ impl TransportConfig {
         ///
         /// Worst-case memory use is directly proportional to `max_concurrent_bidi_streams *
         /// stream_receive_window`, with an upper bound proportional to `receive_window`.
-        pub fn max_concurrent_bidi_streams(mut self, value: VarInt) -> Self {
-            self.max_concurrent_bidi_streams = value;
+        pub fn max_concurrent_bidi_streams(mut self, value: impl Into<VarInt>) -> Self {
+            self.max_concurrent_bidi_streams = value.into();
             self
         }
     }
 
     rama_utils::macros::generate_set_and_with! {
         /// Variant of `max_concurrent_bidi_streams` affecting unidirectional streams
-        pub fn max_concurrent_uni_streams(mut self, value: VarInt) -> Self {
-            self.max_concurrent_uni_streams = value;
+        pub fn max_concurrent_uni_streams(mut self, value: impl Into<VarInt>) -> Self {
+            self.max_concurrent_uni_streams = value.into();
             self
         }
     }
@@ -139,8 +139,8 @@ impl TransportConfig {
         /// stream doesn't monopolize receive buffers, which may otherwise occur if the application
         /// chooses not to read from a large stream for a time while still requiring data on other
         /// streams.
-        pub fn stream_receive_window(mut self, value: VarInt) -> Self {
-            self.stream_receive_window = value;
+        pub fn stream_receive_window(mut self, value: impl Into<VarInt>) -> Self {
+            self.stream_receive_window = value.into();
             self
         }
     }
@@ -199,8 +199,8 @@ impl TransportConfig {
         /// This should be set to at least the expected connection latency multiplied by the maximum
         /// desired throughput. Larger values can be useful to allow maximum throughput within a
         /// stream while another is blocked.
-        pub fn receive_window(mut self, value: VarInt) -> Self {
-            self.receive_window = value;
+        pub fn receive_window(mut self, value: impl Into<VarInt>) -> Self {
+            self.receive_window = value.into();
             self
         }
     }
@@ -685,8 +685,8 @@ impl AckFrequencyConfig {
         /// acknowledging every ack-eliciting packet.
         ///
         /// Defaults to 1, which sends ACK frames for every other ack-eliciting packet.
-        pub fn ack_eliciting_threshold(mut self, value: VarInt) -> Self {
-            self.ack_eliciting_threshold = value;
+        pub fn ack_eliciting_threshold(mut self, value: impl Into<VarInt>) -> Self {
+            self.ack_eliciting_threshold = value.into();
             self
         }
     }
@@ -722,8 +722,8 @@ impl AckFrequencyConfig {
         /// It is recommended to set this value to [`TransportConfig::packet_threshold`] minus one.
         /// Since the default value for [`TransportConfig::packet_threshold`] is 3, this value defaults
         /// to 2.
-        pub fn reordering_threshold(mut self, value: VarInt) -> Self {
-            self.reordering_threshold = value;
+        pub fn reordering_threshold(mut self, value: impl Into<VarInt>) -> Self {
+            self.reordering_threshold = value.into();
             self
         }
     }

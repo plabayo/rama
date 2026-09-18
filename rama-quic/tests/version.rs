@@ -52,7 +52,7 @@ async fn a_v2_first_flight_completes_against_a_default_server() {
         .await
         .expect("the v2 handshake completes");
     runtime::exchange(&connection, b"hello over QUICv2").await;
-    connection.close(0u32.into(), b"done");
+    connection.close(0u32, b"done");
     serving.await.unwrap();
     tokio::join!(client.shutdown(), server.shutdown());
 }
@@ -100,7 +100,7 @@ async fn a_client_restarts_in_v2_when_the_server_only_speaks_v2() {
         "the first flight and the restart"
     );
     runtime::exchange(&connection, b"after version negotiation").await;
-    connection.close(0u32.into(), b"done");
+    connection.close(0u32, b"done");
     serving.await.unwrap();
     tokio::join!(client.shutdown(), server.shutdown());
 }

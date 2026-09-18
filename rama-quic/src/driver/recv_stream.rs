@@ -274,7 +274,8 @@ impl RecvStream {
     ///
     /// Discards unread data and notifies the peer to stop transmitting. Once stopped, further
     /// attempts to operate on a stream will yield `ClosedStream` errors.
-    pub fn stop(&mut self, error_code: VarInt) -> Result<(), ClosedStream> {
+    pub fn stop(&mut self, error_code: impl Into<VarInt>) -> Result<(), ClosedStream> {
+        let error_code = error_code.into();
         let mut conn = self.conn.state.lock();
         if self.is_0rtt && conn.check_0rtt().is_err() {
             return Ok(());
@@ -868,7 +869,7 @@ mod tests {
                 size_limit: 8,
             };
             assert_eq!(read.await, Err(ReadToEndError::TooLong));
-            client.close(0u32.into(), b"done");
+            client.close(0u32, b"done");
             endpoint.shutdown().await;
         })
         .await

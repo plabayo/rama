@@ -79,7 +79,7 @@ impl Pair {
     }
 
     async fn close(self) {
-        self.from_client.close(0u32.into(), b"done");
+        self.from_client.close(0u32, b"done");
         tokio::join!(self.client.shutdown(), self.server.shutdown());
     }
 }

@@ -982,9 +982,13 @@ impl Connection {
     /// [`ConnectionError::LocallyClosed`]: crate::ConnectionError::LocallyClosed
     /// [`Endpoint::wait_idle()`]: crate::Endpoint::wait_idle
     /// [`close()`]: Connection::close
-    pub fn close(&self, error_code: VarInt, reason: &[u8]) {
+    pub fn close(&self, error_code: impl Into<VarInt>, reason: &[u8]) {
         let conn = &mut *self.0.state.lock();
-        conn.close(error_code, Bytes::copy_from_slice(reason), &self.0.shared);
+        conn.close(
+            error_code.into(),
+            Bytes::copy_from_slice(reason),
+            &self.0.shared,
+        );
     }
 
     /// Wait for the handshake to be confirmed.
@@ -1606,9 +1610,10 @@ impl Connection {
     ///
     /// No streams may be opened by the peer unless fewer than `count` are already open. Large
     /// `count`s increase both minimum and worst-case memory consumption.
-    pub fn set_max_concurrent_uni_streams(&self, count: VarInt) {
+    pub fn set_max_concurrent_uni_streams(&self, count: impl Into<VarInt>) {
         let mut conn = self.0.state.lock();
-        conn.inner.set_max_concurrent_streams(Dir::Uni, count);
+        conn.inner
+            .set_max_concurrent_streams(Dir::Uni, count.into());
         // May need to send MAX_STREAMS to make progress
         conn.wake();
     }
@@ -1683,9 +1688,9 @@ impl Connection {
     /// Set the flow control window this connection advertises, as
     /// [`TransportConfig::set_receive_window`](crate::TransportConfig::set_receive_window) does
     /// before it is established.
-    pub fn set_receive_window(&self, receive_window: VarInt) {
+    pub fn set_receive_window(&self, receive_window: impl Into<VarInt>) {
         let mut conn = self.0.state.lock();
-        conn.inner.set_receive_window(receive_window);
+        conn.inner.set_receive_window(receive_window.into());
         conn.wake();
     }
 
@@ -1693,9 +1698,9 @@ impl Connection {
     ///
     /// No streams may be opened by the peer unless fewer than `count` are already open. Large
     /// `count`s increase both minimum and worst-case memory consumption.
-    pub fn set_max_concurrent_bi_streams(&self, count: VarInt) {
+    pub fn set_max_concurrent_bi_streams(&self, count: impl Into<VarInt>) {
         let mut conn = self.0.state.lock();
-        conn.inner.set_max_concurrent_streams(Dir::Bi, count);
+        conn.inner.set_max_concurrent_streams(Dir::Bi, count.into());
         // May need to send MAX_STREAMS to make progress
         conn.wake();
     }
@@ -3730,7 +3735,7 @@ mod tests {
             "the sender stays owned by the driver"
         );
         assert_eq!(connection.driver_stats().oversized_sends, 0);
-        connection.close(0u32.into(), b"done");
+        connection.close(0u32, b"done");
         assert!(matches!(
             tokio::time::timeout(Duration::from_secs(1), connecting)
                 .await

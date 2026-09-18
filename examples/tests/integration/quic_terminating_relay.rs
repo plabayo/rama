@@ -339,7 +339,7 @@ async fn a_relayed_request_is_answered_over_a_half_closed_stream() {
         .expect("the answer came back")
         .expect("it completed");
     assert_eq!(answer, b"i am quite well", "and the client got those bytes");
-    connection.close(0u32.into(), b"done");
+    connection.close(0u32, b"done");
 }
 
 /// The client resets its request. The origin sees its own stream ended rather than left open.
@@ -372,7 +372,7 @@ async fn a_client_reset_reaches_the_origin() {
         ),
         "the origin's end was reset with the relay's own code: {ended:?}"
     );
-    connection.close(0u32.into(), b"done");
+    connection.close(0u32, b"done");
 }
 
 /// The client stops reading while the origin sends nothing, so the relay's copy towards the
@@ -405,7 +405,7 @@ async fn a_client_stop_reaches_the_origin_with_an_idle_source() {
         Some(VarInt::from(RELAY_CANCELLED)),
         "the origin's send was stopped with the relay's own code"
     );
-    connection.close(0u32.into(), b"done");
+    connection.close(0u32, b"done");
 }
 
 /// The relay's upstream write is blocked by the origin's flow control when the client fails
@@ -455,7 +455,7 @@ async fn a_blocked_upstream_write_is_cancelled() {
     // Only now is the origin's end looked at, and the permit is reusable.
     drop(held);
     carries_another_stream(&connection, &upstream).await;
-    connection.close(0u32.into(), b"done");
+    connection.close(0u32, b"done");
 }
 
 /// The mirror: the client stops reading, so the relay's downstream write blocks, and the
@@ -506,7 +506,7 @@ async fn a_blocked_downstream_write_is_cancelled() {
         "the relay stopped the origin's send with its own code: {cancelled:?}"
     );
     drop(held_recv);
-    connection.close(0u32.into(), b"done");
+    connection.close(0u32, b"done");
 }
 
 /// One more stream over the same pair, carried end to end. With a limit of one relayed stream,
@@ -566,7 +566,7 @@ async fn an_origin_that_closes_ends_the_client_connection() {
     let connection = relay.connect().await;
     let upstream = relay.upstream().await;
 
-    upstream.close(0u32.into(), b"origin going away");
+    upstream.close(0u32, b"origin going away");
     let ended = tokio::time::timeout(LIMIT, connection.closed())
         .await
         .expect("the client connection ended with its upstream");
@@ -603,7 +603,7 @@ async fn a_client_that_leaves_releases_a_stream_waiting_on_upstream_credit() {
     );
 
     // The client leaves while that open is still pending.
-    connection.close(0u32.into(), b"leaving");
+    connection.close(0u32, b"leaving");
 
     let ended = tokio::time::timeout(PROMPTLY, upstream.closed())
         .await
@@ -616,7 +616,7 @@ async fn a_client_that_leaves_releases_a_stream_waiting_on_upstream_credit() {
     // And it is still serving: another client gets its own upstream connection.
     let again = relay.connect().await;
     let upstream_again = relay.upstream().await;
-    again.close(0u32.into(), b"done");
+    again.close(0u32, b"done");
     tokio::time::timeout(PROMPTLY, upstream_again.closed())
         .await
         .expect("the second upstream was released too");
@@ -707,7 +707,7 @@ async fn a_stream_permit_is_released_after_a_cancelled_stream() {
     );
 
     carries_another_stream(&connection, &upstream).await;
-    connection.close(0u32.into(), b"done");
+    connection.close(0u32, b"done");
 }
 
 /// The address out of the example's own listening line.
@@ -798,7 +798,7 @@ async fn cancelled_while_waiting_for_credit(reset: bool) {
         .await
         .expect_err("the relay must wait for upstream stream credit");
     if reset {
-        send.reset(7u32.into()).unwrap();
+        send.reset(7u32).unwrap();
         let error = tokio::time::timeout(PROMPTLY, recv.read_to_end(READ_CAP))
             .await
             .expect("a queued request reset is noticed promptly")
@@ -807,7 +807,7 @@ async fn cancelled_while_waiting_for_credit(reset: bool) {
             matches!(error, ReadToEndError::Read(ReadError::Reset(code)) if code == VarInt::from(RELAY_CANCELLED))
         );
     } else {
-        recv.stop(CLIENT_STOPPED.into()).unwrap();
+        recv.stop(CLIENT_STOPPED).unwrap();
         assert_eq!(
             tokio::time::timeout(PROMPTLY, send.stopped())
                 .await
@@ -817,9 +817,9 @@ async fn cancelled_while_waiting_for_credit(reset: bool) {
         );
     }
     // Grant exactly one stream: a stale open for the abandoned request would consume it.
-    upstream.set_max_concurrent_bi_streams(1u32.into());
+    upstream.set_max_concurrent_bi_streams(1u32);
     carries_another_stream(&connection, &upstream).await;
-    connection.close(0u32.into(), b"done");
+    connection.close(0u32, b"done");
 }
 
 /// The request FIN has left the relay but is withheld before the origin. A stop at this
@@ -850,7 +850,7 @@ async fn a_stop_after_forwarding_fin_cancels_the_idle_response() {
     tokio::time::timeout(PROMPTLY, gate.withheld.notified())
         .await
         .expect("the relay tried to forward the request FIN");
-    asked.stop(ORIGIN_STOPPED.into()).unwrap();
+    asked.stop(ORIGIN_STOPPED).unwrap();
     let error = tokio::time::timeout(PROMPTLY, recv.read_to_end(READ_CAP))
         .await
         .expect("the unacknowledged FIN still observes a stop")
@@ -860,5 +860,5 @@ async fn a_stop_after_forwarding_fin_cancels_the_idle_response() {
     );
     gate.paused.store(false, Ordering::Release);
     carries_another_stream(&connection, &upstream).await;
-    connection.close(0u32.into(), b"done");
+    connection.close(0u32, b"done");
 }

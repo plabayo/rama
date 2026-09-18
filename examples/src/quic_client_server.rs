@@ -172,7 +172,7 @@ async fn main() -> Result<(), BoxError> {
     taken(&connection).await?;
 
     tracing::info!("client: done, closing");
-    connection.close(0u32.into(), b"done");
+    connection.close(0u32, b"done");
     client.wait_idle().await;
 
     // Wait for the serving task before ending the endpoints and optional recorder.

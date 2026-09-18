@@ -205,7 +205,8 @@ impl SendStream {
     /// May fail if [`finish()`](Self::finish) or [`reset()`](Self::reset) was previously
     /// called. This error is harmless and serves only to indicate that the caller may have
     /// incorrect assumptions about the stream's state.
-    pub fn reset(&mut self, error_code: VarInt) -> Result<(), ClosedStream> {
+    pub fn reset(&mut self, error_code: impl Into<VarInt>) -> Result<(), ClosedStream> {
+        let error_code = error_code.into();
         let mut conn = self.conn.state.lock();
         if self.is_0rtt && conn.check_0rtt().is_err() {
             return Ok(());

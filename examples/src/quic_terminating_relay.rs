@@ -303,8 +303,8 @@ async fn serve_relay(
                 Err(error) => {
                     // Nothing more will be served, so stop both endpoints before joining: a
                     // connection still waiting in accept_bi would otherwise hold this open.
-                    relay.close(RELAY_STOPPING.into(), b"relay stopping");
-                    client.close(RELAY_STOPPING.into(), b"relay stopping");
+                    relay.close(RELAY_STOPPING, b"relay stopping");
+                    client.close(RELAY_STOPPING, b"relay stopping");
                     break Err(error);
                 }
             },
@@ -423,7 +423,7 @@ async fn carry(
     };
     // The upstream is closed first, so a stream still waiting on it is released and the joins
     // below cannot wait on a peer that will never answer.
-    upstream.close(0u32.into(), b"done");
+    upstream.close(0u32, b"done");
     let joined = join(relaying).await;
     outcome.and(joined)
 }
@@ -448,8 +448,8 @@ async fn open_and_relay(
             }
             opened = upstream.open_bi(), if permit.is_some() => break opened?,
             stopped = down_send.stopped() => {
-                drop(down_send.reset(RELAY_CANCELLED.into()));
-                drop(down_recv.stop(RELAY_CANCELLED.into()));
+                drop(down_send.reset(RELAY_CANCELLED));
+                drop(down_recv.stop(RELAY_CANCELLED));
                 return Err(why(stopped));
             }
             reset = down_recv.received_reset(), if !finished_receiving => {
@@ -461,8 +461,8 @@ async fn open_and_relay(
                     Ok(Some(code)) => ReadError::Reset(code).into(),
                     Err(error) => error.into(),
                 };
-                drop(down_send.reset(RELAY_CANCELLED.into()));
-                drop(down_recv.stop(RELAY_CANCELLED.into()));
+                drop(down_send.reset(RELAY_CANCELLED));
+                drop(down_recv.stop(RELAY_CANCELLED));
                 return Err(error.context("the request ended while waiting for upstream credit"));
             }
         }
@@ -476,14 +476,14 @@ async fn open_and_relay(
 /// and that is what the client should read.
 fn upstream_gone(downstream: &Connection, stopping: &WeakShutdownGuard) {
     if stopping.cancelled().now_or_never().is_none() {
-        downstream.close(UPSTREAM_GONE.into(), b"upstream closed");
+        downstream.close(UPSTREAM_GONE, b"upstream closed");
     }
 }
 
 /// Tell the client its upstream is unreachable, rather than letting it open streams that
 /// cannot be served.
 fn no_upstream(downstream: &Connection, error: BoxError) -> BoxError {
-    downstream.close(UPSTREAM_UNAVAILABLE.into(), b"upstream unavailable");
+    downstream.close(UPSTREAM_UNAVAILABLE, b"upstream unavailable");
     error
 }
 
@@ -607,16 +607,16 @@ fn why(stopped: Result<Option<VarInt>, StoppedError>) -> BoxError {
 
 /// The other direction failed. Nothing is owed to either peer on this one.
 fn sibling_ended(from: &mut RecvStream, to: &mut SendStream) -> BoxError {
-    drop(to.reset(RELAY_CANCELLED.into()));
-    drop(from.stop(RELAY_CANCELLED.into()));
+    drop(to.reset(RELAY_CANCELLED));
+    drop(from.stop(RELAY_CANCELLED));
     BoxError::from_static_str("the other direction of this stream ended")
 }
 
 /// End this direction deliberately and tell the other one, rather than leaving either peer to
 /// infer it from a dropped stream.
 fn ended(from: &mut RecvStream, to: &mut SendStream, cancel: &Cancel, error: BoxError) -> BoxError {
-    drop(to.reset(RELAY_CANCELLED.into()));
-    drop(from.stop(RELAY_CANCELLED.into()));
+    drop(to.reset(RELAY_CANCELLED));
+    drop(from.stop(RELAY_CANCELLED));
     cancel.stop();
     error
 }

@@ -150,8 +150,8 @@ impl Loopback {
 
 impl Drop for Loopback {
     fn drop(&mut self) {
-        self.client.close(0u32.into(), b"benchmark done");
-        self.server.close(0u32.into(), b"benchmark done");
+        self.client.close(0u32, b"benchmark done");
+        self.server.close(0u32, b"benchmark done");
         self.runtime.block_on(async {
             timeout(DEADLINE, async {
                 tokio::join!(self.client.wait_idle(), self.server.wait_idle());

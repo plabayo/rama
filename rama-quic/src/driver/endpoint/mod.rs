@@ -624,9 +624,9 @@ impl Endpoint {
     /// See [`Connection::close()`] for details.
     ///
     /// [`Connection::close()`]: crate::driver::Connection::close
-    pub fn close(&self, error_code: VarInt, reason: &[u8]) {
+    pub fn close(&self, error_code: impl Into<VarInt>, reason: &[u8]) {
         self.inner.state.lock().close(
-            error_code,
+            error_code.into(),
             &Bytes::copy_from_slice(reason),
             &self.inner.shared,
             false,

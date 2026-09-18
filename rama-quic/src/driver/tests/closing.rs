@@ -82,7 +82,7 @@ async fn a_close_is_counted_where_it_is_written() {
             0,
             "nothing has been closed yet"
         );
-        connection.close(0x2au32.into(), b"counted");
+        connection.close(0x2au32, b"counted");
         connection.closed().await;
         let answered = accepting.join().await;
         // The frames are written when each connection next transmits, which is after the

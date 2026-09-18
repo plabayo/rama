@@ -4174,7 +4174,7 @@ fn setup_ack_frequency_test(max_ack_delay: Duration) -> (Pair, ConnectionHandle,
     let mut client_config = client_config_with_deterministic_pns();
     let mut ack_freq_config = AckFrequencyConfig::default();
     ack_freq_config
-        .set_ack_eliciting_threshold(10u32.into())
+        .set_ack_eliciting_threshold(10u32)
         .set_max_ack_delay(max_ack_delay);
     Arc::get_mut(&mut client_config.transport)
         .unwrap()

@@ -2385,8 +2385,8 @@ async fn a_non_reading_peer_bounds_resources_and_recovers_while_other_connection
         let (mut client_config, mut server_config) = configs();
         let transport = Arc::new(
             TransportConfig::default()
-                .with_receive_window(CREDIT.into())
-                .with_stream_receive_window(CREDIT.into())
+                .with_receive_window(CREDIT)
+                .with_stream_receive_window(CREDIT)
                 .with_send_window(SEND_WINDOW),
         );
         client_config.set_transport_config(transport.clone());
@@ -7067,7 +7067,7 @@ async fn retained_sockets_are_bounded_across_address_families_while_another_conn
             connections.extend(result.unwrap());
         }
         for connection in &connections {
-            connection.close(0u32.into(), b"done");
+            connection.close(0u32, b"done");
         }
     })
     .await
