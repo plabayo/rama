@@ -146,7 +146,9 @@ pub(super) fn scramble(payload: &mut [u8], rng: &mut impl Rng) -> bool {
         return false;
     }
     payload.copy_from_slice(&out);
-    // Every byte is still a frame: decoding the result must succeed.
+    // Every byte is still a frame: decoding the result must succeed. `debug_assert!` still compiles
+    // its condition in release, so gate the whole check to match `payload_is_frames`'s own cfg.
+    #[cfg(debug_assertions)]
     debug_assert!(
         payload_is_frames(payload),
         "the scrambled payload is not all frames"
