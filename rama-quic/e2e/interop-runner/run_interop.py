@@ -259,6 +259,10 @@ def main():
             # version mid-handshake; the Rama client built on rustls reports v2 unsupported.
             role_cases = [case for case in cases
                           if not (case == "v2" and role == "client" and args.backend != "boring")]
+            # quic-go's pinned interop image does not run the v2 testcase, so any cell pairing Rama
+            # with quic-go on v2 comes back `unsupported`; that peer cell is tolerated in both
+            # roles, while v2 stays required against every peer that does offer it (ngtcp2).
+            optional = {("quic-go", "v2")}
             report = artifacts / f"rama-{role}.json"
             command = [venv / "bin/python", HERE / "upstream_adapter.py", checkout,
                        "-c", ",".join(clients), "-s", ",".join(servers), "-t", ",".join(role_cases),
@@ -271,10 +275,12 @@ def main():
             result = {"runner_exit": status}
             try:
                 result["successful_outcomes"] = gate(load_report(report), clients=clients,
-                                                     servers=servers, cases=role_cases)
+                                                     servers=servers, cases=role_cases,
+                                                     optional=optional)
                 if status != 0:
                     raise InvalidResults(f"runner exited {status} despite report")
-                result["qlogs"] = gate_qlogs(artifacts, role=role, peers=list(lock["peers"]), cases=role_cases)
+                result["qlogs"] = gate_qlogs(artifacts, role=role, peers=list(lock["peers"]),
+                                             cases=role_cases, optional=optional)
                 result["qlog_records"] = sum(trace["records"] for trace in result["qlogs"].values())
                 print(f"PASS Rama {role}: {result['successful_outcomes']} outcomes", flush=True)
             except (InvalidResults, OSError, json.JSONDecodeError) as error:
