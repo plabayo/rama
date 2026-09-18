@@ -64,7 +64,7 @@ qa-boring-isolation:
 interop-peer-dirs := "e2e/interop-common e2e/quinn-interop e2e/quiche-interop e2e/aioquic-interop"
 interop-dirs := interop-peer-dirs + " e2e/interop-runner e2e/gnutls-interop"
 
-qq: _qq-features (_qq-check "e2e/interop-common" "boring") (_qq-check "e2e/interop-common" "rustls-aws-lc") (_qq-check "e2e/quinn-interop" "boring") (_qq-check "e2e/quinn-interop" "rustls-aws-lc") (_qq-check "e2e/quiche-interop" "boring") (_qq-check "e2e/quiche-interop" "rustls-aws-lc") (_qq-check "e2e/aioquic-interop" "boring") (_qq-check "e2e/aioquic-interop" "rustls-aws-lc") (_qq-check "e2e/interop-runner" "boring") (_qq-check "e2e/interop-runner" "rustls-aws-lc")
+qq: _qq-features _qq-release (_qq-check "e2e/interop-common" "boring") (_qq-check "e2e/interop-common" "rustls-aws-lc") (_qq-check "e2e/quinn-interop" "boring") (_qq-check "e2e/quinn-interop" "rustls-aws-lc") (_qq-check "e2e/quiche-interop" "boring") (_qq-check "e2e/quiche-interop" "rustls-aws-lc") (_qq-check "e2e/aioquic-interop" "boring") (_qq-check "e2e/aioquic-interop" "rustls-aws-lc") (_qq-check "e2e/interop-runner" "boring") (_qq-check "e2e/interop-runner" "rustls-aws-lc")
 
 # Each feature in isolation, tests included, warnings denied like CI. The workspace `check`/`clippy`
 # only build `--all-features`, so a feature-conditional unused import (e.g. a `cfg`-gated re-export)
@@ -72,6 +72,13 @@ qq: _qq-features (_qq-check "e2e/interop-common" "boring") (_qq-check "e2e/inter
 [private]
 _qq-features:
     RUSTFLAGS="-D warnings" cargo hack check --each-feature --all-targets -p rama-quic-proto -p rama-quic
+
+# Release build of the crates' own targets. `cfg(not(debug_assertions))` code (release-only bench
+# modules) never compiles under the debug `check`/`qq`, so a stale path in one only fails the
+# release CI job; this reproduces that.
+[private]
+_qq-release:
+    RUSTFLAGS="-D warnings" cargo check --release --all-targets --no-default-features --features rustls,ring -p rama-quic-proto -p rama-quic
 
 # Check one interop project against one backend in both profiles. Release matters because the
 # interop-runner ships from a `--release` Docker build, where a `debug_assert!` over
