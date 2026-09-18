@@ -278,6 +278,44 @@ fn a_server_preferring_v2_moves_a_client_that_offered_it() {
     exchange(&mut pair, client_ch, server_ch);
 }
 
+/// RFC 9368 §2.3: a corrupt long header in the server's version must not move the client. An
+/// on-path attacker (or a bit flip) that garbles the v2 Initial the server sends to a v2-preferring
+/// negotiation must leave the client in its first-flight version, not switch it on a packet that
+/// never authenticated.
+#[test]
+fn a_corrupt_version_trigger_does_not_move_the_client() {
+    let _guard = subscribe();
+    let mut pair = pair_with(server_preferring(vec![Version::V2]));
+    // Garble every v2 long header the client is handed, past the cleartext header so it still
+    // parses and reaches the switch decision but never decrypts. QUIC v2 is version 0x6b3343cf.
+    pair.client.tamper_inbound = Some(Box::new(|datagram| {
+        const V2: [u8; 4] = [0x6b, 0x33, 0x43, 0xcf];
+        if datagram.len() < 40 || datagram[0] & 0x80 == 0 || datagram[1..5] != V2 {
+            return;
+        }
+        let dcid_len = datagram[5] as usize;
+        let scid_off = 6 + dcid_len;
+        let Some(&scid_len) = datagram.get(scid_off) else {
+            return;
+        };
+        // A server Initial carries no token (0-length varint) followed by a 2-byte length varint;
+        // start past both so the length stays intact and only the protected bytes are ruined.
+        let payload_off = scid_off + 1 + scid_len as usize + 1 + 2;
+        for byte in datagram.iter_mut().skip(payload_off).take(6) {
+            *byte ^= 0xff;
+        }
+    }));
+
+    let config = client_config();
+    let client_ch = pair.begin_connect(config);
+    pair.drive_bounded();
+    assert_eq!(
+        pair.client_conn_mut(client_ch).version(),
+        Version::V1,
+        "an unauthenticated v2 packet must not switch the version"
+    );
+}
+
 #[test]
 fn a_server_keeping_the_clients_choice_stays_in_the_first_flights_version() {
     let _guard = subscribe();

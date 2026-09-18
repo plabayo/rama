@@ -180,10 +180,14 @@ impl Pair {
             if self.server.accepts(packet.destination) {
                 let ecn = set_congestion_experienced(packet.ecn, self.congestion_experienced);
                 let to = (!self.server.hide_local).then_some(packet.destination);
+                let mut datagram: BytesMut = buffer.as_ref().into();
+                if let Some(tamper) = self.server.tamper_inbound.as_mut() {
+                    tamper(&mut datagram);
+                }
                 self.server.inbound.push_back(Inbound {
                     at: self.time + self.latency,
                     ecn,
-                    packet: buffer.as_ref().into(),
+                    packet: datagram,
                     from: packet.local,
                     to,
                 });
@@ -208,10 +212,14 @@ impl Pair {
             if self.client.accepts(packet.destination) {
                 let ecn = set_congestion_experienced(packet.ecn, self.congestion_experienced);
                 let to = (!self.client.hide_local).then_some(packet.destination);
+                let mut datagram: BytesMut = buffer.as_ref().into();
+                if let Some(tamper) = self.client.tamper_inbound.as_mut() {
+                    tamper(&mut datagram);
+                }
                 self.client.inbound.push_back(Inbound {
                     at: self.time + self.latency,
                     ecn,
-                    packet: buffer.as_ref().into(),
+                    packet: datagram,
                     from: packet.local,
                     to,
                 });
@@ -486,6 +494,9 @@ pub(super) struct TestEndpoint {
     pub(super) captured_packets: Vec<Vec<u8>>,
     pub(super) capture_inbound_packets: bool,
     pub(super) handle_incoming: Box<dyn FnMut(&Incoming) -> IncomingConnectionBehavior>,
+    /// While set, every datagram arriving at this endpoint is handed to this hook first, which
+    /// may rewrite it in place: a test's stand-in for an on-path attacker or a lossy link.
+    pub(super) tamper_inbound: Option<Box<dyn FnMut(&mut BytesMut)>>,
     pub(super) waiting_incoming: Vec<Incoming>,
     /// While set, connection IDs the endpoint issues are kept from the connection (the peer sees
     /// no NEW_CONNECTION_ID) until `release_held_identifiers`: a peer slow to issue.
@@ -587,6 +598,7 @@ impl TestEndpoint {
             captured_packets: Vec::new(),
             capture_inbound_packets: false,
             handle_incoming: Box::new(|_| IncomingConnectionBehavior::Accept),
+            tamper_inbound: None,
             waiting_incoming: Vec::new(),
             hold_identifiers: false,
             held_identifiers: Vec::new(),

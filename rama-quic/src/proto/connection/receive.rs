@@ -860,6 +860,12 @@ impl Connection {
         {
             return false;
         }
+        // RFC 9368 §2.3: only move to the server's version once a packet in it authenticates.
+        // A forged or corrupt long header must never flip the connection's version or keys, so
+        // decrypt the trigger with candidate keys first and commit nothing until it succeeds.
+        if !self.authenticates_version_switch(version, partial_decode) {
+            return false;
+        }
         match self.switch_version(now, version) {
             Ok(()) => true,
             Err(error) => {
@@ -867,6 +873,48 @@ impl Connection {
                 false
             }
         }
+    }
+
+    /// Whether `partial_decode` decrypts under `version`'s Initial keys, derived without mutating
+    /// any connection state. Only an Initial can authenticate before Handshake keys exist, which
+    /// is the packet that legitimately drives a compatible-version switch (RFC 9369 §4.1).
+    fn authenticates_version_switch(
+        &self,
+        version: Version,
+        partial_decode: &PartialDecode,
+    ) -> bool {
+        let Ok(candidate) =
+            self.crypto
+                .initial_keys(version, &self.initial_keys_cid, self.side.side())
+        else {
+            return false;
+        };
+        let candidate = Some((version, &candidate));
+        // A stateless reset never drives a version switch, so no reset tokens are offered.
+        let Ok(result) = packet_crypto::unprotect_header(
+            partial_decode.clone(),
+            &self.spaces,
+            self.zero_rtt_crypto.as_ref(),
+            candidate,
+            &[],
+        ) else {
+            return false;
+        };
+        let Some(mut packet) = result.packet else {
+            return false;
+        };
+        matches!(
+            packet_crypto::decrypt_packet_body(
+                &mut packet,
+                &self.spaces,
+                self.zero_rtt_crypto.as_ref(),
+                candidate,
+                self.key_phase,
+                self.prev_crypto.as_ref(),
+                self.next_crypto.as_ref(),
+            ),
+            Ok(Some(_))
+        )
     }
 
     /// Move a client to the version the server picked, before any Handshake key exists
