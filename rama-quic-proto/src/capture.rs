@@ -103,6 +103,17 @@ pub enum PacketKind {
     VersionNegotiation,
 }
 
+impl From<LongKind> for PacketKind {
+    fn from(kind: LongKind) -> Self {
+        match kind {
+            LongKind::Initial => Self::Initial,
+            LongKind::ZeroRtt => Self::ZeroRtt,
+            LongKind::Handshake => Self::Handshake,
+            LongKind::Retry => Self::Retry,
+        }
+    }
+}
+
 /// One packet of a datagram as an observer without keys sees it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ObservedPacket {
@@ -244,12 +255,7 @@ pub fn observe(datagram: &[u8]) -> Result<ObservedDatagram, CaptureError> {
         }
         packets.push(ObservedPacket {
             first_byte,
-            kind: match kind {
-                LongKind::Initial => PacketKind::Initial,
-                LongKind::ZeroRtt => PacketKind::ZeroRtt,
-                LongKind::Handshake => PacketKind::Handshake,
-                LongKind::Retry => PacketKind::Retry,
-            },
+            kind: kind.into(),
             version: Some(version),
             dcid,
             scid: Some(scid),
@@ -390,7 +396,11 @@ pub fn client_hello(initials: &[InitialPacket]) -> Option<Vec<u8>> {
         return None;
     }
     let len = usize::from(header[1]) << 16 | usize::from(header[2]) << 8 | usize::from(header[3]);
-    stream.get(..4 + len).map(<[u8]>::to_vec)
+    // Keep the reassembled buffer itself rather than copying its prefix back out.
+    (stream.len() >= 4 + len).then(|| {
+        stream.truncate(4 + len);
+        stream
+    })
 }
 
 /// A transport parameter as it was sent: identifier and raw value, in wire order.
