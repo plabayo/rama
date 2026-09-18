@@ -329,25 +329,35 @@ fn chaos_layout_scatters_crypto_but_keeps_the_client_hello() {
     // One CRYPTO frame, then padding, with the padding trailing.
     assert_eq!(ordered_crypto, 1);
 
-    let (chaos, _capable_chaos) = rama_first_flight(&QuicProfile::standard().with_packetization(
-        PacketizationProfile::standard().with_layout(InitialFlightLayout::Chaos),
-    ));
-    let chaos_frames: usize = chaos
-        .frames
-        .iter()
-        .map(|packet| {
-            packet
-                .iter()
-                .filter(|frame| matches!(frame, ObservedFrame::Crypto { .. } | ObservedFrame::Ping))
-                .count()
-        })
-        .sum();
-    // Chaos produces more than one CRYPTO or PING frame; the ClientHello still reassembled,
-    // which `first_flight` needs to read the parameters it checked above.
-    assert!(chaos_frames > 1, "chaos did not scatter the frames");
+    // Chaos scatters at random, so a single flight may occasionally land on one CRYPTO frame and
+    // no PING; a handful of flights shows the scattering reliably without a false failure. Every
+    // flight must still reassemble into a readable ClientHello.
+    let scattered = (0..16).any(|_| {
+        let (chaos, _capable_chaos) =
+            rama_first_flight(&QuicProfile::standard().with_packetization(
+                PacketizationProfile::standard().with_layout(InitialFlightLayout::Chaos),
+            ));
+        assert!(
+            chaos.chosen_version.is_some(),
+            "the ClientHello still reassembles"
+        );
+        let chaos_frames: usize = chaos
+            .frames
+            .iter()
+            .map(|packet| {
+                packet
+                    .iter()
+                    .filter(|frame| {
+                        matches!(frame, ObservedFrame::Crypto { .. } | ObservedFrame::Ping)
+                    })
+                    .count()
+            })
+            .sum();
+        chaos_frames > 1
+    });
     assert!(
-        chaos.chosen_version.is_some(),
-        "the ClientHello still reassembles"
+        scattered,
+        "chaos never scattered the frames across 16 flights"
     );
 }
 
