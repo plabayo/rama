@@ -252,7 +252,6 @@ mod tests {
             "resumption",
             "zerortt",
             "chacha20",
-            "v2",
             "keyupdate",
             "connectionmigration",
             "unknown",
@@ -260,5 +259,6 @@ mod tests {
             assert_eq!(TestCase::parse(value), None);
         }
         assert_eq!(TestCase::parse("retry"), Some(TestCase::Retry));
+        assert_eq!(TestCase::parse("v2"), Some(TestCase::V2));
     }
 }
