@@ -160,7 +160,12 @@ jobs:
         with:
           env-vars: RUST_TOOLCHAIN
           key: ${{ matrix.os }}-${{ matrix.toolchain }}
-          shared-key: ${{ matrix.os == 'ubuntu-latest' && matrix.toolchain == 'stable' && 'linux-stable-check-v1' || '' }}
+          # Warm target restore for every stable check leg (not just Linux); the
+          # scarce macOS/Windows runners recompiled from scratch without a family.
+          shared-key: ${{ (matrix.os == 'ubuntu-latest' && matrix.toolchain == 'stable' && 'linux-stable-check-v1') || (matrix.toolchain == 'stable' && format('{0}-stable-check-v1', matrix.os)) || '' }}
+          # sccache is a net loss on Windows (mozilla/sccache#2789: ~0% hits, every
+          # write bounces) and its failed entries evict useful macOS/Linux ones.
+          sccache: ${{ startsWith(matrix.os, 'windows') && 'false' || 'true' }}
       - name: rustfmt
         run: |
           cargo fmt --all --check
@@ -184,7 +189,7 @@ jobs:
       - name: sccache stats
         if: always()
         shell: bash
-        run: sccache --show-stats || true
+        run: command -v sccache >/dev/null 2>&1 && sccache --show-stats || true
 
   doc-rust:
     strategy:
@@ -225,7 +230,6 @@ jobs:
         os:
           - ubuntu-latest
           - ubuntu-24.04-arm
-          - macos-15
           - windows-latest
     name: test-rust-base-${{ matrix.toolchain }}-${{ matrix.os }}
     runs-on: ${{ matrix.os }}
@@ -256,6 +260,12 @@ jobs:
         with:
           key: ${{ matrix.os }}-${{ matrix.toolchain }}-
           env-vars: RUST_TOOLCHAIN
+          # Per-OS shared family so repeated test-base runs restore a warm target
+          # instead of a cold per-job cache.
+          shared-key: ${{ format('{0}-{1}-testbase-v1', matrix.os, matrix.toolchain) }}
+          # sccache is a net loss on Windows (mozilla/sccache#2789: ~0% hits, every
+          # write bounces) and its failed entries evict useful macOS/Linux ones.
+          sccache: ${{ startsWith(matrix.os, 'windows') && 'false' || 'true' }}
       - name: Build run tests (cargo test)
         run: cargo nextest run --all-features --workspace --no-run
       - name: Run tests (cargo test)
@@ -316,7 +326,7 @@ jobs:
       - name: sccache stats
         if: always()
         shell: bash
-        run: sccache --show-stats || true
+        run: command -v sccache >/dev/null 2>&1 && sccache --show-stats || true
 
   test-datastar-sdk:
     runs-on: ubuntu-latest

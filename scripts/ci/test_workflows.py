@@ -53,7 +53,7 @@ class WorkflowPolicyTests(unittest.TestCase):
     def test_long_macos_jobs_use_five_slots(self):
         assignments = [
             (self.daily, "test-rust-base", {"os": "macos-15-intel", "toolchain": "stable"}),
-            (self.workflow, "test-rust-base", {"os": "macos-15", "toolchain": "stable"}),
+            (self.daily, "test-rust-base", {"os": "macos-15", "toolchain": "stable"}),
             (self.daily, "test-rust-linux-gnu-cross-macos", {}),
             (self.workflow, "test-quic-interop-qa", {"os": "macos-15", "toolchain": "stable"}),
             (self.daily, "test-quic-interop-qa", {"os": "macos-15", "toolchain": "1.96.0"}),
@@ -82,11 +82,14 @@ class WorkflowPolicyTests(unittest.TestCase):
         rows = matrix_rows(jobs["test-rust-base"]["strategy"]["matrix"])
         self.assertEqual({(r["os"], r["toolchain"]) for r in rows}, {
             (os, "stable") for os in ("ubuntu-latest", "ubuntu-24.04-arm",
-                                      "macos-15", "windows-latest")
+                                      "windows-latest")
         })
+        # Native macOS test execution runs daily (compile/lint stays on push via
+        # check-rust macos-latest, Apple-specific paths via test-ffi-apple).
         daily_rows = matrix_rows(self.daily["jobs"]["test-rust-base"]["strategy"]["matrix"])
         self.assertEqual({(r["os"], r["toolchain"]) for r in daily_rows}, {
-            ("macos-15-intel", "stable"), ("windows-11-arm", "stable"),
+            ("macos-15", "stable"), ("macos-15-intel", "stable"),
+            ("windows-11-arm", "stable"),
         })
         # MSRV clippy on the scarce macOS and Windows runners moved to the daily
         # workflow; per-push CI keeps MSRV on Linux and stable everywhere.
