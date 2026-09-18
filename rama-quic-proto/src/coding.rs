@@ -126,11 +126,11 @@ impl<T: BufMut> BufMutExt for T {
         x.encode(self);
     }
 
-    #[expect(
-        clippy::unwrap_used,
-        reason = "callers only write values the protocol bounds below 2^62: lengths of buffers this crate allocated and sequence numbers validated when received"
-    )]
     fn write_var(&mut self, x: u64) {
-        VarInt::from_u64(x).unwrap().encode(self);
+        // Every value written here is protocol-bounded below 2^62 (buffer lengths, ids, offsets,
+        // sequence numbers, and `StreamId`s, which are bounded by construction); a bug that
+        // exceeds it writes the varint maximum rather than panicking.
+        debug_assert!(x < 1 << 62, "value too large for a varint");
+        VarInt::from_u64(x).unwrap_or(VarInt::MAX).encode(self);
     }
 }

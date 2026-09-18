@@ -103,8 +103,15 @@ impl fmt::Display for StreamId {
 
 impl StreamId {
     /// Create a new `StreamId`.
+    ///
+    /// A stream index is below [`MAX_STREAM_COUNT`](crate::MAX_STREAM_COUNT) (RFC 9000 §2.1), so
+    /// the encoded identifier fits a varint. The index is masked to that range so a
+    /// `StreamId` can never hold a value that would overflow when encoded; an out-of-range index
+    /// is a bug caught in debug builds.
     #[must_use]
     pub fn new(initiator: Side, dir: Dir, index: u64) -> Self {
+        debug_assert!(index < crate::MAX_STREAM_COUNT, "stream index out of range");
+        let index = index & (crate::MAX_STREAM_COUNT - 1);
         Self((index << 2) | ((dir as u64) << 1) | initiator as u64)
     }
     /// Which side of a connection initiated the stream.
@@ -130,7 +137,8 @@ impl StreamId {
 
 impl From<StreamId> for VarInt {
     fn from(x: StreamId) -> Self {
-        // SAFETY: `StreamId` values come from varints or from indices below 2^62.
+        // SAFETY: every `StreamId` is built from a varint (`From<VarInt>`, `decode`) or a
+        // masked index (`new`), so `x.0` is always below 2^62.
         unsafe { Self::from_u64_unchecked(x.0) }
     }
 }
@@ -152,11 +160,7 @@ impl crate::coding::Codec for StreamId {
         VarInt::decode(buf).map(|x| Self(x.into_inner()))
     }
     fn encode<B: BufMut>(&self, buf: &mut B) {
-        #[expect(
-            clippy::unwrap_used,
-            reason = "`StreamId` values come from varints or from indices below 2^62"
-        )]
-        VarInt::from_u64(self.0).unwrap().encode(buf);
+        VarInt::from(*self).encode(buf);
     }
 }
 
