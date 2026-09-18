@@ -343,7 +343,7 @@ async fn a_rama_client_refuses_a_quiche_server_it_does_not_trust() {
         .await
         .expect("it completes");
     assert_eq!(digest(&heard), echo_hash, "the payload came back whole");
-    connection.close(0u32.into(), b"done");
+    connection.close(0u32, b"done");
 
     deadline.wait("rama's shutdown", client.wait_idle()).await;
     peer.join("the quiche peer", deadline).await;

@@ -103,11 +103,11 @@ pub const SMALL_WINDOWS: &str = "RAMA_INTEROP_SMALL_WINDOWS";
 
 async fn transport(executor: Executor, role: &str) -> Result<Arc<TransportConfig>, BoxError> {
     let mut config =
-        TransportConfig::default().with_max_concurrent_bidi_streams((STREAM_LIMIT as u32).into());
+        TransportConfig::default().with_max_concurrent_bidi_streams(STREAM_LIMIT as u32);
     if std::env::var_os(SMALL_WINDOWS).is_some() {
         config = config
-            .with_stream_receive_window(octets::kib_u32(64).into())
-            .with_receive_window(octets::kib_u32(256).into());
+            .with_stream_receive_window(octets::kib_u32(64))
+            .with_receive_window(octets::kib_u32(256));
     }
     if let Some(directory) = std::env::var_os("QLOGDIR") {
         let directory = Path::new(&directory);

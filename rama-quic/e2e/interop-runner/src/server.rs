@@ -128,7 +128,7 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
             }
         }
     };
-    endpoint.close(0_u32.into(), b"server stopping");
+    endpoint.close(0_u32, b"server stopping");
     connections.abort_all();
     while connections.join_next().await.is_some() {}
     let outcome = shutdown_endpoint(&endpoint, outcome).await;
@@ -153,7 +153,7 @@ async fn serve_connection(connection: Connection, root: Arc<PathBuf>) -> Result<
             result = requests.join_next(), if !requests.is_empty() => {
                 let result = result.ok_or("request task missing")?.context("request task failed")?;
                 if let Err(error) = result {
-                    connection.close(1_u32.into(), b"request failed");
+                    connection.close(1_u32, b"request failed");
                     return Err(error);
                 }
             }

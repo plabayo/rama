@@ -308,7 +308,7 @@ pub async fn rama_client_warms_up(
         .await
         .expect("the first handshake completes");
     exchange(what, *deadline, &connection, run.scenario.warm).await;
-    connection.close(CLOSE_CODE.into(), CLOSE_REASON);
+    connection.close(CLOSE_CODE, CLOSE_REASON);
     deadline.wait(what, connection.closed()).await;
 }
 
@@ -399,7 +399,7 @@ pub async fn rama_client_resumes(
         .handshake_data()
         .expect("the handshake settled something")
         .resumed;
-    connection.close(CLOSE_CODE.into(), CLOSE_REASON);
+    connection.close(CLOSE_CODE, CLOSE_REASON);
     deadline.wait(what, connection.closed()).await;
     resumed
 }

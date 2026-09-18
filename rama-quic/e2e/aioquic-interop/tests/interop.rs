@@ -261,7 +261,7 @@ async fn a_rama_client_refuses_an_aioquic_server_it_does_not_trust() {
         "the peer read what was sent"
     );
 
-    connection.close(0u32.into(), b"done");
+    connection.close(0u32, b"done");
     deadline.wait("rama's shutdown", client.wait_idle()).await;
     peer.expect("ended", deadline).await;
     peer.finished(deadline).await;
@@ -306,7 +306,7 @@ async fn a_peer_that_never_finishes_is_stopped() {
         within(Duration::from_secs(5), || port_is_free(addr.port())).await,
         "the peer's socket is gone once its guard has dropped"
     );
-    client.close(0u32.into(), b"done");
+    client.close(0u32, b"done");
 }
 
 /// A wait on a task that is itself cancelled leaves the task owned by its guard, and dropping

@@ -282,7 +282,7 @@ pub async fn rama_client_accepts_the_identity(run: &CaseRun<Mismatch>, peer_addr
         .await
         .expect("the probe comes back");
     Received::Bytes(back).check(what, "probe", MISMATCH_PROBE);
-    conn.close(0u32.into(), b"done");
+    conn.close(0u32, b"done");
     deadline.wait(what, client.wait_idle()).await;
 }
 
@@ -409,7 +409,7 @@ pub async fn rama_client_side(run: &CaseRun<NameScenario>, peer_addr: SocketAddr
         .await
         .expect("the handshake completes");
     probe(what, &conn, run).await;
-    conn.close(0u32.into(), b"done");
+    conn.close(0u32, b"done");
     deadline.wait(what, client.wait_idle()).await;
 }
 

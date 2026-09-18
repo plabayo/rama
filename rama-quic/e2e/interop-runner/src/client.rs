@@ -139,7 +139,7 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
                 check_alpn(&connection)?;
                 download(connection.clone(), request, args.downloads.clone()).await?;
                 log_connection_stats(&connection);
-                connection.close(0_u32.into(), b"done");
+                connection.close(0_u32, b"done");
             }
         } else {
             let connection = endpoint
@@ -165,7 +165,7 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
                 result.context("download task failed")??;
             }
             log_connection_stats(&connection);
-            connection.close(0_u32.into(), b"done");
+            connection.close(0_u32, b"done");
         }
         Ok::<_, BoxError>(())
     });
@@ -173,7 +173,7 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
         result = batch => result.context("download batch timed out").and_then(|result| result),
         _ = default_signal() => Err(BoxError::from("download batch interrupted by shutdown signal")),
     };
-    endpoint.close(0_u32.into(), b"client finished");
+    endpoint.close(0_u32, b"client finished");
     let outcome = shutdown_endpoint(&endpoint, outcome).await;
     drop(endpoint);
     let _ = finished.send(());

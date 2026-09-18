@@ -88,7 +88,7 @@ async fn both_ends_export_the_same_keying_material() {
         .expect("the peer exported");
     assert_eq!(ours, theirs, "both ends derived the same bytes");
 
-    conn.close(0u32.into(), b"done");
+    conn.close(0u32, b"done");
     step("rama's shutdown", client.wait_idle()).await;
     peer.join("the quinn peer").await;
 }
@@ -199,7 +199,7 @@ async fn a_key_update_does_not_disturb_the_traffic_around_it() {
         updates + 1,
         "the second payload crossed exactly the requested update"
     );
-    conn.close(0u32.into(), b"done");
+    conn.close(0u32, b"done");
     step("rama's shutdown", client.wait_idle()).await;
     peer.join("the quinn peer").await;
 }
@@ -380,7 +380,7 @@ async fn a_consumer_reads_the_counters_through_their_public_types() {
         "one handshake left this endpoint"
     );
 
-    conn.close(0u32.into(), b"done");
+    conn.close(0u32, b"done");
     step("rama's shutdown", client.wait_idle()).await;
     peer.join("the quinn peer").await;
 }
@@ -553,7 +553,7 @@ async fn a_consumer_chooses_congestion_control_and_reads_connection_facts() {
     );
     conn.set_send_window(octets::mib_u64(2));
 
-    conn.close(0u32.into(), b"done");
+    conn.close(0u32, b"done");
     step("rama's shutdown", client.wait_idle()).await;
     peer.join("the quinn peer").await;
 }
@@ -739,7 +739,7 @@ async fn a_consumer_chooses_how_connection_identifiers_are_made() {
         "and names itself in a trace by the destination it chose for its first Initial"
     );
 
-    conn.close(0u32.into(), b"done");
+    conn.close(0u32, b"done");
     step("rama's shutdown", client.wait_idle()).await;
     served.join("the rama peer").await;
     step("the server's shutdown", server.shutdown()).await;
@@ -860,7 +860,7 @@ async fn a_generator_of_ones_own_issues_identifiers_that_outlast_rotation() {
     step("the identifiers turn over", wait_for_it)
         .await
         .expect("the server saw them turn over");
-    conn.close(0u32.into(), b"done");
+    conn.close(0u32, b"done");
     step("rama's shutdown", client.wait_idle()).await;
     served.join("the rama peer").await;
     step("the server's shutdown", server.shutdown()).await;

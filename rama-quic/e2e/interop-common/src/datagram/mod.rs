@@ -250,7 +250,7 @@ pub struct RamaDatagramClient {
 
 impl RamaDatagramClient {
     pub async fn close(self, what: &str, deadline: Deadline) {
-        self.connection.close(0u32.into(), b"done");
+        self.connection.close(0u32, b"done");
         deadline.wait(what, self.endpoint.wait_idle()).await;
     }
 }
