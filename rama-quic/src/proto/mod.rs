@@ -112,7 +112,15 @@ pub use crate::proto::cid_generator::{
 };
 
 mod token;
-#[cfg(test)]
+// Only the backend-gated endpoint lifecycle tests reach for this through `proto::`; matching their
+// cfg keeps it from being an unused import in a backend-less test build.
+#[cfg(all(
+    test,
+    any(
+        feature = "boring",
+        all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+    )
+))]
 pub(crate) use token::reset_token;
 pub use token::{NoneTokenLog, NoneTokenStore, StoredToken, TokenLog, TokenReuseError, TokenStore};
 
