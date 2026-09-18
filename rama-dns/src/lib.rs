@@ -73,6 +73,13 @@
 //! SVCB and HTTPS records. DNS names, TXT string boundaries, and unknown
 //! service parameters are preserved.
 //!
+//! [`wire::Message`] parses an RFC 1035 message on top of that vocabulary:
+//! header flags including [`wire::ResponseCode`], the question section, and
+//! the answer section, with compression resolved and RDATA decoded into typed
+//! values. Parsing stops after the answer section, keeps whatever decoded
+//! before a malformed record unless the strict constructors are used, and
+//! leaves normalisation policy to the caller.
+//!
 //! ## Rama
 //!
 //! Crate used by the end-user `rama` crate and `rama` crate authors alike.

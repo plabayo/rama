@@ -15,7 +15,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 SLOTS = {
     "macos": {f"rama-macos-slot-{i}" for i in range(5)},
-    "windows": {f"rama-windows-slot-{i}" for i in range(4)},
+    "windows": {f"rama-windows-slot-{i}" for i in range(8)},
 }
 
 
@@ -97,15 +97,25 @@ def validate(workflow, path):
                           for run_id in (1, 2, 3, 1001)}
                 assert len(groups) == 1, (path, name, row, "run-specific slot", groups)
                 assert groups <= slots, (path, name, row, groups)
-    if path.name == "CI.yml":
+    if path.name in ("CI.yml", "CI-platforms-daily.yml"):
         checks = {name for name in jobs if not name.startswith("deploy-") and name != "ci-success"}
         assert set(jobs["ci-success"]["needs"]) == checks, "CI success must cover every check"
         assert jobs["ci-success"]["if"] == "${{ !cancelled() }}", "Gate must run after failures/skips"
-        assert jobs["deploy-rama-cli-docker"]["needs"] == "ci-success"
-        gates = {"precheck-rust", "precheck-docs", "precheck-fmt", "meta-lints"}
+        gates = ({"precheck-rust", "precheck-docs", "precheck-fmt", "meta-lints"}
+                 if path.name == "CI.yml" else {"precheck-rust"})
         for name in checks - gates:
             assert gates <= ancestors(jobs, name), f"{name} bypasses early gates"
         assert not any(jobs[name].get("needs") for name in gates), "Early gates must run immediately"
+    if path.name == "CI-platforms-daily.yml":
+        # PyYAML's YAML 1.1 loader interprets the unquoted `on` key as True.
+        triggers = workflow.get("on", workflow.get(True))
+        assert triggers == {
+            "schedule": [{"cron": "0 2 * * *", "timezone": "Europe/Brussels"}],
+            "workflow_dispatch": {},
+        }, "Daily platforms must run at 02:00 Belgian time or on demand"
+        assert not any(name.startswith("deploy-") for name in jobs), "Daily checks must not deploy"
+    if path.name == "CI.yml":
+        assert jobs["deploy-rama-cli-docker"]["needs"] == "ci-success"
         feature_job = jobs["cargo-hack"]
         assert feature_job["strategy"]["matrix"] == {"partition": [1, 2]}, "Both feature partitions are required"
         feature_commands = [step["run"] for step in feature_job["steps"] if "run" in step and "cargo hack check" in step["run"]]
