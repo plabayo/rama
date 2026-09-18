@@ -122,6 +122,14 @@ fn failed_packet_encryption_does_not_emit_or_track_plaintext() {
     let (client, _) = pair.connect();
     let now = pair.time + Duration::from_millis(20);
     let connection = pair.client_conn_mut(client);
+    // Drain whatever the just-completed handshake still owes (a Handshake-space ACK, HANDSHAKE_DONE
+    // acknowledgement, and so on) before the failed key goes in. Those go out under real keys, so a
+    // leftover one would make `poll_transmit` below return `Some` and the assertion flaky; the only
+    // packet this test means to provoke is the ping it encrypts with `FailedEncryption`.
+    let mut drain = Vec::new();
+    while connection.poll_transmit(now, 4, &mut drain).is_some() {
+        drain.clear();
+    }
     connection.spaces[SpaceId::Data]
         .crypto
         .as_mut()
