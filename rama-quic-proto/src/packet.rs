@@ -7,7 +7,7 @@ use crate::{
     ConnectionId, Version,
     coding::{self, BufExt, BufMutExt},
     crypto,
-    version::{LongKind, Wire},
+    version::{LongKind, Wire, WireVersion},
 };
 
 /// A no_std stand-in for `std::io::Cursor`: an owned buffer with a read position, offering the
@@ -147,6 +147,11 @@ impl PartialDecode {
 
     /// The version a long header carries; short headers have none.
     pub fn version(&self) -> Option<Version> {
+        self.wire_version().map(WireVersion::version)
+    }
+
+    /// The wire-bearing version a long header carries; short headers have none.
+    pub fn wire_version(&self) -> Option<WireVersion> {
         match self.plain_header {
             ProtectedHeader::Initial(ProtectedInitialHeader { version, .. })
             | ProtectedHeader::Long { version, .. }
@@ -323,12 +328,12 @@ pub enum Header {
         dst_cid: ConnectionId,
         src_cid: ConnectionId,
         number: PacketNumber,
-        version: Version,
+        version: WireVersion,
     },
     Retry {
         dst_cid: ConnectionId,
         src_cid: ConnectionId,
-        version: Version,
+        version: WireVersion,
     },
     Short {
         spin: bool,
@@ -447,6 +452,16 @@ impl Header {
 
     /// The version a long header carries; short headers have none.
     pub fn version(&self) -> Option<Version> {
+        match *self {
+            Self::Initial(InitialHeader { version, .. })
+            | Self::Long { version, .. }
+            | Self::Retry { version, .. } => Some(version.version()),
+            Self::Short { .. } | Self::VersionNegotiate { .. } => None,
+        }
+    }
+
+    /// The wire-bearing version a long header carries; short headers have none.
+    pub fn wire_version(&self) -> Option<WireVersion> {
         match *self {
             Self::Initial(InitialHeader { version, .. })
             | Self::Long { version, .. }
@@ -582,7 +597,7 @@ pub enum ProtectedHeader {
         /// Length of the packet payload
         len: u64,
         /// QUIC version
-        version: Version,
+        version: WireVersion,
     },
     /// A Retry packet header
     Retry {
@@ -591,7 +606,7 @@ pub enum ProtectedHeader {
         /// Source Connection ID
         src_cid: ConnectionId,
         /// QUIC version
-        version: Version,
+        version: WireVersion,
     },
     /// A short packet header, as used during the data phase
     Short {
@@ -675,8 +690,8 @@ impl ProtectedHeader {
                 });
             }
 
-            let Some(wire) = version
-                .wire()
+            let Some(version) = version
+                .to_wire()
                 .filter(|_| supported_versions.contains(&version))
             else {
                 return Err(PacketDecodeError::UnsupportedVersion {
@@ -686,7 +701,7 @@ impl ProtectedHeader {
                 });
             };
 
-            match LongHeaderType::from_byte(first, wire) {
+            match LongHeaderType::from_byte(first, version.wire()) {
                 LongHeaderType::Initial => {
                     let token_len = buf.get_var()? as usize;
                     let token_start = buf.position() as usize;
@@ -733,7 +748,7 @@ pub struct ProtectedInitialHeader {
     /// Length of the packet payload
     pub len: u64,
     /// QUIC version
-    pub version: Version,
+    pub version: WireVersion,
 }
 
 #[derive(Clone, Debug)]
@@ -742,7 +757,7 @@ pub struct InitialHeader {
     pub src_cid: ConnectionId,
     pub token: Bytes,
     pub number: PacketNumber,
-    pub version: Version,
+    pub version: WireVersion,
 }
 
 // An encoded packet number
@@ -912,19 +927,14 @@ impl LongHeaderType {
     }
 
     /// The first byte of a long header of this type in `version`, without packet number bits.
-    #[expect(
-        clippy::expect_used,
-        reason = "headers are only encoded for versions the connection negotiated, which all have a wire image"
-    )]
-    pub fn to_byte(self, version: Version) -> u8 {
+    pub fn to_byte(self, version: WireVersion) -> u8 {
         let kind = match self {
             Self::Initial => LongKind::Initial,
             Self::Standard(LongType::ZeroRtt) => LongKind::ZeroRtt,
             Self::Standard(LongType::Handshake) => LongKind::Handshake,
             Self::Retry => LongKind::Retry,
         };
-        let wire = version.wire().expect("an implemented QUIC version");
-        LONG_HEADER_FORM | FIXED_BIT | wire.long_type_bits(kind)
+        LONG_HEADER_FORM | FIXED_BIT | version.wire().long_type_bits(kind)
     }
 }
 

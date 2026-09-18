@@ -5206,7 +5206,7 @@ fn application_close_in_initial_is_rejected() {
         src_cid: ConnectionId::new(&[]),
         token: Bytes::new(),
         number,
-        version,
+        version: version.to_wire().unwrap(),
     });
     let mut packet = Vec::new();
     let partial = header.encode(&mut packet);

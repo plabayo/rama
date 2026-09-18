@@ -90,6 +90,84 @@ impl Version {
             _ => None,
         }
     }
+
+    /// This version as a [`WireVersion`], when this crate implements it.
+    ///
+    /// This is the one place the "is this version implemented?" question is answered; a
+    /// [`WireVersion`] then carries the proof, so every wire operation on it is infallible.
+    #[must_use]
+    pub const fn to_wire(self) -> Option<WireVersion> {
+        match self.wire() {
+            Some(wire) => Some(WireVersion {
+                version: self,
+                wire,
+            }),
+            None => None,
+        }
+    }
+}
+
+/// A [`Version`] this crate implements: its number, with the [`Wire`] constants that describe it.
+///
+/// Any 32-bit value is a valid QUIC version *number* (RFC 8999), but only the versions this crate
+/// implements have a wire image. Holding a `WireVersion` is proof of the latter: it is minted only
+/// through [`Version::to_wire`], so anything that has one forms a header for it without a fallible
+/// lookup. Both fields are needed: several version numbers share one [`Wire`] (version 1 and the
+/// pre-standard drafts share [`V1_WIRE`]), so the wire does not identify the number to put on the
+/// wire.
+#[derive(Copy, Clone, Debug)]
+pub struct WireVersion {
+    version: Version,
+    wire: &'static Wire,
+}
+
+impl WireVersion {
+    /// The version number, as it goes on the wire.
+    #[must_use]
+    pub const fn version(self) -> Version {
+        self.version
+    }
+
+    /// The version's wire constants.
+    #[must_use]
+    pub const fn wire(self) -> &'static Wire {
+        self.wire
+    }
+}
+
+impl PartialEq for WireVersion {
+    fn eq(&self, other: &Self) -> bool {
+        // The version identifies everything, wire included.
+        self.version == other.version
+    }
+}
+
+impl Eq for WireVersion {}
+
+impl From<WireVersion> for Version {
+    fn from(wire_version: WireVersion) -> Self {
+        wire_version.version
+    }
+}
+
+impl fmt::Display for WireVersion {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.version.fmt(f)
+    }
+}
+
+impl Codec for WireVersion {
+    /// Reads a version number and requires this crate to implement it. The header decoder does not
+    /// use this — it checks the number against the connection's supported versions and reports a
+    /// richer error — so an unimplemented version is only ever signalled here as an unexpected end.
+    fn decode<B: Buf>(buf: &mut B) -> coding::Result<Self> {
+        Version::decode(buf)?
+            .to_wire()
+            .ok_or_else(coding::UnexpectedEnd::new)
+    }
+    fn encode<B: BufMut>(&self, buf: &mut B) {
+        self.version.encode(buf);
+    }
 }
 
 impl fmt::Debug for Version {

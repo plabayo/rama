@@ -35,7 +35,7 @@ fn header_encoding() {
         src_cid: ConnectionId::new(&[]),
         dst_cid: dcid,
         token: Bytes::new(),
-        version: DEFAULT_SUPPORTED_VERSIONS[0],
+        version: DEFAULT_SUPPORTED_VERSIONS[0].to_wire().unwrap(),
     });
     let encode = header.encode(&mut buf);
     let header_len = buf.len();

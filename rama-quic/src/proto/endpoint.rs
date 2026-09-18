@@ -49,6 +49,7 @@ use rama_quic_proto::{
         PacketNumber, PartialDecode, ProtectedInitialHeader,
     },
     transport_parameters::{PreferredAddress, TransportParameters},
+    version::WireVersion,
 };
 
 /// The main entry point to the library
@@ -622,7 +623,10 @@ impl Endpoint {
             return None;
         }
 
-        let crypto = match server_config.crypto.initial_keys(header.version, dst_cid) {
+        let crypto = match server_config
+            .crypto
+            .initial_keys(header.version.version(), dst_cid)
+        {
             Ok(keys) => keys,
             Err(error) => {
                 match error {
@@ -766,9 +770,10 @@ impl Endpoint {
         let InitialHeader {
             src_cid,
             dst_cid,
-            version,
+            version: wire_version,
             ..
         } = incoming.packet.header;
+        let version = wire_version.version();
         if server_config
             .transport
             .max_idle_timeout
@@ -790,7 +795,7 @@ impl Endpoint {
             return Err(AcceptError {
                 cause: ConnectionError::CidsExhausted,
                 response: self.initial_close(
-                    version,
+                    wire_version,
                     incoming.addresses,
                     &incoming.crypto,
                     &src_cid,
@@ -893,7 +898,7 @@ impl Endpoint {
                 }
                 self.index.remove_initial(dst_cid);
                 let response = self.initial_close(
-                    version,
+                    wire_version,
                     incoming.addresses,
                     &incoming.crypto,
                     &src_cid,
@@ -933,7 +938,7 @@ impl Endpoint {
                 }
                 self.index.remove_initial(dst_cid);
                 let response = self.initial_close(
-                    version,
+                    wire_version,
                     incoming.addresses,
                     &incoming.crypto,
                     &src_cid,
@@ -971,7 +976,7 @@ impl Endpoint {
                 self.handle_event(ch, EndpointEvent(EndpointEventInner::Drained));
                 let response = match e {
                     ConnectionError::TransportError(ref e) => self.initial_close(
-                        version,
+                        wire_version,
                         incoming.addresses,
                         &incoming.crypto,
                         &src_cid,
@@ -1151,7 +1156,7 @@ impl Endpoint {
             address: incoming.addresses.remote,
             orig_dst_cid: incoming.packet.header.dst_cid,
             issued: server_config.time_source.now(),
-            version: incoming.packet.header.version,
+            version: incoming.packet.header.version.version(),
         };
         let token = match Token::new(payload, &mut self.rng).encode(&*server_config.token_key) {
             Ok(token) => token,
@@ -1179,7 +1184,7 @@ impl Endpoint {
         header.encode(buf);
         buf.put_slice(&token);
         let tag = match server_config.crypto.retry_tag(
-            incoming.packet.header.version,
+            incoming.packet.header.version.version(),
             &incoming.packet.header.dst_cid,
             &buf[original_len..],
         ) {
@@ -1360,7 +1365,7 @@ impl Endpoint {
 
     fn initial_close(
         &mut self,
-        version: Version,
+        version: WireVersion,
         addresses: FourTuple,
         crypto: &Keys,
         remote_id: &ConnectionId,

@@ -330,7 +330,7 @@ impl Connection {
                     trace!("got new token");
                     let stored = StoredToken::new(token, time_source.now())
                         .with_peer_greasing_quic_bit(self.peer_params.grease_quic_bit);
-                    token_store.insert(server_name, self.version, stored);
+                    token_store.insert(server_name, self.version(), stored);
                 }
                 Frame::Datagram(datagram) => {
                     if self
@@ -521,7 +521,7 @@ mod tests {
                         dst_cid: conn.handshake_cid,
                         src_cid: conn.orig_rem_cid,
                         number: PacketNumber::U8(0),
-                        version: Version::V1,
+                        version: Version::V1.to_wire().unwrap(),
                     }
                 } else {
                     Header::Short {

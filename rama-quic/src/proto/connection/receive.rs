@@ -151,7 +151,7 @@ impl Connection {
             return;
         }
         if let Some(version) = partial_decode.version()
-            && version != self.version
+            && version != self.version()
             && !self.accept_other_version(now, version, &partial_decode)
         {
             self.qlog_packet_dropped(now, info, DropReason::Unsupported);
@@ -518,7 +518,7 @@ impl Connection {
                 self.initial_keys_cid = rem_cid;
                 self.spaces[SpaceId::Initial] = PacketSpace {
                     crypto: Some(self.crypto.initial_keys(
-                        self.version,
+                        self.version(),
                         &rem_cid,
                         self.side.side(),
                     )?),
@@ -707,7 +707,7 @@ impl Connection {
                     .map(|bytes| Version::from_be_bytes(*bytes))
                     .collect();
                 // One that lists the version we sent is forged or stale (RFC 9368 §2.1).
-                if offered.contains(&self.original_version) {
+                if offered.contains(&self.original_version()) {
                     self.qlog_packet_dropped(now, info, DropReason::Invalid);
                     return Ok(());
                 }
@@ -822,17 +822,19 @@ impl Connection {
     /// The versions a received long header may carry: the connection's, and the client's
     /// original one while the two differ (RFC 9369 §4.1).
     fn decodable_versions(&self) -> [Version; 2] {
-        [self.version, self.original_version]
+        [self.version(), self.original_version()]
     }
 
     /// The Initial keys of the original version, keyed by that version, while they are kept.
     fn original_initial_keys(&self) -> Option<(Version, &crate::proto::crypto::Keys)> {
-        if self.version == self.original_version || self.spaces[SpaceId::Initial].crypto.is_none() {
+        if self.wire_version == self.original_wire_version
+            || self.spaces[SpaceId::Initial].crypto.is_none()
+        {
             return None;
         }
         self.original_initial_crypto
             .as_ref()
-            .map(|keys| (self.original_version, keys))
+            .map(|keys| (self.original_version(), keys))
     }
 
     /// A long header in a version other than the connection's: either the original version,
@@ -844,7 +846,7 @@ impl Connection {
         version: Version,
         partial_decode: &PartialDecode,
     ) -> bool {
-        if version == self.original_version {
+        if version == self.original_version() {
             // Handshake and 1-RTT packets only exist in the negotiated version.
             return partial_decode.is_initial() || partial_decode.is_0rtt();
         }
@@ -852,7 +854,7 @@ impl Connection {
             return false;
         };
         if !self.state.is_handshake()
-            || self.version != self.original_version
+            || self.wire_version != self.original_wire_version
             || !versions.compatible().contains(&version)
             || !(partial_decode.is_initial() || partial_decode.space() == Some(SpaceId::Handshake))
         {
@@ -880,8 +882,11 @@ impl Connection {
             .initial_keys(version, &self.initial_keys_cid, self.side.side())?;
         self.original_initial_crypto = self.spaces[SpaceId::Initial].crypto.replace(keys);
 
-        debug!(from = %self.version, to = %version, "compatible version negotiation");
-        self.version = version;
+        debug!(from = %self.wire_version, to = %version, "compatible version negotiation");
+        // `version` is one of `versions.compatible()`, which this crate implements.
+        self.wire_version = version.to_wire().ok_or_else(|| {
+            TransportError::INTERNAL_ERROR("switched to an unimplemented QUIC version")
+        })?;
         self.qlog_init_negotiation(now);
 
         Ok(())

@@ -224,7 +224,7 @@ fn invalid_first_accepted_initial_logs_drop_without_plaintext_length() {
         src_cid: ConnectionId::new(&[2; 8]),
         token: Bytes::new(),
         number: PacketNumber::U8(0),
-        version,
+        version: version.to_wire().unwrap(),
     });
     let mut packet = Vec::new();
     let partial = header.encode(&mut packet);

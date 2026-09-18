@@ -17,7 +17,7 @@ use crate::proto::{
 };
 use rama_quic_proto::{
     ConnectionId, Dir, Side, StreamId, TransportError, VarInt, Version, crypto::PacketKey,
-    packet::SpaceId, transport_parameters::TransportParameters,
+    packet::SpaceId, transport_parameters::TransportParameters, version::WireVersion,
 };
 
 mod ack_frequency;
@@ -297,10 +297,10 @@ pub(crate) struct Connection {
     /// Connection level statistics
     stats: ConnectionStats,
     /// QUIC version the connection's packets currently carry.
-    version: Version,
+    wire_version: WireVersion,
     /// QUIC version of the client's first flight, before any compatible negotiation
     /// (RFC 9368 §1.2, "Chosen Version").
-    original_version: Version,
+    original_wire_version: WireVersion,
     /// Initial keys for `original_version` while `version` differs from it: a server keeps
     /// reading the client's first flight with them, a client keeps reading what the server sent
     /// before it processed the client's parameters (RFC 9369 §4.1). Gone with the Initial space.
@@ -343,6 +343,15 @@ impl Connection {
         let original_initial_crypto = (original_version != version)
             .then(|| crypto.initial_keys(original_version, &init_cid, side))
             .transpose()?;
+        // The endpoint only starts a connection in a version it negotiated, which is one this
+        // crate implements; proving that here lets every header this connection forms carry the
+        // version without a fallible wire lookup.
+        let version = version.to_wire().ok_or_else(|| {
+            TransportError::INTERNAL_ERROR("connection started in an unimplemented QUIC version")
+        })?;
+        let original_version = original_version.to_wire().ok_or_else(|| {
+            TransportError::INTERNAL_ERROR("connection started in an unimplemented QUIC version")
+        })?;
         let state = State::Handshake(state::Handshake {
             rem_cid_set: side.is_server(),
             expected_token: Bytes::new(),
@@ -452,8 +461,8 @@ impl Connection {
             qlog_state: None,
             qlog_closed: false,
             stats: ConnectionStats::default(),
-            version,
-            original_version,
+            wire_version: version,
+            original_wire_version: original_version,
             original_initial_crypto,
             initial_keys_cid: init_cid,
             peer_params_received: false,
@@ -540,12 +549,12 @@ impl Connection {
     /// Returns connection statistics
     /// The QUIC version the connection's packets carry (RFC 9368 §4: the negotiated version).
     pub(crate) fn version(&self) -> Version {
-        self.version
+        self.wire_version.version()
     }
 
     /// The QUIC version of the client's first flight.
     pub(crate) fn original_version(&self) -> Version {
-        self.original_version
+        self.original_wire_version.version()
     }
 
     /// The transport parameters the peer sent, as this connection applied them.

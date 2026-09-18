@@ -56,7 +56,7 @@ impl PacketBuilder {
         ack_eliciting: bool,
         conn: &mut Connection,
     ) -> Option<Self> {
-        let version = conn.version;
+        let version = conn.wire_version;
         // A key phase is retired well before its keys reach their confidentiality limit, so the
         // usual answer to exhaustion is an update. An update that cannot happen — before the
         // handshake is confirmed, or while one is already in flight (RFC 9001 §6, §6.1) — leaves
@@ -126,7 +126,7 @@ impl PacketBuilder {
                 src_cid: conn.handshake_cid,
                 dst_cid,
                 number,
-                version: conn.original_version,
+                version: conn.original_wire_version,
             },
             SpaceId::Handshake => Header::Long {
                 ty: LongType::Handshake,

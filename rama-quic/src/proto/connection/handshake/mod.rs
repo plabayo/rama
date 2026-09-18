@@ -486,7 +486,7 @@ impl Connection {
                 if params
                     .version_information
                     .as_ref()
-                    .is_some_and(|info| info.chosen() != self.original_version)
+                    .is_some_and(|info| info.chosen() != self.original_version())
                 {
                     return Err(TransportError::VERSION_NEGOTIATION_ERROR(
                         "client's chosen version differs from its first flight",
@@ -503,7 +503,7 @@ impl Connection {
                     (Some(info), _) => info.clone(),
                     (None, None) => return Ok(()),
                     // A server that only speaks v1 predates version negotiation (RFC 9368 §8).
-                    (None, Some(_)) if self.version == Version::V1 => {
+                    (None, Some(_)) if self.version() == Version::V1 => {
                         VersionInformation::new(Version::V1, vec![Version::V1])
                     }
                     (None, Some(_)) => {
@@ -512,15 +512,15 @@ impl Connection {
                         ));
                     }
                 };
-                if info.chosen() != self.version {
+                if info.chosen() != self.version() {
                     return Err(TransportError::VERSION_NEGOTIATION_ERROR(
                         "server's chosen version differs from the negotiated version",
                     ));
                 }
                 if negotiation_offer.is_some() {
                     let mut would_see = info.available().to_vec();
-                    would_see.push(self.version);
-                    if versions.select(&would_see) != Some(self.version) {
+                    would_see.push(self.version());
+                    if versions.select(&would_see) != Some(self.version()) {
                         return Err(TransportError::VERSION_NEGOTIATION_ERROR(
                             "Version Negotiation led to a version the server's list does not justify",
                         ));

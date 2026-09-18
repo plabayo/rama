@@ -12,6 +12,10 @@ use crate::proto::Instant;
 pub(crate) struct ConnectionEvent(pub(crate) ConnectionEventInner);
 
 #[derive(Debug)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "`Datagram` is the common receive-path event and carries the datagram inline; boxing it would add a heap allocation for every received datagram"
+)]
 pub(crate) enum ConnectionEventInner {
     /// A datagram has been received for the Connection
     Datagram(DatagramConnectionEvent),

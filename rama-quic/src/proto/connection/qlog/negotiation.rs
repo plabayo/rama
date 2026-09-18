@@ -54,7 +54,7 @@ impl Connection {
             Event::VersionInformation(VersionInformationView {
                 client_versions,
                 server_versions,
-                chosen_version: Some(Version(self.version.to_be_bytes())),
+                chosen_version: Some(Version(self.version().to_be_bytes())),
             })
         });
         self.qlog_key_change(now, SpaceId::Initial, false, Some(KeyChangeTrigger::Tls));

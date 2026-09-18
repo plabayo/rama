@@ -215,7 +215,7 @@ impl IncomingToken {
                 version,
             } => {
                 // The Initial carrying a Retry token keeps the Retry's version (RFC 9369 §4.1).
-                if address != remote_address || version != header.version {
+                if address != remote_address || version != header.version.version() {
                     return Err(InvalidRetryTokenError);
                 }
                 // An expiry the clock cannot represent cannot validate the token.
@@ -239,7 +239,7 @@ impl IncomingToken {
             } => {
                 // A token belongs to the version of the connection that issued it
                 // (RFC 9369 §5); one from another version leaves the address unvalidated.
-                if ip != remote_address.ip() || version != header.version {
+                if ip != remote_address.ip() || version != header.version.version() {
                     return Ok(unvalidated);
                 }
                 if issued
