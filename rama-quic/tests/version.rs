@@ -105,6 +105,50 @@ async fn a_client_restarts_in_v2_when_the_server_only_speaks_v2() {
     tokio::join!(client.shutdown(), server.shutdown());
 }
 
+/// RFC 9368 §4: after a Version Negotiation restart, a server whose version_information reports an
+/// empty Available Versions list cannot justify the version the client was moved to, so the client
+/// refuses the connection rather than trusting a possibly forged negotiation.
+#[tokio::test]
+async fn a_restart_with_an_empty_server_version_list_is_refused() {
+    use rama_quic_proto::version::ServerVersionPolicy;
+
+    let identities = Identities::new();
+    let mut config = identities.server_config();
+    config.set_versions(
+        ServerVersionPolicy::new()
+            .try_with_fully_deployed(vec![])
+            .unwrap()
+            .with_reserved_version_grease(false),
+    );
+    // Only v2, so a v1 first flight is answered with Version Negotiation and the client restarts.
+    let server = server_speaking(vec![Version::V2], config).await;
+    let client = loopback_endpoint(None).await;
+    let address = server.local_addr().unwrap();
+
+    let accepting = tokio::spawn({
+        let server = server.clone();
+        async move {
+            let incoming = server.accept().await.expect("an attempt arrives");
+            let _result = incoming.await;
+        }
+    });
+
+    let error = client
+        .connect_with(identities.client_config(), address, runtime::SERVER_NAME)
+        .expect("the attempt starts")
+        .await
+        .expect_err("the empty list is refused");
+    match error {
+        rama_quic::ConnectionError::TransportError(error) => assert_eq!(
+            error.code(),
+            rama_quic_proto::TransportErrorCode::VERSION_NEGOTIATION_ERROR
+        ),
+        other => panic!("expected a version negotiation error, got {other:?}"),
+    }
+    accepting.await.unwrap();
+    tokio::join!(client.shutdown(), server.shutdown());
+}
+
 /// A server offering nothing the client speaks ends the attempt with what it offered.
 #[tokio::test]
 async fn an_offer_without_a_common_version_ends_the_attempt() {

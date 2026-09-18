@@ -518,6 +518,14 @@ impl Connection {
                     ));
                 }
                 if negotiation_offer.is_some() {
+                    if info.available().is_empty() {
+                        // RFC 9368 §4: an empty Available Versions list cannot justify the version
+                        // the client was moved to, so a reacted-to Version Negotiation with one is
+                        // indistinguishable from a downgrade attack.
+                        return Err(TransportError::VERSION_NEGOTIATION_ERROR(
+                            "server's Available Versions is empty after Version Negotiation",
+                        ));
+                    }
                     let mut would_see = info.available().to_vec();
                     would_see.push(self.version());
                     if versions.select(&would_see) != Some(self.version()) {
