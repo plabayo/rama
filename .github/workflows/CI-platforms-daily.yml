@@ -102,6 +102,10 @@ jobs:
       - name: Run Apple XPC QA checks
         if: ${{ !cancelled() && matrix.toolchain == 'stable' && matrix.os == 'macos-latest' }}
         run: just qa-xpc-apple
+      - name: sccache stats
+        if: always()
+        shell: bash
+        run: sccache --show-stats || true
 
   test-rust-base:
     strategy:
@@ -195,6 +199,10 @@ jobs:
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: ./scripts/ocsp-relay-gate.ps1
+      - name: sccache stats
+        if: always()
+        shell: bash
+        run: sccache --show-stats || true
 
   test-quic-interop-qa:
     name: test-quic-interop-qa-${{ matrix.backends }}-${{ matrix.toolchain }}-${{ matrix.os }}

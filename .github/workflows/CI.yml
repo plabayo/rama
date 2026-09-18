@@ -19,7 +19,9 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  # Superseded pushes (main included) abandon their scarce macOS/Windows slots
+  # immediately instead of serializing multi-hour runs behind each other.
+  cancel-in-progress: true
 
 # Scarce runners share repository-wide slots with Pages, unstable CI, and releases.
 # Keep group names independent of workflow/ref; see scripts/ci/README.md.
@@ -179,6 +181,10 @@ jobs:
       - name: Run Apple XPC QA checks
         if: ${{ !cancelled() && matrix.toolchain == 'stable' && matrix.os == 'macos-latest' }}
         run: just qa-xpc-apple
+      - name: sccache stats
+        if: always()
+        shell: bash
+        run: sccache --show-stats || true
 
   doc-rust:
     strategy:
@@ -307,6 +313,10 @@ jobs:
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: ./scripts/ocsp-relay-gate.ps1
+      - name: sccache stats
+        if: always()
+        shell: bash
+        run: sccache --show-stats || true
 
   test-datastar-sdk:
     runs-on: ubuntu-latest
