@@ -6,11 +6,18 @@
 //! transport parameters. Initial keys derive from the destination connection ID and version salt
 //! (RFC 9001 §5.2), so both a passive observer and the destination server can supply them; the
 //! keys themselves come from the engine's TLS backend behind that seam.
+//!
+//! Most callers hand a client's first datagrams (the ones sent before it hears from the server)
+//! and a [`KeyProvider`] to [`first_flight`], which runs the whole pipeline and returns a
+//! [`FirstFlight`] summary to fingerprint or turn into a [`crate::profile::QuicProfile`]. The
+//! steps are also public for finer control: [`observe`] splits one datagram with no keys;
+//! [`ObservedDatagram::unprotect_initials`] opens that datagram's Initial packets into
+//! [`InitialPacket`]s; [`client_hello`] takes those `InitialPacket`s from across the whole flight
+//! and reassembles the ClientHello from their CRYPTO frames; [`transport_parameters`] reads it,
+//! and [`version_information`] pulls the negotiated/available versions out of those. So the
+//! packets `client_hello` wants are simply the `InitialPacket`s `unprotect_initials` returned.
 
-use alloc::{
-    string::{String, ToString},
-    vec::Vec,
-};
+use alloc::vec::Vec;
 use core::{fmt, ops::Range};
 
 use rama_core::bytes::{Buf, BytesMut};
@@ -109,8 +116,6 @@ pub struct ObservedPacket {
     pub token: Option<Vec<u8>>,
     /// Where the packet sits in the datagram.
     pub range: Range<usize>,
-    /// Where the packet number starts, for long headers.
-    pn_offset: Option<usize>,
 }
 
 /// A datagram split into its packets.
@@ -180,7 +185,6 @@ pub fn observe(datagram: &[u8]) -> Result<ObservedDatagram, CaptureError> {
                 scid: None,
                 token: None,
                 range: start..datagram.len(),
-                pn_offset: None,
             });
             break;
         }
@@ -203,7 +207,6 @@ pub fn observe(datagram: &[u8]) -> Result<ObservedDatagram, CaptureError> {
                 scid: Some(scid),
                 token: None,
                 range: start..datagram.len(),
-                pn_offset: None,
             });
             break;
         }
@@ -221,7 +224,6 @@ pub fn observe(datagram: &[u8]) -> Result<ObservedDatagram, CaptureError> {
                 scid: Some(scid),
                 token: None,
                 range: start..datagram.len(),
-                pn_offset: None,
             });
             break;
         }
@@ -253,7 +255,6 @@ pub fn observe(datagram: &[u8]) -> Result<ObservedDatagram, CaptureError> {
             scid: Some(scid),
             token,
             range: start..end,
-            pn_offset: Some(at),
         });
         at = end;
     }
@@ -283,37 +284,6 @@ pub struct InitialPacket {
     pub frames: Vec<ObservedFrame>,
     /// The CRYPTO data, by offset.
     pub crypto: Vec<(u64, Vec<u8>)>,
-}
-
-impl InitialPacket {
-    /// How many PADDING bytes the packet carries.
-    #[must_use]
-    pub fn padding(&self) -> usize {
-        self.frames
-            .iter()
-            .map(|frame| match frame {
-                ObservedFrame::Padding { len } => *len,
-                _ => 0,
-            })
-            .sum()
-    }
-
-    /// Whether every PADDING byte comes after every other frame.
-    #[must_use]
-    pub fn padding_trails(&self) -> bool {
-        let last_other = self
-            .frames
-            .iter()
-            .rposition(|frame| !matches!(frame, ObservedFrame::Padding { .. }));
-        let first_padding = self
-            .frames
-            .iter()
-            .position(|frame| matches!(frame, ObservedFrame::Padding { .. }));
-        match (last_other, first_padding) {
-            (Some(other), Some(padding)) => padding > other,
-            _ => true,
-        }
-    }
 }
 
 impl ObservedDatagram {
@@ -572,12 +542,4 @@ pub fn first_flight<P: KeyProvider>(
         chosen_version: info.as_ref().map(VersionInformation::chosen),
         available_versions: info.map_or_else(Vec::new, |info| info.available().to_vec()),
     })
-}
-
-impl FirstFlight {
-    /// The bytes of `datagrams` as hex, for fixtures.
-    #[must_use]
-    pub fn hex(datagram: &[u8]) -> String {
-        rama_utils::fmt::hex(datagram).to_string()
-    }
 }
