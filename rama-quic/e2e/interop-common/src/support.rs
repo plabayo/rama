@@ -13,6 +13,11 @@ use tokio::time::Instant;
 /// so a stall anywhere fails the scenario rather than extending it.
 pub const SCENARIO_LIMIT: Duration = Duration::from_secs(20);
 
+/// The QUIC idle timeout both peers advertise, kept well above every scenario's deadline. The
+/// effective idle timeout is the minimum of the two ends, so a value under a deadline lets a
+/// connection expire mid-exchange under load; the scenario's own deadline is the one bound.
+pub const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// One scenario's deadline, taken once and shared by every await under it.
 #[derive(Debug, Clone, Copy)]
 pub struct Deadline(Instant);

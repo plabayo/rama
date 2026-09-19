@@ -591,6 +591,11 @@ impl AioQuic {
             .arg(project().join("peer/interop_peer.py"))
             .arg(role)
             .args(["--alpn", ALPN])
+            // Keep the peer's idle timeout above a scenario's deadline: the effective timeout is
+            // the minimum of the two ends, so the peer's default would expire a slow exchange
+            // before the deadline could bound it. A later `--idle-timeout` in `arguments` wins.
+            .arg("--idle-timeout")
+            .arg(interop_common::support::IDLE_TIMEOUT.as_secs().to_string())
             .args(arguments)
             .current_dir(project())
             .stdin(Stdio::piped())

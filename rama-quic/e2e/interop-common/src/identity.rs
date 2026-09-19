@@ -7,6 +7,7 @@ use std::{
     fs,
     net::{Ipv4Addr, Ipv6Addr},
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use rama::{
@@ -16,7 +17,7 @@ use rama::{
         pki_types::CertificateDer,
     },
     net::{address::Domain, tls::ApplicationProtocol},
-    quic::{ClientConfig, ServerConfig},
+    quic::{ClientConfig, ServerConfig, TransportConfig},
     tls::{
         client::TlsClientConfig,
         server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
@@ -25,6 +26,7 @@ use rama::{
 };
 
 use crate::scenario::{ANOTHER_NAME, SERVER_NAME};
+use crate::support::IDLE_TIMEOUT;
 
 /// The protocol every shared scenario negotiates. A handshake that settles on anything else is
 /// a failure, not a variant.
@@ -106,14 +108,25 @@ pub fn anchor_of(identity: &Identity) -> CertificateDer<'static> {
     identity.cert_chain.last().expect("a chain").clone()
 }
 
+/// The transport both Rama sides use: the defaults, with an idle timeout above every
+/// scenario's deadline so a slow exchange is bounded by the deadline, not cut off mid-flight.
+fn interop_transport() -> Arc<TransportConfig> {
+    Arc::new(
+        TransportConfig::default()
+            .with_max_idle_timeout(IDLE_TIMEOUT.try_into().expect("a usable idle timeout")),
+    )
+}
+
 #[must_use]
 pub fn rama_server_config(identity: &Identity) -> ServerConfig {
     let tls = TlsServerConfig::new()
         .with_alpn(smallvec![alpn()])
         .with_server_auth(identity.clone())
         .verify_backend();
-    ServerConfig::try_from_rama_tls(&tls, crate::backend::options())
-        .expect("the server config is built")
+    let mut config = ServerConfig::try_from_rama_tls(&tls, crate::backend::options())
+        .expect("the server config is built");
+    config.set_transport_config(interop_transport());
+    config
 }
 
 #[must_use]
@@ -123,8 +136,10 @@ pub fn rama_client_config(anchor: CertificateDer<'static>) -> ClientConfig {
         .try_with_server_trust_anchors([anchor])
         .expect("the trust anchor is accepted")
         .verify_backend();
-    ClientConfig::try_from_rama_tls(&tls, crate::backend::options())
-        .expect("the client config is built")
+    let mut config = ClientConfig::try_from_rama_tls(&tls, crate::backend::options())
+        .expect("the client config is built");
+    config.set_transport_config(interop_transport());
+    config
 }
 
 /// One identity of an issued pair: the material Rama's own side uses, and the same material on
