@@ -77,7 +77,7 @@ async fn key_cases_rama_client() {
             }
         })
         .await;
-        connection.close(0u32.into(), b"done");
+        connection.close(0u32, b"done");
         run.deadline.wait(&run.what, client.wait_idle()).await;
         serving.join(&run.what, run.deadline).await;
         record(&run);

@@ -1,17 +1,23 @@
 use rama_core::telemetry::tracing::{debug, trace};
 
-use crate::proto::Instant;
-use crate::proto::connection::{qlog::drops::DropReason, spaces::PacketSpace};
-use crate::proto::crypto::{HeaderKey, KeyPair, PacketKey};
-use crate::proto::packet::{Packet, PartialDecode, SpaceId};
-use crate::proto::token::ResetToken;
-use crate::proto::{RESET_TOKEN_SIZE, TransportError};
+use rama_quic_proto::{
+    RESET_TOKEN_SIZE, ResetToken, TransportError, Version,
+    crypto::{HeaderKey, PacketKey},
+    packet::{Packet, PartialDecode, SpaceId},
+};
+
+use crate::proto::{
+    Instant,
+    connection::{qlog::drops::DropReason, spaces::PacketSpaces},
+    crypto::{KeyPair, Keys},
+};
 
 /// Removes header protection of a packet, or returns the reason the packet was dropped
 pub(super) fn unprotect_header(
     partial_decode: PartialDecode,
-    spaces: &[PacketSpace; 3],
+    spaces: &PacketSpaces,
     zero_rtt_crypto: Option<&ZeroRttCrypto>,
+    original_initial: Option<(Version, &Keys)>,
     stateless_reset_tokens: &[Option<ResetToken>],
 ) -> Result<UnprotectHeaderResult, DropReason> {
     let header_crypto = if partial_decode.is_0rtt() {
@@ -21,6 +27,12 @@ pub(super) fn unprotect_header(
             debug!("dropping unexpected 0-RTT packet");
             return Err(DropReason::KeyUnavailable);
         }
+    } else if let Some((version, keys)) = original_initial
+        && partial_decode.is_initial()
+        && partial_decode.version() == Some(version)
+    {
+        // An Initial still in the client's first flight version (RFC 9369 §4.1).
+        keys.remote.as_ref().map(|keys| &*keys.header)
     } else if let Some(space) = partial_decode.space() {
         if let Some(crypto) = spaces[space]
             .crypto
@@ -46,10 +58,14 @@ pub(super) fn unprotect_header(
     let packet = partial_decode.data();
     let stateless_reset = packet.len() >= RESET_TOKEN_SIZE + 5
         && stateless_reset_tokens.iter().flatten().any(|token| {
-            crate::proto::constant_time::eq(token, &packet[packet.len() - RESET_TOKEN_SIZE..])
+            rama_quic_proto::constant_time::eq(token, &packet[packet.len() - RESET_TOKEN_SIZE..])
         });
 
-    match partial_decode.finish(header_crypto) {
+    let finished = match header_crypto {
+        Some(key) => partial_decode.finish_protected(key),
+        None => partial_decode.finish_unprotected(),
+    };
+    match finished {
         Ok(packet) => Ok(UnprotectHeaderResult {
             packet: Some(packet),
             stateless_reset,
@@ -80,8 +96,9 @@ pub(super) struct UnprotectHeaderResult {
 )]
 pub(super) fn decrypt_packet_body(
     packet: &mut Packet,
-    spaces: &[PacketSpace; 3],
+    spaces: &PacketSpaces,
     zero_rtt_crypto: Option<&ZeroRttCrypto>,
+    original_initial: Option<(Version, &Keys)>,
     conn_key_phase: bool,
     prev_crypto: Option<&PrevCrypto>,
     next_crypto: Option<&KeyPair<Box<dyn PacketKey>>>,
@@ -98,6 +115,11 @@ pub(super) fn decrypt_packet_body(
     let mut crypto_update = false;
     let crypto = if packet.header.is_0rtt() {
         &zero_rtt_crypto.unwrap().packet
+    } else if let Some((version, keys)) = original_initial
+        && space == SpaceId::Initial
+        && packet.header.version() == Some(version)
+    {
+        &keys.remote.as_ref().ok_or(None)?.packet
     } else if packet_key_phase == conn_key_phase || space != SpaceId::Data {
         &spaces[space]
             .crypto

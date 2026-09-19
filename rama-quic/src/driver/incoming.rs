@@ -7,7 +7,8 @@ use std::{
 };
 
 use crate::driver::sockets::Lease;
-use crate::proto::{ConnectionError, ConnectionId, RetryRefused, ServerConfig};
+use crate::proto::{ConnectionError, RetryRefused, ServerConfig};
+use rama_quic_proto::ConnectionId;
 
 use crate::driver::{
     connection::{Connecting, Connection},

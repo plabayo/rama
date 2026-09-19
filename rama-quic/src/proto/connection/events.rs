@@ -6,18 +6,18 @@ use std::cmp;
 use rama_core::telemetry::tracing::trace;
 
 use crate::proto::{
-    Instant, TransportError,
+    Instant,
     connection::{
         Connection, ConnectionError, Event, State,
         qlog::drops::{DropInfo, DropReason},
         timer::Timer,
     },
-    packet::SpaceId,
     shared::{
         ConnectionEvent, ConnectionEventInner, DatagramConnectionEvent, EndpointEvent,
         EndpointEventInner,
     },
 };
+use rama_quic_proto::{TransportError, packet::SpaceId};
 
 impl Connection {
     pub(crate) fn poll_timeout(&self) -> Option<Instant> {

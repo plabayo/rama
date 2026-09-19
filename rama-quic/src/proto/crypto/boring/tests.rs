@@ -1,13 +1,9 @@
 use super::*;
-use crate::proto::{
-    Side,
-    crypto::{
-        self, ClientConfig as _, HandshakeEvent, ServerConfig as _, Session, config::TlsOptions,
-    },
-    shared::ConnectionId,
-    transport_parameters::TransportParameters,
+use crate::proto::crypto::{
+    self, ClientConfig as _, HandshakeEvent, ServerConfig as _, Session, config::TlsOptions,
 };
 use rama_core::bytes::BytesMut;
+use rama_quic_proto::{ConnectionId, Side, Version, transport_parameters::TransportParameters};
 use rama_tls::{
     client::{TlsClientConfig, TlsServerCertPins},
     server::{
@@ -70,7 +66,10 @@ fn params(side: Side) -> TransportParameters {
     }
 }
 
-fn transfer(from: &mut dyn Session, to: &mut dyn Session) -> Result<bool, crate::TransportError> {
+fn transfer(
+    from: &mut dyn Session,
+    to: &mut dyn Session,
+) -> Result<bool, rama_quic_proto::TransportError> {
     let mut progress = false;
     while let Some(event) = from.poll_handshake()? {
         progress = true;
@@ -86,7 +85,7 @@ fn transfer(from: &mut dyn Session, to: &mut dyn Session) -> Result<bool, crate:
 fn handshake(
     client: &mut dyn Session,
     server: &mut dyn Session,
-) -> Result<(), crate::TransportError> {
+) -> Result<(), rama_quic_proto::TransportError> {
     for _ in 0..32 {
         let progress = transfer(client, server)? | transfer(server, client)?;
         if !progress {
@@ -165,11 +164,11 @@ fn full_resumed_and_early_handshakes() {
     for resumed in [false, true] {
         let mut c = client
             .clone()
-            .start_session(1, "localhost", &params(Side::Client))
+            .start_session(Version::V1, "localhost", &params(Side::Client))
             .unwrap();
         let mut s = server
             .clone()
-            .start_session(1, &params(Side::Server))
+            .start_session(Version::V1, &params(Side::Server))
             .unwrap();
         assert_eq!(c.early_crypto().is_some(), resumed);
         check_session(&mut *c, &mut *s, resumed);
@@ -184,21 +183,24 @@ fn changed_transport_settings_reject_early_data_without_losing_resumption() {
     let client = Arc::new(QuicClientConfig::from_rama(&client, options).unwrap());
     let server = Arc::new(QuicServerConfig::from_rama(&server, options).unwrap());
     let mut server_params = params(Side::Server);
-    server_params.initial_max_data = crate::VarInt::from_u32(1024);
+    server_params.initial_max_data = rama_quic_proto::VarInt::from_u32(1024);
     for resumed in [false, true] {
         if resumed {
-            server_params.initial_max_data = crate::VarInt::from_u32(512);
+            server_params.initial_max_data = rama_quic_proto::VarInt::from_u32(512);
         }
         let mut c = client
             .clone()
-            .start_session(1, "localhost", &params(Side::Client))
+            .start_session(Version::V1, "localhost", &params(Side::Client))
             .unwrap();
-        let mut s = server.clone().start_session(1, &server_params).unwrap();
+        let mut s = server
+            .clone()
+            .start_session(Version::V1, &server_params)
+            .unwrap();
         assert_eq!(c.early_crypto().is_some(), resumed);
         if resumed {
             assert_eq!(
                 c.transport_parameters().unwrap().unwrap().initial_max_data,
-                crate::VarInt::from_u32(1024)
+                rama_quic_proto::VarInt::from_u32(1024)
             );
         }
         check_session(&mut *c, &mut *s, resumed);
@@ -218,25 +220,82 @@ fn ticket_cache_belongs_to_the_client_configuration() {
     let server = Arc::new(QuicServerConfig::from_rama(&server_tls, options).unwrap());
     let mut c = client
         .clone()
-        .start_session(1, "localhost", &params(Side::Client))
+        .start_session(Version::V1, "localhost", &params(Side::Client))
         .unwrap();
     let mut s = server
         .clone()
-        .start_session(1, &params(Side::Server))
+        .start_session(Version::V1, &params(Side::Server))
         .unwrap();
     check_session(&mut *c, &mut *s, false);
     let other = Arc::new(QuicClientConfig::from_rama(&client_tls, options).unwrap());
     let mut c = other
-        .start_session(1, "localhost", &params(Side::Client))
+        .start_session(Version::V1, "localhost", &params(Side::Client))
         .unwrap();
-    let mut s = server.start_session(1, &params(Side::Server)).unwrap();
+    let mut s = server
+        .start_session(Version::V1, &params(Side::Server))
+        .unwrap();
     assert!(c.early_crypto().is_none());
     check_session(&mut *c, &mut *s, false);
     let c = client
-        .start_session(1, "another.example", &params(Side::Client))
+        .start_session(Version::V1, "another.example", &params(Side::Client))
         .unwrap();
     assert!(c.early_crypto().is_none());
     assert!(c.transport_parameters().unwrap().is_none());
+}
+
+/// RFC 9369 §5: a ticket resumes only a connection in the version that issued it. The client
+/// cache files tickets by version; when a ticket is forced onto another version anyway, the
+/// server's per-version context refuses to resume with it.
+#[test]
+fn a_ticket_from_another_version_does_not_resume() {
+    let (client_tls, server_tls) = configs();
+    let options = TlsOptions::default().with_early_data(true);
+    let client = Arc::new(QuicClientConfig::from_rama(&client_tls, options).unwrap());
+    let server = Arc::new(QuicServerConfig::from_rama(&server_tls, options).unwrap());
+
+    let mut c = client
+        .clone()
+        .start_session(Version::V1, "localhost", &params(Side::Client))
+        .unwrap();
+    let mut s = server
+        .clone()
+        .start_session(Version::V1, &params(Side::Server))
+        .unwrap();
+    check_session(&mut *c, &mut *s, false);
+
+    // The v1 ticket is not offered to a v2 connection.
+    let c = client
+        .clone()
+        .start_session(Version::V2, "localhost", &params(Side::Client))
+        .unwrap();
+    assert!(c.early_crypto().is_none());
+    drop(c);
+
+    // Forced onto a v2 connection, the server does not resume with it.
+    client.relabel_tickets(Version::V2);
+    let mut c = client
+        .clone()
+        .start_session(Version::V2, "localhost", &params(Side::Client))
+        .unwrap();
+    assert!(
+        c.early_crypto().is_some(),
+        "the relabelled ticket is offered"
+    );
+    let mut s = server
+        .clone()
+        .start_session(Version::V2, &params(Side::Server))
+        .unwrap();
+    check_session(&mut *c, &mut *s, false);
+    assert_eq!(c.early_data_accepted(), Some(false));
+
+    // The v2 connection issued a v2 ticket, which resumes a v2 connection.
+    let mut c = client
+        .start_session(Version::V2, "localhost", &params(Side::Client))
+        .unwrap();
+    let mut s = server
+        .start_session(Version::V2, &params(Side::Server))
+        .unwrap();
+    check_session(&mut *c, &mut *s, true);
 }
 
 /// BoringSSL hands a client a peer chain that already starts with the leaf, and a server one
@@ -257,9 +316,11 @@ fn a_peer_chain_is_reported_without_a_repeated_leaf() {
     let client = Arc::new(QuicClientConfig::from_rama(&client_tls, options).unwrap());
     let server = Arc::new(QuicServerConfig::from_rama(&server_tls, options).unwrap());
     let mut c = client
-        .start_session(1, "localhost", &params(Side::Client))
+        .start_session(Version::V1, "localhost", &params(Side::Client))
         .unwrap();
-    let mut s = server.start_session(1, &params(Side::Server)).unwrap();
+    let mut s = server
+        .start_session(Version::V1, &params(Side::Server))
+        .unwrap();
     handshake(&mut *c, &mut *s).unwrap();
     assert_eq!(c.peer_certificates().unwrap(), expected);
 }
@@ -274,9 +335,11 @@ fn a_server_reports_its_handshake_data_before_the_handshake_finishes() {
     let client = Arc::new(QuicClientConfig::from_rama(&client_tls, options).unwrap());
     let server = Arc::new(QuicServerConfig::from_rama(&server_tls, options).unwrap());
     let mut c = client
-        .start_session(1, "localhost", &params(Side::Client))
+        .start_session(Version::V1, "localhost", &params(Side::Client))
         .unwrap();
-    let mut s = server.start_session(1, &params(Side::Server)).unwrap();
+    let mut s = server
+        .start_session(Version::V1, &params(Side::Server))
+        .unwrap();
 
     // The client's first flight only, so the handshake cannot have completed.
     let mut reported = false;
@@ -321,9 +384,11 @@ fn a_client_reports_its_handshake_data_before_the_handshake_finishes() {
     let client = Arc::new(QuicClientConfig::from_rama(&client_tls, options).unwrap());
     let server = Arc::new(QuicServerConfig::from_rama(&server_tls, options).unwrap());
     let mut c = client
-        .start_session(1, "localhost", &params(Side::Client))
+        .start_session(Version::V1, "localhost", &params(Side::Client))
         .unwrap();
-    let mut s = server.start_session(1, &params(Side::Server)).unwrap();
+    let mut s = server
+        .start_session(Version::V1, &params(Side::Server))
+        .unwrap();
 
     let mut reported_while_handshaking = false;
     let mut reports = 0;
@@ -406,7 +471,7 @@ fn a_retry_packet_is_accepted_only_with_its_own_integrity_tag() {
     let (client, _) = configs();
     let config = Arc::new(QuicClientConfig::from_rama(&client, TlsOptions::default()).unwrap());
     let session = config
-        .start_session(1, "localhost", &params(Side::Client))
+        .start_session(Version::V1, "localhost", &params(Side::Client))
         .unwrap();
 
     let cid = ConnectionId::new(&[1, 2, 3, 4, 5, 6, 7, 8]);
@@ -415,7 +480,9 @@ fn a_retry_packet_is_accepted_only_with_its_own_integrity_tag() {
     let mut pseudo = header.to_vec();
     pseudo.extend_from_slice(token);
     let mut payload = token.to_vec();
-    payload.extend_from_slice(&super::packet::retry_tag(&cid, &pseudo).unwrap());
+    payload.extend_from_slice(
+        &super::packet::retry_tag(&rama_quic_proto::version::V1_WIRE, &cid, &pseudo).unwrap(),
+    );
     assert!(session.is_valid_retry(&cid, header, &payload));
 
     // One flipped bit anywhere in the token or the tag fails authentication.
@@ -460,25 +527,25 @@ fn a_full_ticket_cache_evicts_its_oldest_entry() {
     for index in 0..HANDSHAKES {
         let mut c = client
             .clone()
-            .start_session(1, &host(index), &params(Side::Client))
+            .start_session(Version::V1, &host(index), &params(Side::Client))
             .unwrap();
         let mut s = server
             .clone()
-            .start_session(1, &params(Side::Server))
+            .start_session(Version::V1, &params(Side::Server))
             .unwrap();
         handshake(&mut *c, &mut *s).unwrap();
     }
 
     let recent = client
         .clone()
-        .start_session(1, &host(HANDSHAKES - 2), &params(Side::Client))
+        .start_session(Version::V1, &host(HANDSHAKES - 2), &params(Side::Client))
         .unwrap();
     assert!(
         recent.transport_parameters().unwrap().is_some(),
         "a recent host must still be cached"
     );
     let oldest = client
-        .start_session(1, &host(0), &params(Side::Client))
+        .start_session(Version::V1, &host(0), &params(Side::Client))
         .unwrap();
     assert!(
         oldest.transport_parameters().unwrap().is_none(),
@@ -593,11 +660,11 @@ fn client_authentication_is_verified_and_retained_on_resumption() {
             for resumed in [false, true] {
                 let mut c = client
                     .clone()
-                    .start_session(1, "localhost", &params(Side::Client))
+                    .start_session(Version::V1, "localhost", &params(Side::Client))
                     .unwrap();
                 let mut s = server
                     .clone()
-                    .start_session(1, &params(Side::Server))
+                    .start_session(Version::V1, &params(Side::Server))
                     .unwrap();
                 if accepted {
                     check_session(&mut *c, &mut *s, resumed);
@@ -649,11 +716,11 @@ fn both_directions_interoperate_with_rustls() {
         for resumed in [false, true] {
             let mut c = client
                 .clone()
-                .start_session(1, "localhost", &params(Side::Client))
+                .start_session(Version::V1, "localhost", &params(Side::Client))
                 .unwrap();
             let mut s = server
                 .clone()
-                .start_session(1, &params(Side::Server))
+                .start_session(Version::V1, &params(Side::Server))
                 .unwrap();
             assert_eq!(c.early_crypto().is_some(), resumed);
             check_session(&mut *c, &mut *s, resumed);
@@ -664,8 +731,9 @@ fn both_directions_interoperate_with_rustls() {
 
 #[tokio::test]
 async fn udp_endpoints_exchange_streams_datagrams_and_early_data() {
-    use crate::{ClientConfig, Endpoint, ServerConfig, VarInt};
+    use crate::{ClientConfig, Endpoint, ServerConfig};
     use rama_core::{bytes::Bytes, rt::Executor};
+    use rama_quic_proto::VarInt;
     use rama_tls::TlsBackend;
     use std::{net::UdpSocket, time::Duration};
 

@@ -6,10 +6,13 @@ use std::num::NonZeroU32;
 use rama_core::{bytes::Bytes, telemetry::tracing::trace};
 
 use crate::proto::{
-    Instant, VarInt,
+    Instant,
     connection::{Connection, ConnectionError, State, state, timer::Timer},
-    frame::{self, Close},
     shared::EndpointEventInner,
+};
+use rama_quic_proto::{
+    VarInt,
+    frame::{self, Close},
 };
 
 impl Connection {

@@ -1,4 +1,5 @@
-//! QUIC v1 (RFC 9000) transport for Rama.
+//! QUIC transport for Rama: version 1 (RFC 9000) and version 2 (RFC 9369), with RFC 9368
+//! version negotiation between them.
 //!
 //! The deterministic protocol engine lives in the private `proto` module and
 //! the asynchronous connection driver in `driver`; only Rama-owned types are
@@ -38,6 +39,7 @@ pub mod benchmarks;
 ))]
 mod test_helpers;
 
+pub mod profile;
 mod proto;
 pub mod qlog;
 
@@ -46,16 +48,14 @@ pub mod qlog;
 #[cfg(any(feature = "aws-lc", feature = "ring", feature = "boring"))]
 pub use proto::AddressTokenKey;
 pub use proto::{
-    AckFrequencyConfig, ApplicationClose, BloomTokenLog, Chunk, ClientConfig, ClosedStream,
-    ConfigError, CongestionControl, ConnectError, ConnectionClose, ConnectionError, ConnectionId,
-    ConnectionIdGenerator, ConnectionIdGeneratorFactory, ConnectionStats,
-    DEFAULT_SUPPORTED_VERSIONS, Dir, EcnCodepoint, EndpointConfig, ExportKeyingMaterialError,
-    FrameStats, FrameType, HashedConnectionIdGenerator, IdleTimeout, InvalidCid, MAX_CID_SIZE,
-    MIN_INITIAL_CONGESTION_WINDOW, MtuDiscoveryConfig, NegotiatedTlsParameters, NoneTokenLog,
-    NoneTokenStore, PathStats, PreferredAddressPolicy, RandomConnectionIdGenerator,
-    ReceiveQueueLimits, RetryRefused, ServerConfig, Side, StdSystemTime, StreamId, TimeSource,
-    TokenLog, TokenMemoryCache, TokenReuseError, TokenStore, TransportConfig, TransportError,
-    TransportErrorCode, UdpStats, ValidationTokenConfig, VarInt, VarIntBoundsExceeded, Written,
+    AckFrequencyConfig, BloomTokenLog, Chunk, ClientConfig, ClosedStream, ConfigError,
+    CongestionControl, ConnectError, ConnectionError, ConnectionIdGenerator,
+    ConnectionIdGeneratorFactory, ConnectionStats, EndpointConfig, ExportKeyingMaterialError,
+    FrameStats, HashedConnectionIdGenerator, IdleTimeout, MIN_INITIAL_CONGESTION_WINDOW,
+    MtuDiscoveryConfig, NegotiatedTlsParameters, NoneTokenLog, NoneTokenStore, PathStats,
+    PreferredAddressPolicy, RandomConnectionIdGenerator, ReceiveQueueLimits, RetryRefused,
+    ServerConfig, StdSystemTime, StoredToken, TimeSource, TokenLog, TokenMemoryCache,
+    TokenReuseError, TokenStore, TransportConfig, UdpStats, ValidationTokenConfig, Written,
 };
 pub use proto::{KEY_MATERIAL_SIZE, StatelessResetKey};
 
@@ -70,20 +70,16 @@ pub mod tls {
     /// Implement [`provider::ClientConfig`] and [`provider::ServerConfig`] and pass them to
     /// [`crate::ClientConfig::new`] and [`crate::ServerConfig::new`]. The latter also
     /// accepts a custom address-token key, so no built-in crypto feature is required.
-    /// A provider encodes local [`provider::TransportParameters`] into its TLS extension and
-    /// decodes its peer's extension with [`provider::TransportParameters::read`].
+    /// A provider encodes local [`rama_quic_proto::transport_parameters::TransportParameters`]
+    /// into its TLS extension and decodes its peer's extension with that type's `read`.
     ///
     /// Sessions must preserve the order of [`provider::HandshakeEvent`] values, distinguish read
     /// and write keys, and report TLS failures through Rama's transport error types.
     pub mod provider {
-        pub use crate::proto::SpaceId as EncryptionLevel;
         pub use crate::proto::crypto::{
-            AeadKey, ClientConfig, CryptoError, DirectionalKeys, ExportKeyingMaterialError,
-            HandshakeEvent, HandshakeTokenKey, HeaderKey, InitialKeysError, KeyPair, Keys,
-            PacketKey, ServerConfig, Session, UnsupportedVersion,
-        };
-        pub use crate::proto::transport_parameters::{
-            Error as TransportParametersError, TransportParameters,
+            AeadKey, ClientConfig, DirectionalKeys, ExportKeyingMaterialError, HandshakeEvent,
+            HandshakeTokenKey, InitialKeysError, KeyPair, Keys, ServerConfig, Session,
+            UnsupportedVersion,
         };
     }
 

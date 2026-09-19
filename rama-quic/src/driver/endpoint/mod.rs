@@ -52,8 +52,10 @@ pub use builder::{DEFAULT_SHUTDOWN_BUDGET, EndpointBuilder};
 
 const BATCH_SIZE: usize = 32;
 
+use rama_quic_proto::VarInt;
+
 use crate::driver::{
-    EndpointConfig, IO_LOOP_BOUND, RECV_TIME_BOUND, VarInt,
+    EndpointConfig, IO_LOOP_BOUND, RECV_TIME_BOUND,
     connection::Connecting,
     incoming::Incoming,
     work_limiter::{WorkCycle, WorkLimiter},
@@ -437,6 +439,8 @@ impl Endpoint {
             })
             .ok_or(ConnectError::EndpointStopping)?;
         let now = now();
+        // A first attempt may be restarted once in another version (RFC 9368 §2.1).
+        let restart = config.negotiation_offer.is_none().then(|| config.clone());
         let (ch, conn) = match endpoint.inner.connect(now, config, addr, server_name) {
             Ok(registered) => registered,
             Err(error) => {
@@ -464,7 +468,10 @@ impl Endpoint {
         let slot = self.inner.shared.lifecycle.reserve();
         drop(endpoint);
         driver.spawn(slot);
-        Ok(connecting)
+        Ok(match restart {
+            Some(config) => connecting.with_restart(self.clone(), config, addr, server_name),
+            None => connecting,
+        })
     }
 
     /// Bind a new socket through Rama's shared UDP construction and switch to it.
@@ -617,9 +624,9 @@ impl Endpoint {
     /// See [`Connection::close()`] for details.
     ///
     /// [`Connection::close()`]: crate::driver::Connection::close
-    pub fn close(&self, error_code: VarInt, reason: &[u8]) {
+    pub fn close(&self, error_code: impl Into<VarInt>, reason: &[u8]) {
         self.inner.state.lock().close(
-            error_code,
+            error_code.into(),
             &Bytes::copy_from_slice(reason),
             &self.inner.shared,
             false,

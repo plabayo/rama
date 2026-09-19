@@ -240,14 +240,12 @@ fn detection_recognises_both_serializations_without_parsing() {
 /// produces the bytes, so a schema change on either side breaks this test.
 #[tokio::test]
 async fn round_trips_the_json_text_sequence_encoder() {
-    use crate::{
-        ConnectionId,
-        qlog::{
-            QlogEventView, TraceInfo,
-            event::{LifecycleEventView, TupleId, lifecycle::ConnectionState},
-            output::QlogEncoder as _,
-        },
+    use crate::qlog::{
+        QlogEventView, TraceInfo,
+        event::{LifecycleEventView, TupleId, lifecycle::ConnectionState},
+        output::QlogEncoder as _,
     };
+    use rama_quic_proto::ConnectionId;
     use rama_utils::str::arcstr::arcstr;
     use std::time::{Duration, Instant};
 

@@ -21,8 +21,9 @@ use parking_lot::Mutex;
 use rama_core::bytes::BytesMut;
 use rama_core::telemetry::tracing::{info_span, trace};
 use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer};
+use rama_quic_proto::{StreamId, Version, packet};
 #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
-use rama_tls_rustls::dep::rustls::{KeyLogFile, client::WebPkiServerVerifier};
+use rama_tls_rustls::dep::rustls::{self, KeyLogFile, client::WebPkiServerVerifier};
 
 pub(super) const DEFAULT_MTU: usize = 1452;
 
@@ -163,12 +164,7 @@ impl Pair {
         self.client.drive(self.time, self.server.addr);
         for (packet, buffer) in self.client.outbound.drain(..) {
             let packet_size = packet_size(&packet, &buffer);
-            self.client_sent.push(Sent {
-                local: packet.local,
-                to: packet.destination,
-                cid: packet.cid_used,
-                bytes: packet_size,
-            });
+            self.client_sent.push(Sent::record(&packet, &buffer));
             if packet_size > self.mtu {
                 info!(packet_size, "dropping packet (max size exceeded)");
                 continue;
@@ -184,10 +180,14 @@ impl Pair {
             if self.server.accepts(packet.destination) {
                 let ecn = set_congestion_experienced(packet.ecn, self.congestion_experienced);
                 let to = (!self.server.hide_local).then_some(packet.destination);
+                let mut datagram: BytesMut = buffer.as_ref().into();
+                if let Some(tamper) = self.server.tamper_inbound.as_mut() {
+                    tamper(&mut datagram);
+                }
                 self.server.inbound.push_back(Inbound {
                     at: self.time + self.latency,
                     ecn,
-                    packet: buffer.as_ref().into(),
+                    packet: datagram,
                     from: packet.local,
                     to,
                 });
@@ -201,12 +201,7 @@ impl Pair {
         self.server.drive(self.time, self.client.addr);
         for (packet, buffer) in self.server.outbound.drain(..) {
             let packet_size = packet_size(&packet, &buffer);
-            self.server_sent.push(Sent {
-                local: packet.local,
-                to: packet.destination,
-                cid: packet.cid_used,
-                bytes: packet_size,
-            });
+            self.server_sent.push(Sent::record(&packet, &buffer));
             if packet_size > self.mtu {
                 info!(packet_size, "dropping packet (max size exceeded)");
                 continue;
@@ -217,10 +212,14 @@ impl Pair {
             if self.client.accepts(packet.destination) {
                 let ecn = set_congestion_experienced(packet.ecn, self.congestion_experienced);
                 let to = (!self.client.hide_local).then_some(packet.destination);
+                let mut datagram: BytesMut = buffer.as_ref().into();
+                if let Some(tamper) = self.client.tamper_inbound.as_mut() {
+                    tamper(&mut datagram);
+                }
                 self.client.inbound.push_back(Inbound {
                     at: self.time + self.latency,
                     ecn,
-                    packet: buffer.as_ref().into(),
+                    packet: datagram,
                     from: packet.local,
                     to,
                 });
@@ -357,13 +356,109 @@ impl Default for Pair {
 
 /// One datagram an endpoint put on the wire: the local address it belongs to, where it went, and
 /// the sequence number of the destination connection ID it carried.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Sent {
     pub(super) local: Option<SocketAddr>,
     pub(super) to: SocketAddr,
     pub(super) cid: Option<u64>,
     /// The datagram's size on the wire, for a case counting bytes against a limit.
     pub(super) bytes: usize,
+    /// The first byte of the datagram's first packet: header form, fixed bit and type bits.
+    pub(super) first_byte: u8,
+    /// The version of the first packet, when it has a long header.
+    pub(super) version: Option<Version>,
+    /// Every packet in the datagram, coalesced ones included: first byte and version.
+    pub(super) packets: Vec<SentPacket>,
+}
+
+/// One packet of a sent datagram, as an observer without keys sees it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct SentPacket {
+    pub(super) first_byte: u8,
+    pub(super) version: Option<Version>,
+}
+
+impl SentPacket {
+    /// The long header kind, read with the type table of the packet's own version.
+    pub(super) fn long_kind(&self) -> Option<rama_quic_proto::version::LongKind> {
+        Some(self.version?.wire()?.long_kind(self.first_byte))
+    }
+}
+
+impl Sent {
+    fn record(packet: &Transmit, buffer: &Bytes) -> Self {
+        let packets = walk_packets(buffer);
+        Self {
+            local: packet.local,
+            to: packet.destination,
+            cid: packet.cid_used,
+            bytes: packet_size(packet, buffer),
+            first_byte: buffer[0],
+            version: packets.first().and_then(|packet| packet.version),
+            packets,
+        }
+    }
+}
+
+/// Split a datagram into its packets using only the invariant long-header layout and the
+/// Length field (RFC 8999 §5.1, RFC 9000 §17.2); a short header runs to the end.
+fn walk_packets(buffer: &[u8]) -> Vec<SentPacket> {
+    fn varint(buf: &[u8], at: &mut usize) -> Option<u64> {
+        let first = *buf.get(*at)?;
+        let len = 1usize << (first >> 6);
+        let bytes = buf.get(*at..*at + len)?;
+        *at += len;
+        let mut value = u64::from(first & 0x3f);
+        for byte in &bytes[1..] {
+            value = value << 8 | u64::from(*byte);
+        }
+        Some(value)
+    }
+    let mut packets = Vec::new();
+    let mut at = 0;
+    while at < buffer.len() {
+        let first_byte = buffer[at];
+        if first_byte & packet::LONG_HEADER_FORM == 0 {
+            packets.push(SentPacket {
+                first_byte,
+                version: None,
+            });
+            break;
+        }
+        let Some(bytes) = buffer.get(at + 1..at + 5) else {
+            break;
+        };
+        let version = Version::from_be_bytes(bytes.try_into().unwrap());
+        packets.push(SentPacket {
+            first_byte,
+            version: Some(version),
+        });
+        let Some(wire) = version.wire() else {
+            break;
+        };
+        let mut cursor = at + 5;
+        for _ in 0..2 {
+            let Some(len) = buffer.get(cursor) else {
+                return packets;
+            };
+            cursor += 1 + usize::from(*len);
+        }
+        match wire.long_kind(first_byte) {
+            rama_quic_proto::version::LongKind::Retry => break,
+            rama_quic_proto::version::LongKind::Initial => {
+                let Some(token_len) = varint(buffer, &mut cursor) else {
+                    break;
+                };
+                cursor += token_len as usize;
+            }
+            _ => {}
+        }
+        let Some(length) = varint(buffer, &mut cursor) else {
+            break;
+        };
+        at = cursor + length as usize;
+    }
+    packets
 }
 
 pub(super) struct TestEndpoint {
@@ -399,6 +494,9 @@ pub(super) struct TestEndpoint {
     pub(super) captured_packets: Vec<Vec<u8>>,
     pub(super) capture_inbound_packets: bool,
     pub(super) handle_incoming: Box<dyn FnMut(&Incoming) -> IncomingConnectionBehavior>,
+    /// While set, every datagram arriving at this endpoint is handed to this hook first, which
+    /// may rewrite it in place: a test's stand-in for an on-path attacker or a lossy link.
+    pub(super) tamper_inbound: Option<Box<dyn FnMut(&mut BytesMut)>>,
     pub(super) waiting_incoming: Vec<Incoming>,
     /// While set, connection IDs the endpoint issues are kept from the connection (the peer sees
     /// no NEW_CONNECTION_ID) until `release_held_identifiers`: a peer slow to issue.
@@ -500,6 +598,7 @@ impl TestEndpoint {
             captured_packets: Vec::new(),
             capture_inbound_packets: false,
             handle_incoming: Box::new(|_| IncomingConnectionBehavior::Accept),
+            tamper_inbound: None,
             waiting_incoming: Vec::new(),
             hold_identifiers: false,
             held_identifiers: Vec::new(),
@@ -934,7 +1033,7 @@ fn server_crypto_inner(
 
 #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 pub(super) fn server_crypto_with_provider(
-    provider: Arc<rama_tls_rustls::dep::rustls::crypto::CryptoProvider>,
+    provider: Arc<rustls::crypto::CryptoProvider>,
     identity: Option<(CertificateDer<'static>, PrivateKeyDer<'static>)>,
     alpn: Option<Vec<Vec<u8>>>,
 ) -> QuicServerConfig {
@@ -945,8 +1044,8 @@ pub(super) fn server_crypto_with_provider(
         )
     });
 
-    let mut config = rama_tls_rustls::dep::rustls::ServerConfig::builder_with_provider(provider)
-        .with_protocol_versions(&[&rama_tls_rustls::dep::rustls::version::TLS13])
+    let mut config = rustls::ServerConfig::builder_with_provider(provider)
+        .with_protocol_versions(&[&rustls::version::TLS13])
         .unwrap()
         .with_no_client_auth()
         .with_single_cert(vec![cert], key)
@@ -965,12 +1064,12 @@ pub(super) fn server_crypto_with_provider(
 /// sizes; post-quantum key shares (preferred by the `aws-lc` provider) roughly double the
 /// ClientHello and would make those sequences provider dependent.
 #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
-pub(super) fn test_provider() -> Arc<rama_tls_rustls::dep::rustls::crypto::CryptoProvider> {
+pub(super) fn test_provider() -> Arc<rustls::crypto::CryptoProvider> {
     let mut provider = Arc::unwrap_or_clone(configured_provider());
     #[cfg(all(feature = "aws-lc", not(feature = "ring")))]
-    let x25519 = rama_tls_rustls::dep::rustls::crypto::aws_lc_rs::kx_group::X25519;
+    let x25519 = rustls::crypto::aws_lc_rs::kx_group::X25519;
     #[cfg(feature = "ring")]
-    let x25519 = rama_tls_rustls::dep::rustls::crypto::ring::kx_group::X25519;
+    let x25519 = rustls::crypto::ring::kx_group::X25519;
     provider.kx_groups = vec![x25519];
     Arc::new(provider)
 }
@@ -1018,11 +1117,11 @@ fn client_crypto_inner(
 
 #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 pub(super) fn client_crypto_with_provider(
-    provider: Arc<rama_tls_rustls::dep::rustls::crypto::CryptoProvider>,
+    provider: Arc<rustls::crypto::CryptoProvider>,
     certs: Option<Vec<CertificateDer<'static>>>,
     alpn: Option<Vec<Vec<u8>>>,
 ) -> QuicClientConfig {
-    let mut roots = rama_tls_rustls::dep::rustls::RootCertStore::empty();
+    let mut roots = rustls::RootCertStore::empty();
     for cert in certs.unwrap_or_else(|| vec![CERTIFIED_KEY.cert_chain[0].clone()]) {
         roots.add(cert).unwrap();
     }
@@ -1030,8 +1129,8 @@ pub(super) fn client_crypto_with_provider(
     let verifier = WebPkiServerVerifier::builder_with_provider(Arc::new(roots), provider.clone())
         .build()
         .unwrap();
-    let mut inner = rama_tls_rustls::dep::rustls::ClientConfig::builder_with_provider(provider)
-        .with_protocol_versions(&[&rama_tls_rustls::dep::rustls::version::TLS13])
+    let mut inner = rustls::ClientConfig::builder_with_provider(provider)
+        .with_protocol_versions(&[&rustls::version::TLS13])
         .unwrap()
         .dangerous()
         .with_custom_certificate_verifier(verifier)

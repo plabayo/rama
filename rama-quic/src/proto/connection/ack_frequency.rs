@@ -1,8 +1,10 @@
-use crate::proto::Duration;
-use crate::proto::connection::spaces::PendingAcks;
-use crate::proto::frame::AckFrequency;
-use crate::proto::transport_parameters::TransportParameters;
-use crate::proto::{AckFrequencyConfig, TIMER_GRANULARITY, TransportError, VarInt};
+use rama_quic_proto::{
+    TransportError, VarInt, frame::AckFrequency, transport_parameters::TransportParameters,
+};
+
+use crate::proto::{
+    AckFrequencyConfig, Duration, TIMER_GRANULARITY, connection::spaces::PendingAcks,
+};
 
 /// State associated to ACK frequency
 pub(super) struct AckFrequencyState {
@@ -20,7 +22,7 @@ impl AckFrequencyState {
     pub(super) fn new(default_max_ack_delay: Duration) -> Self {
         Self {
             in_flight_ack_frequency_frame: None,
-            next_outgoing_sequence_number: VarInt(0),
+            next_outgoing_sequence_number: VarInt::from_u32(0),
             peer_max_ack_delay: default_max_ack_delay,
 
             last_ack_frequency_frame: None,
@@ -66,10 +68,11 @@ impl AckFrequencyState {
 
     /// Returns the next sequence number for an ACK_FREQUENCY frame
     pub(super) fn next_sequence_number(&mut self) -> VarInt {
-        assert!(self.next_outgoing_sequence_number <= VarInt::MAX);
-
         let seq = self.next_outgoing_sequence_number;
-        self.next_outgoing_sequence_number.0 += 1;
+        // Sequence numbers stay well below `VarInt::MAX` in practice; saturate defensively rather
+        // than construct an out-of-range value.
+        self.next_outgoing_sequence_number =
+            VarInt::from_u64(seq.into_inner().saturating_add(1)).unwrap_or(VarInt::MAX);
         seq
     }
 
@@ -80,7 +83,7 @@ impl AckFrequencyState {
         config: &AckFrequencyConfig,
         peer_params: &TransportParameters,
     ) -> bool {
-        if self.next_outgoing_sequence_number.0 == 0 {
+        if self.next_outgoing_sequence_number == 0 {
             // Always send at startup
             return true;
         }
@@ -121,7 +124,7 @@ impl AckFrequencyState {
     ) -> Result<bool, TransportError> {
         if self
             .last_ack_frequency_frame
-            .is_some_and(|highest_sequence_nr| frame.sequence.into_inner() <= highest_sequence_nr)
+            .is_some_and(|highest_sequence_nr| frame.sequence <= highest_sequence_nr)
         {
             return Ok(false);
         }
@@ -176,7 +179,7 @@ mod tests {
         let mut wire = Vec::new();
         params.write(&mut wire);
         let params =
-            TransportParameters::read(crate::proto::Side::Client, &mut wire.as_slice()).unwrap();
+            TransportParameters::read(rama_quic_proto::Side::Client, &mut wire.as_slice()).unwrap();
         let state = AckFrequencyState::new(Duration::from_millis(25));
         assert_eq!(
             state.candidate_max_ack_delay(
@@ -200,7 +203,7 @@ mod tests {
         let mut wire = Vec::new();
         params.write(&mut wire);
         let params =
-            TransportParameters::read(crate::proto::Side::Client, &mut wire.as_slice()).unwrap();
+            TransportParameters::read(rama_quic_proto::Side::Client, &mut wire.as_slice()).unwrap();
         let state = AckFrequencyState::new(Duration::from_millis(25));
         for rtt in [Duration::ZERO, Duration::from_millis(5), Duration::MAX] {
             for config in [
@@ -266,7 +269,7 @@ mod tests {
             } else {
                 assert_eq!(
                     result.unwrap_err().code(),
-                    crate::proto::TransportErrorCode::PROTOCOL_VIOLATION
+                    rama_quic_proto::TransportErrorCode::PROTOCOL_VIOLATION
                 );
             }
         }

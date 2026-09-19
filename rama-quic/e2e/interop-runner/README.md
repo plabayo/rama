@@ -49,10 +49,13 @@ The image selects `rama-quic-interop-client` or `rama-quic-interop-server` via
 fetches space-separated `REQUESTS` URLs into `/downloads`; the server serves
 `/www` on UDP 443 with `/certs/cert.pem` and `/certs/priv.key`. Both honor
 `SSLKEYLOGFILE` and `QLOGDIR`. Recognized endpoint cases are `handshake`,
-`transfer`, `retry`, and `multiconnect`; unsupported cases exit 127. Upstream
+`transfer`, `retry`, `multiconnect` and `v2`; unsupported cases exit 127. Upstream
 maps `multiplexing`/`transferloss` to `transfer`, and `longrtt` to `handshake`.
-HTTP/3, resumption, 0-RTT, migration, v2, and forced cipher/key-update cases
-are outside this initial gate.
+In `v2` the client starts in QUIC v1 offering v2 and the server moves the connection
+to v2 (RFC 9368 compatible version negotiation); a client built on Rustls cannot
+change version mid-handshake and reports the case unsupported, so the gate requires
+it from Boring clients and from servers of every backend. HTTP/3, resumption, 0-RTT,
+migration, and forced cipher/key-update cases are outside this gate.
 
 Artifacts remain in `target/quic-interop/<timestamp>-<run-id>/`, or a **new**
 directory passed with `--artifacts /absolute/path`. They include both role JSON

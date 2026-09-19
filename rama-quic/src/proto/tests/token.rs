@@ -19,11 +19,11 @@ fn stateless_retry() {
         pair.client_conn_mut(client_ch).loss_recovery_in_flight(),
         (0, 0)
     );
-    pair.client
-        .connections
-        .get_mut(&client_ch)
-        .unwrap()
-        .close(pair.time, VarInt(42), Bytes::new());
+    pair.client.connections.get_mut(&client_ch).unwrap().close(
+        pair.time,
+        VarInt::from_u32(42),
+        Bytes::new(),
+    );
     pair.drive();
     assert_eq!(pair.client.known_connections(), 0);
     assert_eq!(pair.client.known_cids(), 0);
@@ -77,11 +77,11 @@ fn use_token() {
     let mut pair = Pair::default();
     let client_config = client_config();
     let (client_ch, _server_ch) = pair.connect_with(client_config.clone());
-    pair.client
-        .connections
-        .get_mut(&client_ch)
-        .unwrap()
-        .close(pair.time, VarInt(42), Bytes::new());
+    pair.client.connections.get_mut(&client_ch).unwrap().close(
+        pair.time,
+        VarInt::from_u32(42),
+        Bytes::new(),
+    );
     pair.drive();
     assert_eq!(pair.client.known_connections(), 0);
     assert_eq!(pair.client.known_cids(), 0);
@@ -98,7 +98,7 @@ fn use_token() {
         .connections
         .get_mut(&client_ch_2)
         .unwrap()
-        .close(pair.time, VarInt(42), Bytes::new());
+        .close(pair.time, VarInt::from_u32(42), Bytes::new());
     pair.drive();
     assert_eq!(pair.client.known_connections(), 0);
     assert_eq!(pair.client.known_cids(), 0);
@@ -113,11 +113,11 @@ fn retry_then_use_token() {
     let client_config = client_config();
     pair.server.handle_incoming = Box::new(validate_incoming);
     let (client_ch, _server_ch) = pair.connect_with(client_config.clone());
-    pair.client
-        .connections
-        .get_mut(&client_ch)
-        .unwrap()
-        .close(pair.time, VarInt(42), Bytes::new());
+    pair.client.connections.get_mut(&client_ch).unwrap().close(
+        pair.time,
+        VarInt::from_u32(42),
+        Bytes::new(),
+    );
     pair.drive();
     assert_eq!(pair.client.known_connections(), 0);
     assert_eq!(pair.client.known_cids(), 0);
@@ -134,7 +134,7 @@ fn retry_then_use_token() {
         .connections
         .get_mut(&client_ch_2)
         .unwrap()
-        .close(pair.time, VarInt(42), Bytes::new());
+        .close(pair.time, VarInt::from_u32(42), Bytes::new());
     pair.drive();
     assert_eq!(pair.client.known_connections(), 0);
     assert_eq!(pair.client.known_cids(), 0);
@@ -148,11 +148,11 @@ fn use_token_then_retry() {
     let mut pair = Pair::default();
     let client_config = client_config();
     let (client_ch, _server_ch) = pair.connect_with(client_config.clone());
-    pair.client
-        .connections
-        .get_mut(&client_ch)
-        .unwrap()
-        .close(pair.time, VarInt(42), Bytes::new());
+    pair.client.connections.get_mut(&client_ch).unwrap().close(
+        pair.time,
+        VarInt::from_u32(42),
+        Bytes::new(),
+    );
     pair.drive();
     assert_eq!(pair.client.known_connections(), 0);
     assert_eq!(pair.client.known_cids(), 0);
@@ -182,7 +182,7 @@ fn use_token_then_retry() {
         .connections
         .get_mut(&client_ch_2)
         .unwrap()
-        .close(pair.time, VarInt(42), Bytes::new());
+        .close(pair.time, VarInt::from_u32(42), Bytes::new());
     pair.drive();
     assert_eq!(pair.client.known_connections(), 0);
     assert_eq!(pair.client.known_cids(), 0);
@@ -193,23 +193,18 @@ fn use_token_then_retry() {
 #[test]
 fn use_same_token_twice() {
     #[derive(Default)]
-    struct EvilTokenStore(Mutex<Bytes>);
+    struct EvilTokenStore(Mutex<Option<StoredToken>>);
 
     impl TokenStore for EvilTokenStore {
-        fn insert(&self, _server_name: &str, token: Bytes) {
+        fn insert(&self, _server_name: &str, _version: Version, token: StoredToken) {
             let mut lock = self.0.lock();
-            if lock.is_empty() {
-                *lock = token;
+            if lock.is_none() {
+                *lock = Some(token);
             }
         }
 
-        fn take(&self, _server_name: &str) -> Option<Bytes> {
-            let lock = self.0.lock();
-            if lock.is_empty() {
-                None
-            } else {
-                Some(lock.clone())
-            }
+        fn take(&self, _server_name: &str, _version: Version) -> Option<StoredToken> {
+            self.0.lock().clone()
         }
     }
 
@@ -218,11 +213,11 @@ fn use_same_token_twice() {
     let mut client_config = client_config();
     client_config.set_token_store(Arc::new(EvilTokenStore::default()));
     let (client_ch, _server_ch) = pair.connect_with(client_config.clone());
-    pair.client
-        .connections
-        .get_mut(&client_ch)
-        .unwrap()
-        .close(pair.time, VarInt(42), Bytes::new());
+    pair.client.connections.get_mut(&client_ch).unwrap().close(
+        pair.time,
+        VarInt::from_u32(42),
+        Bytes::new(),
+    );
     pair.drive();
     assert_eq!(pair.client.known_connections(), 0);
     assert_eq!(pair.client.known_cids(), 0);
@@ -239,7 +234,7 @@ fn use_same_token_twice() {
         .connections
         .get_mut(&client_ch_2)
         .unwrap()
-        .close(pair.time, VarInt(42), Bytes::new());
+        .close(pair.time, VarInt::from_u32(42), Bytes::new());
     pair.drive();
     assert_eq!(pair.client.known_connections(), 0);
     assert_eq!(pair.client.known_cids(), 0);
@@ -256,7 +251,7 @@ fn use_same_token_twice() {
         .connections
         .get_mut(&client_ch_3)
         .unwrap()
-        .close(pair.time, VarInt(42), Bytes::new());
+        .close(pair.time, VarInt::from_u32(42), Bytes::new());
     pair.drive();
     assert_eq!(pair.client.known_connections(), 0);
     assert_eq!(pair.client.known_cids(), 0);
@@ -280,11 +275,11 @@ fn use_token_expired() {
     );
     let client_config = client_config();
     let (client_ch, _server_ch) = pair.connect_with(client_config.clone());
-    pair.client
-        .connections
-        .get_mut(&client_ch)
-        .unwrap()
-        .close(pair.time, VarInt(42), Bytes::new());
+    pair.client.connections.get_mut(&client_ch).unwrap().close(
+        pair.time,
+        VarInt::from_u32(42),
+        Bytes::new(),
+    );
     pair.drive();
     assert_eq!(pair.client.known_connections(), 0);
     assert_eq!(pair.client.known_cids(), 0);
@@ -301,7 +296,7 @@ fn use_token_expired() {
         .connections
         .get_mut(&client_ch_2)
         .unwrap()
-        .close(pair.time, VarInt(42), Bytes::new());
+        .close(pair.time, VarInt::from_u32(42), Bytes::new());
     pair.drive();
     assert_eq!(pair.client.known_connections(), 0);
     assert_eq!(pair.client.known_cids(), 0);
@@ -320,7 +315,7 @@ fn use_token_expired() {
         .connections
         .get_mut(&client_ch_3)
         .unwrap()
-        .close(pair.time, VarInt(42), Bytes::new());
+        .close(pair.time, VarInt::from_u32(42), Bytes::new());
     pair.drive();
     assert_eq!(pair.client.known_connections(), 0);
     assert_eq!(pair.client.known_cids(), 0);
@@ -352,7 +347,10 @@ impl TimeSource for FakeTimeSource {
     }
 }
 
-use crate::proto::crypto::{AeadKey, CryptoError, HandshakeTokenKey};
+use crate::proto::crypto::{AeadKey, HandshakeTokenKey};
+use rama_quic_proto::{
+    ConnectionId, Dir, TransportError, TransportErrorCode, VarInt, crypto::CryptoError,
+};
 
 /// Where a failing token-key provider gives up.
 #[derive(Debug, Clone, Copy)]
@@ -404,22 +402,22 @@ struct FailingRetryIntegrity(Arc<dyn crypto::ServerConfig>);
 impl crypto::ServerConfig for FailingRetryIntegrity {
     fn initial_keys(
         &self,
-        version: u32,
+        version: Version,
         cid: &ConnectionId,
     ) -> Result<crypto::Keys, crypto::InitialKeysError> {
         self.0.initial_keys(version, cid)
     }
     fn retry_tag(
         &self,
-        _: u32,
+        _: Version,
         _: &ConnectionId,
         _: &[u8],
-    ) -> Result<[u8; 16], crypto::CryptoError> {
-        Err(crypto::CryptoError)
+    ) -> Result<[u8; 16], rama_quic_proto::crypto::CryptoError> {
+        Err(rama_quic_proto::crypto::CryptoError::new())
     }
     fn start_session(
         self: Arc<Self>,
-        version: u32,
+        version: Version,
         params: &TransportParameters,
     ) -> Result<Box<dyn crypto::Session>, TransportError> {
         self.0.clone().start_session(version, params)
@@ -567,11 +565,11 @@ fn none_token_log_refuses_presented_validation_tokens() {
         pair.server_conn_mut(server_ch).stats().frame_tx.new_token > 0,
         "a token was issued to the client"
     );
-    pair.client
-        .connections
-        .get_mut(&client_ch)
-        .unwrap()
-        .close(pair.time, VarInt(42), Bytes::new());
+    pair.client.connections.get_mut(&client_ch).unwrap().close(
+        pair.time,
+        VarInt::from_u32(42),
+        Bytes::new(),
+    );
     pair.drive();
 
     let seen = Arc::new(Mutex::new(None));
@@ -601,11 +599,11 @@ fn none_token_store_presents_no_token() {
     let (client_ch, server_ch) = pair.connect_with(client_config.clone());
     pair.drive();
     assert!(pair.server_conn_mut(server_ch).stats().frame_tx.new_token > 0);
-    pair.client
-        .connections
-        .get_mut(&client_ch)
-        .unwrap()
-        .close(pair.time, VarInt(42), Bytes::new());
+    pair.client.connections.get_mut(&client_ch).unwrap().close(
+        pair.time,
+        VarInt::from_u32(42),
+        Bytes::new(),
+    );
     pair.drive();
 
     let seen = Arc::new(Mutex::new(None));
@@ -725,11 +723,11 @@ fn validation_token_lifetime_boundary_is_inclusive() {
         let (ch, server_ch) = pair.connect_with(client_config.clone());
         pair.drive();
         assert!(pair.server_conn_mut(server_ch).stats().frame_tx.new_token > 0);
-        pair.client
-            .connections
-            .get_mut(&ch)
-            .unwrap()
-            .close(pair.time, VarInt(42), Bytes::new());
+        pair.client.connections.get_mut(&ch).unwrap().close(
+            pair.time,
+            VarInt::from_u32(42),
+            Bytes::new(),
+        );
         pair.drive();
         fake_time.advance(elapsed);
         let (_ch, _) = pair.connect_with(client_config);
@@ -875,7 +873,7 @@ fn a_duplicate_initial_after_retry_or_refusal_is_a_fresh_attempt() {
     assert!(!pair.server_conn_mut(server_ch).is_closed());
     let now = pair.time;
     pair.client_conn_mut(client_ch)
-        .close(now, VarInt(0), Bytes::new());
+        .close(now, VarInt::from_u32(0), Bytes::new());
     pair.drive();
 
     // Now the token-bearing Initial: its attempt is held, its duplicate arrives, and the attempt

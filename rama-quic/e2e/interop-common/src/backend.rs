@@ -140,7 +140,7 @@ pub fn options() -> rama::quic::tls::TlsOptions {
 }
 
 #[cfg(feature = "boring")]
-pub fn assert_certificate_failure(error: &rama::quic::TransportError) {
+pub fn assert_certificate_failure(error: &rama::quic::proto::TransportError) {
     use rama::tls::boring::core::ssl::quic::QuicError;
     let Some(QuicError::Tls(native)) = error
         .cause()

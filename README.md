@@ -213,6 +213,7 @@ Rama crates in this repository:
 - [`rama-tcp`](https://crates.io/crates/rama-tcp): TCP support for rama
 - [`rama-udp`](https://crates.io/crates/rama-udp): UDP support for rama
 - [`rama-quic`](https://crates.io/crates/rama-quic): QUIC transport support for rama
+- [`rama-quic-proto`](https://crates.io/crates/rama-quic-proto): QUIC wire types, codec and profiles for rama
 - [`rama-tls`](https://crates.io/crates/rama-tls): shared TLS configuration and types for rama
 - [`rama-tls-acme`](https://crates.io/crates/rama-tls-acme): ACME support for rama
 - [`rama-tls-boring`](https://crates.io/crates/rama-tls-boring): [Boring](https://github.com/plabayo/rama-boring) TLS support for rama

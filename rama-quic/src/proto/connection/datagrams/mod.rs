@@ -2,12 +2,12 @@ use std::collections::VecDeque;
 
 use rama_core::bytes::Bytes;
 use rama_core::telemetry::tracing::{debug, trace};
-
-use super::Connection;
-use crate::proto::{
+use rama_quic_proto::{
     TransportError,
     frame::{ArrivedDatagram, Datagram, FrameStruct},
 };
+
+use super::Connection;
 
 /// API to control datagram traffic
 pub(crate) struct Datagrams<'a> {

@@ -11,6 +11,12 @@
 mod failure_tests;
 
 use crate::qlog::event::negotiation::KeyChangeTrigger;
+use rama_quic_proto::{
+    EcnCodepoint, TransportError, VarInt, Version, frame,
+    packet::{InitialPacket, SpaceId},
+    transport_parameters::TransportParameters,
+    version::VersionInformation,
+};
 use std::{cmp, mem, net::SocketAddr};
 
 use rama_core::{
@@ -19,17 +25,13 @@ use rama_core::{
 };
 
 use crate::proto::{
-    Duration, Instant, TransportError, VarInt,
+    Duration, Instant,
     connection::{
         Connection, ConnectionError, ConnectionSide, Event, State,
         packet_crypto::{PrevCrypto, ZeroRttCrypto},
         timer::Timer,
     },
     crypto::{self, HandshakeEvent, KeyPair, Keys},
-    frame,
-    packet::{InitialPacket, SpaceId},
-    shared::EcnCodepoint,
-    transport_parameters::TransportParameters,
 };
 
 impl Connection {
@@ -466,11 +468,75 @@ impl Connection {
                 "CID authentication failure",
             ));
         }
+        self.validate_peer_versions(&params)?;
 
         self.qlog_remote_parameters(now, &params);
         self.set_peer_params(now, params);
+        self.peer_params_received = true;
 
         Ok(())
+    }
+
+    /// RFC 9368 §4: the peer's `version_information` must agree with the version in use, and
+    /// a client that reacted to a Version Negotiation packet checks that the server's list
+    /// would have led it to the same version.
+    fn validate_peer_versions(&self, params: &TransportParameters) -> Result<(), TransportError> {
+        match &self.side {
+            ConnectionSide::Server { .. } => {
+                if params
+                    .version_information
+                    .as_ref()
+                    .is_some_and(|info| info.chosen() != self.original_version())
+                {
+                    return Err(TransportError::VERSION_NEGOTIATION_ERROR(
+                        "client's chosen version differs from its first flight",
+                    ));
+                }
+                Ok(())
+            }
+            ConnectionSide::Client {
+                versions,
+                negotiation_offer,
+                ..
+            } => {
+                let info = match (&params.version_information, negotiation_offer) {
+                    (Some(info), _) => info.clone(),
+                    (None, None) => return Ok(()),
+                    // A server that only speaks v1 predates version negotiation (RFC 9368 §8).
+                    (None, Some(_)) if self.version() == Version::V1 => {
+                        VersionInformation::new(Version::V1, vec![Version::V1])
+                    }
+                    (None, Some(_)) => {
+                        return Err(TransportError::VERSION_NEGOTIATION_ERROR(
+                            "server sent no version_information after Version Negotiation",
+                        ));
+                    }
+                };
+                if info.chosen() != self.version() {
+                    return Err(TransportError::VERSION_NEGOTIATION_ERROR(
+                        "server's chosen version differs from the negotiated version",
+                    ));
+                }
+                if negotiation_offer.is_some() {
+                    if info.available().is_empty() {
+                        // RFC 9368 §4: an empty Available Versions list cannot justify the version
+                        // the client was moved to, so a reacted-to Version Negotiation with one is
+                        // indistinguishable from a downgrade attack.
+                        return Err(TransportError::VERSION_NEGOTIATION_ERROR(
+                            "server's Available Versions is empty after Version Negotiation",
+                        ));
+                    }
+                    let mut would_see = info.available().to_vec();
+                    would_see.push(self.version());
+                    if versions.select(&would_see) != Some(self.version()) {
+                        return Err(TransportError::VERSION_NEGOTIATION_ERROR(
+                            "Version Negotiation led to a version the server's list does not justify",
+                        ));
+                    }
+                }
+                Ok(())
+            }
+        }
     }
 
     fn set_peer_params(&mut self, now: Instant, params: TransportParameters) {
@@ -564,7 +630,7 @@ impl Connection {
 }
 
 pub(super) fn get_max_ack_delay(params: &TransportParameters) -> Duration {
-    Duration::from_micros(params.max_ack_delay.0 * 1000)
+    Duration::from_micros(params.max_ack_delay * 1000)
 }
 
 /// Perform key updates this many packets before the AEAD confidentiality limit.
@@ -580,11 +646,13 @@ const KEY_UPDATE_MARGIN: u64 = 10_000;
 ///
 /// Returns the negotiated idle timeout as a `Duration`, or `None` when both endpoints have opted out of idle timeout.
 pub(super) fn negotiate_max_idle_timeout(x: Option<VarInt>, y: Option<VarInt>) -> Option<Duration> {
+    // A zero or absent value means "no timeout"; otherwise the lower of the two wins.
+    let x = x.map(VarInt::into_inner).filter(|&v| v != 0);
+    let y = y.map(VarInt::into_inner).filter(|&v| v != 0);
     match (x, y) {
-        (Some(VarInt(0)) | None, Some(VarInt(0)) | None) => None,
-        (Some(VarInt(0)) | None, Some(y)) => Some(Duration::from_millis(y.0)),
-        (Some(x), Some(VarInt(0)) | None) => Some(Duration::from_millis(x.0)),
-        (Some(x), Some(y)) => Some(Duration::from_millis(cmp::min(x, y).0)),
+        (None, None) => None,
+        (Some(v), None) | (None, Some(v)) => Some(Duration::from_millis(v)),
+        (Some(a), Some(b)) => Some(Duration::from_millis(cmp::min(a, b))),
     }
 }
 

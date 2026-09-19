@@ -1,10 +1,11 @@
 use super::*;
+use rama_quic_proto::{ConnectionId, Side, TransportError, TransportErrorCode, packet::SpaceId};
 
 struct FailingClient(bool);
 impl crypto::ClientConfig for FailingClient {
     fn start_session(
         self: Arc<Self>,
-        _: u32,
+        _: Version,
         _: &str,
         _: &TransportParameters,
     ) -> Result<Box<dyn crypto::Session>, ConnectError> {
@@ -20,22 +21,22 @@ struct FailingServer(Arc<dyn crypto::ServerConfig>, bool);
 impl crypto::ServerConfig for FailingServer {
     fn initial_keys(
         &self,
-        version: u32,
+        version: Version,
         cid: &ConnectionId,
     ) -> Result<crypto::Keys, crypto::InitialKeysError> {
         self.0.initial_keys(version, cid)
     }
     fn retry_tag(
         &self,
-        version: u32,
+        version: Version,
         cid: &ConnectionId,
         packet: &[u8],
-    ) -> Result<[u8; 16], crypto::CryptoError> {
+    ) -> Result<[u8; 16], rama_quic_proto::crypto::CryptoError> {
         self.0.retry_tag(version, cid, packet)
     }
     fn start_session(
         self: Arc<Self>,
-        _: u32,
+        _: Version,
         _: &TransportParameters,
     ) -> Result<Box<dyn crypto::Session>, TransportError> {
         if self.1 {
@@ -48,10 +49,20 @@ impl crypto::ServerConfig for FailingServer {
 
 struct FailingInitialKeys;
 impl crypto::Session for FailingInitialKeys {
-    fn initial_keys(&self, _: &ConnectionId, _: Side) -> Result<crypto::Keys, TransportError> {
+    fn initial_keys(
+        &self,
+        _: Version,
+        _: &ConnectionId,
+        _: Side,
+    ) -> Result<crypto::Keys, TransportError> {
         Err(failure())
     }
-    fn early_crypto(&self) -> Option<(Box<dyn crypto::HeaderKey>, Box<dyn crypto::PacketKey>)> {
+    fn early_crypto(
+        &self,
+    ) -> Option<(
+        Box<dyn rama_quic_proto::crypto::HeaderKey>,
+        Box<dyn rama_quic_proto::crypto::PacketKey>,
+    )> {
         None
     }
     fn early_data_accepted(&self) -> Option<bool> {
@@ -62,7 +73,7 @@ impl crypto::Session for FailingInitialKeys {
     }
     fn read_handshake(
         &mut self,
-        _: crate::proto::packet::SpaceId,
+        _: rama_quic_proto::packet::SpaceId,
         _: &[u8],
     ) -> Result<bool, TransportError> {
         Err(failure())
@@ -75,7 +86,8 @@ impl crypto::Session for FailingInitialKeys {
     }
     fn next_1rtt_keys(
         &mut self,
-    ) -> Result<Option<crypto::KeyPair<Box<dyn crypto::PacketKey>>>, TransportError> {
+    ) -> Result<Option<crypto::KeyPair<Box<dyn rama_quic_proto::crypto::PacketKey>>>, TransportError>
+    {
         Err(failure())
     }
     fn is_valid_retry(&self, _: &ConnectionId, _: &[u8], _: &[u8]) -> bool {

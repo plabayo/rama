@@ -1,8 +1,9 @@
 use super::qlog::Capture;
 use super::*;
-use crate::proto::{
+use crate::proto::shared::{ConnectionEvent, ConnectionEventInner, DatagramConnectionEvent};
+use rama_quic_proto::{
+    ConnectionId, Dir, TransportError, TransportErrorCode, VarInt,
     packet::{FixedLengthConnectionIdParser, PartialDecode},
-    shared::{ConnectionEvent, ConnectionEventInner, DatagramConnectionEvent},
 };
 
 fn traced_client(pair: &Pair, capture: &Capture) -> ClientConfig {
@@ -223,7 +224,7 @@ fn invalid_first_accepted_initial_logs_drop_without_plaintext_length() {
         src_cid: ConnectionId::new(&[2; 8]),
         token: Bytes::new(),
         number: PacketNumber::U8(0),
-        version,
+        version: version.to_wire().unwrap(),
     });
     let mut packet = Vec::new();
     let partial = header.encode(&mut packet);
@@ -293,7 +294,7 @@ fn replay_after_zero_rtt_key_discard_keeps_early_packet_type() {
     let (first_client, _) = pair.connect_with(config.clone());
     let now = pair.time;
     pair.client_conn_mut(first_client)
-        .close(now, VarInt(0), Bytes::new());
+        .close(now, VarInt::from_u32(0), Bytes::new());
     pair.drive();
     pair.client
         .addr

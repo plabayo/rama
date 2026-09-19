@@ -5,12 +5,11 @@ use std::sync::Arc;
 use rama_core::bytes::Bytes;
 
 use crate::proto::{
-    Side, TokenStore,
-    config::{PreferredAddressPolicy, ServerConfig},
+    TokenStore,
+    config::{PreferredAddressPolicy, ServerConfig, TimeSource},
     connection::{ConnectionError, streams::StreamEvent},
-    frame::Close,
-    shared::ConnectionId,
 };
+use rama_quic_proto::{ConnectionId, Side, Version, frame::Close, version::ClientVersionPolicy};
 
 /// Fields of `Connection` specific to it being client-side or server-side
 pub(super) enum ConnectionSide {
@@ -21,6 +20,15 @@ pub(super) enum ConnectionSide {
         server_name: String,
         /// What to do with an address the server advertises as preferred
         preferred_address_policy: PreferredAddressPolicy,
+        /// Which versions this attempt offered the server (RFC 9368)
+        versions: ClientVersionPolicy,
+        /// The Version Negotiation offer this attempt reacts to, if any (RFC 9368 §4)
+        negotiation_offer: Option<Vec<Version>>,
+        /// The clock tokens are dated with
+        time_source: Arc<dyn TimeSource>,
+        /// RFC 9287 §3.1: whether the QUIC bit may already be cleared before the server's
+        /// parameters arrive, because a recent token from a greasing server is in use.
+        grease_quic_bit_early: bool,
     },
     Server {
         server_config: Arc<ServerConfig>,
@@ -51,17 +59,31 @@ impl From<SideArgs> for ConnectionSide {
                 token_store,
                 server_name,
                 preferred_address_policy,
-            } => Self::Client {
-                token: token_store.take(&server_name).unwrap_or_default(),
-                token_store,
-                server_name,
-                preferred_address_policy,
-            },
+                versions,
+                negotiation_offer,
+                time_source,
+            } => {
+                let stored = token_store.take(&server_name, versions.original());
+                let grease_quic_bit_early = stored
+                    .as_ref()
+                    .is_some_and(|stored| stored.allows_early_quic_bit_grease(time_source.now()));
+                Self::Client {
+                    token: stored.map(|stored| stored.token).unwrap_or_default(),
+                    token_store,
+                    server_name,
+                    preferred_address_policy,
+                    versions,
+                    negotiation_offer,
+                    time_source,
+                    grease_quic_bit_early,
+                }
+            }
             SideArgs::Server {
                 server_config,
                 pref_addr_cid: _,
                 path_validated: _,
                 orig_dst_cid: _,
+                original_version: _,
             } => Self::Server { server_config },
         }
     }
@@ -73,11 +95,17 @@ pub(crate) enum SideArgs {
         token_store: Arc<dyn TokenStore>,
         server_name: String,
         preferred_address_policy: PreferredAddressPolicy,
+        versions: ClientVersionPolicy,
+        negotiation_offer: Option<Vec<Version>>,
+        time_source: Arc<dyn TimeSource>,
     },
     Server {
         server_config: Arc<ServerConfig>,
         pref_addr_cid: Option<ConnectionId>,
         path_validated: bool,
+        /// The version of the client's first flight, when the server moves the connection to
+        /// another compatible one (RFC 9368 §2.3); otherwise the connection's version.
+        original_version: Version,
         /// The destination the client's first Initial named, before any Retry. It is what both
         /// ends call this connection in a trace.
         orig_dst_cid: ConnectionId,
@@ -113,6 +141,16 @@ impl SideArgs {
         match *self {
             Self::Client { .. } => Side::Client,
             Self::Server { .. } => Side::Server,
+        }
+    }
+
+    /// The version of the client's first flight, given the version the connection runs in.
+    pub(crate) fn original_version(&self, version: Version) -> Version {
+        match *self {
+            Self::Client { .. } => version,
+            Self::Server {
+                original_version, ..
+            } => original_version,
         }
     }
 }
@@ -161,7 +199,7 @@ impl State {
 pub(super) mod state {
     use rama_core::bytes::Bytes;
 
-    use crate::proto::frame::Close;
+    use rama_quic_proto::frame::Close;
 
     #[cfg_attr(
         not(fuzzing),

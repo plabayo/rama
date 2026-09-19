@@ -31,6 +31,7 @@ pub mod serving;
 pub mod support;
 pub mod trust;
 pub mod unsupported;
+pub mod version;
 
 pub use backpressure::{BackpressureScenario, Ears, Filled, Sent, backpressure_cases};
 pub use close::{CloseObservation, CloseScenario, close_cases, told};
@@ -59,6 +60,7 @@ pub use serving::{ServerOutcome, expect_outcome, rama_probe_server};
 pub use support::{Deadline, Peer, digest, localhost, payload};
 pub use trust::{TrustObservation, TrustScenario, trust_cases};
 pub use unsupported::{UnsupportedObservation, UnsupportedScenario, unsupported_cases};
+pub use version::{ClientVersions, Outcome, ServerVersions, VersionScenario, version_cases};
 
 #[cfg(any(not(feature = "boring"), feature = "peer-rustls"))]
 pub use resumption::RecordingSessions;

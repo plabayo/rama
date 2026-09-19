@@ -2,9 +2,10 @@ use rama_utils::octets;
 use std::{fmt, sync::Arc};
 
 use crate::proto::{
-    ConfigError, Duration, INITIAL_MTU, MAX_UDP_PAYLOAD, VarInt, VarIntBoundsExceeded, congestion,
+    ConfigError, Duration, INITIAL_MTU, MAX_UDP_PAYLOAD, congestion,
     connection::qlog::ConnectionQlog,
 };
+use rama_quic_proto::{VarInt, VarIntBoundsExceeded};
 
 /// The smallest initial congestion window this crate accepts: two datagrams of the size every
 /// QUIC path carries (RFC 9000 §14.1). It is a policy floor, not a protocol one; a window of
@@ -42,7 +43,12 @@ pub struct TransportConfig {
     pub(crate) max_concurrent_uni_streams: VarInt,
     pub(crate) max_idle_timeout: Option<VarInt>,
     pub(crate) stream_receive_window: VarInt,
+    pub(crate) stream_receive_window_bidi_remote: Option<VarInt>,
+    pub(crate) stream_receive_window_uni: Option<VarInt>,
     pub(crate) receive_window: VarInt,
+    pub(crate) active_connection_id_limit: Option<VarInt>,
+    pub(crate) max_ack_delay: Duration,
+    pub(crate) wire: crate::profile::WireProfile,
     pub(crate) send_window: u64,
     pub(crate) send_fairness: bool,
 
@@ -80,16 +86,16 @@ impl TransportConfig {
         ///
         /// Worst-case memory use is directly proportional to `max_concurrent_bidi_streams *
         /// stream_receive_window`, with an upper bound proportional to `receive_window`.
-        pub fn max_concurrent_bidi_streams(mut self, value: VarInt) -> Self {
-            self.max_concurrent_bidi_streams = value;
+        pub fn max_concurrent_bidi_streams(mut self, value: impl Into<VarInt>) -> Self {
+            self.max_concurrent_bidi_streams = value.into();
             self
         }
     }
 
     rama_utils::macros::generate_set_and_with! {
         /// Variant of `max_concurrent_bidi_streams` affecting unidirectional streams
-        pub fn max_concurrent_uni_streams(mut self, value: VarInt) -> Self {
-            self.max_concurrent_uni_streams = value;
+        pub fn max_concurrent_uni_streams(mut self, value: impl Into<VarInt>) -> Self {
+            self.max_concurrent_uni_streams = value.into();
             self
         }
     }
@@ -105,7 +111,8 @@ impl TransportConfig {
         ///
         /// ```
         /// # use std::{convert::TryInto, time::Duration};
-        /// # use rama_quic::{TransportConfig, VarInt, VarIntBoundsExceeded};
+        /// # use rama_quic::TransportConfig;
+        /// # use rama_quic_proto::{VarInt, VarIntBoundsExceeded};
         /// # fn main() -> Result<(), VarIntBoundsExceeded> {
         /// let mut config = TransportConfig::default();
         ///
@@ -132,10 +139,57 @@ impl TransportConfig {
         /// stream doesn't monopolize receive buffers, which may otherwise occur if the application
         /// chooses not to read from a large stream for a time while still requiring data on other
         /// streams.
-        pub fn stream_receive_window(mut self, value: VarInt) -> Self {
-            self.stream_receive_window = value;
+        pub fn stream_receive_window(mut self, value: impl Into<VarInt>) -> Self {
+            self.stream_receive_window = value.into();
             self
         }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// The receive window of bidirectional streams the peer opens, when different from
+        /// [`Self::stream_receive_window`], which then applies to locally opened ones.
+        pub fn stream_receive_window_bidi_remote(mut self, value: Option<VarInt>) -> Self {
+            self.stream_receive_window_bidi_remote = value;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// The receive window of unidirectional streams, when different from
+        /// [`Self::stream_receive_window`].
+        pub fn stream_receive_window_uni(mut self, value: Option<VarInt>) -> Self {
+            self.stream_receive_window_uni = value;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// The `active_connection_id_limit` to advertise, when not the one this crate derives
+        /// from how many it can hold. At most that many are honoured.
+        pub fn active_connection_id_limit(mut self, value: Option<VarInt>) -> Self {
+            self.active_connection_id_limit = value;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// How long this endpoint may delay an acknowledgement, advertised as `max_ack_delay`
+        /// and honoured by its ACK timer. Must be below 2^14 ms (RFC 9000 §18.2). Defaults to
+        /// 25 ms.
+        pub fn max_ack_delay(mut self, value: Duration) -> Result<Self, ConfigError> {
+            if value.as_millis() >= 1 << 14 {
+                return Err(ConfigError::OutOfBounds);
+            }
+            self.max_ack_delay = value;
+            Ok(self)
+        }
+    }
+
+    /// The wire profile a connection with this configuration follows.
+    #[must_use]
+    pub(crate) fn with_wire(mut self, wire: crate::profile::WireProfile) -> Self {
+        self.wire = wire;
+        self
     }
 
     rama_utils::macros::generate_set_and_with! {
@@ -145,8 +199,8 @@ impl TransportConfig {
         /// This should be set to at least the expected connection latency multiplied by the maximum
         /// desired throughput. Larger values can be useful to allow maximum throughput within a
         /// stream while another is blocked.
-        pub fn receive_window(mut self, value: VarInt) -> Self {
-            self.receive_window = value;
+        pub fn receive_window(mut self, value: impl Into<VarInt>) -> Self {
+            self.receive_window = value.into();
             self
         }
     }
@@ -483,9 +537,14 @@ impl Default for TransportConfig {
             max_concurrent_bidi_streams: 100u32.into(),
             max_concurrent_uni_streams: 100u32.into(),
             // 30 second default recommended by RFC 9308 § 3.2
-            max_idle_timeout: Some(VarInt(30_000)),
+            max_idle_timeout: Some(VarInt::from_u32(30_000)),
             stream_receive_window: STREAM_RWND.into(),
+            stream_receive_window_bidi_remote: None,
+            stream_receive_window_uni: None,
             receive_window: VarInt::MAX,
+            active_connection_id_limit: None,
+            max_ack_delay: Duration::from_millis(25),
+            wire: crate::profile::WireProfile::default(),
             send_window: (8 * STREAM_RWND).into(),
             send_fairness: true,
 
@@ -524,7 +583,12 @@ impl fmt::Debug for TransportConfig {
             max_concurrent_uni_streams,
             max_idle_timeout,
             stream_receive_window,
+            stream_receive_window_bidi_remote,
+            stream_receive_window_uni,
             receive_window,
+            active_connection_id_limit,
+            max_ack_delay,
+            wire,
             send_window,
             send_fairness,
             packet_threshold,
@@ -554,6 +618,14 @@ impl fmt::Debug for TransportConfig {
             .field("max_concurrent_uni_streams", max_concurrent_uni_streams)
             .field("max_idle_timeout", max_idle_timeout)
             .field("stream_receive_window", stream_receive_window)
+            .field(
+                "stream_receive_window_bidi_remote",
+                stream_receive_window_bidi_remote,
+            )
+            .field("stream_receive_window_uni", stream_receive_window_uni)
+            .field("active_connection_id_limit", active_connection_id_limit)
+            .field("max_ack_delay", max_ack_delay)
+            .field("wire", wire)
             .field("receive_window", receive_window)
             .field("send_window", send_window)
             .field("send_fairness", send_fairness)
@@ -613,8 +685,8 @@ impl AckFrequencyConfig {
         /// acknowledging every ack-eliciting packet.
         ///
         /// Defaults to 1, which sends ACK frames for every other ack-eliciting packet.
-        pub fn ack_eliciting_threshold(mut self, value: VarInt) -> Self {
-            self.ack_eliciting_threshold = value;
+        pub fn ack_eliciting_threshold(mut self, value: impl Into<VarInt>) -> Self {
+            self.ack_eliciting_threshold = value.into();
             self
         }
     }
@@ -650,8 +722,8 @@ impl AckFrequencyConfig {
         /// It is recommended to set this value to [`TransportConfig::packet_threshold`] minus one.
         /// Since the default value for [`TransportConfig::packet_threshold`] is 3, this value defaults
         /// to 2.
-        pub fn reordering_threshold(mut self, value: VarInt) -> Self {
-            self.reordering_threshold = value;
+        pub fn reordering_threshold(mut self, value: impl Into<VarInt>) -> Self {
+            self.reordering_threshold = value.into();
             self
         }
     }
@@ -660,9 +732,9 @@ impl AckFrequencyConfig {
 impl Default for AckFrequencyConfig {
     fn default() -> Self {
         Self {
-            ack_eliciting_threshold: VarInt(1),
+            ack_eliciting_threshold: VarInt::from_u32(1),
             max_ack_delay: None,
-            reordering_threshold: VarInt(2),
+            reordering_threshold: VarInt::from_u32(2),
         }
     }
 }
@@ -798,7 +870,8 @@ impl Default for MtuDiscoveryConfig {
 ///
 /// ```
 /// # use std::{convert::TryFrom, time::Duration};
-/// # use rama_quic::{IdleTimeout, VarIntBoundsExceeded, VarInt};
+/// # use rama_quic::IdleTimeout;
+/// # use rama_quic_proto::{VarInt, VarIntBoundsExceeded};
 /// # fn main() -> Result<(), VarIntBoundsExceeded> {
 /// // A `VarInt`-encoded value in milliseconds
 /// let timeout = IdleTimeout::from(VarInt::from(10_000u32));

@@ -239,7 +239,7 @@ pub struct RamaClient {
 impl RamaClient {
     /// Close the connection and wait for the endpoint to go idle, both inside the deadline.
     pub async fn close(self, what: &str, deadline: Deadline) {
-        self.connection.close(0u32.into(), b"done");
+        self.connection.close(0u32, b"done");
         deadline.wait(what, self.endpoint.wait_idle()).await;
     }
 }
@@ -307,7 +307,7 @@ pub async fn rama_server_side(run: &CaseRun<StreamScenario>) -> (Endpoint, Socke
 
 /// The uploading half: a unidirectional stream ended with FIN, then a bidirectional question
 /// whose answer is read back.
-async fn upload_and_ask(run: &CaseRun<StreamScenario>, conn: &Connection) {
+pub async fn upload_and_ask(run: &CaseRun<StreamScenario>, conn: &Connection) {
     let CaseRun {
         what,
         scenario,
@@ -351,7 +351,7 @@ async fn upload_and_ask(run: &CaseRun<StreamScenario>, conn: &Connection) {
 }
 
 /// The answering half: take the upload, read the question, write a different answer, end it.
-async fn take_and_answer(run: &CaseRun<StreamScenario>, conn: &Connection) {
+pub async fn take_and_answer(run: &CaseRun<StreamScenario>, conn: &Connection) {
     let CaseRun {
         what,
         scenario,

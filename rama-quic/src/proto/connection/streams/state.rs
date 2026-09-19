@@ -12,10 +12,10 @@ use super::{
     PendingStreamsQueue, Recv, Retransmits, Send, SendState, ShouldTransmit, StreamEvent,
     StreamHalf, ThinRetransmits,
 };
-use crate::proto::{
+use crate::proto::connection::stats::FrameStats;
+use rama_quic_proto::{
     Dir, MAX_STREAM_COUNT, Side, StreamId, TransportError, VarInt,
     coding::BufMutExt,
-    connection::stats::FrameStats,
     frame::{self, FrameStruct, StreamMetaVec},
     transport_parameters::TransportParameters,
 };
@@ -138,8 +138,9 @@ pub struct StreamsState {
     ///
     /// Note this may be less than `buffered_data` if the user has set a new value.
     pub(super) send_window: u64,
-    /// Configured upper bound for how much unacked data the peer can send us per stream
-    pub(super) stream_receive_window: u64,
+    /// Configured upper bound for how much unacked data the peer can send us per stream, by
+    /// the kind of stream (RFC 9000 §18.2: `initial_max_stream_data_*`).
+    pub(super) stream_receive_windows: StreamReceiveWindows,
 
     // Pertinent state from the TransportParameters supplied by the peer
     initial_max_stream_data_uni: VarInt,
@@ -220,7 +221,11 @@ impl StreamsState {
             data_recvd: 0,
             buffered_data: 0,
             send_window,
-            stream_receive_window: stream_receive_window.into(),
+            stream_receive_windows: StreamReceiveWindows {
+                bidi_local: stream_receive_window.into(),
+                bidi_remote: stream_receive_window.into(),
+                uni: stream_receive_window.into(),
+            },
             initial_max_stream_data_uni: 0u32.into(),
             initial_max_stream_data_bidi_local: 0u32.into(),
             initial_max_stream_data_bidi_remote: 0u32.into(),
@@ -327,11 +332,8 @@ impl StreamsState {
             debug!("received illegal STREAM frame");
         })?;
 
-        let Some(rs) = self
-            .recv
-            .get_mut(&id)
-            .map(get_or_insert_recv(self.stream_receive_window))
-        else {
+        let window = self.receive_window_for(id);
+        let Some(rs) = self.recv.get_mut(&id).map(get_or_insert_recv(window)) else {
             trace!("dropping frame for closed stream");
             return Ok(ShouldTransmit(false));
         };
@@ -387,11 +389,8 @@ impl StreamsState {
             debug!("received illegal RESET_STREAM frame");
         })?;
 
-        let Some(rs) = self
-            .recv
-            .get_mut(&id)
-            .map(get_or_insert_recv(self.stream_receive_window))
-        else {
+        let window = self.receive_window_for(id);
+        let Some(rs) = self.recv.get_mut(&id).map(get_or_insert_recv(window)) else {
             trace!("received RESET_STREAM on closed stream");
             return Ok(ShouldTransmit(false));
         };
@@ -573,6 +572,7 @@ impl StreamsState {
                 None => break,
             };
             pending.max_stream_data.remove(&id);
+            let window = self.receive_window_for(id);
             let Some(rs) = self
                 .recv
                 .get_mut(&id)
@@ -586,7 +586,7 @@ impl StreamsState {
             }
             retransmits.get_or_create().max_stream_data.insert(id);
 
-            let (max, _) = rs.max_stream_data(self.stream_receive_window);
+            let (max, _) = rs.max_stream_data(window);
             rs.record_sent_max_stream_data(max);
 
             trace!(stream = %id, max = max, "MAX_STREAM_DATA");
@@ -1067,7 +1067,8 @@ impl StreamsState {
     }
 
     pub(super) fn stream_recv_freed(&mut self, id: StreamId, recv: StreamRecv) {
-        self.free_recv.push(recv.free(self.stream_receive_window));
+        let window = self.receive_window_for(id);
+        self.free_recv.push(recv.free(window));
         self.stream_freed(id, StreamHalf::Recv);
     }
 
@@ -1090,6 +1091,33 @@ pub(super) fn get_or_insert_send(
     move |opt| opt.get_or_insert_with(|| Send::new(max_data))
 }
 
+/// The receive window offered for each kind of stream.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct StreamReceiveWindows {
+    /// Bidirectional streams this side opens.
+    pub(crate) bidi_local: u64,
+    /// Bidirectional streams the peer opens.
+    pub(crate) bidi_remote: u64,
+    /// Unidirectional streams the peer opens.
+    pub(crate) uni: u64,
+}
+
+impl StreamsState {
+    /// Override the per-kind receive windows after construction (RFC 9000 §18.2).
+    pub(crate) fn set_receive_windows(&mut self, windows: StreamReceiveWindows) {
+        self.stream_receive_windows = windows;
+    }
+
+    /// The receive window of a stream, by who opened it and in which direction.
+    pub(super) fn receive_window_for(&self, id: StreamId) -> u64 {
+        match id.dir() {
+            Dir::Uni => self.stream_receive_windows.uni,
+            Dir::Bi if id.initiator() == self.side => self.stream_receive_windows.bidi_local,
+            Dir::Bi => self.stream_receive_windows.bidi_remote,
+        }
+    }
+}
+
 #[inline]
 #[expect(
     clippy::unwrap_used,
@@ -1100,7 +1128,14 @@ pub(super) fn get_or_insert_recv(
 ) -> impl FnMut(&mut Option<StreamRecv>) -> &mut Recv {
     move |opt| {
         *opt = opt.take().map(|s| match s {
-            StreamRecv::Free(recv) | StreamRecv::Open(recv) => StreamRecv::Open(recv),
+            // A pooled receiver still carries the window of the stream it last served. Reset it to
+            // this stream's initial limit on activation, or a predecessor with a smaller window
+            // would make us reject data the peer is entitled to send (RFC 9000 §4.1).
+            StreamRecv::Free(mut recv) => {
+                recv.reinit(initial_max_data);
+                StreamRecv::Open(recv)
+            }
+            StreamRecv::Open(recv) => StreamRecv::Open(recv),
         });
         opt.get_or_insert_with(|| StreamRecv::Open(Recv::new(initial_max_data)))
             .as_open_recv_mut()
@@ -1112,10 +1147,11 @@ pub(super) fn get_or_insert_recv(
 mod tests {
     use super::*;
     use crate::proto::{
-        ReadableError, RecvStream, SendStream, TransportErrorCode, WriteError,
-        connection::State as ConnState, connection::Streams,
+        ReadableError, RecvStream, SendStream, WriteError, connection::State as ConnState,
+        connection::Streams,
     };
     use rama_core::bytes::Bytes;
+    use rama_quic_proto::TransportErrorCode;
     use rama_utils::octets;
 
     fn make(side: Side) -> StreamsState {

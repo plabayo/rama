@@ -172,7 +172,7 @@ async fn resumption_reported_by_both_ends(endpoint: &Endpoint) -> (Option<bool>,
         .handshake_data()
         .expect("the handshake settled something")
         .resumed;
-    connection.close(0u32.into(), b"done");
+    connection.close(0u32, b"done");
     connection.closed().await;
     (client, accepting.join().await)
 }

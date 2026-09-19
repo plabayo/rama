@@ -14,13 +14,13 @@ use std::{
 use parking_lot::Mutex;
 use pin_project_lite::pin_project;
 use rama_core::bytes::Bytes;
-use rama_core::telemetry::tracing::{Instrument, Span, debug_span};
+use rama_core::telemetry::tracing::{Instrument, Span, debug, debug_span};
 use rama_udp::SendFailure;
 use rustc_hash::FxHashMap;
 use tokio::sync::{Notify, futures::Notified, oneshot};
 
 use crate::driver::{
-    Duration, IO_LOOP_BOUND, QueuedPacket, VarInt,
+    Duration, IO_LOOP_BOUND, QueuedPacket,
     endpoint::{EndpointInner, LocalSocket},
     now,
     queue::{BoundedReceiver, PacketBudget, PacketQueueStats},
@@ -31,10 +31,10 @@ use crate::driver::{
     udp::{FailureLog, Sender},
 };
 use crate::proto::{
-    ConnectionError, ConnectionHandle, ConnectionId, ConnectionStats, Dir, EndpointEvent, Event,
-    NegotiatedTlsParameters, SendDatagramError as ProtoSendDatagramError, SendPermit, Side,
-    StreamEvent, StreamId,
+    ConnectionError, ConnectionHandle, ConnectionStats, EndpointEvent, Event,
+    NegotiatedTlsParameters, SendDatagramError as ProtoSendDatagramError, SendPermit, StreamEvent,
 };
+use rama_quic_proto::{ConnectionId, Dir, Side, StreamId, VarInt};
 
 /// Tests: the bytes a connection keeps allocated for sending, split by where they are.
 #[cfg(all(
@@ -98,6 +98,18 @@ pub struct Connecting {
     conn: Option<ConnectionRef>,
     connected: oneshot::Receiver<Result<bool, ConnectionError>>,
     handshake_data_ready: Option<oneshot::Receiver<()>>,
+    /// What a client attempt needs to try again in another version after a Version
+    /// Negotiation packet (RFC 9368 §2.1). Taken by the one restart an attempt may make.
+    restart: Option<Restart>,
+}
+
+/// The inputs of a client attempt, kept so a Version Negotiation packet can restart it.
+#[derive(Debug)]
+struct Restart {
+    endpoint: crate::driver::Endpoint,
+    config: crate::proto::ClientConfig,
+    addr: SocketAddr,
+    server_name: String,
 }
 
 impl Connecting {
@@ -165,9 +177,66 @@ impl Connecting {
                 conn: Some(conn),
                 connected: on_connected_recv,
                 handshake_data_ready: Some(on_handshake_data_recv),
+                restart: None,
             },
             driver,
         )
+    }
+
+    /// Let this client attempt start over in another version if the server answers with a
+    /// Version Negotiation packet.
+    pub(crate) fn with_restart(
+        mut self,
+        endpoint: crate::driver::Endpoint,
+        config: crate::proto::ClientConfig,
+        addr: SocketAddr,
+        server_name: &str,
+    ) -> Self {
+        self.restart = Some(Restart {
+            endpoint,
+            config,
+            addr,
+            server_name: server_name.into(),
+        });
+        self
+    }
+
+    /// RFC 9368 §2.1: pick a mutually supported version from what the server offered and send
+    /// a new first flight with it. The new attempt remembers the offer, so it ignores further
+    /// Version Negotiation packets and checks the server's `version_information` against it.
+    fn restart_after_version_negotiation(
+        &mut self,
+        offered: Vec<rama_quic_proto::Version>,
+    ) -> Result<(), ConnectionError> {
+        let mismatch = |offered| ConnectionError::VersionMismatch { offered };
+        let Some(restart) = self.restart.take() else {
+            return Err(mismatch(offered));
+        };
+        let Some(version) = restart.config.versions.select(&offered) else {
+            return Err(mismatch(offered));
+        };
+        let mut config = restart.config;
+        config.negotiation_offer = Some(offered.clone());
+        if config.set_version(version).is_err() {
+            return Err(mismatch(offered));
+        }
+        debug!(%version, "restarting after Version Negotiation");
+        let next = restart
+            .endpoint
+            .connect_with(config, restart.addr, &restart.server_name)
+            .map_err(|error| {
+                ConnectionError::from(
+                    rama_quic_proto::TransportError::INTERNAL_ERROR(
+                        "restart after Version Negotiation failed",
+                    )
+                    .with_cause(error),
+                )
+            })?;
+        // The lost attempt's reference goes away here; its connection is already draining.
+        self.conn = next.conn;
+        self.connected = next.connected;
+        self.handshake_data_ready = next.handshake_data_ready;
+        Ok(())
     }
 
     /// Shared state for the endpoint's connection table; not an application reference.
@@ -245,24 +314,34 @@ impl Connecting {
         //
         // The receiver is kept until it has answered, so a call cancelled while waiting leaves the
         // next one waiting too rather than reading metadata the session does not have yet.
-        if let Some(x) = self.handshake_data_ready.as_mut() {
-            let _handshake = x.await;
-            self.handshake_data_ready = None;
+        loop {
+            if let Some(x) = self.handshake_data_ready.as_mut() {
+                let _handshake = x.await;
+                self.handshake_data_ready = None;
+            }
+            let result = {
+                let conn = self.connection_ref();
+                let inner = conn.state.lock();
+                inner
+                    .inner
+                    .crypto_session()
+                    .handshake_summary()
+                    .ok_or_else(|| {
+                        inner.error.clone().unwrap_or_else(|| {
+                            rama_quic_proto::TransportError::INTERNAL_ERROR(
+                                "TLS session did not provide handshake metadata",
+                            )
+                            .into()
+                        })
+                    })
+            };
+            match result {
+                Err(ConnectionError::VersionMismatch { offered }) => {
+                    self.restart_after_version_negotiation(offered)?;
+                }
+                result => return result,
+            }
         }
-        let conn = self.connection_ref();
-        let inner = conn.state.lock();
-        inner
-            .inner
-            .crypto_session()
-            .handshake_summary()
-            .ok_or_else(|| {
-                inner.error.clone().unwrap_or_else(|| {
-                    crate::proto::TransportError::INTERNAL_ERROR(
-                        "TLS session did not provide handshake metadata",
-                    )
-                    .into()
-                })
-            })
     }
 
     /// The local IP address which was used when the peer established
@@ -295,19 +374,38 @@ impl Connecting {
 impl Future for Connecting {
     type Output = Result<Connection, ConnectionError>;
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
-        Pin::new(&mut self.connected).poll(cx).map(|result| {
-            let conn = self.take_connection();
-            match result {
-                Ok(Ok(_)) => Ok(Connection(conn)),
-                Ok(Err(error)) => Err(error),
-                Err(_) => Err(conn
-                    .state
-                    .lock()
-                    .error
-                    .clone()
-                    .unwrap_or_else(handshake_driver_stopped)),
+        loop {
+            let result = match Pin::new(&mut self.connected).poll(cx) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(result) => result,
+            };
+            let outcome = {
+                let conn = self.connection_ref();
+                match result {
+                    Ok(Ok(_)) => Ok(()),
+                    Ok(Err(error)) => Err(error),
+                    Err(_) => Err(conn
+                        .state
+                        .lock()
+                        .error
+                        .clone()
+                        .unwrap_or_else(handshake_driver_stopped)),
+                }
+            };
+            match outcome {
+                Ok(()) => return Poll::Ready(Ok(Connection(self.take_connection()))),
+                Err(ConnectionError::VersionMismatch { offered }) => {
+                    if let Err(error) = self.restart_after_version_negotiation(offered) {
+                        self.take_connection();
+                        return Poll::Ready(Err(error));
+                    }
+                }
+                Err(error) => {
+                    self.take_connection();
+                    return Poll::Ready(Err(error));
+                }
             }
-        })
+        }
     }
 }
 
@@ -327,8 +425,10 @@ impl Future for ZeroRttAccepted {
 }
 
 fn handshake_driver_stopped() -> ConnectionError {
-    crate::proto::TransportError::INTERNAL_ERROR("QUIC handshake driver stopped without a result")
-        .into()
+    rama_quic_proto::TransportError::INTERNAL_ERROR(
+        "QUIC handshake driver stopped without a result",
+    )
+    .into()
 }
 
 /// The endpoint side of a connection's control path.
@@ -721,7 +821,7 @@ impl Drop for ConnectionDriver {
             conn.packets.close();
             if conn.error.is_none() {
                 conn.terminate(
-                    crate::proto::TransportError::INTERNAL_ERROR("QUIC driver stopped").into(),
+                    rama_quic_proto::TransportError::INTERNAL_ERROR("QUIC driver stopped").into(),
                     &self.conn.shared,
                 );
             }
@@ -882,9 +982,13 @@ impl Connection {
     /// [`ConnectionError::LocallyClosed`]: crate::ConnectionError::LocallyClosed
     /// [`Endpoint::wait_idle()`]: crate::Endpoint::wait_idle
     /// [`close()`]: Connection::close
-    pub fn close(&self, error_code: VarInt, reason: &[u8]) {
+    pub fn close(&self, error_code: impl Into<VarInt>, reason: &[u8]) {
         let conn = &mut *self.0.state.lock();
-        conn.close(error_code, Bytes::copy_from_slice(reason), &self.0.shared);
+        conn.close(
+            error_code.into(),
+            Bytes::copy_from_slice(reason),
+            &self.0.shared,
+        );
     }
 
     /// Wait for the handshake to be confirmed.
@@ -1404,6 +1508,18 @@ impl Connection {
         self.0.state.lock().inner.stats()
     }
 
+    /// The QUIC version this connection runs in: the client's first flight version, or the
+    /// compatible version the server moved it to (RFC 9368).
+    pub fn version(&self) -> rama_quic_proto::Version {
+        self.0.state.lock().inner.version()
+    }
+
+    /// The QUIC version of the client's first flight, which differs from [`Self::version`]
+    /// only after compatible version negotiation moved the connection (RFC 9368 §2.3).
+    pub fn original_version(&self) -> rama_quic_proto::Version {
+        self.0.state.lock().inner.original_version()
+    }
+
     /// Parameters negotiated during the handshake
     ///
     /// Guaranteed to return `Some` on fully established connections or after
@@ -1494,9 +1610,10 @@ impl Connection {
     ///
     /// No streams may be opened by the peer unless fewer than `count` are already open. Large
     /// `count`s increase both minimum and worst-case memory consumption.
-    pub fn set_max_concurrent_uni_streams(&self, count: VarInt) {
+    pub fn set_max_concurrent_uni_streams(&self, count: impl Into<VarInt>) {
         let mut conn = self.0.state.lock();
-        conn.inner.set_max_concurrent_streams(Dir::Uni, count);
+        conn.inner
+            .set_max_concurrent_streams(Dir::Uni, count.into());
         // May need to send MAX_STREAMS to make progress
         conn.wake();
     }
@@ -1571,9 +1688,9 @@ impl Connection {
     /// Set the flow control window this connection advertises, as
     /// [`TransportConfig::set_receive_window`](crate::TransportConfig::set_receive_window) does
     /// before it is established.
-    pub fn set_receive_window(&self, receive_window: VarInt) {
+    pub fn set_receive_window(&self, receive_window: impl Into<VarInt>) {
         let mut conn = self.0.state.lock();
-        conn.inner.set_receive_window(receive_window);
+        conn.inner.set_receive_window(receive_window.into());
         conn.wake();
     }
 
@@ -1581,9 +1698,9 @@ impl Connection {
     ///
     /// No streams may be opened by the peer unless fewer than `count` are already open. Large
     /// `count`s increase both minimum and worst-case memory consumption.
-    pub fn set_max_concurrent_bi_streams(&self, count: VarInt) {
+    pub fn set_max_concurrent_bi_streams(&self, count: impl Into<VarInt>) {
         let mut conn = self.0.state.lock();
-        conn.inner.set_max_concurrent_streams(Dir::Bi, count);
+        conn.inner.set_max_concurrent_streams(Dir::Bi, count.into());
         // May need to send MAX_STREAMS to make progress
         conn.wake();
     }
@@ -2246,8 +2363,9 @@ impl State {
         keep_going |= match self.drive_transmit(cx) {
             Ok(keep_going) => keep_going,
             Err(error) => {
-                let reason = crate::proto::TransportError::INTERNAL_ERROR("QUIC UDP send failed")
-                    .with_cause(error);
+                let reason =
+                    rama_quic_proto::TransportError::INTERNAL_ERROR("QUIC UDP send failed")
+                        .with_cause(error);
                 self.terminate(reason.into(), shared);
                 return Poll::Ready(Ok(()));
             }
@@ -2276,7 +2394,7 @@ impl State {
         }
         if self.error.is_none() {
             self.terminate(
-                crate::proto::TransportError::INTERNAL_ERROR(
+                rama_quic_proto::TransportError::INTERNAL_ERROR(
                     "QUIC engine drained without a close reason",
                 )
                 .into(),
@@ -2924,8 +3042,8 @@ impl State {
                 }
                 Poll::Ready(None) => {
                     return Err(ConnectionError::TransportError(
-                        crate::proto::TransportError::new(
-                            crate::proto::TransportErrorCode::INTERNAL_ERROR,
+                        rama_quic_proto::TransportError::new(
+                            rama_quic_proto::TransportErrorCode::INTERNAL_ERROR,
                             "endpoint driver future was dropped",
                         ),
                     ));
@@ -3059,7 +3177,7 @@ impl State {
 
     /// The local socket failed and this connection has no address it may send from any more.
     fn lose_path(&mut self, shared: &Shared) {
-        let reason = crate::proto::TransportError::INTERNAL_ERROR(
+        let reason = rama_quic_proto::TransportError::INTERNAL_ERROR(
             "QUIC local socket failed and this connection may not migrate now",
         )
         .with_cause(io::Error::new(
@@ -3617,7 +3735,7 @@ mod tests {
             "the sender stays owned by the driver"
         );
         assert_eq!(connection.driver_stats().oversized_sends, 0);
-        connection.close(0u32.into(), b"done");
+        connection.close(0u32, b"done");
         assert!(matches!(
             tokio::time::timeout(Duration::from_secs(1), connecting)
                 .await

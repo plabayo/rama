@@ -1,8 +1,12 @@
-use std::{convert::TryInto, fmt};
+use core::{
+    cmp::Ordering,
+    fmt,
+    ops::{Mul, Rem},
+};
 
 use rama_core::bytes::{Buf, BufMut};
 
-use crate::proto::coding::{self, Codec, UnexpectedEnd};
+use crate::coding::{self, Codec, UnexpectedEnd};
 
 #[cfg(feature = "arbitrary")]
 use arbitrary::Arbitrary;
@@ -13,19 +17,19 @@ use arbitrary::Arbitrary;
 // It would be neat if we could express to Rust that the top two bits are available for use as enum
 // discriminants
 #[derive(Default, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub struct VarInt(pub(crate) u64);
+pub struct VarInt(u64);
 
 impl VarInt {
     /// The largest representable value
-    pub(crate) const MAX: Self = Self((1 << 62) - 1);
+    pub const MAX: Self = Self((1 << 62) - 1);
 
     /// Construct a `VarInt` infallibly
-    pub(crate) const fn from_u32(x: u32) -> Self {
+    pub const fn from_u32(x: u32) -> Self {
         Self(x as u64)
     }
 
     /// Succeeds iff `x` < 2^62
-    pub(crate) fn from_u64(x: u64) -> Result<Self, VarIntBoundsExceeded> {
+    pub fn from_u64(x: u64) -> Result<Self, VarIntBoundsExceeded> {
         if x < 2u64.pow(62) {
             Ok(Self(x))
         } else {
@@ -38,21 +42,17 @@ impl VarInt {
     /// # Safety
     ///
     /// `x` must be less than 2^62.
-    pub(crate) const unsafe fn from_u64_unchecked(x: u64) -> Self {
+    pub const unsafe fn from_u64_unchecked(x: u64) -> Self {
         Self(x)
     }
 
     /// Extract the integer value
-    pub(crate) const fn into_inner(self) -> u64 {
+    pub const fn into_inner(self) -> u64 {
         self.0
     }
 
     /// Compute the number of bytes needed to encode this value
-    #[expect(
-        clippy::panic,
-        reason = "`VarInt` values are below 2^62 by construction: `from_u64` checks and `from_u64_unchecked` is `unsafe` with that contract"
-    )]
-    pub(crate) const fn size(self) -> usize {
+    pub const fn size(self) -> usize {
         let x = self.0;
         if x < 2u64.pow(6) {
             1
@@ -60,10 +60,9 @@ impl VarInt {
             2
         } else if x < 2u64.pow(30) {
             4
-        } else if x < 2u64.pow(62) {
-            8
         } else {
-            panic!("malformed VarInt");
+            debug_assert!(x < 2u64.pow(62), "malformed VarInt");
+            8
         }
     }
 }
@@ -92,7 +91,7 @@ impl From<u32> for VarInt {
     }
 }
 
-impl std::convert::TryFrom<u64> for VarInt {
+impl TryFrom<u64> for VarInt {
     type Error = VarIntBoundsExceeded;
     /// Succeeds iff `x` < 2^62
     fn try_from(x: u64) -> Result<Self, VarIntBoundsExceeded> {
@@ -100,7 +99,7 @@ impl std::convert::TryFrom<u64> for VarInt {
     }
 }
 
-impl std::convert::TryFrom<u128> for VarInt {
+impl TryFrom<u128> for VarInt {
     type Error = VarIntBoundsExceeded;
     /// Succeeds iff `x` < 2^62
     fn try_from(x: u128) -> Result<Self, VarIntBoundsExceeded> {
@@ -111,7 +110,7 @@ impl std::convert::TryFrom<u128> for VarInt {
     }
 }
 
-impl std::convert::TryFrom<usize> for VarInt {
+impl TryFrom<usize> for VarInt {
     type Error = VarIntBoundsExceeded;
     /// Succeeds iff `x` < 2^62
     fn try_from(x: usize) -> Result<Self, VarIntBoundsExceeded> {
@@ -128,6 +127,34 @@ impl fmt::Debug for VarInt {
 impl fmt::Display for VarInt {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
+    }
+}
+
+// Compare and do plain integer arithmetic against `u64` without unwrapping. Arithmetic yields a
+// `u64`, not a `VarInt`, because the result may exceed what a variable-length integer can hold.
+impl PartialEq<u64> for VarInt {
+    fn eq(&self, other: &u64) -> bool {
+        self.0 == *other
+    }
+}
+
+impl PartialOrd<u64> for VarInt {
+    fn partial_cmp(&self, other: &u64) -> Option<Ordering> {
+        self.0.partial_cmp(other)
+    }
+}
+
+impl Rem<u64> for VarInt {
+    type Output = u64;
+    fn rem(self, rhs: u64) -> u64 {
+        self.0 % rhs
+    }
+}
+
+impl Mul<u64> for VarInt {
+    type Output = u64;
+    fn mul(self, rhs: u64) -> u64 {
+        self.0 * rhs
     }
 }
 

@@ -6,7 +6,7 @@ use std::net::SocketAddr;
 use rama_core::telemetry::tracing::{debug, trace, trace_span};
 
 use crate::proto::{
-    Dir, Frame, Instant, MAX_STREAM_COUNT, TransportError,
+    Instant, StoredToken,
     cid_queue::Retired,
     connection::{
         Connection, ConnectionSide, Event, State,
@@ -14,9 +14,13 @@ use crate::proto::{
         preferred::PreferredAddressState,
         timer::Timer,
     },
-    frame::{self, NewToken},
-    packet::{Packet, SpaceId},
     shared::EndpointEventInner,
+    transport_parameters,
+};
+use rama_quic_proto::{
+    Dir, MAX_STREAM_COUNT, TransportError,
+    frame::{self, Frame, NewToken},
+    packet::{Packet, SpaceId},
 };
 
 impl Connection {
@@ -298,9 +302,10 @@ impl Connection {
                     self.streams.received_stop_sending(id, error_code);
                 }
                 Frame::RetireConnectionId { sequence } => {
-                    let allow_more_cids = self
-                        .local_cid_state
-                        .on_cid_retirement(sequence, self.peer_params.issue_cids_limit())?;
+                    let allow_more_cids = self.local_cid_state.on_cid_retirement(
+                        sequence,
+                        transport_parameters::issue_cids_limit(&self.peer_params),
+                    )?;
                     self.endpoint_events
                         .push_back(EndpointEventInner::RetireConnectionId(
                             now,
@@ -313,6 +318,7 @@ impl Connection {
                     let ConnectionSide::Client {
                         token_store,
                         server_name,
+                        time_source,
                         ..
                     } = &self.side
                     else {
@@ -322,7 +328,9 @@ impl Connection {
                         return Err(TransportError::FRAME_ENCODING_ERROR("empty token"));
                     }
                     trace!("got new token");
-                    token_store.insert(server_name, token);
+                    let stored = StoredToken::new(token, time_source.now())
+                        .with_peer_greasing_quic_bit(self.peer_params.grease_quic_bit);
+                    token_store.insert(server_name, self.version(), stored);
                 }
                 Frame::Datagram(datagram) => {
                     if self
@@ -478,11 +486,11 @@ impl Connection {
 ))]
 mod tests {
     use super::*;
-    use crate::proto::{
-        TransportErrorCode, VarInt,
+    use crate::proto::tests::Pair;
+    use rama_quic_proto::{
+        TransportErrorCode, VarInt, Version,
         coding::Codec,
         packet::{Header, LongType, PacketNumber},
-        tests::Pair,
     };
 
     #[test]
@@ -498,10 +506,10 @@ mod tests {
                     frame::FrameType::IMMEDIATE_ACK.encode(&mut payload);
                 } else {
                     frame::AckFrequency {
-                        sequence: VarInt(1_000),
-                        ack_eliciting_threshold: VarInt(1),
-                        request_max_ack_delay: VarInt(25_000),
-                        reordering_threshold: VarInt(1),
+                        sequence: VarInt::from_u32(1_000),
+                        ack_eliciting_threshold: VarInt::from_u32(1),
+                        request_max_ack_delay: VarInt::from_u32(25_000),
+                        reordering_threshold: VarInt::from_u32(1),
                     }
                     .encode(&mut payload);
                 }
@@ -513,7 +521,7 @@ mod tests {
                         dst_cid: conn.handshake_cid,
                         src_cid: conn.orig_rem_cid,
                         number: PacketNumber::U8(0),
-                        version: 1,
+                        version: Version::V1.to_wire().unwrap(),
                     }
                 } else {
                     Header::Short {

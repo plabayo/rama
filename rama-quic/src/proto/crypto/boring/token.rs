@@ -4,7 +4,8 @@ use rama_crypto::{
 };
 use zeroize::Zeroizing;
 
-use crate::proto::crypto::{AeadKey, CryptoError, HandshakeTokenKey};
+use crate::proto::crypto::{AeadKey, HandshakeTokenKey};
+use rama_quic_proto::crypto::CryptoError;
 
 pub(crate) struct TokenKey(Zeroizing<[u8; 32]>);
 
@@ -21,9 +22,10 @@ impl HandshakeTokenKey for TokenKey {
     fn aead_from_hkdf(&self, random_bytes: &[u8]) -> Result<Box<dyn AeadKey>, CryptoError> {
         let mut key = Zeroizing::new([0; 32]);
         hkdf::expand(MessageDigest::sha256(), &*self.0, random_bytes, &mut *key)
-            .map_err(|_error| CryptoError)?;
+            .map_err(|_error| CryptoError::new())?;
         Ok(Box::new(TokenAead(
-            aead::AeadKey::new(aead::Algorithm::Aes256Gcm, &*key).map_err(|_error| CryptoError)?,
+            aead::AeadKey::new(aead::Algorithm::Aes256Gcm, &*key)
+                .map_err(|_error| CryptoError::new())?,
         )))
     }
 }
@@ -35,7 +37,7 @@ impl AeadKey for TokenAead {
         data.resize(data.len() + 16, 0);
         self.0
             .seal_in_place(&[0; 12], additional_data, data)
-            .map_err(|_error| CryptoError)
+            .map_err(|_error| CryptoError::new())
     }
 
     fn open<'a>(
@@ -45,7 +47,7 @@ impl AeadKey for TokenAead {
     ) -> Result<&'a mut [u8], CryptoError> {
         self.0
             .open_in_place(&[0; 12], additional_data, data)
-            .map_err(|_error| CryptoError)
+            .map_err(|_error| CryptoError::new())
     }
 }
 

@@ -88,7 +88,7 @@ async fn key_cases_rama_client() {
             let after = phase(&mut peer, &run).await;
             record(&run, before, after);
 
-            connection.close(0u32.into(), b"done");
+            connection.close(0u32, b"done");
             run.deadline.wait(&run.what, client.wait_idle()).await;
             peer.expect("ended", run.deadline).await;
             peer.finished(run.deadline).await;

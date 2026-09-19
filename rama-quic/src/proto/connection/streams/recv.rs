@@ -7,7 +7,7 @@ use super::state::get_or_insert_recv;
 use super::{ClosedStream, Retransmits, ShouldTransmit, StreamId, StreamsState};
 use crate::proto::connection::assembler::{Assembler, Chunk, IllegalOrderedRead};
 use crate::proto::connection::streams::state::StreamRecv;
-use crate::proto::{TransportError, VarInt, frame};
+use rama_quic_proto::{TransportError, VarInt, frame};
 
 #[derive(Debug, Default)]
 pub(super) struct Recv {
@@ -274,12 +274,13 @@ impl<'a> Chunks<'a> {
         streams: &'a mut StreamsState,
         pending: &'a mut Retransmits,
     ) -> Result<Self, ReadableError> {
+        let window = streams.receive_window_for(id);
         let mut entry = match streams.recv.entry(id) {
             Entry::Occupied(entry) => entry,
             Entry::Vacant(_) => return Err(ReadableError::ClosedStream),
         };
 
-        let recv = get_or_insert_recv(streams.stream_receive_window)(entry.get_mut());
+        let recv = get_or_insert_recv(window)(entry.get_mut());
         if recv.stopped {
             return Err(ReadableError::ClosedStream);
         }
@@ -389,7 +390,7 @@ impl<'a> Chunks<'a> {
 
         // If the stream hasn't finished, we may need to issue stream-level flow control credit
         if let ChunksState::Readable(rs) = state {
-            let (_, max_stream_data) = rs.max_stream_data(self.streams.stream_receive_window);
+            let (_, max_stream_data) = rs.max_stream_data(self.streams.receive_window_for(self.id));
             should_transmit |= max_stream_data.0;
             if max_stream_data.0 {
                 self.pending.max_stream_data.insert(self.id);
@@ -494,9 +495,25 @@ impl Default for RecvState {
 mod tests {
     use rama_core::bytes::Bytes;
 
-    use crate::proto::{Dir, Side};
+    use rama_quic_proto::{Dir, Side};
 
     use super::*;
+    use crate::proto::connection::streams::state::StreamRecv;
+
+    #[test]
+    fn pooled_receiver_takes_the_new_streams_window() {
+        // A receiver freed from a small-window stream, then reused for one with a larger window,
+        // must advertise the larger window; otherwise a compliant peer using the connection's
+        // announced limit would trip a spurious FLOW_CONTROL_ERROR.
+        const SMALL: u64 = 8;
+        const LARGE: u64 = 1024;
+        let pooled = StreamRecv::Open(Recv::new(SMALL)).free(SMALL);
+        assert!(matches!(pooled, StreamRecv::Free(_)));
+        let mut slot = Some(pooled);
+        let recv = get_or_insert_recv(LARGE)(&mut slot);
+        assert_eq!(recv.sent_max_stream_data, LARGE);
+        assert_eq!(recv.max_stream_data(LARGE).0, LARGE);
+    }
 
     #[test]
     fn reordered_frames_while_stopped() {

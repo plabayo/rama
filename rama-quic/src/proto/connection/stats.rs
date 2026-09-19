@@ -1,6 +1,7 @@
 //! Connection statistics
 
-use crate::proto::{Dir, Duration, frame::Frame};
+use crate::proto::Duration;
+use rama_quic_proto::{Dir, frame::Frame};
 
 /// Statistics about UDP datagrams transmitted or received on a connection
 ///

@@ -8,11 +8,11 @@ use crate::qlog::event::lifecycle::{
     ConnectionClosedTrigger, ConnectionClosedView as ConnectionClosed, LifecycleEventView as Event,
     ReasonView, TransportErrorName, TupleEndpointInfo,
 };
+use rama_quic_proto::{ConnectionId, frame::Close};
 
 use crate::proto::{
-    ConnectionId, Instant,
+    Instant,
     connection::{Connection, ConnectionError, State},
-    frame::Close,
 };
 
 impl TupleEndpointInfo {
@@ -104,7 +104,7 @@ impl<'a> ConnectionClosed<'a> {
                 reason: Some(ReasonView::Bytes(Cow::Borrowed(&close.reason))),
                 ..Self::default()
             },
-            ConnectionError::VersionMismatch => Self::internal(
+            ConnectionError::VersionMismatch { .. } => Self::internal(
                 Initiator::Local,
                 ConnectionClosedTrigger::VersionMismatch,
                 "peer doesn't implement any supported version",
@@ -262,8 +262,9 @@ impl Connection {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proto::{TransportError, TransportErrorCode, VarInt, coding::Codec, frame};
+
     use rama_core::bytes::Bytes;
+    use rama_quic_proto::{TransportError, TransportErrorCode, VarInt, coding::Codec, frame};
     use serde_json::json;
 
     fn peer_close(code: TransportErrorCode) -> frame::ConnectionClose {
@@ -449,7 +450,7 @@ mod tests {
     fn internal_close_causes_have_specific_triggers_without_fabricated_wire_codes() {
         for (error, initiator, trigger, reason) in [
             (
-                ConnectionError::VersionMismatch,
+                ConnectionError::VersionMismatch { offered: vec![] },
                 "local",
                 "version_mismatch",
                 "peer doesn't implement any supported version",

@@ -2,6 +2,14 @@
 //! first, and what an authenticated packet settles.
 
 use crate::qlog::event::negotiation::KeyChangeTrigger;
+use rama_quic_proto::{
+    EcnCodepoint, TransportError, TransportErrorCode, Version,
+    frame::{self, Close, Frame},
+    packet::{
+        FixedLengthConnectionIdParser, Header, InitialHeader, LongType, Packet, PartialDecode,
+        SpaceId,
+    },
+};
 use std::{mem, net::SocketAddr};
 
 use rama_core::{
@@ -10,7 +18,7 @@ use rama_core::{
 };
 
 use crate::proto::{
-    Frame, Instant, TransportError, TransportErrorCode,
+    Instant,
     connection::{
         Connection, ConnectionError, ConnectionSide, Event, State, packet_crypto,
         qlog::drops::{DropInfo, DropReason},
@@ -18,12 +26,7 @@ use crate::proto::{
         state,
         timer::Timer,
     },
-    frame::{self, Close},
-    packet::{
-        FixedLengthConnectionIdParser, Header, InitialHeader, LongType, Packet, PartialDecode,
-        SpaceId,
-    },
-    shared::{EcnCodepoint, EndpointEventInner},
+    shared::EndpointEventInner,
 };
 
 #[cfg(test)]
@@ -87,7 +90,7 @@ impl Connection {
             match PartialDecode::new(
                 data,
                 &FixedLengthConnectionIdParser::new(self.local_cid_state.cid_len()),
-                &[self.version],
+                &self.decodable_versions(),
                 self.endpoint_config.grease_quic_bit,
             ) {
                 Ok((partial_decode, rest)) => {
@@ -97,10 +100,10 @@ impl Connection {
                 Err(e) => {
                     trace!("malformed header: {}", e);
                     let reason = match e {
-                        crate::proto::packet::PacketDecodeError::UnsupportedVersion { .. } => {
-                            DropReason::Unsupported
-                        }
-                        crate::proto::packet::PacketDecodeError::InvalidHeader(_) => {
+                        rama_quic_proto::packet::PacketDecodeError::UnsupportedVersion {
+                            ..
+                        } => DropReason::Unsupported,
+                        rama_quic_proto::packet::PacketDecodeError::InvalidHeader(_) => {
                             DropReason::Invalid
                         }
                     };
@@ -147,10 +150,18 @@ impl Connection {
             self.qlog_packet_dropped(now, info, reason);
             return;
         }
+        if let Some(version) = partial_decode.version()
+            && version != self.version()
+            && !self.accept_other_version(now, version, &partial_decode)
+        {
+            self.qlog_packet_dropped(now, info, DropReason::Unsupported);
+            return;
+        }
         match packet_crypto::unprotect_header(
             partial_decode,
             &self.spaces,
             self.zero_rtt_crypto.as_ref(),
+            self.original_initial_keys(),
             // A reset is only ours when it comes from an address this identifier was sent to.
             &self.used_reset_tokens(remote),
         ) {
@@ -329,7 +340,7 @@ impl Connection {
                     debug!("closing connection due to transport error: {}", err);
                     State::closed(err)
                 }
-                ConnectionError::VersionMismatch => State::Draining,
+                ConnectionError::VersionMismatch { .. } => State::Draining,
                 #[expect(
                     clippy::unreachable,
                     reason = "`conn_err` was produced by processing one received packet, which only yields peer-driven errors (transport error, close frames, version mismatch, reset)"
@@ -504,8 +515,13 @@ impl Connection {
                 };
 
                 self.discard_space(now, SpaceId::Initial); // Make sure we clean up after any retransmitted Initials
+                self.initial_keys_cid = rem_cid;
                 self.spaces[SpaceId::Initial] = PacketSpace {
-                    crypto: Some(self.crypto.initial_keys(&rem_cid, self.side.side())?),
+                    crypto: Some(self.crypto.initial_keys(
+                        self.version(),
+                        &rem_cid,
+                        self.side.side(),
+                    )?),
                     next_packet_number: self.spaces[SpaceId::Initial].next_packet_number,
                     crypto_offset: client_hello.len() as u64,
                     ..PacketSpace::new(now)
@@ -570,15 +586,12 @@ impl Connection {
 
                 if self.side.is_client() {
                     // Client-only because server params were set from the client's Initial
-                    let params =
-                        self.crypto
-                            .transport_parameters()?
-                            .ok_or_else(|| TransportError {
-                                code: TransportErrorCode::crypto(0x6d),
-                                frame: None,
-                                reason: "transport parameters missing".into(),
-                                cause: None,
-                            })?;
+                    let params = self.crypto.transport_parameters()?.ok_or_else(|| {
+                        TransportError::new(
+                            TransportErrorCode::crypto(0x6d),
+                            "transport parameters missing",
+                        )
+                    })?;
 
                     if self.has_0rtt() {
                         if !self.crypto.early_data_accepted().unwrap() {
@@ -654,15 +667,12 @@ impl Connection {
                     && starting_space == SpaceId::Initial
                     && self.highest_space != SpaceId::Initial
                 {
-                    let params =
-                        self.crypto
-                            .transport_parameters()?
-                            .ok_or_else(|| TransportError {
-                                code: TransportErrorCode::crypto(0x6d),
-                                frame: None,
-                                reason: "transport parameters missing".into(),
-                                cause: None,
-                            })?;
+                    let params = self.crypto.transport_parameters()?.ok_or_else(|| {
+                        TransportError::new(
+                            TransportErrorCode::crypto(0x6d),
+                            "transport parameters missing",
+                        )
+                    })?;
                     self.handle_peer_params(now, params)?;
                     self.issue_first_cids(now);
                     self.init_0rtt(now);
@@ -677,24 +687,33 @@ impl Connection {
                 Ok(())
             }
             Header::VersionNegotiate { .. } => {
-                if self.total_authed_packets > 1 {
+                // An attempt that already reacted to one ignores any other (RFC 9368 §4).
+                let reacted = matches!(
+                    self.side,
+                    ConnectionSide::Client {
+                        negotiation_offer: Some(_),
+                        ..
+                    }
+                );
+                if self.total_authed_packets > 1 || reacted {
                     self.qlog_packet_dropped(now, info, DropReason::Rejected);
                     return Ok(());
                 }
-                let supported = packet
+                let offered: Vec<Version> = packet
                     .payload
-                    .chunks(4)
-                    .any(|x| match <[u8; 4]>::try_from(x) {
-                        Ok(version) => self.version == u32::from_be_bytes(version),
-                        Err(_) => false,
-                    });
-                if supported {
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|bytes| Version::from_be_bytes(*bytes))
+                    .collect();
+                // One that lists the version we sent is forged or stale (RFC 9368 §2.1).
+                if offered.contains(&self.original_version()) {
                     self.qlog_packet_dropped(now, info, DropReason::Invalid);
                     return Ok(());
                 }
                 self.qlog_version_negotiated(now, &packet.payload);
                 debug!("remote doesn't support our version");
-                Err(ConnectionError::VersionMismatch)
+                Err(ConnectionError::VersionMismatch { offered })
             }
             #[expect(
                 clippy::unreachable,
@@ -773,6 +792,7 @@ impl Connection {
             packet,
             &self.spaces,
             self.zero_rtt_crypto.as_ref(),
+            self.original_initial_keys(),
             self.key_phase,
             self.prev_crypto.as_ref(),
             self.next_crypto.as_ref(),
@@ -797,6 +817,127 @@ impl Connection {
         }
 
         Ok(Some(result.number))
+    }
+
+    /// The versions a received long header may carry: the connection's, and the client's
+    /// original one while the two differ (RFC 9369 §4.1).
+    fn decodable_versions(&self) -> [Version; 2] {
+        [self.version(), self.original_version()]
+    }
+
+    /// The Initial keys of the original version, keyed by that version, while they are kept.
+    fn original_initial_keys(&self) -> Option<(Version, &crate::proto::crypto::Keys)> {
+        if self.wire_version == self.original_wire_version
+            || self.spaces[SpaceId::Initial].crypto.is_none()
+        {
+            return None;
+        }
+        self.original_initial_crypto
+            .as_ref()
+            .map(|keys| (self.original_version(), keys))
+    }
+
+    /// A long header in a version other than the connection's: either the original version,
+    /// which Initial and 0-RTT packets may still carry, or a compatible version the server is
+    /// moving a client to (RFC 9368 §2.3, RFC 9369 §4.1). Returns whether to go on decoding.
+    fn accept_other_version(
+        &mut self,
+        now: Instant,
+        version: Version,
+        partial_decode: &PartialDecode,
+    ) -> bool {
+        if version == self.original_version() {
+            // Handshake and 1-RTT packets only exist in the negotiated version.
+            return partial_decode.is_initial() || partial_decode.is_0rtt();
+        }
+        let ConnectionSide::Client { versions, .. } = &self.side else {
+            return false;
+        };
+        if !self.state.is_handshake()
+            || self.wire_version != self.original_wire_version
+            || !versions.compatible().contains(&version)
+            || !(partial_decode.is_initial() || partial_decode.space() == Some(SpaceId::Handshake))
+        {
+            return false;
+        }
+        // RFC 9368 §2.3: only move to the server's version once a packet in it authenticates.
+        // A forged or corrupt long header must never flip the connection's version or keys, so
+        // decrypt the trigger with candidate keys first and commit nothing until it succeeds.
+        if !self.authenticates_version_switch(version, partial_decode) {
+            return false;
+        }
+        match self.switch_version(now, version) {
+            Ok(()) => true,
+            Err(error) => {
+                self.kill(now, error.into());
+                false
+            }
+        }
+    }
+
+    /// Whether `partial_decode` decrypts under `version`'s Initial keys, derived without mutating
+    /// any connection state. Only an Initial can authenticate before Handshake keys exist, which
+    /// is the packet that legitimately drives a compatible-version switch (RFC 9369 §4.1).
+    fn authenticates_version_switch(
+        &self,
+        version: Version,
+        partial_decode: &PartialDecode,
+    ) -> bool {
+        let Ok(candidate) =
+            self.crypto
+                .initial_keys(version, &self.initial_keys_cid, self.side.side())
+        else {
+            return false;
+        };
+        let candidate = Some((version, &candidate));
+        // A stateless reset never drives a version switch, so no reset tokens are offered.
+        let Ok(result) = packet_crypto::unprotect_header(
+            partial_decode.clone(),
+            &self.spaces,
+            self.zero_rtt_crypto.as_ref(),
+            candidate,
+            &[],
+        ) else {
+            return false;
+        };
+        let Some(mut packet) = result.packet else {
+            return false;
+        };
+        matches!(
+            packet_crypto::decrypt_packet_body(
+                &mut packet,
+                &self.spaces,
+                self.zero_rtt_crypto.as_ref(),
+                candidate,
+                self.key_phase,
+                self.prev_crypto.as_ref(),
+                self.next_crypto.as_ref(),
+            ),
+            Ok(Some(_))
+        )
+    }
+
+    /// Move a client to the version the server picked, before any Handshake key exists
+    /// (RFC 9369 §4.1): keys from here on are labelled with it, and the Initial keys of the
+    /// original version stay readable for what the server sent before it switched.
+    fn switch_version(&mut self, now: Instant, version: Version) -> Result<(), TransportError> {
+        self.crypto.switch_version(version).map_err(|_error| {
+            TransportError::INTERNAL_ERROR("TLS session cannot change QUIC version")
+        })?;
+
+        let keys = self
+            .crypto
+            .initial_keys(version, &self.initial_keys_cid, self.side.side())?;
+        self.original_initial_crypto = self.spaces[SpaceId::Initial].crypto.replace(keys);
+
+        debug!(from = %self.wire_version, to = %version, "compatible version negotiation");
+        // `version` is one of `versions.compatible()`, which this crate implements.
+        self.wire_version = version.to_wire().ok_or_else(|| {
+            TransportError::INTERNAL_ERROR("switched to an unimplemented QUIC version")
+        })?;
+        self.qlog_init_negotiation(now);
+
+        Ok(())
     }
 
     /// Send an IMMEDIATE_ACK frame to the remote endpoint
@@ -827,6 +968,7 @@ impl Connection {
             first_decode.clone(),
             &self.spaces,
             self.zero_rtt_crypto.as_ref(),
+            self.original_initial_keys(),
             &self.used_reset_tokens(self.path.remote),
         )
         .ok()?;
@@ -836,6 +978,7 @@ impl Connection {
             &mut packet,
             &self.spaces,
             self.zero_rtt_crypto.as_ref(),
+            self.original_initial_keys(),
             self.key_phase,
             self.prev_crypto.as_ref(),
             self.next_crypto.as_ref(),

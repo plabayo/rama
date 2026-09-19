@@ -51,7 +51,7 @@ async fn gnutls_client_exchanges_streams_and_datagrams_with_aioquic_after_key_up
         datagram
     );
     assert!(connection.stats().key_updates > 0);
-    connection.close(0u32.into(), b"done");
+    connection.close(0u32, b"done");
     within(endpoint.shutdown()).await;
     peer.finish().await;
     peer.observed("stream", &before);
@@ -231,7 +231,7 @@ async fn external_providers_agree_on_exporters_and_accept_retry() {
         .export_keying_material(&mut server_export, b"interop", b"another context")
         .unwrap();
     assert_ne!(client_export, server_export);
-    from_client.close(0u32.into(), b"done");
+    from_client.close(0u32, b"done");
     within(async {
         tokio::join!(client.shutdown(), server.shutdown());
     })

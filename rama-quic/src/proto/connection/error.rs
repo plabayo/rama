@@ -1,17 +1,24 @@
 //! What ends a connection, as the application is told it.
 
-use std::io;
-
-use crate::proto::{
-    TransportError,
+use rama_quic_proto::{
+    TransportError, Version,
     frame::{self, Close},
 };
+use std::io;
 
 /// Reasons why a connection might be lost
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConnectionError {
-    /// The peer doesn't implement any supported version
-    VersionMismatch,
+    /// The server answered the first flight with a Version Negotiation packet listing these
+    /// versions, none of which is the one this attempt used (RFC 9000 §6, RFC 9368 §2.1).
+    ///
+    /// The endpoint driver restarts an attempt with a mutually supported version on its own;
+    /// this reaches the application when there is none, or when the attempt had already
+    /// reacted to one.
+    VersionMismatch {
+        /// What the server offered, as it listed it, reserved versions included.
+        offered: Vec<Version>,
+    },
     /// The peer violated the QUIC specification as understood by this implementation
     TransportError(TransportError),
     /// The peer's QUIC stack aborted the connection automatically
@@ -38,7 +45,9 @@ pub enum ConnectionError {
 impl core::fmt::Display for ConnectionError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::VersionMismatch => f.write_str("peer doesn't implement any supported version"),
+            Self::VersionMismatch { .. } => {
+                f.write_str("peer doesn't implement any supported version")
+            }
             Self::TransportError(inner) => core::fmt::Display::fmt(inner, f),
             Self::ConnectionClosed(field0) => write!(f, "aborted by peer: {field0}"),
             Self::ApplicationClosed(field0) => write!(f, "closed by peer: {field0}"),
@@ -84,7 +93,7 @@ impl From<ConnectionError> for io::Error {
                 io::ErrorKind::ConnectionAborted
             }
             ConnectionError::TransportError(_)
-            | ConnectionError::VersionMismatch
+            | ConnectionError::VersionMismatch { .. }
             | ConnectionError::LocallyClosed
             | ConnectionError::CidsExhausted => io::ErrorKind::Other,
         };

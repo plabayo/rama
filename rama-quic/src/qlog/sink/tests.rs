@@ -1,6 +1,5 @@
 use super::*;
 use crate::{
-    ConnectionId,
     proto::ConnectionQlog,
     qlog::{
         QlogConfig, ReferenceJsonEncoder, TraceInfo,
@@ -10,6 +9,7 @@ use crate::{
         },
     },
 };
+use rama_quic_proto::ConnectionId;
 use std::{
     borrow::Cow,
     io::{self, Write},

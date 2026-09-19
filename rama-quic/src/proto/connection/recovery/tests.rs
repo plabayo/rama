@@ -1,4 +1,8 @@
 use crate::proto::{Duration, connection::recovery::persistent_congestion_period};
+use rama_quic_proto::{
+    frame::{self, EcnCounts},
+    packet::SpaceId,
+};
 
 #[test]
 fn persistent_congestion_period_saturates() {
@@ -40,24 +44,18 @@ fn loss_delay_respects_granularity_and_saturates_extreme_factors() {
 
 impl super::Connection {
     pub(crate) fn acknowledge_handshake_for_pto_test(&mut self, now: crate::proto::Instant) {
-        use crate::proto::{coding::BufMutExt, frame, packet::SpaceId};
         let Some((&largest, _)) = self.spaces[SpaceId::Handshake]
             .sent_packets
             .last_key_value()
         else {
             return;
         };
-        let mut additional = Vec::new();
-        additional.write_var(largest);
+        let mut ranges = rama_quic_proto::range_set::ArrayRangeSet::new();
+        ranges.insert(0..largest + 1);
         self.on_ack_received(
             now,
             SpaceId::Handshake,
-            &frame::Ack {
-                largest,
-                delay: 0,
-                additional: additional.into(),
-                ecn: None,
-            },
+            &frame::Ack::from_ranges(0, &ranges, None).unwrap(),
         )
         .unwrap();
     }
@@ -143,7 +141,7 @@ impl crate::proto::congestion::Controller for LossRecorder {
 
 impl super::Connection {
     pub(crate) fn assert_mixed_path_loss_is_scoped(&mut self, now: crate::proto::Instant) {
-        use crate::proto::{connection::spaces::SentPacket, packet::SpaceId};
+        use crate::proto::connection::spaces::SentPacket;
         self.replace_recovery_path_for_test(now);
         let recorder = LossRecorder::default();
         self.path.congestion = Box::new(recorder.clone());
@@ -192,7 +190,6 @@ impl super::Connection {
         &mut self,
         now: crate::proto::Instant,
     ) {
-        use crate::proto::{frame::EcnCounts, packet::SpaceId};
         self.replace_recovery_path_for_test(now);
         let recorder = LossRecorder::default();
         self.path.congestion = Box::new(recorder.clone());
@@ -235,12 +232,7 @@ impl super::Connection {
         &mut self,
         now: crate::proto::Instant,
     ) {
-        use crate::proto::{
-            connection::{paths::RttEstimator, spaces::SentPacket},
-            frame,
-            packet::SpaceId,
-        };
-        use rama_core::bytes::Bytes;
+        use crate::proto::connection::{paths::RttEstimator, spaces::SentPacket};
 
         self.skip_no_packet_number();
         self.path.rtt = RttEstimator::new(Duration::from_millis(50));
@@ -248,7 +240,7 @@ impl super::Connection {
             .rtt
             .update(Duration::ZERO, Duration::from_millis(50));
         self.ack_frequency.peer_max_ack_delay = Duration::from_millis(25);
-        self.peer_params.ack_delay_exponent = crate::proto::VarInt(3);
+        self.peer_params.ack_delay_exponent = rama_quic_proto::VarInt::from_u32(3);
         let packet = self.spaces[SpaceId::Data].get_tx_number();
         self.path.sent(
             packet,
@@ -266,15 +258,13 @@ impl super::Connection {
             &mut self.spaces[SpaceId::Data],
         );
         self.in_flight_ack_eliciting += 1;
+        let mut ranges = rama_quic_proto::range_set::ArrayRangeSet::new();
+        ranges.insert_one(packet);
         self.on_ack_received(
             now,
             SpaceId::Data,
-            &frame::Ack {
-                largest: packet,
-                delay: 12_500, // 100 ms with exponent 3
-                additional: Bytes::from_static(&[0]),
-                ecn: None,
-            },
+            // 12_500 µs delay = 100 ms with exponent 3.
+            &frame::Ack::from_ranges(12_500, &ranges, None).unwrap(),
         )
         .unwrap();
         let expected = if self.handshake_confirmed() {

@@ -135,6 +135,35 @@ fn parse_client_hello_handshake_prefix_inner(i: &[u8]) -> IResult<&[u8], ClientH
     Ok((rest, hello))
 }
 
+/// Incrementally classify a (possibly partial) bare TLS ClientHello handshake message: the
+/// handshake header and body with no TLS record layer in front, as QUIC carries in its CRYPTO
+/// stream (RFC 9001 §4.1).
+///
+/// The record-framed counterpart is [`parse_client_hello_handshake_prefix`]; this one skips the
+/// record header a QUIC CRYPTO stream never has. Same incompleteness contract: `Incomplete`
+/// while the buffered bytes are a valid but unfinished prefix, `Invalid` when they can never
+/// complete.
+pub fn parse_client_hello_message_prefix(i: &[u8]) -> ClientHelloHandshakePrefix {
+    match parse_client_hello_message_prefix_inner(i) {
+        Ok((_, hello)) => ClientHelloHandshakePrefix::Complete(hello),
+        Err(nom::Err::Incomplete(_)) => ClientHelloHandshakePrefix::Incomplete,
+        Err(nom::Err::Error(_) | nom::Err::Failure(_)) => ClientHelloHandshakePrefix::Invalid,
+    }
+}
+
+fn parse_client_hello_message_prefix_inner(i: &[u8]) -> IResult<&[u8], ClientHello> {
+    // handshake type (ClientHello == 0x01) + 3-byte handshake-message length
+    let (i, hs_header) = verify(take(4usize), |s: &[u8]| matches!(s, [0x01, ..])).parse(i)?;
+    let hs_len =
+        ((hs_header[1] as usize) << 16) | ((hs_header[2] as usize) << 8) | (hs_header[3] as usize);
+
+    // Bound the body by the handshake length so a short buffer is `Incomplete` rather than a
+    // falsely-completed extension-less hello; see `parse_client_hello_handshake_prefix_inner`.
+    let (rest, body) = take(hs_len).parse(i)?;
+    let (_, hello) = complete(parse_client_hello_inner).parse(body)?;
+    Ok((rest, hello))
+}
+
 fn parse_client_hello_handshake_inner(i: &[u8]) -> IResult<&[u8], ClientHello> {
     // verify content type and tls version
     let (i, _) = verify(take(3usize), |s: &[u8]| {

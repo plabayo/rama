@@ -10,7 +10,10 @@ use rama::{
     error::{BoxError, ErrorContext as _},
     graceful::{Shutdown, default_signal},
     net::{socket::SocketOptions, tls::ApplicationProtocol},
-    quic::{Connection, Endpoint, RecvStream, SendStream, ServerConfig},
+    quic::{
+        Connection, Endpoint, RecvStream, SendStream, ServerConfig,
+        proto::version::{ServerVersionPolicy, Version, VersionPreference},
+    },
     rt::Executor,
     telemetry::tracing,
     tls::{
@@ -76,8 +79,16 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
         .with_alpn(smallvec![ApplicationProtocol::from(ALPN)])
         .with_keylog(KeyLogIntent::Environment)
         .with_server_auth(auth);
-    let config = ServerConfig::try_from_rama_tls(&tls, crate::tls_options())?
+    let mut config = ServerConfig::try_from_rama_tls(&tls, crate::tls_options())?
         .with_transport_config(transport(executor.clone(), "server").await?);
+    if testcase == TestCase::V2 {
+        // Move a client that offers v2 to it (RFC 9368 §2.3).
+        config.set_versions(
+            ServerVersionPolicy::new()
+                .try_with_preference(VersionPreference::Prefer(vec![Version::V2]))
+                .context("a usable preference")?,
+        );
+    }
     let mut socket_options = SocketOptions::default_udp();
     if args.listen.is_ipv6() {
         socket_options.only_v6 = Some(false);
@@ -117,7 +128,7 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
             }
         }
     };
-    endpoint.close(0_u32.into(), b"server stopping");
+    endpoint.close(0_u32, b"server stopping");
     connections.abort_all();
     while connections.join_next().await.is_some() {}
     let outcome = shutdown_endpoint(&endpoint, outcome).await;
@@ -142,7 +153,7 @@ async fn serve_connection(connection: Connection, root: Arc<PathBuf>) -> Result<
             result = requests.join_next(), if !requests.is_empty() => {
                 let result = result.ok_or("request task missing")?.context("request task failed")?;
                 if let Err(error) = result {
-                    connection.close(1_u32.into(), b"request failed");
+                    connection.close(1_u32, b"request failed");
                     return Err(error);
                 }
             }

@@ -13,10 +13,19 @@ use std::{
 };
 
 use super::*;
+use crate::proto::token::reset_token;
 use crate::proto::{
     Duration, Instant,
     cid_generator::{ConnectionIdGenerator, RandomConnectionIdGenerator},
     connection::PreferredAddressState,
+};
+use rama_quic_proto::{
+    ConnectionId, Dir, RESET_TOKEN_SIZE, ResetToken, ResetToken as TestResetToken, TransportError,
+    TransportErrorCode, VarInt, frame,
+    frame::ApplicationClose,
+    frame::ConnectionClose,
+    frame::Datagram,
+    frame::Frame,
     frame::FrameStruct,
     packet::{Header, InitialHeader, PacketNumber},
     transport_parameters::TransportParameters,
@@ -29,7 +38,9 @@ mod admission;
 mod aead_limits;
 mod closing;
 mod datagrams;
+mod grease;
 mod loss_config;
+mod packet_vectors;
 mod qlog;
 mod qlog_drops;
 mod qlog_lifecycle;
@@ -38,6 +49,7 @@ mod qlog_paths;
 mod tls;
 mod token;
 mod validation;
+mod version;
 
 #[cfg(all(target_family = "wasm", target_os = "unknown"))]
 use wasm_bindgen_test::wasm_bindgen_test as test;
@@ -85,7 +97,7 @@ fn version_negotiate_server() {
         ]
     );
     assert!(buf[15..].chunks(4).any(|x| {
-        DEFAULT_SUPPORTED_VERSIONS.contains(&u32::from_be_bytes(x.try_into().unwrap()))
+        DEFAULT_SUPPORTED_VERSIONS.contains(&Version::from_be_bytes(x.try_into().unwrap()))
     }));
 }
 
@@ -129,10 +141,10 @@ fn version_negotiate_client() {
     }
     match client_ch.poll() {
         Some(Event::ConnectionLost {
-            reason: ConnectionError::VersionMismatch,
+            reason: ConnectionError::VersionMismatch { .. },
         }) => {}
         other => panic!(
-            "assertion failed: `{other:?}` does not match `Some(Event::ConnectionLost {{ reason: ConnectionError::VersionMismatch, }})`"
+            "assertion failed: `{other:?}` does not match `Some(Event::ConnectionLost {{ reason: ConnectionError::VersionMismatch {{ .. }}, }})`"
         ),
     }
 }
@@ -153,7 +165,7 @@ fn lifecycle() {
     info!("closing");
     pair.client.connections.get_mut(&client_ch).unwrap().close(
         pair.time,
-        VarInt(42),
+        VarInt::from_u32(42),
         REASON.into(),
     );
     pair.drive();
@@ -161,12 +173,12 @@ fn lifecycle() {
         Some(Event::ConnectionLost {
             reason:
                 ConnectionError::ApplicationClosed(ApplicationClose {
-                    error_code: VarInt(42),
+                    error_code,
                     ref reason,
                 }),
-        }) if reason == REASON => {}
+        }) if reason == REASON && error_code == VarInt::from_u32(42) => {}
         other => panic!(
-            "assertion failed: `{other:?}` does not match `Some(Event::ConnectionLost {{ reason: ConnectionError::ApplicationClosed( ApplicationClose {{ error_code: VarInt(42), ref reason }} )}}) if reason == REASON`"
+            "assertion failed: `{other:?}` does not match `Some(Event::ConnectionLost {{ reason: ConnectionError::ApplicationClosed( ApplicationClose {{ error_code: VarInt::from_u32(42), ref reason }} )}}) if reason == REASON`"
         ),
     }
     match pair.client_conn_mut(client_ch).poll() {
@@ -190,7 +202,9 @@ fn draft_version_compat() {
     let mut endpoint_config = EndpointConfig::try_with_rand_key().unwrap();
     endpoint_config.set_supported_versions([DEFAULT_SUPPORTED_VERSIONS, DRAFT_VERSIONS].concat());
     let mut client_config = client_config();
-    client_config.set_version(0xff00_0020);
+    client_config
+        .set_version(Version::from_u32(0xff00_0020))
+        .unwrap();
 
     let mut pair = Pair::new(Arc::new(endpoint_config), server_config());
     let (client_ch, server_ch) = pair.connect_with(client_config);
@@ -206,7 +220,7 @@ fn draft_version_compat() {
     info!("closing");
     pair.client.connections.get_mut(&client_ch).unwrap().close(
         pair.time,
-        VarInt(42),
+        VarInt::from_u32(42),
         REASON.into(),
     );
     pair.drive();
@@ -214,12 +228,12 @@ fn draft_version_compat() {
         Some(Event::ConnectionLost {
             reason:
                 ConnectionError::ApplicationClosed(ApplicationClose {
-                    error_code: VarInt(42),
+                    error_code,
                     ref reason,
                 }),
-        }) if reason == REASON => {}
+        }) if reason == REASON && error_code == VarInt::from_u32(42) => {}
         other => panic!(
-            "assertion failed: `{other:?}` does not match `Some(Event::ConnectionLost {{ reason: ConnectionError::ApplicationClosed( ApplicationClose {{ error_code: VarInt(42), ref reason }} )}}) if reason == REASON`"
+            "assertion failed: `{other:?}` does not match `Some(Event::ConnectionLost {{ reason: ConnectionError::ApplicationClosed( ApplicationClose {{ error_code: VarInt::from_u32(42), ref reason }} )}}) if reason == REASON`"
         ),
     }
     match pair.client_conn_mut(client_ch).poll() {
@@ -288,7 +302,7 @@ fn client_stateless_reset() {
     // Send something big enough to allow room for a smaller stateless reset.
     pair.server.connections.get_mut(&server_ch).unwrap().close(
         pair.time,
-        VarInt(42),
+        VarInt::from_u32(42),
         (&[0xab; 128][..]).into(),
     );
     info!("resetting");
@@ -332,7 +346,7 @@ fn stateless_reset_with_a_foreign_key_is_ignored() {
         .map(|(_, buffer)| buffer.clone())
         .expect("the ping produced a packet");
     assert_eq!(
-        packet[0] & crate::proto::packet::LONG_HEADER_FORM,
+        packet[0] & rama_quic_proto::packet::LONG_HEADER_FORM,
         0,
         "short header expected"
     );
@@ -348,8 +362,8 @@ fn stateless_reset_with_a_foreign_key_is_ignored() {
         reset.extend_from_slice(&token);
         reset
     };
-    let foreign = build_reset(ResetToken::new(&foreign_key, dst_cid));
-    let genuine = ResetToken::new(&real_key_copy, dst_cid);
+    let foreign = build_reset(reset_token(&foreign_key, dst_cid));
+    let genuine = reset_token(&real_key_copy, dst_cid);
     assert_ne!(
         &foreign[foreign.len() - 16..],
         &genuine[..],
@@ -604,7 +618,7 @@ fn a_configured_stateless_reset_key_is_what_the_issued_tokens_come_from() {
     pair.client.inbound.push_back(Inbound::plain(
         pair.time,
         None,
-        build_reset(ResetToken::new(&elsewhere, dst_cid))
+        build_reset(reset_token(&elsewhere, dst_cid))
             .as_slice()
             .into(),
     ));
@@ -618,7 +632,7 @@ fn a_configured_stateless_reset_key_is_what_the_issued_tokens_come_from() {
     pair.client.inbound.push_back(Inbound::plain(
         pair.time,
         None,
-        build_reset(ResetToken::new(&configured, dst_cid))
+        build_reset(reset_token(&configured, dst_cid))
             .as_slice()
             .into(),
     ));
@@ -780,7 +794,7 @@ fn reset_stream() {
     pair.drive();
 
     info!("resetting stream");
-    const ERROR: VarInt = VarInt(42);
+    const ERROR: VarInt = VarInt::from_u32(42);
     pair.client_send(client_ch, s).reset(ERROR).unwrap();
     pair.drive();
 
@@ -823,7 +837,7 @@ fn stop_stream() {
     pair.drive();
 
     info!("stopping stream");
-    const ERROR: VarInt = VarInt(42);
+    const ERROR: VarInt = VarInt::from_u32(42);
     pair.server_recv(server_ch, s).stop(ERROR).unwrap();
     pair.drive();
 
@@ -1013,11 +1027,11 @@ fn zero_rtt_happypath() {
     let client_ch = pair.begin_connect(config.clone());
     pair.drive();
     pair.server.assert_accept();
-    pair.client
-        .connections
-        .get_mut(&client_ch)
-        .unwrap()
-        .close(pair.time, VarInt(0), [][..].into());
+    pair.client.connections.get_mut(&client_ch).unwrap().close(
+        pair.time,
+        VarInt::from_u32(0),
+        [][..].into(),
+    );
     pair.drive();
 
     pair.client.addr = SocketAddr::new(
@@ -1126,11 +1140,11 @@ fn zero_rtt_rejection() {
         (0, 0),
         "after the handshake discarded its packet number spaces nothing is outstanding"
     );
-    pair.client
-        .connections
-        .get_mut(&client_ch)
-        .unwrap()
-        .close(pair.time, VarInt(0), [][..].into());
+    pair.client.connections.get_mut(&client_ch).unwrap().close(
+        pair.time,
+        VarInt::from_u32(0),
+        [][..].into(),
+    );
     pair.drive();
     match pair.server_conn_mut(server_ch).poll() {
         Some(Event::ConnectionLost { .. }) => {}
@@ -1226,11 +1240,11 @@ fn test_zero_rtt_incoming_limit<F: FnOnce(&mut ServerConfig)>(configure_server: 
     let client_ch = pair.begin_connect(config.clone());
     pair.drive();
     pair.server.assert_accept();
-    pair.client
-        .connections
-        .get_mut(&client_ch)
-        .unwrap()
-        .close(pair.time, VarInt(0), [][..].into());
+    pair.client.connections.get_mut(&client_ch).unwrap().close(
+        pair.time,
+        VarInt::from_u32(0),
+        [][..].into(),
+    );
     pair.drive();
 
     pair.client.addr = SocketAddr::new(
@@ -2209,11 +2223,11 @@ fn instant_close_1() {
     let mut pair = Pair::default();
     info!("connecting");
     let client_ch = pair.begin_connect(client_config());
-    pair.client
-        .connections
-        .get_mut(&client_ch)
-        .unwrap()
-        .close(pair.time, VarInt(0), Bytes::new());
+    pair.client.connections.get_mut(&client_ch).unwrap().close(
+        pair.time,
+        VarInt::from_u32(0),
+        Bytes::new(),
+    );
     pair.drive();
     let server_ch = pair.server.assert_accept();
     match pair.client_conn_mut(client_ch).poll() {
@@ -2242,11 +2256,11 @@ fn instant_close_2() {
     let client_ch = pair.begin_connect(client_config());
     // Unlike `instant_close`, the server sees a valid Initial packet first.
     pair.drive_client();
-    pair.client
-        .connections
-        .get_mut(&client_ch)
-        .unwrap()
-        .close(pair.time, VarInt(42), Bytes::new());
+    pair.client.connections.get_mut(&client_ch).unwrap().close(
+        pair.time,
+        VarInt::from_u32(42),
+        Bytes::new(),
+    );
     pair.drive();
     match pair.client_conn_mut(client_ch).poll() {
         None => {}
@@ -2283,11 +2297,11 @@ fn instant_server_close() {
     pair.server.drive_incoming(pair.time, pair.client.addr);
     let server_ch = pair.server.assert_accept();
     info!("closing");
-    pair.server
-        .connections
-        .get_mut(&server_ch)
-        .unwrap()
-        .close(pair.time, VarInt(42), Bytes::new());
+    pair.server.connections.get_mut(&server_ch).unwrap().close(
+        pair.time,
+        VarInt::from_u32(42),
+        Bytes::new(),
+    );
     pair.drive();
     match pair.client_conn_mut(server_ch).poll() {
         Some(Event::ConnectionLost {
@@ -2309,7 +2323,7 @@ fn idle_timeout() {
     const IDLE_TIMEOUT: u64 = 100;
     let server = ServerConfig {
         transport: Arc::new(TransportConfig {
-            max_idle_timeout: Some(VarInt(IDLE_TIMEOUT)),
+            max_idle_timeout: Some(VarInt::from_u32(IDLE_TIMEOUT as u32)),
             ..TransportConfig::default()
         }),
         ..server_config()
@@ -2365,7 +2379,7 @@ fn connection_close_sends_acks() {
 
     let time = pair.time;
     pair.server_conn_mut(client_ch)
-        .close(time, VarInt(42), Bytes::new());
+        .close(time, VarInt::from_u32(42), Bytes::new());
 
     pair.drive();
 
@@ -2399,7 +2413,7 @@ fn connection_close_while_congestion_blocked() {
     let close_time = pair.time;
     pair.client.connections.get_mut(&client_ch).unwrap().close(
         pair.time,
-        VarInt(42),
+        VarInt::from_u32(42),
         REASON.into(),
     );
 
@@ -2421,11 +2435,11 @@ fn connection_close_while_congestion_blocked() {
     let (reason, delivered_at) = result.expect("server never learned of the close");
     match reason {
         ConnectionError::ApplicationClosed(ApplicationClose {
-            error_code: VarInt(42),
+            error_code,
             ref reason,
-        }) if reason == REASON => {}
+        }) if reason == REASON && error_code == VarInt::from_u32(42) => {}
         other => panic!(
-            "assertion failed: `{other:?}` does not match `ConnectionError::ApplicationClosed( ApplicationClose {{ error_code: VarInt(42), ref reason }} ) if reason == REASON`"
+            "assertion failed: `{other:?}` does not match `ConnectionError::ApplicationClosed( ApplicationClose {{ error_code: VarInt::from_u32(42), ref reason }} ) if reason == REASON`"
         ),
     }
     // Close packets aren't congestion controlled and the test link has no latency, so the close
@@ -2523,14 +2537,16 @@ fn test_flow_control(config: TransportConfig, window_size: usize) {
     );
     pair.drive();
     info!("resetting");
-    pair.client_send(client_ch, s).reset(VarInt(42)).unwrap();
+    pair.client_send(client_ch, s)
+        .reset(VarInt::from_u32(42))
+        .unwrap();
     pair.drive();
 
     let mut recv = pair.server_recv(server_ch, s);
     let mut chunks = recv.read(true).unwrap();
     assert_eq!(
         chunks.next(usize::MAX).err(),
-        Some(ReadError::Reset(VarInt(42)))
+        Some(ReadError::Reset(VarInt::from_u32(42)))
     );
     let _transmit = chunks.finalize();
 
@@ -2630,7 +2646,7 @@ fn stop_opens_bidi() {
     assert_eq!(pair.client_streams(client_ch).send_streams(), 0);
     let s = pair.client_streams(client_ch).open(Dir::Bi).unwrap();
     assert_eq!(pair.client_streams(client_ch).send_streams(), 1);
-    const ERROR: VarInt = VarInt(42);
+    const ERROR: VarInt = VarInt::from_u32(42);
     pair.client
         .connections
         .get_mut(&server_ch)
@@ -2719,17 +2735,17 @@ fn zero_length_cid() {
     let (client_ch, server_ch) = pair.connect();
     // Ensure we can reconnect after a previous connection is cleaned up
     info!("closing");
-    pair.client
-        .connections
-        .get_mut(&client_ch)
-        .unwrap()
-        .close(pair.time, VarInt(42), Bytes::new());
+    pair.client.connections.get_mut(&client_ch).unwrap().close(
+        pair.time,
+        VarInt::from_u32(42),
+        Bytes::new(),
+    );
     pair.drive();
-    pair.server
-        .connections
-        .get_mut(&server_ch)
-        .unwrap()
-        .close(pair.time, VarInt(42), Bytes::new());
+    pair.server.connections.get_mut(&server_ch).unwrap().close(
+        pair.time,
+        VarInt::from_u32(42),
+        Bytes::new(),
+    );
     pair.connect();
 }
 
@@ -2740,7 +2756,7 @@ fn keep_alive() {
     let server = ServerConfig {
         transport: Arc::new(TransportConfig {
             keep_alive_interval: Some(Duration::from_millis(IDLE_TIMEOUT / 2)),
-            max_idle_timeout: Some(VarInt(IDLE_TIMEOUT)),
+            max_idle_timeout: Some(VarInt::from_u32(IDLE_TIMEOUT as u32)),
             ..TransportConfig::default()
         }),
         ..server_config()
@@ -2982,7 +2998,7 @@ fn stop_before_finish() {
     pair.drive();
 
     info!("stopping stream");
-    const ERROR: VarInt = VarInt(42);
+    const ERROR: VarInt = VarInt::from_u32(42);
     pair.server_recv(server_ch, s).stop(ERROR).unwrap();
     pair.drive();
 
@@ -3012,7 +3028,7 @@ fn stop_during_finish() {
         }
     }
     info!("stopping and finishing stream");
-    const ERROR: VarInt = VarInt(42);
+    const ERROR: VarInt = VarInt::from_u32(42);
     pair.server_recv(server_ch, s).stop(ERROR).unwrap();
     pair.drive_server();
     pair.client_send(client_ch, s).finish().unwrap();
@@ -4158,7 +4174,7 @@ fn setup_ack_frequency_test(max_ack_delay: Duration) -> (Pair, ConnectionHandle,
     let mut client_config = client_config_with_deterministic_pns();
     let mut ack_freq_config = AckFrequencyConfig::default();
     ack_freq_config
-        .set_ack_eliciting_threshold(10u32.into())
+        .set_ack_eliciting_threshold(10u32)
         .set_max_ack_delay(max_ack_delay);
     Arc::get_mut(&mut client_config.transport)
         .unwrap()
@@ -5069,11 +5085,11 @@ fn handshake_confirmation_no_resumption_shortcut() {
     let mut pair = Pair::default();
     let config = client_config();
     let (ch, _) = pair.connect_with(config.clone());
-    pair.client
-        .connections
-        .get_mut(&ch)
-        .unwrap()
-        .close(pair.time, VarInt(0), [][..].into());
+    pair.client.connections.get_mut(&ch).unwrap().close(
+        pair.time,
+        VarInt::from_u32(0),
+        [][..].into(),
+    );
     pair.drive();
 
     // Resumed connection
@@ -5171,7 +5187,7 @@ fn application_close_in_initial_is_rejected() {
         .expect("client should send an Initial packet");
     let initial = &buf[..transmit.size];
     // Long header: flags(1) version(4) dcid_len(1) dcid scid_len(1) scid ...
-    let version = u32::from_be_bytes(initial[1..5].try_into().unwrap());
+    let version = Version::from_be_bytes(initial[1..5].try_into().unwrap());
     let dcid_len = initial[5] as usize;
     let orig_dst_cid = ConnectionId::new(&initial[6..6 + dcid_len]);
     let scid_len = initial[6 + dcid_len] as usize;
@@ -5190,7 +5206,7 @@ fn application_close_in_initial_is_rejected() {
         src_cid: ConnectionId::new(&[]),
         token: Bytes::new(),
         number,
-        version,
+        version: version.to_wire().unwrap(),
     });
     let mut packet = Vec::new();
     let partial = header.encode(&mut packet);
@@ -6468,7 +6484,7 @@ fn a_distant_switch_names_a_bounded_set_of_numbers() {
                 sequence: far,
                 retire_prior_to: 0,
                 id: ConnectionId::new(&[0x6A; 8]),
-                reset_token: ResetToken::from([0x6B; crate::proto::RESET_TOKEN_SIZE]),
+                reset_token: ResetToken::from([0x6B; rama_quic_proto::RESET_TOKEN_SIZE]),
             },
         )
         .expect("a distant identifier is legal");
@@ -6530,7 +6546,7 @@ fn a_distant_retirement_names_a_bounded_set_of_numbers() {
                 sequence: far,
                 retire_prior_to: far,
                 id: ConnectionId::new(&[0x5A; 8]),
-                reset_token: ResetToken::from([0x5B; crate::proto::RESET_TOKEN_SIZE]),
+                reset_token: ResetToken::from([0x5B; rama_quic_proto::RESET_TOKEN_SIZE]),
             },
         )
         .expect("a distant frame is applied rather than closing the connection");
@@ -6569,7 +6585,7 @@ fn a_distant_retirement_names_a_bounded_set_of_numbers() {
                 sequence: late,
                 retire_prior_to: 0,
                 id: ConnectionId::new(&[0x5C; 8]),
-                reset_token: ResetToken::from([0x5D; crate::proto::RESET_TOKEN_SIZE]),
+                reset_token: ResetToken::from([0x5D; rama_quic_proto::RESET_TOKEN_SIZE]),
             },
         )
         .err();
@@ -7094,7 +7110,8 @@ fn a_response_on_another_path_validates_the_preferred_address() {
     // As above: this server cannot serve the address it advertised, so the move is the end of
     // what C6a observes here.
     let now = pair.time;
-    pair.client_conn_mut(ch).close(now, VarInt(0), Bytes::new());
+    pair.client_conn_mut(ch)
+        .close(now, VarInt::from_u32(0), Bytes::new());
     drive_settled(&mut pair);
 }
 
@@ -7284,7 +7301,7 @@ fn routed_reset_for(
     let mut reset = vec![0x40; 1];
     reset.extend_from_slice(&dcid);
     reset.extend_from_slice(&[0xab; 32]);
-    reset.extend_from_slice(&ResetToken::new(key, cid));
+    reset.extend_from_slice(&reset_token(key, cid));
     reset
 }
 
@@ -7378,7 +7395,7 @@ fn a_deferred_protocol_error_is_reported_as_itself() {
     match &reasons[0] {
         ConnectionError::TransportError(error) => assert_eq!(
             error.code,
-            crate::proto::TransportErrorCode::CONNECTION_ID_LIMIT_ERROR,
+            rama_quic_proto::TransportErrorCode::CONNECTION_ID_LIMIT_ERROR,
             "the code the failure carried, not a substitute"
         ),
         other => panic!("expected the original transport error, got {other:?}"),
@@ -7699,7 +7716,7 @@ fn two_connections_on_one_endpoint_keep_their_own_arrivals_and_deadlines() {
     let now = pair.time;
     pair.server_conn_mut(server_a).close(
         now,
-        crate::proto::VarInt::from_u32(0),
+        rama_quic_proto::VarInt::from_u32(0),
         rama_core::bytes::Bytes::new(),
     );
     drive_settled(&mut pair);
@@ -7752,7 +7769,7 @@ fn an_endpoint_with_no_room_refuses_the_route_and_indexes_nothing() {
             Ipv4Addr::new(127, 1, (step / 250) as u8, (step % 250) as u8).into(),
             4433,
         );
-        let token = TestResetToken::from([step as u8; crate::proto::RESET_TOKEN_SIZE]);
+        let token = TestResetToken::from([step as u8; rama_quic_proto::RESET_TOKEN_SIZE]);
         let answer = pair.client.endpoint.handle_event(
             client_ch,
             EndpointEvent(EndpointEventInner::ResetTokenUsed(
@@ -7813,7 +7830,7 @@ fn an_endpoint_with_no_room_refuses_the_route_and_indexes_nothing() {
 fn stateless_reset_for(key: &HmacSha2, cid: ConnectionId) -> Vec<u8> {
     let mut reset = vec![0x40; 1];
     reset.extend_from_slice(&[0xab; 40]);
-    reset.extend_from_slice(&ResetToken::new(key, cid));
+    reset.extend_from_slice(&reset_token(key, cid));
     reset
 }
 
@@ -7918,7 +7935,7 @@ fn a_reset_for_an_identifier_the_peer_retired_is_not_ours() {
     let server_addr = pair.server.addr;
     let retired = pair.client_conn_mut(client_ch).active_rem_cid();
     let retired_seq = pair.client_conn_mut(client_ch).active_rem_cid_seq();
-    let retired_token = ResetToken::new(&key, retired);
+    let retired_token = reset_token(&key, retired);
     assert!(
         pair.server
             .endpoint
@@ -8125,7 +8142,7 @@ fn a_reset_token_counts_only_once_its_connection_id_is_used() {
         .first()
         .expect("the server issued spare connection IDs");
     let reset = stateless_reset_for(&key, next);
-    let token = ResetToken::new(&key, next);
+    let token = reset_token(&key, next);
     let server_addr = pair.server.addr;
 
     // Unused: the endpoint holds no route for that identifier at that address.
@@ -8208,7 +8225,7 @@ fn a_reset_for_the_previous_paths_connection_id_counts_until_that_id_is_retired(
     // old address resets us.
     let (mut pair, key, _client_ch, server_ch, old_addr, old_cid) = setup();
     pair.server.outbound.clear();
-    let old_token = ResetToken::new(&key, old_cid);
+    let old_token = reset_token(&key, old_cid);
     assert_eq!(
         pair.server.endpoint.reset_route_for(old_addr, old_token),
         Some(server_ch),
@@ -8230,7 +8247,7 @@ fn a_reset_for_the_previous_paths_connection_id_counts_until_that_id_is_retired(
     assert_eq!(
         pair.server
             .endpoint
-            .reset_route_for(old_addr, ResetToken::new(&key, old_cid)),
+            .reset_route_for(old_addr, reset_token(&key, old_cid)),
         None,
         "retiring the identifier released the route its token arrived by"
     );

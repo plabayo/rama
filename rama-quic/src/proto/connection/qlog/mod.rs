@@ -6,12 +6,12 @@ pub(super) mod lifecycle;
 pub(super) mod negotiation;
 pub(super) mod path;
 use crate::proto::{
-    ConnectionId, Instant,
+    Instant,
     connection::{PathData, SentPacket},
-    packet::SpaceId,
 };
 use crate::qlog::{ConnectionQlogControl, QlogRecorder, event::EventFieldsView};
 use event::{Event, Packet, PacketHeader, PacketLost, PacketLostTrigger, PacketType, RawInfo};
+use rama_quic_proto::{ConnectionId, packet::SpaceId};
 
 /// Per-connection admission. The configuration's template is forked for each connection.
 #[derive(Clone, Default)]

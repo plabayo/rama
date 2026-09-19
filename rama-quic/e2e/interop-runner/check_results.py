@@ -22,8 +22,14 @@ def load_report(path):
     return json.loads(Path(path).read_text(), object_pairs_hook=unique_object)
 
 
-def gate(report, *, clients, servers, cases):
-    """Require exactly one explicit success for every requested cell and case."""
+def gate(report, *, clients, servers, cases, optional=frozenset()):
+    """Require exactly one explicit success for every requested cell and case.
+
+    `optional` is a set of `(peer, case)` pairs whose `unsupported` result is tolerated (`peer`
+    being the non-Rama side of the cell): that image does not implement the testcase, so its
+    absence is not a Rama failure. Any other result there, and every result elsewhere, must still
+    be `succeeded`.
+    """
     for label, expected in (("clients", clients), ("servers", servers), ("cases", cases)):
         if (not expected or not all(isinstance(x, str) and x for x in expected)
                 or len(set(expected)) != len(expected)):
@@ -68,8 +74,12 @@ def gate(report, *, clients, servers, cases):
                 if not isinstance(abbr, str) or definitions.get(abbr, {}).get("name") != name:
                     raise InvalidResults(f"{label}: incorrect abbreviation for {name}")
                 seen.add(name)
-                if entry.get("result") != "succeeded":
-                    failures.append(f"{label} case={name}: {entry.get('result')!r}")
+                result = entry.get("result")
+                # Tolerate the peer's `unsupported`, whichever side of the cell it is on.
+                peer = server if client == "rama" else client
+                tolerated = result == "unsupported" and (peer, name) in optional
+                if result != "succeeded" and not tolerated:
+                    failures.append(f"{label} case={name}: {result!r}")
                 count += 1
             if seen != set(cases):
                 raise InvalidResults(f"{label}: missing cases {sorted(set(cases) - seen)}")

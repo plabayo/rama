@@ -58,12 +58,16 @@ def check_qlog(path):
     return {"records": records, "connection_closed_events": closed, "bytes": total}
 
 
-def gate_qlogs(artifacts, *, role, peers, cases):
+def gate_qlogs(artifacts, *, role, peers, cases, optional=frozenset()):
     checked = {}
     failures = []
     for peer in peers:
         pair = f"{peer}_rama" if role == "client" else f"rama_{peer}"
         for case in cases:
+            # A peer that does not implement this testcase produces no run and so no qlog; its
+            # absence is tolerated exactly where its `unsupported` result is (see `gate`).
+            if (peer, case) in optional:
+                continue
             relative = Path(f"logs-rama-{role}") / pair / case / role / "qlog" / f"rama-{role}.sqlog"
             try:
                 checked[str(relative)] = check_qlog(Path(artifacts) / relative)

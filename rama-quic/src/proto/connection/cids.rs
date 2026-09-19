@@ -6,17 +6,16 @@ use std::{net::SocketAddr, ops::Range};
 use rama_core::telemetry::tracing::debug;
 
 use crate::proto::{
-    Instant, TransportError,
+    Instant,
     cid_queue::{CidQueue, OwnedRemotes, Retired, RouteDelta},
     connection::{Connection, ConnectionError, ConnectionSide},
-    frame::Close,
-    packet::SpaceId,
-    shared::{ConnectionId, EndpointEventInner},
-    token::ResetToken,
+    shared::EndpointEventInner,
+    transport_parameters,
 };
+use rama_quic_proto::{ConnectionId, ResetToken, TransportError, frame::Close, packet::SpaceId};
 
 #[cfg(test)]
-use crate::proto::frame;
+use rama_quic_proto::frame;
 
 impl Connection {
     /// The identifier this endpoint's generator made for the handshake. Later ones are issued
@@ -262,7 +261,7 @@ impl Connection {
         }
 
         // Subtract 1 to account for the CID we supplied while handshaking
-        let mut n = self.peer_params.issue_cids_limit() - 1;
+        let mut n = transport_parameters::issue_cids_limit(&self.peer_params) - 1;
         if let ConnectionSide::Server { server_config } = &self.side
             && server_config.has_preferred_address()
         {

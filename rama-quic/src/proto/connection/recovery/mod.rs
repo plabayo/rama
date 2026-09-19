@@ -6,12 +6,10 @@ use std::cmp;
 use rama_core::telemetry::tracing::{debug, error, trace};
 
 use crate::proto::{
-    Duration, Instant, TIMER_GRANULARITY, TransportError,
+    Duration, Instant, TIMER_GRANULARITY,
     connection::{Connection, Event, spaces::SentPacket, timer::Timer},
-    frame,
-    packet::SpaceId,
-    range_set::ArrayRangeSet,
 };
+use rama_quic_proto::{TransportError, frame, packet::SpaceId, range_set::ArrayRangeSet};
 
 impl Connection {
     /// Returns the next time at which `handle_timeout` should be called
@@ -121,8 +119,9 @@ impl Connection {
             let ack_delay = if space != SpaceId::Data {
                 Duration::from_micros(0)
             } else {
-                let reported =
-                    Duration::from_micros(ack.delay << self.peer_params.ack_delay_exponent.0);
+                let reported = Duration::from_micros(
+                    ack.delay << self.peer_params.ack_delay_exponent.into_inner(),
+                );
                 if self.handshake_confirmed() {
                     cmp::min(self.ack_frequency.peer_max_ack_delay, reported)
                 } else {

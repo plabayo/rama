@@ -1,0 +1,45 @@
+[package]
+name = "rama-quic-proto"
+description = "QUIC wire types, codec and profiles for rama"
+version = { workspace = true }
+license = { workspace = true }
+edition = { workspace = true }
+repository = { workspace = true }
+keywords = ["io", "quic", "codec", "network", "rama"]
+categories = ["asynchronous", "network-programming", "web-programming"]
+authors = { workspace = true }
+rust-version = { workspace = true }
+
+[package.metadata.cargo-public-api-crates]
+allowed = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+targets = ["x86_64-unknown-linux-gnu"]
+
+[features]
+default = ["std"]
+std = ["rama-core/std", "rama-utils/std", "dep:rama-tls"]
+# `arbitrary`'s derive emits `std`-rooted paths, so it only builds on a `std` crate.
+arbitrary = ["dep:arbitrary", "std"]
+
+[dependencies]
+arbitrary = { workspace = true, optional = true }
+rama-core = { workspace = true }
+# Only the std capture pipeline needs it, to peek a ClientHello; kept out of no_std builds.
+rama-tls = { workspace = true, optional = true }
+rama-utils = { workspace = true }
+# Only the trait-level RNG API is used in the library, so it stays no_std (`alloc` for shuffling).
+# Pinned directly rather than inherited because the workspace entry keeps `rand`'s default
+# features (its OS `getrandom` backend), which would break bare-metal `no_std` targets.
+rand = { version = "0.10", default-features = false, features = ["alloc"] }
+serde = { workspace = true, features = ["derive"] }
+
+[dev-dependencies]
+# Tests seed a real RNG (`rand::rng()`), which needs the std/OS backend the library omits.
+rand = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

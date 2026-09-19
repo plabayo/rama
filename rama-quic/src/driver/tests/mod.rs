@@ -117,7 +117,7 @@ async fn close_endpoint() {
             "localhost",
         )
         .unwrap();
-    endpoint.close(0u32.into(), &[]);
+    endpoint.close(0u32, &[]);
     match conn.await {
         Err(crate::driver::ConnectionError::LocallyClosed) => (),
         Err(e) => panic!("unexpected error: {e}"),
@@ -493,13 +493,16 @@ fn run_echo(args: &EchoArgs) {
         // Use small receive windows
         let mut transport_config = TransportConfig::default();
         if let Some(receive_window) = args.receive_window {
-            transport_config.set_receive_window(receive_window.try_into().unwrap());
+            transport_config
+                .set_receive_window(rama_quic_proto::VarInt::try_from(receive_window).unwrap());
         }
         if let Some(stream_receive_window) = args.stream_receive_window {
-            transport_config.set_stream_receive_window(stream_receive_window.try_into().unwrap());
+            transport_config.set_stream_receive_window(
+                rama_quic_proto::VarInt::try_from(stream_receive_window).unwrap(),
+            );
         }
-        transport_config.set_max_concurrent_bidi_streams(1_u8.into());
-        transport_config.set_max_concurrent_uni_streams(1_u8.into());
+        transport_config.set_max_concurrent_bidi_streams(1_u8);
+        transport_config.set_max_concurrent_uni_streams(1_u8);
         let transport_config = Arc::new(transport_config);
 
         // We don't use the `endpoint` helper here because we want two different endpoints with
@@ -612,7 +615,7 @@ fn run_echo(args: &EchoArgs) {
 
                     assert_eq!(data[..], msg[..], "Data mismatch");
                 }
-                new_conn.close(0u32.into(), b"done");
+                new_conn.close(0u32, b"done");
                 drop(new_conn);
                 echo_phase(&args, "client shutdown", client.shutdown()).await;
             }
@@ -726,7 +729,7 @@ async fn rebind_recv() {
     let mut client_config = test_helpers::client(&identity);
     client_config.set_transport_config(Arc::new({
         let mut cfg = TransportConfig::default();
-        cfg.set_max_concurrent_uni_streams(1u32.into());
+        cfg.set_max_concurrent_uni_streams(1u32);
         cfg
     }));
     client.set_default_client_config(client_config);
@@ -788,7 +791,7 @@ async fn rebind_recv() {
 async fn stream_id_flow_control() {
     let _guard = subscribe();
     let mut cfg = TransportConfig::default();
-    cfg.set_max_concurrent_uni_streams(1u32.into());
+    cfg.set_max_concurrent_uni_streams(1u32);
     let endpoint = endpoint_with_config(cfg);
 
     let (client, server) = tokio::join!(
@@ -898,8 +901,8 @@ async fn multiple_conns_with_zero_length_cids() {
         let client1 = server.accept().await.unwrap().await.unwrap();
         let client2 = server.accept().await.unwrap().await.unwrap();
         // Both connections are now concurrently live.
-        client1.close(42u32.into(), &[]);
-        client2.close(42u32.into(), &[]);
+        client1.close(42u32, &[]);
+        client2.close(42u32, &[]);
     }
     .instrument(error_span!("server"));
     tokio::join!(client1, client2, server);
@@ -936,8 +939,8 @@ async fn stream_stopped() {
         let stopped1 = tokio::task::spawn(stopped1);
         // verify that both futures resolved
         let (stopped1, stopped2) = tokio::join!(stopped1, stopped2);
-        assert!(matches!(stopped1, Ok(Ok(Some(val))) if val == 42u32.into()));
-        assert!(matches!(stopped2, Ok(Some(val)) if val == 42u32.into()));
+        assert!(matches!(stopped1, Ok(Ok(Some(val))) if val == 42));
+        assert!(matches!(stopped2, Ok(Some(val)) if val == 42));
         // drop the stream
         drop(stream);
         // verify that a future also resolves after dropping the stream
@@ -950,7 +953,7 @@ async fn stream_stopped() {
         let mut stream = conn.accept_uni().await.unwrap();
         let mut buf = [0u8; 2];
         stream.read_exact(&mut buf).await.unwrap();
-        stream.stop(42u32.into()).unwrap();
+        stream.stop(42u32).unwrap();
         conn
     }
     .instrument(error_span!("server"));
@@ -1020,14 +1023,14 @@ async fn stream_drop_removes_blocked_reader() {
                 assert_eq!(wake_counter.wakes(), 0);
                 // We have a blocked reader, closing the connection should wake it. We use this as
                 // a proxy to assert that the stream is in conn.blocked_readers.
-                conn.close(0u32.into(), b"done");
+                conn.close(0u32, b"done");
                 assert_eq!(wake_counter.wakes(), 1);
             } else {
                 // dropping the stream should remove it from conn.blocked_readers, so we don't
                 // expect any wakeups
                 drop(stream);
                 assert_eq!(wake_counter.wakes(), 0, "no wakeups should have occurred");
-                conn.close(0u32.into(), b"done");
+                conn.close(0u32, b"done");
                 assert_eq!(wake_counter.wakes(), 0, "no wakeups should have occurred");
             }
         });
@@ -1073,7 +1076,7 @@ async fn recv_stream_cancel_stop_drop() {
                 assert!(fut.poll(&mut cx).is_pending());
             }
             recv_dropped.set(()).unwrap();
-            recv.stop(0u32.into()).unwrap();
+            recv.stop(0u32).unwrap();
         },
         async {
             let conn = client
@@ -1134,7 +1137,7 @@ async fn rejected_early_handles_leave_replacement_streams_untouched() {
         response.finish().unwrap();
         let mut received = client.accept_uni().await.unwrap();
         assert_eq!(received.read_to_end(64).await.unwrap(), b"ticket");
-        client.close(0u32.into(), b"primed");
+        client.close(0u32, b"primed");
         drop((response, received, client, server));
         endpoint.wait_idle().await;
 

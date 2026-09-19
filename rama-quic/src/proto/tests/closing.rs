@@ -9,6 +9,7 @@
 use std::{collections::VecDeque, mem, net::SocketAddr, sync::Arc};
 
 use crate::proto::Duration;
+use rama_quic_proto::packet::{FixedLengthConnectionIdParser, PartialDecode};
 
 use rama_core::bytes::Bytes;
 use rama_utils::octets;
@@ -20,7 +21,6 @@ use super::{
 
 use crate::proto::{
     DEFAULT_SUPPORTED_VERSIONS, MIN_INITIAL_SIZE,
-    packet::{FixedLengthConnectionIdParser, PartialDecode},
     shared::{ConnectionEvent, ConnectionEventInner, DatagramConnectionEvent},
 };
 
@@ -139,7 +139,7 @@ fn closed_with_input_waiting(
     let held = gather_from_the_peer(pair, server_ch, count);
     pair.client.connections.get_mut(&client_ch).unwrap().close(
         pair.time,
-        VarInt(42),
+        VarInt::from_u32(42),
         Bytes::from_static(b"done"),
     );
     pair.drive_client();
@@ -200,7 +200,7 @@ fn a_closing_server_does_not_answer_an_address_it_has_not_validated() {
 
     pair.server.connections.get_mut(&server_ch).unwrap().close(
         pair.time,
-        VarInt(42),
+        VarInt::from_u32(42),
         Bytes::from_static(b"done"),
     );
     pair.drive_server();
@@ -247,7 +247,7 @@ fn a_pending_close_is_sent_on_the_next_pass() {
     // Closed, and not yet driven, so the close is still waiting to be encoded.
     pair.client.connections.get_mut(&client_ch).unwrap().close(
         pair.time,
-        VarInt(42),
+        VarInt::from_u32(42),
         Bytes::from_static(b"done"),
     );
 
@@ -258,12 +258,8 @@ fn a_pending_close_is_sent_on_the_next_pass() {
     pair.drive_server();
     match pair.server_conn_mut(server_ch).poll() {
         Some(Event::ConnectionLost {
-            reason:
-                ConnectionError::ApplicationClosed(ApplicationClose {
-                    error_code: VarInt(42),
-                    ..
-                }),
-        }) => {}
+            reason: ConnectionError::ApplicationClosed(ApplicationClose { error_code, .. }),
+        }) if error_code == VarInt::from_u32(42) => {}
         other => panic!("the peer received the close, not {other:?}"),
     }
 }
@@ -323,7 +319,7 @@ fn the_close_deadline_is_fixed_and_expires() {
         release_one(&mut pair, &mut held, None);
         pair.client.connections.get_mut(&client_ch).unwrap().close(
             now,
-            VarInt(7),
+            VarInt::from_u32(7),
             Bytes::from_static(b"again"),
         );
         assert_eq!(
@@ -399,7 +395,7 @@ fn a_peer_close_while_a_local_close_waits_ends_the_answers() {
     // The peer closes first, and its close is held back.
     pair.server.connections.get_mut(&server_ch).unwrap().close(
         pair.time,
-        VarInt(9),
+        VarInt::from_u32(9),
         Bytes::from_static(b"peer"),
     );
     pair.drive_server();
@@ -409,7 +405,7 @@ fn a_peer_close_while_a_local_close_waits_ends_the_answers() {
     // This side closes too, and does not get to send it before the peer's close arrives.
     pair.client.connections.get_mut(&client_ch).unwrap().close(
         pair.time,
-        VarInt(42),
+        VarInt::from_u32(42),
         Bytes::from_static(b"done"),
     );
     release_one(&mut pair, &mut peer_close, None);
@@ -533,7 +529,7 @@ fn a_close_before_the_handshake_is_confirmed_reaches_every_space() {
 
     pair.client.connections.get_mut(&client_ch).unwrap().close(
         pair.time,
-        VarInt(42),
+        VarInt::from_u32(42),
         Bytes::from_static(b"done"),
     );
     let spaces = pair.client_conn_mut(client_ch).spaces_with_close_keys();
@@ -602,7 +598,7 @@ fn the_close_cursor_follows_what_was_written() {
 
     pair.client.connections.get_mut(&client_ch).unwrap().close(
         pair.time,
-        VarInt(42),
+        VarInt::from_u32(42),
         Bytes::from_static(b"done"),
     );
 
@@ -679,7 +675,7 @@ fn an_initial_close_is_padded() {
 
     pair.client.connections.get_mut(&client_ch).unwrap().close(
         pair.time,
-        VarInt(42),
+        VarInt::from_u32(42),
         Bytes::from_static(b"done"),
     );
     let before = pair.server.inbound.len();
@@ -720,7 +716,7 @@ fn a_draining_endpoint_answers_with_one_packet() {
 
     pair.client.connections.get_mut(&client_ch).unwrap().close(
         pair.time,
-        VarInt(42),
+        VarInt::from_u32(42),
         Bytes::from_static(b"done"),
     );
     pair.drive_client();
@@ -769,7 +765,7 @@ fn a_pending_server_close_survives_input_from_elsewhere() {
     // Closed, and not yet driven, so the close is still waiting to be encoded.
     pair.server.connections.get_mut(&server_ch).unwrap().close(
         pair.time,
-        VarInt(42),
+        VarInt::from_u32(42),
         Bytes::from_static(b"done"),
     );
 
@@ -785,12 +781,8 @@ fn a_pending_server_close_survives_input_from_elsewhere() {
     pair.drive_client();
     match pair.client_conn_mut(client_ch).poll() {
         Some(Event::ConnectionLost {
-            reason:
-                ConnectionError::ApplicationClosed(ApplicationClose {
-                    error_code: VarInt(42),
-                    ..
-                }),
-        }) => {}
+            reason: ConnectionError::ApplicationClosed(ApplicationClose { error_code, .. }),
+        }) if error_code == VarInt::from_u32(42) => {}
         other => panic!("the peer received the close, not {other:?}"),
     }
 }
@@ -811,7 +803,7 @@ fn the_amplification_bound_holds_on_a_new_path() {
     // Something worth sending, larger than the credit.
     pair.server.connections.get_mut(&server_ch).unwrap().close(
         pair.time,
-        VarInt(42),
+        VarInt::from_u32(42),
         Bytes::from(vec![b'x'; 1000]),
     );
     let sent = drive_the_server_towards_elsewhere(&mut pair);
@@ -931,7 +923,7 @@ fn a_close_within_the_credit_goes_out_on_a_new_path() {
     // A short reason: the whole close fits in what one small packet earned.
     pair.server.connections.get_mut(&server_ch).unwrap().close(
         pair.time,
-        VarInt(42),
+        VarInt::from_u32(42),
         Bytes::from_static(b"done"),
     );
     let sent = drive_the_server_towards_elsewhere(&mut pair);
@@ -975,7 +967,7 @@ fn nothing_more_goes_out_once_the_credit_on_a_new_path_is_spent() {
     // A close now has nothing left to go out in, and nothing about it moves while it waits.
     pair.server.connections.get_mut(&server_ch).unwrap().close(
         pair.time,
-        VarInt(42),
+        VarInt::from_u32(42),
         Bytes::from_static(b"done"),
     );
     let cursor = pair.server_conn_mut(server_ch).close_due_from();
@@ -1121,7 +1113,7 @@ fn the_closing_period_can_be_abandoned_once_the_close_went_out() {
     assert!(!pair.client_conn_mut(client_ch).abandon_close(now));
 
     pair.client_conn_mut(client_ch)
-        .close(now, VarInt(7), Bytes::from_static(b"leaving"));
+        .close(now, VarInt::from_u32(7), Bytes::from_static(b"leaving"));
     assert!(
         !pair.client_conn_mut(client_ch).close_announced(),
         "closed, but the close has not gone out yet"
@@ -1156,7 +1148,8 @@ fn the_closing_period_can_be_abandoned_once_the_close_went_out() {
         }
     }
     match told {
-        Some(ConnectionError::ApplicationClosed(close)) if close.error_code == VarInt(7) => {}
+        Some(ConnectionError::ApplicationClosed(close))
+            if close.error_code == VarInt::from_u32(7) => {}
         other => panic!("the peer learns of the close: {other:?}"),
     }
     // A draining connection was told by its peer, so it may leave too.

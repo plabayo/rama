@@ -82,7 +82,7 @@ fn consuming_an_owned_event_preserves_its_allocation() {
 
 #[test]
 fn version_lists_borrow_either_representation_and_serialize_identically() {
-    let native = [1, 0x6b3343cf];
+    let native = [rama_quic_proto::Version::V1, rama_quic_proto::Version::V2];
     let network = [[0, 0, 0, 1], [0x6b, 0x33, 0x43, 0xcf]];
     let fields: EventFieldsView<'_> =
         NegotiationEventView::VersionInformation(VersionInformationView {
@@ -114,7 +114,7 @@ fn version_lists_borrow_either_representation_and_serialize_identically() {
 #[test]
 fn owned_version_lists_count_spare_capacity_and_move_it() {
     let mut native = Vec::with_capacity(13);
-    native.push(1);
+    native.push(rama_quic_proto::Version::V1);
     let mut network = Vec::with_capacity(17);
     network.push([0, 0, 0, 1]);
     let expected = (native.capacity() + network.capacity()) * 4;

@@ -12,7 +12,7 @@
 use std::net::SocketAddr;
 
 use rama::{
-    quic::{ConnectionError, Endpoint, VarInt},
+    quic::{ConnectionError, Endpoint, proto::VarInt},
     utils::octets,
 };
 

@@ -4066,6 +4066,7 @@ dependencies = [
  "rama-pac",
  "rama-proxy",
  "rama-quic",
+ "rama-quic-proto",
  "rama-socks5",
  "rama-tcp",
  "rama-tls",
@@ -4300,6 +4301,7 @@ dependencies = [
  "rama-http-core",
  "rama-js",
  "rama-quic",
+ "rama-quic-proto",
  "serde_json",
  "tokio",
 ]
@@ -4771,6 +4773,7 @@ dependencies = [
  "rama-core",
  "rama-crypto",
  "rama-net",
+ "rama-quic-proto",
  "rama-tls",
  "rama-tls-boring",
  "rama-tls-rustls",
@@ -4786,6 +4789,19 @@ dependencies = [
  "tokio",
  "tracing-subscriber",
  "zeroize",
+]
+
+[[package]]
+name = "rama-quic-proto"
+version = "0.5.0"
+dependencies = [
+ "arbitrary",
+ "rama-core",
+ "rama-tls",
+ "rama-utils",
+ "rand 0.10.2",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

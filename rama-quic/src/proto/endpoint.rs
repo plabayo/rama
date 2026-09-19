@@ -20,26 +20,36 @@ use rand::{
 use rustc_hash::FxHashMap;
 use slab::Slab;
 
+use rama_tls::{
+    ExtensionId,
+    client::{ClientHelloExtension, ClientHelloHandshakePrefix, parse_client_hello_message_prefix},
+};
+
 use crate::proto::{
-    Duration, INITIAL_MTU, Instant, MAX_CID_SIZE, MIN_INITIAL_SIZE, RESET_TOKEN_SIZE, ResetToken,
-    Side, Transmit, TransportConfig, TransportError,
+    Duration, INITIAL_MTU, Instant, MIN_INITIAL_SIZE, Transmit, TransportConfig,
     cid_generator::ConnectionIdGenerator,
     cid_queue::{CidQueue, RemCid},
-    coding::BufMutExt,
     config::{ClientConfig, EndpointConfig, ServerConfig},
     connection::{Connection, ConnectionError, SideArgs},
     crypto::{self, Keys},
+    shared::{
+        ConnectionEvent, ConnectionEventInner, DatagramConnectionEvent, EndpointEvent,
+        EndpointEventInner, IssuedCid,
+    },
+    token::{IncomingToken, Token, TokenPayload, reset_token},
+    transport_parameters::{self},
+};
+use rama_quic_proto::{
+    ConnectionId, EcnCodepoint, MAX_CID_SIZE, RESET_TOKEN_SIZE, ResetToken, Side, TransportError,
+    Version,
+    coding::BufMutExt,
     frame,
     packet::{
         FixedLengthConnectionIdParser, Header, InitialHeader, InitialPacket, PacketDecodeError,
         PacketNumber, PartialDecode, ProtectedInitialHeader,
     },
-    shared::{
-        ConnectionEvent, ConnectionEventInner, ConnectionId, DatagramConnectionEvent, EcnCodepoint,
-        EndpointEvent, EndpointEventInner, IssuedCid,
-    },
-    token::{IncomingToken, Token, TokenPayload},
     transport_parameters::{PreferredAddress, TransportParameters},
+    version::WireVersion,
 };
 
 /// The main entry point to the library
@@ -306,11 +316,13 @@ impl Endpoint {
                 }
                 .encode(buf);
                 // Grease with a reserved version
-                buf.write::<u32>(match version {
-                    0x0a1a_2a3a => 0x0a1a_2a4a,
-                    _ => 0x0a1a_2a3a,
-                });
-                for &version in &self.config.supported_versions {
+                buf.write(Version::grease(version));
+                let offered = self
+                    .server_config
+                    .as_ref()
+                    .map(|config| config.versions.offered(&self.config.supported_versions))
+                    .unwrap_or(&self.config.supported_versions);
+                for &version in offered {
                     buf.write(version);
                 }
                 return Some(DatagramEvent::Response(Transmit {
@@ -439,7 +451,7 @@ impl Endpoint {
         buf.resize(padding_len, 0);
         self.rng.fill_bytes(&mut buf[0..padding_len]);
         buf[0] = 0b0100_0000 | (buf[0] >> 2);
-        buf.extend_from_slice(&ResetToken::new(&self.config.reset_key, dst_cid));
+        buf.extend_from_slice(&reset_token(&self.config.reset_key, dst_cid));
 
         debug_assert!(buf.len() < inciting_dgram_len);
 
@@ -467,16 +479,29 @@ impl Endpoint {
         if remote.port() == 0 || remote.ip().is_unspecified() {
             return Err(ConnectError::InvalidRemoteAddress(remote));
         }
-        if !self.config.supported_versions.contains(&config.version) {
+        // Every version the policy can end up in must be one this endpoint decodes.
+        if config
+            .versions
+            .all_versions()
+            .any(|version| !self.config.supported_versions.contains(&version))
+        {
             return Err(ConnectError::UnsupportedVersion);
         }
+        // A held ticket resumes only its own version (RFC 9369 §5); a policy that follows
+        // tickets starts there. A restart after Version Negotiation keeps what it selected.
+        let mut config = config;
+        if config.negotiation_offer.is_none() {
+            let ticket = config.crypto.resumable_version(server_name);
+            config.versions = config.versions.for_ticket(ticket);
+        }
+        let version = config.versions.original();
 
         let remote_id = (config.initial_dst_cid_provider)();
         trace!(initial_dcid = %remote_id);
 
         let ch = ConnectionHandle(self.connections.vacant_key());
         let loc_cid = self.new_cid(ch);
-        let params = TransportParameters::new(
+        let mut params = transport_parameters::new(
             &config.transport,
             &self.config,
             self.local_cid_generator.as_ref(),
@@ -484,10 +509,8 @@ impl Endpoint {
             None,
             &mut self.rng,
         );
-        let tls = match config
-            .crypto
-            .start_session(config.version, server_name, &params)
-        {
+        params.version_information = Some(config.versions.information(Version::grease(version)));
+        let tls = match config.crypto.start_session(version, server_name, &params) {
             Ok(tls) => tls,
             Err(error) => {
                 self.index.connection_ids.remove(&loc_cid);
@@ -498,7 +521,7 @@ impl Endpoint {
         let conn = self
             .add_connection(
                 ch,
-                config.version,
+                version,
                 remote_id,
                 loc_cid,
                 remote_id,
@@ -513,6 +536,9 @@ impl Endpoint {
                     token_store: config.token_store,
                     server_name: server_name.into(),
                     preferred_address_policy: config.preferred_address_policy,
+                    versions: config.versions,
+                    negotiation_offer: config.negotiation_offer,
+                    time_source: config.time_source,
                 },
             )
             .map_err(|error| {
@@ -539,7 +565,7 @@ impl Endpoint {
             ids.push(IssuedCid {
                 sequence,
                 id,
-                reset_token: ResetToken::new(&self.config.reset_key, id),
+                reset_token: reset_token(&self.config.reset_key, id),
             });
         }
         ConnectionEvent(ConnectionEventInner::NewIdentifiers(ids, now))
@@ -597,12 +623,15 @@ impl Endpoint {
             return None;
         }
 
-        let crypto = match server_config.crypto.initial_keys(header.version, dst_cid) {
+        let crypto = match server_config
+            .crypto
+            .initial_keys(header.version.version(), dst_cid)
+        {
             Ok(keys) => keys,
             Err(error) => {
                 match error {
                     crypto::InitialKeysError::UnsupportedVersion => debug!(
-                        "ignoring initial packet version {:#x} unsupported by cryptographic layer",
+                        "ignoring initial packet version {} unsupported by cryptographic layer",
                         header.version
                     ),
                     crypto::InitialKeysError::Crypto(error) => {
@@ -626,10 +655,11 @@ impl Endpoint {
                 .map(DatagramEvent::Response);
         }
 
-        let packet = match event
-            .first_decode
-            .finish(crypto.remote.as_ref().map(|keys| keys.header.as_ref()))
-        {
+        let Some(remote) = crypto.remote.as_ref() else {
+            trace!("initial packet has no remote header protection key");
+            return None;
+        };
+        let packet = match event.first_decode.finish_protected(remote.header.as_ref()) {
             Ok(packet) => packet,
             Err(e) => {
                 trace!("unable to decode initial packet: {}", e);
@@ -741,9 +771,10 @@ impl Endpoint {
         let InitialHeader {
             src_cid,
             dst_cid,
-            version,
+            version: wire_version,
             ..
         } = incoming.packet.header;
+        let version = wire_version.version();
         if server_config
             .transport
             .max_idle_timeout
@@ -765,7 +796,7 @@ impl Endpoint {
             return Err(AcceptError {
                 cause: ConnectionError::CidsExhausted,
                 response: self.initial_close(
-                    version,
+                    wire_version,
                     incoming.addresses,
                     &incoming.crypto,
                     &src_cid,
@@ -792,9 +823,38 @@ impl Endpoint {
             });
         };
 
+        // RFC 9368 §2.3: a server that prefers another compatible version needs the client's
+        // offer, which is in the ClientHello. It is looked for in what has arrived so far; a
+        // ClientHello still incomplete leaves the connection in the client's version.
+        let negotiated = if server_config.crypto.supports_compatible_negotiation()
+            && server_config.versions.may_switch()
+        {
+            match self.peek_client_hello(
+                version,
+                &incoming.crypto,
+                &incoming.packet.payload,
+                &incoming_buffer,
+            ) {
+                // A ticket belongs to the version the client initiated in, and a ticket this
+                // connection issues would belong to the negotiated one (RFC 9369 §5); no TLS
+                // stack serves both from one session, so a resuming client keeps its version.
+                Some(offer) if !offer.resuming => server_config.versions.negotiate(
+                    version,
+                    Some(&offer.available),
+                    &self.config.supported_versions,
+                ),
+                _ => version,
+            }
+        } else {
+            version
+        };
+        if negotiated != version {
+            trace!(from = %version, to = %negotiated, "compatible version negotiation");
+        }
+
         let ch = ConnectionHandle(self.connections.vacant_key());
         let loc_cid = self.new_cid(ch);
-        let mut params = TransportParameters::new(
+        let mut params = transport_parameters::new(
             &server_config.transport,
             &self.config,
             self.local_cid_generator.as_ref(),
@@ -802,9 +862,14 @@ impl Endpoint {
             Some(&server_config),
             &mut self.rng,
         );
-        params.stateless_reset_token = Some(ResetToken::new(&self.config.reset_key, loc_cid));
+        params.stateless_reset_token = Some(reset_token(&self.config.reset_key, loc_cid));
         params.original_dst_cid = Some(incoming.token.orig_dst_cid);
         params.retry_src_cid = incoming.token.retry_src_cid;
+        params.version_information = Some(server_config.versions.information(
+            negotiated,
+            &self.config.supported_versions,
+            Version::grease(negotiated),
+        ));
         let mut pref_addr_cid = None;
         // A preferred address needs an identifier of its own (RFC 9000 §5.1.1), so an endpoint
         // whose connection IDs are zero length keeps its clients where they are.
@@ -815,11 +880,17 @@ impl Endpoint {
                 address_v4: server_config.preferred_address_v4,
                 address_v6: server_config.preferred_address_v6,
                 connection_id: cid,
-                stateless_reset_token: ResetToken::new(&self.config.reset_key, cid),
+                stateless_reset_token: reset_token(&self.config.reset_key, cid),
             });
         }
 
-        let tls = match server_config.crypto.clone().start_session(version, &params) {
+        let crypto_config = server_config.crypto.clone();
+        let tls = if negotiated == version {
+            crypto_config.start_session(version, &params)
+        } else {
+            crypto_config.start_negotiated_session(version, negotiated, &params)
+        };
+        let tls = match tls {
             Ok(tls) => tls,
             Err(error) => {
                 self.index.connection_ids.remove(&loc_cid);
@@ -828,7 +899,7 @@ impl Endpoint {
                 }
                 self.index.remove_initial(dst_cid);
                 let response = self.initial_close(
-                    version,
+                    wire_version,
                     incoming.addresses,
                     &incoming.crypto,
                     &src_cid,
@@ -845,7 +916,7 @@ impl Endpoint {
         let mut conn = self
             .add_connection(
                 ch,
-                version,
+                negotiated,
                 dst_cid,
                 loc_cid,
                 src_cid,
@@ -858,6 +929,7 @@ impl Endpoint {
                     pref_addr_cid,
                     path_validated: remote_address_validated,
                     orig_dst_cid: incoming.token.orig_dst_cid,
+                    original_version: version,
                 },
             )
             .map_err(|error| {
@@ -867,7 +939,7 @@ impl Endpoint {
                 }
                 self.index.remove_initial(dst_cid);
                 let response = self.initial_close(
-                    version,
+                    wire_version,
                     incoming.addresses,
                     &incoming.crypto,
                     &src_cid,
@@ -905,7 +977,7 @@ impl Endpoint {
                 self.handle_event(ch, EndpointEvent(EndpointEventInner::Drained));
                 let response = match e {
                     ConnectionError::TransportError(ref e) => self.initial_close(
-                        version,
+                        wire_version,
                         incoming.addresses,
                         &incoming.crypto,
                         &src_cid,
@@ -917,6 +989,110 @@ impl Endpoint {
                 Err(AcceptError { cause: e, response })
             }
         }
+    }
+
+    /// What the client's ClientHello says about versions, when the whole ClientHello has
+    /// arrived in the first packet and what was buffered behind it (RFC 9368 §2.3).
+    fn peek_client_hello(
+        &self,
+        version: Version,
+        crypto: &Keys,
+        first_payload: &BytesMut,
+        buffered: &IncomingBuffer,
+    ) -> Option<ClientOffer> {
+        /// A ClientHello larger than this is not looked at; the connection stays in the
+        /// client's version.
+        const LIMIT: usize = 16 * 1024;
+
+        let keys = crypto.remote.as_ref()?;
+        let mut chunks: Vec<(u64, Bytes)> = Vec::new();
+        let mut collect = |payload: Bytes| {
+            if let Ok(frames) = frame::Iter::new(payload) {
+                for frame in frames.flatten() {
+                    if let frame::Frame::Crypto(frame::Crypto { offset, data }) = frame {
+                        chunks.push((offset, data));
+                    }
+                }
+            }
+        };
+        collect(first_payload.clone().freeze());
+
+        // Later Initial packets are decrypted on copies; the buffered events themselves are
+        // delivered to the connection untouched once it exists.
+        let mut later: Vec<BytesMut> = Vec::new();
+        for event in &buffered.datagrams {
+            later.push(BytesMut::from(event.first_decode.data()));
+            if let Some(rest) = &event.remaining {
+                later.push(rest.clone());
+            }
+        }
+        let parser = FixedLengthConnectionIdParser::new(self.local_cid_generator.cid_len());
+        for mut bytes in later {
+            loop {
+                let Ok((decode, rest)) =
+                    PartialDecode::new(bytes, &parser, &[version], self.config.grease_quic_bit)
+                else {
+                    break;
+                };
+                if decode.is_initial()
+                    && let Ok(mut packet) = decode.finish_protected(&*keys.header)
+                    && let Some(number) = packet.header.number()
+                    && keys
+                        .packet
+                        .decrypt(number.expand(0), &packet.header_data, &mut packet.payload)
+                        .is_ok()
+                {
+                    collect(packet.payload.freeze());
+                }
+                match rest {
+                    Some(rest) => bytes = rest,
+                    None => break,
+                }
+            }
+        }
+
+        // Reassemble the start of the CRYPTO stream: the ClientHello is one handshake message
+        // with a one-byte type and three-byte length.
+        chunks.sort_by_key(|(offset, _)| *offset);
+        let mut stream: Vec<u8> = Vec::new();
+        for (offset, data) in chunks {
+            let offset = usize::try_from(offset).ok()?;
+            if offset > stream.len() {
+                return None;
+            }
+            let fresh = data.get(stream.len() - offset..)?;
+            if stream.len() + fresh.len() > LIMIT {
+                return None;
+            }
+            stream.extend_from_slice(fresh);
+        }
+        // The CRYPTO stream carries a bare handshake message with no TLS record layer.
+        let ClientHelloHandshakePrefix::Complete(hello) =
+            parse_client_hello_message_prefix(&stream)
+        else {
+            return None;
+        };
+        let resuming = hello
+            .extensions()
+            .iter()
+            .any(|ext| ext.id() == ExtensionId::PRE_SHARED_KEY);
+        let params = hello.extensions().iter().find_map(|ext| match ext {
+            ClientHelloExtension::Opaque { id, data }
+                if *id == ExtensionId::QUIC_TRANSPORT_PARAMETERS =>
+            {
+                Some(data)
+            }
+            _ => None,
+        })?;
+        let available = TransportParameters::read(Side::Server, &mut &params[..])
+            .ok()?
+            .version_information?
+            .available()
+            .to_vec();
+        Some(ClientOffer {
+            available,
+            resuming,
+        })
     }
 
     /// Check if we should refuse a connection attempt regardless of the packet's contents
@@ -981,6 +1157,7 @@ impl Endpoint {
             address: incoming.addresses.remote,
             orig_dst_cid: incoming.packet.header.dst_cid,
             issued: server_config.time_source.now(),
+            version: incoming.packet.header.version.version(),
         };
         let token = match Token::new(payload, &mut self.rng).encode(&*server_config.token_key) {
             Ok(token) => token,
@@ -1008,7 +1185,7 @@ impl Endpoint {
         header.encode(buf);
         buf.put_slice(&token);
         let tag = match server_config.crypto.retry_tag(
-            incoming.packet.header.version,
+            incoming.packet.header.version.version(),
             &incoming.packet.header.dst_cid,
             &buf[original_len..],
         ) {
@@ -1129,7 +1306,7 @@ impl Endpoint {
     fn add_connection(
         &mut self,
         ch: ConnectionHandle,
-        version: u32,
+        version: Version,
         init_cid: ConnectionId,
         loc_cid: ConnectionId,
         rem_cid: ConnectionId,
@@ -1189,7 +1366,7 @@ impl Endpoint {
 
     fn initial_close(
         &mut self,
-        version: u32,
+        version: WireVersion,
         addresses: FourTuple,
         crypto: &Keys,
         remote_id: &ConnectionId,
@@ -1493,6 +1670,14 @@ struct IncomingBuffer {
     live: Arc<AtomicBool>,
     datagrams: Vec<DatagramConnectionEvent>,
     total_bytes: u64,
+}
+
+/// What a client's first flight offers for version negotiation.
+struct ClientOffer {
+    /// The versions its first flight is compatible with.
+    available: Vec<Version>,
+    /// Whether it presents a session ticket, which binds it to the version it started in.
+    resuming: bool,
 }
 
 /// Part of protocol state incoming datagrams can be routed to

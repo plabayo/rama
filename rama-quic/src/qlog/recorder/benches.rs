@@ -32,18 +32,17 @@ use rama_utils::octets;
 use tokio::{io::AsyncWrite, sync::Notify};
 
 use super::{History, QlogRecorder, RecorderStats};
+use rama_quic_proto::ConnectionId;
+
 use crate::proto::ConnectionQlog;
-use crate::{
-    ConnectionId,
-    qlog::{
-        EncodedWriter, HistoryConfig, JsonSeqEncoder, QlogConfig, QlogEvent, QlogEventView,
-        QlogOutput, QlogSink, QueueLimits, ReferenceJsonEncoder, TraceInfo,
-        event::{
-            EventFields, EventFieldsView, EventView, NegotiationEvent, NegotiationEventView,
-            PacketEvent,
-            negotiation::{AlpnIdentifier, AlpnIdentifierView, HexView},
-            packet::{Packet, PacketHeader, PacketType, RawInfo},
-        },
+use crate::qlog::{
+    EncodedWriter, HistoryConfig, JsonSeqEncoder, QlogConfig, QlogEvent, QlogEventView, QlogOutput,
+    QlogSink, QueueLimits, ReferenceJsonEncoder, TraceInfo,
+    event::{
+        EventFields, EventFieldsView, EventView, NegotiationEvent, NegotiationEventView,
+        PacketEvent,
+        negotiation::{AlpnIdentifier, AlpnIdentifierView, HexView},
+        packet::{Packet, PacketHeader, PacketType, RawInfo},
     },
 };
 

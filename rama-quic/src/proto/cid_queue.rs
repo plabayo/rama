@@ -1,7 +1,6 @@
+use rama_quic_proto::{ConnectionId, ResetToken, frame::NewConnectionId};
 use std::net::SocketAddr;
 use std::ops::Range;
-
-use crate::proto::{ConnectionId, ResetToken, frame::NewConnectionId};
 
 /// A remote connection ID with its sequence number and, unless it is the initial one before the
 /// peer's transport parameters arrived, its stateless reset token.
@@ -949,7 +948,7 @@ mod tests {
         NewConnectionId {
             sequence,
             id: ConnectionId::new(&[0xAB; 8]),
-            reset_token: ResetToken::from([0xCD; crate::proto::RESET_TOKEN_SIZE]),
+            reset_token: ResetToken::from([0xCD; rama_quic_proto::RESET_TOKEN_SIZE]),
             retire_prior_to,
         }
     }
@@ -974,7 +973,7 @@ mod tests {
 
     /// A token distinguishable per identifier, so a test can say which one would reset us.
     fn token(n: u8) -> ResetToken {
-        ResetToken::from([n; crate::proto::RESET_TOKEN_SIZE])
+        ResetToken::from([n; rama_quic_proto::RESET_TOKEN_SIZE])
     }
 
     /// A `NEW_CONNECTION_ID` whose token names its sequence number.

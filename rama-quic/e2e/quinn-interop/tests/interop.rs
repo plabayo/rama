@@ -6,7 +6,7 @@ mod common;
 use std::{sync::Arc, time::Duration};
 
 use common::*;
-use rama::quic::{ConnectionError, Endpoint, FrameType};
+use rama::quic::{ConnectionError, Endpoint, proto::frame::FrameType};
 use rustls::AlertDescription;
 #[cfg(not(feature = "boring"))]
 use rustls::CertificateError;
@@ -91,7 +91,7 @@ async fn a_rama_client_refuses_a_server_it_does_not_trust() {
     )
     .await
     .expect("the identity it trusts is accepted");
-    accepted.close(0u32.into(), b"done");
+    accepted.close(0u32, b"done");
 
     step("rama's shutdown", client.wait_idle()).await;
     server.close(0u32.into(), b"done");

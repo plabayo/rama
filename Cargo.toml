@@ -65,6 +65,7 @@ members = [
     "rama-pac",
     "rama-proxy",
     "rama-quic",
+    "rama-quic-proto",
     "rama-socks5",
     "rama-tcp",
     "rama-tls",
@@ -214,6 +215,7 @@ rama-net-apple-xpc = { version = "0.5.0", path = "./rama-net-apple-xpc", default
 rama-pac = { version = "0.5.0", path = "./rama-pac", default-features = false }
 rama-proxy = { version = "0.5.0", path = "./rama-proxy", default-features = false }
 rama-quic = { version = "0.5.0", path = "./rama-quic", default-features = false }
+rama-quic-proto = { version = "0.5.0", path = "./rama-quic-proto", default-features = false }
 rama-socks5 = { version = "0.5.0", path = "./rama-socks5", default-features = false }
 rama-tcp = { version = "0.5.0", path = "./rama-tcp", default-features = false }
 rama-tls = { version = "0.5.0", path = "./rama-tls", default-features = false }
@@ -475,7 +477,7 @@ tcp = ["std", "net", "dep:rama-tcp"]
 udp = ["std", "net", "dep:rama-udp"]
 # QUIC v1 transport over `udp`, with backend-neutral TLS types. Select a built-in
 # TLS/crypto backend explicitly, or supply an external provider.
-quic = ["std", "udp", "tls", "dep:rama-quic"]
+quic = ["std", "udp", "tls", "dep:rama-quic", "dep:rama-quic-proto"]
 ws = ["std", "dep:rama-ws", "http"]
 js = ["std", "dep:rama-js"]
 js-disk-cache = ["js", "rama-js/disk-cache", "rama-pac?/js-disk-cache"]
@@ -595,6 +597,7 @@ rama-net-apple-xpc = { workspace = true, optional = true }
 rama-pac = { workspace = true, optional = true }
 rama-proxy = { workspace = true, optional = true }
 rama-quic = { workspace = true, optional = true }
+rama-quic-proto = { workspace = true, optional = true }
 rama-socks5 = { workspace = true, optional = true }
 rama-tcp = { workspace = true, optional = true }
 rama-tls = { workspace = true, optional = true }

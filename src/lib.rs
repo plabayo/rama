@@ -51,10 +51,22 @@ pub use ::rama_udp as udp;
 #[doc(inline)]
 pub use ::rama_unix as unix;
 
-#[cfg(all(feature = "std", feature = "quic"))]
-#[cfg_attr(docsrs, doc(cfg(all(feature = "std", feature = "quic"))))]
-#[doc(inline)]
-pub use ::rama_quic as quic;
+/// QUIC: the deterministic wire-protocol vocabulary and the async engine built on it.
+///
+/// [`proto`](quic::proto) is [`rama-quic-proto`](::rama_quic_proto) — the packet and frame codec,
+/// version vocabulary and typed wire profiles, usable without the engine. The engine
+/// ([`rama-quic`](::rama_quic)) is re-exported at this module's root.
+#[cfg(feature = "quic")]
+#[cfg_attr(docsrs, doc(cfg(feature = "quic")))]
+pub mod quic {
+    #[cfg(feature = "std")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+    #[doc(inline)]
+    pub use ::rama_quic::*;
+
+    #[doc(inline)]
+    pub use ::rama_quic_proto as proto;
+}
 
 #[cfg(feature = "std")]
 pub mod telemetry;

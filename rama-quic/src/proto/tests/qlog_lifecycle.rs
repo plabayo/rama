@@ -1,5 +1,6 @@
 use super::qlog::Capture;
 use super::*;
+use rama_quic_proto::VarInt;
 
 impl Capture {
     fn assert_handshake_starts_on_first_handshake_packet(&self) {
@@ -91,9 +92,12 @@ fn qlog_lifecycle_handshake_and_application_close() {
 
     let now = pair.time;
     pair.client_conn_mut(client_ch)
-        .close(now, VarInt(42), Bytes::from_static(b"done"));
-    pair.client_conn_mut(client_ch)
-        .close(now, VarInt(99), Bytes::from_static(b"duplicate"));
+        .close(now, VarInt::from_u32(42), Bytes::from_static(b"done"));
+    pair.client_conn_mut(client_ch).close(
+        now,
+        VarInt::from_u32(99),
+        Bytes::from_static(b"duplicate"),
+    );
     pair.drive();
     pair.time += Duration::from_secs(10);
     pair.drive();

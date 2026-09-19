@@ -86,7 +86,7 @@ async fn run() {
                         .await
                         .expect("the stream completes");
                     let seen = check(&data);
-                    conn.close(0u32.into(), b"received");
+                    conn.close(0u32, b"received");
                     seen
                 }));
             }

@@ -341,7 +341,7 @@ async fn exchange(
     step("the peer has it", stream.stopped())
         .await
         .expect("the peer did not reset it");
-    conn.close(0u32.into(), b"done");
+    conn.close(0u32, b"done");
     step("the connection ends", conn.closed()).await;
 }
 
@@ -417,7 +417,7 @@ async fn both_ends_group_a_retried_connection_the_same_way() {
         "both ends name the connection by the destination of the first Initial"
     );
 
-    conn.close(0u32.into(), b"done");
+    conn.close(0u32, b"done");
     step("the connection ends", conn.closed()).await;
     step("rama's shutdown", client.wait_idle()).await;
     served.join("the rama peer").await;

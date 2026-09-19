@@ -1,13 +1,15 @@
 //! Path observations use only tuples and transitions known to the engine.
 use std::net::SocketAddr;
 
+use rama_quic_proto::ConnectionId;
+
 pub(in crate::proto::connection) use crate::qlog::event::path::MigrationState;
 use crate::qlog::event::{
     EventFieldsView, EventView, Initiator, TupleId,
     path::{PathEvent, TupleAssigned, TupleEndpointInfo},
 };
 
-use crate::proto::{ConnectionId, Instant, TIMER_GRANULARITY, connection::Connection};
+use crate::proto::{Instant, TIMER_GRANULARITY, connection::Connection};
 
 /// Attach a known path, leaving the default handshake tuple implicit.
 pub(in crate::proto::connection) fn with_path<'a>(

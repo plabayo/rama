@@ -10,10 +10,9 @@ use crate::proto::{
         Connection, ConnectionError, paths::Challenge, preferred::PreferredAddressState,
         spaces::PacketNumberFilter, timer::Timer,
     },
-    crypto::{self, PacketKey},
-    packet::SpaceId,
-    shared::ConnectionId,
+    crypto::{self},
 };
+use rama_quic_proto::{ConnectionId, crypto::PacketKey, packet::SpaceId};
 
 #[cfg(test)]
 #[derive(Debug, Clone, Copy)]
@@ -268,16 +267,21 @@ impl Connection {
     ) {
         struct Absent;
         impl PacketKey for Absent {
-            fn encrypt(&self, _: u64, _: &mut [u8], _: usize) -> Result<(), crypto::CryptoError> {
-                Err(crypto::CryptoError)
+            fn encrypt(
+                &self,
+                _: u64,
+                _: &mut [u8],
+                _: usize,
+            ) -> Result<(), rama_quic_proto::crypto::CryptoError> {
+                Err(rama_quic_proto::crypto::CryptoError::new())
             }
             fn decrypt(
                 &self,
                 _: u64,
                 _: &[u8],
                 _: &mut rama_core::bytes::BytesMut,
-            ) -> Result<(), crypto::CryptoError> {
-                Err(crypto::CryptoError)
+            ) -> Result<(), rama_quic_proto::crypto::CryptoError> {
+                Err(rama_quic_proto::crypto::CryptoError::new())
             }
             fn tag_len(&self) -> usize {
                 16

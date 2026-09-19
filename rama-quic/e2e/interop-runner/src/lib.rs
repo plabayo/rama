@@ -50,6 +50,9 @@ pub enum TestCase {
     Transfer,
     Retry,
     MultiConnect,
+    /// The client starts in v1 offering v2 and the server moves the connection to v2
+    /// (RFC 9368 §2.3, RFC 9369).
+    V2,
 }
 
 impl TestCase {
@@ -59,7 +62,17 @@ impl TestCase {
             "transfer" => Some(Self::Transfer),
             "retry" => Some(Self::Retry),
             "multiconnect" => Some(Self::MultiConnect),
+            "v2" => Some(Self::V2),
             _ => None,
+        }
+    }
+
+    /// Whether this build's client can run the case. Offering a compatible version needs a TLS
+    /// backend that changes version mid-handshake, which only Boring does.
+    pub fn client_supported(self) -> bool {
+        match self {
+            Self::V2 => cfg!(feature = "boring"),
+            Self::Handshake | Self::Transfer | Self::Retry | Self::MultiConnect => true,
         }
     }
 }
@@ -90,11 +103,11 @@ pub const SMALL_WINDOWS: &str = "RAMA_INTEROP_SMALL_WINDOWS";
 
 async fn transport(executor: Executor, role: &str) -> Result<Arc<TransportConfig>, BoxError> {
     let mut config =
-        TransportConfig::default().with_max_concurrent_bidi_streams((STREAM_LIMIT as u32).into());
+        TransportConfig::default().with_max_concurrent_bidi_streams(STREAM_LIMIT as u32);
     if std::env::var_os(SMALL_WINDOWS).is_some() {
         config = config
-            .with_stream_receive_window(octets::kib_u32(64).into())
-            .with_receive_window(octets::kib_u32(256).into());
+            .with_stream_receive_window(octets::kib_u32(64))
+            .with_receive_window(octets::kib_u32(256));
     }
     if let Some(directory) = std::env::var_os("QLOGDIR") {
         let directory = Path::new(&directory);
@@ -239,7 +252,6 @@ mod tests {
             "resumption",
             "zerortt",
             "chacha20",
-            "v2",
             "keyupdate",
             "connectionmigration",
             "unknown",
@@ -247,5 +259,6 @@ mod tests {
             assert_eq!(TestCase::parse(value), None);
         }
         assert_eq!(TestCase::parse("retry"), Some(TestCase::Retry));
+        assert_eq!(TestCase::parse("v2"), Some(TestCase::V2));
     }
 }

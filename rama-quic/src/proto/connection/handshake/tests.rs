@@ -1,20 +1,25 @@
-use crate::proto::{Duration, VarInt, connection::handshake::negotiate_max_idle_timeout};
+use crate::proto::{Duration, connection::handshake::negotiate_max_idle_timeout};
+use rama_quic_proto::{VarInt, Version, frame, packet::SpaceId};
 
 #[test]
 fn negotiate_max_idle_timeout_commutative() {
     let test_params = [
         (None, None, None),
-        (None, Some(VarInt(0)), None),
-        (None, Some(VarInt(2)), Some(Duration::from_millis(2))),
-        (Some(VarInt(0)), Some(VarInt(0)), None),
+        (None, Some(VarInt::from_u32(0)), None),
         (
-            Some(VarInt(2)),
-            Some(VarInt(0)),
+            None,
+            Some(VarInt::from_u32(2)),
+            Some(Duration::from_millis(2)),
+        ),
+        (Some(VarInt::from_u32(0)), Some(VarInt::from_u32(0)), None),
+        (
+            Some(VarInt::from_u32(2)),
+            Some(VarInt::from_u32(0)),
             Some(Duration::from_millis(2)),
         ),
         (
-            Some(VarInt(1)),
-            Some(VarInt(4)),
+            Some(VarInt::from_u32(1)),
+            Some(VarInt::from_u32(4)),
             Some(Duration::from_millis(1)),
         ),
     ];
@@ -29,9 +34,6 @@ impl super::Connection {
         &mut self,
         now: crate::proto::Instant,
     ) {
-        use crate::proto::{frame, packet::SpaceId};
-        use rama_core::bytes::Bytes;
-
         self.skip_no_packet_number();
         assert!(self.force_key_update(now));
         self.ping();
@@ -45,15 +47,12 @@ impl super::Connection {
         self.qlog_discard_retired_keys(now);
         assert!(!self.force_key_update(now));
 
+        let mut ranges = rama_quic_proto::range_set::ArrayRangeSet::new();
+        ranges.insert_one(sent);
         self.on_ack_received(
             now + crate::proto::Duration::from_millis(1),
             SpaceId::Data,
-            &frame::Ack {
-                largest: sent,
-                delay: 0,
-                additional: Bytes::from_static(&[0]),
-                ecn: None,
-            },
+            &frame::Ack::from_ranges(0, &ranges, None).unwrap(),
         )
         .unwrap();
         assert!(self.force_key_update(now));
@@ -64,10 +63,15 @@ impl super::Connection {
         now: crate::proto::Instant,
         packet: rama_core::bytes::BytesMut,
     ) {
-        use crate::proto::packet::{FixedLengthConnectionIdParser, PartialDecode, SpaceId};
+        use rama_quic_proto::packet::{FixedLengthConnectionIdParser, PartialDecode, SpaceId};
         assert!(self.spaces[SpaceId::Data].crypto.is_some() || self.zero_rtt_crypto.is_some());
-        let (packet, remaining) =
-            PartialDecode::new(packet, &FixedLengthConnectionIdParser::new(8), &[1], true).unwrap();
+        let (packet, remaining) = PartialDecode::new(
+            packet,
+            &FixedLengthConnectionIdParser::new(8),
+            &[Version::V1],
+            true,
+        )
+        .unwrap();
         assert!(remaining.is_none());
         let failures = self.authentication_failures;
         let authenticated = self.total_authed_packets;

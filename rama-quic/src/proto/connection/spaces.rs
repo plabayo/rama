@@ -11,9 +11,11 @@ use rustc_hash::FxHashSet;
 
 use super::assembler::Assembler;
 use crate::proto::{
-    Dir, Duration, Instant, SocketAddr, StreamId, TransportError, VarInt, cid_queue::CidQueue,
-    connection::StreamsState, crypto::Keys, frame, packet::SpaceId, range_set::ArrayRangeSet,
+    Duration, Instant, SocketAddr, cid_queue::CidQueue, connection::StreamsState, crypto::Keys,
     shared::IssuedCid,
+};
+use rama_quic_proto::{
+    Dir, StreamId, TransportError, VarInt, frame, packet::SpaceId, range_set::ArrayRangeSet,
 };
 
 pub(super) struct PacketSpace {
@@ -287,16 +289,20 @@ impl PacketSpace {
     }
 }
 
-impl Index<SpaceId> for [PacketSpace; 3] {
+/// The three packet-number spaces, indexed by [`SpaceId`]. A local newtype because `SpaceId`
+/// now lives in `rama-quic-proto`, so the trait impls could not target a bare array.
+pub(super) struct PacketSpaces(pub(super) [PacketSpace; 3]);
+
+impl Index<SpaceId> for PacketSpaces {
     type Output = PacketSpace;
     fn index(&self, space: SpaceId) -> &PacketSpace {
-        &self.as_ref()[space as usize]
+        &self.0[space as usize]
     }
 }
 
-impl IndexMut<SpaceId> for [PacketSpace; 3] {
+impl IndexMut<SpaceId> for PacketSpaces {
     fn index_mut(&mut self, space: SpaceId) -> &mut PacketSpace {
-        &mut self.as_mut()[space as usize]
+        &mut self.0[space as usize]
     }
 }
 
@@ -1189,7 +1195,7 @@ mod test {
             .expect_err("a range that wide is a protocol error");
         assert_eq!(
             error.code,
-            crate::proto::TransportErrorCode::CONNECTION_ID_LIMIT_ERROR
+            rama_quic_proto::TransportErrorCode::CONNECTION_ID_LIMIT_ERROR
         );
         assert_eq!(pending.retire_cids, before, "a refusal changes nothing");
         // Neither does one that starts inside what is already queued.
@@ -1264,7 +1270,7 @@ mod test {
             .expect_err("the cap is a protocol error");
         assert_eq!(
             error.code,
-            crate::proto::TransportErrorCode::CONNECTION_ID_LIMIT_ERROR
+            rama_quic_proto::TransportErrorCode::CONNECTION_ID_LIMIT_ERROR
         );
         assert_eq!(
             pending.retire_cids.len() as u64,

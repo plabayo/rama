@@ -1,16 +1,21 @@
-use std::{fmt, net::SocketAddr, ops::Range};
+use std::net::SocketAddr;
+use std::ops::Range;
 
-use rama_core::bytes::{Buf, BufMut, BytesMut};
+use rama_core::bytes::BytesMut;
 
-use crate::proto::{
-    Instant, InvalidCid, MAX_CID_SIZE, ResetToken, coding::BufExt, packet::PartialDecode,
-};
+use rama_quic_proto::{ConnectionId, EcnCodepoint, ResetToken, packet::PartialDecode};
+
+use crate::proto::Instant;
 
 /// Events sent from an Endpoint to a Connection
 #[derive(Debug)]
 pub(crate) struct ConnectionEvent(pub(crate) ConnectionEventInner);
 
 #[derive(Debug)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "`Datagram` is the common receive-path event and carries the datagram inline; boxing it would add a heap allocation for every received datagram"
+)]
 pub(crate) enum ConnectionEventInner {
     /// A datagram has been received for the Connection
     Datagram(DatagramConnectionEvent),
@@ -110,114 +115,6 @@ pub(crate) enum EndpointEventInner {
     /// Stop routing connection ID for this sequence number to the connection
     /// When `bool == true`, a new connection ID will be issued to peer
     RetireConnectionId(Instant, u64, bool),
-}
-
-/// Protocol-level identifier for a connection.
-///
-/// Mainly useful for identifying this connection's packets on the wire with tools like Wireshark.
-#[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub struct ConnectionId {
-    /// length of CID
-    len: u8,
-    /// CID in byte array
-    bytes: [u8; MAX_CID_SIZE],
-}
-
-impl ConnectionId {
-    /// An identifier of these bytes, at most [`MAX_CID_SIZE`] of them.
-    ///
-    /// Fails for anything longer, which QUIC version 1 has no room for (RFC 9000 §17.2). This
-    /// is how a [`ConnectionIdGenerator`](crate::ConnectionIdGenerator) of your own builds
-    /// what it hands back.
-    pub fn try_from_bytes(bytes: &[u8]) -> Result<Self, InvalidCid> {
-        if bytes.len() > MAX_CID_SIZE {
-            return Err(InvalidCid::new());
-        }
-        Ok(Self::new(bytes))
-    }
-
-    /// Construct cid from byte array
-    pub(crate) fn new(bytes: &[u8]) -> Self {
-        debug_assert!(bytes.len() <= MAX_CID_SIZE);
-        let mut res = Self {
-            len: bytes.len() as u8,
-            bytes: [0; MAX_CID_SIZE],
-        };
-        res.bytes[..bytes.len()].copy_from_slice(bytes);
-        res
-    }
-
-    /// Constructs cid by reading `len` bytes from a `Buf`
-    ///
-    /// Callers need to assure that `buf.remaining() >= len`
-    pub(crate) fn from_buf(buf: &mut (impl Buf + ?Sized), len: usize) -> Self {
-        debug_assert!(len <= MAX_CID_SIZE);
-        let mut res = Self {
-            len: len as u8,
-            bytes: [0; MAX_CID_SIZE],
-        };
-        buf.copy_to_slice(&mut res[..len]);
-        res
-    }
-
-    /// Decode from long header format
-    pub(crate) fn decode_long(buf: &mut impl Buf) -> Option<Self> {
-        let len = buf.get::<u8>().ok()? as usize;
-        match len > MAX_CID_SIZE || buf.remaining() < len {
-            false => Some(Self::from_buf(buf, len)),
-            true => None,
-        }
-    }
-
-    /// Encode in long header format
-    pub(crate) fn encode_long(&self, buf: &mut impl BufMut) {
-        buf.put_u8(self.len() as u8);
-        buf.put_slice(self);
-    }
-}
-
-impl ::std::ops::Deref for ConnectionId {
-    type Target = [u8];
-    fn deref(&self) -> &[u8] {
-        &self.bytes[0..self.len as usize]
-    }
-}
-
-impl ::std::ops::DerefMut for ConnectionId {
-    fn deref_mut(&mut self) -> &mut [u8] {
-        &mut self.bytes[0..self.len as usize]
-    }
-}
-
-impl fmt::Debug for ConnectionId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.bytes[0..self.len as usize].fmt(f)
-    }
-}
-
-impl fmt::Display for ConnectionId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        rama_utils::fmt::hex(&self[..]).write_to(f)
-    }
-}
-
-/// Explicit congestion notification codepoint
-#[repr(u8)]
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub enum EcnCodepoint {
-    /// The ECT(0) codepoint, indicating that an endpoint is ECN-capable
-    Ect0 = 0b10,
-    /// The ECT(1) codepoint, indicating that an endpoint is ECN-capable
-    Ect1 = 0b01,
-    /// The CE codepoint, signalling that congestion was experienced
-    Ce = 0b11,
-}
-
-impl EcnCodepoint {
-    /// Returns whether the codepoint is a CE, signalling that congestion was experienced
-    pub(crate) fn is_ce(self) -> bool {
-        matches!(self, Self::Ce)
-    }
 }
 
 #[derive(Debug, Copy, Clone)]

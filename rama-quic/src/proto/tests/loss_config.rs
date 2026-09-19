@@ -1,4 +1,5 @@
 use super::*;
+use rama_quic_proto::Dir;
 
 #[test]
 fn ack_delay_limit_applies_after_handshake_confirmation() {

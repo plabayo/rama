@@ -11,12 +11,11 @@
 #![cfg_attr(test, allow(dead_code))]
 #![expect(clippy::too_many_arguments)]
 
-use std::{fmt, net::SocketAddr, ops};
+use std::net::SocketAddr;
 
-mod cid_queue;
-pub(crate) mod coding;
-mod constant_time;
-mod range_set;
+use rama_quic_proto::{EcnCodepoint, Version};
+
+pub(crate) mod cid_queue;
 #[cfg(test)]
 #[cfg(any(
     feature = "boring",
@@ -24,9 +23,7 @@ mod range_set;
 ))]
 mod tests;
 pub(crate) mod transport_parameters;
-mod varint;
 
-pub use varint::{VarInt, VarIntBoundsExceeded};
 mod bloom_token_log;
 pub use bloom_token_log::BloomTokenLog;
 
@@ -63,17 +60,6 @@ pub(crate) use crate::proto::connection::{Datagrams, StreamResourceUsage, Stream
     )
 ))]
 pub(crate) use crate::proto::endpoint::AcceptError;
-#[cfg(all(
-    test,
-    any(
-        feature = "boring",
-        any(
-            feature = "boring",
-            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
-        )
-    )
-))]
-pub(crate) use crate::proto::frame::Datagram;
 #[cfg(feature = "test-utils")]
 pub(crate) use connection::benchmarks;
 
@@ -92,8 +78,6 @@ pub use config::{KEY_MATERIAL_SIZE, StatelessResetKey};
 
 pub(crate) mod crypto;
 
-mod frame;
-
 /// Whether a datagram carrying a particular connection ID may go to a particular address.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SendPermit {
@@ -106,8 +90,6 @@ pub(crate) enum SendPermit {
     /// of the datagram that has not already left is dropped.
     Obsolete,
 }
-use crate::proto::frame::Frame;
-pub use crate::proto::frame::{ApplicationClose, ConnectionClose, FrameType};
 
 mod endpoint;
 pub use crate::proto::endpoint::ConnectError;
@@ -118,44 +100,32 @@ pub(crate) use crate::proto::endpoint::{
 
 pub use crate::proto::crypto::{ExportKeyingMaterialError, NegotiatedTlsParameters};
 
-mod packet;
-pub use packet::SpaceId;
-
 mod shared;
 pub(crate) use crate::proto::shared::{ConnectionEvent, EndpointEvent};
-pub use crate::proto::shared::{ConnectionId, EcnCodepoint};
-
-mod transport_error;
-pub use crate::proto::transport_error::{Code as TransportErrorCode, Error as TransportError};
 
 pub(crate) mod congestion;
 
-mod cid_generator;
+pub(crate) mod cid_generator;
 pub use crate::proto::cid_generator::{
-    ConnectionIdGenerator, ConnectionIdGeneratorFactory, HashedConnectionIdGenerator, InvalidCid,
+    ConnectionIdGenerator, ConnectionIdGeneratorFactory, HashedConnectionIdGenerator,
     RandomConnectionIdGenerator,
 };
 
 mod token;
-use token::ResetToken;
+// Only the backend-gated endpoint lifecycle tests reach for this through `proto::`; matching their
+// cfg keeps it from being an unused import in a backend-less test build.
 #[cfg(all(
     test,
     any(
         feature = "boring",
-        any(
-            feature = "boring",
-            all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
-        )
+        all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
     )
 ))]
-pub(crate) use token::ResetToken as TestResetToken;
-pub use token::{NoneTokenLog, NoneTokenStore, TokenLog, TokenReuseError, TokenStore};
+pub(crate) use token::reset_token;
+pub use token::{NoneTokenLog, NoneTokenStore, StoredToken, TokenLog, TokenReuseError, TokenStore};
 
 mod token_memory_cache;
 pub use token_memory_cache::TokenMemoryCache;
-
-#[cfg(feature = "arbitrary")]
-use arbitrary::Arbitrary;
 
 pub(crate) use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -163,14 +133,9 @@ pub(crate) use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 pub(crate) mod fuzzing {
     pub use crate::proto::connection::{Retransmits, State as ConnectionState, StreamsState};
     pub use crate::proto::connection::{SendStream, Streams};
-    pub use crate::proto::frame::ResetStream;
-    pub use crate::proto::packet::{
-        ConnectionIdParser, FixedLengthConnectionIdParser, PartialDecode,
-    };
-    pub use crate::proto::transport_parameters::TransportParameters;
     pub use rama_core::bytes::{BufMut, Bytes, BytesMut};
 
-    use crate::proto::{
+    use rama_quic_proto::{
         TransportError,
         frame::{Frame, Iter},
     };
@@ -199,19 +164,6 @@ pub(crate) mod fuzzing {
     #[cfg(feature = "arbitrary")]
     use arbitrary::{Arbitrary, Result, Unstructured};
 
-    #[cfg(feature = "arbitrary")]
-    impl<'arbitrary> Arbitrary<'arbitrary> for TransportParameters {
-        fn arbitrary(u: &mut Unstructured<'arbitrary>) -> Result<Self> {
-            Ok(Self {
-                initial_max_streams_bidi: u.arbitrary()?,
-                initial_max_streams_uni: u.arbitrary()?,
-                ack_delay_exponent: u.arbitrary()?,
-                max_udp_payload_size: u.arbitrary()?,
-                ..Self::default()
-            })
-        }
-    }
-
     #[derive(Debug)]
     pub struct PacketParams {
         pub local_cid_len: usize,
@@ -222,7 +174,7 @@ pub(crate) mod fuzzing {
     #[cfg(feature = "arbitrary")]
     impl<'arbitrary> Arbitrary<'arbitrary> for PacketParams {
         fn arbitrary(u: &mut Unstructured<'arbitrary>) -> Result<Self> {
-            let local_cid_len: usize = u.int_in_range(0..=crate::proto::MAX_CID_SIZE)?;
+            let local_cid_len: usize = u.int_in_range(0..=rama_quic_proto::MAX_CID_SIZE)?;
             let bytes: Vec<u8> = Vec::arbitrary(u)?;
             let mut buf = BytesMut::new();
             buf.put_slice(&bytes[..]);
@@ -235,162 +187,23 @@ pub(crate) mod fuzzing {
     }
 }
 
-/// The QUIC protocol versions advertised and accepted by default: QUIC v1 only.
+/// The QUIC protocol versions accepted by default: version 1 and version 2.
 ///
 /// Draft versions remain decodable for explicit test fixtures but are not offered as
 /// product support.
-pub const DEFAULT_SUPPORTED_VERSIONS: &[u32] = &[0x0000_0001];
+pub(crate) const DEFAULT_SUPPORTED_VERSIONS: &[Version] = &[Version::V1, Version::V2];
 
 /// Pre-standard draft versions 29 through 34, kept only for explicit tests.
 #[cfg(test)]
-pub(crate) const DRAFT_VERSIONS: &[u32] = &[
-    0xff00_001d,
-    0xff00_001e,
-    0xff00_001f,
-    0xff00_0020,
-    0xff00_0021,
-    0xff00_0022,
+pub(crate) const DRAFT_VERSIONS: &[Version] = &[
+    Version::from_u32(0xff00_001d),
+    Version::from_u32(0xff00_001e),
+    Version::from_u32(0xff00_001f),
+    Version::from_u32(0xff00_0020),
+    Version::from_u32(0xff00_0021),
+    Version::from_u32(0xff00_0022),
 ];
 
-/// Whether an endpoint was the initiator of a connection
-#[cfg_attr(feature = "arbitrary", derive(Arbitrary))]
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub enum Side {
-    /// The initiator of a connection
-    Client = 0,
-    /// The acceptor of a connection
-    Server = 1,
-}
-
-impl Side {
-    #[inline]
-    /// Shorthand for `self == Side::Client`
-    pub(crate) fn is_client(self) -> bool {
-        self == Self::Client
-    }
-
-    #[inline]
-    /// Shorthand for `self == Side::Server`
-    pub(crate) fn is_server(self) -> bool {
-        self == Self::Server
-    }
-}
-
-impl ops::Not for Side {
-    type Output = Self;
-    fn not(self) -> Self {
-        match self {
-            Self::Client => Self::Server,
-            Self::Server => Self::Client,
-        }
-    }
-}
-
-/// Whether a stream communicates data in both directions or only from the initiator
-#[cfg_attr(feature = "arbitrary", derive(Arbitrary))]
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub enum Dir {
-    /// Data flows in both directions
-    Bi = 0,
-    /// Data flows only from the stream's initiator
-    Uni = 1,
-}
-
-impl Dir {
-    fn iter() -> impl Iterator<Item = Self> {
-        [Self::Bi, Self::Uni].iter().cloned()
-    }
-}
-
-impl fmt::Display for Dir {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.pad(match *self {
-            Self::Bi => "bidirectional",
-            Self::Uni => "unidirectional",
-        })
-    }
-}
-
-/// Identifier for a stream within a particular connection
-#[cfg_attr(feature = "arbitrary", derive(Arbitrary))]
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub struct StreamId(u64);
-
-impl fmt::Display for StreamId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let initiator = match self.initiator() {
-            Side::Client => "client",
-            Side::Server => "server",
-        };
-        let dir = match self.dir() {
-            Dir::Uni => "uni",
-            Dir::Bi => "bi",
-        };
-        write!(
-            f,
-            "{} {}directional stream {}",
-            initiator,
-            dir,
-            self.index()
-        )
-    }
-}
-
-impl StreamId {
-    /// Create a new StreamId
-    pub fn new(initiator: Side, dir: Dir, index: u64) -> Self {
-        Self((index << 2) | ((dir as u64) << 1) | initiator as u64)
-    }
-    /// Which side of a connection initiated the stream
-    pub fn initiator(self) -> Side {
-        if self.0 & 0x1 == 0 {
-            Side::Client
-        } else {
-            Side::Server
-        }
-    }
-    /// Which directions data flows in
-    pub fn dir(self) -> Dir {
-        if self.0 & 0x2 == 0 { Dir::Bi } else { Dir::Uni }
-    }
-    /// Distinguishes streams of the same initiator and directionality
-    pub fn index(self) -> u64 {
-        self.0 >> 2
-    }
-}
-
-impl From<StreamId> for VarInt {
-    fn from(x: StreamId) -> Self {
-        unsafe { Self::from_u64_unchecked(x.0) }
-    }
-}
-
-impl From<VarInt> for StreamId {
-    fn from(v: VarInt) -> Self {
-        Self(v.0)
-    }
-}
-
-impl From<StreamId> for u64 {
-    fn from(x: StreamId) -> Self {
-        x.0
-    }
-}
-
-impl coding::Codec for StreamId {
-    fn decode<B: rama_core::bytes::Buf>(buf: &mut B) -> coding::Result<Self> {
-        VarInt::decode(buf).map(|x| Self(x.into_inner()))
-    }
-    fn encode<B: rama_core::bytes::BufMut>(&self, buf: &mut B) {
-        #[expect(
-            clippy::unwrap_used,
-            reason = "`StreamId` values come from varints or from indices below 2^62"
-        )]
-        VarInt::from_u64(self.0).unwrap().encode(buf);
-    }
-}
-
-/// An outgoing packet
 #[derive(Debug)]
 #[must_use]
 pub(crate) struct Transmit {
@@ -417,13 +230,8 @@ pub(crate) struct Transmit {
 
 /// The maximum number of CIDs we bother to issue per connection
 const LOC_CID_COUNT: u64 = 8;
-const RESET_TOKEN_SIZE: usize = 16;
-/// The longest connection ID QUIC version 1 carries, in bytes (RFC 9000 §17.2).
-pub const MAX_CID_SIZE: usize = 20;
 pub(crate) const MIN_INITIAL_SIZE: u16 = 1200;
 /// <https://www.rfc-editor.org/rfc/rfc9000.html#name-datagram-size>
-const INITIAL_MTU: u16 = 1200;
+pub(crate) const INITIAL_MTU: u16 = 1200;
 const MAX_UDP_PAYLOAD: u16 = 65527;
 const TIMER_GRANULARITY: Duration = Duration::from_millis(1);
-/// Maximum number of streams that can be uniquely identified by a stream ID
-const MAX_STREAM_COUNT: u64 = 1 << 60;

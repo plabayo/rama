@@ -1,7 +1,7 @@
 //! Connection lifetime event data.
 
 use super::Initiator;
-use crate::ConnectionId;
+use rama_quic_proto::ConnectionId;
 use rama_utils::str::utf8::{self, DecodeError, REPLACEMENT_CHARACTER};
 use serde::{Serialize, Serializer};
 use std::{

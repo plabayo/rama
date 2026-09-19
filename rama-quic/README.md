@@ -39,29 +39,39 @@ The reasons behind the creation of rama can be read in [the "Why Rama" chapter](
 
 ## rama-quic
 
-QUIC v1 (RFC 9000) transport for Rama: client, server and combined endpoints,
-streams, DATAGRAM, resumption and 0-RTT, migration, loss recovery, congestion
-control and path MTU discovery, on top of `rama-udp` sockets and the common
-`rama-tls` configuration (TLS 1.3 through BoringSSL or Rustls).
+QUIC for Rama — the transport that carries HTTP/3 and MASQUE. It gives you QUIC
+client and server endpoints: encrypted, multiplexed streams and unreliable datagrams
+over UDP, with the loss recovery, congestion control, connection migration and
+path-MTU discovery a real deployment needs. TLS 1.3 comes from the shared `rama-tls`
+config (BoringSSL or Rustls); the sockets from `rama-udp`.
 
-Choose `boring` for BoringSSL alone, `rustls,ring` for Rustls with ring, or
-`rustls,aws-lc` for Rustls with AWS-LC. The `boring` feature does not require
-ring, AWS-LC, or the Rustls engine. `rustls-pki-types` remains the shared
-certificate/key representation used throughout Rama.
+QUIC v2 (RFC 9369) is supported and on by default. Rama negotiates the version per
+RFC 9368 with downgrade protection and greases the QUIC bit (RFC 9287); the module
+map below says where to shape or turn any of that off.
 
-Applications can supply their own TLS 1.3 and packet protection through
-`tls::provider::{ClientConfig, ServerConfig, Session}`. Pass the configurations to
-`ClientConfig::new` and `ServerConfig::new`; the latter accepts a custom token key.
-No built-in TLS or crypto feature is needed for this API. The root `rama` crate's
-`quic` feature also enables the shared `tls` types without selecting a backend.
-The [external GnuTLS interop project](e2e/gnutls-interop/) exercises this interface
-against aioquic in both roles with all built-in Rama backends disabled.
+### Where things live
 
-Crate used by the end-user `rama` crate.
+- **`driver`** — the async `Endpoint`, `Connection` and streams you actually build on.
+- **`version`** — which versions are offered and how negotiation resolves, through
+  `ClientVersionPolicy` / `ServerVersionPolicy`. (Only BoringSSL can switch version
+  mid-handshake; a Rustls client offers just its first-flight version.)
+- **`profile`** — the wire image a client presents (version offer, transport-parameter
+  order, connection-ID lengths, datagram size, frame layout) as a typed, checked
+  `QuicProfile`, plus a parser to read a captured first flight back. The vocabulary and
+  codec behind it live engine-free in [`rama-quic-proto`](../rama-quic-proto/), so a
+  fingerprinting tool can depend on them without the engine.
+- **`tls::provider`** — bring your own TLS 1.3 and packet protection; no built-in crypto
+  backend required. The [GnuTLS interop project](e2e/gnutls-interop/) drives this seam
+  with every Rama backend switched off.
 
-Qlog recording targets main schema draft 14 and QUIC events draft 13.
-See the [qlog module documentation](src/qlog/mod.rs) for scope, specification links,
-and compatibility considerations for older readers.
+### Backends
+
+Pick one crypto backend: `boring` (BoringSSL), `rustls,ring`, or `rustls,aws-lc`.
+`boring` pulls in neither ring, AWS-LC nor the Rustls engine. From the end-user `rama`
+crate, enable the `quic` feature.
+
+Qlog recording follows qlog schema draft 14 and QUIC events draft 13; see the
+[`qlog` module](src/qlog/mod.rs) for scope and reader compatibility.
 
 Learn more about `rama`:
 

@@ -1,5 +1,4 @@
 use std::{
-    fmt,
     mem::size_of,
     net::{IpAddr, SocketAddr},
 };
@@ -8,13 +7,72 @@ use rama_core::bytes::{Buf, BufMut, Bytes};
 use rama_crypto::hmac::HmacSha2;
 use rand::{Rng, RngExt};
 
-use crate::proto::{
-    Duration, RESET_TOKEN_SIZE, ServerConfig, SystemTime, UNIX_EPOCH,
+use crate::proto::{Duration, ServerConfig, SystemTime, UNIX_EPOCH, crypto::HandshakeTokenKey};
+use rama_quic_proto::{
+    ConnectionId, RESET_TOKEN_SIZE, ResetToken, Version,
     coding::{BufExt, BufMutExt},
-    crypto::{CryptoError, HandshakeTokenKey},
+    crypto::CryptoError,
     packet::InitialHeader,
-    shared::ConnectionId,
 };
+
+/// An address-validation token a client keeps for its next connection to the same server,
+/// with what it needs to know about the connection that issued it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredToken {
+    pub(crate) token: Bytes,
+    /// When the token arrived, by the client's clock.
+    pub(crate) received: SystemTime,
+    /// Whether the issuing server sent `grease_quic_bit` (RFC 9287 §3.1).
+    pub(crate) peer_greases_quic_bit: bool,
+}
+
+impl StoredToken {
+    /// A token received at `received` from a server that did not grease the QUIC bit.
+    #[must_use]
+    pub fn new(token: Bytes, received: SystemTime) -> Self {
+        Self {
+            token,
+            received,
+            peer_greases_quic_bit: false,
+        }
+    }
+
+    /// The token as it goes in the next Initial packet.
+    #[must_use]
+    pub fn token(&self) -> &Bytes {
+        &self.token
+    }
+
+    /// When the token arrived, by the client's clock.
+    #[must_use]
+    pub fn received(&self) -> SystemTime {
+        self.received
+    }
+
+    /// Whether the issuing server sent `grease_quic_bit`.
+    #[must_use]
+    pub fn peer_greases_quic_bit(&self) -> bool {
+        self.peer_greases_quic_bit
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Whether the issuing server sent `grease_quic_bit` (RFC 9287 §3.1).
+        pub fn peer_greasing_quic_bit(mut self, greases: bool) -> Self {
+            self.peer_greases_quic_bit = greases;
+            self
+        }
+    }
+
+    /// RFC 9287 §3.1: a client may clear the QUIC bit before it has the server's parameters
+    /// only with a token received less than seven days ago from a server that greased.
+    pub(crate) fn allows_early_quic_bit_grease(&self, now: SystemTime) -> bool {
+        const WINDOW: Duration = Duration::from_secs(604_800);
+        self.peer_greases_quic_bit
+            && now
+                .duration_since(self.received)
+                .is_ok_and(|age| age < WINDOW)
+    }
+}
 
 /// Responsible for limiting clients' ability to reuse validation tokens
 ///
@@ -83,24 +141,27 @@ impl TokenLog for NoneTokenLog {
 pub trait TokenStore: Send + Sync {
     /// Potentially store a token for later one-time use
     ///
-    /// Called when a NEW_TOKEN frame is received from the server.
-    fn insert(&self, server_name: &str, token: Bytes);
+    /// Called when a NEW_TOKEN frame is received from the server. `version` is the QUIC
+    /// version of the connection that received it: a token is only valid for a connection in
+    /// the same version (RFC 9369 §5).
+    fn insert(&self, server_name: &str, version: Version, token: StoredToken);
 
-    /// Try to find and take a token that was stored with the given server name
+    /// Try to find and take a token that was stored with the given server name and version
     ///
     /// The same token must never be returned from `take` twice, as doing so can be used to
-    /// de-anonymize a client's traffic.
+    /// de-anonymize a client's traffic. A token stored under another version must not be
+    /// returned either.
     ///
     /// Called when trying to connect to a server. It is always ok for this to return `None`.
-    fn take(&self, server_name: &str) -> Option<Bytes>;
+    fn take(&self, server_name: &str, version: Version) -> Option<StoredToken>;
 }
 
 /// Null implementation of [`TokenStore`], which does not store any tokens
 pub struct NoneTokenStore;
 
 impl TokenStore for NoneTokenStore {
-    fn insert(&self, _: &str, _: Bytes) {}
-    fn take(&self, _: &str) -> Option<Bytes> {
+    fn insert(&self, _: &str, _: Version, _: StoredToken) {}
+    fn take(&self, _: &str, _: Version) -> Option<StoredToken> {
         None
     }
 }
@@ -151,8 +212,10 @@ impl IncomingToken {
                 address,
                 orig_dst_cid,
                 issued,
+                version,
             } => {
-                if address != remote_address {
+                // The Initial carrying a Retry token keeps the Retry's version (RFC 9369 §4.1).
+                if address != remote_address || version != header.version.version() {
                     return Err(InvalidRetryTokenError);
                 }
                 // An expiry the clock cannot represent cannot validate the token.
@@ -169,8 +232,14 @@ impl IncomingToken {
                     validated: true,
                 })
             }
-            TokenPayload::Validation { ip, issued } => {
-                if ip != remote_address.ip() {
+            TokenPayload::Validation {
+                ip,
+                issued,
+                version,
+            } => {
+                // A token belongs to the version of the connection that issued it
+                // (RFC 9369 §5); one from another version leaves the address unvalidated.
+                if ip != remote_address.ip() || version != header.version.version() {
                     return Ok(unvalidated);
                 }
                 if issued
@@ -232,16 +301,23 @@ impl Token {
                 address,
                 orig_dst_cid,
                 issued,
+                version,
             } => {
                 buf.put_u8(TokenType::Retry as u8);
                 encode_addr(&mut buf, address);
                 orig_dst_cid.encode_long(&mut buf);
                 encode_unix_secs(&mut buf, issued);
+                buf.put_u32(version.as_u32());
             }
-            TokenPayload::Validation { ip, issued } => {
+            TokenPayload::Validation {
+                ip,
+                issued,
+                version,
+            } => {
                 buf.put_u8(TokenType::Validation as u8);
                 encode_ip(&mut buf, ip);
                 encode_unix_secs(&mut buf, issued);
+                buf.put_u32(version.as_u32());
             }
         }
 
@@ -271,10 +347,12 @@ impl Token {
                 address: decode_addr(&mut reader)?,
                 orig_dst_cid: ConnectionId::decode_long(&mut reader)?,
                 issued: decode_unix_secs(&mut reader)?,
+                version: decode_version(&mut reader)?,
             },
             TokenType::Validation => TokenPayload::Validation {
                 ip: decode_ip(&mut reader)?,
                 issued: decode_unix_secs(&mut reader)?,
+                version: decode_version(&mut reader)?,
             },
         };
 
@@ -297,6 +375,8 @@ pub(crate) enum TokenPayload {
         orig_dst_cid: ConnectionId,
         /// The time at which this token was issued
         issued: SystemTime,
+        /// The version of the Initial the Retry answered (RFC 9369 §4.1)
+        version: Version,
     },
     /// Token originating from a NEW_TOKEN frame
     Validation {
@@ -304,6 +384,8 @@ pub(crate) enum TokenPayload {
         ip: IpAddr,
         /// The time at which this token was issued
         issued: SystemTime,
+        /// The negotiated version of the connection that issued it (RFC 9369 §5)
+        version: Version,
     },
 }
 
@@ -355,6 +437,10 @@ fn decode_ip<B: Buf>(buf: &mut B) -> Option<IpAddr> {
     }
 }
 
+fn decode_version<B: Buf>(buf: &mut B) -> Option<Version> {
+    (buf.remaining() >= 4).then(|| Version::from_u32(buf.get_u32()))
+}
+
 fn encode_unix_secs(buf: &mut Vec<u8>, time: SystemTime) {
     buf.write::<u64>(
         time.duration_since(UNIX_EPOCH)
@@ -367,52 +453,13 @@ fn decode_unix_secs<B: Buf>(buf: &mut B) -> Option<SystemTime> {
     Some(UNIX_EPOCH + Duration::from_secs(buf.get::<u64>().ok()?))
 }
 
-/// Stateless reset token
-///
-/// Used for an endpoint to securely communicate that it has lost state for a connection.
-#[expect(
-    clippy::derived_hash_with_manual_eq,
-    reason = "the manual PartialEq compares the same bytes the derived Hash uses"
-)]
-#[derive(Debug, Copy, Clone, Hash)]
-pub(crate) struct ResetToken([u8; RESET_TOKEN_SIZE]);
-
-impl ResetToken {
-    pub(crate) fn new(key: &HmacSha2, id: ConnectionId) -> Self {
-        let mut signature = vec![0; key.signature_len()];
-        key.sign(&id, &mut signature);
-        // TODO: Server ID??
-        let mut result = [0; RESET_TOKEN_SIZE];
-        result.copy_from_slice(&signature[..RESET_TOKEN_SIZE]);
-        result.into()
-    }
-}
-
-impl PartialEq for ResetToken {
-    fn eq(&self, other: &Self) -> bool {
-        crate::proto::constant_time::eq(&self.0, &other.0)
-    }
-}
-
-impl Eq for ResetToken {}
-
-impl From<[u8; RESET_TOKEN_SIZE]> for ResetToken {
-    fn from(x: [u8; RESET_TOKEN_SIZE]) -> Self {
-        Self(x)
-    }
-}
-
-impl std::ops::Deref for ResetToken {
-    type Target = [u8];
-    fn deref(&self) -> &[u8] {
-        &self.0
-    }
-}
-
-impl fmt::Display for ResetToken {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        rama_utils::fmt::hex(&self.0).write_to(f)
-    }
+/// Derive the stateless reset token for `id` from the endpoint's reset key (RFC 9000 §10.3).
+pub(crate) fn reset_token(key: &HmacSha2, id: ConnectionId) -> ResetToken {
+    let mut signature = vec![0; key.signature_len()];
+    key.sign(&id, &mut signature);
+    let mut result = [0; RESET_TOKEN_SIZE];
+    result.copy_from_slice(&signature[..RESET_TOKEN_SIZE]);
+    result.into()
 }
 
 #[cfg(test)]
@@ -438,7 +485,7 @@ mod test {
     /// the reset token is the first 16 bytes of HMAC-SHA256(key, cid).
     #[test]
     fn reset_tokens_are_the_hmac_prefix_and_differ_per_key_and_cid() {
-        use crate::proto::ConnectionId;
+        use rama_quic_proto::ConnectionId;
         let key_bytes: [u8; 32] = std::array::from_fn(|i| i as u8);
         let other_key_bytes: [u8; 32] = std::array::from_fn(|i| i as u8 + 1);
         let key = hkdf_free_hmac(&key_bytes);
@@ -459,18 +506,18 @@ mod test {
             0xc5, 0xf7, 0x14, 0xcc, 0x23, 0x28, 0x46, 0x1c, 0x20, 0x65, 0x56, 0x9b, 0x9d, 0x5a,
             0x23, 0xa7,
         ];
-        let token = ResetToken::new(&key, cid);
+        let token = reset_token(&key, cid);
         assert_eq!(
             &token[..],
             &KEY_CID[..],
             "independent HMAC-SHA256(key, cid) prefix"
         );
-        assert_eq!(&ResetToken::new(&key, other_cid)[..], &KEY_OTHER_CID[..]);
-        assert_eq!(&ResetToken::new(&other_key, cid)[..], &OTHER_KEY_CID[..]);
+        assert_eq!(&reset_token(&key, other_cid)[..], &KEY_OTHER_CID[..]);
+        assert_eq!(&reset_token(&other_key, cid)[..], &OTHER_KEY_CID[..]);
         // Equality follows the bytes, not the identity of the value.
-        assert_eq!(token, ResetToken::new(&key, cid));
-        assert_ne!(token, ResetToken::new(&key, other_cid));
-        assert_ne!(token, ResetToken::new(&other_key, cid));
+        assert_eq!(token, reset_token(&key, cid));
+        assert_ne!(token, reset_token(&key, other_cid));
+        assert_ne!(token, reset_token(&other_key, cid));
         let mut flipped = [0u8; RESET_TOKEN_SIZE];
         flipped.copy_from_slice(&token);
         flipped[15] ^= 0x80;
@@ -494,6 +541,7 @@ mod test {
             TokenPayload::Validation {
                 ip: std::net::Ipv4Addr::LOCALHOST.into(),
                 issued: crate::proto::UNIX_EPOCH,
+                version: Version::V1,
             },
             rng,
         );
@@ -534,11 +582,13 @@ mod test {
             address: address_1,
             orig_dst_cid: orig_dst_cid_1,
             issued: issued_1,
+            version: Version::V2,
         };
         let TokenPayload::Retry {
             address: address_2,
             orig_dst_cid: orig_dst_cid_2,
             issued: issued_2,
+            version: version_2,
         } = token_round_trip(payload_1)
         else {
             panic!("token decoded as wrong variant");
@@ -547,6 +597,7 @@ mod test {
         assert_eq!(address_1, address_2);
         assert_eq!(orig_dst_cid_1, orig_dst_cid_2);
         assert_eq!(issued_1, issued_2);
+        assert_eq!(version_2, Version::V2);
     }
 
     #[test]
@@ -561,10 +612,12 @@ mod test {
         let payload_1 = TokenPayload::Validation {
             ip: ip_1,
             issued: issued_1,
+            version: Version::V2,
         };
         let TokenPayload::Validation {
             ip: ip_2,
             issued: issued_2,
+            version: version_2,
         } = token_round_trip(payload_1)
         else {
             panic!("token decoded as wrong variant");
@@ -572,6 +625,7 @@ mod test {
 
         assert_eq!(ip_1, ip_2);
         assert_eq!(issued_1, issued_2);
+        assert_eq!(version_2, Version::V2);
     }
 
     #[test]

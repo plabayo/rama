@@ -10,16 +10,15 @@ use rama_net::address::{SocketAddress, ip::IntoCanonicalIpAddr};
 use rand::RngExt;
 
 use crate::proto::{
-    Duration, Instant, MIN_INITIAL_SIZE, SendPermit, Transmit, TransportError,
-    coding::BufMutExt,
+    Duration, Instant, MIN_INITIAL_SIZE, SendPermit, Transmit,
     config::{PreferredAddressPolicy, ServerConfig},
     connection::{
         Connection, ConnectionSide, migration::PreviousPath, packet_builder::PacketBuilder,
         qlog::path::MigrationState, timer::Timer,
     },
-    frame,
-    packet::SpaceId,
-    shared::ConnectionId,
+};
+use rama_quic_proto::{
+    ConnectionId, TransportError, coding::BufMutExt, frame, packet::SpaceId,
     transport_parameters::PreferredAddress,
 };
 

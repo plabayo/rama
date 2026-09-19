@@ -1,8 +1,11 @@
 use super::*;
 use crate::proto::{
-    ConnectionId, Side, TransportErrorCode,
-    crypto::{ExportKeyingMaterialError, HeaderKey, PacketKey, Session},
+    crypto::{ExportKeyingMaterialError, Session},
     tests::Pair,
+};
+use rama_quic_proto::{
+    ConnectionId, Side, TransportErrorCode, Version,
+    crypto::{HeaderKey, PacketKey},
 };
 
 struct FailedKeyUpdate {
@@ -10,7 +13,7 @@ struct FailedKeyUpdate {
 }
 
 impl Session for FailedKeyUpdate {
-    fn initial_keys(&self, _: &ConnectionId, _: Side) -> Result<Keys, TransportError> {
+    fn initial_keys(&self, _: Version, _: &ConnectionId, _: Side) -> Result<Keys, TransportError> {
         Err(TransportError::INTERNAL_ERROR(
             "injected Initial key derivation failure",
         ))
@@ -85,12 +88,22 @@ fn failed_key_derivation_closes_without_rotating_or_counting_an_update() {
 struct FailedEncryption;
 
 impl PacketKey for FailedEncryption {
-    fn encrypt(&self, _: u64, buffer: &mut [u8], _: usize) -> Result<(), crypto::CryptoError> {
+    fn encrypt(
+        &self,
+        _: u64,
+        buffer: &mut [u8],
+        _: usize,
+    ) -> Result<(), rama_quic_proto::crypto::CryptoError> {
         buffer.fill(0x42);
-        Err(crypto::CryptoError)
+        Err(rama_quic_proto::crypto::CryptoError::new())
     }
-    fn decrypt(&self, _: u64, _: &[u8], _: &mut BytesMut) -> Result<(), crypto::CryptoError> {
-        Err(crypto::CryptoError)
+    fn decrypt(
+        &self,
+        _: u64,
+        _: &[u8],
+        _: &mut BytesMut,
+    ) -> Result<(), rama_quic_proto::crypto::CryptoError> {
+        Err(rama_quic_proto::crypto::CryptoError::new())
     }
     fn tag_len(&self) -> usize {
         16
@@ -109,6 +122,14 @@ fn failed_packet_encryption_does_not_emit_or_track_plaintext() {
     let (client, _) = pair.connect();
     let now = pair.time + Duration::from_millis(20);
     let connection = pair.client_conn_mut(client);
+    // Drain whatever the just-completed handshake still owes (a Handshake-space ACK, HANDSHAKE_DONE
+    // acknowledgement, and so on) before the failed key goes in. Those go out under real keys, so a
+    // leftover one would make `poll_transmit` below return `Some` and the assertion flaky; the only
+    // packet this test means to provoke is the ping it encrypts with `FailedEncryption`.
+    let mut drain = Vec::new();
+    while connection.poll_transmit(now, 4, &mut drain).is_some() {
+        drain.clear();
+    }
     connection.spaces[SpaceId::Data]
         .crypto
         .as_mut()

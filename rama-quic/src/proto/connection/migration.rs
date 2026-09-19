@@ -11,7 +11,7 @@ use rama_core::telemetry::tracing::{debug, trace};
 use rand::RngExt;
 
 use crate::proto::{
-    Instant, TransportError,
+    Instant,
     connection::{
         Connection, ConnectionSide,
         paths::{Challenge, PathData},
@@ -19,9 +19,8 @@ use crate::proto::{
         qlog::path::MigrationState,
         timer::Timer,
     },
-    packet::SpaceId,
-    shared::ConnectionId,
 };
+use rama_quic_proto::{ConnectionId, TransportError, packet::SpaceId};
 
 /// How many times the expanded validation is attempted before the path is given up. Each
 /// attempt costs a full-size datagram, and running out of them abandons the path rather than
@@ -524,7 +523,7 @@ impl Connection {
         let ConnectionSide::Server { server_config } = &self.side else {
             return;
         };
-        let new_tokens = &mut self.spaces[SpaceId::Data as usize].pending.new_tokens;
+        let new_tokens = &mut self.spaces[SpaceId::Data].pending.new_tokens;
         new_tokens.clear();
         for _ in 0..server_config.validation_token.sent {
             new_tokens.push(self.path.remote);

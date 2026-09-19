@@ -1,6 +1,7 @@
 //! What a connection does with an unreliable datagram it has no room for.
 
 use super::*;
+use rama_quic_proto::{Dir, frame};
 
 /// A datagram the peer was told it could send does not end the connection when there is no
 /// room to hold it. A stream transfer succeeds after the datagram is dropped.
@@ -98,7 +99,7 @@ fn tiny_peer_datagram_limits_never_emit_an_oversized_frame() {
 #[test]
 fn dropping_old_datagrams_makes_room_for_the_new_entry_in_both_roles() {
     const PAYLOAD: usize = 64;
-    let budget = 2 * (PAYLOAD + size_of::<crate::proto::frame::Datagram>());
+    let budget = 2 * (PAYLOAD + size_of::<rama_quic_proto::frame::Datagram>());
     let transport = Arc::new(TransportConfig {
         datagram_send_buffer_size: budget,
         ..TransportConfig::default()
@@ -141,7 +142,7 @@ fn an_unsendable_datagram_does_not_evict_queued_data() {
         let mut pair = Pair::default();
         let mut client = client_config();
         client.transport = Arc::new(TransportConfig {
-            datagram_send_buffer_size: 64 + size_of::<crate::proto::frame::Datagram>(),
+            datagram_send_buffer_size: 64 + size_of::<rama_quic_proto::frame::Datagram>(),
             ..TransportConfig::default()
         });
         let (client_ch, server_ch) = pair.connect_with(client);

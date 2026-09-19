@@ -5,7 +5,7 @@
 //! described, so a case exercises the size that was really on the wire.
 
 use super::*;
-use crate::proto::{
+use rama_quic_proto::{
     TransportErrorCode,
     frame::{Frame, Iter},
 };

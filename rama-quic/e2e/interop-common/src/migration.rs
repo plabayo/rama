@@ -181,7 +181,7 @@ pub async fn rama_client_side(
     // The application carries on across the rebind whether or not the connection moved.
     exchange(what, *deadline, &connection, scenario.after).await;
     let (code, reason) = CLOSED_WITH;
-    connection.close(code.into(), reason);
+    connection.close(code, reason);
     deadline.wait(what, client.wait_idle()).await;
     (first, second)
 }

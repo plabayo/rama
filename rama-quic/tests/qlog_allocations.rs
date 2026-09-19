@@ -12,7 +12,7 @@ use core::{
     cell::Cell,
 };
 use rama_quic::{
-    ConnectionId, TransportConfig,
+    TransportConfig,
     qlog::{
         QlogConfig, QlogEventView, QlogOutput, QlogSink, QueueLimits, TraceInfo,
         event::{
@@ -21,6 +21,7 @@ use rama_quic::{
         },
     },
 };
+use rama_quic_proto::ConnectionId;
 use rama_utils::octets;
 use std::{
     alloc::System,

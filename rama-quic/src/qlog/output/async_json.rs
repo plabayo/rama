@@ -666,28 +666,23 @@ async fn lossy_string<W: AsyncWrite + Unpin + Send>(
 mod tests {
     use super::super::reference::ReferenceJsonEncoder;
     use super::*;
-    use crate::{
-        ConnectionId,
-        qlog::{
-            QlogEncoder,
-            event::{
-                EventFields, EventFieldsView, Initiator, TupleId,
-                drops::{DropHeader, DropPacketType, DropReason, PacketDropped},
-                lifecycle::{
-                    ConnectionClosedTrigger, ConnectionClosedView, ConnectionState,
-                    TransportErrorName,
-                },
-                negotiation::{
-                    AlpnIdentifierView, HexView, KeyChange, KeyChangeTrigger, KeyType,
-                    ParametersSet, VersionInformationView,
-                },
-                packet::{
-                    Packet, PacketLost, PacketLostTrigger, PacketType, RecoveryMetricsUpdated,
-                },
-                path::{MigrationState, TupleAssigned},
+    use crate::qlog::{
+        QlogEncoder,
+        event::{
+            EventFields, EventFieldsView, Initiator, TupleId,
+            drops::{DropHeader, DropPacketType, DropReason, PacketDropped},
+            lifecycle::{
+                ConnectionClosedTrigger, ConnectionClosedView, ConnectionState, TransportErrorName,
             },
+            negotiation::{
+                AlpnIdentifierView, HexView, KeyChange, KeyChangeTrigger, KeyType, ParametersSet,
+                VersionInformationView,
+            },
+            packet::{Packet, PacketLost, PacketLostTrigger, PacketType, RecoveryMetricsUpdated},
+            path::{MigrationState, TupleAssigned},
         },
     };
+    use rama_quic_proto::ConnectionId;
     use std::{
         borrow::Cow,
         net::{Ipv4Addr, Ipv6Addr},
@@ -830,7 +825,10 @@ mod tests {
                     [0, 0, 0, 1],
                     [0xff; 4],
                 ]))),
-                client_versions: Some(VersionListView::Host(Cow::Owned(vec![1, 0x6b3343cf]))),
+                client_versions: Some(VersionListView::Host(Cow::Owned(vec![
+                    rama_quic_proto::Version::V1,
+                    rama_quic_proto::Version::V2,
+                ]))),
                 chosen_version: Some(Version([0, 0, 0, 1])),
             })
             .into(),

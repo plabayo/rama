@@ -148,7 +148,7 @@ pub async fn rama_client_side<Between, Between_>(
     let (client, connection) = rama_client_connects(run, addr).await;
     settle_before_measuring(run, &connection).await;
     rama_client_updates(run, &connection, between).await;
-    connection.close(0u32.into(), b"done");
+    connection.close(0u32, b"done");
     run.deadline.wait(&run.what, client.wait_idle()).await;
 }
 

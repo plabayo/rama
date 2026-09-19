@@ -1,6 +1,6 @@
-use std::{
+use alloc::collections::{BTreeMap, btree_map};
+use core::{
     cmp,
-    collections::{BTreeMap, btree_map},
     ops::{
         Bound::{Excluded, Included},
         Range,
@@ -9,20 +9,20 @@ use std::{
 
 /// A set of u64 values optimized for long runs and random insert/delete/contains
 #[derive(Debug, Default, Clone)]
-pub(crate) struct RangeSet(BTreeMap<u64, u64>);
+pub struct RangeSet(BTreeMap<u64, u64>);
 
 impl RangeSet {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Default::default()
     }
 
     #[cfg(test)]
-    pub(crate) fn contains(&self, x: u64) -> bool {
+    pub fn contains(&self, x: u64) -> bool {
         self.pred(x).is_some_and(|(_, end)| end > x)
     }
 
     #[cfg(test)]
-    pub(crate) fn insert_one(&mut self, x: u64) -> bool {
+    pub fn insert_one(&mut self, x: u64) -> bool {
         if let Some((start, end)) = self.pred(x) {
             match end.cmp(&x) {
                 // Wholly contained
@@ -57,7 +57,7 @@ impl RangeSet {
         true
     }
 
-    pub(crate) fn insert(&mut self, mut x: Range<u64>) -> bool {
+    pub fn insert(&mut self, mut x: Range<u64>) -> bool {
         if x.is_empty() {
             return false;
         }
@@ -100,7 +100,7 @@ impl RangeSet {
     }
 
     #[cfg(test)]
-    pub(crate) fn remove(&mut self, x: Range<u64>) -> bool {
+    pub fn remove(&mut self, x: Range<u64>) -> bool {
         if x.is_empty() {
             return false;
         }
@@ -138,7 +138,7 @@ impl RangeSet {
     }
 
     /// Add a range to the set, returning the intersection of current ranges with the new one
-    pub(crate) fn replace(&mut self, mut range: Range<u64>) -> Replace<'_> {
+    pub fn replace(&mut self, mut range: Range<u64>) -> Replace<'_> {
         let pred = if let Some((prev_start, prev_end)) = self
             .pred(range.start)
             .filter(|&(_, end)| end >= range.start)
@@ -164,41 +164,41 @@ impl RangeSet {
     }
 
     #[cfg(test)]
-    pub(crate) fn add(&mut self, other: &Self) {
+    pub fn add(&mut self, other: &Self) {
         for (&start, &end) in &other.0 {
             self.insert(start..end);
         }
     }
 
     #[cfg(test)]
-    pub(crate) fn subtract(&mut self, other: &Self) {
+    pub fn subtract(&mut self, other: &Self) {
         for (&start, &end) in &other.0 {
             self.remove(start..end);
         }
     }
 
-    pub(crate) fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 
-    pub(crate) fn min(&self) -> Option<u64> {
+    pub fn min(&self) -> Option<u64> {
         self.0.first_key_value().map(|(&start, _)| start)
     }
 
     #[cfg(test)]
-    pub(crate) fn max(&self) -> Option<u64> {
+    pub fn max(&self) -> Option<u64> {
         self.0.last_key_value().map(|(_, &end)| end - 1)
     }
 
     #[cfg(test)]
-    pub(crate) fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.0.len()
     }
-    pub(crate) fn iter(&self) -> Iter<'_> {
+    pub fn iter(&self) -> Iter<'_> {
         Iter(self.0.iter())
     }
     #[cfg(test)]
-    pub(crate) fn elts(&self) -> EltIter<'_> {
+    pub fn elts(&self) -> EltIter<'_> {
         EltIter {
             inner: self.0.iter(),
             next: 0,
@@ -206,19 +206,19 @@ impl RangeSet {
         }
     }
 
-    pub(crate) fn peek_min(&self) -> Option<Range<u64>> {
+    pub fn peek_min(&self) -> Option<Range<u64>> {
         let (&start, &end) = self.0.iter().next()?;
         Some(start..end)
     }
 
-    pub(crate) fn pop_min(&mut self) -> Option<Range<u64>> {
+    pub fn pop_min(&mut self) -> Option<Range<u64>> {
         let result = self.peek_min()?;
         self.0.remove(&result.start);
         Some(result)
     }
 }
 
-pub(crate) struct Iter<'a>(btree_map::Iter<'a, u64, u64>);
+pub struct Iter<'a>(btree_map::Iter<'a, u64, u64>);
 
 impl Iterator for Iter<'_> {
     type Item = Range<u64>;
@@ -244,7 +244,7 @@ impl<'a> IntoIterator for &'a RangeSet {
 }
 
 #[cfg(test)]
-pub(crate) struct EltIter<'a> {
+pub struct EltIter<'a> {
     inner: btree_map::Iter<'a, u64, u64>,
     next: u64,
     end: u64,
@@ -279,7 +279,7 @@ impl DoubleEndedIterator for EltIter<'_> {
 }
 
 /// Iterator returned by `RangeSet::replace`
-pub(crate) struct Replace<'a> {
+pub struct Replace<'a> {
     set: &'a mut RangeSet,
     /// Portion of the intersection arising from a range beginning at or before the newly inserted
     /// range

@@ -8,9 +8,9 @@ use super::{
     spaces::{PacketSpace, SentPacket},
 };
 use crate::proto::{
-    ConnectionId, Duration, Instant, MIN_INITIAL_SIZE, TIMER_GRANULARITY, TransportConfig,
-    congestion, packet::SpaceId,
+    Duration, Instant, MIN_INITIAL_SIZE, TIMER_GRANULARITY, TransportConfig, congestion,
 };
+use rama_quic_proto::{ConnectionId, packet::SpaceId};
 
 use super::qlog::event::RecoveryMetricsUpdated;
 

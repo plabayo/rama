@@ -308,7 +308,7 @@ pub async fn rama_client_warms_up(
         .await
         .expect("the first handshake completes");
     exchange(what, *deadline, &connection, run.scenario.warm).await;
-    connection.close(CLOSE_CODE.into(), CLOSE_REASON);
+    connection.close(CLOSE_CODE, CLOSE_REASON);
     deadline.wait(what, connection.closed()).await;
 }
 
@@ -399,7 +399,7 @@ pub async fn rama_client_resumes(
         .handshake_data()
         .expect("the handshake settled something")
         .resumed;
-    connection.close(CLOSE_CODE.into(), CLOSE_REASON);
+    connection.close(CLOSE_CODE, CLOSE_REASON);
     deadline.wait(what, connection.closed()).await;
     resumed
 }
@@ -594,7 +594,7 @@ impl RamaResumptionConfigs {
             .unwrap();
             config.set_transport_config(Arc::new(
                 rama::quic::TransportConfig::default()
-                    .with_receive_window(rama::quic::VarInt::from(65536u32)),
+                    .with_receive_window(rama::quic::proto::VarInt::from(65536u32)),
             ));
             config
         };
@@ -656,7 +656,7 @@ impl RamaResumptionConfigs {
                 // Preserve ticket keys but change their bound transport context to reject 0-RTT.
                 config.set_transport_config(Arc::new(
                     rama::quic::TransportConfig::default()
-                        .with_receive_window(rama::quic::VarInt::from(131072u32)),
+                        .with_receive_window(rama::quic::proto::VarInt::from(131072u32)),
                 ));
             }
             (config, || {

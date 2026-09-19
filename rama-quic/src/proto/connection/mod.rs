@@ -8,14 +8,16 @@ use rama_core::bytes::Bytes;
 use rand::{RngExt, SeedableRng, rngs::StdRng};
 
 use crate::proto::{
-    Dir, Duration, EndpointConfig, Instant, Side, StreamId, TransportError, VarInt,
+    Duration, EndpointConfig, Instant,
     cid_generator::ConnectionIdGenerator,
     cid_queue::CidQueue,
     config::TransportConfig,
-    crypto::{self, KeyPair, PacketKey},
-    packet::SpaceId,
-    shared::{ConnectionId, EndpointEventInner},
-    transport_parameters::TransportParameters,
+    crypto::{self, KeyPair},
+    shared::EndpointEventInner,
+};
+use rama_quic_proto::{
+    ConnectionId, Dir, Side, StreamId, TransportError, VarInt, Version, crypto::PacketKey,
+    packet::SpaceId, transport_parameters::TransportParameters, version::WireVersion,
 };
 
 mod ack_frequency;
@@ -91,13 +93,12 @@ use ack_frequency::AckFrequencyState;
 use cid_state::CidState;
 use close::CloseResponses;
 use datagrams::DatagramState;
-use handshake::get_max_ack_delay;
 use lifecycle::{ConnectionSide, state};
 use migration::{DeferredMigration, PATH_CIDS, PathCid, PrevPath};
 use packet_crypto::{PrevCrypto, ZeroRttCrypto};
 use paths::{PathData, PathResponses};
 use preferred::PreferredCandidate;
-use spaces::{PacketNumberFilter, PacketSpace, SentPacket};
+use spaces::{PacketNumberFilter, PacketSpace, PacketSpaces, SentPacket};
 #[cfg(not(fuzzing))]
 use streams::StreamsState;
 use timer::{Timer, TimerTable};
@@ -229,7 +230,7 @@ pub(crate) struct Connection {
     /// Outgoing spin bit state
     spin: bool,
     /// Packet number spaces: initial, handshake, 1-RTT
-    spaces: [PacketSpace; 3],
+    spaces: PacketSpaces,
     /// Highest usable packet number space
     highest_space: SpaceId,
     /// 1-RTT keys used prior to a key update
@@ -295,8 +296,21 @@ pub(crate) struct Connection {
     qlog_closed: bool,
     /// Connection level statistics
     stats: ConnectionStats,
-    /// QUIC version used for the connection.
-    version: u32,
+    /// QUIC version the connection's packets currently carry.
+    wire_version: WireVersion,
+    /// QUIC version of the client's first flight, before any compatible negotiation
+    /// (RFC 9368 §1.2, "Chosen Version").
+    original_wire_version: WireVersion,
+    /// Initial keys for `original_version` while `version` differs from it: a server keeps
+    /// reading the client's first flight with them, a client keeps reading what the server sent
+    /// before it processed the client's parameters (RFC 9369 §4.1). Gone with the Initial space.
+    original_initial_crypto: Option<crypto::Keys>,
+    /// The connection ID the Initial keys derive from: the first destination, or the Retry's
+    /// source afterwards (RFC 9001 §5.2).
+    initial_keys_cid: ConnectionId,
+    /// Whether `peer_params` came from the peer in this handshake, rather than being remembered
+    /// from an earlier one for 0-RTT.
+    peer_params_received: bool,
 }
 
 impl Connection {
@@ -311,7 +325,7 @@ impl Connection {
         crypto: Box<dyn crypto::Session>,
         cid_gen: &dyn ConnectionIdGenerator,
         now: Instant,
-        version: u32,
+        version: Version,
         allow_mtud: bool,
         rng_seed: [u8; 32],
         side_args: SideArgs,
@@ -319,12 +333,25 @@ impl Connection {
         let pref_addr_cid = side_args.pref_addr_cid();
         let path_validated = side_args.path_validated();
         let trace_cid = side_args.trace_cid(init_cid);
+        let original_version = side_args.original_version(version);
         let connection_side = ConnectionSide::from(side_args);
         let side = connection_side.side();
         let initial_space = PacketSpace {
-            crypto: Some(crypto.initial_keys(&init_cid, side)?),
+            crypto: Some(crypto.initial_keys(version, &init_cid, side)?),
             ..PacketSpace::new(now)
         };
+        let original_initial_crypto = (original_version != version)
+            .then(|| crypto.initial_keys(original_version, &init_cid, side))
+            .transpose()?;
+        // The endpoint only starts a connection in a version it negotiated, which is one this
+        // crate implements; proving that here lets every header this connection forms carry the
+        // version without a fallible wire lookup.
+        let version = version.to_wire().ok_or_else(|| {
+            TransportError::INTERNAL_ERROR("connection started in an unimplemented QUIC version")
+        })?;
+        let original_version = original_version.to_wire().ok_or_else(|| {
+            TransportError::INTERNAL_ERROR("connection started in an unimplemented QUIC version")
+        })?;
         let state = State::Handshake(state::Handshake {
             rem_cid_set: side.is_server(),
             expected_token: Bytes::new(),
@@ -384,15 +411,15 @@ impl Connection {
             endpoint_events: VecDeque::new(),
             spin_enabled: config.allow_spin && rng.random_ratio(7, 8),
             spin: false,
-            spaces: [initial_space, PacketSpace::new(now), PacketSpace::new(now)],
+            spaces: PacketSpaces([initial_space, PacketSpace::new(now), PacketSpace::new(now)]),
             highest_space: SpaceId::Initial,
             prev_crypto: None,
             next_crypto: None,
             accepted_0rtt: false,
             permit_idle_reset: true,
-            idle_timeout: match config.max_idle_timeout {
-                None | Some(VarInt(0)) => None,
-                Some(dur) => Some(Duration::from_millis(dur.0)),
+            idle_timeout: match config.max_idle_timeout.map(VarInt::into_inner) {
+                None | Some(0) => None,
+                Some(dur) => Some(Duration::from_millis(dur)),
             },
             timers: TimerTable::default(),
             authentication_failures: 0,
@@ -409,9 +436,7 @@ impl Connection {
             close: false,
             close_responses: CloseResponses::new(),
 
-            ack_frequency: AckFrequencyState::new(get_max_ack_delay(
-                &TransportParameters::default(),
-            )),
+            ack_frequency: AckFrequencyState::new(config.max_ack_delay),
             next_bundled_ack_time: None,
 
             pto_count: 0,
@@ -436,8 +461,30 @@ impl Connection {
             qlog_state: None,
             qlog_closed: false,
             stats: ConnectionStats::default(),
-            version,
+            wire_version: version,
+            original_wire_version: original_version,
+            original_initial_crypto,
+            initial_keys_cid: init_cid,
+            peer_params_received: false,
         };
+        this.streams
+            .set_receive_windows(streams::StreamReceiveWindows {
+                bidi_local: this.config.stream_receive_window.into(),
+                bidi_remote: this
+                    .config
+                    .stream_receive_window_bidi_remote
+                    .unwrap_or(this.config.stream_receive_window)
+                    .into(),
+                uni: this
+                    .config
+                    .stream_receive_window_uni
+                    .unwrap_or(this.config.stream_receive_window)
+                    .into(),
+            });
+        let first_packet_number = this.config.wire.packetization.first_packet_number();
+        for space in &mut this.spaces.0 {
+            space.next_packet_number = first_packet_number;
+        }
         this.qlog_connection_started(now);
         this.qlog_init_negotiation(now);
         this.qlog_init_recovery(now);
@@ -500,6 +547,54 @@ impl Connection {
     }
 
     /// Returns connection statistics
+    /// The QUIC version the connection's packets carry (RFC 9368 §4: the negotiated version).
+    pub(crate) fn version(&self) -> Version {
+        self.wire_version.version()
+    }
+
+    /// The QUIC version of the client's first flight.
+    pub(crate) fn original_version(&self) -> Version {
+        self.original_wire_version.version()
+    }
+
+    /// The transport parameters the peer sent, as this connection applied them.
+    #[cfg(test)]
+    pub(crate) fn peer_params(&self) -> &TransportParameters {
+        &self.peer_params
+    }
+
+    /// RFC 9287 §3.1: the QUIC bit may be cleared once the peer's parameters for this
+    /// handshake say it accepts that. Before they arrive, only a client holding a recent token
+    /// from a server that greased may clear it; parameters remembered for 0-RTT do not count.
+    /// Greasing is off altogether when this endpoint does not grease.
+    pub(crate) fn may_grease_quic_bit(&self) -> bool {
+        if !self.endpoint_config.grease_quic_bit {
+            return false;
+        }
+        if self.peer_params_received {
+            return self.peer_params.grease_quic_bit;
+        }
+        matches!(
+            self.side,
+            ConnectionSide::Client {
+                grease_quic_bit_early: true,
+                ..
+            }
+        )
+    }
+
+    /// Tests: whether this client clears the QUIC bit before the server's parameters arrive.
+    #[cfg(test)]
+    pub(crate) fn greases_quic_bit_early(&self) -> bool {
+        matches!(
+            self.side,
+            ConnectionSide::Client {
+                grease_quic_bit_early: true,
+                ..
+            }
+        )
+    }
+
     pub(crate) fn stats(&self) -> ConnectionStats {
         let mut stats = self.stats;
         stats.path.rtt = self.path.rtt.get();

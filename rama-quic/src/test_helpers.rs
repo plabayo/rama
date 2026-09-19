@@ -6,6 +6,7 @@
 )]
 
 use crate::{ClientConfig, ServerConfig, tls::TlsOptions};
+use rama_quic_proto::TransportErrorCode;
 use rama_tls::{
     client::TlsClientConfig,
     server::{LeafCertRequest, ServerAuthData, TlsServerConfig},
@@ -40,7 +41,7 @@ pub(crate) fn untrusted_identity() -> ServerAuthData {
     ServerAuthData::new_self_signed_leaf(request).unwrap()
 }
 
-pub(crate) fn untrusted_certificate_error() -> crate::TransportErrorCode {
+pub(crate) fn untrusted_certificate_error() -> TransportErrorCode {
     // TLS unknown_ca alert, independent of the provider's native error type.
-    crate::TransportErrorCode::crypto(48)
+    TransportErrorCode::crypto(48)
 }

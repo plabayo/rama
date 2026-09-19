@@ -173,6 +173,6 @@ pub async fn rama_client_accepts(run: &CaseRun<TrustScenario>, peer_addr: Socket
         .await
         .expect("the probe comes back");
     Received::Bytes(back).check(what, "probe", scenario.probe);
-    conn.close(0u32.into(), b"done");
+    conn.close(0u32, b"done");
     deadline.wait(what, client.wait_idle()).await;
 }

@@ -4,7 +4,8 @@ use std::collections::VecDeque;
 use rama_core::telemetry::tracing::{debug, trace};
 use rustc_hash::FxHashSet;
 
-use crate::proto::{Duration, Instant, TransportError, shared::IssuedCid};
+use crate::proto::{Duration, Instant, shared::IssuedCid};
+use rama_quic_proto::TransportError;
 
 /// Local connection ID management
 pub(super) struct CidState {
