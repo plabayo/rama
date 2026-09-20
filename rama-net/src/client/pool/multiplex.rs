@@ -729,8 +729,8 @@ fn select_and_admit<C, ID: PartialEq + Debug>(
 
 #[cfg(test)]
 mod tests {
-    use super::super::PooledConnector;
     use super::*;
+    use crate::client::pool::PooledConnector;
     use crate::client::{
         ConnectionError, ConnectionErrorDomain, ConnectionErrorKind, ConnectorService,
         EstablishedClientConnection,

@@ -430,7 +430,7 @@ try {
         assert_eq!(event.event(), Some(EventType::PatchElements.as_str()));
         assert!(matches!(
             event.data(),
-            Some(super::super::EventData::ExecuteScript(_))
+            Some(crate::body::sse::datastar::EventData::ExecuteScript(_))
         ));
     }
 }

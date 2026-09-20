@@ -218,14 +218,14 @@ pub(super) fn parse_absolute_ref(
 ///
 /// # Grammar by mode
 ///
-/// - **Graceful** ([`Uri::parse_authority_form`](super::super::Uri::parse_authority_form)):
+/// - **Graceful** ([`Uri::parse_authority_form`](crate::uri::Uri::parse_authority_form)):
 ///   `[userinfo@]host[:port]`. Userinfo and bare-host (no port) are
 ///   accepted — the latter so callers without a port handy (e.g. HTTP
 ///   tooling that derives the port from the scheme) can still go
-///   through this entry point. The wire writer ([`super::super::wire`])
+///   through this entry point. The wire writer ([`crate::uri::wire`])
 ///   strips userinfo before serializing, so wire RFC 9112 compliance
 ///   is preserved regardless.
-/// - **Strict** ([`Uri::parse_authority_form_strict`](super::super::Uri::parse_authority_form_strict)):
+/// - **Strict** ([`Uri::parse_authority_form_strict`](crate::uri::Uri::parse_authority_form_strict)):
 ///   exactly `host:port`. Userinfo and bare-host are
 ///   [`ParseError::StrictViolation`] — RFC 9112 §3.2.3 says
 ///   "The request-target consists of the host and port number of the

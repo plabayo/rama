@@ -293,7 +293,7 @@ mod server_pieces_tests {
 
     #[test]
     fn modify_rustls_config_runs_last() {
-        use super::super::config::RustlsServerConfigExt;
+        use crate::server::config::RustlsServerConfigExt;
         crate::ensure_default_crypto_provider();
         let cfg = TlsServerConfig::new()
             .try_with_generated_server_auth(GeneratedServerAuthConfig::default())

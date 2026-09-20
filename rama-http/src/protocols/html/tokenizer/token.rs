@@ -8,9 +8,9 @@
 
 use std::borrow::Cow;
 
-use super::super::decode_entities;
 use super::name::LocalNameHash;
 use super::tag::HtmlTag;
+use crate::protocols::html::decode_entities;
 
 /// UTF-8-lossy decode `bytes` and resolve HTML entities, borrowing the input
 /// when both are no-ops.

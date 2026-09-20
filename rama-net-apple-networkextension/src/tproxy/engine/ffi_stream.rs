@@ -351,6 +351,7 @@ impl Drop for FfiBridgeStream {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tproxy::engine::DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT;
     use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize};
     use std::task::{Context, Wake, Waker};
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -436,7 +437,7 @@ mod tests {
                 noop(),
                 on_closed,
                 direction,
-                super::super::DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT,
+                DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT,
                 signals.clone(),
                 Arc::new(TcpFlowByteCounters::default()),
             );
@@ -454,7 +455,7 @@ mod tests {
                 let mut write = std::pin::pin!(s.write_all(b"response tail"));
                 assert!(write.as_mut().poll(&mut cx).is_pending());
                 tokio::time::advance(
-                    super::super::DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT
+                    DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT
                         .checked_sub(Duration::from_millis(1))
                         .unwrap(),
                 )
@@ -790,7 +791,7 @@ mod tests {
                     noop(),
                     counter_cb(closed.clone()),
                     direction,
-                    super::super::DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT,
+                    DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT,
                     signals.clone(),
                     counters.clone(),
                 );
@@ -823,7 +824,7 @@ mod tests {
     /// transfer alive beyond one window; unrelated traffic and wakeups cannot.
     #[tokio::test(start_paused = true)]
     async fn production_pause_window_tracks_only_matching_progress() {
-        let max_wait = super::super::DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT;
+        let max_wait = DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT;
         for direction in [BridgeDirection::Ingress, BridgeDirection::Egress] {
             let opposite = match direction {
                 BridgeDirection::Ingress => BridgeDirection::Egress,
@@ -935,7 +936,7 @@ mod tests {
                 noop(),
                 counter_cb(closed.clone()),
                 BridgeDirection::Ingress,
-                super::super::DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT,
+                DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT,
                 signals.clone(),
                 Arc::new(TcpFlowByteCounters::default()),
             );
@@ -979,7 +980,7 @@ mod tests {
             rx,
             accept_sink(),
             BridgeDirection::Egress,
-            super::super::DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT,
+            DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT,
         );
         // Swift supplies the buffered tail and then reports a failed read.
         let mut source = source.with_read_error_flag(Arc::new(AtomicBool::new(true)));
@@ -1004,7 +1005,7 @@ mod tests {
             noop(),
             noop(),
             BridgeDirection::Ingress,
-            super::super::DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT,
+            DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT,
             signals.clone(),
             Arc::new(TcpFlowByteCounters::default()),
         );

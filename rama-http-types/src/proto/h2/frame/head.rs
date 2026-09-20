@@ -113,9 +113,9 @@ mod tests {
     #[test]
     fn parse_errors_when_buffer_shorter_than_header_len() {
         assert!(matches!(
-            Head::parse(&[0u8; super::super::HEADER_LEN - 1]),
+            Head::parse(&[0u8; crate::proto::h2::frame::HEADER_LEN - 1]),
             Err(Error::ShortBuffer { needed, got })
-                if needed == super::super::HEADER_LEN && got == super::super::HEADER_LEN - 1,
+                if needed == crate::proto::h2::frame::HEADER_LEN && got == crate::proto::h2::frame::HEADER_LEN - 1,
         ));
     }
 }

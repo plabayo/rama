@@ -215,8 +215,8 @@ impl HeaderEncode for CrossOriginEmbedderPolicyReportOnly {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{test_decode, test_encode};
     use super::*;
+    use crate::common::{test_decode, test_encode};
 
     #[test]
     fn round_trip_each_variant_no_report_to() {

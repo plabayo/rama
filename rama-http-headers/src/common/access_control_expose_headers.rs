@@ -36,8 +36,8 @@ derive_values_or_any_header! {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{test_decode, test_encode};
     use super::*;
+    use crate::common::{test_decode, test_encode};
     use rama_utils::collections::non_empty_vec;
 
     #[test]

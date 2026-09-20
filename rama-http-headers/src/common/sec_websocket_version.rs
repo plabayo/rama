@@ -36,8 +36,8 @@ impl HeaderEncode for SecWebSocketVersion {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{test_decode, test_encode};
     use super::SecWebSocketVersion;
+    use crate::common::{test_decode, test_encode};
 
     #[test]
     fn decode_v13() {

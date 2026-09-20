@@ -321,8 +321,8 @@ impl HeaderEncode for ContentSecurityPolicy {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{test_decode, test_encode};
     use super::*;
+    use crate::common::{test_decode, test_encode};
 
     use rama_net::Protocol;
     use rama_net::address::Domain;

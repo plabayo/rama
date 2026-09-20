@@ -247,7 +247,7 @@ signals }"##,
         let event: Event<PatchSignals<String>> = patch.clone().try_into().unwrap();
         assert_eq!(event.event(), Some(EventType::PatchSignals.as_str()));
 
-        let event: super::super::DatastarEvent = patch.try_into().unwrap();
+        let event: crate::body::sse::datastar::DatastarEvent = patch.try_into().unwrap();
         assert_eq!(event.event(), Some(EventType::PatchSignals.as_str()));
     }
 

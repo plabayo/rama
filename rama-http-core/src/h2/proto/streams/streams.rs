@@ -497,7 +497,9 @@ where
     /// Cheap clone of the shared `PeerSettingsState` cell — the canonical
     /// handle for observing the peer's initial SETTINGS frame. Holding
     /// the returned `Arc` does NOT extend the connection's lifetime.
-    pub(crate) fn peer_settings_state(&self) -> std::sync::Arc<super::super::PeerSettingsState> {
+    pub(crate) fn peer_settings_state(
+        &self,
+    ) -> std::sync::Arc<crate::h2::proto::PeerSettingsState> {
         self.inner.lock().actions.send.peer_settings_state()
     }
 

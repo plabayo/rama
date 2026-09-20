@@ -1,6 +1,5 @@
 //! A server that advertises a preferred address, and the sockets it owns for it (RFC 9000 §9.6).
 
-use super::super::*;
 use super::lifecycle::{
     SegmentLog, block_segments_for, breakable_segmenting_socket, breakable_socket, close_receive,
     configs, endpoint_with, exchange, fail_receiver, handshake, open_receive, open_segment_hold,
@@ -8,6 +7,7 @@ use super::lifecycle::{
 };
 use super::{DropObserver, TestSocket, probe_socket};
 use crate::driver::connection::{MAX_TRANSMIT_SEGMENTS, Outcome, RETAINED_DESCRIPTORS};
+use crate::driver::endpoint::*;
 use rama_udp::UdpSocketConfig;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::sync::atomic::Ordering;

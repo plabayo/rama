@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use crate::protobuf::prost::{DecodeError, Message, types::Any};
 use crate::protobuf::types::richer_error::FromAnyRef;
 
-use super::super::{IntoAny, pb};
+use crate::protobuf::types::richer_error::{IntoAny, pb};
 
 /// Used to encode/decode the `ErrorInfo` standard error message described in
 /// [error_details.proto]. Describes the cause of the error with structured
@@ -96,8 +96,8 @@ impl From<ErrorInfo> for pb::ErrorInfo {
 mod tests {
     use std::collections::HashMap;
 
-    use super::super::super::{FromAny, IntoAny};
     use super::ErrorInfo;
+    use crate::protobuf::types::richer_error::{FromAny, IntoAny};
 
     #[test]
     fn gen_error_info() {

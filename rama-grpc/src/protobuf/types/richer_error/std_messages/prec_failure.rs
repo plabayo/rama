@@ -2,7 +2,7 @@ use crate::protobuf::prost::{DecodeError, Message, types::Any};
 
 use crate::protobuf::types::richer_error::FromAnyRef;
 
-use super::super::{IntoAny, pb};
+use crate::protobuf::types::richer_error::{IntoAny, pb};
 
 /// Used at the `violations` field of the [`PreconditionFailure`] struct.
 /// Describes a single precondition failure.
@@ -157,8 +157,8 @@ impl From<PreconditionFailure> for pb::PreconditionFailure {
 
 #[cfg(test)]
 mod tests {
-    use super::super::super::{FromAny, IntoAny};
     use super::PreconditionFailure;
+    use crate::protobuf::types::richer_error::{FromAny, IntoAny};
 
     #[test]
     fn gen_prec_failure() {

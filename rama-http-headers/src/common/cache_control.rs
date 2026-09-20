@@ -614,8 +614,8 @@ impl FromStr for KnownDirective {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{test_decode, test_encode};
     use super::*;
+    use crate::common::{test_decode, test_encode};
 
     #[test]
     fn test_parse_multiple_headers() {

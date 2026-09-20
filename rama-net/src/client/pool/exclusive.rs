@@ -664,8 +664,8 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::super::{PooledConnector, ReqToConnID};
     use super::*;
+    use crate::client::pool::{PooledConnector, ReqToConnID};
     use crate::client::{ConnectorService, EstablishedClientConnection};
     use rama_core::ServiceInput;
     use rama_core::extensions::ExtensionsRef;

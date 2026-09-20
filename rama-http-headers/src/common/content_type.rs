@@ -544,7 +544,8 @@ impl std::str::FromStr for ContentType {
 
 #[cfg(test)]
 mod tests {
-    use super::{super::test_decode, ContentType};
+    use super::ContentType;
+    use crate::common::test_decode;
 
     #[test]
     fn jose_json_is_valid() {

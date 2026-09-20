@@ -155,7 +155,7 @@ impl DomainBuilder {
     }
 
     /// Append every label from another label-aware value (e.g. a [`Domain`]
-    /// or [`Host`](super::super::Host)).
+    /// or [`Host`](crate::address::Host)).
     ///
     /// # Errors
     ///
@@ -295,8 +295,8 @@ impl From<LabelError> for PushError {
 mod tests {
     use core::error::Error as _;
 
-    use super::super::Domain;
     use super::*;
+    use crate::address::domain::Domain;
 
     #[test]
     fn build_single_label() {

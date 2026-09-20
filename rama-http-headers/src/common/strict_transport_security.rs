@@ -270,8 +270,8 @@ impl HeaderEncode for StrictTransportSecurity {
 
 #[cfg(test)]
 mod tests {
-    use super::super::test_decode;
     use super::*;
+    use crate::common::test_decode;
 
     #[test]
     fn test_parse_max_age() {
@@ -401,7 +401,7 @@ mod tests {
     fn test_encode_canonical_order() {
         let sts = StrictTransportSecurity::including_subdomains_for_max_seconds(31_536_000)
             .with_preload(true);
-        let map = super::super::test_encode(sts);
+        let map = crate::common::test_encode(sts);
         let raw = map
             .get(StrictTransportSecurity::name())
             .expect("header set")
@@ -415,7 +415,7 @@ mod tests {
     fn test_encode_preload_excluding_subdomains() {
         let sts = StrictTransportSecurity::excluding_subdomains_for_max_seconds(31_536_000)
             .with_preload(true);
-        let map = super::super::test_encode(sts);
+        let map = crate::common::test_encode(sts);
         let raw = map
             .get(StrictTransportSecurity::name())
             .expect("header set")
@@ -429,7 +429,7 @@ mod tests {
     fn test_preload_round_trip_idempotent() {
         let sts = StrictTransportSecurity::including_subdomains_for_max_seconds(31_536_000)
             .with_preload(true);
-        let map = super::super::test_encode(sts.clone());
+        let map = crate::common::test_encode(sts.clone());
         let raw = map
             .get(StrictTransportSecurity::name())
             .expect("header set")

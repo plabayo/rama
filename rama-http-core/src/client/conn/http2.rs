@@ -17,8 +17,8 @@ use rama_http_types::{Request, Response, StreamingBody};
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use super::super::dispatch::{self, TrySendError};
 use crate::body::Incoming as IncomingBody;
+use crate::client::dispatch::{self, TrySendError};
 use crate::proto;
 
 /// The sender side of an established connection.

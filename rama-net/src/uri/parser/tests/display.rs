@@ -1,10 +1,10 @@
 //! `Display` impl on [`Uri`] — round-trip from parse + format.
 
-use super::super::super::UriInner;
-use super::super::super::owned::OwnedUriRef;
 use super::parse_graceful;
 use crate::Protocol;
 use crate::address::{Authority, Domain, Host, HostWithOptPort, UserInfo};
+use crate::uri::UriInner;
+use crate::uri::owned::OwnedUriRef;
 use crate::uri::{Fragment, Query, Uri};
 
 use rama_core::bytes::BytesMut;

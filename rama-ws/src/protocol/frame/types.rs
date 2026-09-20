@@ -476,7 +476,7 @@ impl LengthFormat {
 mod tests {
     use super::*;
 
-    use super::super::coding::{OpCode, OpCodeData};
+    use crate::protocol::frame::coding::{OpCode, OpCodeData};
     use std::io::Cursor;
 
     #[test]

@@ -1,6 +1,6 @@
 //! Borrowed HTTP request-target validation and parser parity.
 
-use super::super::{MAX_URI_LEN, validate_http_request_target};
+use crate::uri::parser::{MAX_URI_LEN, validate_http_request_target};
 use crate::uri::{Component, ParseError, Uri};
 
 #[test]

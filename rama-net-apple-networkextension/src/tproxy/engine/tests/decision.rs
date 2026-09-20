@@ -328,7 +328,7 @@ fn tcp_decision_panic_honors_passthrough_action() {
             on_wake: None,
         },
         Duration::from_secs(2),
-        super::super::DecisionDeadlineAction::Passthrough,
+        crate::tproxy::engine::DecisionDeadlineAction::Passthrough,
     );
 
     let decision = engine.new_tcp_session(
@@ -476,7 +476,7 @@ fn decision_deadline_passthrough_when_action_is_passthrough() {
     }))
     .with_runtime_factory(TestRuntimeFactory)
     .with_decision_deadline(Duration::from_millis(100))
-    .with_decision_deadline_action(super::super::DecisionDeadlineAction::Passthrough)
+    .with_decision_deadline_action(crate::tproxy::engine::DecisionDeadlineAction::Passthrough)
     .build()
     .expect("build engine");
 
@@ -515,7 +515,7 @@ fn decision_deadline_does_not_fire_for_fast_handlers() {
     let engine = build_engine_with_decision_deadline(
         handler,
         Duration::from_secs(2),
-        super::super::DecisionDeadlineAction::Block,
+        crate::tproxy::engine::DecisionDeadlineAction::Block,
     );
 
     let action = engine.new_tcp_session(

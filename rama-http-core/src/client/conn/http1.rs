@@ -16,8 +16,8 @@ use rama_net::conn::ConnectionHealthWatcher;
 use rama_net::extensions::StreamTransformed;
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use super::super::dispatch::{self, TrySendError};
 use crate::body::Incoming as IncomingBody;
+use crate::client::dispatch::{self, TrySendError};
 use crate::proto;
 
 type Dispatcher<T, B> =

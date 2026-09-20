@@ -367,9 +367,9 @@ mod tests {
     use rama_net::user::credentials::bearer;
     use rama_utils::str::non_empty_str;
 
-    use super::super::{test_decode, test_encode};
     use super::{Authorization, Basic, Bearer};
     use crate::HeaderMapExt;
+    use crate::common::{test_decode, test_encode};
 
     #[test]
     fn basic_encode() {

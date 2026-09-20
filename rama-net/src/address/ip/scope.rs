@@ -314,8 +314,8 @@ pub fn scope_cidrs(scopes: IpScopes) -> Vec<IpNet> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::private::is_private_ip;
     use super::*;
+    use crate::address::ip::private::is_private_ip;
 
     /// The scope classifier must agree with the existing `is_private_ip` bool:
     /// non-global iff private. This pins `ip_scope` against the trusted

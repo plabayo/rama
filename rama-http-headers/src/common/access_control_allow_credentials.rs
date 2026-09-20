@@ -65,8 +65,8 @@ impl HeaderEncode for AccessControlAllowCredentials {
 
 #[cfg(test)]
 mod tests {
-    use super::super::test_decode;
     use super::*;
+    use crate::common::test_decode;
 
     #[test]
     fn allow_credentials_is_case_sensitive() {

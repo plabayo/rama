@@ -61,8 +61,8 @@ impl HeaderEncode for XContentTypeOptions {
 
 #[cfg(test)]
 mod tests {
-    use super::super::test_decode;
     use super::*;
+    use crate::common::test_decode;
 
     #[test]
     fn decode_nosniff() {

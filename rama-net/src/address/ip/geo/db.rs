@@ -330,8 +330,8 @@ pub struct IpGeoInfo {
 mod tests {
     use core::net::IpAddr;
 
-    use super::super::AsOrg;
     use super::*;
+    use crate::address::ip::geo::AsOrg;
     use crate::address::ip::geo::mmdb::{IpVersion, MmdbBuilder};
     use crate::asn::LossyAsn;
 

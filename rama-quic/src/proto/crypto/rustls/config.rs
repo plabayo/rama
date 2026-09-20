@@ -1,5 +1,5 @@
-pub(crate) use super::super::config::{AlpnPolicy, TlsConfigError, TlsOptions};
 use super::{QuicClientConfig, QuicServerConfig, rustls};
+pub(crate) use crate::proto::crypto::config::{AlpnPolicy, TlsConfigError, TlsOptions};
 use rama_tls::{
     ProtocolVersion, TlsSupportedVersions, client::TlsClientConfig, server::TlsServerConfig,
 };

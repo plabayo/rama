@@ -45,8 +45,8 @@ impl Pragma {
 
 #[cfg(test)]
 mod tests {
-    use super::super::test_decode;
     use super::Pragma;
+    use crate::common::test_decode;
 
     #[test]
     fn no_cache_is_no_cache() {

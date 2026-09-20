@@ -420,6 +420,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rate::ClientIpRateKey;
     use rama_core::extensions::{Extensions, ExtensionsRef};
     use std::net::{IpAddr, Ipv4Addr};
 
@@ -461,7 +462,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn per_key_budgets_are_independent() {
-        let policy = KeyedRatePolicy::abort(super::super::ClientIpRateKey::new(), Rate::per_sec(1));
+        let policy = KeyedRatePolicy::abort(ClientIpRateKey::new(), Rate::per_sec(1));
 
         assert_ready(policy.check(input_for_ip([10, 0, 0, 1])).await);
         // same client again: over budget, with a downcastable error
@@ -474,7 +475,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn refills_per_key() {
-        let policy = KeyedRatePolicy::abort(super::super::ClientIpRateKey::new(), Rate::per_sec(2));
+        let policy = KeyedRatePolicy::abort(ClientIpRateKey::new(), Rate::per_sec(2));
 
         assert_ready(policy.check(input_for_ip([10, 0, 0, 1])).await);
         assert_ready(policy.check(input_for_ip([10, 0, 0, 1])).await);
@@ -486,13 +487,12 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn missing_key_modes() {
-        let allowing =
-            KeyedRatePolicy::abort(super::super::ClientIpRateKey::new(), Rate::per_sec(1));
+        let allowing = KeyedRatePolicy::abort(ClientIpRateKey::new(), Rate::per_sec(1));
         // no SocketInfo extension: no key
         assert_ready(allowing.check(Extensions::new()).await);
         assert_ready(allowing.check(Extensions::new()).await);
 
-        let strict = KeyedRatePolicy::abort(super::super::ClientIpRateKey::new(), Rate::per_sec(1))
+        let strict = KeyedRatePolicy::abort(ClientIpRateKey::new(), Rate::per_sec(1))
             .with_missing_key_allowed(false);
         let err = assert_abort(strict.check(Extensions::new()).await);
         assert!(err.downcast_ref::<MissingRateKey>().is_some());
@@ -516,7 +516,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn wait_mode_paces_per_key() {
-        let policy = KeyedRatePolicy::wait(super::super::ClientIpRateKey::new(), Rate::per_sec(10));
+        let policy = KeyedRatePolicy::wait(ClientIpRateKey::new(), Rate::per_sec(10));
 
         let start = tokio::time::Instant::now();
         for _ in 0..10 {
@@ -555,11 +555,8 @@ mod tests {
     #[should_panic(expected = "burst must be non-zero")]
     fn zero_burst_is_rejected_at_configuration_time() {
         drop(
-            KeyedRatePolicy::<_, IpAddr>::abort(
-                super::super::ClientIpRateKey::new(),
-                Rate::per_sec(1),
-            )
-            .with_burst(0),
+            KeyedRatePolicy::<_, IpAddr>::abort(ClientIpRateKey::new(), Rate::per_sec(1))
+                .with_burst(0),
         );
     }
 
@@ -567,11 +564,8 @@ mod tests {
     #[should_panic(expected = "max_keys must be non-zero")]
     fn zero_max_keys_is_rejected_at_configuration_time() {
         drop(
-            KeyedRatePolicy::<_, IpAddr>::abort(
-                super::super::ClientIpRateKey::new(),
-                Rate::per_sec(1),
-            )
-            .with_max_keys(0),
+            KeyedRatePolicy::<_, IpAddr>::abort(ClientIpRateKey::new(), Rate::per_sec(1))
+                .with_max_keys(0),
         );
     }
 

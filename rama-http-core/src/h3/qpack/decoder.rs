@@ -980,7 +980,7 @@ mod regression_tests {
 
     #[test]
     fn individual_limits_have_rfc_7_4_scope_and_recover_stream_storage() {
-        use super::super::error::ErrorScope;
+        use crate::h3::qpack::error::ErrorScope;
         use rama_http_types::proto::h3::Code;
         let config = DecoderConfig {
             max_field_section_size: 1,

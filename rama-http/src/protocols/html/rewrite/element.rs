@@ -8,8 +8,8 @@ use std::str::FromStr;
 use rama_core::error::BoxError;
 use rama_utils::byte_set::{set_each, set_range};
 
-use super::super::tokenizer::{HtmlTag, StartTag};
-use super::super::{IntoHtml, escape_attr_value_into};
+use crate::protocols::html::tokenizer::{HtmlTag, StartTag};
+use crate::protocols::html::{IntoHtml, escape_attr_value_into};
 
 /// The result of an element content handler. An error aborts the rewrite.
 pub type HandlerResult = Result<(), BoxError>;
@@ -284,7 +284,7 @@ impl<'t> Element<'t> {
     /// Inserts content immediately before the element's start tag.
     ///
     /// Accepts any [`IntoHtml`] value: plain strings are escaped; wrap
-    /// trusted HTML in [`PreEscaped`](super::super::PreEscaped) to emit it
+    /// trusted HTML in [`PreEscaped`](crate::protocols::html::PreEscaped) to emit it
     /// verbatim.
     pub fn before(&mut self, content: impl IntoHtml) {
         reserve_html(&mut self.before, &content);
