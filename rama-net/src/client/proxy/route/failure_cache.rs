@@ -1332,7 +1332,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn expired_entry_allows_only_one_concurrent_probe() {
         const TASKS: usize = 32;
 
@@ -1358,28 +1358,29 @@ mod tests {
                 }
             }
         });
-        let connector = ProxyRouteFailureCacheConnector::new(
-            inner,
-            cache(ProxyRouteFailureCacheScope::PerDestination),
-        );
+        let mut failure_cache = cache(ProxyRouteFailureCacheScope::PerDestination);
+        // Moka uses wall time, independently of Tokio's paused clock. Exclude
+        // idle eviction so a descheduled runner still probes the same entry.
+        failure_cache.entries = Arc::new(Cache::new(32));
+        let connector = ProxyRouteFailureCacheConnector::new(inner, failure_cache);
 
         let _initial_error = connector
             .serve(request("one.example:443", proxy(None)))
             .await
             .unwrap_err();
-        tokio::time::sleep(Duration::from_millis(40)).await;
+        tokio::time::advance(Duration::from_millis(40)).await;
 
         let barrier = Arc::new(Barrier::new(TASKS + 1));
-        let mut tasks = Vec::with_capacity(TASKS);
+        let mut tasks = tokio::task::JoinSet::new();
         for _ in 0..TASKS {
             let connector = connector.clone();
             let barrier = barrier.clone();
-            tasks.push(tokio::spawn(async move {
+            tasks.spawn(async move {
                 barrier.wait().await;
                 connector
                     .serve(request("one.example:443", proxy(None)))
                     .await
-            }));
+            });
         }
         let probe_notification = probe_started.notified();
         within_test_timeout(async {
@@ -1387,13 +1388,35 @@ mod tests {
             probe_notification.await;
         })
         .await;
-        tokio::task::yield_now().await;
-        release_probe.notify_one();
-
-        for task in tasks {
-            let _error = within_test_timeout(task).await.unwrap().unwrap_err();
+        // Keep the probe in flight until every competing caller has observed
+        // its lease. A yield does not guarantee that all tasks have run.
+        for _ in 0..TASKS - 1 {
+            let error = within_test_timeout(tasks.join_next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap_err();
+            assert!(
+                error
+                    .get_ref()
+                    .downcast_ref::<ProxyRouteFailureCachedError>()
+                    .is_some()
+            );
         }
         assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        release_probe.notify_one();
+        let error = within_test_timeout(tasks.join_next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+        assert!(
+            error
+                .get_ref()
+                .downcast_ref::<ProxyRouteFailureCachedError>()
+                .is_none()
+        );
+        assert!(tasks.is_empty());
     }
 
     #[tokio::test]
