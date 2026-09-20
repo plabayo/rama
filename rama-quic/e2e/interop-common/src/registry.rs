@@ -168,6 +168,7 @@ pub async fn for_each_case_within<S, F, Fut>(
         };
         let deadline = run.deadline;
         let what = run.what.clone();
+        println!("running {what}");
         deadline.wait(&what, body(run)).await;
     }
 }

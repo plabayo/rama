@@ -25,6 +25,19 @@ the peer's key phase read back so the counter is not the only witness, and a con
 update is asked for. quiche exposes no key update at all. Neither peer exposes a TLS
 keying-material exporter, so exporters stay covered against Quinn.
 
+`tests/version_cases.rs` reports v2 first-flight, compatible-upgrade and version-restart
+cases as unsupported by the pinned aioquic 1.2.0. Its `next_key_phase` uses `quic ku`
+for v2, where RFC 9369 §3.3.2 requires `quicv2 ku`. Rama's randomized early key update
+can expose this even in a short exchange. A probe against the RFC's Appendix A.5 vector
+checks the limitation and requires revisiting the exclusions when the peer is fixed.
+The peer's cryptography and Rama's production key-update policy remain unmodified.
+V1 negotiation and key-update cases still run. The pinned Quinn and quiche peers also
+lack v2 support; Rama's v2 vectors, negotiation and forced key-update tests run in
+`rama-quic` for each TLS provider. External v2 interoperability remains a coverage gap.
+
+Set `RUST_LOG=rama_quic=trace` to capture Rama's packet and recovery traces when
+investigating an interoperability failure.
+
 ## Prerequisites
 
 - A Rust toolchain.

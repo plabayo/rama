@@ -15,7 +15,7 @@
 [crates-badge]: https://img.shields.io/crates/v/rama-quic-proto.svg
 [crates-url]: https://crates.io/crates/rama-quic-proto
 [docs-badge]: https://img.shields.io/docsrs/rama-quic-proto/latest
-[docs-url]: https://docs.rs/rama-quic-proto/latest/rama_quic_proto/index.html
+[docs-url]: https://ramaproxy.org/docs/rama/quic/proto/
 [license-mit-badge]: https://img.shields.io/badge/license-MIT-blue.svg
 [license-mit-url]: https://github.com/plabayo/rama/blob/main/LICENSE-MIT
 [license-apache-badge]: https://img.shields.io/badge/license-APACHE-blue.svg

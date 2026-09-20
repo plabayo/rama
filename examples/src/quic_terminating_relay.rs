@@ -221,7 +221,7 @@ async fn main() -> Result<(), BoxError> {
     };
     let upstream_anchor = CertificateDer::from_pem_file(&settings.upstream_ca)?;
 
-    // The application's shutdown. Ctrl-c stops the relay, which stops its endpoints, and so
+    // The application's shutdown. Ctrl-c stops the relay, which drains its endpoints, and so
     // does the serving task ending: dropping its side of this channel resolves the receiver,
     // so a fatal failure is reported without waiting for a signal that may never come.
     let (serving_ended, serving_ends) = oneshot::channel::<()>();
@@ -232,7 +232,7 @@ async fn main() -> Result<(), BoxError> {
         }
     });
 
-    let relay = Endpoint::build(Executor::graceful(shutdown.guard()))
+    let relay = Endpoint::build(Executor::new())
         .with_server_config(server_config(&auth)?)
         .bind_address(settings.listen)
         .await?;
@@ -243,7 +243,7 @@ async fn main() -> Result<(), BoxError> {
         true => SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), 0),
         false => SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), 0),
     };
-    let client = Endpoint::build(Executor::graceful(shutdown.guard()))
+    let client = Endpoint::build(Executor::new())
         .bind_address(outbound)
         .await?;
     tracing::info!(
@@ -297,16 +297,11 @@ async fn serve_relay(
     let mut carrying: Vec<JoinHandle<()>> = Vec::new();
     let outcome = loop {
         let incoming = tokio::select! {
+            _ = stopping.cancelled() => break Ok(()),
             incoming = relay.accept() => incoming,
             failed = finished(&mut carrying) => match failed {
                 Ok(()) => continue,
-                Err(error) => {
-                    // Nothing more will be served, so stop both endpoints before joining: a
-                    // connection still waiting in accept_bi would otherwise hold this open.
-                    relay.close(RELAY_STOPPING, b"relay stopping");
-                    client.close(RELAY_STOPPING, b"relay stopping");
-                    break Err(error);
-                }
+                Err(error) => break Err(error),
             },
         };
         let Some(incoming) = incoming else {
@@ -335,8 +330,15 @@ async fn serve_relay(
             drop(permit);
         }));
     };
-    // Whatever the loop ended for, the tasks it started are joined.
+    // Whatever the loop ended for, close both endpoints before joining its tasks.
+    relay.close(RELAY_STOPPING, b"relay stopping");
+    client.close(RELAY_STOPPING, b"relay stopping");
     let joined = join(carrying).await;
+    // Keep the closing state long enough to answer late packets with CONNECTION_CLOSE.
+    // Immediate endpoint shutdown can retire that state and race a stateless reset
+    // against the close; the serving task owns this drain under its shutdown guard.
+    tokio::join!(relay.wait_idle(), client.wait_idle());
+    tokio::join!(relay.shutdown(), client.shutdown());
     outcome.and(joined)
 }
 

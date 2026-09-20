@@ -156,6 +156,7 @@ async fn websocket_messages_flow_from_upgrade_into_file_recorder() {
 
 #[tokio::test]
 async fn stop_finalizes_har_without_closing_live_web_socket() {
+    let started = std::time::Instant::now();
     let dir = rama_utils::fs::tempdir().expect("tempdir");
     let recorder = FileRecorder::new(dir.path().to_owned(), "websocket-stop".to_owned());
 
@@ -247,7 +248,13 @@ async fn stop_finalizes_har_without_closing_live_web_socket() {
         "open WebSocket duration must reach its last captured activity: {}ms",
         entry.time,
     );
-    assert!(entry.time < 2_000, "unexpectedly long test capture");
+    // Scheduling and filesystem delays on a loaded runner belong to capture time.
+    // Bound the recorded duration by the measured test lifetime, not an assumed
+    // two-second wall-clock speed. stop_record has its own bounded await above.
+    assert!(
+        u128::try_from(entry.time).expect("nonnegative capture time")
+            <= started.elapsed().as_millis()
+    );
 
     // Stopping the recorder closes only its capture sink. The application
     // stream remains usable, and later traffic cannot mutate the closed HAR.

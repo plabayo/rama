@@ -373,6 +373,13 @@ fn trimmed(mut text: String, cap: usize) -> String {
 /// versions are then read back from the interpreter itself, so a wrong or broken environment
 /// fails here with what it actually is.
 pub async fn prepare() {
+    if std::env::var_os("RUST_LOG").is_some() {
+        let _ = rama::telemetry::tracing::subscriber::fmt()
+            .with_env_filter(rama::telemetry::tracing::subscriber::EnvFilter::from_default_env())
+            .with_writer(std::io::stderr)
+            .with_ansi(false)
+            .try_init();
+    }
     INTERPRETER
         .get_or_init(|| async {
             let mut command = Command::new("uv");
@@ -642,8 +649,9 @@ impl AioQuic {
     /// The next line the peer wrote, or a failure naming what was being waited for.
     pub async fn event(&mut self, what: &str, deadline: Deadline) -> Event {
         let line = deadline
-            .wait(what, capped_line(&mut self.output, LINE_LIMIT))
+            .try_wait(capped_line(&mut self.output, LINE_LIMIT))
             .await
+            .unwrap_or_else(|| panic!("{what}: the scenario's deadline ran out{}", self.said()))
             .unwrap_or_else(|reason| panic!("{what}: the peer's output: {reason}"))
             .unwrap_or_else(|| panic!("{what}: the peer stopped without saying so{}", self.said()));
         Event(serde_json::from_str(&line).unwrap_or_else(|reason| {

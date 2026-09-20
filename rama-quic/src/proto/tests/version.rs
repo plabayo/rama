@@ -171,6 +171,38 @@ fn v2_handshake_completes_with_v2_long_headers() {
     let _transmit = chunks.finalize();
 }
 
+/// Both endpoints can initiate a key update after a v2 handshake, without
+/// depending on the randomized threshold for the first automatic update.
+#[test]
+fn v2_key_updates_carry_stream_data_from_either_initiator() {
+    let _guard = subscribe();
+    for initiator in [Side::Client, Side::Server] {
+        let mut pair = Pair::default();
+        let mut config = client_config();
+        config.set_version(Version::V2).unwrap();
+        let (client, server) = pair.connect_with(config);
+        let client_before = pair.client_conn_mut(client).stats().key_updates;
+        let server_before = pair.server_conn_mut(server).stats().key_updates;
+        let now = pair.time;
+        let connection = match initiator {
+            Side::Client => pair.client_conn_mut(client),
+            Side::Server => pair.server_conn_mut(server),
+        };
+        assert!(connection.force_key_update(now));
+        connection.ping();
+        pair.drive();
+        exchange(&mut pair, client, server);
+        assert_eq!(
+            pair.client_conn_mut(client).stats().key_updates,
+            client_before + 1
+        );
+        assert_eq!(
+            pair.server_conn_mut(server).stats().key_updates,
+            server_before + 1
+        );
+    }
+}
+
 /// A server that speaks only v1 answers a v2 first flight with Version Negotiation that lists v1.
 #[test]
 fn a_v1_only_server_negotiates_a_v2_client_down() {

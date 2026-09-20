@@ -8,8 +8,8 @@ mod common;
 
 use common::*;
 use interop_common::{
-    PeerObservation, Role, VersionScenario, for_each_case_within,
-    registry::CaseRun,
+    PeerObservation, Role, Unsupported, VersionScenario, for_each_case_within,
+    registry::{Case, CaseRun},
     scenario::SERVER_NAME,
     version::{check_peer_version, rama_client_side, rama_server_side, version_cases},
 };
@@ -19,6 +19,65 @@ const PEER: &str = "aioquic";
 /// A client's first unidirectional stream, and its first bidirectional one.
 const UNI: u64 = 2;
 const BI: u64 = 0;
+
+// aioquic 1.2.0 uses the v1 key-update label for v2 (RFC 9369 §3.3.2).
+// Rama's randomized early update can therefore stall even these short exchanges.
+// Keep the peer unmodified and report the unsupported cases, as the other peers do.
+fn supported_version_cases() -> Vec<Case<VersionScenario>> {
+    version_cases()
+        .into_iter()
+        .filter(|case| {
+            if case.scenario.as_client.expected(true) == Version::V2
+                || case.scenario.as_server.expected(true) == Version::V2
+            {
+                println!(
+                    "{}",
+                    Unsupported {
+                        case: case.name,
+                        peer: PEER,
+                        reason: "aioquic 1.2.0 derives v2 key updates with the v1 label",
+                    }
+                );
+                false
+            } else {
+                true
+            }
+        })
+        .collect()
+}
+
+/// Re-enable the v2 cases when the peer passes RFC 9369 Appendix A.5.
+/// This tests the pinned peer directly, without changing its cryptography.
+#[tokio::test]
+async fn pinned_peer_has_the_known_v2_key_update_limitation() {
+    prepare().await;
+    let mut command = tokio::process::Command::new(python());
+    command
+        .args([
+            "-c",
+            r#"
+from aioquic.quic.crypto import CryptoContext, next_key_phase
+from aioquic.quic.packet import QuicProtocolVersion
+from aioquic.tls import CipherSuite, cipher_suite_hash, hkdf_expand_label
+secret = bytes.fromhex("9ac312a7f877468ebe69422748ad00a15443f18203a07d6060f688f30f21632b")
+expected = bytes.fromhex("c69374c49e3d2a9466fa689e49d476db5d0dfbc87d32ceeaa6343fd0ae4c7d88")
+suite = CipherSuite.CHACHA20_POLY1305_SHA256
+algorithm = cipher_suite_hash(suite)
+assert hkdf_expand_label(algorithm, secret, b"quicv2 ku", b"", 32) == expected
+context = CryptoContext()
+context.setup(cipher_suite=suite, secret=secret, version=QuicProtocolVersion.VERSION_2)
+actual = next_key_phase(context).secret
+assert actual == hkdf_expand_label(algorithm, secret, b"quic ku", b"", 32), "peer changed: review the version exclusions"
+assert actual != expected, "peer fixed: re-enable v2 interoperability cases"
+"#,
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let result = bounded_command(command, LIMIT)
+        .await
+        .expect("peer probe finishes");
+    assert!(result.status.success(), "{}", result.stderr);
+}
 
 fn versions_argument(versions: &[Version]) -> String {
     versions
@@ -53,7 +112,7 @@ async fn version_cases_rama_client() {
     for_each_case_within(
         PEER,
         Role::RamaClient,
-        version_cases(),
+        supported_version_cases(),
         LIMIT,
         |run| async move {
             let identity = Identity::generate(SERVER_NAME);
@@ -118,7 +177,7 @@ async fn version_cases_rama_server() {
     for_each_case_within(
         PEER,
         Role::RamaServer,
-        version_cases(),
+        supported_version_cases(),
         LIMIT,
         |run| async move {
             let identity = Identity::generate(SERVER_NAME);

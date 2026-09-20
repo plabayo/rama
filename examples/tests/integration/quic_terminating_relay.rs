@@ -51,6 +51,7 @@ const READ_CAP: usize = octets::kib(64);
 /// The code the example gives either peer when it ends a stream for them.
 const RELAY_CANCELLED: u32 = 1;
 /// The codes the client and the origin use when they give up on a direction.
+const RELAY_STOPPING: u32 = 4;
 const CLIENT_STOPPED: u32 = 9;
 const ORIGIN_STOPPED: u32 = 11;
 /// The codes the example closes a client connection with when its upstream fails it.
@@ -663,14 +664,14 @@ async fn an_interrupted_relay_stops_its_peers_and_exits() {
         .await
         .expect("the client connection ended with the relay");
     assert!(
-        matches!(&told, ConnectionError::ApplicationClosed(close) if close.error_code() == VarInt::from(0u32)),
+        matches!(&told, ConnectionError::ApplicationClosed(close) if close.error_code() == VarInt::from(RELAY_STOPPING)),
         "the client was told the relay closed: {told:?}"
     );
     let told = tokio::time::timeout(LIMIT, upstream.closed())
         .await
         .expect("the upstream connection ended with the relay");
     assert!(
-        matches!(&told, ConnectionError::ApplicationClosed(close) if close.error_code() == VarInt::from(0u32)),
+        matches!(&told, ConnectionError::ApplicationClosed(close) if close.error_code() == VarInt::from(RELAY_STOPPING)),
         "the origin was told the relay closed: {told:?}"
     );
 }
