@@ -665,6 +665,9 @@ where
         return Err(BoxError::from_static_str("server identity missing"));
     }
 
+    let authenticated_identity = (connector_data.server_verify_mode != ServerVerifyMode::Disable)
+        .then(|| connector_data.server_name.clone())
+        .flatten();
     let store_server_certificate_chain = connector_data.store_server_certificate_chain;
     #[cfg(feature = "dial9")]
     let dial9_server_name = connector_data.server_name.clone();
@@ -725,6 +728,12 @@ where
         }
     };
 
+    stream
+        .get_ref()
+        .extensions()
+        .insert(rama_tls::client::TlsServerAuthentication(
+            authenticated_identity,
+        ));
     let params = match stream.ssl().session() {
         Some(ssl_session) => {
             let protocol_version = ssl_session

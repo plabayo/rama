@@ -13,6 +13,36 @@ use rama_net::{
     tls::{ApplicationProtocol, TlsAlpn},
 };
 
+/// Whether a TLS configuration changes connection policy and authenticates its server.
+/// Provider crates refine this common summary for their native overrides.
+#[derive(Debug, Clone, Copy)]
+pub struct TlsClientSecurityPolicy {
+    /// Request overrides must not reuse a connection established under another policy.
+    pub has_overrides: bool,
+    /// Standard verification establishes a server identity after a successful handshake.
+    /// Opaque custom verification hooks must set this to false.
+    pub authenticates_server: bool,
+}
+impl TlsClientSecurityPolicy {
+    /// Inspect the common TLS extension types; provider-specific hooks require refinement.
+    pub fn from_extensions(extensions: &Extensions) -> Self {
+        Self {
+            has_overrides: extensions.contains::<TlsServerName>()
+                || extensions.contains::<TlsServerVerify>()
+                || extensions.contains::<TlsServerCertPins>()
+                || extensions.contains::<TlsServerTrust>()
+                || extensions.contains::<TlsClientAuth>()
+                || extensions.contains::<TlsSupportedVersions>()
+                || extensions.contains::<TlsAlpn>()
+                || extensions.contains::<TlsKeyLog>()
+                || extensions.contains::<TlsStoreServerCertChain>(),
+            authenticates_server: extensions
+                .get_ref::<TlsServerVerify>()
+                .is_none_or(|verify| verify.0 != ServerVerifyMode::Disable),
+        }
+    }
+}
+
 /// A backend agnostic builder for the common TLS configs.
 ///
 /// It holds a set of fine grained config extensions (e.g. [`TlsAlpn`], [`TlsServerVerify`])
@@ -213,6 +243,14 @@ impl TlsClientConfig {
         }
     }
 
+    /// Layer request-specific TLS extensions over this configuration.
+    /// Parent scopes are preserved and subsequent setters remain local to the result.
+    #[must_use]
+    pub fn with_overrides(mut self, overrides: &Extensions) -> Self {
+        self.0 = overrides.fork().with_base(&self.0);
+        self
+    }
+
     pub fn as_extensions(&self) -> &Extensions {
         &self.0
     }
@@ -229,7 +267,15 @@ impl TlsClientConfig {
 impl Clone for TlsClientConfig {
     fn clone(&self) -> Self {
         let clone = Self::new();
-        clone.as_extensions().extend(self.as_extensions());
+        let mut scopes = Vec::new();
+        let mut current = Some(self.as_extensions());
+        while let Some(scope) = current {
+            scopes.push(scope);
+            current = scope.parent();
+        }
+        for scope in scopes.into_iter().rev() {
+            clone.as_extensions().extend(scope);
+        }
         clone
     }
 }
@@ -677,6 +723,25 @@ mod tests {
     use super::*;
     use rama_core::extensions::Extensions;
     use rama_utils::collections::smallvec::smallvec;
+
+    #[test]
+    fn request_override_parents_survive_tls_configuration_clone() {
+        let parent = Extensions::new();
+        parent.insert(TlsServerVerify(ServerVerifyMode::Disable));
+        let request = parent.fork();
+        let config = TlsClientConfig::new().with_overrides(&request);
+        assert!(
+            !TlsClientSecurityPolicy::from_extensions(config.as_extensions()).authenticates_server
+        );
+        let clone = config.clone();
+        assert!(
+            !TlsClientSecurityPolicy::from_extensions(clone.as_extensions()).authenticates_server
+        );
+        clone.insert(TlsServerVerify(ServerVerifyMode::Auto));
+        assert!(
+            !TlsClientSecurityPolicy::from_extensions(config.as_extensions()).authenticates_server
+        );
+    }
 
     #[test]
     fn server_identity_classifies_dns_and_ip_hosts() {

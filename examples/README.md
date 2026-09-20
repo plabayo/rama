@@ -18,6 +18,7 @@ You can find these integration tests at [./tests/integration](./tests/integratio
 ## HTTP Servers and Services
 
 ### Basic HTTP Services
+- [`http3_client_server.rs`](./src/http3_client_server.rs) - Authenticated HTTP/3 client/server with common streaming bodies, trailers and pooled reuse (round-trip test included in the example)
 - [`http_service_hello.rs`](./src/http_service_hello.rs) - A simple HTTP service that returns "Hello, World!"
 - [`http_listener_hello.rs`](./src/http_listener_hello.rs) - Basic HTTP listener example
 - [`http_service_fs.rs`](./src/http_service_fs.rs) - File system service for serving static files

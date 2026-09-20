@@ -118,8 +118,10 @@ pub struct StreamsState {
     ///
     /// Streams are only added to this list when a write fails.
     pub(super) connection_blocked: Vec<StreamId>,
+    pub(super) blocked_scan: Option<(u64, u64, usize)>,
     /// Connection-level flow control budget dictated by the peer
     pub(super) max_data: u64,
+    pub(super) initial_send_credit: u64,
     /// The initial receive window
     receive_window: u64,
     /// Limit on incoming data, which is transmitted through `MAX_DATA` frames
@@ -213,7 +215,9 @@ impl StreamsState {
             pending: PendingStreamsQueue::new(),
             events: VecDeque::new(),
             connection_blocked: Vec::new(),
+            blocked_scan: None,
             max_data: 0,
+            initial_send_credit: 0,
             receive_window: receive_window.into(),
             local_max_data: receive_window.into(),
             sent_max_data: receive_window,
@@ -259,6 +263,7 @@ impl StreamsState {
                 self.events.push_back(StreamEvent::Available { dir });
             }
         }
+        self.initial_send_credit = params.initial_max_data.into();
         self.received_max_data(params.initial_max_data);
         for i in 0..self.max_remote[Dir::Bi as usize] {
             let id = StreamId::new(!self.side, Dir::Bi, i);
@@ -842,6 +847,9 @@ impl StreamsState {
 
     /// Handle increase to connection-level flow control limit
     pub(crate) fn received_max_data(&mut self, n: VarInt) {
+        if self.initial_send_credit == 0 {
+            self.initial_send_credit = n.into();
+        }
         self.max_data = self.max_data.max(n.into());
     }
 
@@ -864,6 +872,7 @@ impl StreamsState {
         }
 
         let write_limit = self.write_limit();
+        let reserve_cap = (self.initial_send_credit / 2).min(self.send_window / 2);
         let max_send_data = self.max_send_data(id);
         if let Some(ss) = self
             .send
@@ -871,7 +880,7 @@ impl StreamsState {
             .map(get_or_insert_send(max_send_data))
         {
             if ss.increase_max_data(offset) {
-                if write_limit > 0 {
+                if write_limit > ss.connection_reserve.min(reserve_cap) {
                     self.events.push_back(StreamEvent::Writable { id });
                 } else if !ss.connection_blocked {
                     // The stream is still blocked on the connection flow control
@@ -906,23 +915,34 @@ impl StreamsState {
             return Some(StreamEvent::Opened { dir });
         }
 
-        if self.write_limit() > 0 {
-            while let Some(id) = self.connection_blocked.pop() {
-                let Some(stream) = self.send.get_mut(&id).and_then(|s| s.as_mut()) else {
-                    continue;
-                };
-
-                debug_assert!(stream.connection_blocked);
-                stream.connection_blocked = false;
-
-                // If it's no longer sensible to write to a stream (even to detect an error) then don't
-                // report it.
-                if stream.is_writable() && stream.max_data > stream.offset() {
-                    return Some(StreamEvent::Writable { id });
-                }
+        let limit = self.write_limit();
+        if limit == 0 {
+            return self.events.pop_front();
+        }
+        let reserve_cap = (self.initial_send_credit / 2).min(self.send_window / 2);
+        let scan = (limit, reserve_cap, self.connection_blocked.len());
+        if self.blocked_scan == Some(scan) {
+            return self.events.pop_front();
+        }
+        self.blocked_scan = None;
+        while let Some(index) = self.connection_blocked.iter().rposition(|id| {
+            self.send
+                .get(id)
+                .and_then(|stream| stream.as_ref())
+                .is_none_or(|stream| limit > stream.connection_reserve.min(reserve_cap))
+        }) {
+            let id = self.connection_blocked.swap_remove(index);
+            let Some(stream) = self.send.get_mut(&id).and_then(|stream| stream.as_mut()) else {
+                continue;
+            };
+            debug_assert!(stream.connection_blocked);
+            stream.connection_blocked = false;
+            if stream.is_writable() && stream.max_data > stream.offset() {
+                return Some(StreamEvent::Writable { id });
             }
         }
 
+        self.blocked_scan = Some((limit, reserve_cap, self.connection_blocked.len()));
         self.events.pop_front()
     }
 
@@ -1163,6 +1183,127 @@ mod tests {
             octets::mib_u32(1).into(),
             octets::mib_u32(1).into(),
         )
+    }
+
+    #[test]
+    fn reserve_wakes_only_above_credit_threshold() {
+        let mut state = make(Side::Client);
+        state.set_params(&TransportParameters {
+            initial_max_data: 100u32.into(),
+            initial_max_stream_data_uni: 200u32.into(),
+            initial_max_streams_uni: 2u32.into(),
+            ..TransportParameters::default()
+        });
+        let conn_state = ConnState::Established;
+        let mut pending = Retransmits::default();
+        let id = (Streams {
+            state: &mut state,
+            conn_state: &conn_state,
+        })
+        .open(Dir::Uni)
+        .unwrap();
+        let mut chunks = [Bytes::from(vec![0; 100])];
+        let write = |state: &mut StreamsState, pending: &mut Retransmits, chunks: &mut [Bytes]| {
+            SendStream {
+                id,
+                state,
+                pending,
+                conn_state: &conn_state,
+            }
+            .write_chunks_with_reserve(chunks, 20)
+        };
+        assert_eq!(
+            write(&mut state, &mut pending, &mut chunks).unwrap().bytes,
+            80
+        );
+        assert_eq!(
+            write(&mut state, &mut pending, &mut chunks),
+            Err(WriteError::Blocked)
+        );
+        assert!(state.poll().is_none());
+        assert!(state.poll().is_none());
+        state.received_max_data(101u32.into());
+        assert!(matches!(state.poll(), Some(StreamEvent::Writable { id: actual }) if actual == id));
+        assert_eq!(
+            write(&mut state, &mut pending, &mut chunks).unwrap().bytes,
+            1
+        );
+        assert_eq!(
+            write(&mut state, &mut pending, &mut chunks),
+            Err(WriteError::Blocked)
+        );
+        // A reduced local send window lowers the reserve threshold after ACKs.
+        state.set_send_window(16);
+        state.buffered_data = 0;
+        assert!(matches!(state.poll(), Some(StreamEvent::Writable { id: actual }) if actual == id));
+        // A critical stream can still consume the reserved credit.
+        let critical = (Streams {
+            state: &mut state,
+            conn_state: &conn_state,
+        })
+        .open(Dir::Uni)
+        .unwrap();
+        assert_eq!(
+            SendStream {
+                id: critical,
+                state: &mut state,
+                pending: &mut pending,
+                conn_state: &conn_state
+            }
+            .write(b"ack")
+            .unwrap(),
+            3
+        );
+    }
+
+    #[test]
+    fn generated_chunk_admission_is_atomic_and_can_decline() {
+        let mut state = make(Side::Client);
+        state.set_params(&TransportParameters {
+            initial_max_data: 10u32.into(),
+            initial_max_stream_data_uni: 7u32.into(),
+            initial_max_streams_uni: 1u32.into(),
+            ..TransportParameters::default()
+        });
+        let conn_state = ConnState::Established;
+        let mut pending = Retransmits::default();
+        let id = (Streams {
+            state: &mut state,
+            conn_state: &conn_state,
+        })
+        .open(Dir::Uni)
+        .unwrap();
+        let mut stream = SendStream {
+            id,
+            state: &mut state,
+            pending: &mut pending,
+            conn_state: &conn_state,
+        };
+        assert_eq!(
+            stream
+                .write_generated(2, |capacity| {
+                    assert_eq!(capacity, 7);
+                    (Bytes::new(), "literal")
+                })
+                .unwrap(),
+            "literal"
+        );
+        assert_eq!(
+            stream
+                .write_generated(2, |capacity| {
+                    assert_eq!(capacity, 7);
+                    (Bytes::from_static(b"insert!"), 7)
+                })
+                .unwrap(),
+            7
+        );
+        stream
+            .write_generated(2, |capacity| {
+                assert_eq!(capacity, 0);
+                (Bytes::new(), ())
+            })
+            .unwrap();
+        assert_eq!(state.data_sent, 7);
     }
 
     #[test]

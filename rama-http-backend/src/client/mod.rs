@@ -21,3 +21,15 @@ mod pool;
 pub use pool::{HttpConnId, HttpConnIdentifier, HttpPooledConnector, HttpPooledConnectorConfig};
 
 pub mod proxy;
+
+mod h3;
+#[doc(inline)]
+pub use h3::{Http3Connector, Http3Policy, TlsPoolPolicy};
+
+mod alt_svc;
+#[doc(inline)]
+pub use alt_svc::AltSvcCache;
+
+mod h3_selection;
+#[doc(inline)]
+pub use h3_selection::{AltSvcConnection, Http3Selection, Http3SelectionConnector};

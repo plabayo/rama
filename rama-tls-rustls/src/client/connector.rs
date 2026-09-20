@@ -451,6 +451,15 @@ impl<S, K> TlsConnector<S, K> {
             .or_else(|| maybe_server_host.cloned())
             .context("server identity missing")?;
 
+        let authenticated_identity = connector_data
+            .verification_enabled
+            .then(|| {
+                connector_data
+                    .server_name
+                    .clone()
+                    .or_else(|| maybe_server_host.cloned())
+            })
+            .flatten();
         let server_name = rama_crypto::pki_types::ServerName::rama_try_from(
             connector_data
                 .server_name
@@ -472,6 +481,13 @@ impl<S, K> TlsConnector<S, K> {
             }
         };
 
+        stream
+            .get_ref()
+            .0
+            .extensions()
+            .insert(rama_tls::client::TlsServerAuthentication(
+                authenticated_identity,
+            ));
         let (_, conn_data_ref) = stream.get_ref();
 
         let server_certificate_chain = if connector_data.store_server_certificate_chain {

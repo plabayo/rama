@@ -19,6 +19,7 @@ use tokio::sync::Mutex;
 pub(super) enum SendRequest<Body> {
     Http1(Mutex<rama_http_core::client::conn::http1::SendRequest<Body>>),
     Http2(rama_http_core::client::conn::http2::SendRequest<Body>),
+    Http3(rama_http_core::h3::client::SendRequest<Body>),
 }
 
 impl<Body: fmt::Debug> fmt::Debug for SendRequest<Body> {
@@ -27,6 +28,7 @@ impl<Body: fmt::Debug> fmt::Debug for SendRequest<Body> {
         match self {
             Self::Http1(send_request) => f.field(send_request).finish(),
             Self::Http2(send_request) => f.field(send_request).finish(),
+            Self::Http3(send_request) => f.field(send_request).finish(),
         }
     }
 }
@@ -56,9 +58,14 @@ where
         // Check if this http connection can actually be used for this request version
         match (&self.sender, req.version()) {
             (SendRequest::Http1(_), Version::HTTP_10 | Version::HTTP_11)
-            | (SendRequest::Http2(_), Version::HTTP_2) => (),
+            | (SendRequest::Http2(_), Version::HTTP_2)
+            | (SendRequest::Http3(_), Version::HTTP_3) => (),
             (SendRequest::Http1(_), version) => Err(BoxError::from_static_str(
                 "Http1 connector cannot send request with version",
+            )
+            .context_debug_field("version", version))?,
+            (SendRequest::Http3(_), version) => Err(BoxError::from_static_str(
+                "Http3 connector cannot send request with version",
             )
             .context_debug_field("version", version))?,
             (SendRequest::Http2(_), version) => Err(BoxError::from_static_str(
@@ -75,6 +82,19 @@ where
         ensure_valid_request_for_version(&mut req)?;
 
         let resp = match &self.sender {
+            SendRequest::Http3(sender) => {
+                let mut sender = sender.clone();
+                match sender.send_request(req).await {
+                    Ok(response) => response,
+                    Err(error) => {
+                        mark_broken_if_closed(
+                            sender.is_closed() || sender.is_draining(),
+                            &self.extensions,
+                        );
+                        return Err(error.into());
+                    }
+                }
+            }
             SendRequest::Http1(sender) => {
                 let mut sender = sender.lock().await;
                 if let Err(err) = sender.ready().await {
@@ -152,7 +172,9 @@ where
                 }))
             }
             // h2 recovers per stream: an abandoned body resets only its stream.
-            SendRequest::Http2(_) => Ok(resp.map(rama_http_types::Body::new)),
+            SendRequest::Http2(_) | SendRequest::Http3(_) => {
+                Ok(resp.map(rama_http_types::Body::new))
+            }
         }
     }
 }
@@ -172,6 +194,36 @@ fn mark_broken(extensions: &Extensions) {
 impl<B> ExtensionsRef for HttpClientService<B> {
     fn extensions(&self) -> &Extensions {
         &self.extensions
+    }
+}
+
+impl<Body> HttpClientService<Body> {
+    /// Build an HTTP/3 service on an established QUIC connection and drive its critical streams.
+    pub fn http3(
+        input: rama_core::ServiceInput<rama_quic::Connection>,
+        config: rama_http_core::h3::connection::Config,
+        executor: rama_core::rt::Executor,
+    ) -> Result<Self, rama_http_core::h3::Error> {
+        let (sender, driver) =
+            rama_http_core::h3::client::handshake(input.input, config, executor.clone())?;
+        let extensions = input.extensions;
+        let driver_extensions = extensions.clone();
+        let draining = sender.closed_or_draining();
+        executor.into_spawn_task(async move {
+            let driver = driver.run();
+            tokio::pin!(driver);
+            tokio::select! {
+                _ = &mut driver => mark_broken(&driver_extensions),
+                _ = draining => {
+                    mark_broken(&driver_extensions);
+                    _ = driver.await;
+                }
+            }
+        });
+        Ok(Self {
+            sender: SendRequest::Http3(sender),
+            extensions,
+        })
     }
 }
 

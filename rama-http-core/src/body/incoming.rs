@@ -28,6 +28,7 @@ pub struct Incoming {
 }
 
 enum Kind {
+    H3(Box<crate::h3::body::Body>),
     Empty,
     Chan {
         content_length: DecodedLength,
@@ -67,6 +68,10 @@ const WANT_PENDING: usize = 1;
 const WANT_READY: usize = 2;
 
 impl Incoming {
+    pub(crate) fn h3(body: crate::h3::body::Body) -> Self {
+        Self::new(Kind::H3(Box::new(body)))
+    }
+
     /// Create a `Body` stream with an associated sender half.
     ///
     /// Useful when wanting to stream chunks from another thread.
@@ -138,6 +143,7 @@ impl StreamingBody for Incoming {
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
         match &mut self.kind {
+            Kind::H3(body) => Pin::new(body.as_mut()).poll_frame(cx),
             Kind::Empty => Poll::Ready(None),
             Kind::Chan {
                 content_length: len,
@@ -214,6 +220,7 @@ impl StreamingBody for Incoming {
 
     fn is_end_stream(&self) -> bool {
         match &self.kind {
+            Kind::H3(body) => body.is_end_stream(),
             Kind::Empty => true,
             Kind::Chan { content_length, .. } => *content_length == DecodedLength::ZERO,
             Kind::H2 { recv: h2, .. } => h2.is_end_stream(),
@@ -230,6 +237,7 @@ impl StreamingBody for Incoming {
         }
 
         match self.kind {
+            Kind::H3(ref body) => body.size_hint(),
             Kind::Empty => SizeHint::with_exact(0),
             Kind::Chan { content_length, .. } | Kind::H2 { content_length, .. } => {
                 opt_len(content_length)

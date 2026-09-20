@@ -8,3 +8,6 @@ mod service_matcher;
 pub use self::service_matcher::{
     HttpProxyConnectRelayServiceRequestMatcher, HttpProxyConnectRelayServiceResponseMatcher,
 };
+
+mod egress;
+pub use egress::ConnectEgress;

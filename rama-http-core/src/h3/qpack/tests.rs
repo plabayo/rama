@@ -541,3 +541,51 @@ fn neqo_decoder_stream_insert_count_increment() {
     enc.feed_decoder_stream(&hex("03")).unwrap();
     assert_eq!(enc.known_received_count(), 3);
 }
+
+#[test]
+fn peer_settings_transition_enables_dynamic_encoding_once() {
+    use rama_http_types::proto::h3::{SettingId, Settings};
+    let mut encoder = Encoder::before_peer_settings(EncoderConfig::default());
+    let fields = [(b"x-before".as_slice(), b"settings".as_slice())];
+    let before = encoder.encode(0, fields).unwrap();
+    assert_eq!(encoder.insert_count(), 0);
+    assert!(encoder.take_encoder_stream().is_empty());
+    let mut decoder = Decoder::new(DecoderConfig::default());
+    assert!(decoder.decode_field_section(0, before).unwrap().is_some());
+    let mut settings = Settings::new();
+    settings
+        .set(
+            SettingId::QPACK_MAX_TABLE_CAPACITY,
+            rama_utils::octets::kib_u64(4),
+        )
+        .unwrap();
+    settings.set(SettingId::QPACK_BLOCKED_STREAMS, 16).unwrap();
+    encoder.apply_peer_settings(&settings).unwrap();
+    let after = encoder.encode(4, fields).unwrap();
+    assert!(encoder.insert_count() > 0);
+    assert!(decoder.decode_field_section(4, after).unwrap().is_none());
+    decoder
+        .feed_encoder_stream(&encoder.take_encoder_stream())
+        .unwrap();
+    let (stream_id, result) = decoder.resume_next().unwrap();
+    assert_eq!(stream_id, 4);
+    assert_eq!(result.unwrap()[0].value.as_ref(), b"settings");
+    assert!(decoder.resume_next().is_none());
+    assert!(encoder.apply_peer_settings(&settings).is_err());
+}
+
+#[test]
+fn absent_peer_settings_keep_static_encoding_and_apply_field_limit() {
+    use rama_http_types::proto::h3::{SettingId, Settings};
+    let mut encoder = Encoder::before_peer_settings(EncoderConfig::default());
+    let mut settings = Settings::new();
+    settings.set(SettingId::MAX_FIELD_SECTION_SIZE, 33).unwrap();
+    encoder.apply_peer_settings(&settings).unwrap();
+    encoder
+        .encode(0, [(b"x".as_slice(), b"".as_slice())])
+        .unwrap();
+    encoder
+        .encode(4, [(b"x".as_slice(), b"y".as_slice())])
+        .unwrap_err();
+    assert!(encoder.take_encoder_stream().is_empty());
+}

@@ -192,7 +192,7 @@ impl RecvStream {
     /// If no data is available for reading, the method returns `Poll::Pending`
     /// and arranges for the current task (via cx.waker()) to receive a notification
     /// when the stream becomes readable or is closed.
-    fn poll_read_chunk(
+    pub fn poll_read_chunk(
         &mut self,
         cx: &mut Context,
         max_length: usize,
@@ -218,8 +218,8 @@ impl RecvStream {
         ReadChunks { stream: self, bufs }.await
     }
 
-    /// Foundation of [`Self::read_chunks`]
-    fn poll_read_chunks(
+    /// Polling equivalent of [`Self::read_chunks`], retaining zero-copy segments.
+    pub fn poll_read_chunks(
         &mut self,
         cx: &mut Context,
         bufs: &mut [Bytes],

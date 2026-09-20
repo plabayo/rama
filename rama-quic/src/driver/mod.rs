@@ -75,7 +75,7 @@ pub use crate::driver::queue::PacketQueueStats;
 pub use crate::driver::recv_stream::{
     ReadError, ReadExactError, ReadToEndError, RecvStream, ResetError,
 };
-pub use crate::driver::send_stream::{SendStream, StoppedError, WriteError};
+pub use crate::driver::send_stream::{SendStream, StoppedError, StreamAbortHandle, WriteError};
 
 #[cfg(test)]
 mod tests;

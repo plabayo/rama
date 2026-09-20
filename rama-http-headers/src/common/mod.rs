@@ -224,3 +224,6 @@ mod vary;
 //mod warning;
 mod x_content_type_options;
 mod x_frame_options;
+
+mod priority;
+pub use priority::Priority;

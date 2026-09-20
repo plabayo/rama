@@ -62,6 +62,8 @@ pub struct TlsStage<const PROXY: bool = true>;
 #[non_exhaustive]
 #[derive(Debug)]
 pub struct HttpStage<const PROXY: bool = true>;
+#[derive(Debug)]
+pub struct Http3Stage;
 #[non_exhaustive]
 #[derive(Debug)]
 pub struct ProxyRouteFailureCacheStage;
@@ -70,6 +72,24 @@ pub struct ProxyRouteFailureCacheStage;
 pub struct PoolStage;
 
 impl EasyHttpConnectorBuilder {
+    /// Build an HTTP/3 connector with DNS resolution and the ordinary pool stages.
+    /// The supplied QUIC TLS configuration must negotiate `h3`.
+    pub fn with_http3_connector<Body: Send + 'static>(
+        self,
+        endpoint: crate::quic::Endpoint,
+        tls: crate::tls::client::TlsClientConfig,
+        options: crate::quic::tls::TlsOptions,
+        config: rama_http_core::h3::connection::Config,
+        executor: Executor,
+    ) -> EasyHttpConnectorBuilder<ErasedConnector<super::HttpClientService<Body>>, Http3Stage> {
+        EasyHttpConnectorBuilder {
+            connector: erase_connector(crate::dns::client::DnsConnector::new(
+                super::Http3Connector::new(endpoint, tls, options, config, executor),
+            )),
+            _phantom: PhantomData,
+        }
+    }
+
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -911,5 +931,74 @@ impl<T, S> EasyHttpConnectorBuilder<T, S> {
     /// Build a connector from the currently configured setup
     pub fn build_connector(self) -> T {
         self.connector
+    }
+}
+
+impl<T> EasyHttpConnectorBuilder<T, Http3Stage>
+where
+    T: ConnectorService<ConnectRequest>,
+{
+    /// Select H3 or a TCP HTTP connector before dispatch, with independent pools.
+    ///
+    /// Supply the TCP builder after its HTTP stage and before adding its pool.
+    /// Both connectors must return the same connection type. TLS and policy
+    /// failures are returned directly; only establishment availability failures
+    /// can fall back, within `attempt_budget`.
+    pub fn with_fallback_connector<S>(
+        self,
+        tcp: S,
+        cache: super::AltSvcCache,
+        selection: super::Http3Selection,
+        attempt_budget: Duration,
+    ) -> EasyHttpConnectorBuilder<
+        DefaultHttpConnector<
+            super::Http3SelectionConnector<
+                super::Http3Policy<HttpPooledConnector<T>>,
+                super::TlsPoolPolicy<HttpPooledConnector<S>>,
+            >,
+        >,
+        PoolStage,
+    >
+    where
+        S: ConnectorService<ConnectRequest, Connection = T::Connection>,
+    {
+        let h3 = super::Http3Policy::new(HttpPooledConnectorConfig::build_default_connector(
+            self.connector,
+        ));
+        let tcp =
+            super::TlsPoolPolicy::new(HttpPooledConnectorConfig::build_default_connector(tcp));
+        EasyHttpConnectorBuilder {
+            connector: finalize_http_connector(super::Http3SelectionConnector::new(
+                h3,
+                tcp,
+                cache,
+                selection,
+                attempt_budget,
+            )),
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Use the ordinary multiplex pool, partitioned by H3 and TLS policy.
+    pub fn with_default_connection_pool(
+        self,
+    ) -> EasyHttpConnectorBuilder<
+        DefaultHttpConnector<super::Http3Policy<HttpPooledConnector<T>>>,
+        PoolStage,
+    > {
+        let pool = HttpPooledConnectorConfig::build_default_connector(self.connector);
+        EasyHttpConnectorBuilder {
+            connector: finalize_http_connector(super::Http3Policy::new(pool)),
+            _phantom: PhantomData,
+        }
+    }
+    /// Build an H3 client without connection reuse.
+    pub fn without_connection_pool(
+        self,
+    ) -> EasyHttpConnectorBuilder<DefaultHttpConnector<super::Http3Policy<T>>, PoolStage> {
+        EasyHttpConnectorBuilder {
+            connector: finalize_http_connector(super::Http3Policy::new(self.connector)),
+            _phantom: PhantomData,
+        }
     }
 }

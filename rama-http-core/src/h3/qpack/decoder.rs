@@ -81,6 +81,7 @@ pub struct Decoder {
     encoder_stream: BytesMut,
     /// Queued decoder-stream instructions to send to the peer's encoder.
     decoder_output: BytesMut,
+    output_in_flight: usize,
     /// Field sections waiting for the Required Insert Count to be reached, in arrival order per
     /// stream so a stream's sections are still delivered in order.
     blocked: BTreeMap<u64, VecDeque<BlockedSection>>,
@@ -97,6 +98,7 @@ impl Decoder {
             config,
             encoder_stream: BytesMut::new(),
             decoder_output: BytesMut::new(),
+            output_in_flight: 0,
             blocked: BTreeMap::new(),
             blocked_bytes: 0,
         }
@@ -124,6 +126,16 @@ impl Decoder {
     /// Take the queued decoder-stream bytes to send to the peer, leaving the queue empty.
     pub fn take_decoder_stream(&mut self) -> Bytes {
         self.decoder_output.split().freeze()
+    }
+
+    pub(crate) fn take_output_for_write(&mut self) -> Bytes {
+        let output = self.take_decoder_stream();
+        self.output_in_flight += output.len();
+        output
+    }
+
+    pub(crate) fn output_written(&mut self, bytes: usize) {
+        self.output_in_flight -= bytes;
     }
 
     /// The maximum size a full encoder-stream instruction may occupy before it is rejected as a
@@ -230,6 +242,7 @@ impl Decoder {
                 .config
                 .max_decoder_stream_bytes
                 .saturating_sub(self.decoder_output.len())
+                .saturating_sub(self.output_in_flight)
         {
             return Err(QpackError::OutputBlocked);
         }
@@ -432,6 +445,32 @@ impl Decoder {
             }
         }
         out
+    }
+
+    /// Resume at most one ready section without allocating a temporary result list.
+    ///
+    /// Call within the connection's work budget. `OutputBlocked` retains the section;
+    /// drain decoder output before retrying. Ordering within each stream is preserved.
+    pub fn resume_next(&mut self) -> Option<(u64, Result<Vec<FieldPair>, QpackError>)> {
+        let insert_count = self.table.insert_count();
+        let (&stream_id, queue) = self.blocked.iter().find(|(_, queue)| {
+            queue
+                .front()
+                .is_some_and(|s| s.prefix.required_insert_count <= insert_count)
+        })?;
+        if queue.front()?.prefix.required_insert_count > 0
+            && let Err(error) =
+                self.reserve_instruction(DecoderInstruction::SectionAcknowledgment { stream_id })
+        {
+            return Some((stream_id, Err(error)));
+        }
+        let section = self.pop_ready_front(stream_id, insert_count)?;
+        self.blocked_bytes -= section.size;
+        let result = self.decode_body(stream_id, &section.prefix, &section.body);
+        if matches!(result, Err(QpackError::FieldSectionLimit(_))) {
+            self.drop_blocked_stream(stream_id);
+        }
+        Some((stream_id, result))
     }
 
     /// Remove and return the front blocked section of `stream_id` when its Required Insert Count is
@@ -670,6 +709,24 @@ mod regression_tests {
         bytes.freeze()
     }
 
+    #[test]
+    fn detached_output_remains_charged_until_written() {
+        let mut decoder = Decoder::new(DecoderConfig {
+            max_decoder_stream_bytes: 10,
+            ..DecoderConfig::default()
+        });
+        decoder.decoder_output.extend_from_slice(&[0; 10]);
+        let output = decoder.take_output_for_write();
+        assert_eq!(output.len(), 10);
+        assert_eq!(decoder.reserve_output(1), Err(QpackError::OutputBlocked));
+        decoder.output_written(4);
+        decoder.reserve_output(4).unwrap();
+        assert_eq!(decoder.reserve_output(5), Err(QpackError::OutputBlocked));
+        decoder.decoder_output.extend_from_slice(&[0; 4]);
+        assert_eq!(decoder.reserve_output(1), Err(QpackError::OutputBlocked));
+        decoder.output_written(6);
+        decoder.reserve_output(6).unwrap();
+    }
     #[test]
     fn every_dynamic_reference_must_be_below_ric() {
         let mut decoder = Decoder::new(DecoderConfig::default());

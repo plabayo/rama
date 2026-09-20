@@ -11,7 +11,7 @@
 //! never loses framing.
 
 use rama_core::bytes::{Buf, Bytes, BytesMut};
-use rama_http_types::proto::h3::{FrameType, Settings, SettingsError, VarIntDecoder};
+use rama_http_types::proto::h3::{FrameHeader, FrameType, Settings, SettingsError, VarIntDecoder};
 
 /// The default cap on a single buffered (non-DATA) frame's payload.
 pub const DEFAULT_MAX_FRAME_SIZE: usize = rama_utils::octets::mib(1);
@@ -19,6 +19,8 @@ pub const DEFAULT_MAX_FRAME_SIZE: usize = rama_utils::octets::mib(1);
 /// An event produced by [`FrameDecoder::poll`].
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum FrameEvent {
+    /// A frame header emitted before payload processing when header events are enabled.
+    Header(FrameHeader),
     /// The start of a DATA frame; `len` payload bytes follow as [`FrameEvent::DataChunk`]s.
     DataHeader {
         /// The total DATA payload length.
@@ -42,6 +44,15 @@ pub enum FrameEvent {
         push_id: u64,
         /// The QPACK-encoded field section.
         encoded_headers: Bytes,
+    },
+    /// An RFC 9218 priority update. The field value shares frame payload storage.
+    PriorityUpdate {
+        /// Whether the identifier names a push rather than a request stream.
+        push: bool,
+        /// Prioritized request stream or push identifier.
+        element_id: u64,
+        /// Structured Priority field value.
+        field_value: Bytes,
     },
     /// An unknown or reserved frame type whose payload was skipped without buffering.
     Ignored {
@@ -107,6 +118,8 @@ enum State {
     Type,
     /// Reading the length varint, having read this type.
     Len(FrameType),
+    /// Header delivered; payload processing has not started.
+    Payload(FrameHeader),
     /// Streaming a DATA payload with this many bytes remaining.
     Data(u64),
     /// Buffering a known frame's payload until it reaches this target length.
@@ -117,6 +130,7 @@ enum State {
 
 /// A bounded, incremental HTTP/3 frame decoder.
 pub struct FrameDecoder {
+    emit_headers: bool,
     max_frame_size: usize,
     max_input_size: usize,
     inbox: Bytes,
@@ -139,6 +153,7 @@ impl FrameDecoder {
     #[must_use]
     pub fn with_input_limit(max_frame_size: usize, max_input_size: usize) -> Self {
         Self {
+            emit_headers: false,
             max_frame_size,
             max_input_size,
             inbox: Bytes::new(),
@@ -146,6 +161,15 @@ impl FrameDecoder {
             varint: VarIntDecoder::new(),
             payload: BytesMut::new(),
         }
+    }
+
+    /// Enable early frame-header events for stream role/state validation.
+    ///
+    /// The header is delivered before allocating or consuming its payload.
+    #[must_use]
+    pub fn with_header_events(mut self) -> Self {
+        self.emit_headers = true;
+        self
     }
 
     /// Copy a received chunk, rejecting it before allocation if the inbox is occupied or the
@@ -194,12 +218,22 @@ impl FrameDecoder {
                 },
                 State::Len(ty) => match self.varint.decode(&mut self.inbox) {
                     Some(len) => {
+                        if self.emit_headers {
+                            let header = FrameHeader::new(ty, len.into_inner());
+                            self.state = State::Payload(header);
+                            return Ok(Some(FrameEvent::Header(header)));
+                        }
                         if let Some(event) = self.begin_payload(ty, len.into_inner())? {
                             return Ok(Some(event));
                         }
                     }
                     None => return Ok(None),
                 },
+                State::Payload(header) => {
+                    if let Some(event) = self.begin_payload(header.ty, header.len)? {
+                        return Ok(Some(event));
+                    }
+                }
                 State::Data(0) | State::Skip(0) => {
                     self.state = State::Type;
                 }
@@ -290,6 +324,19 @@ fn finish_buffered(ty: FrameType, payload: Bytes) -> Result<FrameEvent, FrameErr
         FrameType::CANCEL_PUSH => Ok(FrameEvent::CancelPush(single_varint(ty, &payload)?)),
         FrameType::GOAWAY => Ok(FrameEvent::GoAway(single_varint(ty, &payload)?)),
         FrameType::MAX_PUSH_ID => Ok(FrameEvent::MaxPushId(single_varint(ty, &payload)?)),
+        FrameType::PRIORITY_UPDATE_REQUEST | FrameType::PRIORITY_UPDATE_PUSH => {
+            let mut cursor: &[u8] = &payload;
+            let element_id = VarIntDecoder::new()
+                .decode(&mut cursor)
+                .ok_or(FrameError::Malformed(ty))?
+                .into_inner();
+            let consumed = payload.len() - cursor.len();
+            Ok(FrameEvent::PriorityUpdate {
+                push: ty == FrameType::PRIORITY_UPDATE_PUSH,
+                element_id,
+                field_value: payload.slice(consumed..),
+            })
+        }
         FrameType::PUSH_PROMISE => {
             let mut cursor: &[u8] = &payload;
             let push_id = VarIntDecoder::new()
@@ -318,6 +365,8 @@ fn is_buffered(ty: FrameType) -> bool {
             | FrameType::GOAWAY
             | FrameType::MAX_PUSH_ID
             | FrameType::PUSH_PROMISE
+            | FrameType::PRIORITY_UPDATE_REQUEST
+            | FrameType::PRIORITY_UPDATE_PUSH
     )
 }
 

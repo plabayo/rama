@@ -36,12 +36,52 @@ pub struct SendStream {
     is_0rtt: bool,
 }
 
+/// Cloneable cancellation handle independent of the stream's I/O owner.
+/// It resets sending and, for bidirectional streams, stops receiving. Dropping
+/// the handle has no effect on the stream.
+#[derive(Debug, Clone)]
+pub struct StreamAbortHandle {
+    conn: ConnectionRef,
+    stream: StreamId,
+    is_0rtt: bool,
+}
+impl StreamAbortHandle {
+    /// Abort both available directions. Already closed directions are harmless.
+    pub fn abort(&self, error_code: impl Into<VarInt>) {
+        let code = error_code.into();
+        let mut conn = self.conn.state.lock();
+        if self.is_0rtt && conn.check_0rtt().is_err() {
+            return;
+        }
+        _ = conn.inner.send_stream(self.stream).reset(code);
+        if self.stream.dir() == rama_quic_proto::Dir::Bi {
+            _ = conn.inner.recv_stream(self.stream).stop(code);
+        }
+        if let Some(waker) = conn.blocked_writers.remove(&self.stream) {
+            waker.wake();
+        }
+        if let Some(waker) = conn.blocked_readers.remove(&self.stream) {
+            waker.wake();
+        }
+        conn.wake();
+    }
+}
+
 impl SendStream {
     pub(crate) fn new(conn: ConnectionRef, stream: StreamId, is_0rtt: bool) -> Self {
         Self {
             conn,
             stream,
             is_0rtt,
+        }
+    }
+
+    /// Obtain a handle for cancelling this stream from another owner or task.
+    pub fn abort_handle(&self) -> StreamAbortHandle {
+        StreamAbortHandle {
+            conn: self.conn.clone(),
+            stream: self.stream,
+            is_0rtt: self.is_0rtt,
         }
     }
 
@@ -96,7 +136,20 @@ impl SendStream {
     ///
     /// This method is cancellation safe. If this does not resolve, no bytes were written.
     pub async fn write_chunks(&mut self, bufs: &mut [Bytes]) -> Result<Written, WriteError> {
-        poll_fn(|cx| self.execute_poll(cx, |s| s.write_chunks(bufs))).await
+        poll_fn(|cx| self.poll_write_chunks(cx, bufs)).await
+    }
+
+    /// Polling equivalent of [`Self::write_chunks`].
+    ///
+    /// On `Pending`, no bytes are consumed and the current waker is registered.
+    /// On success, `bufs` retains only unwritten suffixes, which the caller must
+    /// preserve until the next poll. No payload copy is required.
+    pub fn poll_write_chunks(
+        &mut self,
+        cx: &mut Context<'_>,
+        bufs: &mut [Bytes],
+    ) -> Poll<Result<Written, WriteError>> {
+        self.execute_poll(cx, |s| s.write_chunks(bufs))
     }
 
     /// Write a single [`Bytes`] into this stream in its entirety
@@ -112,6 +165,58 @@ impl SendStream {
     pub async fn write_chunk(&mut self, buf: Bytes) -> Result<(), WriteError> {
         self.write_all_chunks(&mut [buf]).await?;
         Ok(())
+    }
+
+    /// Write chunks while leaving connection credit available for critical streams.
+    /// The reserve is capped at half the peer's initial connection window and local send window,
+    /// so even very small peer windows can make application progress.
+    /// Bytes accepted by this call are removed from `chunks`, including partial chunks.
+    pub fn poll_write_chunks_with_reserve(
+        &mut self,
+        cx: &mut Context<'_>,
+        chunks: &mut [Bytes],
+        reserve: u64,
+    ) -> Poll<Result<Written, WriteError>> {
+        self.execute_poll(cx, |stream| {
+            stream.write_chunks_with_reserve(chunks, reserve)
+        })
+    }
+
+    /// Generate and atomically admit one bounded chunk without waiting for credit.
+    ///
+    /// `generate` receives the available stream and connection credit and returns
+    /// a chunk plus an application result. `reserve` leaves connection credit for
+    /// other streams, capped at half the initial connection and local send windows. Returning an empty chunk is permitted,
+    /// including when capacity is zero. This supports optional compression whose
+    /// instructions must fit in their entirety before being committed.
+    ///
+    /// The callback runs under the connection lock: keep it bounded and do not
+    /// call back into this connection. Panics if its chunk exceeds the supplied capacity.
+    pub fn try_write_generated<R>(
+        &mut self,
+        reserve: u64,
+        generate: impl FnOnce(usize) -> (Bytes, R),
+    ) -> Result<R, WriteError> {
+        let mut conn = self.conn.state.lock();
+        if self.is_0rtt {
+            conn.check_0rtt()
+                .map_err(|()| WriteError::ZeroRttRejected)?;
+        }
+        if let Some(error) = &conn.error {
+            return Err(WriteError::ConnectionLost(error.clone()));
+        }
+        let result = conn
+            .inner
+            .send_stream(self.stream)
+            .write_generated(reserve, generate)
+            .map_err(|error| match error {
+                ProtoWriteError::Stopped(code) => WriteError::Stopped(code),
+                ProtoWriteError::ClosedStream | ProtoWriteError::Blocked => {
+                    WriteError::ClosedStream
+                }
+            })?;
+        conn.wake();
+        Ok(result)
     }
 
     /// Write a slice of [`Bytes`] into this stream in its entirety

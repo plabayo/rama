@@ -65,6 +65,44 @@ pub use proto::{KEY_MATERIAL_SIZE, StatelessResetKey};
 /// carries only what QUIC adds to it. The provider behind it follows this crate's features, and
 /// no Rustls type appears in any signature here.
 pub mod tls {
+    /// Classify TLS extensions for connection reuse and authenticated-origin metadata.
+    /// Conservatively includes native overrides for every compiled provider.
+    pub fn client_security_policy(
+        extensions: &rama_core::extensions::Extensions,
+    ) -> rama_tls::client::TlsClientSecurityPolicy {
+        #[cfg_attr(not(any(feature = "rustls", feature = "boring")), expect(unused_mut))]
+        let mut policy = rama_tls::client::TlsClientSecurityPolicy::from_extensions(extensions);
+        #[cfg(feature = "rustls")]
+        {
+            if extensions.contains::<rama_tls_rustls::client::RustlsServerCertVerifier>()
+                || extensions.contains::<rama_tls_rustls::client::ModifyRustlsClientConfig>()
+            {
+                policy.has_overrides = true;
+                policy.authenticates_server = false;
+            }
+        }
+        #[cfg(feature = "boring")]
+        {
+            use rama_tls_boring::client::*;
+            policy.has_overrides |= extensions.contains::<BoringServerVerifyCertStore>()
+                || extensions.contains::<BoringCipherSuites>()
+                || extensions.contains::<BoringSupportedGroups>()
+                || extensions.contains::<BoringSignatureSchemes>()
+                || extensions.contains::<BoringMinVersion>()
+                || extensions.contains::<BoringMaxVersion>()
+                || extensions.contains::<BoringGrease>()
+                || extensions.contains::<BoringAlps>()
+                || extensions.contains::<BoringExtensionOrder>()
+                || extensions.contains::<BoringCertCompression>()
+                || extensions.contains::<BoringDelegatedCredentials>()
+                || extensions.contains::<BoringRecordSizeLimit>()
+                || extensions.contains::<BoringEncryptedClientHello>()
+                || extensions.contains::<BoringOcspStapling>()
+                || extensions.contains::<BoringSignedCertTimestamps>();
+        }
+        policy
+    }
+
     /// Interfaces for supplying a QUIC TLS 1.3 implementation.
     ///
     /// Implement [`provider::ClientConfig`] and [`provider::ServerConfig`] and pass them to
@@ -97,7 +135,7 @@ pub use driver::{
     DEFAULT_SOCKET_BUFFER_SIZE, DriverStats, Endpoint, EndpointBuilder, EndpointStats, Incoming,
     IncomingFuture, OpenBi, OpenUni, PacketQueueStats, ReadDatagram, ReadError, ReadExactError,
     ReadToEndError, RecvStream, ResetError, RetryError, SendDatagram, SendDatagramError,
-    SendStream, ShutdownOutcome, StoppedError, WriteError, ZeroRttAccepted,
+    SendStream, ShutdownOutcome, StoppedError, StreamAbortHandle, WriteError, ZeroRttAccepted,
 };
 
 #[cfg(fuzzing)]

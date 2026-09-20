@@ -49,6 +49,7 @@ impl HttpConnIdentifier {
 /// HTTP request semantics.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct HttpConnId {
+    tls_identity: Option<super::h3::TlsPoolIdentity>,
     network: BasicConnId,
     required_version: Option<Version>,
     http_proxy_mode: Option<HttpProxyModeRequirement>,
@@ -90,6 +91,10 @@ impl ReqToConnID<ConnectRequest> for HttpConnIdentifier {
         }
 
         Ok(HttpConnId {
+            tls_identity: input
+                .extensions()
+                .get_ref::<super::h3::TlsPoolIdentity>()
+                .cloned(),
             network,
             required_version: connection_version_requirement(input),
             http_proxy_mode: http_proxy_mode_requirement(input),
@@ -127,7 +132,7 @@ fn http_proxy_mode_requirement(input: &ConnectRequest) -> Option<HttpProxyModeRe
     )
 }
 
-fn connection_version_requirement(input: &ConnectRequest) -> Option<Version> {
+pub(crate) fn connection_version_requirement(input: &ConnectRequest) -> Option<Version> {
     let plaintext_http = input
         .protocol()
         .is_some_and(|protocol| protocol.is_http_based() && !protocol.is_secure());

@@ -202,6 +202,12 @@ dependencies = [
 
 [[package]]
 name = "base64"
+version = "0.22.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
+
+[[package]]
+name = "base64"
 version = "0.23.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
@@ -1751,7 +1757,7 @@ version = "4.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d354a98a3d1251555de99e8fdd8afda05573c31b82f59063a7b0a29b5527f120"
 dependencies = [
- "base64",
+ "base64 0.23.1",
  "serde_core",
 ]
 
@@ -2034,7 +2040,7 @@ name = "rama"
 version = "0.5.0"
 dependencies = [
  "ahash",
- "base64",
+ "base64 0.23.1",
  "cc",
  "pin-project-lite",
  "rama-core",
@@ -2050,6 +2056,7 @@ dependencies = [
  "rama-net",
  "rama-net-apple-networkextension",
  "rama-quic",
+ "rama-quic-proto",
  "rama-socks5",
  "rama-tcp",
  "rama-tls",
@@ -2134,7 +2141,7 @@ version = "0.5.0"
 dependencies = [
  "ahash",
  "aws-lc-rs",
- "base64",
+ "base64 0.23.1",
  "hmac",
  "openssl-probe",
  "rama-boring",
@@ -2161,7 +2168,7 @@ version = "0.5.0"
 dependencies = [
  "ahash",
  "arc-swap",
- "base64",
+ "base64 0.23.1",
  "bindgen 0.73.2",
  "cc",
  "libc",
@@ -2200,7 +2207,7 @@ name = "rama-grpc"
 version = "0.5.0"
 dependencies = [
  "arc-swap",
- "base64",
+ "base64 0.23.1",
  "flate2",
  "pin-project-lite",
  "prost",
@@ -2252,7 +2259,7 @@ version = "0.5.0"
 dependencies = [
  "ahash",
  "async-compression",
- "base64",
+ "base64 0.23.1",
  "bitflags 2.13.2",
  "compression-codecs",
  "compression-core",
@@ -2291,6 +2298,7 @@ dependencies = [
 name = "rama-http-backend"
 version = "0.5.0"
 dependencies = [
+ "moka",
  "parking_lot",
  "pin-project-lite",
  "rama-core",
@@ -2299,6 +2307,7 @@ dependencies = [
  "rama-http-headers",
  "rama-http-types",
  "rama-net",
+ "rama-quic",
  "rama-tcp",
  "rama-tls",
  "rama-unix",
@@ -2324,6 +2333,8 @@ dependencies = [
  "rama-http",
  "rama-http-types",
  "rama-net",
+ "rama-quic",
+ "rama-quic-proto",
  "rama-utils",
  "slab",
  "tokio",
@@ -2336,7 +2347,7 @@ name = "rama-http-headers"
 version = "0.5.0"
 dependencies = [
  "ahash",
- "base64",
+ "base64 0.23.1",
  "const_format",
  "httpdate",
  "jiff",
@@ -2347,6 +2358,7 @@ dependencies = [
  "rama-utils",
  "rand",
  "serde",
+ "sfv",
  "sha1",
 ]
 
@@ -2444,7 +2456,7 @@ version = "0.5.0"
 dependencies = [
  "ahash",
  "arc-swap",
- "base64",
+ "base64 0.23.1",
  "bitflags 2.13.2",
  "const_format",
  "core-foundation",
@@ -2565,7 +2577,7 @@ name = "rama-tls"
 version = "0.5.0"
 dependencies = [
  "ahash",
- "base64",
+ "base64 0.23.1",
  "bytes",
  "flume",
  "jiff",
@@ -2684,7 +2696,7 @@ dependencies = [
 name = "rama-utils"
 version = "0.5.0"
 dependencies = [
- "base64",
+ "base64 0.23.1",
  "const_format",
  "memchr",
  "parking_lot",
@@ -2779,6 +2791,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed2bf2547551a7053d6fdfafda3f938979645c44812fbfcda098faae3f1a362d"
 dependencies = [
  "bitflags 2.13.2",
+]
+
+[[package]]
+name = "ref-cast"
+version = "1.0.27"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7e440fb4e4b4147295338efb76001ab9e4efc0e5839df2c47fc5ac2381d365c3"
+dependencies = [
+ "ref-cast-impl",
+]
+
+[[package]]
+name = "ref-cast-impl"
+version = "1.0.27"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "92ecd8964f8453721699a1ed72037b0db49ce2f5a5138486ee89bed6f67cdf3a"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.5",
 ]
 
 [[package]]
@@ -3047,6 +3079,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.5",
+]
+
+[[package]]
+name = "sfv"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "890ef0e5532daf21fdaa3dbaf991417187f3a87ab69231fe69be942495746480"
+dependencies = [
+ "base64 0.22.1",
+ "ref-cast",
 ]
 
 [[package]]

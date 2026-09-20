@@ -114,6 +114,7 @@ pub struct Encoder {
     blocking_streams: u64,
     decoder_partial: [u8; 11],
     decoder_partial_len: usize,
+    pending_target_capacity: Option<u64>,
 }
 
 impl Encoder {
@@ -134,7 +135,51 @@ impl Encoder {
             blocking_streams: 0,
             decoder_partial: [0; 11],
             decoder_partial_len: 0,
+            pending_target_capacity: None,
         }
+    }
+
+    /// Create a connection encoder before receiving peer SETTINGS.
+    ///
+    /// Only static and literal representations are used until [`Self::apply_peer_settings`].
+    /// The configured target capacity and local budgets are retained for negotiation.
+    #[must_use]
+    pub fn before_peer_settings(mut config: EncoderConfig) -> Self {
+        let target = config.target_capacity;
+        config.max_table_capacity = 0;
+        config.max_blocked_streams = 0;
+        let mut encoder = Self::new(config);
+        encoder.pending_target_capacity = Some(target);
+        encoder
+    }
+
+    /// Apply the first peer SETTINGS without replacing decoder-stream parser state.
+    ///
+    /// This is valid exactly once on an encoder created with [`Self::before_peer_settings`].
+    /// The connection driver must reject subsequent SETTINGS as H3_FRAME_UNEXPECTED.
+    pub fn apply_peer_settings(
+        &mut self,
+        settings: &rama_http_types::proto::h3::Settings,
+    ) -> Result<(), QpackError> {
+        let target = self
+            .pending_target_capacity
+            .take()
+            .ok_or(QpackError::ResourceLimit(
+                "peer settings already configured",
+            ))?;
+        self.config.max_table_capacity = settings.qpack_max_table_capacity();
+        self.config.max_blocked_streams = settings.qpack_blocked_streams();
+        self.config.target_capacity = target.min(self.config.max_table_capacity);
+        if let Some(limit) = settings.max_field_section_size() {
+            self.config.max_field_section_size = self
+                .config
+                .max_field_section_size
+                .min(usize::try_from(limit).unwrap_or(usize::MAX));
+        }
+        // Before SETTINGS no insertion or dynamic reference was permitted.
+        debug_assert_eq!(self.table.insert_count(), 0);
+        self.table = DynamicTable::new(self.config.max_table_capacity);
+        Ok(())
     }
 
     /// Number of insertions acknowledged by the peer.
@@ -184,6 +229,27 @@ impl Encoder {
                     .any(|s| s.required_insert_count > self.known_received_count)
             })
             .count() as u64;
+    }
+
+    /// Bound newly generated instructions by credit atomically reserved by the transport.
+    /// Existing synchronous users retain their configured output budget.
+    pub(crate) fn encode_with_credit<I, F, N, V>(
+        &mut self,
+        stream_id: u64,
+        fields: I,
+        credit: usize,
+    ) -> Result<Bytes, QpackError>
+    where
+        I: IntoIterator<Item = F>,
+        F: Into<EncodeField<N, V>>,
+        N: AsRef<[u8]>,
+        V: AsRef<[u8]>,
+    {
+        let configured = self.config.max_encoder_stream_bytes;
+        self.config.max_encoder_stream_bytes = configured.min(credit);
+        let result = self.encode(stream_id, fields);
+        self.config.max_encoder_stream_bytes = configured;
+        result
     }
 
     fn output_fits(&self, additional: usize) -> bool {

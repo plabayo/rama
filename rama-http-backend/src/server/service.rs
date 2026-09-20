@@ -24,7 +24,7 @@ use ::{rama_unix::server::UnixListener, std::path::Path};
 
 /// A builder for configuring and listening over HTTP using a [`Service`].
 ///
-/// Supported Protocols: HTTP/1, H2, Auto (HTTP/1 + H2)
+/// Supported protocols: HTTP/1, H2, Auto (HTTP/1 + H2), and H3 over QUIC.
 ///
 /// [`Service`]: rama_core::Service
 #[derive(Debug, Clone)]
@@ -238,5 +238,45 @@ where
         let service = self.service.clone();
         self.builder
             .http_core_serve_connection(stream, service, self.guard.clone())
+    }
+}
+
+impl HttpServer<rama_http_core::h3::connection::Config> {
+    /// Create an HTTP/3 server for QUIC connections negotiated with the `h3` ALPN.
+    #[must_use]
+    pub fn new_http3(exec: Executor) -> Self {
+        Self {
+            builder: rama_http_core::h3::connection::Config::default(),
+            exec,
+        }
+    }
+
+    /// HTTP/3 connection limits.
+    pub fn http3(&self) -> &rama_http_core::h3::connection::Config {
+        &self.builder
+    }
+
+    /// Mutable HTTP/3 connection limits.
+    pub fn http3_mut(&mut self) -> &mut rama_http_core::h3::connection::Config {
+        &mut self.builder
+    }
+
+    /// Serve a QUIC connection through the ordinary Rama HTTP service interface.
+    pub async fn serve_quic<S, Response>(
+        &self,
+        connection: rama_core::ServiceInput<rama_quic::Connection>,
+        service: S,
+    ) -> HttpServeResult
+    where
+        S: Service<Request, Output = Response, Error = Infallible> + Clone,
+        Response: IntoResponse + Send + 'static,
+    {
+        crate::server::h3::serve(
+            connection,
+            self.builder.clone(),
+            self.exec.guard().cloned(),
+            service,
+        )
+        .await
     }
 }

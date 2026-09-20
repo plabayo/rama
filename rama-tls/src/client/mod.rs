@@ -23,9 +23,9 @@ mod config;
 #[doc(inline)]
 pub use config::{
     ClientAuth, ClientAuthData, ServerTrustRoots, ServerVerifyMode, TlsClientAuth, TlsClientConfig,
-    TlsServerCertPin, TlsServerCertPinCheck, TlsServerCertPinSet, TlsServerCertPins,
-    TlsServerIdentity, TlsServerName, TlsServerTrust, TlsServerTrustAnchors, TlsServerVerify,
-    TlsStoreServerCertChain,
+    TlsClientSecurityPolicy, TlsServerCertPin, TlsServerCertPinCheck, TlsServerCertPinSet,
+    TlsServerCertPins, TlsServerIdentity, TlsServerName, TlsServerTrust, TlsServerTrustAnchors,
+    TlsServerVerify, TlsStoreServerCertChain,
 };
 use rama_crypto::pki_types::CertificateDer;
 
@@ -59,6 +59,15 @@ pub struct NegotiatedTlsParameters {
     /// or if it cannot report resumption.
     pub resumed: Option<bool>,
 }
+
+/// Server identity authenticated by the effective TLS verification policy.
+///
+/// Published only after a successful client handshake. `None` explicitly
+/// shadows older connection metadata when verification was disabled; negotiated
+/// ALPN or a received certificate alone does not prove server authentication.
+#[derive(Debug, Clone, PartialEq, Eq, Extension)]
+#[extension(tags(tls))]
+pub struct TlsServerAuthentication(pub Option<rama_net::address::Host>);
 
 /// Merge extension lists A and B, with
 /// B overwriting any conflict with A, and otherwise push it to the back.

@@ -14,7 +14,7 @@ pub use crate::io::upgrade::Upgraded;
 
 mod http_proxy_connect;
 pub use http_proxy_connect::{
-    EagerHttpProxyConnector, HttpProxyConnectRelayServiceRequestMatcher,
+    ConnectEgress, EagerHttpProxyConnector, HttpProxyConnectRelayServiceRequestMatcher,
     HttpProxyConnectRelayServiceResponseMatcher, LazyHttpProxyConnectReplyService,
 };
 

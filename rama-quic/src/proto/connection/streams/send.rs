@@ -13,6 +13,8 @@ pub(super) struct Send {
     pub(super) fin_pending: bool,
     /// Whether this stream is in the `connection_blocked` list of `Streams`
     pub(super) connection_blocked: bool,
+    /// Requested critical-stream reserve; its effective cap follows live transport limits.
+    pub(super) connection_reserve: u64,
     /// The reason the peer wants us to stop, if `STOP_SENDING` was received
     pub(super) stop_reason: Option<VarInt>,
 }
@@ -26,6 +28,7 @@ impl Send {
             priority: 0,
             fin_pending: false,
             connection_blocked: false,
+            connection_reserve: 0,
             stop_reason: None,
         })
     }

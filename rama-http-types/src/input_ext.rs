@@ -45,6 +45,16 @@ fn try_get_sni_from_secure_transport(_: &SecureTransport) -> Option<Domain> {
 /// `None` when none of them yields a host.
 pub(crate) fn authority_from_http_parts(parts: &impl HttpRequestParts) -> Option<HostWithOptPort> {
     let uri = parts.uri();
+    // An asterisk target has no URI authority. Preserve its explicit HTTP
+    // authority when forwarding instead of substituting ingress SNI/Forwarded.
+    if uri.is_asterisk()
+        && let Some(authority) = parts
+            .headers()
+            .get(crate::header::HOST)
+            .and_then(|value| HostWithOptPort::try_from(value.as_bytes()).ok())
+    {
+        return Some(authority);
+    }
 
     let protocol = protocol_from_uri_or_extensions(parts.extensions(), uri);
     let default_port = uri

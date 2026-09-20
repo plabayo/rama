@@ -58,6 +58,8 @@ relied upon by rama-http-core or related to.
   encoder/decoder and blocked-section accounting are in `h3::qpack`. The Huffman
   code is shared with HPACK ([rfc7541.txt](./rfc7541.txt)); it is not duplicated.
 
+* [rfc9218.txt](./rfc9218.txt): Extensible Prioritization Scheme for HTTP.
+
 ### Related, vendored in sibling crates
 
 To avoid duplication, the following load-bearing specifications live next

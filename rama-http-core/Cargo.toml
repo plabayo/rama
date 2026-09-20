@@ -26,6 +26,8 @@ targets = [
 
 [features]
 default = []
+# Synchronous bounded harnesses for the HTTP/3 state machines.
+fuzz-utils = []
 tls = ["rama-http-types/tls"]
 
 # Enables **unstable** APIs. Any API exposed by this feature has no backwards
@@ -48,6 +50,8 @@ rama-core = { workspace = true, features = ["std"] }
 rama-http = { workspace = true }
 rama-http-types = { workspace = true }
 rama-net = { workspace = true, features = ["std"] }
+rama-quic = { workspace = true }
+rama-quic-proto = { workspace = true }
 rama-utils = { workspace = true, features = ["std"] }
 slab = { workspace = true }
 tokio = { workspace = true, features = ["io-util"] }
@@ -57,6 +61,7 @@ want = { workspace = true }
 [dev-dependencies]
 rama-error = { path = "../rama-error" }
 rama-http = { workspace = true, features = ["compression"] }
+rama-quic = { workspace = true, features = ["rustls", "ring"] }
 rama-tls = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "net"] }
 tokio-rustls = { workspace = true }
