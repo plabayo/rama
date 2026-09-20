@@ -18,7 +18,7 @@ use libfuzzer_sys::{
     arbitrary::{self, Arbitrary, Unstructured},
     fuzz_target,
 };
-use rama_js::{JsObject, JsRuntime, JsValue, Serde};
+use rama::js::{JsObject, JsRuntime, JsValue, Serde};
 
 /// Matches the runtime's default snapshot depth limit, so near-limit and
 /// exactly-at-limit nesting is exercised.

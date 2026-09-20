@@ -485,6 +485,7 @@ rama_core::combinators::impl_either!(impl_into_response_either);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::service::web::endpoint::response::{Csv, Form, Json, Redirect};
     use rama_core::combinators::Either;
     use rama_http_types::body::util::BodyExt as _;
     use rama_utils::str::arcstr::arcstr;
@@ -507,9 +508,9 @@ mod tests {
     #[test]
     fn outer_status_does_not_hide_response_conversion_failures() {
         for response in [
-            (StatusCode::CREATED, super::super::Json(FailingSerialize)).into_response(),
-            (StatusCode::CREATED, super::super::Form(FailingSerialize)).into_response(),
-            (StatusCode::CREATED, super::super::Csv([FailingSerialize])).into_response(),
+            (StatusCode::CREATED, Json(FailingSerialize)).into_response(),
+            (StatusCode::CREATED, Form(FailingSerialize)).into_response(),
+            (StatusCode::CREATED, Csv([FailingSerialize])).into_response(),
         ] {
             assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
             assert!(
@@ -531,7 +532,7 @@ mod tests {
         let response = (
             [("x-error-context", "preserved")],
             extensions,
-            super::super::Json(FailingSerialize),
+            Json(FailingSerialize),
         )
             .into_response();
 
@@ -545,15 +546,11 @@ mod tests {
         );
 
         for response in [
-            (
-                super::super::Redirect::temporary("/next"),
-                super::super::Json(FailingSerialize),
-            )
-                .into_response(),
+            (Redirect::temporary("/next"), Json(FailingSerialize)).into_response(),
             (
                 StatusCode::CREATED,
-                super::super::Redirect::temporary("/next"),
-                super::super::Json(FailingSerialize),
+                Redirect::temporary("/next"),
+                Json(FailingSerialize),
             )
                 .into_response(),
         ] {
@@ -567,7 +564,7 @@ mod tests {
             .body(())
             .unwrap();
         template.extensions().insert(TestResponseExtension);
-        let response = (template, super::super::Json(FailingSerialize)).into_response();
+        let response = (template, Json(FailingSerialize)).into_response();
 
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(response.headers()["x-template-context"], "preserved");
@@ -602,7 +599,7 @@ mod tests {
         let response = (
             ForceStatusCode(StatusCode::IM_A_TEAPOT),
             [("x-forced", "true")],
-            super::super::Json(FailingSerialize),
+            Json(FailingSerialize),
         )
             .into_response();
 

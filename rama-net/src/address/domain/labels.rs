@@ -2,8 +2,8 @@
 //! type.
 //!
 //! Implemented for [`Domain`], [`DomainRef`], and for
-//! [`Host`](super::super::Host) (the [`Host::Name`](super::super::Host::Name)
-//! variant delegates; the [`Host::Address`](super::super::Host::Address)
+//! [`Host`](crate::address::Host) (the [`Host::Name`](crate::address::Host::Name)
+//! variant delegates; the [`Host::Address`](crate::address::Host::Address)
 //! variant has no labels).
 //!
 //! Presentation-format only — no octets generic, no DNS wire format, no
@@ -84,7 +84,7 @@ pub trait DomainLabels: sealed::Sealed {
     /// Returns `true` if `self` is a subdomain of `parent` (or equal to it).
     ///
     /// Returns `false` when `parent` has zero labels (e.g. an IP-valued
-    /// [`Host`](super::super::Host)).
+    /// [`Host`](crate::address::Host)).
     fn is_subdomain_of<D: DomainLabels + ?Sized>(&self, parent: &D) -> bool {
         // One walk: walk reverse together. Empty-parent check is folded in —
         // if parent has no labels at all, `b.next()` is None on the first
@@ -200,7 +200,7 @@ impl<'a> DoubleEndedIterator for DomainLabelIter<'a> {
 
 impl sealed::Sealed for Domain {}
 impl sealed::Sealed for DomainRef<'_> {}
-impl sealed::Sealed for super::super::Host {}
+impl sealed::Sealed for crate::address::Host {}
 
 impl DomainLabels for Domain {
     type LabelIter<'a> = DomainLabelIter<'a>;
@@ -250,8 +250,8 @@ impl DomainLabels for DomainRef<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::Domain;
     use super::DomainLabels;
+    use crate::address::domain::Domain;
 
     fn labels_of(s: &str) -> Vec<String> {
         Domain::try_from(s.to_owned())

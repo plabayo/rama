@@ -664,8 +664,8 @@ async fn lossy_string<W: AsyncWrite + Unpin + Send>(
 
 #[cfg(test)]
 mod tests {
-    use super::super::reference::ReferenceJsonEncoder;
     use super::*;
+    use crate::qlog::output::reference::ReferenceJsonEncoder;
     use crate::qlog::{
         QlogEncoder,
         event::{

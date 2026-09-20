@@ -905,7 +905,7 @@ mod tests {
         let python = meta("162.159.200.1:123", "com.apple.python3");
         assert!(!should_hold_e2e_pressure_flow(
             scope,
-            start + super::super::UDP_E2E_SAFETY_LIFETIME,
+            start + crate::UDP_E2E_SAFETY_LIFETIME,
             Some(&python),
             peer,
             &pressure_payload("162.159.200.1:123"),

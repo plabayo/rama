@@ -1,7 +1,7 @@
 use crate::protobuf::prost::{DecodeError, Message, types::Any};
 use crate::protobuf::types::richer_error::FromAnyRef;
 
-use super::super::{IntoAny, pb};
+use crate::protobuf::types::richer_error::{IntoAny, pb};
 
 /// Used to encode/decode the `ResourceInfo` standard error message described
 /// in [error_details.proto]. Describes the resource that is being accessed.
@@ -96,8 +96,8 @@ impl From<ResourceInfo> for pb::ResourceInfo {
 
 #[cfg(test)]
 mod tests {
-    use super::super::super::{FromAny, IntoAny};
     use super::ResourceInfo;
+    use crate::protobuf::types::richer_error::{FromAny, IntoAny};
 
     #[test]
     fn gen_resource_info() {

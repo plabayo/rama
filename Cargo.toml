@@ -420,6 +420,10 @@ std = [
     "rama-utils/std",
 ]
 test-utils = ["rama-net?/test-utils", "rama-udp?/test-utils", "rama-quic?/test-utils"]
+# Optional fuzzing support without enabling additional protocol crates.
+fuzz-utils = ["rama-quic?/fuzz-utils", "rama-quic-proto?/fuzz-utils"]
+# Forward experimental HTTP APIs when the HTTP backend is enabled.
+unstable = ["rama-http-core?/unstable"]
 compression = [
     "std",
     "http",

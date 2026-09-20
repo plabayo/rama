@@ -59,7 +59,7 @@ fn leaf_request(data: &TestCertData) -> LeafCertRequest {
         identities.push(CertificateIdentity::Dns(Domain::from_static("localhost")));
     }
     LeafCertRequest {
-        config: super::super::LeafCertConfig {
+        config: crate::cert::LeafCertConfig {
             subject: ca_config(data).subject,
             key_kind: data.key_kind,
             ..Default::default()

@@ -16,7 +16,7 @@ rama_utils::macros::error::static_str_error! {
 }
 
 /// Whether an endpoint was the initiator of a connection.
-#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
+#[cfg_attr(feature = "fuzz-utils", derive(arbitrary::Arbitrary))]
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum Side {
     /// The initiator of a connection
@@ -52,7 +52,7 @@ impl ops::Not for Side {
 }
 
 /// Whether a stream communicates data in both directions or only from the initiator.
-#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
+#[cfg_attr(feature = "fuzz-utils", derive(arbitrary::Arbitrary))]
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum Dir {
     /// Data flows in both directions
@@ -77,7 +77,7 @@ impl fmt::Display for Dir {
 }
 
 /// Identifier for a stream within a particular connection.
-#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
+#[cfg_attr(feature = "fuzz-utils", derive(arbitrary::Arbitrary))]
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct StreamId(pub(crate) u64);
 

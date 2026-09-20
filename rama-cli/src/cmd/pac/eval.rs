@@ -1173,7 +1173,7 @@ mod tests {
     fn javascript_cache_lives_below_the_rama_home_state() {
         let home = std::path::Path::new("/home/user");
         assert_eq!(
-            super::super::js_cache_dir(home),
+            crate::cmd::pac::js_cache_dir(home),
             home.join(".rama").join("wasm")
         );
     }

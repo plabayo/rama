@@ -736,7 +736,7 @@ mod tests {
             now,
             &TransportConfig::default(),
         );
-        super::super::qlog::ConnectionQlog::default().emit_recovery_metrics(
+        crate::proto::connection::qlog::ConnectionQlog::default().emit_recovery_metrics(
             0,
             &mut path,
             now,

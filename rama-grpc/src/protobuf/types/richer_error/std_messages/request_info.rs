@@ -1,7 +1,7 @@
 use crate::protobuf::prost::{DecodeError, Message, types::Any};
 use crate::protobuf::types::richer_error::FromAnyRef;
 
-use super::super::{IntoAny, pb};
+use crate::protobuf::types::richer_error::{IntoAny, pb};
 
 /// Used to encode/decode the `RequestInfo` standard error message described
 /// in [error_details.proto]. Contains metadata about the request that
@@ -79,8 +79,8 @@ impl From<RequestInfo> for pb::RequestInfo {
 
 #[cfg(test)]
 mod tests {
-    use super::super::super::{FromAny, IntoAny};
     use super::RequestInfo;
+    use crate::protobuf::types::richer_error::{FromAny, IntoAny};
 
     #[test]
     fn gen_request_info() {

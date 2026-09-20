@@ -2,7 +2,7 @@ use crate::protobuf::prost::{DecodeError, Message, types::Any};
 
 use crate::protobuf::types::{LocalizedMessage, richer_error::FromAnyRef};
 
-use super::super::{IntoAny, pb};
+use crate::protobuf::types::richer_error::{IntoAny, pb};
 
 /// Used at the `field_violations` field of the [`BadRequest`] struct.
 /// Describes a single bad request field.
@@ -151,8 +151,8 @@ impl From<BadRequest> for pb::BadRequest {
 
 #[cfg(test)]
 mod tests {
-    use super::super::super::{FromAny, IntoAny};
     use super::BadRequest;
+    use crate::protobuf::types::richer_error::{FromAny, IntoAny};
 
     #[test]
     fn gen_bad_request() {

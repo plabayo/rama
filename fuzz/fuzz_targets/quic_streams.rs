@@ -4,8 +4,8 @@
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
 
-use rama_quic::fuzzing::{ConnectionState, Retransmits, SendStream, Streams, StreamsState};
-use rama_quic_proto::{Dir, Side, StreamId, VarInt, frame::ResetStream};
+use rama::quic::fuzzing::{ConnectionState, Retransmits, SendStream, Streams, StreamsState};
+use rama::quic::proto::{Dir, Side, StreamId, VarInt, frame::ResetStream};
 
 #[derive(Arbitrary, Debug)]
 struct StreamParams {

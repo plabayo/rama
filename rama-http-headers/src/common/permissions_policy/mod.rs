@@ -472,8 +472,8 @@ fn parse_directive(s: &str) -> Option<PermissionsPolicyDirective> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{test_decode, test_encode};
     use super::*;
+    use crate::common::{test_decode, test_encode};
 
     #[test]
     fn empty_renders_to_empty_string() {

@@ -65,6 +65,7 @@ mod error;
 pub use self::error::{Error, Result};
 
 pub mod h2;
+pub mod h3;
 
 pub mod service;
 

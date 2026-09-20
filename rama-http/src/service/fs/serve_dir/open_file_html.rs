@@ -10,14 +10,14 @@
 //! bytes inside filenames are percent-encoded by the URI builder rather
 //! than spliced into the attribute raw.
 
-use super::super::{DirSource, open_file::OpenFileOutput};
+use crate::service::fs::serve_dir::{DirSource, open_file::OpenFileOutput};
 use jiff::Zoned;
 use rama_net::uri::Uri;
 use rama_utils::include_dir;
 use std::{fmt, path::PathBuf, time::SystemTime};
 
 /// Handle a directory request under
-/// [`DirectoryServeMode::HtmlFileList`](super::super::DirectoryServeMode::HtmlFileList):
+/// [`DirectoryServeMode::HtmlFileList`](crate::service::fs::serve_dir::DirectoryServeMode::HtmlFileList):
 /// collect the directory's entries (filesystem or embedded), then render
 /// them into an [`OpenFileOutput::Html`] response body.
 pub(super) async fn serve_html_listing(

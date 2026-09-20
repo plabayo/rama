@@ -692,6 +692,7 @@ mod tests {
     use tokio::sync::Notify;
 
     use crate::{
+        client::options::{OptionsCachePartition, OptionsValidation},
         codec::{Header, RequestLine, ResponseLine},
         message::{EncapsulatedParts, Request, Response},
         proto::{Method, MethodKind, StatusCode, header},
@@ -712,31 +713,21 @@ mod tests {
             Some(EncapsulatedParts::null()),
         )
         .unwrap();
-        ServiceCapabilities::parse(
-            response,
-            None,
-            8,
-            false,
-            super::super::OptionsValidation::Compatible,
-        )
-        .unwrap()
+        ServiceCapabilities::parse(response, None, 8, false, OptionsValidation::Compatible).unwrap()
     }
 
-    fn request(partition: &super::super::OptionsCachePartition) -> OptionsRequest {
+    fn request(partition: &OptionsCachePartition) -> OptionsRequest {
         request_for("icap://icap.test/service", partition)
     }
 
-    fn request_for(
-        service_uri: &str,
-        partition: &super::super::OptionsCachePartition,
-    ) -> OptionsRequest {
+    fn request_for(service_uri: &str, partition: &OptionsCachePartition) -> OptionsRequest {
         request_for_protocol(service_uri, None, partition)
     }
 
     fn request_for_protocol(
         service_uri: &str,
         application_protocol: Option<Protocol>,
-        partition: &super::super::OptionsCachePartition,
+        partition: &OptionsCachePartition,
     ) -> OptionsRequest {
         let uri = Uri::parse_strict(service_uri).unwrap();
         let uri_text = uri.as_str();
@@ -754,7 +745,7 @@ mod tests {
     }
 
     fn request_with_allow(
-        partition: &super::super::OptionsCachePartition,
+        partition: &OptionsCachePartition,
         allow: &'static [u8],
     ) -> OptionsRequest {
         let uri = Uri::parse_strict("icap://icap.test/service").unwrap();
@@ -841,7 +832,7 @@ mod tests {
     async fn fresh_and_non_expiring_snapshots_are_shared() {
         let provider = TestProvider::new(capabilities(None));
         let cache = OptionsCacheLayer::new().layer(provider.clone());
-        let partition = super::super::OptionsCachePartition::new();
+        let partition = OptionsCachePartition::new();
         let input = request(&partition);
 
         let first = cache.serve(input.clone()).await.unwrap();
@@ -885,7 +876,7 @@ mod tests {
     async fn negotiation_offers_partition_cache_entries() {
         let provider = TestProvider::new(capabilities(None));
         let cache = OptionsCacheLayer::new().layer(provider.clone());
-        let partition = super::super::OptionsCachePartition::new();
+        let partition = OptionsCachePartition::new();
         let none = request(&partition);
         let allow_204 = request_with_allow(&partition, b"204");
         let allow_206 = request_with_allow(&partition, b"206");
@@ -903,7 +894,7 @@ mod tests {
     async fn application_protocol_partitions_cache_entries() {
         let provider = TestProvider::new(capabilities(None));
         let cache = OptionsCacheLayer::new().layer(provider.clone());
-        let partition = super::super::OptionsCachePartition::new();
+        let partition = OptionsCachePartition::new();
 
         for protocol in [Protocol::ICAP, Protocol::ICAPS] {
             let input =
@@ -921,7 +912,7 @@ mod tests {
         let provider = TestProvider::new(capabilities(Some(b"0")));
         provider.hold.store(true, Ordering::SeqCst);
         let cache = OptionsCacheLayer::new().layer(provider.clone());
-        let partition = super::super::OptionsCachePartition::new();
+        let partition = OptionsCachePartition::new();
         let calls = join_all((0..50).map(|_| cache.serve(request(&partition))));
         let release = async {
             provider.wait_until_held().await;
@@ -942,7 +933,7 @@ mod tests {
     async fn same_tick_waiters_share_the_successful_replacement() {
         let provider = TestProvider::new(capabilities(Some(b"0")));
         let cache = OptionsCacheLayer::new().layer(provider.clone());
-        let partition = super::super::OptionsCachePartition::new();
+        let partition = OptionsCachePartition::new();
         let input = request(&partition);
         let expired = cache.serve(input.clone()).await.unwrap();
 
@@ -976,7 +967,7 @@ mod tests {
                 OptionsCacheConfig::new().with_stale_if_error(Some(Duration::from_secs(60))),
             )
             .layer(provider.clone());
-        let partition = super::super::OptionsCachePartition::new();
+        let partition = OptionsCachePartition::new();
         let input = request(&partition);
         let stale = cache.serve(input.clone()).await.unwrap();
 
@@ -1001,7 +992,7 @@ mod tests {
     async fn failed_same_tick_refresh_never_serves_an_expired_snapshot() {
         let provider = TestProvider::new(capabilities(Some(b"0")));
         let cache = OptionsCacheLayer::new().layer(provider.clone());
-        let partition = super::super::OptionsCachePartition::new();
+        let partition = OptionsCachePartition::new();
         let input = request(&partition);
         cache.serve(input.clone()).await.unwrap();
 
@@ -1031,8 +1022,8 @@ mod tests {
         let provider = TestProvider::new(capabilities(Some(b"60")));
         provider.hold.store(true, Ordering::SeqCst);
         let cache = OptionsCacheLayer::new().layer(provider.clone());
-        let first = super::super::OptionsCachePartition::new();
-        let second = super::super::OptionsCachePartition::new();
+        let first = OptionsCachePartition::new();
+        let second = OptionsCachePartition::new();
         let calls =
             async { tokio::join!(cache.serve(request(&first)), cache.serve(request(&second))) };
         let release = async {
@@ -1055,8 +1046,8 @@ mod tests {
         let cache = OptionsCacheLayer::new()
             .with_config(OptionsCacheConfig::new().with_max_in_flight(1))
             .layer(provider.clone());
-        let first = super::super::OptionsCachePartition::new();
-        let second = super::super::OptionsCachePartition::new();
+        let first = OptionsCachePartition::new();
+        let second = OptionsCachePartition::new();
         let held = cache.serve(request(&first));
         let bounded = async {
             provider.wait_until_held().await;
@@ -1075,7 +1066,7 @@ mod tests {
         provider.hold.store(true, Ordering::SeqCst);
         let cache = OptionsCacheLayer::new().layer(provider.clone());
         let handle = cache.handle();
-        let partition = super::super::OptionsCachePartition::new();
+        let partition = OptionsCachePartition::new();
         let input = request(&partition);
         let refresh = cache.serve(input.clone());
         let invalidate = async {
@@ -1095,7 +1086,7 @@ mod tests {
         let provider = TestProvider::new(capabilities(Some(b"60")));
         provider.hold.store(true, Ordering::SeqCst);
         let cache = OptionsCacheLayer::new().layer(provider.clone());
-        let partition = super::super::OptionsCachePartition::new();
+        let partition = OptionsCachePartition::new();
         let input = request_for("icap://icap.test/b", &partition);
         let refresh = cache.serve(input.clone());
         let invalidate = async {
@@ -1116,7 +1107,7 @@ mod tests {
     async fn exact_invalidation_removes_only_matching_entries_and_dead_refreshes() {
         let provider = TestProvider::new(capabilities(None));
         let cache = OptionsCacheLayer::new().layer(provider.clone());
-        let partition = super::super::OptionsCachePartition::new();
+        let partition = OptionsCachePartition::new();
         let first = request_for("icap://icap.test/a", &partition);
         let second = request_for("icap://icap.test/b", &partition);
 
@@ -1135,7 +1126,7 @@ mod tests {
     async fn global_invalidation_removes_every_cached_snapshot() {
         let provider = TestProvider::new(capabilities(None));
         let cache = OptionsCacheLayer::new().layer(provider.clone());
-        let partition = super::super::OptionsCachePartition::new();
+        let partition = OptionsCachePartition::new();
         let first = request_for("icap://icap.test/a", &partition);
         let second = request_for("icap://icap.test/b", &partition);
 
@@ -1152,7 +1143,7 @@ mod tests {
     async fn current_snapshot_requires_both_its_key_and_arc_identity() {
         let provider = TestProvider::new(capabilities(None));
         let cache = OptionsCacheLayer::new().layer(provider);
-        let partition = super::super::OptionsCachePartition::new();
+        let partition = OptionsCachePartition::new();
         let first = request_for("icap://icap.test/a", &partition);
         let second = request_for("icap://icap.test/b", &partition);
         let first_key = CacheKey::from_request(&first);
@@ -1175,7 +1166,7 @@ mod tests {
                 OptionsCacheConfig::new().with_stale_if_error(Some(Duration::from_secs(60))),
             )
             .layer(provider.clone());
-        let partition = super::super::OptionsCachePartition::new();
+        let partition = OptionsCachePartition::new();
         let input = request(&partition);
         cache.serve(input.clone()).await.unwrap();
 
@@ -1202,7 +1193,7 @@ mod tests {
         let provider = TestProvider::new(capabilities(Some(b"60")));
         provider.fail.store(true, Ordering::SeqCst);
         let cache = OptionsCacheLayer::new().layer(provider.clone());
-        let partition = super::super::OptionsCachePartition::new();
+        let partition = OptionsCachePartition::new();
 
         cache.serve(request(&partition)).await.unwrap_err();
         cache.serve(request(&partition)).await.unwrap_err();
@@ -1211,7 +1202,7 @@ mod tests {
         let provider = TestProvider::new(capabilities(Some(b"60")));
         provider.hold.store(true, Ordering::SeqCst);
         let cache = OptionsCacheLayer::new().layer(provider.clone());
-        let partition = super::super::OptionsCachePartition::new();
+        let partition = OptionsCachePartition::new();
         let mut attempt = Box::pin(cache.serve(request(&partition)));
         tokio::select! {
             result = &mut attempt => panic!("attempt completed unexpectedly: {result:?}"),
@@ -1230,7 +1221,7 @@ mod tests {
         let cache = OptionsCacheLayer::new()
             .with_config(OptionsCacheConfig::new().with_failure_backoff(Duration::from_secs(1)))
             .layer(provider.clone());
-        let partition = super::super::OptionsCachePartition::new();
+        let partition = OptionsCachePartition::new();
 
         cache.serve(request(&partition)).await.unwrap_err();
         tokio::time::advance(Duration::from_millis(999)).await;
@@ -1249,8 +1240,8 @@ mod tests {
         let cache = OptionsCacheLayer::new()
             .with_config(OptionsCacheConfig::new().with_max_entries(1))
             .layer(provider.clone());
-        let first = super::super::OptionsCachePartition::new();
-        let second = super::super::OptionsCachePartition::new();
+        let first = OptionsCachePartition::new();
+        let second = OptionsCachePartition::new();
 
         cache.serve(request(&first)).await.unwrap_err();
         cache.serve(request(&second)).await.unwrap_err();
@@ -1267,11 +1258,11 @@ mod tests {
         let cache = OptionsCacheLayer::new().layer(provider.clone());
 
         cache
-            .serve(request(&super::super::OptionsCachePartition::new()))
+            .serve(request(&OptionsCachePartition::new()))
             .await
             .unwrap();
         cache
-            .serve(request(&super::super::OptionsCachePartition::new()))
+            .serve(request(&OptionsCachePartition::new()))
             .await
             .unwrap();
         assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
@@ -1281,7 +1272,7 @@ mod tests {
     async fn peer_ttl_uses_monotonic_receipt_time() {
         let provider = TestProvider::new(capabilities(Some(b"1")));
         let cache = OptionsCacheLayer::new().layer(provider.clone());
-        let partition = super::super::OptionsCachePartition::new();
+        let partition = OptionsCachePartition::new();
 
         cache.serve(request(&partition)).await.unwrap();
         tokio::time::advance(Duration::from_millis(999)).await;
@@ -1297,7 +1288,7 @@ mod tests {
         let provider = TestProvider::new(capabilities(Some(b"1")));
         provider.hold.store(true, Ordering::SeqCst);
         let cache = OptionsCacheLayer::new().layer(provider.clone());
-        let partition = super::super::OptionsCachePartition::new();
+        let partition = OptionsCachePartition::new();
         let input = request(&partition);
         let fetch = cache.serve(input.clone());
         let release = async {
@@ -1326,7 +1317,7 @@ mod tests {
                     .with_max_ttl(Some(Duration::from_secs(1))),
             )
             .layer(provider.clone());
-        let partition = super::super::OptionsCachePartition::new();
+        let partition = OptionsCachePartition::new();
 
         cache.serve(request(&partition)).await.unwrap();
         tokio::time::advance(Duration::from_millis(999)).await;
@@ -1347,7 +1338,7 @@ mod tests {
                     .with_failure_backoff(Duration::from_secs(30)),
             )
             .layer(provider.clone());
-        let partition = super::super::OptionsCachePartition::new();
+        let partition = OptionsCachePartition::new();
         let first = cache.serve(request(&partition)).await.unwrap();
 
         provider.fail.store(true, Ordering::SeqCst);
@@ -1369,8 +1360,8 @@ mod tests {
         let cache = OptionsCacheLayer::new()
             .with_config(OptionsCacheConfig::new().with_max_entries(1))
             .layer(provider.clone());
-        let first = super::super::OptionsCachePartition::new();
-        let second = super::super::OptionsCachePartition::new();
+        let first = OptionsCachePartition::new();
+        let second = OptionsCachePartition::new();
 
         cache.serve(request(&first)).await.unwrap();
         cache.serve(request(&second)).await.unwrap();
@@ -1384,9 +1375,9 @@ mod tests {
         let cache = OptionsCacheLayer::new()
             .with_config(OptionsCacheConfig::new().with_max_entries(2))
             .layer(provider.clone());
-        let first = super::super::OptionsCachePartition::new();
-        let second = super::super::OptionsCachePartition::new();
-        let third = super::super::OptionsCachePartition::new();
+        let first = OptionsCachePartition::new();
+        let second = OptionsCachePartition::new();
+        let third = OptionsCachePartition::new();
 
         cache.serve(request(&first)).await.unwrap();
         cache.serve(request(&second)).await.unwrap();

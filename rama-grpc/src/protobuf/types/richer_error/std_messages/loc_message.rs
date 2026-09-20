@@ -2,7 +2,7 @@ use crate::protobuf::prost::{DecodeError, Message, types::Any};
 
 use crate::protobuf::types::richer_error::FromAnyRef;
 
-use super::super::{IntoAny, pb};
+use crate::protobuf::types::richer_error::{IntoAny, pb};
 
 /// Used to encode/decode the `LocalizedMessage` standard error message
 /// described in [error_details.proto]. Provides a localized error message
@@ -81,8 +81,8 @@ impl From<LocalizedMessage> for pb::LocalizedMessage {
 
 #[cfg(test)]
 mod tests {
-    use super::super::super::{FromAny, IntoAny};
     use super::LocalizedMessage;
+    use crate::protobuf::types::richer_error::{FromAny, IntoAny};
 
     #[test]
     fn gen_localized_message() {

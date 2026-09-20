@@ -1,4 +1,4 @@
-use super::super::std_messages::{
+use crate::protobuf::types::richer_error::std_messages::{
     BadRequest, DebugInfo, ErrorInfo, Help, LocalizedMessage, PreconditionFailure, QuotaFailure,
     RequestInfo, ResourceInfo, RetryInfo,
 };

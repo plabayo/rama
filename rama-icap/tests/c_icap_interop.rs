@@ -1,14 +1,7 @@
 #![cfg(feature = "std")]
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
-use std::{
-    env,
-    net::SocketAddr,
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
-};
+use std::{env, net::SocketAddr};
 
 use rama_core::{
     ServiceInput,
@@ -17,14 +10,11 @@ use rama_core::{
     io::Io,
 };
 use rama_icap::{
-    client::{
-        ClientConnection, ClientResponse, PreviewOutcome, WriteOutcome,
-        options::{MethodSupport, OptionsCacheLayer, OptionsService, TransferDisposition},
-    },
+    client::{ClientConnection, ClientResponse, PreviewOutcome, WriteOutcome},
     codec::{HeadParserConfig, Header, HeaderSlot, InterimServiceTag, RequestLine},
-    io::{BodyEnd, ConnectionOptions},
+    io::ConnectionOptions,
     message::{EncapsulatedParts, Request, TrailerBlock},
-    proto::{EncapsulatedKind, Method, MethodKind, Preview, StatusCode},
+    proto::{EncapsulatedKind, Method, Preview, StatusCode},
 };
 use tokio::net::TcpStream;
 #[cfg(feature = "http")]
@@ -34,15 +24,24 @@ use {
         Body, Request as HttpRequest, Response as HttpResponse,
         body::{Frame, util::BodyExt as _},
     },
-    rama_icap::http::{
-        ClientRequest as HttpClientRequest, Encapsulated as HttpEncapsulated,
-        layer::{AdaptationLayer, ReqmodResult, RespmodResult, ServiceEndpoint},
+    rama_icap::{
+        client::options::{MethodSupport, OptionsCacheLayer, OptionsService, TransferDisposition},
+        http::{
+            ClientRequest as HttpClientRequest, Encapsulated as HttpEncapsulated,
+            layer::{AdaptationLayer, ReqmodResult, RespmodResult, ServiceEndpoint},
+        },
+        io::BodyEnd,
+        proto::MethodKind,
     },
     rama_net::client::{
         ConnectRequest, ConnectionError, ConnectionErrorKind, EstablishedClientConnection,
     },
     rama_tls::client::{ServerVerifyMode, TlsClientConfig},
     rama_tls_boring::client::TlsConnector,
+    std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 fn oracle_addr(name: &str) -> Option<SocketAddr> {

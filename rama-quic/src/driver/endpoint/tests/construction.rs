@@ -1,7 +1,7 @@
 //! Construction of an endpoint's socket through Rama's shared UDP utilities.
 
-use super::super::*;
 use super::lifecycle::{configs, exchange, handshake};
+use crate::driver::endpoint::*;
 use rama_net::socket::{SocketOptions, core as socket};
 use rama_udp::{DatagramError, DatagramFeature, DatagramSocket as _, UdpSocketConfig};
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};

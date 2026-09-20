@@ -204,22 +204,57 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "h3_frame"
+path = "fuzz_targets/h3_frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "h3_settings"
+path = "fuzz_targets/h3_settings.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "qpack_field_section"
+path = "fuzz_targets/qpack_field_section.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "qpack_encoder_stream"
+path = "fuzz_targets/qpack_encoder_stream.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "qpack_instruction"
+path = "fuzz_targets/qpack_instruction.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "qpack_stateful"
+path = "fuzz_targets/qpack_stateful.rs"
+test = false
+doc = false
+bench = false
+
 [dependencies]
 arbitrary = { workspace = true }
 libfuzzer-sys = { workspace = true, features = ["arbitrary-derive"] }
-rama = { path = "../", features = ["dns", "ua", "http", "net", "html", "icap"] }
-rama-js = { path = "../rama-js" }
-rama-quic = { path = "../rama-quic", features = ["arbitrary", "ring"] }
-rama-quic-proto = { path = "../rama-quic-proto", features = ["arbitrary"] }
+rama = { path = "../", features = ["dns", "ua", "http-backend", "net", "html", "icap", "js", "quic", "ring", "fuzz-utils", "unstable"] }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 
 [dependencies.h2-support]
 path = "../rama-http-core/tests/h2-support"
-
-[dependencies.rama-http-core]
-path = "../rama-http-core"
-features = ["unstable"]
 
 [lints]
 workspace = true

@@ -103,8 +103,8 @@ mod html {
 
     use crate::protocols::html::IntoHtml;
 
-    use super::super::{ExtractJsonLdError, extract_from_html};
     use super::*;
+    use crate::protocols::json_ld::{ExtractJsonLdError, extract_from_html};
 
     #[test]
     fn script_renders_exactly_once_and_escapes_id() {

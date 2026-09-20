@@ -11,6 +11,7 @@ use crate::HeaderMap;
 
 pub mod h1;
 pub mod h2;
+pub mod h3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Extension)]
 #[extension(tags(http))]

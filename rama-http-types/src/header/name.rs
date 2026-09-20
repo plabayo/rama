@@ -2212,7 +2212,7 @@ mod tests {
         }
     }
 
-    const ONE_TOO_LONG: &[u8] = &[b'a'; super::super::MAX_HEADER_NAME_LEN + 1];
+    const ONE_TOO_LONG: &[u8] = &[b'a'; crate::header::MAX_HEADER_NAME_LEN + 1];
 
     #[test]
     fn test_invalid_name_lengths() {
@@ -2221,7 +2221,7 @@ mod tests {
             "zero-length header name is an error",
         );
 
-        let long = &ONE_TOO_LONG[0..super::super::MAX_HEADER_NAME_LEN];
+        let long = &ONE_TOO_LONG[0..crate::header::MAX_HEADER_NAME_LEN];
 
         let long_str = std::str::from_utf8(long).unwrap();
         assert_eq!(HeaderName::from_static(long_str), long_str); // shouldn't panic!

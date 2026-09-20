@@ -206,8 +206,8 @@ impl<'a> TryFrom<&'a OriginOrNull> for HeaderValue {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{test_decode, test_encode};
     use super::*;
+    use crate::common::{test_decode, test_encode};
 
     #[test]
     fn origin() {

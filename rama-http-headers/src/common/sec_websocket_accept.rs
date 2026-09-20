@@ -53,8 +53,8 @@ fn try_sign(key: &[u8]) -> Result<SecWebSocketAccept, BoxError> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{test_decode, test_encode};
     use super::*;
+    use crate::common::{test_decode, test_encode};
 
     #[test]
     fn key_to_accept() {

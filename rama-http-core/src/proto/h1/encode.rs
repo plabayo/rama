@@ -412,8 +412,8 @@ mod tests {
         },
     };
 
-    use super::super::io::Cursor;
     use super::Encoder;
+    use crate::proto::h1::io::Cursor;
 
     #[test]
     fn chunked() {

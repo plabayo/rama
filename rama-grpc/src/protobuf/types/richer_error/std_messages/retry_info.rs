@@ -4,7 +4,7 @@ use crate::protobuf::prost::{DecodeError, Message, types::Any};
 
 use crate::protobuf::types::richer_error::FromAnyRef;
 
-use super::super::{IntoAny, pb};
+use crate::protobuf::types::richer_error::{IntoAny, pb};
 
 /// Used to encode/decode the `RetryInfo` standard error message described in
 /// [error_details.proto]. Describes when the clients can retry a failed
@@ -113,8 +113,8 @@ impl From<RetryInfo> for pb::RetryInfo {
 mod tests {
     use core::time::Duration;
 
-    use super::super::super::{FromAny, IntoAny};
     use super::RetryInfo;
+    use crate::protobuf::types::richer_error::{FromAny, IntoAny};
 
     #[test]
     fn gen_retry_info() {

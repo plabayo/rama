@@ -2,7 +2,7 @@ use crate::protobuf::prost::{DecodeError, Message, types::Any};
 
 use crate::protobuf::types::richer_error::FromAnyRef;
 
-use super::super::{IntoAny, pb};
+use crate::protobuf::types::richer_error::{IntoAny, pb};
 
 /// Used at the `links` field of the [`Help`] struct. Describes a URL link.
 #[derive(Clone, Debug)]
@@ -133,8 +133,8 @@ impl From<Help> for pb::Help {
 
 #[cfg(test)]
 mod tests {
-    use super::super::super::{FromAny, IntoAny};
     use super::Help;
+    use crate::protobuf::types::richer_error::{FromAny, IntoAny};
 
     #[test]
     fn gen_help() {

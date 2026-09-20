@@ -382,6 +382,19 @@ jobs:
         run: just fuzz/h2 30
       - name: fuzz — quic
         run: just fuzz/quic 30
+      - name: fuzz — h3 and stateful qpack
+        run: just fuzz/h3 60
+      - name: Upload H3 and QPACK fuzz corpus and failures
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: h3-qpack-fuzz-${{ github.run_id }}
+          if-no-files-found: ignore
+          path: |
+            fuzz/corpus/h3_*
+            fuzz/corpus/qpack_*
+            fuzz/artifacts/h3_*
+            fuzz/artifacts/qpack_*
 
   docsrs-emulation:
     # Linux is the docs.rs build host. cargo-docs-rs applies each crate's

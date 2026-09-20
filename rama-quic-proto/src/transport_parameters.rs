@@ -9,7 +9,7 @@
 use alloc::{vec, vec::Vec};
 use core::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
 
-#[cfg(feature = "arbitrary")]
+#[cfg(feature = "fuzz-utils")]
 use arbitrary::Arbitrary;
 use rama_core::bytes::{Buf, BufMut};
 use rand::{Rng, RngExt, seq::SliceRandom as _};
@@ -212,7 +212,7 @@ impl TransportParameters {
     }
 }
 
-#[cfg(feature = "arbitrary")]
+#[cfg(feature = "fuzz-utils")]
 impl<'arbitrary> Arbitrary<'arbitrary> for TransportParameters {
     fn arbitrary(u: &mut arbitrary::Unstructured<'arbitrary>) -> arbitrary::Result<Self> {
         Ok(Self {

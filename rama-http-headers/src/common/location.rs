@@ -61,8 +61,8 @@ impl TryFrom<&Uri> for Location {
 
 #[cfg(test)]
 mod tests {
-    use super::super::test_decode;
     use super::*;
+    use crate::common::test_decode;
 
     #[test]
     fn absolute_uri() {

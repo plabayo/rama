@@ -1418,27 +1418,43 @@ mod tests {
     #[tokio::test]
     async fn cancelled_preview_continuation_resumes_the_same_write() {
         let (client_io, server_io) = tokio::io::duplex(8);
-        let service = service_fn(async |mut request: IncomingRequest| {
-            let mut received = BytesMut::new();
-            while let Some(data) = request.body_mut().next_data().await? {
-                received.extend_from_slice(&data);
+        let prefix_read = Arc::new(Notify::new());
+        let cancelled = Arc::new(Notify::new());
+        let service_prefix_read = Arc::clone(&prefix_read);
+        let service_cancelled = Arc::clone(&cancelled);
+        let service = service_fn(move |mut request: IncomingRequest| {
+            let prefix_read = Arc::clone(&service_prefix_read);
+            let cancelled = Arc::clone(&service_cancelled);
+            async move {
+                let mut received = BytesMut::new();
+                while let Some(data) = request.body_mut().next_data().await? {
+                    received.extend_from_slice(&data);
+                }
+                assert_eq!(request.body().body_end(), Some(BodyEnd::Preview));
+                // Cancel only after the peer has observed a partial write. It
+                // keeps the rest backpressured until this future is dropped.
+                {
+                    let continuation = request.body_mut().continue_preview();
+                    tokio::pin!(continuation);
+                    tokio::select! {
+                        biased;
+                        result = &mut continuation => {
+                            panic!("continuation completed before cancellation: {result:?}");
+                        }
+                        () = prefix_read.notified() => {}
+                    }
+                }
+                cancelled.notify_one();
+                request.body_mut().continue_preview().await?;
+                while let Some(data) = request.body_mut().next_data().await? {
+                    received.extend_from_slice(&data);
+                }
+                assert_eq!(&received[..], b"onetwo");
+                Ok::<_, BoxError>(OutgoingResponse::without_body(response(
+                    MethodKind::Reqmod,
+                    EncapsulatedParts::null(),
+                )))
             }
-            assert_eq!(request.body().body_end(), Some(BodyEnd::Preview));
-            let timed_out = tokio::time::timeout(
-                std::time::Duration::from_millis(10),
-                request.body_mut().continue_preview(),
-            )
-            .await;
-            timed_out.unwrap_err();
-            request.body_mut().continue_preview().await?;
-            while let Some(data) = request.body_mut().next_data().await? {
-                received.extend_from_slice(&data);
-            }
-            assert_eq!(&received[..], b"onetwo");
-            Ok::<_, BoxError>(OutgoingResponse::without_body(response(
-                MethodKind::Reqmod,
-                EncapsulatedParts::null(),
-            )))
         });
         let server_task = tokio::spawn(async move {
             Server::new(service, TEST_SERVICE_TAG)
@@ -1468,11 +1484,15 @@ mod tests {
             write.write_all(b"3\r\ntwo\r\n0\r\n\r\n").await.unwrap();
         };
         let receive = async move {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             let expected = b"ICAP/1.0 100 Continue\r\n\
                 ISTag: \"rama-test\"\r\n\r\n";
             let mut interim = vec![0; expected.len()];
-            read.read_exact(&mut interim).await.unwrap();
+            // Reading one buffer's worth proves the continuation started,
+            // while leaving too little room for the complete interim response.
+            read.read_exact(&mut interim[..8]).await.unwrap();
+            prefix_read.notify_one();
+            cancelled.notified().await;
+            read.read_exact(&mut interim[8..]).await.unwrap();
             assert_eq!(&interim, expected);
             continued.notify_one();
             let mut response = Vec::new();

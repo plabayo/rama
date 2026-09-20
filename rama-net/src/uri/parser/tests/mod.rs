@@ -34,8 +34,8 @@
 //!
 //! Shared helpers live in this file.
 
-use super::super::UriInner;
-use super::super::lazy::LazyUriRef;
+use crate::uri::UriInner;
+use crate::uri::lazy::LazyUriRef;
 use crate::uri::{ParseError, Uri};
 
 pub(super) mod absolute_form;

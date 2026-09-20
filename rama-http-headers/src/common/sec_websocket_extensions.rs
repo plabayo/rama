@@ -376,10 +376,10 @@ impl fmt::Display for Extension {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{test_decode, test_encode};
     use super::{
         Extension, PerMessageDeflateConfig, PerMessageDeflateIdentifier, SecWebSocketExtensions,
     };
+    use crate::common::{test_decode, test_encode};
 
     #[test]
     fn decode_sec_websocket_extensions() {

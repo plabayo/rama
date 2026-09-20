@@ -88,6 +88,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use crate::client::pool::{LruDropPool, PooledConnector};
     use core::convert::Infallible;
     use std::sync::{
         Arc,
@@ -212,11 +213,10 @@ mod tests {
                     }
                 }
             });
-            let pool = super::super::LruDropPool::try_new(1, 2)
+            let pool = LruDropPool::try_new(1, 2)
                 .unwrap()
                 .with_drop_connection_if_no_response(false);
-            let connector =
-                super::super::PooledConnector::new(inner, pool, BasicConnIdentifier::new());
+            let connector = PooledConnector::new(inner, pool, BasicConnIdentifier::new());
 
             for route_requested in [
                 requested_first,
@@ -258,10 +258,10 @@ mod tests {
                 }
             }
         });
-        let pool = super::super::LruDropPool::try_new(1, 2)
+        let pool = LruDropPool::try_new(1, 2)
             .unwrap()
             .with_drop_connection_if_no_response(false);
-        let connector = super::super::PooledConnector::new(inner, pool, BasicConnIdentifier::new());
+        let connector = PooledConnector::new(inner, pool, BasicConnIdentifier::new());
         let authority = "icap.test:11344".parse::<HostWithPort>().unwrap();
 
         for protocol in [

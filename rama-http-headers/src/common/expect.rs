@@ -64,8 +64,8 @@ impl fmt::Debug for Expect {
 
 #[cfg(test)]
 mod tests {
-    use super::super::test_decode;
     use super::Expect;
+    use crate::common::test_decode;
 
     #[test]
     fn expect_continue() {

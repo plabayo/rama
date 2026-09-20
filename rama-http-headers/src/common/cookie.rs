@@ -79,8 +79,8 @@ impl PartialEq for Cookie {
 
 #[cfg(test)]
 mod tests {
-    use super::super::test_decode;
     use super::Cookie;
+    use crate::common::test_decode;
 
     #[test]
     fn test_parse() {

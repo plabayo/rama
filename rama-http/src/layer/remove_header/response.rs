@@ -331,7 +331,7 @@ mod test {
     #[tokio::test]
     async fn remove_response_header_hop_by_hop_preserves_matching_upgrade() {
         let svc = (
-            super::super::RemoveRequestHeaderLayer::hop_by_hop(),
+            crate::layer::remove_header::RemoveRequestHeaderLayer::hop_by_hop(),
             RemoveResponseHeaderLayer::hop_by_hop(),
         )
             .into_layer(service_fn(async |req: Request| {
@@ -475,7 +475,7 @@ mod test {
     #[tokio::test]
     async fn hop_layers_consume_fields_before_transform_middleware() {
         let svc = (
-            super::super::RemoveRequestHeaderLayer::hop_by_hop(),
+            crate::layer::remove_header::RemoveRequestHeaderLayer::hop_by_hop(),
             SetResponseHeaderLayer::overriding(
                 HeaderName::from_static("x-response-hop"),
                 HeaderValue::from_static("secret"),

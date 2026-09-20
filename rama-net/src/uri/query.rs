@@ -784,7 +784,7 @@ impl core::str::FromStr for Query {
 mod internal_tests {
     //! Direct tests for the private `form_decode` helper. Behavioural
     //! coverage via the public `QueryRef::pairs()` API lives in
-    //! `super::super::parser::tests::query_pairs`; these pin the
+    //! `crate::uri::parser::tests::query_pairs`; these pin the
     //! function-level invariants that don't surface through the iterator.
 
     use crate::std::borrow::Cow;

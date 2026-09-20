@@ -666,6 +666,13 @@ impl From<status::InvalidStatusCode> for DecoderError {
     }
 }
 
+impl From<crate::proto::h2::ext::InvalidProtocol> for DecoderError {
+    fn from(_: crate::proto::h2::ext::InvalidProtocol) -> Self {
+        // an invalid `:protocol` value is a malformed pseudo-header
+        Self::InvalidPseudoheader
+    }
+}
+
 impl From<DecoderError> for frame::Error {
     fn from(src: DecoderError) -> Self {
         Self::Hpack(src)

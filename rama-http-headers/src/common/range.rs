@@ -231,8 +231,8 @@ impl HeaderEncode for Range {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{test_decode, test_encode};
     use super::*;
+    use crate::common::{test_decode, test_encode};
 
     fn range(s: &str) -> Range {
         test_decode(&[s]).unwrap()

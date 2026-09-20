@@ -201,9 +201,9 @@ impl HeaderEncode for ReferrerPolicy {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{test_decode, test_encode};
     use super::ReferrerPolicy;
     use crate::TypedHeader;
+    use crate::common::{test_decode, test_encode};
 
     #[test]
     fn decode_single_token() {

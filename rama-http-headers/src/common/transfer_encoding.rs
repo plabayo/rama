@@ -91,8 +91,8 @@ impl TransferEncoding {
 mod tests {
     use rama_utils::collections::non_empty_smallvec;
 
-    use super::super::{test_decode, test_encode};
     use super::{TransferEncoding, TransferEncodingDirective};
+    use crate::common::{test_decode, test_encode};
 
     #[test]
     fn chunked_is_chunked() {

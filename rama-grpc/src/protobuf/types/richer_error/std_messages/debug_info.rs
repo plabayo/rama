@@ -2,7 +2,7 @@ use crate::protobuf::prost::{DecodeError, Message, types::Any};
 
 use crate::protobuf::types::richer_error::FromAnyRef;
 
-use super::super::{IntoAny, pb};
+use crate::protobuf::types::richer_error::{IntoAny, pb};
 
 /// Used to encode/decode the `DebugInfo` standard error message described in
 /// [error_details.proto]. Describes additional debugging info.
@@ -77,8 +77,8 @@ impl From<DebugInfo> for pb::DebugInfo {
 
 #[cfg(test)]
 mod tests {
-    use super::super::super::{FromAny, IntoAny};
     use super::DebugInfo;
+    use crate::protobuf::types::richer_error::{FromAny, IntoAny};
 
     #[test]
     fn gen_debug_info() {

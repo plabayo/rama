@@ -23,7 +23,7 @@ use rama::{
 };
 use tokio::io::AsyncWriteExt as _;
 
-use super::super::SendCommand;
+use crate::cmd::send::SendCommand;
 
 mod tui;
 

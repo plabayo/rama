@@ -2,12 +2,12 @@
 
 use rama_core::error::BoxError;
 
-use super::super::selector::Selector;
-use super::super::tokenizer::{
-    Cdata, Comment, Doctype, EndTag, StartTag, Text, TokenSink, Tokenizer,
-};
 use super::SelectorMatcher;
 use super::element::{Element, ElementContentHandler, EndActions, HandlerResult};
+use crate::protocols::html::selector::Selector;
+use crate::protocols::html::tokenizer::{
+    Cdata, Comment, Doctype, EndTag, StartTag, Text, TokenSink, Tokenizer,
+};
 
 /// The [`TokenSink`] that drives matching + mutation + serialization.
 struct RewriteSink<H> {

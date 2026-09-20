@@ -518,7 +518,7 @@ Encapsulated: opt-body=0\r\n\r\n\
         );
         assert_eq!(
             capabilities.methods().support(MethodKind::Reqmod),
-            super::super::MethodSupport::Supported
+            crate::client::options::MethodSupport::Supported
         );
         assert!(capabilities.allows_206());
         assert_eq!(

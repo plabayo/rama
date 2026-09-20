@@ -1786,7 +1786,7 @@ async fn reject_extended_connect_request_without_scheme() {
             .send_frame(frames::headers(1).pseudo(frame::Pseudo {
                 method: Method::CONNECT.into(),
                 path: util::byte_str("/").into(),
-                protocol: Protocol::from("the-bread-protocol").into(),
+                protocol: Protocol::from_static("the-bread-protocol").into(),
                 ..Default::default()
             }))
             .await;
@@ -1830,7 +1830,7 @@ async fn reject_extended_connect_request_without_path() {
             .send_frame(frames::headers(1).pseudo(frame::Pseudo {
                 method: Method::CONNECT.into(),
                 scheme: util::byte_str("https").into(),
-                protocol: Protocol::from("the-bread-protocol").into(),
+                protocol: Protocol::from_static("the-bread-protocol").into(),
                 ..Default::default()
             }))
             .await;

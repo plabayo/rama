@@ -414,7 +414,7 @@ mod tests {
         let event: Event<PatchElements> = patch.clone().try_into().unwrap();
         assert_eq!(event.event(), Some(EventType::PatchElements.as_str()));
 
-        let event: super::super::DatastarEvent = patch.try_into().unwrap();
+        let event: crate::body::sse::datastar::DatastarEvent = patch.try_into().unwrap();
         assert_eq!(event.event(), Some(EventType::PatchElements.as_str()));
     }
 

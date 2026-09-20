@@ -1831,6 +1831,7 @@ dependencies = [
  "rama-core",
  "rama-json",
  "rama-net",
+ "rama-quic-proto",
  "rama-tls",
  "rama-utils",
  "rand",

@@ -46,6 +46,18 @@ relied upon by rama-http-core or related to.
 * [rfc9113.txt](./rfc9113.txt)  
   HTTP/2
 
+* [rfc9114.txt](./rfc9114.txt)  
+  HTTP/3. Frame types, settings, unidirectional stream types and error codes are
+  modelled in `proto::h3` (in `rama-http-types`); the bounded incremental frame
+  codec lives in `h3::frame`.
+
+* [rfc9204.txt](./rfc9204.txt)  
+  QPACK: Field Compression for HTTP/3. The static table, prefixed integer/string
+  codings and the field-line and instruction representations are in
+  `proto::h3::qpack` (in `rama-http-types`); the connection-scoped dynamic table,
+  encoder/decoder and blocked-section accounting are in `h3::qpack`. The Huffman
+  code is shared with HPACK ([rfc7541.txt](./rfc7541.txt)); it is not duplicated.
+
 ### Related, vendored in sibling crates
 
 To avoid duplication, the following load-bearing specifications live next

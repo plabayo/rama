@@ -13,8 +13,8 @@ use rama::{
 
 use std::sync::Arc;
 
-use super::super::feed::{self, FeedKind, FeedTuiCandidate};
 use super::writer::Writer;
+use crate::cmd::send::http::feed::{self, FeedKind, FeedTuiCandidate};
 
 const SELECT_JSON_MAX_CAPTURE_BYTES: usize = mib(8);
 

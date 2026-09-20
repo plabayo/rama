@@ -247,7 +247,7 @@ pub(super) fn build_engine_with_tcp_idle_timeout(
 pub(super) fn build_engine_with_decision_deadline(
     handler: TestHandler,
     deadline: Duration,
-    action: super::super::DecisionDeadlineAction,
+    action: crate::tproxy::engine::DecisionDeadlineAction,
 ) -> TransparentProxyEngine<TestHandler> {
     TransparentProxyEngineBuilder::new(TestHandlerFactory(handler))
         .with_runtime_factory(TestRuntimeFactory)

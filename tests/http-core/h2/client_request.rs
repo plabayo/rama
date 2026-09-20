@@ -1858,7 +1858,7 @@ async fn extended_connect_request() {
         let (mut client, mut h2) = client::handshake(io).await.unwrap();
 
         let request = Request::connect("http://bread/baguette")
-            .extension(Protocol::from("the-bread-protocol"))
+            .extension(Protocol::from_static("the-bread-protocol"))
             .body(())
             .unwrap();
         let (response, _) = client.send_request(request, true).unwrap();

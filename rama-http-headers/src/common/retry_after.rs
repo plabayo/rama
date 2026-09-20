@@ -115,8 +115,8 @@ impl<'a> TryFrom<&'a After> for HeaderValue {
 
 #[cfg(test)]
 mod tests {
-    use super::super::test_decode;
     use super::{RetryAfter, Seconds};
+    use crate::common::test_decode;
     use crate::util::HttpDate;
 
     #[test]

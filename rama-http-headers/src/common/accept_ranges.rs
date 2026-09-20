@@ -124,8 +124,8 @@ impl AcceptRanges {
 
 #[cfg(test)]
 mod tests {
-    use super::super::test_decode;
     use super::*;
+    use crate::common::test_decode;
 
     fn accept_ranges(s: &str) -> AcceptRanges {
         test_decode(&[s]).unwrap()
