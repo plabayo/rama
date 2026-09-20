@@ -2,7 +2,7 @@
 #![cfg(fuzzing)]
 
 use libfuzzer_sys::fuzz_target;
-use rama_http_types::proto::h3::qpack::{
+use rama::http::proto::h3::qpack::{
     DecoderInstruction, EncoderInstruction, FieldLine, HeaderPrefix,
 };
 
@@ -14,7 +14,7 @@ fuzz_target!(|data: &[u8]| {
     {
         let mut cursor = data;
         while let Ok(inst) = EncoderInstruction::decode(&mut cursor, 4096) {
-            let mut buf = rama_core::bytes::BytesMut::new();
+            let mut buf = rama::bytes::BytesMut::new();
             inst.encode(&mut buf);
             let mut again = &buf[..];
             let round = EncoderInstruction::decode(&mut again, 4096).expect("re-decode");
@@ -25,7 +25,7 @@ fuzz_target!(|data: &[u8]| {
     {
         let mut cursor = data;
         while let Ok(inst) = DecoderInstruction::decode(&mut cursor) {
-            let mut buf = rama_core::bytes::BytesMut::new();
+            let mut buf = rama::bytes::BytesMut::new();
             inst.encode(&mut buf);
             let mut again = &buf[..];
             let round = DecoderInstruction::decode(&mut again).expect("re-decode");
@@ -36,7 +36,7 @@ fuzz_target!(|data: &[u8]| {
     {
         let mut cursor = data;
         while let Ok(line) = FieldLine::decode(&mut cursor, 4096) {
-            let mut buf = rama_core::bytes::BytesMut::new();
+            let mut buf = rama::bytes::BytesMut::new();
             line.encode(&mut buf);
             let mut again = &buf[..];
             let round = FieldLine::decode(&mut again, 4096).expect("re-decode");

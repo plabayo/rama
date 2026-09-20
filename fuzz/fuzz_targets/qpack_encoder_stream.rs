@@ -2,7 +2,7 @@
 #![cfg(fuzzing)]
 
 use libfuzzer_sys::fuzz_target;
-use rama_http_core::h3::qpack::{Decoder, DecoderConfig};
+use rama::http::core::h3::qpack::{Decoder, DecoderConfig};
 
 // Feed arbitrary bytes to the QPACK encoder-stream processor in small chunks. The dynamic table
 // must stay bounded by the advertised capacity, and malformed instructions must be a clean error.

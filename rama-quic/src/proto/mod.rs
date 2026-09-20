@@ -161,7 +161,7 @@ pub(crate) mod fuzzing {
         Ok(decoded)
     }
 
-    #[cfg(feature = "arbitrary")]
+    #[cfg(feature = "fuzz-utils")]
     use arbitrary::{Arbitrary, Result, Unstructured};
 
     #[derive(Debug)]
@@ -171,7 +171,7 @@ pub(crate) mod fuzzing {
         pub grease_quic_bit: bool,
     }
 
-    #[cfg(feature = "arbitrary")]
+    #[cfg(feature = "fuzz-utils")]
     impl<'arbitrary> Arbitrary<'arbitrary> for PacketParams {
         fn arbitrary(u: &mut Unstructured<'arbitrary>) -> Result<Self> {
             let local_cid_len: usize = u.int_in_range(0..=rama_quic_proto::MAX_CID_SIZE)?;

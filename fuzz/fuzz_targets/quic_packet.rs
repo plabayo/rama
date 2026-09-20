@@ -2,8 +2,8 @@
 #![cfg(fuzzing)]
 
 use libfuzzer_sys::fuzz_target;
-use rama_quic::fuzzing::PacketParams;
-use rama_quic_proto::{
+use rama::quic::fuzzing::PacketParams;
+use rama::quic::proto::{
     Version,
     packet::{FixedLengthConnectionIdParser, PartialDecode},
 };

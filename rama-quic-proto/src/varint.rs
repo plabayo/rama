@@ -8,7 +8,7 @@ use rama_core::bytes::{Buf, BufMut};
 
 use crate::coding::{self, Codec, UnexpectedEnd};
 
-#[cfg(feature = "arbitrary")]
+#[cfg(feature = "fuzz-utils")]
 use arbitrary::Arbitrary;
 
 /// An integer less than 2^62
@@ -158,7 +158,7 @@ impl Mul<u64> for VarInt {
     }
 }
 
-#[cfg(feature = "arbitrary")]
+#[cfg(feature = "fuzz-utils")]
 impl<'arbitrary> Arbitrary<'arbitrary> for VarInt {
     fn arbitrary(u: &mut arbitrary::Unstructured<'arbitrary>) -> arbitrary::Result<Self> {
         Ok(Self(u.int_in_range(0..=Self::MAX.0)?))

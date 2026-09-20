@@ -4298,12 +4298,6 @@ dependencies = [
  "h2-support",
  "libfuzzer-sys",
  "rama",
- "rama-core",
- "rama-http-core",
- "rama-http-types",
- "rama-js",
- "rama-quic",
- "rama-quic-proto",
  "serde_json",
  "tokio",
 ]

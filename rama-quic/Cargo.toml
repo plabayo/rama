@@ -32,7 +32,7 @@ ring = ["rama-crypto/ring", "rama-tls-rustls?/ring"]
 # Deterministic in-memory sockets and engine simulator helpers for tests.
 test-utils = ["rama-udp/test-utils"]
 # Byte-oriented hooks used by the workspace fuzz crate only.
-arbitrary = ["dep:arbitrary", "rama-quic-proto/arbitrary"]
+fuzz-utils = ["dep:arbitrary", "rama-quic-proto/fuzz-utils"]
 # Optional [dial9] runtime telemetry: driver tasks go through Rama's shared
 # spawn path, so an attached recorder tracks them. No recorder is created here.
 #

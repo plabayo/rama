@@ -2,7 +2,7 @@
 #![cfg(fuzzing)]
 
 use libfuzzer_sys::fuzz_target;
-use rama_http_core::h3::frame::{DEFAULT_MAX_FRAME_SIZE, FrameDecoder};
+use rama::http::core::h3::frame::{DEFAULT_MAX_FRAME_SIZE, FrameDecoder};
 
 // Feed arbitrary bytes to the bounded incremental frame decoder and drain events until it needs
 // more input or errors. The decoder must never allocate an unbounded amount, panic or loop.

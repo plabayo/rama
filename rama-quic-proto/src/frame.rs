@@ -20,7 +20,7 @@ use crate::{
     shared::{ConnectionId, EcnCodepoint},
 };
 
-#[cfg(feature = "arbitrary")]
+#[cfg(feature = "fuzz-utils")]
 use arbitrary::Arbitrary;
 
 /// A QUIC frame type
@@ -922,7 +922,7 @@ impl Iterator for AckIter<'_> {
     }
 }
 
-#[cfg_attr(feature = "arbitrary", derive(Arbitrary))]
+#[cfg_attr(feature = "fuzz-utils", derive(Arbitrary))]
 #[derive(Debug, Copy, Clone)]
 pub struct ResetStream {
     pub id: StreamId,

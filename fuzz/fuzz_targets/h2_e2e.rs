@@ -87,14 +87,14 @@ impl AsyncWrite for MockIo<'_> {
     }
 }
 
-async fn run(script: &[u8]) -> Result<(), rama_http_core::h2::Error> {
+async fn run(script: &[u8]) -> Result<(), rama::http::core::h2::Error> {
     let io = MockIo { input: script };
     let io = ServiceInput::new(io);
-    let (mut h2, mut connection) = rama_http_core::h2::client::handshake(io).await?;
+    let (mut h2, mut connection) = rama::http::core::h2::client::handshake(io).await?;
     let mut futs = FuturesUnordered::new();
     let future = future::poll_fn(|cx| {
         if Pin::new(&mut connection).poll(cx)? == Poll::Ready(()) {
-            return Poll::Ready(Ok::<_, rama_http_core::h2::Error>(()));
+            return Poll::Ready(Ok::<_, rama::http::core::h2::Error>(()));
         }
         while futs.len() < 128 {
             if !h2.poll_ready(cx)?.is_ready() {

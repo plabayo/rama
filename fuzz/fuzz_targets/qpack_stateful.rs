@@ -4,8 +4,8 @@
 use std::collections::BTreeMap;
 
 use libfuzzer_sys::fuzz_target;
-use rama_core::bytes::{Bytes, BytesMut};
-use rama_http_core::h3::qpack::{
+use rama::bytes::{Bytes, BytesMut};
+use rama::http::core::h3::qpack::{
     Decoder, DecoderConfig, EncodeField, Encoder, EncoderConfig, FieldPair,
 };
 

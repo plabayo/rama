@@ -2,7 +2,7 @@
 #![cfg(fuzzing)]
 
 use libfuzzer_sys::fuzz_target;
-use rama_quic_proto::{Side, transport_parameters::TransportParameters};
+use rama::quic::proto::{Side, transport_parameters::TransportParameters};
 
 fuzz_target!(|data: &[u8]| {
     let mut data = data;

@@ -2,7 +2,7 @@
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
 
-use rama_quic_proto::{Dir, Side, StreamId};
+use rama::quic::proto::{Dir, Side, StreamId};
 
 #[derive(Arbitrary, Debug)]
 struct StreamIdParams {
