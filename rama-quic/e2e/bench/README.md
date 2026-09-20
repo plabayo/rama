@@ -7,14 +7,19 @@ certificates under `/certs`, HTTP/0.9 over ALPN `hq-interop`. Rama's image (buil
 can be measured without writing any peer code: one image serves, another fetches, the fetch
 is timed from the client container's own start and finish timestamps.
 
-The simulator stays out. The two runner subnets are kept, with a plain forwarding container
+The simulator stays out. The runner’s IPv4 and IPv6 subnets are kept, with a plain forwarding container
 where the simulator would be, because the endpoint base image routes through that gateway.
+The endpoint setup scripts require both address families even for IPv4 requests.
+The two temporary benchmark bridges use Docker’s `nat-unprotected` gateway mode so
+Docker does not drop packets destined for the other subnet before they reach the forwarder.
+This permits direct access to unpublished ports on those benchmark networks by hosts with
+routes to them; it does not change daemon-wide settings or other Docker networks.
 Every pair crosses the same forwarder, so cells compare fairly with one another; absolute
 numbers describe this host's path, not the implementations in isolation.
 
 ## Run
 
-Docker is the only prerequisite. From the repository root:
+Docker Engine 28 or newer with IPv6 bridge support is the only prerequisite. From the repository root:
 
 ```sh
 just rama-quic/bench-matrix
@@ -24,6 +29,9 @@ That builds the Rama images for the three TLS backends when they are missing, pu
 images pinned in [`bench.lock.json`](bench.lock.json), generates the certificates and served
 files inside containers, runs every client x server pair for every case, prints one table per
 case and writes the SVGs under `graph/`, plus a JSON report under `target/quic-bench/`.
+Container logs are saved by default under `target/quic-bench/logs/<timestamp>/`.
+A partial report is saved after each cell to `target/quic-bench/in-progress.json`, so an
+interrupted matrix can still be inspected or rendered with `bench-matrix-report`.
 
 Useful knobs (`--help` has them all):
 

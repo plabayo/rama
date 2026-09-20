@@ -1,5 +1,11 @@
 """The pure parts of the benchmark matrix: sizes, cell values, tables and the SVG heat-map."""
 import unittest
+import json
+import subprocess
+import tempfile
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 import xml.etree.ElementTree as ET
 
 import bench_matrix as bm
@@ -74,6 +80,63 @@ class TimestampTests(unittest.TestCase):
         self.assertAlmostEqual(end - start, 2.376543211, places=6)
         with self.assertRaises(bm.BenchError):
             bm.parse_docker_time("yesterday")
+
+
+class ClientFailureTests(unittest.TestCase):
+    def test_empty_downloads_are_a_failed_sample(self):
+        # Execute the actual inspection shell script against an empty directory:
+        # the old loop returned 1 and aborted the entire matrix.
+        with tempfile.TemporaryDirectory() as directory:
+            def docker(*args, **kwargs):
+                stdout = ""
+                if args[0] == "wait":
+                    stdout = "0"
+                elif args[0] == "inspect":
+                    stdout = json.dumps([{"State": {
+                        "StartedAt": "2026-09-19T12:00:00Z",
+                        "FinishedAt": "2026-09-19T12:00:01Z",
+                    }}])
+                elif args[:2] == ("run", "--rm"):
+                    script = args[-1].replace("cd /downloads", 'cd "' + directory + '"')
+                    return subprocess.run(["sh", "-c", script], check=True, capture_output=True, text=True)
+                return subprocess.CompletedProcess(args, 0, stdout, "")
+
+            with patch.object(bm, "docker", side_effect=docker):
+                result = bm.run_client({"image": "test"}, Path(directory), "transfer", ["bulk-0"],
+                                       SimpleNamespace(timeout=1, logs=None), 1024)
+            self.assertFalse(result["ok"])
+            self.assertIn("downloaded 0 files, 0 bytes", result["error"])
+
+    def test_timeout_is_recorded_and_logs_saved_before_removal(self):
+        def docker(*args, **kwargs):
+            if args[0] == "wait":
+                raise subprocess.TimeoutExpired("docker wait", 1)
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        with patch.object(bm, "docker", side_effect=docker) as calls, patch.object(bm, "save_logs") as logs:
+            result = bm.run_client({"image": "test"}, Path("/certs"), "transfer", ["bulk-0"],
+                                   SimpleNamespace(timeout=1, logs=None), 1024)
+        self.assertEqual(result["error"], "timeout")
+        self.assertFalse(result["ok"])
+        logs.assert_called_once()
+        self.assertEqual(calls.call_args.args, ("rm", "-f", "quic-bench-client"))
+
+    def test_network_provides_both_endpoint_address_families(self):
+        with patch.object(bm, "docker") as docker, patch.object(bm, "occupied_subnets", return_value=[]):
+            bm.start_network(SimpleNamespace())
+        commands = [call.args for call in docker.call_args_list]
+        for subnet, subnet6, network in ((bm.LEFT_SUBNET, bm.LEFT_SUBNET6, bm.LEFT_NET),
+                                         (bm.RIGHT_SUBNET, bm.RIGHT_SUBNET6, bm.RIGHT_NET)):
+            command = next(c for c in commands if c[:2] == ("network", "create") and c[-1] == network)
+            for option in ("--ipv6", subnet, subnet6,
+                           "com.docker.network.bridge.gateway_mode_ipv4=nat-unprotected",
+                           "com.docker.network.bridge.gateway_mode_ipv6=nat-unprotected"):
+                self.assertIn(option, command)
+        forwarder = next(command for command in commands if command[0] == "run")
+        self.assertIn("net.ipv6.conf.all.forwarding=1", forwarder)
+        self.assertIn(bm.LEFT_GATEWAY6, forwarder)
+        self.assertIn(("network", "connect", "--ip", bm.RIGHT_GATEWAY, "--ip6", bm.RIGHT_GATEWAY6,
+                       bm.RIGHT_NET, "quic-bench-sim"), commands)
 
 
 class RenderTests(unittest.TestCase):

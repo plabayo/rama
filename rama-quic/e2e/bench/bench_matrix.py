@@ -42,6 +42,8 @@ RIGHT_NET, RIGHT_SUBNET, RIGHT_GATEWAY, SERVER_IP = (
     "193.167.100.2",
     "193.167.100.100",
 )
+LEFT_SUBNET6, LEFT_GATEWAY6, CLIENT_IP6 = "fd00:cafe:cafe:0::/64", "fd00:cafe:cafe:0::2", "fd00:cafe:cafe:0::100"
+RIGHT_SUBNET6, RIGHT_GATEWAY6, SERVER_IP6 = "fd00:cafe:cafe:100::/64", "fd00:cafe:cafe:100::2", "fd00:cafe:cafe:100::100"
 SERVER_NAME = "server4"
 UNITS = {"": 1, "K": 1 << 10, "M": 1 << 20, "G": 1 << 30}
 RAMA_IMAGE = "glendc/rama-quic-interop"
@@ -382,7 +384,7 @@ def occupied_subnets():
             continue
         inspected = json.loads(docker("network", "inspect", net).stdout)[0]
         for config in (inspected.get("IPAM") or {}).get("Config") or []:
-            if str(config.get("Subnet", "")).startswith("193.167."):
+            if str(config.get("Subnet", "")).startswith(("193.167.", "fd00:cafe:cafe:")):
                 taken.append(f"{net} ({config['Subnet']})")
     return taken
 
@@ -395,13 +397,18 @@ def start_network(args):
     taken = occupied_subnets()
     if taken:
         raise BenchError(f"the runner subnets are in use by other Docker networks: {', '.join(taken)}")
-    docker("network", "create", "--subnet", LEFT_SUBNET, LEFT_NET)
-    docker("network", "create", "--subnet", RIGHT_SUBNET, RIGHT_NET)
+    # Docker's default gateway mode drops packets addressed to the opposite bridge
+    # before they reach our router. Allow this routing only on the benchmark networks.
+    network_options = ["--ipv6", "-o", "com.docker.network.bridge.gateway_mode_ipv4=nat-unprotected",
+                       "-o", "com.docker.network.bridge.gateway_mode_ipv6=nat-unprotected"]
+    docker("network", "create", *network_options, "--subnet", LEFT_SUBNET, "--subnet", LEFT_SUBNET6, LEFT_NET)
+    docker("network", "create", *network_options, "--subnet", RIGHT_SUBNET, "--subnet", RIGHT_SUBNET6, RIGHT_NET)
     # The forwarder: the endpoints' default gateway on both sides, and the `sim` the clients wait for.
     docker("run", "-d", "--name", f"{PREFIX}-sim", "--cap-add", "NET_ADMIN",
-           "--sysctl", "net.ipv4.ip_forward=1", "--network", LEFT_NET, "--ip", LEFT_GATEWAY,
+           "--sysctl", "net.ipv4.ip_forward=1", "--sysctl", "net.ipv6.conf.all.forwarding=1",
+           "--network", LEFT_NET, "--ip", LEFT_GATEWAY, "--ip6", LEFT_GATEWAY6,
            "alpine:3", "sh", "-c", "while true; do nc -l -p 57832 </dev/null >/dev/null; done")
-    docker("network", "connect", "--ip", RIGHT_GATEWAY, RIGHT_NET, f"{PREFIX}-sim")
+    docker("network", "connect", "--ip", RIGHT_GATEWAY, "--ip6", RIGHT_GATEWAY6, RIGHT_NET, f"{PREFIX}-sim")
 
 
 def stop_network():
@@ -427,7 +434,7 @@ def start_server(spec, certs, volume, testcase, args, label="server"):
     quiet("rm", "-f", f"{PREFIX}-server")
     options, trailing = role_options(spec, "server")
     docker("run", "-d", "--name", f"{PREFIX}-server", "--cap-add", "NET_ADMIN",
-           "--network", RIGHT_NET, "--ip", SERVER_IP,
+           "--network", RIGHT_NET, "--ip", SERVER_IP, "--ip6", SERVER_IP6,
            "-e", "ROLE=server", "-e", f"TESTCASE={testcase}", *options,
            "-v", f"{volume}:/www:ro", "-v", f"{certs}:/certs:ro", spec["image"], *trailing)
     time.sleep(args.settle)
@@ -462,15 +469,19 @@ def run_client(spec, certs, testcase, names, args, expect_bytes, label="client")
     docker("volume", "create", downloads)
     options, trailing = role_options(spec, "client")
     command = ["run", "-d", "--name", name, "--cap-add", "NET_ADMIN",
-               "--network", LEFT_NET, "--ip", CLIENT_IP,
+               "--network", LEFT_NET, "--ip", CLIENT_IP, "--ip6", CLIENT_IP6,
                "--add-host", f"{SERVER_NAME}:{SERVER_IP}", "--add-host", f"sim:{LEFT_GATEWAY}",
                "-e", "ROLE=client", "-e", f"TESTCASE={testcase}", "-e", f"REQUESTS={requests_for(names)}",
                *options, "-v", f"{certs}:/certs:ro", "-v", f"{downloads}:/downloads", spec["image"], *trailing]
     docker(*command)
-    waited = docker("wait", name, check=False, timeout=args.timeout)
-    if waited.returncode != 0:
+    try:
+        waited = docker("wait", name, check=False, timeout=args.timeout)
+    except subprocess.TimeoutExpired:
+        waited = None
+    if waited is None or waited.returncode != 0:
         quiet("kill", name)
         sample = {"seconds": float(args.timeout), "exit": None, "bytes": 0, "ok": False, "error": "timeout"}
+        save_logs(args, label)
         quiet("rm", "-f", name)
         return sample
     state = json.loads(docker("inspect", name).stdout)[0]["State"]
@@ -487,7 +498,7 @@ def run_client(spec, certs, testcase, names, args, expect_bytes, label="client")
     if "error" in sample:
         return sample
     sizes = docker("run", "--rm", "-v", f"{downloads}:/downloads:ro", "alpine:3", "sh", "-c",
-                   "cd /downloads && for f in *; do [ -f \"$f\" ] && stat -c '%s' \"$f\"; done").stdout.split()
+                   "cd /downloads && for f in *; do if [ -f \"$f\" ]; then stat -c '%s' \"$f\" || exit; fi; done").stdout.split()
     total = sum(int(s) for s in sizes)
     sample["bytes"] = total
     if len(sizes) != len(names) or total != expect_bytes:
@@ -518,9 +529,10 @@ def run_matrix(args):
             emulated.append(f"{name} ({arch})")
     meta["emulated"] = emulated
     meta["images"] = images
-    order = ["handshake"] + [c for c in cases if c != "handshake"]
+    order = (["handshake"] if "handshake" in cases else []) + [c for c in cases if c != "handshake"]
     report = {"meta": meta, "cases": cases, "implementations": names, "cells": []}
     workdir = Path(tempfile.mkdtemp(prefix=f"{PREFIX}-"))
+    previous = "none"
     try:
         certs, volume, expected = prepare_content(lock, args, workdir)
         start_network(args)
@@ -554,6 +566,8 @@ def run_matrix(args):
                             "value": value, "min": low, "max": high, "short": short,
                             "baseline_seconds": handshake_seconds}
                     report["cells"].append(cell)
+                    args.out.mkdir(parents=True, exist_ok=True)
+                    (args.out / "in-progress.json").write_text(json.dumps(report, indent=1, sort_keys=True) + "\n")
                     shown = format_value(value, case["unit"]) + ("*" if short else "")
                     problem = next((s.get("error") for s in samples if s.get("error")), "")
                     print(f"{case_name:10} client={client:20} server={server:20} {shown:>8} {case['unit']}"
@@ -608,6 +622,8 @@ def main():
     if args.report:
         report = json.loads(args.report.read_text())
     else:
+        if args.logs is None:
+            args.logs = args.out / "logs" / dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         report = run_matrix(args)
         args.out.mkdir(parents=True, exist_ok=True)
         stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
