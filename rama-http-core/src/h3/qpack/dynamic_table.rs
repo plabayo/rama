@@ -23,7 +23,7 @@ pub fn entry_size(name: &[u8], value: &[u8]) -> u64 {
 struct Entry {
     name: Bytes,
     value: Bytes,
-    refs: u32,
+    refs: usize,
 }
 
 impl Entry {
@@ -39,6 +39,8 @@ pub enum InsertError {
     TooLarge,
     /// Making room would require evicting an entry that is still referenced.
     Blocked,
+    /// The absolute insertion count cannot be represented.
+    InsertCountOverflow,
 }
 
 /// The QPACK dynamic table.
@@ -144,36 +146,41 @@ impl DynamicTable {
         Some(self.dropped() - 1)
     }
 
-    /// Insert an entry, evicting as needed (RFC 9204 §3.2.2). `require_unreferenced` refuses to
-    /// evict a referenced entry (encoder semantics); the decoder passes `false`.
-    ///
-    /// Returns the new entry's absolute index on success.
+    /// Check insertion before allocating or mutating the table. An encoder supplies its Known
+    /// Received Count; a decoder supplies `None` because encoder-stream ordering permits eviction.
+    pub fn can_insert(&self, need: u64, acknowledged: Option<u64>) -> Result<(), InsertError> {
+        if self.inserted == u64::MAX {
+            return Err(InsertError::InsertCountOverflow);
+        }
+        if need > self.capacity {
+            return Err(InsertError::TooLarge);
+        }
+        if let Some(known_received_count) = acknowledged {
+            let mut freed = self.capacity - self.size;
+            for (offset, entry) in self.entries.iter().enumerate() {
+                if freed >= need {
+                    break;
+                }
+                if entry.refs > 0 || self.dropped() + offset as u64 >= known_received_count {
+                    return Err(InsertError::Blocked);
+                }
+                freed += entry.size();
+            }
+        }
+        Ok(())
+    }
+
+    /// Insert an entry, evicting as needed (RFC 9204 §3.2.2). An encoder must supply its
+    /// Known Received Count: even an unreferenced entry cannot be evicted until acknowledged.
+    /// The decoder supplies `None` and applies the peer's ordered instructions unconditionally.
     pub fn insert(
         &mut self,
         name: Bytes,
         value: Bytes,
-        require_unreferenced: bool,
+        acknowledged: Option<u64>,
     ) -> Result<u64, InsertError> {
         let need = entry_size(&name, &value);
-        if need > self.capacity {
-            return Err(InsertError::TooLarge);
-        }
-        // Ensure eviction is possible before mutating anything.
-        if require_unreferenced {
-            let mut freed = self.capacity - self.size;
-            let mut idx = 0;
-            while freed < need {
-                let Some(front) = self.entries.get(idx) else {
-                    // should not happen: need <= capacity guarantees enough room exists
-                    break;
-                };
-                if front.refs > 0 {
-                    return Err(InsertError::Blocked);
-                }
-                freed += front.size();
-                idx += 1;
-            }
-        }
+        self.can_insert(need, acknowledged)?;
         while self.capacity - self.size < need {
             self.evict_front();
         }
@@ -240,14 +247,41 @@ mod tests {
     }
 
     #[test]
+    fn insertion_preflight_limits_and_ack_boundary() {
+        let mut t = DynamicTable::new(102);
+        t.set_capacity(102);
+        assert_eq!(t.can_insert(103, None), Err(InsertError::TooLarge));
+        assert_eq!(t.can_insert(102, None), Ok(()));
+        t.insert(b("a"), b("b"), None).unwrap();
+        t.insert(b("c"), b("d"), None).unwrap();
+        // An exact fit does not need eviction, including when inserts are not acknowledged.
+        assert_eq!(t.can_insert(34, Some(0)), Ok(()));
+        assert_eq!(t.can_insert(35, Some(0)), Err(InsertError::Blocked));
+        assert_eq!(t.can_insert(35, Some(1)), Ok(()));
+        t.add_ref(0);
+        assert_eq!(t.can_insert(35, Some(2)), Err(InsertError::Blocked));
+        t.release_ref(0);
+        assert_eq!(t.can_insert(102, Some(1)), Err(InsertError::Blocked));
+        assert_eq!(t.can_insert(102, Some(2)), Ok(()));
+        // Absolute positions must account for entries already dropped, as well as candidate offset.
+        t.insert(b("e"), b("f"), None).unwrap();
+        t.insert(b("g"), b("h"), None).unwrap();
+        assert_eq!(t.dropped(), 1);
+        assert_eq!(t.can_insert(35, Some(2)), Err(InsertError::Blocked));
+        assert_eq!(t.can_insert(35, Some(3)), Ok(()));
+        t.inserted = u64::MAX;
+        assert_eq!(t.can_insert(0, None), Err(InsertError::InsertCountOverflow));
+    }
+
+    #[test]
     fn insert_and_index() {
         let mut t = DynamicTable::new(220);
         assert!(t.set_capacity(220));
         assert_eq!(t.max_entries(), 6);
         let a0 = t
-            .insert(b(":authority"), b("www.example.com"), false)
+            .insert(b(":authority"), b("www.example.com"), None)
             .unwrap();
-        let a1 = t.insert(b(":path"), b("/sample/path"), false).unwrap();
+        let a1 = t.insert(b(":path"), b("/sample/path"), None).unwrap();
         assert_eq!((a0, a1), (0, 1));
         assert_eq!(t.insert_count(), 2);
         assert_eq!(t.get(0), Some((b(":authority"), b("www.example.com"))));
@@ -262,16 +296,15 @@ mod tests {
     fn eviction_on_capacity() {
         let mut t = DynamicTable::new(220);
         t.set_capacity(220);
-        t.insert(b(":authority"), b("www.example.com"), false)
+        t.insert(b(":authority"), b("www.example.com"), None)
             .unwrap(); // abs 0, size 57
-        t.insert(b(":path"), b("/sample/path"), false).unwrap(); // abs 1, size 49
-        t.insert(b("custom-key"), b("custom-value"), false).unwrap(); // abs 2, size 54; total 160
-        t.insert(b(":authority"), b("www.example.com"), false)
+        t.insert(b(":path"), b("/sample/path"), None).unwrap(); // abs 1, size 49
+        t.insert(b("custom-key"), b("custom-value"), None).unwrap(); // abs 2, size 54; total 160
+        t.insert(b(":authority"), b("www.example.com"), None)
             .unwrap(); // abs 3 (dup), 57; total 217
         assert_eq!(t.dropped(), 0, "nothing evicted yet");
         // B.5: insert custom-key=custom-value2 (55) -> 272 > 220, evicts abs 0.
-        t.insert(b("custom-key"), b("custom-value2"), false)
-            .unwrap();
+        t.insert(b("custom-key"), b("custom-value2"), None).unwrap();
         assert_eq!(t.dropped(), 1, "oldest entry evicted");
         assert_eq!(t.get(0), None);
         assert_eq!(t.insert_count(), 5);
@@ -283,7 +316,7 @@ mod tests {
         t.set_capacity(64);
         // entry size = 10 + 30 + 32 = 72 > 64
         assert_eq!(
-            t.insert(b("0123456789"), b("012345678901234567890123456789"), false),
+            t.insert(b("0123456789"), b("012345678901234567890123456789"), None),
             Err(InsertError::TooLarge)
         );
     }
@@ -292,15 +325,15 @@ mod tests {
     fn referenced_entry_blocks_eviction() {
         let mut t = DynamicTable::new(128);
         t.set_capacity(128); // room for ~2 small entries
-        let a0 = t.insert(b("aa"), b("bb"), true).unwrap(); // 36
+        let a0 = t.insert(b("aa"), b("bb"), Some(u64::MAX)).unwrap(); // 36
         t.add_ref(a0);
-        t.insert(b("cc"), b("dd"), true).unwrap(); // 36, total 72
+        t.insert(b("cc"), b("dd"), Some(u64::MAX)).unwrap(); // 36, total 72
         // now try to insert something that requires evicting a0 (referenced)
-        let big = t.insert(b("ee"), b([b'x'; 60]), true); // 94, needs eviction of a0
+        let big = t.insert(b("ee"), b([b'x'; 60]), Some(u64::MAX)); // 94, needs eviction of a0
         assert_eq!(big, Err(InsertError::Blocked));
         // release and retry
         t.release_ref(a0);
-        t.insert(b("ee"), b([b'x'; 60]), true).unwrap();
+        t.insert(b("ee"), b([b'x'; 60]), Some(u64::MAX)).unwrap();
         assert_eq!(t.get(a0), None);
     }
 
@@ -316,6 +349,6 @@ mod tests {
         let mut t = DynamicTable::new(0);
         assert_eq!(t.max_entries(), 0);
         assert!(t.set_capacity(0));
-        assert_eq!(t.insert(b("a"), b("b"), false), Err(InsertError::TooLarge));
+        assert_eq!(t.insert(b("a"), b("b"), None), Err(InsertError::TooLarge));
     }
 }

@@ -179,6 +179,7 @@ impl Settings {
     /// Returns `None` without writing if any identifier or value exceeds the variable-length
     /// integer range.
     pub fn encode_payload<B: BufMut>(&self, dst: &mut B) -> Option<()> {
+        self.payload_len()?;
         for s in &self.entries {
             let id = VarInt::from_u64(s.id.0).ok()?;
             let value = VarInt::from_u64(s.value).ok()?;
@@ -237,7 +238,8 @@ impl fmt::Debug for Settings {
 
 /// An error encountered while validating or decoding HTTP/3 settings (RFC 9114 §7.2.4.1).
 ///
-/// Every variant maps to a connection error of type `H3_SETTINGS_ERROR`.
+/// Duplicate and forbidden identifiers map to `H3_SETTINGS_ERROR`; malformed frame layout maps
+/// to `H3_FRAME_ERROR` (RFC 9114 §7.1), and exceeding a local budget maps to `H3_EXCESSIVE_LOAD`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SettingsError {
     /// The same identifier appeared twice (including unknown identifiers).
@@ -273,6 +275,29 @@ impl From<rama_quic_proto::coding::UnexpectedEnd> for SettingsError {
 mod tests {
     use super::*;
     use rama_core::bytes::BytesMut;
+
+    #[test]
+    fn encoding_invalid_later_entry_leaves_output_unchanged() {
+        for (id, value) in [(SettingId::new(u64::MAX), 0), (SettingId::new(7), u64::MAX)] {
+            let mut settings = Settings::new();
+            settings.set(SettingId::new(6), 42).unwrap();
+            settings.set(id, value).unwrap();
+            let mut dst = BytesMut::from(&b"prefix"[..]);
+            assert_eq!(settings.encode_payload(&mut dst), None);
+            assert_eq!(dst, b"prefix"[..]);
+        }
+    }
+
+    #[test]
+    fn exact_entry_limit_and_nonminimal_integers() {
+        let payload = [0x40, 6, 0x40, 1, 0x40, 7, 0x40, 2];
+        assert_eq!(Settings::decode_with_limit(&payload, 2).unwrap().len(), 2);
+        assert_eq!(
+            Settings::decode_with_limit(&payload, 1),
+            Err(SettingsError::TooMany)
+        );
+        assert!(Settings::decode_with_limit(&[], 0).unwrap().is_empty());
+    }
 
     #[test]
     fn insert_and_get() {

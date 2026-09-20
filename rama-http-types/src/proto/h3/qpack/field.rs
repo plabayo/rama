@@ -4,9 +4,11 @@
 //! the [`HeaderPrefix`] carries the reconstructed Required Insert Count and Base. Resolving indices
 //! against the dynamic table is the connection-scoped decoder's job (in `rama-http-core`).
 
-use rama_core::bytes::{BufMut, Bytes};
+use rama_core::bytes::{Buf, BufMut, Bytes};
 
-use super::prefix::{PrefixError, decode_int, decode_string, encode_int, encode_string};
+use super::prefix::{
+    PrefixError, decode_int, decode_string_shared, encode_int, encode_string, string_payload,
+};
 
 /// The encoded-field-section prefix (RFC 9204 §4.5.1): the Required Insert Count and Base.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -268,6 +270,51 @@ impl FieldLine {
 
     /// Decode one field-line representation, bounding each decoded string by `max_string_len`.
     pub fn decode(src: &mut &[u8], max_string_len: usize) -> Result<Self, PrefixError> {
+        Self::encoded_len(src, max_string_len)?;
+        let mut cursor = *src;
+        let result = Self::decode_shared(&mut cursor, max_string_len, None)?;
+        *src = cursor;
+        Ok(result)
+    }
+
+    /// Decode from owned bytes, slicing plain literals without copying their payloads.
+    /// Leaves the cursor unchanged on error.
+    pub fn decode_bytes(src: &mut Bytes, max_string_len: usize) -> Result<Self, PrefixError> {
+        Self::encoded_len(src, max_string_len)?;
+        let mut cursor = src.as_ref();
+        let result = Self::decode_shared(&mut cursor, max_string_len, Some(src))?;
+        let consumed = src.len() - cursor.len();
+        src.advance(consumed);
+        Ok(result)
+    }
+
+    /// Probe the complete field-line length without decoding or allocating strings.
+    /// Incomplete bodies return `UnexpectedEnd`; impossible string lengths fail early.
+    pub fn encoded_len(src: &[u8], max_string_len: usize) -> Result<usize, PrefixError> {
+        let mut cursor = src;
+        let first = *cursor.first().ok_or(PrefixError::UnexpectedEnd)?;
+        if first & 0x80 != 0 {
+            decode_int(&mut cursor, 6)?;
+        } else if first & 0x40 != 0 {
+            decode_int(&mut cursor, 4)?;
+            string_payload(&mut cursor, 7, max_string_len)?;
+        } else if first & 0x20 != 0 {
+            string_payload(&mut cursor, 3, max_string_len)?;
+            string_payload(&mut cursor, 7, max_string_len)?;
+        } else if first & 0x10 != 0 {
+            decode_int(&mut cursor, 4)?;
+        } else {
+            decode_int(&mut cursor, 3)?;
+            string_payload(&mut cursor, 7, max_string_len)?;
+        }
+        Ok(src.len() - cursor.len())
+    }
+
+    fn decode_shared(
+        src: &mut &[u8],
+        max_string_len: usize,
+        backing: Option<&Bytes>,
+    ) -> Result<Self, PrefixError> {
         let first = *src.first().ok_or(PrefixError::UnexpectedEnd)?;
         if first & 0x80 != 0 {
             // 1 T index(6+) : Indexed
@@ -279,24 +326,24 @@ impl FieldLine {
             let never_index = first & 0x20 != 0;
             let is_static = first & 0x10 != 0;
             let name_index = decode_int(src, 4)?;
-            let value = decode_string(src, 7, max_string_len)?;
+            let value = decode_string_shared(src, 7, max_string_len, backing)?;
             Ok(Self::LiteralWithNameRef {
                 never_index,
                 is_static,
                 name_index,
-                value: value.value.freeze(),
+                value: value.value,
                 value_huffman: value.huffman,
             })
         } else if first & 0x20 != 0 {
             // 001 N H namelen(3+) name value : Literal with Literal Name
             let never_index = first & 0x10 != 0;
-            let name = decode_string(src, 3, max_string_len)?;
-            let value = decode_string(src, 7, max_string_len)?;
+            let name = decode_string_shared(src, 3, max_string_len, backing)?;
+            let value = decode_string_shared(src, 7, max_string_len, backing)?;
             Ok(Self::LiteralWithLiteralName {
                 never_index,
-                name: name.value.freeze(),
+                name: name.value,
                 name_huffman: name.huffman,
-                value: value.value.freeze(),
+                value: value.value,
                 value_huffman: value.huffman,
             })
         } else if first & 0x10 != 0 {
@@ -307,11 +354,11 @@ impl FieldLine {
             // 0000 N index(3+) value : Literal with Post-Base Name Reference
             let never_index = first & 0x08 != 0;
             let name_index = decode_int(src, 3)?;
-            let value = decode_string(src, 7, max_string_len)?;
+            let value = decode_string_shared(src, 7, max_string_len, backing)?;
             Ok(Self::LiteralWithPostBaseNameRef {
                 never_index,
                 name_index,
-                value: value.value.freeze(),
+                value: value.value,
                 value_huffman: value.huffman,
             })
         }
@@ -329,6 +376,68 @@ mod tests {
     fn prefix_decode(hex: &[u8], total_inserts: u64) -> HeaderPrefix {
         let mut cursor = hex;
         HeaderPrefix::decode(&mut cursor, MAX_ENTRIES, total_inserts).unwrap()
+    }
+
+    #[test]
+    fn incomplete_field_value_does_not_decode_completed_huffman_name() {
+        // Literal name with invalid Huffman padding. Do not decode that name on
+        // each partial-value retry: only inspect its envelope until complete.
+        let mut bytes = Bytes::from_static(&[0x29, 0x00, 0x02, b'a', b'b']);
+        for split in 0..bytes.len() {
+            let mut cursor = &bytes[..split];
+            assert_eq!(
+                FieldLine::decode(&mut cursor, 16),
+                Err(PrefixError::UnexpectedEnd)
+            );
+            assert_eq!(cursor, &bytes[..split]);
+            let mut cursor = bytes.slice(..split);
+            assert_eq!(
+                FieldLine::decode_bytes(&mut cursor, 16),
+                Err(PrefixError::UnexpectedEnd)
+            );
+            assert_eq!(cursor, bytes.slice(..split));
+        }
+        assert_eq!(FieldLine::encoded_len(&bytes, 16), Ok(bytes.len()));
+        assert_eq!(
+            FieldLine::decode(&mut &bytes[..], 16),
+            Err(PrefixError::InvalidHuffman)
+        );
+        assert_eq!(
+            FieldLine::decode_bytes(&mut bytes, 16),
+            Err(PrefixError::InvalidHuffman)
+        );
+    }
+
+    #[test]
+    fn literal_fields_slice_owned_bytes_and_preserve_error_cursor() {
+        let line = FieldLine::LiteralWithLiteralName {
+            never_index: true,
+            name: Bytes::from_static(b"custom"),
+            name_huffman: false,
+            value: Bytes::from_static(b"value"),
+            value_huffman: false,
+        };
+        let mut out = BytesMut::new();
+        line.encode(&mut out);
+        let bytes = out.freeze();
+        for split in 0..bytes.len() {
+            let mut cursor = bytes.slice(..split);
+            assert_eq!(
+                FieldLine::decode_bytes(&mut cursor, 128),
+                Err(PrefixError::UnexpectedEnd)
+            );
+            assert_eq!(cursor, bytes.slice(..split));
+        }
+        let mut cursor = bytes.clone();
+        let decoded = FieldLine::decode_bytes(&mut cursor, 128).unwrap();
+        assert_eq!(decoded, line);
+        match decoded {
+            FieldLine::LiteralWithLiteralName { name, value, .. } => {
+                assert_eq!(name.as_ptr(), bytes[1..].as_ptr());
+                assert_eq!(value.as_ptr(), bytes[8..].as_ptr());
+            }
+            other => panic!("expected literal field, got {other:?}"),
+        }
     }
 
     #[test]
@@ -476,6 +585,13 @@ mod tests {
         for line in lines {
             let mut buf = BytesMut::new();
             line.encode(&mut buf);
+            assert_eq!(FieldLine::encoded_len(&buf, 4096), Ok(buf.len()));
+            for split in 0..buf.len() {
+                assert_eq!(
+                    FieldLine::encoded_len(&buf[..split], 4096),
+                    Err(PrefixError::UnexpectedEnd)
+                );
+            }
             let mut cursor = &buf[..];
             let decoded = FieldLine::decode(&mut cursor, 4096).unwrap();
             assert_eq!(decoded, line);

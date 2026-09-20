@@ -239,6 +239,13 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "qpack_stateful"
+path = "fuzz_targets/qpack_stateful.rs"
+test = false
+doc = false
+bench = false
+
 [dependencies]
 arbitrary = { workspace = true }
 libfuzzer-sys = { workspace = true, features = ["arbitrary-derive"] }

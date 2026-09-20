@@ -1,7 +1,7 @@
 //! The QPACK static table (RFC 9204 Appendix A, Table 4): 99 entries, indexed `0..=98`.
 //!
 //! Values are copied verbatim from the RFC as published — including the uppercase
-//! `access-control-allow-credentials` values `TRUE`/`FALSE` (indices 73/74), which erratum 7277 is
+//! `access-control-allow-credentials` values `FALSE`/`TRUE` (indices 73/74), which erratum 7277 is
 //! *Held for Document Update* and every interoperable implementation keeps, because the static
 //! table is a fixed wire contract.
 
@@ -129,20 +129,101 @@ pub fn get(index: usize) -> Option<(&'static [u8], &'static [u8])> {
 /// Find the index of a static entry whose name and value both match exactly, if any.
 #[must_use]
 pub fn find(name: &[u8], value: &[u8]) -> Option<usize> {
-    STATIC_TABLE
+    name_indices(name)
         .iter()
-        .position(|(n, v)| *n == name && *v == value)
+        .copied()
+        .find(|&index| STATIC_TABLE[index].1 == value)
 }
 
 /// Find the lowest index of a static entry whose name matches, if any (name-only match).
 #[must_use]
 pub fn find_name(name: &[u8]) -> Option<usize> {
-    STATIC_TABLE.iter().position(|(n, _)| *n == name)
+    name_indices(name).first().copied()
+}
+
+// Dispatch once on the name, then compare only candidate values. Some names occur
+// in multiple disjoint ranges of the RFC table (notably :status).
+fn name_indices(name: &[u8]) -> &'static [usize] {
+    match name {
+        b":authority" => &[0],
+        b":path" => &[1],
+        b"age" => &[2],
+        b"content-disposition" => &[3],
+        b"content-length" => &[4],
+        b"cookie" => &[5],
+        b"date" => &[6],
+        b"etag" => &[7],
+        b"if-modified-since" => &[8],
+        b"if-none-match" => &[9],
+        b"last-modified" => &[10],
+        b"link" => &[11],
+        b"location" => &[12],
+        b"referer" => &[13],
+        b"set-cookie" => &[14],
+        b":method" => &[15, 16, 17, 18, 19, 20, 21],
+        b":scheme" => &[22, 23],
+        b":status" => &[24, 25, 26, 27, 28, 63, 64, 65, 66, 67, 68, 69, 70, 71],
+        b"accept" => &[29, 30],
+        b"accept-encoding" => &[31],
+        b"accept-ranges" => &[32],
+        b"access-control-allow-headers" => &[33, 34, 75],
+        b"access-control-allow-origin" => &[35],
+        b"cache-control" => &[36, 37, 38, 39, 40, 41],
+        b"content-encoding" => &[42, 43],
+        b"content-type" => &[44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54],
+        b"range" => &[55],
+        b"strict-transport-security" => &[56, 57, 58],
+        b"vary" => &[59, 60],
+        b"x-content-type-options" => &[61],
+        b"x-xss-protection" => &[62],
+        b"accept-language" => &[72],
+        b"access-control-allow-credentials" => &[73, 74],
+        b"access-control-allow-methods" => &[76, 77, 78],
+        b"access-control-expose-headers" => &[79],
+        b"access-control-request-headers" => &[80],
+        b"access-control-request-method" => &[81, 82],
+        b"alt-svc" => &[83],
+        b"authorization" => &[84],
+        b"content-security-policy" => &[85],
+        b"early-data" => &[86],
+        b"expect-ct" => &[87],
+        b"forwarded" => &[88],
+        b"if-range" => &[89],
+        b"origin" => &[90],
+        b"purpose" => &[91],
+        b"server" => &[92],
+        b"timing-allow-origin" => &[93],
+        b"upgrade-insecure-requests" => &[94],
+        b"user-agent" => &[95],
+        b"x-forwarded-for" => &[96],
+        b"x-frame-options" => &[97, 98],
+        _ => &[],
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn complete_rfc_static_table_fixture() {
+        let fixture = include_str!("fixtures/rfc9204-static-table.tsv");
+        let mut count = 0;
+        for row in fixture.lines().filter(|line| !line.starts_with('#')) {
+            let mut fields = row.split('\t');
+            let index: usize = fields.next().unwrap().parse().unwrap();
+            let name = fields.next().unwrap().as_bytes();
+            let value = fields.next().unwrap().as_bytes();
+            assert_eq!(get(index), Some((name, value)), "RFC static index {index}");
+            assert_eq!(find(name, value), Some(index));
+            assert_eq!(
+                find_name(name),
+                STATIC_TABLE.iter().position(|(n, _)| *n == name)
+            );
+            count += 1;
+        }
+        assert_eq!(count, STATIC_TABLE_SIZE);
+    }
 
     #[test]
     fn size_and_spot_checks() {

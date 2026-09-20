@@ -7,13 +7,16 @@
 pub mod dynamic_table;
 
 mod error;
-pub use error::QpackError;
+pub use error::{ErrorScope, QpackError};
 
 mod decoder;
 pub use decoder::{Decoder, DecoderConfig, FieldPair};
 
 mod encoder;
-pub use encoder::{Encoder, EncoderConfig};
+pub use encoder::{EncodeField, Encoder, EncoderConfig};
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod pylsqpack_tests;

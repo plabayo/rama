@@ -10,7 +10,9 @@ fuzz_target!(|data: &[u8]| {
     let mut dec = FrameDecoder::new(DEFAULT_MAX_FRAME_SIZE);
     // deliver in a few chunks to exercise fragmentation across the state machine
     for chunk in data.chunks(7) {
-        dec.feed(chunk);
+        if dec.feed(chunk).is_err() {
+            return;
+        }
         loop {
             match dec.poll() {
                 Ok(Some(_event)) => continue,

@@ -4,9 +4,11 @@
 //! table (and the accounting behind Insert Count Increment / Section Acknowledgment / Stream
 //! Cancellation) is the connection-scoped codec's job in `rama-http-core`.
 
-use rama_core::bytes::{BufMut, Bytes};
+use rama_core::bytes::{Buf, BufMut, Bytes};
 
-use super::prefix::{PrefixError, decode_int, decode_string, encode_int, encode_string};
+use super::prefix::{
+    PrefixError, decode_int, decode_string_shared, encode_int, encode_string, string_payload,
+};
 
 /// An instruction on the QPACK encoder stream (encoder → decoder, RFC 9204 §4.3).
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -80,24 +82,64 @@ impl EncoderInstruction {
 
     /// Decode one encoder-stream instruction, bounding each decoded string by `max_string_len`.
     pub fn decode(src: &mut &[u8], max_string_len: usize) -> Result<Self, PrefixError> {
+        Self::encoded_len(src, max_string_len)?;
+        let mut cursor = *src;
+        let result = Self::decode_shared(&mut cursor, max_string_len, None)?;
+        *src = cursor;
+        Ok(result)
+    }
+
+    /// Decode from owned bytes, slicing plain literals without copying their payloads.
+    /// Leaves the cursor unchanged on error.
+    pub fn decode_bytes(src: &mut Bytes, max_string_len: usize) -> Result<Self, PrefixError> {
+        Self::encoded_len(src, max_string_len)?;
+        let mut cursor = src.as_ref();
+        let result = Self::decode_shared(&mut cursor, max_string_len, Some(src))?;
+        let consumed = src.len() - cursor.len();
+        src.advance(consumed);
+        Ok(result)
+    }
+
+    /// Probe the complete instruction length without decoding or allocating strings.
+    /// Incomplete bodies return `UnexpectedEnd`; impossible string lengths fail early.
+    pub fn encoded_len(src: &[u8], max_string_len: usize) -> Result<usize, PrefixError> {
+        let mut cursor = src;
+        let first = *cursor.first().ok_or(PrefixError::UnexpectedEnd)?;
+        if first & 0x80 != 0 {
+            decode_int(&mut cursor, 6)?;
+            string_payload(&mut cursor, 7, max_string_len)?;
+        } else if first & 0x40 != 0 {
+            string_payload(&mut cursor, 5, max_string_len)?;
+            string_payload(&mut cursor, 7, max_string_len)?;
+        } else {
+            decode_int(&mut cursor, 5)?;
+        }
+        Ok(src.len() - cursor.len())
+    }
+
+    fn decode_shared(
+        src: &mut &[u8],
+        max_string_len: usize,
+        backing: Option<&Bytes>,
+    ) -> Result<Self, PrefixError> {
         let first = *src.first().ok_or(PrefixError::UnexpectedEnd)?;
         if first & 0x80 != 0 {
             let is_static = first & 0x40 != 0;
             let name_index = decode_int(src, 6)?;
-            let value = decode_string(src, 7, max_string_len)?;
+            let value = decode_string_shared(src, 7, max_string_len, backing)?;
             Ok(Self::InsertWithNameRef {
                 is_static,
                 name_index,
-                value: value.value.freeze(),
+                value: value.value,
                 value_huffman: value.huffman,
             })
         } else if first & 0x40 != 0 {
-            let name = decode_string(src, 5, max_string_len)?;
-            let value = decode_string(src, 7, max_string_len)?;
+            let name = decode_string_shared(src, 5, max_string_len, backing)?;
+            let value = decode_string_shared(src, 7, max_string_len, backing)?;
             Ok(Self::InsertWithLiteralName {
-                name: name.value.freeze(),
+                name: name.value,
                 name_huffman: name.huffman,
-                value: value.value.freeze(),
+                value: value.value,
                 value_huffman: value.huffman,
             })
         } else if first & 0x20 != 0 {
@@ -168,6 +210,85 @@ mod tests {
         let mut buf = BytesMut::new();
         inst.encode(&mut buf);
         buf.to_vec()
+    }
+
+    #[test]
+    fn every_split_is_transactional_and_plain_strings_share_storage() {
+        for huffman in [false, true] {
+            let instructions = [
+                EncoderInstruction::SetDynamicTableCapacity { capacity: 65536 },
+                EncoderInstruction::Duplicate { index: 1024 },
+                EncoderInstruction::InsertWithNameRef {
+                    is_static: true,
+                    name_index: 84,
+                    value: Bytes::from_static(b"secret"),
+                    value_huffman: huffman,
+                },
+                EncoderInstruction::InsertWithLiteralName {
+                    name: Bytes::from_static(b"custom-name"),
+                    name_huffman: huffman,
+                    value: Bytes::from_static(b"custom-value"),
+                    value_huffman: huffman,
+                },
+            ];
+            for instruction in instructions {
+                let bytes = Bytes::from(enc(&instruction));
+                for split in 0..bytes.len() {
+                    assert_eq!(
+                        EncoderInstruction::encoded_len(&bytes[..split], 1024),
+                        Err(PrefixError::UnexpectedEnd)
+                    );
+                    let mut cursor = bytes.slice(..split);
+                    assert_eq!(
+                        EncoderInstruction::decode_bytes(&mut cursor, 1024),
+                        Err(PrefixError::UnexpectedEnd)
+                    );
+                    assert_eq!(cursor, bytes.slice(..split));
+                    let mut cursor = &bytes[..split];
+                    assert_eq!(
+                        EncoderInstruction::decode(&mut cursor, 1024),
+                        Err(PrefixError::UnexpectedEnd)
+                    );
+                    assert_eq!(cursor, &bytes[..split]);
+                }
+                assert_eq!(
+                    EncoderInstruction::encoded_len(&bytes, 1024),
+                    Ok(bytes.len())
+                );
+                let mut cursor = bytes.clone();
+                let decoded = EncoderInstruction::decode_bytes(&mut cursor, 1024).unwrap();
+                assert!(cursor.is_empty());
+                assert_eq!(decoded, instruction);
+                if !huffman {
+                    match decoded {
+                        EncoderInstruction::InsertWithLiteralName { name, value, .. } => {
+                            assert_eq!(name.as_ptr(), bytes[1..].as_ptr());
+                            assert_eq!(value.as_ptr(), bytes[13..].as_ptr());
+                        }
+                        EncoderInstruction::InsertWithNameRef { value, .. } => {
+                            assert_eq!(value.as_ptr(), bytes[3..].as_ptr())
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn incomplete_value_does_not_decode_completed_huffman_name() {
+        // Invalid Huffman name is deliberately not inspected until the whole
+        // instruction exists. Fragmented value retries only inspect envelopes.
+        let bytes = [0x61, 0x00, 0x02, b'a'];
+        assert_eq!(
+            EncoderInstruction::decode(&mut &bytes[..], 16),
+            Err(PrefixError::UnexpectedEnd)
+        );
+        let complete = [0x61, 0x00, 0x02, b'a', b'b'];
+        assert_eq!(
+            EncoderInstruction::decode(&mut &complete[..], 16),
+            Err(PrefixError::InvalidHuffman)
+        );
     }
 
     #[test]

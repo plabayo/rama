@@ -16,6 +16,7 @@ fn pair(name: &[u8], value: &[u8]) -> FieldPair {
     FieldPair {
         name: Bytes::copy_from_slice(name),
         value: Bytes::copy_from_slice(value),
+        never_index: false,
     }
 }
 
@@ -25,6 +26,7 @@ fn appendix_b_config() -> DecoderConfig {
         max_blocked_streams: 16,
         max_field_section_size: 65536,
         max_blocked_bytes: 65536,
+        ..DecoderConfig::default()
     }
 }
 
@@ -108,6 +110,7 @@ fn static_only_round_trip() {
         max_blocked_streams: 0,
         target_capacity: 0,
         huffman: true,
+        ..EncoderConfig::default()
     });
     let mut dec = Decoder::new(DecoderConfig {
         max_table_capacity: 0,
@@ -120,7 +123,9 @@ fn static_only_round_trip() {
         (b":scheme".to_vec(), b"https".to_vec()),
         (b"custom".to_vec(), b"value".to_vec()),
     ];
-    let section = enc.encode(0, fields.iter().map(|(n, v)| (n.clone(), v.clone())));
+    let section = enc
+        .encode(0, fields.iter().map(|(n, v)| (n.clone(), v.clone())))
+        .unwrap();
     // zero capacity: nothing is placed on the encoder stream.
     assert!(enc.take_encoder_stream().is_empty());
 
@@ -142,6 +147,7 @@ fn dynamic_round_trip_with_acks() {
         max_blocked_streams: 16,
         target_capacity: 4096,
         huffman: true,
+        ..EncoderConfig::default()
     });
     let mut dec = Decoder::new(DecoderConfig {
         max_table_capacity: 4096,
@@ -153,7 +159,9 @@ fn dynamic_round_trip_with_acks() {
         (b":method".to_vec(), b"GET".to_vec()),
         (b"x-custom".to_vec(), b"hello".to_vec()),
     ];
-    let section = enc.encode(0, fields.iter().map(|(n, v)| (n.clone(), v.clone())));
+    let section = enc
+        .encode(0, fields.iter().map(|(n, v)| (n.clone(), v.clone())))
+        .unwrap();
 
     // the encoder inserted x-custom -> hello on its stream; deliver it first.
     let enc_stream = enc.take_encoder_stream();
@@ -173,7 +181,9 @@ fn dynamic_round_trip_with_acks() {
     assert_eq!(enc.known_received_count(), 1);
 
     // a second request reuses the dynamic entry without another insert.
-    let section2 = enc.encode(4, [(b"x-custom".to_vec(), b"hello".to_vec())]);
+    let section2 = enc
+        .encode(4, [(b"x-custom".to_vec(), b"hello".to_vec())])
+        .unwrap();
     assert!(enc.take_encoder_stream().is_empty(), "no new insert needed");
     let decoded2 = dec.decode_field_section(4, section2).unwrap().unwrap();
     assert_eq!(decoded2, vec![pair(b"x-custom", b"hello")]);
@@ -216,6 +226,7 @@ fn blocked_stream_limit_enforced() {
         max_blocked_streams: 1,
         max_field_section_size: 65536,
         max_blocked_bytes: 65536,
+        ..DecoderConfig::default()
     });
     dec.feed_encoder_stream(&hex("3fbd01")).unwrap();
 
@@ -243,7 +254,7 @@ fn cancel_releases_blocked_storage() {
     );
     assert_eq!(dec.blocked_stream_count(), 1);
 
-    dec.cancel_stream(4);
+    dec.cancel_stream(4).unwrap();
     assert_eq!(dec.blocked_stream_count(), 0);
     // a Stream Cancellation (0x40 | 4 = 0x44 for stream 4) is queued for the encoder.
     let out = dec.take_decoder_stream();
@@ -328,7 +339,9 @@ fn static_only_sections_are_not_tracked() {
     // without bound (nothing ever acknowledges them).
     let mut enc = Encoder::new(EncoderConfig::default());
     for stream_id in 0..50u64 {
-        let _ = enc.encode(stream_id, [(b":method".to_vec(), b"GET".to_vec())]);
+        let _ = enc
+            .encode(stream_id, [(b":method".to_vec(), b"GET".to_vec())])
+            .unwrap();
     }
     assert_eq!(enc.tracked_section_count(), 0);
 }
@@ -342,8 +355,12 @@ fn ack_releases_the_right_section_when_ric0_precedes_dynamic() {
     let mut enc = Encoder::new(EncoderConfig::default());
     let mut dec = Decoder::new(DecoderConfig::default());
 
-    let sec_a = enc.encode(0, [(b":method".to_vec(), b"GET".to_vec())]); // RIC=0
-    let sec_b = enc.encode(0, [(b"x-custom".to_vec(), b"v".to_vec())]); // inserts, RIC=1
+    let sec_a = enc
+        .encode(0, [(b":method".to_vec(), b"GET".to_vec())])
+        .unwrap(); // RIC=0
+    let sec_b = enc
+        .encode(0, [(b"x-custom".to_vec(), b"v".to_vec())])
+        .unwrap(); // inserts, RIC=1
     assert_eq!(enc.tracked_section_count(), 1);
 
     dec.feed_encoder_stream(&enc.take_encoder_stream()).unwrap();
@@ -366,33 +383,37 @@ fn reference_is_protected_against_same_section_eviction() {
         max_blocked_streams: 16,
         target_capacity: 96,
         huffman: false,
+        ..EncoderConfig::default()
     };
     let cfg_d = DecoderConfig {
         max_table_capacity: 96,
         max_blocked_streams: 16,
         max_field_section_size: 65536,
         max_blocked_bytes: 65536,
+        ..DecoderConfig::default()
     };
     let mut enc = Encoder::new(cfg_e);
     let mut dec = Decoder::new(cfg_d);
 
     // Seed and acknowledge entry ("re","x") so it is referenceable without blocking.
-    let seed = enc.encode(0, [(b"re".to_vec(), b"x".to_vec())]);
+    let seed = enc.encode(0, [(b"re".to_vec(), b"x".to_vec())]).unwrap();
     dec.feed_encoder_stream(&enc.take_encoder_stream()).unwrap();
     dec.decode_field_section(0, seed).unwrap().unwrap();
     enc.feed_decoder_stream(&dec.take_decoder_stream()).unwrap();
 
     // New section reuses ("re","x") and then a field whose insert would need to evict it.
-    let section = enc.encode(
-        4,
-        [
-            (b"re".to_vec(), b"x".to_vec()),
-            (
-                b"other".to_vec(),
-                b"a-longer-value-forcing-eviction".to_vec(),
-            ),
-        ],
-    );
+    let section = enc
+        .encode(
+            4,
+            [
+                (b"re".to_vec(), b"x".to_vec()),
+                (
+                    b"other".to_vec(),
+                    b"a-longer-value-forcing-eviction".to_vec(),
+                ),
+            ],
+        )
+        .unwrap();
     dec.feed_encoder_stream(&enc.take_encoder_stream()).unwrap();
     let decoded = dec.decode_field_section(4, section).unwrap().unwrap();
     assert_eq!(
@@ -496,7 +517,7 @@ fn field_section_size_limit_enforced() {
     // :authority: abcde  (uncompressed size 32 + 10 + 5 = 47 > 8)
     assert_eq!(
         dec.decode_field_section(0, hex("000050056162636465")),
-        Err(QpackError::DecompressionFailed("field section too large"))
+        Err(QpackError::ResourceLimit("field section too large"))
     );
 }
 
@@ -508,10 +529,13 @@ fn neqo_decoder_stream_insert_count_increment() {
         max_blocked_streams: 16,
         target_capacity: 4096,
         huffman: false,
+        ..EncoderConfig::default()
     });
     // encode three sections that each insert one entry so the increment is valid.
     for (i, name) in ["a-one", "a-two", "a-three"].into_iter().enumerate() {
-        let _ = enc.encode(i as u64, [(name.as_bytes().to_vec(), b"v".to_vec())]);
+        let _ = enc
+            .encode(i as u64, [(name.as_bytes().to_vec(), b"v".to_vec())])
+            .unwrap();
     }
     assert_eq!(enc.insert_count(), 3);
     enc.feed_decoder_stream(&hex("03")).unwrap();

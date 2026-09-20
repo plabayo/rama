@@ -1,44 +1,98 @@
-//! The stateful QPACK encoder (RFC 9204 §2.1): builds encoded field sections, optionally inserting
-//! into its dynamic table and referencing it, while never referencing an entry the decoder may not
-//! have and never evicting one still referenced by an unacknowledged section.
-//!
-//! The insertion policy is deliberately simple rather than optimal: it inserts a full match when
-//! space and the blocking budget allow, and otherwise falls back to a name reference or a literal.
-//! It always produces correct, decodable output, including with a zero-capacity table (static and
-//! literal only), and processes the decoder stream to release references and advance its Known
-//! Received Count.
+//! Connection-scoped QPACK encoding, bounded reference tracking and decoder-stream feedback.
 
 use std::collections::{BTreeMap, VecDeque};
 
 use rama_core::bytes::{Bytes, BytesMut};
-use rama_http_types::proto::h3::qpack::{
-    DecoderInstruction, EncoderInstruction, FieldLine, HeaderPrefix, PrefixError, static_table,
+use rama_http_types::proto::h3::qpack::prefix::{
+    encode_int, encode_string, int_encoded_len, string_encoded_len,
 };
+use rama_http_types::proto::h3::{
+    VarInt,
+    qpack::{DecoderInstruction, HeaderPrefix, PrefixError, static_table},
+};
+use rama_utils::octets::{kib, kib_u64};
 
-use super::dynamic_table::{DynamicTable, InsertError, entry_size};
-use super::error::QpackError;
+use super::dynamic_table::{DynamicTable, ENTRY_OVERHEAD, entry_size};
+use super::{FieldPair, QpackError};
 
-/// Configuration for an [`Encoder`].
+/// Encoder input preserving the never-index requirement across intermediary hops.
+#[derive(Clone, Debug)]
+pub struct EncodeField<N, V> {
+    /// Field name bytes.
+    pub name: N,
+    /// Field value bytes.
+    pub value: V,
+    /// Always emit a literal with N=1; never insert or fully index this field.
+    pub never_index: bool,
+}
+
+impl<'a> EncodeField<&'a [u8], &'a [u8]> {
+    /// Borrow a Rama header while preserving [`rama_http_types::HeaderValue::is_sensitive`].
+    #[must_use]
+    pub fn from_header(
+        name: &'a rama_http_types::HeaderName,
+        value: &'a rama_http_types::HeaderValue,
+    ) -> Self {
+        Self {
+            name: name.as_str().as_bytes(),
+            value: value.as_bytes(),
+            never_index: value.is_sensitive(),
+        }
+    }
+}
+
+impl<N, V> From<(N, V)> for EncodeField<N, V> {
+    fn from((name, value): (N, V)) -> Self {
+        Self {
+            name,
+            value,
+            never_index: false,
+        }
+    }
+}
+
+impl From<FieldPair> for EncodeField<Bytes, Bytes> {
+    fn from(field: FieldPair) -> Self {
+        Self {
+            name: field.name,
+            value: field.value,
+            never_index: field.never_index,
+        }
+    }
+}
+
+/// Configuration and local resource budgets for an [`Encoder`].
 #[derive(Clone, Copy, Debug)]
 pub struct EncoderConfig {
-    /// The peer's `SETTINGS_QPACK_MAX_TABLE_CAPACITY`: the largest table the peer will keep.
+    /// The peer's SETTINGS_QPACK_MAX_TABLE_CAPACITY.
     pub max_table_capacity: u64,
-    /// The peer's `SETTINGS_QPACK_BLOCKED_STREAMS`: how many streams may block the decoder.
+    /// The peer's SETTINGS_QPACK_BLOCKED_STREAMS.
     pub max_blocked_streams: u64,
-    /// The capacity to actually use, clamped to `max_table_capacity`. Zero disables the dynamic
-    /// table (static + literal only).
+    /// Capacity to use, clamped to the peer maximum.
     pub target_capacity: u64,
     /// Whether to Huffman-encode literal strings.
     pub huffman: bool,
+    /// Maximum uncompressed section size, including 32 bytes per field.
+    pub max_field_section_size: usize,
+    /// Maximum queued encoder-stream bytes. When full, encoding falls back to literals.
+    pub max_encoder_stream_bytes: usize,
+    /// Maximum sections awaiting Section Acknowledgment. Further sections use literals.
+    pub max_outstanding_sections: usize,
+    /// Maximum outstanding dynamic references, including repeated references within sections.
+    pub max_outstanding_references: usize,
 }
 
 impl Default for EncoderConfig {
     fn default() -> Self {
         Self {
-            max_table_capacity: 4096,
+            max_table_capacity: kib_u64(4),
             max_blocked_streams: 16,
-            target_capacity: 4096,
+            target_capacity: kib_u64(4),
             huffman: true,
+            max_field_section_size: kib(64),
+            max_encoder_stream_bytes: kib(64),
+            max_outstanding_sections: 1024,
+            max_outstanding_references: 16_384,
         }
     }
 }
@@ -48,297 +102,316 @@ struct Section {
     required_insert_count: u64,
 }
 
-/// A stateful QPACK encoder for one connection.
+/// Stateful encoder for one connection. Dynamic insertion and references fall back to literals
+/// when budgets are exhausted; invalid/oversized input fails before any state changes.
 pub struct Encoder {
     config: EncoderConfig,
     table: DynamicTable,
     encoder_output: BytesMut,
     known_received_count: u64,
     capacity_initialized: bool,
-    /// Outstanding sections per stream, oldest first (Section Acknowledgments arrive in order).
     sections: BTreeMap<u64, VecDeque<Section>>,
+    section_count: usize,
+    reference_count: usize,
+    blocking_streams: u64,
+    decoder_partial: [u8; 11],
+    decoder_partial_len: usize,
 }
 
 impl Encoder {
-    /// Create an encoder with the given configuration.
+    /// Create an encoder with the peer settings and local budgets.
     #[must_use]
-    pub fn new(config: EncoderConfig) -> Self {
-        let capacity = config.target_capacity.min(config.max_table_capacity);
+    pub fn new(mut config: EncoderConfig) -> Self {
+        config.max_table_capacity = config.max_table_capacity.min(VarInt::MAX.into_inner());
+        config.target_capacity = config.target_capacity.min(config.max_table_capacity);
         Self {
-            config: EncoderConfig {
-                target_capacity: capacity,
-                ..config
-            },
             table: DynamicTable::new(config.max_table_capacity),
+            config,
             encoder_output: BytesMut::new(),
             known_received_count: 0,
             capacity_initialized: false,
             sections: BTreeMap::new(),
+            section_count: 0,
+            reference_count: 0,
+            blocking_streams: 0,
+            decoder_partial: [0; 11],
+            decoder_partial_len: 0,
         }
     }
 
-    /// The encoder's Known Received Count: how many inserts the decoder has acknowledged.
+    /// Number of insertions acknowledged by the peer.
     #[must_use]
     pub fn known_received_count(&self) -> u64 {
         self.known_received_count
     }
-
-    /// The encoder's dynamic-table insert count.
+    /// Number of dynamic entries inserted over the connection lifetime.
     #[must_use]
     pub fn insert_count(&self) -> u64 {
         self.table.insert_count()
     }
-
-    /// The number of field sections currently tracked awaiting acknowledgment (test-only; a section
-    /// with no dynamic references is not tracked, so this stays bounded under static-only traffic).
-    #[cfg(test)]
-    pub(crate) fn tracked_section_count(&self) -> usize {
-        self.sections.values().map(VecDeque::len).sum()
+    /// Number of sections awaiting acknowledgment.
+    #[must_use]
+    pub fn tracked_section_count(&self) -> usize {
+        self.section_count
     }
-
-    /// Take the queued encoder-stream bytes to send to the peer, leaving the queue empty.
+    /// Number of outstanding references retained for acknowledgment/cancellation.
+    #[must_use]
+    pub fn tracked_reference_count(&self) -> usize {
+        self.reference_count
+    }
+    /// Number of queued encoder-stream bytes.
+    #[must_use]
+    pub fn encoder_stream_len(&self) -> usize {
+        self.encoder_output.len()
+    }
+    /// Take queued encoder-stream bytes in order.
     pub fn take_encoder_stream(&mut self) -> Bytes {
         self.encoder_output.split().freeze()
     }
 
-    /// The number of streams currently blocking the decoder (a section with RIC above KRC).
-    fn blocking_stream_count(&self) -> u64 {
-        self.sections
+    fn is_stream_blocking(&self, stream_id: u64) -> bool {
+        self.sections.get(&stream_id).is_some_and(|queue| {
+            queue
+                .iter()
+                .any(|s| s.required_insert_count > self.known_received_count)
+        })
+    }
+
+    fn refresh_blocking_count(&mut self) {
+        self.blocking_streams = self
+            .sections
             .values()
             .filter(|q| {
                 q.iter()
                     .any(|s| s.required_insert_count > self.known_received_count)
             })
-            .count() as u64
+            .count() as u64;
     }
 
-    fn is_stream_blocking(&self, stream_id: u64) -> bool {
-        self.sections.get(&stream_id).is_some_and(|q| {
-            q.iter()
-                .any(|s| s.required_insert_count > self.known_received_count)
-        })
+    fn output_fits(&self, additional: usize) -> bool {
+        additional
+            <= self
+                .config
+                .max_encoder_stream_bytes
+                .saturating_sub(self.encoder_output.len())
     }
 
     fn ensure_capacity(&mut self) {
-        if self.capacity_initialized {
-            return;
-        }
-        self.capacity_initialized = true;
-        if self.config.target_capacity > 0 {
+        if !self.capacity_initialized
+            && self.config.target_capacity > 0
+            && self.output_fits(int_encoded_len(self.config.target_capacity, 5))
+        {
+            self.capacity_initialized = true;
             let ok = self.table.set_capacity(self.config.target_capacity);
             debug_assert!(ok);
-            EncoderInstruction::SetDynamicTableCapacity {
-                capacity: self.config.target_capacity,
-            }
-            .encode(&mut self.encoder_output);
+            encode_int(
+                &mut self.encoder_output,
+                self.config.target_capacity,
+                5,
+                0x20,
+            );
         }
     }
 
-    /// Whether making (or keeping) `stream_id` a blocking stream is within the peer's budget.
-    fn may_block(&self, stream_id: u64) -> bool {
-        if self.is_stream_blocking(stream_id) {
-            return true;
-        }
-        self.blocking_stream_count() < self.config.max_blocked_streams
-    }
-
-    /// Encode a field section for `stream_id` from `fields` (name/value byte pairs).
+    /// Encode ordered fields for a HEADERS/PUSH_PROMISE payload. Tuples represent ordinary fields;
+    /// [`EncodeField`] or decoded [`FieldPair`] values preserve sensitivity.
     ///
-    /// Returns the encoded field section to place in a HEADERS frame; any dynamic-table inserts are
-    /// queued on the encoder stream (retrieve with [`Encoder::take_encoder_stream`]).
-    pub fn encode<I, N, V>(&mut self, stream_id: u64, fields: I) -> Bytes
+    /// Input size and stream ID are validated before any connection state changes. A tracking or
+    /// encoder-output budget prevents optional dynamic compression rather than failing the section.
+    pub fn encode<I, F, N, V>(&mut self, stream_id: u64, fields: I) -> Result<Bytes, QpackError>
     where
-        I: IntoIterator<Item = (N, V)>,
+        I: IntoIterator<Item = F>,
+        F: Into<EncodeField<N, V>>,
         N: AsRef<[u8]>,
         V: AsRef<[u8]>,
     {
+        if VarInt::from_u64(stream_id).is_err() {
+            return Err(QpackError::ResourceLimit(
+                "stream ID exceeds QUIC integer range",
+            ));
+        }
+        // Retain the caller's original values, without allocating per-literal copies. This bounded
+        // preflight makes input rejection transactional even for one-shot iterators.
+        let mut input = Vec::new();
+        let mut size = 0usize;
+        for field in fields {
+            let field = field.into();
+            size = size
+                .checked_add(field.name.as_ref().len())
+                .and_then(|n| n.checked_add(field.value.as_ref().len()))
+                .and_then(|n| n.checked_add(ENTRY_OVERHEAD as usize))
+                .filter(|n| *n <= self.config.max_field_section_size)
+                .ok_or(QpackError::ResourceLimit("field section too large"))?;
+            input.push(field);
+        }
         self.ensure_capacity();
-
-        let mut lines: Vec<FieldLine> = Vec::new();
-        let mut refs: Vec<u64> = Vec::new();
-        let mut max_ref_abs: Option<u64> = None;
-
-        for (name, value) in fields {
-            let name = name.as_ref();
-            let value = value.as_ref();
-            let line = self.encode_field(stream_id, name, value, &mut refs, &mut max_ref_abs);
-            lines.push(line);
-        }
-
-        // Base = current insert count; all dynamic references are pre-Base relative indices.
         let base = self.table.insert_count();
-        let required_insert_count = max_ref_abs.map_or(0, |abs| abs + 1);
-
-        let mut out = BytesMut::new();
-        HeaderPrefix::new(required_insert_count, base).encode(&mut out, self.table.max_entries());
-        for line in &lines {
-            // rewrite dynamic references now that Base is known
-            encode_line(&mut out, line, base);
+        let was_blocking = self.is_stream_blocking(stream_id);
+        let may_block = was_blocking || self.blocking_streams < self.config.max_blocked_streams;
+        let may_track = self.section_count < self.config.max_outstanding_sections;
+        let mut refs = Vec::new();
+        let mut ric = 0;
+        // Two u64 prefixed integers need at most 22 bytes. Backfill the prefix into this headroom
+        // after the body is encoded; slicing it away avoids moving or copying the body.
+        const PREFIX_HEADROOM: usize = 22;
+        let mut out = BytesMut::with_capacity(PREFIX_HEADROOM + size.min(kib(1)));
+        out.resize(PREFIX_HEADROOM, 0);
+        for field in input {
+            let name = field.name.as_ref();
+            let value = field.value.as_ref();
+            let can_track =
+                may_track && self.reference_count < self.config.max_outstanding_references;
+            let referenceable =
+                |abs: u64| can_track && (abs < self.known_received_count || may_block);
+            if !field.never_index {
+                if let Some(index) = static_table::find(name, value) {
+                    encode_int(&mut out, index as u64, 6, 0xc0);
+                    continue;
+                }
+                if let Some(abs) = self
+                    .table
+                    .find(name, value)
+                    .filter(|abs| referenceable(*abs))
+                {
+                    self.reference(abs, &mut refs, &mut ric);
+                    encode_dynamic_index(&mut out, abs, base);
+                    continue;
+                }
+                if can_track && may_block && self.try_insert(name, value) {
+                    let abs = self.table.insert_count() - 1;
+                    self.reference(abs, &mut refs, &mut ric);
+                    encode_dynamic_index(&mut out, abs, base);
+                    continue;
+                }
+            }
+            if let Some(index) = static_table::find_name(name) {
+                encode_int(
+                    &mut out,
+                    index as u64,
+                    4,
+                    0x50 | if field.never_index { 0x20 } else { 0 },
+                );
+            } else if let Some(abs) = self
+                .table
+                .find_name(name)
+                .filter(|abs| can_track && (*abs < self.known_received_count || may_block))
+            {
+                self.reference(abs, &mut refs, &mut ric);
+                if abs < base {
+                    encode_int(
+                        &mut out,
+                        base - abs - 1,
+                        4,
+                        0x40 | if field.never_index { 0x20 } else { 0 },
+                    );
+                } else {
+                    encode_int(
+                        &mut out,
+                        abs - base,
+                        3,
+                        if field.never_index { 0x08 } else { 0 },
+                    );
+                }
+            } else {
+                encode_string(
+                    &mut out,
+                    name,
+                    3,
+                    0x20 | if field.never_index { 0x10 } else { 0 },
+                    self.config.huffman,
+                );
+            }
+            encode_string(&mut out, value, 7, 0, self.config.huffman);
         }
-
-        // Only sections that reference the dynamic table are acknowledged (RFC 9204 §4.4.1), so
-        // only those are tracked; a static/literal section (RIC=0) holds no references to release.
-        if required_insert_count > 0 {
+        let mut prefix = [0u8; PREFIX_HEADROOM];
+        let mut cursor = &mut prefix[..];
+        HeaderPrefix::new(ric, if ric == 0 { 0 } else { base })
+            .encode(&mut cursor, self.table.max_entries());
+        let prefix_len = PREFIX_HEADROOM - cursor.len();
+        out[PREFIX_HEADROOM - prefix_len..PREFIX_HEADROOM].copy_from_slice(&prefix[..prefix_len]);
+        if ric > 0 {
             self.sections
                 .entry(stream_id)
                 .or_default()
                 .push_back(Section {
                     refs,
-                    required_insert_count,
+                    required_insert_count: ric,
                 });
-        }
-
-        out.freeze()
-    }
-
-    /// Record and immediately protect a reference to dynamic entry `abs` for the section being
-    /// built, so a later insert in the same section cannot evict it (RFC 9204 §2.1.1.1).
-    fn reference(&mut self, abs: u64, refs: &mut Vec<u64>, max_ref_abs: &mut Option<u64>) {
-        refs.push(abs);
-        *max_ref_abs = Some(max_ref_abs.map_or(abs, |m| m.max(abs)));
-        self.table.add_ref(abs);
-    }
-
-    /// Choose a representation for one field, possibly inserting into the dynamic table.
-    fn encode_field(
-        &mut self,
-        stream_id: u64,
-        name: &[u8],
-        value: &[u8],
-        refs: &mut Vec<u64>,
-        max_ref_abs: &mut Option<u64>,
-    ) -> FieldLine {
-        // 1) exact static match
-        if let Some(index) = static_table::find(name, value) {
-            return FieldLine::Indexed {
-                is_static: true,
-                index: index as u64,
-            };
-        }
-
-        // 2) exact dynamic match, if referenceable
-        if let Some(abs) = self.table.find(name, value)
-            && self.can_reference(stream_id, abs)
-        {
-            self.reference(abs, refs, max_ref_abs);
-            // stored as absolute; rewritten to a relative index at Base time
-            return FieldLine::Indexed {
-                is_static: false,
-                index: abs,
-            };
-        }
-
-        // 3) try to insert an exact entry and reference it
-        if self.try_insert(stream_id, name, value) {
-            let abs = self.table.insert_count() - 1;
-            self.reference(abs, refs, max_ref_abs);
-            return FieldLine::Indexed {
-                is_static: false,
-                index: abs,
-            };
-        }
-
-        // 4) name reference: static, then dynamic
-        if let Some(index) = static_table::find_name(name) {
-            return FieldLine::LiteralWithNameRef {
-                never_index: false,
-                is_static: true,
-                name_index: index as u64,
-                value: Bytes::copy_from_slice(value),
-                value_huffman: self.config.huffman,
-            };
-        }
-        if let Some(abs) = self.table.find_name(name)
-            && self.can_reference(stream_id, abs)
-        {
-            self.reference(abs, refs, max_ref_abs);
-            return FieldLine::LiteralWithNameRef {
-                never_index: false,
-                is_static: false,
-                name_index: abs,
-                value: Bytes::copy_from_slice(value),
-                value_huffman: self.config.huffman,
-            };
-        }
-
-        // 5) literal name and value
-        FieldLine::LiteralWithLiteralName {
-            never_index: false,
-            name: Bytes::copy_from_slice(name),
-            name_huffman: self.config.huffman,
-            value: Bytes::copy_from_slice(value),
-            value_huffman: self.config.huffman,
-        }
-    }
-
-    /// Whether referencing dynamic entry `abs` from `stream_id` is safe and within budget.
-    fn can_reference(&self, stream_id: u64, abs: u64) -> bool {
-        if abs < self.known_received_count {
-            // decoder already has it; never blocks
-            return true;
-        }
-        // referencing an unacknowledged entry makes the stream blocking
-        self.may_block(stream_id)
-    }
-
-    /// Attempt to insert `(name, value)`; returns whether it was inserted (and an instruction was
-    /// queued). Fails safely (returns false) when the table cannot take it or blocking is exhausted.
-    fn try_insert(&mut self, stream_id: u64, name: &[u8], value: &[u8]) -> bool {
-        if self.config.target_capacity == 0 {
-            return false;
-        }
-        if entry_size(name, value) > self.table.capacity() {
-            return false;
-        }
-        // a fresh entry is above KRC, so referencing it will make the stream blocking
-        if !self.may_block(stream_id) {
-            return false;
-        }
-
-        // Prefer inserting with a static name reference when the name exists statically.
-        let name_bytes = Bytes::copy_from_slice(name);
-        let value_bytes = Bytes::copy_from_slice(value);
-        match self
-            .table
-            .insert(name_bytes.clone(), value_bytes.clone(), true)
-        {
-            Ok(_) => {
-                let instruction = if let Some(index) = static_table::find_name(name) {
-                    EncoderInstruction::InsertWithNameRef {
-                        is_static: true,
-                        name_index: index as u64,
-                        value: value_bytes,
-                        value_huffman: self.config.huffman,
-                    }
-                } else {
-                    EncoderInstruction::InsertWithLiteralName {
-                        name: name_bytes,
-                        name_huffman: self.config.huffman,
-                        value: value_bytes,
-                        value_huffman: self.config.huffman,
-                    }
-                };
-                instruction.encode(&mut self.encoder_output);
-                true
+            self.section_count += 1;
+            if !was_blocking && ric > self.known_received_count {
+                self.blocking_streams += 1;
             }
-            Err(InsertError::TooLarge | InsertError::Blocked) => false,
         }
+        Ok(out.freeze().slice(PREFIX_HEADROOM - prefix_len..))
     }
 
-    /// Process one instruction received on the peer's decoder stream (RFC 9204 §4.4).
+    fn reference(&mut self, abs: u64, refs: &mut Vec<u64>, ric: &mut u64) {
+        refs.push(abs);
+        *ric = (*ric).max(abs + 1);
+        self.table.add_ref(abs);
+        self.reference_count += 1;
+    }
+
+    fn try_insert(&mut self, name: &[u8], value: &[u8]) -> bool {
+        if self
+            .table
+            .can_insert(entry_size(name, value), Some(self.known_received_count))
+            .is_err()
+        {
+            return false;
+        }
+        let static_name = static_table::find_name(name);
+        let name_len = static_name.map_or_else(
+            || string_encoded_len(name, 5, self.config.huffman),
+            |index| int_encoded_len(index as u64, 6),
+        );
+        let Some(wire_len) =
+            name_len.checked_add(string_encoded_len(value, 7, self.config.huffman))
+        else {
+            return false;
+        };
+        if !self.output_fits(wire_len) {
+            return false;
+        }
+        // These copies own only table entry bytes: retaining slices of whole sections here would
+        // pin unrelated payload allocations beyond the table capacity accounting.
+        if self
+            .table
+            .insert(
+                Bytes::copy_from_slice(name),
+                Bytes::copy_from_slice(value),
+                Some(self.known_received_count),
+            )
+            .is_err()
+        {
+            return false;
+        }
+        if let Some(index) = static_name {
+            encode_int(&mut self.encoder_output, index as u64, 6, 0xc0);
+        } else {
+            encode_string(&mut self.encoder_output, name, 5, 0x40, self.config.huffman);
+        }
+        encode_string(&mut self.encoder_output, value, 7, 0, self.config.huffman);
+        true
+    }
+
+    /// Apply one decoded feedback instruction (RFC 9204 §4.4).
     pub fn on_decoder_instruction(&mut self, inst: DecoderInstruction) -> Result<(), QpackError> {
         match inst {
             DecoderInstruction::InsertCountIncrement { increment } => {
-                let new = self.known_received_count.checked_add(increment).ok_or(
-                    QpackError::DecoderStreamError("insert count increment overflow"),
-                )?;
-                if new > self.table.insert_count() {
+                if increment == 0 {
                     return Err(QpackError::DecoderStreamError(
-                        "insert count increment exceeds inserts",
+                        "zero insert count increment",
                     ));
                 }
+                let new = self
+                    .known_received_count
+                    .checked_add(increment)
+                    .filter(|v| *v <= self.table.insert_count())
+                    .ok_or(QpackError::DecoderStreamError(
+                        "insert count increment exceeds inserts",
+                    ))?;
                 self.known_received_count = new;
-                Ok(())
             }
             DecoderInstruction::SectionAcknowledgment { stream_id } => {
                 let queue =
@@ -353,102 +426,105 @@ impl Encoder {
                 if queue.is_empty() {
                     self.sections.remove(&stream_id);
                 }
-                // Section Acknowledgment implies the decoder reached this section's RIC.
                 self.known_received_count =
                     self.known_received_count.max(section.required_insert_count);
-                for abs in section.refs {
-                    self.table.release_ref(abs);
-                }
-                Ok(())
+                self.release_section(section);
             }
             DecoderInstruction::StreamCancellation { stream_id } => {
+                if VarInt::from_u64(stream_id).is_err() {
+                    return Err(QpackError::DecoderStreamError(
+                        "stream ID exceeds QUIC integer range",
+                    ));
+                }
                 if let Some(queue) = self.sections.remove(&stream_id) {
                     for section in queue {
-                        for abs in section.refs {
-                            self.table.release_ref(abs);
-                        }
+                        self.release_section(section);
                     }
                 }
-                Ok(())
             }
+        }
+        self.refresh_blocking_count();
+        Ok(())
+    }
+
+    fn release_section(&mut self, section: Section) {
+        self.section_count -= 1;
+        self.reference_count -= section.refs.len();
+        for abs in section.refs {
+            self.table.release_ref(abs);
         }
     }
 
-    /// Feed raw decoder-stream bytes, applying every complete instruction (transactional).
-    pub fn feed_decoder_stream(&mut self, input: &[u8]) -> Result<(), QpackError> {
-        let mut buf = input;
-        loop {
-            let mut cursor = buf;
-            match DecoderInstruction::decode(&mut cursor) {
-                Ok(inst) => {
-                    buf = cursor;
-                    self.on_decoder_instruction(inst)?;
-                }
-                Err(PrefixError::UnexpectedEnd) => break,
-                Err(_) => {
+    /// Process arbitrarily fragmented decoder-stream bytes, retaining at most eleven bytes of
+    /// one incomplete instruction. Complete instructions before a malformed one remain applied.
+    pub fn feed_decoder_stream(&mut self, mut input: &[u8]) -> Result<(), QpackError> {
+        while !input.is_empty() {
+            if self.decoder_partial_len > 0 {
+                if self.decoder_partial_len == self.decoder_partial.len() {
                     return Err(QpackError::DecoderStreamError(
-                        "malformed decoder-stream instruction",
+                        "decoder-stream integer overflow",
                     ));
+                }
+                self.decoder_partial[self.decoder_partial_len] = input[0];
+                self.decoder_partial_len += 1;
+                input = &input[1..];
+                let mut cursor = &self.decoder_partial[..self.decoder_partial_len];
+                match DecoderInstruction::decode(&mut cursor) {
+                    Ok(inst) => {
+                        self.decoder_partial_len = 0;
+                        self.on_decoder_instruction(inst)?;
+                    }
+                    Err(PrefixError::UnexpectedEnd) => {}
+                    Err(_) => {
+                        return Err(QpackError::DecoderStreamError(
+                            "malformed decoder-stream instruction",
+                        ));
+                    }
+                }
+            } else {
+                let mut cursor = input;
+                match DecoderInstruction::decode(&mut cursor) {
+                    Ok(inst) => {
+                        input = cursor;
+                        self.on_decoder_instruction(inst)?;
+                    }
+                    Err(PrefixError::UnexpectedEnd) => {
+                        if input.len() > self.decoder_partial.len() {
+                            return Err(QpackError::DecoderStreamError(
+                                "decoder-stream integer overflow",
+                            ));
+                        }
+                        self.decoder_partial[..input.len()].copy_from_slice(input);
+                        self.decoder_partial_len = input.len();
+                        break;
+                    }
+                    Err(_) => {
+                        return Err(QpackError::DecoderStreamError(
+                            "malformed decoder-stream instruction",
+                        ));
+                    }
                 }
             }
         }
         Ok(())
     }
-}
 
-/// Serialize one field line, rewriting an absolute dynamic index into the Base-relative or
-/// post-Base form.
-fn encode_line(out: &mut BytesMut, line: &FieldLine, base: u64) {
-    let rewritten = match line {
-        FieldLine::Indexed {
-            is_static: false,
-            index: abs,
-        } => dynamic_indexed(*abs, base),
-        FieldLine::LiteralWithNameRef {
-            never_index,
-            is_static: false,
-            name_index: abs,
-            value,
-            value_huffman,
-        } => dynamic_literal_name_ref(*abs, base, *never_index, value.clone(), *value_huffman),
-        other => other.clone(),
-    };
-    rewritten.encode(out);
-}
-
-/// Encode an Indexed dynamic field line for absolute index `abs` under `base`.
-fn dynamic_indexed(abs: u64, base: u64) -> FieldLine {
-    if abs < base {
-        FieldLine::Indexed {
-            is_static: false,
-            index: base - abs - 1,
-        }
-    } else {
-        FieldLine::IndexedPostBase { index: abs - base }
+    /// Whether feedback ends on an instruction boundary. The connection driver handles critical
+    /// stream closure; this reports a partial instruction for diagnostics and incremental tests.
+    #[must_use]
+    pub fn is_at_decoder_instruction_boundary(&self) -> bool {
+        self.decoder_partial_len == 0
     }
 }
 
-fn dynamic_literal_name_ref(
-    abs: u64,
-    base: u64,
-    never_index: bool,
-    value: Bytes,
-    value_huffman: bool,
-) -> FieldLine {
+fn encode_dynamic_index(out: &mut BytesMut, abs: u64, base: u64) {
     if abs < base {
-        FieldLine::LiteralWithNameRef {
-            never_index,
-            is_static: false,
-            name_index: base - abs - 1,
-            value,
-            value_huffman,
-        }
+        encode_int(out, base - abs - 1, 6, 0x80);
     } else {
-        FieldLine::LiteralWithPostBaseNameRef {
-            never_index,
-            name_index: abs - base,
-            value,
-            value_huffman,
-        }
+        encode_int(out, abs - base, 4, 0x10);
     }
 }
+
+#[cfg(test)]
+#[path = "encoder_tests.rs"]
+mod tests;

@@ -14,7 +14,7 @@ use rama_core::bytes::{Buf, Bytes, BytesMut};
 use rama_http_types::proto::h3::{FrameType, Settings, SettingsError, VarIntDecoder};
 
 /// The default cap on a single buffered (non-DATA) frame's payload.
-pub const DEFAULT_MAX_FRAME_SIZE: usize = 1 << 20;
+pub const DEFAULT_MAX_FRAME_SIZE: usize = rama_utils::octets::mib(1);
 
 /// An event produced by [`FrameDecoder::poll`].
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -64,6 +64,11 @@ pub enum FrameError {
         /// The advertised payload length.
         len: u64,
     },
+    /// Input was not accepted because the previous chunk has not been drained or the new chunk
+    /// exceeds the input limit. This is local backpressure, not a peer protocol error.
+    InputBufferFull,
+    /// SETTINGS exceeded the local entry budget: `H3_EXCESSIVE_LOAD`.
+    TooManySettings,
     /// A known frame's payload was malformed: `H3_FRAME_ERROR`.
     Malformed(FrameType),
     /// A SETTINGS frame was invalid: `H3_SETTINGS_ERROR`.
@@ -75,6 +80,10 @@ impl core::fmt::Display for FrameError {
         match self {
             Self::UnexpectedH2Frame(ty) => write!(f, "unexpected HTTP/2 frame {ty:?}"),
             Self::FrameTooLarge { ty, len } => write!(f, "frame {ty:?} too large ({len} bytes)"),
+            Self::InputBufferFull => {
+                f.write_str("drain the frame decoder or supply a smaller input chunk")
+            }
+            Self::TooManySettings => f.write_str("too many HTTP/3 settings"),
             Self::Malformed(ty) => write!(f, "malformed {ty:?} frame"),
             Self::Settings(e) => write!(f, "{e}"),
         }
@@ -85,7 +94,11 @@ impl std::error::Error for FrameError {}
 
 impl From<SettingsError> for FrameError {
     fn from(e: SettingsError) -> Self {
-        Self::Settings(e)
+        match e {
+            SettingsError::Malformed => Self::Malformed(FrameType::SETTINGS),
+            SettingsError::TooMany => Self::TooManySettings,
+            e => Self::Settings(e),
+        }
     }
 }
 
@@ -105,7 +118,8 @@ enum State {
 /// A bounded, incremental HTTP/3 frame decoder.
 pub struct FrameDecoder {
     max_frame_size: usize,
-    inbox: BytesMut,
+    max_input_size: usize,
+    inbox: Bytes,
     state: State,
     varint: VarIntDecoder,
     payload: BytesMut,
@@ -115,18 +129,52 @@ impl FrameDecoder {
     /// Create a decoder that buffers at most `max_frame_size` bytes for any single non-DATA frame.
     #[must_use]
     pub fn new(max_frame_size: usize) -> Self {
+        Self::with_input_limit(max_frame_size, DEFAULT_MAX_FRAME_SIZE)
+    }
+
+    /// Set independent limits for a buffered frame and a single input chunk.
+    ///
+    /// At most one input chunk is retained. Poll until more input is needed before feeding again.
+    /// A zero input limit accepts only empty chunks.
+    #[must_use]
+    pub fn with_input_limit(max_frame_size: usize, max_input_size: usize) -> Self {
         Self {
             max_frame_size,
-            inbox: BytesMut::new(),
+            max_input_size,
+            inbox: Bytes::new(),
             state: State::Type,
             varint: VarIntDecoder::new(),
             payload: BytesMut::new(),
         }
     }
 
-    /// Feed received bytes.
-    pub fn feed(&mut self, input: &[u8]) {
-        self.inbox.extend_from_slice(input);
+    /// Copy a received chunk, rejecting it before allocation if the inbox is occupied or the
+    /// chunk exceeds the input limit. Poll until `Ok(None)` and retry; split oversized chunks.
+    /// Prefer [`Self::feed_bytes`] to avoid this copy.
+    pub fn feed(&mut self, input: &[u8]) -> Result<(), FrameError> {
+        self.check_input(input.len())?;
+        if !input.is_empty() {
+            self.inbox = Bytes::copy_from_slice(input);
+        }
+        Ok(())
+    }
+
+    /// Transfer an owned received chunk without copying. On success `input` becomes empty;
+    /// on backpressure it is unchanged, so the caller can drain the decoder and retry or split it.
+    pub fn feed_bytes(&mut self, input: &mut Bytes) -> Result<(), FrameError> {
+        self.check_input(input.len())?;
+        if !input.is_empty() {
+            self.inbox = core::mem::take(input);
+        }
+        Ok(())
+    }
+
+    fn check_input(&self, len: usize) -> Result<(), FrameError> {
+        if len > self.max_input_size || (len != 0 && !self.inbox.is_empty()) {
+            Err(FrameError::InputBufferFull)
+        } else {
+            Ok(())
+        }
     }
 
     /// Whether the decoder is between frames with nothing buffered — i.e. a clean place for the
@@ -163,7 +211,7 @@ impl FrameDecoder {
                         usize::try_from(remaining).unwrap_or(usize::MAX),
                         self.inbox.len(),
                     );
-                    let chunk = self.inbox.split_to(take).freeze();
+                    let chunk = self.inbox.split_to(take);
                     self.state = State::Data(remaining - take as u64);
                     return Ok(Some(FrameEvent::DataChunk(chunk)));
                 }
@@ -180,10 +228,18 @@ impl FrameDecoder {
                 }
                 State::Buffer { ty, len } => {
                     let have = self.payload.len();
+                    if have == 0 && self.inbox.len() >= len {
+                        let payload = self.inbox.split_to(len);
+                        self.state = State::Type;
+                        return Ok(Some(finish_buffered(ty, payload)?));
+                    }
                     if have < len {
                         if self.inbox.is_empty() {
                             return Ok(None);
                         }
+                        // Only fragmented payloads need storage. Reserve the bounded full length
+                        // once so subsequent fragments do not repeatedly grow and copy it.
+                        self.payload.reserve(len - have);
                         let take = usize::min(len - have, self.inbox.len());
                         let chunk = self.inbox.split_to(take);
                         self.payload.extend_from_slice(&chunk);
@@ -214,7 +270,6 @@ impl FrameDecoder {
                 return Err(FrameError::FrameTooLarge { ty, len });
             }
             self.payload.clear();
-            self.payload.reserve(len as usize);
             self.state = State::Buffer {
                 ty,
                 len: len as usize,
@@ -301,6 +356,144 @@ mod tests {
     }
 
     #[test]
+    fn input_backpressure_is_bounded_and_retryable() {
+        let mut dec = FrameDecoder::with_input_limit(8, 4);
+        let mut oversized = Bytes::from_static(b"12345");
+        assert_eq!(
+            dec.feed_bytes(&mut oversized),
+            Err(FrameError::InputBufferFull)
+        );
+        assert_eq!(oversized, b"12345"[..]);
+        assert!(dec.is_at_frame_boundary());
+        assert_eq!(dec.feed(&oversized), Err(FrameError::InputBufferFull));
+        let mut wire = Bytes::from(frame(FrameType::HEADERS, b"ab"));
+        dec.feed_bytes(&mut wire).unwrap();
+        assert!(wire.is_empty());
+        assert_eq!(dec.feed(b"x"), Err(FrameError::InputBufferFull));
+        assert_eq!(
+            drain(&mut dec),
+            vec![FrameEvent::Headers(Bytes::from_static(b"ab"))]
+        );
+        dec.feed(&frame(FrameType::HEADERS, b"cd")).unwrap();
+        assert_eq!(
+            drain(&mut dec),
+            vec![FrameEvent::Headers(Bytes::from_static(b"cd"))]
+        );
+    }
+
+    #[test]
+    fn owned_payloads_share_input_storage() {
+        for ty in [FrameType::HEADERS, FrameType::DATA, FrameType::PUSH_PROMISE] {
+            let mut wire = Bytes::from(frame(ty, b"\x00abc"));
+            let expected = wire
+                .as_ptr()
+                .wrapping_add(if ty == FrameType::PUSH_PROMISE { 3 } else { 2 });
+            let mut dec = FrameDecoder::new(4);
+            dec.feed_bytes(&mut wire).unwrap();
+            let event = dec.poll().unwrap().unwrap();
+            let payload = match event {
+                FrameEvent::Headers(b) => b,
+                FrameEvent::PushPromise {
+                    encoded_headers, ..
+                } => encoded_headers,
+                FrameEvent::DataHeader { .. } => match dec.poll().unwrap().unwrap() {
+                    FrameEvent::DataChunk(b) => b,
+                    other => panic!("unexpected {other:?}"),
+                },
+                other => panic!("unexpected {other:?}"),
+            };
+            assert_eq!(payload.as_ptr(), expected);
+        }
+    }
+
+    #[test]
+    fn every_frame_split_and_truncation() {
+        for (ty, payload) in [
+            (FrameType::HEADERS, &b"headers"[..]),
+            (FrameType::SETTINGS, &b"\x06\x40\x01"[..]),
+            (FrameType::CANCEL_PUSH, &b"\x40\x01"[..]),
+            (FrameType::GOAWAY, &b"\x40\x01"[..]),
+            (FrameType::MAX_PUSH_ID, &b"\x40\x01"[..]),
+            (FrameType::PUSH_PROMISE, &b"\x40\x01headers"[..]),
+        ] {
+            // Non-minimal type and length varints are legal, including across chunk boundaries.
+            let mut wire = vec![0x40, ty.value() as u8, 0x40, payload.len() as u8];
+            wire.extend_from_slice(payload);
+            let mut whole = FrameDecoder::new(payload.len());
+            whole.feed(&wire).unwrap();
+            let expected = drain(&mut whole);
+            for split in 1..wire.len() {
+                let mut dec = FrameDecoder::new(payload.len());
+                dec.feed(&wire[..split]).unwrap();
+                assert!(drain(&mut dec).is_empty());
+                assert!(!dec.is_at_frame_boundary());
+                dec.feed(&wire[split..]).unwrap();
+                assert_eq!(drain(&mut dec), expected);
+                assert!(dec.is_at_frame_boundary());
+            }
+        }
+    }
+
+    #[test]
+    fn streaming_and_skipping_do_not_use_the_buffered_frame_budget() {
+        for ty in [FrameType::DATA, FrameType::new(0x21)] {
+            let mut dec = FrameDecoder::with_input_limit(0, 8);
+            let mut header = BytesMut::new();
+            FrameHeader::new(ty, 80).encode(&mut header).unwrap();
+            dec.feed(&header).unwrap();
+            assert!(dec.poll().unwrap().is_some());
+            assert_eq!(dec.poll(), Ok(None));
+            for _ in 0..10 {
+                let mut input = Bytes::from_static(b"abcdefgh");
+                dec.feed_bytes(&mut input).unwrap();
+                let events = drain(&mut dec);
+                assert_eq!(events.len(), usize::from(ty == FrameType::DATA));
+                assert!(dec.payload.is_empty());
+                assert_eq!(dec.payload.capacity(), 0);
+            }
+            assert!(dec.is_at_frame_boundary());
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_fixed_layout_payloads() {
+        for ty in [
+            FrameType::CANCEL_PUSH,
+            FrameType::GOAWAY,
+            FrameType::MAX_PUSH_ID,
+        ] {
+            for payload in [&b""[..], &b"\x40"[..], &b"\x01\x02"[..]] {
+                let mut dec = FrameDecoder::new(8);
+                dec.feed(&frame(ty, payload)).unwrap();
+                assert_eq!(dec.poll(), Err(FrameError::Malformed(ty)));
+            }
+        }
+        let mut dec = FrameDecoder::new(8);
+        dec.feed(&frame(FrameType::PUSH_PROMISE, b"\x40")).unwrap();
+        assert_eq!(
+            dec.poll(),
+            Err(FrameError::Malformed(FrameType::PUSH_PROMISE))
+        );
+    }
+
+    #[test]
+    fn settings_errors_have_distinct_protocol_classifications() {
+        for payload in [&b"\x06"[..], &b"\x40"[..], &b"\x06\x40"[..]] {
+            let mut dec = FrameDecoder::new(16);
+            dec.feed(&frame(FrameType::SETTINGS, payload)).unwrap();
+            assert_eq!(dec.poll(), Err(FrameError::Malformed(FrameType::SETTINGS)));
+        }
+        assert_eq!(
+            FrameError::from(SettingsError::TooMany),
+            FrameError::TooManySettings
+        );
+        assert_eq!(
+            FrameError::from(SettingsError::Duplicate(SettingId::new(6))),
+            FrameError::Settings(SettingsError::Duplicate(SettingId::new(6)))
+        );
+    }
+
+    #[test]
     fn decodes_settings_frame() {
         let mut settings = Settings::new();
         settings
@@ -312,7 +505,7 @@ mod tests {
         let wire = frame(FrameType::SETTINGS, &payload);
 
         let mut dec = FrameDecoder::new(DEFAULT_MAX_FRAME_SIZE);
-        dec.feed(&wire);
+        dec.feed(&wire).unwrap();
         let events = drain(&mut dec);
         assert_eq!(events, vec![FrameEvent::Settings(settings)]);
         assert!(dec.is_at_frame_boundary());
@@ -324,7 +517,7 @@ mod tests {
         wire.extend_from_slice(&frame(FrameType::DATA, b"hello world"));
 
         let mut dec = FrameDecoder::new(DEFAULT_MAX_FRAME_SIZE);
-        dec.feed(&wire);
+        dec.feed(&wire).unwrap();
         let events = drain(&mut dec);
         assert_eq!(
             events,
@@ -342,7 +535,7 @@ mod tests {
         let mut wire = frame(FrameType::new(0x21), b"\x01\x02\x03\x04\x05");
         wire.extend_from_slice(&frame(FrameType::DATA, b"x"));
         let mut dec = FrameDecoder::new(DEFAULT_MAX_FRAME_SIZE);
-        dec.feed(&wire);
+        dec.feed(&wire).unwrap();
         let events = drain(&mut dec);
         assert_eq!(
             events[0],
@@ -359,7 +552,7 @@ mod tests {
     fn rejects_h2_reserved_frame() {
         let wire = frame(FrameType::new(0x02), b"");
         let mut dec = FrameDecoder::new(DEFAULT_MAX_FRAME_SIZE);
-        dec.feed(&wire);
+        dec.feed(&wire).unwrap();
         assert_eq!(
             dec.poll(),
             Err(FrameError::UnexpectedH2Frame(FrameType::new(0x02)))
@@ -374,7 +567,7 @@ mod tests {
             .encode(&mut wire)
             .unwrap();
         let mut dec = FrameDecoder::new(4096);
-        dec.feed(&wire);
+        dec.feed(&wire).unwrap();
         assert_eq!(
             dec.poll(),
             Err(FrameError::FrameTooLarge {
@@ -397,7 +590,7 @@ mod tests {
         let mut dec = FrameDecoder::new(DEFAULT_MAX_FRAME_SIZE);
         let mut produced = None;
         for (i, byte) in wire.iter().enumerate() {
-            dec.feed(&[*byte]);
+            dec.feed(&[*byte]).unwrap();
             let ev = dec.poll().unwrap();
             if i + 1 < wire.len() {
                 assert!(ev.is_none(), "premature event at byte {i}");
@@ -418,7 +611,7 @@ mod tests {
             .unwrap();
         wire.extend_from_slice(&[0x00, 0x00]);
         let mut dec = FrameDecoder::new(DEFAULT_MAX_FRAME_SIZE);
-        dec.feed(&wire);
+        dec.feed(&wire).unwrap();
         assert_eq!(dec.poll().unwrap(), None);
         assert!(
             !dec.is_at_frame_boundary(),
@@ -431,7 +624,7 @@ mod tests {
         // GOAWAY payload is a single varint; 4 encodes as one byte.
         let wire = frame(FrameType::GOAWAY, &[0x04]);
         let mut dec = FrameDecoder::new(DEFAULT_MAX_FRAME_SIZE);
-        dec.feed(&wire);
+        dec.feed(&wire).unwrap();
         assert_eq!(drain(&mut dec), vec![FrameEvent::GoAway(4)]);
     }
 }

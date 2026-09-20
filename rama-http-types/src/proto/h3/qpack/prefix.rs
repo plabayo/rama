@@ -6,14 +6,9 @@
 //! from the start of the (retained) buffer. This transactional style keeps the codings themselves
 //! free of retained state while still supporting fragmented input.
 
-use rama_core::bytes::{BufMut, BytesMut};
+use rama_core::bytes::{BufMut, Bytes, BytesMut};
 
 use crate::proto::h2::hpack::{DecoderError, huffman};
-
-/// The Huffman-decoded output can be at most `8/5` the encoded length (the shortest code is 5
-/// bits), so this factor bounds the decode buffer before growth.
-const HUFFMAN_MAX_EXPANSION_NUM: usize = 8;
-const HUFFMAN_MAX_EXPANSION_DEN: usize = 5;
 
 /// An error decoding a prefixed integer or string.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -24,7 +19,7 @@ pub enum PrefixError {
     IntegerOverflow,
     /// A Huffman-encoded string contained an invalid code or padding.
     InvalidHuffman,
-    /// A length field exceeded the caller-supplied bound before any allocation.
+    /// The encoded length was impossible within the bound, or decoded output reached it.
     LengthLimitExceeded,
 }
 
@@ -46,6 +41,32 @@ impl From<DecoderError> for PrefixError {
         // the shared Huffman decoder only fails with an invalid code or padding for our inputs.
         Self::InvalidHuffman
     }
+}
+
+/// Number of wire bytes needed by a prefixed integer.
+#[must_use]
+pub fn int_encoded_len(value: u64, prefix_bits: u8) -> usize {
+    debug_assert!((1..=8).contains(&prefix_bits));
+    let mask = (1u64 << prefix_bits) - 1;
+    if value < mask {
+        1
+    } else {
+        let remainder = value - mask;
+        1 + ((64 - remainder.leading_zeros()) as usize)
+            .div_ceil(7)
+            .max(1)
+    }
+}
+
+/// Number of wire bytes needed by a string, including its length prefix.
+#[must_use]
+pub fn string_encoded_len(data: &[u8], prefix_bits: u8, huffman: bool) -> usize {
+    let payload_len = if huffman {
+        huffman::encoded_len(data)
+    } else {
+        data.len()
+    };
+    int_encoded_len(payload_len as u64, prefix_bits) + payload_len
 }
 
 /// Encode `value` as a prefixed integer with an `prefix_bits`-bit prefix, OR-ing `flags` into the
@@ -120,11 +141,10 @@ pub fn encode_string<B: BufMut>(
     huffman: bool,
 ) {
     if huffman {
-        let mut encoded = BytesMut::new();
-        huffman::encode(data, &mut encoded);
+        let encoded_len = huffman::encoded_len(data);
         let huffman_flag = 1u8 << prefix_bits;
-        encode_int(dst, encoded.len() as u64, prefix_bits, flags | huffman_flag);
-        dst.put_slice(&encoded);
+        encode_int(dst, encoded_len as u64, prefix_bits, flags | huffman_flag);
+        huffman::encode(data, dst);
     } else {
         encode_int(dst, data.len() as u64, prefix_bits, flags);
         dst.put_slice(data);
@@ -141,53 +161,79 @@ pub struct DecodedString {
 }
 
 /// Decode a string literal with an `prefix_bits`-bit length prefix, rejecting a decoded length
-/// above `max_len` before allocating (RFC 9204 §4.1.2).
+/// above `max_len` (RFC 9204 §4.1.2). Plain lengths are checked before allocating;
+/// Huffman output is bounded during decoding.
 pub fn decode_string(
     src: &mut &[u8],
     prefix_bits: u8,
     max_len: usize,
 ) -> Result<DecodedString, PrefixError> {
-    let first = *src.first().ok_or(PrefixError::UnexpectedEnd)?;
-    let huffman = (first & (1 << prefix_bits)) != 0;
-    // `decode_int` masks off the flag/Huffman bits, so it reads only the length.
-    let len = decode_int(src, prefix_bits)?;
+    let decoded = decode_string_shared(src, prefix_bits, max_len, None)?;
+    Ok(DecodedString {
+        value: decoded
+            .value
+            .try_into_mut()
+            .unwrap_or_else(|bytes| BytesMut::from(bytes.as_ref())),
+        huffman: decoded.huffman,
+    })
+}
 
-    // bound the *decoded* size before touching memory (compare in u64 to avoid a lossy cast)
-    let max_len_u64 = max_len as u64;
-    if huffman {
-        let upper =
-            len.saturating_mul(HUFFMAN_MAX_EXPANSION_NUM as u64) / HUFFMAN_MAX_EXPANSION_DEN as u64;
-        if upper > max_len_u64 {
-            return Err(PrefixError::LengthLimitExceeded);
-        }
-    } else if len > max_len_u64 {
+pub(super) struct SharedDecodedString {
+    pub value: Bytes,
+    pub huffman: bool,
+}
+
+/// Read and bound a string envelope without inspecting or allocating its body.
+/// A valid Huffman symbol takes at most 30 bits; padding takes at most seven.
+/// This wire bound rejects impossible lengths early without rejecting valid
+/// strings whose encoded representation is larger than the decoded output.
+pub(super) fn string_payload<'a>(
+    src: &mut &'a [u8],
+    prefix_bits: u8,
+    max_len: usize,
+) -> Result<(&'a [u8], bool), PrefixError> {
+    let mut cursor = *src;
+    let first = *cursor.first().ok_or(PrefixError::UnexpectedEnd)?;
+    let huffman = first & (1 << prefix_bits) != 0;
+    let len = decode_int(&mut cursor, prefix_bits)?;
+    let max_wire_len = if huffman {
+        (max_len as u64).saturating_mul(30).saturating_add(7) / 8
+    } else {
+        max_len as u64
+    };
+    if len > max_wire_len {
         return Err(PrefixError::LengthLimitExceeded);
     }
-    // `len <= max_len` (or its Huffman bound) at this point, so it fits `usize`.
-    let len = len as usize;
-
-    if src.len() < len {
+    let len = usize::try_from(len).map_err(|_overflow| PrefixError::LengthLimitExceeded)?;
+    if cursor.len() < len {
         return Err(PrefixError::UnexpectedEnd);
     }
-    let (raw, rest) = src.split_at(len);
+    let (raw, rest) = cursor.split_at(len);
     *src = rest;
+    Ok((raw, huffman))
+}
 
-    if huffman {
+pub(super) fn decode_string_shared(
+    src: &mut &[u8],
+    prefix_bits: u8,
+    max_len: usize,
+    backing: Option<&Bytes>,
+) -> Result<SharedDecodedString, PrefixError> {
+    let (raw, huffman) = string_payload(src, prefix_bits, max_len)?;
+    let value = if huffman {
         let mut buf = BytesMut::new();
-        let decoded = huffman::decode(raw, &mut buf)?;
-        if decoded.len() > max_len {
-            return Err(PrefixError::LengthLimitExceeded);
-        }
-        Ok(DecodedString {
-            value: decoded,
-            huffman: true,
-        })
+        huffman::decode_bounded(raw, &mut buf, max_len)
+            .map_err(|error| match error {
+                huffman::BoundedDecodeError::InvalidCode => PrefixError::InvalidHuffman,
+                huffman::BoundedDecodeError::LengthLimit => PrefixError::LengthLimitExceeded,
+            })?
+            .freeze()
+    } else if let Some(backing) = backing {
+        backing.slice_ref(raw)
     } else {
-        Ok(DecodedString {
-            value: BytesMut::from(raw),
-            huffman: false,
-        })
-    }
+        Bytes::copy_from_slice(raw)
+    };
+    Ok(SharedDecodedString { value, huffman })
 }
 
 #[cfg(test)]
@@ -198,6 +244,56 @@ mod tests {
         let mut out = BytesMut::new();
         encode_int(&mut out, value, prefix_bits, flags);
         out.to_vec()
+    }
+
+    #[test]
+    fn exact_huffman_output_limits_all_octets() {
+        for byte in 0..=u8::MAX {
+            for len in [0, 1, 2, 10, 127] {
+                let input = vec![byte; len];
+                let mut encoded = BytesMut::new();
+                encode_string(&mut encoded, &input, 7, 0, true);
+                assert_eq!(string_encoded_len(&input, 7, true), encoded.len());
+                assert_eq!(
+                    decode_string(&mut &encoded[..], 7, len).unwrap().value,
+                    input
+                );
+                if len > 0 {
+                    assert_eq!(
+                        decode_string(&mut &encoded[..], 7, len - 1),
+                        Err(PrefixError::LengthLimitExceeded)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn encoded_integer_lengths_match_wire_at_boundaries() {
+        for bits in 1..=8 {
+            let mask = (1u64 << bits) - 1;
+            for value in [
+                0,
+                mask - 1,
+                mask,
+                mask + 1,
+                mask + 127,
+                mask + 128,
+                u64::MAX,
+            ] {
+                assert_eq!(int_encoded_len(value, bits), enc(value, bits, 0).len());
+            }
+        }
+    }
+
+    #[test]
+    fn impossible_huffman_wire_length_fails_without_body() {
+        let mut out = BytesMut::new();
+        encode_int(&mut out, 1000, 7, 0x80);
+        assert_eq!(
+            decode_string(&mut &out[..], 7, 1),
+            Err(PrefixError::LengthLimitExceeded)
+        );
     }
 
     #[test]
