@@ -3,9 +3,7 @@
 use std::collections::{BTreeMap, VecDeque};
 
 use rama_core::bytes::{Bytes, BytesMut};
-use rama_http_types::proto::h3::qpack::prefix::{
-    encode_int, encode_string, int_encoded_len, string_encoded_len,
-};
+use rama_http_types::proto::h3::qpack::prefix::{StringEncoder, encode_int, int_encoded_len};
 use rama_http_types::proto::h3::{
     VarInt,
     qpack::{DecoderInstruction, HeaderPrefix, PrefixError, static_table},
@@ -70,7 +68,7 @@ pub struct EncoderConfig {
     pub max_blocked_streams: u64,
     /// Capacity to use, clamped to the peer maximum.
     pub target_capacity: u64,
-    /// Whether to Huffman-encode literal strings.
+    /// Allow Huffman encoding when it reduces a literal's wire size; plain encoding wins ties.
     pub huffman: bool,
     /// Maximum uncompressed section size, including 32 bytes per field.
     pub max_field_section_size: usize,
@@ -313,15 +311,10 @@ impl Encoder {
                     );
                 }
             } else {
-                encode_string(
-                    &mut out,
-                    name,
-                    3,
-                    0x20 | if field.never_index { 0x10 } else { 0 },
-                    self.config.huffman,
-                );
+                StringEncoder::new(name, 3, self.config.huffman)
+                    .encode(&mut out, 0x20 | if field.never_index { 0x10 } else { 0 });
             }
-            encode_string(&mut out, value, 7, 0, self.config.huffman);
+            StringEncoder::new(value, 7, self.config.huffman).encode(&mut out, 0);
         }
         let mut prefix = [0u8; PREFIX_HEADROOM];
         let mut cursor = &mut prefix[..];
@@ -361,13 +354,15 @@ impl Encoder {
             return false;
         }
         let static_name = static_table::find_name(name);
-        let name_len = static_name.map_or_else(
-            || string_encoded_len(name, 5, self.config.huffman),
-            |index| int_encoded_len(index as u64, 6),
-        );
-        let Some(wire_len) =
-            name_len.checked_add(string_encoded_len(value, 7, self.config.huffman))
-        else {
+        let (name_literal, name_len) = if let Some(index) = static_name {
+            (None, int_encoded_len(index as u64, 6))
+        } else {
+            let literal = StringEncoder::new(name, 5, self.config.huffman);
+            let len = literal.encoded_len();
+            (Some(literal), len)
+        };
+        let value_literal = StringEncoder::new(value, 7, self.config.huffman);
+        let Some(wire_len) = name_len.checked_add(value_literal.encoded_len()) else {
             return false;
         };
         if !self.output_fits(wire_len) {
@@ -388,10 +383,10 @@ impl Encoder {
         }
         if let Some(index) = static_name {
             encode_int(&mut self.encoder_output, index as u64, 6, 0xc0);
-        } else {
-            encode_string(&mut self.encoder_output, name, 5, 0x40, self.config.huffman);
+        } else if let Some(name_literal) = name_literal {
+            name_literal.encode(&mut self.encoder_output, 0x40);
         }
-        encode_string(&mut self.encoder_output, value, 7, 0, self.config.huffman);
+        value_literal.encode(&mut self.encoder_output, 0);
         true
     }
 

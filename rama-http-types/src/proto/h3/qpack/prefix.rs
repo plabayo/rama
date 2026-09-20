@@ -140,8 +140,63 @@ pub fn encode_string<B: BufMut>(
     flags: u8,
     huffman: bool,
 ) {
-    if huffman {
-        let encoded_len = huffman::encoded_len(data);
+    encode_string_payload(
+        dst,
+        data,
+        prefix_bits,
+        flags,
+        huffman.then(|| huffman::encoded_len(data)),
+    );
+}
+
+/// A borrowed string encoding plan that uses Huffman only when it reduces wire size.
+///
+/// Computes the Huffman length at most once, sharing the decision between output-budget
+/// checks and encoding without allocating a temporary buffer. Plain encoding wins ties.
+#[derive(Debug)]
+pub struct StringEncoder<'a> {
+    data: &'a [u8],
+    prefix_bits: u8,
+    huffman_len: Option<usize>,
+}
+
+impl<'a> StringEncoder<'a> {
+    /// Plan a string with a `prefix_bits`-bit length prefix. If `allow_huffman` is false,
+    /// use plain encoding without computing a Huffman length.
+    #[must_use]
+    pub fn new(data: &'a [u8], prefix_bits: u8, allow_huffman: bool) -> Self {
+        debug_assert!((1..=7).contains(&prefix_bits));
+        let huffman_len = allow_huffman
+            .then(|| huffman::encoded_len(data))
+            .filter(|len| *len < data.len());
+        Self {
+            data,
+            prefix_bits,
+            huffman_len,
+        }
+    }
+
+    /// The exact wire length, including the length prefix.
+    #[must_use]
+    pub fn encoded_len(&self) -> usize {
+        let len = self.huffman_len.unwrap_or(self.data.len());
+        int_encoded_len(len as u64, self.prefix_bits) + len
+    }
+
+    /// Write the planned representation, with `flags` above the Huffman bit.
+    pub fn encode<B: BufMut>(&self, dst: &mut B, flags: u8) {
+        encode_string_payload(dst, self.data, self.prefix_bits, flags, self.huffman_len);
+    }
+}
+
+fn encode_string_payload<B: BufMut>(
+    dst: &mut B,
+    data: &[u8],
+    prefix_bits: u8,
+    flags: u8,
+    huffman_len: Option<usize>,
+) {
+    if let Some(encoded_len) = huffman_len {
         let huffman_flag = 1u8 << prefix_bits;
         encode_int(dst, encoded_len as u64, prefix_bits, flags | huffman_flag);
         huffman::encode(data, dst);
@@ -239,6 +294,31 @@ pub(super) fn decode_string_shared(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn adaptive_string_size_matches_output_at_prefix_boundaries() {
+        for byte in 0..=u8::MAX {
+            for len in [0, 1, 7, 31, 127, 128] {
+                let input = vec![byte; len];
+                for bits in [3, 5, 7] {
+                    let huffman_len = huffman::encoded_len(&input);
+                    for allow_huffman in [false, true] {
+                        let plan = StringEncoder::new(&input, bits, allow_huffman);
+                        let mut wire = BytesMut::new();
+                        plan.encode(&mut wire, 0);
+                        assert_eq!(plan.encoded_len(), wire.len());
+                        assert_eq!(
+                            wire[0] & (1 << bits) != 0,
+                            allow_huffman && huffman_len < len
+                        );
+                        assert!(wire.len() <= string_encoded_len(&input, bits, false));
+                        let decoded = decode_string(&mut &wire[..], bits, len).unwrap();
+                        assert_eq!(&decoded.value[..], input);
+                    }
+                }
+            }
+        }
+    }
 
     fn enc(value: u64, prefix_bits: u8, flags: u8) -> Vec<u8> {
         let mut out = BytesMut::new();

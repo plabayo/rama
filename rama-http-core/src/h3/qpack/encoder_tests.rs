@@ -278,3 +278,125 @@ fn native_header_sensitivity_is_preserved() {
     let fields = dec.decode_field_section(0, bytes).unwrap().unwrap();
     assert!(fields[0].never_index);
 }
+
+#[test]
+fn adaptive_huffman_preserves_sensitive_literals_and_plain_mode() {
+    // Expansion, equal length, and compression respectively, for both names and values.
+    let cases: &[(&[u8], bool)] = &[
+        (b"##########", false),
+        (b"a", false),
+        (b"www.example.com", true),
+    ];
+    for &(name, name_smaller) in cases {
+        for &(value, value_smaller) in cases {
+            for allow_huffman in [false, true] {
+                let mut enc = Encoder::new(EncoderConfig {
+                    huffman: allow_huffman,
+                    ..Default::default()
+                });
+                let section = enc
+                    .encode(
+                        0,
+                        [EncodeField {
+                            name,
+                            value,
+                            never_index: true,
+                        }],
+                    )
+                    .unwrap();
+                let mut cursor = &section[..];
+                let prefix = HeaderPrefix::decode(&mut cursor, 128, 0).unwrap();
+                assert_eq!(prefix.required_insert_count, 0);
+                assert_eq!(enc.insert_count(), 0);
+                assert_eq!(
+                    FieldLine::decode(&mut cursor, 1024).unwrap(),
+                    FieldLine::LiteralWithLiteralName {
+                        name: Bytes::copy_from_slice(name),
+                        value: Bytes::copy_from_slice(value),
+                        name_huffman: allow_huffman && name_smaller,
+                        value_huffman: allow_huffman && value_smaller,
+                        never_index: true,
+                    }
+                );
+                assert!(cursor.is_empty());
+                let mut dec = Decoder::new(DecoderConfig::default());
+                let fields = dec.decode_field_section(0, section).unwrap().unwrap();
+                assert_eq!(&fields[0].name[..], name);
+                assert_eq!(&fields[0].value[..], value);
+                assert!(fields[0].never_index);
+            }
+        }
+    }
+}
+
+#[test]
+fn adaptive_insert_budget_matches_exact_wire_and_one_byte_short() {
+    use rama_http_types::proto::h3::qpack::EncoderInstruction;
+    let cases: &[(&[u8], bool)] = &[
+        (b"##########", false),
+        (b"a", false),
+        (b"www.example.com", true),
+    ];
+    for &(value, value_huffman) in cases {
+        // Exercise literal-name and static-name insertions independently.
+        for name in [
+            b"##########".as_slice(),
+            b"www.example.com",
+            b"a",
+            b":authority",
+        ] {
+            let instruction = if name == b":authority" {
+                EncoderInstruction::InsertWithNameRef {
+                    is_static: true,
+                    name_index: 0,
+                    value: Bytes::copy_from_slice(value),
+                    value_huffman,
+                }
+            } else {
+                EncoderInstruction::InsertWithLiteralName {
+                    name: Bytes::copy_from_slice(name),
+                    value: Bytes::copy_from_slice(value),
+                    name_huffman: name == b"www.example.com",
+                    value_huffman,
+                }
+            };
+            let mut expected = BytesMut::new();
+            EncoderInstruction::SetDynamicTableCapacity { capacity: 128 }.encode(&mut expected);
+            let capacity_len = expected.len();
+            instruction.encode(&mut expected);
+            for budget in [expected.len() - 1, expected.len()] {
+                let mut enc = Encoder::new(EncoderConfig {
+                    max_table_capacity: 128,
+                    target_capacity: 128,
+                    max_encoder_stream_bytes: budget,
+                    ..Default::default()
+                });
+                let section = enc.encode(0, [(name, value)]).unwrap();
+                let control = enc.take_encoder_stream();
+                let inserted = budget == expected.len();
+                assert_eq!(enc.insert_count(), u64::from(inserted));
+                assert_eq!(
+                    control,
+                    if inserted {
+                        &expected[..]
+                    } else {
+                        &expected[..capacity_len]
+                    }
+                );
+                assert!(control.len() <= budget);
+                let mut dec = Decoder::new(DecoderConfig {
+                    max_table_capacity: 128,
+                    ..Default::default()
+                });
+                for byte in control {
+                    dec.feed_encoder_stream(&[byte]).unwrap();
+                }
+                let fields = dec.decode_field_section(0, section).unwrap().unwrap();
+                assert_eq!(&fields[0].name[..], name);
+                assert_eq!(&fields[0].value[..], value);
+                enc.feed_decoder_stream(&dec.take_decoder_stream()).unwrap();
+                assert_eq!(enc.tracked_reference_count(), 0);
+            }
+        }
+    }
+}
