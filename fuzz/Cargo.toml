@@ -204,10 +204,47 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "h3_frame"
+path = "fuzz_targets/h3_frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "h3_settings"
+path = "fuzz_targets/h3_settings.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "qpack_field_section"
+path = "fuzz_targets/qpack_field_section.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "qpack_encoder_stream"
+path = "fuzz_targets/qpack_encoder_stream.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "qpack_instruction"
+path = "fuzz_targets/qpack_instruction.rs"
+test = false
+doc = false
+bench = false
+
 [dependencies]
 arbitrary = { workspace = true }
 libfuzzer-sys = { workspace = true, features = ["arbitrary-derive"] }
 rama = { path = "../", features = ["dns", "ua", "http", "net", "html", "icap"] }
+rama-core = { path = "../rama-core" }
+rama-http-types = { path = "../rama-http-types" }
 rama-js = { path = "../rama-js" }
 rama-quic = { path = "../rama-quic", features = ["arbitrary", "ring"] }
 rama-quic-proto = { path = "../rama-quic-proto", features = ["arbitrary"] }

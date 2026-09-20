@@ -666,6 +666,13 @@ impl From<status::InvalidStatusCode> for DecoderError {
     }
 }
 
+impl From<super::super::ext::InvalidProtocol> for DecoderError {
+    fn from(_: super::super::ext::InvalidProtocol) -> Self {
+        // an invalid `:protocol` value is a malformed pseudo-header
+        Self::InvalidPseudoheader
+    }
+}
+
 impl From<DecoderError> for frame::Error {
     fn from(src: DecoderError) -> Self {
         Self::Hpack(src)

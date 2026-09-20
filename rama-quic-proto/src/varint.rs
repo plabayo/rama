@@ -233,3 +233,226 @@ impl Codec for VarInt {
         }
     }
 }
+
+/// Incremental, fragmentation-safe decoder for a single QUIC variable-length integer.
+///
+/// [`VarInt`]'s [`Codec::decode`](crate::coding::Codec::decode) consumes the leading byte before it
+/// can report that a multi-byte integer was truncated, so retrying it on input delivered in
+/// arbitrary chunks — an HTTP/3 stream, for instance — silently loses framing. This decoder retains
+/// partial state across calls instead: feed it whatever bytes are currently available and it
+/// consumes only the bytes belonging to the integer, returning [`None`] when it needs more. It
+/// never consumes a byte it cannot account for, so the same decoder can be driven from
+/// non-contiguous buffers. After it returns [`Some`], it resets and is ready for the next integer.
+#[derive(Debug, Clone)]
+pub struct VarIntDecoder {
+    buf: [u8; 8],
+    /// Total bytes the encoding occupies, known once the first byte is read (`0` before that).
+    len: u8,
+    /// Bytes read into `buf` so far.
+    filled: u8,
+}
+
+impl Default for VarIntDecoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl VarIntDecoder {
+    /// Create a decoder with no buffered state.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            buf: [0; 8],
+            len: 0,
+            filled: 0,
+        }
+    }
+
+    /// Whether bytes of an in-progress integer are buffered.
+    ///
+    /// A caller that reaches end of input while this is `true` holds a truncated integer and should
+    /// treat it as a framing error rather than a clean end.
+    #[must_use]
+    pub const fn in_progress(&self) -> bool {
+        self.filled > 0
+    }
+
+    /// Feed the currently available bytes.
+    ///
+    /// Consumes only the bytes belonging to the integer being decoded. Returns `Some(value)` once a
+    /// complete integer has been read (resetting for reuse), or `None` if more input is required, in
+    /// which case the buffered progress is retained for the next call.
+    pub fn decode<B: Buf>(&mut self, r: &mut B) -> Option<VarInt> {
+        if self.filled == 0 {
+            if !r.has_remaining() {
+                return None;
+            }
+            let first = r.get_u8();
+            // tag 0b00/01/10/11 -> 1/2/4/8 encoded bytes
+            self.len = 1 << (first >> 6);
+            self.buf[0] = first & 0b0011_1111;
+            self.filled = 1;
+        }
+        while self.filled < self.len {
+            if !r.has_remaining() {
+                return None;
+            }
+            let start = usize::from(self.filled);
+            let take = usize::min(usize::from(self.len - self.filled), r.remaining());
+            r.copy_to_slice(&mut self.buf[start..start + take]);
+            self.filled += take as u8;
+        }
+        let value = match self.len {
+            1 => u64::from(self.buf[0]),
+            2 => u64::from(u16::from_be_bytes([self.buf[0], self.buf[1]])),
+            4 => u64::from(u32::from_be_bytes([
+                self.buf[0],
+                self.buf[1],
+                self.buf[2],
+                self.buf[3],
+            ])),
+            // `len` is one of 1/2/4/8 by construction; 8 is the only remaining case.
+            _ => u64::from_be_bytes(self.buf),
+        };
+        self.reset();
+        // SAFETY: the top two bits of `buf[0]` were masked off, so `value < 2^62`.
+        Some(unsafe { VarInt::from_u64_unchecked(value) })
+    }
+
+    fn reset(&mut self) {
+        self.buf = [0; 8];
+        self.len = 0;
+        self.filled = 0;
+    }
+}
+
+#[cfg(test)]
+mod incremental_tests {
+    use super::*;
+    use alloc::vec::Vec;
+
+    /// One value of each encoded width (RFC 9000 §A.1 sample values).
+    fn samples() -> [(u64, usize); 4] {
+        [
+            (37, 1),
+            (15293, 2),
+            (494_878_333, 4),
+            (151_288_809_941_952_652, 8),
+        ]
+    }
+
+    fn encode(v: u64) -> Vec<u8> {
+        let mut out = Vec::new();
+        VarInt::from_u64(v).unwrap().encode(&mut out);
+        out
+    }
+
+    #[test]
+    fn encoded_widths_match_samples() {
+        for (v, width) in samples() {
+            assert_eq!(encode(v).len(), width, "width mismatch for {v}");
+        }
+    }
+
+    #[test]
+    fn decodes_all_at_once() {
+        for (v, _) in samples() {
+            let mut dec = VarIntDecoder::new();
+            let mut buf = &encode(v)[..];
+            assert_eq!(dec.decode(&mut buf).map(VarInt::into_inner), Some(v));
+            assert!(!dec.in_progress());
+        }
+    }
+
+    #[test]
+    fn decodes_byte_by_byte() {
+        for (v, width) in samples() {
+            let enc = encode(v);
+            let mut dec = VarIntDecoder::new();
+            for (i, byte) in enc.iter().enumerate() {
+                let mut chunk = &[*byte][..];
+                let got = dec.decode(&mut chunk);
+                assert!(!chunk.has_remaining(), "byte {i} not consumed for {v}");
+                if i + 1 < width {
+                    assert_eq!(got, None, "premature value at byte {i} for {v}");
+                    assert!(dec.in_progress());
+                } else {
+                    assert_eq!(got.map(VarInt::into_inner), Some(v));
+                    assert!(!dec.in_progress());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn decodes_at_every_split_point() {
+        for (v, width) in samples() {
+            let enc = encode(v);
+            for split in 0..=width {
+                let mut dec = VarIntDecoder::new();
+                let mut head = &enc[..split];
+                let first = dec.decode(&mut head);
+                assert!(!head.has_remaining());
+                if split == width {
+                    assert_eq!(first.map(VarInt::into_inner), Some(v));
+                    continue;
+                }
+                assert_eq!(first, None, "value before full input (split {split}, {v})");
+                let mut tail = &enc[split..];
+                let second = dec.decode(&mut tail);
+                assert!(!tail.has_remaining());
+                assert_eq!(second.map(VarInt::into_inner), Some(v));
+            }
+        }
+    }
+
+    #[test]
+    fn decodes_from_non_contiguous_buffer() {
+        for (v, width) in samples() {
+            if width < 2 {
+                continue;
+            }
+            let enc = encode(v);
+            let (a, b) = enc.split_at(1);
+            let mut chained = Buf::chain(a, b);
+            let mut dec = VarIntDecoder::new();
+            assert_eq!(dec.decode(&mut chained).map(VarInt::into_inner), Some(v));
+        }
+    }
+
+    #[test]
+    fn empty_input_yields_none() {
+        let mut dec = VarIntDecoder::new();
+        let mut empty: &[u8] = &[];
+        assert_eq!(dec.decode(&mut empty), None);
+        assert!(!dec.in_progress());
+    }
+
+    #[test]
+    fn eof_mid_integer_is_observable() {
+        // truncated 8-byte integer: feed all but the last byte
+        let enc = encode(151_288_809_941_952_652);
+        let mut dec = VarIntDecoder::new();
+        let mut partial = &enc[..enc.len() - 1];
+        assert_eq!(dec.decode(&mut partial), None);
+        assert!(
+            dec.in_progress(),
+            "caller can detect a truncated integer at EOF"
+        );
+    }
+
+    #[test]
+    fn reused_for_back_to_back_integers() {
+        let mut stream = Vec::new();
+        for (v, _) in samples() {
+            stream.extend_from_slice(&encode(v));
+        }
+        let mut buf = &stream[..];
+        let mut dec = VarIntDecoder::new();
+        for (v, _) in samples() {
+            assert_eq!(dec.decode(&mut buf).map(VarInt::into_inner), Some(v));
+        }
+        assert!(!buf.has_remaining());
+    }
+}

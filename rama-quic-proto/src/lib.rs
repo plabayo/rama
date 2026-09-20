@@ -38,7 +38,7 @@ pub const MAX_STREAM_COUNT: u64 = 1 << 60;
 pub mod coding;
 
 mod varint;
-pub use varint::{VarInt, VarIntBoundsExceeded};
+pub use varint::{VarInt, VarIntBoundsExceeded, VarIntDecoder};
 
 pub mod version;
 pub use version::Version;

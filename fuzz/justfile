@@ -76,7 +76,20 @@ quic-streams SECONDS="0": (_run "quic_streams" SECONDS "-max_len=4096 -timeout=1
 
 quic SECONDS="0": (quic-packet SECONDS) (quic-frame SECONDS) (quic-params SECONDS) (quic-streamid SECONDS) (quic-streams SECONDS)
 
+# HTTP/3 frame/settings codecs and QPACK instruction/field-section decoding.
+h3-frame SECONDS="0": (_run "h3_frame" SECONDS "-max_len=65536 -timeout=10")
+
+h3-settings SECONDS="0": (_run "h3_settings" SECONDS "-max_len=4096 -timeout=10")
+
+qpack-field-section SECONDS="0": (_run "qpack_field_section" SECONDS "-max_len=65536 -timeout=10")
+
+qpack-encoder-stream SECONDS="0": (_run "qpack_encoder_stream" SECONDS "-max_len=65536 -timeout=10")
+
+qpack-instruction SECONDS="0": (_run "qpack_instruction" SECONDS "-max_len=4096 -timeout=10")
+
+h3 SECONDS="0": (h3-frame SECONDS) (h3-settings SECONDS) (qpack-field-section SECONDS) (qpack-encoder-stream SECONDS) (qpack-instruction SECONDS)
+
 # The pre-release smoke pass: a minute per target.
-all-60s: (ua "60") (h2 "60") (http-headers-x-robots-tag "60") (http-header-map "60") (icap "60") (quic "60")
+all-60s: (ua "60") (h2 "60") (http-headers-x-robots-tag "60") (http-header-map "60") (icap "60") (quic "60") (h3 "60")
 
 full: all-60s h2-main

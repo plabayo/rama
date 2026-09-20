@@ -241,7 +241,8 @@ pub(crate) fn request_connect_protocol<Body>(request: &Request<Body>) -> Option<
     }
     let upgrade = request.headers().typed_get::<Upgrade>()?;
     let token = std::str::from_utf8(upgrade.as_bytes()).ok()?.trim();
-    (!token.is_empty()).then(|| Protocol::from(token))
+    // A non-token upgrade value cannot be a `:protocol`; treat it as a mere advertisement.
+    Protocol::try_from(token).ok()
 }
 
 /// Translate the handshake envelope of an HTTP/1.x request up to HTTP/2 or HTTP/3.
