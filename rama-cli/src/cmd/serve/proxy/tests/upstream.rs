@@ -246,17 +246,22 @@ async fn forward_client_can_tunnel_plaintext_without_leaking_proxy_auth() {
         .expect("proxy task failed");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test]
 async fn forward_http_client_applies_connect_timeout_to_tls_handshake() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let (accepted_tx, accepted_rx) = tokio::sync::oneshot::channel();
     let listener_task = tokio::spawn(async move {
-        let (socket, _) = listener.accept().await.unwrap();
+        let (mut socket, _) = listener.accept().await.unwrap();
+        // Observe TLS bytes, not just TCP acceptance, before advancing the clock.
+        let mut first_byte = [0];
+        socket.read_exact(&mut first_byte).await.unwrap();
+        assert_eq!(first_byte[0], 0x16, "the client started a TLS handshake");
         _ = accepted_tx.send(());
         std::future::pending::<()>().await;
         drop(socket);
     });
+    let connect_timeout = Duration::from_secs(30);
     let client = new_proxy_client(ProxyClientConfig {
         exec: Executor::default(),
         capture: None,
@@ -264,29 +269,36 @@ async fn forward_http_client_applies_connect_timeout_to_tls_handshake() {
         har: HarController::default(),
         portal: None,
         tcp_options: Arc::new(SocketOptions::default_tcp()),
-        connect_timeout: Some(Duration::from_millis(50)),
+        connect_timeout: Some(connect_timeout),
         mitm_policy: MitmPolicy::try_new(&[], &[]).unwrap(),
         upstream: UpstreamProxyConfig::new(None, false, &[]).unwrap(),
         icap: None,
     });
-    let started = tokio::time::Instant::now();
-    let response = timeout(
-        Duration::from_secs(2),
-        client.serve(
-            Request::builder()
-                .uri(format!("https://{address}/"))
-                .body(Body::empty())
-                .unwrap(),
-        ),
-    )
-    .await
-    .expect("forward HTTP client ignored its connect timeout")
-    .unwrap();
-    assert!(response.status().is_server_error());
-    assert!(started.elapsed() >= Duration::from_millis(25));
-    timeout(Duration::from_secs(1), accepted_rx)
+    let request_task = tokio::spawn(async move {
+        client
+            .serve(
+                Request::builder()
+                    .uri(format!("https://{address}/"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+    });
+    // Real socket readiness is independent of Tokio's clock. Complete that setup
+    // before pausing time, so auto-advance cannot outrun the TCP/TLS exchange.
+    timeout(Duration::from_secs(10), accepted_rx)
         .await
         .expect("client did not reach the stalled TLS peer")
         .unwrap();
+    assert!(!request_task.is_finished());
+    tokio::time::pause();
+    tokio::time::advance(connect_timeout).await;
+    let response = timeout(Duration::from_secs(1), request_task)
+        .await
+        .expect("forward HTTP client ignored its connect timeout")
+        .expect("client task failed")
+        .unwrap();
+    assert!(response.status().is_server_error());
     listener_task.abort();
+    assert!(listener_task.await.unwrap_err().is_cancelled());
 }

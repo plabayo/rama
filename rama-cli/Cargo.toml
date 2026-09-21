@@ -79,6 +79,7 @@ windows-sys = { workspace = true, features = [
 
 [dev-dependencies]
 rama = { path = "..", features = ["test-utils"] }
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true
