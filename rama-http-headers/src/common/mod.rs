@@ -24,6 +24,7 @@ pub use self::access_control_request_private_network::AccessControlRequestPrivat
 pub use self::age::Age;
 pub use self::allow::Allow;
 pub use self::alt_svc::{AltSvc, AlternativeService};
+pub use self::alt_used::AltUsed;
 pub use self::authorization::Authorization;
 pub use self::cache_control::CacheControl;
 pub use self::connection::Connection;
@@ -66,6 +67,7 @@ pub use self::permissions_policy::{
     AllowlistSource, PermissionsPolicy, PermissionsPolicyDirective, PermissionsPolicyDirectiveName,
 };
 pub use self::pragma::Pragma;
+pub use self::priority::Priority;
 //pub use self::prefer::{Prefer, Preference};
 //pub use self::preference_applied::PreferenceApplied;
 pub use self::proxy_authorization::ProxyAuthorization;
@@ -166,6 +168,7 @@ mod access_control_request_private_network;
 mod age;
 mod allow;
 mod alt_svc;
+mod alt_used;
 pub mod authorization;
 mod cache_control;
 mod connection;
@@ -200,6 +203,7 @@ mod location;
 mod origin;
 mod permissions_policy;
 mod pragma;
+mod priority;
 //mod prefer;
 //mod preference_applied;
 mod proxy_authorization;
@@ -224,6 +228,3 @@ mod vary;
 //mod warning;
 mod x_content_type_options;
 mod x_frame_options;
-
-mod priority;
-pub use priority::Priority;

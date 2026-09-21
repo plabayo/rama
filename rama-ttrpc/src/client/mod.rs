@@ -163,7 +163,7 @@ impl Client {
             tasks.spawn(async move {
                 let mut tx = tx;
                 let work = f(res, stream);
-                tokio::pin!(work);
+                let mut work = std::pin::pin!(work);
                 // If the caller drops the returned handle (dropping `rx`), abort the work
                 // instead of running it against a nonterminating peer forever. ttRPC has no
                 // cancellation frame, but this at least frees the local task and stream id.

@@ -17,7 +17,12 @@ use rama_tls::{
 };
 use rama_udp::{DatagramCapabilities, DatagramError, DatagramSender, DatagramSocket};
 use std::collections::VecDeque;
-use std::{net::IpAddr, num::NonZeroUsize, sync::atomic::AtomicBool, task::Wake};
+use std::{
+    net::{IpAddr, Ipv4Addr},
+    num::NonZeroUsize,
+    sync::atomic::AtomicBool,
+    task::Wake,
+};
 
 pub(super) fn configs() -> (ClientConfig, ServerConfig) {
     let auth = ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).unwrap();
@@ -42,7 +47,8 @@ pub(super) fn configs() -> (ClientConfig, ServerConfig) {
 }
 
 fn endpoint(config: Option<ServerConfig>, executor: Executor, budget: Duration) -> Endpoint {
-    let socket = Socket::from_std(std::net::UdpSocket::bind("127.0.0.1:0").unwrap()).unwrap();
+    let socket =
+        Socket::from_std(std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap()).unwrap();
     Endpoint::new_with_advertised(
         EndpointConfig::try_with_rand_key().unwrap(),
         config,
@@ -55,7 +61,8 @@ fn endpoint(config: Option<ServerConfig>, executor: Executor, budget: Duration) 
 }
 
 fn deadline_endpoint(config: Option<ServerConfig>, timeout: Duration) -> Endpoint {
-    let socket = Socket::from_std(std::net::UdpSocket::bind("127.0.0.1:0").unwrap()).unwrap();
+    let socket =
+        Socket::from_std(std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap()).unwrap();
     let mut endpoint_config = EndpointConfig::try_with_rand_key().unwrap();
     endpoint_config.handshake_timeout(timeout).unwrap();
     Endpoint::new_with_advertised(
@@ -104,7 +111,7 @@ pub(super) fn endpoint_with(
 }
 
 fn loopback_socket() -> Socket {
-    Socket::from_std(std::net::UdpSocket::bind("127.0.0.1:0").unwrap()).unwrap()
+    Socket::from_std(std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap()).unwrap()
 }
 
 /// The receive budget of the endpoint's only connection.
@@ -247,6 +254,7 @@ impl rama_net::stream::Socket for FaultySocket {
     fn local_addr(&self) -> io::Result<SocketAddress> {
         self.inner.local_addr()
     }
+
     fn peer_addr(&self) -> io::Result<SocketAddress> {
         self.inner.peer_addr()
     }
@@ -265,6 +273,7 @@ impl DatagramSocket for FaultySocket {
             probe: self.probe.clone(),
         }
     }
+
     fn poll_recv(
         &mut self,
         cx: &mut Context<'_>,
@@ -285,6 +294,7 @@ impl DatagramSocket for FaultySocket {
         }
         result
     }
+
     fn capabilities(&self) -> DatagramCapabilities {
         let mut caps = self.inner.capabilities();
         if self.single_segment {
@@ -349,6 +359,7 @@ impl DatagramSender for FaultySender {
             }
         }
     }
+
     fn capabilities(&self) -> DatagramCapabilities {
         let mut caps = self.inner.capabilities();
         if self.single_segment {
@@ -367,7 +378,7 @@ fn faulty_endpoint_with_threshold(
     faults: Arc<Mutex<VecDeque<Fault>>>,
     max_payload: Arc<AtomicUsize>,
 ) -> Endpoint {
-    let std_socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let std_socket = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
     std_socket.set_nonblocking(true).unwrap();
     let inner = rama_udp::UdpPacketSocket::from_socket(
         tokio::net::UdpSocket::from_std(std_socket).unwrap(),
@@ -409,7 +420,7 @@ pub(super) fn breakable_socket(
     Arc<Mutex<Option<RecvFault>>>,
     Arc<AtomicUsize>,
 ) {
-    let std_socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let std_socket = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
     std_socket.set_nonblocking(true).unwrap();
     let inner = rama_udp::UdpPacketSocket::from_socket(
         tokio::net::UdpSocket::from_std(std_socket).unwrap(),
@@ -580,7 +591,7 @@ pub(super) async fn wait_for_with(
 
 /// A real loopback endpoint whose socket counts sent datagrams and sends one segment at a time.
 fn counting_endpoint(server: Option<ServerConfig>, sent: Arc<AtomicUsize>) -> Endpoint {
-    let std_socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let std_socket = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
     std_socket.set_nonblocking(true).unwrap();
     let inner = rama_udp::UdpPacketSocket::from_socket(
         tokio::net::UdpSocket::from_std(std_socket).unwrap(),
@@ -736,7 +747,7 @@ async fn handshake_deadline_runs_without_polling_connecting() {
     let mut transport = crate::TransportConfig::default();
     transport.maybe_set_max_idle_timeout(None);
     client_config.set_transport_config(Arc::new(transport));
-    let blackhole = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let blackhole = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
     let endpoint = deadline_endpoint(None, Duration::from_millis(100));
     let connecting = endpoint
         .connect_with(client_config, blackhole.local_addr().unwrap(), "localhost")
@@ -849,7 +860,8 @@ async fn invalid_handshake_deadlines_fail_before_spawning() {
         .expect_err("a zero handshake timeout is refused");
     for duration in [Duration::ZERO, Duration::MAX] {
         config.handshake_timeout = duration;
-        let socket = Socket::from_std(std::net::UdpSocket::bind("127.0.0.1:0").unwrap()).unwrap();
+        let socket =
+            Socket::from_std(std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap()).unwrap();
         let error = Endpoint::new_with_advertised(
             config.clone(),
             None,
@@ -913,7 +925,7 @@ async fn forced_shutdown_joins_an_unpolled_connection_attempt() {
     let mut transport = crate::TransportConfig::default();
     transport.maybe_set_max_idle_timeout(None);
     client_config.set_transport_config(Arc::new(transport));
-    let blackhole = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let blackhole = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
     let endpoint = endpoint(None, Executor::new(), Duration::from_millis(1));
     let addr = endpoint.local_addr().unwrap();
     let connecting = endpoint
@@ -2039,7 +2051,7 @@ async fn refused_stateless_response_leaves_the_endpoint_serving_others() {
     let server = faulty_endpoint(Some(server_config), faults.clone());
     let address = server.local_addr().unwrap();
     // A long header with an unknown version elicits a Version Negotiation response.
-    let probe = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let probe = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
     probe
         .send_to(&super::tests::version_negotiation_probe(), address)
         .unwrap();
@@ -2516,7 +2528,8 @@ async fn queued_admission_deadline_does_not_busy_poll_and_expires_on_time() {
     endpoint_config
         .handshake_timeout(handshake_timeout)
         .unwrap();
-    let socket = Socket::from_std(std::net::UdpSocket::bind("127.0.0.1:0").unwrap()).unwrap();
+    let socket =
+        Socket::from_std(std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap()).unwrap();
     let engine = proto::Endpoint::new(
         Arc::new(endpoint_config),
         Some(Arc::new(server_config)),
@@ -2770,7 +2783,7 @@ async fn path_size_decrease_after_a_larger_mtu_was_learned() {
 #[tokio::test]
 async fn a_path_validation_probe_is_a_dedicated_packet_padded_to_the_smallest_allowed_datagram() {
     let (mut client_config, mut server_config) = configs();
-    let silent = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let silent = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
     silent.set_nonblocking(true).unwrap();
     let preferred = match silent.local_addr().unwrap() {
         SocketAddr::V4(addr) => addr,
@@ -3293,7 +3306,8 @@ async fn receive_queue_limits_accept_the_exact_boundary() {
     let endpoint_limits = ReceiveQueueLimits::new(1, payload + INCOMING_OVERHEAD).unwrap();
     let mut config = EndpointConfig::try_with_rand_key().unwrap();
     config.set_receive_queue_limits(connection, endpoint_limits);
-    let socket = Socket::from_std(std::net::UdpSocket::bind("127.0.0.1:0").unwrap()).unwrap();
+    let socket =
+        Socket::from_std(std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap()).unwrap();
     let endpoint = Endpoint::new_with_advertised(
         config,
         None,
@@ -3309,7 +3323,8 @@ async fn receive_queue_limits_accept_the_exact_boundary() {
         ReceiveQueueLimits::new(1, payload + PACKET_OVERHEAD - 1).unwrap(),
         endpoint_limits,
     );
-    let socket = Socket::from_std(std::net::UdpSocket::bind("127.0.0.1:0").unwrap()).unwrap();
+    let socket =
+        Socket::from_std(std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap()).unwrap();
     Endpoint::new_with_advertised(
         config,
         None,
@@ -3324,7 +3339,8 @@ async fn receive_queue_limits_accept_the_exact_boundary() {
     let build = |connection: ReceiveQueueLimits, endpoint_limits: ReceiveQueueLimits| {
         let mut config = EndpointConfig::try_with_rand_key().unwrap();
         config.set_receive_queue_limits(connection, endpoint_limits);
-        let socket = Socket::from_std(std::net::UdpSocket::bind("127.0.0.1:0").unwrap()).unwrap();
+        let socket =
+            Socket::from_std(std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap()).unwrap();
         Endpoint::new_with_advertised(
             config,
             None,
@@ -4185,6 +4201,7 @@ async fn an_attempt_admitted_before_a_receive_fault_in_the_same_pass_is_released
     assert_ne!(server.shutdown().await, ShutdownOutcome::DriverFailed);
     client.shutdown().await;
 }
+
 /// One datagram handed to the network by a [`SegmentingSocket`], with its metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct SentDatagram {
@@ -4301,6 +4318,7 @@ impl rama_net::stream::Socket for SegmentingSocket {
     fn local_addr(&self) -> io::Result<SocketAddress> {
         self.inner.local_addr()
     }
+
     fn peer_addr(&self) -> io::Result<SocketAddress> {
         self.inner.peer_addr()
     }
@@ -4315,6 +4333,7 @@ impl DatagramSocket for SegmentingSocket {
             segments: self.segments.clone(),
         }
     }
+
     fn poll_recv(
         &mut self,
         cx: &mut Context<'_>,
@@ -4342,6 +4361,7 @@ impl DatagramSocket for SegmentingSocket {
         }
         result
     }
+
     fn capabilities(&self) -> DatagramCapabilities {
         self.segments.caps(self.inner.capabilities())
     }
@@ -4472,6 +4492,7 @@ impl<S: DatagramSender> DatagramSender for SegmentingSender<S> {
         }
         result
     }
+
     fn capabilities(&self) -> DatagramCapabilities {
         self.segments.caps(self.inner.capabilities())
     }
@@ -4479,7 +4500,7 @@ impl<S: DatagramSender> DatagramSender for SegmentingSender<S> {
 
 /// A real loopback socket that never offers segmentation and records every datagram it sends.
 pub(super) fn recording_socket() -> (Socket, Arc<Mutex<SegmentLog>>) {
-    let std_socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let std_socket = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
     recording_socket_from(std_socket)
 }
 
@@ -4491,7 +4512,7 @@ fn recording_socket_from(std_socket: std::net::UdpSocket) -> (Socket, Arc<Mutex<
 pub(super) fn segmenting_socket(
     hold_after: usize,
 ) -> (Socket, Arc<Mutex<SegmentLog>>, Arc<Segments>) {
-    let std_socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let std_socket = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
     segmenting_socket_from(std_socket, hold_after)
 }
 
@@ -4513,7 +4534,7 @@ pub(super) fn breakable_segmenting_socket(
     Arc<Segments>,
     Arc<Mutex<Option<RecvFault>>>,
 ) {
-    let std_socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let std_socket = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
     breakable_segmenting_socket_from(std_socket, hold_after)
 }
 
@@ -4735,6 +4756,7 @@ async fn a_partial_segmented_send_completes_on_its_socket_across_repeated_rebind
     drop((c, s));
     tokio::join!(client.shutdown(), server.shutdown());
 }
+
 /// RFC 9000 §10.3.1 ordering: a datagram carrying a connection ID whose stateless reset route the
 /// endpoint has not installed does not reach the socket, and is not discarded. It is sent once the
 /// route is confirmed, and the connection keeps receiving while it waits.
@@ -6127,7 +6149,7 @@ async fn a_migration_switches_to_an_unused_destination_cid_and_a_same_address_re
     let len = cid_a.len();
     assert!(len > 0, "the server issues non-zero-length connection IDs");
 
-    let std_b = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let std_b = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
     let std_b_again = std_b.try_clone().unwrap();
     let (socket_b, log_b) = recording_socket_from(std_b);
     client.rebind_abstract(socket_b).unwrap();
@@ -6311,7 +6333,7 @@ async fn preferring_pair(
     Arc<SendGate>,
 ) {
     let (client_config, mut server_config) = configs();
-    let silent = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let silent = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
     let preferred = match silent.local_addr().unwrap() {
         SocketAddr::V4(addr) => addr,
         SocketAddr::V6(addr) => panic!("expected an IPv4 loopback address, got {addr}"),
@@ -6319,8 +6341,9 @@ async fn preferring_pair(
     server_config.set_preferred_address_v4(preferred);
     let key = HmacSha2::new_256(&[0x55; 32]);
     let key_copy = HmacSha2::new_256(&[0x55; 32]);
-    let server_socket = Socket::from_std(std::net::UdpSocket::bind("127.0.0.1:0").unwrap())
-        .expect("a loopback socket");
+    let server_socket =
+        Socket::from_std(std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap())
+            .expect("a loopback socket");
     let server = Endpoint::new_with_advertised(
         EndpointConfig::new(key),
         Some(server_config),
@@ -6678,7 +6701,7 @@ async fn a_probed_identifier_counts_when_its_datagram_leaves() {
 async fn a_client_probes_a_preferred_address_at_most_three_times() {
     let (client_config, mut server_config) = configs();
     // A real socket that never answers, so every probe is delivered and none is replied to.
-    let silent = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let silent = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
     silent.set_nonblocking(true).unwrap();
     let preferred = match silent.local_addr().unwrap() {
         SocketAddr::V4(addr) => addr,
@@ -6960,37 +6983,40 @@ async fn retained_sockets_are_bounded_across_address_families_while_another_conn
     let server_v4 = Endpoint::bind_server(
         Executor::new(),
         server_config.clone(),
-        "127.0.0.1:0".parse::<std::net::SocketAddr>().unwrap(),
+        SocketAddress::local_ipv4(0),
     )
     .await
     .unwrap();
     let server_v6 = Endpoint::bind_server(
         Executor::new(),
         server_config.clone(),
-        "[::1]:0".parse::<std::net::SocketAddr>().unwrap(),
+        SocketAddress::local_ipv6(0),
     )
     .await
     .unwrap();
-    let control_server = Endpoint::bind_server(
-        Executor::new(),
-        server_config,
-        "[::1]:0".parse::<std::net::SocketAddr>().unwrap(),
-    )
-    .await
-    .unwrap();
+    let control_server =
+        Endpoint::bind_server(Executor::new(), server_config, SocketAddress::local_ipv6(0))
+            .await
+            .unwrap();
     let mut pending = Vec::new();
     let mut held_logs = Vec::new();
     let mut client = None;
     for index in 0..MAX_RETAINED_SOCKETS {
         let ipv6 = index % 2 == 1;
-        let bind = if ipv6 { "[::1]:0" } else { "127.0.0.1:0" };
+        let bind = if ipv6 {
+            SocketAddress::local_ipv6(0)
+        } else {
+            SocketAddress::local_ipv4(0)
+        };
         let destination = if ipv6 {
             server_v6.local_addr().unwrap()
         } else {
             server_v4.local_addr().unwrap()
         };
-        let (socket, log, _) =
-            segmenting_socket_from(std::net::UdpSocket::bind(bind).unwrap(), usize::MAX);
+        let (socket, log, _) = segmenting_socket_from(
+            std::net::UdpSocket::bind(bind.into_std()).unwrap(),
+            usize::MAX,
+        );
         block_segments_for(&log, SocketAddress::from(destination));
         if let Some(endpoint) = &client {
             let endpoint: &Endpoint = endpoint;

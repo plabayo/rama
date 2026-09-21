@@ -261,8 +261,20 @@ impl HttpServer<rama_http_core::h3::connection::Config> {
         &mut self.builder
     }
 
+    /// Turn this server into a service for accepted QUIC connections.
+    pub fn service<S: Clone>(
+        self,
+        service: S,
+    ) -> HttpService<rama_http_core::h3::connection::Config, S> {
+        HttpService {
+            guard: self.exec.guard().cloned(),
+            builder: Arc::new(self.builder),
+            service,
+        }
+    }
+
     /// Serve a QUIC connection through the ordinary Rama HTTP service interface.
-    pub async fn serve_quic<S, Response>(
+    pub async fn serve<S, Response>(
         &self,
         connection: rama_core::ServiceInput<rama_quic::Connection>,
         service: S,
@@ -276,6 +288,29 @@ impl HttpServer<rama_http_core::h3::connection::Config> {
             self.builder.clone(),
             self.exec.guard().cloned(),
             service,
+        )
+        .await
+    }
+}
+
+impl<S, Response> Service<rama_core::ServiceInput<rama_quic::Connection>>
+    for HttpService<rama_http_core::h3::connection::Config, S>
+where
+    S: Service<Request, Output = Response, Error = Infallible> + Clone,
+    Response: IntoResponse + Send + 'static,
+{
+    type Output = ();
+    type Error = BoxError;
+
+    async fn serve(
+        &self,
+        connection: rama_core::ServiceInput<rama_quic::Connection>,
+    ) -> HttpServeResult {
+        crate::server::h3::serve(
+            connection,
+            self.builder.as_ref().clone(),
+            self.guard.clone(),
+            self.service.clone(),
         )
         .await
     }

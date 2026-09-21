@@ -82,7 +82,7 @@ pub use self::map::{
 pub use self::name::{
     HeaderName, InvalidHeaderName, LowercaseHeaderName, OriginalHeaderName, StandardHeader,
 };
-pub use self::value::{HeaderValue, InvalidHeaderValue, ToStrError};
+pub use self::value::{HeaderValue, InvalidHeaderValue, ToStrError, is_valid_h2_h3_field_value};
 
 // Use header name constants
 #[rustfmt::skip]
@@ -103,6 +103,7 @@ pub use self::name::{
     AGE,
     ALLOW,
     ALT_SVC,
+    ALT_USED,
     AUTHENTICATION_INFO,
     AUTHORIZATION,
     CACHE_CONTROL,
@@ -138,6 +139,7 @@ pub use self::name::{
     MAX_FORWARDS,
     ORIGIN,
     PRAGMA,
+    PRIORITY,
     PROXY_AUTHENTICATE,
     PROXY_AUTHENTICATION_INFO,
     PROXY_AUTHORIZATION,

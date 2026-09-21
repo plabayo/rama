@@ -202,7 +202,8 @@ impl PromoteHandle {
         loop {
             let notified = self.inner.completed.notified();
             let shutdown = self.inner.shutdown.notify.notified();
-            tokio::pin!(notified, shutdown);
+            let mut notified = std::pin::pin!(notified);
+            let mut shutdown = std::pin::pin!(shutdown);
             notified.as_mut().enable();
             shutdown.as_mut().enable();
             if let Some(r) = self.inner.result.lock().clone() {

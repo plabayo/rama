@@ -270,9 +270,10 @@ fn native_header_sensitivity_is_preserved() {
     let mut value = rama_http_types::HeaderValue::from_static("secret");
     value.set_sensitive(true);
     let mut enc = Encoder::new(EncoderConfig::default());
-    let bytes = enc
-        .encode(0, [EncodeField::from_header(&name, &value)])
-        .unwrap();
+    let field = EncodeField::from_header(&name, &value);
+    assert!(matches!(field.name, std::borrow::Cow::Borrowed(_)));
+    assert_eq!(field.value.as_ptr(), value.as_bytes().as_ptr());
+    let bytes = enc.encode(0, [field]).unwrap();
     assert_eq!(enc.insert_count(), 0);
     let mut dec = Decoder::new(DecoderConfig::default());
     let fields = dec.decode_field_section(0, bytes).unwrap().unwrap();

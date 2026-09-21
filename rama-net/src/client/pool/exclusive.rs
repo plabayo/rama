@@ -70,6 +70,7 @@ struct PooledConnection<C, ID> {
     id: ID,
     pool_slot: PoolSlot,
     last_used: Instant,
+    reusable: bool,
 }
 
 impl<C: ExtensionsRef, ID> ExtensionsRef for PooledConnection<C, ID> {
@@ -116,7 +117,7 @@ impl<C, ID> Clone for ConnReturner<C, ID> {
 
 impl<C, ID> ConnReturner<C, ID> {
     fn return_conn(&self, mut conn: PooledConnection<C, ID>) {
-        if self.retired.load(Ordering::Acquire) {
+        if !conn.reusable || self.retired.load(Ordering::Acquire) {
             return;
         }
         if let Some(storage) = self.weak_storage.upgrade() {
@@ -313,6 +314,9 @@ where
         }
 
         let mut get_conn = || loop {
+            if !id.is_reusable() {
+                return None;
+            }
             let idx = match self.reuse_strategy {
                 ReuseStrategy::FiFo => storage.iter().position(|stored| &stored.id == id)?,
                 ReuseStrategy::RoundRobin => storage.iter().rposition(|stored| &stored.id == id)?,
@@ -406,6 +410,7 @@ where
             active_slot,
             returner: self.returner.clone(),
             pooled_conn: ManuallyDrop::new(PooledConnection {
+                reusable: id.is_reusable(),
                 id,
                 conn,
                 pool_slot,
@@ -418,6 +423,7 @@ where
         }
     }
 }
+
 /// Free a discarded connection's pool slot now and park the connection itself
 /// for dropping outside the storage lock.
 fn park<C, ID>(pooled_conn: PooledConnection<C, ID>, doomed: &mut Vec<C>) {
@@ -775,6 +781,26 @@ mod tests {
     impl ConnID for () {}
 
     #[tokio::test]
+    async fn non_reusable_policy_drops_a_successful_connection() {
+        #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+        struct Fresh;
+        impl ConnID for Fresh {
+            fn is_reusable(&self) -> bool {
+                false
+            }
+        }
+        let pool: LruDropPool<InnerService, Fresh> = LruDropPool::try_new(1, 1).unwrap();
+        let ConnectionResult::CreatePermit(permit) = pool.get_conn(&Fresh).await.unwrap() else {
+            panic!("non-reusable policy must acquire a fresh connection");
+        };
+        let connection = pool.create(Fresh, InnerService::default(), permit).await;
+        connection.serve(false).await.unwrap();
+        drop(connection);
+        assert!(pool.storage.lock().is_empty());
+        assert_eq!(pool.total_slots.available_permits(), 1);
+    }
+
+    #[tokio::test]
     async fn test_should_reuse_connections() {
         let pool = LruDropPool::try_new(5, 10)
             .unwrap()
@@ -1056,7 +1082,7 @@ mod tests {
             conn.conn.serve((true, Duration::from_millis(10))),
             conn.conn.serve((false, Duration::from_millis(20))),
         );
-        assert!(failed.is_err());
+        failed.unwrap_err();
         assert_ok!(succeeded);
         drop(conn);
 

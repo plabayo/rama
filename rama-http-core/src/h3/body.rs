@@ -34,6 +34,7 @@ pub(crate) struct Body {
     // Holds the request's admission permit until both body directions finish.
     _permit: Option<Arc<tokio::sync::OwnedSemaphorePermit>>,
 }
+
 impl Body {
     pub(crate) fn new(
         reader: Reader<rama_quic::RecvStream>,
@@ -85,7 +86,7 @@ impl Body {
             self.trailers = None;
             return Poll::Ready(Some(Ok(Frame::trailers(fields))));
         }
-        for _ in 0..32 {
+        for _ in 0..super::cooperative::OPERATIONS_PER_QUANTUM {
             match ready!(self.reader.poll_event(cx))? {
                 Some(FrameEvent::DataHeader { len }) => {
                     if let Some(remaining) = &mut self.remaining {
@@ -136,6 +137,7 @@ impl Body {
         Poll::Pending
     }
 }
+
 impl StreamingBody for Body {
     type Data = Bytes;
     type Error = crate::Error;
@@ -156,9 +158,11 @@ impl StreamingBody for Body {
             result => result.map(|frame| frame.map(|frame| frame.map_err(crate::Error::new_body))),
         }
     }
+
     fn is_end_stream(&self) -> bool {
         self.failed || self.reader.phase == Phase::Finished
     }
+
     fn size_hint(&self) -> SizeHint {
         if self.is_end_stream() {
             SizeHint::with_exact(0)
@@ -170,6 +174,30 @@ impl StreamingBody for Body {
 }
 
 pub(crate) async fn send<B, S>(
+    writer: Writer<S>,
+    body: B,
+    shared: Arc<Shared>,
+    id: u64,
+    remaining: Option<u64>,
+) -> Result<(), Error>
+where
+    B: StreamingBody + Unpin,
+    B::Error: Into<BoxError>,
+    S: SendStream,
+{
+    let stopped = writer.stopped();
+    // An idle application body must not retain a request's admission permit
+    // after STOP_SENDING or connection failure. Watching write readiness alone
+    // misses cancellation while awaiting the next application frame.
+    tokio::select! {
+        biased;
+        result = send_inner(writer, body, shared.clone(), id, remaining) => result,
+        error = stopped => Err(error),
+        error = shared.failed() => Err(error),
+    }
+}
+
+async fn send_inner<B, S>(
     mut writer: Writer<S>,
     mut body: B,
     shared: Arc<Shared>,
@@ -183,7 +211,7 @@ where
 {
     flush(&shared, id, &mut writer).await?;
     let mut trailers_seen = false;
-    let mut work = 0usize;
+    let mut budget = super::cooperative::Budget::default();
     while let Some(frame) = std::future::poll_fn(|cx| {
         Pin::new(&mut body).poll_frame(cx).map(|frame| {
             frame.map(|frame| {
@@ -195,11 +223,7 @@ where
     })
     .await
     {
-        work += 1;
-        if work >= 32 {
-            tokio::task::yield_now().await;
-            work = 0;
-        }
+        budget.consume().await;
         let frame = frame?;
         match frame.into_data() {
             Ok(mut data) => {
@@ -220,11 +244,7 @@ where
                 }
                 while data.has_remaining() {
                     let len = data.remaining().min(shared.config.read_chunk_size);
-                    work += 1;
-                    if work >= 32 {
-                        tokio::task::yield_now().await;
-                        work = 0;
-                    }
+                    budget.consume().await;
                     writer.queue(FrameType::DATA, data.copy_to_bytes(len))?;
                     flush(&shared, id, &mut writer).await?;
                 }
@@ -269,7 +289,7 @@ async fn flush<S: SendStream>(
 ) -> Result<(), Error> {
     std::future::poll_fn(|cx| {
         let priority = ready!(shared.schedule.lock().poll_turn(id, cx));
-        writer.priority(i32::from(7 - priority.urgency()))?;
+        writer.priority(super::priority::transport_priority(priority))?;
         let result = writer.poll_flush(cx);
         shared.schedule.lock().release(id);
         result

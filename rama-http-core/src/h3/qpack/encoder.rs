@@ -1,6 +1,9 @@
 //! Connection-scoped QPACK encoding, bounded reference tracking and decoder-stream feedback.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::{
+    borrow::Cow,
+    collections::{BTreeMap, VecDeque},
+};
 
 use rama_core::bytes::{Bytes, BytesMut};
 use rama_http_types::proto::h3::qpack::prefix::{StringEncoder, encode_int, int_encoded_len};
@@ -24,15 +27,20 @@ pub struct EncodeField<N, V> {
     pub never_index: bool,
 }
 
-impl<'a> EncodeField<&'a [u8], &'a [u8]> {
-    /// Borrow a Rama header while preserving [`rama_http_types::HeaderValue::is_sensitive`].
+impl<'a> EncodeField<Cow<'a, [u8]>, &'a [u8]> {
+    /// Encode a lowercase name and preserve [`rama_http_types::HeaderValue::is_sensitive`].
+    /// Values and already-lowercase names remain borrowed. Mixed-case custom names
+    /// are normalized only for the wire, without changing the original header map.
     #[must_use]
     pub fn from_header(
         name: &'a rama_http_types::HeaderName,
         value: &'a rama_http_types::HeaderValue,
     ) -> Self {
         Self {
-            name: name.as_str().as_bytes(),
+            name: match name.as_lower_str() {
+                Cow::Borrowed(name) => Cow::Borrowed(name.as_bytes()),
+                Cow::Owned(name) => Cow::Owned(name.into_bytes()),
+            },
             value: value.as_bytes(),
             never_index: value.is_sensitive(),
         }

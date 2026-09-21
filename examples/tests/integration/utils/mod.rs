@@ -86,9 +86,15 @@ use rama::{
 
 #[cfg(all(
     feature = "http-full",
-    any(all(feature = "rustls", feature = "aws-lc"), feature = "boring")
+    any(
+        all(feature = "rustls", any(feature = "aws-lc", feature = "ring")),
+        feature = "boring"
+    )
 ))]
 use rama::rt::Executor;
+
+#[cfg(all(feature = "http-full", feature = "rustls", not(feature = "boring")))]
+use rama::tls::client::TlsClientConfig;
 
 #[cfg(feature = "http-full")]
 pub(super) type ClientService = BoxService<Request, Response, BoxError>;
@@ -379,6 +385,10 @@ impl ExampleRunner {
     ) -> Self {
         // QUIC tests must execute the binary built with this test's selected backend.
         let mut command = match example_name.as_ref() {
+            #[cfg(feature = "http-full")]
+            "http3_client_server" => {
+                std::process::Command::new(env!("CARGO_BIN_EXE_http3_client_server"))
+            }
             #[cfg(all(feature = "quic", feature = "tls"))]
             "quic_terminating_relay" => {
                 std::process::Command::new(env!("CARGO_BIN_EXE_quic_terminating_relay"))
@@ -461,7 +471,11 @@ impl ExampleRunner {
                     .build_client()
             };
 
-            #[cfg(all(feature = "rustls", feature = "aws-lc", not(feature = "boring")))]
+            #[cfg(all(
+                feature = "rustls",
+                any(feature = "aws-lc", feature = "ring"),
+                not(feature = "boring")
+            ))]
             let inner_client = {
                 let tls_config = TlsClientConfig::default_http()
                     .with_server_verify(rama::tls::client::ServerVerifyMode::Disable)

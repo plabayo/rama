@@ -31,11 +31,7 @@ impl TryFrom<RustlsTlsConnectorConfig<'_>> for TlsConnectorData {
 
     fn try_from(value: RustlsTlsConnectorConfig<'_>) -> Result<Self, Self::Error> {
         Ok(Self {
-            verification_enabled: value.verifier.is_none()
-                && value.modify.is_none()
-                && value
-                    .verify
-                    .is_none_or(|verify| verify.0 != ServerVerifyMode::Disable),
+            verification_enabled: value.authenticates_server(),
             server_name: value.server_name.map(|name| name.0.clone()),
             store_server_certificate_chain: value.store_chain.is_some_and(|flag| flag.0),
             client_config: Arc::new(value.try_into()?),

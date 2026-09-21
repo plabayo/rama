@@ -353,8 +353,7 @@ async fn shutdown_drains_after_its_waiter_is_cancelled_and_rejects_new_builders(
     entered.await.unwrap();
     emit(&recorder, 1);
     {
-        let shutdown = recorder.shutdown();
-        tokio::pin!(shutdown);
+        let mut shutdown = std::pin::pin!(recorder.shutdown());
         tokio::select! {
             biased;
             result = &mut shutdown => panic!("shutdown completed while output blocked: {result:?}"),
@@ -395,8 +394,7 @@ async fn flush_waits_for_output_and_survives_cancellation_of_another_flush_waite
     emit(&recorder, 0);
     entered.await.unwrap();
     {
-        let flush = recorder.flush();
-        tokio::pin!(flush);
+        let mut flush = std::pin::pin!(recorder.flush());
         tokio::select! {
             biased;
             result = &mut flush => panic!("flush completed before event output: {result:?}"),
@@ -455,7 +453,7 @@ async fn output_errors_and_panics_end_admission_and_preserve_completion() {
             assert!(!recorder.is_enabled());
             must_skip(&recorder);
             let count = log.lock().calls.len();
-            assert!(recorder.flush().await.is_err());
+            recorder.flush().await.unwrap_err();
             assert_eq!(log.lock().calls.len(), count);
             assert_eq!(recorder.stats().queued_events, 0);
             assert_eq!(recorder.stats().queued_bytes, 0);
@@ -786,7 +784,7 @@ async fn dropping_last_handle_wakes_idle_worker_and_finishes_destination() {
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             if let Some(result) = completion.borrow_and_update().as_ref() {
-                assert!(result.is_ok());
+                result.as_ref().unwrap();
                 break;
             }
             completion.changed().await.unwrap();
@@ -819,8 +817,7 @@ async fn cancelled_shutdown_wakes_after_only_queue_permit_is_released() {
     let permit = recorder.sender.try_reserve().unwrap();
     assert_eq!(recorder.stats().queued_events, 1);
     {
-        let shutdown = recorder.shutdown();
-        tokio::pin!(shutdown);
+        let mut shutdown = std::pin::pin!(recorder.shutdown());
         tokio::select! {
             biased;
             result = &mut shutdown => panic!("shutdown ignored an outstanding reservation: {result:?}"),
@@ -858,8 +855,7 @@ async fn cancelled_dump_waiter_does_not_duplicate_or_retract_submitted_history()
     let control = recorder.connection(ConnectionId::new(&[1]));
     emit(&recorder, 1);
     {
-        let dump = control.dump_recent();
-        tokio::pin!(dump);
+        let mut dump = std::pin::pin!(control.dump_recent());
         tokio::select! {
             biased;
             result = &mut dump => panic!("dump completed while event output blocked: {result:?}"),
@@ -1737,9 +1733,11 @@ impl QlogOutput for DestructorFailureOutput {
     async fn begin(&mut self, _: &TraceInfo) -> io::Result<()> {
         Ok(())
     }
+
     async fn event(&mut self, _: &QlogEventView<'_>) -> io::Result<()> {
         Ok(())
     }
+
     async fn flush(&mut self) -> io::Result<()> {
         Ok(())
     }
@@ -1792,8 +1790,7 @@ async fn flush_waiting_for_queue_capacity_observes_shutdown_completion() {
             .unwrap();
         entered.await.unwrap();
         emit(&recorder, 1);
-        let flush = recorder.flush();
-        tokio::pin!(flush);
+        let mut flush = std::pin::pin!(recorder.flush());
         tokio::select! {
             biased;
             result = &mut flush => panic!("flush must wait for queue capacity: {result:?}"),

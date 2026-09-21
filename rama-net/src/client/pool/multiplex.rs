@@ -216,6 +216,7 @@ where
     ID: Send + Sync + Debug + 'static,
 {
 }
+
 impl<C, ID> NetExtension for MultiplexPool<C, ID>
 where
     C: Send + Sync + 'static,
@@ -421,7 +422,11 @@ where
         permit: OwnedSemaphorePermit,
     ) -> ConnectionResult<MultiplexedConnection<C, ID>, PoolSlot> {
         let mut doomed = Vec::new();
-        let same_id = self.snapshot(&mut self.storage.lock(), id, &mut doomed);
+        let same_id = if id.is_reusable() {
+            self.snapshot(&mut self.storage.lock(), id, &mut doomed)
+        } else {
+            Snapshot::new()
+        };
         drop(doomed);
         if let Some(conn) = select_and_admit(
             &same_id,
@@ -475,7 +480,11 @@ where
             // Only this id's bucket is touched under the lock; swept
             // connections close after it is released.
             let mut doomed = Vec::new();
-            let same_id = self.snapshot(&mut self.storage.lock(), id, &mut doomed);
+            let same_id = if id.is_reusable() {
+                self.snapshot(&mut self.storage.lock(), id, &mut doomed)
+            } else {
+                Snapshot::new()
+            };
             doomed.clear();
 
             // Subscribe to same-id notifications BEFORE the capacity
@@ -598,8 +607,7 @@ where
 
             // Saturated. Register as a waiter, and then re-check. This order is important
             // to make sure we don't miss a notify while our check logic is running
-            let notified = self.notify.notified();
-            tokio::pin!(notified);
+            let mut notified = std::pin::pin!(self.notify.notified());
             notified.as_mut().enable();
             let (mut stream_capacity, mut cap_changes) = match attempt(true) {
                 Ok(result) => return Ok(result),
@@ -662,12 +670,14 @@ where
         });
 
         trace!(id = ?conn.id, "multiplex pool: adding new connection");
-        self.storage
-            .lock()
-            .by_id
-            .entry(conn.id.clone())
-            .or_default()
-            .push(conn.clone());
+        if conn.id.is_reusable() {
+            self.storage
+                .lock()
+                .by_id
+                .entry(conn.id.clone())
+                .or_default()
+                .push(conn.clone());
+        }
 
         // A freshly added connection has spare capacity beyond its establishing
         // handout, so make sure to wake parked waiters.
@@ -740,7 +750,11 @@ mod tests {
 
     #[derive(Clone, Debug, PartialEq, Eq, Hash)]
     struct TestId(u32);
-    impl ConnID for TestId {}
+    impl ConnID for TestId {
+        fn is_reusable(&self) -> bool {
+            self.0 != u32::MAX
+        }
+    }
 
     #[derive(Debug)]
     struct Conn {
@@ -855,6 +869,26 @@ mod tests {
 
     fn created(svc: &MuxConnector) -> usize {
         svc.inner.created.load(Ordering::Relaxed)
+    }
+
+    #[tokio::test]
+    async fn non_reusable_policy_keeps_capacity_without_retaining_connections() {
+        let pool = MultiplexPool::try_new(10, 1).unwrap();
+        let svc = connector(pool.clone());
+        let first = connect(&svc, u32::MAX).await;
+        assert!(pool.storage.lock().by_id.is_empty());
+        let mut waiter = tokio_test::task::spawn(pool.get_conn(&TestId(u32::MAX)));
+        assert!(waiter.poll().is_pending());
+        drop(first);
+        match waiter.poll() {
+            std::task::Poll::Ready(Ok(ConnectionResult::CreatePermit(_))) => {}
+            other => panic!("fresh capacity must be released on drop: {other:?}"),
+        }
+        let second = connect(&svc, u32::MAX).await;
+        assert_eq!(created(&svc), 2);
+        drop(second);
+        assert!(pool.storage.lock().by_id.is_empty());
+        assert_eq!(pool.total_slots.available_permits(), 1);
     }
 
     #[tokio::test]

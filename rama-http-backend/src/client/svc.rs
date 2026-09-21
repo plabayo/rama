@@ -211,7 +211,7 @@ impl<Body> HttpClientService<Body> {
         let draining = sender.closed_or_draining();
         executor.into_spawn_task(async move {
             let driver = driver.run();
-            tokio::pin!(driver);
+            let mut driver = std::pin::pin!(driver);
             tokio::select! {
                 _ = &mut driver => mark_broken(&driver_extensions),
                 _ = draining => {

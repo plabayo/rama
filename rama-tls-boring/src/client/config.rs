@@ -48,6 +48,89 @@ pub struct BoringTlsConnectorConfig<'a> {
     pub max_version: Option<&'a BoringMaxVersion>,
 }
 
+impl BoringTlsConnectorConfig<'_> {
+    /// Whether native settings are present outside the common reusable TLS policy.
+    pub fn has_native_overrides(&self) -> bool {
+        // Name every field so additions require an explicit pooling decision.
+        let Self {
+            // These settings are accounted for by the common TLS pool key.
+            alpn: _,
+            versions: _,
+            verify: _,
+            keylog: _,
+            server_name: _,
+            store_chain: _,
+            client_auth: _,
+            server_cert_pins: _,
+            server_trust: _,
+            cipher_suites,
+            supported_groups,
+            signature_schemes,
+            grease,
+            alps,
+            extension_order,
+            cert_compression,
+            delegated_credentials,
+            record_size_limit,
+            encrypted_client_hello,
+            ocsp_stapling,
+            signed_cert_timestamps,
+            verify_cert_store,
+            min_version,
+            max_version,
+        } = self;
+
+        cipher_suites.is_some()
+            || supported_groups.is_some()
+            || signature_schemes.is_some()
+            || grease.is_some()
+            || alps.is_some()
+            || extension_order.is_some()
+            || cert_compression.is_some()
+            || delegated_credentials.is_some()
+            || record_size_limit.is_some()
+            || encrypted_client_hello.is_some()
+            || ocsp_stapling.is_some()
+            || signed_cert_timestamps.is_some()
+            || verify_cert_store.is_some()
+            || min_version.is_some()
+            || max_version.is_some()
+    }
+
+    /// Whether a successful handshake establishes the configured server identity.
+    pub fn authenticates_server(&self) -> bool {
+        // New fields must also be reviewed for their effect on authentication.
+        let Self {
+            alpn: _,
+            versions: _,
+            verify,
+            keylog: _,
+            server_name: _,
+            store_chain: _,
+            client_auth: _,
+            server_cert_pins: _,
+            server_trust: _,
+            cipher_suites: _,
+            supported_groups: _,
+            signature_schemes: _,
+            grease: _,
+            alps: _,
+            extension_order: _,
+            cert_compression: _,
+            delegated_credentials: _,
+            record_size_limit: _,
+            encrypted_client_hello: _,
+            ocsp_stapling: _,
+            signed_cert_timestamps: _,
+            verify_cert_store: _,
+            min_version: _,
+            max_version: _,
+        } = self;
+
+        verify.is_none_or(|verify| verify.0 != rama_tls::client::ServerVerifyMode::Disable)
+    }
+}
+
 /// Boring-specific setters for [`TlsClientConfig`].
 pub trait BoringClientConfigExt: Sized {
     /// Create a new config that mimics the provided [`ClientHello`]

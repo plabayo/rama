@@ -13,36 +13,6 @@ use rama_net::{
     tls::{ApplicationProtocol, TlsAlpn},
 };
 
-/// Whether a TLS configuration changes connection policy and authenticates its server.
-/// Provider crates refine this common summary for their native overrides.
-#[derive(Debug, Clone, Copy)]
-pub struct TlsClientSecurityPolicy {
-    /// Request overrides must not reuse a connection established under another policy.
-    pub has_overrides: bool,
-    /// Standard verification establishes a server identity after a successful handshake.
-    /// Opaque custom verification hooks must set this to false.
-    pub authenticates_server: bool,
-}
-impl TlsClientSecurityPolicy {
-    /// Inspect the common TLS extension types; provider-specific hooks require refinement.
-    pub fn from_extensions(extensions: &Extensions) -> Self {
-        Self {
-            has_overrides: extensions.contains::<TlsServerName>()
-                || extensions.contains::<TlsServerVerify>()
-                || extensions.contains::<TlsServerCertPins>()
-                || extensions.contains::<TlsServerTrust>()
-                || extensions.contains::<TlsClientAuth>()
-                || extensions.contains::<TlsSupportedVersions>()
-                || extensions.contains::<TlsAlpn>()
-                || extensions.contains::<TlsKeyLog>()
-                || extensions.contains::<TlsStoreServerCertChain>(),
-            authenticates_server: extensions
-                .get_ref::<TlsServerVerify>()
-                .is_none_or(|verify| verify.0 != ServerVerifyMode::Disable),
-        }
-    }
-}
-
 /// A backend agnostic builder for the common TLS configs.
 ///
 /// It holds a set of fine grained config extensions (e.g. [`TlsAlpn`], [`TlsServerVerify`])
@@ -321,7 +291,7 @@ pub struct TlsServerVerify(pub ServerVerifyMode);
 /// names applies globally; otherwise it is considered only when the effective
 /// TLS server name matches. Names are configured explicitly rather than inferred
 /// from certificate contents.
-#[derive(Debug, Clone, Extension)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Extension)]
 #[extension(tags(tls))]
 pub struct TlsServerCertPins(Arc<Vec<TlsServerCertPinSet>>);
 
@@ -333,7 +303,7 @@ pub struct TlsServerCertPins(Arc<Vec<TlsServerCertPinSet>>);
 ///
 /// [`FromStr`]: std::str::FromStr
 /// [`Display`]: std::fmt::Display
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TlsServerCertPin {
     /// SHA-256 of the leaf's `SubjectPublicKeyInfo`: the industry standard.
     ///
@@ -348,7 +318,7 @@ pub enum TlsServerCertPin {
 }
 
 /// One alternative group of server leaf pins, optionally scoped to server names.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TlsServerCertPinSet {
     pins: Vec<TlsServerCertPin>,
     server_names: Vec<Host>,
@@ -730,16 +700,31 @@ mod tests {
         parent.insert(TlsServerVerify(ServerVerifyMode::Disable));
         let request = parent.fork();
         let config = TlsClientConfig::new().with_overrides(&request);
-        assert!(
-            !TlsClientSecurityPolicy::from_extensions(config.as_extensions()).authenticates_server
+        assert_eq!(
+            config
+                .as_extensions()
+                .get_ref::<TlsServerVerify>()
+                .unwrap()
+                .0,
+            ServerVerifyMode::Disable
         );
         let clone = config.clone();
-        assert!(
-            !TlsClientSecurityPolicy::from_extensions(clone.as_extensions()).authenticates_server
+        assert_eq!(
+            clone
+                .as_extensions()
+                .get_ref::<TlsServerVerify>()
+                .unwrap()
+                .0,
+            ServerVerifyMode::Disable
         );
         clone.insert(TlsServerVerify(ServerVerifyMode::Auto));
-        assert!(
-            !TlsClientSecurityPolicy::from_extensions(config.as_extensions()).authenticates_server
+        assert_eq!(
+            config
+                .as_extensions()
+                .get_ref::<TlsServerVerify>()
+                .unwrap()
+                .0,
+            ServerVerifyMode::Disable
         );
     }
 

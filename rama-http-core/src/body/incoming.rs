@@ -28,7 +28,6 @@ pub struct Incoming {
 }
 
 enum Kind {
-    H3(Box<crate::h3::body::Body>),
     Empty,
     Chan {
         content_length: DecodedLength,
@@ -42,6 +41,10 @@ enum Kind {
         ping: ping::Recorder,
         recv: h2::RecvStream,
     },
+    // H2's receive stream is a handle into its connection driver. H3 owns its
+    // frame reader, QUIC stream, and trailer decoding state here. Keep that
+    // larger state off the enum so HTTP/1 and HTTP/2 bodies retain their size.
+    H3(Box<crate::h3::body::Body>),
 }
 
 /// A sender half created through [`Body::channel()`].

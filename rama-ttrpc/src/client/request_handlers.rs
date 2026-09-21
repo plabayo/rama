@@ -298,7 +298,7 @@ async fn handle_client_stream<Input: prost::Message + Default>(
 
     let _guard = CloseGuard(tx);
 
-    tokio::pin!(strm);
+    let mut strm = std::pin::pin!(strm);
     while let Some(data) = strm.next().await {
         tx.data(data).await.map_err(Status::send_error)?;
     }

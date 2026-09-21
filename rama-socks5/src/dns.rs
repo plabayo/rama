@@ -48,7 +48,8 @@ pub(crate) async fn race_resolve_dual(
         .instrument(tracing::trace_span!("dns::ipv4_lookup"));
     let ipv6 = lookup_ipv6(dns_resolver, domain, delay_ipv6)
         .instrument(tracing::trace_span!("dns::ipv6_lookup"));
-    tokio::pin!(ipv4, ipv6);
+    let mut ipv4 = std::pin::pin!(ipv4);
+    let mut ipv6 = std::pin::pin!(ipv6);
 
     let mut ipv4_done = false;
     let mut ipv6_done = false;

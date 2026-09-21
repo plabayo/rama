@@ -116,6 +116,7 @@ pub struct RequestStream {
     writer: Writer<rama_quic::SendStream>,
     permit: Arc<tokio::sync::OwnedSemaphorePermit>,
 }
+
 impl RequestStream {
     /// Decode and validate the request head, returning the common Incoming body.
     pub async fn resolve(
@@ -181,6 +182,7 @@ pub struct SendResponse {
     method: Method,
     _priority: super::priority::Lease,
 }
+
 impl SendResponse {
     async fn flush(&mut self, finish: bool) -> Result<(), Error> {
         let push = self.outgoing_push.as_ref().map(super::push::Lease::id);
@@ -203,7 +205,7 @@ impl SendResponse {
     pub async fn ready_for_push(&self) -> Result<(), Error> {
         loop {
             let changed = self.shared.push_ready.notified();
-            tokio::pin!(changed);
+            let mut changed = std::pin::pin!(changed);
             changed.as_mut().enable();
             if let Some(error) = self.shared.error() {
                 return Err(error);

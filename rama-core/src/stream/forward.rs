@@ -253,7 +253,8 @@ where
     // polled: no `select!` arm below awaits anything of its own.
     let a_to_b = pump(a_stream, b_sink, &progress, "b");
     let b_to_a = pump(b_stream, a_sink, &progress, "a");
-    tokio::pin!(a_to_b, b_to_a);
+    let mut a_to_b = std::pin::pin!(a_to_b);
+    let mut b_to_a = std::pin::pin!(b_to_a);
 
     let mut a_done = false;
     let mut b_done = false;

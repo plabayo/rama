@@ -13,11 +13,9 @@ pub struct TlsOptions {
 }
 
 impl TlsOptions {
-    #[cfg(any(
-        feature = "boring",
-        all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
-    ))]
-    pub(crate) fn resolve_backend(self) -> Result<TlsBackend, TlsConfigError> {
+    /// Resolve the selected provider without constructing a TLS configuration.
+    /// Auto prefers Rustls when its crypto provider is enabled, then BoringSSL.
+    pub fn resolve_backend(self) -> Result<TlsBackend, TlsConfigError> {
         let rustls = cfg!(all(
             feature = "rustls",
             any(feature = "aws-lc", feature = "ring")

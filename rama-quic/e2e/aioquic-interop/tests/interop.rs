@@ -426,7 +426,7 @@ async fn a_setup_command_that_hangs_is_stopped_and_reaped() {
     );
 
     let cancelled = scratch.path().join("cancelled.pid");
-    // Boxed rather than pinned in place: dropping a `tokio::pin!` binding drops the pointer,
+    // Boxed rather than pinned in place: dropping a `std::pin::pin!` binding drops the pointer,
     // not the future, so the child would outlive the cancellation this test is about.
     let mut running = Box::pin(bounded_command(
         a_child_that_sleeps(&cancelled),

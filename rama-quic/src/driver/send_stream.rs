@@ -2,6 +2,7 @@ use std::{
     future::{Future, poll_fn},
     io,
     pin::{Pin, pin},
+    sync::Arc,
     task::{Context, Poll},
 };
 
@@ -10,6 +11,7 @@ use crate::proto::{
 };
 use rama_core::bytes::Bytes;
 use rama_quic_proto::{StreamId, VarInt};
+use tokio::sync::Notify;
 
 use crate::driver::connection::{ConnectionRef, State};
 
@@ -356,6 +358,11 @@ impl SendStream {
     /// For a variety of reasons, the peer may not send acknowledgements immediately upon receiving
     /// data. As such, relying on `stopped` to know when the peer has read a stream to completion
     /// may introduce more latency than using an application-level response of some sort.
+    ///
+    /// # Cancellation
+    ///
+    /// Dropping this future releases its notification registration without
+    /// cancelling other waiters or changing the stream's state.
     pub fn stopped(
         &self,
     ) -> impl Future<Output = Result<Option<VarInt>, StoppedError>> + Send + Sync + 'static {
@@ -363,24 +370,32 @@ impl SendStream {
         let stream = self.stream;
         let is_0rtt = self.is_0rtt;
         async move {
+            let notify = {
+                let mut state = conn.state.lock();
+                if let Some(output) = send_stream_stopped(&mut state, stream, is_0rtt) {
+                    return output;
+                }
+                let registered = state.stopped.entry(stream).or_default();
+                registered.waiters += 1;
+                registered.notify.clone()
+            };
+            let registration = StoppedRegistration {
+                conn,
+                stream,
+                notify,
+            };
             loop {
-                // The `Notify::notified` future needs to be created while the lock is being held,
-                // otherwise a wakeup could be missed if triggered inbetween releasing the lock
-                // and creating the future.
-                // The lock may only be held in a block without `await`s, otherwise the future
-                // becomes `!Send`. `Notify::notified` is lifetime-bound to `Notify`, therefore
-                // we need to declare `notify` outside of the block, and initialize it inside.
-                let notify;
+                // Register before checking state, so an event between that check
+                // and awaiting the notification cannot be lost.
+                let mut notified = pin!(registration.notify.notified());
+                notified.as_mut().enable();
                 {
-                    let mut conn = conn.state.lock();
-                    if let Some(output) = send_stream_stopped(&mut conn, stream, is_0rtt) {
+                    let mut state = registration.conn.state.lock();
+                    if let Some(output) = send_stream_stopped(&mut state, stream, is_0rtt) {
                         return output;
                     }
-
-                    notify = conn.stopped.entry(stream).or_default().clone();
-                    notify.notified()
                 }
-                .await
+                notified.await;
             }
         }
     }
@@ -403,6 +418,38 @@ impl SendStream {
         buf: &[u8],
     ) -> Poll<Result<usize, WriteError>> {
         pin!(self.get_mut().write(buf)).as_mut().poll(cx)
+    }
+}
+
+/// Registered observers of one send stream. The connection-state lock protects
+/// the waiter count, including cancellation on other threads.
+#[derive(Default)]
+pub(crate) struct StoppedNotify {
+    pub(crate) notify: Arc<Notify>,
+    waiters: usize,
+}
+
+/// One independently cancellable waiter. Removing the last waiter releases its
+/// registry entry even if a locally reset stream never produces a peer
+/// STOP_SENDING or stream-finished notification.
+struct StoppedRegistration {
+    conn: ConnectionRef,
+    stream: StreamId,
+    notify: Arc<Notify>,
+}
+
+impl Drop for StoppedRegistration {
+    fn drop(&mut self) {
+        let mut state = self.conn.state.lock();
+        if let std::collections::hash_map::Entry::Occupied(mut entry) =
+            state.stopped.entry(self.stream)
+            && Arc::ptr_eq(&entry.get().notify, &self.notify)
+        {
+            entry.get_mut().waiters -= 1;
+            if entry.get().waiters == 0 {
+                entry.remove();
+            }
+        }
     }
 }
 
@@ -576,6 +623,115 @@ impl std::error::Error for StoppedError {
 impl From<ConnectionError> for StoppedError {
     fn from(value: ConnectionError) -> Self {
         Self::ConnectionLost(value)
+    }
+}
+
+#[cfg(all(
+    test,
+    any(
+        feature = "boring",
+        all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+    )
+))]
+mod tests {
+    use super::*;
+    use crate::driver::Duration;
+
+    #[tokio::test]
+    async fn cancelled_stop_waiters_release_registration_after_local_resets() {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let endpoint = crate::driver::tests::endpoint();
+            let (client, server) = tokio::join!(
+                endpoint
+                    .connect(endpoint.local_addr().unwrap(), "localhost")
+                    .unwrap(),
+                async { endpoint.accept().await.unwrap().await },
+            );
+            let (client, _server) = (client.unwrap(), server.unwrap());
+            for iteration in 0..64 {
+                let mut send = client.open_uni().await.unwrap();
+                let mut first = Box::pin(send.stopped());
+                let mut second = Box::pin(send.stopped());
+                let mut cx = Context::from_waker(std::task::Waker::noop());
+                assert!(first.as_mut().poll(&mut cx).is_pending());
+                assert!(second.as_mut().poll(&mut cx).is_pending());
+                assert_eq!(send.conn.state.lock().stopped.len(), 1);
+                if iteration % 2 == 0 {
+                    drop(first);
+                    assert_eq!(send.conn.state.lock().stopped.len(), 1);
+                    drop(second);
+                } else {
+                    let barrier = std::sync::Barrier::new(2);
+                    std::thread::scope(|scope| {
+                        scope.spawn(|| {
+                            barrier.wait();
+                            drop(first);
+                        });
+                        scope.spawn(|| {
+                            barrier.wait();
+                            drop(second);
+                        });
+                    });
+                }
+                assert!(send.conn.state.lock().stopped.is_empty());
+
+                // Cancelling every waiter leaves the live stream unchanged; a
+                // subsequent caller can register again independently.
+                let mut stopped = Box::pin(send.stopped());
+                assert!(stopped.as_mut().poll(&mut cx).is_pending());
+                assert_eq!(send.conn.state.lock().stopped.len(), 1);
+
+                // Model both an application body failing and cancellation by an
+                // independent owner. Neither path produces StreamEvent::Finished.
+                if iteration % 2 == 0 {
+                    send.reset(0u32).unwrap();
+                } else {
+                    send.abort_handle().abort(0u32);
+                }
+                drop(stopped);
+                assert!(send.conn.state.lock().stopped.is_empty());
+            }
+            client.close(0u32, b"done");
+            endpoint.shutdown().await;
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancelling_one_stop_waiter_preserves_other_waiters_wakeup() {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let endpoint = crate::driver::tests::endpoint();
+            let (client, server) = tokio::join!(
+                endpoint
+                    .connect(endpoint.local_addr().unwrap(), "localhost")
+                    .unwrap(),
+                async { endpoint.accept().await.unwrap().await },
+            );
+            let (client, server) = (client.unwrap(), server.unwrap());
+            let mut send = client.open_uni().await.unwrap();
+            let mut cancelled = Box::pin(send.stopped());
+            let mut first = Box::pin(send.stopped());
+            let mut second = Box::pin(send.stopped());
+            let mut cx = Context::from_waker(std::task::Waker::noop());
+            assert!(cancelled.as_mut().poll(&mut cx).is_pending());
+            assert!(first.as_mut().poll(&mut cx).is_pending());
+            assert!(second.as_mut().poll(&mut cx).is_pending());
+            drop(cancelled);
+            assert_eq!(send.conn.state.lock().stopped.len(), 1);
+
+            send.write_all(b"payload").await.unwrap();
+            let mut recv = server.accept_uni().await.unwrap();
+            recv.stop(42u32).unwrap();
+            let (first, second) = tokio::join!(first, second);
+            assert_eq!(first.unwrap(), Some(42u32.into()));
+            assert_eq!(second.unwrap(), Some(42u32.into()));
+            assert!(send.conn.state.lock().stopped.is_empty());
+            client.close(0u32, b"done");
+            endpoint.shutdown().await;
+        })
+        .await
+        .unwrap();
     }
 }
 

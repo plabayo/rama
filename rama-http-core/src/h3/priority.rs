@@ -9,6 +9,13 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
+/// HTTP urgency runs from most to least urgent; QUIC schedules larger values
+/// first. Reserve priorities above this range for connection-critical streams.
+pub(super) fn transport_priority(priority: Priority) -> i32 {
+    const LEAST_URGENT: u8 = 7;
+    i32::from(LEAST_URGENT - priority.urgency())
+}
+
 /// Update the peer's response scheduling through RFC 9218 PRIORITY_UPDATE.
 /// Available in client response extensions, including informational responses.
 /// This weak handle does not keep the connection or response body alive.
@@ -18,6 +25,7 @@ pub struct PriorityHandle {
     id: u64,
     push: bool,
 }
+
 impl std::fmt::Debug for PriorityHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PriorityHandle")
@@ -26,6 +34,7 @@ impl std::fmt::Debug for PriorityHandle {
             .finish_non_exhaustive()
     }
 }
+
 impl PriorityHandle {
     pub(crate) fn new(
         shared: &std::sync::Arc<super::connection::Shared>,
@@ -38,6 +47,7 @@ impl PriorityHandle {
             push,
         }
     }
+
     /// Queue a bounded priority update. Scheduling remains advisory to the peer.
     pub fn update(&self, priority: Priority) -> Result<(), Error> {
         self.shared
@@ -65,6 +75,7 @@ pub(crate) struct Schedule {
     limit: usize,
     clock: u64,
 }
+
 impl Schedule {
     pub(crate) fn new(limit: usize) -> Self {
         Self {
@@ -75,6 +86,7 @@ impl Schedule {
             clock: 0,
         }
     }
+
     pub(crate) fn register(&mut self, id: u64, priority: Priority) -> Result<(), Error> {
         if self.active.len() >= self.limit {
             return Err(Error::connection(
@@ -96,6 +108,7 @@ impl Schedule {
         self.clock = self.clock.saturating_add(1);
         Ok(())
     }
+
     pub(crate) fn update(&mut self, id: u64, priority: Priority) -> Result<(), Error> {
         if !id.is_multiple_of(4) {
             return Err(Error::connection(
@@ -122,6 +135,7 @@ impl Schedule {
         self.wake_next();
         Ok(())
     }
+
     pub(crate) fn peer_priority(&mut self, id: u64, priority: Priority) {
         if let Some(entry) = self.active.get_mut(&id)
             && !entry.overridden
@@ -130,6 +144,7 @@ impl Schedule {
         }
         self.wake_next();
     }
+
     pub(crate) fn override_priority(&mut self, id: u64, priority: Priority) {
         if let Some(entry) = self.active.get_mut(&id) {
             entry.priority = priority;
@@ -137,6 +152,7 @@ impl Schedule {
         }
         self.wake_next();
     }
+
     fn next(&self) -> Option<u64> {
         self.active
             .iter()
@@ -151,6 +167,7 @@ impl Schedule {
             })
             .map(|(id, _)| *id)
     }
+
     fn wake_next(&self) {
         if let Some(id) = self.next()
             && let Some(waker) = &self.active[&id].waker
@@ -158,6 +175,7 @@ impl Schedule {
             waker.wake_by_ref();
         }
     }
+
     pub(crate) fn poll_turn(&mut self, id: u64, cx: &Context<'_>) -> Poll<Priority> {
         let Some(entry) = self.active.get_mut(&id) else {
             return Poll::Ready(Priority::default());
@@ -175,6 +193,7 @@ impl Schedule {
             Poll::Pending
         }
     }
+
     /// A blocked writer must let another stream progress. Incremental writers move
     /// behind other ready streams after each bounded payload quantum.
     pub(crate) fn release(&mut self, id: u64) {
@@ -187,6 +206,7 @@ impl Schedule {
         }
         self.wake_next();
     }
+
     pub(crate) fn complete(&mut self, id: u64) -> Result<(), Error> {
         self.active.remove(&id);
         self.pending.remove(&id);
@@ -208,6 +228,7 @@ pub(crate) struct Lease {
     pub(crate) shared: std::sync::Arc<super::connection::Shared>,
     pub(crate) id: u64,
 }
+
 impl Drop for Lease {
     fn drop(&mut self) {
         let result = self.shared.schedule.lock().complete(self.id);
@@ -220,6 +241,18 @@ impl Drop for Lease {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn transport_priority_preserves_http_urgency_order() {
+        for urgency in 0..=7 {
+            let priority = transport_priority(Priority::new(urgency, false).unwrap());
+            assert!((0..=7).contains(&priority));
+            assert!(priority < i32::MAX);
+            if urgency != 7 {
+                assert!(priority > transport_priority(Priority::new(urgency + 1, true).unwrap()));
+            }
+        }
+    }
+
     #[test]
     fn pre_stream_updates_coalesce_and_are_bounded() {
         let mut schedule = Schedule::new(1);
@@ -237,6 +270,7 @@ mod tests {
         assert!(schedule.pending.is_empty());
         schedule.update(1, Priority::default()).unwrap_err();
     }
+
     #[test]
     fn urgency_incremental_and_stalled_writer_progress() {
         let mut schedule = Schedule::new(3);

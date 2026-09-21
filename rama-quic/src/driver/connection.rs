@@ -2277,7 +2277,7 @@ pub(crate) struct State {
     pending_endpoint_events: Vec<EndpointEvent>,
     pub(crate) blocked_writers: FxHashMap<StreamId, Waker>,
     pub(crate) blocked_readers: FxHashMap<StreamId, Waker>,
-    pub(crate) stopped: FxHashMap<StreamId, Arc<Notify>>,
+    pub(crate) stopped: FxHashMap<StreamId, super::send_stream::StoppedNotify>,
     /// Always set to Some before the connection becomes drained
     pub(crate) error: Option<ConnectionError>,
     socket: Option<Sender>,
@@ -3265,16 +3265,19 @@ fn wake_all(wakers: &mut FxHashMap<StreamId, Waker>) {
     wakers.drain().for_each(|(_, waker)| waker.wake())
 }
 
-fn wake_stream_notify(stream_id: StreamId, wakers: &mut FxHashMap<StreamId, Arc<Notify>>) {
+fn wake_stream_notify(
+    stream_id: StreamId,
+    wakers: &mut FxHashMap<StreamId, super::send_stream::StoppedNotify>,
+) {
     if let Some(notify) = wakers.remove(&stream_id) {
-        notify.notify_waiters()
+        notify.notify.notify_waiters()
     }
 }
 
-fn wake_all_notify(wakers: &mut FxHashMap<StreamId, Arc<Notify>>) {
+fn wake_all_notify(wakers: &mut FxHashMap<StreamId, super::send_stream::StoppedNotify>) {
     wakers
         .drain()
-        .for_each(|(_, notify)| notify.notify_waiters())
+        .for_each(|(_, notify)| notify.notify.notify_waiters())
 }
 
 /// Errors that can arise when sending a datagram

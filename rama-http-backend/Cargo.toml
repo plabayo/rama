@@ -38,7 +38,6 @@ opentelemetry = ["rama-core/opentelemetry", "rama-net/opentelemetry"]
 tls = ["rama-tls/http", "rama-http-types/tls"]
 
 [dependencies]
-moka = { workspace = true, features = ["sync"] }
 parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
 rama-core = { workspace = true, features = ["std"] }

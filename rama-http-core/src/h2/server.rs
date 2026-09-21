@@ -134,7 +134,7 @@ use rama_http::proto::h2::frame::EarlyFrameStreamContext;
 use rama_http_types::proto::h2::frame::{
     self, Pseudo, PushPromiseHeaderError, Reason, Settings, StreamId,
 };
-use rama_http_types::proto::h2::{PseudoHeaderOrder, ext};
+use rama_http_types::proto::h2::{PseudoHeaderOrder, PseudoHeaderSensitivity, ext};
 use rama_http_types::{HeaderMap, Method, Request, Response, Version};
 use rama_net::extensions::StreamTransformed;
 use rama_net::uri;
@@ -1662,6 +1662,10 @@ impl Peer {
         {
             pseudo.order = order;
         }
+        pseudo.sensitivity = extensions
+            .get_ref::<PseudoHeaderSensitivity>()
+            .copied()
+            .unwrap_or_default();
 
         // Create the HEADERS frame
         let mut frame = frame::Headers::new(id, pseudo, headers, None);
@@ -1716,6 +1720,10 @@ impl Peer {
         {
             pseudo.order = order;
         }
+        pseudo.sensitivity = extensions
+            .get_ref::<PseudoHeaderSensitivity>()
+            .copied()
+            .unwrap_or_default();
 
         Ok(frame::PushPromise::new(
             stream_id,
@@ -1910,6 +1918,9 @@ impl proto::Peer for Peer {
         if !pseudo.order.is_empty() {
             request.extensions().insert(pseudo.order);
         }
+        if pseudo.sensitivity != PseudoHeaderSensitivity::default() {
+            request.extensions().insert(pseudo.sensitivity);
+        }
 
         request.extensions().insert(HeaderByteLength(header_size));
 
@@ -1952,6 +1963,38 @@ mod path_form_tests {
             StreamId::from(1),
             Extensions::new(),
         )
+    }
+
+    #[test]
+    fn incoming_pseudo_sensitivity_is_retained_as_shared_metadata() {
+        let mut pseudo =
+            Pseudo::request(Method::GET, &"https://example.com/".parse().unwrap(), None);
+        pseudo
+            .sensitivity
+            .set_sensitive(rama_http_types::proto::h2::PseudoHeader::Path, true);
+        let request = decode(pseudo).unwrap();
+        assert!(
+            request
+                .extensions()
+                .get_ref::<PseudoHeaderSensitivity>()
+                .unwrap()
+                .is_sensitive(rama_http_types::proto::h2::PseudoHeader::Path)
+        );
+    }
+
+    #[test]
+    fn promised_request_retains_pseudo_sensitivity() {
+        let request = Request::builder()
+            .uri("https://example.com/")
+            .body(())
+            .unwrap();
+        let mut sensitivity = PseudoHeaderSensitivity::default();
+        sensitivity.set_sensitive(rama_http_types::proto::h2::PseudoHeader::Path, true);
+        request.extensions().insert(sensitivity);
+        let promise =
+            Peer::convert_push_message(StreamId::from(1), StreamId::from(2), request).unwrap();
+        let (pseudo, _) = promise.into_parts();
+        assert_eq!(pseudo.sensitivity, sensitivity);
     }
 
     // RFC 9113 §8.3.1: an absolute-form `:path` (carrying scheme/authority) must

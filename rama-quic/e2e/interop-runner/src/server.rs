@@ -103,8 +103,7 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
         .context("bind interop server")?;
     tracing::info!(address = %endpoint.local_addr()?, "interop server listening");
     let mut connections = JoinSet::new();
-    let stopping = default_signal();
-    tokio::pin!(stopping);
+    let mut stopping = std::pin::pin!(default_signal());
     let outcome = loop {
         tokio::select! {
             _ = &mut stopping => break Ok(()),

@@ -1679,7 +1679,7 @@ async fn wait_for_udp_idle(timeout: Duration, notify: &tokio::sync::Notify) {
         return;
     };
     let deadline = tokio::time::sleep_until(deadline_at);
-    tokio::pin!(deadline);
+    let mut deadline = std::pin::pin!(deadline);
     loop {
         tokio::select! {
             biased;
@@ -2062,7 +2062,7 @@ where
                 std::future::pending::<()>().await;
             }
         };
-        tokio::pin!(lifetime_fut);
+        let mut lifetime_fut = std::pin::pin!(lifetime_fut);
 
         // Activation is part of the same lifetime race. `biased` makes an
         // already-expired deadline win over an activation that becomes ready

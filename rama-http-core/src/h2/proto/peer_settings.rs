@@ -89,7 +89,7 @@ impl PeerSettingsState {
 
         loop {
             let notified = self.notify.notified();
-            tokio::pin!(notified);
+            let mut notified = std::pin::pin!(notified);
             // Enable interest BEFORE re-checking the state to avoid
             // racing with a notify between the check and the await.
             notified.as_mut().enable();

@@ -19,13 +19,16 @@ pub use parser::{
     parse_client_hello_handshake_prefix, parse_client_hello_message_prefix,
 };
 
+mod pool;
+pub use pool::{TlsClientFingerprint, TlsClientPoolKey};
+
 mod config;
 #[doc(inline)]
 pub use config::{
     ClientAuth, ClientAuthData, ServerTrustRoots, ServerVerifyMode, TlsClientAuth, TlsClientConfig,
-    TlsClientSecurityPolicy, TlsServerCertPin, TlsServerCertPinCheck, TlsServerCertPinSet,
-    TlsServerCertPins, TlsServerIdentity, TlsServerName, TlsServerTrust, TlsServerTrustAnchors,
-    TlsServerVerify, TlsStoreServerCertChain,
+    TlsServerCertPin, TlsServerCertPinCheck, TlsServerCertPinSet, TlsServerCertPins,
+    TlsServerIdentity, TlsServerName, TlsServerTrust, TlsServerTrustAnchors, TlsServerVerify,
+    TlsStoreServerCertChain,
 };
 use rama_crypto::pki_types::CertificateDer;
 

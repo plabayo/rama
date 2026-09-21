@@ -6,6 +6,9 @@ use rama_http_types::proto::h3::{Code, FrameHeader, FrameType, VarInt};
 use std::task::{Context, Poll, ready};
 
 pub(crate) trait SendStream {
+    /// Observe cancellation independently of write readiness or application data.
+    fn stopped(&self) -> impl Future<Output = Error> + Send + 'static;
+
     fn poll_chunks(
         &mut self,
         cx: &mut Context<'_>,
@@ -26,10 +29,26 @@ pub(crate) trait RecvStream {
 }
 
 impl SendStream for rama_quic::SendStream {
+    fn stopped(&self) -> impl Future<Output = Error> + Send + 'static {
+        let stopped = self.stopped();
+        async move {
+            match stopped.await {
+                Ok(Some(code)) => Error::peer_stopped(Code::new(code.into_inner())),
+                Err(rama_quic::StoppedError::ConnectionLost(error)) => {
+                    Error::from_transport(&error)
+                }
+                Ok(None) | Err(rama_quic::StoppedError::ZeroRttRejected) => {
+                    Error::stream(Code::H3_REQUEST_CANCELLED, "send stream closed")
+                }
+            }
+        }
+    }
+
     fn priority(&mut self, priority: i32) -> Result<(), Error> {
         self.set_priority(priority)
             .map_err(|_error| Error::stream(Code::H3_REQUEST_CANCELLED, "send stream closed"))
     }
+
     fn poll_chunks(
         &mut self,
         cx: &mut Context<'_>,
@@ -38,10 +57,12 @@ impl SendStream for rama_quic::SendStream {
         self.poll_write_chunks_with_reserve(cx, chunks, super::connection::CRITICAL_SEND_RESERVE)
             .map(|result| result.map(|_| ()).map_err(|error| write_error(&error)))
     }
+
     fn finish(&mut self) -> Result<(), Error> {
         self.finish()
             .map_err(|_error| Error::stream(Code::H3_REQUEST_CANCELLED, "send stream closed"))
     }
+
     fn reset(&mut self, code: Code) {
         if let Ok(code) = VarInt::from_u64(code.value()) {
             _ = self.reset(code);
@@ -61,6 +82,7 @@ impl RecvStream for rama_quic::RecvStream {
                 .map_err(|error| read_error(&error))
         })
     }
+
     fn stop(&mut self, code: Code) {
         if let Ok(code) = VarInt::from_u64(code.value()) {
             _ = self.stop(code);
@@ -101,6 +123,10 @@ impl Writer<rama_quic::SendStream> {
 }
 
 impl<S: SendStream> Writer<S> {
+    pub(crate) fn stopped(&self) -> impl Future<Output = Error> + Send + 'static {
+        self.stream.stopped()
+    }
+
     pub(crate) fn new(stream: S) -> Self {
         Self {
             stream,
@@ -159,7 +185,7 @@ impl<S: SendStream> Writer<S> {
 
     pub(crate) fn poll_flush(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
         // Bound work even if a fake/transport accepts only one byte per call.
-        for _ in 0..32 {
+        for _ in 0..super::cooperative::OPERATIONS_PER_QUANTUM {
             if self.chunks.iter().all(Bytes::is_empty) {
                 return Poll::Ready(Ok(()));
             }
@@ -199,9 +225,14 @@ mod tests {
         reset: Option<Code>,
         finished: bool,
         pending: bool,
+        always_ready: bool,
     }
     struct Fake(Arc<Mutex<State>>);
     impl SendStream for Fake {
+        fn stopped(&self) -> impl Future<Output = Error> + Send + 'static {
+            std::future::pending()
+        }
+
         fn priority(&mut self, _priority: i32) -> Result<(), Error> {
             Ok(())
         }
@@ -212,7 +243,7 @@ mod tests {
         ) -> Poll<Result<(), Error>> {
             let mut state = self.0.lock();
             state.pending = !state.pending;
-            if state.pending {
+            if state.pending && !state.always_ready {
                 cx.waker().wake_by_ref();
                 return Poll::Pending;
             }
@@ -228,6 +259,29 @@ mod tests {
         fn reset(&mut self, code: Code) {
             self.0.lock().reset = Some(code);
         }
+    }
+
+    #[test]
+    fn tiny_immediately_ready_writes_are_bounded_and_retain_payload() {
+        let state = Arc::new(Mutex::new(State {
+            always_ready: true,
+            ..State::default()
+        }));
+        let mut writer = Writer::new(Fake(state.clone()));
+        let payload = Bytes::from(vec![0xaa; 128]);
+        let payload_start = payload.as_ptr();
+        writer.queue(FrameType::DATA, payload).unwrap();
+        let header_len = writer.chunks[0].len();
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+        assert!(writer.poll_flush(&mut cx).is_pending());
+        let sent = state.lock().wire.len();
+        assert_eq!(sent, crate::h3::cooperative::OPERATIONS_PER_QUANTUM);
+        assert_eq!(
+            writer.chunks[1].as_ptr(),
+            payload_start.wrapping_add(sent - header_len)
+        );
+        while writer.poll_finish(&mut cx).is_pending() {}
+        assert_eq!(state.lock().wire.len(), header_len + 128);
     }
 
     #[test]

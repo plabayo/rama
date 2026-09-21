@@ -36,6 +36,7 @@ pub struct Config {
     /// Maximum unclassified peer unidirectional streams retained simultaneously.
     pub max_pending_uni_streams: usize,
 }
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -208,7 +209,7 @@ impl Shared {
     pub(crate) async fn failed(&self) -> Error {
         loop {
             let failed = self.failure.notified();
-            tokio::pin!(failed);
+            let mut failed = std::pin::pin!(failed);
             failed.as_mut().enable();
             if let Some(error) = self.error() {
                 return error;
@@ -220,7 +221,7 @@ impl Shared {
     pub(crate) async fn rejected(&self, id: Option<u64>) -> Error {
         loop {
             let progress = self.progress.notified();
-            tokio::pin!(progress);
+            let mut progress = std::pin::pin!(progress);
             progress.as_mut().enable();
             if let Some(error) = self.error() {
                 return error;
@@ -384,7 +385,7 @@ impl Shared {
         loop {
             // Enable before trying the codec, closing the drain-before-wait race.
             let progress = self.progress.notified();
-            tokio::pin!(progress);
+            let mut progress = std::pin::pin!(progress);
             progress.as_mut().enable();
             let receiver = {
                 let mut state = self.state.lock();
@@ -454,7 +455,7 @@ impl Shared {
     }
 
     fn resume(state: &mut State) -> Result<(), Error> {
-        for _ in 0..32 {
+        for _ in 0..super::cooperative::OPERATIONS_PER_QUANTUM {
             let Some((id, result)) = state.decoder.resume_next() else {
                 break;
             };
@@ -478,7 +479,7 @@ impl Shared {
     pub(crate) async fn control_flushed(&self) -> Result<(), Error> {
         loop {
             let changed = self.progress.notified();
-            tokio::pin!(changed);
+            let mut changed = std::pin::pin!(changed);
             changed.as_mut().enable();
             {
                 let state = self.state.lock();
@@ -648,13 +649,9 @@ pub(crate) async fn receive_uni(
     let mut frames =
         FrameDecoder::with_input_limit(shared.config.max_frame_size, shared.config.read_chunk_size)
             .with_header_events();
-    let mut work = 0usize;
+    let mut budget = super::cooperative::Budget::default();
     loop {
-        work += 1;
-        if work >= 32 {
-            tokio::task::yield_now().await;
-            work = 0;
-        }
+        budget.consume().await;
         if ty == StreamType::CONTROL {
             frames.feed_bytes(&mut chunk).map_err(|_error| {
                 Error::connection(Code::H3_INTERNAL_ERROR, "frame input not drained")
@@ -665,11 +662,7 @@ pub(crate) async fn receive_uni(
                     "frame backpressure",
                 ))
             })? {
-                work += 1;
-                if work >= 32 {
-                    tokio::task::yield_now().await;
-                    work = 0;
-                }
+                budget.consume().await;
                 let mut state = shared.state.lock();
                 state.control.receive(&event)?;
                 if let FrameEvent::Settings(ref settings) = event {
@@ -723,7 +716,7 @@ pub(crate) async fn receive_uni(
             // Retry the same bytes on local output backpressure; codec feed is transactional.
             loop {
                 let progress = shared.progress.notified();
-                tokio::pin!(progress);
+                let mut progress = std::pin::pin!(progress);
                 progress.as_mut().enable();
                 let blocked = shared.feed_instructions(ty, &chunk)?;
                 if !blocked {
@@ -779,6 +772,7 @@ pub struct Driver {
     shared: Arc<Shared>,
     role: Role,
 }
+
 impl std::fmt::Debug for Driver {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("H3Driver")
@@ -786,6 +780,7 @@ impl std::fmt::Debug for Driver {
             .finish_non_exhaustive()
     }
 }
+
 impl Driver {
     pub(crate) fn new(connection: rama_quic::Connection, shared: Arc<Shared>, role: Role) -> Self {
         Self {
@@ -941,6 +936,7 @@ impl Driver {
         }
     }
 }
+
 impl Drop for Driver {
     fn drop(&mut self) {
         self.shared.fail(Error::connection(

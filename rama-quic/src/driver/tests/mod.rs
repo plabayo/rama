@@ -701,6 +701,7 @@ impl std::io::Write for TestWriter {
         );
         Ok(buf.len())
     }
+
     fn flush(&mut self) -> io::Result<()> {
         io::stdout().flush()
     }
@@ -975,9 +976,10 @@ async fn stream_stopped_2() {
     )
     .unwrap();
     let send_stream = conn.open_uni().await.unwrap();
-    let stopped = timeout(Duration::from_millis(100), send_stream.stopped())
-        .instrument(error_span!("stopped"));
-    tokio::pin!(stopped);
+    let mut stopped = std::pin::pin!(
+        timeout(Duration::from_millis(100), send_stream.stopped())
+            .instrument(error_span!("stopped"))
+    );
     // poll the future once so that the waker is registered.
     tokio::select! {
         biased;
@@ -1014,8 +1016,7 @@ async fn stream_drop_removes_blocked_reader() {
             // do a blocking read which will add the stream in conn.blocked_readers
             {
                 let mut buf = [0u8; 64];
-                let read_fut = stream.read(&mut buf);
-                tokio::pin!(read_fut);
+                let mut read_fut = std::pin::pin!(stream.read(&mut buf));
                 assert!(matches!(read_fut.as_mut().poll(&mut cx), Poll::Pending));
             }
 
@@ -1109,6 +1110,7 @@ impl Wake for WakeCounter {
     fn wake(self: Arc<Self>) {
         self.wakes.fetch_add(1, Ordering::SeqCst);
     }
+
     fn wake_by_ref(self: &Arc<Self>) {
         self.wakes.fetch_add(1, Ordering::SeqCst);
     }
@@ -1160,10 +1162,10 @@ async fn rejected_early_handles_leave_replacement_streams_untouched() {
             "the early stream's numeric ID was reused"
         );
         send.set_priority(7).unwrap();
-        assert!(old_send.set_priority(19).is_err());
+        old_send.set_priority(19).unwrap_err();
         old_send.priority().unwrap_err();
         assert_eq!(send.priority().unwrap(), 7);
-        assert!(old_send.finish().is_err());
+        old_send.finish().unwrap_err();
         send.write_all(b"request").await.unwrap();
 
         let (reader_waker, reader_wakes) = new_count_waker();

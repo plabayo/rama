@@ -135,6 +135,14 @@ impl Table {
         // Check the static table
         let statik = index_static(&header);
 
+        // Never-indexed literals must not become indexed even on an exact
+        // static-table match (RFC 7541 §6.2.3).
+        if header.is_sensitive()
+            && let Some((index, _)) = statik
+        {
+            return Index::Name(index, header);
+        }
+
         // Don't index certain headers. This logic is borrowed from nghttp2.
         if header.skip_value_index() {
             // Right now, if this is true, the header name is always in the
@@ -218,6 +226,12 @@ impl Table {
             // Compute the real index into the VecDeque
             let real_idx = index.wrapping_add(self.inserted);
 
+            // A matching value still cannot be indexed when forwarding a
+            // never-indexed field; only its name may reference the table.
+            if header.is_sensitive() {
+                return Index::Name(real_idx + DYN_OFFSET, header);
+            }
+
             if self.slots[real_idx].header.value_eq(&header) {
                 // We have a full match!
                 return Index::Indexed(real_idx + DYN_OFFSET, header);
@@ -226,12 +240,6 @@ impl Table {
             if let Some(next) = self.slots[real_idx].next {
                 index = next;
                 continue;
-            }
-
-            if header.is_sensitive() {
-                // Should we assert this?
-                // debug_assert!(statik.is_none());
-                return Index::Name(real_idx + DYN_OFFSET, header);
             }
 
             self.update_size(header.len(), Some(index));
@@ -733,6 +741,18 @@ fn index_static(header: &Header) -> Option<(usize, bool)> {
             Some(header::StandardHeader::WwwAuthenticate) => Some((61, false)),
             _ => None,
         },
+        Header::NeverIndexed(ref value) => {
+            use crate::proto::h2::PseudoHeader;
+            let index = match value.name() {
+                PseudoHeader::Authority => 1,
+                PseudoHeader::Method => 2,
+                PseudoHeader::Scheme => 6,
+                PseudoHeader::Path => 4,
+                PseudoHeader::Status => 8,
+                PseudoHeader::Protocol => return None,
+            };
+            Some((index, false))
+        }
         Header::Authority(_) => Some((1, false)),
         Header::Method(ref v) => match *v {
             Method::GET => Some((2, true)),

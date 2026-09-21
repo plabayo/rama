@@ -188,7 +188,7 @@ fn qlog_negotiation_incompatible_versions_record_the_offer_and_close_cause() {
     let _guard = subscribe();
     let capture = Capture::default();
     let start = Instant::now();
-    let server_addr = "[::2]:7890".parse().unwrap();
+    let server_addr = SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 2], 7890));
     // An empty local CID makes the response destination independent of randomness.
     let cid_factory: fn() -> Box<dyn ConnectionIdGenerator> =
         || Box::new(RandomConnectionIdGenerator::new(0).unwrap());

@@ -1,7 +1,13 @@
 //! Real QUIC round trips complement deterministic framing/cancellation tests.
+#[path = "fairness_tests.rs"]
+mod fairness;
+#[path = "robustness_tests.rs"]
+mod robustness;
+
 use super::{client, connection::Config, server};
 use rama_core::{
     bytes::Bytes,
+    extensions::ExtensionsRef as _,
     rt::{Executor, spawn},
 };
 use rama_http_types::{
@@ -27,6 +33,7 @@ struct Pair {
     client: rama_quic::Connection,
     server: rama_quic::Connection,
 }
+
 impl Pair {
     async fn new(
         client_transport: Option<TransportConfig>,
@@ -86,6 +93,7 @@ impl Pair {
             server,
         }
     }
+
     async fn close(self) {
         self.client.close(0u32, b"test complete");
         tokio::join!(
@@ -93,6 +101,71 @@ impl Pair {
             self.server_endpoint.shutdown()
         );
     }
+}
+
+#[tokio::test]
+async fn dropping_last_client_sender_stops_its_driver() {
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::new(None, None).await;
+        let (client, driver) =
+            client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
+                .unwrap();
+        let driver = spawn(driver.run());
+        let clone = client.clone();
+        drop(client);
+        assert!(pair.client.close_reason().is_none());
+        drop(clone);
+        // Extra transport handles must not keep the detached H3 driver alive.
+        assert!(pair.client.close_reason().is_some());
+        _ = driver.await.unwrap();
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn response_body_keeps_driver_alive_after_client_sender_drop() {
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::new(None, None).await;
+        let (mut client, client_driver) =
+            client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
+                .unwrap();
+        let (mut server, server_driver) =
+            server::handshake(pair.server.clone(), Config::default()).unwrap();
+        let client_driver = spawn(client_driver.run());
+        let server_driver = spawn(server_driver.run());
+        let serve = spawn(async move {
+            let (request, response) = server.accept().await.unwrap().resolve().await.unwrap();
+            request.into_body().collect().await.unwrap();
+            response
+                .send_response(Response::new(Body::from("still readable")))
+                .await
+                .unwrap();
+        });
+        let response = client
+            .send_request(
+                Request::builder()
+                    .uri("https://localhost/")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        drop(client);
+        assert!(pair.client.close_reason().is_none());
+        assert_eq!(
+            response.into_body().collect().await.unwrap().to_bytes(),
+            "still readable"
+        );
+        serve.await.unwrap();
+        _ = client_driver.await.unwrap();
+        _ = server_driver.await.unwrap();
+        assert!(pair.client.close_reason().is_some());
+        pair.close().await;
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
@@ -176,10 +249,104 @@ async fn streaming_round_trip_reuses_connection_and_dynamic_qpack() {
 }
 
 #[tokio::test]
+async fn header_order_survives_transport_and_message_forwarding() {
+    use rama_http_types::{
+        HeaderMap, HeaderValue,
+        proto::h3::{PseudoHeader, PseudoHeaderOrder},
+    };
+
+    fn headers() -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.append("x-first", HeaderValue::from_static("Keep CASE"));
+        headers.append("cookie", HeaderValue::from_static("a=1"));
+        headers.append("x-first", HeaderValue::from_static("second"));
+        let mut secret = HeaderValue::from_static("b=2");
+        secret.set_sensitive(true);
+        headers.append("cookie", secret);
+        headers
+    }
+
+    fn assert_headers(actual: &HeaderMap) {
+        let actual: Vec<_> = actual
+            .ordered_iter()
+            .map(|(name, value)| (name.as_str(), value.as_bytes(), value.is_sensitive()))
+            .collect();
+        let expected = headers();
+        let expected: Vec<_> = expected
+            .ordered_iter()
+            .map(|(name, value)| (name.as_str(), value.as_bytes(), value.is_sensitive()))
+            .collect();
+        assert_eq!(actual, expected);
+    }
+
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::new(None, None).await;
+        let (mut client, client_driver) =
+            client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
+                .unwrap();
+        let (mut server, server_driver) =
+            server::handshake(pair.server.clone(), Config::default()).unwrap();
+        let client_driver = spawn(client_driver.run());
+        let server_driver = spawn(server_driver.run());
+        let order: PseudoHeaderOrder = [
+            PseudoHeader::Path,
+            PseudoHeader::Scheme,
+            PseudoHeader::Method,
+            PseudoHeader::Authority,
+        ]
+        .into_iter()
+        .collect();
+        let expected_order = order.clone();
+        let serve = spawn(async move {
+            let (request, response) = server.accept().await.unwrap().resolve().await.unwrap();
+            assert_headers(request.headers());
+            assert_eq!(
+                request.extensions().get_ref::<PseudoHeaderOrder>(),
+                Some(&expected_order)
+            );
+            let (parts, body) = request.into_parts();
+            let body = body.collect().await.unwrap();
+            assert_headers(body.trailers().unwrap());
+            // Forward received field lines and trailer lines through a second QPACK encode.
+            let trailers = body.trailers().unwrap().clone();
+            let body = Body::from_frame_stream(rama_core::futures::stream::iter([
+                Ok::<_, std::convert::Infallible>(Frame::data(body.to_bytes())),
+                Ok(Frame::trailers(trailers)),
+            ]));
+            let mut reply = Response::new(body);
+            *reply.headers_mut() = parts.headers;
+            response.send_response(reply).await.unwrap();
+        });
+        let body = Body::from_frame_stream(rama_core::futures::stream::iter([
+            Ok::<_, std::convert::Infallible>(Frame::data(Bytes::from_static(b"body"))),
+            Ok(Frame::trailers(headers())),
+        ]));
+        let mut request = Request::builder()
+            .uri("https://localhost/")
+            .body(body)
+            .unwrap();
+        *request.headers_mut() = headers();
+        request.extensions().insert(order);
+        let response = client.send_request(request).await.unwrap();
+        assert_headers(response.headers());
+        let body = response.into_body().collect().await.unwrap();
+        assert_headers(body.trailers().unwrap());
+        assert_eq!(body.to_bytes(), "body");
+        serve.await.unwrap();
+        pair.client.close(0u32, b"test complete");
+        _ = client_driver.await.unwrap();
+        _ = server_driver.await.unwrap();
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
 async fn idle_qpack_stream_stop_closes_connection() {
     tokio::time::timeout(LIMIT, async {
         let pair = Pair::new(None, None).await;
-        let (_, driver) =
+        let (_sender, driver) =
             client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
                 .unwrap();
         let driver = spawn(driver.run());

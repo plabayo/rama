@@ -24,7 +24,7 @@ use crate::{
     service::BoxService,
     tcp::client::service::TcpConnector,
 };
-use std::{marker::PhantomData, time::Duration};
+use std::time::Duration;
 
 #[cfg(feature = "boring")]
 use crate::tls::boring::client as boring_client;
@@ -41,53 +41,84 @@ use crate::{http::client::proxy_connector::ProxyConnector, proxy::socks5::Socks5
 #[derive(Default)]
 pub struct EasyHttpConnectorBuilder<C = (), S = ()> {
     connector: C,
-    _phantom: PhantomData<S>,
+    stage: S,
 }
 
 #[non_exhaustive]
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct TransportStage;
 #[non_exhaustive]
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct DnsStage;
 #[non_exhaustive]
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct ProxyTunnelStage<const TLS_PROXY: bool = true>;
 #[non_exhaustive]
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct ProxyStage<const PROXY: bool = true>;
 #[non_exhaustive]
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct TlsStage<const PROXY: bool = true>;
 #[non_exhaustive]
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct HttpStage<const PROXY: bool = true>;
+/// HTTP/3 selection and pooling defaults retained across connector layers.
 #[derive(Debug)]
-pub struct Http3Stage;
+pub struct Http3Stage {
+    #[cfg(any(feature = "boring", feature = "rustls"))]
+    executor: Executor,
+    tls: crate::tls::client::TlsClientConfig,
+    backend: crate::tls::TlsBackend,
+    cache: Option<crate::http::layer::alt_svc::AltSvcCache>,
+    selection: super::Http3Selection,
+    attempt_budget: Duration,
+}
+
 #[non_exhaustive]
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct ProxyRouteFailureCacheStage;
 #[non_exhaustive]
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct PoolStage;
 
 impl EasyHttpConnectorBuilder {
-    /// Build an HTTP/3 connector with DNS resolution and the ordinary pool stages.
-    /// The supplied QUIC TLS configuration must negotiate `h3`.
+    /// Add a configured HTTP/3 connector with DNS resolution.
     pub fn with_http3_connector<Body: Send + 'static>(
         self,
-        endpoint: crate::quic::Endpoint,
-        tls: crate::tls::client::TlsClientConfig,
-        options: crate::quic::tls::TlsOptions,
-        config: rama_http_core::h3::connection::Config,
-        executor: Executor,
-    ) -> EasyHttpConnectorBuilder<ErasedConnector<super::HttpClientService<Body>>, Http3Stage> {
+        connector: super::Http3Connector<Body>,
+    ) -> EasyHttpConnectorBuilder<
+        crate::dns::client::DnsConnector<super::Http3Connector<Body>>,
+        Http3Stage,
+    > {
+        let stage = Http3Stage {
+            #[cfg(any(feature = "boring", feature = "rustls"))]
+            executor: connector.executor().clone(),
+            tls: connector.tls_config().clone(),
+            backend: connector.tls_backend(),
+            cache: Some(Default::default()),
+            selection: Default::default(),
+            // Bound speculative establishment before trying the TCP connector.
+            attempt_budget: Duration::from_millis(300),
+        };
         EasyHttpConnectorBuilder {
-            connector: erase_connector(crate::dns::client::DnsConnector::new(
-                super::Http3Connector::new(endpoint, tls, options, config, executor),
-            )),
-            _phantom: PhantomData,
+            connector: crate::dns::client::DnsConnector::new(connector),
+            stage,
         }
+    }
+
+    /// Bind an outbound endpoint with verified TLS defaults on this executor.
+    pub async fn with_default_http3_connector<Body: Send + 'static>(
+        self,
+        executor: Executor,
+    ) -> Result<
+        EasyHttpConnectorBuilder<
+            crate::dns::client::DnsConnector<super::Http3Connector<Body>>,
+            Http3Stage,
+        >,
+        BoxError,
+    > {
+        let connector = super::Http3Connector::builder(executor).build().await?;
+        Ok(self.with_http3_connector(connector))
     }
 
     #[must_use]
@@ -102,7 +133,7 @@ impl EasyHttpConnectorBuilder {
         let connector = TcpConnector::default();
         EasyHttpConnectorBuilder {
             connector,
-            _phantom: PhantomData,
+            stage: Default::default(),
         }
     }
 
@@ -113,7 +144,7 @@ impl EasyHttpConnectorBuilder {
     ) -> EasyHttpConnectorBuilder<C, TransportStage> {
         EasyHttpConnectorBuilder {
             connector,
-            _phantom: PhantomData,
+            stage: Default::default(),
         }
     }
 }
@@ -144,7 +175,7 @@ impl<T, Stage> EasyHttpConnectorBuilder<T, Stage> {
         let connector = map_fn(self.connector);
         EasyHttpConnectorBuilder {
             connector,
-            _phantom: PhantomData,
+            stage: self.stage,
         }
     }
 }
@@ -186,7 +217,7 @@ impl<T> EasyHttpConnectorBuilder<T, TransportStage> {
         let connector = connector_layer.into_layer(self.connector);
         EasyHttpConnectorBuilder {
             connector,
-            _phantom: PhantomData,
+            stage: Default::default(),
         }
     }
 }
@@ -209,7 +240,7 @@ impl<T> EasyHttpConnectorBuilder<T, DnsStage> {
         let connector = connector_layer.into_layer(self.connector);
         EasyHttpConnectorBuilder {
             connector,
-            _phantom: PhantomData,
+            stage: Default::default(),
         }
     }
 
@@ -229,7 +260,7 @@ impl<T> EasyHttpConnectorBuilder<T, DnsStage> {
         let connector = boring_client::TlsConnector::tunnel(self.connector, None);
         EasyHttpConnectorBuilder {
             connector,
-            _phantom: PhantomData,
+            stage: Default::default(),
         }
     }
 
@@ -251,7 +282,7 @@ impl<T> EasyHttpConnectorBuilder<T, DnsStage> {
             boring_client::TlsConnector::tunnel(self.connector, None).with_base_config(config);
         EasyHttpConnectorBuilder {
             connector,
-            _phantom: PhantomData,
+            stage: Default::default(),
         }
     }
 
@@ -272,7 +303,7 @@ impl<T> EasyHttpConnectorBuilder<T, DnsStage> {
 
         EasyHttpConnectorBuilder {
             connector,
-            _phantom: PhantomData,
+            stage: Default::default(),
         }
     }
 
@@ -295,7 +326,7 @@ impl<T> EasyHttpConnectorBuilder<T, DnsStage> {
 
         EasyHttpConnectorBuilder {
             connector,
-            _phantom: PhantomData,
+            stage: Default::default(),
         }
     }
 
@@ -307,7 +338,7 @@ impl<T> EasyHttpConnectorBuilder<T, DnsStage> {
     pub fn without_tls_proxy_support(self) -> EasyHttpConnectorBuilder<T, ProxyTunnelStage<false>> {
         EasyHttpConnectorBuilder {
             connector: self.connector,
-            _phantom: PhantomData,
+            stage: Default::default(),
         }
     }
 }
@@ -324,7 +355,7 @@ impl<T, const TLS_PROXY: bool> EasyHttpConnectorBuilder<T, ProxyTunnelStage<TLS_
         let connector = connector_layer.into_layer(self.connector);
         EasyHttpConnectorBuilder {
             connector,
-            _phantom: PhantomData,
+            stage: Default::default(),
         }
     }
 
@@ -359,7 +390,7 @@ impl<T, const TLS_PROXY: bool> EasyHttpConnectorBuilder<T, ProxyTunnelStage<TLS_
 
         EasyHttpConnectorBuilder {
             connector,
-            _phantom: PhantomData,
+            stage: Default::default(),
         }
     }
 
@@ -375,7 +406,7 @@ impl<T, const TLS_PROXY: bool> EasyHttpConnectorBuilder<T, ProxyTunnelStage<TLS_
 
         EasyHttpConnectorBuilder {
             connector,
-            _phantom: PhantomData,
+            stage: Default::default(),
         }
     }
 
@@ -383,7 +414,7 @@ impl<T, const TLS_PROXY: bool> EasyHttpConnectorBuilder<T, ProxyTunnelStage<TLS_
     pub fn without_proxy_support(self) -> EasyHttpConnectorBuilder<T, ProxyStage<false>> {
         EasyHttpConnectorBuilder {
             connector: self.connector,
-            _phantom: PhantomData,
+            stage: Default::default(),
         }
     }
 }
@@ -412,7 +443,7 @@ impl<T: Clone, const TLS_PROXY: bool> EasyHttpConnectorBuilder<T, ProxyTunnelSta
 
         EasyHttpConnectorBuilder {
             connector,
-            _phantom: PhantomData,
+            stage: Default::default(),
         }
     }
 }
@@ -435,7 +466,7 @@ impl<T, const PROXY: bool> EasyHttpConnectorBuilder<T, ProxyStage<PROXY>> {
 
         EasyHttpConnectorBuilder {
             connector,
-            _phantom: PhantomData,
+            stage: Default::default(),
         }
     }
 
@@ -453,7 +484,7 @@ impl<T, const PROXY: bool> EasyHttpConnectorBuilder<T, ProxyStage<PROXY>> {
 
         EasyHttpConnectorBuilder {
             connector,
-            _phantom: PhantomData,
+            stage: Default::default(),
         }
     }
 
@@ -483,7 +514,7 @@ impl<T, const PROXY: bool> EasyHttpConnectorBuilder<T, ProxyStage<PROXY>> {
 
         EasyHttpConnectorBuilder {
             connector,
-            _phantom: PhantomData,
+            stage: Default::default(),
         }
     }
 
@@ -501,7 +532,7 @@ impl<T, const PROXY: bool> EasyHttpConnectorBuilder<T, ProxyStage<PROXY>> {
 
         EasyHttpConnectorBuilder {
             connector,
-            _phantom: PhantomData,
+            stage: Default::default(),
         }
     }
 
@@ -531,7 +562,7 @@ impl<T, const PROXY: bool> EasyHttpConnectorBuilder<T, ProxyStage<PROXY>> {
 
         EasyHttpConnectorBuilder {
             connector,
-            _phantom: PhantomData,
+            stage: Default::default(),
         }
     }
 
@@ -539,7 +570,7 @@ impl<T, const PROXY: bool> EasyHttpConnectorBuilder<T, ProxyStage<PROXY>> {
     pub fn without_tls_support(self) -> EasyHttpConnectorBuilder<T, TlsStage<PROXY>> {
         EasyHttpConnectorBuilder {
             connector: self.connector,
-            _phantom: PhantomData,
+            stage: Default::default(),
         }
     }
 }
@@ -554,7 +585,7 @@ impl<T, const PROXY: bool> EasyHttpConnectorBuilder<T, TlsStage<PROXY>> {
 
         EasyHttpConnectorBuilder {
             connector,
-            _phantom: PhantomData,
+            stage: Default::default(),
         }
     }
 
@@ -570,7 +601,7 @@ impl<T, const PROXY: bool> EasyHttpConnectorBuilder<T, TlsStage<PROXY>> {
 
         EasyHttpConnectorBuilder {
             connector,
-            _phantom: PhantomData,
+            stage: Default::default(),
         }
     }
 }
@@ -634,7 +665,7 @@ where
 {
     EasyHttpConnectorBuilder {
         connector: finalize_http_connector(builder.connector),
-        _phantom: PhantomData,
+        stage: Default::default(),
     }
 }
 
@@ -648,7 +679,7 @@ where
     let connector = config.try_build_connector(builder.connector)?;
     Ok(EasyHttpConnectorBuilder {
         connector: finalize_http_connector(connector),
-        _phantom: PhantomData,
+        stage: Default::default(),
     })
 }
 
@@ -661,7 +692,7 @@ where
     let connector = HttpPooledConnectorConfig::build_default_connector(builder.connector);
     EasyHttpConnectorBuilder {
         connector: finalize_http_connector(connector),
-        _phantom: PhantomData,
+        stage: Default::default(),
     }
 }
 
@@ -675,7 +706,7 @@ fn finish_with_custom_connection_pool<T, Stage, P, R>(
         .maybe_with_wait_for_pool_timeout(wait_for_pool_timeout);
     EasyHttpConnectorBuilder {
         connector,
-        _phantom: PhantomData,
+        stage: Default::default(),
     }
 }
 
@@ -698,7 +729,7 @@ impl<T, const PROXY: bool> EasyHttpConnectorBuilder<T, HttpStage<PROXY>> {
     {
         EasyHttpConnectorBuilder {
             connector: ProxyRouteFailureCacheConnector::new(erase_connector(self.connector), cache),
-            _phantom: PhantomData,
+            stage: Default::default(),
         }
     }
 
@@ -709,7 +740,7 @@ impl<T, const PROXY: bool> EasyHttpConnectorBuilder<T, HttpStage<PROXY>> {
     ) -> EasyHttpConnectorBuilder<T, ProxyRouteFailureCacheStage> {
         EasyHttpConnectorBuilder {
             connector: self.connector,
-            _phantom: PhantomData,
+            stage: Default::default(),
         }
     }
 }
@@ -938,48 +969,129 @@ impl<T> EasyHttpConnectorBuilder<T, Http3Stage>
 where
     T: ConnectorService<ConnectRequest>,
 {
-    /// Select H3 or a TCP HTTP connector before dispatch, with independent pools.
+    /// Disable Alt-Svc learning and advertised alternative selection.
+    /// Explicit H3 requests and `Prefer` selection remain available.
+    #[must_use]
+    pub fn without_alt_svc(mut self) -> Self {
+        self.stage.cache = None;
+        self
+    }
+
+    /// Share a bounded Alt-Svc cache with other clients.
+    #[must_use]
+    pub fn with_alt_svc_cache(mut self, cache: crate::http::layer::alt_svc::AltSvcCache) -> Self {
+        self.stage.cache = Some(cache);
+        self
+    }
+
+    /// Configure when H3 is attempted before the TCP fallback.
+    #[must_use]
+    pub fn with_http3_selection(mut self, selection: super::Http3Selection) -> Self {
+        self.stage.selection = selection;
+        self
+    }
+
+    /// Bound speculative H3 establishment before TCP fallback (default: 300 ms).
+    #[must_use]
+    pub fn with_http3_attempt_budget(mut self, budget: Duration) -> Self {
+        self.stage.attempt_budget = budget;
+        self
+    }
+
+    /// Add the standard TCP HTTP connector and its independent pool.
     ///
-    /// Supply the TCP builder after its HTTP stage and before adding its pool.
-    /// Both connectors must return the same connection type. TLS and policy
-    /// failures are returned directly; only establishment availability failures
-    /// can fall back, within `attempt_budget`.
+    /// Both transports share TLS defaults and the graceful executor. Alt-Svc
+    /// learning is enabled by default; use [`Self::without_alt_svc`] to opt out.
+    /// Fails if the chosen QUIC provider has no corresponding TCP TLS connector
+    /// enabled in this crate. Explicit provider choices are preserved.
+    #[cfg(any(feature = "boring", feature = "rustls"))]
+    pub fn with_default_fallback_connector<Body>(
+        self,
+    ) -> Result<
+        ConfiguredConnectionBuilder<
+            super::Http3SelectionConnector<
+                super::Http3Policy<HttpPooledConnector<T>>,
+                super::TlsPoolPolicy<
+                    HttpPooledConnector<ErasedConnector<super::HttpClientService<Body>>>,
+                >,
+            >,
+        >,
+        BoxError,
+    >
+    where
+        Body: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
+        T: ConnectorService<ConnectRequest, Connection = super::HttpClientService<Body>>,
+    {
+        let tls = self.stage.tls.clone();
+        let tcp = EasyHttpConnectorBuilder::new()
+            .with_default_transport_connector()
+            .with_default_dns_connector()
+            .without_tls_proxy_support()
+            .with_proxy_support();
+
+        let backend = self.stage.backend;
+        let tcp = match backend {
+            #[cfg(feature = "boring")]
+            crate::tls::TlsBackend::Boring => erase_connector(
+                tcp.with_tls_support_using_boringssl(tls.clone())
+                    .with_default_http_connector(self.stage.executor.clone())
+                    .build_connector(),
+            ),
+            #[cfg(feature = "rustls")]
+            crate::tls::TlsBackend::Rustls => erase_connector(
+                tcp.with_tls_support_using_rustls(tls.clone())
+                    .with_default_http_connector(self.stage.executor.clone())
+                    .build_connector(),
+            ),
+            backend => {
+                return Err(crate::quic::tls::TlsConfigError::BackendUnavailable(backend).into());
+            }
+        };
+
+        let pool = HttpPooledConnectorConfig::build_default_connector(tcp);
+        Ok(self.with_fallback_connector(super::TlsPoolPolicy::new(pool, tls, backend)))
+    }
+
+    /// Select H3 or a prepared TCP HTTP connector before dispatch.
+    ///
+    /// Supply a TCP pool wrapped in [`super::TlsPoolPolicy`] with the same TLS
+    /// defaults and provider as its dialer. This makes effective policy explicit
+    /// even for custom connector stacks. TLS failures never trigger fallback;
+    /// request bodies are dispatched once, after connection selection.
     pub fn with_fallback_connector<S>(
         self,
-        tcp: S,
-        cache: super::AltSvcCache,
-        selection: super::Http3Selection,
-        attempt_budget: Duration,
+        tcp: super::TlsPoolPolicy<S>,
     ) -> EasyHttpConnectorBuilder<
         DefaultHttpConnector<
             super::Http3SelectionConnector<
                 super::Http3Policy<HttpPooledConnector<T>>,
-                super::TlsPoolPolicy<HttpPooledConnector<S>>,
+                super::TlsPoolPolicy<S>,
             >,
         >,
         PoolStage,
     >
     where
-        S: ConnectorService<ConnectRequest, Connection = T::Connection>,
+        HttpPooledConnector<T>: ConnectorService<ConnectRequest>,
+        S: ConnectorService<ConnectRequest, Connection = <HttpPooledConnector<T> as ConnectorService<ConnectRequest>>::Connection>,
     {
-        let h3 = super::Http3Policy::new(HttpPooledConnectorConfig::build_default_connector(
-            self.connector,
-        ));
-        let tcp =
-            super::TlsPoolPolicy::new(HttpPooledConnectorConfig::build_default_connector(tcp));
+        let h3 = super::Http3Policy::new(
+            HttpPooledConnectorConfig::build_default_connector(self.connector),
+            self.stage.tls,
+            self.stage.backend,
+        );
         EasyHttpConnectorBuilder {
             connector: finalize_http_connector(super::Http3SelectionConnector::new(
                 h3,
                 tcp,
-                cache,
-                selection,
-                attempt_budget,
+                self.stage.cache,
+                self.stage.selection,
+                self.stage.attempt_budget,
             )),
-            _phantom: PhantomData,
+            stage: PoolStage,
         }
     }
 
-    /// Use the ordinary multiplex pool, partitioned by H3 and TLS policy.
+    /// Use the ordinary multiplex pool, partitioned by H3 and effective TLS policy.
     pub fn with_default_connection_pool(
         self,
     ) -> EasyHttpConnectorBuilder<
@@ -988,17 +1100,26 @@ where
     > {
         let pool = HttpPooledConnectorConfig::build_default_connector(self.connector);
         EasyHttpConnectorBuilder {
-            connector: finalize_http_connector(super::Http3Policy::new(pool)),
-            _phantom: PhantomData,
+            connector: finalize_http_connector(super::Http3Policy::new(
+                pool,
+                self.stage.tls,
+                self.stage.backend,
+            )),
+            stage: PoolStage,
         }
     }
+
     /// Build an H3 client without connection reuse.
     pub fn without_connection_pool(
         self,
     ) -> EasyHttpConnectorBuilder<DefaultHttpConnector<super::Http3Policy<T>>, PoolStage> {
         EasyHttpConnectorBuilder {
-            connector: finalize_http_connector(super::Http3Policy::new(self.connector)),
-            _phantom: PhantomData,
+            connector: finalize_http_connector(super::Http3Policy::new(
+                self.connector,
+                self.stage.tls,
+                self.stage.backend,
+            )),
+            stage: PoolStage,
         }
     }
 }

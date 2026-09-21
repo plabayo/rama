@@ -28,7 +28,7 @@ pub mod alpn;
 mod enums;
 
 /// Select a TLS implementation independently of the enabled implementations.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum TlsBackend {
     /// Use the caller's documented default among the available implementations.
     #[default]
@@ -57,7 +57,7 @@ pub struct TlsKeyLog(pub KeyLogIntent);
 
 /// Supported protocol versions, as a list (backends derive min/max as needed,
 /// preserving any GREASE entries in the wire list).
-#[derive(Debug, Clone, Extension)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Extension)]
 #[extension(tags(tls))]
 pub struct TlsSupportedVersions(pub Vec<ProtocolVersion>);
 

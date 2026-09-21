@@ -148,7 +148,7 @@ pub(super) async fn capture_http_entry(
         temp_cleanup.clone(),
         cancel.clone(),
     );
-    tokio::pin!(request_capture);
+    let mut request_capture = std::pin::pin!(request_capture);
     let mut request_artifact = None;
 
     let command = loop {

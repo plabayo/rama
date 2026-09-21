@@ -29,6 +29,7 @@ pub(crate) struct Entry {
     server_stream: Option<u64>,
     server_abort: Option<rama_quic::StreamAbortHandle>,
 }
+
 pub(crate) struct State {
     entries: BTreeMap<u64, Entry>,
     next: u64,
@@ -37,6 +38,7 @@ pub(crate) struct State {
     consumer_taken: bool,
     consumer_closed: bool,
 }
+
 impl State {
     pub(crate) fn new() -> Self {
         Self {
@@ -48,15 +50,19 @@ impl State {
             consumer_closed: false,
         }
     }
+
     pub(crate) fn grant(&mut self, id: u64) {
         self.advertised_max = Some(id);
     }
+
     fn granted(&self, id: u64) -> bool {
         self.advertised_max.is_some_and(|max| id <= max)
     }
+
     pub(crate) fn max_id(&mut self, id: u64) {
         self.peer_max = Some(id);
     }
+
     pub(crate) fn allocate(&mut self, limit: usize, goaway: Option<u64>) -> Result<u64, Error> {
         let id = self.next;
         if id >= limit as u64 || self.peer_max.is_none_or(|max| id > max) || goaway.is_some() {
@@ -69,11 +75,13 @@ impl State {
         self.entries.insert(id, Entry::default());
         Ok(id)
     }
+
     pub(crate) fn mark_promised(&mut self, id: u64) {
         if let Some(entry) = self.entries.get_mut(&id) {
             entry.promised = true;
         }
     }
+
     pub(crate) fn attach_stream(
         &mut self,
         id: u64,
@@ -89,6 +97,7 @@ impl State {
         }
         entry.priority
     }
+
     pub(crate) fn priority(
         &mut self,
         id: u64,
@@ -106,6 +115,7 @@ impl State {
             Ok(None)
         }
     }
+
     pub(crate) fn reject_from(&mut self, limit: u64) {
         for (_, entry) in self.entries.range_mut(limit..) {
             entry.cancelled = true;
@@ -114,16 +124,20 @@ impl State {
             }
         }
     }
+
     pub(crate) fn exhausted(&self, limit: usize) -> bool {
         self.next >= limit as u64
     }
+
     pub(crate) fn capacity(&self, limit: usize) -> bool {
         self.next < limit as u64 && self.peer_max.is_some_and(|max| self.next <= max)
     }
+
     pub(crate) fn cancelled(&self, id: u64) -> bool {
         self.entries.get(&id).is_none_or(|entry| entry.cancelled)
     }
 }
+
 fn invalid_id() -> Error {
     Error::connection(Code::H3_ID_ERROR, "push ID is outside granted quota")
 }
@@ -156,6 +170,7 @@ impl Shared {
         self.push_ready.notify_waiters();
         Ok(())
     }
+
     pub(crate) async fn promise(
         &self,
         carrier: u64,
@@ -203,6 +218,7 @@ impl Shared {
         self.push_ready.notify_waiters();
         Ok(())
     }
+
     pub(crate) fn cancel_push(&self, id: u64, send: bool) -> Result<(), Error> {
         let mut pushes = self.pushes.lock();
         if self.role == Role::Client {
@@ -233,6 +249,7 @@ impl Shared {
         self.push_ready.notify_waiters();
         Ok(())
     }
+
     pub(crate) async fn decode_for_stream(
         &self,
         stream: u64,
@@ -248,10 +265,11 @@ impl Shared {
             self.decode(stream, bytes).await
         }
     }
+
     pub(crate) async fn push_cancelled(&self, id: u64) -> Error {
         loop {
             let changed = self.push_ready.notified();
-            tokio::pin!(changed);
+            let mut changed = std::pin::pin!(changed);
             changed.as_mut().enable();
             if let Some(error) = self.error() {
                 return error;
@@ -271,11 +289,16 @@ impl Shared {
 /// Drop unwanted pushes to cancel them. The quota is a lifetime limit for this
 /// connection, bounding even reordered promises and retained duplicate state.
 pub struct Pushes {
+    lifetime: Arc<super::client::ConnectionLifetime>,
     shared: Arc<Shared>,
     admission: Arc<Semaphore>,
 }
+
 impl Pushes {
-    pub(crate) fn take(shared: Arc<Shared>) -> Option<Self> {
+    pub(crate) fn take(
+        shared: Arc<Shared>,
+        lifetime: Arc<super::client::ConnectionLifetime>,
+    ) -> Option<Self> {
         let mut pushes = shared.pushes.lock();
         if pushes.consumer_taken || shared.config.max_pushes == 0 {
             return None;
@@ -283,15 +306,17 @@ impl Pushes {
         pushes.consumer_taken = true;
         drop(pushes);
         Some(Self {
+            lifetime,
             admission: Arc::new(Semaphore::new(shared.config.max_pushes)),
             shared,
         })
     }
+
     /// Wait for a promise and its push stream, regardless of arrival order.
     pub async fn next(&mut self) -> Result<Push, Error> {
         loop {
             let changed = self.shared.push_ready.notified();
-            tokio::pin!(changed);
+            let mut changed = std::pin::pin!(changed);
             changed.as_mut().enable();
             if let Some(error) = self.shared.error() {
                 return Err(error);
@@ -312,8 +337,9 @@ impl Pushes {
             };
             if let Some((id, Some(request), Some((stream, prefix)))) = ready {
                 let stream_id = u64::from(stream.id());
-                let reader =
+                let mut reader =
                     Reader::with_prefix(stream, self.shared.clone(), stream_id, id, prefix)?;
+                reader.client_lifetime = Some(self.lifetime.clone());
                 let permit = Arc::new(self.admission.clone().acquire_owned().await.map_err(
                     |_error| Error::stream(Code::H3_REQUEST_CANCELLED, "push consumer closed"),
                 )?);
@@ -332,6 +358,7 @@ impl Pushes {
         }
     }
 }
+
 impl Drop for Pushes {
     fn drop(&mut self) {
         // The configured lifetime quota bounds this scan, including not-yet-promised IDs.
@@ -355,15 +382,18 @@ pub struct Push {
     permit: Arc<OwnedSemaphorePermit>,
     lease: Lease,
 }
+
 impl Push {
     /// The promised GET/HEAD request, validated against the associated request origin.
     pub fn request(&self) -> &Request<()> {
         &self.request
     }
+
     /// Change this push's scheduling before or after receiving its response head.
     pub fn priority_handle(&self) -> super::PriorityHandle {
         super::PriorityHandle::new(&self.reader.shared, self.lease.id, true)
     }
+
     /// Receive final response headers and the ordinary streaming body.
     pub async fn response(mut self) -> Result<Response<crate::body::Incoming>, Error> {
         loop {
@@ -388,11 +418,13 @@ impl Push {
         }
     }
 }
+
 pub(crate) struct Lease {
     shared: Arc<Shared>,
     id: u64,
     pub(crate) finished: bool,
 }
+
 impl Lease {
     pub(crate) fn new(shared: Arc<Shared>, id: u64) -> Self {
         Self {
@@ -401,10 +433,12 @@ impl Lease {
             finished: false,
         }
     }
+
     pub(crate) fn id(&self) -> u64 {
         self.id
     }
 }
+
 impl Drop for Lease {
     fn drop(&mut self) {
         if self.finished
@@ -439,6 +473,7 @@ mod tests {
         shared.pushes.lock().grant(1);
         shared
     }
+
     fn promise(path: &'static str) -> Bytes {
         let mut encoder = Encoder::before_peer_settings(EncoderConfig::default());
         encoder
@@ -453,6 +488,7 @@ mod tests {
             )
             .unwrap()
     }
+
     #[tokio::test]
     async fn configured_quota_does_not_authorize_unsolicited_push() {
         let shared = Shared::new(
@@ -472,6 +508,7 @@ mod tests {
             Code::H3_ID_ERROR
         );
     }
+
     #[tokio::test]
     async fn repeated_live_promise_is_compared_after_delivery() {
         let shared = shared();
@@ -494,6 +531,7 @@ mod tests {
             Code::H3_GENERAL_PROTOCOL_ERROR
         );
     }
+
     #[tokio::test]
     async fn reordered_cancellation_does_not_deliver_later_promise() {
         let shared = shared();
@@ -511,6 +549,7 @@ mod tests {
         assert!(pushes.entries[&0].cancelled);
         assert!(pushes.entries[&0].request.is_none());
     }
+
     #[tokio::test]
     async fn cancel_interrupts_qpack_blocked_push_headers() {
         use std::{
@@ -540,6 +579,7 @@ mod tests {
         shared.cancel_push(0, false).unwrap();
         assert_eq!(decode.await.unwrap_err().code(), Code::H3_REQUEST_CANCELLED);
     }
+
     #[test]
     fn server_rejects_cancel_for_allocated_but_unpromised_id() {
         let shared = Shared::new(

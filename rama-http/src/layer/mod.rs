@@ -16,6 +16,7 @@
 //! [`Layer`]: rama_core::Layer
 //! [`Service`]: rama_core::Service
 
+pub mod alt_svc;
 pub mod auth;
 pub mod body_capture;
 pub mod body_limit;

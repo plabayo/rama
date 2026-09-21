@@ -918,7 +918,7 @@ mod tests {
                 if self.0.ready.swap(false, Ordering::AcqRel) {
                     break;
                 }
-                tokio::pin!(notified);
+                let mut notified = std::pin::pin!(notified);
                 std::future::poll_fn(|ctx| {
                     self.0.polls.fetch_add(1, Ordering::AcqRel);
                     notified.as_mut().poll(ctx)
@@ -1093,7 +1093,7 @@ mod tests {
                 }
             };
 
-            assert!(result.is_err());
+            result.unwrap_err();
             let messages = state.messages.lock();
             assert_eq!(messages.len(), 1);
             assert_eq!(messages[0].r#type, WebSocketMessageType::Error);

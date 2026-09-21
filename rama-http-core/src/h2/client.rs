@@ -146,11 +146,11 @@ use rama_core::extensions::{Extensions, ExtensionsRef};
 use rama_core::telemetry::tracing::{self, Instrument, debug, warn};
 use rama_http::proto::HeaderByteLength;
 use rama_http::proto::h2::frame::{EarlyFrame, EarlyFrameStreamContext};
-use rama_http_types::proto::h2::PseudoHeaderOrder;
 use rama_http_types::proto::h2::ext::Protocol;
 use rama_http_types::proto::h2::frame::StreamDependency;
 use rama_http_types::proto::h2::frame::{Headers, Pseudo, Reason, Settings, StreamId};
 use rama_http_types::proto::h2::frame::{SettingOrder, SettingsConfig};
+use rama_http_types::proto::h2::{PseudoHeaderOrder, PseudoHeaderSensitivity};
 use rama_http_types::request;
 use rama_http_types::{HeaderMap, Method, Request, Response, Version};
 use rama_net::extensions::StreamTransformed;
@@ -1877,6 +1877,10 @@ impl Peer {
         {
             pseudo.order = order;
         }
+        pseudo.sensitivity = extensions
+            .get_ref::<PseudoHeaderSensitivity>()
+            .copied()
+            .unwrap_or_default();
 
         if pseudo.scheme.is_none() {
             // If the scheme is not set, then there are a two options.
@@ -1956,11 +1960,63 @@ impl proto::Peer for Peer {
         if !pseudo.order.is_empty() {
             response.extensions().insert(pseudo.order);
         }
+        if pseudo.sensitivity != PseudoHeaderSensitivity::default() {
+            response.extensions().insert(pseudo.sensitivity);
+        }
 
         response.extensions().insert(HeaderByteLength(header_size));
 
         *response.headers_mut() = fields;
 
         Ok(response)
+    }
+}
+
+#[cfg(test)]
+mod pseudo_sensitivity_tests {
+    use super::*;
+    use rama_http_types::{StatusCode, proto::h2::PseudoHeader};
+
+    #[test]
+    fn host_only_request_keeps_sensitive_host_without_synthesizing_authority() {
+        let mut request = Request::builder().uri("/").body(()).unwrap();
+        let mut host = rama_http_types::HeaderValue::from_static("example.com");
+        host.set_sensitive(true);
+        request
+            .headers_mut()
+            .insert(rama_http_types::header::HOST, host);
+        let (frame, _) =
+            Peer::convert_send_message(StreamId::from(1), request, None, true, None, None).unwrap();
+        assert!(frame.pseudo().authority.is_none());
+        assert!(frame.fields()[rama_http_types::header::HOST].is_sensitive());
+    }
+
+    #[test]
+    fn response_retains_pseudo_sensitivity_in_both_directions() {
+        let mut pseudo = Pseudo::response(StatusCode::OK);
+        pseudo.sensitivity.set_sensitive(PseudoHeader::Status, true);
+        let response = <Peer as proto::Peer>::convert_poll_message(
+            pseudo,
+            HeaderMap::new(),
+            0,
+            StreamId::from(1),
+            Extensions::new(),
+        )
+        .unwrap();
+        assert!(
+            response
+                .extensions()
+                .get_ref::<PseudoHeaderSensitivity>()
+                .unwrap()
+                .is_sensitive(PseudoHeader::Status)
+        );
+        let (frame, _) =
+            crate::h2::server::Peer::convert_send_message(StreamId::from(1), response, true);
+        assert!(
+            frame
+                .pseudo()
+                .sensitivity
+                .is_sensitive(PseudoHeader::Status)
+        );
     }
 }

@@ -1333,6 +1333,7 @@ mod tests {
         }
         assert!(q.next().is_none());
     }
+
     #[test]
     fn next_sparse() {
         let mut q = CidQueue::new(initial_cid());
@@ -1684,8 +1685,8 @@ mod tests {
             q.insert(cid_token(i, 0)).unwrap();
         }
         q.set_initial_reset_token(token(0));
-        let here: SocketAddr = "127.0.0.1:4433".parse().unwrap();
-        let there: SocketAddr = "127.0.0.1:4434".parse().unwrap();
+        let here = SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 4433));
+        let there = SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 4434));
         let used = |q: &CidQueue, remote: SocketAddr| -> Vec<ResetToken> {
             q.used_reset_tokens(remote)
                 .iter()
@@ -1809,7 +1810,7 @@ mod tests {
     #[test]
     fn learning_a_token_closes_the_gate_until_the_route_is_confirmed() {
         let mut q = CidQueue::new(initial_cid());
-        let here: SocketAddr = "127.0.0.1:4433".parse().unwrap();
+        let here = SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 4433));
 
         // No token yet: nothing to route, so the handshake sends freely.
         assert!(
@@ -1872,7 +1873,11 @@ mod tests {
         // An acknowledgement for another installation, address or identifier opens nothing.
         q.route_installed(0, here, 6);
         assert!(!q.is_installed(0, here), "a stale generation opens nothing");
-        q.route_installed(0, "127.0.0.1:9999".parse().unwrap(), 7);
+        q.route_installed(
+            0,
+            SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 9999)),
+            7,
+        );
         assert!(!q.is_installed(0, here), "another address opens nothing");
         q.route_installed(9, here, 7);
         assert!(!q.is_installed(0, here), "another identifier opens nothing");

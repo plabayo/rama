@@ -37,7 +37,6 @@ rama-net = { workspace = true, features = ["std"] }
 rama-utils = { workspace = true, features = ["std"] }
 rand = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
-sfv = { workspace = true }
 sha1 = { workspace = true }
 
 [dev-dependencies]

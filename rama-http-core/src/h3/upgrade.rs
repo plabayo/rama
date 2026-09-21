@@ -59,6 +59,7 @@ struct Tunnel {
     write_finished: bool,
     _priority: Option<super::priority::Lease>,
 }
+
 impl Tunnel {
     fn release_finished(&mut self) {
         if self.write_finished && self.reader.phase == Phase::Finished {
@@ -71,17 +72,20 @@ impl Tunnel {
         let shared = &self.reader.shared;
         let id = self.reader.id;
         let priority = ready!(shared.schedule.lock().poll_turn(id, cx));
-        self.writer.priority(i32::from(7 - priority.urgency()))?;
+        self.writer
+            .priority(super::priority::transport_priority(priority))?;
         let result = self.writer.poll_flush(cx);
         shared.schedule.lock().release(id);
         result
     }
 }
+
 impl ExtensionsRef for Tunnel {
     fn extensions(&self) -> &Extensions {
         &self.extensions
     }
 }
+
 impl AsyncRead for Tunnel {
     fn poll_read(
         mut self: Pin<&mut Self>,
@@ -91,7 +95,7 @@ impl AsyncRead for Tunnel {
         if dst.remaining() == 0 {
             return Poll::Ready(Ok(()));
         }
-        for _ in 0..32 {
+        for _ in 0..super::cooperative::OPERATIONS_PER_QUANTUM {
             if !self.buffer.is_empty() {
                 let count = dst.remaining().min(self.buffer.len());
                 dst.put_slice(&self.buffer.split_to(count));
@@ -117,6 +121,7 @@ impl AsyncRead for Tunnel {
         Poll::Pending
     }
 }
+
 impl AsyncWrite for Tunnel {
     fn poll_write(
         mut self: Pin<&mut Self>,
@@ -133,9 +138,11 @@ impl AsyncWrite for Tunnel {
         // Ownership has transferred: report acceptance before any subsequent Pending.
         Poll::Ready(Ok(count))
     }
+
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         self.flush(cx).map_err(io::Error::other)
     }
+
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         ready!(self.flush(cx)).map_err(io::Error::other)?;
         ready!(self.writer.poll_finish(cx)).map_err(io::Error::other)?;

@@ -1,13 +1,11 @@
 //! Select a connection before dispatching the request body exactly once.
 
-use super::{AltSvcCache, alt_svc::canonical};
 use rama_core::{
-    Fork as _, Service,
-    error::BoxErrorExt as _,
-    error::{BoxError, error_chain},
-    extensions::{Extensions, ExtensionsRef},
+    Fork as _, Layer as _, Service, error::BoxErrorExt as _, error::error_chain,
+    extensions::ExtensionsRef,
 };
-use rama_http_types::{Request, Response, Version};
+use rama_http::layer::alt_svc::{AltSvc, AltSvcCache, AltSvcLayer};
+use rama_http_types::Version;
 use rama_net::{
     ProtocolInputExt as _,
     address::HostWithPort,
@@ -16,9 +14,13 @@ use rama_net::{
         EstablishedClientConnection, ProxyRoute,
     },
 };
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// How a client chooses HTTP/3 before dispatching a request.
+///
+/// An explicit HTTP/3 version requirement takes precedence over this policy:
+/// it attempts H3 without requiring an Alt-Svc advertisement and fails if H3
+/// cannot be established, rather than falling back to TCP.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Http3Selection {
     /// Use H3 exclusively; fail if the route or peer cannot provide it.
@@ -40,16 +42,19 @@ pub enum Http3Selection {
 pub struct Http3SelectionConnector<H, T> {
     h3: H,
     tcp: T,
-    cache: AltSvcCache,
+    cache: Option<AltSvcCache>,
     selection: Http3Selection,
     attempt_budget: Duration,
 }
+
 impl<H, T> Http3SelectionConnector<H, T> {
     /// Compose prepared H3 and TCP connector stacks.
+    ///
+    /// Pass no cache to disable advertised alternatives and response learning.
     pub fn new(
         h3: H,
         tcp: T,
-        cache: AltSvcCache,
+        cache: Option<AltSvcCache>,
         selection: Http3Selection,
         attempt_budget: Duration,
     ) -> Self {
@@ -62,12 +67,13 @@ impl<H, T> Http3SelectionConnector<H, T> {
         }
     }
 }
+
 impl<H, T> Service<ConnectRequest> for Http3SelectionConnector<H, T>
 where
     H: ConnectorService<ConnectRequest>,
     T: ConnectorService<ConnectRequest, Connection = H::Connection>,
 {
-    type Output = EstablishedClientConnection<AltSvcConnection<H::Connection>, ConnectRequest>;
+    type Output = EstablishedClientConnection<AltSvc<H::Connection>, ConnectRequest>;
     type Error = ConnectionError;
     async fn serve(&self, input: ConnectRequest) -> Result<Self::Output, Self::Error> {
         let origin = input.authority.clone();
@@ -82,7 +88,7 @@ where
         let required = super::pool::connection_version_requirement(&input);
         let only = self.selection == Http3Selection::Only || required == Some(Version::HTTP_3);
         let alternate = (secure && direct && !input.extensions().contains::<ConnectorTarget>())
-            .then(|| self.cache.lookup(&origin))
+            .then(|| self.cache.as_ref().and_then(|cache| cache.lookup(&origin)))
             .flatten();
         let attempt = only
             || (secure
@@ -104,13 +110,7 @@ where
                 Ok(Ok(EstablishedClientConnection { input, conn })) => {
                     return Ok(EstablishedClientConnection {
                         input,
-                        conn: AltSvcConnection {
-                            inner: conn,
-                            cache: self.cache.clone(),
-                            origin,
-                            alternate,
-                            secure,
-                        },
+                        conn: wrap_connection(conn, self.cache.clone(), origin, alternate, secure),
                     });
                 }
                 Ok(Err(error)) if only || attempt_state.failed() || !fallback_allowed(&error) => {
@@ -131,8 +131,10 @@ where
                     ));
                 }
                 _ => {
-                    if alternate.is_some() {
-                        self.cache.failed(&origin);
+                    if let Some(target) = &alternate
+                        && let Some(cache) = &self.cache
+                    {
+                        cache.failed(&origin, target);
                     }
                 }
             }
@@ -140,16 +142,11 @@ where
         let EstablishedClientConnection { input, conn } = self.tcp.connect(input).await?;
         Ok(EstablishedClientConnection {
             input,
-            conn: AltSvcConnection {
-                inner: conn,
-                cache: self.cache.clone(),
-                origin,
-                alternate: None,
-                secure,
-            },
+            conn: wrap_connection(conn, self.cache.clone(), origin, None, secure),
         })
     }
 }
+
 fn fallback_allowed(error: &ConnectionError) -> bool {
     if error.kind() == ConnectionErrorKind::Timeout {
         return true;
@@ -157,6 +154,7 @@ fn fallback_allowed(error: &ConnectionError) -> bool {
     // TLS alerts, certificate/pin failures and local policy failures never downgrade.
     availability_error(error)
 }
+
 pub(crate) fn availability_error(error: &(dyn std::error::Error + 'static)) -> bool {
     error_chain(error, 32).any(|error| {
         error
@@ -186,79 +184,40 @@ impl AttemptState {
     pub(crate) fn failed(&self) -> bool {
         self.0.load(std::sync::atomic::Ordering::Acquire)
     }
+
     pub(crate) fn reject(&self) {
         self.0.store(true, std::sync::atomic::Ordering::Release);
     }
 }
 
-/// Connection wrapper that learns hints only from a verified logical origin.
-pub struct AltSvcConnection<C> {
-    inner: C,
-    cache: AltSvcCache,
+/// Carry verified transport provenance into the transport-independent middleware.
+fn wrap_connection<C: ExtensionsRef>(
+    conn: C,
+    cache: Option<AltSvcCache>,
     origin: HostWithPort,
     alternate: Option<HostWithPort>,
     secure: bool,
-}
-impl<C: ExtensionsRef> ExtensionsRef for AltSvcConnection<C> {
-    fn extensions(&self) -> &Extensions {
-        self.inner.extensions()
-    }
-}
-impl<C: std::fmt::Debug> std::fmt::Debug for AltSvcConnection<C> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AltSvcConnection")
-            .field("inner", &self.inner)
-            .field("origin", &self.origin)
-            .finish_non_exhaustive()
-    }
-}
-impl<C, B: Send + 'static> Service<Request<B>> for AltSvcConnection<C>
-where
-    C: Service<Request<B>, Output = Response, Error: Into<BoxError>> + ExtensionsRef,
-{
-    type Output = Response;
-    type Error = BoxError;
-    async fn serve(&self, mut request: Request<B>) -> Result<Response, BoxError> {
-        if let Some(target) = &self.alternate {
-            request
-                .headers_mut()
-                .insert("alt-used", target.to_string().parse()?);
-        } else {
-            request.headers_mut().remove("alt-used");
-        }
-        let authenticated = self.secure
-            && canonical(&self.origin).is_some_and(|origin| {
-                self.inner
-                    .extensions()
-                    .get_ref::<rama_tls::client::TlsServerAuthentication>()
-                    .and_then(|auth| auth.0.as_ref())
-                    .and_then(|host| {
-                        canonical(&HostWithPort {
-                            host: host.clone(),
-                            port: origin.port,
-                        })
-                    })
-                    .is_some_and(|identity| identity == origin)
+) -> AltSvc<C> {
+    let authenticated = secure
+        && conn
+            .extensions()
+            .get_ref::<rama_tls::client::TlsServerAuthentication>()
+            .and_then(|auth| auth.0.as_ref())
+            .is_some_and(|identity| {
+                identity.clone().canonicalize() == origin.host.clone().canonicalize()
             });
-        let started = Instant::now();
-        let response = self.inner.serve(request).await.map_err(Into::into)?;
-        if response.status() == rama_http_types::StatusCode::MISDIRECTED_REQUEST {
-            if self.alternate.is_some() {
-                self.cache.clear(&self.origin);
-            }
-        } else if authenticated {
-            self.cache
-                .record_authenticated(&self.origin, response.headers(), started.elapsed());
-        }
-        Ok(response)
-    }
+    AltSvcLayer::new(cache, origin)
+        .with_authenticated(authenticated)
+        .with_alternative(alternate)
+        .layer(conn)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rama_core::{error::BoxError, extensions::Extensions};
     use rama_core::{extensions::Extension, service::service_fn};
-    use rama_http_types::{Body, StatusCode};
+    use rama_http_types::{Body, Request, Response, StatusCode};
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -288,10 +247,12 @@ mod tests {
                 .body(Body::empty())?)
         }
     }
+
     fn input() -> ConnectRequest {
         ConnectRequest::new("example.com:443".parse().unwrap())
             .with_application_protocol(rama_net::Protocol::HTTPS)
     }
+
     fn connection(
         dispatched: Arc<AtomicUsize>,
         authenticated: bool,
@@ -307,6 +268,7 @@ mod tests {
             dispatched,
         }
     }
+
     #[derive(Debug, Clone, Extension)]
     struct Sentinel;
 
@@ -339,7 +301,7 @@ mod tests {
         let connector = Http3SelectionConnector::new(
             h3,
             tcp,
-            cache.clone(),
+            Some(cache.clone()),
             Http3Selection::Prefer,
             Duration::from_secs(1),
         );
@@ -382,7 +344,11 @@ mod tests {
                 }
             }
         });
-        let tcp = TlsPoolPolicy::new(HttpPooledConnectorConfig::build_default_connector(tcp));
+        let tcp = TlsPoolPolicy::new(
+            HttpPooledConnectorConfig::build_default_connector(tcp),
+            rama_tls::client::TlsClientConfig::new(),
+            rama_tls::TlsBackend::Auto,
+        );
         let h3 = service_fn(async |_input: ConnectRequest| {
             std::future::pending::<
                 Result<EstablishedClientConnection<_, ConnectRequest>, ConnectionError>,
@@ -392,7 +358,7 @@ mod tests {
         let connector = Http3SelectionConnector::new(
             h3,
             tcp,
-            AltSvcCache::default(),
+            Some(AltSvcCache::default()),
             Http3Selection::Prefer,
             Duration::from_millis(1),
         );
@@ -446,7 +412,7 @@ mod tests {
         let connector = Http3SelectionConnector::new(
             h3,
             tcp,
-            AltSvcCache::default(),
+            Some(AltSvcCache::default()),
             Http3Selection::Prefer,
             Duration::from_millis(1),
         );
@@ -486,7 +452,7 @@ mod tests {
         let connector = Http3SelectionConnector::new(
             h3,
             tcp,
-            cache,
+            Some(cache),
             Http3Selection::AlternativeServices,
             Duration::from_secs(1),
         );
@@ -507,13 +473,13 @@ mod tests {
             (true, StatusCode::MISDIRECTED_REQUEST),
         ] {
             let cache = AltSvcCache::default();
-            let conn = AltSvcConnection {
-                inner: connection(Arc::default(), authenticated, status),
-                cache: cache.clone(),
-                origin: input().authority,
-                alternate: Some("example.com:8443".parse().unwrap()),
-                secure: true,
-            };
+            let conn = wrap_connection(
+                connection(Arc::default(), authenticated, status),
+                Some(cache.clone()),
+                input().authority,
+                Some("example.com:8443".parse().unwrap()),
+                true,
+            );
             conn.serve(Request::new(Body::from("one body")))
                 .await
                 .unwrap();

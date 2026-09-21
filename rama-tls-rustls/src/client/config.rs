@@ -27,6 +27,49 @@ pub struct RustlsTlsConnectorConfig<'a> {
 }
 
 impl RustlsTlsConnectorConfig<'_> {
+    /// Whether opaque native configuration prevents comparing connection policies.
+    pub fn has_native_overrides(&self) -> bool {
+        // Name every field so additions require an explicit pooling decision.
+        let Self {
+            // These settings are accounted for by the common TLS pool key.
+            alpn: _,
+            versions: _,
+            verify: _,
+            keylog: _,
+            server_name: _,
+            store_chain: _,
+            client_auth: _,
+            server_cert_pins: _,
+            server_trust: _,
+            verifier,
+            modify,
+        } = self;
+
+        verifier.is_some() || modify.is_some()
+    }
+
+    /// Whether a successful handshake establishes the configured server identity.
+    pub fn authenticates_server(&self) -> bool {
+        // New fields must also be reviewed for their effect on authentication.
+        let Self {
+            alpn: _,
+            versions: _,
+            verify,
+            keylog: _,
+            server_name: _,
+            store_chain: _,
+            client_auth: _,
+            server_cert_pins: _,
+            server_trust: _,
+            verifier,
+            modify,
+        } = self;
+
+        verifier.is_none()
+            && modify.is_none()
+            && verify.is_none_or(|verify| verify.0 != rama_tls::client::ServerVerifyMode::Disable)
+    }
+
     /// Build a native TLS client configuration using the supplied cryptographic provider.
     ///
     /// This does not read or install the process-wide default provider. Certificate

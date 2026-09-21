@@ -567,6 +567,57 @@ mod test {
     }
 
     #[test]
+    fn sensitive_pseudo_headers_preserve_never_indexed_on_static_and_dynamic_matches() {
+        use crate::proto::h2::hpack::{BytesStr, Decoder};
+        use std::{io::Cursor, ops::ControlFlow};
+
+        let headers = [
+            Header::Authority(BytesStr::from_static("example.com")),
+            Header::Method(crate::Method::GET),
+            Header::Scheme(BytesStr::from_static("https")),
+            Header::Path(BytesStr::from_static("/")),
+            Header::Protocol(crate::proto::h2::ext::Protocol::from_static("websocket")),
+            Header::Status(crate::StatusCode::OK),
+        ];
+        let mut encoder = Encoder::default();
+        let mut decoder = Decoder::new(4096);
+        for original in headers {
+            // First populate any available dynamic entry, then ensure that neither
+            // it nor a static exact match can remove the never-index requirement.
+            let mut seed = encode(&mut encoder, vec![original.clone()]);
+            decoder
+                .decode(&mut Cursor::new(&mut seed), |_| ControlFlow::Continue(()))
+                .unwrap();
+            for _ in 0..2 {
+                let sensitive = original.clone().with_sensitive(true);
+                let mut encoded = encode(&mut encoder, vec![sensitive.clone()]);
+                assert_eq!(encoded[0] & 0xf0, 0x10);
+                decoder
+                    .decode(&mut Cursor::new(&mut encoded), |decoded| {
+                        assert_eq!(decoded, sensitive.clone().reify().unwrap());
+                        assert!(decoded.is_sensitive());
+                        ControlFlow::Continue(())
+                    })
+                    .unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn sensitive_regular_fields_do_not_use_exact_static_or_dynamic_matches() {
+        for (name, value) in [
+            ("accept-encoding", "gzip, deflate"),
+            ("x-secret", "same-secret"),
+        ] {
+            let mut encoder = Encoder::default();
+            let original = header(name, value);
+            let _seed = encode(&mut encoder, vec![original.clone()]);
+            let encoded = encode(&mut encoder, vec![original.with_sensitive(true)]);
+            assert_eq!(encoded[0] & 0xf0, 0x10);
+        }
+    }
+
+    #[test]
     fn test_content_length_value_not_indexed() {
         let mut encoder = Encoder::default();
         let res = encode(&mut encoder, vec![header("content-length", "1234")]);

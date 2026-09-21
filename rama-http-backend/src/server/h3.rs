@@ -28,21 +28,24 @@ where
     let extensions = input.extensions;
     let (mut connection, driver) = server::handshake(input.input, config)?;
     let driver = driver.run();
-    tokio::pin!(driver);
+    let mut driver = std::pin::pin!(driver);
     let cancelled = async {
         match guard.as_ref() {
             Some(guard) => guard.cancelled().await,
             None => std::future::pending().await,
         }
     };
-    tokio::pin!(cancelled);
+    let mut cancelled = std::pin::pin!(cancelled);
     let mut requests = FuturesUnordered::new();
     let service = RamaHttpService::new(service);
     let mut draining = false;
     loop {
         tokio::select! {
             result = &mut driver => return result.map_err(Into::into),
-            _ = &mut cancelled, if !draining => { connection.shutdown()?; draining = true; }
+            _ = &mut cancelled, if !draining => {
+                connection.shutdown()?;
+                draining = true;
+            }
             accepted = connection.accept(), if !draining => {
                 let stream = match accepted {
                     Ok(stream) => stream,
@@ -55,12 +58,19 @@ where
                     let (request, response) = stream.resolve().await?;
                     request.extensions().insert(Ingress(ingress));
                     let result = service.serve(request).await;
-                    let output = match result { Ok(output) => output, Err(never) => match never {} };
+                    let output = match result {
+                        Ok(output) => output,
+                        Err(never) => match never {},
+                    };
                     response.send_response(output).await
                 });
             }
             result = requests.next(), if !requests.is_empty() => {
-                if let Some(Err(error)) = result && error.scope() == ErrorScope::Connection { return Err(error.into()); }
+                if let Some(Err(error)) = result
+                    && error.scope() == ErrorScope::Connection
+                {
+                    return Err(error.into());
+                }
             }
         }
         if draining && requests.is_empty() {

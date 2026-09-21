@@ -1,14 +1,8 @@
 //! Extensible HTTP priorities (RFC 9218). Unknown dictionary members are validated and ignored.
 
 use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
+use rama_http_types::structured_fields::{BareItem, DictionaryValue, parse_dictionary};
 use rama_http_types::{HeaderName, HeaderValue};
-use sfv::{
-    BareItemFromInput, KeyRef, Parser,
-    visitor::{
-        DictionaryVisitor, EntryVisitor, Ignored, InnerListVisitor, ItemVisitor, ParameterVisitor,
-    },
-};
-use std::convert::Infallible;
 
 /// HTTP urgency and incremental-delivery preference, independent of protocol version.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -16,6 +10,7 @@ pub struct Priority {
     urgency: u8,
     incremental: bool,
 }
+
 impl Default for Priority {
     fn default() -> Self {
         Self {
@@ -24,6 +19,7 @@ impl Default for Priority {
         }
     }
 }
+
 impl Priority {
     /// Construct a priority. Urgency must be in the inclusive range 0–7.
     #[must_use]
@@ -37,25 +33,40 @@ impl Priority {
             })
         }
     }
+
     /// Urgency, with zero being most urgent.
     #[must_use]
     pub const fn urgency(self) -> u8 {
         self.urgency
     }
+
     /// Whether useful processing can proceed incrementally.
     #[must_use]
     pub const fn incremental(self) -> bool {
         self.incremental
     }
+
     /// Parse a complete Priority field value, including unknown structured members.
     /// Invalid known parameter types/ranges use their defaults; malformed syntax fails.
     pub fn parse(value: &[u8]) -> Result<Self, Error> {
         let mut priority = Self::default();
-        Parser::new(value)
-            .parse_dictionary_with_visitor(&mut priority)
-            .map_err(|_error| Error::invalid())?;
+        parse_dictionary(value, |key, value| match key {
+            "u" => {
+                priority.urgency = match value {
+                    DictionaryValue::Item(BareItem::Integer(value @ 0..=7)) => value as u8,
+                    _ => 3,
+                };
+            }
+            "i" => {
+                priority.incremental =
+                    matches!(value, DictionaryValue::Item(BareItem::Boolean(true)));
+            }
+            _ => (),
+        })
+        .map_err(|_error| Error::invalid())?;
         Ok(priority)
     }
+
     /// Canonical field value. All possible combinations use static storage.
     #[must_use]
     pub fn field_value(self) -> HeaderValue {
@@ -71,73 +82,12 @@ impl Priority {
     }
 }
 
-struct Value<'a> {
-    priority: &'a mut Priority,
-    urgency: bool,
-}
-impl<'de> DictionaryVisitor<'de> for &mut Priority {
-    type Out = ();
-    type Error = Infallible;
-    fn entry(&mut self, key: &'de KeyRef) -> Result<impl EntryVisitor<'de>, Infallible> {
-        // Structured dictionaries use the last occurrence, including invalid typed values.
-        Ok(match key.as_str() {
-            "u" => {
-                self.urgency = 3;
-                Some(Value {
-                    priority: self,
-                    urgency: true,
-                })
-            }
-            "i" => {
-                self.incremental = false;
-                Some(Value {
-                    priority: self,
-                    urgency: false,
-                })
-            }
-            _ => None,
-        })
-    }
-    fn finish(self) -> Result<(), Infallible> {
-        Ok(())
-    }
-}
-impl<'de> EntryVisitor<'de> for Value<'_> {
-    type Error = Infallible;
-    fn item(self) -> Result<impl ItemVisitor<'de>, Infallible> {
-        Ok(self)
-    }
-    fn inner_list(self) -> Result<impl InnerListVisitor<'de>, Infallible> {
-        Ok(Ignored)
-    }
-}
-impl<'de> ItemVisitor<'de> for Value<'_> {
-    type Out = ();
-    type Error = Infallible;
-    fn bare_item(
-        self,
-        item: BareItemFromInput<'de>,
-    ) -> Result<impl ParameterVisitor<'de, Out = ()>, Infallible> {
-        if self.urgency {
-            if let Some(value) = item
-                .as_integer()
-                .and_then(|v| u8::try_from(v).ok())
-                .filter(|v| *v <= 7)
-            {
-                self.priority.urgency = value;
-            }
-        } else if let Some(value) = item.as_boolean() {
-            self.priority.incremental = value;
-        }
-        Ok(Ignored)
-    }
-}
 impl TypedHeader for Priority {
     fn name() -> &'static HeaderName {
-        static NAME: HeaderName = HeaderName::from_static("priority");
-        &NAME
+        &rama_http_types::header::PRIORITY
     }
 }
+
 impl HeaderDecode for Priority {
     fn decode<'i, I: Iterator<Item = &'i HeaderValue>>(values: &mut I) -> Result<Self, Error> {
         let first = values.next().ok_or_else(Error::invalid)?;
@@ -152,6 +102,7 @@ impl HeaderDecode for Priority {
         Self::parse(&combined)
     }
 }
+
 impl HeaderEncode for Priority {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
         values.extend(std::iter::once(self.field_value()));
@@ -161,6 +112,44 @@ impl HeaderEncode for Priority {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn repeated_field_lines_follow_dictionary_rules() {
+        let first = HeaderValue::from_static("u=1, i");
+        let second = HeaderValue::from_static("u=7, i=?0");
+        assert_eq!(
+            Priority::decode(&mut [&first, &second].into_iter()).unwrap(),
+            Priority::new(7, false).unwrap()
+        );
+        let malformed = HeaderValue::from_static("x=(1; p=)");
+        Priority::decode(&mut [&first, &malformed].into_iter()).unwrap_err();
+        let empty = HeaderValue::from_static("");
+        Priority::decode(&mut [&first, &empty].into_iter()).unwrap_err();
+    }
+
+    #[test]
+    fn extension_types_do_not_change_priority() {
+        for extension in [
+            "x=@1234567890",
+            "x=%\"%c3%bc\"",
+            "x=:aQ==:",
+            "x=1.234;p=?0",
+            "x=(token \"value\");p",
+        ] {
+            assert_eq!(
+                Priority::parse(format!("u=2, i, {extension}").as_bytes()).unwrap(),
+                Priority::new(2, true).unwrap()
+            );
+        }
+        for value in [
+            "u=-1", "u=8", "u=2.0", "u=?1", "u=@2", "u=()", "i=1", "i=()",
+        ] {
+            assert_eq!(
+                Priority::parse(value.as_bytes()).unwrap(),
+                Priority::default()
+            );
+        }
+    }
+
     #[test]
     fn structured_priority_syntax_and_last_value() {
         assert_eq!(

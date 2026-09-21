@@ -8,18 +8,21 @@ use rama_core::{
     futures::{StreamExt as _, stream},
     rt::Executor,
 };
+use rama_http_core::h3::connection::Config;
 use rama_http_types::{Version, conn::TargetHttpVersion};
 use rama_net::{
     ConnectorTargetInputExt, ProtocolInputExt,
     client::{
-        ConnectRequest, ConnectionError, ConnectionErrorKind, ConnectorTargetStream,
-        EstablishedClientConnection, EstablishedProxyRoute, ProxyRoute, race_connect,
+        ConnectRequest, ConnectionError, ConnectionErrorKind, ConnectorService as _,
+        ConnectorTargetStream, EstablishedClientConnection, EstablishedProxyRoute, ProxyRoute,
+        race_connect,
     },
     conn::MaxConcurrency,
     stream::SocketInfo,
     tls::ApplicationProtocol,
 };
-use std::{marker::PhantomData, net::SocketAddr};
+use rama_tls::{TlsBackend, client::TlsClientConfig};
+use std::{marker::PhantomData, net::SocketAddr, sync::Arc};
 
 /// Establish authenticated HTTP/3 connections on a reusable QUIC endpoint.
 ///
@@ -31,23 +34,27 @@ use std::{marker::PhantomData, net::SocketAddr};
 pub struct Http3Connector<B> {
     endpoint: rama_quic::Endpoint,
     tls: rama_tls::client::TlsClientConfig,
-    options: rama_quic::tls::TlsOptions,
+    backend: TlsBackend,
+    transport: Arc<rama_quic::TransportConfig>,
     config: rama_http_core::h3::connection::Config,
     executor: Executor,
     _body: PhantomData<fn(B)>,
 }
+
 impl<B> Clone for Http3Connector<B> {
     fn clone(&self) -> Self {
         Self {
             endpoint: self.endpoint.clone(),
             tls: self.tls.clone(),
-            options: self.options,
+            backend: self.backend,
+            transport: self.transport.clone(),
             config: self.config.clone(),
             executor: self.executor.clone(),
             _body: PhantomData,
         }
     }
 }
+
 impl<B> std::fmt::Debug for Http3Connector<B> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Http3Connector")
@@ -55,81 +62,169 @@ impl<B> std::fmt::Debug for Http3Connector<B> {
             .finish_non_exhaustive()
     }
 }
+
+/// Configure an HTTP/3 connector, including its reusable UDP endpoint.
+///
+/// The supplied executor owns endpoint and connection tasks. Pass an executor
+/// tied to the application's graceful shutdown when those tasks should drain
+/// with the application. A custom endpoint can be supplied when its socket or
+/// lifecycle is managed separately.
+#[derive(Debug)]
+pub struct Http3ConnectorBuilder<B> {
+    endpoint: Option<rama_quic::Endpoint>,
+    tls: TlsClientConfig,
+    backend: TlsBackend,
+    config: Config,
+    executor: Executor,
+    _body: PhantomData<fn(B)>,
+}
+
 impl<B> Http3Connector<B> {
-    /// Use an endpoint and TLS configuration supplied by the application.
-    /// Transport receive limits come from `config`. Request TLS extensions
-    /// override `tls`, following the ordinary Rama TLS connector convention.
-    pub fn new(
-        endpoint: rama_quic::Endpoint,
-        tls: rama_tls::client::TlsClientConfig,
-        options: rama_quic::tls::TlsOptions,
-        config: rama_http_core::h3::connection::Config,
-        executor: Executor,
-    ) -> Self {
-        Self {
-            endpoint,
-            tls,
-            options,
-            config,
+    /// Configure a connector with default TLS verification and HTTP/3 limits.
+    #[must_use]
+    pub fn builder(executor: Executor) -> Http3ConnectorBuilder<B> {
+        Http3ConnectorBuilder {
+            endpoint: None,
+            tls: TlsClientConfig::default_http(),
+            backend: TlsBackend::Auto,
+            config: Config::default(),
             executor,
             _body: PhantomData,
         }
     }
+
+    /// Executor shared by the endpoint and connection drivers.
+    #[must_use]
+    pub fn executor(&self) -> &Executor {
+        &self.executor
+    }
+
+    /// TLS defaults that pool policy must combine with request overrides.
+    #[must_use]
+    pub fn tls_config(&self) -> &TlsClientConfig {
+        &self.tls
+    }
+
+    /// Provider selection used for both establishment and pool policy.
+    #[must_use]
+    pub fn tls_backend(&self) -> TlsBackend {
+        self.backend
+    }
 }
+
+impl<B> Http3ConnectorBuilder<B> {
+    rama_utils::macros::generate_set_and_with! {
+        /// Reuse an application-managed endpoint instead of binding a new socket.
+        pub fn endpoint(mut self, endpoint: rama_quic::Endpoint) -> Self {
+            self.endpoint = Some(endpoint);
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set TLS defaults; request TLS extensions can override these settings.
+        pub fn tls_config(mut self, tls: TlsClientConfig) -> Self {
+            self.tls = tls;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Select the TLS provider. Auto follows Rama QUIC's provider preference.
+        pub fn tls_backend(mut self, backend: TlsBackend) -> Self {
+            self.backend = backend;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Configure HTTP/3 limits and their corresponding QUIC receive budgets.
+        pub fn config(mut self, config: Config) -> Self {
+            self.config = config;
+            self
+        }
+    }
+
+    /// Validate the limits and bind a default outbound endpoint when needed.
+    pub async fn build(self) -> Result<Http3Connector<B>, BoxError> {
+        let mut transport = rama_quic::TransportConfig::default();
+        self.config.configure_transport(&mut transport)?;
+        let backend = rama_quic::tls::TlsOptions::default()
+            .with_backend(self.backend)
+            .resolve_backend()?;
+
+        let endpoint = match self.endpoint {
+            Some(endpoint) => endpoint,
+            None => {
+                // Reuse QUIC's dual-stack socket policy; fall back when the host
+                // cannot bind IPv6. Both attempts use the same graceful executor.
+                match rama_quic::Endpoint::bind_client(
+                    self.executor.clone(),
+                    rama_net::address::SocketAddress::default_ipv6(0),
+                )
+                .await
+                {
+                    Ok(endpoint) => endpoint,
+                    Err(error) => {
+                        rama_core::telemetry::tracing::debug!(%error, "binding IPv4 H3 endpoint after IPv6 bind failed");
+                        rama_quic::Endpoint::bind_client(
+                            self.executor.clone(),
+                            rama_net::address::SocketAddress::default_ipv4(0),
+                        )
+                        .await?
+                    }
+                }
+            }
+        };
+
+        Ok(Http3Connector {
+            endpoint,
+            tls: self.tls,
+            backend,
+            transport: Arc::new(transport),
+            config: self.config,
+            executor: self.executor,
+            _body: PhantomData,
+        })
+    }
+}
+
 fn invalid(message: &'static str) -> ConnectionError {
     ConnectionError::local(
         BoxError::from_static_str(message),
         ConnectionErrorKind::InvalidInput,
     )
 }
-impl<B: Send + 'static> Service<ConnectRequest> for Http3Connector<B> {
-    type Output = EstablishedClientConnection<HttpClientService<B>, ConnectRequest>;
-    type Error = ConnectionError;
 
-    async fn serve(&self, input: ConnectRequest) -> Result<Self::Output, Self::Error> {
-        if input
-            .extensions()
-            .get_ref::<ProxyRoute>()
-            .and_then(ProxyRoute::proxy_address)
-            .is_some()
-        {
-            return Err(invalid("HTTP/3 is not available over this TCP proxy route"));
-        }
-        if input.protocol().is_none_or(|p| !p.is_secure()) {
-            return Err(invalid("HTTP/3 requires a secure origin"));
-        }
-        validate_version(&input)?;
+/// Values derived once from the effective TLS configuration for one dial.
+struct PreparedTls {
+    config: rama_quic::ClientConfig,
+    server_name: String,
+    authenticated_identity: Option<rama_net::address::Host>,
+    capture_chain: bool,
+}
+
+impl<B> Http3Connector<B> {
+    fn prepare_tls(&self, input: &ConnectRequest) -> Result<PreparedTls, ConnectionError> {
         let tls = self.tls.clone().with_overrides(input.extensions());
         let server_identity = tls
             .as_extensions()
             .get_ref::<rama_tls::client::TlsServerName>()
             .map_or_else(|| input.authority.host.clone(), |name| name.0.clone());
         let authenticated_identity =
-            if rama_quic::tls::client_security_policy(tls.as_extensions()).authenticates_server {
-                Some(
-                    tls.as_extensions()
-                        .get_ref::<rama_tls::client::TlsServerName>()
-                        .map_or_else(|| input.authority.host.clone(), |name| name.0.clone()),
-                )
-            } else {
-                None
-            };
+            rama_quic::tls::client_authenticates_server(tls.as_extensions(), self.backend)
+                .then(|| server_identity.clone());
         let capture_chain = tls
             .as_extensions()
             .get_ref::<rama_tls::client::TlsStoreServerCertChain>()
             .is_some_and(|capture| capture.0);
         let tls = tls.with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
-        let mut tls = rama_quic::ClientConfig::try_from_rama_tls(&tls, self.options)
-            .map_err(|error| ConnectionError::local(error, ConnectionErrorKind::InvalidInput))?;
-        let mut transport = rama_quic::TransportConfig::default();
-        self.config
-            .configure_transport(&mut transport)
-            .map_err(|error| ConnectionError::local(error, ConnectionErrorKind::InvalidInput))?;
-        tls.set_transport_config(std::sync::Arc::new(transport));
-        let tls = &tls;
-        let target = input
-            .connector_target()
-            .ok_or_else(|| invalid("HTTP/3 connector target is missing"))?;
+        let mut tls = rama_quic::ClientConfig::try_from_rama_tls(
+            &tls,
+            rama_quic::tls::TlsOptions::default().with_backend(self.backend),
+        )
+        .map_err(|error| ConnectionError::local(error, ConnectionErrorKind::InvalidInput))?;
+        tls.set_transport_config(self.transport.clone());
         let server_name = if let Ok(ip) = server_identity.try_as_ip() {
             ip.to_string()
         } else {
@@ -138,7 +233,24 @@ impl<B: Send + 'static> Service<ConnectRequest> for Http3Connector<B> {
                 .map_err(|_error| invalid("invalid TLS origin host"))?
                 .to_string()
         };
-        let server_name = &server_name;
+        Ok(PreparedTls {
+            config: tls,
+            server_name,
+            authenticated_identity,
+            capture_chain,
+        })
+    }
+
+    async fn connect(
+        &self,
+        input: &ConnectRequest,
+        prepared: &PreparedTls,
+    ) -> Result<(SocketAddr, rama_quic::Connection), ConnectionError> {
+        let tls = &prepared.config;
+        let server_name = prepared.server_name.as_str();
+        let target = input
+            .connector_target()
+            .ok_or_else(|| invalid("HTTP/3 connector target is missing"))?;
         let attempt = input
             .extensions()
             .get_ref::<super::h3_selection::AttemptState>()
@@ -170,7 +282,7 @@ impl<B: Send + 'static> Service<ConnectRequest> for Http3Connector<B> {
             }
             result
         };
-        let (address, connection) = if let Ok(ip) = target.host.try_as_ip() {
+        if let Ok(ip) = target.host.try_as_ip() {
             race_connect(
                 stream::once(async { Ok(SocketAddr::new(ip, target.port)) }),
                 1,
@@ -199,16 +311,21 @@ impl<B: Send + 'static> Service<ConnectRequest> for Http3Connector<B> {
                 ConnectionError::transport(error, ConnectionErrorKind::Unavailable)
             };
             error.context("HTTP/3 connection establishment")
-        })?;
-        input
-            .extensions()
-            .insert(TargetHttpVersion(Version::HTTP_3));
+        })
+    }
+
+    fn connection_extensions(
+        &self,
+        connection: &rama_quic::Connection,
+        address: SocketAddr,
+        prepared: PreparedTls,
+    ) -> rama_core::extensions::Extensions {
         // Connection metadata must not inherit a request store: attaching it back
         // as Egress would form a recursive extension chain and retain that request.
         let extensions = rama_core::extensions::Extensions::new();
         extensions.insert(TargetHttpVersion(Version::HTTP_3));
         extensions.insert(rama_tls::client::TlsServerAuthentication(
-            authenticated_identity,
+            prepared.authenticated_identity,
         ));
         extensions.insert(EstablishedProxyRoute::Direct);
         extensions.insert(MaxConcurrency::new(self.config.max_requests));
@@ -217,11 +334,40 @@ impl<B: Send + 'static> Service<ConnectRequest> for Http3Connector<B> {
             address.into(),
         ));
         if let Some(mut parameters) = connection.handshake_data() {
-            if capture_chain {
+            if prepared.capture_chain {
                 parameters.peer_certificate_chain = connection.peer_identity();
             }
             extensions.insert(parameters);
         }
+        extensions
+    }
+}
+
+impl<B: Send + 'static> Service<ConnectRequest> for Http3Connector<B> {
+    type Output = EstablishedClientConnection<HttpClientService<B>, ConnectRequest>;
+    type Error = ConnectionError;
+
+    async fn serve(&self, input: ConnectRequest) -> Result<Self::Output, Self::Error> {
+        if input
+            .extensions()
+            .get_ref::<ProxyRoute>()
+            .and_then(ProxyRoute::proxy_address)
+            .is_some()
+        {
+            return Err(invalid("HTTP/3 is not available over this TCP proxy route"));
+        }
+        if input.protocol().is_none_or(|p| !p.is_secure()) {
+            return Err(invalid("HTTP/3 requires a secure origin"));
+        }
+        validate_version(&input)?;
+
+        let prepared = self.prepare_tls(&input)?;
+        let (address, connection) = self.connect(&input, &prepared).await?;
+        let extensions = self.connection_extensions(&connection, address, prepared);
+        input
+            .extensions()
+            .insert(TargetHttpVersion(Version::HTTP_3));
+
         let conn = HttpClientService::http3(
             ServiceInput {
                 input: connection,
@@ -235,73 +381,59 @@ impl<B: Send + 'static> Service<ConnectRequest> for Http3Connector<B> {
     }
 }
 
-/// Apply H3 intent before DNS, route selection and pool identity calculation.
+/// Apply H3 intent before DNS, route selection and pool selection.
 #[derive(Clone, Debug)]
 pub struct Http3Policy<S> {
-    inner: S,
-    identity: TlsPoolIdentity,
+    inner: TlsPoolPolicy<S>,
 }
+
 impl<S> Http3Policy<S> {
-    /// Wrap the complete H3 connector stack, including its pool.
-    pub fn new(inner: S) -> Self {
+    /// Wrap the complete H3 connector stack using its effective TLS defaults.
+    pub fn new(
+        inner: S,
+        tls: rama_tls::client::TlsClientConfig,
+        backend: rama_tls::TlsBackend,
+    ) -> Self {
         Self {
-            inner,
-            identity: TlsPoolIdentity::new(),
+            inner: TlsPoolPolicy::new(inner, tls, backend),
         }
     }
 }
 
-#[derive(Clone, Debug, rama_core::extensions::Extension)]
-pub(crate) struct TlsPoolIdentity(std::sync::Arc<()>);
-impl TlsPoolIdentity {
-    fn new() -> Self {
-        Self(std::sync::Arc::new(()))
-    }
-    fn apply(&self, extensions: &rama_core::extensions::Extensions) {
-        // Until TLS policies have stable identities, isolate every request that
-        // overrides security settings from all previously pooled connections.
-        let overridden = rama_quic::tls::client_security_policy(extensions).has_overrides;
-        extensions.insert(if overridden {
-            Self::new()
-        } else {
-            self.clone()
-        });
-    }
-}
-impl PartialEq for TlsPoolIdentity {
-    fn eq(&self, other: &Self) -> bool {
-        std::sync::Arc::ptr_eq(&self.0, &other.0)
-    }
-}
-impl Eq for TlsPoolIdentity {}
-impl std::hash::Hash for TlsPoolIdentity {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        std::hash::Hash::hash(&std::sync::Arc::as_ptr(&self.0), state);
-    }
-}
-/// Isolate connection pools by connector and per-request TLS security policy.
-/// Apply this outside the pool so overrides are considered before lookup.
+/// Select pooled connections by their effective TLS security policy.
+/// Apply this outside the pool so request overrides are considered before lookup.
 #[derive(Clone, Debug)]
 pub struct TlsPoolPolicy<S> {
     inner: S,
-    identity: TlsPoolIdentity,
+    tls: rama_tls::client::TlsClientConfig,
+    backend: rama_tls::TlsBackend,
 }
+
 impl<S> TlsPoolPolicy<S> {
-    /// Wrap a pooled connector without changing its HTTP version or transport.
-    pub fn new(inner: S) -> Self {
+    /// Wrap a pooled connector with the same TLS defaults and backend as its dialer.
+    pub fn new(
+        inner: S,
+        tls: rama_tls::client::TlsClientConfig,
+        backend: rama_tls::TlsBackend,
+    ) -> Self {
         Self {
             inner,
-            identity: TlsPoolIdentity::new(),
+            tls,
+            backend,
         }
     }
 }
+
 impl<S: rama_net::client::ConnectorService<ConnectRequest>> Service<ConnectRequest>
     for TlsPoolPolicy<S>
 {
     type Output = EstablishedClientConnection<S::Connection, ConnectRequest>;
     type Error = ConnectionError;
+
     async fn serve(&self, input: ConnectRequest) -> Result<Self::Output, Self::Error> {
-        self.identity.apply(input.extensions());
+        let effective = input.extensions().with_base(self.tls.as_extensions());
+        let key = rama_quic::tls::client_pool_key(&effective, self.backend);
+        input.extensions().insert(key);
         self.inner.connect(input).await
     }
 }
@@ -318,6 +450,7 @@ fn validate_version(input: &ConnectRequest) -> Result<(), ConnectionError> {
     }
     Ok(())
 }
+
 impl<S> Service<ConnectRequest> for Http3Policy<S>
 where
     S: rama_net::client::ConnectorService<ConnectRequest>,
@@ -327,7 +460,6 @@ where
     async fn serve(&self, input: ConnectRequest) -> Result<Self::Output, Self::Error> {
         validate_version(&input)?;
         let extensions = input.extensions();
-        self.identity.apply(extensions);
         extensions.insert(TargetHttpVersion(Version::HTTP_3));
         extensions.insert(rama_net::client::ConnectorTransportProtocol(
             rama_net::transport::TransportProtocol::Udp,
@@ -346,6 +478,7 @@ mod tests {
         ConnectRequest::new("example.com:443".parse().unwrap())
             .with_application_protocol(rama_net::Protocol::HTTPS)
     }
+
     #[tokio::test]
     async fn tcp_policy_isolates_overrides_without_changing_transport() {
         let inspect = service_fn(async |input: ConnectRequest| {
@@ -364,7 +497,11 @@ mod tests {
                 },
             })
         });
-        let policy = TlsPoolPolicy::new(inspect);
+        let policy = TlsPoolPolicy::new(
+            inspect,
+            rama_tls::client::TlsClientConfig::new(),
+            rama_tls::TlsBackend::Auto,
+        );
         let cached = policy.serve(request()).await.unwrap().conn.input;
         assert_eq!(cached, policy.serve(request()).await.unwrap().conn.input);
         let changed = || {
@@ -378,7 +515,7 @@ mod tests {
         };
         let fresh = policy.serve(changed()).await.unwrap().conn.input;
         assert_ne!(cached, fresh);
-        assert_ne!(fresh, policy.serve(changed()).await.unwrap().conn.input);
+        assert_eq!(fresh, policy.serve(changed()).await.unwrap().conn.input);
     }
 
     #[tokio::test]
@@ -397,7 +534,11 @@ mod tests {
                 },
             })
         });
-        let policy = Http3Policy::new(inspect);
+        let policy = Http3Policy::new(
+            inspect,
+            rama_tls::client::TlsClientConfig::new(),
+            rama_tls::TlsBackend::Auto,
+        );
         let first = policy.serve(request()).await.unwrap().conn.input;
         let second = policy.serve(request()).await.unwrap().conn.input;
         assert_eq!(first, second);
@@ -418,7 +559,7 @@ mod tests {
         };
         let override_id = policy.serve(overridden()).await.unwrap().conn.input;
         assert_ne!(first, override_id);
-        assert_ne!(
+        assert_eq!(
             override_id,
             policy.serve(overridden()).await.unwrap().conn.input
         );

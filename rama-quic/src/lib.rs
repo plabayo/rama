@@ -65,42 +65,107 @@ pub use proto::{KEY_MATERIAL_SIZE, StatelessResetKey};
 /// carries only what QUIC adds to it. The provider behind it follows this crate's features, and
 /// no Rustls type appears in any signature here.
 pub mod tls {
-    /// Classify TLS extensions for connection reuse and authenticated-origin metadata.
-    /// Conservatively includes native overrides for every compiled provider.
-    pub fn client_security_policy(
+    fn selected_backend(backend: rama_tls::TlsBackend) -> Option<rama_tls::TlsBackend> {
+        TlsOptions::default()
+            .with_backend(backend)
+            .resolve_backend()
+            .ok()
+    }
+
+    /// Capture the effective TLS policy for pool selection.
+    ///
+    /// Layer request settings over connector defaults before calling this. Native
+    /// overrides of the selected provider require a fresh connection when their
+    /// behavior cannot be compared. Auto follows connection establishment's choice.
+    pub fn client_pool_key(
         extensions: &rama_core::extensions::Extensions,
-    ) -> rama_tls::client::TlsClientSecurityPolicy {
-        #[cfg_attr(not(any(feature = "rustls", feature = "boring")), expect(unused_mut))]
-        let mut policy = rama_tls::client::TlsClientSecurityPolicy::from_extensions(extensions);
-        #[cfg(feature = "rustls")]
-        {
-            if extensions.contains::<rama_tls_rustls::client::RustlsServerCertVerifier>()
-                || extensions.contains::<rama_tls_rustls::client::ModifyRustlsClientConfig>()
-            {
-                policy.has_overrides = true;
-                policy.authenticates_server = false;
+        backend: rama_tls::TlsBackend,
+    ) -> rama_tls::client::TlsClientPoolKey {
+        let selected = selected_backend(backend);
+        let mut key = rama_tls::client::TlsClientPoolKey::from_extensions(
+            extensions,
+            selected.unwrap_or(backend),
+        );
+        let native_overrides = match selected {
+            #[cfg(feature = "rustls")]
+            Some(rama_tls::TlsBackend::Rustls) => {
+                rama_tls_rustls::client::RustlsTlsConnectorConfig::from_extensions(extensions)
+                    .has_native_overrides()
             }
+            #[cfg(feature = "boring")]
+            Some(rama_tls::TlsBackend::Boring) => {
+                rama_tls_boring::client::BoringTlsConnectorConfig::from_extensions(extensions)
+                    .has_native_overrides()
+            }
+            _ => true,
+        };
+        if native_overrides {
+            key.disable_reuse();
         }
-        #[cfg(feature = "boring")]
-        {
-            use rama_tls_boring::client::*;
-            policy.has_overrides |= extensions.contains::<BoringServerVerifyCertStore>()
-                || extensions.contains::<BoringCipherSuites>()
-                || extensions.contains::<BoringSupportedGroups>()
-                || extensions.contains::<BoringSignatureSchemes>()
-                || extensions.contains::<BoringMinVersion>()
-                || extensions.contains::<BoringMaxVersion>()
-                || extensions.contains::<BoringGrease>()
-                || extensions.contains::<BoringAlps>()
-                || extensions.contains::<BoringExtensionOrder>()
-                || extensions.contains::<BoringCertCompression>()
-                || extensions.contains::<BoringDelegatedCredentials>()
-                || extensions.contains::<BoringRecordSizeLimit>()
-                || extensions.contains::<BoringEncryptedClientHello>()
-                || extensions.contains::<BoringOcspStapling>()
-                || extensions.contains::<BoringSignedCertTimestamps>();
+        key
+    }
+
+    /// Summarize whether the selected provider establishes server identity.
+    #[cfg_attr(
+        not(any(feature = "rustls", feature = "boring")),
+        expect(unused_variables)
+    )]
+    pub fn client_authenticates_server(
+        extensions: &rama_core::extensions::Extensions,
+        backend: rama_tls::TlsBackend,
+    ) -> bool {
+        match selected_backend(backend) {
+            #[cfg(feature = "rustls")]
+            Some(rama_tls::TlsBackend::Rustls) => {
+                rama_tls_rustls::client::RustlsTlsConnectorConfig::from_extensions(extensions)
+                    .authenticates_server()
+            }
+            #[cfg(feature = "boring")]
+            Some(rama_tls::TlsBackend::Boring) => {
+                rama_tls_boring::client::BoringTlsConnectorConfig::from_extensions(extensions)
+                    .authenticates_server()
+            }
+            _ => false,
         }
-        policy
+    }
+
+    #[cfg(all(
+        test,
+        feature = "boring",
+        feature = "rustls",
+        any(feature = "aws-lc", feature = "ring")
+    ))]
+    mod policy_tests {
+        use super::*;
+        use rama_core::extensions::Extensions;
+        use rama_tls::{
+            TlsBackend,
+            client::{ServerVerifyMode, TlsServerVerify},
+        };
+
+        #[test]
+        fn native_hooks_only_affect_the_selected_provider() {
+            let extensions = Extensions::new();
+            extensions.insert(rama_tls_rustls::client::ModifyRustlsClientConfig::new(Ok));
+            assert!(client_pool_key(&extensions, TlsBackend::Boring).is_reusable());
+            assert!(client_authenticates_server(&extensions, TlsBackend::Boring));
+            assert!(!client_pool_key(&extensions, TlsBackend::Rustls).is_reusable());
+            assert!(!client_authenticates_server(
+                &extensions,
+                TlsBackend::Rustls
+            ));
+            assert_eq!(
+                client_pool_key(&extensions, TlsBackend::Auto),
+                client_pool_key(&extensions, TlsBackend::Rustls)
+            );
+            assert!(!client_authenticates_server(&extensions, TlsBackend::Auto));
+
+            extensions.insert(TlsServerVerify(ServerVerifyMode::Disable));
+            assert!(!client_authenticates_server(
+                &extensions,
+                TlsBackend::Boring
+            ));
+        }
     }
 
     /// Interfaces for supplying a QUIC TLS 1.3 implementation.

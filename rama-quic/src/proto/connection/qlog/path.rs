@@ -198,7 +198,7 @@ mod tests {
     fn tuple_and_cid_schema() {
         let event = PathEvent::TupleAssigned(TupleAssigned {
             tuple_id: TupleId::Default,
-            tuple_remote: Some("[::1]:443".parse::<SocketAddr>().unwrap().into()),
+            tuple_remote: Some(SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, 443)).into()),
             tuple_local: None,
         });
         let value = serde_json::to_value(event).unwrap();

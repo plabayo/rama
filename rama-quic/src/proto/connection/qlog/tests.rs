@@ -5,6 +5,7 @@ use rama_utils::octets;
 use serde_json::{Value, json};
 use std::{
     io,
+    net::{Ipv4Addr, SocketAddr},
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
@@ -297,7 +298,7 @@ async fn qlog_writer_failure_disables_further_writes_and_preserves_first_error()
         io::ErrorKind::BrokenPipe
     );
     assert!(!ConnectionQlog::from(Some(stream.clone())).is_enabled());
-    assert!(stream.shutdown().await.is_err());
+    stream.shutdown().await.unwrap_err();
     crate::qlog::QlogConfig::default()
         .start()
         .expect_err("starting a recorder requires an output destination");
@@ -399,7 +400,7 @@ async fn qlog_recovery_metrics_emit_initial_snapshot_then_changes() {
         .unwrap();
     let sink = ConnectionQlog::from(Some(stream.clone()));
     let mut path = PathData::new(
-        "127.0.0.1:443".parse().unwrap(),
+        SocketAddr::from((Ipv4Addr::LOCALHOST, 443)),
         None,
         false,
         None,
@@ -514,7 +515,7 @@ async fn rejected_recovery_snapshot_is_retried_and_unchanged_metrics_remain_supp
     let start = Instant::now();
     let group = ConnectionId::new(&[1]);
     let mut path = PathData::new(
-        "127.0.0.1:443".parse().unwrap(),
+        SocketAddr::from((Ipv4Addr::LOCALHOST, 443)),
         None,
         false,
         None,
@@ -524,8 +525,7 @@ async fn rejected_recovery_snapshot_is_retried_and_unchanged_metrics_remain_supp
     );
     // A control command fills the channel without consuming event reservations. Admission
     // must reject before committing the path's recovery snapshot.
-    let flush = recorder.flush();
-    tokio::pin!(flush);
+    let mut flush = std::pin::pin!(recorder.flush());
     tokio::select! {
         biased;
         result = &mut flush => panic!("header output is blocked: {result:?}"),
@@ -567,8 +567,7 @@ async fn rejected_lifecycle_events_do_not_commit_connection_logging_state() {
     entered.await.unwrap();
     let connection = pair.client_conn_mut(client);
     connection.qlog_sink = ConnectionQlog::from(Some(recorder.clone()));
-    let flush = recorder.flush();
-    tokio::pin!(flush);
+    let mut flush = std::pin::pin!(recorder.flush());
     tokio::select! {
         biased;
         result = &mut flush => panic!("header output is blocked: {result:?}"),
@@ -637,7 +636,7 @@ async fn recording_toggles_refresh_recovery_snapshot_without_redundant_state_upd
     let now = Instant::now();
     let group = ConnectionId::new(&[1]);
     let mut path = PathData::new(
-        "127.0.0.1:443".parse().unwrap(),
+        SocketAddr::from((Ipv4Addr::LOCALHOST, 443)),
         None,
         false,
         None,
@@ -709,7 +708,7 @@ async fn dynamic_filter_generation_refreshes_previously_suppressed_recovery_snap
     let now = Instant::now();
     let group = ConnectionId::new(&[1]);
     let mut path = PathData::new(
-        "127.0.0.1:443".parse().unwrap(),
+        SocketAddr::from((Ipv4Addr::LOCALHOST, 443)),
         None,
         false,
         None,
@@ -770,7 +769,7 @@ fn post_build_recovery_snapshot_rejection_retries_complete_snapshot() {
     let now = Instant::now();
     let group = ConnectionId::new(&[1]);
     let mut path = PathData::new(
-        "127.0.0.1:443".parse().unwrap(),
+        SocketAddr::from((Ipv4Addr::LOCALHOST, 443)),
         None,
         false,
         None,
@@ -834,7 +833,7 @@ async fn migration_with_unusable_fallback_does_not_log_abandonment() {
         .unwrap();
     let connection = pair.client_conn_mut(client);
     connection.qlog_sink = ConnectionQlog::from(Some(recorder.clone()));
-    let moved_to = "127.0.0.7:443".parse().unwrap();
+    let moved_to = SocketAddr::from(([127, 0, 0, 7], 443));
     connection.migrate(now, moved_to, None, PreviousPath::Keep(PrevCid::Gone));
     assert!(connection.prev_path.is_some());
     while connection.rem_cids.next().is_some() {}

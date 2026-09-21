@@ -12,6 +12,11 @@
 
 pub use rama_quic_proto::{VarInt, VarIntDecoder};
 
+// H2 and H3 share pseudo-header vocabulary, ordering and sensitivity metadata.
+pub use super::h2::{
+    PseudoHeader, PseudoHeaderOrder, PseudoHeaderOrderIter, PseudoHeaderSensitivity,
+};
+
 mod error;
 pub use error::Code;
 

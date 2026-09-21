@@ -49,7 +49,7 @@ impl HttpConnIdentifier {
 /// HTTP request semantics.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct HttpConnId {
-    tls_identity: Option<super::h3::TlsPoolIdentity>,
+    tls_policy: Option<rama_tls::client::TlsClientPoolKey>,
     network: BasicConnId,
     required_version: Option<Version>,
     http_proxy_mode: Option<HttpProxyModeRequirement>,
@@ -62,6 +62,12 @@ enum HttpProxyModeRequirement {
 }
 
 impl ConnID for HttpConnId {
+    fn is_reusable(&self) -> bool {
+        self.tls_policy
+            .as_ref()
+            .is_none_or(|policy| policy.is_reusable())
+    }
+
     #[cfg(feature = "opentelemetry")]
     fn attributes(&self) -> impl Iterator<Item = rama_core::telemetry::opentelemetry::KeyValue> {
         self.network.attributes()
@@ -91,9 +97,9 @@ impl ReqToConnID<ConnectRequest> for HttpConnIdentifier {
         }
 
         Ok(HttpConnId {
-            tls_identity: input
+            tls_policy: input
                 .extensions()
-                .get_ref::<super::h3::TlsPoolIdentity>()
+                .get_ref::<rama_tls::client::TlsClientPoolKey>()
                 .cloned(),
             network,
             required_version: connection_version_requirement(input),

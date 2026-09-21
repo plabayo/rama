@@ -3,6 +3,7 @@
 mod pseudo_header;
 pub use pseudo_header::{
     InvalidPseudoHeaderStr, PseudoHeader, PseudoHeaderOrder, PseudoHeaderOrderIter,
+    PseudoHeaderSensitivity,
 };
 
 pub mod ext;

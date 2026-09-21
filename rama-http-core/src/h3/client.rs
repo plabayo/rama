@@ -25,20 +25,33 @@ pub struct SendRequest<B> {
     connection: rama_quic::Connection,
     shared: Arc<Shared>,
     admission: Arc<Semaphore>,
+    lifetime: Arc<ConnectionLifetime>,
     executor: Executor,
     _body: PhantomData<fn(B)>,
 }
+// The driver owns a transport handle too, so transport reference counting alone
+// cannot detect when the application has stopped using this connection.
+pub(crate) struct ConnectionLifetime(rama_quic::Connection);
+impl Drop for ConnectionLifetime {
+    fn drop(&mut self) {
+        self.0
+            .close(Code::H3_NO_ERROR.value() as u32, b"HTTP/3 client released");
+    }
+}
+
 impl<B> Clone for SendRequest<B> {
     fn clone(&self) -> Self {
         Self {
             connection: self.connection.clone(),
             shared: self.shared.clone(),
             admission: self.admission.clone(),
+            lifetime: self.lifetime.clone(),
             executor: self.executor.clone(),
             _body: PhantomData,
         }
     }
 }
+
 impl<B> std::fmt::Debug for SendRequest<B> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("H3SendRequest")
@@ -77,6 +90,7 @@ pub fn handshake<B>(
     let driver = Driver::new(connection.clone(), shared.clone(), Role::Client);
     Ok((
         SendRequest {
+            lifetime: Arc::new(ConnectionLifetime(connection.clone())),
             connection,
             shared,
             admission,
@@ -95,7 +109,7 @@ impl<B> SendRequest<B> {
 
     /// Take the opt-in push consumer once per connection, shared across sender clones.
     pub fn take_pushes(&self) -> Option<super::push::Pushes> {
-        super::push::Pushes::take(self.shared.clone())
+        super::push::Pushes::take(self.shared.clone(), self.lifetime.clone())
     }
 
     /// Whether the underlying connection is terminal.
@@ -170,6 +184,7 @@ where
         let id = u64::from(send.id());
         let mut writer = Writer::new(send);
         let mut reader = Reader::new(recv, self.shared.clone(), id);
+        reader.client_lifetime = Some(self.lifetime.clone());
         if self.shared.goaway().is_some_and(|limit| id >= limit) {
             return Err(Error::stream(
                 Code::H3_REQUEST_REJECTED,
@@ -221,10 +236,12 @@ where
         }
         let shared = self.shared.clone();
         let upload_permit = permit.clone();
+        let upload_lifetime = self.lifetime.clone();
         let remaining = headers::content_length(request.headers())?;
         let (_, request_body) = request.into_parts();
         let task = self.executor.spawn_task(async move {
             let _permit = upload_permit;
+            let _lifetime = upload_lifetime;
             let result = body::send(writer, request_body, shared.clone(), id, remaining).await;
             if let Err(error) = result
                 && error.scope() == super::qpack::ErrorScope::Connection
@@ -246,7 +263,7 @@ where
         loop {
             let fields = {
                 let head = reader.headers();
-                tokio::pin!(head);
+                let mut head = std::pin::pin!(head);
                 loop {
                     tokio::select! {
                         error = self.shared.rejected(Some(id)) => return Err(error),

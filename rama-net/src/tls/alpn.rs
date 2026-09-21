@@ -101,7 +101,7 @@ enum_builder! {
 }
 
 /// ALPN protocols to offer during a TLS handshake.
-#[derive(Clone, Debug, PartialEq, Eq, Extension)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Extension)]
 #[extension(tags(tls))]
 pub struct TlsAlpn(pub SmallVec<[ApplicationProtocol; 2]>);
 

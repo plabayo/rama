@@ -312,6 +312,17 @@ impl HeaderValue {
         self.as_ref()
     }
 
+    /// Whether the value starts or ends with SP or HTAB.
+    ///
+    /// HTTP/1 permits this optional whitespace around field content, whereas
+    /// HTTP/2 and HTTP/3 require it to be removed before encoding. Safe
+    /// constructors already reject NUL, CR and LF, so a typed value only needs
+    /// this constant-time boundary check for those protocols.
+    #[inline]
+    pub fn has_outer_whitespace(&self) -> bool {
+        has_outer_whitespace(self.as_bytes())
+    }
+
     /// Mark that the header value represents sensitive information.
     ///
     /// # Examples
@@ -563,6 +574,25 @@ mod try_from_header_name_tests {
             HeaderValue::from_bytes(b"upgrade").unwrap()
         );
     }
+}
+
+/// Check raw field-value constraints shared by HTTP/2 and HTTP/3.
+///
+/// RFC 9113 Section 8.2.1 and RFC 9114 Section 4.2 reject NUL, CR, LF and
+/// leading or trailing SP/HTAB. This also applies to pseudo-header values,
+/// before their individual syntax is validated. Immediately after constructing
+/// a value through a checked [`HeaderValue`] constructor, use
+/// [`HeaderValue::has_outer_whitespace`] to avoid scanning the octets again.
+/// Values supplied by other code can use the unchecked constructor, so validate
+/// them fully at an outgoing protocol boundary.
+#[inline]
+pub fn is_valid_h2_h3_field_value(value: &[u8]) -> bool {
+    !has_outer_whitespace(value) && memchr::memchr3(0, b'\r', b'\n', value).is_none()
+}
+
+#[inline]
+fn has_outer_whitespace(value: &[u8]) -> bool {
+    matches!(value.first(), Some(b' ' | b'\t')) || matches!(value.last(), Some(b' ' | b'\t'))
 }
 
 const fn is_valid_ascii(b: u8) -> bool {
@@ -909,4 +939,30 @@ fn test_debug() {
     let mut sensitive = HeaderValue::from_static("password");
     sensitive.set_sensitive(true);
     assert_eq!("Sensitive", format!("{:?}", sensitive));
+}
+
+#[test]
+fn h2_h3_value_constraints_cover_every_octet_and_position() {
+    assert!(is_valid_h2_h3_field_value(b""));
+    for length in [1, 3, 64, 257] {
+        for position in 0..length {
+            for byte in 0..=u8::MAX {
+                let mut value = vec![b'a'; length];
+                value[position] = byte;
+                let forbidden = matches!(byte, 0 | b'\r' | b'\n')
+                    || ((position == 0 || position == length - 1) && matches!(byte, b' ' | b'\t'));
+                assert_eq!(is_valid_h2_h3_field_value(&value), !forbidden);
+                if let Ok(typed) = HeaderValue::from_bytes(&value) {
+                    assert_eq!(typed.has_outer_whitespace(), forbidden);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn quoted_field_values_remain_valid() {
+    let value = HeaderValue::from_static("\"quoted field value\"");
+    assert!(!value.has_outer_whitespace());
+    assert!(is_valid_h2_h3_field_value(value.as_bytes()));
 }

@@ -27,6 +27,7 @@ pub(crate) struct Reader<R: RecvStream> {
     pub(crate) shared: Arc<Shared>,
     pub(crate) id: u64,
     pub(crate) phase: Phase,
+    pub(crate) client_lifetime: Option<Arc<super::client::ConnectionLifetime>>,
     frames: FrameDecoder,
     pub(crate) push_id: Option<u64>,
     pub(crate) origin: Option<rama_net::uri::Uri>,
@@ -46,6 +47,7 @@ impl<R: RecvStream> Reader<R> {
             shared,
             id,
             phase: Phase::Headers,
+            client_lifetime: None,
             frames,
             origin: None,
             push_id: None,
@@ -103,7 +105,7 @@ impl<R: RecvStream> Reader<R> {
         if self.phase == Phase::Finished {
             return Poll::Ready(Ok(None));
         }
-        for _ in 0..32 {
+        for _ in 0..super::cooperative::OPERATIONS_PER_QUANTUM {
             if let Some(promise) = &mut self.promise {
                 ready!(promise.as_mut().poll(cx))?;
                 self.promise = None;
@@ -206,6 +208,7 @@ impl<R: RecvStream> Reader<R> {
         result.map_err(|error| self.reject(error))
     }
 }
+
 impl<R: RecvStream> Drop for Reader<R> {
     fn drop(&mut self) {
         if self.phase != Phase::Finished {
@@ -225,7 +228,7 @@ pub(crate) fn encode_trailers(
     shared.encode(
         id,
         headers
-            .iter()
+            .ordered_iter()
             .map(|(name, value)| super::qpack::EncodeField::from_header(name, value)),
     )
 }

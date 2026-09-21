@@ -8,10 +8,8 @@ use rama_core::bytes::Buf;
 use rama_core::error::BoxError;
 use rama_core::telemetry::tracing::{debug, trace};
 use rama_http::StreamingBody;
-use rama_http_types::header::{
-    CONNECTION, KEEP_ALIVE, PROXY_CONNECTION, TE, TRANSFER_ENCODING, UPGRADE,
-};
-use rama_http_types::{HeaderMap, HeaderName};
+use rama_http_types::HeaderMap;
+use rama_http_types::header::{CONNECTION, TE, hop_by_hop::CONNECTION_SPECIFIC_HEADERS};
 use std::task::ready;
 
 pub(crate) mod ping;
@@ -26,13 +24,6 @@ pub(crate) use self::server::Server;
 /// Default initial stream window size defined in HTTP2 spec.
 pub(crate) const SPEC_WINDOW_SIZE: u32 = 65_535;
 
-// List of connection headers from RFC 9110 Section 7.6.1
-//
-// TE headers are allowed in HTTP/2 requests as long as the value is "trailers", so they're
-// tested separately.
-static CONNECTION_HEADERS: [&HeaderName; 4] =
-    [&KEEP_ALIVE, &PROXY_CONNECTION, &TRANSFER_ENCODING, &UPGRADE];
-
 #[derive(Clone, Copy)]
 enum MessageKind {
     Request,
@@ -40,7 +31,11 @@ enum MessageKind {
 }
 
 fn strip_connection_headers(headers: &mut HeaderMap, kind: MessageKind) {
-    for header in CONNECTION_HEADERS {
+    for header in CONNECTION_SPECIFIC_HEADERS {
+        // Consume Connection last: its nominations are needed below.
+        if *header == CONNECTION {
+            continue;
+        }
         if headers.remove(header).is_some() {
             debug!("Connection header illegal in HTTP/2: {}", header.as_str());
         }

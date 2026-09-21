@@ -8,7 +8,7 @@ use rustc_hash::FxHashMap;
 use std::{
     convert::TryInto,
     mem,
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV6},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
     sync::Arc,
 };
 
@@ -62,7 +62,7 @@ use wasm_bindgen_test::wasm_bindgen_test as test;
 #[test]
 fn version_negotiate_server() {
     let _guard = subscribe();
-    let client_addr = "[::2]:7890".parse().unwrap();
+    let client_addr = SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 2], 7890));
     let mut server = Endpoint::new(
         Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
         Some(Arc::new(server_config())),
@@ -104,7 +104,7 @@ fn version_negotiate_server() {
 #[test]
 fn version_negotiate_client() {
     let _guard = subscribe();
-    let server_addr = "[::2]:7890".parse().unwrap();
+    let server_addr = SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 2], 7890));
     // Configure client to use empty CIDs so we can easily hardcode a server version negotiation
     // packet
     let cid_generator_factory: fn() -> Box<dyn ConnectionIdGenerator> =
@@ -3685,7 +3685,7 @@ fn big_cert_and_key() -> (CertificateDer<'static>, PrivateKeyDer<'static>) {
 #[test]
 fn malformed_token_len() {
     let _guard = subscribe();
-    let client_addr = "[::2]:7890".parse().unwrap();
+    let client_addr = SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 2], 7890));
     let mut server = Endpoint::new(
         Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
         Some(Arc::new(server_config())),
@@ -4976,7 +4976,7 @@ fn oversized_datagrams_trigger_unblock() {
 #[test]
 fn reject_short_idcid() {
     let _guard = subscribe();
-    let client_addr = "[::2]:7890".parse().unwrap();
+    let client_addr = SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 2], 7890));
     let mut server = Endpoint::new(
         Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
         Some(Arc::new(server_config())),
@@ -5001,7 +5001,7 @@ fn reject_short_idcid() {
 fn preferred_address() {
     let _guard = subscribe();
     let mut server_config = server_config();
-    server_config.set_preferred_address_v6("[::1]:65535".parse().unwrap());
+    server_config.set_preferred_address_v6(SocketAddrV6::new(Ipv6Addr::LOCALHOST, 65535, 0, 0));
 
     let mut pair = Pair::new(
         Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
@@ -7247,7 +7247,7 @@ fn a_declined_preferred_address_is_never_probed() {
 fn a_preferred_address_of_another_family_is_not_probed() {
     let _guard = subscribe();
     let mut config = server_config();
-    config.set_preferred_address_v4("127.0.0.1:65535".parse().unwrap());
+    config.set_preferred_address_v4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 65535));
     let mut pair = Pair::new(
         Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
         config,
