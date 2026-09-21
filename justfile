@@ -27,6 +27,12 @@ export RUSTDOCFLAGS := \
     } else { \
         "-D warnings" \
     }
+export RAMA_DEV_DENY_C_WARNINGS := \
+    if env_var_or_default("ALLOW_WARNINGS", "false") == "true" { \
+        "0" \
+    } else { \
+        "1" \
+    }
 export RUST_LOG := "debug"
 
 # Install a cargo tool only when it is missing. The probe needs a shell of its
