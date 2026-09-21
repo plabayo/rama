@@ -17,12 +17,14 @@ use rama_http::{
 use rama_http_headers::ProxyAuthorization;
 use rama_http_types::{Version, proxy::PlaintextHttpProxyMode};
 use rama_net::{
-    AuthorityInputExt, HttpVersionInputExt, Protocol, ProtocolInputExt, TargetHttpVersionInputExt,
+    AuthorityInputExt, ConnectorTargetInputExt, HttpVersionInputExt, Protocol, ProtocolInputExt,
+    TargetHttpVersionInputExt,
     client::{
         ConnectionError, ConnectionErrorKind, ConnectorService, ConnectorTarget,
         ConnectorTransportProtocol, EstablishedClientConnection, EstablishedProxyRoute, ProxyRoute,
     },
     http::TargetHttpVersion,
+    tls::RequireTls,
     transport::TransportProtocol,
     user::ProxyCredential,
 };
@@ -214,17 +216,29 @@ where
                 ConnectionErrorKind::InvalidInput,
             )
         })?;
+        // Preserve the selected endpoint before the proxy becomes the dial target.
+        // HTTP authority and TLS authentication still use the logical origin.
+        let destination = input.connector_target().ok_or_else(|| {
+            ConnectionError::local(
+                BoxError::from_static_str("http proxy connector: destination missing from input"),
+                ConnectionErrorKind::InvalidInput,
+            )
+        })?;
+        let requires_tls = input.extensions().contains::<RequireTls>();
         let app_protocol = input.protocol().cloned();
         let app_is_http = app_protocol.as_ref().is_some_and(Protocol::is_http_based);
-        let app_is_plaintext_http = app_protocol
-            .as_ref()
-            .is_some_and(|protocol| protocol.is_http_based() && !protocol.is_secure());
-        let use_forward_proxy = input
-            .extensions()
-            .get_ref::<PlaintextHttpProxyMode>()
-            .copied()
-            .unwrap_or_default()
-            .should_forward(app_protocol.as_ref());
+        let app_is_plaintext_http = !requires_tls
+            && app_protocol
+                .as_ref()
+                .is_some_and(|protocol| protocol.is_http_based() && !protocol.is_secure());
+        let use_forward_proxy = !requires_tls
+            && !input.extensions().contains::<ConnectorTarget>()
+            && input
+                .extensions()
+                .get_ref::<PlaintextHttpProxyMode>()
+                .copied()
+                .unwrap_or_default()
+                .should_forward(app_protocol.as_ref());
         let proxy_is_secure = proxy_info
             .protocol
             .as_ref()
@@ -326,7 +340,7 @@ where
         // CONNECT is a separate proxy exchange: deliberately omit request
         // extensions, including telemetry, so origin Protocol/TargetHttpVersion
         // metadata cannot change the proxy handshake.
-        let mut connector = InnerHttpProxyConnector::new(authority.clone(), Extensions::new())
+        let mut connector = InnerHttpProxyConnector::new(destination.into(), Extensions::new())
             .map_err(|error| {
                 ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
                     .context("http proxy connector: build CONNECT request")
@@ -836,6 +850,54 @@ mod tests {
                     Some(&ProxyRoute::Proxy(proxy.clone())),
                 );
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn selected_service_is_tunneled_without_changing_the_origin() {
+        for (require_tls, select_alternative) in [(false, true), (true, true), (true, false)] {
+            let destination = if select_alternative {
+                "alternative.example:8443"
+            } else {
+                "example.com:80"
+            };
+            let proxy: ProxyAddress = "http://proxy.example:8080".parse().unwrap();
+            let http_server = HttpServer::auto(Executor::default()).service(service_fn(
+                move |req: Request| async move {
+                    assert_eq!(req.method(), rama_http_types::Method::CONNECT);
+                    assert_eq!(req.uri().to_string(), destination);
+                    assert_eq!(req.headers()[rama_http_types::header::HOST], destination);
+                    Ok::<_, Infallible>(Response::new(Body::empty()))
+                },
+            ));
+            let connector = HttpProxyConnector::required(MockConnectorService::new(move || {
+                http_server.clone()
+            }));
+            let input = ConnectRequest::new(HostWithPort::example_domain_http())
+                .with_application_protocol(Protocol::HTTP);
+            input.extensions.insert(ProxyRoute::Proxy(proxy.clone()));
+            input.extensions.insert(PlaintextHttpProxyMode::Forward);
+            if select_alternative {
+                input
+                    .extensions
+                    .insert(ConnectorTarget(destination.parse().unwrap()));
+            }
+            if require_tls {
+                input.extensions.insert(RequireTls);
+            }
+            let established = connector.serve(input).await.unwrap();
+            assert_eq!(established.input.protocol(), Some(&Protocol::HTTP));
+            assert_eq!(
+                established.input.authority().unwrap(),
+                HostWithPort::example_domain_http().into(),
+            );
+            assert_eq!(
+                established
+                    .conn
+                    .extensions()
+                    .get_ref::<EstablishedProxyRoute>(),
+                Some(&EstablishedProxyRoute::Tunnel(proxy)),
+            );
         }
     }
 

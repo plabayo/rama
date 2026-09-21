@@ -36,6 +36,8 @@ pub struct RequestVersionAdapter<S> {
 }
 
 impl<S> RequestVersionAdapter<S> {
+    rama_utils::macros::define_inner_service_accessors!();
+
     pub fn new(inner: S) -> Self {
         Self {
             inner,

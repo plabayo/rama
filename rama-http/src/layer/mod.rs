@@ -35,6 +35,7 @@ pub mod har;
 pub mod header_config;
 pub mod header_from_str_config;
 pub mod header_option_value;
+pub mod http_service;
 pub mod into_response;
 pub mod map_request_body;
 pub mod map_response_body;

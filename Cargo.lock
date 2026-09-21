@@ -4421,6 +4421,7 @@ dependencies = [
  "rama-inspect",
  "rama-json",
  "rama-net",
+ "rama-tls",
  "rama-utils",
  "rand 0.10.2",
  "rawzip",

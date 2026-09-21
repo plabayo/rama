@@ -1,5 +1,11 @@
 //! HTTP connection utilities.
 
+mod http_service;
+pub use http_service::{
+    EstablishedHttpService, HttpOrigin, HttpServiceCandidate, HttpServiceCandidates,
+    HttpServiceSource, SelectedHttpService,
+};
+
 use std::time::Duration;
 
 use crate::proto::h2::{PseudoHeaderOrder, frame::EarlyFrameCapture, frame::Settings};

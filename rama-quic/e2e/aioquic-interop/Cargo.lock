@@ -1590,6 +1590,7 @@ dependencies = [
  "rama-http-types",
  "rama-json",
  "rama-net",
+ "rama-tls",
  "rama-utils",
  "rand",
  "serde",

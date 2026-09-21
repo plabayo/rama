@@ -1,6 +1,6 @@
 //! HTTP/3 establishment using Rama DNS candidates and the existing multiplex pool.
 
-use super::HttpClientService;
+use super::{HttpClientService, HttpTlsPoolConfig, TlsPoolPolicy};
 use rama_core::{
     Service, ServiceInput,
     error::{BoxError, BoxErrorExt as _},
@@ -253,7 +253,7 @@ impl<B> Http3Connector<B> {
             .ok_or_else(|| invalid("HTTP/3 connector target is missing"))?;
         let attempt = input
             .extensions()
-            .get_ref::<super::h3_selection::AttemptState>()
+            .get_ref::<rama_http::layer::http_service::HttpServiceAttempt>()
             .cloned()
             .unwrap_or_default();
         let attempt = &attempt;
@@ -276,7 +276,7 @@ impl<B> Http3Connector<B> {
             }
             .await;
             if let Err(error) = &result
-                && !super::h3_selection::availability_error(error.as_ref())
+                && !availability_error(error.as_ref())
             {
                 attempt.reject();
             }
@@ -362,7 +362,10 @@ impl<B: Send + 'static> Service<ConnectRequest> for Http3Connector<B> {
         validate_version(&input)?;
 
         let prepared = self.prepare_tls(&input)?;
-        let (address, connection) = self.connect(&input, &prepared).await?;
+        // Keep QUIC address-race and handshake state out of enclosing pool and
+        // service-selection futures. Allocate only when opening a connection;
+        // either transport's pool hits bypass this boundary entirely.
+        let (address, connection) = Box::pin(self.connect(&input, &prepared)).await?;
         let extensions = self.connection_extensions(&connection, address, prepared);
         input
             .extensions()
@@ -394,47 +397,21 @@ impl<S> Http3Policy<S> {
         tls: rama_tls::client::TlsClientConfig,
         backend: rama_tls::TlsBackend,
     ) -> Self {
+        let classify: fn(&rama_core::extensions::Extensions) -> rama_tls::client::TlsClientPoolKey =
+            match backend {
+                TlsBackend::Auto => {
+                    |extensions| rama_quic::tls::client_pool_key(extensions, TlsBackend::Auto)
+                }
+                TlsBackend::Rustls => {
+                    |extensions| rama_quic::tls::client_pool_key(extensions, TlsBackend::Rustls)
+                }
+                TlsBackend::Boring => {
+                    |extensions| rama_quic::tls::client_pool_key(extensions, TlsBackend::Boring)
+                }
+            };
         Self {
-            inner: TlsPoolPolicy::new(inner, tls, backend),
+            inner: TlsPoolPolicy::new(inner, HttpTlsPoolConfig::new(tls, classify)),
         }
-    }
-}
-
-/// Select pooled connections by their effective TLS security policy.
-/// Apply this outside the pool so request overrides are considered before lookup.
-#[derive(Clone, Debug)]
-pub struct TlsPoolPolicy<S> {
-    inner: S,
-    tls: rama_tls::client::TlsClientConfig,
-    backend: rama_tls::TlsBackend,
-}
-
-impl<S> TlsPoolPolicy<S> {
-    /// Wrap a pooled connector with the same TLS defaults and backend as its dialer.
-    pub fn new(
-        inner: S,
-        tls: rama_tls::client::TlsClientConfig,
-        backend: rama_tls::TlsBackend,
-    ) -> Self {
-        Self {
-            inner,
-            tls,
-            backend,
-        }
-    }
-}
-
-impl<S: rama_net::client::ConnectorService<ConnectRequest>> Service<ConnectRequest>
-    for TlsPoolPolicy<S>
-{
-    type Output = EstablishedClientConnection<S::Connection, ConnectRequest>;
-    type Error = ConnectionError;
-
-    async fn serve(&self, input: ConnectRequest) -> Result<Self::Output, Self::Error> {
-        let effective = input.extensions().with_base(self.tls.as_extensions());
-        let key = rama_quic::tls::client_pool_key(&effective, self.backend);
-        input.extensions().insert(key);
-        self.inner.connect(input).await
     }
 }
 
@@ -468,6 +445,33 @@ where
     }
 }
 
+// Classify QUIC address-race failures at the transport boundary. Generic HTTP
+// service selection consumes ConnectionError classifications, never QUIC errors.
+const MAX_ERROR_CHAIN_DEPTH: usize = 32;
+
+fn availability_error(error: &(dyn std::error::Error + 'static)) -> bool {
+    rama_core::error::error_chain(error, MAX_ERROR_CHAIN_DEPTH).any(|error| {
+        error
+            .downcast_ref::<rama_quic::ConnectionError>()
+            .is_some_and(|error| {
+                matches!(
+                    error,
+                    rama_quic::ConnectionError::TimedOut
+                        | rama_quic::ConnectionError::VersionMismatch { .. }
+                )
+            })
+            || error.downcast_ref::<std::io::Error>().is_some_and(|error| {
+                matches!(
+                    error.kind(),
+                    std::io::ErrorKind::TimedOut
+                        | std::io::ErrorKind::ConnectionRefused
+                        | std::io::ErrorKind::NetworkUnreachable
+                        | std::io::ErrorKind::HostUnreachable
+                )
+            })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -499,8 +503,9 @@ mod tests {
         });
         let policy = TlsPoolPolicy::new(
             inspect,
-            rama_tls::client::TlsClientConfig::new(),
-            rama_tls::TlsBackend::Auto,
+            HttpTlsPoolConfig::new(rama_tls::client::TlsClientConfig::new(), |extensions| {
+                rama_tls::client::TlsClientPoolKey::from_extensions(extensions, TlsBackend::Rustls)
+            }),
         );
         let cached = policy.serve(request()).await.unwrap().conn.input;
         assert_eq!(cached, policy.serve(request()).await.unwrap().conn.input);

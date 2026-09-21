@@ -34,7 +34,7 @@ use rama_http::{
 
 pub mod builder;
 #[doc(inline)]
-pub use builder::EasyHttpConnectorBuilder;
+pub use builder::{EasyHttpConnectorBuilder, Http3Selection};
 
 #[cfg(feature = "socks5")]
 mod proxy_connector;
@@ -118,8 +118,13 @@ impl EasyHttpWebClient<(), (), ()> {
 pub type DefaultHttpWebClient<Body = crate::http::Body> = EasyHttpWebClient<
     Body,
     EstablishedClientConnection<
-        BindBodyToConn<
-            crate::net::client::pool::MultiplexedConnection<HttpClientService<Body>, HttpConnId>,
+        rama_http::layer::alt_svc::AltSvc<
+            BindBodyToConn<
+                crate::net::client::pool::MultiplexedConnection<
+                    HttpClientService<Body>,
+                    HttpConnId,
+                >,
+            >,
         >,
         Request<Body>,
     >,

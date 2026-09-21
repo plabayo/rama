@@ -1,8 +1,8 @@
-//! Learn HTTP alternative services from authenticated HTTPS responses.
+//! Learn HTTP alternative services from origin responses.
 //!
 //! [RFC 7838] allows an origin to advertise alternative protocols, hosts and
-//! ports; the mechanism is independent of HTTP/3. The current [`AltSvcCache`]
-//! retains HTTP/3 alternatives for the H3-capable client.
+//! ports; the mechanism is independent of HTTP/3. [`AltSvcCache`] retains
+//! all advertised protocols, and connector selection applies client capabilities.
 //!
 //! The transport supplies the logical origin and whether it authenticated that
 //! origin. The middleware records response hints and sets the typed `Alt-Used`
@@ -21,30 +21,35 @@ use rama_core::{
     extensions::{Extensions, ExtensionsRef},
 };
 use rama_http_headers::{AltUsed, HeaderMapExt as _, TypedHeader as _};
+use rama_http_types::conn::{HttpOrigin, HttpServiceCandidates, HttpServiceSource};
 use rama_net::address::HostWithPort;
 use rama_utils::macros::define_inner_service_accessors;
 use std::time::Instant;
 
-/// Learn alternatives for one logical HTTPS origin over an established connection.
+/// Learn alternatives for one logical HTTP origin over an established connection.
 ///
-/// Learning is disabled until [`Self::with_authenticated`] is explicitly enabled
-/// by a transport that verified the origin. Passing no cache disables learning.
+/// HTTPS learning requires [`Self::with_authenticated`] from a transport that
+/// verified the origin. Plaintext HTTP may supply hints, but automatic selection
+/// requires the additional origin authorization from RFC 8164. Passing no cache
+/// disables learning.
 #[derive(Clone, Debug)]
 pub struct AltSvcLayer {
     cache: Option<AltSvcCache>,
-    origin: HostWithPort,
+    origin: HttpOrigin,
     authenticated: bool,
     alternative: Option<HostWithPort>,
+    selection: Option<(HttpServiceCandidates, usize)>,
 }
 
 impl AltSvcLayer {
     /// Create middleware scoped to the logical origin, independently of the dial target.
-    pub fn new(cache: Option<AltSvcCache>, origin: HostWithPort) -> Self {
+    pub fn new(cache: Option<AltSvcCache>, origin: HttpOrigin) -> Self {
         Self {
             cache,
             origin,
             authenticated: false,
             alternative: None,
+            selection: None,
         }
     }
 
@@ -62,6 +67,25 @@ impl AltSvcLayer {
     #[must_use]
     pub fn with_alternative(mut self, alternative: Option<HostWithPort>) -> Self {
         self.alternative = alternative;
+        self.selection = None;
+        self
+    }
+
+    /// Identify the exact cached candidate used by this connection.
+    ///
+    /// Carries advertisement identity so a 421 cannot remove a newer hint for
+    /// the same endpoint. Also sets `Alt-Used` from the selected candidate.
+    #[must_use]
+    pub fn with_selection(mut self, snapshot: HttpServiceCandidates, index: usize) -> Self {
+        self.alternative = None;
+        self.selection = None;
+        if snapshot.origin() == &self.origin
+            && let Some(candidate) = snapshot.get(index)
+            && candidate.source() == HttpServiceSource::AltSvc
+        {
+            self.alternative = Some(candidate.target().clone());
+            self.selection = Some((snapshot, index));
+        }
         self
     }
 }
@@ -71,7 +95,7 @@ impl<S> Layer<S> for AltSvcLayer {
     fn layer(&self, inner: S) -> Self::Service {
         AltSvc {
             inner,
-            policy: self.clone(),
+            policy: Some(self.clone()),
         }
     }
 }
@@ -80,11 +104,19 @@ impl<S> Layer<S> for AltSvcLayer {
 #[derive(Clone, Debug)]
 pub struct AltSvc<S> {
     inner: S,
-    policy: AltSvcLayer,
+    policy: Option<AltSvcLayer>,
 }
 
 impl<S> AltSvc<S> {
     define_inner_service_accessors!();
+
+    /// Wrap a connection without changing requests or learning advertisements.
+    pub fn passthrough(inner: S) -> Self {
+        Self {
+            inner,
+            policy: None,
+        }
+    }
 }
 
 impl<S: ExtensionsRef> ExtensionsRef for AltSvc<S> {
@@ -103,7 +135,10 @@ where
     type Error = S::Error;
 
     async fn serve(&self, mut request: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
-        if let Some(target) = &self.policy.alternative {
+        let Some(policy) = &self.policy else {
+            return self.inner.serve(request).await;
+        };
+        if let Some(target) = &policy.alternative {
             request
                 .headers_mut()
                 .typed_insert(AltUsed::from(target.clone()));
@@ -112,17 +147,13 @@ where
         }
         let started = Instant::now();
         let response = self.inner.serve(request).await?;
-        if let Some(cache) = &self.policy.cache {
+        if let Some(cache) = &policy.cache {
             if response.status() == StatusCode::MISDIRECTED_REQUEST {
-                if self.policy.alternative.is_some() {
-                    cache.clear(&self.policy.origin);
+                if let Some((snapshot, index)) = &policy.selection {
+                    cache.misdirected(snapshot, *index);
                 }
-            } else if self.policy.authenticated {
-                cache.record_authenticated(
-                    &self.policy.origin,
-                    response.headers(),
-                    started.elapsed(),
-                );
+            } else if policy.authenticated || !policy.origin.is_secure() {
+                cache.record(&policy.origin, response.headers(), started.elapsed());
             }
         }
         Ok(response)
@@ -134,6 +165,7 @@ mod tests {
     use super::*;
     use crate::Body;
     use rama_core::service::service_fn;
+    use rama_net::Protocol;
     use std::{
         convert::Infallible,
         sync::{
@@ -143,18 +175,27 @@ mod tests {
         time::Duration,
     };
 
+    fn origin(protocol: Protocol) -> HttpOrigin {
+        HttpOrigin::new(protocol, "example.com:443".parse().unwrap()).unwrap()
+    }
+
     #[tokio::test]
-    async fn learning_requires_explicit_authentication_and_enabled_cache() {
-        for (authenticated, enabled) in [(false, true), (true, false), (true, true)] {
+    async fn https_learning_requires_authentication_http_hints_do_not() {
+        for (protocol, authenticated, enabled, expected) in [
+            (Protocol::HTTPS, false, true, false),
+            (Protocol::HTTPS, true, false, false),
+            (Protocol::HTTPS, true, true, true),
+            (Protocol::HTTP, false, true, true),
+        ] {
             let cache = AltSvcCache::default();
-            let origin: HostWithPort = "example.com:443".parse().unwrap();
+            let origin = origin(protocol);
             let service = AltSvcLayer::new(enabled.then(|| cache.clone()), origin.clone())
                 .with_authenticated(authenticated)
                 .layer(service_fn(async |request: Request| {
                     assert!(!request.headers().contains_key(AltUsed::name()));
                     Ok::<_, Infallible>(
                         Response::builder()
-                            .header("alt-svc", "h3=\":8443\"")
+                            .header("alt-svc", "h2=\":8443\", h3=\":443\"")
                             .body(Body::empty())
                             .unwrap(),
                     )
@@ -168,25 +209,28 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            assert_eq!(cache.lookup(&origin).is_some(), authenticated && enabled);
+            assert_eq!(cache.lookup(&origin).is_some(), expected);
         }
     }
 
     #[tokio::test]
-    async fn misdirected_alternative_is_cleared_without_replaying_request() {
+    async fn misdirected_removes_only_selected_advertisement_without_replaying() {
         let cache = AltSvcCache::default();
-        let origin: HostWithPort = "example.com:443".parse().unwrap();
-        let target: HostWithPort = "alternative.example:8443".parse().unwrap();
+        let origin = origin(Protocol::HTTPS);
         let mut headers = crate::HeaderMap::new();
         headers.insert(
             "alt-svc",
-            "h3=\"alternative.example:8443\"".parse().unwrap(),
+            "h2=\"alternative.example:8443\", h3=\":443\""
+                .parse()
+                .unwrap(),
         );
         cache.record_authenticated(&origin, &headers, Duration::ZERO);
+        let snapshot = cache.lookup(&origin).unwrap();
+        let target = snapshot.get(0).unwrap().target().clone();
         let dispatched = Arc::new(AtomicUsize::new(0));
         let service = AltSvcLayer::new(Some(cache.clone()), origin.clone())
             .with_authenticated(true)
-            .with_alternative(Some(target.clone()))
+            .with_selection(snapshot.clone(), 0)
             .layer(service_fn({
                 let dispatched = dispatched.clone();
                 move |request: Request| {
@@ -208,9 +252,86 @@ mod tests {
                     }
                 }
             }));
-        let response = service.serve(Request::new(Body::empty())).await.unwrap();
-        assert_eq!(response.status(), StatusCode::MISDIRECTED_REQUEST);
+        assert_eq!(
+            service
+                .serve(Request::new(Body::empty()))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::MISDIRECTED_REQUEST
+        );
         assert_eq!(dispatched.load(Ordering::SeqCst), 1);
-        assert!(cache.lookup(&origin).is_none());
+        assert!(!cache.is_usable(&snapshot, 0));
+        assert!(cache.is_usable(&snapshot, 1));
+    }
+
+    #[tokio::test]
+    async fn late_421_cannot_remove_same_target_readvertised_during_request() {
+        let cache = AltSvcCache::default();
+        let origin = origin(Protocol::HTTPS);
+        let mut headers = crate::HeaderMap::new();
+        headers.insert("alt-svc", "h2=\":8443\"".parse().unwrap());
+        cache.record_authenticated(&origin, &headers, Duration::ZERO);
+        let snapshot = cache.lookup(&origin).unwrap();
+        let service = AltSvcLayer::new(Some(cache.clone()), origin.clone())
+            .with_authenticated(true)
+            .with_selection(snapshot, 0)
+            .layer(service_fn({
+                let cache = cache.clone();
+                let origin = origin.clone();
+                move |_: Request| {
+                    cache.record_authenticated(&origin, &headers, Duration::ZERO);
+                    async {
+                        Ok::<_, Infallible>(
+                            Response::builder()
+                                .status(StatusCode::MISDIRECTED_REQUEST)
+                                .body(Body::empty())
+                                .unwrap(),
+                        )
+                    }
+                }
+            }));
+        service.serve(Request::new(Body::empty())).await.unwrap();
+        let replacement = cache.lookup(&origin).unwrap();
+        assert!(cache.is_usable(&replacement, 0));
+    }
+
+    #[tokio::test]
+    async fn configured_service_does_not_manufacture_alt_used() {
+        let origin = origin(Protocol::HTTPS);
+        let snapshot = HttpServiceCandidates::new(
+            origin.clone(),
+            vec![rama_http_types::conn::HttpServiceCandidate::new(
+                rama_net::tls::ApplicationProtocol::HTTP_2,
+                "configured.example:443".parse().unwrap(),
+            )],
+        );
+        let service = AltSvcLayer::new(None, origin)
+            .with_selection(snapshot, 0)
+            .layer(service_fn(async |request: Request| {
+                assert!(!request.headers().contains_key(AltUsed::name()));
+                Ok::<_, Infallible>(Response::new(Body::empty()))
+            }));
+        service.serve(Request::new(Body::empty())).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn passthrough_preserves_headers() {
+        let service = AltSvc::passthrough(service_fn(async |request: Request| {
+            assert_eq!(
+                request.headers().get(AltUsed::name()).unwrap(),
+                "existing.example:443"
+            );
+            Ok::<_, Infallible>(Response::new(Body::empty()))
+        }));
+        service
+            .serve(
+                Request::builder()
+                    .header("alt-used", "existing.example:443")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
     }
 }

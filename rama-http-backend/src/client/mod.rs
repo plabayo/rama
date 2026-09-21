@@ -18,14 +18,17 @@ pub use bind_body::{BindBodyToConn, BindBodyToConnLayer, BindBodyToConnector};
 
 mod pool;
 #[doc(inline)]
-pub use pool::{HttpConnId, HttpConnIdentifier, HttpPooledConnector, HttpPooledConnectorConfig};
+pub use pool::{
+    HttpConnId, HttpConnIdentifier, HttpPooledConnector, HttpPooledConnectorConfig,
+    HttpTlsPoolConfig, TlsPoolPolicy,
+};
 
 pub mod proxy;
 
 mod h3;
 #[doc(inline)]
-pub use h3::{Http3Connector, Http3ConnectorBuilder, Http3Policy, TlsPoolPolicy};
+pub use h3::{Http3Connector, Http3ConnectorBuilder, Http3Policy};
 
-mod h3_selection;
+mod h3_transport;
 #[doc(inline)]
-pub use h3_selection::{Http3Selection, Http3SelectionConnector};
+pub use h3_transport::Http3TransportConnector;

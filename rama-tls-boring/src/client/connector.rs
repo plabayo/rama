@@ -15,7 +15,7 @@ use rama_net::client::{
 use rama_net::extensions::StreamTransformed;
 use rama_net::{
     AuthorityInputExt, Protocol, ProtocolInputExt,
-    tls::{ApplicationProtocol, TlsAlpn, default_tls_alpn},
+    tls::{ApplicationProtocol, RequireTls, TlsAlpn, default_tls_alpn},
 };
 use rama_tls::client::{
     NegotiatedTlsParameters, ServerVerifyMode, TlsClientConfig, TlsServerCertPinCheck,
@@ -64,8 +64,9 @@ impl<K> TlsConnectorLayer<K> {
 
 impl TlsConnectorLayer<ConnectorKindAuto> {
     /// Creates a new [`TlsConnectorLayer`] which will establish
-    /// a secure connection if the request demands it,
-    /// otherwise it will forward the pre-established inner connection.
+    /// a secure connection when the input protocol is secure or its extensions
+    /// contain [`RequireTls`]. Otherwise it forwards the inner connection.
+    /// The logical authority remains the default server identity.
     #[must_use]
     pub fn auto() -> Self {
         Self {
@@ -164,8 +165,9 @@ impl<S, K> TlsConnector<S, K> {
 
 impl<S> TlsConnector<S, ConnectorKindAuto> {
     /// Creates a new [`TlsConnector`] which will establish
-    /// a secure connection if the request demands it,
-    /// otherwise it will forward the pre-established inner connection.
+    /// a secure connection when the input protocol is secure or its extensions
+    /// contain [`RequireTls`]. Otherwise it forwards the inner connection.
+    /// The logical authority remains the default server identity.
     pub const fn auto(inner: S) -> Self {
         Self::new(inner, ConnectorKindAuto)
     }
@@ -208,10 +210,8 @@ where
         })?;
         let app_protocol = input.protocol();
 
-        if !app_protocol
-            .as_ref()
-            .map(|p| p.is_secure())
-            .unwrap_or_default()
+        if !app_protocol.is_some_and(Protocol::is_secure)
+            && !input.extensions().contains::<RequireTls>()
         {
             tracing::trace!(
                 server.address = %authority.host,
@@ -802,7 +802,8 @@ where
 #[derive(Debug, Clone)]
 /// A connector which can be used to establish a connection to a server
 /// in function of the Request, meaning either it will be a seucre
-/// connector or it will be a plain connector.
+/// connector or it will be a plain connector. A [`RequireTls`] extension also
+/// requests TLS, without changing the logical application protocol or origin.
 ///
 /// This connector can be handy as it allows to have a single layer
 /// which will work both for plain and secure connections.
@@ -832,6 +833,123 @@ mod tests {
     use super::*;
     #[cfg(feature = "http")]
     use rama_net::tls::TlsAlpn;
+
+    #[tokio::test]
+    async fn auto_tls_preserves_plaintext_without_requirement() {
+        use rama_core::{ServiceInput, service::service_fn};
+        use rama_net::{address::HostWithPort, client::ConnectRequest};
+        use std::time::Duration;
+
+        let transport = service_fn(async |input: ConnectRequest| {
+            let (io, _peer) = tokio::io::duplex(64);
+            Ok::<_, ConnectionError>(EstablishedClientConnection {
+                input,
+                conn: ServiceInput::new(io),
+            })
+        });
+        let input = ConnectRequest::new(HostWithPort::example_domain_http())
+            .with_application_protocol(Protocol::HTTP);
+        let established = tokio::time::timeout(
+            Duration::from_secs(5),
+            TlsConnector::auto(transport).serve(input),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(established.input.protocol(), Some(&Protocol::HTTP));
+        assert!(
+            !established
+                .conn
+                .extensions()
+                .contains::<NegotiatedTlsParameters>()
+        );
+    }
+
+    #[tokio::test]
+    async fn auto_tls_can_secure_plaintext_origin_without_changing_identity() {
+        use rama_core::{ServiceInput, service::service_fn};
+        use rama_crypto::cert::generate_server_auth;
+        use rama_net::{
+            address::HostWithPort,
+            client::{ConnectRequest, ConnectorTarget},
+            stream::service::EchoService,
+        };
+        use rama_tls::{
+            client::TlsServerAuthentication,
+            server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
+        };
+        use std::{sync::Arc, time::Duration};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let (cert_chain, private_key) =
+            generate_server_auth(GeneratedServerAuthConfig::default()).unwrap();
+        let trust_anchor = cert_chain.last().unwrap().clone();
+        let server = crate::server::TlsAcceptorLayer::new(TlsServerConfig::new().with_single_cert(
+            ServerAuthData {
+                cert_chain,
+                private_key,
+                ocsp: None,
+            },
+        ))
+        .into_layer(EchoService::new());
+        let (client_io, server_io) = tokio::io::duplex(rama_utils::octets::kib(64));
+        let server_task =
+            tokio::spawn(async move { server.serve(ServiceInput::new(server_io)).await });
+        let client_io = Arc::new(tokio::sync::Mutex::new(Some(client_io)));
+        let transport = service_fn(move |input: ConnectRequest| {
+            let client_io = Arc::clone(&client_io);
+            async move {
+                let conn = ServiceInput::new(client_io.lock().await.take().unwrap());
+                Ok::<_, ConnectionError>(EstablishedClientConnection { input, conn })
+            }
+        });
+        let connector = TlsConnector::auto(transport).with_base_config(
+            TlsClientConfig::new()
+                .try_with_server_trust_anchors([trust_anchor])
+                .unwrap(),
+        );
+        let input = ConnectRequest::new("localhost:80".parse::<HostWithPort>().unwrap())
+            .with_application_protocol(Protocol::HTTP);
+        input.extensions.insert(RequireTls);
+        input
+            .extensions
+            .insert(ConnectorTarget("alternative.invalid:8443".parse().unwrap()));
+        let mut established = tokio::time::timeout(Duration::from_secs(5), connector.serve(input))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(established.input.protocol(), Some(&Protocol::HTTP));
+        assert_eq!(
+            established.input.authority().unwrap().host,
+            Host::from_static("localhost")
+        );
+        assert_eq!(
+            established
+                .conn
+                .extensions()
+                .get_ref::<TlsServerAuthentication>(),
+            Some(&TlsServerAuthentication(Some(Host::from_static(
+                "localhost"
+            )))),
+        );
+        tokio::time::timeout(Duration::from_secs(5), async {
+            established
+                .conn
+                .write_all(b"verified origin")
+                .await
+                .unwrap();
+            let mut echoed = [0; 15];
+            established.conn.read_exact(&mut echoed).await.unwrap();
+            assert_eq!(&echoed, b"verified origin");
+        })
+        .await
+        .unwrap();
+        drop(established);
+        let _server_result = tokio::time::timeout(Duration::from_secs(5), server_task)
+            .await
+            .unwrap()
+            .unwrap();
+    }
 
     #[test]
     fn assert_send() {

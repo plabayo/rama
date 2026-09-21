@@ -39,3 +39,12 @@ mod ready_on_poll_stream;
 mod unbuffered_stream;
 
 mod examples;
+
+#[cfg(all(
+    feature = "http-full",
+    any(
+        feature = "boring",
+        all(feature = "rustls", any(feature = "ring", feature = "aws-lc"))
+    )
+))]
+mod http_service;
