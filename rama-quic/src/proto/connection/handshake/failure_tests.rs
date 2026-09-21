@@ -130,6 +130,10 @@ fn failed_packet_encryption_does_not_emit_or_track_plaintext() {
     while connection.poll_transmit(now, 4, &mut drain).is_some() {
         drain.clear();
     }
+    // Keep the injected key installed: the randomized early key-update threshold
+    // can otherwise rotate it out for a working key when the ping is built.
+    connection.key_phase_size = u64::MAX;
+    let updates = connection.stats.key_updates;
     connection.spaces[SpaceId::Data]
         .crypto
         .as_mut()
@@ -142,6 +146,7 @@ fn failed_packet_encryption_does_not_emit_or_track_plaintext() {
     let mut buffer = Vec::new();
     assert!(connection.poll_transmit(now, 1, &mut buffer).is_none());
     assert!(buffer.is_empty());
+    assert_eq!(connection.stats.key_updates, updates);
     assert_eq!(connection.stats.path.sent_packets, sent);
     assert_eq!(connection.stats.udp_tx.datagrams, datagrams);
     assert!(
