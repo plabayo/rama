@@ -25,11 +25,11 @@ fn main() {
         (target_os.as_deref(), target_env.as_deref()),
         (Some("linux"), Some("gnu"))
     ) {
+        // Dev/CI only: downstream toolchains can emit warnings we don't control.
+        println!("cargo::rerun-if-env-changed=RAMA_DEV_DENY_C_WARNINGS");
         cc::Build::new()
             .file("src/client/linux/resolv_wrapper.c")
-            // Compiler warnings remain fatal; avoid promoting cargo-zigbuild's
-            // failed compiler-family probe into a successful build warning.
-            .warnings_into_errors(true)
+            .warnings_into_errors(env::var("RAMA_DEV_DENY_C_WARNINGS").as_deref() == Ok("1"))
             .cargo_warnings(false)
             .compile("rama_dns_resolv");
     }
