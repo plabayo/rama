@@ -1638,6 +1638,17 @@ impl Connection {
         self.0.state.lock().inner.max_concurrent_streams(dir)
     }
 
+    /// Exclusive cumulative stream-index limit advertised to the peer for `dir`.
+    ///
+    /// This is the initial transport limit or the latest transmitted MAX_STREAMS
+    /// value. A remote stream is within the advertised limit when its index
+    /// (`stream_id / 4`) is smaller than this value. Unlike the concurrency
+    /// target, it includes streams that have already closed.
+    #[must_use]
+    pub fn remote_stream_limit(&self, dir: Dir) -> u64 {
+        self.0.state.lock().inner.streams().remote_stream_limit(dir)
+    }
+
     /// How many remotely initiated streams of `dir` are open, including those this side has
     /// not accepted yet. They count against
     /// [`max_concurrent_streams`](Self::max_concurrent_streams).

@@ -21,9 +21,12 @@ pub enum ErrorScope {
 pub enum QpackError {
     /// Local output backpressure: drain queued instructions and retry without changing the input.
     OutputBlocked,
-    /// A field section or individual value exceeds decoding limits (RFC 9204 §7.4).
+    /// An individual integer or string exceeds decoding limits (RFC 9204 §7.4).
     /// Reset this stream with QPACK_DECOMPRESSION_FAILED; compression state remains usable.
     FieldSectionLimit(&'static str),
+    /// A field section exceeds the local aggregate size or blocked-storage budget.
+    /// Reset only its stream with H3_EXCESSIVE_LOAD (RFC 9114 §§4.2.2/8).
+    StreamResourceLimit(&'static str),
     /// An outgoing section exceeds the peer's or local field-section limit.
     /// Reject only this message; no compression state was changed (RFC 9114 §4.2.2).
     EncodeFieldSectionLimit(&'static str),
@@ -43,7 +46,7 @@ impl QpackError {
     pub const fn code(self) -> Option<Code> {
         Some(match self {
             Self::OutputBlocked => return None,
-            Self::ResourceLimit(_) => Code::H3_EXCESSIVE_LOAD,
+            Self::ResourceLimit(_) | Self::StreamResourceLimit(_) => Code::H3_EXCESSIVE_LOAD,
             Self::EncodeFieldSectionLimit(_) => Code::H3_MESSAGE_ERROR,
             Self::FieldSectionLimit(_) | Self::DecompressionFailed(_) => {
                 Code::QPACK_DECOMPRESSION_FAILED
@@ -58,9 +61,9 @@ impl QpackError {
     pub const fn scope(self) -> Option<ErrorScope> {
         match self {
             Self::OutputBlocked => None,
-            Self::FieldSectionLimit(_) | Self::EncodeFieldSectionLimit(_) => {
-                Some(ErrorScope::Stream)
-            }
+            Self::FieldSectionLimit(_)
+            | Self::EncodeFieldSectionLimit(_)
+            | Self::StreamResourceLimit(_) => Some(ErrorScope::Stream),
             _ => Some(ErrorScope::Connection),
         }
     }
@@ -71,6 +74,7 @@ impl QpackError {
         match self {
             Self::OutputBlocked => "QPACK output queue full",
             Self::ResourceLimit(r)
+            | Self::StreamResourceLimit(r)
             | Self::FieldSectionLimit(r)
             | Self::EncodeFieldSectionLimit(r)
             | Self::DecompressionFailed(r)

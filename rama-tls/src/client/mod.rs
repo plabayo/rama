@@ -33,7 +33,7 @@ use rama_crypto::pki_types::CertificateDer;
 
 use super::ProtocolVersion;
 use rama_core::extensions::{Extension, Extensions};
-use rama_net::address::Domain;
+use rama_net::address::{Domain, Host};
 use rama_net::tls::ApplicationProtocol;
 use std::fmt;
 
@@ -103,10 +103,27 @@ pub fn merge_client_hello_lists(
 /// Custom providers participate through the same interface as built-in providers.
 pub trait TlsClientConfigProvider: fmt::Debug + Send + Sync {
     /// Identity of request overrides, before connector defaults are applied.
+    ///
+    /// `None` means the request does not change the provider's fixed TLS policy,
+    /// including server identity and authentication. Callers may then classify
+    /// the fixed defaults directly. Opaque overrides must return a non-reusable ID.
     fn pool_id(&self, extensions: &Extensions) -> Option<TlsPoolId>;
 
     /// Whether the effective configuration establishes the server identity.
     fn authenticates_server(&self, extensions: &Extensions) -> bool;
+
+    /// Whether this effective policy authenticates the requested HTTP origin.
+    ///
+    /// Discovery must not redirect a request whose TLS server-name override
+    /// authenticates a different identity. Providers with additional identity
+    /// semantics can refine this check; connection authentication is still
+    /// verified after the handshake.
+    fn authenticates_origin(&self, extensions: &Extensions, origin: &Host) -> bool {
+        extensions
+            .get_ref::<TlsServerName>()
+            .is_none_or(|name| &name.0 == origin)
+            && self.authenticates_server(extensions)
+    }
 }
 
 #[cfg(test)]

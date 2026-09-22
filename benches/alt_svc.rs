@@ -10,6 +10,7 @@ use rama::{
         core::h2::server,
         header,
         layer::{alt_svc::AltSvcCache, http_service::HttpServiceConnector},
+        proto::h2::alt_svc::AltSvcObserverExtension,
     },
     net::{
         Protocol,
@@ -66,8 +67,8 @@ impl ExtensionsRef for Connection {
 
 /// Repeatedly select the same pooled connection. The allocation profiler catches
 /// retained metadata allocations that would otherwise grow with every request.
-#[divan::bench]
-fn pooled_selection(b: divan::Bencher) {
+#[divan::bench(args = [false, true])]
+fn pooled_selection(b: divan::Bencher, discovery: bool) {
     let (cache, origin, _) = fixture();
     let extensions = Extensions::new();
     extensions.insert(TargetHttpVersion(Version::HTTP_2));
@@ -82,11 +83,17 @@ fn pooled_selection(b: divan::Bencher) {
         resumed: None,
     });
     let connection = Connection(extensions);
-    let connector = HttpServiceConnector::new(service_fn(move |input| {
+    let connector = HttpServiceConnector::new(service_fn(move |input: ConnectRequest| {
         let conn = connection.clone();
+        // Model the H2 driver's ownership of the connection-level observer.
+        if !conn.extensions().contains::<AltSvcObserverExtension>()
+            && let Some(observer) = input.extensions().get_arc::<AltSvcObserverExtension>()
+        {
+            conn.extensions().insert_arc(observer);
+        }
         async move { Ok::<_, ConnectionError>(EstablishedClientConnection { conn, input }) }
     }))
-    .with_cache(cache)
+    .maybe_with_cache(discovery.then_some(cache))
     .with_protocols([ApplicationProtocol::HTTP_2]);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_time()

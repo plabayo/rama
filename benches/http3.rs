@@ -5,9 +5,10 @@
 
 use rama::{
     bytes::{Bytes, BytesMut},
+    futures::stream,
     http::{
-        Body, Request, Response,
-        body::util::BodyExt as _,
+        Body, Method, Request, Response,
+        body::{Frame, util::BodyExt as _},
         core::h3::{
             client,
             connection::Config,
@@ -15,16 +16,18 @@ use rama::{
             qpack::{Decoder, DecoderConfig, Encoder, EncoderConfig},
             server,
         },
+        proto::h3::qpack::EncoderInstruction,
     },
+    net::address::SocketAddress,
     quic::{Endpoint, TransportConfig, tls::TlsOptions},
     rt::Executor,
     tls::{
         client::TlsClientConfig,
         server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
     },
-    utils::octets::{kib, mib},
+    utils::octets::{kib, kib_u64, mib},
 };
-use std::{net::SocketAddr, sync::Arc};
+use std::{convert::Infallible, sync::Arc};
 
 #[global_allocator]
 static ALLOC: divan::AllocProfiler = divan::AllocProfiler::system();
@@ -64,20 +67,33 @@ fn pooled_streaming_round_trip(bencher: divan::Bencher, size: usize) {
         bencher.counter(divan::counter::BytesCount::new(size)),
         size,
         false,
+        0,
     );
 }
 
 #[divan::bench(sample_count = 20)]
 fn abandoned_response_churn(bencher: divan::Bencher) {
-    round_trip(bencher, kib(16), true);
+    round_trip(bencher, kib(16), true, 0);
 }
 
-fn round_trip(bencher: divan::Bencher, size: usize, abandon: bool) {
+// Retained responses keep scheduler entries alive without ready DATA. The
+// active writer's cost should not grow linearly with these unrelated streams.
+#[divan::bench(args = [16, 128, 1024], sample_count = 20)]
+fn streaming_with_idle_responses(bencher: divan::Bencher, idle: usize) {
+    round_trip(
+        bencher.counter(divan::counter::BytesCount::new(kib(16))),
+        kib(16),
+        false,
+        idle,
+    );
+}
+
+fn round_trip(bencher: divan::Bencher, size: usize, abandon: bool, idle: usize) {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap();
-    let (endpoint, client_endpoint, sender) = rt.block_on(async {
+    let (endpoint, client_endpoint, sender, retained) = rt.block_on(async {
         let auth = ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).unwrap();
         let client_tls = TlsClientConfig::new()
             .try_with_server_trust_anchors(auth.cert_chain.clone())
@@ -87,9 +103,11 @@ fn round_trip(bencher: divan::Bencher, size: usize, abandon: bool) {
             .with_server_auth(auth)
             .with_alpn([b"h3".as_slice().into()].into_iter().collect());
         let mut transport = TransportConfig::default();
-        Config::default()
-            .configure_transport(&mut transport)
-            .unwrap();
+        let config = Config {
+            max_requests: Config::default().max_requests.max(idle + 1),
+            ..Config::default()
+        };
+        config.configure_transport(&mut transport).unwrap();
         let mut server_config =
             rama::quic::ServerConfig::try_from_rama_tls(&server_tls, TlsOptions::default())
                 .unwrap();
@@ -99,7 +117,7 @@ fn round_trip(bencher: divan::Bencher, size: usize, abandon: bool) {
             rama::quic::ClientConfig::try_from_rama_tls(&client_tls, TlsOptions::default())
                 .unwrap();
         client_config.set_transport_config(transport);
-        let bind: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let bind = SocketAddress::local_ipv4(0);
         let endpoint = Endpoint::build(Executor::new())
             .with_server_config(server_config)
             .bind_address(bind)
@@ -107,15 +125,21 @@ fn round_trip(bencher: divan::Bencher, size: usize, abandon: bool) {
             .unwrap();
         let accept = tokio::spawn({
             let endpoint = endpoint.clone();
+            let config = config.clone();
             async move {
                 let connection = endpoint.accept().await.unwrap().await.unwrap();
-                let (mut server, driver) =
-                    server::handshake(connection, Config::default()).unwrap();
+                let (mut server, driver) = server::handshake(connection, config).unwrap();
                 tokio::spawn(driver.run());
                 tokio::spawn(async move {
                     while let Ok(stream) = server.accept().await {
                         tokio::spawn(async move {
                             let (request, response) = stream.resolve().await.unwrap();
+                            if request.uri().request_target() == "/hold" {
+                                let frames = stream::pending::<Result<Frame<Bytes>, Infallible>>();
+                                let body = Body::from_frame_stream(frames);
+                                let _result = response.send_response(Response::new(body)).await;
+                                return;
+                            }
                             // Cancellation is expected in the churn benchmark.
                             let _result = response
                                 .send_response(Response::new(request.into_body()))
@@ -135,10 +159,25 @@ fn round_trip(bencher: divan::Bencher, size: usize, abandon: bool) {
             .await
             .unwrap();
         let (sender, driver) =
-            client::handshake::<Body>(connection, Config::default(), Executor::new()).unwrap();
+            client::handshake::<Body>(connection, config, Executor::new()).unwrap();
         tokio::spawn(driver.run());
         accept.await.unwrap();
-        (endpoint, client_endpoint, sender)
+        let mut retained = Vec::with_capacity(idle);
+        for _ in 0..idle {
+            retained.push(
+                sender
+                    .clone()
+                    .send_request(
+                        Request::builder()
+                            .uri("https://localhost/hold")
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap(),
+            );
+        }
+        (endpoint, client_endpoint, sender, retained)
     });
     let payload = Bytes::from(vec![42; size]);
     bencher.bench(|| {
@@ -147,7 +186,7 @@ fn round_trip(bencher: divan::Bencher, size: usize, abandon: bool) {
                 .clone()
                 .send_request(
                     Request::builder()
-                        .method("POST")
+                        .method(Method::POST)
                         .uri("https://localhost/echo")
                         .body(Body::from(payload.clone()))
                         .unwrap(),
@@ -168,6 +207,7 @@ fn round_trip(bencher: divan::Bencher, size: usize, abandon: bool) {
             assert_eq!(received, size);
         })
     });
+    drop(retained);
     rt.block_on(async {
         client_endpoint.close(0u32, b"benchmark complete");
         endpoint.close(0u32, b"benchmark complete");
@@ -258,4 +298,37 @@ fn qpack_unknown_cancellations(bencher: divan::Bencher, outstanding: usize) {
             .feed_decoder_stream(divan::black_box(&cancellations))
             .unwrap();
     });
+}
+
+// Both literals use Huffman coding. Bytewise input must probe only their length
+// prefixes until complete, rather than repeatedly decoding the first literal.
+#[divan::bench(args = [kib(1), kib(4), kib(16)])]
+fn qpack_fragmented_encoder_literals(bencher: divan::Bencher, size: usize) {
+    let mut wire = BytesMut::new();
+    EncoderInstruction::SetDynamicTableCapacity {
+        capacity: kib_u64(64),
+    }
+    .encode(&mut wire);
+    EncoderInstruction::InsertWithLiteralName {
+        name: Bytes::from(vec![b'a'; size]),
+        value: Bytes::from(vec![0xff; size]),
+        name_huffman: true,
+        value_huffman: true,
+    }
+    .encode(&mut wire);
+    bencher
+        .counter(divan::counter::BytesCount::new(wire.len()))
+        .bench(|| {
+            let mut decoder = Decoder::new(DecoderConfig {
+                max_table_capacity: kib_u64(64),
+                ..DecoderConfig::default()
+            });
+            for byte in wire.iter() {
+                decoder
+                    .feed_encoder_stream(divan::black_box(&[*byte]))
+                    .unwrap();
+            }
+            assert_eq!(decoder.insert_count(), 1);
+            divan::black_box(decoder);
+        });
 }

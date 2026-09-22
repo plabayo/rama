@@ -10,8 +10,14 @@
 //! opportunistic-security authorization described by RFC 8164.
 //! Retries must fork the original connection request; returned input includes
 //! the operational state of the established connection.
+//!
+//! Failed speculative endpoints fall back while preserving the origin's request
+//! and TLS policy. An explicitly required version keeps failures terminal.
+//! Local configuration and policy errors also remain terminal. Request-specific
+//! TLS policy failures do not suppress alternatives for other cache users.
 
-use crate::layer::alt_svc::{AltSvc, AltSvcCache, AltSvcLayer};
+use crate::layer::alt_svc::{AltSvc, AltSvcCache, AltSvcLayer, RouteContext};
+use parking_lot::Mutex;
 use rama_core::{
     Fork as _, Layer, Service,
     error::{BoxError, BoxErrorExt as _},
@@ -30,19 +36,19 @@ use rama_net::{
     Protocol,
     client::{
         ConnectRequest, ConnectionError, ConnectionErrorDomain, ConnectionErrorKind,
-        ConnectorService, ConnectorTarget, EstablishedClientConnection, ProxyRoute, ProxyRoutes,
+        ConnectorService, ConnectorTarget, EstablishedClientConnection,
     },
     conn::ConnectionHealthWatcher,
     http::{HttpRequestVersion, TargetHttpVersion},
     tls::ApplicationProtocol,
 };
 #[cfg(feature = "tls")]
-use rama_tls::client::{NegotiatedTlsParameters, TlsServerAuthentication};
-use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
-use std::{
-    sync::{Arc, OnceLock},
-    time::Duration,
+use rama_tls::client::{
+    NegotiatedTlsParameters, ServerVerifyMode, TlsClientConfigProvider, TlsServerAuthentication,
+    TlsServerCertPins, TlsServerName, TlsServerTrust, TlsServerVerify,
 };
+use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
+use std::{sync::Arc, time::Duration};
 use tokio::time::Instant;
 
 // Speculation is sequential: cap its cost before trying the next service. Slow
@@ -53,24 +59,33 @@ const DEFAULT_MAX_ATTEMPTS: usize = 8;
 /// Preserve a terminal failure observed by an address race across cancellation.
 ///
 /// A transport calls [`Self::reject`] after an authentication, protocol or policy
-/// failure. An outer timeout then cannot disguise that failure as unavailability
-/// and cause fallback to another service.
+/// failure. An outer timeout cannot disguise its cause as mere unavailability;
+/// explicit-version requests retain that terminal classification.
 #[derive(Debug, Default, Extension)]
-pub struct HttpServiceAttempt(OnceLock<ConnectionErrorKind>);
+pub struct HttpServiceAttempt(Mutex<Option<ConnectionErrorKind>>);
 
 impl HttpServiceAttempt {
     pub fn reject(&self) {
         self.reject_with_kind(ConnectionErrorKind::Authentication);
     }
 
-    /// Preserve the first terminal failure observed during an address race.
+    /// Preserve terminal address-race failures, with authentication taking
+    /// precedence over protocol or policy errors regardless of completion order.
     pub fn reject_with_kind(&self, kind: ConnectionErrorKind) {
-        self.0.get_or_init(|| kind);
+        let mut failure = self.0.lock();
+        if kind == ConnectionErrorKind::Authentication || failure.is_none() {
+            *failure = Some(kind);
+        }
+    }
+
+    /// The strongest terminal failure observed during this attempt.
+    pub fn failure_kind(&self) -> Option<ConnectionErrorKind> {
+        *self.0.lock()
     }
 
     #[must_use]
     pub fn failed(&self) -> bool {
-        self.0.get().is_some()
+        self.failure_kind().is_some()
     }
 }
 
@@ -78,6 +93,10 @@ impl HttpServiceAttempt {
 #[derive(Clone, Debug)]
 pub struct HttpServiceLayer {
     cache: Option<AltSvcCache>,
+    #[cfg(feature = "tls")]
+    tls_provider: Option<Arc<dyn TlsClientConfigProvider>>,
+    #[cfg(feature = "tls")]
+    http3_tls_provider: Option<Arc<dyn TlsClientConfigProvider>>,
     protocols: Arc<[ApplicationProtocol]>,
     attempt_timeout: Duration,
     timeout: Option<Duration>,
@@ -88,6 +107,10 @@ impl Default for HttpServiceLayer {
     fn default() -> Self {
         Self {
             cache: None,
+            #[cfg(feature = "tls")]
+            tls_provider: None,
+            #[cfg(feature = "tls")]
+            http3_tls_provider: None,
             protocols: Arc::from([]),
             attempt_timeout: DEFAULT_ATTEMPT_TIMEOUT,
             timeout: None,
@@ -97,6 +120,24 @@ impl Default for HttpServiceLayer {
 }
 
 impl HttpServiceLayer {
+    #[cfg(feature = "tls")]
+    generate_set_and_with! {
+        /// Supply the fixed TLS provider for stream-based HTTP alternative eligibility.
+        pub fn tls_provider(mut self, provider: Option<Arc<dyn TlsClientConfigProvider>>) -> Self {
+            self.tls_provider = provider;
+            self
+        }
+    }
+
+    #[cfg(feature = "tls")]
+    generate_set_and_with! {
+        /// Supply the fixed TLS provider for HTTP/3 alternative eligibility.
+        pub fn http3_tls_provider(mut self, provider: Option<Arc<dyn TlsClientConfigProvider>>) -> Self {
+            self.http3_tls_provider = provider;
+            self
+        }
+    }
+
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -167,6 +208,24 @@ pub struct HttpServiceConnector<S> {
 }
 
 impl<S> HttpServiceConnector<S> {
+    #[cfg(feature = "tls")]
+    generate_set_and_with! {
+        /// Supply the fixed TLS provider for stream-based HTTP alternative eligibility.
+        pub fn tls_provider(mut self, provider: Option<Arc<dyn TlsClientConfigProvider>>) -> Self {
+            self.policy.tls_provider = provider;
+            self
+        }
+    }
+
+    #[cfg(feature = "tls")]
+    generate_set_and_with! {
+        /// Supply the fixed TLS provider for HTTP/3 alternative eligibility.
+        pub fn http3_tls_provider(mut self, provider: Option<Arc<dyn TlsClientConfigProvider>>) -> Self {
+            self.policy.http3_tls_provider = provider;
+            self
+        }
+    }
+
     #[must_use]
     pub fn new(inner: S) -> Self {
         Self {
@@ -368,6 +427,19 @@ where
         (candidates, true)
     }
 
+    fn observe_frames(&self, input: &ConnectRequest, origin: Option<&HttpOrigin>) {
+        if required_version(input).is_some_and(|version| version != Version::HTTP_2) {
+            return;
+        }
+        if let (Some(cache), Some(origin)) = (&self.policy.cache, origin)
+            && !input.extensions().contains::<AltSvcObserverExtension>()
+        {
+            input
+                .extensions()
+                .insert_arc(cache.frame_observer(origin.clone()));
+        }
+    }
+
     fn candidate_version(
         &self,
         candidate: &HttpServiceCandidate,
@@ -378,7 +450,9 @@ where
         }
 
         let version = Version::try_from(&candidate.protocol).ok()?;
-        (!required.is_some_and(|required| required != version)).then_some(version)
+        required
+            .is_none_or(|required| required == version)
+            .then_some(version)
     }
 
     async fn attempt(
@@ -414,9 +488,13 @@ where
         }
 
         let result = tokio::time::timeout_at(attempt_deadline, self.inner.connect(input)).await;
-        let rejected = state.as_ref().and_then(|state| state.0.get().copied());
+        let rejected = state.as_ref().and_then(|state| state.failure_kind());
         match (result, rejected) {
-            (Ok(Err(error)), Some(kind)) if availability(&error) => {
+            (Ok(Err(error)), Some(kind))
+                if availability(&error)
+                    || (kind == ConnectionErrorKind::Authentication
+                        && error.kind() != ConnectionErrorKind::Authentication) =>
+            {
                 Err(ConnectionError::application(error, kind)
                     .context("terminal failure during service address race"))
             }
@@ -496,25 +574,26 @@ where
                     .ok_or_else(|| invalid("HTTP service timeout is too large"))
             })
             .transpose()?;
-        let origin = origin(&input);
-        if let (Some(cache), Some(origin)) = (&self.policy.cache, &origin)
-            && !input.extensions().contains::<AltSvcObserverExtension>()
-        {
-            input
-                .extensions()
-                .insert(cache.frame_observer(origin.clone()));
-        }
         let required = required_version(&input);
-        let proxy_context = input.extensions().get_ref::<ProxyRoutes>().map_or_else(
-            || {
-                input
-                    .extensions()
-                    .get_ref::<ProxyRoute>()
-                    .is_some_and(|route| route.proxy_address().is_some())
-            },
-            |routes| routes.iter().any(|route| route.proxy_address().is_some()),
-        );
-        let (snapshot, from_cache) = self.candidates(&input, origin.as_ref(), proxy_context);
+        if self.policy.cache.is_none() && !input.extensions().contains::<HttpServiceCandidates>() {
+            if let Some(version) = required {
+                input.extensions().insert(TargetHttpVersion(version));
+            }
+            let established = self.attempt(input, deadline, false).await?;
+            if let Some(version) = required {
+                verify_version(&established.conn, version)
+                    .inspect_err(|_| discard_connection(&established.conn))?;
+            }
+            let origin = established
+                .conn
+                .extensions()
+                .get_ref::<EstablishedHttpService>()
+                .and_then(|_| origin(&established.input));
+            return Ok(self.wrap(established, origin, None));
+        }
+        let origin = origin(&input);
+        let route = RouteContext::for_request(input.extensions());
+        let (snapshot, from_cache) = self.candidates(&input, origin.as_ref(), route.is_some());
         let mut attempts = 0;
 
         if let (Some(origin), Some(snapshot)) = (origin.as_ref(), snapshot.as_ref())
@@ -528,10 +607,41 @@ where
                     continue;
                 };
 
+                #[cfg(not(feature = "tls"))]
+                let custom_tls_policy = false;
+                #[cfg(feature = "tls")]
+                let custom_tls_policy = {
+                    let extensions = input.extensions();
+                    let provider = if version == Version::HTTP_3 {
+                        &self.policy.http3_tls_provider
+                    } else {
+                        &self.policy.tls_provider
+                    };
+                    if extensions
+                        .get_ref::<TlsServerVerify>()
+                        .is_some_and(|verify| verify.0 == ServerVerifyMode::Disable)
+                        || extensions.get_ref::<TlsServerName>().is_some_and(|name| {
+                            name.0.clone().canonicalize() != origin.authority().host
+                        })
+                        || provider.as_ref().is_some_and(|provider| {
+                            !provider.authenticates_origin(extensions, &origin.authority().host)
+                        })
+                    {
+                        continue;
+                    }
+                    // A custom trust/pin/hook failure describes this request's
+                    // policy, not the shared endpoint's availability.
+                    extensions.contains::<TlsServerTrust>()
+                        || extensions.contains::<TlsServerCertPins>()
+                        || provider
+                            .as_ref()
+                            .is_some_and(|provider| provider.pool_id(extensions).is_some())
+                };
+
                 if from_cache
                     && let Some(cache) = &self.policy.cache
-                    && !(if proxy_context {
-                        cache.is_fresh(snapshot, index)
+                    && !(if let Some(route) = &route {
+                        cache.route_usable(snapshot, index, route)
                     } else {
                         cache.is_usable(snapshot, index)
                     })
@@ -548,6 +658,7 @@ where
                 attempt
                     .extensions()
                     .insert(SelectedHttpService::new(origin.clone(), candidate.clone()));
+                self.observe_frames(&attempt, Some(origin));
                 attempts += 1;
                 let failure_context = self
                     .policy
@@ -556,16 +667,32 @@ where
                     .map(|cache| (cache, cache.network_epoch()));
                 match self.attempt(attempt, deadline, true).await {
                     Ok(established) => {
-                        verify_alternative(&established.conn, origin, candidate).inspect_err(
-                            |_| {
-                                discard_connection(&established.conn);
-                                if candidate.source == HttpServiceSource::AltSvc
-                                    && let Some((cache, network)) = failure_context
-                                {
+                        if let Err(error) = verify_alternative(&established.conn, origin, candidate)
+                        {
+                            discard_connection(&established.conn);
+                            if !custom_tls_policy
+                                && candidate.source == HttpServiceSource::AltSvc
+                                && let Some((cache, network)) = failure_context
+                            {
+                                if let Some(route) = &route {
+                                    cache.failed_route(snapshot, index, network, route);
+                                } else {
                                     cache.failed_attempt(snapshot, index, network, true);
                                 }
-                            },
-                        )?;
+                            }
+                            if required.is_some() {
+                                return Err(error);
+                            }
+                            tracing::debug!(
+                                ?error,
+                                ?candidate,
+                                "alternative validation failed; trying next service"
+                            );
+                            continue;
+                        }
+                        if !custom_tls_policy && let Some((cache, network)) = failure_context {
+                            cache.succeeded(snapshot, index, route.as_ref(), network);
+                        }
                         let extensions = established.conn.extensions();
                         if let Some(current) = extensions.get_ref::<EstablishedHttpService>() {
                             if current.origin != *origin
@@ -602,57 +729,49 @@ where
                             "connector cannot reach this service; trying next service"
                         );
                     }
-                    Err(error) if availability(&error) => {
-                        if !proxy_context
+                    Err(error) => {
+                        // The origin keeps exactly the same request TLS policy.
+                        // Failure of a speculative endpoint does not authorize a
+                        // weaker connection, nor dispatch or replay a request.
+                        if error.domain() == ConnectionErrorDomain::Local {
+                            return Err(error);
+                        }
+                        if (!custom_tls_policy || availability(&error))
                             && candidate.source == HttpServiceSource::AltSvc
                             && let Some((cache, network)) = failure_context
                         {
-                            cache.failed_attempt(snapshot, index, network, false);
+                            if let Some(route) = &route {
+                                cache.failed_route(snapshot, index, network, route);
+                            } else {
+                                cache.failed_attempt(
+                                    snapshot,
+                                    index,
+                                    network,
+                                    !availability(&error),
+                                );
+                            }
+                        }
+                        if required.is_some() {
+                            return Err(error);
                         }
                         tracing::debug!(
                             ?error,
                             ?candidate,
-                            "HTTP alternative unavailable; trying next service"
+                            "HTTP alternative failed; trying next service"
                         );
-                    }
-                    Err(error) => {
-                        let endpoint_failed = match error.domain() {
-                            ConnectionErrorDomain::Application => matches!(
-                                error.kind(),
-                                ConnectionErrorKind::Authentication
-                                    | ConnectionErrorKind::Protocol
-                                    | ConnectionErrorKind::Rejected
-                            ),
-                            ConnectionErrorDomain::Transport if !proxy_context => matches!(
-                                error.kind(),
-                                ConnectionErrorKind::Authentication | ConnectionErrorKind::Protocol
-                            ),
-                            _ => false,
-                        };
-                        if endpoint_failed
-                            && candidate.source == HttpServiceSource::AltSvc
-                            && let Some((cache, network)) = failure_context
-                        {
-                            cache.failed_attempt(
-                                snapshot,
-                                index,
-                                network,
-                                error.domain() == ConnectionErrorDomain::Application,
-                            );
-                        }
-                        return Err(error);
                     }
                 }
             }
         }
 
-        let attempt = input.fork();
+        let attempt = input;
         if let Some(snapshot) = &snapshot {
             attempt.extensions().insert_arc(snapshot.clone());
         }
         if let Some(version) = required {
             attempt.extensions().insert(TargetHttpVersion(version));
         }
+        self.observe_frames(&attempt, origin.as_ref());
         let established = self.attempt(attempt, deadline, false).await?;
         if let Some(version) = required {
             verify_version(&established.conn, version)

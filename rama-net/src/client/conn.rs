@@ -1,6 +1,8 @@
 use core::fmt;
 
-use rama_core::{Service, extensions::ExtensionsRef, service::BoxService};
+use rama_core::{
+    Service, extensions::ExtensionsRef, futures::TryFutureExt as _, service::BoxService,
+};
 
 use super::ConnectionError;
 
@@ -64,8 +66,7 @@ where
         Output = Result<EstablishedClientConnection<Self::Connection, Input>, ConnectionError>,
     > + Send
     + '_ {
-        let future = self.serve(input);
-        async move { future.await.map_err(Into::into) }
+        self.serve(input).map_err(Into::into)
     }
 }
 
@@ -101,9 +102,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use core::{convert::Infallible, fmt};
+    use core::{convert::Infallible, fmt, future, mem::size_of_val};
 
-    use rama_core::ServiceInput;
+    use rama_core::{ServiceInput, service::service_fn};
+    use rama_utils::octets::kib;
 
     use super::*;
     use crate::client::{ConnectionErrorDomain, ConnectionErrorKind};
@@ -159,6 +161,28 @@ mod tests {
                 conn: ServiceInput::new(()),
             })
         }
+    }
+
+    #[test]
+    fn connector_future_does_not_duplicate_inner_state() {
+        // Real connector stacks retain inputs and handshake state across awaits.
+        // Normalizing an error must not reserve another copy of that state.
+        let connector = service_fn(|input: [u8; kib(4)]| async move {
+            future::ready(()).await;
+            Ok::<_, Infallible>(EstablishedClientConnection {
+                input,
+                conn: ServiceInput::new(()),
+            })
+        });
+        let inner = connector.serve([0; kib(4)]);
+        let normalized = connector.connect([0; kib(4)]);
+        let inner_size = size_of_val(&inner);
+        let normalized_size = size_of_val(&normalized);
+
+        assert!(
+            normalized_size <= inner_size + size_of::<usize>(),
+            "error normalization grew the future from {inner_size} to {normalized_size} bytes",
+        );
     }
 
     #[tokio::test]

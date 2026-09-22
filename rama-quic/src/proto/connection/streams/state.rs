@@ -90,7 +90,7 @@ pub struct StreamsState {
     /// connection so far, per direction
     pub(super) max_remote: [u64; 2],
     /// Value of `max_remote` most recently transmitted to the peer in a `MAX_STREAMS` frame
-    sent_max_remote: [u64; 2],
+    pub(super) sent_max_remote: [u64; 2],
     /// Number of streams that we've given the peer permission to open and which aren't fully closed
     pub(super) allocated_remote_count: [u64; 2],
     /// Size of the desired stream flow control window. May be smaller than `allocated_remote_count`
@@ -953,14 +953,29 @@ impl StreamsState {
         let mut queued = false;
         for dir in Dir::iter() {
             let diff = self.max_remote[dir as usize] - self.sent_max_remote[dir as usize];
-            // To reduce traffic, only announce updates if at least 1/8 of the flow control window
-            // has been consumed.
-            if diff > self.max_concurrent_remote_count[dir as usize] / 8 {
+            // Batch ordinary credit updates, but never withhold the last free
+            // slot once the peer has used its advertised grant. Long-lived
+            // streams can otherwise prevent the batching threshold ever being
+            // reached, leaving a reusable slot inaccessible until idle timeout.
+            let exhausted = self.next_remote[dir as usize] >= self.sent_max_remote[dir as usize];
+            if diff > 0 && (exhausted || diff > self.max_concurrent_remote_count[dir as usize] / 8)
+            {
                 pending.max_stream_id[dir as usize] = true;
                 queued = true;
             }
         }
         queued
+    }
+
+    /// Return available credit when the peer cannot open another stream.
+    ///
+    /// A peer can allocate streams without sending on them, so observed stream
+    /// IDs alone do not always reveal an exhausted grant. This only advertises
+    /// credit already earned by closed streams or configured by the application.
+    pub(crate) fn received_streams_blocked(&self, dir: Dir, limit: u64, pending: &mut Retransmits) {
+        if self.max_remote[dir as usize] > limit {
+            pending.max_stream_id[dir as usize] = true;
+        }
     }
 
     /// Check for errors entailed by the peer's use of `id` as a send stream
@@ -1183,6 +1198,163 @@ mod tests {
             octets::mib_u32(1).into(),
             octets::mib_u32(1).into(),
         )
+    }
+
+    #[test]
+    fn exhausted_stream_window_returns_a_single_freed_slot_immediately() {
+        for dir in Dir::iter() {
+            for exhaust_before_free in [false, true] {
+                let mut state = make(Side::Server);
+                let limit = state.sent_max_remote[dir as usize];
+                let index = if exhaust_before_free { limit - 1 } else { 0 };
+                let id = StreamId::new(Side::Client, dir, index);
+                // Opening the highest permitted stream implicitly opens all lower
+                // IDs. Retain those streams while freeing only this one.
+                let transmit = state
+                    .received(
+                        frame::Stream {
+                            id,
+                            offset: 0,
+                            fin: true,
+                            data: Bytes::new(),
+                        },
+                        0,
+                    )
+                    .unwrap();
+                assert!(!transmit.should_transmit());
+                // Accept all implicitly opened streams before accessing their
+                // application halves, as the normal driver does.
+                let mut streams = Streams {
+                    state: &mut state,
+                    conn_state: &ConnState::Established,
+                };
+                for accepted_index in 0..=index {
+                    assert_eq!(
+                        streams.accept(dir),
+                        Some(StreamId::new(Side::Client, dir, accepted_index))
+                    );
+                }
+                let mut pending = Retransmits::default();
+                // Exhaustion alone cannot create credit while all slots are held.
+                assert!(!state.queue_max_stream_id(&mut pending));
+                let mut recv = RecvStream {
+                    id,
+                    state: &mut state,
+                    pending: &mut pending,
+                };
+                let mut chunks = recv.read(true).unwrap();
+                assert!(chunks.next(1).unwrap().is_none());
+                let _transmit = chunks.finalize();
+                if dir == Dir::Bi {
+                    // Both halves must finish before a bidirectional slot returns.
+                    assert_eq!(state.max_remote[dir as usize], limit);
+                    SendStream {
+                        id,
+                        state: &mut state,
+                        pending: &mut pending,
+                        conn_state: &ConnState::Established,
+                    }
+                    .finish()
+                    .unwrap();
+                    let frames = state.write_stream_frames(&mut Vec::new(), 128, true);
+                    assert_eq!(frames.len(), 1);
+                    for frame in frames {
+                        assert_eq!(frame.id, id);
+                        assert!(frame.fin);
+                        state.received_ack_of(frame);
+                    }
+                }
+                assert_eq!(state.max_remote[dir as usize], limit + 1);
+                // Preserve batching while the peer still has unused credit.
+                assert_eq!(state.queue_max_stream_id(&mut pending), exhaust_before_free);
+                assert_eq!(pending.max_stream_id[dir as usize], exhaust_before_free);
+                if !exhaust_before_free {
+                    // Exhaustion can occur after a slot was freed. Packet
+                    // processing rechecks credit even when no stream completes.
+                    let transmit = state
+                        .received(
+                            frame::Stream {
+                                id: StreamId::new(Side::Client, dir, limit - 1),
+                                offset: 0,
+                                fin: false,
+                                data: Bytes::new(),
+                            },
+                            0,
+                        )
+                        .unwrap();
+                    assert!(!transmit.should_transmit());
+                    assert!(state.queue_max_stream_id(&mut pending));
+                    assert!(pending.max_stream_id[dir as usize]);
+                }
+                state.write_control_frames(
+                    &mut Vec::new(),
+                    &mut pending,
+                    &mut ThinRetransmits::default(),
+                    &mut FrameStats::default(),
+                    128,
+                );
+                assert_eq!(state.sent_max_remote[dir as usize], limit + 1);
+                assert!(!state.queue_max_stream_id(&mut pending));
+            }
+        }
+    }
+
+    #[test]
+    fn streams_blocked_only_advertises_credit_already_available() {
+        for dir in Dir::iter() {
+            let mut state = make(Side::Server);
+            let original = state.sent_max_remote[dir as usize];
+            for new_slots in [0, 1] {
+                state.max_concurrent_remote_count[dir as usize] = original + new_slots;
+                state.ensure_remote_streams(dir);
+                for reported in [original - 1, original, original + 1] {
+                    let mut pending = Retransmits::default();
+                    state.received_streams_blocked(dir, reported, &mut pending);
+                    assert_eq!(
+                        pending.max_stream_id[dir as usize],
+                        reported < original + new_slots,
+                    );
+                    assert_eq!(state.max_remote[dir as usize], original + new_slots);
+                    assert_eq!(state.sent_max_remote[dir as usize], original);
+                    assert_eq!(state.next_remote[dir as usize], 0);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn remote_stream_limit_reports_transmitted_credit_only() {
+        let mut state = make(Side::Server);
+        let connection = ConnState::Established;
+        let original = state.sent_max_remote[Dir::Bi as usize];
+        state.max_concurrent_remote_count[Dir::Bi as usize] += 1;
+        state.ensure_remote_streams(Dir::Bi);
+        assert_eq!(state.max_remote[Dir::Bi as usize], original + 1);
+        assert_eq!(
+            Streams {
+                state: &mut state,
+                conn_state: &connection
+            }
+            .remote_stream_limit(Dir::Bi),
+            original
+        );
+        let mut pending = Retransmits::default();
+        pending.max_stream_id[Dir::Bi as usize] = true;
+        state.write_control_frames(
+            &mut Vec::new(),
+            &mut pending,
+            &mut ThinRetransmits::default(),
+            &mut FrameStats::default(),
+            128,
+        );
+        assert_eq!(
+            Streams {
+                state: &mut state,
+                conn_state: &connection
+            }
+            .remote_stream_limit(Dir::Bi),
+            original + 1
+        );
     }
 
     #[test]

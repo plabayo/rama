@@ -10,15 +10,17 @@ use parking_lot::Mutex;
 use rama_core::{
     bytes::{Bytes, BytesMut},
     extensions::{Extensions, ExtensionsRef},
+    futures::{StreamExt, stream::FuturesUnordered},
 };
 use rama_http_types::proto::h3::{
     Code, FrameHeader, FrameType, SettingId, Settings, StreamType, VarInt, VarIntDecoder,
 };
 use rama_net::stream::SocketInfo;
 use rama_quic::NegotiatedTlsParameters;
-use rama_quic_proto::coding::Codec;
+use rama_quic_proto::{Dir, coding::Codec};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
+    pin::pin,
     sync::Arc,
 };
 use tokio::sync::{Notify, oneshot};
@@ -151,7 +153,7 @@ pub(crate) struct Shared {
     progress: Notify,
     failure: Notify,
     control_ready: Notify,
-    pub(crate) schedule: Mutex<super::priority::Schedule>,
+    pub(crate) schedule: super::priority::Schedule,
 }
 
 impl Shared {
@@ -195,9 +197,9 @@ impl Shared {
                 control_in_flight: false,
                 local_goaway: None,
             }),
-            schedule: Mutex::new(super::priority::Schedule::new(
+            schedule: super::priority::Schedule::new(
                 config.max_requests.saturating_add(config.max_pushes),
-            )),
+            ),
             config,
             output: [Notify::new(), Notify::new()],
             progress: Notify::new(),
@@ -215,9 +217,27 @@ impl Shared {
         self.state.lock().error
     }
 
+    /// Preserve an already-discovered fatal cause when an owner releases transport.
+    pub(crate) fn close_code(&self) -> VarInt {
+        let code = self.error().map_or(Code::H3_NO_ERROR, Error::code);
+        VarInt::from_u64(code.value())
+            .unwrap_or(VarInt::from_u32(Code::H3_INTERNAL_ERROR.value() as u32))
+    }
+
     /// A clean connection close still permits draining received stream data and FIN.
     pub(crate) fn receive_error(&self) -> Option<Error> {
-        self.error().filter(|error| !error.is_clean_close())
+        self.receive_error_for_stream(None)
+    }
+
+    pub(crate) fn receive_error_for_stream(&self, request_id: Option<u64>) -> Option<Error> {
+        let state = self.state.lock();
+        if request_id.is_some_and(|id| state.control.goaway().is_some_and(|limit| id >= limit)) {
+            return Some(Error::stream(
+                Code::H3_REQUEST_REJECTED,
+                "request excluded by GOAWAY",
+            ));
+        }
+        state.error.filter(|error| !error.is_clean_close())
     }
 
     pub(crate) fn fail(&self, error: Error) {
@@ -240,7 +260,7 @@ impl Shared {
     pub(crate) async fn failed(&self) -> Error {
         loop {
             let failed = self.failure.notified();
-            let mut failed = std::pin::pin!(failed);
+            let mut failed = pin!(failed);
             failed.as_mut().enable();
             if let Some(error) = self.error() {
                 return error;
@@ -249,21 +269,25 @@ impl Shared {
         }
     }
 
+    /// GOAWAY proves these requests were not processed, even after connection close.
+    pub(crate) fn rejection(&self, id: Option<u64>) -> Option<Error> {
+        self.goaway()
+            .filter(|limit| id.is_none_or(|id| id >= *limit))
+            .map(|_| Error::stream(Code::H3_REQUEST_REJECTED, "request excluded by GOAWAY"))
+    }
+
     pub(crate) async fn rejected(&self, id: Option<u64>) -> Error {
         loop {
             let progress = self.progress.notified();
-            let mut progress = std::pin::pin!(progress);
+            let mut progress = pin!(progress);
             progress.as_mut().enable();
+            if let Some(error) = self.rejection(id) {
+                return error;
+            }
             if let Some(error) = self.error()
                 && (id.is_none() || !error.is_clean_close())
             {
                 return error;
-            }
-            if self
-                .goaway()
-                .is_some_and(|limit| id.is_none_or(|id| id >= limit))
-            {
-                return Error::stream(Code::H3_REQUEST_REJECTED, "request excluded by GOAWAY");
             }
             progress.await;
         }
@@ -378,6 +402,7 @@ impl Shared {
         state.control_output.push_back((bytes.freeze(), None));
         drop(state);
         self.control_ready.notify_one();
+        self.progress.notify_waiters();
         Ok(())
     }
 
@@ -422,7 +447,7 @@ impl Shared {
         loop {
             // Enable before trying the codec, closing the drain-before-wait race.
             let progress = self.progress.notified();
-            let mut progress = std::pin::pin!(progress);
+            let mut progress = pin!(progress);
             progress.as_mut().enable();
             let receiver = {
                 let mut state = self.state.lock();
@@ -432,7 +457,10 @@ impl Shared {
                             .decoder
                             .decode_field_section_after_close(id, bytes)
                             .map_err(compression_error)?
-                            .ok_or(error);
+                            .ok_or(Error::stream(
+                                Code::H3_REQUEST_INCOMPLETE,
+                                "connection closed before required QPACK inserts",
+                            ));
                     }
                     return Err(error);
                 }
@@ -523,7 +551,7 @@ impl Shared {
     pub(crate) async fn control_flushed(&self) -> Result<(), Error> {
         loop {
             let changed = self.progress.notified();
-            let mut changed = std::pin::pin!(changed);
+            let mut changed = pin!(changed);
             changed.as_mut().enable();
             {
                 let state = self.state.lock();
@@ -650,6 +678,7 @@ pub(crate) async fn write_instructions(
 }
 
 pub(crate) async fn receive_uni(
+    connection: &rama_quic::Connection,
     shared: Arc<Shared>,
     mut stream: rama_quic::RecvStream,
 ) -> Result<(), Error> {
@@ -736,10 +765,11 @@ pub(crate) async fn receive_uni(
                 {
                     if push {
                         let priority = rama_http::headers::Priority::parse(field_value).ok();
-                        if let Some(id) = shared.pushes.lock().priority(element_id, priority)?
+                        let stream_id = shared.pushes.lock().priority(element_id, priority)?;
+                        if let Some(id) = stream_id
                             && let Some(priority) = priority
                         {
-                            shared.schedule.lock().peer_priority(id, priority);
+                            shared.schedule.peer_priority(id, priority);
                         }
                         continue;
                     }
@@ -749,8 +779,16 @@ pub(crate) async fn receive_uni(
                             "priority target is not a request stream",
                         ));
                     }
+                    // RFC 9218 §7.2 bounds future request IDs by the cumulative
+                    // stream credit advertised on QUIC, including replenishment.
+                    if element_id / 4 >= connection.remote_stream_limit(Dir::Bi) {
+                        return Err(Error::connection(
+                            Code::H3_ID_ERROR,
+                            "priority target exceeds advertised request stream limit",
+                        ));
+                    }
                     if let Ok(priority) = rama_http::headers::Priority::parse(field_value) {
-                        shared.schedule.lock().update(element_id, priority)?;
+                        shared.schedule.update(element_id, priority)?;
                     }
                 }
                 shared.progress.notify_waiters();
@@ -760,7 +798,7 @@ pub(crate) async fn receive_uni(
             // Retry the same bytes on local output backpressure; codec feed is transactional.
             loop {
                 let progress = shared.progress.notified();
-                let mut progress = std::pin::pin!(progress);
+                let mut progress = pin!(progress);
                 progress.as_mut().enable();
                 let blocked = shared.feed_instructions(ty, &chunk)?;
                 if !blocked {
@@ -839,9 +877,11 @@ impl Driver {
         let result = self.run_inner().await;
         // Stream operations wake together with `closed()`. Whichever branch won,
         // preserve the connection's actual close code rather than a secondary
-        // critical-stream or accept error caused by that same closure.
-        let result = match self.connection.close_reason() {
-            Some(reason) => {
+        // critical-stream or accept error caused by that same closure. A fatal
+        // error already discovered by a request outranks local cleanup closure.
+        let result = match (self.shared.receive_error(), self.connection.close_reason()) {
+            (Some(error), _) => Err(error),
+            (None, Some(reason)) => {
                 let error = Error::from_transport(&reason);
                 if error.code() == Code::H3_NO_ERROR {
                     Ok(())
@@ -849,7 +889,7 @@ impl Driver {
                     Err(error)
                 }
             }
-            None => result,
+            (None, None) => result,
         };
         if let Err(error) = result {
             self.shared.fail(error);
@@ -867,7 +907,6 @@ impl Driver {
     }
 
     async fn run_inner(&self) -> Result<(), Error> {
-        use rama_core::futures::{StreamExt, stream::FuturesUnordered};
         self.connection
             .handshake_confirmed()
             .await
@@ -968,7 +1007,7 @@ impl Driver {
                         if streams.len() >= self.shared.config.max_pending_uni_streams {
                             return Err(Error::connection(Code::H3_EXCESSIVE_LOAD, "too many pending unidirectional streams"));
                         }
-                        streams.push(receive_uni(self.shared.clone(), stream));
+                        streams.push(receive_uni(&self.connection, self.shared.clone(), stream));
                     }
                     result = streams.next(), if !streams.is_empty() => {
                         if let Some(result) = result { result?; }
@@ -984,7 +1023,28 @@ impl Driver {
                     "server initiated bidirectional stream",
                 ));
             }
-            std::future::pending::<Result<(), Error>>().await
+            // Admission owns bidi streams until shutdown. Afterwards the driver
+            // rejects newly arriving requests while accepted work drains (§5.2).
+            loop {
+                let progress = self.shared.progress.notified();
+                let mut progress = pin!(progress);
+                progress.as_mut().enable();
+                if self.shared.state.lock().local_goaway.is_some() {
+                    break;
+                }
+                progress.await;
+            }
+            let mut budget = super::cooperative::Budget::default();
+            loop {
+                budget.consume().await;
+                let (send, _recv) = self
+                    .connection
+                    .accept_bi()
+                    .await
+                    .map_err(|error| Error::from_transport(&error))?;
+                send.abort_handle()
+                    .abort(VarInt::from_u32(Code::H3_REQUEST_REJECTED.value() as u32));
+            }
         };
         tokio::select! {
             error = self.shared.failed() => Err(error),
@@ -1003,15 +1063,44 @@ impl Driver {
 
 impl Drop for Driver {
     fn drop(&mut self) {
+        let close_code = self.shared.close_code();
         if self.shared.error().is_none() {
             self.shared.fail(Error::connection(
                 Code::H3_REQUEST_CANCELLED,
                 "HTTP/3 driver stopped",
             ));
         }
-        self.connection.close(
-            VarInt::from_u32(Code::H3_NO_ERROR.value() as u32),
-            b"HTTP/3 driver stopped",
-        );
+        self.connection.close(close_code, b"HTTP/3 driver stopped");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cancelling_after_connection_failure_releases_blocked_fields_without_feedback() {
+        let shared = Shared::new(Config::default(), Role::Client, Extensions::default()).unwrap();
+        let mut encoder = Encoder::new(EncoderConfig::default());
+        let encoded = encoder.encode(0, [("x-blocked", "pending")]).unwrap();
+        {
+            let mut state = shared.state.lock();
+            assert!(
+                state
+                    .decoder
+                    .decode_field_section(0, encoded)
+                    .unwrap()
+                    .is_none()
+            );
+            assert_eq!(state.decoder.blocked_stream_count(), 1);
+        }
+        let error = Error::connection(Code::H3_GENERAL_PROTOCOL_ERROR, "connection failed");
+        shared.fail(error);
+        shared.cancel(0);
+        let mut state = shared.state.lock();
+        assert_eq!(state.decoder.blocked_stream_count(), 0);
+        assert!(state.decoder.take_decoder_stream().is_empty());
+        assert!(state.cancelled.is_empty());
+        assert_eq!(state.error, Some(error));
     }
 }

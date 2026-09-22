@@ -18,7 +18,7 @@ use std::io;
 
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use tokio::io::AsyncRead;
+use tokio::{io::AsyncRead, task::coop};
 
 // 16 MB "sane default" taken from golang http2
 const DEFAULT_SETTINGS_MAX_HEADER_LIST_SIZE: usize = 16 << 20;
@@ -436,12 +436,17 @@ where
         let _e = span.enter();
         loop {
             tracing::trace!("poll");
+            // Buffered extension frames can remain ready without polling the
+            // socket. Charge every consumed frame, including ignored ones,
+            // so parsing and synchronous observers share the task's budget.
+            let budget = ready!(coop::poll_proceed(cx));
             let bytes = match ready!(Pin::new(&mut self.inner).poll_next(cx)) {
                 Some(Ok(bytes)) => bytes,
                 Some(Err(e)) => return Poll::Ready(Some(Err(map_err(e)))),
                 None => return Poll::Ready(None),
             };
 
+            budget.made_progress();
             tracing::trace!("bytes read = {}", bytes.len());
             let Self {
                 ref mut hpack,

@@ -23,7 +23,7 @@ use rama_net::client::{
 use rama_net::{AuthorityInputExt, Protocol as Scheme, ProtocolInputExt};
 
 use crate::layer::remove_header::{coalesce_cookie_headers, remove_illegal_h2_request_headers};
-use rama_utils::macros::generate_set_and_with;
+use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
 
 #[derive(Clone, Debug)]
 /// [`ConnectorService`] which will adapt the request version if needed.
@@ -36,7 +36,12 @@ pub struct RequestVersionAdapter<S> {
 }
 
 impl<S> RequestVersionAdapter<S> {
-    rama_utils::macros::define_inner_service_accessors!();
+    define_inner_service_accessors!();
+
+    /// Configure the wrapped connector before sharing the adapter.
+    pub fn get_mut(&mut self) -> &mut S {
+        &mut self.inner
+    }
 
     pub fn new(inner: S) -> Self {
         Self {

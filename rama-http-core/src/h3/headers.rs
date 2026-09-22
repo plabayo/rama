@@ -64,7 +64,10 @@ fn parse(fields: Vec<FieldPair>, trailers: bool) -> Result<Fields, Error> {
             .map_err(|_error| malformed("invalid field value"))?;
         validate_value(&value)?;
         value.set_sensitive(field.never_index);
-        result.headers.append(name, value);
+        result
+            .headers
+            .try_append(name, value)
+            .map_err(|_error| Error::stream(Code::H3_EXCESSIVE_LOAD, "too many header fields"))?;
     }
     Ok(result)
 }
@@ -457,6 +460,8 @@ pub(crate) fn encode_response<B>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::h3::qpack::ErrorScope;
+
     fn fields(values: &[(&'static str, &'static str)]) -> Vec<FieldPair> {
         values
             .iter()
@@ -466,6 +471,20 @@ mod tests {
                 never_index: false,
             })
             .collect()
+    }
+
+    #[test]
+    fn excessive_distinct_header_names_return_an_error_without_panicking() {
+        let fields = (0..32_768)
+            .map(|index| FieldPair {
+                name: Bytes::from(format!("x-field-{index}")),
+                value: Bytes::new(),
+                never_index: false,
+            })
+            .collect();
+        let error = parse(fields, false).err().unwrap();
+        assert_eq!(error.code(), Code::H3_EXCESSIVE_LOAD);
+        assert_eq!(error.scope(), ErrorScope::Stream);
     }
 
     #[test]

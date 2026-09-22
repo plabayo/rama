@@ -97,16 +97,16 @@ impl Connection {
             .map_err(|error| Error::from_transport(&error))?;
         let id = u64::from(send.id());
         self.next_id = self.next_id.max(id.saturating_add(4));
-        self.shared
-            .schedule
-            .lock()
-            .register(id, Priority::default())?;
+        self.shared.schedule.register(id, Priority::default())?;
         let mut reader = Reader::new(recv, self.shared.clone(), id);
         reader.abort = Some(send.abort_handle());
+        reader.cancel_code = Code::H3_REQUEST_REJECTED;
+        let mut writer = Writer::new(send);
+        writer.cancel_code = Code::H3_REQUEST_REJECTED;
         Ok(RequestStream {
             connection: self.connection.clone(),
             reader,
-            writer: Writer::new(send),
+            writer,
             permit,
             priority: super::priority::Lease {
                 shared: self.shared.clone(),
@@ -143,9 +143,10 @@ impl RequestStream {
         self.reader
             .shared
             .schedule
-            .lock()
             .initial_priority(self.reader.id, priority);
         self.reader.phase = Phase::Body;
+        self.reader.cancel_code = Code::H3_REQUEST_CANCELLED;
+        self.writer.cancel_code = Code::H3_REQUEST_CANCELLED;
         let mut response = SendResponse {
             connection: self.connection,
             origin: request.uri().clone(),
@@ -299,7 +300,7 @@ impl SendResponse {
                 .pushes
                 .lock()
                 .attach_stream(id, stream_id, writer.abort_handle());
-        self.shared.schedule.lock().register(stream_id, priority)?;
+        self.shared.schedule.register(stream_id, priority)?;
         Ok(Self {
             connection: self.connection.clone(),
             origin: request.uri().clone(),
@@ -319,10 +320,7 @@ impl SendResponse {
 
     /// Override peer priority using application knowledge.
     pub fn set_priority(&mut self, priority: Priority) {
-        self.shared
-            .schedule
-            .lock()
-            .override_priority(self.id, priority);
+        self.shared.schedule.override_priority(self.id, priority);
     }
 
     /// Send a non-101 informational response before the final response.

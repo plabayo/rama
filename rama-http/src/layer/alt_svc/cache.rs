@@ -1,19 +1,26 @@
 //! Bounded, origin-scoped HTTP alternative-service advertisements.
 
 use moka::{ops::compute::Op, policy::EvictionPolicy, sync::Cache};
-use rama_core::bytes::Bytes;
+use rama_core::{
+    bytes::Bytes,
+    extensions::{Extensions, FromExtensions},
+};
 use rama_http_headers::{Age, AltSvc, Date, HeaderDecode as _, HeaderMapExt as _};
 use rama_http_types::{
     HeaderMap, HeaderValue,
     conn::{HttpOrigin, HttpServiceCandidate, HttpServiceCandidates, HttpServiceSource},
     header,
-    proto::h2::alt_svc::AltSvcReceivedAt,
+    proto::h2::alt_svc::{AltSvcObserverExtension, AltSvcReceivedAt},
 };
-use rama_net::address::{Host, HostWithPort};
+use rama_net::{
+    address::{Host, HostWithPort},
+    client::{ProxyRoute, ProxyRoutes},
+};
 use rama_utils::macros::generate_set_and_with;
 use std::{
+    hash::{Hash, Hasher},
     sync::{
-        Arc,
+        Arc, Weak,
         atomic::{AtomicU64, Ordering},
     },
     time::{Duration, Instant, SystemTime},
@@ -21,6 +28,62 @@ use std::{
 
 const DEFAULT_ALTERNATIVES_PER_ORIGIN: usize = 16;
 const DEFAULT_ADVERTISEMENT_BYTES: usize = rama_utils::octets::kib(16);
+
+/// The configured route plan is shared, including its credentials, rather than
+/// copied into every candidate's failure key. A failure of the entire plan says
+/// nothing about a different plan or the direct path.
+#[derive(Clone, Debug, FromExtensions)]
+pub(crate) enum RouteContext {
+    Route(Arc<ProxyRoute>),
+    Routes(Arc<ProxyRoutes>),
+}
+
+impl RouteContext {
+    pub(crate) fn for_request(extensions: &Extensions) -> Option<Self> {
+        Self::from_extensions(extensions).filter(|context| {
+            !context.cacheable()
+                || context
+                    .routes()
+                    .iter()
+                    .any(|route| route.proxy_address().is_some())
+        })
+    }
+
+    fn cacheable(&self) -> bool {
+        match self {
+            Self::Route(_) => true,
+            // Route-local extensions are opaque to this outer selector. They
+            // may change DNS, TLS or network policy despite identical addresses.
+            Self::Routes(routes) => {
+                (0..routes.as_slice().len()).all(|index| routes.route_extensions(index).is_none())
+            }
+        }
+    }
+
+    fn routes(&self) -> &[ProxyRoute] {
+        match self {
+            Self::Route(route) => std::slice::from_ref(route.as_ref()),
+            Self::Routes(routes) => routes.as_slice(),
+        }
+    }
+}
+
+impl PartialEq for RouteContext {
+    fn eq(&self, other: &Self) -> bool {
+        self.routes() == other.routes()
+    }
+}
+
+impl Eq for RouteContext {}
+
+impl Hash for RouteContext {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.routes().len().hash(state);
+        for route in self.routes() {
+            route.proxy_address().hash(state);
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 struct Availability {
@@ -79,10 +142,16 @@ struct Advertisement {
 /// the logical origin and negotiate its advertised protocol. Using an alternative
 /// for an HTTP origin additionally requires RFC 8164's origin authorization; TLS
 /// authentication alone does not grant that permission.
+///
+/// Share a cache between connectors with the same default authentication policy:
+/// endpoint failures are shared as well as advertisements. Per-request policy
+/// failures and opaque per-route configuration are excluded from shared backoff.
 #[derive(Clone, Debug)]
 pub struct AltSvcCache {
     entries: Cache<HttpOrigin, Advertisement>,
+    pub(super) observers: Cache<HttpOrigin, Weak<AltSvcObserverExtension>>,
     failures: Cache<(u64, HttpOrigin, HttpServiceCandidate), Failure>,
+    route_failures: Cache<(u64, HttpOrigin, HttpServiceCandidate, RouteContext), Failure>,
     network: Arc<AtomicU64>,
     max_age: Duration,
     failure_backoff: Duration,
@@ -100,12 +169,18 @@ impl AltSvcCache {
     /// Set origin capacity, maximum retention and alternative failure backoff.
     pub fn new(capacity: u64, max_age: Duration, failure_backoff: Duration) -> Self {
         Self {
+            observers: Cache::builder().max_capacity(capacity).build(),
             entries: Cache::builder()
                 .max_capacity(capacity)
                 .eviction_policy(EvictionPolicy::lru())
                 .time_to_live(max_age)
                 .build(),
             failures: Cache::builder()
+                .max_capacity(capacity.saturating_mul(DEFAULT_ALTERNATIVES_PER_ORIGIN as u64))
+                .eviction_policy(EvictionPolicy::lru())
+                .time_to_live(max_age)
+                .build(),
+            route_failures: Cache::builder()
                 .max_capacity(capacity.saturating_mul(DEFAULT_ALTERNATIVES_PER_ORIGIN as u64))
                 .eviction_policy(EvictionPolicy::lru())
                 .time_to_live(max_age)
@@ -263,6 +338,9 @@ impl AltSvcCache {
         let mut candidates = Vec::new();
         let mut availability = Vec::new();
         if let Some(alternatives) = advertisement.alternatives() {
+            let capacity = alternatives.len().min(self.max_alternatives_per_origin);
+            candidates.reserve_exact(capacity);
+            availability.reserve_exact(capacity);
             for alternative in alternatives {
                 if candidates.len() == self.max_alternatives_per_origin {
                     break;
@@ -484,6 +562,114 @@ impl AltSvcCache {
             });
     }
 
+    pub(crate) fn route_usable(
+        &self,
+        snapshot: &Arc<HttpServiceCandidates>,
+        index: usize,
+        route: &RouteContext,
+    ) -> bool {
+        snapshot.get(index).is_some_and(|candidate| {
+            self.is_fresh(snapshot, index)
+                && (!route.cacheable()
+                    || self
+                        .route_failures
+                        .get(&(
+                            self.network_epoch(),
+                            snapshot.origin().clone(),
+                            candidate.clone(),
+                            route.clone(),
+                        ))
+                        .is_none_or(|failure| Instant::now() >= failure.until))
+        })
+    }
+
+    pub(crate) fn failed_route(
+        &self,
+        snapshot: &Arc<HttpServiceCandidates>,
+        index: usize,
+        network: u64,
+        route: &RouteContext,
+    ) {
+        let Some(candidate) = snapshot.get(index) else {
+            return;
+        };
+        if self.network_epoch() != network || !route.cacheable() {
+            return;
+        }
+        let key = (
+            network,
+            snapshot.origin().clone(),
+            candidate.clone(),
+            route.clone(),
+        );
+        self.route_failures.entry(key).and_compute_with(|previous| {
+            let attempts = previous.map_or(1, |entry| entry.value().attempts.saturating_add(1));
+            let backoff = self
+                .failure_backoff
+                .saturating_mul(2u32.saturating_pow(attempts.saturating_sub(1)))
+                .min(self.max_age);
+            let now = Instant::now();
+            Op::Put(Failure {
+                network,
+                until: now.checked_add(backoff).unwrap_or(now),
+                attempts,
+                all_routes: false,
+            })
+        });
+    }
+
+    /// A validated successful connection ends the selected path's failure streak.
+    pub(crate) fn succeeded(
+        &self,
+        snapshot: &Arc<HttpServiceCandidates>,
+        index: usize,
+        route: Option<&RouteContext>,
+        network: u64,
+    ) {
+        if self.network_epoch() != network {
+            return;
+        }
+        let Some(candidate) = snapshot.get(index) else {
+            return;
+        };
+        if let Some(route) = route {
+            if !route.cacheable() {
+                return;
+            }
+            let key = (
+                network,
+                snapshot.origin().clone(),
+                candidate.clone(),
+                route.clone(),
+            );
+            if self.route_failures.contains_key(&key) {
+                self.route_failures.invalidate(&key);
+            }
+        } else {
+            let key = (network, snapshot.origin().clone(), candidate.clone());
+            if self.failures.contains_key(&key) {
+                self.entries
+                    .entry(snapshot.origin().clone())
+                    .and_compute_with(|entry| {
+                        if self.network_epoch() != network {
+                            return Op::Nop;
+                        }
+                        self.failures.invalidate(&key);
+                        let Some(entry) = entry else {
+                            return Op::Nop;
+                        };
+                        let mut entry = entry.into_value();
+                        let Some(index) = entry.services.iter().position(|item| item == candidate)
+                        else {
+                            return Op::Nop;
+                        };
+                        Arc::make_mut(&mut entry.availability)[index].failure = None;
+                        Op::Put(entry)
+                    });
+            }
+        }
+    }
+
     /// Remove only the alternative that returned 421, without replaying a request.
     /// Delayed responses cannot invalidate a newer advertisement of that endpoint.
     pub fn misdirected(&self, snapshot: &Arc<HttpServiceCandidates>, index: usize) {
@@ -512,9 +698,15 @@ impl AltSvcCache {
     }
 
     /// Forget network-specific alternatives while retaining `persist=1` entries.
+    ///
+    /// Call this when the application's network changes (for example, switching
+    /// interfaces or VPNs). Rama does not monitor operating-system connectivity.
+    /// This also clears path failure backoff, including persistent alternatives,
+    /// because reachability on the previous network does not describe the new one.
     pub fn network_changed(&self) {
         self.network.fetch_add(1, Ordering::AcqRel);
         self.failures.invalidate_all();
+        self.route_failures.invalidate_all();
         for (origin, observed) in &self.entries {
             self.entries
                 .entry(origin.as_ref().clone())
@@ -1050,5 +1242,73 @@ mod tests {
         }
         cache.entries.run_pending_tasks();
         assert!(cache.entries.entry_count() <= 2);
+    }
+    #[test]
+    fn validated_success_restarts_failure_backoff() {
+        let cache = AltSvcCache::new(16, Duration::from_secs(60), Duration::from_secs(2));
+        let now = Instant::now();
+        record(&cache, "h2=\":443\"", now);
+        let snapshot = cache.lookup_at(&origin(), now).unwrap();
+        cache.failed_at(&snapshot, 0, now);
+        cache.failed_at(&snapshot, 0, now);
+        assert!(!cache.is_usable_at(&snapshot, 0, now + Duration::from_secs(3)));
+        cache.succeeded(&snapshot, 0, None, cache.network_epoch());
+        cache.failed_at(&snapshot, 0, now);
+        assert!(cache.is_usable_at(&snapshot, 0, now + Duration::from_secs(3)));
+    }
+    #[test]
+    fn success_recovers_a_readvertised_endpoint_but_not_a_different_network() {
+        let cache = AltSvcCache::default();
+        let now = Instant::now();
+        record(&cache, "h2=\":443\"; persist=1", now);
+        let first = cache.lookup_at(&origin(), now).unwrap();
+        let network = cache.network_epoch();
+        cache.failed_at(&first, 0, now);
+        record(&cache, "h2=\":443\"; persist=1", now);
+        cache.succeeded(&first, 0, None, network);
+        let current = cache.lookup_at(&origin(), now).unwrap();
+        assert!(!Arc::ptr_eq(&first, &current));
+        cache.network_changed();
+        let current = cache.lookup_at(&origin(), now).unwrap();
+        cache.failed_at(&current, 0, now);
+        cache.succeeded(&first, 0, None, network);
+        assert!(!cache.is_usable_at(&current, 0, now));
+    }
+    #[test]
+    fn opaque_route_configuration_does_not_poison_another_plan() {
+        let cache = AltSvcCache::default();
+        let now = Instant::now();
+        record(&cache, "h2=\":443\"", now);
+        let snapshot = cache.lookup_at(&origin(), now).unwrap();
+        let proxy = ProxyRoute::Proxy("http://proxy.example:3128".parse().unwrap());
+        let first = RouteContext::Routes(Arc::new(
+            [(proxy.clone(), Extensions::new())].into_iter().collect(),
+        ));
+        let second = RouteContext::Routes(Arc::new(
+            [(proxy.clone(), Extensions::new())].into_iter().collect(),
+        ));
+        cache.failed_route(&snapshot, 0, cache.network_epoch(), &first);
+        assert!(cache.route_usable(&snapshot, 0, &second));
+        let plain = RouteContext::Route(Arc::new(proxy));
+        assert!(cache.route_usable(&snapshot, 0, &plain));
+        cache.failed_route(&snapshot, 0, cache.network_epoch(), &plain);
+        assert!(!cache.route_usable(&snapshot, 0, &plain));
+        assert!(cache.route_usable(&snapshot, 0, &second));
+    }
+    #[test]
+    fn direct_route_extensions_keep_their_policy_context() {
+        let extensions = Extensions::new();
+        extensions.insert(ProxyRoutes::from_iter([(
+            ProxyRoute::Direct,
+            Extensions::new(),
+        )]));
+        let context = RouteContext::for_request(&extensions).unwrap();
+        assert!(!context.cacheable());
+        let cache = AltSvcCache::default();
+        let now = Instant::now();
+        record(&cache, "h2=\":443\"", now);
+        let snapshot = cache.lookup_at(&origin(), now).unwrap();
+        cache.failed_route(&snapshot, 0, cache.network_epoch(), &context);
+        assert!(cache.is_usable_at(&snapshot, 0, now));
     }
 }

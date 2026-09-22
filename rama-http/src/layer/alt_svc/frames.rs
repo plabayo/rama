@@ -15,12 +15,25 @@ use rama_net::{
     uri::AbsoluteUriRef,
 };
 
+use std::sync::Arc;
+
 impl AltSvcCache {
-    pub(crate) fn frame_observer(&self, origin: HttpOrigin) -> AltSvcObserverExtension {
-        AltSvcObserverExtension::new(FrameObserver {
+    pub(crate) fn frame_observer(&self, origin: HttpOrigin) -> Arc<AltSvcObserverExtension> {
+        if let Some(observer) = self
+            .observers
+            .get(&origin)
+            .and_then(|observer| observer.upgrade())
+        {
+            return observer;
+        }
+        let observer = Arc::new(AltSvcObserverExtension::new(FrameObserver {
             cache: self.clone(),
-            origin,
-        })
+            origin: origin.clone(),
+        }));
+        // Weak storage avoids a cycle through the observer's cache handle.
+        // Racing first connections may each create an observer; both are valid.
+        self.observers.insert(origin, Arc::downgrade(&observer));
+        observer
     }
 }
 
@@ -209,5 +222,16 @@ mod tests {
             &connection,
         );
         assert!(cache.lookup(&origin()).is_none());
+    }
+    #[test]
+    fn observers_share_per_origin_without_retaining_themselves() {
+        let cache = AltSvcCache::default();
+        let first = cache.frame_observer(origin());
+        let second = cache.frame_observer(origin());
+        assert!(Arc::ptr_eq(&first, &second));
+        let weak = Arc::downgrade(&first);
+        drop(first);
+        drop(second);
+        assert!(weak.upgrade().is_none());
     }
 }

@@ -290,10 +290,12 @@ async fn flush<S: SendStream>(
     writer: &mut Writer<S>,
 ) -> Result<(), Error> {
     std::future::poll_fn(|cx| {
-        let priority = ready!(shared.schedule.lock().poll_turn(id, cx));
-        writer.priority(super::priority::transport_priority(priority))?;
-        let result = writer.poll_flush(cx);
-        shared.schedule.lock().release(id);
+        let priority = ready!(shared.schedule.poll_turn(id, cx));
+        let result = match writer.priority(super::priority::transport_priority(priority)) {
+            Ok(()) => writer.poll_flush(cx),
+            Err(error) => Poll::Ready(Err(error)),
+        };
+        shared.schedule.release(id);
         result
     })
     .await

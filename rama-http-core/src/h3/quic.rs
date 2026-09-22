@@ -115,6 +115,7 @@ pub(crate) struct Writer<S: SendStream> {
     data_header: Option<(usize, Bytes)>,
     priority: Option<i32>,
     finished: bool,
+    pub(crate) cancel_code: Code,
 }
 
 impl Writer<rama_quic::SendStream> {
@@ -141,6 +142,7 @@ impl<S: SendStream> Writer<S> {
             stream,
             chunks: [Bytes::new(), Bytes::new()],
             finished: false,
+            cancel_code: Code::H3_REQUEST_CANCELLED,
             data_header: None,
             priority: None,
         }
@@ -151,6 +153,7 @@ impl<S: SendStream> Writer<S> {
             stream,
             chunks: [prefix, Bytes::new()],
             finished: false,
+            cancel_code: Code::H3_REQUEST_CANCELLED,
             data_header: None,
             priority: None,
         }
@@ -223,7 +226,7 @@ impl<S: SendStream> Writer<S> {
 impl<S: SendStream> Drop for Writer<S> {
     fn drop(&mut self) {
         if !self.finished {
-            self.stream.reset(Code::H3_REQUEST_CANCELLED);
+            self.stream.reset(self.cancel_code);
         }
     }
 }

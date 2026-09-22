@@ -68,6 +68,11 @@ impl<S> HttpConnectRequestAdapter<S> {
     }
 
     define_inner_service_accessors!();
+
+    /// Configure the wrapped connector before sharing the adapter.
+    pub fn get_mut(&mut self) -> &mut S {
+        &mut self.inner
+    }
 }
 
 impl<S, Body> Service<Request<Body>> for HttpConnectRequestAdapter<S>

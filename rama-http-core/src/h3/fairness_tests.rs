@@ -156,11 +156,7 @@ impl SendStream for ReadySend {
 #[test]
 fn immediately_ready_empty_body_frames_yield_before_reaching_payload() {
     let shared = Shared::new(Config::default(), Role::Server, Default::default()).unwrap();
-    shared
-        .schedule
-        .lock()
-        .register(0, Default::default())
-        .unwrap();
+    shared.schedule.register(0, Default::default()).unwrap();
     let polls = Arc::new(AtomicUsize::new(0));
     let body = EmptyFrames {
         remaining: OPERATIONS_PER_QUANTUM * 4,

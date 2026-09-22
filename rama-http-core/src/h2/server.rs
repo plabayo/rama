@@ -401,7 +401,9 @@ where
     ///
     /// Enable this with [`Builder::with_alt_svc`] before the handshake.
     /// Stream zero requires an explicit origin; request-stream frames must
-    /// omit it. The connection must continue being polled to transmit the frame.
+    /// omit it and identify the request whose origin is being advertised.
+    /// The caller supplies that association; this low-level API does not infer it.
+    /// The connection must continue being polled to transmit the frame.
     pub fn send_alt_svc(&self, frame: frame::AltSvc) -> Result<(), AltSvcSendError> {
         self.connection.send_alt_svc(frame)
     }

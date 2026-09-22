@@ -640,7 +640,7 @@ async fn pooled_service_refreshes_advertisement_generation_before_421() {
 }
 
 #[tokio::test]
-async fn advertised_protocol_mismatch_never_falls_back_to_origin() {
+async fn advertised_protocol_mismatch_falls_back_without_dispatching_to_alternative() {
     let (auth, tls) = credentials();
     let origin = Server::start(auth.clone(), Version::HTTP_2).await;
     let alternative = Server::start(auth, Version::HTTP_11).await;
@@ -651,13 +651,12 @@ async fn advertised_protocol_mismatch_never_falls_back_to_origin() {
         &format!("h2=\"{}\"", alternative.address),
     );
     let client = client(tls, cache);
-    assert!(
-        timeout(TEST_TIMEOUT, client.serve(origin.request()))
-            .await
-            .unwrap()
-            .is_err()
-    );
-    assert_eq!(origin.request_count(), 0);
+    assert_eq!(complete(&client, origin.request()).await.0, StatusCode::OK);
+    let attempted = alternative.accepted.load(Ordering::SeqCst);
+    assert!(attempted > 0);
+    assert_eq!(complete(&client, origin.request()).await.0, StatusCode::OK);
+    assert_eq!(alternative.accepted.load(Ordering::SeqCst), attempted);
+    assert_eq!(origin.request_count(), 2);
     assert_eq!(alternative.request_count(), 0);
     drop(client);
     origin.close().await;
@@ -665,7 +664,7 @@ async fn advertised_protocol_mismatch_never_falls_back_to_origin() {
 }
 
 #[tokio::test]
-async fn cached_alternative_authentication_failure_never_falls_back() {
+async fn cached_alternative_authentication_failure_falls_back_to_verified_origin() {
     let (auth, tls) = credentials();
     let origin = Server::start(auth, Version::HTTP_2).await;
     let (untrusted, _) = credentials();
@@ -677,17 +676,109 @@ async fn cached_alternative_authentication_failure_never_falls_back() {
         &format!("h2=\"{}\"", alternative.address),
     );
     let client = client(tls, cache);
-    assert!(
-        timeout(TEST_TIMEOUT, client.serve(origin.request()))
-            .await
-            .unwrap()
-            .is_err()
-    );
-    assert_eq!(origin.request_count(), 0);
+    assert_eq!(complete(&client, origin.request()).await.0, StatusCode::OK);
+    let attempted = alternative.accepted.load(Ordering::SeqCst);
+    assert!(attempted > 0);
+    assert_eq!(complete(&client, origin.request()).await.0, StatusCode::OK);
+    assert_eq!(alternative.accepted.load(Ordering::SeqCst), attempted);
+    assert_eq!(origin.request_count(), 2);
     assert_eq!(alternative.request_count(), 0);
     drop(client);
     origin.close().await;
     alternative.close().await;
+}
+
+#[tokio::test]
+async fn request_tls_overrides_do_not_poison_shared_alternatives() {
+    for (protocol, version) in [("h2", Version::HTTP_2), ("h3", Version::HTTP_3)] {
+        let (auth, tls) = credentials();
+        let origin = Server::start(auth.clone(), Version::HTTP_2).await;
+        let alternative = Server::start(auth, version).await;
+        let cache = AltSvcCache::default();
+        seed(
+            &cache,
+            &origin.origin(),
+            &format!("{protocol}=\"{}\"", alternative.address),
+        );
+        let (client, endpoint) = client_with_http3_cache(tls, cache).await;
+
+        let insecure = origin.request();
+        insecure
+            .extensions()
+            .insert(TlsServerVerify(ServerVerifyMode::Disable));
+        assert_eq!(complete(&client, insecure).await.1, Version::HTTP_2);
+        assert_eq!(alternative.accepted.load(Ordering::SeqCst), 0);
+        assert_eq!(complete(&client, origin.request()).await.1, version);
+
+        let mismatched_name = origin.request();
+        mismatched_name.extensions().extend(
+            TlsClientConfig::new()
+                .with_server_name(Host::EXAMPLE_NAME)
+                .as_extensions(),
+        );
+        let before = alternative.accepted.load(Ordering::SeqCst);
+        assert!(
+            timeout(TEST_TIMEOUT, client.serve(mismatched_name))
+                .await
+                .unwrap()
+                .is_err()
+        );
+        assert_eq!(alternative.accepted.load(Ordering::SeqCst), before);
+        assert_eq!(complete(&client, origin.request()).await.1, version);
+
+        let invalid_pins = origin.request();
+        invalid_pins
+            .extensions()
+            .insert(TlsServerCertPins::new(TlsServerCertPin::SpkiSha256(
+                [1; 32],
+            )));
+        assert!(
+            timeout(TEST_TIMEOUT, client.serve(invalid_pins))
+                .await
+                .unwrap()
+                .is_err()
+        );
+        assert_eq!(complete(&client, origin.request()).await.1, version);
+        assert_eq!(alternative.request_count(), 3);
+        assert_eq!(origin.request_count(), 1);
+
+        drop(client);
+        close_client_endpoint(endpoint).await;
+        origin.close().await;
+        alternative.close().await;
+    }
+}
+
+#[tokio::test]
+async fn connector_tls_defaults_control_alternative_eligibility() {
+    for (protocol, version) in [("h2", Version::HTTP_2), ("h3", Version::HTTP_3)] {
+        let (auth, tls) = credentials();
+        let origin = Server::start(auth.clone(), Version::HTTP_2).await;
+        let alternative = Server::start(auth, version).await;
+        let cache = AltSvcCache::default();
+        seed(
+            &cache,
+            &origin.origin(),
+            &format!("{protocol}=\"{}\"", alternative.address),
+        );
+        let (client, endpoint) =
+            client_with_http3_cache(tls.with_server_verify(ServerVerifyMode::Disable), cache).await;
+
+        assert_eq!(complete(&client, origin.request()).await.1, Version::HTTP_2);
+        assert_eq!(alternative.accepted.load(Ordering::SeqCst), 0);
+        let verified = origin.request();
+        verified
+            .extensions()
+            .insert(TlsServerVerify(ServerVerifyMode::Auto));
+        assert_eq!(complete(&client, verified).await.1, version);
+        assert_eq!(origin.request_count(), 1);
+        assert_eq!(alternative.request_count(), 1);
+
+        drop(client);
+        close_client_endpoint(endpoint).await;
+        origin.close().await;
+        alternative.close().await;
+    }
 }
 
 #[tokio::test]
@@ -790,6 +881,7 @@ async fn alternative_target_is_reached_through_selected_proxy_route() {
         .unwrap();
     let proxy_address = listener.local_addr().unwrap();
     let targets = Arc::new(Mutex::new(Vec::new()));
+    let refused = Arc::new(Mutex::new(None::<(u16, StatusCode)>));
     let connect = EagerHttpProxyConnector::new(
         DnsConnector::new(TcpConnector::new()),
         IoForwardService::new(executor.clone()),
@@ -813,6 +905,29 @@ async fn alternative_target_is_reached_through_selected_proxy_route() {
                     .unwrap(),
             )
         }));
+    let service = service_fn({
+        let refused = refused.clone();
+        let targets = targets.clone();
+        move |request: Request| {
+            let service = service.clone();
+            let rejection = *refused.lock();
+            let targets = targets.clone();
+            async move {
+                if let Some((port, status)) = rejection
+                    && request.uri().port_u16() == Some(port)
+                {
+                    targets.lock().push(request.uri().to_string());
+                    return Ok::<_, Infallible>(
+                        Response::builder()
+                            .status(status)
+                            .body(Body::empty())
+                            .unwrap(),
+                    );
+                }
+                service.serve(request).await
+            }
+        }
+    });
     let task = spawn(listener.serve(HttpServer::auto(executor).service(service)));
     let unavailable = TokioTcpListener::bind(SocketAddr::from(SocketAddress::local_ipv4(0)))
         .await
@@ -826,7 +941,7 @@ async fn alternative_target_is_reached_through_selected_proxy_route() {
         &origin.origin(),
         &format!("h2=\"{}\"", alternative.address),
     );
-    let client = client(tls.clone(), cache);
+    let initial_client = client(tls.clone(), cache);
     let request = origin.request();
     request.extensions().insert(ProxyRoutes::new([
         ProxyRoute::from(
@@ -840,7 +955,7 @@ async fn alternative_target_is_reached_through_selected_proxy_route() {
                 .unwrap(),
         ),
     ]));
-    assert_eq!(complete(&client, request).await.1, Version::HTTP_2);
+    assert_eq!(complete(&initial_client, request).await.1, Version::HTTP_2);
     assert_eq!(*targets.lock(), [alternative.address.to_string()]);
     assert_eq!(origin.request_count(), 0);
     assert_eq!(alternative.request_count(), 1);
@@ -852,7 +967,45 @@ async fn alternative_target_is_reached_through_selected_proxy_route() {
             format!("localhost:{}", origin.address.port())
         );
     }
-    drop(client);
+    drop(initial_client);
+
+    // A real CONNECT refusal concerns the alternative's endpoint, not the
+    // origin or the proxy's ability to reach it. Keep both selector and proxy
+    // failure caches in this path, including a second request after failure.
+    for status in [
+        StatusCode::FORBIDDEN,
+        StatusCode::BAD_GATEWAY,
+        StatusCode::GATEWAY_TIMEOUT,
+    ] {
+        *refused.lock() = Some((alternative.address.port(), status));
+        let cache = AltSvcCache::default();
+        seed(
+            &cache,
+            &origin.origin(),
+            &format!("h2=\"{}\"", alternative.address),
+        );
+        let client = client(tls.clone(), cache);
+        let before = targets.lock().len();
+        for _ in 0..2 {
+            let request = origin.request();
+            request
+                .extensions()
+                .insert(ProxyRoutes::new([ProxyRoute::from(
+                    format!("http://{proxy_address}")
+                        .parse::<ProxyAddress>()
+                        .unwrap(),
+                )]));
+            assert_eq!(complete(&client, request).await.0, StatusCode::OK);
+        }
+        assert_eq!(targets.lock().len(), before + 2);
+        assert_eq!(targets.lock()[before], alternative.address.to_string());
+        assert_eq!(
+            targets.lock()[before + 1],
+            format!("localhost:{}", origin.address.port())
+        );
+        drop(client);
+    }
+    *refused.lock() = None;
 
     // An unsupported local QUIC proxy capability must leave the working proxy
     // available for origin fallback, including on the next request. An explicit
@@ -895,7 +1048,7 @@ async fn alternative_target_is_reached_through_selected_proxy_route() {
         drop(client);
         close_client_endpoint(endpoint).await;
     }
-    assert_eq!(origin.request_count(), 4);
+    assert_eq!(origin.request_count(), 10);
     quic_alternative.close().await;
     cancel.cancel();
     shutdown.shutdown_with_limit(TEST_TIMEOUT).await.unwrap();

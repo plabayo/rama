@@ -45,6 +45,7 @@ impl Error {
             peer_stopped: true,
         }
     }
+
     pub(crate) const fn is_peer_stop(self) -> bool {
         self.peer_stopped
     }
@@ -62,11 +63,20 @@ impl Error {
             rama_quic::ConnectionError::LocallyClosed => {
                 Self::connection(Code::H3_NO_ERROR, "local connection closed")
             }
+            // HTTP/3 defines no timeout application code. Retain a terminal
+            // local error, with an explicit transport cause rather than claiming
+            // the peer violated HTTP/3. This code was not received from the peer.
+            rama_quic::ConnectionError::TimedOut => {
+                Self::connection(Code::H3_GENERAL_PROTOCOL_ERROR, "QUIC connection timed out")
+            }
             _ => Self::connection(Code::H3_GENERAL_PROTOCOL_ERROR, "QUIC connection failed"),
         }
     }
 
-    /// The application error code sent to the peer.
+    /// The HTTP/3 application error code.
+    ///
+    /// Transport failures use a local classification when no application code
+    /// was received; a closed transport cannot deliver it to the peer.
     #[must_use]
     pub const fn code(self) -> Code {
         self.code
@@ -118,4 +128,18 @@ impl std::fmt::Display for Error {
         write!(f, "{} ({}, {:?})", self.reason, self.code, self.scope)
     }
 }
+
 impl std::error::Error for Error {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transport_timeout_remains_terminal_with_specific_cause() {
+        let error = Error::from_transport(&rama_quic::ConnectionError::TimedOut);
+        assert!(!error.is_clean_close());
+        assert_eq!(error.scope(), ErrorScope::Connection);
+        assert!(error.to_string().contains("timed out"));
+    }
+}

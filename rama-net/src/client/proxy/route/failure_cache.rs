@@ -19,7 +19,8 @@ use crate::client::{
     EstablishedClientConnection,
 };
 use crate::{
-    AuthorityInputExt, Protocol, ProtocolInputExt, address::HostWithPort, user::ProxyCredential,
+    AuthorityInputExt, ConnectorTargetInputExt, Protocol, ProtocolInputExt, address::HostWithPort,
+    user::ProxyCredential,
 };
 
 use super::ProxyRoute;
@@ -193,13 +194,15 @@ enum CacheDecision {
 ///
 /// The cache is bounded and safe to clone across connector services. Healthy
 /// routes create only transient state while an attempt is in flight; a success
-/// or non-cacheable failure removes it, so retained entries represent negative
-/// backoff state. State transitions for one route key use atomics and do not
-/// contend with unrelated proxy routes or destinations. After a backoff expires,
+/// or non-cacheable remote failure removes it, so retained entries represent
+/// negative backoff state. Local failures leave existing backoff unchanged.
+/// State transitions use atomics without contending with unrelated proxy routes
+/// or destinations. After a backoff expires,
 /// at most one caller receives a half-open probe permit for that key.
 ///
 /// Keys contain the proxy protocol and address, an optional Basic routing
-/// username, and optionally the final destination protocol and address. Basic
+/// username, and optionally the destination protocol and connector target address.
+/// The target respects routing overrides such as alternative services. Basic
 /// passwords and bearer tokens are never retained in a key.
 #[derive(Clone)]
 pub struct ProxyRouteFailureCache {
@@ -254,14 +257,9 @@ impl ProxyRouteFailureCache {
             return None;
         };
         let (destination_protocol, destination) = match self.config.scope {
-            ProxyRouteFailureCacheScope::PerDestination => (
-                input.protocol(),
-                Some(
-                    input
-                        .authority()?
-                        .into_host_with_port(input.protocol_default_port())?,
-                ),
-            ),
+            ProxyRouteFailureCacheScope::PerDestination => {
+                (input.protocol(), Some(input.connector_target()?))
+            }
             ProxyRouteFailureCacheScope::PerProxy => (None, None),
         };
         let (basic_username, bearer_credential) = match proxy.credential.as_ref() {
@@ -468,8 +466,10 @@ impl core::error::Error for ProxyRouteFailureCachedError {}
 ///
 /// Transport `Unavailable`, `Timeout`, `Rejected`, `Protocol`, and `Other`
 /// failures are cached.
-/// A success or any non-cacheable failure clears existing backoff state so the
-/// next request can try the route again. Direct and plural routes are ignored.
+/// A success or non-cacheable remote failure clears existing backoff state so
+/// the next request can try the route again. Local failures provide no evidence
+/// about the proxy and leave its backoff unchanged. Direct and plural routes
+/// are ignored.
 #[derive(Debug, Clone)]
 pub struct ProxyRouteFailureCacheConnector<S> {
     inner: S,
@@ -531,7 +531,9 @@ where
                 Err(error)
             }
             Err(error) => {
-                permit.mark_live();
+                if error.domain() != ConnectionErrorDomain::Local {
+                    permit.mark_live();
+                }
                 Err(error)
             }
         }
@@ -579,7 +581,7 @@ mod tests {
     use rama_core::{ServiceInput, service::service_fn};
     use tokio::sync::{Barrier, Notify};
 
-    use crate::client::{ConnectRequest, ProxyRoute, ProxyRoutes};
+    use crate::client::{ConnectRequest, ConnectorTarget, ProxyRoute, ProxyRoutes};
 
     use super::*;
 
@@ -826,6 +828,89 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn alternative_failure_does_not_block_origin_at_same_proxy() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let inner = service_fn({
+            let attempts = attempts.clone();
+            move |input: ConnectRequest| {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    if input.extensions.contains::<ConnectorTarget>() {
+                        Err(ConnectionError::transport(
+                            BoxError::from_static_str("proxy refused alternative port"),
+                            ConnectionErrorKind::Rejected,
+                        ))
+                    } else {
+                        Ok(EstablishedClientConnection {
+                            input,
+                            conn: ServiceInput::new(()),
+                        })
+                    }
+                }
+            }
+        });
+        let connector = ProxyRouteFailureCacheConnector::new(
+            inner,
+            cache(ProxyRouteFailureCacheScope::PerDestination),
+        );
+        let alternative = || {
+            let input = request("origin.example:443", proxy(None));
+            input
+                .extensions
+                .insert(ConnectorTarget("origin.example:8443".parse().unwrap()));
+            input
+        };
+
+        let _failure = connector.serve(alternative()).await.unwrap_err();
+        connector
+            .serve(request("origin.example:443", proxy(None)))
+            .await
+            .unwrap();
+        let cached = connector.serve(alternative()).await.unwrap_err();
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert!(
+            cached
+                .get_ref()
+                .downcast_ref::<ProxyRouteFailureCachedError>()
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn local_refusal_preserves_backoff_and_releases_probe() {
+        let failure_cache = cache(ProxyRouteFailureCacheScope::PerDestination);
+        let input = request("one.example:443", proxy(None));
+        let mut permit = begin_attempt(&failure_cache, &input);
+        let entry = permit.entry.clone();
+        failure_cache.mark_failure(&mut permit, ConnectionErrorKind::Unavailable);
+        drop(permit);
+        // Expire the backoff without depending on a scheduler or wall clock.
+        entry.blocked_until.store(0, Ordering::Release);
+        let connector = ProxyRouteFailureCacheConnector::new(
+            service_fn(|_input: ConnectRequest| async {
+                Err::<EstablishedClientConnection<ServiceInput<()>, ConnectRequest>, _>(
+                    ConnectionError::local(
+                        BoxError::from_static_str("transport does not support this route"),
+                        ConnectionErrorKind::Unavailable,
+                    ),
+                )
+            }),
+            failure_cache.clone(),
+        );
+
+        let _refusal = connector.serve(input.clone()).await.unwrap_err();
+
+        assert_eq!(entry.failure_count.load(Ordering::Acquire), 1);
+        assert!(!entry.succeeded.load(Ordering::Acquire));
+        assert_eq!(entry.probe_until.load(Ordering::Acquire), 0);
+        let mut permit = begin_attempt(&failure_cache, &input);
+        assert!(Arc::ptr_eq(&entry, &permit.entry));
+        failure_cache.mark_failure(&mut permit, ConnectionErrorKind::Unavailable);
+        assert_eq!(entry.failure_count.load(Ordering::Acquire), 2);
     }
 
     #[tokio::test]

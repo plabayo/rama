@@ -123,7 +123,10 @@ impl<R: RecvStream> Reader<R> {
                 ready!(promise.as_mut().poll(cx))?;
                 self.promise = None;
             }
-            if let Some(error) = self.shared.receive_error() {
+            let request_id = (self.shared.role == super::control::Role::Client
+                && self.push_id.is_none())
+            .then_some(self.id);
+            if let Some(error) = self.shared.receive_error_for_stream(request_id) {
                 return Poll::Ready(Err(error));
             }
             let event = self.frames.poll().map_err(|e| {
@@ -179,7 +182,17 @@ impl<R: RecvStream> Reader<R> {
                     if let Some(mut bytes) = ready!(
                         self.stream
                             .poll_chunk(cx, self.shared.config.read_chunk_size)
-                    )? {
+                    )
+                    .map_err(|error| {
+                        if error.is_clean_close() {
+                            Error::stream(
+                                Code::H3_REQUEST_INCOMPLETE,
+                                "connection closed before stream FIN",
+                            )
+                        } else {
+                            error
+                        }
+                    })? {
                         self.frames.feed_bytes(&mut bytes).map_err(|_error| {
                             Error::connection(Code::H3_INTERNAL_ERROR, "frame input not drained")
                         })?

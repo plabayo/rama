@@ -60,6 +60,17 @@ impl MemoryDatagramSocket {
         )
     }
 
+    /// Control loss and reordering on datagrams sent by this endpoint.
+    ///
+    /// The handle does not keep either endpoint logically open.
+    #[must_use]
+    pub fn fault_control(&self) -> MemoryDatagramControl {
+        MemoryDatagramControl {
+            shared: self.shared.clone(),
+            side: self.side,
+        }
+    }
+
     /// Insert a datagram directly into this endpoint's receive queue.
     ///
     /// This is useful for deterministic tests of metadata that cannot be
@@ -88,8 +99,9 @@ impl MemoryDatagramSocket {
             }
         }
         let mut state = self.lock();
+        let held = usize::from(state.endpoints[other(self.side)].held.is_some());
         let endpoint = &mut state.endpoints[self.side];
-        if endpoint.queue.len() >= self.shared.capacity {
+        if endpoint.queue.len() + held >= self.shared.capacity {
             return Err(io::Error::new(
                 io::ErrorKind::WouldBlock,
                 "in-memory datagram receive queue is full",
@@ -122,6 +134,71 @@ impl MemoryDatagramSocket {
 
     fn lock(&self) -> MutexGuard<'_, PairState> {
         self.shared.state.lock()
+    }
+}
+
+/// Deterministic outbound faults for a [`MemoryDatagramSocket`].
+#[derive(Clone)]
+pub struct MemoryDatagramControl {
+    shared: Arc<Shared>,
+    side: usize,
+}
+
+impl std::fmt::Debug for MemoryDatagramControl {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("MemoryDatagramControl")
+            .field("stats", &self.stats())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Faults actually applied, counted after segmented sends are split.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MemoryDatagramFaultStats {
+    /// Datagrams discarded while reporting a successful send.
+    pub dropped: usize,
+    /// Pairs delivered in reverse send order.
+    pub reordered_pairs: usize,
+}
+
+impl MemoryDatagramControl {
+    /// Drop the next `count` outbound datagrams, including individual GSO segments.
+    /// Replaces any remaining drop count. Dropped datagrams consume no queue space.
+    pub fn drop_next(&self, count: usize) {
+        let mut state = self.shared.state.lock();
+        let endpoint = &mut state.endpoints[self.side];
+        endpoint.drop_next = count;
+        let waiters = take_waiters(&mut endpoint.send_waiters);
+        drop(state);
+        wake_all(waiters);
+    }
+
+    /// Hold one outgoing datagram until the following datagram can pass it.
+    ///
+    /// Requires at least two queue slots. Reserves one slot by lowering the
+    /// segmented-send limit to at most `capacity - 1`, so a held datagram never
+    /// prevents an otherwise empty receive queue from accepting a GSO batch.
+    /// Drops happen before reordering; only surviving datagrams form the pair.
+    pub fn reorder_next_pair(&self) -> Result<(), DatagramError> {
+        let Some(max_segments) = self.shared.capacity.checked_sub(1).filter(|n| *n > 0) else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "datagram reordering needs at least two queue slots",
+            )
+            .into());
+        };
+        self.shared
+            .max_send_segments
+            .fetch_min(max_segments, Ordering::Relaxed);
+        self.shared.state.lock().endpoints[self.side].reorder_next = true;
+        Ok(())
+    }
+
+    /// Return cumulative applied faults for this direction.
+    #[must_use]
+    pub fn stats(&self) -> MemoryDatagramFaultStats {
+        self.shared.state.lock().endpoints[self.side].fault_stats
     }
 }
 
@@ -298,7 +375,10 @@ impl DatagramSender for MemoryDatagramSender {
         if !state.endpoints[peer].receiver_alive {
             return Poll::Ready(Err(DatagramError::Closed));
         }
-        if state.endpoints[peer].queue.len() + segment_count > self.shared.capacity {
+        let retained = state.endpoints[peer].queue.len()
+            + usize::from(state.endpoints[self.side].held.is_some());
+        let incoming = segment_count.saturating_sub(state.endpoints[self.side].drop_next);
+        if retained + incoming > self.shared.capacity {
             register_waiter(
                 &mut state.endpoints[self.side].send_waiters,
                 &self.waiter,
@@ -319,9 +399,13 @@ impl DatagramSender for MemoryDatagramSender {
             Box::new(std::iter::once(datagram.payload()))
         };
         for payload in chunks {
-            let timestamp = state.sequence.get();
-            state.sequence = state.sequence.checked_add(1).unwrap_or(NonZeroU64::MAX);
-            state.endpoints[peer].queue.push_back(OwnedDatagram {
+            let endpoint = &mut state.endpoints[self.side];
+            if endpoint.drop_next > 0 {
+                endpoint.drop_next -= 1;
+                endpoint.fault_stats.dropped += 1;
+                continue;
+            }
+            let packet = OwnedDatagram {
                 payload: payload.to_vec(),
                 metadata: DatagramMetadata {
                     len: payload.len(),
@@ -332,10 +416,22 @@ impl DatagramSender for MemoryDatagramSender {
                     original_destination: None,
                     interface_index: Some((peer + 1) as u32),
                     ecn: Some(datagram.ecn().unwrap_or(EcnCodepoint::NotEct)),
-                    timestamp: Some(ReceiveTimestamp::Monotonic(Duration::from_nanos(timestamp))),
+                    timestamp: None,
                     truncated: false,
                 },
-            });
+            };
+            if endpoint.reorder_next {
+                if let Some(held) = endpoint.held.take() {
+                    endpoint.reorder_next = false;
+                    endpoint.fault_stats.reordered_pairs += 1;
+                    state.deliver(peer, packet);
+                    state.deliver(peer, held);
+                } else {
+                    endpoint.held = Some(packet);
+                }
+            } else {
+                state.deliver(peer, packet);
+            }
         }
         let waker = state.endpoints[peer].recv_waker.take();
         drop(state);
@@ -362,12 +458,26 @@ struct PairState {
     sequence: NonZeroU64,
 }
 
+impl PairState {
+    fn deliver(&mut self, peer: usize, mut packet: OwnedDatagram) {
+        packet.metadata.timestamp = Some(ReceiveTimestamp::Monotonic(Duration::from_nanos(
+            self.sequence.get(),
+        )));
+        self.sequence = self.sequence.checked_add(1).unwrap_or(NonZeroU64::MAX);
+        self.endpoints[peer].queue.push_back(packet);
+    }
+}
+
 struct EndpointState {
     receiver_alive: bool,
     senders: usize,
     queue: VecDeque<OwnedDatagram>,
     recv_waker: Option<Waker>,
     send_waiters: Vec<Weak<SendWaiter>>,
+    drop_next: usize,
+    reorder_next: bool,
+    held: Option<OwnedDatagram>,
+    fault_stats: MemoryDatagramFaultStats,
 }
 
 #[derive(Default)]
@@ -383,6 +493,10 @@ impl EndpointState {
             queue: VecDeque::new(),
             recv_waker: None,
             send_waiters: Vec::new(),
+            drop_next: 0,
+            reorder_next: false,
+            held: None,
+            fault_stats: MemoryDatagramFaultStats::default(),
         }
     }
 }
@@ -481,6 +595,112 @@ mod tests {
         fn wake(self: Arc<Self>) {
             self.0.fetch_add(1, Ordering::Relaxed);
         }
+    }
+
+    #[tokio::test]
+    async fn loss_counts_individual_gso_segments() {
+        let (mut receiver, socket) = memory_pair(NonZeroUsize::new(4).unwrap());
+        let control = socket.fault_control();
+        control.drop_next(2);
+        let mut sender = socket.create_sender();
+        sender
+            .send(
+                SendDatagram::new(receiver.local_addr().unwrap(), b"aabbcc")
+                    .with_segment_size(NonZeroUsize::new(2).unwrap()),
+            )
+            .await
+            .unwrap();
+
+        let mut buffer = [0; 2];
+        assert_eq!(receiver.recv(&mut buffer).await.unwrap().len, 2);
+        assert_eq!(&buffer, b"cc");
+        assert_eq!(control.stats().dropped, 2);
+        assert_eq!(control.stats().reordered_pairs, 0);
+        assert_eq!(socket.fault_control().stats(), control.stats());
+    }
+
+    #[tokio::test]
+    async fn reordering_preserves_gso_boundaries_and_queue_bound() {
+        let (mut receiver, socket) = memory_pair(NonZeroUsize::new(4).unwrap());
+        let control = socket.fault_control();
+        control.reorder_next_pair().unwrap();
+        let mut sender = socket.create_sender();
+        let destination = receiver.local_addr().unwrap();
+        sender
+            .send(SendDatagram::new(destination, b"first"))
+            .await
+            .unwrap();
+        assert!(receiver.shared.state.lock().endpoints[0].queue.is_empty());
+        sender
+            .send(
+                SendDatagram::new(destination, b"aabbcc")
+                    .with_segment_size(NonZeroUsize::new(2).unwrap()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(receiver.shared.state.lock().endpoints[0].queue.len(), 4);
+        assert!(matches!(
+            sender.poll_send(
+                &mut Context::from_waker(Waker::noop()),
+                &SendDatagram::new(destination, b"full"),
+            ),
+            Poll::Pending
+        ));
+        for expected in [b"aa".as_slice(), b"first", b"bb", b"cc"] {
+            let mut buffer = [0; 8];
+            let metadata = receiver.recv(&mut buffer).await.unwrap();
+            assert_eq!(&buffer[..metadata.len], expected);
+        }
+        assert_eq!(control.stats().reordered_pairs, 1);
+        assert_eq!(control.stats().dropped, 0);
+    }
+
+    #[tokio::test]
+    async fn dropped_datagrams_do_not_need_queue_capacity() {
+        let (mut receiver, socket) = memory_pair(NonZeroUsize::MIN);
+        let control = socket.fault_control();
+        assert!(control.reorder_next_pair().is_err());
+        let mut sender = socket.create_sender();
+        let destination = receiver.local_addr().unwrap();
+        sender
+            .send(SendDatagram::new(destination, b"kept"))
+            .await
+            .unwrap();
+        let wake_counter = Arc::new(WakeCounter::default());
+        let waker = Waker::from(wake_counter.clone());
+        let mut context = Context::from_waker(&waker);
+        let lost = SendDatagram::new(destination, b"lost");
+        assert!(sender.poll_send(&mut context, &lost).is_pending());
+        control.drop_next(1);
+        assert_eq!(wake_counter.0.load(Ordering::Relaxed), 1);
+        assert!(matches!(
+            sender.poll_send(&mut context, &lost),
+            Poll::Ready(Ok(()))
+        ));
+        assert_eq!(control.stats().dropped, 1);
+        let mut buffer = [0; 4];
+        receiver.recv(&mut buffer).await.unwrap();
+        assert_eq!(&buffer, b"kept");
+    }
+
+    #[tokio::test]
+    async fn fault_handle_does_not_keep_peer_open() {
+        let (mut receiver, socket) = memory_pair(NonZeroUsize::new(2).unwrap());
+        let control = socket.fault_control();
+        control.reorder_next_pair().unwrap();
+        let mut sender = socket.create_sender();
+        sender
+            .send(SendDatagram::new(receiver.local_addr().unwrap(), b"held"))
+            .await
+            .unwrap();
+        drop(sender);
+        drop(socket);
+        let mut buffer = [0; 8];
+        assert!(matches!(
+            receiver.recv(&mut buffer).await,
+            Err(DatagramError::Closed)
+        ));
+        assert_eq!(control.stats().reordered_pairs, 0);
     }
 
     #[tokio::test]

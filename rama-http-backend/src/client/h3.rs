@@ -40,7 +40,7 @@ use rama_utils::macros::generate_set_and_with;
 use std::{
     error::Error as StdError,
     io::{Error as IoError, ErrorKind as IoErrorKind},
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     sync::Arc,
 };
 
@@ -314,7 +314,7 @@ impl Http3Connector {
                 .extensions()
                 .get_ref::<ConnectorTargetStream>()
                 .filter(|c| c.domain() == domain.as_ref())
-                .ok_or_else(|| invalid("HTTP/3 requires DNS candidates for this domain"))?;
+                .ok_or_else(|| invalid("HTTP/3 domain targets require an outer DNS connector"))?;
             let addresses = candidates
                 .stream(input.extensions())
                 .map(|result| result.map(|ip| SocketAddr::new(ip, target.port)));
@@ -327,12 +327,7 @@ impl Http3Connector {
         })
     }
 
-    fn set_connection_extensions(
-        &self,
-        connection: &Connection,
-        address: SocketAddr,
-        prepared: PreparedTls,
-    ) {
+    fn set_connection_extensions(&self, connection: &Connection, prepared: PreparedTls) {
         // Populate only connection facts: inheriting the request store here would
         // retain request metadata and could create a cycle through Egress.
         let extensions = connection.extensions();
@@ -340,8 +335,8 @@ impl Http3Connector {
         extensions.insert(TlsServerAuthentication(prepared.authenticated_identity));
         extensions.insert(EstablishedProxyRoute::Direct);
         extensions.insert(SocketInfo::new(
-            self.endpoint.local_addr().ok().map(Into::into),
-            address.into(),
+            known_local_address(self.endpoint.local_addr().ok(), connection.local_ip()),
+            connection.remote_address().into(),
         ));
         if let Some(mut parameters) = connection.handshake_data() {
             if prepared.capture_chain {
@@ -350,6 +345,19 @@ impl Http3Connector {
             extensions.insert(parameters);
         }
     }
+}
+
+// A wildcard bind is not a connection's source address. Packet metadata may
+// identify the actual interface; otherwise leave the optional address unknown.
+fn known_local_address(
+    bound: Option<SocketAddr>,
+    observed_ip: Option<IpAddr>,
+) -> Option<SocketAddress> {
+    let bound = bound?;
+    let ip = observed_ip
+        .filter(|ip| !ip.is_unspecified())
+        .or_else(|| (!bound.ip().is_unspecified()).then_some(bound.ip()))?;
+    Some(SocketAddr::new(ip, bound.port()).into())
 }
 
 impl Service<ConnectRequest> for Http3Connector {
@@ -377,8 +385,8 @@ impl Service<ConnectRequest> for Http3Connector {
         // Keep QUIC address-race and handshake state out of enclosing pool and
         // service-selection futures. Allocate only when opening a connection;
         // either transport's pool hits bypass this boundary entirely.
-        let (address, connection) = Box::pin(self.connect(&input, &prepared)).await?;
-        self.set_connection_extensions(&connection, address, prepared);
+        let (_, connection) = Box::pin(self.connect(&input, &prepared)).await?;
+        self.set_connection_extensions(&connection, prepared);
         input
             .extensions()
             .insert(TargetHttpVersion(Version::HTTP_3));
@@ -663,23 +671,64 @@ mod concrete_transport_tests {
     }
 
     #[test]
-    fn later_address_timeout_preserves_authentication_failure_and_cause() {
-        let failures = ConnectFailures::default();
-        let attempt = HttpServiceAttempt::default();
+    fn connection_metadata_never_reports_a_wildcard_source() {
+        let concrete = SocketAddress::local_ipv4(443);
+        let wildcard = SocketAddress::default_ipv4(443);
+        assert_eq!(known_local_address(Some(wildcard.into()), None), None);
+        assert_eq!(
+            known_local_address(Some(concrete.into()), None),
+            Some(concrete)
+        );
+        assert_eq!(
+            known_local_address(Some(wildcard.into()), Some(SocketAddr::from(concrete).ip())),
+            Some(concrete)
+        );
+        assert_eq!(
+            known_local_address(None, Some(SocketAddr::from(concrete).ip())),
+            None
+        );
+    }
+
+    #[test]
+    fn address_race_preserves_authentication_failure_in_any_order() {
         let authentication =
             QuicConnectionError::TransportError(TransportErrorCode::crypto(42).into());
-        drop(failures.record(authentication.clone().into(), &attempt));
-        let timeout = failures.record(QuicConnectionError::TimedOut.into(), &attempt);
-        let error = failures.finish(timeout);
-        assert!(attempt.failed());
-        assert_eq!(error.kind(), ConnectionErrorKind::Authentication);
-        assert!(
-            error_chain(error.get_ref(), MAX_ERROR_CHAIN_DEPTH).any(|cause| cause
-                .downcast_ref::<QuicConnectionError>(
-            ) == Some(
-                &authentication
-            ))
-        );
+        let protocol =
+            QuicConnectionError::TransportError(TransportErrorCode::PROTOCOL_VIOLATION.into());
+        for errors in [
+            vec![authentication.clone(), QuicConnectionError::TimedOut],
+            vec![
+                authentication.clone(),
+                QuicConnectionError::TimedOut,
+                protocol.clone(),
+                QuicConnectionError::Reset,
+            ],
+            vec![
+                protocol,
+                QuicConnectionError::Reset,
+                authentication.clone(),
+                QuicConnectionError::TimedOut,
+            ],
+        ] {
+            let failures = ConnectFailures::default();
+            let attempt = HttpServiceAttempt::default();
+            for error in errors {
+                drop(failures.record(error.into(), &attempt));
+            }
+            // The final race result may only expose its last timed-out address.
+            let error = failures.finish(QuicConnectionError::TimedOut.into());
+            assert_eq!(
+                attempt.failure_kind(),
+                Some(ConnectionErrorKind::Authentication)
+            );
+            assert_eq!(error.domain(), ConnectionErrorDomain::Application);
+            assert_eq!(error.kind(), ConnectionErrorKind::Authentication);
+            assert!(
+                error_chain(error.get_ref(), MAX_ERROR_CHAIN_DEPTH).any(|cause| {
+                    cause.downcast_ref::<QuicConnectionError>() == Some(&authentication)
+                })
+            );
+        }
     }
 
     #[test]

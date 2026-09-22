@@ -1,10 +1,14 @@
 //! Bounded extensible-priority scheduling independent of frame parsing.
 
-use super::Error;
+use super::{Error, connection::Shared};
+use parking_lot::Mutex;
 use rama_http::headers::Priority;
 use rama_http_types::proto::h3::Code;
 use std::{
-    collections::BTreeMap,
+    cmp::Reverse,
+    collections::{BTreeMap, BinaryHeap},
+    fmt,
+    sync::{Arc, Weak},
     task::{Context, Poll, Waker},
 };
 
@@ -20,13 +24,13 @@ pub(super) fn transport_priority(priority: Priority) -> i32 {
 /// This weak handle does not keep the connection or response body alive.
 #[derive(Clone, rama_core::extensions::Extension)]
 pub struct PriorityHandle {
-    shared: std::sync::Weak<super::connection::Shared>,
+    shared: Weak<Shared>,
     id: u64,
     push: bool,
 }
 
-impl std::fmt::Debug for PriorityHandle {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for PriorityHandle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PriorityHandle")
             .field("id", &self.id)
             .field("push", &self.push)
@@ -35,13 +39,9 @@ impl std::fmt::Debug for PriorityHandle {
 }
 
 impl PriorityHandle {
-    pub(crate) fn new(
-        shared: &std::sync::Arc<super::connection::Shared>,
-        id: u64,
-        push: bool,
-    ) -> Self {
+    pub(crate) fn new(shared: &Arc<Shared>, id: u64, push: bool) -> Self {
         Self {
-            shared: std::sync::Arc::downgrade(shared),
+            shared: Arc::downgrade(shared),
             id,
             push,
         }
@@ -66,9 +66,91 @@ struct Entry {
     ready: bool,
     order: u64,
     waker: Option<Waker>,
+    revision: u64,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct Ready {
+    urgency: u8,
+    incremental: bool,
+    order: u64,
+    id: u64,
+    revision: u64,
+}
+
+impl Entry {
+    fn key(&self, id: u64) -> Ready {
+        Ready {
+            urgency: self.priority.urgency(),
+            incremental: self.priority.incremental(),
+            order: self.order,
+            id,
+            revision: self.revision,
+        }
+    }
+}
+
+/// Own the lock so caller-provided wakers are always invoked after unlocking.
 pub(crate) struct Schedule {
+    state: Mutex<State>,
+}
+
+impl Schedule {
+    pub(crate) fn new(limit: usize) -> Self {
+        Self {
+            state: Mutex::new(State::new(limit)),
+        }
+    }
+
+    fn access<T>(&self, operation: impl FnOnce(&mut State) -> T) -> T {
+        let (result, wake, repoll) = {
+            let mut state = self.state.lock();
+            let result = operation(&mut state);
+            (result, state.wake.take(), state.repoll.take())
+        };
+        if let Some(waker) = wake {
+            waker.wake();
+        }
+        if let Some(waker) = repoll {
+            waker.wake();
+        }
+        result
+    }
+
+    pub(crate) fn register(&self, id: u64, priority: Priority) -> Result<(), Error> {
+        self.access(|state| state.register(id, priority))
+    }
+
+    pub(crate) fn update(&self, id: u64, priority: Priority) -> Result<(), Error> {
+        self.access(|state| state.update(id, priority))
+    }
+
+    pub(crate) fn initial_priority(&self, id: u64, priority: Priority) {
+        self.access(|state| state.initial_priority(id, priority));
+    }
+
+    pub(crate) fn peer_priority(&self, id: u64, priority: Priority) {
+        self.access(|state| state.peer_priority(id, priority));
+    }
+
+    pub(crate) fn override_priority(&self, id: u64, priority: Priority) {
+        self.access(|state| state.override_priority(id, priority));
+    }
+
+    pub(crate) fn poll_turn(&self, id: u64, cx: &Context<'_>) -> Poll<Priority> {
+        self.access(|state| state.poll_turn(id, cx))
+    }
+
+    pub(crate) fn release(&self, id: u64) {
+        self.access(|state| state.release(id));
+    }
+
+    pub(crate) fn complete(&self, id: u64) {
+        self.access(|state| state.complete(id));
+    }
+}
+
+struct State {
     active: BTreeMap<u64, Entry>,
     pending: BTreeMap<u64, Priority>,
     // Request streams are admitted in increasing QUIC stream-ID order.
@@ -76,9 +158,12 @@ pub(crate) struct Schedule {
     accepted_until: u64,
     limit: usize,
     clock: u64,
+    ready: BinaryHeap<Reverse<Ready>>,
+    wake: Option<Waker>,
+    repoll: Option<Waker>,
 }
 
-impl Schedule {
+impl State {
     pub(crate) fn new(limit: usize) -> Self {
         Self {
             active: BTreeMap::new(),
@@ -86,6 +171,9 @@ impl Schedule {
             accepted_until: 0,
             limit,
             clock: 0,
+            ready: BinaryHeap::new(),
+            wake: None,
+            repoll: None,
         }
     }
 
@@ -117,6 +205,7 @@ impl Schedule {
                 ready: false,
                 order: self.clock,
                 waker: None,
+                revision: 0,
             },
         );
         self.clock = self.clock.saturating_add(1);
@@ -144,6 +233,7 @@ impl Schedule {
             }
             self.pending.insert(id, priority);
         }
+        self.index_ready(id);
         self.wake_next();
         Ok(())
     }
@@ -156,6 +246,7 @@ impl Schedule {
         {
             entry.priority = priority;
         }
+        self.index_ready(id);
         self.wake_next();
     }
 
@@ -165,6 +256,7 @@ impl Schedule {
         {
             entry.priority = priority;
         }
+        self.index_ready(id);
         self.wake_next();
     }
 
@@ -173,46 +265,74 @@ impl Schedule {
             entry.priority = priority;
             entry.overridden = true;
         }
+        self.index_ready(id);
         self.wake_next();
     }
 
-    fn next(&self) -> Option<u64> {
-        self.active
-            .iter()
-            .filter(|(_, entry)| entry.ready)
-            .min_by_key(|(id, entry)| {
-                (
-                    entry.priority.urgency(),
-                    entry.priority.incremental(),
-                    entry.order,
-                    **id,
-                )
-            })
-            .map(|(id, _)| *id)
+    fn index_ready(&mut self, id: u64) {
+        if let Some(entry) = self.active.get_mut(&id)
+            && entry.ready
+        {
+            entry.revision = entry.revision.wrapping_add(1);
+            self.ready.push(Reverse(entry.key(id)));
+        }
+        // Priority changes invalidate old tickets lazily. Keep churn bounded;
+        // BinaryHeap::retain reuses its storage and rebuilds in linear time.
+        if self.ready.len() > self.active.len().saturating_mul(2) {
+            self.ready.retain(|Reverse(key)| {
+                self.active
+                    .get(&key.id)
+                    .is_some_and(|entry| entry.ready && entry.key(key.id) == *key)
+            });
+        }
     }
 
-    fn wake_next(&self) {
-        if let Some(id) = self.next()
-            && let Some(waker) = &self.active[&id].waker
-        {
-            waker.wake_by_ref();
+    fn next(&mut self) -> Option<u64> {
+        while let Some(Reverse(key)) = self.ready.peek() {
+            if self
+                .active
+                .get(&key.id)
+                .is_some_and(|entry| entry.ready && entry.key(key.id) == *key)
+            {
+                return Some(key.id);
+            }
+            self.ready.pop();
         }
+        None
+    }
+
+    fn wake_next(&mut self) {
+        self.wake = self.next().and_then(|id| self.active[&id].waker.clone());
     }
 
     pub(crate) fn poll_turn(&mut self, id: u64, cx: &Context<'_>) -> Poll<Priority> {
         let Some(entry) = self.active.get_mut(&id) else {
             return Poll::Ready(Priority::default());
         };
+        let enqueue = !entry.ready;
         entry.ready = true;
         match &mut entry.waker {
             Some(waker) => waker.clone_from(cx.waker()),
             None => entry.waker = Some(cx.waker().clone()),
         }
         let priority = entry.priority;
+        if enqueue {
+            self.index_ready(id);
+        }
         if self.next() == Some(id) {
             Poll::Ready(priority)
         } else {
-            self.wake_next();
+            // AsyncWrite futures can be dropped while the tunnel remains alive.
+            // A wake is a one-shot invitation, never ownership of the scheduler:
+            // retire the chosen ticket, wake its writer, then repoll this writer.
+            // If that write was abandoned, another stream can immediately advance.
+            if let Some(Reverse(key)) = self.ready.pop()
+                && let Some(entry) = self.active.get_mut(&key.id)
+            {
+                entry.ready = false;
+                self.wake = entry.waker.clone();
+            }
+            self.repoll = Some(cx.waker().clone());
             Poll::Pending
         }
     }
@@ -238,19 +358,84 @@ impl Schedule {
 }
 
 pub(crate) struct Lease {
-    pub(crate) shared: std::sync::Arc<super::connection::Shared>,
+    pub(crate) shared: Arc<Shared>,
     pub(crate) id: u64,
 }
 
 impl Drop for Lease {
     fn drop(&mut self) {
-        self.shared.schedule.lock().complete(self.id);
+        self.shared.schedule.complete(self.id);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        sync::atomic::{AtomicUsize, Ordering},
+        task::Wake,
+    };
+
+    #[test]
+    fn priority_churn_retains_a_bounded_ready_index() {
+        let schedule = Schedule::new(1);
+        schedule.register(0, Priority::default()).unwrap();
+        let cx = Context::from_waker(Waker::noop());
+        assert!(schedule.poll_turn(0, &cx).is_ready());
+        for _ in 0..1000 {
+            // Repeating the identical value must invalidate its old ticket too.
+            schedule.update(0, Priority::default()).unwrap();
+            assert!(schedule.state.lock().ready.len() <= 2);
+        }
+    }
+
+    #[test]
+    fn caller_wakers_run_after_unlocking() {
+        struct InspectWake {
+            schedule: Weak<Schedule>,
+            calls: AtomicUsize,
+        }
+        impl Wake for InspectWake {
+            fn wake(self: Arc<Self>) {
+                let schedule = self.schedule.upgrade().unwrap();
+                assert!(
+                    schedule.state.try_lock().is_some(),
+                    "waker invoked while scheduler locked"
+                );
+                self.calls.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        let schedule = Arc::new(Schedule::new(2));
+        schedule.register(0, Priority::default()).unwrap();
+        schedule.register(4, Priority::default()).unwrap();
+        let wake = Arc::new(InspectWake {
+            schedule: Arc::downgrade(&schedule),
+            calls: AtomicUsize::new(0),
+        });
+        let waker = Waker::from(wake.clone());
+        let cx = Context::from_waker(&waker);
+        assert!(schedule.poll_turn(0, &cx).is_ready());
+        assert!(schedule.poll_turn(4, &cx).is_pending());
+        schedule.release(0);
+        assert!(wake.calls.load(Ordering::Relaxed) >= 2);
+    }
+
+    #[test]
+    fn abandoned_ready_ticket_does_not_own_the_next_turn() {
+        let schedule = Schedule::new(3);
+        for id in [0, 4, 8] {
+            schedule.register(id, Priority::default()).unwrap();
+        }
+        let cx = Context::from_waker(Waker::noop());
+        assert!(schedule.poll_turn(0, &cx).is_ready());
+        assert!(schedule.poll_turn(4, &cx).is_pending());
+        // Stream 4's write future is abandoned, but its stream stays registered.
+        schedule.release(0);
+        assert!(schedule.poll_turn(8, &cx).is_pending());
+        assert!(schedule.poll_turn(8, &cx).is_ready());
+        schedule.release(8);
+        assert!(schedule.poll_turn(4, &cx).is_ready());
+    }
 
     #[test]
     fn transport_priority_preserves_http_urgency_order() {
@@ -266,7 +451,7 @@ mod tests {
 
     #[test]
     fn pre_stream_updates_coalesce_and_are_bounded() {
-        let mut schedule = Schedule::new(1);
+        let schedule = Schedule::new(1);
         schedule.update(4, Priority::new(1, true).unwrap()).unwrap();
         schedule.update(4, Priority::new(2, true).unwrap()).unwrap();
         schedule.update(8, Priority::default()).unwrap_err();
@@ -278,27 +463,27 @@ mod tests {
         );
         schedule.complete(4);
         schedule.update(4, Priority::default()).unwrap();
-        assert!(schedule.pending.is_empty());
+        assert!(schedule.state.lock().pending.is_empty());
         schedule.update(1, Priority::default()).unwrap_err();
     }
 
     #[test]
     fn skipped_requests_do_not_retain_history_or_late_updates() {
-        let mut schedule = Schedule::new(1);
+        let schedule = Schedule::new(1);
         for id in (4..4000).step_by(8) {
             schedule.update(id - 4, Priority::default()).unwrap();
             schedule.register(id, Priority::default()).unwrap();
             schedule.complete(id);
             schedule.update(id, Priority::default()).unwrap();
             schedule.update(id - 4, Priority::default()).unwrap();
-            assert!(schedule.pending.is_empty());
-            assert!(schedule.active.is_empty());
+            assert!(schedule.state.lock().pending.is_empty());
+            assert!(schedule.state.lock().active.is_empty());
         }
     }
 
     #[test]
     fn priority_updates_precede_initial_header_even_before_decoding() {
-        let mut schedule = Schedule::new(2);
+        let schedule = Schedule::new(2);
         let peer = Priority::new(1, true).unwrap();
         let header = Priority::new(5, false).unwrap();
         schedule.update(0, peer).unwrap();
@@ -307,13 +492,13 @@ mod tests {
         schedule.register(4, Priority::default()).unwrap();
         schedule.update(4, peer).unwrap();
         schedule.initial_priority(4, header);
-        assert_eq!(schedule.active[&0].priority, peer);
-        assert_eq!(schedule.active[&4].priority, peer);
+        assert_eq!(schedule.state.lock().active[&0].priority, peer);
+        assert_eq!(schedule.state.lock().active[&4].priority, peer);
     }
 
     #[test]
     fn urgency_incremental_and_stalled_writer_progress() {
-        let mut schedule = Schedule::new(3);
+        let schedule = Schedule::new(3);
         let incremental = Priority::new(3, true).unwrap();
         schedule.register(0, incremental).unwrap();
         schedule.register(4, incremental).unwrap();

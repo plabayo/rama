@@ -246,6 +246,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn buffered_altsvc_bursts_yield_without_losing_clear() {
+        tokio::spawn(async {
+            let mut wire = BytesMut::new();
+            for _ in 0..1024 {
+                advertisement().encode(&mut wire);
+            }
+            let clear = AltSvc::new(
+                StreamId::zero(),
+                Bytes::from_static(b"https://example.com"),
+                Bytes::from_static(b"clear"),
+            )
+            .unwrap();
+            clear.encode(&mut wire);
+            let mut codec = Codec::<_, Bytes>::new(io::Cursor::new(wire.to_vec()));
+            let mut received = 0;
+            while let Some(frame) = codec.next().now_or_never() {
+                assert_eq!(frame.unwrap().unwrap(), Frame::AltSvc(advertisement()));
+                received += 1;
+            }
+            assert!(received > 0 && received < 1024);
+            while received < 1024 {
+                assert_eq!(
+                    codec.next().await.unwrap().unwrap(),
+                    Frame::AltSvc(advertisement())
+                );
+                received += 1;
+            }
+            assert_eq!(codec.next().await.unwrap().unwrap(), Frame::AltSvc(clear));
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn ignored_altsvc_bursts_yield_before_following_control_frame() {
+        tokio::spawn(async {
+            let mut wire = BytesMut::new();
+            for _ in 0..1024 {
+                advertisement().encode(&mut wire);
+            }
+            let ping = Ping::new(*b"abcdefgh");
+            ping.encode(&mut wire);
+            let mut codec = Codec::<_, Bytes>::new(io::Cursor::new(wire.to_vec()));
+            codec.set_recv_alt_svc(false);
+            assert!(codec.next().now_or_never().is_none());
+            assert_eq!(codec.next().await.unwrap().unwrap(), Frame::Ping(ping));
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
     async fn altsvc_decodes_at_every_fragment_boundary() {
         let expected = advertisement();
         let mut wire = BytesMut::new();

@@ -149,6 +149,11 @@ impl<'a> Streams<'a> {
         self.state.send_streams
     }
 
+    /// Exclusive cumulative remote stream-index limit already advertised to the peer.
+    pub(crate) fn remote_stream_limit(&self, dir: Dir) -> u64 {
+        self.state.sent_max_remote[dir as usize]
+    }
+
     /// The number of remotely initiated open streams of a certain directionality.
     ///
     /// Includes remotely initiated streams, which have not been accepted via [`accept`](Self::accept).

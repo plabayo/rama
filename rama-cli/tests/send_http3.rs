@@ -7,9 +7,12 @@ use rama::{
     Layer,
     bytes::Bytes,
     crypto::pem::PemEncode as _,
+    futures::stream,
     graceful::Shutdown,
     http::{
-        Body, HeaderMap, Request, Response, StatusCode, Version, body::util::BodyExt as _, header,
+        Body, HeaderMap, Request, Response, StatusCode, Version,
+        body::{Frame, util::BodyExt as _},
+        header,
         server::HttpServer,
     },
     layer::MapInputLayer,
@@ -106,6 +109,7 @@ impl Fixture {
 struct Reply {
     status: StatusCode,
     headers: HeaderMap,
+    body: Option<Body>,
 }
 
 impl Reply {
@@ -123,6 +127,7 @@ impl Reply {
         Self {
             status: StatusCode::FOUND,
             headers,
+            body: None,
         }
     }
 }
@@ -187,11 +192,13 @@ impl Server {
                         body: body.clone(),
                     });
                     let reply = replies.lock().pop_front().unwrap_or_default();
-                    let mut response = Response::new(if body.is_empty() {
-                        Body::from("hello from rama")
-                    } else {
-                        Body::from(body)
-                    });
+                    let mut response = Response::new(reply.body.unwrap_or_else(|| {
+                        if body.is_empty() {
+                            Body::from("hello from rama")
+                        } else {
+                            Body::from(body)
+                        }
+                    }));
                     *response.status_mut() = reply.status;
                     *response.headers_mut() = reply.headers;
                     Ok::<_, Infallible>(response)
@@ -411,7 +418,57 @@ async fn alternative_services_require_opt_in_and_respect_explicit_versions() -> 
 }
 
 #[tokio::test]
-async fn h3_authentication_failure_does_not_fall_back() -> TestResult {
+async fn h3_response_trailers_complete_the_streamed_body() -> TestResult {
+    let fixture = Fixture::new().await?;
+    let server = Server::start(fixture.auth.clone(), Version::HTTP_3).await?;
+    let mut trailers = HeaderMap::new();
+    trailers.insert("x-complete", "yes".parse()?);
+    server.reply(Reply {
+        body: Some(Body::from_frame_stream(stream::iter([
+            Ok::<_, Infallible>(Frame::data(Bytes::from_static(b"streamed "))),
+            Ok(Frame::data(Bytes::from_static(b"response"))),
+            Ok(Frame::trailers(trailers)),
+        ]))),
+        ..Default::default()
+    });
+    let output = fixture.send(&server.url(), &["--http3"]).await?;
+    succeeded(&output);
+    assert_eq!(output.stdout, b"streamed response");
+    assert_eq!(server.requests.lock().len(), 1);
+    server.close().await
+}
+
+#[tokio::test]
+async fn h2_alternatives_require_opt_in_independently_of_h3_transport() -> TestResult {
+    let fixture = Fixture::new().await?;
+    let origin = Server::start(fixture.auth.clone(), Version::HTTP_2).await?;
+    let alternative = Server::start(fixture.auth.clone(), Version::HTTP_2).await?;
+
+    for (args, expected_alternative_requests) in [
+        (vec!["--location"], 0),
+        (vec!["--location", "--alt-svc"], 1),
+    ] {
+        let mut redirect = Reply::redirect(None);
+        redirect.headers.insert(
+            header::ALT_SVC,
+            format!("h2=\":{}\"; ma=60", alternative.address.port()).parse()?,
+        );
+        origin.reply(redirect);
+        let output = fixture.send(&origin.url(), &args).await?;
+        succeeded(&output);
+        assert_eq!(output.stdout, b"hello from rama");
+        assert_eq!(
+            alternative.requests.lock().len(),
+            expected_alternative_requests
+        );
+    }
+
+    origin.close().await?;
+    alternative.close().await
+}
+
+#[tokio::test]
+async fn failed_alternative_authentication_falls_back_to_verified_origin() -> TestResult {
     let fixture = Fixture::new().await?;
     let origin = Server::start(fixture.auth.clone(), Version::HTTP_2).await?;
     let untrusted = Server::start(
@@ -423,8 +480,8 @@ async fn h3_authentication_failure_does_not_fall_back() -> TestResult {
     let output = fixture
         .send(&origin.url(), &["--location", "--alt-svc"])
         .await?;
-    failed(&output);
-    assert_eq!(origin.requests.lock().len(), 1);
+    succeeded(&output);
+    assert_eq!(origin.requests.lock().len(), 2);
     assert!(untrusted.requests.lock().is_empty());
     let output = fixture
         .send(&untrusted.url(), &["--http3", "--insecure"])

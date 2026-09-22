@@ -43,9 +43,9 @@ handshake and use `AltSvcSender`; ordinary connections allocate no sender queue.
 
 Selection tries alternatives sequentially, with a configurable 300 ms
 `attempt_timeout` including DNS and TLS. Increase it for slower networks. There
-is no overall deadline unless `timeout` is set. Authentication or protocol
-failure ends the current request and suppresses the endpoint for later requests;
-re-advertising it does not reset backoff.
+is no overall deadline unless `timeout` is set. Failed alternatives back off;
+selection can fall back to the origin with the same TLS policy. Explicit version
+requirements remain binding. Re-advertising an endpoint does not reset backoff.
 
 Custom connectors use these contracts:
 

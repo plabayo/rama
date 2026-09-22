@@ -120,6 +120,10 @@ impl AltSvcSender {
     }
 
     /// Queue a frame without blocking request handling.
+    ///
+    /// A nonzero stream ID must identify the request whose origin is being
+    /// advertised. The sender does not keep a separate stream registry;
+    /// use stream zero with an explicit origin for connection-level hints.
     pub fn try_send(&self, frame: frame::AltSvc) -> Result<(), AltSvcSendError> {
         if frame.payload_len() > ALT_SVC_MAX_PAYLOAD {
             return Err(AltSvcSendError::TooLarge);

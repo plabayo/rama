@@ -218,12 +218,13 @@ impl TlsClientConfig {
         }
     }
 
-    /// Layer request-specific TLS extensions over this configuration.
-    /// Parent scopes are preserved and subsequent setters remain local to the result.
-    #[must_use]
-    pub fn with_overrides(mut self, overrides: &Extensions) -> Self {
-        self.0 = overrides.fork().with_base(&self.0);
-        self
+    generate_set_and_with! {
+        /// Layer request-specific TLS extensions over this configuration.
+        /// Parent scopes are preserved and subsequent setters remain local to the result.
+        pub fn overrides(mut self, overrides: &Extensions) -> Self {
+            self.0 = overrides.fork().with_base(&self.0);
+            self
+        }
     }
 
     pub fn as_extensions(&self) -> &Extensions {

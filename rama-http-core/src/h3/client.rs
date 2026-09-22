@@ -17,7 +17,7 @@ use rama_http_types::{
         h3::{Code, FrameType},
     },
 };
-use std::{marker::PhantomData, sync::Arc};
+use std::{marker::PhantomData, pin::pin, sync::Arc};
 use tokio::sync::Semaphore;
 
 /// Cloneable sender for a multiplexed HTTP/3 connection.
@@ -29,13 +29,18 @@ pub struct SendRequest<B> {
     executor: Executor,
     _body: PhantomData<fn(B)>,
 }
+
 // The driver owns a transport handle too, so transport reference counting alone
 // cannot detect when the application has stopped using this connection.
-pub(crate) struct ConnectionLifetime(rama_quic::Connection);
+pub(crate) struct ConnectionLifetime {
+    connection: rama_quic::Connection,
+    shared: Arc<Shared>,
+}
+
 impl Drop for ConnectionLifetime {
     fn drop(&mut self) {
-        self.0
-            .close(Code::H3_NO_ERROR.value() as u32, b"HTTP/3 client released");
+        self.connection
+            .close(self.shared.close_code(), b"HTTP/3 client released");
     }
 }
 
@@ -81,7 +86,10 @@ pub fn handshake<B>(
     let driver = Driver::new(connection.clone(), shared.clone(), Role::Client);
     Ok((
         SendRequest {
-            lifetime: Arc::new(ConnectionLifetime(connection.clone())),
+            lifetime: Arc::new(ConnectionLifetime {
+                connection: connection.clone(),
+                shared: shared.clone(),
+            }),
             connection,
             shared,
             admission,
@@ -125,10 +133,12 @@ impl<B> SendRequest<B> {
         self.connection
             .handshake_confirmed()
             .await
-            .map_err(|_error| {
-                Error::connection(Code::H3_GENERAL_PROTOCOL_ERROR, "QUIC handshake failed")
+            .map_err(|error| {
+                self.shared
+                    .rejection(None)
+                    .unwrap_or_else(|| Error::from_transport(&error))
             })?;
-        if let Some(error) = self.shared.error() {
+        if let Some(error) = self.shared.rejection(None).or_else(|| self.shared.error()) {
             return Err(error);
         }
         if self
@@ -140,12 +150,6 @@ impl<B> SendRequest<B> {
             return Err(Error::connection(
                 Code::H3_GENERAL_PROTOCOL_ERROR,
                 "HTTP/3 requires h3 ALPN",
-            ));
-        }
-        if self.is_draining() {
-            return Err(Error::stream(
-                Code::H3_REQUEST_REJECTED,
-                "connection draining",
             ));
         }
         Ok(())
@@ -165,10 +169,12 @@ where
     ) -> Result<Response<crate::body::Incoming>, Error> {
         self.ready().await?;
         let permit = tokio::select! {
+            biased;
             error = self.shared.rejected(None) => return Err(error),
             permit = self.admission.clone().acquire_owned() => Arc::new(permit.map_err(|_error| Error::stream(Code::H3_REQUEST_REJECTED, "connection draining"))?),
         };
         let (send, recv) = tokio::select! {
+            biased;
             error = self.shared.rejected(None) => return Err(error),
             streams = self.connection.open_bi() => streams.map_err(|_error| Error::connection(Code::H3_GENERAL_PROTOCOL_ERROR, "cannot open request stream"))?,
         };
@@ -198,9 +204,14 @@ where
         let encoded = headers::encode_request(&self.shared, id, &request)?;
         writer.queue(FrameType::HEADERS, encoded)?;
         if method == Method::CONNECT {
-            std::future::poll_fn(|cx| writer.poll_flush(cx)).await?;
+            tokio::select! {
+                biased;
+                error = self.shared.rejected(Some(id)) => return Err(error),
+                result = std::future::poll_fn(|cx| writer.poll_flush(cx)) => result?,
+            }
             loop {
                 let fields = tokio::select! {
+                    biased;
                     error = self.shared.rejected(Some(id)) => return Err(error),
                     fields = reader.headers() => fields?,
                 };
@@ -258,9 +269,10 @@ where
         loop {
             let fields = {
                 let head = reader.headers();
-                let mut head = std::pin::pin!(head);
+                let mut head = pin!(head);
                 loop {
                     tokio::select! {
+                        biased;
                         error = self.shared.rejected(Some(id)) => return Err(error),
                         result = &mut head => break result?,
                         result = async {

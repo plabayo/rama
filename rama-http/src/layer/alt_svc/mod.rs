@@ -20,6 +20,7 @@ mod cache;
 mod frames;
 #[doc(inline)]
 pub use cache::AltSvcCache;
+pub(crate) use cache::RouteContext;
 
 use crate::{Request, Response, StatusCode};
 use rama_core::{

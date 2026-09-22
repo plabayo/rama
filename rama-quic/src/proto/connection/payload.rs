@@ -281,6 +281,11 @@ impl Connection {
                             "unrepresentable stream limit",
                         ));
                     }
+                    self.streams.received_streams_blocked(
+                        dir,
+                        limit,
+                        &mut self.spaces[SpaceId::Data].pending,
+                    );
                     debug!(
                         "peer claims to be blocked opening more than {} {} streams",
                         limit, dir

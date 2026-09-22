@@ -1,6 +1,11 @@
 use super::*;
 use parking_lot::Mutex;
 use rama_core::extensions::{Extension, Extensions};
+#[cfg(feature = "tls")]
+use rama_net::client::{
+    ProxyRoute, ProxyRouteFailureCache, ProxyRouteFailureCacheLayer, ProxyRoutes,
+    ProxyRoutesConnector,
+};
 use rama_net::{ConnectorTargetInputExt as _, address::HostWithPort};
 use std::{
     collections::VecDeque,
@@ -245,7 +250,7 @@ async fn frame_learning_is_opt_in_and_preserves_custom_observers() {
     }
 
     let request = input();
-    let custom = Arc::new(AltSvcCache::default().frame_observer(origin(&request).unwrap()));
+    let custom = AltSvcCache::default().frame_observer(origin(&request).unwrap());
     request.extensions().insert_arc(custom.clone());
     let established = capabilities(FakeConnector::new([Outcome::Success(
         ApplicationProtocol::HTTP_2,
@@ -267,7 +272,6 @@ async fn frame_learning_is_opt_in_and_preserves_custom_observers() {
 #[cfg(feature = "tls")]
 #[tokio::test]
 async fn candidates_wrap_proxy_routes_and_preserve_origin_and_attempt_isolation() {
-    use rama_net::client::{ProxyRoute, ProxyRoutes, ProxyRoutesConnector};
     let input = input();
     advertise(
         &input,
@@ -366,7 +370,7 @@ async fn fallback_keeps_original_input_and_dispatches_body_once() {
 
 #[cfg(feature = "tls")]
 #[tokio::test]
-async fn authentication_alpn_and_policy_failures_never_fall_back() {
+async fn explicit_version_keeps_authentication_alpn_and_policy_failures_terminal() {
     for outcome in [
         Outcome::WrongIdentity,
         Outcome::WrongAlpn,
@@ -385,6 +389,9 @@ async fn authentication_alpn_and_policy_failures_never_fall_back() {
     ] {
         let input = input();
         advertise(&input, &[(ApplicationProtocol::HTTP_2, "alt.example:8443")]);
+        input
+            .extensions()
+            .insert(TargetHttpVersion(Version::HTTP_2));
         let fake = FakeConnector::new([outcome]);
         drop(capabilities(fake.clone()).serve(input).await.unwrap_err());
         assert_eq!(fake.records.lock().len(), 1);
@@ -441,9 +448,13 @@ fn advertised_input() -> ConnectRequest {
 async fn terminal_failure_latch_survives_timeout_or_later_unavailability() {
     for outcome in [Outcome::Pending(true), Outcome::RejectedAvailability] {
         let fake = FakeConnector::new([outcome]);
+        let request = advertised_input();
+        request
+            .extensions()
+            .insert(TargetHttpVersion(Version::HTTP_3));
         let error = capabilities(fake.clone())
             .with_attempt_timeout(Duration::from_millis(5))
-            .serve(advertised_input())
+            .serve(request)
             .await
             .unwrap_err();
         assert_eq!(error.kind(), ConnectionErrorKind::Authentication);
@@ -861,20 +872,21 @@ async fn terminal_alternative_failure_is_not_retried_by_the_next_request() {
             crate::HeaderValue::from_static("h2=\"alt.example:8443\""),
         );
         cache.record(&origin, &headers, Duration::ZERO);
-        let fake = FakeConnector::new([failure, Outcome::Success(ApplicationProtocol::HTTP_2)]);
+        let fake = FakeConnector::new([
+            failure,
+            Outcome::Success(ApplicationProtocol::HTTP_2),
+            Outcome::Success(ApplicationProtocol::HTTP_2),
+        ]);
         let connector = capabilities(fake.clone()).with_cache(cache.clone());
-        drop(connector.serve(input()).await.unwrap_err());
-        assert_eq!(
-            fake.records.lock().len(),
-            1,
-            "terminal errors must not fall back in the current operation"
-        );
+        connector.serve(input()).await.unwrap();
+        assert_eq!(fake.records.lock().len(), 2);
         cache.record(&origin, &headers, Duration::ZERO);
         connector.serve(input()).await.unwrap();
         let records = fake.records.lock();
-        assert_eq!(records.len(), 2);
+        assert_eq!(records.len(), 3);
         assert_eq!(records[0].target.to_string(), "alt.example:8443");
         assert_eq!(records[1].target.to_string(), "origin.example:443");
+        assert_eq!(records[2].target.to_string(), "origin.example:443");
     }
 }
 
@@ -989,6 +1001,9 @@ async fn speculative_deadline_preserves_recorded_protocol_failure_kind() {
         &request,
         &[(ApplicationProtocol::HTTP_2, "alt.example:8443")],
     );
+    request
+        .extensions()
+        .insert(TargetHttpVersion(Version::HTTP_2));
     let error = capabilities(inner)
         .with_attempt_timeout(Duration::from_millis(1))
         .serve(request)
@@ -1092,17 +1107,291 @@ async fn local_and_proxy_rejection_do_not_suppress_the_remote_service() {
             Outcome::Success(ApplicationProtocol::HTTP_2),
         ]);
         let connector = capabilities(fake.clone()).with_cache(cache.clone());
-        let error = connector.serve(request.fork()).await.unwrap_err();
-        assert_eq!(error.domain(), domain);
-        assert_eq!(error.kind(), kind);
-        assert_eq!(fake.records.lock().len(), 1);
-        assert!(cache.is_usable(&snapshot, 0));
+        if domain == ConnectionErrorDomain::Local {
+            let error = connector.serve(request.fork()).await.unwrap_err();
+            assert_eq!(error.domain(), domain);
+            assert_eq!(error.kind(), kind);
+            assert_eq!(fake.records.lock().len(), 1);
+            assert!(cache.is_usable(&snapshot, 0));
+            connector.serve(request).await.unwrap();
+        } else {
+            connector.serve(request).await.unwrap();
+            assert_eq!(
+                fake.records.lock()[1].target.to_string(),
+                "origin.example:443"
+            );
+            assert_eq!(cache.is_usable(&snapshot, 0), proxied);
+        }
+    }
+}
+
+#[cfg(feature = "tls")]
+#[tokio::test]
+async fn request_tls_policy_skips_alternatives_without_poisoning_shared_cache() {
+    for override_name in [false, true] {
+        let cache = AltSvcCache::default();
+        let origin = origin(&input()).unwrap();
+        let mut headers = crate::HeaderMap::new();
+        headers.insert(
+            crate::header::ALT_SVC,
+            crate::HeaderValue::from_static("h2=\"alt.example:8443\""),
+        );
+        cache.record(&origin, &headers, Duration::ZERO);
+        let fake = FakeConnector::new([
+            Outcome::Success(ApplicationProtocol::HTTP_2),
+            Outcome::Success(ApplicationProtocol::HTTP_2),
+        ]);
+        let connector = capabilities(fake.clone()).with_cache(cache.clone());
+        let request = input();
+        if override_name {
+            request
+                .extensions()
+                .insert(TlsServerName("other.example".parse().unwrap()));
+        } else {
+            request
+                .extensions()
+                .insert(TlsServerVerify(ServerVerifyMode::Disable));
+        }
+        connector.serve(request).await.unwrap();
+        assert!(cache.lookup(&origin).is_some());
+        connector.serve(input()).await.unwrap();
+        let records = fake.records.lock();
+        assert_eq!(records[0].target.to_string(), "origin.example:443");
+        assert_eq!(records[1].target.to_string(), "alt.example:8443");
+    }
+}
+
+#[cfg(feature = "tls")]
+#[tokio::test]
+async fn proxy_alternative_failure_falls_back_and_remembers_only_that_route() {
+    for kind in [
+        ConnectionErrorKind::Rejected,
+        ConnectionErrorKind::Unavailable,
+        ConnectionErrorKind::Timeout,
+        ConnectionErrorKind::Protocol,
+    ] {
+        let cache = AltSvcCache::default();
+        let origin = origin(&input()).unwrap();
+        let mut headers = crate::HeaderMap::new();
+        headers.insert(
+            crate::header::ALT_SVC,
+            crate::HeaderValue::from_static("h2=\"alt.example:8443\""),
+        );
+        cache.record(&origin, &headers, Duration::ZERO);
+        let fake = FakeConnector::new([
+            Outcome::Failure(ConnectionErrorDomain::Transport, kind),
+            Outcome::Success(ApplicationProtocol::HTTP_2),
+            Outcome::Success(ApplicationProtocol::HTTP_2),
+            Outcome::Success(ApplicationProtocol::HTTP_2),
+        ]);
+        let connector = capabilities(fake.clone()).with_cache(cache.clone());
+        let request = input();
+        request.extensions().insert(ProxyRoute::Proxy(
+            "http://proxy.example:3128".parse().unwrap(),
+        ));
+        connector.serve(request.fork()).await.unwrap();
+        cache.record(&origin, &headers, Duration::ZERO);
+        connector.serve(request).await.unwrap();
+        let other = input();
+        other.extensions().insert(ProxyRoute::Proxy(
+            "http://other.example:3128".parse().unwrap(),
+        ));
+        connector.serve(other).await.unwrap();
+        let records = fake.records.lock();
+        assert_eq!(records.len(), 4);
+        assert_eq!(records[0].target.to_string(), "alt.example:8443");
+        assert_eq!(records[1].target.to_string(), "origin.example:443");
+        assert_eq!(records[2].target.to_string(), "origin.example:443");
+        assert_eq!(records[3].target.to_string(), "alt.example:8443");
+        assert!(
+            cache.lookup(&origin).is_some(),
+            "a proxy failure must not suppress the direct path"
+        );
+    }
+}
+
+#[cfg(feature = "tls")]
+#[tokio::test]
+async fn custom_trust_failure_keeps_origin_verification_and_shared_alternative() {
+    let cache = AltSvcCache::default();
+    let origin = origin(&input()).unwrap();
+    let mut headers = crate::HeaderMap::new();
+    headers.insert(
+        crate::header::ALT_SVC,
+        crate::HeaderValue::from_static("h2=\"alt.example:8443\""),
+    );
+    cache.record(&origin, &headers, Duration::ZERO);
+    let fake = FakeConnector::new([
+        Outcome::Failure(
+            ConnectionErrorDomain::Application,
+            ConnectionErrorKind::Authentication,
+        ),
+        Outcome::Failure(
+            ConnectionErrorDomain::Application,
+            ConnectionErrorKind::Authentication,
+        ),
+        Outcome::Success(ApplicationProtocol::HTTP_2),
+    ]);
+    let inner = rama_core::service::service_fn({
+        let fake = fake.clone();
+        move |request: ConnectRequest| {
+            let fake = fake.clone();
+            async move {
+                if fake.records.lock().len() < 2 {
+                    assert!(
+                        request.extensions().contains::<TlsServerTrust>(),
+                        "origin fallback must retain the request's trust policy"
+                    );
+                }
+                fake.serve(request).await
+            }
+        }
+    });
+    let connector = capabilities(inner).with_cache(cache.clone());
+    let request = input();
+    request.extensions().insert(TlsServerTrust::webpki_roots());
+    let error = connector.serve(request).await.unwrap_err();
+    assert_eq!(error.kind(), ConnectionErrorKind::Authentication);
+    assert!(cache.lookup(&origin).is_some());
+    connector.serve(input()).await.unwrap();
+    let records = fake.records.lock();
+    assert_eq!(records[0].target.to_string(), "alt.example:8443");
+    assert_eq!(records[1].target.to_string(), "origin.example:443");
+    assert_eq!(records[2].target.to_string(), "alt.example:8443");
+}
+
+#[tokio::test]
+async fn ordinary_connection_moves_input_without_allocating_retry_extensions() {
+    let fake = FakeConnector::new([Outcome::Success(ApplicationProtocol::HTTP_11)]);
+    let established = capabilities(fake).serve(input()).await.unwrap();
+    assert!(established.input.extensions().parent().is_none());
+    assert!(
+        !established
+            .input
+            .extensions()
+            .contains::<AltSvcObserverExtension>()
+    );
+}
+
+#[cfg(feature = "tls")]
+#[tokio::test]
+async fn proxy_negative_cache_is_scoped_to_the_advertised_connect_target() {
+    for kind in [
+        ConnectionErrorKind::Rejected,
+        ConnectionErrorKind::Unavailable,
+    ] {
+        let cache = AltSvcCache::default();
+        let origin = origin(&input()).unwrap();
+        let mut headers = crate::HeaderMap::new();
+        headers.insert(
+            crate::header::ALT_SVC,
+            crate::HeaderValue::from_static("h2=\"alt.example:8443\""),
+        );
+        cache.record(&origin, &headers, Duration::ZERO);
+        let fake = FakeConnector::new([
+            Outcome::Failure(ConnectionErrorDomain::Transport, kind),
+            Outcome::Success(ApplicationProtocol::HTTP_2),
+            Outcome::Success(ApplicationProtocol::HTTP_2),
+        ]);
+        let proxy_cache = ProxyRouteFailureCache::default();
+        let routed = ProxyRoutesConnector::new(
+            ProxyRouteFailureCacheLayer::new(proxy_cache).layer(fake.clone()),
+        );
+        let connector = capabilities(routed).with_cache(cache.clone());
+        let request = input();
+        request
+            .extensions()
+            .insert(ProxyRoutes::new([ProxyRoute::Proxy(
+                "http://proxy.example:3128".parse().unwrap(),
+            )]));
+        connector.serve(request.fork()).await.unwrap();
+        cache.record(&origin, &headers, Duration::ZERO);
         connector.serve(request).await.unwrap();
         let records = fake.records.lock();
-        assert!(
-            records
-                .iter()
-                .all(|record| record.target.to_string() == "alt.example:8443")
+        assert_eq!(records.len(), 3);
+        assert_eq!(records[0].target.to_string(), "alt.example:8443");
+        for record in &records[1..] {
+            assert_eq!(record.target.to_string(), "origin.example:443");
+            assert_eq!(record.proxy.as_deref(), Some("proxy.example:3128"));
+        }
+    }
+}
+
+#[tokio::test]
+async fn required_h3_does_not_install_an_h2_frame_observer() {
+    let request = input();
+    request
+        .extensions()
+        .insert(TargetHttpVersion(Version::HTTP_3));
+    let established = capabilities(FakeConnector::new([Outcome::Success(
+        ApplicationProtocol::HTTP_3,
+    )]))
+    .with_cache(AltSvcCache::default())
+    .serve(request)
+    .await
+    .unwrap();
+    assert!(
+        !established
+            .input
+            .extensions()
+            .contains::<AltSvcObserverExtension>()
+    );
+}
+
+#[test]
+fn address_race_authentication_failures_dominate_in_every_order() {
+    for failures in [
+        [
+            ConnectionErrorKind::Protocol,
+            ConnectionErrorKind::Authentication,
+        ],
+        [
+            ConnectionErrorKind::Authentication,
+            ConnectionErrorKind::Protocol,
+        ],
+    ] {
+        let attempt = HttpServiceAttempt::default();
+        assert!(!attempt.failed());
+        for failure in failures {
+            attempt.reject_with_kind(failure);
+        }
+        assert_eq!(
+            attempt.failure_kind(),
+            Some(ConnectionErrorKind::Authentication)
         );
+    }
+}
+
+#[cfg(feature = "tls")]
+#[tokio::test]
+async fn address_race_preserves_authentication_over_protocol_and_timeout_results() {
+    for timeout in [false, true] {
+        let inner = rama_core::service::service_fn(move |request: ConnectRequest| async move {
+            let attempt = request
+                .extensions()
+                .get_ref::<HttpServiceAttempt>()
+                .unwrap();
+            attempt.reject_with_kind(ConnectionErrorKind::Protocol);
+            attempt.reject_with_kind(ConnectionErrorKind::Authentication);
+            if timeout {
+                std::future::pending::<()>().await;
+            }
+            Err::<EstablishedClientConnection<FakeConnection, ConnectRequest>, _>(
+                ConnectionError::application(
+                    BoxError::from_static_str("later protocol failure"),
+                    ConnectionErrorKind::Protocol,
+                ),
+            )
+        });
+        let request = advertised_input();
+        request
+            .extensions()
+            .insert(TargetHttpVersion(Version::HTTP_3));
+        let error = capabilities(inner)
+            .with_attempt_timeout(Duration::from_millis(1))
+            .serve(request)
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), ConnectionErrorKind::Authentication);
     }
 }
