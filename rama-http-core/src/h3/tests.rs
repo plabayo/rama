@@ -15,16 +15,14 @@ use rama_http_types::{
     body::{Frame, util::BodyExt},
     proto::h3::Code,
 };
+use rama_net::address::SocketAddress;
 use rama_quic::{Endpoint, TransportConfig, tls::TlsOptions};
 use rama_tls::{
     client::TlsClientConfig,
     server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
 };
-use std::{
-    net::{Ipv4Addr, SocketAddr},
-    sync::Arc,
-    time::Duration,
-};
+use rama_udp::test_utils::MemoryDatagramSocket;
+use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 
 const LIMIT: Duration = Duration::from_secs(20);
 struct Pair {
@@ -38,6 +36,21 @@ impl Pair {
     async fn new(
         client_transport: Option<TransportConfig>,
         server_transport: Option<TransportConfig>,
+    ) -> Self {
+        Self::build(client_transport, server_transport, false).await
+    }
+
+    async fn in_memory(
+        client_transport: Option<TransportConfig>,
+        server_transport: Option<TransportConfig>,
+    ) -> Self {
+        Self::build(client_transport, server_transport, true).await
+    }
+
+    async fn build(
+        client_transport: Option<TransportConfig>,
+        server_transport: Option<TransportConfig>,
+        in_memory: bool,
     ) -> Self {
         let identity = ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).unwrap();
         let server_tls = TlsServerConfig::new()
@@ -62,16 +75,28 @@ impl Pair {
             .set_transport_config(Arc::new(server_transport.unwrap_or_else(default_transport)));
         client_config
             .set_transport_config(Arc::new(client_transport.unwrap_or_else(default_transport)));
-        let localhost = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0);
-        let server_endpoint = Endpoint::build(Executor::new())
-            .with_server_config(server_config)
-            .bind_address(localhost)
-            .await
-            .unwrap();
-        let client_endpoint = Endpoint::build(Executor::new())
-            .bind_address(localhost)
-            .await
-            .unwrap();
+        let server = Endpoint::build(Executor::new()).with_server_config(server_config);
+        let client = Endpoint::build(Executor::new());
+        let (server_endpoint, client_endpoint) = if in_memory {
+            let (server_socket, client_socket) = MemoryDatagramSocket::pair(
+                SocketAddress::local_ipv4(443),
+                SocketAddress::local_ipv4(444),
+                NonZeroUsize::MIN,
+            );
+            // One datagram per side forces the real driver through send
+            // backpressure. A GSO batch must fit that same queue capacity.
+            server_socket.set_max_send_segments(NonZeroUsize::MIN);
+            (
+                server.with_test_datagram_socket(server_socket).unwrap(),
+                client.with_test_datagram_socket(client_socket).unwrap(),
+            )
+        } else {
+            let localhost = SocketAddress::local_ipv4(0);
+            (
+                server.bind_address(localhost).await.unwrap(),
+                client.bind_address(localhost).await.unwrap(),
+            )
+        };
         let accept = spawn({
             let endpoint = server_endpoint.clone();
             async move { endpoint.accept().await.unwrap().await.unwrap() }

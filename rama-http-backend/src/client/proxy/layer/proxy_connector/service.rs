@@ -24,7 +24,6 @@ use rama_net::{
         ConnectorTransportProtocol, EstablishedClientConnection, EstablishedProxyRoute, ProxyRoute,
     },
     http::TargetHttpVersion,
-    tls::RequireTls,
     transport::TransportProtocol,
     user::ProxyCredential,
 };
@@ -216,6 +215,7 @@ where
                 ConnectionErrorKind::InvalidInput,
             )
         })?;
+
         // Preserve the selected endpoint before the proxy becomes the dial target.
         // HTTP authority and TLS authentication still use the logical origin.
         let destination = input.connector_target().ok_or_else(|| {
@@ -224,15 +224,12 @@ where
                 ConnectionErrorKind::InvalidInput,
             )
         })?;
-        let requires_tls = input.extensions().contains::<RequireTls>();
         let app_protocol = input.protocol().cloned();
         let app_is_http = app_protocol.as_ref().is_some_and(Protocol::is_http_based);
-        let app_is_plaintext_http = !requires_tls
-            && app_protocol
-                .as_ref()
-                .is_some_and(|protocol| protocol.is_http_based() && !protocol.is_secure());
-        let use_forward_proxy = !requires_tls
-            && !input.extensions().contains::<ConnectorTarget>()
+        let app_is_plaintext_http = app_protocol
+            .as_ref()
+            .is_some_and(|protocol| protocol.is_http_based() && !protocol.is_secure());
+        let use_forward_proxy = !input.extensions().contains::<ConnectorTarget>()
             && input
                 .extensions()
                 .get_ref::<PlaintextHttpProxyMode>()
@@ -723,7 +720,9 @@ mod tests {
         rt::Executor,
         service::service_fn,
     };
-    use rama_http_types::{Body, Request, Response, StatusCode, conn::FallbackHttpVersion};
+    use rama_http_types::{
+        Body, Method, Request, Response, StatusCode, conn::FallbackHttpVersion, header,
+    };
     use rama_net::{
         Protocol,
         address::{Domain, HostWithPort, ProxyAddress},
@@ -817,7 +816,7 @@ mod tests {
             ] {
                 let http_server = HttpServer::auto(Executor::default()).service(service_fn(
                     async |req: Request| {
-                        assert_eq!(req.method(), rama_http_types::Method::CONNECT);
+                        assert_eq!(req.method(), Method::CONNECT);
                         Ok::<_, Infallible>(Response::new(Body::empty()))
                     },
                 ));
@@ -855,42 +854,36 @@ mod tests {
 
     #[tokio::test]
     async fn selected_service_is_tunneled_without_changing_the_origin() {
-        for (require_tls, select_alternative) in [(false, true), (true, true), (true, false)] {
-            let destination = if select_alternative {
-                "alternative.example:8443"
+        for protocol in [Protocol::HTTP, Protocol::HTTPS] {
+            let origin = if protocol.is_secure() {
+                HostWithPort::example_domain_https()
             } else {
-                "example.com:80"
+                HostWithPort::example_domain_http()
             };
+            let destination = "alternative.example:8443";
             let proxy: ProxyAddress = "http://proxy.example:8080".parse().unwrap();
             let http_server = HttpServer::auto(Executor::default()).service(service_fn(
                 move |req: Request| async move {
-                    assert_eq!(req.method(), rama_http_types::Method::CONNECT);
+                    assert_eq!(req.method(), Method::CONNECT);
                     assert_eq!(req.uri().to_string(), destination);
-                    assert_eq!(req.headers()[rama_http_types::header::HOST], destination);
+                    assert_eq!(req.headers()[header::HOST], destination);
                     Ok::<_, Infallible>(Response::new(Body::empty()))
                 },
             ));
             let connector = HttpProxyConnector::required(MockConnectorService::new(move || {
                 http_server.clone()
             }));
-            let input = ConnectRequest::new(HostWithPort::example_domain_http())
-                .with_application_protocol(Protocol::HTTP);
+            let input =
+                ConnectRequest::new(origin.clone()).with_application_protocol(protocol.clone());
             input.extensions.insert(ProxyRoute::Proxy(proxy.clone()));
             input.extensions.insert(PlaintextHttpProxyMode::Forward);
-            if select_alternative {
-                input
-                    .extensions
-                    .insert(ConnectorTarget(destination.parse().unwrap()));
-            }
-            if require_tls {
-                input.extensions.insert(RequireTls);
-            }
+            input
+                .extensions
+                .insert(ConnectorTarget(destination.parse().unwrap()));
+
             let established = connector.serve(input).await.unwrap();
-            assert_eq!(established.input.protocol(), Some(&Protocol::HTTP));
-            assert_eq!(
-                established.input.authority().unwrap(),
-                HostWithPort::example_domain_http().into(),
-            );
+            assert_eq!(established.input.protocol(), Some(&protocol));
+            assert_eq!(established.input.authority().unwrap(), origin.into());
             assert_eq!(
                 established
                     .conn
@@ -1016,41 +1009,32 @@ mod tests {
     async fn connect_custom_headers_cannot_override_managed_fields() {
         let http_server =
             HttpServer::auto(Executor::default()).service(service_fn(async move |req: Request| {
-                assert_eq!(req.method(), rama_http_types::Method::CONNECT);
+                assert_eq!(req.method(), Method::CONNECT);
+                assert_eq!(req.headers()[header::HOST], "example.com:443");
                 assert_eq!(
-                    req.headers()[rama_http_types::header::HOST],
-                    "example.com:443"
-                );
-                assert_eq!(
-                    req.headers()[rama_http_types::header::PROXY_AUTHORIZATION],
+                    req.headers()[header::PROXY_AUTHORIZATION],
                     "Basic dXBzdHJlYW06c2VjcmV0"
                 );
-                assert!(
-                    !req.headers()
-                        .contains_key(rama_http_types::header::CONTENT_LENGTH)
-                );
-                assert!(
-                    !req.headers()
-                        .contains_key(rama_http_types::header::TRANSFER_ENCODING)
-                );
+                assert!(!req.headers().contains_key(header::CONTENT_LENGTH));
+                assert!(!req.headers().contains_key(header::TRANSFER_ENCODING));
                 assert_eq!(req.headers()["x-kept"], "yes");
                 Ok::<_, Infallible>(Response::new(Body::empty()))
             }));
         let connector = HttpProxyConnectorLayer::required()
             .with_custom_header(
-                rama_http_types::header::HOST,
+                header::HOST,
                 rama_http_types::HeaderValue::from_static("evil.example"),
             )
             .with_custom_header(
-                rama_http_types::header::PROXY_AUTHORIZATION,
+                header::PROXY_AUTHORIZATION,
                 rama_http_types::HeaderValue::from_static("Basic ZXZpbA=="),
             )
             .with_custom_header(
-                rama_http_types::header::CONTENT_LENGTH,
+                header::CONTENT_LENGTH,
                 rama_http_types::HeaderValue::from_static("999"),
             )
             .with_custom_header(
-                rama_http_types::header::TRANSFER_ENCODING,
+                header::TRANSFER_ENCODING,
                 rama_http_types::HeaderValue::from_static("chunked"),
             )
             .with_custom_header("x-kept", rama_http_types::HeaderValue::from_static("yes"))
@@ -1174,7 +1158,7 @@ mod tests {
                             let mut conn =
                                 rama_http_core::h2::server::handshake(socket).await.unwrap();
                             let (req, mut respond) = conn.accept().await.unwrap().unwrap();
-                            assert_eq!(req.method(), rama_http_types::Method::CONNECT);
+                            assert_eq!(req.method(), Method::CONNECT);
                             respond.send_reset(rama_http_core::h2::Reason::PROTOCOL_ERROR);
                             _ = std::future::poll_fn(|cx| conn.poll_closed(cx)).await;
                         } else {
@@ -1226,7 +1210,7 @@ mod tests {
                             let mut conn =
                                 rama_http_core::h2::server::handshake(socket).await.unwrap();
                             let (req, _) = conn.accept().await.unwrap().unwrap();
-                            assert_eq!(req.method(), rama_http_types::Method::CONNECT);
+                            assert_eq!(req.method(), Method::CONNECT);
                         } else {
                             let mut request = Vec::new();
                             while !request.ends_with(b"\r\n\r\n") {
@@ -1269,7 +1253,7 @@ mod tests {
         for protocol in [Protocol::ICAP, Protocol::from_static("custom")] {
             let http_server = HttpServer::auto(Executor::default()).service(service_fn(
                 async move |req: Request| {
-                    assert_eq!(req.method(), rama_http_types::Method::CONNECT);
+                    assert_eq!(req.method(), Method::CONNECT);
                     assert!(
                         !req.extensions()
                             .contains::<rama_http_types::proto::h2::ext::Protocol>()
@@ -1312,7 +1296,7 @@ mod tests {
     async fn plaintext_http_tunnel_restores_origin_version_after_connect() {
         let http_server =
             HttpServer::auto(Executor::default()).service(service_fn(async move |req: Request| {
-                assert_eq!(req.method(), rama_http_types::Method::CONNECT);
+                assert_eq!(req.method(), Method::CONNECT);
                 assert_eq!(req.version(), Version::HTTP_11);
                 Ok::<_, Infallible>(Response::new(Body::empty()))
             }));
@@ -1354,7 +1338,7 @@ mod tests {
     async fn plaintext_http_tunnel_defaults_missing_origin_version() {
         let http_server =
             HttpServer::auto(Executor::default()).service(service_fn(async move |req: Request| {
-                assert_eq!(req.method(), rama_http_types::Method::CONNECT);
+                assert_eq!(req.method(), Method::CONNECT);
                 Ok::<_, Infallible>(Response::new(Body::empty()))
             }));
         let transport = MockConnectorService::new(move || http_server.clone());
@@ -1394,7 +1378,7 @@ mod tests {
     async fn non_http_tunnel_does_not_inherit_incidental_http_version() {
         let http_server =
             HttpServer::auto(Executor::default()).service(service_fn(async move |req: Request| {
-                assert_eq!(req.method(), rama_http_types::Method::CONNECT);
+                assert_eq!(req.method(), Method::CONNECT);
                 Ok::<_, Infallible>(Response::new(Body::empty()))
             }));
         let connector = HttpProxyConnectorLayer::required()
@@ -1423,7 +1407,7 @@ mod tests {
     async fn https_proxy_tunnel_declares_http_as_its_tls_protocol() {
         let http_server =
             HttpServer::auto(Executor::default()).service(service_fn(async |req: Request| {
-                assert_eq!(req.method(), rama_http_types::Method::CONNECT);
+                assert_eq!(req.method(), Method::CONNECT);
                 Ok::<_, Infallible>(Response::new(Body::empty()))
             }));
         let transport = MockConnectorService::new(move || http_server.clone());
@@ -1735,7 +1719,7 @@ mod tests {
     async fn automatic_connect_version_follows_proxy_tls_negotiation() {
         let http_server =
             HttpServer::auto(Executor::default()).service(service_fn(async |req: Request| {
-                assert_eq!(req.method(), rama_http_types::Method::CONNECT);
+                assert_eq!(req.method(), Method::CONNECT);
                 assert_eq!(req.version(), Version::HTTP_2);
                 Ok::<_, Infallible>(Response::new(Body::empty()))
             }));
@@ -1838,7 +1822,7 @@ mod tests {
     async fn plaintext_proxy_ignores_unrelated_tls_negotiation_metadata() {
         let http_server =
             HttpServer::auto(Executor::default()).service(service_fn(async |req: Request| {
-                assert_eq!(req.method(), rama_http_types::Method::CONNECT);
+                assert_eq!(req.method(), Method::CONNECT);
                 assert_eq!(req.version(), Version::HTTP_11);
                 Ok::<_, Infallible>(Response::new(Body::empty()))
             }));

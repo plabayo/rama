@@ -10,7 +10,9 @@ pub use connect_request::{HttpConnectRequestAdapter, HttpConnectRequestAdapterLa
 
 mod conn;
 #[doc(inline)]
-pub use conn::{HttpConnector, HttpConnectorLayer, http_connect, http2_eager_handshake};
+pub use conn::{
+    HttpConnector, HttpConnectorLayer, NoHttp3Connector, http_connect, http2_eager_handshake,
+};
 
 mod bind_body;
 #[doc(inline)]
@@ -18,17 +20,10 @@ pub use bind_body::{BindBodyToConn, BindBodyToConnLayer, BindBodyToConnector};
 
 mod pool;
 #[doc(inline)]
-pub use pool::{
-    HttpConnId, HttpConnIdentifier, HttpPooledConnector, HttpPooledConnectorConfig,
-    HttpTlsPoolConfig, TlsPoolPolicy,
-};
+pub use pool::{HttpConnId, HttpConnIdentifier, HttpPooledConnector, HttpPooledConnectorConfig};
 
 pub mod proxy;
 
 mod h3;
 #[doc(inline)]
-pub use h3::{Http3Connector, Http3ConnectorBuilder, Http3Policy};
-
-mod h3_transport;
-#[doc(inline)]
-pub use h3_transport::Http3TransportConnector;
+pub use h3::{Http3Connector, Http3ConnectorBuilder};

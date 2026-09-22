@@ -152,11 +152,23 @@ async fn main() -> Result<(), BoxError> {
             let anchors = CertificateDer::pem_file_iter(ca)?.collect::<Result<Vec<_>, _>>()?;
             let tls = TlsClientConfig::new().try_with_server_trust_anchors(anchors)?;
             let connector = Http3Connector::<Body>::builder(exec.clone())
-                .with_tls_config(tls)
+                .with_tls_config(tls.clone())
                 .build()
                 .await?;
-            let client = EasyHttpConnectorBuilder::new()
-                .with_http3_connector(connector)
+            let client_builder = EasyHttpConnectorBuilder::new()
+                .with_default_transport_connector()
+                .with_default_dns_connector()
+                .without_tls_proxy_support()
+                .with_proxy_support();
+            #[cfg(feature = "rustls")]
+            let client_builder = client_builder.with_tls_support_using_rustls(tls.clone());
+            #[cfg(all(not(feature = "rustls"), feature = "boring"))]
+            let client_builder = client_builder.with_tls_support_using_boringssl(tls.clone());
+            #[cfg(not(any(feature = "rustls", feature = "boring")))]
+            let client_builder = client_builder.without_tls_support();
+            let client = client_builder
+                .with_default_http_connector(exec.clone())
+                .with_http3_support(connector)
                 .with_default_connection_pool()
                 .build_client();
             for _ in 0..count {

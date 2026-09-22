@@ -34,7 +34,7 @@ use rama_http::{
 
 pub mod builder;
 #[doc(inline)]
-pub use builder::{EasyHttpConnectorBuilder, Http3Selection};
+pub use builder::EasyHttpConnectorBuilder;
 
 #[cfg(feature = "socks5")]
 mod proxy_connector;

@@ -8,6 +8,7 @@ use rama_http_types::{
     header,
 };
 use rama_net::address::{Host, HostWithPort};
+use rama_utils::macros::generate_set_and_with;
 use std::{
     sync::Arc,
     time::{Duration, Instant, SystemTime},
@@ -36,7 +37,7 @@ impl Availability {
 
 #[derive(Clone, Debug)]
 struct Advertisement {
-    services: HttpServiceCandidates,
+    services: Arc<HttpServiceCandidates>,
     availability: Arc<[Availability]>,
 }
 
@@ -82,21 +83,23 @@ impl AltSvcCache {
         }
     }
 
-    /// Bound retained alternatives per advertisement. Zero disables retention.
-    ///
-    /// Configure this before sharing the cache; existing entries are unaffected.
-    #[must_use]
-    pub fn with_max_alternatives_per_origin(mut self, capacity: usize) -> Self {
-        self.max_alternatives_per_origin = capacity;
-        self
+    generate_set_and_with! {
+        /// Bound retained alternatives per advertisement. Zero disables retention.
+        ///
+        /// Configure this before sharing the cache; existing entries are unaffected.
+        pub fn max_alternatives_per_origin(mut self, capacity: usize) -> Self {
+            self.max_alternatives_per_origin = capacity;
+            self
+        }
     }
 
-    /// Bound combined Alt-Svc field bytes before parsing or allocating records.
-    /// Oversized advertisements are ignored, preserving existing cache state.
-    #[must_use]
-    pub fn with_max_advertisement_bytes(mut self, capacity: usize) -> Self {
-        self.max_advertisement_bytes = capacity;
-        self
+    generate_set_and_with! {
+        /// Bound combined Alt-Svc field bytes before parsing or allocating records.
+        /// Oversized advertisements are ignored, preserving existing cache state.
+        pub fn max_advertisement_bytes(mut self, capacity: usize) -> Self {
+            self.max_advertisement_bytes = capacity;
+            self
+        }
     }
 
     /// Record response hints for their logical origin, including plaintext HTTP.
@@ -176,14 +179,14 @@ impl AltSvcCache {
                 if alternative.port() == 0 || ttl.is_zero() {
                     continue;
                 }
-                let host = alternative.host().unwrap_or(&origin.authority().host);
-                let host = if let Ok(ip) = host.try_as_ip() {
-                    Host::from(ip)
-                } else if let Ok(domain) = host.try_as_domain() {
-                    Host::from(domain.into_owned())
-                } else {
+                let host = alternative
+                    .host()
+                    .unwrap_or(&origin.authority().host)
+                    .clone()
+                    .canonicalize();
+                if !matches!(host, Host::Name(_) | Host::Address(_)) {
                     continue;
-                };
+                }
                 let Some(expires) = now.checked_add(ttl) else {
                     continue;
                 };
@@ -211,7 +214,7 @@ impl AltSvcCache {
             return;
         }
         let advertisement = Advertisement {
-            services: HttpServiceCandidates::new(origin.clone(), candidates),
+            services: Arc::new(HttpServiceCandidates::new(origin.clone(), candidates)),
             availability: availability.into(),
         };
         self.entries
@@ -224,7 +227,7 @@ impl AltSvcCache {
     /// The snapshot retains stable advertisement indices, including candidates
     /// that have expired or been suppressed. Call [`Self::is_usable`] before
     /// attempting each candidate. This avoids rebuilding a vector on every lookup.
-    pub fn lookup(&self, origin: &HttpOrigin) -> Option<HttpServiceCandidates> {
+    pub fn lookup(&self, origin: &HttpOrigin) -> Option<Arc<HttpServiceCandidates>> {
         self.lookup_at(origin, Instant::now())
     }
 
@@ -233,11 +236,11 @@ impl AltSvcCache {
     /// Proxy routes can reach alternatives unavailable on the direct path. Use
     /// this with [`Self::is_fresh`] for proxy route plans, and do not call
     /// [`Self::failed`] for those attempts.
-    pub fn lookup_fresh(&self, origin: &HttpOrigin) -> Option<HttpServiceCandidates> {
+    pub fn lookup_fresh(&self, origin: &HttpOrigin) -> Option<Arc<HttpServiceCandidates>> {
         self.lookup_with_policy(origin, Instant::now(), false)
     }
 
-    fn lookup_at(&self, origin: &HttpOrigin, now: Instant) -> Option<HttpServiceCandidates> {
+    fn lookup_at(&self, origin: &HttpOrigin, now: Instant) -> Option<Arc<HttpServiceCandidates>> {
         self.lookup_with_policy(origin, now, true)
     }
 
@@ -246,7 +249,7 @@ impl AltSvcCache {
         origin: &HttpOrigin,
         now: Instant,
         apply_backoff: bool,
-    ) -> Option<HttpServiceCandidates> {
+    ) -> Option<Arc<HttpServiceCandidates>> {
         let entry = self.entries.get(origin)?;
         if entry.availability.iter().any(|value| {
             if apply_backoff {
@@ -266,7 +269,7 @@ impl AltSvcCache {
                 .entry(origin.clone())
                 .and_compute_with(|current| {
                     if current.is_some_and(|current| {
-                        current.value().services.same_advertisement(&entry.services)
+                        Arc::ptr_eq(&current.value().services, &entry.services)
                     }) {
                         Op::Remove
                     } else {
@@ -279,15 +282,15 @@ impl AltSvcCache {
 
     /// Check current freshness and failure state for this exact advertisement.
     /// A replaced snapshot or out-of-range index is never usable.
-    pub fn is_usable(&self, snapshot: &HttpServiceCandidates, index: usize) -> bool {
+    pub fn is_usable(&self, snapshot: &Arc<HttpServiceCandidates>, index: usize) -> bool {
         self.is_usable_at(snapshot, index, Instant::now())
     }
 
     /// Check advertisement freshness independently of direct-path failure state.
     /// Used with [`Self::lookup_fresh`] for proxy-routed establishment.
-    pub fn is_fresh(&self, snapshot: &HttpServiceCandidates, index: usize) -> bool {
+    pub fn is_fresh(&self, snapshot: &Arc<HttpServiceCandidates>, index: usize) -> bool {
         self.entries.get(snapshot.origin()).is_some_and(|entry| {
-            entry.services.same_advertisement(snapshot)
+            Arc::ptr_eq(&entry.services, snapshot)
                 && entry
                     .availability
                     .get(index)
@@ -295,9 +298,14 @@ impl AltSvcCache {
         })
     }
 
-    fn is_usable_at(&self, snapshot: &HttpServiceCandidates, index: usize, now: Instant) -> bool {
+    fn is_usable_at(
+        &self,
+        snapshot: &Arc<HttpServiceCandidates>,
+        index: usize,
+        now: Instant,
+    ) -> bool {
         self.entries.get(snapshot.origin()).is_some_and(|entry| {
-            entry.services.same_advertisement(snapshot)
+            Arc::ptr_eq(&entry.services, snapshot)
                 && entry
                     .availability
                     .get(index)
@@ -310,11 +318,11 @@ impl AltSvcCache {
     /// Do not report proxy-route failures here: reachability can differ by route.
     /// Proxy selection uses [`Self::lookup_fresh`] instead of this direct-path
     /// backoff. A subsequent advertisement of the same endpoint is unaffected.
-    pub fn failed(&self, snapshot: &HttpServiceCandidates, index: usize) {
+    pub fn failed(&self, snapshot: &Arc<HttpServiceCandidates>, index: usize) {
         self.failed_at(snapshot, index, Instant::now());
     }
 
-    fn failed_at(&self, snapshot: &HttpServiceCandidates, index: usize, now: Instant) {
+    fn failed_at(&self, snapshot: &Arc<HttpServiceCandidates>, index: usize, now: Instant) {
         self.update_candidate(snapshot, index, |value| {
             value.suppressed_until = Some(
                 now.checked_add(self.failure_backoff)
@@ -326,13 +334,13 @@ impl AltSvcCache {
 
     /// Remove only the alternative that returned 421, without replaying a request.
     /// Delayed responses cannot invalidate a newer advertisement of that endpoint.
-    pub fn misdirected(&self, snapshot: &HttpServiceCandidates, index: usize) {
+    pub fn misdirected(&self, snapshot: &Arc<HttpServiceCandidates>, index: usize) {
         self.update_candidate(snapshot, index, |value| value.removed = true);
     }
 
     fn update_candidate(
         &self,
-        snapshot: &HttpServiceCandidates,
+        snapshot: &Arc<HttpServiceCandidates>,
         index: usize,
         update: impl FnOnce(&mut Availability),
     ) {
@@ -343,8 +351,7 @@ impl AltSvcCache {
                     return Op::Nop;
                 };
                 let mut entry = entry.into_value();
-                if !entry.services.same_advertisement(snapshot) || index >= entry.availability.len()
-                {
+                if !Arc::ptr_eq(&entry.services, snapshot) || index >= entry.availability.len() {
                     return Op::Nop;
                 }
                 update(&mut Arc::make_mut(&mut entry.availability)[index]);
@@ -362,7 +369,7 @@ impl AltSvcCache {
                         return Op::Nop;
                     };
                     let mut entry = entry.into_value();
-                    if !entry.services.same_advertisement(&observed.services) {
+                    if !Arc::ptr_eq(&entry.services, &observed.services) {
                         return Op::Nop;
                     }
                     let values = Arc::make_mut(&mut entry.availability);
@@ -379,10 +386,10 @@ impl AltSvcCache {
                     } else {
                         // Rotate generation so delayed old-network failures
                         // cannot suppress a recovered persistent alternative.
-                        entry.services = HttpServiceCandidates::new(
+                        entry.services = Arc::new(HttpServiceCandidates::new(
                             entry.services.origin().clone(),
                             entry.services.iter().cloned().collect::<Vec<_>>(),
-                        );
+                        ));
                         Op::Put(entry)
                     }
                 });
@@ -434,19 +441,22 @@ mod tests {
         let snapshot = cache.lookup_at(&origin(), now).unwrap();
         assert_eq!(snapshot.len(), 4);
         assert_eq!(
-            snapshot.get(0).unwrap().protocol(),
+            &snapshot.get(0).unwrap().protocol,
             &ApplicationProtocol::HTTP_2
         );
         assert_eq!(
-            snapshot.get(1).unwrap().protocol(),
+            &snapshot.get(1).unwrap().protocol,
             &ApplicationProtocol::HTTP_3
         );
         assert_eq!(
-            snapshot.get(2).unwrap().protocol(),
+            &snapshot.get(2).unwrap().protocol,
             &ApplicationProtocol::HTTP_11
         );
-        assert_eq!(snapshot.get(3).unwrap().target().port, 9443);
-        assert!(snapshot.same_advertisement(&cache.lookup_at(&origin(), now).unwrap()));
+        assert_eq!(snapshot.get(3).unwrap().target.port, 9443);
+        assert!(Arc::ptr_eq(
+            &snapshot,
+            &cache.lookup_at(&origin(), now).unwrap()
+        ));
         for index in 0..snapshot.len() {
             assert!(cache.is_usable_at(&snapshot, index, now));
         }
@@ -485,7 +495,7 @@ mod tests {
         let mut invalid = headers("h3=\":9443\"; ma=120");
         invalid.insert(header::AGE, "invalid".parse().unwrap());
         cache.record_at(&origin(), &invalid, Duration::ZERO, wall, now);
-        assert!(old.same_advertisement(&cache.lookup_at(&origin(), now).unwrap()));
+        assert!(Arc::ptr_eq(&old, &cache.lookup_at(&origin(), now).unwrap()));
         assert!(
             cache
                 .lookup_at(&origin(), now + Duration::from_secs(35))
@@ -553,7 +563,7 @@ mod tests {
         let old = cache.lookup_at(&origin(), now).unwrap();
         record(&cache, "h2=\":443\", h3=\":443\"", now);
         let new = cache.lookup_at(&origin(), now).unwrap();
-        assert!(!old.same_advertisement(&new));
+        assert!(!Arc::ptr_eq(&old, &new));
         cache.failed_at(&old, 0, now);
         cache.misdirected(&old, 1);
         assert!(cache.is_usable_at(&new, 0, now));
@@ -595,7 +605,7 @@ mod tests {
         assert!(!cache.is_usable_at(&current, 0, now));
         assert!(cache.is_usable_at(&current, 1, now));
         assert_eq!(
-            current.get(1).unwrap().target().host.to_string(),
+            current.get(1).unwrap().target.host.to_string(),
             "alt.example"
         );
         record(&cache, "h2=\":443\"", now);
@@ -614,7 +624,7 @@ mod tests {
         );
         let snapshot = cache.lookup_at(&origin(), now).unwrap();
         assert_eq!(snapshot.len(), 2);
-        assert_eq!(snapshot.get(0).unwrap().target().port, 8443);
+        assert_eq!(snapshot.get(0).unwrap().target.port, 8443);
         record(&cache, "clear", now);
         assert!(cache.lookup_at(&origin(), now).is_none());
         record(&cache, "h3=\"[v1.fe80::a]:443\"", now);
@@ -653,7 +663,10 @@ mod tests {
                 .unwrap(),
         );
         cache.record_at(&origin(), &fields, Duration::ZERO, SystemTime::now(), now);
-        assert!(snapshot.same_advertisement(&cache.lookup_at(&origin(), now).unwrap()));
+        assert!(Arc::ptr_eq(
+            &snapshot,
+            &cache.lookup_at(&origin(), now).unwrap()
+        ));
     }
 
     #[test]

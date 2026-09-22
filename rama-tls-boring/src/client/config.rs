@@ -4,12 +4,13 @@ use rama_core::conversion::RamaFrom;
 use rama_core::extensions::{Extension, Extensions, FromExtensions};
 use rama_net::tls::{ApplicationProtocol, TlsAlpn};
 use rama_tls::client::{
-    ClientHello, ClientHelloExtension, TlsClientAuth, TlsClientConfig, TlsServerCertPins,
-    TlsServerName, TlsServerTrust, TlsServerVerify, TlsStoreServerCertChain,
+    ClientHello, ClientHelloExtension, TlsClientAuth, TlsClientConfig, TlsClientPoolKey,
+    TlsClientPoolPolicy, TlsServerCertPins, TlsServerName, TlsServerTrust, TlsServerVerify,
+    TlsStoreServerCertChain,
 };
 use rama_tls::{
     CertificateCompressionAlgorithm, CipherSuite, ExtensionId, ProtocolVersion, SignatureScheme,
-    SupportedGroup, TlsKeyLog, TlsSupportedVersions,
+    SupportedGroup, TlsBackend, TlsKeyLog, TlsSupportedVersions,
 };
 use rama_utils::macros::generate_set_and_with;
 use std::sync::Arc;
@@ -49,6 +50,19 @@ pub struct BoringTlsConnectorConfig<'a> {
 }
 
 impl BoringTlsConnectorConfig<'_> {
+    /// Cache this provider's default TLS identity for connection pooling.
+    pub fn pool_policy(config: &TlsClientConfig) -> TlsClientPoolPolicy {
+        TlsClientPoolPolicy::new(config.as_extensions(), Self::pool_key)
+    }
+
+    fn pool_key(extensions: &Extensions) -> TlsClientPoolKey {
+        let mut key = TlsClientPoolKey::from_extensions(extensions, TlsBackend::Boring);
+        if BoringTlsConnectorConfig::from_extensions(extensions).has_native_overrides() {
+            key.disable_reuse();
+        }
+        key
+    }
+
     /// Whether native settings are present outside the common reusable TLS policy.
     pub fn has_native_overrides(&self) -> bool {
         // Name every field so additions require an explicit pooling decision.
@@ -136,60 +150,60 @@ pub trait BoringClientConfigExt: Sized {
     /// Create a new config that mimics the provided [`ClientHello`]
     fn new_from_client_hello(hello: &ClientHello) -> Self;
 
-    rama_utils::macros::generate_set_and_with! {
+    generate_set_and_with! {
         /// Layer the fingerprint pieces captured in a [`ClientHello`] onto this config.
         fn mimic_client_hello(self, hello: &ClientHello) -> Self;
     }
 
-    rama_utils::macros::generate_set_and_with! {
+    generate_set_and_with! {
         /// Set the cipher suites to offer, in order.
         fn cipher_suites(self, suites: Vec<CipherSuite>) -> Self;
     }
-    rama_utils::macros::generate_set_and_with! {
+    generate_set_and_with! {
         /// Set the supported groups (named curves), in order.
         fn supported_groups(self, groups: Vec<SupportedGroup>) -> Self;
     }
-    rama_utils::macros::generate_set_and_with! {
+    generate_set_and_with! {
         /// Set the signature schemes to advertise, in order.
         fn signature_schemes(self, schemes: Vec<SignatureScheme>) -> Self;
     }
-    rama_utils::macros::generate_set_and_with! {
+    generate_set_and_with! {
         /// Enable/disable GREASE injection.
         fn grease(self, enabled: bool) -> Self;
     }
-    rama_utils::macros::generate_set_and_with! {
+    generate_set_and_with! {
         /// Set Application-Layer Protocol Settings (ALPS).
         fn alps(self, protocols: Vec<ApplicationProtocol>, new_codepoint: bool) -> Self;
     }
-    rama_utils::macros::generate_set_and_with! {
+    generate_set_and_with! {
         /// Set the ClientHello extension ordering.
         fn extension_order(self, order: Vec<ExtensionId>) -> Self;
     }
-    rama_utils::macros::generate_set_and_with! {
+    generate_set_and_with! {
         /// Set certificate compression algorithms to advertise.
         fn cert_compression(self, algorithms: Vec<CertificateCompressionAlgorithm>) -> Self;
     }
-    rama_utils::macros::generate_set_and_with! {
+    generate_set_and_with! {
         /// Set delegated credential signature schemes.
         fn delegated_credentials(self, schemes: Vec<SignatureScheme>) -> Self;
     }
-    rama_utils::macros::generate_set_and_with! {
+    generate_set_and_with! {
         /// Set the `record_size_limit` value.
         fn record_size_limit(self, limit: u16) -> Self;
     }
-    rama_utils::macros::generate_set_and_with! {
+    generate_set_and_with! {
         /// Enable/disable Encrypted ClientHello (ECH) GREASE.
         fn encrypted_client_hello(self, enabled: bool) -> Self;
     }
-    rama_utils::macros::generate_set_and_with! {
+    generate_set_and_with! {
         /// Enable/disable OCSP stapling request.
         fn ocsp_stapling(self, enabled: bool) -> Self;
     }
-    rama_utils::macros::generate_set_and_with! {
+    generate_set_and_with! {
         /// Enable/disable signed certificate timestamps request.
         fn signed_cert_timestamps(self, enabled: bool) -> Self;
     }
-    rama_utils::macros::generate_set_and_with! {
+    generate_set_and_with! {
         /// Set a custom server-certificate verification store (custom CA roots).
         ///
         /// Ignored with [`ServerVerifyMode::Disable`]; takes precedence over
@@ -198,11 +212,11 @@ pub trait BoringClientConfigExt: Sized {
         /// [`ServerVerifyMode::Disable`]: rama_tls::client::ServerVerifyMode::Disable
         fn server_verify_cert_store(self, store: Arc<X509Store>) -> Self;
     }
-    rama_utils::macros::generate_set_and_with! {
+    generate_set_and_with! {
         /// Set the minimum TLS version boring will negotiate.
         fn min_version(self, version: ProtocolVersion) -> Self;
     }
-    rama_utils::macros::generate_set_and_with! {
+    generate_set_and_with! {
         /// Cap the maximum TLS version boring will negotiate.
         fn max_version(self, version: ProtocolVersion) -> Self;
     }

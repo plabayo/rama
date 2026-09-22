@@ -3,27 +3,44 @@
 use rama::{
     Layer, Service,
     bytes::Bytes,
+    dns::client::DnsConnector,
     extensions::ExtensionsRef,
     graceful::Shutdown,
     http::{
-        Body, HeaderMap, Request, Response, StatusCode, Version, body::util::BodyExt as _,
-        client::EasyHttpConnectorBuilder, conn::HttpOrigin, header, layer::alt_svc::AltSvcCache,
+        Body, HeaderMap, Method, Request, Response, StatusCode, Version,
+        body::util::BodyExt as _,
+        client::EasyHttpConnectorBuilder,
+        conn::HttpOrigin,
+        header,
+        layer::{
+            alt_svc::AltSvcCache,
+            upgrade::{EagerHttpProxyConnector, UpgradeLayer},
+        },
+        matcher::MethodMatcher,
         server::HttpServer,
     },
     layer::MapInputLayer,
-    net::{Protocol, address::SocketAddress},
+    net::{
+        Protocol,
+        address::{HostWithPort, ProxyAddress, SocketAddress},
+        client::{ProxyRoute, ProxyRoutes},
+        proxy::IoForwardService,
+    },
     rt::Executor,
     service::service_fn,
-    tcp::{TcpStream, server::TcpListener},
+    tcp::{TcpStream, client::service::TcpConnector, server::TcpListener},
     tls::{
         SecureTransport,
-        client::{TlsClientConfig, TlsServerCertPin, TlsServerCertPins},
+        client::{
+            ServerVerifyMode, TlsClientConfig, TlsServerCertPin, TlsServerCertPins, TlsServerVerify,
+        },
         server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
     },
 };
 use std::{
     collections::VecDeque,
     convert::Infallible,
+    fmt::Debug,
     net::SocketAddr,
     sync::{
         Arc,
@@ -38,6 +55,11 @@ use rama::tls::boring::server::TlsAcceptorLayer;
 use rama::tls::rustls::server::TlsAcceptorLayer;
 
 use parking_lot::Mutex;
+use tokio::{
+    net::TcpListener as TokioTcpListener,
+    task::{JoinHandle, spawn},
+    time::timeout,
+};
 use tokio_util::sync::CancellationToken;
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(15);
@@ -75,7 +97,7 @@ struct Server {
     replies: Arc<Mutex<VecDeque<Reply>>>,
     shutdown: Shutdown,
     cancel: CancellationToken,
-    task: tokio::task::JoinHandle<()>,
+    task: JoinHandle<()>,
 }
 
 impl Server {
@@ -148,7 +170,7 @@ impl Server {
             TlsAcceptorLayer::new(config).with_store_client_hello(true),
         )
             .into_layer(HttpServer::auto(executor).service(handler));
-        let task = tokio::spawn(listener.serve(service));
+        let task = spawn(listener.serve(service));
         Self {
             address,
             accepted,
@@ -163,16 +185,14 @@ impl Server {
     fn origin(&self) -> HttpOrigin {
         HttpOrigin::new(
             Protocol::HTTPS,
-            format!("localhost:{}", self.address.port())
-                .parse()
-                .unwrap(),
+            HostWithPort::localhost_domain_with_port(self.address.port()),
         )
         .unwrap()
     }
 
     fn request(&self) -> Request {
         Request::builder()
-            .method(rama::http::Method::POST)
+            .method(Method::POST)
             .uri(format!(
                 "https://localhost:{}/resource",
                 self.address.port()
@@ -202,7 +222,7 @@ impl Server {
 fn client(
     tls: TlsClientConfig,
     cache: AltSvcCache,
-) -> impl Service<Request, Output = Response, Error: std::fmt::Debug> {
+) -> impl Service<Request, Output = Response, Error: Debug> {
     let builder = EasyHttpConnectorBuilder::new()
         .with_default_transport_connector()
         .with_default_dns_connector()
@@ -228,10 +248,10 @@ fn credentials() -> (ServerAuthData, TlsClientConfig) {
 }
 
 async fn complete(
-    client: &impl Service<Request, Output = Response, Error: std::fmt::Debug>,
+    client: &impl Service<Request, Output = Response, Error: Debug>,
     request: Request,
 ) -> (StatusCode, Version) {
-    let response = tokio::time::timeout(TEST_TIMEOUT, client.serve(request))
+    let response = timeout(TEST_TIMEOUT, client.serve(request))
         .await
         .unwrap()
         .unwrap();
@@ -371,7 +391,7 @@ async fn advertised_protocol_mismatch_never_falls_back_to_origin() {
     );
     let client = client(tls, cache);
     assert!(
-        tokio::time::timeout(TEST_TIMEOUT, client.serve(origin.request()))
+        timeout(TEST_TIMEOUT, client.serve(origin.request()))
             .await
             .unwrap()
             .is_err()
@@ -397,7 +417,7 @@ async fn cached_alternative_authentication_failure_never_falls_back() {
     );
     let client = client(tls, cache);
     assert!(
-        tokio::time::timeout(TEST_TIMEOUT, client.serve(origin.request()))
+        timeout(TEST_TIMEOUT, client.serve(origin.request()))
             .await
             .unwrap()
             .is_err()
@@ -431,7 +451,7 @@ async fn changed_certificate_pins_cannot_reuse_alternative_connection() {
             [1; 32],
         )));
     assert!(
-        tokio::time::timeout(TEST_TIMEOUT, client.serve(request))
+        timeout(TEST_TIMEOUT, client.serve(request))
             .await
             .unwrap()
             .is_err()
@@ -447,11 +467,11 @@ async fn changed_certificate_pins_cannot_reuse_alternative_connection() {
 async fn timed_out_alternative_cannot_bypass_new_pins_on_pooled_origin() {
     let (auth, tls) = credentials();
     let origin = Server::start(auth, Version::HTTP_2).await;
-    let listener = tokio::net::TcpListener::bind(SocketAddr::from(SocketAddress::local_ipv4(0)))
+    let listener = TokioTcpListener::bind(SocketAddr::from(SocketAddress::local_ipv4(0)))
         .await
         .unwrap();
     let stalled_address = listener.local_addr().unwrap();
-    let stalled = tokio::spawn(async move {
+    let stalled = spawn(async move {
         let mut sockets = Vec::new();
         while let Ok((socket, _)) = listener.accept().await {
             sockets.push(socket);
@@ -480,7 +500,7 @@ async fn timed_out_alternative_cannot_bypass_new_pins_on_pooled_origin() {
             [1; 32],
         )));
     assert!(
-        tokio::time::timeout(TEST_TIMEOUT, client.serve(request))
+        timeout(TEST_TIMEOUT, client.serve(request))
             .await
             .unwrap()
             .is_err()
@@ -497,20 +517,6 @@ async fn timed_out_alternative_cannot_bypass_new_pins_on_pooled_origin() {
 
 #[tokio::test]
 async fn alternative_target_is_reached_through_selected_proxy_route() {
-    use rama::{
-        dns::client::DnsConnector,
-        http::{
-            layer::upgrade::{EagerHttpProxyConnector, UpgradeLayer},
-            matcher::MethodMatcher,
-        },
-        net::{
-            address::ProxyAddress,
-            client::{ProxyRoute, ProxyRoutes},
-            proxy::IoForwardService,
-        },
-        tcp::client::service::TcpConnector,
-    };
-
     let (auth, tls) = credentials();
     let origin = Server::start(auth.clone(), Version::HTTP_2).await;
     let alternative = Server::start(auth, Version::HTTP_2).await;
@@ -530,7 +536,7 @@ async fn alternative_target_is_reached_through_selected_proxy_route() {
         MapInputLayer::new({
             let targets = targets.clone();
             move |request: Request| {
-                assert_eq!(request.method(), rama::http::Method::CONNECT);
+                assert_eq!(request.method(), Method::CONNECT);
                 targets.lock().push(request.uri().to_string());
                 request
             }
@@ -545,8 +551,8 @@ async fn alternative_target_is_reached_through_selected_proxy_route() {
                     .unwrap(),
             )
         }));
-    let task = tokio::spawn(listener.serve(HttpServer::auto(executor).service(service)));
-    let unavailable = tokio::net::TcpListener::bind(SocketAddr::from(SocketAddress::local_ipv4(0)))
+    let task = spawn(listener.serve(HttpServer::auto(executor).service(service)));
+    let unavailable = TokioTcpListener::bind(SocketAddr::from(SocketAddress::local_ipv4(0)))
         .await
         .unwrap();
     let unavailable_address = unavailable.local_addr().unwrap();
@@ -590,4 +596,82 @@ async fn alternative_target_is_reached_through_selected_proxy_route() {
     task.await.unwrap();
     origin.close().await;
     alternative.close().await;
+}
+
+#[tokio::test]
+async fn ordinary_origin_pool_does_not_bypass_new_certificate_pins() {
+    for version in [Version::HTTP_11, Version::HTTP_2] {
+        let (auth, tls) = credentials();
+        let origin = Server::start(auth, version).await;
+        let client = client(tls, AltSvcCache::default());
+        for _ in 0..2 {
+            assert_eq!(complete(&client, origin.request()).await.1, version);
+        }
+        assert_eq!(origin.accepted.load(Ordering::SeqCst), 1);
+
+        let request = origin.request();
+        request
+            .extensions()
+            .insert(TlsServerCertPins::new(TlsServerCertPin::SpkiSha256(
+                [1; 32],
+            )));
+        assert!(
+            timeout(TEST_TIMEOUT, client.serve(request))
+                .await
+                .unwrap()
+                .is_err()
+        );
+        assert_eq!(
+            origin.request_count(),
+            2,
+            "a pooled connection must not bypass newly requested pins"
+        );
+        assert_eq!(
+            origin.accepted.load(Ordering::SeqCst),
+            2,
+            "the changed pin policy requires a fresh handshake"
+        );
+
+        // An isolated failure must not corrupt the still-compatible original pool.
+        assert_eq!(complete(&client, origin.request()).await.1, version);
+        assert_eq!(origin.accepted.load(Ordering::SeqCst), 2);
+        drop(client);
+        origin.close().await;
+    }
+}
+
+#[tokio::test]
+async fn ordinary_origin_pool_does_not_reuse_unverified_connection_for_verified_request() {
+    for version in [Version::HTTP_11, Version::HTTP_2] {
+        let (auth, _) = credentials();
+        let origin = Server::start(auth, version).await;
+        let tls = TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable);
+        let client = client(tls, AltSvcCache::default());
+        for _ in 0..2 {
+            assert_eq!(complete(&client, origin.request()).await.1, version);
+        }
+        assert_eq!(origin.accepted.load(Ordering::SeqCst), 1);
+
+        let request = origin.request();
+        request
+            .extensions()
+            .insert(TlsServerVerify(ServerVerifyMode::Auto));
+        assert!(
+            timeout(TEST_TIMEOUT, client.serve(request))
+                .await
+                .unwrap()
+                .is_err()
+        );
+        assert_eq!(
+            origin.request_count(),
+            2,
+            "verified requests must not use an unverified pooled connection"
+        );
+        assert_eq!(origin.accepted.load(Ordering::SeqCst), 2);
+
+        assert_eq!(complete(&client, origin.request()).await.1, version);
+        assert_eq!(origin.accepted.load(Ordering::SeqCst), 2);
+        drop(client);
+        origin.close().await;
+    }
 }

@@ -4,8 +4,6 @@
 //! pooling and records the established service only after validating the peer.
 //! These types do not impose Alt-Svc or DNS freshness and retry rules.
 
-use std::sync::Arc;
-
 use rama_core::{
     error::{BoxError, BoxErrorExt as _},
     extensions::Extension,
@@ -15,6 +13,7 @@ use rama_net::{
     address::{Host, HostWithPort},
     tls::ApplicationProtocol,
 };
+use rama_utils::macros::generate_set_and_with;
 
 /// An HTTP origin, including its scheme and effective port.
 ///
@@ -39,14 +38,15 @@ impl HttpOrigin {
                 "HTTP service origin requires a nonzero port",
             ));
         }
-        let host = if let Ok(ip) = authority.host.try_as_ip() {
-            Host::from(ip)
-        } else {
-            Host::from(authority.host.try_into_domain()?)
-        };
+        let authority = authority.canonicalize();
+        if !matches!(authority.host, Host::Name(_) | Host::Address(_)) {
+            return Err(BoxError::from_static_str(
+                "HTTP service origin requires a DNS name or IP address",
+            ));
+        }
         Ok(Self {
             protocol,
-            authority: HostWithPort::new(host.canonicalize(), authority.port),
+            authority,
         })
     }
 
@@ -76,7 +76,12 @@ pub enum HttpServiceSource {
     /// Explicit application configuration, independent of response advertisements.
     #[default]
     Configured,
-    /// An HTTP Alt-Svc advertisement.
+    /// An HTTP alternative-service advertisement (RFC 7838).
+    ///
+    /// The RFC defines the `Alt-Svc` response header and HTTP/2 ALTSVC frame.
+    /// Rama currently learns the response header; frame ingestion is not yet
+    /// implemented. DNS HTTPS/SVCB records are a separate discovery mechanism,
+    /// with different authorization, freshness and selection rules.
     AltSvc,
 }
 
@@ -86,9 +91,12 @@ pub enum HttpServiceSource {
 /// not permission to downgrade the request or skip origin authentication.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct HttpServiceCandidate {
-    protocol: ApplicationProtocol,
-    target: HostWithPort,
-    source: HttpServiceSource,
+    /// Required negotiated application protocol.
+    pub protocol: ApplicationProtocol,
+    /// Physical endpoint, independently of the logical origin.
+    pub target: HostWithPort,
+    /// Discovery mechanism whose policies apply to this candidate.
+    pub source: HttpServiceSource,
 }
 
 impl HttpServiceCandidate {
@@ -101,43 +109,30 @@ impl HttpServiceCandidate {
         }
     }
 
-    /// Record the discovery mechanism whose policies apply to this candidate.
-    #[must_use]
-    pub fn with_source(mut self, source: HttpServiceSource) -> Self {
-        self.source = source;
-        self
-    }
-
-    /// Discovery mechanism, preserved in selection and establishment metadata.
-    pub fn source(&self) -> HttpServiceSource {
-        self.source
-    }
-
-    /// Required application protocol.
-    pub fn protocol(&self) -> &ApplicationProtocol {
-        &self.protocol
-    }
-
-    /// Physical endpoint, independently of the logical origin.
-    pub fn target(&self) -> &HostWithPort {
-        &self.target
+    generate_set_and_with! {
+        /// Record the discovery mechanism whose policies apply to this candidate.
+        pub fn source(mut self, source: HttpServiceSource) -> Self {
+            self.source = source;
+            self
+        }
     }
 }
 
 /// An immutable, ordered discovery snapshot for one origin.
 ///
-/// Cloning shares the collection. Discovery-specific freshness and availability
-/// remain with the source; inspect those before trying a cached candidate.
-#[derive(Clone, Debug, Extension)]
+/// Share snapshots through `Arc<HttpServiceCandidates>`, including the Arc
+/// already provided by request extensions. Discovery-specific freshness and
+/// availability remain with the source; inspect those before trying a candidate.
+#[derive(Debug, Extension)]
 #[extension(tags(http))]
 pub struct HttpServiceCandidates {
     origin: HttpOrigin,
-    candidates: Arc<[HttpServiceCandidate]>,
+    candidates: Box<[HttpServiceCandidate]>,
 }
 
 impl HttpServiceCandidates {
     /// Create a new discovery snapshot in preference order.
-    pub fn new(origin: HttpOrigin, candidates: impl Into<Arc<[HttpServiceCandidate]>>) -> Self {
+    pub fn new(origin: HttpOrigin, candidates: impl Into<Box<[HttpServiceCandidate]>>) -> Self {
         Self {
             origin,
             candidates: candidates.into(),
@@ -168,39 +163,22 @@ impl HttpServiceCandidates {
     pub fn is_empty(&self) -> bool {
         self.candidates.is_empty()
     }
-
-    /// Whether both handles refer to the same origin and discovery snapshot.
-    ///
-    /// This compares ephemeral advertisement identity, not candidate equality.
-    /// A delayed failure must not suppress a newer advertisement of the same
-    /// endpoint. It is not a connection-pool or authentication identity.
-    pub fn same_advertisement(&self, other: &Self) -> bool {
-        self.origin == other.origin && Arc::ptr_eq(&self.candidates, &other.candidates)
-    }
 }
 
 /// One candidate selected for an isolated connection attempt.
 #[derive(Clone, Debug, Extension)]
 #[extension(tags(http))]
 pub struct SelectedHttpService {
-    origin: HttpOrigin,
-    candidate: HttpServiceCandidate,
+    /// Original request and authentication identity.
+    pub origin: HttpOrigin,
+    /// Endpoint and protocol selected for this attempt.
+    pub candidate: HttpServiceCandidate,
 }
 
 impl SelectedHttpService {
     /// Record a decision before connection establishment.
     pub fn new(origin: HttpOrigin, candidate: HttpServiceCandidate) -> Self {
         Self { origin, candidate }
-    }
-
-    /// Original request and authentication identity.
-    pub fn origin(&self) -> &HttpOrigin {
-        &self.origin
-    }
-
-    /// Endpoint and protocol selected for this attempt.
-    pub fn candidate(&self) -> &HttpServiceCandidate {
-        &self.candidate
     }
 }
 
@@ -213,8 +191,10 @@ impl SelectedHttpService {
 #[derive(Clone, Debug, Extension)]
 #[extension(tags(http))]
 pub struct EstablishedHttpService {
-    origin: HttpOrigin,
-    candidate: HttpServiceCandidate,
+    /// Original request and authenticated origin identity.
+    pub origin: HttpOrigin,
+    /// Verified protocol and connected endpoint.
+    pub candidate: HttpServiceCandidate,
 }
 
 impl EstablishedHttpService {
@@ -222,21 +202,12 @@ impl EstablishedHttpService {
     pub fn new(origin: HttpOrigin, candidate: HttpServiceCandidate) -> Self {
         Self { origin, candidate }
     }
-
-    /// Original request and authenticated origin identity.
-    pub fn origin(&self) -> &HttpOrigin {
-        &self.origin
-    }
-
-    /// Verified protocol and connected endpoint.
-    pub fn candidate(&self) -> &HttpServiceCandidate {
-        &self.candidate
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     #[test]
     fn origins_canonicalize_hosts_and_preserve_scheme_and_port() {
@@ -259,12 +230,12 @@ mod tests {
             ApplicationProtocol::HTTP_2,
             "alt.example:8443".parse().unwrap(),
         );
-        assert_eq!(configured.source(), HttpServiceSource::Configured);
+        assert_eq!(configured.source, HttpServiceSource::Configured);
         let advertised = configured.with_source(HttpServiceSource::AltSvc);
         let selected = SelectedHttpService::new(origin.clone(), advertised.clone());
         let established = EstablishedHttpService::new(origin, advertised);
-        assert_eq!(selected.candidate().source(), HttpServiceSource::AltSvc);
-        assert_eq!(established.candidate().source(), HttpServiceSource::AltSvc);
+        assert_eq!(selected.candidate.source, HttpServiceSource::AltSvc);
+        assert_eq!(established.candidate.source, HttpServiceSource::AltSvc);
     }
 
     #[test]
@@ -274,10 +245,13 @@ mod tests {
             ApplicationProtocol::HTTP_2,
             "alt.example:8443".parse().unwrap(),
         );
-        let first = HttpServiceCandidates::new(origin.clone(), vec![candidate.clone()]);
-        assert!(first.same_advertisement(&first.clone()));
-        let replacement = HttpServiceCandidates::new(origin, vec![candidate]);
-        assert!(!first.same_advertisement(&replacement));
+        let first = Arc::new(HttpServiceCandidates::new(
+            origin.clone(),
+            vec![candidate.clone()],
+        ));
+        assert!(Arc::ptr_eq(&first, &first.clone()));
+        let replacement = Arc::new(HttpServiceCandidates::new(origin, vec![candidate]));
+        assert!(!Arc::ptr_eq(&first, &replacement));
         assert_eq!(first.get(0), replacement.get(0));
     }
 }

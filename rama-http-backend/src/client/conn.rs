@@ -333,9 +333,10 @@ fn apply_h2_client_extensions_to_builder(
 
 #[derive(Debug, Clone)]
 /// A [`Service`] which establishes an HTTP Connection.
-pub struct HttpConnector<S, Body> {
+pub struct HttpConnector<S, Body, H = NoHttp3Connector<Body>> {
     inner: S,
     exec: Executor,
+    http3: H,
     // Body type this connector will be able to send, this is not
     // necessarily the same one that was used in the request that
     // created this connection
@@ -348,11 +349,41 @@ impl<S, Body> HttpConnector<S, Body> {
         Self {
             inner,
             exec,
+            http3: NoHttp3Connector(PhantomData),
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<S, Body, H> HttpConnector<S, Body, H> {
+    /// Enable HTTP/3 using a connector that establishes an HTTP service directly.
+    /// Custom transports can construct their service with [`HttpClientService::http3`].
+    pub fn with_http3_connector<T>(self, connector: T) -> HttpConnector<S, Body, T> {
+        HttpConnector {
+            inner: self.inner,
+            exec: self.exec,
+            http3: connector,
             _phantom: PhantomData,
         }
     }
 
     define_inner_service_accessors!();
+}
+
+/// Default marker for an HTTP connector without HTTP/3 support.
+#[derive(Clone, Debug)]
+pub struct NoHttp3Connector<Body>(PhantomData<fn() -> Body>);
+
+impl<Input: Send + 'static, Body: Send + 'static> Service<Input> for NoHttp3Connector<Body> {
+    type Output = EstablishedClientConnection<HttpClientService<Body>, Input>;
+    type Error = ConnectionError;
+
+    async fn serve(&self, _input: Input) -> Result<Self::Output, Self::Error> {
+        Err(ConnectionError::transport(
+            BoxError::from_static_str("HTTP/3 connector is not configured"),
+            ConnectionErrorKind::Unavailable,
+        ))
+    }
 }
 
 /// Establish an HTTP connection on the pre-established IO (bytes) stream.
@@ -528,8 +559,9 @@ where
     Ok((svc, peer_handle))
 }
 
-impl<S, Input, BodyConnection> Service<Input> for HttpConnector<S, BodyConnection>
+impl<S, Input, BodyConnection, H> Service<Input> for HttpConnector<S, BodyConnection, H>
 where
+    H: ConnectorService<Input, Connection = HttpClientService<BodyConnection>>,
     S: ConnectorService<Input, Connection: Io + Unpin>,
     Input: AuthorityInputExt
         + ExtensionsRef
@@ -547,6 +579,9 @@ where
 
     #[inline]
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
+        if resolve_input_target_http_version(&input) == Some(Version::HTTP_3) {
+            return self.http3.connect(input).await;
+        }
         let EstablishedClientConnection { input, conn } = self.inner.connect(input).await?;
         let version = resolve_target_http_version(&conn, &input);
         if let Some(version) = version {
@@ -604,6 +639,7 @@ impl<S, Body> Layer<S> for HttpConnectorLayer<Body> {
         HttpConnector {
             inner,
             exec: self.exec.clone(),
+            http3: NoHttp3Connector(PhantomData),
             _phantom: PhantomData,
         }
     }
@@ -612,7 +648,126 @@ impl<S, Body> Layer<S> for HttpConnectorLayer<Body> {
         HttpConnector {
             inner,
             exec: self.exec,
+            http3: NoHttp3Connector(PhantomData),
             _phantom: PhantomData,
         }
+    }
+}
+
+#[cfg(test)]
+mod http3_dispatch_tests {
+    use super::*;
+    use rama_core::{ServiceInput, service::service_fn};
+    use rama_http_types::Body;
+    use rama_net::{
+        Protocol as ApplicationProtocol,
+        client::{ConnectRequest, ConnectorTarget, ProxyRoute},
+    };
+
+    fn stream_connector_must_not_connect()
+    -> impl ConnectorService<ConnectRequest, Connection = ServiceInput<tokio::io::DuplexStream>>
+    {
+        service_fn(
+            async |_input: ConnectRequest| -> Result<
+                EstablishedClientConnection<ServiceInput<tokio::io::DuplexStream>, ConnectRequest>,
+                ConnectionError,
+            > {
+                panic!("HTTP/3 must not dial the byte-stream connector");
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn absent_http3_rejects_before_stream_establishment() {
+        let connector =
+            HttpConnector::<_, Body>::new(stream_connector_must_not_connect(), Executor::default());
+        let input = ConnectRequest::new("origin.example:443".parse().unwrap());
+        input
+            .extensions()
+            .insert(TargetHttpVersion(Version::HTTP_3));
+        let error = connector.serve(input).await.err().unwrap();
+        assert_eq!(error.kind(), ConnectionErrorKind::Unavailable);
+    }
+
+    #[tokio::test]
+    async fn http1_and_http2_use_stream_connector() {
+        for version in [Version::HTTP_11, Version::HTTP_2] {
+            let stream_connector = service_fn(move |input: ConnectRequest| async move {
+                assert_eq!(
+                    input.extensions().get_ref::<TargetHttpVersion>().unwrap().0,
+                    version
+                );
+                Err::<
+                    EstablishedClientConnection<
+                        ServiceInput<tokio::io::DuplexStream>,
+                        ConnectRequest,
+                    >,
+                    _,
+                >(ConnectionError::application(
+                    BoxError::from_static_str("byte-stream connector reached"),
+                    ConnectionErrorKind::Rejected,
+                ))
+            });
+            let http3 = service_fn(
+                async |_input: ConnectRequest| -> Result<
+                    EstablishedClientConnection<HttpClientService<Body>, ConnectRequest>,
+                    ConnectionError,
+                > {
+                    panic!("HTTP/1 and HTTP/2 must not use the HTTP/3 transport");
+                },
+            );
+            let connector = HttpConnector::new(stream_connector, Executor::default())
+                .with_http3_connector(http3);
+            let input = ConnectRequest::new("origin.example:443".parse().unwrap());
+            input.extensions().insert(TargetHttpVersion(version));
+            let error = connector.serve(input).await.err().unwrap();
+            assert_eq!(error.kind(), ConnectionErrorKind::Rejected);
+        }
+    }
+
+    #[tokio::test]
+    async fn custom_http3_owns_route_capability_and_preserves_origin_and_target() {
+        let http3 = service_fn(
+            async |input: ConnectRequest| -> Result<
+                EstablishedClientConnection<HttpClientService<Body>, ConnectRequest>,
+                ConnectionError,
+            > {
+                assert_eq!(input.authority.to_string(), "origin.example:443");
+                assert_eq!(input.application_protocol, Some(ApplicationProtocol::HTTPS));
+                assert_eq!(
+                    input
+                        .extensions()
+                        .get_ref::<ConnectorTarget>()
+                        .unwrap()
+                        .0
+                        .to_string(),
+                    "alternative.example:8443"
+                );
+                assert!(matches!(
+                    input.extensions().get_ref::<ProxyRoute>(),
+                    Some(ProxyRoute::Proxy(_))
+                ));
+                Err(ConnectionError::application(
+                    BoxError::from_static_str("custom transport reached"),
+                    ConnectionErrorKind::Rejected,
+                ))
+            },
+        );
+        let connector =
+            HttpConnector::new(stream_connector_must_not_connect(), Executor::default())
+                .with_http3_connector(http3);
+        let input = ConnectRequest::new("origin.example:443".parse().unwrap())
+            .with_application_protocol(ApplicationProtocol::HTTPS);
+        input
+            .extensions()
+            .insert(TargetHttpVersion(Version::HTTP_3));
+        input
+            .extensions()
+            .insert(ConnectorTarget("alternative.example:8443".parse().unwrap()));
+        input.extensions().insert(ProxyRoute::Proxy(
+            "http://proxy.example:8080".parse().unwrap(),
+        ));
+        let error = connector.serve(input).await.err().unwrap();
+        assert_eq!(error.kind(), ConnectionErrorKind::Rejected);
     }
 }

@@ -55,7 +55,7 @@ use super::{
 };
 
 #[tokio::test]
-async fn unsupported_http_version_is_local_invalid_input() {
+async fn unconfigured_http3_transport_is_unavailable() {
     let connector =
         HttpConnectorLayer::<Body>::default().into_layer(MockConnectorService::new(|| {
             HttpServer::auto(Executor::default()).service(service_fn(server_svc_fn))
@@ -65,9 +65,9 @@ async fn unsupported_http_version_is_local_invalid_input() {
         .serve(create_test_request(Version::HTTP_3))
         .await
         .err()
-        .expect("HTTP/3 is unsupported");
-    assert_eq!(error.domain(), ConnectionErrorDomain::Local);
-    assert_eq!(error.kind(), ConnectionErrorKind::InvalidInput);
+        .expect("HTTP/3 requires a configured connector");
+    assert_eq!(error.domain(), ConnectionErrorDomain::Transport);
+    assert_eq!(error.kind(), ConnectionErrorKind::Unavailable);
 }
 
 #[tokio::test]

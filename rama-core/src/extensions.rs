@@ -67,16 +67,6 @@ pub struct Extensions {
     parent: Option<Box<Self>>,
 }
 
-impl FromIterator<TypeErasedExtension> for Extensions {
-    fn from_iter<T: IntoIterator<Item = TypeErasedExtension>>(iter: T) -> Self {
-        let extensions = Self::new();
-        for value in iter {
-            extensions.extensions.push(value);
-        }
-        extensions
-    }
-}
-
 impl Extensions {
     /// Create an empty [`Extensions`] store with no parent.
     #[inline(always)]
@@ -802,15 +792,6 @@ impl TypeErasedExtension {
             type_id: TypeId::of::<T>(),
             value,
         }
-    }
-
-    /// Whether both entries share the same stored extension instance.
-    ///
-    /// This compares insertion identity, not value equality. It is useful when
-    /// tracking whether an extension was replaced by a later layer.
-    #[must_use]
-    pub fn ptr_eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.value, &other.value)
     }
 
     /// Get the [`TypeId`] for the internally stored type `Arc<T>`
@@ -1819,26 +1800,5 @@ mod tests {
             AnyOf::from_extensions(&child),
             Some(AnyOf::Req(&RequestId(7)))
         );
-    }
-    #[test]
-    fn erased_identity_distinguishes_replacements_from_shared_values() {
-        let first = TypeErasedExtension::new(WorkerId(1));
-        let shared = first.clone();
-        let equal_value = TypeErasedExtension::new(WorkerId(1));
-        assert!(first.ptr_eq(&shared));
-        assert!(!first.ptr_eq(&equal_value));
-    }
-
-    #[test]
-    fn collect_erased_extensions_preserves_precedence_and_sharing() {
-        let first = TypeErasedExtension::new(WorkerId(1));
-        let last = TypeErasedExtension::new(WorkerId(2));
-        let extensions: Extensions = [first.clone(), last.clone()].into_iter().collect();
-        assert_eq!(extensions.get_ref::<WorkerId>().unwrap().0, 2);
-        let entries = extensions.self_iter_all().collect::<Vec<_>>();
-        assert!(entries[0].ptr_eq(&first));
-        assert!(entries[1].ptr_eq(&last));
-        let empty: Extensions = core::iter::empty::<TypeErasedExtension>().collect();
-        assert!(!empty.contains::<WorkerId>());
     }
 }

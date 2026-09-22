@@ -72,6 +72,31 @@ pub mod tls {
             .ok()
     }
 
+    /// Prepare a compact pooling policy with the same provider as QUIC dialing.
+    pub fn client_pool_policy(
+        config: &rama_tls::client::TlsClientConfig,
+        backend: rama_tls::TlsBackend,
+    ) -> rama_tls::client::TlsClientPoolPolicy {
+        match selected_backend(backend) {
+            #[cfg(feature = "rustls")]
+            Some(rama_tls::TlsBackend::Rustls) => {
+                rama_tls_rustls::client::RustlsTlsConnectorConfig::pool_policy(config)
+            }
+            #[cfg(feature = "boring")]
+            Some(rama_tls::TlsBackend::Boring) => {
+                rama_tls_boring::client::BoringTlsConnectorConfig::pool_policy(config)
+            }
+            _ => rama_tls::client::TlsClientPoolPolicy::new(config.as_extensions(), |extensions| {
+                let mut key = rama_tls::client::TlsClientPoolKey::from_extensions(
+                    extensions,
+                    rama_tls::TlsBackend::Auto,
+                );
+                key.disable_reuse();
+                key
+            }),
+        }
+    }
+
     /// Capture the effective TLS policy for pool selection.
     ///
     /// Layer request settings over connector defaults before calling this. Native

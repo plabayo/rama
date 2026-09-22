@@ -1,13 +1,14 @@
 use crate::dep::rustls::ClientConfig;
 use crate::dep::rustls::client::danger::ServerCertVerifier;
 use rama_core::error::BoxError;
-use rama_core::extensions::{Extension, FromExtensions};
+use rama_core::extensions::{Extension, Extensions, FromExtensions};
 use rama_net::tls::TlsAlpn;
 use rama_tls::client::{
-    TlsClientAuth, TlsClientConfig, TlsServerCertPins, TlsServerName, TlsServerTrust,
-    TlsServerVerify, TlsStoreServerCertChain,
+    TlsClientAuth, TlsClientConfig, TlsClientPoolKey, TlsClientPoolPolicy, TlsServerCertPins,
+    TlsServerName, TlsServerTrust, TlsServerVerify, TlsStoreServerCertChain,
 };
-use rama_tls::{TlsKeyLog, TlsSupportedVersions};
+use rama_tls::{TlsBackend, TlsKeyLog, TlsSupportedVersions};
+use rama_utils::macros::generate_set_and_with;
 use std::sync::Arc;
 
 /// Gather all the TLS extensions supported by rustls
@@ -27,6 +28,19 @@ pub struct RustlsTlsConnectorConfig<'a> {
 }
 
 impl RustlsTlsConnectorConfig<'_> {
+    /// Cache this provider's default TLS identity for connection pooling.
+    pub fn pool_policy(config: &TlsClientConfig) -> TlsClientPoolPolicy {
+        TlsClientPoolPolicy::new(config.as_extensions(), Self::pool_key)
+    }
+
+    fn pool_key(extensions: &Extensions) -> TlsClientPoolKey {
+        let mut key = TlsClientPoolKey::from_extensions(extensions, TlsBackend::Rustls);
+        if RustlsTlsConnectorConfig::from_extensions(extensions).has_native_overrides() {
+            key.disable_reuse();
+        }
+        key
+    }
+
     /// Whether opaque native configuration prevents comparing connection policies.
     pub fn has_native_overrides(&self) -> bool {
         // Name every field so additions require an explicit pooling decision.
@@ -85,7 +99,7 @@ impl RustlsTlsConnectorConfig<'_> {
 
 /// Rustls specific setters for [`TlsClientConfig`].
 pub trait RustlsClientConfigExt: Sized {
-    rama_utils::macros::generate_set_and_with! {
+    generate_set_and_with! {
         /// Set a custom server certificate verifier
         ///
         /// Ignored with [`ServerVerifyMode::Disable`]; takes precedence over
@@ -96,7 +110,7 @@ pub trait RustlsClientConfigExt: Sized {
         fn cert_verifier(self, verifier: Arc<dyn ServerCertVerifier>) -> Self;
     }
 
-    rama_utils::macros::generate_set_and_with! {
+    generate_set_and_with! {
         /// Take over the final rustls [`ClientConfig`] build: see [`ModifyRustlsClientConfig`].
         fn modify_rustls_config(
             self,
@@ -106,14 +120,14 @@ pub trait RustlsClientConfigExt: Sized {
 }
 
 impl RustlsClientConfigExt for TlsClientConfig {
-    rama_utils::macros::generate_set_and_with! {
+    generate_set_and_with! {
         fn cert_verifier(mut self, verifier: Arc<dyn ServerCertVerifier>) -> Self {
             self.insert(RustlsServerCertVerifier(verifier));
             self
         }
     }
 
-    rama_utils::macros::generate_set_and_with! {
+    generate_set_and_with! {
         fn modify_rustls_config(
             mut self,
             modify: impl Fn(ClientConfig) -> Result<ClientConfig, BoxError> + Send + Sync + 'static,

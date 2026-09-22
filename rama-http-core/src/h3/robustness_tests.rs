@@ -1,17 +1,36 @@
 //! Exercise admission recovery and independent streams across a real QUIC connection.
 
 use super::{LIMIT, Pair};
-use crate::h3::{client, connection::Config, server};
+use crate::h3::{
+    client,
+    connection::Config,
+    qpack::{Encoder, EncoderConfig, ErrorScope},
+    quic::Writer,
+    server,
+};
 use rama_core::{
     bytes::Bytes,
     rt::{Executor, spawn},
 };
-use rama_http_types::{Body, Method, Request, Response, body::util::BodyExt, proto::h3::Code};
+use rama_http_types::{
+    Body, Method, Request, Response,
+    body::util::BodyExt,
+    proto::h3::{Code, FrameType},
+};
 use std::{convert::Infallible, sync::Arc};
 use tokio::sync::Barrier;
 
 #[tokio::test]
 async fn malformed_control_streams_close_connection_and_wake_accept() {
+    check_malformed_control_streams_close_connection_and_wake_accept(false).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn memory_malformed_control_streams_close_connection_and_wake_accept() {
+    check_malformed_control_streams_close_connection_and_wake_accept(true).await;
+}
+
+async fn check_malformed_control_streams_close_connection_and_wake_accept(in_memory: bool) {
     // RFC 9114 sections 6.2.1 and 7.2.4. Keep every sending stream open so
     // an unintended critical-stream FIN cannot mask the actual protocol error.
     let cases: &[(&str, &[&[u8]], Code)] = &[
@@ -38,7 +57,7 @@ async fn malformed_control_streams_close_connection_and_wake_accept() {
     ];
     for &(scenario, streams, expected) in cases {
         tokio::time::timeout(LIMIT, async {
-            let pair = Pair::new(None, None).await;
+            let pair = pair(None, None, in_memory).await;
             let (mut server, driver) =
                 server::handshake(pair.server.clone(), Config::default()).unwrap();
             let driver = spawn(driver.run());
@@ -66,14 +85,17 @@ async fn malformed_control_streams_close_connection_and_wake_accept() {
 
 #[tokio::test]
 async fn malformed_request_streams_leave_connection_and_admission_usable() {
-    use crate::h3::{
-        qpack::{Encoder, EncoderConfig, ErrorScope},
-        quic::Writer,
-    };
-    use rama_http_types::proto::h3::FrameType;
+    check_malformed_request_streams_leave_connection_and_admission_usable(false).await;
+}
 
+#[tokio::test(start_paused = true)]
+async fn memory_malformed_request_streams_leave_connection_and_admission_usable() {
+    check_malformed_request_streams_leave_connection_and_admission_usable(true).await;
+}
+
+async fn check_malformed_request_streams_leave_connection_and_admission_usable(in_memory: bool) {
     tokio::time::timeout(LIMIT, async {
-        let pair = Pair::new(None, None).await;
+        let pair = pair(None, None, in_memory).await;
         let config = Config {
             max_requests: 1,
             ..Config::default()
@@ -157,8 +179,17 @@ async fn malformed_request_streams_leave_connection_and_admission_usable() {
 
 #[tokio::test]
 async fn cancelled_idle_response_releases_single_admission_slot() {
+    check_cancelled_idle_response_releases_single_admission_slot(false).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn memory_cancelled_idle_response_releases_single_admission_slot() {
+    check_cancelled_idle_response_releases_single_admission_slot(true).await;
+}
+
+async fn check_cancelled_idle_response_releases_single_admission_slot(in_memory: bool) {
     tokio::time::timeout(LIMIT, async {
-        let pair = Pair::new(None, None).await;
+        let pair = pair(None, None, in_memory).await;
         let config = Config {
             max_requests: 1,
             ..Config::default()
@@ -228,6 +259,15 @@ async fn cancelled_idle_response_releases_single_admission_slot() {
 
 #[tokio::test]
 async fn concurrent_stream_waves_recover_admission_and_flow_control_credit() {
+    check_concurrent_stream_waves_recover_admission_and_flow_control_credit(false).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn memory_concurrent_stream_waves_recover_admission_and_flow_control_credit() {
+    check_concurrent_stream_waves_recover_admission_and_flow_control_credit(true).await;
+}
+
+async fn check_concurrent_stream_waves_recover_admission_and_flow_control_credit(in_memory: bool) {
     const CONCURRENT: usize = 8;
     const WAVES: usize = 16;
     tokio::time::timeout(LIMIT, async {
@@ -243,7 +283,7 @@ async fn concurrent_stream_waves_recover_admission_and_flow_control_credit() {
             transport.set_receive_window(rama_utils::octets::kib(4) as u32);
             transport
         };
-        let pair = Pair::new(Some(transport()), Some(transport())).await;
+        let pair = pair(Some(transport()), Some(transport()), in_memory).await;
         let (client, client_driver) =
             client::handshake::<Body>(pair.client.clone(), config.clone(), Executor::new())
                 .unwrap();
@@ -310,4 +350,16 @@ async fn concurrent_stream_waves_recover_admission_and_flow_control_credit() {
     })
     .await
     .unwrap();
+}
+
+async fn pair(
+    client: Option<rama_quic::TransportConfig>,
+    server: Option<rama_quic::TransportConfig>,
+    in_memory: bool,
+) -> Pair {
+    if in_memory {
+        Pair::in_memory(client, server).await
+    } else {
+        Pair::new(client, server).await
+    }
 }

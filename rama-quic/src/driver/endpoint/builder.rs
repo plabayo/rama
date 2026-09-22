@@ -11,6 +11,8 @@ use std::{io, time::Duration};
 
 use rama_core::rt::Executor;
 use rama_net::address::SocketAddress;
+#[cfg(feature = "test-utils")]
+use rama_udp::DatagramSocket;
 use rama_udp::{DatagramError, UdpPacketSocket, UdpSocketConfig, UdpSocketFactory};
 
 use crate::driver::{
@@ -131,6 +133,19 @@ impl EndpointBuilder {
     ///
     /// This does not bind preferred-address sockets or change the supplied socket options.
     pub fn with_packet_socket(self, socket: UdpPacketSocket) -> Result<Endpoint, DatagramError> {
+        self.on_socket(Socket::new(socket).map_err(DatagramError::from)?)
+    }
+
+    /// Build an endpoint on a deterministic datagram transport for protocol tests.
+    ///
+    /// The normal endpoint and connection drivers run unchanged. The supplied
+    /// socket provides packet metadata, readiness and backpressure, allowing
+    /// higher-level protocols to exercise QUIC without operating-system sockets.
+    #[cfg(feature = "test-utils")]
+    pub fn with_test_datagram_socket(
+        self,
+        socket: impl DatagramSocket,
+    ) -> Result<Endpoint, DatagramError> {
         self.on_socket(Socket::new(socket).map_err(DatagramError::from)?)
     }
 

@@ -3,6 +3,9 @@
 //! [RFC 7838] allows an origin to advertise alternative protocols, hosts and
 //! ports; the mechanism is independent of HTTP/3. [`AltSvcCache`] retains
 //! all advertised protocols, and connector selection applies client capabilities.
+//! This layer ingests the response header. RFC 7838 also defines an HTTP/2 ALTSVC
+//! frame; frame ingestion is not implemented yet. DNS HTTPS/SVCB discovery is a
+//! separate mechanism and must not be recorded as an Alt-Svc advertisement.
 //!
 //! The transport supplies the logical origin and whether it authenticated that
 //! origin. The middleware records response hints and sets the typed `Alt-Used`
@@ -23,8 +26,8 @@ use rama_core::{
 use rama_http_headers::{AltUsed, HeaderMapExt as _, TypedHeader as _};
 use rama_http_types::conn::{HttpOrigin, HttpServiceCandidates, HttpServiceSource};
 use rama_net::address::HostWithPort;
-use rama_utils::macros::define_inner_service_accessors;
-use std::time::Instant;
+use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
+use std::{sync::Arc, time::Instant};
 
 /// Learn alternatives for one logical HTTP origin over an established connection.
 ///
@@ -38,7 +41,7 @@ pub struct AltSvcLayer {
     origin: HttpOrigin,
     authenticated: bool,
     alternative: Option<HostWithPort>,
-    selection: Option<(HttpServiceCandidates, usize)>,
+    selection: Option<(Arc<HttpServiceCandidates>, usize)>,
 }
 
 impl AltSvcLayer {
@@ -53,40 +56,43 @@ impl AltSvcLayer {
         }
     }
 
-    /// Declare whether this connection authenticated the logical HTTPS origin.
-    ///
-    /// This must represent successful certificate and configured peer-policy
-    /// verification, not merely the presence of encryption or a peer certificate.
-    #[must_use]
-    pub fn with_authenticated(mut self, authenticated: bool) -> Self {
-        self.authenticated = authenticated;
-        self
-    }
-
-    /// Set the selected alternative authority to report in `Alt-Used`.
-    #[must_use]
-    pub fn with_alternative(mut self, alternative: Option<HostWithPort>) -> Self {
-        self.alternative = alternative;
-        self.selection = None;
-        self
-    }
-
-    /// Identify the exact cached candidate used by this connection.
-    ///
-    /// Carries advertisement identity so a 421 cannot remove a newer hint for
-    /// the same endpoint. Also sets `Alt-Used` from the selected candidate.
-    #[must_use]
-    pub fn with_selection(mut self, snapshot: HttpServiceCandidates, index: usize) -> Self {
-        self.alternative = None;
-        self.selection = None;
-        if snapshot.origin() == &self.origin
-            && let Some(candidate) = snapshot.get(index)
-            && candidate.source() == HttpServiceSource::AltSvc
-        {
-            self.alternative = Some(candidate.target().clone());
-            self.selection = Some((snapshot, index));
+    generate_set_and_with! {
+        /// Declare whether this connection authenticated the logical HTTPS origin.
+        ///
+        /// This must represent successful certificate and configured peer-policy
+        /// verification, not merely the presence of encryption or a peer certificate.
+        pub fn authenticated(mut self, authenticated: bool) -> Self {
+            self.authenticated = authenticated;
+            self
         }
-        self
+    }
+
+    generate_set_and_with! {
+        /// Set the selected alternative authority to report in `Alt-Used`.
+        pub fn alternative(mut self, alternative: Option<HostWithPort>) -> Self {
+            self.alternative = alternative;
+            self.selection = None;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Identify the exact cached candidate used by this connection.
+        ///
+        /// Carries advertisement identity so a 421 cannot remove a newer hint for
+        /// the same endpoint. Also sets `Alt-Used` from the selected candidate.
+        pub fn selection(mut self, snapshot: Arc<HttpServiceCandidates>, index: usize) -> Self {
+            self.alternative = None;
+            self.selection = None;
+            if snapshot.origin() == &self.origin
+                && let Some(candidate) = snapshot.get(index)
+                && candidate.source == HttpServiceSource::AltSvc
+            {
+                self.alternative = Some(candidate.target.clone());
+                self.selection = Some((snapshot, index));
+            }
+            self
+        }
     }
 }
 
@@ -226,7 +232,7 @@ mod tests {
         );
         cache.record_authenticated(&origin, &headers, Duration::ZERO);
         let snapshot = cache.lookup(&origin).unwrap();
-        let target = snapshot.get(0).unwrap().target().clone();
+        let target = snapshot.get(0).unwrap().target.clone();
         let dispatched = Arc::new(AtomicUsize::new(0));
         let service = AltSvcLayer::new(Some(cache.clone()), origin.clone())
             .with_authenticated(true)
@@ -299,13 +305,13 @@ mod tests {
     #[tokio::test]
     async fn configured_service_does_not_manufacture_alt_used() {
         let origin = origin(Protocol::HTTPS);
-        let snapshot = HttpServiceCandidates::new(
+        let snapshot = Arc::new(HttpServiceCandidates::new(
             origin.clone(),
             vec![rama_http_types::conn::HttpServiceCandidate::new(
                 rama_net::tls::ApplicationProtocol::HTTP_2,
                 "configured.example:443".parse().unwrap(),
             )],
-        );
+        ));
         let service = AltSvcLayer::new(None, origin)
             .with_selection(snapshot, 0)
             .layer(service_fn(async |request: Request| {

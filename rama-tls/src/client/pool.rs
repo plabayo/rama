@@ -1,7 +1,7 @@
 use std::hash::{Hash, Hasher};
 
 use rama_core::extensions::{Extension, Extensions};
-use rama_net::{address::Host, tls::TlsAlpn};
+use rama_net::tls::TlsAlpn;
 use sha2::{Digest, Sha256};
 
 use super::{
@@ -27,14 +27,52 @@ pub struct TlsClientFingerprint([u8; 32]);
 ///
 /// Construct this from request extensions layered over the connector defaults,
 /// before pool lookup. The fingerprint owns no certificates or policy collections.
-/// An explicit server identity remains separate: two requests to the same target
-/// can override SNI and certificate verification with different names.
+/// Explicit server-name overrides are hashed into the identity: two requests
+/// to the same target can select different SNI and verification names.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Extension)]
 #[extension(tags(tls))]
 pub struct TlsClientPoolKey {
-    fingerprint: TlsClientFingerprint,
-    server_name: Option<Host>,
+    fingerprint: [u8; 32],
     reusable: bool,
+}
+
+/// A provider-prepared pooling policy with a cached identity for its defaults.
+///
+/// Provider crates construct this policy and classify their native overrides.
+/// It retains no configuration, certificates or credential objects. Per-request
+/// settings are combined with the cached defaults before pool lookup. Equivalent
+/// explicit and inherited settings may occupy separate buckets; this conservative
+/// separation avoids rebuilding and hashing the default trust store per request.
+#[derive(Debug, Clone)]
+pub struct TlsClientPoolPolicy {
+    defaults: TlsClientPoolKey,
+    classify: fn(&Extensions) -> TlsClientPoolKey,
+}
+
+impl TlsClientPoolPolicy {
+    /// Provider integration: cache defaults using the provider's complete policy
+    /// classifier. Opaque native settings must disable reuse.
+    #[doc(hidden)]
+    pub fn new(defaults: &Extensions, classify: fn(&Extensions) -> TlsClientPoolKey) -> Self {
+        Self {
+            defaults: classify(defaults),
+            classify,
+        }
+    }
+
+    /// Compare request settings against the cached connector defaults.
+    #[must_use]
+    pub fn key(&self, extensions: &Extensions) -> TlsClientPoolKey {
+        let request = (self.classify)(extensions);
+        let mut state = PolicyHasher(Sha256::new());
+        state.write(b"rama.tls.client-pool-policy.v1");
+        self.defaults.fingerprint.hash(&mut state);
+        request.fingerprint.hash(&mut state);
+        TlsClientPoolKey {
+            fingerprint: state.0.finalize().into(),
+            reusable: self.defaults.reusable && request.reusable,
+        }
+    }
 }
 
 // Borrow the effective policy only while hashing it. Derived Hash incorporates
@@ -43,12 +81,12 @@ pub struct TlsClientPoolKey {
 #[derive(Hash)]
 struct ClientPolicy<'a> {
     backend: TlsBackend,
-    verify: ServerVerifyMode,
+    verify: Option<ServerVerifyMode>,
     trust: Option<&'a TlsServerTrust>,
     pins: Option<&'a TlsServerCertPins>,
     alpn: Option<&'a TlsAlpn>,
     versions: Option<&'a TlsSupportedVersions>,
-    store_chain: bool,
+    store_chain: Option<bool>,
     keylog: KeyLogPolicy<'a>,
 }
 
@@ -76,16 +114,14 @@ impl TlsClientFingerprint {
         };
         let policy = ClientPolicy {
             backend,
-            verify: extensions
-                .get_ref::<TlsServerVerify>()
-                .map_or(ServerVerifyMode::default(), |value| value.0),
+            verify: extensions.get_ref::<TlsServerVerify>().map(|value| value.0),
             trust: extensions.get_ref::<TlsServerTrust>(),
             pins: extensions.get_ref::<TlsServerCertPins>(),
             alpn: extensions.get_ref::<TlsAlpn>(),
             versions: extensions.get_ref::<TlsSupportedVersions>(),
             store_chain: extensions
                 .get_ref::<TlsStoreServerCertChain>()
-                .is_some_and(|value| value.0),
+                .map(|value| value.0),
             keylog,
         };
 
@@ -101,22 +137,20 @@ impl TlsClientPoolKey {
     /// disable reuse when their native settings cannot be compared by value.
     #[must_use]
     pub fn from_extensions(extensions: &Extensions, backend: TlsBackend) -> Self {
+        let mut state = PolicyHasher(Sha256::new());
+        state.write(b"rama.tls.client-pool-key.v1");
+        TlsClientFingerprint::from_extensions(extensions, backend).hash(&mut state);
+        extensions
+            .get_ref::<TlsServerName>()
+            .map(|value| &value.0)
+            .hash(&mut state);
         Self {
-            fingerprint: TlsClientFingerprint::from_extensions(extensions, backend),
-            server_name: extensions
-                .get_ref::<TlsServerName>()
-                .map(|value| value.0.clone()),
+            fingerprint: state.0.finalize().into(),
             reusable: !extensions.contains::<TlsClientAuth>()
                 && !extensions
                     .get_ref::<TlsKeyLog>()
                     .is_some_and(|value| matches!(value.0, KeyLogIntent::Custom(_))),
         }
-    }
-
-    /// The target-independent common TLS policy identity.
-    #[must_use]
-    pub fn fingerprint(&self) -> TlsClientFingerprint {
-        self.fingerprint
     }
 
     /// Whether these settings can be compared completely enough to permit reuse.
@@ -158,6 +192,37 @@ impl Hasher for PolicyHasher {
 mod tests {
     use super::*;
     use crate::client::{ClientAuth, TlsClientConfig, TlsServerCertPin};
+    use rama_net::address::Host;
+
+    #[test]
+    fn cached_defaults_preserve_explicit_verification_and_capture_overrides() {
+        fn classify(extensions: &Extensions) -> TlsClientPoolKey {
+            TlsClientPoolKey::from_extensions(extensions, TlsBackend::Rustls)
+        }
+        let defaults = TlsClientConfig::new()
+            .with_server_verify(ServerVerifyMode::Disable)
+            .with_store_server_cert_chain(true);
+        defaults
+            .as_extensions()
+            .insert(TlsServerTrust::webpki_roots());
+        let trust = defaults
+            .as_extensions()
+            .get_arc::<TlsServerTrust>()
+            .unwrap();
+        let retained = std::sync::Arc::strong_count(&trust);
+        let policy = TlsClientPoolPolicy::new(defaults.as_extensions(), classify);
+        assert_eq!(std::sync::Arc::strong_count(&trust), retained);
+
+        let request = Extensions::new();
+        let inherited = policy.key(&request);
+        assert_eq!(inherited, policy.key(&request));
+        request.insert(TlsServerVerify(ServerVerifyMode::Auto));
+        let verified = policy.key(&request);
+        assert_ne!(inherited, verified);
+        request.insert(TlsStoreServerCertChain(false));
+        assert_ne!(verified, policy.key(&request));
+        assert_eq!(std::sync::Arc::strong_count(&trust), retained);
+    }
 
     #[test]
     fn equivalent_pins_reuse_but_distinct_security_policies_do_not() {
@@ -200,8 +265,12 @@ mod tests {
         settings.insert(TlsServerName(Host::try_from("two.example").unwrap()));
         let two = TlsClientPoolKey::from_extensions(&settings, TlsBackend::Rustls);
 
-        assert_eq!(initial.fingerprint(), one.fingerprint());
-        assert_eq!(one.fingerprint(), two.fingerprint());
+        let common = TlsClientFingerprint::from_extensions(&settings, TlsBackend::Rustls);
+        settings.insert(TlsServerName(Host::try_from("three.example").unwrap()));
+        assert_eq!(
+            common,
+            TlsClientFingerprint::from_extensions(&settings, TlsBackend::Rustls)
+        );
         assert_ne!(initial, one);
         assert_ne!(one, two);
     }
@@ -282,9 +351,7 @@ mod tests {
     #[test]
     fn fingerprints_are_compact_and_do_not_retain_policy_collections() {
         assert_eq!(std::mem::size_of::<TlsClientFingerprint>(), 32);
-        assert!(
-            std::mem::size_of::<TlsClientPoolKey>() <= std::mem::size_of::<Option<Host>>() + 40
-        );
+        assert!(std::mem::size_of::<TlsClientPoolKey>() <= 40);
         let settings = Extensions::new();
         settings.insert(TlsServerTrust::webpki_roots());
         let trust = settings.get_arc::<TlsServerTrust>().unwrap();
@@ -315,7 +382,7 @@ mod tests {
         request.insert(TlsServerVerify(ServerVerifyMode::Auto));
         assert_eq!(
             TlsClientPoolKey::from_extensions(&request.with_base(&defaults), TlsBackend::Rustls),
-            TlsClientPoolKey::from_extensions(&Extensions::new(), TlsBackend::Rustls),
+            TlsClientPoolKey::from_extensions(&request, TlsBackend::Rustls),
         );
         assert_ne!(
             TlsClientPoolKey::from_extensions(&request, TlsBackend::Rustls),

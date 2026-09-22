@@ -4481,6 +4481,7 @@ dependencies = [
  "rama-quic",
  "rama-quic-proto",
  "rama-tls",
+ "rama-udp",
  "rama-utils",
  "slab",
  "tokio",

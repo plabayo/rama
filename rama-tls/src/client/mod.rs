@@ -20,7 +20,7 @@ pub use parser::{
 };
 
 mod pool;
-pub use pool::{TlsClientFingerprint, TlsClientPoolKey};
+pub use pool::{TlsClientFingerprint, TlsClientPoolKey, TlsClientPoolPolicy};
 
 mod config;
 #[doc(inline)]

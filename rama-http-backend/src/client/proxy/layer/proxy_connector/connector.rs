@@ -17,6 +17,7 @@ use rama_http_types::Response;
 use rama_http_types::{Body, HeaderName, HeaderValue, Method, Request, StatusCode, Version};
 use rama_net::address::HostWithOptPort;
 use rama_net::uri::Uri;
+use rama_utils::macros::generate_set_and_with;
 
 #[derive(Debug)]
 /// Connector for HTTP proxies.
@@ -48,14 +49,14 @@ impl InnerHttpProxyConnector {
         Ok(Self { req })
     }
 
-    rama_utils::macros::generate_set_and_with! {
+    generate_set_and_with! {
         pub(super) fn version(mut self, version: Version) -> Self {
             *self.req.version_mut() = version;
             self
         }
     }
 
-    rama_utils::macros::generate_set_and_with! {
+    generate_set_and_with! {
         /// Add a header to the request.
         pub(super) fn header(mut self, name: HeaderName, value: HeaderValue) -> Self {
             self.req.headers_mut().insert(name, value);
@@ -63,7 +64,7 @@ impl InnerHttpProxyConnector {
         }
     }
 
-    rama_utils::macros::generate_set_and_with! {
+    generate_set_and_with! {
         /// Add a typed header to the request.
         pub(super) fn typed_header(mut self, header: impl HeaderEncode) -> Self {
             self.req.headers_mut().typed_insert(header);

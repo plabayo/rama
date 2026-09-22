@@ -161,15 +161,27 @@ async fn public_builders_reuse_h3_with_common_bodies_and_trailers() -> Result<()
             let client_endpoint = Endpoint::build(Executor::new())
                 .bind_address(rama::net::address::SocketAddress::local_ipv4(0))
                 .await?;
-            let client = EasyHttpConnectorBuilder::new()
-                .with_http3_connector(
+            let client_builder = EasyHttpConnectorBuilder::new()
+                .with_default_transport_connector()
+                .with_default_dns_connector()
+                .without_tls_proxy_support()
+                .with_proxy_support();
+            #[cfg(feature = "rustls")]
+            let client_builder = client_builder.with_tls_support_using_rustls(tls.clone());
+            #[cfg(all(not(feature = "rustls"), feature = "boring"))]
+            let client_builder = client_builder.with_tls_support_using_boringssl(tls.clone());
+            #[cfg(not(any(feature = "rustls", feature = "boring")))]
+            let client_builder = client_builder.without_tls_support();
+            let client = client_builder
+                .with_default_http_connector(Executor::new())
+                .with_http3_support(
                     Http3Connector::<Body>::builder(Executor::new())
                         .with_endpoint(client_endpoint.clone())
-                        .with_tls_config(tls)
+                        .with_tls_config(tls.clone())
                         .build()
                         .await?,
                 )
-                .with_default_fallback_connector()?
+                .with_default_connection_pool()
                 .build_client()
                 .with_jit_layer(rama::layer::MapInputLayer::new(move |request: Request| {
                     let egress = request
@@ -258,7 +270,7 @@ async fn public_builders_reuse_h3_with_common_bodies_and_trailers() -> Result<()
 #[cfg(all(feature = "rustls", any(feature = "ring", feature = "aws-lc")))]
 #[tokio::test]
 #[ignore]
-async fn default_tcp_fallback_preserves_explicit_tls_provider() -> Result<(), BoxError> {
+async fn http_client_preserves_explicit_tls_provider() -> Result<(), BoxError> {
     use rama::{
         error::BoxErrorExt as _,
         tls::{TlsBackend, rustls::client::RustlsClientConfigExt as _},
@@ -283,12 +295,24 @@ async fn default_tcp_fallback_preserves_explicit_tls_provider() -> Result<(), Bo
     let address = listener.local_addr()?;
     let connector = Http3Connector::<Body>::builder(Executor::new())
         .with_tls_backend(TlsBackend::Rustls)
-        .with_tls_config(tls)
+        .with_tls_config(tls.clone())
         .build()
         .await?;
-    let client = EasyHttpConnectorBuilder::new()
-        .with_http3_connector(connector)
-        .with_default_fallback_connector()?
+    let client_builder = EasyHttpConnectorBuilder::new()
+        .with_default_transport_connector()
+        .with_default_dns_connector()
+        .without_tls_proxy_support()
+        .with_proxy_support();
+    #[cfg(feature = "rustls")]
+    let client_builder = client_builder.with_tls_support_using_rustls(tls.clone());
+    #[cfg(all(not(feature = "rustls"), feature = "boring"))]
+    let client_builder = client_builder.with_tls_support_using_boringssl(tls.clone());
+    #[cfg(not(any(feature = "rustls", feature = "boring")))]
+    let client_builder = client_builder.without_tls_support();
+    let client = client_builder
+        .with_default_http_connector(Executor::new())
+        .with_http3_support(connector)
+        .with_default_connection_pool()
         .build_client();
     let request = Request::builder()
         .uri(format!("https://{address}/"))
