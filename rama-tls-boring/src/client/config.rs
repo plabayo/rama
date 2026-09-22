@@ -38,6 +38,7 @@ pub struct BoringTlsConnectorConfig<'a> {
     pub grease: Option<&'a BoringGrease>,
     pub alps: Option<&'a BoringAlps>,
     pub extension_order: Option<&'a BoringExtensionOrder>,
+    pub permute_extensions: Option<&'a BoringPermuteExtensions>,
     pub requested_trust_anchors: Option<&'a BoringRequestedTrustAnchors>,
     pub cert_compression: Option<&'a BoringCertCompression>,
     pub delegated_credentials: Option<&'a BoringDelegatedCredentials>,
@@ -83,6 +84,14 @@ pub trait BoringClientConfigExt: Sized {
     rama_utils::macros::generate_set_and_with! {
         /// Set the ClientHello extension ordering.
         fn extension_order(self, order: Vec<ExtensionId>) -> Self;
+    }
+    rama_utils::macros::generate_set_and_with! {
+        /// Enable native per-handshake extension permutation (default: disabled).
+        ///
+        /// A nonempty explicit extension order takes precedence. Clear that
+        /// order with an empty vector to permute a mimicked ClientHello. Native
+        /// GREASE and pre-shared-key placement rules remain in force.
+        fn permute_extensions(self, enabled: bool) -> Self;
     }
     rama_utils::macros::generate_set_and_with! {
         /// Set requested trust anchor identifiers without changing certificate verification.
@@ -179,6 +188,12 @@ impl BoringClientConfigExt for TlsClientConfig {
     generate_set_and_with! {
         fn extension_order(mut self, order: Vec<ExtensionId>) -> Self {
             self.insert(BoringExtensionOrder(order));
+            self
+        }
+    }
+    generate_set_and_with! {
+        fn permute_extensions(mut self, enabled: bool) -> Self {
+            self.insert(BoringPermuteExtensions(enabled));
             self
         }
     }
@@ -347,6 +362,11 @@ pub(crate) fn set_alpn_with_coupled_alps(
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(tls))]
 pub struct BoringExtensionOrder(pub Vec<ExtensionId>);
+
+/// Native per-handshake permutation, used when the explicit order is empty or unset.
+#[derive(Debug, Clone, Extension)]
+#[extension(tags(tls))]
+pub struct BoringPermuteExtensions(pub bool);
 
 /// Certificate compression algorithms to advertise.
 #[derive(Debug, Clone, Extension)]

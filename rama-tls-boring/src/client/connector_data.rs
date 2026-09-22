@@ -396,6 +396,10 @@ impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorContextBuilder {
             });
         }
 
+        if let Some(permute) = value.permute_extensions {
+            cfg_builder.set_permute_extensions(permute.0);
+        }
+
         if let Some(order) = &extension_order {
             trace!(?order, "boring connector: set extension order");
             cfg_builder
