@@ -272,7 +272,7 @@ impl Shared {
             let changed = self.push_ready.notified();
             let mut changed = std::pin::pin!(changed);
             changed.as_mut().enable();
-            if let Some(error) = self.error() {
+            if let Some(error) = self.receive_error() {
                 return error;
             }
             if self.role == Role::Server && self.goaway().is_some_and(|limit| id >= limit) {

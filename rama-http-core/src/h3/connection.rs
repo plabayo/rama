@@ -215,9 +215,14 @@ impl Shared {
         self.state.lock().error
     }
 
+    /// A clean connection close still permits draining received stream data and FIN.
+    pub(crate) fn receive_error(&self) -> Option<Error> {
+        self.error().filter(|error| !error.is_clean_close())
+    }
+
     pub(crate) fn fail(&self, error: Error) {
         let mut state = self.state.lock();
-        if state.error.is_none() {
+        if state.error.is_none_or(Error::is_clean_close) {
             state.error = Some(error);
         }
         for (_, tx) in std::mem::take(&mut state.waiting) {
@@ -249,7 +254,9 @@ impl Shared {
             let progress = self.progress.notified();
             let mut progress = std::pin::pin!(progress);
             progress.as_mut().enable();
-            if let Some(error) = self.error() {
+            if let Some(error) = self.error()
+                && (id.is_none() || !error.is_clean_close())
+            {
                 return error;
             }
             if self
@@ -381,6 +388,10 @@ impl Shared {
     pub(crate) fn cancel(&self, id: u64) {
         let mut state = self.state.lock();
         state.waiting.remove(&id);
+        if state.error.is_some() {
+            state.decoder.drop_blocked_stream(id);
+            return;
+        }
         match state.decoder.cancel_stream(id) {
             Ok(()) => (),
             Err(QpackError::OutputBlocked) => {
@@ -416,6 +427,13 @@ impl Shared {
             let receiver = {
                 let mut state = self.state.lock();
                 if let Some(error) = state.error {
+                    if error.is_clean_close() {
+                        return state
+                            .decoder
+                            .decode_field_section_after_close(id, bytes)
+                            .map_err(compression_error)?
+                            .ok_or(error);
+                    }
                     return Err(error);
                 }
                 match state.decoder.decode_field_section(id, bytes.clone()) {
@@ -838,6 +856,12 @@ impl Driver {
             if let Ok(code) = VarInt::from_u64(error.code().value()) {
                 self.connection.close(code, b"HTTP/3 connection error");
             }
+        } else {
+            // Wake terminal waiters without making Drop discard complete buffered responses.
+            self.shared.fail(Error::connection(
+                Code::H3_NO_ERROR,
+                "HTTP/3 connection closed",
+            ));
         }
         result
     }
@@ -979,10 +1003,12 @@ impl Driver {
 
 impl Drop for Driver {
     fn drop(&mut self) {
-        self.shared.fail(Error::connection(
-            Code::H3_REQUEST_CANCELLED,
-            "HTTP/3 driver stopped",
-        ));
+        if self.shared.error().is_none() {
+            self.shared.fail(Error::connection(
+                Code::H3_REQUEST_CANCELLED,
+                "HTTP/3 driver stopped",
+            ));
+        }
         self.connection.close(
             VarInt::from_u32(Code::H3_NO_ERROR.value() as u32),
             b"HTTP/3 driver stopped",

@@ -271,7 +271,7 @@ where
                         } => {
                             upload.0 = None;
                             if let Err(error) = result.map_err(|_error| Error::stream(Code::H3_INTERNAL_ERROR, "upload task failed"))?
-                                && !error.is_peer_stop() { return Err(error); }
+                                && !error.is_peer_stop() && !error.is_clean_close() { return Err(error); }
                         }
                     }
                 }

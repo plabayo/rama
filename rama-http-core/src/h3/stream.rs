@@ -123,7 +123,7 @@ impl<R: RecvStream> Reader<R> {
                 ready!(promise.as_mut().poll(cx))?;
                 self.promise = None;
             }
-            if let Some(error) = self.shared.error() {
+            if let Some(error) = self.shared.receive_error() {
                 return Poll::Ready(Err(error));
             }
             let event = self.frames.poll().map_err(|e| {

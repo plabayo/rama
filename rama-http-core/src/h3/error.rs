@@ -49,6 +49,10 @@ impl Error {
         self.peer_stopped
     }
 
+    pub(crate) fn is_clean_close(self) -> bool {
+        self.scope == ErrorScope::Connection && self.code == Code::H3_NO_ERROR
+    }
+
     pub(crate) fn from_transport(error: &rama_quic::ConnectionError) -> Self {
         match error {
             rama_quic::ConnectionError::ApplicationClosed(close) => Self::connection(

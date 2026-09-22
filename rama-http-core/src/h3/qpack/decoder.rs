@@ -408,6 +408,22 @@ impl Decoder {
         Ok(None)
     }
 
+    /// Decode buffered fields after connection close, when feedback can no longer be sent.
+    /// Missing inserts remain terminal: do not retain a section that can never resume.
+    pub(crate) fn decode_field_section_after_close(
+        &mut self,
+        stream_id: u64,
+        encoded: Bytes,
+    ) -> Result<Option<Vec<FieldPair>>, QpackError> {
+        self.decoder_output.clear();
+        self.output_in_flight = 0;
+        self.drop_blocked_stream(stream_id);
+        let result = self.decode_field_section(stream_id, encoded);
+        self.drop_blocked_stream(stream_id);
+        self.decoder_output.clear();
+        result
+    }
+
     /// Decode and remove blocked sections whose Required Insert Count is now satisfied.
     ///
     /// Each stream's sections are resumed front-first and only while the front is ready, so a
@@ -519,7 +535,7 @@ impl Decoder {
         Ok(())
     }
 
-    fn drop_blocked_stream(&mut self, stream_id: u64) {
+    pub(crate) fn drop_blocked_stream(&mut self, stream_id: u64) {
         if let Some(queue) = self.blocked.remove(&stream_id) {
             for section in queue {
                 self.blocked_bytes -= section.size;

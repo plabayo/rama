@@ -3,7 +3,8 @@
 use super::{LIMIT, Pair};
 use crate::h3::{
     Error, client,
-    connection::{Config, initial_control},
+    connection::{Config, Shared, initial_control},
+    control::Role,
     qpack::{Encoder, EncoderConfig, ErrorScope},
     quic::Writer,
     server,
@@ -16,7 +17,7 @@ use rama_core::{
 use rama_http_types::{
     Body, HeaderMap, Method, Request, Response, StatusCode,
     body::{Frame, util::BodyExt},
-    proto::h3::{Code, FrameHeader, FrameType},
+    proto::h3::{Code, FrameHeader, FrameType, StreamType},
 };
 use rama_net::uri::Uri;
 use rama_quic::TransportConfig;
@@ -637,6 +638,184 @@ async fn memory_reset_before_headers_does_not_fragment_priority_history() {
         client_driver.await.unwrap().unwrap();
         server_driver.await.unwrap().unwrap();
         pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn memory_clean_close_preserves_buffered_response_and_trailers() {
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::in_memory(None, None).await;
+        let (mut client, driver) =
+            client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
+                .unwrap();
+        let driver = spawn(driver.run());
+        client.ready().await.unwrap();
+        let mut response = pin!(
+            client.send_request(
+                Request::builder()
+                    .uri("https://localhost/buffered")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+        );
+        assert!(poll_fn(|cx| Poll::Ready(response.as_mut().poll(cx).is_pending())).await);
+        let (mut send, mut recv) = pair.server.accept_bi().await.unwrap();
+        recv.read_to_end(4096).await.unwrap();
+        let mut encoder = Encoder::new(EncoderConfig {
+            max_table_capacity: 0,
+            ..EncoderConfig::default()
+        });
+        let mut bytes = BytesMut::new();
+        for (ty, payload) in [
+            (
+                FrameType::HEADERS,
+                encoder
+                    .encode(0, [(":status", "200"), ("content-length", "4")])
+                    .unwrap(),
+            ),
+            (FrameType::DATA, Bytes::from_static(b"done")),
+            (
+                FrameType::HEADERS,
+                encoder.encode(0, [("x-end", "yes")]).unwrap(),
+            ),
+        ] {
+            FrameHeader::new(ty, payload.len() as u64)
+                .encode(&mut bytes)
+                .unwrap();
+            bytes.extend_from_slice(&payload);
+        }
+        send.write_all(&bytes).await.unwrap();
+        send.finish().unwrap();
+        // ACK confirms the complete response and FIN reached the peer before close.
+        assert_eq!(send.stopped().await.unwrap(), None);
+        pair.server
+            .close(Code::H3_NO_ERROR.value() as u32, b"complete");
+        driver.await.unwrap().unwrap();
+        let response = response.await.unwrap();
+        let body = response.into_body().collect().await.unwrap();
+        assert_eq!(body.trailers().unwrap()["x-end"], "yes");
+        assert_eq!(body.to_bytes(), "done");
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn memory_closed_connection_preserves_only_complete_successful_responses() {
+    tokio::time::timeout(LIMIT, async {
+        // All cases expose the headers before close, leaving the body buffered.
+        for (finish, declared_length, close_code, abort_driver) in [
+            (true, "4", Code::H3_NO_ERROR, false),
+            (false, "4", Code::H3_NO_ERROR, false),
+            (true, "5", Code::H3_NO_ERROR, false),
+            (true, "4", Code::H3_GENERAL_PROTOCOL_ERROR, false),
+            (true, "4", Code::H3_NO_ERROR, true),
+        ] {
+            let pair = Pair::in_memory(None, None).await;
+            let (mut client, driver) =
+                client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
+                    .unwrap();
+            let driver = spawn(driver.run());
+            client.ready().await.unwrap();
+            let response = spawn(async move {
+                client
+                    .send_request(
+                        Request::builder()
+                            .uri("https://localhost/incomplete")
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap()
+            });
+            let (mut send, mut recv) = pair.server.accept_bi().await.unwrap();
+            recv.read_to_end(4096).await.unwrap();
+            let mut encoder = Encoder::new(EncoderConfig {
+                max_table_capacity: 0,
+                ..EncoderConfig::default()
+            });
+            let headers = encoder
+                .encode(0, [(":status", "200"), ("content-length", declared_length)])
+                .unwrap();
+            let mut bytes = BytesMut::new();
+            FrameHeader::new(FrameType::HEADERS, headers.len() as u64)
+                .encode(&mut bytes)
+                .unwrap();
+            bytes.extend_from_slice(&headers);
+            FrameHeader::new(FrameType::DATA, 4)
+                .encode(&mut bytes)
+                .unwrap();
+            bytes.extend_from_slice(b"done");
+            send.write_all(&bytes).await.unwrap();
+            if finish {
+                send.finish().unwrap();
+                assert_eq!(send.stopped().await.unwrap(), None);
+            }
+            let response = response.await.unwrap();
+            if abort_driver {
+                driver.abort();
+                assert!(driver.await.unwrap_err().is_cancelled());
+            } else {
+                pair.server.close(close_code.value() as u32, b"test close");
+                let result = driver.await.unwrap();
+                assert_eq!(result.is_ok(), close_code == Code::H3_NO_ERROR);
+            }
+            assert_eq!(
+                response.into_body().collect().await.is_ok(),
+                finish
+                    && declared_length == "4"
+                    && close_code == Code::H3_NO_ERROR
+                    && !abort_driver
+            );
+            pair.close().await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn clean_close_decodes_available_qpack_without_waiting_for_missing_inserts() {
+    tokio::time::timeout(LIMIT, async {
+        let mut config = Config::default();
+        config.decoder.max_decoder_stream_bytes = 10;
+        let shared = Shared::new(config, Role::Client, Default::default()).unwrap();
+        let mut encoder = Encoder::new(EncoderConfig::default());
+        let bytes = encoder.encode(0, [("x-dynamic", "present")]).unwrap();
+        assert!(
+            !shared
+                .feed_instructions(StreamType::QPACK_ENCODER, &encoder.take_encoder_stream())
+                .unwrap()
+        );
+        shared.fail(Error::connection(Code::H3_NO_ERROR, "complete"));
+        // Feedback is impossible after close, but known entries remain usable.
+        for id in (0..400).step_by(4) {
+            let fields = shared.decode(id, bytes.clone()).await.unwrap();
+            assert_eq!(fields[0].value, "present");
+        }
+        let missing = encoder
+            .encode(400, [("x-dynamic", "not received")])
+            .unwrap();
+        assert_eq!(
+            shared.decode(400, missing).await.unwrap_err().code(),
+            Code::H3_NO_ERROR
+        );
+        // A protocol error discovered during draining must still poison other readers.
+        shared.fail(Error::connection(
+            Code::H3_FRAME_UNEXPECTED,
+            "malformed buffered frame",
+        ));
+        assert_eq!(
+            shared.receive_error().unwrap().code(),
+            Code::H3_FRAME_UNEXPECTED
+        );
+        assert_eq!(
+            shared.decode(404, bytes).await.unwrap_err().code(),
+            Code::H3_FRAME_UNEXPECTED
+        );
     })
     .await
     .unwrap();
