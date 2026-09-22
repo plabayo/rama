@@ -16,11 +16,14 @@ use rama_core::extensions::{Egress, Extensions, ExtensionsRef};
 use rama_core::telemetry::tracing;
 use rama_http::proto::RequestHeaders;
 use rama_http::proto::h2::frame::EarlyFrameStreamContext;
+use rama_http_types::conn::HttpOrigin;
 use rama_http_types::proto::h2::PseudoHeaderOrder;
+use rama_http_types::proto::h2::alt_svc::AltSvcObserverExtension;
 use rama_http_types::proto::h2::ext::Protocol;
 use rama_http_types::proto::h2::frame::{self, Frame, Reason, Settings};
 use rama_http_types::{HeaderMap, Request, Response};
 use rama_net::conn::{ConnectionHealthWatcher, MaxConcurrency};
+use rama_net::{AuthorityInputExt, ProtocolInputExt};
 use std::task::{Context, Poll, Waker};
 use tokio::io::AsyncWrite;
 
@@ -419,6 +422,18 @@ where
         let stream_id = me.actions.send.open()?;
 
         // Convert the message
+        let alt_svc_origin = me
+            .extensions
+            .contains::<AltSvcObserverExtension>()
+            .then(|| {
+                request.protocol().and_then(|protocol| {
+                    let authority = request
+                        .authority()?
+                        .into_host_with_port(protocol.default_port())?;
+                    HttpOrigin::new(protocol.clone(), authority).ok()
+                })
+            })
+            .flatten();
         let request_method = request.method().clone();
         let (headers, req_ext) = client::Peer::convert_send_message(
             stream_id,
@@ -443,6 +458,7 @@ where
         // stream-specific metadata that was unavailable to the outer layers.
         req_ext.insert(Egress(stream.extensions.clone()));
         stream.req_extensions = Some(req_ext);
+        stream.alt_svc_origin = alt_svc_origin;
 
         match request_method {
             Method::HEAD => stream.content_length = ContentLength::Head,
@@ -558,6 +574,15 @@ impl<B> DynStreams<'_, B> {
         let mut me = self.inner.lock();
         me.early_frame_ctx.record_windows_update_frame(frame);
         me.recv_window_update(self.send_buffer, frame)
+    }
+
+    pub(crate) fn alt_svc_origin(&mut self, id: StreamId) -> Option<HttpOrigin> {
+        let mut me = self.inner.lock();
+        let stream = me.store.find_mut(id)?;
+        if stream.is_pending_open {
+            return None;
+        }
+        stream.alt_svc_origin.clone()
     }
 
     pub(crate) fn recv_priority(&mut self, frame: &frame::Priority) -> Result<(), Error> {

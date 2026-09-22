@@ -19,6 +19,10 @@ use rama::{
             upgrade::{EagerHttpProxyConnector, UpgradeLayer},
         },
         matcher::MethodMatcher,
+        proto::h2::{
+            alt_svc::AltSvcSender,
+            frame::{AltSvc as AltSvcFrame, StreamId},
+        },
         server::HttpServer,
     },
     layer::MapInputLayer,
@@ -37,7 +41,8 @@ use rama::{
     tls::{
         SecureTransport,
         client::{
-            ServerVerifyMode, TlsClientConfig, TlsServerCertPin, TlsServerCertPins, TlsServerVerify,
+            NegotiatedTlsParameters, ServerVerifyMode, TlsClientConfig, TlsServerCertPin,
+            TlsServerCertPins, TlsServerVerify,
         },
         server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
     },
@@ -89,6 +94,7 @@ struct Observation {
 
 #[derive(Default)]
 struct Reply {
+    alt_svc_frame: Option<AltSvcFrame>,
     body: Option<Body>,
     status: StatusCode,
     headers: HeaderMap,
@@ -132,6 +138,7 @@ impl Server {
                 let observations = observations.clone();
                 let replies = replies.clone();
                 async move {
+                    let alt_svc_sender = request.extensions().get_ref::<AltSvcSender>().cloned();
                     let observation = Observation {
                         version: request.version(),
                         authority: request
@@ -150,7 +157,15 @@ impl Server {
                             .get_ref::<SecureTransport>()
                             .and_then(|tls| tls.client_hello())
                             .and_then(|hello| hello.ext_server_name())
-                            .map(ToString::to_string),
+                            .map(ToString::to_string)
+                            .or_else(|| {
+                                request
+                                    .extensions()
+                                    .get_ref::<NegotiatedTlsParameters>()
+                                    .and_then(|parameters| {
+                                        parameters.server_name.as_ref().map(ToString::to_string)
+                                    })
+                            }),
                         alt_used: request
                             .headers()
                             .get(header::ALT_USED)
@@ -159,6 +174,12 @@ impl Server {
                     };
                     observations.lock().push(observation);
                     let reply = replies.lock().pop_front().unwrap_or_default();
+                    if let Some(frame) = reply.alt_svc_frame {
+                        alt_svc_sender
+                            .expect("H2 server advertisement sender")
+                            .try_send(frame)
+                            .unwrap();
+                    }
                     let mut response =
                         Response::new(reply.body.unwrap_or_else(|| Body::from("delivered")));
                     *response.status_mut() = reply.status;
@@ -313,6 +334,16 @@ async fn client_with_http3(
     impl Service<Request, Output = Response, Error: Debug>,
     Endpoint,
 ) {
+    client_with_http3_cache(tls, AltSvcCache::default()).await
+}
+
+async fn client_with_http3_cache(
+    tls: TlsClientConfig,
+    cache: AltSvcCache,
+) -> (
+    impl Service<Request, Output = Response, Error: Debug>,
+    Endpoint,
+) {
     let endpoint = Endpoint::build(Executor::new())
         .bind_address(SocketAddress::local_ipv4(0))
         .await
@@ -337,6 +368,7 @@ async fn client_with_http3(
         .with_default_http_connector(Executor::new())
         .with_http3_support(h3)
         .with_default_connection_pool()
+        .with_alt_svc_cache(cache)
         .build_client();
     (client, endpoint)
 }
@@ -374,6 +406,66 @@ fn seed(cache: &AltSvcCache, origin: &HttpOrigin, advertisement: &str) {
     let mut headers = HeaderMap::new();
     headers.insert(header::ALT_SVC, advertisement.parse().unwrap());
     cache.record_authenticated(origin, &headers, Duration::ZERO);
+}
+
+#[tokio::test]
+async fn h2_altsvc_frame_discovers_h3_without_a_response_header() {
+    let (auth, tls) = credentials();
+    let origin = Server::start(auth.clone(), Version::HTTP_2).await;
+    let alternative = Server::start(auth, Version::HTTP_3).await;
+    origin.reply(Reply {
+        alt_svc_frame: Some(
+            AltSvcFrame::new(
+                StreamId::zero(),
+                Bytes::from(format!("https://localhost:{}", origin.address.port())),
+                Bytes::from(format!("h3=\"{}\"", alternative.address)),
+            )
+            .unwrap(),
+        ),
+        ..Reply::default()
+    });
+    let cache = AltSvcCache::default();
+    let (client, endpoint) = client_with_http3_cache(tls, cache.clone()).await;
+    let response = timeout(TEST_TIMEOUT, client.serve(origin.request()))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(response.version(), Version::HTTP_2);
+    assert!(!response.headers().contains_key(header::ALT_SVC));
+    assert_eq!(
+        response.into_body().collect().await.unwrap().to_bytes(),
+        "delivered"
+    );
+
+    // No second HTTP exchange is needed to deliver the connection-level hint.
+    timeout(TEST_TIMEOUT, async {
+        while cache.lookup(&origin.origin()).is_none() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(complete(&client, origin.request()).await.1, Version::HTTP_3);
+    assert_eq!(origin.request_count(), 1);
+    {
+        let observations = alternative.observations.lock();
+        let observed = &observations[0];
+        assert_eq!(observed.version, Version::HTTP_3);
+        assert_eq!(
+            observed.authority,
+            format!("localhost:{}", origin.address.port())
+        );
+        assert_eq!(observed.sni.as_deref(), Some("localhost"));
+        assert_eq!(
+            observed.alt_used.as_deref(),
+            Some(alternative.address.to_string().as_str())
+        );
+        assert_eq!(observed.body, "dispatched once");
+    }
+    drop(client);
+    close_client_endpoint(endpoint).await;
+    origin.close().await;
+    alternative.close().await;
 }
 
 #[tokio::test]

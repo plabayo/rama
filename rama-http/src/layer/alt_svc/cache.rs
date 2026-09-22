@@ -1,9 +1,10 @@
 //! Bounded, origin-scoped HTTP alternative-service advertisements.
 
 use moka::{ops::compute::Op, policy::EvictionPolicy, sync::Cache};
-use rama_http_headers::{Age, AltSvc, Date, HeaderMapExt as _};
+use rama_core::bytes::Bytes;
+use rama_http_headers::{Age, AltSvc, Date, HeaderDecode as _, HeaderMapExt as _};
 use rama_http_types::{
-    HeaderMap,
+    HeaderMap, HeaderValue,
     conn::{HttpOrigin, HttpServiceCandidate, HttpServiceCandidates, HttpServiceSource},
     header,
 };
@@ -129,6 +130,26 @@ impl AltSvcCache {
         self.record(origin, headers, response_delay);
     }
 
+    /// Record the field value of an HTTP/2 ALTSVC frame for its verified origin.
+    ///
+    /// The caller must validate the frame's stream/origin association and ensure
+    /// the connection is authoritative for `origin` (RFC 7838 section 4).
+    /// `received_at` starts the freshness lifetime; delayed delivery does not
+    /// extend it. Response `Age`, `Date` and request latency do not apply to frames.
+    /// Malformed or oversized values leave existing advertisements unchanged.
+    pub fn record_frame(&self, origin: &HttpOrigin, field_value: Bytes, received_at: Instant) {
+        if field_value.len() > self.max_advertisement_bytes {
+            return;
+        }
+        let Ok(value) = HeaderValue::from_maybe_shared(field_value) else {
+            return;
+        };
+        let Ok(advertisement) = AltSvc::decode(&mut std::iter::once(&value)) else {
+            return;
+        };
+        self.record_advertisement(origin, &advertisement, Duration::ZERO, received_at);
+    }
+
     fn record_at(
         &self,
         origin: &HttpOrigin,
@@ -168,9 +189,23 @@ impl AltSvcCache {
             .and_then(|date| wall.duration_since(SystemTime::from(date)).ok())
             .unwrap_or_default();
         let age = age.max(apparent_age);
+        self.record_advertisement(origin, &header, age, now);
+    }
+
+    fn record_advertisement(
+        &self,
+        origin: &HttpOrigin,
+        advertisement: &AltSvc,
+        age: Duration,
+        now: Instant,
+    ) {
+        if advertisement.is_clear() {
+            self.clear(origin);
+            return;
+        }
         let mut candidates = Vec::new();
         let mut availability = Vec::new();
-        if let Some(alternatives) = header.alternatives() {
+        if let Some(alternatives) = advertisement.alternatives() {
             for alternative in alternatives {
                 if candidates.len() == self.max_alternatives_per_origin {
                     break;
@@ -427,6 +462,74 @@ mod tests {
             SystemTime::now(),
             now,
         );
+    }
+
+    #[test]
+    fn frames_share_protocol_order_and_retention_policy_with_headers() {
+        let cache = AltSvcCache::new(16, Duration::from_secs(30), Duration::ZERO)
+            .with_max_alternatives_per_origin(2);
+        let now = Instant::now();
+        cache.record_frame(
+            &origin(),
+            Bytes::from_static(b"h2=\":8443\"; ma=5, h3=\":443\"; ma=60, future=\":9443\""),
+            now,
+        );
+        let snapshot = cache.lookup_at(&origin(), now).unwrap();
+        assert_eq!(snapshot.len(), 2);
+        assert_eq!(
+            snapshot.get(0).unwrap().protocol,
+            ApplicationProtocol::HTTP_2
+        );
+        assert_eq!(
+            snapshot.get(1).unwrap().protocol,
+            ApplicationProtocol::HTTP_3
+        );
+        assert!(!cache.is_usable_at(&snapshot, 0, now + Duration::from_secs(5)));
+        assert!(cache.is_usable_at(&snapshot, 1, now + Duration::from_secs(29)));
+        assert!(!cache.is_usable_at(&snapshot, 1, now + Duration::from_secs(30)));
+    }
+
+    #[test]
+    fn delayed_frames_expire_from_reception_without_response_age() {
+        let cache = AltSvcCache::default();
+        let now = Instant::now();
+        cache.record_frame(
+            &origin(),
+            Bytes::from_static(b"h3=\":443\"; ma=10"),
+            now.checked_sub(Duration::from_secs(9)).unwrap(),
+        );
+        assert!(cache.lookup_at(&origin(), now).is_some());
+        assert!(
+            cache
+                .lookup_at(&origin(), now + Duration::from_secs(1))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn frame_clear_is_origin_scoped_and_invalid_values_preserve_advertisements() {
+        let cache = AltSvcCache::default().with_max_advertisement_bytes(32);
+        let now = Instant::now();
+        let other = HttpOrigin::new(Protocol::HTTPS, "other.example:443".parse().unwrap()).unwrap();
+        let field = Bytes::from_static(b"h3=\":443\"");
+        cache.record_frame(&origin(), field.clone(), now);
+        cache.record_frame(&other, field, now);
+        let original = cache.lookup_at(&origin(), now).unwrap();
+        for invalid in [
+            Bytes::from_static(b"h3=\"unterminated"),
+            Bytes::from_static(b"h3=\":443\"\r\n"),
+            Bytes::from_static(b"h3=\":443\"; ignored=\"too long for the configured bound\""),
+            Bytes::new(),
+        ] {
+            cache.record_frame(&origin(), invalid, now);
+            assert!(Arc::ptr_eq(
+                &original,
+                &cache.lookup_at(&origin(), now).unwrap()
+            ));
+        }
+        cache.record_frame(&origin(), Bytes::from_static(b"clear"), now);
+        assert!(cache.lookup_at(&origin(), now).is_none());
+        assert!(cache.lookup_at(&other, now).is_some());
     }
 
     #[test]

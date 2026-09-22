@@ -293,6 +293,12 @@ where
                     self.last_data_frame = Some(v);
                 }
             }
+            Frame::AltSvc(v) => {
+                if v.payload_len() > self.max_frame_size() {
+                    return Err(UserError::PayloadTooBig);
+                }
+                v.encode(self.buf.get_mut());
+            }
             Frame::Headers(v) => {
                 let mut buf = limited_write_buf!(self);
                 if let Some(continuation) = v.encode(&mut self.hpack, &mut buf) {

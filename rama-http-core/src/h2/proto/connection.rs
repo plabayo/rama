@@ -3,19 +3,26 @@ use crate::h2::proto::*;
 use crate::h2::{client, server};
 
 use rama_core::bytes::Bytes;
-use rama_core::extensions::ExtensionsRef;
+use rama_core::extensions::{Extensions, ExtensionsRef};
 use rama_core::futures::Stream;
 use rama_core::telemetry::tracing;
 use rama_http::proto::h2::frame::EarlyFrameStreamContext;
 use rama_http_types::proto::h2::PseudoHeaderOrder;
+use rama_http_types::proto::h2::alt_svc::{
+    ALT_SVC_MAX_PAYLOAD, ALT_SVC_QUEUE_CAPACITY, AltSvcEvent, AltSvcObserverExtension,
+    AltSvcOrigin, AltSvcSendError, AltSvcSender,
+};
 use rama_http_types::proto::h2::frame::DEFAULT_INITIAL_WINDOW_SIZE;
 use rama_http_types::proto::h2::frame::{Reason, StreamId};
 use std::io;
 use std::marker::PhantomData;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 use tokio::io::AsyncRead;
+use tokio::sync::mpsc;
+use tokio::time::Instant;
 
 /// An H2 connection
 #[derive(Debug)]
@@ -57,6 +64,12 @@ where
     /// Stream state handler
     streams: Streams<B, P>,
 
+    /// Optional connection-local observation, with established transport metadata.
+    alt_svc_observer: Option<(Arc<AltSvcObserverExtension>, Extensions)>,
+
+    /// Explicit server advertisements, bounded independently of stream data.
+    alt_svc_send: Option<mpsc::Receiver<frame::AltSvc>>,
+
     /// A `tracing` span tracking the lifetime of the connection.
     span: tracing::Span,
 
@@ -74,6 +87,8 @@ struct DynConnection<'a, B: Buf = Bytes> {
     error: &'a mut Option<frame::GoAway>,
 
     ping_pong: &'a mut PingPong,
+
+    alt_svc_observer: &'a Option<(Arc<AltSvcObserverExtension>, Extensions)>,
 }
 
 #[derive(Debug, Clone)]
@@ -109,7 +124,7 @@ where
     B: Buf,
 {
     pub(crate) fn try_new(
-        codec: Codec<T, Prioritized<B>>,
+        mut codec: Codec<T, Prioritized<B>>,
         config: Config,
     ) -> Result<Self, crate::h2::proto::Error> {
         fn streams_config(config: &Config) -> streams::Config {
@@ -145,6 +160,18 @@ where
         }
         // Transfer ownership of extensions to Streams as at this point our connection is esthablished
         // and we only need these extensions as parents for our inner Stream's
+        let (alt_svc_observer, alt_svc_send) = if P::r#dyn().is_server() {
+            let (sender, receiver) = AltSvcSender::channel();
+            codec.extensions().insert(sender);
+            (None, Some(receiver))
+        } else {
+            let observer = codec
+                .extensions()
+                .get_arc::<AltSvcObserverExtension>()
+                .map(|observer| (observer, codec.extensions().clone()));
+            (observer, None)
+        };
+        codec.set_recv_alt_svc(alt_svc_observer.is_some());
         let streams = Streams::try_new(streams_config(&config), codec.extensions().clone())?;
         let span = tracing::debug_root_span!(
             "Connection",
@@ -159,6 +186,8 @@ where
                 ping_pong: PingPong::new(),
                 settings: Settings::new(config.settings),
                 streams,
+                alt_svc_observer,
+                alt_svc_send,
                 span,
                 _phantom: PhantomData,
             },
@@ -237,6 +266,36 @@ where
         }
 
         Poll::Ready(Ok(()))
+    }
+
+    // Advisory advertisements run only after control frames and stream output
+    // have progressed, so a full queue cannot starve responses or SETTINGS.
+    fn poll_alt_svc(&mut self, cx: &mut Context) -> Poll<Result<(), Error>> {
+        let Some(receiver) = &mut self.inner.alt_svc_send else {
+            return Poll::Ready(Ok(()));
+        };
+        let mut buffered = false;
+        // Poll even an empty channel to wake the driver when a handler emits
+        // an advertisement while the connection is otherwise idle.
+        for index in 0..ALT_SVC_QUEUE_CAPACITY {
+            ready!(self.codec.poll_ready(cx))?;
+            let Poll::Ready(Some(frame)) = receiver.poll_recv(cx) else {
+                break;
+            };
+            self.codec.buffer(frame.into())?;
+            buffered = true;
+            if index + 1 == ALT_SVC_QUEUE_CAPACITY {
+                // Resume after this bounded batch, including frames queued
+                // concurrently while the batch was drained.
+                cx.waker().wake_by_ref();
+            }
+        }
+
+        if buffered {
+            self.codec.flush(cx).map_err(Into::into)
+        } else {
+            Poll::Ready(Ok(()))
+        }
     }
 
     /// Send any pending GOAWAY frames.
@@ -323,6 +382,7 @@ where
                             //
                             // This will also handle flushing `self.codec`
                             ready!(self.inner.streams.poll_complete(cx, &mut self.codec))?;
+                            ready!(self.poll_alt_svc(cx))?;
 
                             if (self.inner.error.is_some()
                                 || self.inner.go_away.should_close_on_idle())
@@ -421,6 +481,7 @@ where
             streams,
             error,
             ping_pong,
+            alt_svc_observer,
             ..
         } = self;
         let streams = streams.as_dyn();
@@ -430,6 +491,7 @@ where
             streams,
             error,
             ping_pong,
+            alt_svc_observer,
         }
     }
 }
@@ -615,6 +677,28 @@ where
                 tracing::trace!("recv WINDOW_UPDATE: {frame:?}");
                 self.streams.recv_window_update(frame)?;
             }
+            Some(Frame::AltSvc(frame)) => {
+                if let Some((observer, extensions)) = self.alt_svc_observer
+                    && frame.payload_len() <= ALT_SVC_MAX_PAYLOAD
+                {
+                    let (id, explicit_origin, field_value) = frame.into_parts();
+                    let origin = if id.is_zero() {
+                        Some(AltSvcOrigin::Explicit(explicit_origin))
+                    } else {
+                        self.streams.alt_svc_origin(id).map(AltSvcOrigin::Request)
+                    };
+                    if let Some(origin) = origin {
+                        observer.observe(
+                            AltSvcEvent {
+                                origin,
+                                field_value,
+                                received_at: Instant::now(),
+                            },
+                            extensions,
+                        );
+                    }
+                }
+            }
             Some(Frame::Priority(frame)) => {
                 tracing::trace!("recv PRIORITY: {frame:?}");
                 self.streams.recv_priority(&frame)?;
@@ -650,6 +734,17 @@ where
     T: AsyncRead + AsyncWrite + Unpin,
     B: Buf,
 {
+    pub(crate) fn send_alt_svc(&self, frame: frame::AltSvc) -> Result<(), AltSvcSendError>
+    where
+        T: ExtensionsRef,
+    {
+        self.codec
+            .extensions()
+            .get_ref::<AltSvcSender>()
+            .ok_or(AltSvcSendError::Closed)?
+            .try_send(frame)
+    }
+
     pub(crate) fn next_incoming(&mut self) -> Option<StreamRef<B>> {
         self.inner.streams.next_incoming()
     }

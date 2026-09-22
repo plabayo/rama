@@ -877,6 +877,7 @@ impl Prioritize {
                         }
                         Some(Frame::Headers(frame)) => frame.into(),
                         Some(Frame::Priority(frame)) => frame.into(),
+                        Some(Frame::AltSvc(frame)) => frame.into(),
                         Some(Frame::Settings(frame)) => frame.into(),
                         Some(Frame::Ping(frame)) => frame.into(),
                         Some(Frame::GoAway(frame)) => frame.into(),

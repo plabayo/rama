@@ -17,7 +17,7 @@ use rama_http_types::{
     conn::{
         FallbackHttpVersion, H2ClientContextParams, Http1ClientContextParams, TargetHttpVersion,
     },
-    proto::h2::PseudoHeaderOrder,
+    proto::h2::{PseudoHeaderOrder, alt_svc::AltSvcObserverExtension},
 };
 use rama_net::client::{
     ConnectionError, ConnectionErrorKind, ConnectorService, EstablishedClientConnection,
@@ -491,6 +491,11 @@ where
 
     match version {
         Version::HTTP_2 => {
+            if !io.extensions().contains::<AltSvcObserverExtension>()
+                && let Some(observer) = input.extensions().get_arc::<AltSvcObserverExtension>()
+            {
+                io.extensions().insert_arc(observer);
+            }
             tracing::trace!("create h2 client executor");
 
             let mut builder = rama_http_core::client::conn::http2::Builder::new(exec.clone());

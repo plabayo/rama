@@ -118,6 +118,9 @@ impl Service<ConnectRequest> for FakeConnector {
             .lock()
             .pop_front()
             .expect("unexpected extra attempt");
+        #[cfg(not(feature = "tls"))]
+        let Outcome::Success(protocol) = outcome;
+        #[cfg(feature = "tls")]
         let protocol = match outcome.clone() {
             #[cfg(feature = "tls")]
             Outcome::Failure(domain, kind) => {
@@ -218,6 +221,43 @@ fn advertise(input: &ConnectRequest, candidates: &[(ApplicationProtocol, &'stati
                 HttpServiceCandidate::new(protocol.clone(), target.parse().unwrap())
             })
             .collect::<Vec<_>>(),
+    ));
+}
+
+#[tokio::test]
+async fn frame_learning_is_opt_in_and_preserves_custom_observers() {
+    for enabled in [false, true] {
+        let connector = capabilities(FakeConnector::new([Outcome::Success(
+            ApplicationProtocol::HTTP_2,
+        )]))
+        .maybe_with_cache(enabled.then(AltSvcCache::default));
+        let established = connector.serve(input()).await.unwrap();
+        assert_eq!(
+            established
+                .input
+                .extensions()
+                .contains::<AltSvcObserverExtension>(),
+            enabled
+        );
+    }
+
+    let request = input();
+    let custom = Arc::new(AltSvcCache::default().frame_observer(origin(&request).unwrap()));
+    request.extensions().insert_arc(custom.clone());
+    let established = capabilities(FakeConnector::new([Outcome::Success(
+        ApplicationProtocol::HTTP_2,
+    )]))
+    .with_cache(AltSvcCache::default())
+    .serve(request)
+    .await
+    .unwrap();
+    assert!(Arc::ptr_eq(
+        &custom,
+        &established
+            .input
+            .extensions()
+            .get_arc::<AltSvcObserverExtension>()
+            .unwrap()
     ));
 }
 

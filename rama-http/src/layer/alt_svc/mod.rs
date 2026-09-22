@@ -3,8 +3,9 @@
 //! [RFC 7838] allows an origin to advertise alternative protocols, hosts and
 //! ports; the mechanism is independent of HTTP/3. [`AltSvcCache`] retains
 //! all advertised protocols, and connector selection applies client capabilities.
-//! This layer ingests the response header. RFC 7838 also defines an HTTP/2 ALTSVC
-//! frame; frame ingestion is not implemented yet. DNS HTTPS/SVCB discovery is a
+//! Response headers are learned here; [`HttpServiceConnector`] also activates
+//! connection-level learning of HTTP/2 ALTSVC frames, including idle connections.
+//! DNS HTTPS/SVCB discovery is a
 //! separate mechanism and must not be recorded as an Alt-Svc advertisement.
 //!
 //! The transport supplies the logical origin and whether it authenticated that
@@ -13,8 +14,10 @@
 //! the transport's responsibility; a request is dispatched exactly once.
 //!
 //! [RFC 7838]: https://www.rfc-editor.org/rfc/rfc7838
+//! [`HttpServiceConnector`]: crate::layer::http_service::HttpServiceConnector
 
 mod cache;
+mod frames;
 #[doc(inline)]
 pub use cache::AltSvcCache;
 

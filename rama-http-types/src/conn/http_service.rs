@@ -79,8 +79,8 @@ pub enum HttpServiceSource {
     /// An HTTP alternative-service advertisement (RFC 7838).
     ///
     /// The RFC defines the `Alt-Svc` response header and HTTP/2 ALTSVC frame.
-    /// Rama currently learns the response header; frame ingestion is not yet
-    /// implemented. DNS HTTPS/SVCB records are a separate discovery mechanism,
+    /// Rama learns response headers and connection-local HTTP/2 frames.
+    /// DNS HTTPS/SVCB records are a separate discovery mechanism,
     /// with different authorization, freshness and selection rules.
     AltSvc,
 }

@@ -1,3 +1,4 @@
+mod alt_svc;
 mod client_request;
 mod codec_read;
 mod codec_write;

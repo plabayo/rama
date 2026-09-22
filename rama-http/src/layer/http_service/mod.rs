@@ -24,6 +24,7 @@ use rama_http_types::{
         EstablishedHttpService, HttpOrigin, HttpServiceCandidate, HttpServiceCandidates,
         HttpServiceSource, SelectedHttpService,
     },
+    proto::h2::alt_svc::AltSvcObserverExtension,
 };
 use rama_net::{
     Protocol,
@@ -246,7 +247,7 @@ fn required_version(input: &ConnectRequest) -> Option<Version> {
 }
 
 #[cfg(feature = "tls")]
-fn authenticates<C: ExtensionsRef>(connection: &C, origin: &HttpOrigin) -> bool {
+pub(super) fn authenticates<C: ExtensionsRef>(connection: &C, origin: &HttpOrigin) -> bool {
     connection
         .extensions()
         .get_ref::<TlsServerAuthentication>()
@@ -255,7 +256,7 @@ fn authenticates<C: ExtensionsRef>(connection: &C, origin: &HttpOrigin) -> bool 
 }
 
 #[cfg(not(feature = "tls"))]
-fn authenticates<C: ExtensionsRef>(_connection: &C, _origin: &HttpOrigin) -> bool {
+pub(super) fn authenticates<C: ExtensionsRef>(_connection: &C, _origin: &HttpOrigin) -> bool {
     false
 }
 
@@ -476,6 +477,13 @@ where
             .checked_add(self.policy.timeout)
             .ok_or_else(|| invalid("HTTP service timeout is too large"))?;
         let origin = origin(&input);
+        if let (Some(cache), Some(origin)) = (&self.policy.cache, &origin)
+            && !input.extensions().contains::<AltSvcObserverExtension>()
+        {
+            input
+                .extensions()
+                .insert(cache.frame_observer(origin.clone()));
+        }
         let required = required_version(&input);
         let proxy_context = input.extensions().contains::<ProxyRoutes>()
             || input

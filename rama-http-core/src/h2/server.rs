@@ -131,6 +131,7 @@ use rama_core::telemetry::tracing::{
 };
 use rama_http::proto::HeaderByteLength;
 use rama_http::proto::h2::frame::EarlyFrameStreamContext;
+use rama_http_types::proto::h2::alt_svc::AltSvcSendError;
 use rama_http_types::proto::h2::frame::{
     self, Pseudo, PushPromiseHeaderError, Reason, Settings, StreamId,
 };
@@ -393,6 +394,14 @@ where
     T: AsyncRead + AsyncWrite + Unpin + ExtensionsRef,
     B: Buf,
 {
+    /// Queue a bounded, connection-local alternative-service advertisement.
+    ///
+    /// Stream zero requires an explicit origin; request-stream frames must
+    /// omit it. The connection must continue being polled to transmit the frame.
+    pub fn send_alt_svc(&self, frame: frame::AltSvc) -> Result<(), AltSvcSendError> {
+        self.connection.send_alt_svc(frame)
+    }
+
     fn handshake2(io: T, builder: Builder) -> Handshake<T, B> {
         let span = tracing::trace_span!("server_handshake");
         let entered = span.enter();
@@ -403,6 +412,8 @@ where
 
         // Create the codec.
         let mut codec = Codec::new(io);
+        // ALTSVC is a server-to-client extension, never input to a server.
+        codec.set_recv_alt_svc(false);
 
         if let Some(max) = builder.settings.config.max_frame_size {
             codec.set_max_recv_frame_size(max as usize);

@@ -2,6 +2,7 @@ use crate::proto::h2::hpack::DecoderError;
 use rama_core::bytes::Bytes;
 use std::fmt;
 
+mod alt_svc;
 mod data;
 mod early_frame;
 mod go_away;
@@ -17,6 +18,7 @@ mod stream_id;
 mod util;
 mod window_update;
 
+pub use self::alt_svc::AltSvc;
 pub use self::data::Data;
 pub use self::early_frame::{EarlyFrame, EarlyFrameCapture, EarlyFrameStreamContext};
 pub use self::go_away::GoAway;
@@ -46,6 +48,7 @@ pub const HEADER_LEN: usize = 9;
 
 #[derive(Eq, PartialEq)]
 pub enum Frame<T = Bytes> {
+    AltSvc(AltSvc),
     Data(Data<T>),
     Headers(Headers),
     Priority(Priority),
@@ -63,6 +66,7 @@ impl<T> Frame<T> {
         F: FnOnce(T) -> U,
     {
         match self {
+            Self::AltSvc(frame) => frame.into(),
             Self::Data(frame) => frame.map(f).into(),
             Self::Headers(frame) => frame.into(),
             Self::Priority(frame) => frame.into(),
@@ -79,6 +83,7 @@ impl<T> Frame<T> {
 impl<T> fmt::Debug for Frame<T> {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         match *self {
+            Self::AltSvc(ref frame) => fmt::Debug::fmt(frame, fmt),
             Self::Data(ref frame) => fmt::Debug::fmt(frame, fmt),
             Self::Headers(ref frame) => fmt::Debug::fmt(frame, fmt),
             Self::Priority(ref frame) => fmt::Debug::fmt(frame, fmt),

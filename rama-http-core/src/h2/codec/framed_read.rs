@@ -35,6 +35,8 @@ pub(super) struct FramedRead<T> {
     max_continuation_frames: usize,
 
     partial: Option<Partial>,
+
+    recv_alt_svc: bool,
 }
 
 /// Partially loaded headers frame
@@ -66,7 +68,12 @@ impl<T> FramedRead<T> {
             max_header_list_size,
             max_continuation_frames,
             partial: None,
+            recv_alt_svc: true,
         }
+    }
+
+    pub(super) fn set_recv_alt_svc(&mut self, enabled: bool) {
+        self.recv_alt_svc = enabled;
     }
 
     pub(super) fn get_ref(&self) -> &T {
@@ -132,6 +139,7 @@ fn decode_frame(
     max_header_list_size: usize,
     max_continuation_frames: usize,
     partial_inout: &mut Option<Partial>,
+    recv_alt_svc: bool,
     mut bytes: BytesMut,
 ) -> Result<Option<Frame>, Error> {
     let span = tracing::trace_span!("FramedRead::decode_frame", offset = bytes.len());
@@ -248,6 +256,26 @@ fn decode_frame(
                 Error::library_go_away(Reason::PROTOCOL_ERROR)
             })?
             .into()
+        }
+        Kind::AltSvc => {
+            if !recv_alt_svc {
+                return Ok(None);
+            }
+            bytes.advance(frame::HEADER_LEN);
+            match frame::AltSvc::load(head, bytes.freeze()) {
+                Ok(frame) => frame.into(),
+                Err(frame::Error::InvalidStreamId) => {
+                    // Invalid origin/stream associations MUST be ignored
+                    // (RFC 7838 §4), without affecting stream state.
+                    return Ok(None);
+                }
+                Err(error) => {
+                    // Known frames must contain their mandatory payload
+                    // fields (RFC 9113 §4.2).
+                    proto_err!(conn: "truncated ALTSVC frame; err={:?}", error);
+                    return Err(Error::library_go_away(Reason::FRAME_SIZE_ERROR));
+                }
+            }
         }
         Kind::Data => {
             bytes.advance(frame::HEADER_LEN);
@@ -420,6 +448,7 @@ where
                 max_header_list_size,
                 ref mut partial,
                 max_continuation_frames,
+                recv_alt_svc,
                 ..
             } = *self;
             if let Some(frame) = decode_frame(
@@ -427,6 +456,7 @@ where
                 max_header_list_size,
                 max_continuation_frames,
                 partial,
+                recv_alt_svc,
                 bytes,
             )? {
                 tracing::trace!("frame received: {frame:?}");

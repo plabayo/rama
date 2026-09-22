@@ -4,6 +4,7 @@ use super::*;
 
 use rama_core::extensions::Extensions;
 use rama_core::telemetry::tracing::{self, warn};
+use rama_http_types::conn::HttpOrigin;
 use rama_net::extensions::StreamMultiplexed;
 use std::fmt;
 use std::task::{Context, Waker};
@@ -84,6 +85,9 @@ pub(super) struct Stream {
     /// Captured at `send_request` time and carried so the response builder can fork
     /// it to create the response extensions
     pub req_extensions: Option<Extensions>,
+
+    /// Request origin retained for connection-local ALTSVC association.
+    pub alt_svc_origin: Option<HttpOrigin>,
 
     // ===== Fields related to receiving =====
     /// Next node in the accept linked list
@@ -248,6 +252,7 @@ impl Stream {
             state: State::default(),
             extensions,
             req_extensions: None,
+            alt_svc_origin: None,
             ref_count: 0,
             is_counted: false,
 
