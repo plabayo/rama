@@ -425,7 +425,13 @@ async fn carry(
     };
     // The upstream is closed first, so a stream still waiting on it is released and the joins
     // below cannot wait on a peer that will never answer.
-    upstream.close(0u32, b"done");
+    // Closing the downstream endpoint wakes this task before the upstream
+    // endpoint necessarily closes. Preserve the shutdown reason in that race.
+    if stopping.cancelled().now_or_never().is_some() {
+        upstream.close(RELAY_STOPPING, b"relay stopping");
+    } else {
+        upstream.close(0u32, b"done");
+    }
     let joined = join(relaying).await;
     outcome.and(joined)
 }

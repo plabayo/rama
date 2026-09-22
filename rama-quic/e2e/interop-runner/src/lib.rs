@@ -41,17 +41,18 @@ pub fn tls_options() -> TlsOptions {
 pub fn tls_provider() -> Arc<dyn QuicClientConfigProvider> {
     #[cfg(feature = "boring")]
     {
-        return Arc::new(BoringTlsProvider);
+        Arc::new(BoringTlsProvider)
     }
     #[cfg(not(feature = "boring"))]
     {
         default_tls_provider().unwrap()
     }
 }
+
 pub fn server_tls_provider() -> Arc<dyn QuicServerConfigProvider> {
     #[cfg(feature = "boring")]
     {
-        return Arc::new(BoringTlsProvider);
+        Arc::new(BoringTlsProvider)
     }
     #[cfg(not(feature = "boring"))]
     {

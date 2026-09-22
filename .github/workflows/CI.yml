@@ -916,6 +916,11 @@ jobs:
         with:
           tool: cargo-zigbuild
       - name: Build Workspace
+        env:
+          # Use the same target-aware native tools as the GNU cross-builds.
+          # CMake's failed Zig ABI probe can select 32-bit ARM assembly.
+          AR: zig ar
+          AWS_LC_SYS_CMAKE_BUILDER: "0"
         run: |
           cargo zigbuild -p rama -p rama-cli --target ${{ matrix.target }} --all-features
       - name: Setup Docker buildx
