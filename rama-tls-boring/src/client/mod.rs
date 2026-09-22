@@ -23,9 +23,9 @@ pub(crate) use config::{AlpsCoupling, set_alpn_with_coupled_alps};
 pub use config::{
     BoringAlps, BoringCertCompression, BoringCipherSuites, BoringClientConfigExt,
     BoringDelegatedCredentials, BoringEncryptedClientHello, BoringExtensionOrder, BoringGrease,
-    BoringMaxVersion, BoringMinVersion, BoringOcspStapling, BoringRecordSizeLimit,
-    BoringServerVerifyCertStore, BoringSignatureSchemes, BoringSignedCertTimestamps,
-    BoringSupportedGroups, BoringTlsConnectorConfig,
+    BoringMaxVersion, BoringMinVersion, BoringOcspStapling, BoringPermuteExtensions,
+    BoringRecordSizeLimit, BoringServerVerifyCertStore, BoringSignatureSchemes,
+    BoringSignedCertTimestamps, BoringSupportedGroups, BoringTlsConnectorConfig,
 };
 
 mod trust_anchors;
@@ -47,3 +47,6 @@ mod emulate_ua;
 pub use emulate_ua::{EmulateTlsProfileLayer, EmulateTlsProfileService};
 
 pub use config::BoringTlsClientConfigProvider;
+
+#[cfg(test)]
+mod tests;
