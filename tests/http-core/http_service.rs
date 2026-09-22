@@ -9,8 +9,9 @@ use rama::{
     http::{
         Body, HeaderMap, Method, Request, Response, StatusCode, Version,
         body::util::BodyExt as _,
-        client::EasyHttpConnectorBuilder,
-        conn::HttpOrigin,
+        client::{EasyHttpConnectorBuilder, Http3Transport, http_connect},
+        conn::{HttpOrigin, TargetHttpVersion},
+        core::h3::connection::Config as Http3Config,
         header,
         layer::{
             alt_svc::AltSvcCache,
@@ -23,9 +24,12 @@ use rama::{
     net::{
         Protocol,
         address::{HostWithPort, ProxyAddress, SocketAddress},
-        client::{ProxyRoute, ProxyRoutes},
+        client::{ConnectRequest, ProxyRoute, ProxyRoutes},
+        conn::MaxConcurrency,
         proxy::IoForwardService,
+        tls::ApplicationProtocol,
     },
+    quic::{ClientConfig, Endpoint, ServerConfig, tls::TlsOptions},
     rt::Executor,
     service::service_fn,
     tcp::{TcpStream, client::service::TcpConnector, server::TcpListener},
@@ -50,9 +54,15 @@ use std::{
 };
 
 #[cfg(feature = "boring")]
-use rama::tls::boring::server::TlsAcceptorLayer;
+use rama::tls::boring::{
+    client::{BoringClientConfigExt as _, TlsConnectorLayer},
+    server::TlsAcceptorLayer,
+};
 #[cfg(not(feature = "boring"))]
-use rama::tls::rustls::server::TlsAcceptorLayer;
+use rama::tls::rustls::{
+    client::{RustlsClientConfigExt as _, TlsConnectorLayer},
+    server::TlsAcceptorLayer,
+};
 
 use parking_lot::Mutex;
 use tokio::{
@@ -673,5 +683,170 @@ async fn ordinary_origin_pool_does_not_reuse_unverified_connection_for_verified_
         assert_eq!(origin.accepted.load(Ordering::SeqCst), 2);
         drop(client);
         origin.close().await;
+    }
+}
+
+#[tokio::test]
+async fn fixed_custom_tls_connector_reuses_connections() {
+    for version in [Version::HTTP_11, Version::HTTP_2] {
+        let (auth, tls) = credentials();
+        let origin = Server::start(auth, version).await;
+        // Native settings belong to this connector's fixed policy. Their presence
+        // alone must not disable reuse of connections created by that connector.
+        #[cfg(feature = "boring")]
+        let tls = tls.with_grease(true);
+        #[cfg(not(feature = "boring"))]
+        let tls = tls.with_modify_rustls_config(Ok);
+        let client = EasyHttpConnectorBuilder::new()
+            .with_default_transport_connector()
+            .with_default_dns_connector()
+            .without_tls_proxy_support()
+            .with_http_proxy_support()
+            .with_custom_tls_connector(TlsConnectorLayer::auto().with_base_config(tls))
+            .with_default_http_connector(Executor::new())
+            .with_default_connection_pool()
+            .build_client();
+
+        for _ in 0..3 {
+            assert_eq!(complete(&client, origin.request()).await.1, version);
+        }
+        assert_eq!(origin.accepted.load(Ordering::SeqCst), 1);
+        assert_eq!(origin.request_count(), 3);
+        drop(client);
+        origin.close().await;
+    }
+}
+
+#[tokio::test]
+async fn request_tls_overrides_neither_borrow_nor_return_pooled_connections() {
+    for version in [Version::HTTP_11, Version::HTTP_2] {
+        let (auth, tls) = credentials();
+        let origin = Server::start(auth, version).await;
+        let client = client(tls, AltSvcCache::default());
+
+        // An overridden connection must not enter an otherwise empty pool.
+        let request = origin.request();
+        request
+            .extensions()
+            .insert(TlsServerVerify(ServerVerifyMode::Auto));
+        assert_eq!(complete(&client, request).await.1, version);
+        assert_eq!(origin.accepted.load(Ordering::SeqCst), 1);
+        assert_eq!(complete(&client, origin.request()).await.1, version);
+        assert_eq!(origin.accepted.load(Ordering::SeqCst), 2);
+
+        // Even an override equal to the default policy must bypass lookup.
+        // Repeating it must perform another fresh handshake each time.
+        for expected_connections in 3..=4 {
+            let request = origin.request();
+            request
+                .extensions()
+                .insert(TlsServerVerify(ServerVerifyMode::Auto));
+            assert_eq!(complete(&client, request).await.1, version);
+            assert_eq!(origin.accepted.load(Ordering::SeqCst), expected_connections);
+        }
+
+        assert_eq!(complete(&client, origin.request()).await.1, version);
+        assert_eq!(origin.accepted.load(Ordering::SeqCst), 4);
+        assert_eq!(origin.request_count(), 5);
+        drop(client);
+        origin.close().await;
+    }
+}
+
+#[tokio::test]
+async fn custom_quic_transport_validates_negotiation_and_concurrency() {
+    for (alpn, required, expected_error) in [
+        (
+            ApplicationProtocol::HTTP_2,
+            Version::HTTP_3,
+            Some("QUIC transport did not negotiate h3 ALPN"),
+        ),
+        (
+            ApplicationProtocol::HTTP_3,
+            Version::HTTP_2,
+            Some("established transport conflicts with required HTTP version"),
+        ),
+        (ApplicationProtocol::HTTP_3, Version::HTTP_3, None),
+    ] {
+        let (auth, tls) = credentials();
+        let server_tls = TlsServerConfig::new()
+            .with_server_auth(auth)
+            .with_alpn([alpn.clone()].into_iter().collect());
+        let server = Endpoint::build(Executor::new())
+            .with_server_config(
+                ServerConfig::try_from_rama_tls(&server_tls, TlsOptions::default()).unwrap(),
+            )
+            .bind_address(SocketAddress::local_ipv4(0))
+            .await
+            .unwrap();
+        let client = Endpoint::build(Executor::new())
+            .bind_address(SocketAddress::local_ipv4(0))
+            .await
+            .unwrap();
+        let client_config = ClientConfig::try_from_rama_tls(
+            &tls.with_alpn([alpn].into_iter().collect()),
+            TlsOptions::default(),
+        )
+        .unwrap();
+        let connecting = client
+            .connect_with(client_config, server.local_addr().unwrap(), "localhost")
+            .unwrap();
+        let (connection, peer) = timeout(TEST_TIMEOUT, async {
+            tokio::join!(connecting, async { server.accept().await.unwrap().await })
+        })
+        .await
+        .unwrap();
+        let peer = peer.unwrap();
+        let connection = connection.unwrap();
+        // Connection metadata cannot replace the actual negotiated QUIC ALPN.
+        connection
+            .extensions()
+            .insert(TargetHttpVersion(Version::HTTP_3));
+        connection.extensions().insert(MaxConcurrency::new(100));
+        let input = ConnectRequest::new(HostWithPort::localhost_domain_with_port(
+            server.local_addr().unwrap().port(),
+        ));
+        input.extensions.insert(TargetHttpVersion(required));
+        let transport = Http3Transport {
+            connection,
+            config: Http3Config {
+                max_requests: 1,
+                max_pushes: 0,
+                ..Default::default()
+            },
+        };
+        let result = timeout(
+            TEST_TIMEOUT,
+            http_connect::<_, _, Body>(transport, input, Executor::new()),
+        )
+        .await
+        .unwrap();
+        if let Some(expected_error) = expected_error {
+            let Err(error) = result else {
+                panic!("invalid QUIC transport must be rejected");
+            };
+            assert!(error.to_string().contains(expected_error), "{error}");
+        } else {
+            let established = result.unwrap();
+            assert_eq!(
+                established
+                    .conn
+                    .extensions()
+                    .get_ref::<MaxConcurrency>()
+                    .unwrap()
+                    .get(),
+                1,
+                "HTTP configuration must replace stale transport concurrency hints"
+            );
+        }
+
+        drop(peer);
+        client.close(0u32, b"done");
+        server.close(0u32, b"done");
+        timeout(TEST_TIMEOUT, async {
+            tokio::join!(client.shutdown(), server.shutdown());
+        })
+        .await
+        .unwrap();
     }
 }

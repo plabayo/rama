@@ -1,4 +1,6 @@
-use super::{HttpClientService, svc::SendRequest};
+use super::{
+    HttpClientService, HttpTransport, HttpTransportConnector, IntoHttpTransport, svc::SendRequest,
+};
 use rama_core::error::BoxErrorExt as _;
 use rama_core::{
     Layer, Service,
@@ -333,10 +335,9 @@ fn apply_h2_client_extensions_to_builder(
 
 #[derive(Debug, Clone)]
 /// A [`Service`] which establishes an HTTP Connection.
-pub struct HttpConnector<S, Body, H = NoHttp3Connector<Body>> {
+pub struct HttpConnector<S, Body> {
     inner: S,
     exec: Executor,
-    http3: H,
     // Body type this connector will be able to send, this is not
     // necessarily the same one that was used in the request that
     // created this connection
@@ -349,20 +350,21 @@ impl<S, Body> HttpConnector<S, Body> {
         Self {
             inner,
             exec,
-            http3: NoHttp3Connector(PhantomData),
             _phantom: PhantomData,
         }
     }
 }
 
-impl<S, Body, H> HttpConnector<S, Body, H> {
-    /// Enable HTTP/3 using a connector that establishes an HTTP service directly.
-    /// Custom transports can construct their service with [`HttpClientService::http3`].
-    pub fn with_http3_connector<T>(self, connector: T) -> HttpConnector<S, Body, T> {
+impl<S, Body> HttpConnector<S, Body> {
+    /// Add a QUIC transport connector below the common HTTP handshake.
+    /// The connector returns [`super::Http3Transport`], without starting HTTP/3.
+    pub fn with_http3_connector<Q>(
+        self,
+        quic: Q,
+    ) -> HttpConnector<HttpTransportConnector<S, Q>, Body> {
         HttpConnector {
-            inner: self.inner,
+            inner: HttpTransportConnector::new(self.inner, quic),
             exec: self.exec,
-            http3: connector,
             _phantom: PhantomData,
         }
     }
@@ -370,19 +372,80 @@ impl<S, Body, H> HttpConnector<S, Body, H> {
     define_inner_service_accessors!();
 }
 
-/// Default marker for an HTTP connector without HTTP/3 support.
-#[derive(Clone, Debug)]
-pub struct NoHttp3Connector<Body>(PhantomData<fn() -> Body>);
-
-impl<Input: Send + 'static, Body: Send + 'static> Service<Input> for NoHttp3Connector<Body> {
-    type Output = EstablishedClientConnection<HttpClientService<Body>, Input>;
-    type Error = ConnectionError;
-
-    async fn serve(&self, _input: Input) -> Result<Self::Output, Self::Error> {
-        Err(ConnectionError::transport(
-            BoxError::from_static_str("HTTP/3 connector is not configured"),
-            ConnectionErrorKind::Unavailable,
-        ))
+/// Perform the HTTP handshake on an established byte stream or QUIC transport.
+/// The selected protocol must agree with the transport; metadata remains attached
+/// to the resulting service for pooling and request adaptation.
+pub async fn http_connect<T, Input, BodyConnection>(
+    transport: T,
+    input: Input,
+    exec: Executor,
+) -> Result<EstablishedClientConnection<HttpClientService<BodyConnection>, Input>, OpaqueError>
+where
+    T: IntoHttpTransport,
+    Input: AuthorityInputExt
+        + ExtensionsRef
+        + HttpVersionInputExt
+        + TargetHttpVersionInputExt
+        + Send
+        + 'static,
+    BodyConnection:
+        StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
+{
+    let transport = transport.into_http_transport();
+    let version = match &transport {
+        HttpTransport::Stream(io) => resolve_target_http_version(io, &input),
+        HttpTransport::Quic(_) => Some(Version::HTTP_3),
+    };
+    let required = input
+        .extensions()
+        .get_ref::<TargetHttpVersion>()
+        .map(|version| version.0)
+        .or_else(|| {
+            resolve_input_target_http_version(&input).filter(|version| *version == Version::HTTP_3)
+        });
+    if required
+        .zip(version)
+        .is_some_and(|(required, actual)| required != actual)
+    {
+        return Err(BoxError::from_static_str(
+            "established transport conflicts with required HTTP version",
+        )
+        .into_opaque_error());
+    }
+    match transport {
+        HttpTransport::Stream(io) => {
+            if let Some(version) = version {
+                input.extensions().insert(TargetHttpVersion(version));
+                io.extensions().insert(TargetHttpVersion(version));
+            }
+            http_stream_connect(io, input, exec).await
+        }
+        HttpTransport::Quic(quic) => {
+            quic.connection
+                .handshake_confirmed()
+                .await
+                .into_opaque_error()?;
+            if quic
+                .connection
+                .handshake_data()
+                .and_then(|data| data.application_layer_protocol)
+                != Some(rama_net::tls::ApplicationProtocol::HTTP_3)
+            {
+                return Err(
+                    BoxError::from_static_str("QUIC transport did not negotiate h3 ALPN")
+                        .into_opaque_error(),
+                );
+            }
+            input
+                .extensions()
+                .insert(TargetHttpVersion(Version::HTTP_3));
+            quic.connection
+                .extensions()
+                .insert(TargetHttpVersion(Version::HTTP_3));
+            let conn =
+                HttpClientService::http3(quic.connection, quic.config, exec).into_opaque_error()?;
+            Ok(EstablishedClientConnection { input, conn })
+        }
     }
 }
 
@@ -396,7 +459,7 @@ impl<Input: Send + 'static, Body: Send + 'static> Service<Input> for NoHttp3Conn
 /// The spawned HTTP connection span is connection-scoped and can serve many
 /// requests, so request fields such as method, URI and user agent belong on
 /// request spans rather than this connection span.
-pub async fn http_connect<IO, Input, BodyConnection>(
+async fn http_stream_connect<IO, Input, BodyConnection>(
     io: IO,
     input: Input,
     exec: Executor,
@@ -559,10 +622,9 @@ where
     Ok((svc, peer_handle))
 }
 
-impl<S, Input, BodyConnection, H> Service<Input> for HttpConnector<S, BodyConnection, H>
+impl<S, Input, BodyConnection> Service<Input> for HttpConnector<S, BodyConnection>
 where
-    H: ConnectorService<Input, Connection = HttpClientService<BodyConnection>>,
-    S: ConnectorService<Input, Connection: Io + Unpin>,
+    S: ConnectorService<Input, Connection: IntoHttpTransport>,
     Input: AuthorityInputExt
         + ExtensionsRef
         + HttpVersionInputExt
@@ -579,24 +641,20 @@ where
 
     #[inline]
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
-        if resolve_input_target_http_version(&input) == Some(Version::HTTP_3) {
-            return self.http3.connect(input).await;
-        }
         let EstablishedClientConnection { input, conn } = self.inner.connect(input).await?;
         let version = resolve_target_http_version(&conn, &input);
-        if let Some(version) = version {
-            // TLS has already completed. Normalize the selected version onto
-            // both sides so the HTTP handshake, the request adapter and pooled
-            // reuse all observe the same concrete target.
-            input.extensions().insert(TargetHttpVersion(version));
-            conn.extensions().insert(TargetHttpVersion(version));
-        }
         http_connect(conn, input, self.exec.clone())
             .await
             .map_err(|error| {
                 if matches!(
                     version,
-                    Some(Version::HTTP_09 | Version::HTTP_10 | Version::HTTP_11 | Version::HTTP_2)
+                    Some(
+                        Version::HTTP_09
+                            | Version::HTTP_10
+                            | Version::HTTP_11
+                            | Version::HTTP_2
+                            | Version::HTTP_3
+                    )
                 ) {
                     ConnectionError::application(error, ConnectionErrorKind::Protocol)
                         .context("HTTP connector: protocol handshake")
@@ -639,7 +697,6 @@ impl<S, Body> Layer<S> for HttpConnectorLayer<Body> {
         HttpConnector {
             inner,
             exec: self.exec.clone(),
-            http3: NoHttp3Connector(PhantomData),
             _phantom: PhantomData,
         }
     }
@@ -648,7 +705,6 @@ impl<S, Body> Layer<S> for HttpConnectorLayer<Body> {
         HttpConnector {
             inner,
             exec: self.exec,
-            http3: NoHttp3Connector(PhantomData),
             _phantom: PhantomData,
         }
     }
@@ -678,15 +734,49 @@ mod http3_dispatch_tests {
     }
 
     #[tokio::test]
-    async fn absent_http3_rejects_before_stream_establishment() {
-        let connector =
-            HttpConnector::<_, Body>::new(stream_connector_must_not_connect(), Executor::default());
+    async fn common_handshake_honors_fallback_before_request_http3() {
+        let (io, _peer) = tokio::io::duplex(4096);
+        let input = ConnectRequest::new("origin.example:443".parse().unwrap());
+        input
+            .extensions
+            .insert(rama_net::http::HttpRequestVersion(Version::HTTP_3));
+        input
+            .extensions
+            .insert(FallbackHttpVersion(Version::HTTP_2));
+        let established =
+            http_connect::<_, _, Body>(ServiceInput::new(io), input, Executor::default())
+                .await
+                .unwrap();
+        assert_eq!(
+            established.input.target_http_version(),
+            Some(Version::HTTP_2)
+        );
+        assert_eq!(
+            established
+                .conn
+                .extensions()
+                .get_ref::<TargetHttpVersion>()
+                .map(|version| version.0),
+            Some(Version::HTTP_2)
+        );
+    }
+
+    #[tokio::test]
+    async fn common_handshake_rejects_http3_on_a_byte_stream() {
+        let stream = service_fn(async |input: ConnectRequest| {
+            let (io, _peer) = tokio::io::duplex(64);
+            Ok::<_, ConnectionError>(EstablishedClientConnection {
+                input,
+                conn: ServiceInput::new(io),
+            })
+        });
+        let connector = HttpConnector::<_, Body>::new(stream, Executor::default());
         let input = ConnectRequest::new("origin.example:443".parse().unwrap());
         input
             .extensions()
             .insert(TargetHttpVersion(Version::HTTP_3));
         let error = connector.serve(input).await.err().unwrap();
-        assert_eq!(error.kind(), ConnectionErrorKind::Unavailable);
+        assert_eq!(error.kind(), ConnectionErrorKind::Protocol);
     }
 
     #[tokio::test]
@@ -710,13 +800,13 @@ mod http3_dispatch_tests {
             });
             let http3 = service_fn(
                 async |_input: ConnectRequest| -> Result<
-                    EstablishedClientConnection<HttpClientService<Body>, ConnectRequest>,
+                    EstablishedClientConnection<crate::client::Http3Transport, ConnectRequest>,
                     ConnectionError,
                 > {
                     panic!("HTTP/1 and HTTP/2 must not use the HTTP/3 transport");
                 },
             );
-            let connector = HttpConnector::new(stream_connector, Executor::default())
+            let connector = HttpConnector::<_, Body>::new(stream_connector, Executor::default())
                 .with_http3_connector(http3);
             let input = ConnectRequest::new("origin.example:443".parse().unwrap());
             input.extensions().insert(TargetHttpVersion(version));
@@ -729,7 +819,7 @@ mod http3_dispatch_tests {
     async fn custom_http3_owns_route_capability_and_preserves_origin_and_target() {
         let http3 = service_fn(
             async |input: ConnectRequest| -> Result<
-                EstablishedClientConnection<HttpClientService<Body>, ConnectRequest>,
+                EstablishedClientConnection<crate::client::Http3Transport, ConnectRequest>,
                 ConnectionError,
             > {
                 assert_eq!(input.authority.to_string(), "origin.example:443");
@@ -754,7 +844,7 @@ mod http3_dispatch_tests {
             },
         );
         let connector =
-            HttpConnector::new(stream_connector_must_not_connect(), Executor::default())
+            HttpConnector::<_, Body>::new(stream_connector_must_not_connect(), Executor::default())
                 .with_http3_connector(http3);
         let input = ConnectRequest::new("origin.example:443".parse().unwrap())
             .with_application_protocol(ApplicationProtocol::HTTPS);

@@ -1,13 +1,13 @@
 use crate::dep::rustls::ClientConfig;
 use crate::dep::rustls::client::danger::ServerCertVerifier;
 use rama_core::error::BoxError;
-use rama_core::extensions::{Extension, Extensions, FromExtensions};
+use rama_core::extensions::{Extension, FromExtensions};
 use rama_net::tls::TlsAlpn;
 use rama_tls::client::{
-    TlsClientAuth, TlsClientConfig, TlsClientPoolKey, TlsClientPoolPolicy, TlsServerCertPins,
-    TlsServerName, TlsServerTrust, TlsServerVerify, TlsStoreServerCertChain,
+    TlsClientAuth, TlsClientConfig, TlsServerCertPins, TlsServerName, TlsServerTrust,
+    TlsServerVerify, TlsStoreServerCertChain,
 };
-use rama_tls::{TlsBackend, TlsKeyLog, TlsSupportedVersions};
+use rama_tls::{TlsKeyLog, TlsSupportedVersions};
 use rama_utils::macros::generate_set_and_with;
 use std::sync::Arc;
 
@@ -28,38 +28,38 @@ pub struct RustlsTlsConnectorConfig<'a> {
 }
 
 impl RustlsTlsConnectorConfig<'_> {
-    /// Cache this provider's default TLS identity for connection pooling.
-    pub fn pool_policy(config: &TlsClientConfig) -> TlsClientPoolPolicy {
-        TlsClientPoolPolicy::new(config.as_extensions(), Self::pool_key)
-    }
-
-    fn pool_key(extensions: &Extensions) -> TlsClientPoolKey {
-        let mut key = TlsClientPoolKey::from_extensions(extensions, TlsBackend::Rustls);
-        if RustlsTlsConnectorConfig::from_extensions(extensions).has_native_overrides() {
-            key.disable_reuse();
-        }
-        key
-    }
-
-    /// Whether opaque native configuration prevents comparing connection policies.
-    pub fn has_native_overrides(&self) -> bool {
+    /// Whether no request-level TLS configuration is present.
+    ///
+    /// A connection pool dedicated to a fixed connector policy can reuse its
+    /// connections only when request extensions do not override that policy.
+    /// Inspect the request extensions before layering connector defaults.
+    pub fn is_empty(&self) -> bool {
         // Name every field so additions require an explicit pooling decision.
         let Self {
-            // These settings are accounted for by the common TLS pool key.
-            alpn: _,
-            versions: _,
-            verify: _,
-            keylog: _,
-            server_name: _,
-            store_chain: _,
-            client_auth: _,
-            server_cert_pins: _,
-            server_trust: _,
+            alpn,
+            versions,
+            verify,
+            keylog,
+            server_name,
+            store_chain,
+            client_auth,
+            server_cert_pins,
+            server_trust,
             verifier,
             modify,
         } = self;
 
-        verifier.is_some() || modify.is_some()
+        alpn.is_none()
+            && versions.is_none()
+            && verify.is_none()
+            && keylog.is_none()
+            && server_name.is_none()
+            && store_chain.is_none()
+            && client_auth.is_none()
+            && server_cert_pins.is_none()
+            && server_trust.is_none()
+            && verifier.is_none()
+            && modify.is_none()
     }
 
     /// Whether a successful handshake establishes the configured server identity.

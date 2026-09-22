@@ -468,6 +468,7 @@ mod tests {
                 ..Config::default()
             },
             Role::Client,
+            Default::default(),
         )
         .unwrap();
         shared.pushes.lock().grant(1);
@@ -497,6 +498,7 @@ mod tests {
                 ..Config::default()
             },
             Role::Client,
+            Default::default(),
         )
         .unwrap();
         assert_eq!(
@@ -588,6 +590,7 @@ mod tests {
                 ..Config::default()
             },
             Role::Server,
+            Default::default(),
         )
         .unwrap();
         shared.pushes.lock().max_id(0);

@@ -19,9 +19,6 @@ pub use parser::{
     parse_client_hello_handshake_prefix, parse_client_hello_message_prefix,
 };
 
-mod pool;
-pub use pool::{TlsClientFingerprint, TlsClientPoolKey, TlsClientPoolPolicy};
-
 mod config;
 #[doc(inline)]
 pub use config::{

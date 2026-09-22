@@ -23,6 +23,7 @@ use crate::driver::{Duration, Instant};
 use crate::proto::RandomConnectionIdGenerator;
 use crate::test_helpers;
 use rama_core::bytes::Bytes;
+use rama_core::extensions::{Extension, ExtensionsRef};
 use rama_core::telemetry::tracing::Instrument as _;
 use rama_core::telemetry::tracing::{error_span, info};
 use rand::{Rng, SeedableRng, rngs::StdRng};
@@ -180,6 +181,62 @@ fn read_after_close() {
         let msg = stream.read_to_end(usize::MAX).await.expect("read_to_end");
         assert_eq!(msg, MSG);
     });
+}
+
+#[derive(Debug, Extension)]
+struct ConnectionMetadata(u32);
+
+#[tokio::test]
+async fn connection_extensions_are_shared_by_handles_and_isolated_between_connections() {
+    let endpoint = endpoint();
+    let connecting = endpoint
+        .connect(endpoint.local_addr().unwrap(), "localhost")
+        .unwrap();
+    let (outgoing, incoming) = timeout(Duration::from_secs(5), async {
+        join!(connecting, async { endpoint.accept().await.unwrap().await })
+    })
+    .await
+    .unwrap();
+    let outgoing = outgoing.unwrap();
+    let incoming = incoming.unwrap();
+    let shared = outgoing.clone();
+
+    outgoing.extensions().insert(ConnectionMetadata(1));
+    assert_eq!(
+        shared
+            .extensions()
+            .get_ref::<ConnectionMetadata>()
+            .unwrap()
+            .0,
+        1
+    );
+    assert!(!incoming.extensions().contains::<ConnectionMetadata>());
+
+    shared.extensions().insert(ConnectionMetadata(2));
+    assert_eq!(
+        outgoing
+            .extensions()
+            .get_ref::<ConnectionMetadata>()
+            .unwrap()
+            .0,
+        2
+    );
+    drop(outgoing);
+    assert_eq!(
+        shared
+            .extensions()
+            .get_ref::<ConnectionMetadata>()
+            .unwrap()
+            .0,
+        2
+    );
+
+    drop(shared);
+    drop(incoming);
+    endpoint.close(0u32, b"done");
+    timeout(Duration::from_secs(5), endpoint.shutdown())
+        .await
+        .unwrap();
 }
 
 #[test]

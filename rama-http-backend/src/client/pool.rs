@@ -3,7 +3,10 @@
 use std::{num::NonZeroUsize, time::Duration};
 
 use rama_core::error::BoxError;
-use rama_core::{Layer, extensions::ExtensionsRef};
+use rama_core::{
+    Layer,
+    extensions::{Extensions, ExtensionsRef},
+};
 use rama_http_types::{Version, conn::FallbackHttpVersion, proxy::PlaintextHttpProxyMode};
 use rama_net::client::pool::{
     BasicConnId, BasicConnIdentifier, ConnID, MultiplexPool, MuxSelection, PooledConnector,
@@ -13,9 +16,10 @@ use rama_net::client::{ConnectRequest, ConnectorService, ProxyRoute};
 use rama_net::{
     HttpVersionInputExt, ProtocolInputExt, TargetHttpVersionInputExt, transport::TransportProtocol,
 };
+use rama_tls::TlsTunnel;
+use rama_utils::macros::generate_set_and_with;
 
 use super::{BindBodyToConnLayer, BindBodyToConnector};
-use rama_tls::client::{TlsClientPoolKey, TlsClientPoolPolicy};
 
 /// Default HTTP pooled connector assembled by
 /// [`HttpPooledConnectorConfig::try_build_connector`].
@@ -30,11 +34,18 @@ pub type HttpPooledConnector<S> = BindBodyToConnector<
 /// HTTP connection-pool identifier derived from the network route, any version
 /// requirement that constrains the physical connection, and whether plaintext
 /// HTTP uses forward-proxy or CONNECT-tunnel semantics.
+///
+/// A pool belongs to a fixed connector policy. Custom connectors reuse by
+/// default; when request extensions change their policy, configure a reuse check
+/// or use a custom [`ReqToConnID`] that distinguishes those settings. Injecting
+/// the same pool into multiple connectors requires compatible fixed policies
+/// or a custom connection-ID namespace. Retire the pool before changing those
+/// defaults or the behavior of mutable native hooks.
 #[derive(Clone, Debug, Default)]
 #[non_exhaustive]
 pub struct HttpConnIdentifier {
-    tls: Option<TlsClientPoolPolicy>,
-    http3_tls: Option<TlsClientPoolPolicy>,
+    reuse: Option<fn(&Extensions) -> bool>,
+    http3_reuse: Option<fn(&Extensions) -> bool>,
 }
 
 impl HttpConnIdentifier {
@@ -42,23 +53,24 @@ impl HttpConnIdentifier {
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            tls: None,
-            http3_tls: None,
+            reuse: None,
+            http3_reuse: None,
         }
     }
 
-    rama_utils::macros::generate_set_and_with! {
-        /// Compare the HTTP/1 and HTTP/2 TLS provider's cached policy before connection-pool lookup.
-        pub fn tls_policy(mut self, tls: Option<TlsClientPoolPolicy>) -> Self {
-            self.tls = tls;
+    generate_set_and_with! {
+        /// Check whether a request can reuse the fixed connector policy.
+        /// False bypasses pool lookup and discards the new connection after use.
+        pub fn reuse_check(mut self, check: Option<fn(&Extensions) -> bool>) -> Self {
+            self.reuse = check;
             self
         }
     }
 
-    rama_utils::macros::generate_set_and_with! {
-        /// Use the QUIC provider's policy when the request selects HTTP/3.
-        pub fn http3_tls_policy(mut self, tls: Option<TlsClientPoolPolicy>) -> Self {
-            self.http3_tls = tls;
+    generate_set_and_with! {
+        /// Use this reuse check when the request selects HTTP/3.
+        pub fn http3_reuse_check(mut self, check: Option<fn(&Extensions) -> bool>) -> Self {
+            self.http3_reuse = check;
             self
         }
     }
@@ -72,7 +84,7 @@ impl HttpConnIdentifier {
 /// HTTP request semantics.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct HttpConnId {
-    tls_policy: Option<TlsClientPoolKey>,
+    reusable: bool,
     network: BasicConnId,
     required_version: Option<Version>,
     http_proxy_mode: Option<HttpProxyModeRequirement>,
@@ -86,9 +98,7 @@ enum HttpProxyModeRequirement {
 
 impl ConnID for HttpConnId {
     fn is_reusable(&self) -> bool {
-        self.tls_policy
-            .as_ref()
-            .is_none_or(|policy| policy.is_reusable())
+        self.reusable
     }
 
     #[cfg(feature = "opentelemetry")]
@@ -102,11 +112,7 @@ impl ReqToConnID<ConnectRequest> for HttpConnIdentifier {
 
     fn id(&self, input: &ConnectRequest) -> Result<Self::ID, BoxError> {
         let http3 = super::conn::resolve_input_target_http_version(input) == Some(Version::HTTP_3);
-        let tls = if http3 {
-            self.http3_tls.as_ref()
-        } else {
-            self.tls.as_ref()
-        };
+        let reuse = if http3 { self.http3_reuse } else { self.reuse };
         let mut network = BasicConnIdentifier::new().id(input)?;
         if input
             .extensions()
@@ -129,30 +135,11 @@ impl ReqToConnID<ConnectRequest> for HttpConnIdentifier {
             network.connector_transport_protocol = Some(TransportProtocol::Udp);
         }
         Ok(HttpConnId {
-            tls_policy: tls
-                .map(|tls| tls.key(input.extensions()))
-                .or_else(|| input.extensions().get_ref::<TlsClientPoolKey>().cloned())
-                .or_else(|| {
-                    // Unknown TLS dialers may contain opaque provider configuration.
-                    // Only an explicit, complete policy can authorize their reuse.
-                    let secure = input
-                        .protocol()
-                        .is_some_and(|protocol| protocol.is_secure())
-                        || input
-                            .extensions()
-                            .get_ref::<ProxyRoute>()
-                            .and_then(ProxyRoute::proxy_address)
-                            .and_then(|proxy| proxy.protocol.as_ref())
-                            .is_some_and(|protocol| protocol.is_secure());
-                    secure.then(|| {
-                        let mut key = TlsClientPoolKey::from_extensions(
-                            input.extensions(),
-                            rama_tls::TlsBackend::Auto,
-                        );
-                        key.disable_reuse();
-                        key
-                    })
-                }),
+            // A request-supplied tunnel changes proxy-side TLS even when there
+            // is no origin TLS provider. Route-generated tunnels are added
+            // below the pool and remain part of the fixed proxy policy.
+            reusable: !input.extensions().contains::<TlsTunnel>()
+                && reuse.is_none_or(|check| check(input.extensions())),
             network,
             required_version: connection_version_requirement(input),
             http_proxy_mode: http_proxy_mode_requirement(input),
@@ -281,8 +268,9 @@ impl HttpPooledConnectorConfig {
     /// Unlike [`Self::try_build_connector`], this constructor is infallible because
     /// its connection and concurrency limits are non-zero constants owned by
     /// Rama.
-    /// TLS connections require a precomputed [`rama_tls::client::TlsClientPoolKey`]
-    /// to permit reuse; otherwise use [`Self::build_default_connector_with_identifier`].
+    /// The pool belongs to one fixed connector policy. If request extensions can
+    /// change connection settings, supply a reuse check through
+    /// [`Self::build_default_connector_with_identifier`].
     pub fn build_default_connector<S>(inner: S) -> HttpPooledConnector<S>
     where
         S: ConnectorService<ConnectRequest>,
@@ -290,7 +278,7 @@ impl HttpPooledConnectorConfig {
         Self::build_default_connector_with_identifier(inner, HttpConnIdentifier::new())
     }
 
-    /// Build the default pool with the TLS dialer's effective policy.
+    /// Build the default pool with a request reuse check.
     pub fn build_default_connector_with_identifier<S>(
         inner: S,
         identifier: HttpConnIdentifier,
@@ -314,9 +302,16 @@ impl HttpPooledConnectorConfig {
     /// The connector only adds body binding and pool lookup. HTTP request
     /// adaptation and proxy-route selection remain independently composable
     /// services and can be layered around the returned connector when needed.
-    /// TLS connections without an explicit policy key are not reused. Supply
-    /// the dialer's policy with [`Self::try_build_connector_with_identifier`]
-    /// to compare request settings against connector defaults before lookup.
+    /// The pool belongs to one fixed connector policy, including TLS defaults
+    /// and native hooks. Retire it before changing that policy or mutable hook
+    /// behavior. A custom connector that changes its connection policy
+    /// per request must supply a reuse check through
+    /// [`Self::try_build_connector_with_identifier`], or use a custom
+    /// [`ReqToConnID`] with [`PooledConnector`].
+    ///
+    /// A pool injected through request extensions must obey the same fixed-policy
+    /// contract. Share it only between compatible connectors, or supply a custom
+    /// connection ID that separates their policies.
     ///
     /// The returned connector wraps each pooled connection in
     /// [`BindBodyToConn`](super::BindBodyToConn), so the pool only frees/reuses a
@@ -333,7 +328,7 @@ impl HttpPooledConnectorConfig {
         self.try_build_connector_with_identifier(inner, HttpConnIdentifier::new())
     }
 
-    /// Build a pool with the TLS defaults and provider classifier used by `inner`.
+    /// Build a pool with a request reuse check for the fixed policy of `inner`.
     pub fn try_build_connector_with_identifier<S>(
         self,
         inner: S,
@@ -393,7 +388,6 @@ mod tests {
     use crate::client::proxy::layer::HttpProxyConnectorLayer;
     use crate::client::{HttpConnectRequestAdapter, HttpConnectorLayer};
     use crate::server::HttpServer;
-    use rama_tls::client::TlsClientPoolPolicy;
 
     fn create_test_request(version: Version) -> Request {
         Request::builder()
@@ -410,66 +404,26 @@ mod tests {
     where
         S: ConnectorService<ConnectRequest>,
     {
-        // These mock dialers have no native TLS settings. Declare their common
-        // policy explicitly, just as a real provider does before pool lookup.
-        HttpConnectRequestAdapter::new(
-            config
-                .try_build_connector_with_identifier(
-                    inner,
-                    HttpConnIdentifier::new().maybe_with_tls_policy(Some(
-                        TlsClientPoolPolicy::new(
-                            rama_tls::client::TlsClientConfig::new().as_extensions(),
-                            common_tls_key,
-                        ),
-                    )),
-                )
-                .unwrap(),
-        )
-    }
-
-    fn common_tls_key(
-        extensions: &rama_core::extensions::Extensions,
-    ) -> rama_tls::client::TlsClientPoolKey {
-        rama_tls::client::TlsClientPoolKey::from_extensions(
-            extensions,
-            rama_tls::TlsBackend::Rustls,
-        )
+        HttpConnectRequestAdapter::new(config.try_build_connector(inner).unwrap())
     }
 
     #[test]
-    fn tls_policy_and_transport_follow_the_connectors_version_resolution() {
+    fn reuse_check_follows_the_connectors_version_resolution() {
         use rama_net::client::pool::ConnID as _;
-        use rama_tls::client::{ClientAuth, TlsClientConfig};
-        let tls_defaults = TlsClientConfig::new().with_client_auth(ClientAuth::SelfSigned);
-        let tls_policy = TlsClientPoolPolicy::new(tls_defaults.as_extensions(), common_tls_key);
-        let http3_tls_policy =
-            TlsClientPoolPolicy::new(TlsClientConfig::new().as_extensions(), common_tls_key);
         let identifier = HttpConnIdentifier::new()
-            .with_tls_policy(tls_policy.clone())
-            .with_http3_tls_policy(http3_tls_policy);
-        let request = || {
-            let input = ConnectRequest::new(HostWithPort::example_domain_https())
-                .with_application_protocol(Protocol::HTTPS);
-            input
-                .extensions()
-                .insert(HttpRequestVersion(Version::HTTP_3));
-            input
-        };
-        let input = request();
+            .with_reuse_check(|_| false)
+            .with_http3_reuse_check(|_| true);
+        let input = ConnectRequest::new(HostWithPort::example_domain_https())
+            .with_application_protocol(Protocol::HTTPS);
+        input
+            .extensions()
+            .insert(HttpRequestVersion(Version::HTTP_3));
         let h3 = identifier.id(&input).unwrap();
         assert!(h3.is_reusable());
         assert_eq!(
             h3.network.connector_transport_protocol,
             Some(TransportProtocol::Udp)
         );
-        // HTTP/3 intent without a complete QUIC policy cannot borrow the HTTP/1 and HTTP/2 TLS identity.
-        let unknown = HttpConnIdentifier::new()
-            .with_tls_policy(tls_policy)
-            .id(&input)
-            .unwrap();
-        assert!(!unknown.is_reusable());
-        assert_ne!(unknown, h3);
-
         input
             .extensions()
             .insert(rama_http_types::conn::FallbackHttpVersion(Version::HTTP_2));
@@ -490,76 +444,57 @@ mod tests {
     }
 
     #[test]
-    fn tls_pool_identity_compares_effective_defaults_and_request_overrides() {
+    fn fixed_custom_connector_policy_reuses_secure_connections() {
         use rama_net::client::pool::ConnID as _;
-        use rama_tls::client::{
-            ClientAuth, ServerVerifyMode, TlsClientAuth, TlsClientConfig, TlsServerCertPin,
-            TlsServerCertPins, TlsServerName, TlsServerVerify,
-        };
-        let request = || {
-            ConnectRequest::new(HostWithPort::example_domain_https())
-                .with_application_protocol(Protocol::HTTPS)
-        };
-        let config = TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable);
-        let identifier = HttpConnIdentifier::new().maybe_with_tls_policy(Some(
-            TlsClientPoolPolicy::new(config.as_extensions(), common_tls_key),
+        let input = ConnectRequest::new(HostWithPort::example_domain_https())
+            .with_application_protocol(Protocol::HTTPS);
+        assert!(HttpConnIdentifier::new().id(&input).unwrap().is_reusable());
+        let identifier = HttpConnIdentifier::new().with_reuse_check(|extensions| {
+            !extensions.contains::<rama_tls::client::TlsServerVerify>()
+        });
+        assert!(identifier.id(&input).unwrap().is_reusable());
+        input.extensions().insert(rama_tls::client::TlsServerVerify(
+            rama_tls::client::ServerVerifyMode::Auto,
         ));
-        let input = request();
-        let defaults = identifier.id(&input).unwrap();
-        assert!(defaults.is_reusable());
-        input
-            .extensions()
-            .insert(TlsServerVerify(ServerVerifyMode::Disable));
-        // Explicit and inherited equivalent settings may occupy separate buckets.
-        assert_eq!(
-            identifier.id(&input).unwrap(),
-            identifier.id(&input).unwrap()
-        );
-        input
-            .extensions()
-            .insert(TlsServerVerify(ServerVerifyMode::Auto));
-        let verified = identifier.id(&input).unwrap();
-        assert_ne!(defaults, verified);
-        input
-            .extensions()
-            .insert(TlsServerCertPins::new(TlsServerCertPin::SpkiSha256(
-                [1; 32],
-            )));
-        let first_pin = identifier.id(&input).unwrap();
-        input
-            .extensions()
-            .insert(TlsServerCertPins::new(TlsServerCertPin::SpkiSha256(
-                [2; 32],
-            )));
-        assert_ne!(first_pin, identifier.id(&input).unwrap());
-        input
-            .extensions()
-            .insert(TlsServerName("one.example".parse().unwrap()));
-        let first_name = identifier.id(&input).unwrap();
-        input
-            .extensions()
-            .insert(TlsServerName("two.example".parse().unwrap()));
-        assert_ne!(first_name, identifier.id(&input).unwrap());
-        input
-            .extensions()
-            .insert(TlsClientAuth(ClientAuth::SelfSigned));
         assert!(!identifier.id(&input).unwrap().is_reusable());
     }
 
-    #[test]
-    fn unknown_tls_policy_disables_reuse_but_explicit_policy_is_preserved() {
-        use rama_net::client::pool::ConnID as _;
-        let identifier = HttpConnIdentifier::new();
-        let input = ConnectRequest::new(HostWithPort::example_domain_https())
-            .with_application_protocol(Protocol::HTTPS);
-        assert!(!identifier.id(&input).unwrap().is_reusable());
-        input
-            .extensions()
-            .insert(common_tls_key(input.extensions()));
-        assert!(identifier.id(&input).unwrap().is_reusable());
-        let plaintext = ConnectRequest::new(HostWithPort::example_domain_http())
-            .with_application_protocol(Protocol::HTTP);
-        assert!(identifier.id(&plaintext).unwrap().is_reusable());
+    #[tokio::test]
+    async fn request_tls_tunnel_bypasses_proxy_pool_lookup_and_return() {
+        use rama_tls::TlsTunnel;
+
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let inner = service_fn({
+            let attempts = Arc::clone(&attempts);
+            move |input: ConnectRequest| {
+                attempts.fetch_add(1, Ordering::Relaxed);
+                async move {
+                    Ok::<_, ConnectionError>(EstablishedClientConnection {
+                        input,
+                        conn: ServiceInput::new(()),
+                    })
+                }
+            }
+        });
+        let pool = MultiplexPool::try_new(10, 10).unwrap();
+        // No origin TLS provider or reuse predicate is installed.
+        let connector = PooledConnector::new(inner, pool, HttpConnIdentifier::new());
+        let proxy: ProxyAddress = "http://proxy.example:8080".parse().unwrap();
+        for (tunnel, expected_attempts) in [(true, 1), (false, 2), (true, 3), (true, 4), (false, 4)]
+        {
+            let input = ConnectRequest::new(HostWithPort::example_domain_http())
+                .with_application_protocol(Protocol::HTTP);
+            input.extensions.insert(ProxyRoute::Proxy(proxy.clone()));
+            if tunnel {
+                input.extensions.insert(TlsTunnel {
+                    server_identity: Some("proxy.example".parse().unwrap()),
+                    application_protocol: Some(Protocol::HTTP),
+                    alpn: None,
+                });
+            }
+            drop(connector.serve(input).await.unwrap().conn);
+            assert_eq!(attempts.load(Ordering::Relaxed), expected_attempts);
+        }
     }
 
     #[test]

@@ -522,6 +522,7 @@ mod tests {
         let shared = crate::h3::connection::Shared::new(
             crate::h3::connection::Config::default(),
             crate::h3::control::Role::Client,
+            Default::default(),
         )
         .unwrap();
         for host in ["bad host", "user@example.com", "[invalid]"] {
@@ -564,6 +565,7 @@ mod tests {
         crate::h3::connection::Shared::new(
             crate::h3::connection::Config::default(),
             crate::h3::control::Role::Client,
+            Default::default(),
         )
         .unwrap()
     }
@@ -929,6 +931,7 @@ mod tests {
         let shared = crate::h3::connection::Shared::new(
             crate::h3::connection::Config::default(),
             crate::h3::control::Role::Client,
+            Default::default(),
         )
         .unwrap();
         let encoded = encode_request(&shared, 0, &req).unwrap();

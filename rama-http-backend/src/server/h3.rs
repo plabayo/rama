@@ -2,7 +2,7 @@
 
 use super::HttpServeResult;
 use rama_core::{
-    Service, ServiceInput,
+    Service,
     extensions::{ExtensionsRef, Ingress},
     futures::{StreamExt, stream::FuturesUnordered},
     graceful::ShutdownGuard,
@@ -16,7 +16,7 @@ use rama_http_types::Request;
 use std::convert::Infallible;
 
 pub(super) async fn serve<S, R>(
-    input: ServiceInput<rama_quic::Connection>,
+    input: rama_quic::Connection,
     config: Config,
     guard: Option<ShutdownGuard>,
     service: S,
@@ -25,8 +25,8 @@ where
     S: Service<Request, Output = R, Error = Infallible> + Clone,
     R: IntoResponse + Send + 'static,
 {
-    let extensions = input.extensions;
-    let (mut connection, driver) = server::handshake(input.input, config)?;
+    let extensions = input.extensions().clone();
+    let (mut connection, driver) = server::handshake(input, config)?;
     let driver = driver.run();
     let mut driver = std::pin::pin!(driver);
     let cancelled = async {

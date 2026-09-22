@@ -7,10 +7,15 @@ use super::{
     qpack::{Decoder, DecoderConfig, Encoder, EncoderConfig, FieldPair, QpackError},
 };
 use parking_lot::Mutex;
-use rama_core::bytes::{Bytes, BytesMut};
+use rama_core::{
+    bytes::{Bytes, BytesMut},
+    extensions::{Extensions, ExtensionsRef},
+};
 use rama_http_types::proto::h3::{
     Code, FrameHeader, FrameType, SettingId, Settings, StreamType, VarInt, VarIntDecoder,
 };
+use rama_net::stream::SocketInfo;
+use rama_quic::NegotiatedTlsParameters;
 use rama_quic_proto::coding::Codec;
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
@@ -138,7 +143,7 @@ pub(crate) struct Shared {
     pub(crate) role: Role,
     pub(crate) pushes: Mutex<super::push::State>,
     pub(crate) push_ready: Notify,
-    pub(crate) transport_extensions: rama_core::extensions::Extensions,
+    pub(crate) transport_extensions: Extensions,
     state: Mutex<State>,
     encoder_stream: Mutex<Option<rama_quic::SendStream>>,
     pub(crate) config: Config,
@@ -150,13 +155,34 @@ pub(crate) struct Shared {
 }
 
 impl Shared {
-    pub(crate) fn new(config: Config, role: Role) -> Result<Arc<Self>, Error> {
+    pub(crate) fn from_connection(
+        config: Config,
+        role: Role,
+        connection: &rama_quic::Connection,
+    ) -> Result<Arc<Self>, Error> {
+        let extensions = connection.extensions().clone();
+        // Preserve connector-provided certificate chains and local addresses.
+        // CONNECT streams fork this store, keeping stream metadata isolated.
+        if !extensions.contains::<NegotiatedTlsParameters>()
+            && let Some(parameters) = connection.handshake_data()
+        {
+            extensions.insert(parameters);
+        }
+        extensions.get_ref_or_insert(|| SocketInfo::new(None, connection.remote_address().into()));
+        Self::new(config, role, extensions)
+    }
+
+    pub(crate) fn new(
+        config: Config,
+        role: Role,
+        transport_extensions: Extensions,
+    ) -> Result<Arc<Self>, Error> {
         config.settings()?;
         Ok(Arc::new(Self {
             role,
             pushes: Mutex::new(super::push::State::new()),
             push_ready: Notify::new(),
-            transport_extensions: rama_core::extensions::Extensions::new(),
+            transport_extensions,
             encoder_stream: Mutex::new(None),
             state: Mutex::new(State {
                 control: Control::new(role),

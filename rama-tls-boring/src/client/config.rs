@@ -4,13 +4,12 @@ use rama_core::conversion::RamaFrom;
 use rama_core::extensions::{Extension, Extensions, FromExtensions};
 use rama_net::tls::{ApplicationProtocol, TlsAlpn};
 use rama_tls::client::{
-    ClientHello, ClientHelloExtension, TlsClientAuth, TlsClientConfig, TlsClientPoolKey,
-    TlsClientPoolPolicy, TlsServerCertPins, TlsServerName, TlsServerTrust, TlsServerVerify,
-    TlsStoreServerCertChain,
+    ClientHello, ClientHelloExtension, TlsClientAuth, TlsClientConfig, TlsServerCertPins,
+    TlsServerName, TlsServerTrust, TlsServerVerify, TlsStoreServerCertChain,
 };
 use rama_tls::{
     CertificateCompressionAlgorithm, CipherSuite, ExtensionId, ProtocolVersion, SignatureScheme,
-    SupportedGroup, TlsBackend, TlsKeyLog, TlsSupportedVersions,
+    SupportedGroup, TlsKeyLog, TlsSupportedVersions,
 };
 use rama_utils::macros::generate_set_and_with;
 use std::sync::Arc;
@@ -50,33 +49,23 @@ pub struct BoringTlsConnectorConfig<'a> {
 }
 
 impl BoringTlsConnectorConfig<'_> {
-    /// Cache this provider's default TLS identity for connection pooling.
-    pub fn pool_policy(config: &TlsClientConfig) -> TlsClientPoolPolicy {
-        TlsClientPoolPolicy::new(config.as_extensions(), Self::pool_key)
-    }
-
-    fn pool_key(extensions: &Extensions) -> TlsClientPoolKey {
-        let mut key = TlsClientPoolKey::from_extensions(extensions, TlsBackend::Boring);
-        if BoringTlsConnectorConfig::from_extensions(extensions).has_native_overrides() {
-            key.disable_reuse();
-        }
-        key
-    }
-
-    /// Whether native settings are present outside the common reusable TLS policy.
-    pub fn has_native_overrides(&self) -> bool {
+    /// Whether no request-level TLS configuration is present.
+    ///
+    /// A connection pool dedicated to a fixed connector policy can reuse its
+    /// connections only when request extensions do not override that policy.
+    /// Inspect the request extensions before layering connector defaults.
+    pub fn is_empty(&self) -> bool {
         // Name every field so additions require an explicit pooling decision.
         let Self {
-            // These settings are accounted for by the common TLS pool key.
-            alpn: _,
-            versions: _,
-            verify: _,
-            keylog: _,
-            server_name: _,
-            store_chain: _,
-            client_auth: _,
-            server_cert_pins: _,
-            server_trust: _,
+            alpn,
+            versions,
+            verify,
+            keylog,
+            server_name,
+            store_chain,
+            client_auth,
+            server_cert_pins,
+            server_trust,
             cipher_suites,
             supported_groups,
             signature_schemes,
@@ -94,21 +83,30 @@ impl BoringTlsConnectorConfig<'_> {
             max_version,
         } = self;
 
-        cipher_suites.is_some()
-            || supported_groups.is_some()
-            || signature_schemes.is_some()
-            || grease.is_some()
-            || alps.is_some()
-            || extension_order.is_some()
-            || cert_compression.is_some()
-            || delegated_credentials.is_some()
-            || record_size_limit.is_some()
-            || encrypted_client_hello.is_some()
-            || ocsp_stapling.is_some()
-            || signed_cert_timestamps.is_some()
-            || verify_cert_store.is_some()
-            || min_version.is_some()
-            || max_version.is_some()
+        alpn.is_none()
+            && versions.is_none()
+            && verify.is_none()
+            && keylog.is_none()
+            && server_name.is_none()
+            && store_chain.is_none()
+            && client_auth.is_none()
+            && server_cert_pins.is_none()
+            && server_trust.is_none()
+            && cipher_suites.is_none()
+            && supported_groups.is_none()
+            && signature_schemes.is_none()
+            && grease.is_none()
+            && alps.is_none()
+            && extension_order.is_none()
+            && cert_compression.is_none()
+            && delegated_credentials.is_none()
+            && record_size_limit.is_none()
+            && encrypted_client_hello.is_none()
+            && ocsp_stapling.is_none()
+            && signed_cert_timestamps.is_none()
+            && verify_cert_store.is_none()
+            && min_version.is_none()
+            && max_version.is_none()
     }
 
     /// Whether a successful handshake establishes the configured server identity.

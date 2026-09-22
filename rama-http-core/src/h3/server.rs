@@ -39,16 +39,7 @@ pub fn handshake(
     }
     config.settings()?;
     let admission = Arc::new(Semaphore::new(config.max_requests));
-    let shared = Shared::new(config, Role::Server)?;
-    if let Some(parameters) = connection.handshake_data() {
-        shared.transport_extensions.insert(parameters);
-    }
-    shared
-        .transport_extensions
-        .insert(rama_net::stream::SocketInfo::new(
-            None,
-            connection.remote_address().into(),
-        ));
+    let shared = Shared::from_connection(config, Role::Server, &connection)?;
     let driver = Driver::new(connection.clone(), shared.clone(), Role::Server);
     Ok((
         Connection {

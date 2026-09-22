@@ -12,16 +12,16 @@
 
 use clap::{Parser, Subcommand};
 use rama::{
-    Service, ServiceInput,
+    Service,
     crypto::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject as _},
     error::BoxError,
-    extensions::Extensions,
     graceful::Shutdown,
     http::{
         Body, Method, Request, Response, Version,
         body::util::BodyExt as _,
         client::{EasyHttpConnectorBuilder, Http3Connector},
         server::HttpServer,
+        service::client::HttpClientExt as _,
     },
     net::address::SocketAddress,
     quic::{Endpoint, ServerConfig, TransportConfig, tls::TlsOptions},
@@ -125,12 +125,7 @@ async fn main() -> Result<(), BoxError> {
                     let result: Result<(), BoxError> = async {
                         let connection = incoming.await?;
                         tracing::info!("accepted HTTP/3 connection");
-                        service
-                            .serve(ServiceInput {
-                                input: connection,
-                                extensions: Extensions::new(),
-                            })
-                            .await?;
+                        service.serve(connection).await?;
                         Ok(())
                     }
                     .await;
@@ -151,7 +146,7 @@ async fn main() -> Result<(), BoxError> {
         } => {
             let anchors = CertificateDer::pem_file_iter(ca)?.collect::<Result<Vec<_>, _>>()?;
             let tls = TlsClientConfig::new().try_with_server_trust_anchors(anchors)?;
-            let connector = Http3Connector::<Body>::builder(exec.clone())
+            let connector = Http3Connector::builder(exec.clone())
                 .with_tls_config(tls.clone())
                 .build()
                 .await?;
@@ -172,17 +167,16 @@ async fn main() -> Result<(), BoxError> {
                 .with_default_connection_pool()
                 .build_client();
             for _ in 0..count {
-                let request = Request::builder()
-                    .uri(url.as_str())
+                let request = if body.is_some() {
+                    client.post(url.as_str())
+                } else {
+                    client.get(url.as_str())
+                };
+                let response = request
                     .version(Version::HTTP_3)
-                    .method(if body.is_some() {
-                        Method::POST
-                    } else {
-                        Method::GET
-                    })
-                    .body(body.clone().map_or_else(Body::empty, Body::from))?;
-                let response =
-                    tokio::time::timeout(Duration::from_secs(15), client.serve(request)).await??;
+                    .body(body.clone().map_or_else(Body::empty, Body::from))
+                    .send_with_timeout(Duration::from_secs(15))
+                    .await?;
                 assert_eq!(response.version(), Version::HTTP_3);
                 let status = response.status();
                 let received = response.into_body().collect().await?;

@@ -76,6 +76,7 @@ pub fn state(input: &[u8]) {
             ..Config::default()
         },
         role,
+        Default::default(),
     ) else {
         return;
     };
@@ -135,6 +136,7 @@ fn compression_schedule(input: &[u8]) {
             ..Config::default()
         },
         Role::Server,
+        Default::default(),
     )
     .unwrap();
     let mut encoder = Encoder::new(EncoderConfig {

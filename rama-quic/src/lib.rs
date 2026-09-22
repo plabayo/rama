@@ -72,62 +72,26 @@ pub mod tls {
             .ok()
     }
 
-    /// Prepare a compact pooling policy with the same provider as QUIC dialing.
-    pub fn client_pool_policy(
-        config: &rama_tls::client::TlsClientConfig,
+    /// Check whether request extensions preserve the connector's fixed TLS policy.
+    ///
+    /// Resolve the provider once when assembling a connection pool. The returned
+    /// check reads request overrides only, before layering connector defaults.
+    pub fn client_connection_reuse_check(
         backend: rama_tls::TlsBackend,
-    ) -> rama_tls::client::TlsClientPoolPolicy {
+    ) -> fn(&rama_core::extensions::Extensions) -> bool {
         match selected_backend(backend) {
             #[cfg(feature = "rustls")]
-            Some(rama_tls::TlsBackend::Rustls) => {
-                rama_tls_rustls::client::RustlsTlsConnectorConfig::pool_policy(config)
-            }
-            #[cfg(feature = "boring")]
-            Some(rama_tls::TlsBackend::Boring) => {
-                rama_tls_boring::client::BoringTlsConnectorConfig::pool_policy(config)
-            }
-            _ => rama_tls::client::TlsClientPoolPolicy::new(config.as_extensions(), |extensions| {
-                let mut key = rama_tls::client::TlsClientPoolKey::from_extensions(
-                    extensions,
-                    rama_tls::TlsBackend::Auto,
-                );
-                key.disable_reuse();
-                key
-            }),
-        }
-    }
-
-    /// Capture the effective TLS policy for pool selection.
-    ///
-    /// Layer request settings over connector defaults before calling this. Native
-    /// overrides of the selected provider require a fresh connection when their
-    /// behavior cannot be compared. Auto follows connection establishment's choice.
-    pub fn client_pool_key(
-        extensions: &rama_core::extensions::Extensions,
-        backend: rama_tls::TlsBackend,
-    ) -> rama_tls::client::TlsClientPoolKey {
-        let selected = selected_backend(backend);
-        let mut key = rama_tls::client::TlsClientPoolKey::from_extensions(
-            extensions,
-            selected.unwrap_or(backend),
-        );
-        let native_overrides = match selected {
-            #[cfg(feature = "rustls")]
-            Some(rama_tls::TlsBackend::Rustls) => {
+            Some(rama_tls::TlsBackend::Rustls) => |extensions| {
                 rama_tls_rustls::client::RustlsTlsConnectorConfig::from_extensions(extensions)
-                    .has_native_overrides()
-            }
+                    .is_empty()
+            },
             #[cfg(feature = "boring")]
-            Some(rama_tls::TlsBackend::Boring) => {
+            Some(rama_tls::TlsBackend::Boring) => |extensions| {
                 rama_tls_boring::client::BoringTlsConnectorConfig::from_extensions(extensions)
-                    .has_native_overrides()
-            }
-            _ => true,
-        };
-        if native_overrides {
-            key.disable_reuse();
+                    .is_empty()
+            },
+            _ => |_| false,
         }
-        key
     }
 
     /// Summarize whether the selected provider establishes server identity.
@@ -171,17 +135,27 @@ pub mod tls {
         #[test]
         fn native_hooks_only_affect_the_selected_provider() {
             let extensions = Extensions::new();
+            assert!(client_connection_reuse_check(TlsBackend::Boring)(
+                &extensions
+            ));
+            assert!(client_connection_reuse_check(TlsBackend::Rustls)(
+                &extensions
+            ));
             extensions.insert(rama_tls_rustls::client::ModifyRustlsClientConfig::new(Ok));
-            assert!(client_pool_key(&extensions, TlsBackend::Boring).is_reusable());
+            assert!(client_connection_reuse_check(TlsBackend::Boring)(
+                &extensions
+            ));
             assert!(client_authenticates_server(&extensions, TlsBackend::Boring));
-            assert!(!client_pool_key(&extensions, TlsBackend::Rustls).is_reusable());
+            assert!(!client_connection_reuse_check(TlsBackend::Rustls)(
+                &extensions
+            ));
             assert!(!client_authenticates_server(
                 &extensions,
                 TlsBackend::Rustls
             ));
             assert_eq!(
-                client_pool_key(&extensions, TlsBackend::Auto),
-                client_pool_key(&extensions, TlsBackend::Rustls)
+                client_connection_reuse_check(TlsBackend::Auto)(&extensions),
+                client_connection_reuse_check(TlsBackend::Rustls)(&extensions)
             );
             assert!(!client_authenticates_server(&extensions, TlsBackend::Auto));
 
@@ -189,6 +163,13 @@ pub mod tls {
             assert!(!client_authenticates_server(
                 &extensions,
                 TlsBackend::Boring
+            ));
+            extensions.insert(TlsServerVerify(ServerVerifyMode::Auto));
+            assert!(!client_connection_reuse_check(TlsBackend::Boring)(
+                &extensions
+            ));
+            assert!(!client_connection_reuse_check(TlsBackend::Rustls)(
+                &extensions
             ));
         }
     }

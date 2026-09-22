@@ -11,7 +11,7 @@ use rama_http::layer::version_adapter::ensure_valid_request_for_version;
 use rama_http_types::body::OnIncompleteBody;
 use rama_http_types::proto::h1::ext::ConnectionClose;
 use rama_http_types::{Method, Request, Response, Version};
-use rama_net::conn::ConnectionHealthWatcher;
+use rama_net::conn::{ConnectionHealthWatcher, MaxConcurrency};
 use rama_utils::guard::DropGuard;
 use std::fmt;
 use tokio::sync::Mutex;
@@ -199,14 +199,15 @@ impl<B> ExtensionsRef for HttpClientService<B> {
 
 impl<Body> HttpClientService<Body> {
     /// Build an HTTP/3 service on an established QUIC connection and drive its critical streams.
-    pub fn http3(
-        input: rama_core::ServiceInput<rama_quic::Connection>,
+    pub(super) fn http3(
+        input: rama_quic::Connection,
         config: rama_http_core::h3::connection::Config,
         executor: rama_core::rt::Executor,
     ) -> Result<Self, rama_http_core::h3::Error> {
+        let extensions = input.extensions().clone();
+        extensions.insert(MaxConcurrency::new(config.max_requests));
         let (sender, driver) =
-            rama_http_core::h3::client::handshake(input.input, config, executor.clone())?;
-        let extensions = input.extensions;
+            rama_http_core::h3::client::handshake(input, config, executor.clone())?;
         let driver_extensions = extensions.clone();
         let draining = sender.closed_or_draining();
         executor.into_spawn_task(async move {

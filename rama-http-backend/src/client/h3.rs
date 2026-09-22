@@ -1,8 +1,8 @@
 //! HTTP/3 establishment using Rama DNS candidates and the existing multiplex pool.
 
-use super::HttpClientService;
+use super::Http3Transport;
 use rama_core::{
-    Service, ServiceInput,
+    Service,
     error::{BoxError, BoxErrorExt as _, error_chain},
     extensions::{Extensions, ExtensionsRef},
     futures::{StreamExt as _, stream},
@@ -18,42 +18,37 @@ use rama_net::{
         ConnectRequest, ConnectionError, ConnectionErrorKind, ConnectorTargetStream,
         EstablishedClientConnection, EstablishedProxyRoute, ProxyRoute, race_connect,
     },
-    conn::MaxConcurrency,
     stream::SocketInfo,
     tls::ApplicationProtocol,
 };
 use rama_quic::{
     ClientConfig, Connection, ConnectionError as QuicConnectionError, Endpoint, TransportConfig,
-    tls::{TlsOptions, client_authenticates_server, client_pool_policy},
+    tls::{TlsOptions, client_authenticates_server, client_connection_reuse_check},
 };
 use rama_tls::{
     TlsBackend,
-    client::{
-        TlsClientConfig, TlsClientPoolPolicy, TlsServerAuthentication, TlsServerName,
-        TlsStoreServerCertChain,
-    },
+    client::{TlsClientConfig, TlsServerAuthentication, TlsServerName, TlsStoreServerCertChain},
 };
 use rama_utils::macros::generate_set_and_with;
-use std::{marker::PhantomData, net::SocketAddr, sync::Arc};
+use std::{net::SocketAddr, sync::Arc};
 
-/// Establish authenticated HTTP/3 connections on a reusable QUIC endpoint.
+/// Establish authenticated QUIC transports for the common HTTP handshake.
 ///
 /// Wrap this connector with Rama's DNS connector and HTTP connection pool,
-/// then configure the pool with [`Self::tls_pool_policy`] so overrides affect lookup.
+/// then configure the pool with [`Self::connection_reuse_check`] so overrides affect lookup.
 /// The connector selects `h3` ALPN; the origin hostname remains the TLS
 /// verification target even when routing selects a different physical address.
 /// TCP proxy routes are rejected before any UDP connection is attempted.
-pub struct Http3Connector<B> {
+pub struct Http3Connector {
     endpoint: Endpoint,
     tls: TlsClientConfig,
     backend: TlsBackend,
     transport: Arc<TransportConfig>,
     config: Config,
     executor: Executor,
-    _body: PhantomData<fn(B)>,
 }
 
-impl<B> Clone for Http3Connector<B> {
+impl Clone for Http3Connector {
     fn clone(&self) -> Self {
         Self {
             endpoint: self.endpoint.clone(),
@@ -62,12 +57,11 @@ impl<B> Clone for Http3Connector<B> {
             transport: self.transport.clone(),
             config: self.config.clone(),
             executor: self.executor.clone(),
-            _body: PhantomData,
         }
     }
 }
 
-impl<B> std::fmt::Debug for Http3Connector<B> {
+impl std::fmt::Debug for Http3Connector {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Http3Connector")
             .field("config", &self.config)
@@ -82,26 +76,24 @@ impl<B> std::fmt::Debug for Http3Connector<B> {
 /// with the application. A custom endpoint can be supplied when its socket or
 /// lifecycle is managed separately.
 #[derive(Debug)]
-pub struct Http3ConnectorBuilder<B> {
+pub struct Http3ConnectorBuilder {
     endpoint: Option<Endpoint>,
     tls: TlsClientConfig,
     backend: TlsBackend,
     config: Config,
     executor: Executor,
-    _body: PhantomData<fn(B)>,
 }
 
-impl<B> Http3Connector<B> {
+impl Http3Connector {
     /// Configure a connector with default TLS verification and HTTP/3 limits.
     #[must_use]
-    pub fn builder(executor: Executor) -> Http3ConnectorBuilder<B> {
+    pub fn builder(executor: Executor) -> Http3ConnectorBuilder {
         Http3ConnectorBuilder {
             endpoint: None,
             tls: TlsClientConfig::default_http(),
             backend: TlsBackend::Auto,
             config: Config::default(),
             executor,
-            _body: PhantomData,
         }
     }
 
@@ -111,20 +103,21 @@ impl<B> Http3Connector<B> {
         &self.executor
     }
 
-    /// TLS defaults that pool policy must combine with request overrides.
+    /// Fixed TLS defaults for this connector. Rebuild its pool when these defaults
+    /// or behavior captured by native TLS hooks change.
     #[must_use]
     pub fn tls_config(&self) -> &TlsClientConfig {
         &self.tls
     }
 
-    /// Provider selection used for both establishment and pool policy.
+    /// Provider selection used for establishment and connection reuse checks.
     #[must_use]
     pub fn tls_backend(&self) -> TlsBackend {
         self.backend
     }
 }
 
-impl<B> Http3ConnectorBuilder<B> {
+impl Http3ConnectorBuilder {
     generate_set_and_with! {
         /// Reuse an application-managed endpoint instead of binding a new socket.
         pub fn endpoint(mut self, endpoint: Endpoint) -> Self {
@@ -158,7 +151,7 @@ impl<B> Http3ConnectorBuilder<B> {
     }
 
     /// Validate the limits and bind a default outbound endpoint when needed.
-    pub async fn build(self) -> Result<Http3Connector<B>, BoxError> {
+    pub async fn build(self) -> Result<Http3Connector, BoxError> {
         let mut transport = TransportConfig::default();
         self.config.configure_transport(&mut transport)?;
         let backend = TlsOptions::default()
@@ -196,7 +189,6 @@ impl<B> Http3ConnectorBuilder<B> {
             transport: Arc::new(transport),
             config: self.config,
             executor: self.executor,
-            _body: PhantomData,
         })
     }
 }
@@ -216,10 +208,10 @@ struct PreparedTls {
     capture_chain: bool,
 }
 
-impl<B> Http3Connector<B> {
-    /// Cache this connector's provider policy for lookup in a shared HTTP pool.
-    pub fn tls_pool_policy(&self) -> TlsClientPoolPolicy {
-        client_pool_policy(&self.tls, self.backend)
+impl Http3Connector {
+    /// Reject request-local TLS overrides when reusing this connector's pool.
+    pub fn connection_reuse_check(&self) -> fn(&Extensions) -> bool {
+        client_connection_reuse_check(self.backend)
     }
 
     fn prepare_tls(&self, input: &ConnectRequest) -> Result<PreparedTls, ConnectionError> {
@@ -329,19 +321,18 @@ impl<B> Http3Connector<B> {
         })
     }
 
-    fn connection_extensions(
+    fn set_connection_extensions(
         &self,
         connection: &Connection,
         address: SocketAddr,
         prepared: PreparedTls,
-    ) -> Extensions {
-        // Connection metadata must not inherit a request store: attaching it back
-        // as Egress would form a recursive extension chain and retain that request.
-        let extensions = Extensions::new();
+    ) {
+        // Populate only connection facts: inheriting the request store here would
+        // retain request metadata and could create a cycle through Egress.
+        let extensions = connection.extensions();
         extensions.insert(TargetHttpVersion(Version::HTTP_3));
         extensions.insert(TlsServerAuthentication(prepared.authenticated_identity));
         extensions.insert(EstablishedProxyRoute::Direct);
-        extensions.insert(MaxConcurrency::new(self.config.max_requests));
         extensions.insert(SocketInfo::new(
             self.endpoint.local_addr().ok().map(Into::into),
             address.into(),
@@ -352,12 +343,11 @@ impl<B> Http3Connector<B> {
             }
             extensions.insert(parameters);
         }
-        extensions
     }
 }
 
-impl<B: Send + 'static> Service<ConnectRequest> for Http3Connector<B> {
-    type Output = EstablishedClientConnection<HttpClientService<B>, ConnectRequest>;
+impl Service<ConnectRequest> for Http3Connector {
+    type Output = EstablishedClientConnection<Http3Transport, ConnectRequest>;
     type Error = ConnectionError;
 
     async fn serve(&self, input: ConnectRequest) -> Result<Self::Output, Self::Error> {
@@ -382,20 +372,15 @@ impl<B: Send + 'static> Service<ConnectRequest> for Http3Connector<B> {
         // service-selection futures. Allocate only when opening a connection;
         // either transport's pool hits bypass this boundary entirely.
         let (address, connection) = Box::pin(self.connect(&input, &prepared)).await?;
-        let extensions = self.connection_extensions(&connection, address, prepared);
+        self.set_connection_extensions(&connection, address, prepared);
         input
             .extensions()
             .insert(TargetHttpVersion(Version::HTTP_3));
 
-        let conn = HttpClientService::http3(
-            ServiceInput {
-                input: connection,
-                extensions,
-            },
-            self.config.clone(),
-            self.executor.clone(),
-        )
-        .map_err(|error| ConnectionError::application(error, ConnectionErrorKind::Protocol))?;
+        let conn = Http3Transport {
+            connection,
+            config: self.config.clone(),
+        };
         Ok(EstablishedClientConnection { input, conn })
     }
 }
@@ -442,7 +427,6 @@ fn availability_error(error: &(dyn std::error::Error + 'static)) -> bool {
 #[cfg(test)]
 mod concrete_transport_tests {
     use super::*;
-    use rama_http_types::Body;
     use rama_net::{
         Protocol,
         address::SocketAddress,
@@ -458,14 +442,13 @@ mod concrete_transport_tests {
             .unwrap();
         // Deliberately omit a TLS provider: reaching direct establishment would
         // fail locally instead of returning the proxy capability error.
-        let http3 = Http3Connector::<Body> {
+        let http3 = Http3Connector {
             endpoint: endpoint.clone(),
             tls: TlsClientConfig::default_http(),
             backend: TlsBackend::Auto,
             transport: Arc::new(TransportConfig::default()),
             config: Config::default(),
             executor,
-            _body: PhantomData,
         };
         let connector = ProxyRoutesConnector::new(http3);
         let input = ConnectRequest::new("origin.example:443".parse().unwrap())

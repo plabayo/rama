@@ -7,16 +7,16 @@ mod robustness;
 use super::{client, connection::Config, server};
 use rama_core::{
     bytes::Bytes,
-    extensions::ExtensionsRef as _,
+    extensions::{Extension, ExtensionsRef as _},
     rt::{Executor, spawn},
 };
 use rama_http_types::{
-    Body, Request, Response, Version,
+    Body, Method, Request, Response, Version,
     body::{Frame, util::BodyExt},
     proto::h3::Code,
 };
-use rama_net::address::SocketAddress;
-use rama_quic::{Endpoint, TransportConfig, tls::TlsOptions};
+use rama_net::{address::SocketAddress, stream::SocketInfo};
+use rama_quic::{Endpoint, NegotiatedTlsParameters, TransportConfig, tls::TlsOptions};
 use rama_tls::{
     client::TlsClientConfig,
     server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
@@ -87,8 +87,8 @@ impl Pair {
             // backpressure. A GSO batch must fit that same queue capacity.
             server_socket.set_max_send_segments(NonZeroUsize::MIN);
             (
-                server.with_test_datagram_socket(server_socket).unwrap(),
-                client.with_test_datagram_socket(client_socket).unwrap(),
+                server.with_datagram_socket(server_socket).unwrap(),
+                client.with_datagram_socket(client_socket).unwrap(),
             )
         } else {
             let localhost = SocketAddress::local_ipv4(0);
@@ -495,6 +495,22 @@ async fn connect_upgrade_keeps_half_closed_tunnel_alive() {
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     tokio::time::timeout(LIMIT, async {
         let pair = Pair::new(None, None).await;
+        let client_local = pair.client_endpoint.local_addr().unwrap().into();
+        let server_local = pair.server_endpoint.local_addr().unwrap().into();
+        for (connection, local, marker) in [
+            (&pair.client, client_local, 1),
+            (&pair.server, server_local, 2),
+        ] {
+            connection.extensions().insert(ConnectionMetadata(marker));
+            connection.extensions().insert(SocketInfo::new(
+                Some(local),
+                connection.remote_address().into(),
+            ));
+        }
+        let mut parameters = pair.client.handshake_data().unwrap();
+        parameters.peer_certificate_chain = Some(pair.client.peer_identity().unwrap());
+        pair.client.extensions().insert(parameters);
+        let server_extensions = pair.server.extensions().clone();
         let (mut client, client_driver) =
             client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
                 .unwrap();
@@ -504,7 +520,7 @@ async fn connect_upgrade_keeps_half_closed_tunnel_alive() {
         let server_driver = spawn(server_driver.run());
         let serve = spawn(async move {
             let (request, mut response) = server.accept().await.unwrap().resolve().await.unwrap();
-            assert_eq!(request.method(), rama_http_types::Method::CONNECT);
+            assert_eq!(request.method(), Method::CONNECT);
             let upgrade = handle_upgrade(request);
             response
                 .send_informational(Response::builder().status(103).body(()).unwrap())
@@ -521,6 +537,27 @@ async fn connect_upgrade_keeps_half_closed_tunnel_alive() {
                 .await
                 .unwrap();
             let mut tunnel = upgrade.await.unwrap();
+            assert_eq!(
+                tunnel
+                    .extensions()
+                    .get_ref::<ConnectionMetadata>()
+                    .unwrap()
+                    .0,
+                2
+            );
+            assert_eq!(
+                tunnel
+                    .extensions()
+                    .get_ref::<SocketInfo>()
+                    .unwrap()
+                    .local_addr(),
+                Some(server_local)
+            );
+            tunnel.extensions().insert(ConnectionMetadata(3));
+            assert_eq!(
+                server_extensions.get_ref::<ConnectionMetadata>().unwrap().0,
+                2
+            );
             server.shutdown().unwrap();
             {
                 use std::{
@@ -546,7 +583,7 @@ async fn connect_upgrade_keeps_half_closed_tunnel_alive() {
         let response = client
             .send_request(
                 Request::builder()
-                    .method("CONNECT")
+                    .method(Method::CONNECT)
                     .uri(
                         rama_net::uri::Uri::parse_http_request_target("localhost:443", true)
                             .unwrap(),
@@ -559,6 +596,39 @@ async fn connect_upgrade_keeps_half_closed_tunnel_alive() {
         assert_eq!(response.status(), rama_http_types::StatusCode::CREATED);
         assert!(!response.headers().contains_key("content-length"));
         let mut tunnel = handle_upgrade(response).await.unwrap();
+        assert_eq!(
+            tunnel
+                .extensions()
+                .get_ref::<ConnectionMetadata>()
+                .unwrap()
+                .0,
+            1
+        );
+        assert_eq!(
+            tunnel
+                .extensions()
+                .get_ref::<SocketInfo>()
+                .unwrap()
+                .local_addr(),
+            Some(client_local)
+        );
+        assert!(
+            tunnel
+                .extensions()
+                .get_ref::<NegotiatedTlsParameters>()
+                .unwrap()
+                .peer_certificate_chain
+                .is_some()
+        );
+        tunnel.extensions().insert(ConnectionMetadata(4));
+        assert_eq!(
+            pair.client
+                .extensions()
+                .get_ref::<ConnectionMetadata>()
+                .unwrap()
+                .0,
+            1
+        );
         tunnel.write_all(b"client tunnel bytes").await.unwrap();
         tunnel.shutdown().await.unwrap();
         let mut bytes = Vec::new();
@@ -573,6 +643,9 @@ async fn connect_upgrade_keeps_half_closed_tunnel_alive() {
     .await
     .unwrap();
 }
+
+#[derive(Debug, Extension)]
+struct ConnectionMetadata(u8);
 
 #[tokio::test]
 async fn tiny_windows_fall_back_without_qpack_deadlock() {
@@ -904,6 +977,7 @@ async fn cancelled_push_resets_even_when_sender_is_idle() {
                     ..Config::default()
                 },
                 super::control::Role::Server,
+                Default::default(),
             )
             .unwrap();
             let mut send = pair.server.open_uni().await.unwrap();

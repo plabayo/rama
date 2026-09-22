@@ -13,7 +13,7 @@ use crate::{
     Layer, Service,
     dns::client::{DnsConnectorLayer, resolver::DnsAddressResolver},
     error::BoxError,
-    extensions::ExtensionsRef,
+    extensions::{Extensions, ExtensionsRef},
     http::{
         Request, StreamingBody, client::proxy::layer::HttpProxyConnector,
         layer::version_adapter::RequestVersionAdapter,
@@ -28,7 +28,6 @@ use crate::{
 };
 use rama_http::layer::{alt_svc::AltSvcCache, http_service::HttpServiceConnector};
 use rama_net::tls::ApplicationProtocol;
-use rama_tls::client::TlsClientPoolPolicy;
 use std::time::Duration;
 
 #[cfg(feature = "boring")]
@@ -64,20 +63,20 @@ pub struct ProxyStage<const PROXY: bool = true>;
 #[non_exhaustive]
 #[derive(Debug, Default)]
 pub struct TlsStage<const PROXY: bool = true> {
-    tls: Option<TlsClientPoolPolicy>,
+    reuse: Option<fn(&Extensions) -> bool>,
 }
 #[non_exhaustive]
 #[derive(Debug, Default)]
 pub struct HttpStage<const PROXY: bool = true> {
-    tls: Option<TlsClientPoolPolicy>,
-    h3_tls: Option<TlsClientPoolPolicy>,
+    reuse: Option<fn(&Extensions) -> bool>,
+    h3_reuse: Option<fn(&Extensions) -> bool>,
     h3_enabled: bool,
 }
 #[non_exhaustive]
 #[derive(Debug, Default)]
 pub struct ProxyRouteFailureCacheStage {
-    tls: Option<TlsClientPoolPolicy>,
-    h3_tls: Option<TlsClientPoolPolicy>,
+    reuse: Option<fn(&Extensions) -> bool>,
+    h3_reuse: Option<fn(&Extensions) -> bool>,
     h3_enabled: bool,
 }
 #[non_exhaustive]
@@ -444,14 +443,16 @@ impl<T, const PROXY: bool> EasyHttpConnectorBuilder<T, ProxyStage<PROXY>> {
         self,
         config: TlsClientConfig,
     ) -> EasyHttpConnectorBuilder<boring_client::TlsConnector<T>, TlsStage<PROXY>> {
-        let tls = Some(boring_client::BoringTlsConnectorConfig::pool_policy(
-            &config,
-        ));
+        let reuse = Some(
+            (|extensions: &Extensions| {
+                boring_client::BoringTlsConnectorConfig::from_extensions(extensions).is_empty()
+            }) as fn(&Extensions) -> bool,
+        );
         let connector = boring_client::TlsConnector::auto(self.connector).with_base_config(config);
 
         EasyHttpConnectorBuilder {
             connector,
-            stage: TlsStage { tls },
+            stage: TlsStage { reuse },
         }
     }
 
@@ -474,9 +475,11 @@ impl<T, const PROXY: bool> EasyHttpConnectorBuilder<T, ProxyStage<PROXY>> {
         AddInputExtension<boring_client::TlsConnector<T>, FallbackHttpVersion>,
         TlsStage<PROXY>,
     > {
-        let tls = Some(boring_client::BoringTlsConnectorConfig::pool_policy(
-            &config,
-        ));
+        let reuse = Some(
+            (|extensions: &Extensions| {
+                boring_client::BoringTlsConnectorConfig::from_extensions(extensions).is_empty()
+            }) as fn(&Extensions) -> bool,
+        );
         let connector = boring_client::TlsConnector::auto(self.connector).with_base_config(config);
         let connector =
             AddInputExtension::new(connector, FallbackHttpVersion(default_http_version))
@@ -484,7 +487,7 @@ impl<T, const PROXY: bool> EasyHttpConnectorBuilder<T, ProxyStage<PROXY>> {
 
         EasyHttpConnectorBuilder {
             connector,
-            stage: TlsStage { tls },
+            stage: TlsStage { reuse },
         }
     }
 
@@ -498,14 +501,16 @@ impl<T, const PROXY: bool> EasyHttpConnectorBuilder<T, ProxyStage<PROXY>> {
         self,
         config: TlsClientConfig,
     ) -> EasyHttpConnectorBuilder<rustls_client::TlsConnector<T>, TlsStage<PROXY>> {
-        let tls = Some(rustls_client::RustlsTlsConnectorConfig::pool_policy(
-            &config,
-        ));
+        let reuse = Some(
+            (|extensions: &Extensions| {
+                rustls_client::RustlsTlsConnectorConfig::from_extensions(extensions).is_empty()
+            }) as fn(&Extensions) -> bool,
+        );
         let connector = rustls_client::TlsConnector::auto(self.connector).with_base_config(config);
 
         EasyHttpConnectorBuilder {
             connector,
-            stage: TlsStage { tls },
+            stage: TlsStage { reuse },
         }
     }
 
@@ -528,9 +533,11 @@ impl<T, const PROXY: bool> EasyHttpConnectorBuilder<T, ProxyStage<PROXY>> {
         AddInputExtension<rustls_client::TlsConnector<T>, FallbackHttpVersion>,
         TlsStage<PROXY>,
     > {
-        let tls = Some(rustls_client::RustlsTlsConnectorConfig::pool_policy(
-            &config,
-        ));
+        let reuse = Some(
+            (|extensions: &Extensions| {
+                rustls_client::RustlsTlsConnectorConfig::from_extensions(extensions).is_empty()
+            }) as fn(&Extensions) -> bool,
+        );
         let connector = rustls_client::TlsConnector::auto(self.connector).with_base_config(config);
         let connector =
             AddInputExtension::new(connector, FallbackHttpVersion(default_http_version))
@@ -538,7 +545,7 @@ impl<T, const PROXY: bool> EasyHttpConnectorBuilder<T, ProxyStage<PROXY>> {
 
         EasyHttpConnectorBuilder {
             connector,
-            stage: TlsStage { tls },
+            stage: TlsStage { reuse },
         }
     }
 
@@ -553,9 +560,14 @@ impl<T, const PROXY: bool> EasyHttpConnectorBuilder<T, ProxyStage<PROXY>> {
 
 impl<T, const PROXY: bool> EasyHttpConnectorBuilder<T, TlsStage<PROXY>> {
     generate_set_and_with! {
-        /// Supply the provider-prepared policy of a custom TLS connector.
-        pub fn tls_pool_policy(mut self, policy: TlsClientPoolPolicy) -> Self {
-            self.stage.tls = Some(policy);
+        /// Check whether a request can reuse this connector's fixed policy.
+        ///
+        /// Custom connectors are assumed to use a fixed policy. Return false for
+        /// request overrides that require a fresh connection; that connection will
+        /// also be discarded after use. For policy-specific pool keys, use a custom
+        /// `ReqToConnID` with `with_custom_connection_pool`.
+        pub fn connection_reuse_check(mut self, check: fn(&Extensions) -> bool) -> Self {
+            self.stage.reuse = Some(check);
             self
         }
     }
@@ -570,8 +582,8 @@ impl<T, const PROXY: bool> EasyHttpConnectorBuilder<T, TlsStage<PROXY>> {
         EasyHttpConnectorBuilder {
             connector,
             stage: HttpStage {
-                tls: self.stage.tls,
-                h3_tls: None,
+                reuse: self.stage.reuse,
+                h3_reuse: None,
                 h3_enabled: false,
             },
         }
@@ -590,25 +602,31 @@ impl<T, const PROXY: bool> EasyHttpConnectorBuilder<T, TlsStage<PROXY>> {
         EasyHttpConnectorBuilder {
             connector,
             stage: HttpStage {
-                tls: self.stage.tls,
-                h3_tls: None,
+                reuse: self.stage.reuse,
+                h3_reuse: None,
                 h3_enabled: false,
             },
         }
     }
 }
 
-impl<T, Body, H, const PROXY: bool>
-    EasyHttpConnectorBuilder<HttpConnector<T, Body, H>, HttpStage<PROXY>>
+impl<T, Body, const PROXY: bool>
+    EasyHttpConnectorBuilder<HttpConnector<T, Body>, HttpStage<PROXY>>
 {
-    /// Enable HTTP/3 before pooling using a separately configured service connector.
-    /// The connector supplies its own transport, DNS and TLS policy.
+    /// Add a separately configured QUIC transport below the common HTTP handshake.
+    /// The connector supplies its own transport, DNS and TLS policy. Its policy
+    /// must remain fixed for the lifetime of the pool. For request overrides, use
+    /// [`Self::with_http3_connection_reuse_check`], or use
+    /// [`Self::with_http3_support`] for the built-in connector.
     pub fn with_http3_connector<C>(
         mut self,
         connector: C,
-    ) -> EasyHttpConnectorBuilder<HttpConnector<T, Body, C>, HttpStage<PROXY>> {
+    ) -> EasyHttpConnectorBuilder<
+        HttpConnector<super::HttpTransportConnector<T, C>, Body>,
+        HttpStage<PROXY>,
+    > {
         self.stage.h3_enabled = true;
-        self.stage.h3_tls = None;
+        self.stage.h3_reuse = None;
         EasyHttpConnectorBuilder {
             connector: self.connector.with_http3_connector(connector),
             stage: self.stage,
@@ -616,24 +634,30 @@ impl<T, Body, H, const PROXY: bool>
     }
 
     generate_set_and_with! {
-        /// Use the provider-prepared policy of a custom HTTP/3 connector for pooling.
-        pub fn http3_tls_pool_policy(mut self, policy: TlsClientPoolPolicy) -> Self {
-            self.stage.h3_tls = Some(policy);
+        /// Decide whether a custom HTTP/3 connector can reuse connections for this request.
+        pub fn http3_connection_reuse_check(mut self, check: fn(&Extensions) -> bool) -> Self {
+            self.stage.h3_reuse = Some(check);
             self
         }
     }
 
-    /// Enable a configured QUIC connector with DNS and its cached TLS pool identity.
+    /// Enable a configured QUIC connector with DNS and its connection reuse check.
     pub fn with_http3_support(
         self,
-        connector: super::Http3Connector<Body>,
+        connector: super::Http3Connector,
     ) -> EasyHttpConnectorBuilder<
-        HttpConnector<T, Body, crate::dns::client::DnsConnector<super::Http3Connector<Body>>>,
+        HttpConnector<
+            super::HttpTransportConnector<
+                T,
+                crate::dns::client::DnsConnector<super::Http3Connector>,
+            >,
+            Body,
+        >,
         HttpStage<PROXY>,
     > {
-        let policy = connector.tls_pool_policy();
+        let check = connector.connection_reuse_check();
         self.with_http3_connector(crate::dns::client::DnsConnector::new(connector))
-            .with_http3_tls_pool_policy(policy)
+            .with_http3_connection_reuse_check(check)
     }
 }
 
@@ -730,7 +754,7 @@ impl<T> EasyHttpConnectorBuilder<DefaultHttpConnector<T>, PoolStage> {
     }
 }
 
-fn finish_without_connection_pool<T, Stage: PoolTlsConfig>(
+fn finish_without_connection_pool<T, Stage: PoolConfig>(
     builder: EasyHttpConnectorBuilder<T, Stage>,
 ) -> ConfiguredConnectionBuilder<T>
 where
@@ -743,33 +767,33 @@ where
     }
 }
 
-trait PoolTlsConfig {
+trait PoolConfig {
     fn into_pool_setup(self) -> (HttpConnIdentifier, bool);
 }
 
-impl<const PROXY: bool> PoolTlsConfig for HttpStage<PROXY> {
+impl<const PROXY: bool> PoolConfig for HttpStage<PROXY> {
     fn into_pool_setup(self) -> (HttpConnIdentifier, bool) {
         (
             HttpConnIdentifier::new()
-                .maybe_with_tls_policy(self.tls)
-                .maybe_with_http3_tls_policy(self.h3_tls),
+                .maybe_with_reuse_check(self.reuse)
+                .maybe_with_http3_reuse_check(self.h3_reuse),
             self.h3_enabled,
         )
     }
 }
 
-impl PoolTlsConfig for ProxyRouteFailureCacheStage {
+impl PoolConfig for ProxyRouteFailureCacheStage {
     fn into_pool_setup(self) -> (HttpConnIdentifier, bool) {
         (
             HttpConnIdentifier::new()
-                .maybe_with_tls_policy(self.tls)
-                .maybe_with_http3_tls_policy(self.h3_tls),
+                .maybe_with_reuse_check(self.reuse)
+                .maybe_with_http3_reuse_check(self.h3_reuse),
             self.h3_enabled,
         )
     }
 }
 
-fn finish_with_connection_pool<T, Stage: PoolTlsConfig>(
+fn finish_with_connection_pool<T, Stage: PoolConfig>(
     builder: EasyHttpConnectorBuilder<T, Stage>,
     config: HttpPooledConnectorConfig,
 ) -> Result<ConfiguredConnectionPoolBuilder<T>, BoxError>
@@ -784,7 +808,7 @@ where
     })
 }
 
-fn finish_with_default_connection_pool<T, Stage: PoolTlsConfig>(
+fn finish_with_default_connection_pool<T, Stage: PoolConfig>(
     builder: EasyHttpConnectorBuilder<T, Stage>,
 ) -> ConfiguredConnectionPoolBuilder<T>
 where
@@ -835,8 +859,8 @@ impl<T, const PROXY: bool> EasyHttpConnectorBuilder<T, HttpStage<PROXY>> {
         EasyHttpConnectorBuilder {
             connector: ProxyRouteFailureCacheConnector::new(erase_connector(self.connector), cache),
             stage: ProxyRouteFailureCacheStage {
-                tls: self.stage.tls,
-                h3_tls: self.stage.h3_tls,
+                reuse: self.stage.reuse,
+                h3_reuse: self.stage.h3_reuse,
                 h3_enabled: self.stage.h3_enabled,
             },
         }
@@ -850,8 +874,8 @@ impl<T, const PROXY: bool> EasyHttpConnectorBuilder<T, HttpStage<PROXY>> {
         EasyHttpConnectorBuilder {
             connector: self.connector,
             stage: ProxyRouteFailureCacheStage {
-                tls: self.stage.tls,
-                h3_tls: self.stage.h3_tls,
+                reuse: self.stage.reuse,
+                h3_reuse: self.stage.h3_reuse,
                 h3_enabled: self.stage.h3_enabled,
             },
         }
@@ -940,6 +964,11 @@ impl<T> EasyHttpConnectorBuilder<T, HttpStage<true>> {
     ///
     /// [`Pool`]: rama_net::client::pool::Pool
     /// [`ReqToConnId`]: rama_net::client::pool::ReqToConnID
+    ///
+    /// The supplied `ReqToConnID` replaces the built-in reuse checks. It owns
+    /// request-override compatibility and must separate incompatible connector
+    /// policies when the pool is shared. Return a non-reusable `ConnID` when a
+    /// request needs a fresh connection that must not return to the pool.
     pub fn with_custom_connection_pool<P, R>(
         self,
         pool: P,
@@ -995,6 +1024,11 @@ impl<T> EasyHttpConnectorBuilder<T, HttpStage<false>> {
     }
 
     /// Use a custom connection pool without a proxy-route failure cache.
+    ///
+    /// The supplied `ReqToConnID` replaces the built-in reuse checks. It owns
+    /// request-override compatibility and must separate incompatible connector
+    /// policies when the pool is shared. Return a non-reusable `ConnID` when a
+    /// request needs a fresh connection that must not return to the pool.
     pub fn with_custom_connection_pool<P, R>(
         self,
         pool: P,
@@ -1041,6 +1075,11 @@ impl<T> EasyHttpConnectorBuilder<T, ProxyRouteFailureCacheStage> {
     /// plaintext HTTP forward-proxy connections from CONNECT tunnels to the
     /// same proxy. [`HttpConnIdentifier`](super::HttpConnIdentifier) does so by
     /// default.
+    ///
+    /// The supplied `ReqToConnID` replaces the built-in reuse checks. It owns
+    /// request-override compatibility and must separate incompatible connector
+    /// policies when the pool is shared. Return a non-reusable `ConnID` when a
+    /// request needs a fresh connection that must not return to the pool.
     pub fn with_custom_connection_pool<P, R>(
         self,
         pool: P,
@@ -1081,49 +1120,26 @@ impl<T, S> EasyHttpConnectorBuilder<T, S> {
 #[cfg(all(test, any(feature = "rustls", feature = "boring")))]
 mod tls_pool_tests {
     use super::*;
-    #[cfg(feature = "rustls")]
-    use rama_core::extensions::Extensions;
 
     #[cfg(feature = "rustls")]
     #[test]
-    fn rustls_pool_key_rejects_native_hooks() {
+    fn rustls_request_overrides_bypass_reuse() {
         let extensions = Extensions::new();
-        assert!(
-            rustls_client::RustlsTlsConnectorConfig::pool_policy(&TlsClientConfig::new())
-                .key(&extensions)
-                .is_reusable()
-        );
+        assert!(rustls_client::RustlsTlsConnectorConfig::from_extensions(&extensions).is_empty());
         extensions.insert(rustls_client::ModifyRustlsClientConfig::new(Ok));
-        assert!(
-            !rustls_client::RustlsTlsConnectorConfig::pool_policy(&TlsClientConfig::new())
-                .key(&extensions)
-                .is_reusable()
-        );
+        assert!(!rustls_client::RustlsTlsConnectorConfig::from_extensions(&extensions).is_empty());
         #[cfg(feature = "boring")]
-        assert!(
-            boring_client::BoringTlsConnectorConfig::pool_policy(&TlsClientConfig::new())
-                .key(&extensions)
-                .is_reusable()
-        );
+        assert!(boring_client::BoringTlsConnectorConfig::from_extensions(&extensions).is_empty());
     }
 
     #[cfg(feature = "boring")]
     #[test]
-    fn boring_pool_key_rejects_native_overrides() {
-        let config = TlsClientConfig::new();
-        config
-            .as_extensions()
-            .insert(boring_client::BoringGrease(true));
-        assert!(
-            !boring_client::BoringTlsConnectorConfig::pool_policy(&TlsClientConfig::new())
-                .key(config.as_extensions())
-                .is_reusable()
-        );
+    fn boring_request_overrides_bypass_reuse() {
+        let extensions = Extensions::new();
+        assert!(boring_client::BoringTlsConnectorConfig::from_extensions(&extensions).is_empty());
+        extensions.insert(boring_client::BoringGrease(true));
+        assert!(!boring_client::BoringTlsConnectorConfig::from_extensions(&extensions).is_empty());
         #[cfg(feature = "rustls")]
-        assert!(
-            rustls_client::RustlsTlsConnectorConfig::pool_policy(&TlsClientConfig::new())
-                .key(config.as_extensions())
-                .is_reusable()
-        );
+        assert!(rustls_client::RustlsTlsConnectorConfig::from_extensions(&extensions).is_empty());
     }
 }

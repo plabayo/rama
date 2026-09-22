@@ -53,7 +53,7 @@ impl RecvStream for ReadyRecv {
 
 #[test]
 fn ignored_frame_flood_yields_and_preserves_following_data() {
-    let shared = Shared::new(Config::default(), Role::Server).unwrap();
+    let shared = Shared::new(Config::default(), Role::Server, Default::default()).unwrap();
     // 0x21 is an unknown frame type. All bytes are immediately available.
     let mut wire = [0x21, 0].repeat(OPERATIONS_PER_QUANTUM * 4);
     wire.extend_from_slice(b"\x00\x07payload");
@@ -155,7 +155,7 @@ impl SendStream for ReadySend {
 
 #[test]
 fn immediately_ready_empty_body_frames_yield_before_reaching_payload() {
-    let shared = Shared::new(Config::default(), Role::Server).unwrap();
+    let shared = Shared::new(Config::default(), Role::Server, Default::default()).unwrap();
     shared
         .schedule
         .lock()

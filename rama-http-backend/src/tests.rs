@@ -55,7 +55,7 @@ use super::{
 };
 
 #[tokio::test]
-async fn unconfigured_http3_transport_is_unavailable() {
+async fn byte_stream_transport_rejects_http3_handshake() {
     let connector =
         HttpConnectorLayer::<Body>::default().into_layer(MockConnectorService::new(|| {
             HttpServer::auto(Executor::default()).service(service_fn(server_svc_fn))
@@ -65,9 +65,9 @@ async fn unconfigured_http3_transport_is_unavailable() {
         .serve(create_test_request(Version::HTTP_3))
         .await
         .err()
-        .expect("HTTP/3 requires a configured connector");
-    assert_eq!(error.domain(), ConnectionErrorDomain::Transport);
-    assert_eq!(error.kind(), ConnectionErrorKind::Unavailable);
+        .expect("HTTP/3 requires a QUIC transport");
+    assert_eq!(error.domain(), ConnectionErrorDomain::Application);
+    assert_eq!(error.kind(), ConnectionErrorKind::Protocol);
 }
 
 #[tokio::test]

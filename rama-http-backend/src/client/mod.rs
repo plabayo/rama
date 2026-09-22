@@ -10,9 +10,7 @@ pub use connect_request::{HttpConnectRequestAdapter, HttpConnectRequestAdapterLa
 
 mod conn;
 #[doc(inline)]
-pub use conn::{
-    HttpConnector, HttpConnectorLayer, NoHttp3Connector, http_connect, http2_eager_handshake,
-};
+pub use conn::{HttpConnector, HttpConnectorLayer, http_connect, http2_eager_handshake};
 
 mod bind_body;
 #[doc(inline)]
@@ -27,3 +25,7 @@ pub mod proxy;
 mod h3;
 #[doc(inline)]
 pub use h3::{Http3Connector, Http3ConnectorBuilder};
+
+mod transport;
+#[doc(inline)]
+pub use transport::{Http3Transport, HttpTransport, HttpTransportConnector, IntoHttpTransport};

@@ -276,7 +276,7 @@ impl HttpServer<rama_http_core::h3::connection::Config> {
     /// Serve a QUIC connection through the ordinary Rama HTTP service interface.
     pub async fn serve<S, Response>(
         &self,
-        connection: rama_core::ServiceInput<rama_quic::Connection>,
+        connection: rama_quic::Connection,
         service: S,
     ) -> HttpServeResult
     where
@@ -293,7 +293,7 @@ impl HttpServer<rama_http_core::h3::connection::Config> {
     }
 }
 
-impl<S, Response> Service<rama_core::ServiceInput<rama_quic::Connection>>
+impl<S, Response> Service<rama_quic::Connection>
     for HttpService<rama_http_core::h3::connection::Config, S>
 where
     S: Service<Request, Output = Response, Error = Infallible> + Clone,
@@ -302,10 +302,7 @@ where
     type Output = ();
     type Error = BoxError;
 
-    async fn serve(
-        &self,
-        connection: rama_core::ServiceInput<rama_quic::Connection>,
-    ) -> HttpServeResult {
+    async fn serve(&self, connection: rama_quic::Connection) -> HttpServeResult {
         crate::server::h3::serve(
             connection,
             self.builder.as_ref().clone(),

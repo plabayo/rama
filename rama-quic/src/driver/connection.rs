@@ -14,6 +14,7 @@ use std::{
 use parking_lot::Mutex;
 use pin_project_lite::pin_project;
 use rama_core::bytes::Bytes;
+use rama_core::extensions::{Extensions, ExtensionsRef};
 use rama_core::telemetry::tracing::{Instrument, Span, debug, debug_span};
 use rama_udp::SendFailure;
 use rustc_hash::FxHashMap;
@@ -858,10 +859,18 @@ impl Drop for ConnectionDriver {
 /// connection without losing application data.
 ///
 /// May be cloned to obtain another handle to the same connection.
+/// Connection-scoped extensions are shared by all handles and can be accessed
+/// through [`ExtensionsRef::extensions`], independently of the transport state lock.
 ///
 /// [`Connection::close()`]: Connection::close
 #[derive(Debug, Clone)]
 pub struct Connection(ConnectionRef);
+
+impl ExtensionsRef for Connection {
+    fn extensions(&self) -> &Extensions {
+        &self.0.extensions
+    }
+}
 
 impl Connection {
     /// Initiate a new outgoing unidirectional stream.
@@ -1947,6 +1956,7 @@ impl ConnectionRef {
         receive_queue: PacketBudget,
     ) -> Self {
         Self(Arc::new(ConnectionInner {
+            extensions: Extensions::new(),
             state: Mutex::new(State {
                 inner: conn,
                 driver: None,
@@ -2042,6 +2052,7 @@ impl std::ops::Deref for ConnectionRef {
 
 #[derive(Debug)]
 pub(crate) struct ConnectionInner {
+    extensions: Extensions,
     pub(crate) state: Mutex<State>,
     pub(crate) shared: Shared,
 }
