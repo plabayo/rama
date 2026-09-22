@@ -17,8 +17,7 @@ on:
     - cron: "0 10 * * *"
   workflow_dispatch: {}
 
-permissions:
-  contents: read
+permissions: {}
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -26,12 +25,16 @@ concurrency:
 
 jobs:
   precheck:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     env:
       RUSTUP_TOOLCHAIN: beta
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: beta
           components: rustfmt
@@ -39,6 +42,8 @@ jobs:
         run: bash scripts/ci/check-format.sh
 
   check-rust:
+    permissions:
+      contents: read
     strategy:
       matrix:
         toolchain:
@@ -58,9 +63,11 @@ jobs:
       RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
         if: startsWith(matrix.os, 'windows')
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{ matrix.toolchain }}
           components: clippy, rustfmt
@@ -76,6 +83,8 @@ jobs:
           cargo clippy --workspace --all-targets --all-features
 
   test-rust:
+    permissions:
+      contents: read
     name: test-rust-${{ matrix.toolchain }}-${{ matrix.profile }}-${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -111,12 +120,14 @@ jobs:
       RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
         if: startsWith(matrix.os, 'windows')
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{ matrix.toolchain }}
-      - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
+      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
         with:
           tool: nextest
       - uses: ./.github/actions/rust-cache
@@ -178,93 +189,95 @@ jobs:
           --workspace --run-ignored=only
 
   clippy-autofix:
-    # If check-rust fails (typically because clippy fires new lints on
-    # the beta toolchain), try `cargo clippy --fix` on ubuntu-latest +
-    # beta and open a PR with whatever auto-fixes get applied. Many
-    # beta lint regressions are auto-fixable, so this should resolve
-    # most failures of the scheduled run without manual intervention.
+    permissions:
+      contents: read
     needs: check-rust
-    if: failure()
+    if: failure() && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    env:
+      RUSTUP_TOOLCHAIN: beta
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+    - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+      with:
+        toolchain: beta
+        components: clippy
+    - uses: ./.github/actions/rust-cache
+      with:
+        env-vars: RUST_TOOLCHAIN
+        sccache: 'false'
+        key: ubuntu-latest-beta
+    - name: cargo clippy --fix
+      continue-on-error: true
+      run: |
+        cargo clippy --workspace --all-targets --all-features \
+          --fix --allow-dirty --allow-staged
+    - name: Export tracked source changes as data
+      id: patch
+      shell: bash
+      run: |
+        set -euo pipefail
+        git diff --binary HEAD -- '*.rs' > "$RUNNER_TEMP/changes.patch"
+        if [[ -s "$RUNNER_TEMP/changes.patch" ]]; then
+          echo 'has_changes=true' >> "$GITHUB_OUTPUT"
+        fi
+    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      if: steps.patch.outputs.has_changes == 'true'
+      with:
+        name: clippy-autofix-patch
+        path: ${{ runner.temp }}/changes.patch
+        if-no-files-found: error
+        retention-days: 1
+    outputs:
+      has-changes: ${{ steps.patch.outputs.has_changes }}
+
+  clippy-autofix-pr:
+    needs: clippy-autofix
+    if: always() && github.ref == 'refs/heads/main' && needs.clippy-autofix.result == 'success' && needs.clippy-autofix.outputs.has-changes
+      == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
       pull-requests: write
-    env:
-      RUSTUP_TOOLCHAIN: beta
-      # No `-D warnings` here: we want clippy to apply as many
-      # auto-fixes as it can, even if some lints remain unfixable.
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
-        with:
-          toolchain: beta
-          components: clippy
-      - uses: ./.github/actions/rust-cache
-        with:
-          env-vars: RUST_TOOLCHAIN
-          # Source rewriting should always execute the compiler directly.
-          sccache: "false"
-          key: ubuntu-latest-beta
-      - name: cargo clippy --fix
-        # Don't fail the job on remaining (unfixable) lints — we still
-        # want to open a PR with whatever got auto-fixed.
-        continue-on-error: true
-        run: |
-          cargo clippy --workspace --all-targets --all-features \
-            --fix --allow-dirty --allow-staged
-      - name: Check for changes
-        id: diff
-        run: |
-          if [ -n "$(git status --porcelain)" ]; then
-            echo "has_changes=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "has_changes=false" >> "$GITHUB_OUTPUT"
-          fi
-      - name: Open PR with clippy --fix changes
-        if: steps.diff.outputs.has_changes == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          rustc_version=$(rustc --version)
-          today=$(date -u +%Y-%m-%d)
-          stamp=$(date -u +%Y%m%d-%H%M%S)
-          branch="ci/clippy-autofix-${stamp}"
-          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -b "${branch}"
-          git add -A
-
-          commit_msg=$(cat <<EOF
-          ci(autofix): apply cargo clippy --fix (beta)
-
-          rustc:    ${rustc_version}
-          date:     ${today}
-          workflow: ${run_url}
-          EOF
-          )
-          git commit -m "${commit_msg}"
-          git push origin "${branch}"
-
-          pr_body=$(cat <<EOF
-          Automated fixes from \`cargo clippy --fix\` on the beta toolchain.
-
-          - **rustc:** \`${rustc_version}\`
-          - **date:** ${today}
-          - **workflow run:** ${run_url}
-
-          Triggered because the scheduled \`check-rust\` job in \`CI-unstable.yml\` failed. Review carefully — auto-fixes are usually safe but not always semantics-preserving.
-          EOF
-          )
-          gh pr create \
-            --base main \
-            --head "${branch}" \
-            --title "ci: clippy --fix auto-fixes (${today})" \
-            --body "${pr_body}"
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+        ref: ${{ github.sha }}
+    - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      with:
+        name: clippy-autofix-patch
+        path: ${{ runner.temp }}/generated-patch
+    - name: Open a reviewable PR without running generated code
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        branch="ci/clippy-autofix-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+        git apply --index --include='*.rs' --exclude='.github/**' "$RUNNER_TEMP/generated-patch/changes.patch"
+        if git diff --cached --quiet; then exit 0; fi
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        git -c core.hooksPath=/dev/null commit -m "Apply beta clippy fixes"
+        gh auth setup-git
+        if git ls-remote --exit-code --heads origin "$branch" >/dev/null; then
+          git fetch origin "+refs/heads/$branch:refs/remotes/origin/$branch"
+        fi
+        git push --force-with-lease origin "HEAD:refs/heads/$branch"
+        body="$RUNNER_TEMP/pr-body.md"
+        printf 'Generated source changes from %s/%s/actions/runs/%s. Review before merging.\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" > "$body"
+        pr=$(gh pr list --base main --head "$branch" --state open --json number --jq '.[0].number // empty')
+        if [[ -n "$pr" ]]; then
+          gh pr edit "$pr" --title "Apply beta clippy fixes" --body-file "$body"
+        else
+          gh pr create --base main --head "$branch" --title "Apply beta clippy fixes" --body-file "$body"
+        fi
 
   test-ffi-apple-example-transparent-proxy-e2e-sanitizers:
+    permissions:
+      contents: read
     needs: precheck
     runs-on: macos-latest
     concurrency:
@@ -274,9 +287,11 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       # ASan needs nightly for `-Z sanitizer=address` and a matching
       # `rust-src` so the sanitizer-built std actually compiles.
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: nightly
           components: rust-src
@@ -294,6 +309,8 @@ jobs:
         run: just test-e2e-sanitizers
 
   test-ffi-apple-ne-miri:
+    permissions:
+      contents: read
     needs: precheck
     runs-on: macos-latest
     concurrency:
@@ -301,23 +318,27 @@ jobs:
       cancel-in-progress: false
       queue: max
     timeout-minutes: 60
+    env:
+      MIRI_TOOLCHAIN: nightly-2026-09-22
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
-          toolchain: nightly
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+        with:
+          toolchain: nightly-2026-09-22
           components: miri, rust-src
-      - uses: ./.github/actions/rust-cache
-        with:
-          # Miri manages its own compiler wrapper and sysroot.
-          sccache: "false"
-          key: macos-latest-nightly-apple-ne-miri
+      # Never persist Miri output: it can contain build-time environment data.
       - name: Install just
         run: brew install just
       - name: Run targeted Apple NetworkExtension Miri checks
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/miri-target
         run: just miri-apple-ne-ffi
 
   fuzz-rust:
+    permissions:
+      contents: read
     needs: precheck
     runs-on: ubuntu-latest
     env:
@@ -338,7 +359,9 @@ jobs:
       RAMA_FUZZ_TARGET: x86_64-unknown-linux-gnu
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{env.RUST_TOOLCHAIN_NIGHTLY}}
           targets: x86_64-unknown-linux-gnu
@@ -347,11 +370,11 @@ jobs:
           key: ubuntu-latest-nightly-fuzz
           env-vars: RUST_TOOLCHAIN
       - name: Install cargo-fuzz
-        uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
+        uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
         with:
           tool: cargo-fuzz
       - name: Install just
-        uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
+        uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
         with:
           tool: just
       # Every smoke goes through `fuzz/justfile`, the same recipes developers run locally;
@@ -398,6 +421,8 @@ jobs:
             fuzz/artifacts/qpack_*
 
   docsrs-emulation:
+    permissions:
+      contents: read
     # Linux is the docs.rs build host. cargo-docs-rs applies each crate's
     # docs.rs metadata and cross-compiles every declared documentation target.
     needs: precheck
@@ -405,17 +430,19 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.x"
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{env.RUST_TOOLCHAIN_NIGHTLY}}
       - uses: ./.github/actions/rust-cache
         with:
           key: ubuntu-latest-nightly-docsrs-emulation
           env-vars: RUST_TOOLCHAIN
-      - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
+      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
         with:
           tool: cargo-docs-rs@1.0.4
       - name: docs.rs per-crate build emulation
@@ -423,6 +450,8 @@ jobs:
           python scripts/docsrs_check.py --all-targets
 
   edge-docs:
+    permissions:
+      contents: read
     name: edge-docs (${{ matrix.os }})
     strategy:
       fail-fast: false
@@ -439,12 +468,14 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.x"
       - uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
         if: startsWith(matrix.os, 'windows')
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{env.RUST_TOOLCHAIN_NIGHTLY}}
       - uses: ./.github/actions/rust-cache
@@ -453,7 +484,7 @@ jobs:
           # Match native/check jobs: Windows sccache can fail to spawn rustc.
           sccache: ${{ startsWith(matrix.os, 'windows') && 'false' || 'true' }}
           env-vars: RUST_TOOLCHAIN
-      - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
+      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
         with:
           tool: cargo-docs-rs@1.0.4
       - name: docs.rs settings on the native target
@@ -461,6 +492,8 @@ jobs:
           python scripts/docsrs_check.py
 
   refresh-docsrs-bindings:
+    permissions:
+      contents: read
     name: refresh docs.rs Apple bindings
     if: github.ref == 'refs/heads/main'
     needs: precheck
@@ -470,90 +503,83 @@ jobs:
       cancel-in-progress: false
       queue: max
     timeout-minutes: 60
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+        fetch-depth: 0
+    - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+      with:
+        toolchain: ${{env.RUST_TOOLCHAIN_NIGHTLY}}
+        components: rustfmt
+    - uses: ./.github/actions/rust-cache
+      with:
+        key: macos-latest-nightly-docsrs-bindings
+        env-vars: RUST_TOOLCHAIN
+    - name: Generate docs.rs Apple bindings
+      env:
+        RAMA_UPDATE_DOCSRS_BINDINGS: ${{ github.run_id }}
+      run: |
+        cargo check --locked \
+          -p rama-net-apple-networkextension \
+          -p rama-net-apple-xpc
+    - name: Export tracked source changes as data
+      id: patch
+      shell: bash
+      run: |
+        set -euo pipefail
+        git diff --binary HEAD -- rama-net-apple-networkextension/docsrs_bindings.rs rama-net-apple-xpc/docsrs_bindings.rs > "$RUNNER_TEMP/changes.patch"
+        if [[ -s "$RUNNER_TEMP/changes.patch" ]]; then
+          echo 'has_changes=true' >> "$GITHUB_OUTPUT"
+        fi
+    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      if: steps.patch.outputs.has_changes == 'true'
+      with:
+        name: refresh-docsrs-bindings-patch
+        path: ${{ runner.temp }}/changes.patch
+        if-no-files-found: error
+        retention-days: 1
+    outputs:
+      has-changes: ${{ steps.patch.outputs.has_changes }}
+
+  refresh-docsrs-bindings-pr:
+    needs: refresh-docsrs-bindings
+    if: always() && github.ref == 'refs/heads/main' && needs.refresh-docsrs-bindings.result == 'success' && needs.refresh-docsrs-bindings.outputs.has-changes
+      == 'true'
+    runs-on: ubuntu-latest
     permissions:
       contents: write
       pull-requests: write
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
-        with:
-          toolchain: ${{env.RUST_TOOLCHAIN_NIGHTLY}}
-          components: rustfmt
-      - uses: ./.github/actions/rust-cache
-        with:
-          key: macos-latest-nightly-docsrs-bindings
-          env-vars: RUST_TOOLCHAIN
-      - name: Generate docs.rs Apple bindings
-        env:
-          RAMA_UPDATE_DOCSRS_BINDINGS: ${{ github.run_id }}
-        run: |
-          cargo check --locked \
-            -p rama-net-apple-networkextension \
-            -p rama-net-apple-xpc
-      - name: Check generated bindings
-        id: bindings
-        shell: bash
-        run: |
-          if git diff --quiet -- \
-            rama-net-apple-networkextension/docsrs_bindings.rs \
-            rama-net-apple-xpc/docsrs_bindings.rs
-          then
-            echo "has_changes=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "has_changes=true" >> "$GITHUB_OUTPUT"
-          fi
-      - name: Update bindings PR
-        if: steps.bindings.outputs.has_changes == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          branch="ci/docsrs-apple-bindings"
-          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-          rustc_version=$(rustc --version)
-          sdk_version=$(xcrun --sdk macosx --show-sdk-version)
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add \
-            rama-net-apple-networkextension/docsrs_bindings.rs \
-            rama-net-apple-xpc/docsrs_bindings.rs
-          git commit -m "Refresh docs.rs Apple bindings"
-
-          if git ls-remote --exit-code --heads origin "${branch}" >/dev/null
-          then
-            git fetch origin \
-              "+refs/heads/${branch}:refs/remotes/origin/${branch}"
-          fi
-          git push --force-with-lease origin "HEAD:refs/heads/${branch}"
-
-          pr_body=$(cat <<EOF
-          Automated refresh of the Apple FFI declarations used by docs.rs cross-builds.
-
-          - **rustc:** \`${rustc_version}\`
-          - **macOS SDK:** \`${sdk_version}\`
-          - **workflow:** ${run_url}
-          EOF
-          )
-
-          pr_number=$(gh pr list \
-            --base main \
-            --head "${branch}" \
-            --state open \
-            --json number \
-            --jq '.[0].number // empty')
-          if [[ -n "${pr_number}" ]]
-          then
-            gh pr edit "${pr_number}" \
-              --title "Refresh docs.rs Apple bindings" \
-              --body "${pr_body}"
-          else
-            gh pr create \
-              --base main \
-              --head "${branch}" \
-              --title "Refresh docs.rs Apple bindings" \
-              --body "${pr_body}"
-          fi
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+        ref: ${{ github.sha }}
+    - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      with:
+        name: refresh-docsrs-bindings-patch
+        path: ${{ runner.temp }}/generated-patch
+    - name: Open a reviewable PR without running generated code
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        branch="ci/docsrs-apple-bindings"
+        git apply --index --include=rama-net-apple-networkextension/docsrs_bindings.rs --include=rama-net-apple-xpc/docsrs_bindings.rs "$RUNNER_TEMP/generated-patch/changes.patch"
+        if git diff --cached --quiet; then exit 0; fi
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        git -c core.hooksPath=/dev/null commit -m "Refresh docs.rs Apple bindings"
+        gh auth setup-git
+        if git ls-remote --exit-code --heads origin "$branch" >/dev/null; then
+          git fetch origin "+refs/heads/$branch:refs/remotes/origin/$branch"
+        fi
+        git push --force-with-lease origin "HEAD:refs/heads/$branch"
+        body="$RUNNER_TEMP/pr-body.md"
+        printf 'Generated source changes from %s/%s/actions/runs/%s. Review before merging.\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" > "$body"
+        pr=$(gh pr list --base main --head "$branch" --state open --json number --jq '.[0].number // empty')
+        if [[ -n "$pr" ]]; then
+          gh pr edit "$pr" --title "Refresh docs.rs Apple bindings" --body-file "$body"
+        else
+          gh pr create --base main --head "$branch" --title "Refresh docs.rs Apple bindings" --body-file "$body"
+        fi

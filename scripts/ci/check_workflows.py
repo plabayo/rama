@@ -79,7 +79,42 @@ def ancestors(jobs, name):
     return result
 
 
+def validate_security(workflow, path):
+    """Guard the credential/build boundary; this is not a general shell analyzer."""
+    assert workflow.get("permissions") == {}, (path, "Workflow permissions must default to none")
+    assert "secrets." not in str(workflow.get("env", {})), (path, "Workflow-wide secret")
+    if path.name == "CI-retry.yml":
+        assert all("uses" not in step for job in workflow["jobs"].values() for step in job["steps"]), "Retry must remain metadata-only"
+    for name, job in workflow["jobs"].items():
+        steps = job.get("steps", [])
+        permissions = job.get("permissions", workflow["permissions"])
+        assert isinstance(permissions, dict), (path, name, "Broad token permission")
+        privileged = "write" in permissions.values()
+        custom_secrets = re.findall(r"secrets\.([A-Za-z_][A-Za-z0-9_]*)", str(job))
+        privileged |= any(secret != "GITHUB_TOKEN" for secret in custom_secrets)
+        cached = any("cache" in step.get("uses", "").lower() for step in steps)
+        builds = any(
+            step.get("uses", "").startswith(("dtolnay/rust-toolchain@", "docker/build-push-action@"))
+            or re.search(r"\b(cargo|cross)\s+(build|check|test|clippy|install|doc|nextest|zigbuild|miri)\b", step.get("run", ""))
+            for step in steps
+        )
+        assert not (privileged and cached), (path, name, "Privileged job must not use build caches")
+        assert not (privileged and builds), (path, name, "Builds must not have secrets or write authority")
+        for step in steps:
+            if step.get("uses", "").startswith("actions/checkout@"):
+                assert step.get("with", {}).get("persist-credentials") is False, (path, name, "Persisted checkout token")
+        if "miri" in name:
+            assert not cached, (path, name, "Miri output must never be cached")
+            assert not any("upload-artifact@" in step.get("uses", "") for step in steps), (path, name, "Miri output must not be uploaded")
+            assert job.get("env", {}).get("MIRI_TOOLCHAIN") == "nightly-2026-09-22", (path, name, "Review the patched Miri pin before changing it")
+        if path.name == "RamaCLIRelease.yaml" and name.startswith("build-release-"):
+            assert not cached, (path, name, "Release builds must not restore executable caches")
+            checkout = next(step for step in steps if step.get("uses", "").startswith("actions/checkout@"))
+            assert checkout["with"].get("ref") == "${{ needs.resolve-release.outputs.sha }}", (path, name, "Build the resolved release tag")
+
+
 def validate(workflow, path):
+    validate_security(workflow, path)
     jobs = workflow["jobs"]
     for name, job in jobs.items():
         ancestors(jobs, name)
