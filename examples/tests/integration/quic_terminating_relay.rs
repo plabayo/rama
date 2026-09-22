@@ -630,23 +630,29 @@ async fn a_client_that_leaves_releases_a_stream_waiting_on_upstream_credit() {
 async fn an_interrupted_relay_stops_its_peers_and_exits() {
     utils::init_tracing();
     let mut relay = Relay::new(1, None).await;
-    let connection = relay.connect().await;
-    let upstream = relay.upstream().await;
-
-    // A stream in flight, carried both ways, so nothing below is about an idle relay.
-    let (mut send, mut recv) = connection.open_bi().await.expect("a bi stream");
-    send.write_all(b"live").await.expect("it is written");
-    let (mut answering, mut asked) = upstream_stream(&upstream).await;
-    let mut taken = [0u8; 8];
-    tokio::time::timeout(LIMIT, asked.read(&mut taken))
-        .await
-        .expect("the stream reached the origin")
-        .expect("it read");
-    answering.write_all(b"back").await.expect("written");
-    tokio::time::timeout(LIMIT, recv.read(&mut taken))
-        .await
-        .expect("the answer reached the client")
-        .expect("it read");
+    let mut peers = Vec::new();
+    let mut live_streams = Vec::new();
+    // Several connection workers race with the endpoint shutdown. Keep a stream
+    // live on every connection so the test also exercises stream teardown.
+    for _ in 0..8 {
+        let connection = relay.connect().await;
+        let upstream = relay.upstream().await;
+        let (mut send, mut recv) = connection.open_bi().await.expect("a bi stream");
+        send.write_all(b"live").await.expect("it is written");
+        let (mut answering, mut asked) = upstream_stream(&upstream).await;
+        let mut taken = [0u8; 8];
+        tokio::time::timeout(LIMIT, asked.read(&mut taken))
+            .await
+            .expect("the stream reached the origin")
+            .expect("it read");
+        answering.write_all(b"back").await.expect("written");
+        tokio::time::timeout(LIMIT, recv.read(&mut taken))
+            .await
+            .expect("the answer reached the client")
+            .expect("it read");
+        peers.push((connection, upstream));
+        live_streams.push((send, recv, answering, asked));
+    }
 
     // Asked to stop, and reaped within the bound.
     let status = relay
@@ -660,20 +666,27 @@ async fn an_interrupted_relay_stops_its_peers_and_exits() {
 
     // Both peers are told, rather than left to time out: a stopping endpoint closes its
     // connections itself, so each peer reads an application close and not a transport failure.
-    let told = tokio::time::timeout(LIMIT, connection.closed())
-        .await
-        .expect("the client connection ended with the relay");
-    assert!(
-        matches!(&told, ConnectionError::ApplicationClosed(close) if close.error_code() == VarInt::from(RELAY_STOPPING)),
-        "the client was told the relay closed: {told:?}"
-    );
-    let told = tokio::time::timeout(LIMIT, upstream.closed())
-        .await
-        .expect("the upstream connection ended with the relay");
-    assert!(
-        matches!(&told, ConnectionError::ApplicationClosed(close) if close.error_code() == VarInt::from(RELAY_STOPPING)),
-        "the origin was told the relay closed: {told:?}"
-    );
+    for (connection, upstream) in peers {
+        for (role, peer) in [("client", connection), ("origin", upstream)] {
+            let told = tokio::time::timeout(LIMIT, peer.closed())
+                .await
+                .expect("the peer connection ended with the relay");
+            let ConnectionError::ApplicationClosed(close) = &told else {
+                panic!("the {role} was told the relay closed: {told:?}");
+            };
+            assert_eq!(
+                close.error_code(),
+                VarInt::from(RELAY_STOPPING),
+                "the {role} received the shutdown code, not normal completion: {told:?}"
+            );
+            assert_eq!(
+                close.reason(),
+                b"relay stopping",
+                "the {role}'s close reason"
+            );
+        }
+    }
+    drop(live_streams);
 }
 
 /// A stream permit is released when its stream ends, so the next stream is carried even with

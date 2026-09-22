@@ -68,8 +68,8 @@ use rama::{
     graceful::{Shutdown, WeakShutdownGuard, default_signal},
     net::tls::ApplicationProtocol,
     quic::{
-        ClientConfig, Connection, Endpoint, ReadError, RecvStream, SendStream, ServerConfig,
-        StoppedError, proto::VarInt, tls::TlsOptions,
+        ClientConfig, Connection, ConnectionError, Endpoint, ReadError, RecvStream, SendStream,
+        ServerConfig, StoppedError, proto::VarInt, tls::TlsOptions,
     },
     rt::{Executor, spawn},
     telemetry::tracing::{
@@ -425,7 +425,18 @@ async fn carry(
     };
     // The upstream is closed first, so a stream still waiting on it is released and the joins
     // below cannot wait on a peer that will never answer.
-    upstream.close(0u32, b"done");
+    // Endpoint shutdown closes downstream first. Its wakeup can reach this task
+    // before the outbound endpoint closes. Preserve the endpoint's stopping
+    // reason here too: even dropping the last upstream handle would close it
+    // with the normal completion code before endpoint shutdown catches up.
+    if matches!(
+        downstream.close_reason(),
+        Some(ConnectionError::LocallyClosed)
+    ) {
+        upstream.close(RELAY_STOPPING, b"relay stopping");
+    } else {
+        upstream.close(0u32, b"done");
+    }
     let joined = join(relaying).await;
     outcome.and(joined)
 }
