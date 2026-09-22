@@ -3,11 +3,13 @@ use crate::dep::rustls::client::danger::ServerCertVerifier;
 use rama_core::error::BoxError;
 use rama_core::extensions::{Extension, FromExtensions};
 use rama_net::tls::TlsAlpn;
+#[cfg(test)]
+use rama_tls::KeyLogIntent;
 use rama_tls::client::{
     TlsClientAuth, TlsClientConfig, TlsPoolId, TlsServerCertPins, TlsServerName, TlsServerTrust,
     TlsServerVerify, TlsStoreServerCertChain,
 };
-use rama_tls::{KeyLogIntent, TlsKeyLog, TlsSupportedVersions};
+use rama_tls::{TlsKeyLog, TlsSupportedVersions};
 use rama_utils::macros::generate_set_and_with;
 use std::sync::Arc;
 
@@ -61,8 +63,8 @@ impl RustlsTlsConnectorConfig<'_> {
 
     /// Compact identity of request-level overrides, or `None` for the baseline.
     ///
-    /// Explicit defaults remain distinct from absence. Common settings compare
-    /// across providers; native settings have their own namespace. Opaque
+    /// Explicit defaults remain distinct from absence. Equivalent settings compare
+    /// independently of the TLS implementation. Opaque
     /// credentials, hooks, verifiers and custom log sinks disable reuse.
     /// Connector defaults are fixed for the lifetime of the pool and must not
     /// be layered onto this request-only view.
@@ -83,30 +85,18 @@ impl RustlsTlsConnectorConfig<'_> {
             verifier,
             modify,
         } = self;
-        if client_auth.is_some()
-            || keylog.is_some_and(|value| matches!(value.0, KeyLogIntent::Custom(_)))
-            || verifier.is_some()
-            || modify.is_some()
-        {
-            return Some(TlsPoolId::non_reusable());
-        }
-        let keylog = keylog.map(|value| match &value.0 {
-            KeyLogIntent::Environment => (0_u8, None),
-            KeyLogIntent::Disabled => (1, None),
-            KeyLogIntent::File(path) => (2, Some(path.as_str())),
-            KeyLogIntent::Custom(_) => (3, None),
-        });
-        let common = (
-            alpn.map(|value| &value.0),
-            versions.map(|value| &value.0),
-            verify.map(|value| value.0),
-            keylog,
-            server_name.map(|value| &value.0),
-            store_chain.map(|value| value.0),
-            server_cert_pins,
-            server_trust,
-        );
-        Some(TlsPoolId::from_hash(&(common, None::<(&str, ())>)))
+        TlsPoolId::builder()
+            .maybe_with_alpn(*alpn)
+            .maybe_with_versions(*versions)
+            .maybe_with_verify(*verify)
+            .maybe_with_keylog(*keylog)
+            .maybe_with_server_name(*server_name)
+            .maybe_with_store_chain(*store_chain)
+            .maybe_with_client_auth(*client_auth)
+            .maybe_with_server_cert_pins(*server_cert_pins)
+            .maybe_with_server_trust(*server_trust)
+            .with_opaque_override(verifier.is_some() || modify.is_some())
+            .build()
     }
 
     /// Whether a successful handshake establishes the configured server identity.

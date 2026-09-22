@@ -1,42 +1,62 @@
-use std::hash::{Hash, Hasher};
+use std::{hash::Hash, sync::LazyLock};
 
+use ahash::RandomState;
 use rama_core::extensions::Extension;
-use sha2::{Digest as _, Sha256};
+use rama_net::{
+    address::Host,
+    tls::{ApplicationProtocol, TlsAlpn},
+};
+use rama_utils::macros::generate_set_and_with;
 
-/// Compact identity of request-level TLS configuration overrides.
+use crate::client::{
+    ServerVerifyMode, TlsClientAuth, TlsServerCertPins, TlsServerName, TlsServerTrust,
+    TlsServerVerify, TlsStoreServerCertChain,
+};
+use crate::{
+    CertificateCompressionAlgorithm, CipherSuite, ExtensionId, KeyLogIntent, ProtocolVersion,
+    SignatureScheme, SupportedGroup, TlsKeyLog, TlsSupportedVersions,
+};
+
+/// Compact, process-local identity of request-level TLS overrides.
 ///
-/// Provider configuration views return `None` when no overrides are present.
-/// Explicit default values remain distinct from absence: they may replace a
-/// different connector default. Common settings have the same identity across
-/// providers; native settings use a separate namespace.
-///
-/// Opaque credentials, verifiers, hooks and custom key-log sinks cannot be
-/// compared by value. Their identity is non-reusable, and a pool must honor
-/// [`Self::is_reusable`] before both lookup and return. Equality itself remains
-/// reflexive, including for non-reusable identities.
+/// Construct with [`Self::builder`]. An absent override differs from an explicit
+/// default: the latter might replace a different connector default. Equivalent
+/// settings have the same identity regardless of the TLS implementation.
 ///
 /// This identifies overrides within a pool with fixed connector defaults. It
-/// does not compare different connectors or encode the destination. The hash
-/// encoding is local to the build, not a stable serialization or TLS fingerprint.
+/// neither identifies a destination nor authenticates a peer, and is not a stable
+/// serialization or a TLS wire fingerprint. Opaque policies cannot be compared
+/// by value; pools must check [`Self::is_reusable`] at checkout and return.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Extension)]
 #[extension(tags(tls))]
 pub struct TlsPoolId {
-    digest: [u8; 32],
+    digest: PolicyDigest,
     reusable: bool,
 }
 
 impl TlsPoolId {
-    /// Identify settings that are completely comparable by value.
+    /// Begin an identity without request overrides.
     ///
-    /// Provider integrations must include every effective override, preserve
-    /// absence versus explicit values, and namespace their native fields.
-    /// Custom connectors may use this to identify their own comparable policy.
-    /// Never use object addresses as a substitute for opaque policy semantics.
-    #[must_use]
-    pub fn from_hash(settings: &impl Hash) -> Self {
-        Self {
-            digest: policy_digest(b"rama.tls.overrides.v1", settings),
-            reusable: true,
+    /// Set the request overrides through the typed builder methods.
+    ///
+    /// ```
+    /// use rama_net::tls::TlsAlpn;
+    /// use rama_tls::client::{ServerVerifyMode, TlsPoolId, TlsServerVerify};
+    ///
+    /// let alpn = TlsAlpn::http_2();
+    /// let verify = TlsServerVerify(ServerVerifyMode::Auto);
+    /// let id = TlsPoolId::builder()
+    ///     .with_alpn(&alpn)
+    ///     .with_verify(&verify)
+    ///     .build()
+    ///     .unwrap();
+    /// assert!(id.is_reusable());
+    /// ```
+    pub fn builder<'a>() -> TlsPoolIdBuilder<'a> {
+        TlsPoolIdBuilder {
+            overrides: Overrides::default(),
+            client_hello: ClientHelloSettings::default(),
+            opaque_override: false,
         }
     }
 
@@ -44,7 +64,7 @@ impl TlsPoolId {
     #[must_use]
     pub const fn non_reusable() -> Self {
         Self {
-            digest: [0; 32],
+            digest: [0; 2],
             reusable: false,
         }
     }
@@ -56,30 +76,337 @@ impl TlsPoolId {
     }
 }
 
-pub(crate) fn policy_digest(domain: &[u8], settings: &impl Hash) -> [u8; 32] {
-    let mut state = PolicyHasher(Sha256::new());
-    state.write(domain);
-    settings.hash(&mut state);
-    state.0.finalize().into()
+// Borrow the common overrides until the identity is built.
+#[derive(Default)]
+struct Overrides<'a> {
+    alpn: Option<&'a TlsAlpn>,
+    versions: Option<&'a TlsSupportedVersions>,
+    verify: Option<&'a TlsServerVerify>,
+    keylog: Option<&'a TlsKeyLog>,
+    server_name: Option<&'a TlsServerName>,
+    store_chain: Option<&'a TlsStoreServerCertChain>,
+    client_auth: Option<&'a TlsClientAuth>,
+    server_cert_pins: Option<&'a TlsServerCertPins>,
+    server_trust: Option<&'a TlsServerTrust>,
 }
 
-// Frame every Hash write, in addition to the field/presence framing supplied by
-// tuple, Option and collection Hash implementations. No 64-bit projection is
-// used for identity equality.
-struct PolicyHasher(Sha256);
+// Canonical field ordering is independent of the order of builder calls.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+struct ClientHelloSettings<'a> {
+    cipher_suites: Option<&'a [CipherSuite]>,
+    supported_groups: Option<&'a [SupportedGroup]>,
+    signature_schemes: Option<&'a [SignatureScheme]>,
+    grease: Option<bool>,
+    alps: Option<AlpsSettings<'a>>,
+    extension_order: Option<&'a [ExtensionId]>,
+    cert_compression: Option<&'a [CertificateCompressionAlgorithm]>,
+    delegated_credentials: Option<&'a [SignatureScheme]>,
+    record_size_limit: Option<u16>,
+    encrypted_client_hello: Option<bool>,
+    ocsp_stapling: Option<bool>,
+    signed_cert_timestamps: Option<bool>,
+    min_version: Option<ProtocolVersion>,
+    max_version: Option<ProtocolVersion>,
+}
 
-impl Hasher for PolicyHasher {
-    fn finish(&self) -> u64 {
-        let digest = self.0.clone().finalize();
-        let mut prefix = [0; 8];
-        prefix.copy_from_slice(&digest[..8]);
-        u64::from_be_bytes(prefix)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct AlpsSettings<'a> {
+    protocols: &'a [ApplicationProtocol],
+    new_codepoint: bool,
+}
+
+/// Build a backend-independent identity with shared presence and field encoding.
+///
+/// The builder borrows configuration and allocates no storage. Settings are
+/// encoded in one canonical order, independent of setter order. Library adapters
+/// should exhaustively destructure their configuration before setting fields,
+/// so additions require an explicit pooling decision.
+pub struct TlsPoolIdBuilder<'a> {
+    overrides: Overrides<'a>,
+    client_hello: ClientHelloSettings<'a>,
+    opaque_override: bool,
+}
+
+impl<'a> TlsPoolIdBuilder<'a> {
+    generate_set_and_with! {
+        /// Ordered application protocol offer.
+        pub fn alpn(mut self, value: Option<&'a TlsAlpn>) -> Self {
+            self.overrides.alpn = value;
+            self
+        }
     }
 
-    fn write(&mut self, bytes: &[u8]) {
-        self.0.update((bytes.len() as u64).to_be_bytes());
-        self.0.update(bytes);
+    generate_set_and_with! {
+        /// Ordered supported TLS versions.
+        pub fn versions(mut self, value: Option<&'a TlsSupportedVersions>) -> Self {
+            self.overrides.versions = value;
+            self
+        }
     }
+
+    generate_set_and_with! {
+        /// Server certificate verification mode.
+        pub fn verify(mut self, value: Option<&'a TlsServerVerify>) -> Self {
+            self.overrides.verify = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Key logging policy; custom sinks prevent reuse.
+        pub fn keylog(mut self, value: Option<&'a TlsKeyLog>) -> Self {
+            self.overrides.keylog = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Explicit server-name override.
+        pub fn server_name(mut self, value: Option<&'a TlsServerName>) -> Self {
+            self.overrides.server_name = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Whether to retain the peer certificate chain.
+        pub fn store_chain(mut self, value: Option<&'a TlsStoreServerCertChain>) -> Self {
+            self.overrides.store_chain = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Client credentials; opaque credentials prevent reuse.
+        pub fn client_auth(mut self, value: Option<&'a TlsClientAuth>) -> Self {
+            self.overrides.client_auth = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Cached server certificate pin policy.
+        pub fn server_cert_pins(mut self, value: Option<&'a TlsServerCertPins>) -> Self {
+            self.overrides.server_cert_pins = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Cached server trust policy.
+        pub fn server_trust(mut self, value: Option<&'a TlsServerTrust>) -> Self {
+            self.overrides.server_trust = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Ordered cipher suite offer.
+        pub fn cipher_suites(mut self, value: Option<&'a [CipherSuite]>) -> Self {
+            self.client_hello.cipher_suites = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Ordered supported group offer.
+        pub fn supported_groups(mut self, value: Option<&'a [SupportedGroup]>) -> Self {
+            self.client_hello.supported_groups = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Ordered signature scheme offer.
+        pub fn signature_schemes(mut self, value: Option<&'a [SignatureScheme]>) -> Self {
+            self.client_hello.signature_schemes = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Whether GREASE values are offered.
+        pub fn grease(mut self, value: Option<bool>) -> Self {
+            self.client_hello.grease = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Ordered extension identifiers.
+        pub fn extension_order(mut self, value: Option<&'a [ExtensionId]>) -> Self {
+            self.client_hello.extension_order = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Ordered certificate compression algorithms.
+        pub fn cert_compression(mut self, value: Option<&'a [CertificateCompressionAlgorithm]>) -> Self {
+            self.client_hello.cert_compression = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Ordered delegated credential signature schemes.
+        pub fn delegated_credentials(mut self, value: Option<&'a [SignatureScheme]>) -> Self {
+            self.client_hello.delegated_credentials = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Advertised record size limit.
+        pub fn record_size_limit(mut self, value: Option<u16>) -> Self {
+            self.client_hello.record_size_limit = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Whether Encrypted ClientHello is enabled.
+        pub fn encrypted_client_hello(mut self, value: Option<bool>) -> Self {
+            self.client_hello.encrypted_client_hello = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Whether OCSP stapling is requested.
+        pub fn ocsp_stapling(mut self, value: Option<bool>) -> Self {
+            self.client_hello.ocsp_stapling = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Whether signed certificate timestamps are requested.
+        pub fn signed_cert_timestamps(mut self, value: Option<bool>) -> Self {
+            self.client_hello.signed_cert_timestamps = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Minimum permitted TLS version.
+        pub fn min_version(mut self, value: Option<ProtocolVersion>) -> Self {
+            self.client_hello.min_version = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Maximum permitted TLS version.
+        pub fn max_version(mut self, value: Option<ProtocolVersion>) -> Self {
+            self.client_hello.max_version = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Offer Application-Layer Protocol Settings for these ordered protocols.
+        ///
+        /// `new_codepoint` selects the newer ALPS extension codepoint.
+        pub fn alps(mut self, protocols: &'a [ApplicationProtocol], new_codepoint: bool) -> Self {
+            self.client_hello.alps = Some(AlpsSettings { protocols, new_codepoint });
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Remove the Application-Layer Protocol Settings override.
+        pub fn no_alps(mut self) -> Self {
+            self.client_hello.alps = None;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Mark whether a verifier, native trust store or hook cannot be compared by value.
+        ///
+        /// Such overrides require a fresh connection. Never substitute an object
+        /// address for the semantics of a mutable or opaque policy.
+        pub fn opaque_override(mut self, present: bool) -> Self {
+            self.opaque_override = present;
+            self
+        }
+    }
+
+    /// Finish the identity, returning `None` when no overrides are present.
+    pub fn build(self) -> Option<TlsPoolId> {
+        let Overrides {
+            alpn,
+            versions,
+            verify,
+            keylog,
+            server_name,
+            store_chain,
+            client_auth,
+            server_cert_pins,
+            server_trust,
+        } = self.overrides;
+        if self.opaque_override || client_auth.is_some() {
+            return Some(TlsPoolId::non_reusable());
+        }
+        let keylog = match keylog.map(|value| &value.0) {
+            Some(KeyLogIntent::Environment) => Some(ComparableKeyLog::Environment),
+            Some(KeyLogIntent::Disabled) => Some(ComparableKeyLog::Disabled),
+            Some(KeyLogIntent::File(path)) => Some(ComparableKeyLog::File(path)),
+            Some(KeyLogIntent::Custom(_)) => return Some(TlsPoolId::non_reusable()),
+            None => None,
+        };
+        let settings = ComparableOverrides {
+            alpn: alpn.map(|value| value.0.as_slice()),
+            versions: versions.map(|value| value.0.as_slice()),
+            verify: verify.map(|value| value.0),
+            keylog,
+            server_name: server_name.map(|value| &value.0),
+            store_chain: store_chain.map(|value| value.0),
+            server_cert_pins,
+            server_trust,
+            client_hello: self.client_hello,
+        };
+        (settings != ComparableOverrides::default()).then(|| TlsPoolId {
+            digest: policy_digest(b"rama.tls.overrides.v2", &settings),
+            reusable: true,
+        })
+    }
+}
+
+#[derive(Default, PartialEq, Eq, Hash)]
+struct ComparableOverrides<'a> {
+    alpn: Option<&'a [ApplicationProtocol]>,
+    versions: Option<&'a [ProtocolVersion]>,
+    verify: Option<ServerVerifyMode>,
+    keylog: Option<ComparableKeyLog<'a>>,
+    server_name: Option<&'a Host>,
+    store_chain: Option<bool>,
+    server_cert_pins: Option<&'a TlsServerCertPins>,
+    server_trust: Option<&'a TlsServerTrust>,
+    client_hello: ClientHelloSettings<'a>,
+}
+
+#[derive(PartialEq, Eq, Hash)]
+enum ComparableKeyLog<'a> {
+    Environment,
+    Disabled,
+    File(&'a str),
+}
+
+pub(crate) type PolicyDigest = [u64; 2];
+
+// AHash is already used by Rama. Independently keyed lanes keep this cheap
+// local identifier compact without reducing equality to a single 64-bit hash.
+// These process-wide keys also keep cached certificate hashes consistent with
+// newly built IDs. This is deliberately not a cryptographic digest.
+static POLICY_HASHERS: LazyLock<[RandomState; 2]> =
+    LazyLock::new(|| [RandomState::new(), RandomState::new()]);
+
+pub(crate) fn policy_digest(domain: &[u8], settings: &impl Hash) -> PolicyDigest {
+    POLICY_HASHERS
+        .each_ref()
+        .map(|state| state.hash_one((domain, settings)))
 }
 
 #[cfg(test)]
@@ -89,37 +416,170 @@ mod tests {
         TlsServerCertPin, TlsServerCertPinSet, TlsServerCertPins, TlsServerTrustAnchors,
     };
     use rama_utils::octets::kib;
+    use std::hash::Hasher;
+
+    fn id_from_hash(value: &impl Hash) -> TlsPoolId {
+        TlsPoolId {
+            digest: policy_digest(b"test", value),
+            reusable: true,
+        }
+    }
+
+    #[test]
+    fn builder_canonicalizes_setter_order_and_retains_explicit_defaults() {
+        let verify = TlsServerVerify(ServerVerifyMode::Auto);
+        let store = TlsStoreServerCertChain(false);
+        let alpn = TlsAlpn::http_2();
+        let keylog = TlsKeyLog(KeyLogIntent::Disabled);
+
+        assert_eq!(TlsPoolId::builder().build(), None);
+        let first = TlsPoolId::builder()
+            .with_alpn(&alpn)
+            .with_verify(&verify)
+            .with_store_chain(&store)
+            .with_keylog(&keylog)
+            .build();
+        let second = TlsPoolId::builder()
+            .with_keylog(&keylog)
+            .with_store_chain(&store)
+            .with_verify(&verify)
+            .with_alpn(&alpn)
+            .build();
+        assert_eq!(first, second);
+        assert!(first.unwrap().is_reusable());
+        assert!(TlsPoolId::builder().with_verify(&verify).build().is_some());
+        assert!(
+            TlsPoolId::builder()
+                .with_store_chain(&store)
+                .build()
+                .is_some()
+        );
+        assert!(TlsPoolId::builder().with_keylog(&keylog).build().is_some());
+        assert_eq!(
+            TlsPoolId::builder()
+                .with_verify(&verify)
+                .without_verify()
+                .build(),
+            None
+        );
+    }
+
+    #[test]
+    fn builder_separates_fields_and_preserves_protocol_order() {
+        let alpn = TlsAlpn(vec![ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11].into());
+        let reversed =
+            TlsAlpn(vec![ApplicationProtocol::HTTP_11, ApplicationProtocol::HTTP_2].into());
+        assert_ne!(
+            TlsPoolId::builder().with_alpn(&alpn).build(),
+            TlsPoolId::builder().with_alpn(&reversed).build(),
+        );
+        assert_ne!(
+            TlsPoolId::builder().with_alpn(&TlsAlpn::empty()).build(),
+            TlsPoolId::builder().build(),
+        );
+        assert_ne!(
+            TlsPoolId::builder().with_grease(false).build(),
+            TlsPoolId::builder()
+                .with_encrypted_client_hello(false)
+                .build(),
+        );
+        assert!(TlsPoolId::builder().with_grease(false).build().is_some());
+        assert_ne!(
+            TlsPoolId::builder().with_cipher_suites(&[]).build(),
+            TlsPoolId::builder().build(),
+        );
+    }
+
+    #[test]
+    fn absent_client_hello_settings_do_not_change_common_identity() {
+        let verify = TlsServerVerify(ServerVerifyMode::Disable);
+        assert_eq!(TlsPoolId::builder().maybe_with_grease(None).build(), None);
+        assert_eq!(
+            TlsPoolId::builder().with_verify(&verify).build(),
+            TlsPoolId::builder()
+                .with_verify(&verify)
+                .maybe_with_cipher_suites(None)
+                .maybe_with_grease(None)
+                .build(),
+        );
+    }
+
+    #[test]
+    fn opaque_override_dominates_comparable_settings() {
+        let verify = TlsServerVerify(ServerVerifyMode::Disable);
+        let alone = TlsPoolId::builder()
+            .with_opaque_override(true)
+            .build()
+            .unwrap();
+        let combined = TlsPoolId::builder()
+            .with_verify(&verify)
+            .with_grease(true)
+            .with_opaque_override(true)
+            .build()
+            .unwrap();
+        assert_eq!(alone, combined);
+        assert!(!combined.is_reusable());
+        assert_eq!(
+            TlsPoolId::builder().with_opaque_override(false).build(),
+            None
+        );
+    }
+
+    #[test]
+    fn native_setter_order_and_alps_codepoint_are_preserved() {
+        let protocols = [ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11];
+        let groups = [SupportedGroup::X25519];
+        let first = TlsPoolId::builder()
+            .with_grease(true)
+            .with_supported_groups(&groups)
+            .with_alps(&protocols, true)
+            .build();
+        let reordered = TlsPoolId::builder()
+            .with_alps(&protocols, true)
+            .with_supported_groups(&groups)
+            .with_grease(true)
+            .build();
+        assert_eq!(first, reordered);
+        assert_ne!(
+            first,
+            TlsPoolId::builder()
+                .with_grease(true)
+                .with_supported_groups(&groups)
+                .with_alps(&protocols, false)
+                .build()
+        );
+        assert_ne!(
+            TlsPoolId::builder().with_alps(&protocols, true).build(),
+            TlsPoolId::builder()
+                .with_alps(&[protocols[1].clone(), protocols[0].clone()], true)
+                .build(),
+        );
+        assert_eq!(
+            TlsPoolId::builder()
+                .with_alps(&protocols, true)
+                .with_no_alps()
+                .build(),
+            None
+        );
+    }
 
     #[test]
     fn compact_identity_preserves_presence_and_reflexive_equality() {
-        assert!(std::mem::size_of::<TlsPoolId>() <= 40);
-        assert_ne!(
-            TlsPoolId::from_hash(&None::<bool>),
-            TlsPoolId::from_hash(&Some(false))
-        );
+        assert!(std::mem::size_of::<TlsPoolId>() <= 24);
+        assert_ne!(id_from_hash(&None::<bool>), id_from_hash(&Some(false)));
         let opaque = TlsPoolId::non_reusable();
         assert_eq!(opaque, opaque);
         assert!(!opaque.is_reusable());
-        let known = TlsPoolId::from_hash(&(Some(false), "name.example"));
-        assert_eq!(known, TlsPoolId::from_hash(&(Some(false), "name.example")));
+        let known = id_from_hash(&(Some(false), "name.example"));
+        assert_eq!(known, id_from_hash(&(Some(false), "name.example")));
         assert!(known.is_reusable());
         assert_ne!(known, opaque);
     }
 
     #[test]
-    fn hash_writes_and_domains_are_unambiguous() {
-        let mut one = PolicyHasher(Sha256::new());
-        one.write(b"ab");
-        one.write(b"c");
-        let mut two = PolicyHasher(Sha256::new());
-        two.write(b"a");
-        two.write(b"bc");
-        assert_ne!(one.0.finalize(), two.0.finalize());
+    fn field_sequences_and_domains_are_unambiguous() {
         assert_ne!(policy_digest(b"one", &42), policy_digest(b"two", &42));
-        assert_ne!(
-            TlsPoolId::from_hash(&("ab", "c")),
-            TlsPoolId::from_hash(&("a", "bc"))
-        );
+        assert_ne!(id_from_hash(&("ab", "c")), id_from_hash(&("a", "bc")));
     }
 
     #[test]
@@ -156,15 +616,15 @@ mod tests {
             TlsServerTrustAnchors::try_new([large.into()]).unwrap()
         );
 
-        let original_id = TlsPoolId::from_hash(&pins);
+        let original_id = id_from_hash(&pins);
         let changed = pins
             .clone()
             .with_pin_set(TlsServerCertPin::SpkiSha256([8; 32]));
-        assert_eq!(original_id, TlsPoolId::from_hash(&pins));
-        assert_ne!(original_id, TlsPoolId::from_hash(&changed));
+        assert_eq!(original_id, id_from_hash(&pins));
+        assert_ne!(original_id, id_from_hash(&changed));
         assert_eq!(
-            TlsPoolId::from_hash(&changed),
-            TlsPoolId::from_hash(&pins.with_pin_set(TlsServerCertPin::SpkiSha256([8; 32])))
+            id_from_hash(&changed),
+            id_from_hash(&pins.with_pin_set(TlsServerCertPin::SpkiSha256([8; 32])))
         );
 
         let scoped = |name: &str| {
@@ -176,6 +636,6 @@ mod tests {
         let lower = scoped("example.test");
         let upper = scoped("EXAMPLE.TEST");
         assert_eq!(lower, upper);
-        assert_eq!(TlsPoolId::from_hash(&lower), TlsPoolId::from_hash(&upper));
+        assert_eq!(id_from_hash(&lower), id_from_hash(&upper));
     }
 }

@@ -28,7 +28,7 @@ pub use config::{
     TlsServerIdentity, TlsServerName, TlsServerTrust, TlsServerTrustAnchors, TlsServerVerify,
     TlsStoreServerCertChain,
 };
-pub use pool::TlsPoolId;
+pub use pool::{TlsPoolId, TlsPoolIdBuilder};
 use rama_crypto::pki_types::CertificateDer;
 
 use super::ProtocolVersion;

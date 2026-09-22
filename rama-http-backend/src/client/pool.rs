@@ -3,31 +3,25 @@
 use std::{num::NonZeroUsize, time::Duration};
 
 use rama_core::error::BoxError;
-use rama_core::{
-    Layer,
-    extensions::{Extensions, ExtensionsRef},
-};
+use rama_core::{Layer, extensions::ExtensionsRef};
 use rama_http_types::{Version, conn::FallbackHttpVersion, proxy::PlaintextHttpProxyMode};
 use rama_net::client::pool::{
     BasicConnId, BasicConnIdentifier, ConnID, MultiplexPool, MuxSelection, PooledConnector,
     ReqToConnID,
 };
 use rama_net::client::{ConnectRequest, ConnectorService, ProxyRoute};
-use rama_net::{
-    HttpVersionInputExt, ProtocolInputExt, TargetHttpVersionInputExt, transport::TransportProtocol,
-};
-use rama_tls::{TlsBackend, TlsTunnel, client::TlsPoolId};
-use rama_utils::macros::generate_set_and_with;
+use rama_net::{HttpVersionInputExt, ProtocolInputExt, TargetHttpVersionInputExt};
+use rama_tls::{TlsTunnel, client::TlsPoolId};
 
 use super::{BindBodyToConnLayer, BindBodyToConnector};
 
 /// Default HTTP pooled connector assembled by
 /// [`HttpPooledConnectorConfig::try_build_connector`].
-pub type HttpPooledConnector<S> = BindBodyToConnector<
+pub type HttpPooledConnector<S, R = HttpConnIdentifier> = BindBodyToConnector<
     PooledConnector<
         S,
         MultiplexPool<<S as ConnectorService<ConnectRequest>>::Connection, HttpConnId>,
-        HttpConnIdentifier,
+        R,
     >,
 >;
 
@@ -43,36 +37,39 @@ pub type HttpPooledConnector<S> = BindBodyToConnector<
 /// defaults or the behavior of mutable native hooks.
 #[derive(Clone, Debug, Default)]
 #[non_exhaustive]
-pub struct HttpConnIdentifier {
-    tls_backend: Option<TlsBackend>,
-    http3_tls_backend: Option<TlsBackend>,
-}
+pub struct HttpConnIdentifier;
 
 impl HttpConnIdentifier {
     /// Create an HTTP connection-pool identifier.
     #[must_use]
     pub const fn new() -> Self {
-        Self {
-            tls_backend: None,
-            http3_tls_backend: None,
-        }
+        Self
     }
 
-    generate_set_and_with! {
-        /// Resolved TLS provider used by the fixed stream connector.
-        /// Auto and unavailable providers conservatively disable reuse.
-        pub fn tls_backend(mut self, backend: Option<TlsBackend>) -> Self {
-            self.tls_backend = backend;
-            self
-        }
-    }
-
-    generate_set_and_with! {
-        /// Resolved TLS provider used by the fixed HTTP/3 connector.
-        pub fn http3_tls_backend(mut self, backend: Option<TlsBackend>) -> Self {
-            self.http3_tls_backend = backend;
-            self
-        }
+    /// Derive an HTTP identity with the TLS settings classified by the connector.
+    ///
+    /// This explicit value takes precedence over a request's `TlsPoolId` extension.
+    /// Classify request overrides before layering fixed connector defaults.
+    /// Connector assemblies in other crates can then compose their own
+    /// [`ReqToConnID`] without changing the input's extensions or duplicating
+    /// HTTP identity rules.
+    pub fn id_with_tls(
+        &self,
+        input: &ConnectRequest,
+        tls: Option<TlsPoolId>,
+    ) -> Result<HttpConnId, BoxError> {
+        let network = BasicConnIdentifier::new().id(input)?;
+        Ok(HttpConnId {
+            // A request-supplied tunnel changes proxy-side TLS even when there
+            // is no origin TLS provider. Route-generated tunnels are added
+            // below the pool and remain part of the fixed proxy policy.
+            reusable: !input.extensions().contains::<TlsTunnel>()
+                && tls.is_none_or(|id| id.is_reusable()),
+            tls,
+            network,
+            required_version: connection_version_requirement(input),
+            http_proxy_mode: http_proxy_mode_requirement(input),
+        })
     }
 }
 
@@ -112,68 +109,7 @@ impl ReqToConnID<ConnectRequest> for HttpConnIdentifier {
     type ID = HttpConnId;
 
     fn id(&self, input: &ConnectRequest) -> Result<Self::ID, BoxError> {
-        let http3 = super::conn::resolve_input_target_http_version(input) == Some(Version::HTTP_3);
-        let backend = if http3 {
-            self.http3_tls_backend
-        } else {
-            self.tls_backend
-        };
-        // Built-in providers classify their own policy; a caller-supplied ID
-        // must not hide pins or opaque hooks from that classification.
-        let tls = match backend {
-            Some(backend) => tls_pool_id(input.extensions(), backend),
-            None => input.extensions().get_ref::<TlsPoolId>().copied(),
-        };
-        let mut network = BasicConnIdentifier::new().id(input)?;
-        if input
-            .extensions()
-            .get_ref::<ProxyRoute>()
-            .and_then(ProxyRoute::proxy_address)
-            .is_some_and(|proxy| {
-                proxy
-                    .protocol
-                    .as_ref()
-                    .is_none_or(|protocol| protocol.is_http() || protocol.is_socks5())
-            })
-        {
-            // Rama's supported HTTP(S) and SOCKS proxy connectors establish a
-            // TCP connection to the proxy, irrespective of the origin's
-            // logical transport.
-            network.connector_transport_protocol = Some(TransportProtocol::Tcp);
-        }
-
-        if http3 {
-            network.connector_transport_protocol = Some(TransportProtocol::Udp);
-        }
-        Ok(HttpConnId {
-            // A request-supplied tunnel changes proxy-side TLS even when there
-            // is no origin TLS provider. Route-generated tunnels are added
-            // below the pool and remain part of the fixed proxy policy.
-            reusable: !input.extensions().contains::<TlsTunnel>()
-                && tls.is_none_or(|id| id.is_reusable()),
-            tls,
-            network,
-            required_version: connection_version_requirement(input),
-            http_proxy_mode: http_proxy_mode_requirement(input),
-        })
-    }
-}
-
-#[cfg_attr(
-    not(any(feature = "rustls", feature = "boring")),
-    expect(unused_variables)
-)]
-fn tls_pool_id(extensions: &Extensions, backend: TlsBackend) -> Option<TlsPoolId> {
-    match backend {
-        #[cfg(feature = "rustls")]
-        TlsBackend::Rustls => {
-            rama_tls_rustls::client::RustlsTlsConnectorConfig::from_extensions(extensions).pool_id()
-        }
-        #[cfg(feature = "boring")]
-        TlsBackend::Boring => {
-            rama_tls_boring::client::BoringTlsConnectorConfig::from_extensions(extensions).pool_id()
-        }
-        _ => Some(TlsPoolId::non_reusable()),
+        self.id_with_tls(input, input.extensions().get_ref::<TlsPoolId>().copied())
     }
 }
 
@@ -211,6 +147,19 @@ fn http_proxy_mode_requirement(input: &ConnectRequest) -> Option<HttpProxyModeRe
 }
 
 pub(crate) fn connection_version_requirement(input: &ConnectRequest) -> Option<Version> {
+    let fallback = input
+        .extensions()
+        .get_ref::<FallbackHttpVersion>()
+        .map(|fallback| fallback.0);
+    let target = input.target_http_version_with_fallback(fallback);
+    let version = target.or_else(|| input.http_version());
+
+    // An H3 request selects the H3 connector even through a custom proxy route.
+    // Keep that HTTP requirement separate from the route's physical transport.
+    if version == Some(Version::HTTP_3) {
+        return Some(Version::HTTP_3);
+    }
+
     let plaintext_http = input
         .protocol()
         .is_some_and(|protocol| protocol.is_http_based() && !protocol.is_secure());
@@ -236,18 +185,7 @@ pub(crate) fn connection_version_requirement(input: &ConnectRequest) -> Option<V
         return None;
     }
 
-    let fallback = input
-        .extensions()
-        .get_ref::<FallbackHttpVersion>()
-        .map(|fallback| fallback.0);
-    input
-        .target_http_version_with_fallback(fallback)
-        .or_else(|| {
-            let requested = input.http_version();
-            (plaintext_http || requested == Some(Version::HTTP_3))
-                .then_some(requested)
-                .flatten()
-        })
+    if plaintext_http { version } else { target }
 }
 
 #[derive(Debug, Clone)]
@@ -299,7 +237,7 @@ impl HttpPooledConnectorConfig {
     /// its connection and concurrency limits are non-zero constants owned by
     /// Rama.
     /// The pool belongs to one fixed connector policy. If request extensions can
-    /// change connection settings, configure its TLS provider through
+    /// change connection settings, supply a TLS-aware identifier through
     /// [`Self::build_default_connector_with_identifier`].
     pub fn build_default_connector<S>(inner: S) -> HttpPooledConnector<S>
     where
@@ -309,12 +247,13 @@ impl HttpPooledConnectorConfig {
     }
 
     /// Build the default pool with a TLS-aware identifier.
-    pub fn build_default_connector_with_identifier<S>(
+    pub fn build_default_connector_with_identifier<S, R>(
         inner: S,
-        identifier: HttpConnIdentifier,
-    ) -> HttpPooledConnector<S>
+        identifier: R,
+    ) -> HttpPooledConnector<S, R>
     where
         S: ConnectorService<ConnectRequest>,
+        R: ReqToConnID<ConnectRequest, ID = HttpConnId>,
     {
         let config = Self::default();
         let pool = MultiplexPool::new(DEFAULT_MAX_CONCURRENT_STREAMS, DEFAULT_MAX_TOTAL)
@@ -335,7 +274,7 @@ impl HttpPooledConnectorConfig {
     /// The pool belongs to one fixed connector policy, including TLS defaults
     /// and native hooks. Retire it before changing that policy or mutable hook
     /// behavior. A custom connector that changes its connection policy
-    /// per request must configure its TLS provider through
+    /// per request must supply a TLS-aware identifier through
     /// [`Self::try_build_connector_with_identifier`], or use a custom
     /// [`ReqToConnID`] with [`PooledConnector`].
     ///
@@ -359,13 +298,14 @@ impl HttpPooledConnectorConfig {
     }
 
     /// Build a pool with a TLS-aware identifier for the fixed policy of `inner`.
-    pub fn try_build_connector_with_identifier<S>(
+    pub fn try_build_connector_with_identifier<S, R>(
         self,
         inner: S,
-        identifier: HttpConnIdentifier,
-    ) -> Result<HttpPooledConnector<S>, BoxError>
+        identifier: R,
+    ) -> Result<HttpPooledConnector<S, R>, BoxError>
     where
         S: ConnectorService<ConnectRequest>,
+        R: ReqToConnID<ConnectRequest, ID = HttpConnId>,
     {
         let pool = MultiplexPool::try_new(self.max_concurrent_streams, self.max_total)?
             .with_selection(self.selection)
@@ -393,8 +333,6 @@ mod tests {
     use rama_core::service::service_fn;
     use rama_core::{Layer, Service, ServiceInput};
     use rama_http_types::body::util::BodyExt as _;
-    #[cfg(feature = "rustls")]
-    use rama_http_types::conn::FallbackHttpVersion;
     use rama_http_types::proxy::PlaintextHttpProxyMode;
     use rama_http_types::{Body, HeaderValue, Method, Request, Response, StatusCode, Version};
     use rama_net::address::{HostWithPort, ProxyAddress};
@@ -403,21 +341,19 @@ mod tests {
     };
     use rama_net::client::{
         ConnectRequest, ConnectionError, ConnectionErrorKind, ConnectorService,
-        EstablishedClientConnection, EstablishedProxyRoute, ProxyRoute, ProxyRoutes,
-        ProxyRoutesConnector,
+        ConnectorTransportProtocol, EstablishedClientConnection, EstablishedProxyRoute, ProxyRoute,
+        ProxyRoutes, ProxyRoutesConnector,
     };
     use rama_net::conn::{ConnectionHealth, ConnectionHealthWatcher};
     use rama_net::http::{HttpRequestVersion, TargetHttpVersion};
     use rama_net::test_utils::client::MockConnectorService;
     use rama_net::{HttpVersionInputExt, Protocol, transport::TransportProtocol};
-    #[cfg(feature = "rustls")]
-    use rama_tls::TlsBackend;
-    use rama_tls::client::TlsPoolId;
+    use rama_tls::client::{ServerVerifyMode, TlsPoolId, TlsServerVerify};
     use rama_utils::octets::kib;
     use tokio::time::sleep;
 
     use super::{
-        HttpConnIdentifier, HttpPooledConnector, HttpPooledConnectorConfig,
+        FallbackHttpVersion, HttpConnIdentifier, HttpPooledConnector, HttpPooledConnectorConfig,
         HttpProxyModeRequirement, connection_version_requirement, http_proxy_mode_requirement,
     };
     use crate::client::proxy::layer::HttpProxyConnectorLayer;
@@ -449,143 +385,18 @@ mod tests {
         let identifier = HttpConnIdentifier::new();
         let baseline = identifier.id(&input).unwrap();
         assert!(baseline.is_reusable());
-        input
-            .extensions
-            .insert(TlsPoolId::from_hash(&"custom policy"));
+        input.extensions.insert(
+            TlsPoolId::builder()
+                .with_verify(&TlsServerVerify(ServerVerifyMode::Disable))
+                .build()
+                .unwrap(),
+        );
         let customized = identifier.id(&input).unwrap();
         assert!(customized.is_reusable());
         assert_ne!(baseline, customized);
+        assert_eq!(baseline, identifier.id_with_tls(&input, None).unwrap());
         assert_eq!(customized, identifier.id(&input).unwrap());
         input.extensions.insert(TlsPoolId::non_reusable());
-        assert!(!identifier.id(&input).unwrap().is_reusable());
-    }
-
-    #[cfg(feature = "rustls")]
-    #[test]
-    fn tls_identity_follows_the_connectors_version_resolution() {
-        let identifier = HttpConnIdentifier::new().with_tls_backend(TlsBackend::Rustls);
-        let input = ConnectRequest::new(HostWithPort::example_domain_https())
-            .with_application_protocol(Protocol::HTTPS);
-        input.extensions.insert(rama_tls::client::TlsServerVerify(
-            rama_tls::client::ServerVerifyMode::Disable,
-        ));
-        input.extensions.insert(HttpRequestVersion(Version::HTTP_3));
-        let h3 = identifier.id(&input).unwrap();
-        assert_eq!(h3.tls, None);
-        assert_eq!(
-            h3.network.connector_transport_protocol,
-            Some(TransportProtocol::Udp)
-        );
-        input
-            .extensions
-            .insert(FallbackHttpVersion(Version::HTTP_2));
-        let fallback = identifier.id(&input).unwrap();
-        assert!(fallback.tls.is_some());
-        assert_ne!(
-            fallback.network.connector_transport_protocol,
-            Some(TransportProtocol::Udp)
-        );
-        input.extensions.insert(TargetHttpVersion(Version::HTTP_3));
-        assert_eq!(identifier.id(&input).unwrap().tls, None);
-        input.extensions.insert(TargetHttpVersion(Version::HTTP_2));
-        assert_eq!(identifier.id(&input).unwrap().tls, fallback.tls);
-    }
-
-    #[cfg(all(feature = "rustls", feature = "boring"))]
-    #[test]
-    fn native_tls_identity_uses_selected_transport_provider() {
-        let identifier = HttpConnIdentifier::new()
-            .with_tls_backend(TlsBackend::Rustls)
-            .with_http3_tls_backend(TlsBackend::Boring);
-        let input = ConnectRequest::new(HostWithPort::example_domain_https());
-        input
-            .extensions
-            .insert(rama_tls_boring::client::BoringGrease(true));
-        input.extensions.insert(TargetHttpVersion(Version::HTTP_2));
-        assert_eq!(identifier.id(&input).unwrap().tls, None);
-        input.extensions.insert(TargetHttpVersion(Version::HTTP_3));
-        assert!(identifier.id(&input).unwrap().tls.is_some());
-    }
-
-    #[cfg(all(feature = "rustls", feature = "boring"))]
-    #[test]
-    fn common_tls_identity_agrees_across_providers_and_preserves_presence() {
-        use rama_tls::client::{
-            ServerVerifyMode, TlsClientConfig, TlsServerCertPins, TlsServerName, TlsServerVerify,
-            TlsStoreServerCertChain,
-        };
-        let input = ConnectRequest::new(HostWithPort::example_domain_https());
-        let rustls = HttpConnIdentifier::new().with_tls_backend(TlsBackend::Rustls);
-        let boring = HttpConnIdentifier::new().with_tls_backend(TlsBackend::Boring);
-        let baseline = rustls.id(&input).unwrap();
-        assert_eq!(baseline, boring.id(&input).unwrap());
-        for intent in [
-            rama_tls::KeyLogIntent::Disabled,
-            rama_tls::KeyLogIntent::Environment,
-            rama_tls::KeyLogIntent::File("pool-test-keylog.txt".into()),
-        ] {
-            input.extensions.insert(rama_tls::TlsKeyLog(intent));
-            assert_ne!(baseline, rustls.id(&input).unwrap());
-            assert_eq!(rustls.id(&input).unwrap(), boring.id(&input).unwrap());
-        }
-        let input = ConnectRequest::new(HostWithPort::example_domain_https());
-        for alpn in [
-            rama_net::tls::TlsAlpn(Default::default()),
-            rama_net::tls::TlsAlpn::http_1(),
-        ] {
-            input.extensions.insert(alpn);
-            assert_ne!(baseline, rustls.id(&input).unwrap());
-            assert_eq!(rustls.id(&input).unwrap(), boring.id(&input).unwrap());
-        }
-        input.extensions.insert(rama_tls::TlsSupportedVersions(vec![
-            rama_tls::ProtocolVersion::TLSv1_3,
-        ]));
-        assert_eq!(rustls.id(&input).unwrap(), boring.id(&input).unwrap());
-        let input = ConnectRequest::new(HostWithPort::example_domain_https());
-        input
-            .extensions
-            .insert(TlsServerVerify(ServerVerifyMode::Auto));
-        assert_ne!(baseline, rustls.id(&input).unwrap());
-        assert_eq!(rustls.id(&input).unwrap(), boring.id(&input).unwrap());
-        input
-            .extensions
-            .insert(TlsServerName("example.com".parse().unwrap()));
-        input.extensions.insert(TlsStoreServerCertChain(true));
-        assert_eq!(rustls.id(&input).unwrap(), boring.id(&input).unwrap());
-        input.extensions.insert(TlsServerCertPins::new(
-            rama_tls::client::TlsServerCertPin::SpkiSha256([1; 32]),
-        ));
-        assert_eq!(rustls.id(&input).unwrap(), boring.id(&input).unwrap());
-        TlsClientConfig::new()
-            .try_with_server_trust_anchors([vec![4, 5, 6].into()])
-            .unwrap()
-            .write_to(&input.extensions);
-        assert_eq!(rustls.id(&input).unwrap(), boring.id(&input).unwrap());
-    }
-
-    #[cfg(feature = "rustls")]
-    #[test]
-    fn explicit_custom_identity_cannot_mask_builtin_tls_policy() {
-        use rama_tls::client::TlsServerCertPins;
-        let input = ConnectRequest::new(HostWithPort::example_domain_https());
-        let identifier = HttpConnIdentifier::new().with_tls_backend(TlsBackend::Rustls);
-        input
-            .extensions
-            .insert(TlsPoolId::from_hash(&"caller identity"));
-        let baseline = identifier.id(&input).unwrap();
-        assert_eq!(baseline.tls, None);
-        input.extensions.insert(TlsServerCertPins::new(
-            rama_tls::client::TlsServerCertPin::SpkiSha256([2; 32]),
-        ));
-        let pins = identifier.id(&input).unwrap();
-        assert_ne!(baseline, pins);
-        input
-            .extensions
-            .insert(TlsPoolId::from_hash(&"replacement caller identity"));
-        assert_eq!(pins, identifier.id(&input).unwrap());
-        input
-            .extensions
-            .insert(rama_tls_rustls::client::ModifyRustlsClientConfig::new(Ok));
         assert!(!identifier.id(&input).unwrap().is_reusable());
     }
 
@@ -709,6 +520,94 @@ mod tests {
     }
 
     #[test]
+    fn http_connection_id_preserves_the_selected_physical_transport() {
+        for proxy in [
+            None,
+            Some("http://proxy.example:8080"),
+            Some("https://proxy.example:8443"),
+            Some("socks5://proxy.example:1080"),
+        ] {
+            for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
+                for logical in [
+                    None,
+                    Some(TransportProtocol::Tcp),
+                    Some(TransportProtocol::Udp),
+                ] {
+                    for physical in [
+                        None,
+                        Some(TransportProtocol::Tcp),
+                        Some(TransportProtocol::Udp),
+                    ] {
+                        let input = ConnectRequest::new(HostWithPort::example_domain_http())
+                            .with_application_protocol(Protocol::HTTP)
+                            .maybe_with_transport_protocol(logical);
+                        input.extensions.insert(HttpRequestVersion(version));
+                        if let Some(proxy) = proxy {
+                            input
+                                .extensions
+                                .insert(ProxyRoute::Proxy(proxy.parse().unwrap()));
+                        }
+                        if let Some(physical) = physical {
+                            input
+                                .extensions
+                                .insert(ConnectorTransportProtocol(physical));
+                        }
+
+                        let id = HttpConnIdentifier::new().id(&input).unwrap();
+                        assert_eq!(
+                            id.network.connector_transport_protocol,
+                            physical.or(logical)
+                        );
+                        assert_eq!(id.network, BasicConnIdentifier::new().id(&input).unwrap());
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn h3_proxy_identity_is_separate_even_with_the_same_physical_transport() {
+        let request = || {
+            let input = ConnectRequest::new(HostWithPort::example_domain_http())
+                .with_application_protocol(Protocol::HTTP)
+                .with_transport_protocol(TransportProtocol::Tcp);
+            input.extensions.insert(ProxyRoute::Proxy(
+                "https://proxy.example:8443".parse().unwrap(),
+            ));
+            input
+        };
+        let ordinary = request();
+        ordinary
+            .extensions
+            .insert(HttpRequestVersion(Version::HTTP_2));
+        let baseline = HttpConnIdentifier::new().id(&ordinary).unwrap();
+
+        for (target, fallback, requested) in [
+            (Some(Version::HTTP_3), None, Version::HTTP_11),
+            (None, Some(Version::HTTP_3), Version::HTTP_11),
+            (None, None, Version::HTTP_3),
+        ] {
+            let input = request();
+            input.extensions.insert(HttpRequestVersion(requested));
+            if let Some(target) = target {
+                input.extensions.insert(TargetHttpVersion(target));
+            }
+            if let Some(fallback) = fallback {
+                input.extensions.insert(FallbackHttpVersion(fallback));
+            }
+
+            let id = HttpConnIdentifier::new().id(&input).unwrap();
+            assert_eq!(id.network, baseline.network);
+            assert_eq!(id.required_version, Some(Version::HTTP_3));
+            assert_ne!(id, baseline);
+
+            // An explicit target takes precedence over request and fallback versions.
+            input.extensions.insert(TargetHttpVersion(Version::HTTP_2));
+            assert_eq!(HttpConnIdentifier::new().id(&input).unwrap(), baseline);
+        }
+    }
+
+    #[test]
     fn http_connection_id_uses_only_physical_version_requirements() {
         let secure_proxy: ProxyAddress = "https://proxy.example:8443".parse().unwrap();
         let secure_forward_ids = [
@@ -727,7 +626,7 @@ mod tests {
             HttpConnIdentifier::new().id(&input).unwrap()
         });
         assert_eq!(secure_forward_ids[0], secure_forward_ids[1]);
-        // H3 selects a separate transport before the TCP proxy connector runs.
+        // H3 retains its HTTP requirement independently of the physical transport.
         assert_ne!(secure_forward_ids[1], secure_forward_ids[2]);
 
         let explicit_ids = [Version::HTTP_11, Version::HTTP_2].map(|version| {

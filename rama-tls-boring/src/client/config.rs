@@ -3,13 +3,15 @@ use rama_boring::x509::store::X509Store;
 use rama_core::conversion::RamaFrom;
 use rama_core::extensions::{Extension, Extensions, FromExtensions};
 use rama_net::tls::{ApplicationProtocol, TlsAlpn};
+#[cfg(test)]
+use rama_tls::KeyLogIntent;
 use rama_tls::client::{
     ClientHello, ClientHelloExtension, TlsClientAuth, TlsClientConfig, TlsPoolId,
     TlsServerCertPins, TlsServerName, TlsServerTrust, TlsServerVerify, TlsStoreServerCertChain,
 };
 use rama_tls::{
-    CertificateCompressionAlgorithm, CipherSuite, ExtensionId, KeyLogIntent, ProtocolVersion,
-    SignatureScheme, SupportedGroup, TlsKeyLog, TlsSupportedVersions,
+    CertificateCompressionAlgorithm, CipherSuite, ExtensionId, ProtocolVersion, SignatureScheme,
+    SupportedGroup, TlsKeyLog, TlsSupportedVersions,
 };
 use rama_utils::macros::generate_set_and_with;
 use std::sync::Arc;
@@ -108,8 +110,8 @@ impl BoringTlsConnectorConfig<'_> {
 
     /// Compact identity of request-level overrides, or `None` for the baseline.
     ///
-    /// Explicit defaults remain distinct from absence. Common settings compare
-    /// across providers; native settings have their own namespace. Opaque
+    /// Explicit defaults remain distinct from absence. Equivalent settings compare
+    /// independently of the TLS implementation. Opaque
     /// credentials, hooks, verifiers and custom log sinks disable reuse.
     /// Connector defaults are fixed for the lifetime of the pool and must not
     /// be layered onto this request-only view.
@@ -143,53 +145,35 @@ impl BoringTlsConnectorConfig<'_> {
             min_version,
             max_version,
         } = self;
-        if client_auth.is_some()
-            || keylog.is_some_and(|value| matches!(value.0, KeyLogIntent::Custom(_)))
-            || verify_cert_store.is_some()
-        {
-            return Some(TlsPoolId::non_reusable());
+        let mut builder = TlsPoolId::builder()
+            .maybe_with_alpn(*alpn)
+            .maybe_with_versions(*versions)
+            .maybe_with_verify(*verify)
+            .maybe_with_keylog(*keylog)
+            .maybe_with_server_name(*server_name)
+            .maybe_with_store_chain(*store_chain)
+            .maybe_with_client_auth(*client_auth)
+            .maybe_with_server_cert_pins(*server_cert_pins)
+            .maybe_with_server_trust(*server_trust)
+            .maybe_with_cipher_suites(cipher_suites.map(|value| value.0.as_slice()))
+            .maybe_with_supported_groups(supported_groups.map(|value| value.0.as_slice()))
+            .maybe_with_signature_schemes(signature_schemes.map(|value| value.0.as_slice()))
+            .maybe_with_grease(grease.map(|value| value.0))
+            .maybe_with_extension_order(extension_order.map(|value| value.0.as_slice()))
+            .maybe_with_cert_compression(cert_compression.map(|value| value.0.as_slice()))
+            .maybe_with_delegated_credentials(delegated_credentials.map(|value| value.0.as_slice()))
+            .maybe_with_record_size_limit(record_size_limit.map(|value| value.0))
+            .maybe_with_encrypted_client_hello(encrypted_client_hello.map(|value| value.0))
+            .maybe_with_ocsp_stapling(ocsp_stapling.map(|value| value.0))
+            .maybe_with_signed_cert_timestamps(signed_cert_timestamps.map(|value| value.0))
+            .maybe_with_min_version(min_version.map(|value| value.0))
+            .maybe_with_max_version(max_version.map(|value| value.0))
+            .with_opaque_override(verify_cert_store.is_some());
+
+        if let Some(alps) = alps {
+            builder.set_alps(&alps.protocols, alps.new_codepoint);
         }
-        let keylog = keylog.map(|value| match &value.0 {
-            KeyLogIntent::Environment => (0_u8, None),
-            KeyLogIntent::Disabled => (1, None),
-            KeyLogIntent::File(path) => (2, Some(path.as_str())),
-            KeyLogIntent::Custom(_) => (3, None),
-        });
-        let common = (
-            alpn.map(|value| &value.0),
-            versions.map(|value| &value.0),
-            verify.map(|value| value.0),
-            keylog,
-            server_name.map(|value| &value.0),
-            store_chain.map(|value| value.0),
-            server_cert_pins,
-            server_trust,
-        );
-        let native = (
-            (
-                cipher_suites.map(|value| &value.0),
-                supported_groups.map(|value| &value.0),
-                signature_schemes.map(|value| &value.0),
-                grease.map(|value| &value.0),
-                alps.map(|value| (&value.protocols, value.new_codepoint)),
-                extension_order.map(|value| &value.0),
-                cert_compression.map(|value| &value.0),
-                delegated_credentials.map(|value| &value.0),
-            ),
-            (
-                record_size_limit.map(|value| &value.0),
-                encrypted_client_hello.map(|value| &value.0),
-                ocsp_stapling.map(|value| &value.0),
-                signed_cert_timestamps.map(|value| &value.0),
-                min_version.map(|value| &value.0),
-                max_version.map(|value| &value.0),
-            ),
-        );
-        let has_native = native != Default::default();
-        Some(TlsPoolId::from_hash(&(
-            common,
-            has_native.then_some(("boring.v1", native)),
-        )))
+        builder.build()
     }
 
     /// Whether a successful handshake establishes the configured server identity.
@@ -775,6 +759,7 @@ mod tests {
 #[cfg(test)]
 mod pool_tests {
     use super::*;
+    use itertools::iproduct;
     use rama_core::extensions::Extensions;
     use rama_tls::ProtocolVersion;
     use rama_tls::client::{ClientAuth, ServerVerifyMode, TlsServerCertPin, TlsServerTrustAnchors};
@@ -940,6 +925,69 @@ mod pool_tests {
                 BoringTlsConnectorConfig::from_extensions(&first).pool_id(),
                 BoringTlsConnectorConfig::from_extensions(&changed).pool_id(),
                 "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn generic_builder_matches_native_override_identity() {
+        let alpn = TlsAlpn::http_2();
+        let protocols = [ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11];
+        let ciphers = [CipherSuite::TLS13_AES_128_GCM_SHA256];
+        let groups = [SupportedGroup::X25519];
+        let signatures = [SignatureScheme::RSA_PSS_SHA256];
+        let delegated = [SignatureScheme::ECDSA_NISTP256_SHA256];
+        let extensions = [ExtensionId::SERVER_NAME];
+        let compression = [CertificateCompressionAlgorithm::Zlib];
+
+        // Distinct combinations catch swapped boolean setters as well as omitted fields.
+        for (grease, ech, ocsp, timestamps, new_codepoint) in iproduct!(
+            [false, true],
+            [false, true],
+            [false, true],
+            [false, true],
+            [false, true]
+        ) {
+            let input = Extensions::new();
+            input.insert(alpn.clone());
+            input.insert(BoringCipherSuites(ciphers.to_vec()));
+            input.insert(BoringSupportedGroups(groups.to_vec()));
+            input.insert(BoringSignatureSchemes(signatures.to_vec()));
+            input.insert(BoringGrease(grease));
+            input.insert(BoringAlps {
+                protocols: protocols.to_vec(),
+                new_codepoint,
+            });
+            input.insert(BoringExtensionOrder(extensions.to_vec()));
+            input.insert(BoringCertCompression(compression.to_vec()));
+            input.insert(BoringDelegatedCredentials(delegated.to_vec()));
+            input.insert(BoringRecordSizeLimit(4096));
+            input.insert(BoringEncryptedClientHello(ech));
+            input.insert(BoringOcspStapling(ocsp));
+            input.insert(BoringSignedCertTimestamps(timestamps));
+            input.insert(BoringMinVersion(ProtocolVersion::TLSv1_2));
+            input.insert(BoringMaxVersion(ProtocolVersion::TLSv1_3));
+
+            let expected = TlsPoolId::builder()
+                .with_alpn(&alpn)
+                .with_cipher_suites(&ciphers)
+                .with_supported_groups(&groups)
+                .with_signature_schemes(&signatures)
+                .with_grease(grease)
+                .with_alps(&protocols, new_codepoint)
+                .with_extension_order(&extensions)
+                .with_cert_compression(&compression)
+                .with_delegated_credentials(&delegated)
+                .with_record_size_limit(4096)
+                .with_encrypted_client_hello(ech)
+                .with_ocsp_stapling(ocsp)
+                .with_signed_cert_timestamps(timestamps)
+                .with_min_version(ProtocolVersion::TLSv1_2)
+                .with_max_version(ProtocolVersion::TLSv1_3)
+                .build();
+            assert_eq!(
+                BoringTlsConnectorConfig::from_extensions(&input).pool_id(),
+                expected
             );
         }
     }

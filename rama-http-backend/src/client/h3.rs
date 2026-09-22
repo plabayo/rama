@@ -35,7 +35,8 @@ use std::{net::SocketAddr, sync::Arc};
 /// Establish authenticated QUIC transports for the common HTTP handshake.
 ///
 /// Wrap this connector with Rama's DNS connector and HTTP connection pool,
-/// then configure the pool with [`Self::tls_backend`] so overrides affect lookup.
+/// with a connection identifier that classifies TLS overrides before lookup.
+/// Rama’s easy client builder assembles this policy automatically.
 /// The connector selects `h3` ALPN; the origin hostname remains the TLS
 /// verification target even when routing selects a different physical address.
 /// TCP proxy routes are rejected before any UDP connection is attempted.

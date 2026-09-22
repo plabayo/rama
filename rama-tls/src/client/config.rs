@@ -300,7 +300,7 @@ pub struct TlsServerVerify(pub ServerVerifyMode);
 #[extension(tags(tls))]
 pub struct TlsServerCertPins {
     sets: Arc<Vec<TlsServerCertPinSet>>,
-    digest: [u8; 32],
+    digest: super::pool::PolicyDigest,
 }
 
 impl PartialEq for TlsServerCertPins {
@@ -552,7 +552,7 @@ impl TlsServerCertPins {
 #[derive(Debug, Clone)]
 pub struct TlsServerTrustAnchors {
     certificates: Arc<[CertificateDer<'static>]>,
-    digest: [u8; 32],
+    digest: super::pool::PolicyDigest,
 }
 
 impl PartialEq for TlsServerTrustAnchors {
