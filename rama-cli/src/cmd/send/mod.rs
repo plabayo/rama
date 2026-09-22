@@ -278,7 +278,10 @@ pub struct SendCommand {
     http_2: bool,
 
     #[arg(long = "http3")]
-    /// (HTTP) force http_version to http/3
+    /// (HTTP) require HTTP/3 over QUIC for an HTTPS origin.
+    ///
+    /// Fails if HTTP/3 cannot be established; does not fall back to HTTP/1 or HTTP/2.
+    /// Without a forced version, HTTP/3 can be selected from discovered alternatives.
     ///
     /// Mutually exclusive with --http0.9, --http1.0, --http1.1, --http2
     http_3: bool,

@@ -24,7 +24,7 @@ where
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let ec = self.0.connect(input).await?;
         if ec.input.extensions().contains::<VerboseLogs>() {
-            if let Some(alpn) = ec.input.extensions().get_ref::<TlsAlpn>() {
+            if let Some(alpn) = ec.conn.extensions().get_ref::<TlsAlpn>() {
                 let protocols: Vec<String> = alpn.0.iter().map(|p| p.to_string()).collect();
                 eprintln!("* ALPN: rama offers {}", protocols.join(","));
             }

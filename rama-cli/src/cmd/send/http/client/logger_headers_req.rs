@@ -48,7 +48,8 @@ where
                     });
                 for header in pseudo_headers.iter() {
                     eprintln!(
-                        "* [HTTP/2] [{}: {}]",
+                        "* [{:?}] [{}: {}]",
+                        req.version(),
                         header,
                         match header {
                             PseudoHeader::Method => {

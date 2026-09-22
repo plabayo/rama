@@ -43,7 +43,8 @@ where
             if let Some(pseudo_headers) = res.extensions().get_ref::<PseudoHeaderOrder>() {
                 for header in pseudo_headers.iter() {
                     eprintln!(
-                        "* [HTTP/2] [{}: {}]",
+                        "* [{:?}] [{}: {}]",
+                        res.version(),
                         header,
                         match header {
                             PseudoHeader::Status => {

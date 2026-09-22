@@ -5,7 +5,10 @@ use rama::{
     extensions::Extension,
     http::{
         Body, Request, Response, StreamingBody,
-        client::{EasyHttpWebClient, ProxyConnectorLayer, proxy::layer::HttpProxyConnectorLayer},
+        client::{
+            EasyHttpWebClient, Http3Connector, ProxyConnectorLayer,
+            proxy::layer::HttpProxyConnectorLayer,
+        },
         layer::{
             auth::AddAuthorizationLayer,
             follow_redirect::{
@@ -27,6 +30,7 @@ use rama::{
         user::{Basic, ProxyCredential},
     },
     proxy::socks5::Socks5ProxyConnectorLayer,
+    quic::tls::BoringTlsProvider,
     rt::Executor,
     tls::boring::client::{BoringClientConfigExt, EmulateTlsProfileLayer},
     tls::{
@@ -51,7 +55,10 @@ use rama::js::pac::SystemPacProxy;
 use crate::cmd::send::layer::resolve::OptDnsOverwriteLayer;
 
 use super::{SendCommand, arg::HttpHeader};
-use crate::cmd::send::EmulationProfiles;
+use crate::cmd::{
+    send::{EmulationProfiles, arg::TlsVersion},
+    uri::parse_user_uri,
+};
 
 mod logger_body_res;
 mod logger_headers_req;
@@ -66,6 +73,7 @@ pub(super) async fn new(
     cfg: &SendCommand,
     feed_tui: bool,
     har_recorder: Option<FileRecorder>,
+    executor: Executor,
 ) -> Result<impl Service<Request, Output = Response, Error = OpaqueError>, BoxError> {
     let explicit_proxy = cfg.proxy.clone().map(|mut proxy_address| {
         if let Some(credentials) = cfg.proxy_user.clone() {
@@ -86,13 +94,23 @@ pub(super) async fn new(
     new_with_proxy_layers(
         cfg,
         feed_tui,
-        no_proxy_environment_layer,
-        explicit_proxy_layer,
-        proxy_environment_layer,
-        system_proxy_layer,
+        ProxyLayers {
+            no_proxy_environment_layer,
+            explicit_proxy_layer,
+            proxy_environment_layer,
+            system_proxy_layer,
+        },
         har_recorder,
+        executor,
     )
     .await
+}
+
+struct ProxyLayers<P> {
+    no_proxy_environment_layer: NoProxyEnvLayer,
+    explicit_proxy_layer: ProxyAddressLayer,
+    proxy_environment_layer: ProxyEnvLayer,
+    system_proxy_layer: SystemProxyLayer<P>,
 }
 
 /// Same as [`new`], with initial proxy layers handed in so construction does
@@ -100,19 +118,23 @@ pub(super) async fn new(
 async fn new_with_proxy_layers<P>(
     cfg: &SendCommand,
     feed_tui: bool,
-    no_proxy_environment_layer: NoProxyEnvLayer,
-    explicit_proxy_layer: ProxyAddressLayer,
-    proxy_environment_layer: ProxyEnvLayer,
-    system_proxy_layer: SystemProxyLayer<P>,
+    proxy_layers: ProxyLayers<P>,
     har_recorder: Option<FileRecorder>,
+    executor: Executor,
 ) -> Result<impl Service<Request, Output = Response, Error = OpaqueError>, BoxError>
 where
     P: SystemProxyPacService + Clone,
 {
+    let ProxyLayers {
+        no_proxy_environment_layer,
+        explicit_proxy_layer,
+        proxy_environment_layer,
+        system_proxy_layer,
+    } = proxy_layers;
     let writer = writer::try_new(cfg).await?;
     let json_selectors: Arc<[JsonPath]> = cfg.select_json.clone().into();
 
-    let inner_client = new_inner_client(cfg)?;
+    let inner_client = new_inner_client(cfg, executor).await?;
     let emulation_layer = if let Some(profiles) = &cfg.emulate {
         let database = load_emulation_database(profiles).await?;
         Some((
@@ -232,8 +254,9 @@ fn compute_redirect_limit(location: bool, location_trusted: bool, max_redirs: is
     }
 }
 
-fn new_inner_client(
+async fn new_inner_client(
     cfg: &SendCommand,
+    executor: Executor,
 ) -> Result<impl Service<Request, Output = Response, Error = OpaqueError> + Clone, BoxError> {
     let mut tls_config = if cfg.emulate.is_some() {
         TlsClientConfig::new()
@@ -260,10 +283,10 @@ fn new_inner_client(
 
     if let Some(max_ssl_version) = cfg.tls_max.as_ref() {
         let max_ssl_version = match max_ssl_version {
-            crate::cmd::send::arg::TlsVersion::V10 => ProtocolVersion::TLSv1_0,
-            crate::cmd::send::arg::TlsVersion::V11 => ProtocolVersion::TLSv1_1,
-            crate::cmd::send::arg::TlsVersion::V12 => ProtocolVersion::TLSv1_2,
-            crate::cmd::send::arg::TlsVersion::V13 => ProtocolVersion::TLSv1_3,
+            TlsVersion::V10 => ProtocolVersion::TLSv1_0,
+            TlsVersion::V11 => ProtocolVersion::TLSv1_1,
+            TlsVersion::V12 => ProtocolVersion::TLSv1_2,
+            TlsVersion::V13 => ProtocolVersion::TLSv1_3,
         };
         tls_config.set_max_version(max_ssl_version);
     }
@@ -285,16 +308,44 @@ fn new_inner_client(
     let proxy_connector =
         ProxyConnectorLayer::optional(Socks5ProxyConnectorLayer::required(), http_proxy_connector);
 
-    let client = EasyHttpWebClient::connector_builder()
+    let builder = EasyHttpWebClient::connector_builder()
         .with_default_transport_connector()
         .with_default_dns_connector()
-        .with_custom_connector(layer_fn(logger_l4::TransportConnInfoLogger))
         .with_tls_proxy_support_using_boringssl_config(proxy_tls_config)
         .with_custom_proxy_connector(proxy_connector)
-        .with_tls_support_using_boringssl(tls_config)
-        .with_custom_connector(layer_fn(logger_tls::TlsInfoLogger))
+        .with_tls_support_using_boringssl(tls_config.clone())
         .with_custom_connector(UserAgentEmulateHttpConnectModifierLayer::default())
-        .with_default_http_connector(Executor::default())
+        .with_default_http_connector(executor.clone());
+
+    let uri = parse_user_uri(&cfg.uri)?;
+    // Local URI handlers and WebSocket connections do not need a QUIC socket.
+    let network_http = uri.scheme().is_some_and(|scheme| scheme.is_http());
+    // Honor an older TLS ceiling without making an ordinary HTTP request fail
+    // merely because the client also supports HTTP/3.
+    let allows_h3 = !cfg.http_09
+        && !cfg.http_10
+        && !cfg.http_11
+        && !cfg.http_2
+        && (cfg.http_3 || matches!(cfg.tls_max, None | Some(TlsVersion::V13)));
+    // Erase the deep transport futures before adding diagnostics and timeouts.
+    // Otherwise constructing their combined future can exhaust a worker stack.
+    // This boundary is only crossed for a new connection; pool hits bypass it.
+    let builder = if network_http && allows_h3 {
+        let connector = Http3Connector::builder(executor)
+            .with_tls_provider(Arc::new(BoringTlsProvider))
+            .with_tls_config(tls_config)
+            .build()
+            .await?;
+        builder
+            .with_http3_support(connector)
+            .map_connector(|connector| connector.boxed())
+    } else {
+        builder.map_connector(|connector| connector.boxed())
+    };
+
+    let client = builder
+        .with_custom_connector(layer_fn(logger_l4::TransportConnInfoLogger))
+        .with_custom_connector(layer_fn(logger_tls::TlsInfoLogger))
         .with_custom_connector(
             if let Some(timeout) = cfg.connect_timeout
                 && timeout > 0.
@@ -304,7 +355,7 @@ fn new_inner_client(
                 TimeoutLayer::never()
             },
         )
-        .without_connection_pool()
+        .with_default_connection_pool()
         .build_client()
         .with_forward_proxy_auth(!cfg.no_proxy_forward_auth)
         .with_tunnel_plaintext_http(cfg.proxy_tunnel)
@@ -655,11 +706,14 @@ mod tests {
         new_with_proxy_layers(
             cfg,
             false,
-            no_proxy_none(),
-            ProxyAddressLayer::maybe(explicit_proxy),
-            lazy_proxy(None),
-            SystemProxyLayer::from_cached(SystemProxyConfig::default()),
+            ProxyLayers {
+                no_proxy_environment_layer: no_proxy_none(),
+                explicit_proxy_layer: ProxyAddressLayer::maybe(explicit_proxy),
+                proxy_environment_layer: lazy_proxy(None),
+                system_proxy_layer: SystemProxyLayer::from_cached(SystemProxyConfig::default()),
+            },
             None,
+            Executor::default(),
         )
         .await
     }
@@ -721,11 +775,14 @@ mod tests {
         let svc = new_with_proxy_layers(
             &cfg,
             false,
-            no_proxy_none(),
-            ProxyAddressLayer::maybe(None),
-            lazy_proxy(None),
-            SystemProxyLayer::from_cached(SystemProxyConfig::default()),
+            ProxyLayers {
+                no_proxy_environment_layer: no_proxy_none(),
+                explicit_proxy_layer: ProxyAddressLayer::maybe(None),
+                proxy_environment_layer: lazy_proxy(None),
+                system_proxy_layer: SystemProxyLayer::from_cached(SystemProxyConfig::default()),
+            },
             None,
+            Executor::default(),
         )
         .await
         .unwrap();
@@ -982,11 +1039,14 @@ mod tests {
         let svc = new_with_proxy_layers(
             &cfg,
             false,
-            no_proxy_none(),
-            ProxyAddressLayer::maybe(None),
-            lazy_proxy(None),
-            SystemProxyLayer::from_cached(system),
+            ProxyLayers {
+                no_proxy_environment_layer: no_proxy_none(),
+                explicit_proxy_layer: ProxyAddressLayer::maybe(None),
+                proxy_environment_layer: lazy_proxy(None),
+                system_proxy_layer: SystemProxyLayer::from_cached(system),
+            },
             None,
+            Executor::default(),
         )
         .await
         .unwrap();
@@ -1018,11 +1078,14 @@ mod tests {
         let service = new_with_proxy_layers(
             &cfg,
             false,
-            no_proxy_none(),
-            ProxyAddressLayer::maybe(None),
-            lazy_proxy(None),
-            SystemProxyLayer::from_cached(system),
+            ProxyLayers {
+                no_proxy_environment_layer: no_proxy_none(),
+                explicit_proxy_layer: ProxyAddressLayer::maybe(None),
+                proxy_environment_layer: lazy_proxy(None),
+                system_proxy_layer: SystemProxyLayer::from_cached(system),
+            },
             None,
+            Executor::default(),
         )
         .await
         .unwrap();
@@ -1186,11 +1249,14 @@ mod tests {
         let service = new_with_proxy_layers(
             &cfg,
             false,
-            no_proxy_none(),
-            ProxyAddressLayer::maybe(None),
-            lazy_proxy(None),
-            SystemProxyLayer::from_cached(system).with_pac_service(factory),
+            ProxyLayers {
+                no_proxy_environment_layer: no_proxy_none(),
+                explicit_proxy_layer: ProxyAddressLayer::maybe(None),
+                proxy_environment_layer: lazy_proxy(None),
+                system_proxy_layer: SystemProxyLayer::from_cached(system).with_pac_service(factory),
+            },
             None,
+            Executor::default(),
         )
         .await
         .unwrap();
@@ -1250,11 +1316,14 @@ mod tests {
         let svc = new_with_proxy_layers(
             &cfg,
             false,
-            no_proxy_none(),
-            ProxyAddressLayer::maybe(None),
-            lazy_proxy(None),
-            SystemProxyLayer::from_cached(system),
+            ProxyLayers {
+                no_proxy_environment_layer: no_proxy_none(),
+                explicit_proxy_layer: ProxyAddressLayer::maybe(None),
+                proxy_environment_layer: lazy_proxy(None),
+                system_proxy_layer: SystemProxyLayer::from_cached(system),
+            },
             None,
+            Executor::default(),
         )
         .await
         .unwrap();
@@ -1345,11 +1414,17 @@ mod tests {
         let svc = new_with_proxy_layers(
             &cfg,
             false,
-            no_proxy_environment_layer,
-            ProxyAddressLayer::new(format!("http://{proxy}").parse().unwrap()),
-            environment_proxy_layer,
-            SystemProxyLayer::from_cached(system).with_pac_service(pac_factory),
+            ProxyLayers {
+                no_proxy_environment_layer,
+                explicit_proxy_layer: ProxyAddressLayer::new(
+                    format!("http://{proxy}").parse().unwrap(),
+                ),
+                proxy_environment_layer: environment_proxy_layer,
+                system_proxy_layer: SystemProxyLayer::from_cached(system)
+                    .with_pac_service(pac_factory),
+            },
             None,
+            Executor::default(),
         )
         .await
         .unwrap();
@@ -1420,11 +1495,17 @@ mod tests {
         let svc = new_with_proxy_layers(
             &cfg,
             false,
-            no_proxy_none(),
-            ProxyAddressLayer::new(format!("http://{primary}").parse().unwrap()),
-            environment_proxy_layer,
-            SystemProxyLayer::from_cached(system).with_pac_service(pac_factory),
+            ProxyLayers {
+                no_proxy_environment_layer: no_proxy_none(),
+                explicit_proxy_layer: ProxyAddressLayer::new(
+                    format!("http://{primary}").parse().unwrap(),
+                ),
+                proxy_environment_layer: environment_proxy_layer,
+                system_proxy_layer: SystemProxyLayer::from_cached(system)
+                    .with_pac_service(pac_factory),
+            },
             None,
+            Executor::default(),
         )
         .await
         .unwrap();
@@ -1462,11 +1543,17 @@ mod tests {
         let svc = new_with_proxy_layers(
             &cfg,
             false,
-            no_proxy_none(),
-            ProxyAddressLayer::maybe(None),
-            lazy_proxy(Some(format!("http://{environment}").parse().unwrap())),
-            SystemProxyLayer::from_cached(system).with_pac_service(pac_factory),
+            ProxyLayers {
+                no_proxy_environment_layer: no_proxy_none(),
+                explicit_proxy_layer: ProxyAddressLayer::maybe(None),
+                proxy_environment_layer: lazy_proxy(Some(
+                    format!("http://{environment}").parse().unwrap(),
+                )),
+                system_proxy_layer: SystemProxyLayer::from_cached(system)
+                    .with_pac_service(pac_factory),
+            },
             None,
+            Executor::default(),
         )
         .await
         .unwrap();
@@ -1507,11 +1594,14 @@ mod tests {
         let svc = new_with_proxy_layers(
             &cfg,
             false,
-            no_proxy_none(),
-            ProxyAddressLayer::maybe(None),
-            lazy_proxy(None),
-            SystemProxyLayer::from_cached(system).with_pac_service(pac),
+            ProxyLayers {
+                no_proxy_environment_layer: no_proxy_none(),
+                explicit_proxy_layer: ProxyAddressLayer::maybe(None),
+                proxy_environment_layer: lazy_proxy(None),
+                system_proxy_layer: SystemProxyLayer::from_cached(system).with_pac_service(pac),
+            },
             None,
+            Executor::default(),
         )
         .await
         .unwrap();
@@ -1541,11 +1631,14 @@ mod tests {
         let svc = new_with_proxy_layers(
             &cfg,
             false,
-            no_proxy_none(),
-            ProxyAddressLayer::maybe(None),
-            lazy_proxy(None),
-            SystemProxyLayer::from_cached(system).with_pac_service(factory),
+            ProxyLayers {
+                no_proxy_environment_layer: no_proxy_none(),
+                explicit_proxy_layer: ProxyAddressLayer::maybe(None),
+                proxy_environment_layer: lazy_proxy(None),
+                system_proxy_layer: SystemProxyLayer::from_cached(system).with_pac_service(factory),
+            },
             None,
+            Executor::default(),
         )
         .await
         .unwrap();
@@ -1620,11 +1713,15 @@ mod tests {
         let svc = new_with_proxy_layers(
             &cfg,
             false,
-            no_proxy_none(),
-            ProxyAddressLayer::maybe(None),
-            lazy_proxy(None),
-            SystemProxyLayer::from_cached(system).with_pac_service(pac_factory),
+            ProxyLayers {
+                no_proxy_environment_layer: no_proxy_none(),
+                explicit_proxy_layer: ProxyAddressLayer::maybe(None),
+                proxy_environment_layer: lazy_proxy(None),
+                system_proxy_layer: SystemProxyLayer::from_cached(system)
+                    .with_pac_service(pac_factory),
+            },
             None,
+            Executor::default(),
         )
         .await
         .unwrap();

@@ -1,7 +1,9 @@
 use rama::{
     Service,
     error::{BoxError, BoxErrorExt, ErrorContext as _, ErrorExt},
+    graceful::{self, Shutdown},
     http::layer::har::recorder::{FileRecorder, Recorder as _},
+    rt::Executor,
     utils::collections::NonEmptySmallVec,
 };
 
@@ -18,6 +20,8 @@ mod feed;
 mod request;
 mod trace;
 mod ws;
+
+const CLIENT_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub async fn run(cfg: SendCommand, is_ws: bool) -> Result<(), BoxError> {
     trace::init_logger(cfg.trace.clone(), is_ws)?;
@@ -38,8 +42,18 @@ pub async fn run_inner(cfg: &SendCommand, is_ws: bool) -> Result<(), BoxError> {
         .as_ref()
         .map(|path| FileRecorder::try_new_at(path.clone()))
         .transpose()?;
+    let (finished, completed) = tokio::sync::oneshot::channel::<()>();
+    let shutdown = Shutdown::new(async move {
+        tokio::select! {
+            _ = completed => {},
+            _ = graceful::default_signal() => {},
+        }
+    });
+    let guard = shutdown.guard();
+    let executor = Executor::graceful(shutdown.guard());
     let exchange = async {
-        let https_client = client::new(cfg, feed_tui, har_recorder.clone()).await?;
+        let https_client =
+            client::new(cfg, feed_tui, har_recorder.clone(), executor.clone()).await?;
         let request = request::build(cfg, is_ws).await?;
 
         if is_ws {
@@ -80,6 +94,14 @@ pub async fn run_inner(cfg: &SendCommand, is_ws: bool) -> Result<(), BoxError> {
         Ok::<_, BoxError>(())
     };
 
+    // Keep the command-sized exchange off worker stacks and out of timeout wrappers.
+    let exchange = Box::pin(exchange);
+    let exchange = async {
+        tokio::select! {
+            result = exchange => result,
+            _ = guard.cancelled() => Err(BoxError::from_static_str("request cancelled")),
+        }
+    };
     let result = if let Some(max_time) = cfg.max_time
         && max_time > 0.
     {
@@ -91,8 +113,15 @@ pub async fn run_inner(cfg: &SendCommand, is_ws: bool) -> Result<(), BoxError> {
         exchange.await
     };
 
+    drop(executor);
+    drop(guard);
+    finished.send(()).unwrap_or_default();
+    let drained = shutdown.shutdown_with_limit(CLIENT_DRAIN_TIMEOUT).await;
     if let Some(recorder) = &har_recorder {
         recorder.stop_record().await;
+    }
+    if result.is_ok() {
+        drained.context("drain HTTP client tasks")?;
     }
     if result.is_ok()
         && let Some(path) = &cfg.har
