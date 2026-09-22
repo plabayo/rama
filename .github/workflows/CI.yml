@@ -642,7 +642,8 @@ jobs:
         run: cargo test -p rama-examples --no-default-features --features quic,boring --test integration quic_ --locked -- --include-ignored
       - name: HTTP/3 streaming and pool integration (boring)
         if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'boring') }}
-        run: cargo test -p rama-examples --no-default-features --features http-full,boring --test integration http3_client_server:: --locked -- --include-ignored
+        run: >-
+          cargo test -p rama-examples --no-default-features --features http-full,boring --test integration http3_client_server:: --locked -- --include-ignored
       - name: Concurrent QUIC transfers (boring)
         if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'boring') }}
         run: cargo test -p rama-quic --no-default-features --features boring --test many_connections --locked -- --include-ignored
@@ -688,7 +689,8 @@ jobs:
         run: cargo test -p rama-examples --no-default-features --features quic,rustls,ring --test integration quic_ --locked -- --include-ignored
       - name: HTTP/3 streaming and pool integration (rustls-ring)
         if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-ring') }}
-        run: cargo test -p rama-examples --no-default-features --features http-full,rustls,ring --test integration http3_client_server:: --locked -- --include-ignored
+        run: >-
+          cargo test -p rama-examples --no-default-features --features http-full,rustls,ring --test integration http3_client_server:: --locked -- --include-ignored
       - name: Concurrent QUIC transfers (rustls-ring)
         if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-ring') }}
         run: cargo test -p rama-quic --no-default-features --features rustls,ring --test many_connections --locked -- --include-ignored
@@ -734,7 +736,8 @@ jobs:
         run: cargo test -p rama-examples --no-default-features --features quic,rustls,aws-lc --test integration quic_ --locked -- --include-ignored
       - name: HTTP/3 streaming and pool integration (rustls-aws-lc)
         if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-aws-lc') }}
-        run: cargo test -p rama-examples --no-default-features --features http-full,rustls,aws-lc --test integration http3_client_server:: --locked -- --include-ignored
+        run: >-
+          cargo test -p rama-examples --no-default-features --features http-full,rustls,aws-lc --test integration http3_client_server:: --locked -- --include-ignored
       - name: Concurrent QUIC transfers (rustls-aws-lc)
         if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-aws-lc') }}
         run: cargo test -p rama-quic --no-default-features --features rustls,aws-lc --test many_connections --locked -- --include-ignored
