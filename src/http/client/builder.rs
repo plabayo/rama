@@ -1,5 +1,3 @@
-#[cfg(any(feature = "rustls", feature = "boring"))]
-use rama_core::layer::AddInputExtension;
 use rama_core::rt::Executor;
 
 use super::{
@@ -33,10 +31,10 @@ use std::{sync::Arc, time::Duration};
 #[cfg(feature = "boring")]
 use crate::tls::boring::client as boring_client;
 
-#[cfg(any(feature = "rustls", feature = "boring"))]
-use crate::tls::client::TlsClientConfig;
 #[cfg(feature = "rustls")]
 use crate::tls::rustls::client as rustls_client;
+#[cfg(any(feature = "rustls", feature = "boring"))]
+use {crate::tls::client::TlsClientConfig, rama_core::layer::AddInputExtension};
 
 #[cfg(feature = "socks5")]
 use crate::{http::client::proxy_connector::ProxyConnector, proxy::socks5::Socks5ProxyConnector};
@@ -1153,8 +1151,6 @@ impl<T, S> EasyHttpConnectorBuilder<T, S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(feature = "rustls")]
-    use rama_net::http::{HttpRequestVersion, TargetHttpVersion};
     use rama_net::{
         Protocol,
         address::HostWithPort,
@@ -1163,9 +1159,12 @@ mod tests {
             pool::{ConnID as _, ReqToConnID},
         },
     };
-    #[cfg(feature = "rustls")]
-    use rama_tls::client::TlsServerCertPin;
     use rama_tls::client::{ServerVerifyMode, TlsClientConfigProvider, TlsPoolId, TlsServerVerify};
+    #[cfg(feature = "rustls")]
+    use {
+        rama_net::http::{HttpRequestVersion, TargetHttpVersion},
+        rama_tls::client::TlsServerCertPin,
+    };
 
     use rama_core::{extensions::Extensions, layer::layer_fn};
 

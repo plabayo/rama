@@ -59,18 +59,19 @@ use std::{
     time::Duration,
 };
 
-#[cfg(feature = "boring")]
-use rama::quic::tls::BoringTlsProvider;
-#[cfg(feature = "boring")]
-use rama::tls::boring::{
-    client::{BoringClientConfigExt as _, TlsConnectorLayer},
-    core::x509::{X509, store::X509StoreBuilder},
-    server::TlsAcceptorLayer,
-};
 #[cfg(not(feature = "boring"))]
 use rama::tls::rustls::{
     client::{RustlsClientConfigExt as _, TlsConnectorLayer},
     server::TlsAcceptorLayer,
+};
+#[cfg(feature = "boring")]
+use rama::{
+    quic::tls::BoringTlsProvider,
+    tls::boring::{
+        client::{BoringClientConfigExt as _, TlsConnectorLayer},
+        core::x509::{X509, store::X509StoreBuilder},
+        server::TlsAcceptorLayer,
+    },
 };
 
 use parking_lot::Mutex;

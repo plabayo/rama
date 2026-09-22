@@ -1,30 +1,28 @@
-#[cfg(feature = "boring")]
-use crate::proto::crypto::boring as boring_crypto;
-#[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
-use crate::proto::crypto::rustls as rustls_crypto;
-#[cfg(feature = "boring")]
-use rama_tls_boring::client::BoringTlsConnectorConfig;
-#[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
-use rama_tls_rustls::{client::RustlsTlsConnectorConfig, dep::rustls::crypto::CryptoProvider};
-use std::{fmt, sync::Arc};
-
-#[cfg(any(
-    feature = "boring",
-    all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
-))]
-use rama_core::extensions::Extensions;
-#[cfg(any(
-    feature = "boring",
-    all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
-))]
-use rama_tls::client::TlsPoolId;
+use crate::{
+    ClientConfig, ServerConfig,
+    tls::{TlsConfigError, TlsOptions},
+};
 use rama_tls::{
     client::{TlsClientConfig, TlsClientConfigProvider},
     server::TlsServerConfig,
 };
+use std::{fmt, sync::Arc};
 
-use crate::tls::{TlsConfigError, TlsOptions};
-use crate::{ClientConfig, ServerConfig};
+#[cfg(feature = "boring")]
+use {
+    crate::proto::crypto::boring as boring_crypto,
+    rama_tls_boring::client::BoringTlsConnectorConfig,
+};
+#[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+use {
+    crate::proto::crypto::rustls as rustls_crypto,
+    rama_tls_rustls::{client::RustlsTlsConnectorConfig, dep::rustls::crypto::CryptoProvider},
+};
+#[cfg(any(
+    feature = "boring",
+    all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+))]
+use {rama_core::extensions::Extensions, rama_tls::client::TlsPoolId};
 
 /// Build QUIC TLS configurations from Rama settings using a fixed provider.
 ///

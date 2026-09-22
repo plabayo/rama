@@ -36,9 +36,10 @@ use std::{
 use tokio::{fs, process::Command, spawn, time::timeout};
 
 #[cfg(all(feature = "rustls", any(feature = "ring", feature = "aws-lc")))]
-use rama::{error::BoxErrorExt as _, tls::rustls::client::RustlsClientConfigExt as _};
-#[cfg(all(feature = "rustls", any(feature = "ring", feature = "aws-lc")))]
-use tokio::net::TcpListener;
+use {
+    rama::{error::BoxErrorExt as _, tls::rustls::client::RustlsClientConfigExt as _},
+    tokio::net::TcpListener,
+};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 

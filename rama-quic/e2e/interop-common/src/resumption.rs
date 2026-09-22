@@ -22,9 +22,10 @@ use rama::{
     utils::{collections::smallvec::smallvec, octets},
 };
 #[cfg(any(not(feature = "boring"), feature = "peer-rustls"))]
-use rustls::server::{ServerSessionMemoryCache, StoresServerSessions};
-#[cfg(any(not(feature = "boring"), feature = "peer-rustls"))]
-use std::sync::atomic::{AtomicUsize, Ordering};
+use {
+    rustls::server::{ServerSessionMemoryCache, StoresServerSessions},
+    std::sync::atomic::{AtomicUsize, Ordering},
+};
 
 use crate::{
     close::CloseObservation,
