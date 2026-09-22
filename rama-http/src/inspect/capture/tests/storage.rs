@@ -116,7 +116,7 @@ async fn total_budget_charges_committed_records_and_releases_evicted_entries() {
         .unwrap()
         .unwrap();
     assert_ne!(second, first);
-    store.exchange(first).unwrap_err();
+    store.exchange(first).err().expect("exchange was evicted");
     let second_entry = store.exchange(second).unwrap();
     let second_file_len = second_entry.stored_bytes.load(Ordering::Acquire);
     assert_eq!(store.0.budget.used.load(Ordering::Acquire), second_file_len);
@@ -162,7 +162,7 @@ async fn selected_exchange_remains_readable_after_retention_evicts_it() {
         .unwrap();
 
     assert_ne!(first, second);
-    store.exchange(first).unwrap_err();
+    store.exchange(first).err().expect("exchange was evicted");
     let details = selected.next_details().await.unwrap().unwrap();
     assert_eq!(details.summary.id, first);
     assert!(selected.next_details().await.unwrap().is_none());

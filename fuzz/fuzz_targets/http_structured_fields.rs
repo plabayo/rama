@@ -9,8 +9,8 @@ fuzz_target!(|input: &[u8]| {
     assert_eq!(dictionary.is_ok(), priority.is_ok());
     if let Ok(priority) = priority {
         assert_eq!(
-            Priority::parse(priority.field_value().as_bytes()).unwrap(),
-            priority
+            Priority::parse(priority.field_value().as_bytes()).ok(),
+            Some(priority)
         );
     }
 });

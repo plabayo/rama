@@ -934,7 +934,7 @@ impl<T> EasyHttpConnectorBuilder<T, HttpStage<true>> {
     ///
     /// This will create a [`MultiplexPool`](crate::net::client::pool::MultiplexPool)
     /// using the provided limits and will use
-    /// [`HttpConnIdentifier`](super::HttpConnIdentifier) to group connections on
+    /// [`HttpConnIdentifier`] to group connections on
     /// protocol, authority, selected route, physical transport, any HTTP
     /// version requirement, and the selected plaintext HTTP proxy mode. This
     /// keeps forward-proxy connections separate from CONNECT tunnels to the
@@ -992,7 +992,7 @@ impl<T> EasyHttpConnectorBuilder<T, HttpStage<true>> {
     /// When the connector supports plaintext HTTP through an HTTP proxy, the
     /// custom [`ReqToConnId`] must keep ordinary forward-proxy connections
     /// separate from CONNECT tunnels to the same proxy. Rama's
-    /// [`HttpConnIdentifier`](super::HttpConnIdentifier) includes this
+    /// [`HttpConnIdentifier`] includes this
     /// distinction automatically.
     ///
     /// [`Pool`]: rama_net::client::pool::Pool
@@ -1104,9 +1104,9 @@ impl<T> EasyHttpConnectorBuilder<T, ProxyRouteFailureCacheStage> {
     /// Use a custom connection pool with the selected failure-cache policy.
     ///
     /// For a proxy-capable connector, the custom
-    /// [`ReqToConnID`](rama_net::client::pool::ReqToConnID) must partition
+    /// [`ReqToConnID`] must partition
     /// plaintext HTTP forward-proxy connections from CONNECT tunnels to the
-    /// same proxy. [`HttpConnIdentifier`](super::HttpConnIdentifier) does so by
+    /// same proxy. [`HttpConnIdentifier`] does so by
     /// default.
     ///
     /// The supplied `ReqToConnID` replaces the built-in TLS pool identity. It owns
