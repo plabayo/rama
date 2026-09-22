@@ -403,6 +403,12 @@ impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorContextBuilder {
                 .context("build (boring) ssl connector: set extension order")?;
         }
 
+        if let Some(anchors) = value.requested_trust_anchors {
+            cfg_builder
+                .set_requested_trust_anchors(anchors.identifier_list()?)
+                .context("build (boring) ssl connector: set requested trust anchors")?;
+        }
+
         if let Some(list) = &cipher_list {
             trace!(?list, "boring connector: set raw cipher list");
             cfg_builder
