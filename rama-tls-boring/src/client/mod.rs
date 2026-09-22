@@ -28,6 +28,10 @@ pub use config::{
     BoringSupportedGroups, BoringTlsConnectorConfig,
 };
 
+mod trust_anchors;
+#[doc(inline)]
+pub use trust_anchors::BoringRequestedTrustAnchors;
+
 mod connector_data;
 #[doc(inline)]
 pub use connector_data::{

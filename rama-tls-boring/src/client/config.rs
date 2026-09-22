@@ -20,6 +20,7 @@ use std::sync::Arc;
 #[cfg(feature = "http")]
 use rama_utils::collections::smallvec::smallvec;
 
+use super::{BoringRequestedTrustAnchors, trust_anchors::TRUST_ANCHORS_EXTENSION_ID};
 use crate::RamaTlsBoringCrateMarker;
 
 /// Gather all the TLS extensions supported by boringssl
@@ -40,6 +41,7 @@ pub struct BoringTlsConnectorConfig<'a> {
     pub grease: Option<&'a BoringGrease>,
     pub alps: Option<&'a BoringAlps>,
     pub extension_order: Option<&'a BoringExtensionOrder>,
+    pub requested_trust_anchors: Option<&'a BoringRequestedTrustAnchors>,
     pub cert_compression: Option<&'a BoringCertCompression>,
     pub delegated_credentials: Option<&'a BoringDelegatedCredentials>,
     pub record_size_limit: Option<&'a BoringRecordSizeLimit>,
@@ -248,6 +250,10 @@ pub trait BoringClientConfigExt: Sized {
         fn extension_order(self, order: Vec<ExtensionId>) -> Self;
     }
     generate_set_and_with! {
+        /// Set requested trust anchor identifiers without changing certificate verification.
+        fn requested_trust_anchors(self, anchors: BoringRequestedTrustAnchors) -> Self;
+    }
+    generate_set_and_with! {
         /// Set certificate compression algorithms to advertise.
         fn cert_compression(self, algorithms: Vec<CertificateCompressionAlgorithm>) -> Self;
     }
@@ -338,6 +344,12 @@ impl BoringClientConfigExt for TlsClientConfig {
     generate_set_and_with! {
         fn extension_order(mut self, order: Vec<ExtensionId>) -> Self {
             self.insert(BoringExtensionOrder(order));
+            self
+        }
+    }
+    generate_set_and_with! {
+        fn requested_trust_anchors(mut self, anchors: BoringRequestedTrustAnchors) -> Self {
+            self.insert(anchors);
             self
         }
     }
@@ -626,6 +638,13 @@ impl RamaFrom<&ClientHello, RamaTlsBoringCrateMarker> for TlsClientConfig {
                     new_codepoint,
                 } => {
                     config.set_alps(protocols.clone(), *new_codepoint);
+                }
+                ClientHelloExtension::Opaque { id, data }
+                    if u16::from(*id) == TRUST_ANCHORS_EXTENSION_ID =>
+                {
+                    config.set_requested_trust_anchors(
+                        BoringRequestedTrustAnchors::from_raw_extension_body(data.clone()),
+                    );
                 }
                 other => match other.id() {
                     ExtensionId::STATUS_REQUEST | ExtensionId::STATUS_REQUEST_V2 => {
