@@ -55,6 +55,8 @@ use std::{
 };
 
 #[cfg(feature = "boring")]
+use rama::quic::tls::BoringTlsProvider;
+#[cfg(feature = "boring")]
 use rama::tls::boring::{
     client::{BoringClientConfigExt as _, TlsConnectorLayer},
     core::x509::{X509, store::X509StoreBuilder},
@@ -317,10 +319,11 @@ async fn client_with_http3(
         .unwrap();
     let h3 = Http3Connector::builder(Executor::new())
         .with_endpoint(endpoint.clone())
-        .with_tls_config(tls.clone())
-        .build()
-        .await
-        .unwrap();
+        .with_tls_config(tls.clone());
+    // Match the stream provider so native overrides exercise both transports.
+    #[cfg(feature = "boring")]
+    let h3 = h3.with_tls_provider(Arc::new(BoringTlsProvider));
+    let h3 = h3.build().await.unwrap();
     let builder = EasyHttpConnectorBuilder::new()
         .with_default_transport_connector()
         .with_default_dns_connector()

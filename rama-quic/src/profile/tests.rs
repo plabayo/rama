@@ -413,9 +413,10 @@ fn boring_client(identity: &rama_tls::server::ServerAuthData) -> ClientConfig {
         .with_alpn([b"rama-quic-test".as_slice().into()].into_iter().collect())
         .try_with_server_trust_anchors([identity.cert_chain.last().unwrap().clone()])
         .unwrap();
-    ClientConfig::try_from_rama_tls(
+    ClientConfig::try_from_rama_tls_with_provider(
         &tls,
-        crate::tls::TlsOptions::default().with_backend(rama_tls::TlsBackend::Boring),
+        crate::tls::TlsOptions::default(),
+        &crate::tls::BoringTlsProvider,
     )
     .unwrap()
 }
@@ -429,11 +430,8 @@ fn the_firefox_profile_is_refused_on_a_rustls_client() {
         .with_alpn([b"rama-quic-test".as_slice().into()].into_iter().collect())
         .try_with_server_trust_anchors([identity.cert_chain.last().unwrap().clone()])
         .unwrap();
-    let mut config = ClientConfig::try_from_rama_tls(
-        &tls,
-        crate::tls::TlsOptions::default().with_backend(rama_tls::TlsBackend::Rustls),
-    )
-    .unwrap();
+    let mut config =
+        ClientConfig::try_from_rama_tls(&tls, crate::tls::TlsOptions::default()).unwrap();
     assert!(matches!(
         config.apply_quic_profile(&firefox_156()),
         Err(crate::ConfigError::VersionPolicy(_))

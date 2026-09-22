@@ -1,13 +1,13 @@
 use crate::dep::rustls::ClientConfig;
 use crate::dep::rustls::client::danger::ServerCertVerifier;
 use rama_core::error::BoxError;
-use rama_core::extensions::{Extension, FromExtensions};
+use rama_core::extensions::{Extension, Extensions, FromExtensions};
 use rama_net::tls::TlsAlpn;
 #[cfg(test)]
 use rama_tls::KeyLogIntent;
 use rama_tls::client::{
-    TlsClientAuth, TlsClientConfig, TlsPoolId, TlsServerCertPins, TlsServerName, TlsServerTrust,
-    TlsServerVerify, TlsStoreServerCertChain,
+    TlsClientAuth, TlsClientConfig, TlsClientConfigProvider, TlsPoolId, TlsServerCertPins,
+    TlsServerName, TlsServerTrust, TlsServerVerify, TlsStoreServerCertChain,
 };
 use rama_tls::{TlsKeyLog, TlsSupportedVersions};
 use rama_utils::macros::generate_set_and_with;
@@ -209,6 +209,20 @@ impl std::fmt::Debug for ModifyRustlsClientConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ModifyRustlsClientConfig")
             .finish_non_exhaustive()
+    }
+}
+
+/// Classification of request overrides understood by Rustls.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RustlsTlsClientConfigProvider;
+
+impl TlsClientConfigProvider for RustlsTlsClientConfigProvider {
+    fn pool_id(&self, extensions: &Extensions) -> Option<TlsPoolId> {
+        RustlsTlsConnectorConfig::from_extensions(extensions).pool_id()
+    }
+
+    fn authenticates_server(&self, extensions: &Extensions) -> bool {
+        RustlsTlsConnectorConfig::from_extensions(extensions).authenticates_server()
     }
 }
 

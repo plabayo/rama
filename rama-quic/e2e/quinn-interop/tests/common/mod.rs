@@ -146,7 +146,8 @@ pub fn rama_server_config(auth: &ServerAuthData) -> ServerConfig {
         .with_alpn(smallvec![shared_alpn()])
         .with_server_auth(auth.clone())
         .verify_backend();
-    ServerConfig::try_from_rama_tls(&tls, interop_common::backend::options())
+    interop_common::backend::server_tls_provider()
+        .server_config(&tls, interop_common::backend::options())
         .expect("the server config is built")
 }
 
@@ -156,7 +157,8 @@ pub fn rama_client_config(anchor: CertificateDer<'static>) -> ClientConfig {
         .try_with_server_trust_anchors([anchor])
         .expect("the trust anchor is accepted")
         .verify_backend();
-    ClientConfig::try_from_rama_tls(&tls, interop_common::backend::options())
+    interop_common::backend::tls_provider()
+        .client_config(&tls, interop_common::backend::options())
         .expect("the client config is built")
 }
 

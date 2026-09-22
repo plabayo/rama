@@ -1,5 +1,11 @@
 //! Verify Rama's native provider even when an independent peer enables another Rustls backend.
 
+#[cfg(feature = "boring")]
+use rama::quic::tls::BoringTlsProvider;
+use rama::quic::tls::{QuicClientConfigProvider, QuicServerConfigProvider, TlsOptions};
+#[cfg(not(feature = "boring"))]
+use rama::quic::tls::{default_server_tls_provider, default_tls_provider};
+use std::sync::Arc;
 #[cfg(not(feature = "boring"))]
 mod rustls_backend {
     use rama::{error::BoxError, tls::rustls::dep::rustls};
@@ -131,12 +137,29 @@ pub const UNKNOWN_CA: u8 = 48;
 pub const BAD_CERTIFICATE: u8 = 42;
 
 /// Select the Rama backend explicitly; peer dependencies may enable other implementations.
-pub fn options() -> rama::quic::tls::TlsOptions {
+pub fn options() -> TlsOptions {
+    TlsOptions::default()
+}
+
+pub fn tls_provider() -> Arc<dyn QuicClientConfigProvider> {
     #[cfg(feature = "boring")]
-    let backend = rama::tls::TlsBackend::Boring;
+    {
+        return Arc::new(BoringTlsProvider);
+    }
     #[cfg(not(feature = "boring"))]
-    let backend = rama::tls::TlsBackend::Rustls;
-    rama::quic::tls::TlsOptions::default().with_backend(backend)
+    {
+        default_tls_provider().unwrap()
+    }
+}
+pub fn server_tls_provider() -> Arc<dyn QuicServerConfigProvider> {
+    #[cfg(feature = "boring")]
+    {
+        return Arc::new(BoringTlsProvider);
+    }
+    #[cfg(not(feature = "boring"))]
+    {
+        default_server_tls_provider().unwrap()
+    }
 }
 
 #[cfg(feature = "boring")]

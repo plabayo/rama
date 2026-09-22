@@ -6,8 +6,9 @@ use rama_net::tls::{ApplicationProtocol, TlsAlpn};
 #[cfg(test)]
 use rama_tls::KeyLogIntent;
 use rama_tls::client::{
-    ClientHello, ClientHelloExtension, TlsClientAuth, TlsClientConfig, TlsPoolId,
-    TlsServerCertPins, TlsServerName, TlsServerTrust, TlsServerVerify, TlsStoreServerCertChain,
+    ClientHello, ClientHelloExtension, TlsClientAuth, TlsClientConfig, TlsClientConfigProvider,
+    TlsPoolId, TlsServerCertPins, TlsServerName, TlsServerTrust, TlsServerVerify,
+    TlsStoreServerCertChain,
 };
 use rama_tls::{
     CertificateCompressionAlgorithm, CipherSuite, ExtensionId, ProtocolVersion, SignatureScheme,
@@ -680,6 +681,20 @@ fn egress_max_version_clamp(hello: &ClientHello) -> Option<ProtocolVersion> {
     });
 
     (!has_tls13_cipher || !has_tls13_sig_alg).then_some(ProtocolVersion::TLSv1_2)
+}
+
+/// Classification of request overrides understood by Boring.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct BoringTlsClientConfigProvider;
+
+impl TlsClientConfigProvider for BoringTlsClientConfigProvider {
+    fn pool_id(&self, extensions: &Extensions) -> Option<TlsPoolId> {
+        BoringTlsConnectorConfig::from_extensions(extensions).pool_id()
+    }
+
+    fn authenticates_server(&self, extensions: &Extensions) -> bool {
+        BoringTlsConnectorConfig::from_extensions(extensions).authenticates_server()
+    }
 }
 
 #[cfg(test)]

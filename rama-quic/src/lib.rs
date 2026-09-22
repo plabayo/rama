@@ -62,72 +62,11 @@ pub use proto::{KEY_MATERIAL_SIZE, StatelessResetKey};
 /// TLS for QUIC: how a connection's identity and application protocol are configured.
 ///
 /// The configuration itself is the common Rama TLS client and server configuration; this module
-/// carries only what QUIC adds to it. The provider behind it follows this crate's features, and
-/// no Rustls type appears in any signature here.
+/// carries only what QUIC adds to it. Inject a configuration provider explicitly,
+/// or use the convenience constructors to select the feature-default provider.
 pub mod tls {
-    fn selected_backend(backend: rama_tls::TlsBackend) -> Option<rama_tls::TlsBackend> {
-        TlsOptions::default()
-            .with_backend(backend)
-            .resolve_backend()
-            .ok()
-    }
-
-    /// Summarize whether the selected provider establishes server identity.
-    #[cfg_attr(
-        not(any(feature = "rustls", feature = "boring")),
-        expect(unused_variables)
-    )]
-    pub fn client_authenticates_server(
-        extensions: &rama_core::extensions::Extensions,
-        backend: rama_tls::TlsBackend,
-    ) -> bool {
-        match selected_backend(backend) {
-            #[cfg(feature = "rustls")]
-            Some(rama_tls::TlsBackend::Rustls) => {
-                rama_tls_rustls::client::RustlsTlsConnectorConfig::from_extensions(extensions)
-                    .authenticates_server()
-            }
-            #[cfg(feature = "boring")]
-            Some(rama_tls::TlsBackend::Boring) => {
-                rama_tls_boring::client::BoringTlsConnectorConfig::from_extensions(extensions)
-                    .authenticates_server()
-            }
-            _ => false,
-        }
-    }
-
-    #[cfg(all(
-        test,
-        feature = "boring",
-        feature = "rustls",
-        any(feature = "aws-lc", feature = "ring")
-    ))]
-    mod policy_tests {
-        use super::*;
-        use rama_core::extensions::Extensions;
-        use rama_tls::{
-            TlsBackend,
-            client::{ServerVerifyMode, TlsServerVerify},
-        };
-
-        #[test]
-        fn native_hooks_only_affect_the_selected_provider() {
-            let extensions = Extensions::new();
-            extensions.insert(rama_tls_rustls::client::ModifyRustlsClientConfig::new(Ok));
-            assert!(client_authenticates_server(&extensions, TlsBackend::Boring));
-            assert!(!client_authenticates_server(
-                &extensions,
-                TlsBackend::Rustls
-            ));
-            assert!(!client_authenticates_server(&extensions, TlsBackend::Auto));
-
-            extensions.insert(TlsServerVerify(ServerVerifyMode::Disable));
-            assert!(!client_authenticates_server(
-                &extensions,
-                TlsBackend::Boring
-            ));
-        }
-    }
+    mod factory;
+    pub use factory::*;
 
     /// Interfaces for supplying a QUIC TLS 1.3 implementation.
     ///
@@ -148,7 +87,7 @@ pub mod tls {
     }
 
     pub use crate::proto::crypto::config::{
-        AlpnPolicy, NoInitialCipherSuite, TlsBackend, TlsConfigError, TlsOptions,
+        AlpnPolicy, NoInitialCipherSuite, TlsConfigError, TlsOptions,
     };
 }
 

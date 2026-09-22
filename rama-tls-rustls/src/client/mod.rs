@@ -28,3 +28,5 @@ mod tls_stream_auto;
 pub use tls_stream_auto::AutoTlsStream;
 
 use crate::dep::tokio_rustls::client::TlsStream as RustlsTlsStream;
+
+pub use config::RustlsTlsClientConfigProvider;

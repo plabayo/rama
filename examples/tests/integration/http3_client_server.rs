@@ -36,10 +36,7 @@ use std::{
 use tokio::{fs, process::Command, spawn, time::timeout};
 
 #[cfg(all(feature = "rustls", any(feature = "ring", feature = "aws-lc")))]
-use rama::{
-    error::BoxErrorExt as _,
-    tls::{TlsBackend, rustls::client::RustlsClientConfigExt as _},
-};
+use rama::{error::BoxErrorExt as _, tls::rustls::client::RustlsClientConfigExt as _};
 #[cfg(all(feature = "rustls", any(feature = "ring", feature = "aws-lc")))]
 use tokio::net::TcpListener;
 
@@ -301,7 +298,7 @@ async fn http_client_preserves_explicit_tls_provider() -> Result<(), BoxError> {
     let listener = TcpListener::bind(SocketAddress::local_ipv4(0).into_std()).await?;
     let address = listener.local_addr()?;
     let connector = Http3Connector::builder(Executor::new())
-        .with_tls_backend(TlsBackend::Rustls)
+        .with_tls_provider(rama::quic::tls::default_tls_provider().unwrap())
         .with_tls_config(tls.clone())
         .build()
         .await?;

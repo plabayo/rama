@@ -7,13 +7,14 @@ use rama_core::{
     extensions::ExtensionsRef,
     futures::{StreamExt as _, stream},
     rt::Executor,
+    telemetry::tracing,
 };
 use rama_http::layer::http_service::HttpServiceAttempt;
 use rama_http_core::h3::connection::Config;
 use rama_http_types::{Version, conn::TargetHttpVersion};
 use rama_net::{
     ConnectorTargetInputExt, ProtocolInputExt,
-    address::Host,
+    address::{Host, SocketAddress},
     client::{
         ConnectRequest, ConnectionError, ConnectionErrorKind, ConnectorTargetStream,
         EstablishedClientConnection, EstablishedProxyRoute, ProxyRoute, race_connect,
@@ -23,11 +24,10 @@ use rama_net::{
 };
 use rama_quic::{
     ClientConfig, Connection, ConnectionError as QuicConnectionError, Endpoint, TransportConfig,
-    tls::{TlsOptions, client_authenticates_server},
+    tls::{QuicClientConfigProvider, TlsOptions, default_tls_provider},
 };
-use rama_tls::{
-    TlsBackend,
-    client::{TlsClientConfig, TlsServerAuthentication, TlsServerName, TlsStoreServerCertChain},
+use rama_tls::client::{
+    TlsClientConfig, TlsServerAuthentication, TlsServerName, TlsStoreServerCertChain,
 };
 use rama_utils::macros::generate_set_and_with;
 use std::{net::SocketAddr, sync::Arc};
@@ -43,7 +43,7 @@ use std::{net::SocketAddr, sync::Arc};
 pub struct Http3Connector {
     endpoint: Endpoint,
     tls: TlsClientConfig,
-    backend: TlsBackend,
+    provider: Arc<dyn QuicClientConfigProvider>,
     transport: Arc<TransportConfig>,
     config: Config,
     executor: Executor,
@@ -54,7 +54,7 @@ impl Clone for Http3Connector {
         Self {
             endpoint: self.endpoint.clone(),
             tls: self.tls.clone(),
-            backend: self.backend,
+            provider: self.provider.clone(),
             transport: self.transport.clone(),
             config: self.config.clone(),
             executor: self.executor.clone(),
@@ -80,7 +80,7 @@ impl std::fmt::Debug for Http3Connector {
 pub struct Http3ConnectorBuilder {
     endpoint: Option<Endpoint>,
     tls: TlsClientConfig,
-    backend: TlsBackend,
+    provider: Option<Arc<dyn QuicClientConfigProvider>>,
     config: Config,
     executor: Executor,
 }
@@ -92,7 +92,7 @@ impl Http3Connector {
         Http3ConnectorBuilder {
             endpoint: None,
             tls: TlsClientConfig::default_http(),
-            backend: TlsBackend::Auto,
+            provider: None,
             config: Config::default(),
             executor,
         }
@@ -113,8 +113,8 @@ impl Http3Connector {
 
     /// Provider selection used for establishment and TLS pool identity.
     #[must_use]
-    pub fn tls_backend(&self) -> TlsBackend {
-        self.backend
+    pub fn tls_provider(&self) -> &Arc<dyn QuicClientConfigProvider> {
+        &self.provider
     }
 }
 
@@ -136,9 +136,9 @@ impl Http3ConnectorBuilder {
     }
 
     generate_set_and_with! {
-        /// Select the TLS provider. Auto follows Rama QUIC's provider preference.
-        pub fn tls_backend(mut self, backend: TlsBackend) -> Self {
-            self.backend = backend;
+        /// Inject the fixed TLS configuration provider, including custom implementations.
+        pub fn tls_provider(mut self, provider: Arc<dyn QuicClientConfigProvider>) -> Self {
+            self.provider = Some(provider);
             self
         }
     }
@@ -155,29 +155,24 @@ impl Http3ConnectorBuilder {
     pub async fn build(self) -> Result<Http3Connector, BoxError> {
         let mut transport = TransportConfig::default();
         self.config.configure_transport(&mut transport)?;
-        let backend = TlsOptions::default()
-            .with_backend(self.backend)
-            .resolve_backend()?;
+        let provider = match self.provider {
+            Some(provider) => provider,
+            None => default_tls_provider()?,
+        };
 
         let endpoint = match self.endpoint {
             Some(endpoint) => endpoint,
             None => {
                 // Reuse QUIC's dual-stack socket policy; fall back when the host
                 // cannot bind IPv6. Both attempts use the same graceful executor.
-                match Endpoint::bind_client(
-                    self.executor.clone(),
-                    rama_net::address::SocketAddress::default_ipv6(0),
-                )
-                .await
+                match Endpoint::bind_client(self.executor.clone(), SocketAddress::default_ipv6(0))
+                    .await
                 {
                     Ok(endpoint) => endpoint,
                     Err(error) => {
-                        rama_core::telemetry::tracing::debug!(%error, "binding IPv4 H3 endpoint after IPv6 bind failed");
-                        Endpoint::bind_client(
-                            self.executor.clone(),
-                            rama_net::address::SocketAddress::default_ipv4(0),
-                        )
-                        .await?
+                        tracing::debug!(%error, "binding IPv4 H3 endpoint after IPv6 bind failed");
+                        Endpoint::bind_client(self.executor.clone(), SocketAddress::default_ipv4(0))
+                            .await?
                     }
                 }
             }
@@ -186,7 +181,7 @@ impl Http3ConnectorBuilder {
         Ok(Http3Connector {
             endpoint,
             tls: self.tls,
-            backend,
+            provider,
             transport: Arc::new(transport),
             config: self.config,
             executor: self.executor,
@@ -211,23 +206,27 @@ struct PreparedTls {
 
 impl Http3Connector {
     fn prepare_tls(&self, input: &ConnectRequest) -> Result<PreparedTls, ConnectionError> {
-        let tls = self.tls.clone().with_overrides(input.extensions());
+        let tls = self
+            .tls
+            .clone()
+            .with_overrides(input.extensions())
+            .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
         let server_identity = tls
             .as_extensions()
             .get_ref::<TlsServerName>()
             .map_or_else(|| input.authority.host.clone(), |name| name.0.clone());
-        let authenticated_identity = client_authenticates_server(tls.as_extensions(), self.backend)
+        let authenticated_identity = self
+            .provider
+            .authenticates_server(tls.as_extensions())
             .then(|| server_identity.clone());
         let capture_chain = tls
             .as_extensions()
             .get_ref::<TlsStoreServerCertChain>()
             .is_some_and(|capture| capture.0);
-        let tls = tls.with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
-        let mut tls =
-            ClientConfig::try_from_rama_tls(&tls, TlsOptions::default().with_backend(self.backend))
-                .map_err(|error| {
-                    ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
-                })?;
+        let mut tls = self
+            .provider
+            .client_config(&tls, TlsOptions::default())
+            .map_err(|error| ConnectionError::local(error, ConnectionErrorKind::InvalidInput))?;
         tls.set_transport_config(self.transport.clone());
         let server_name = if let Ok(ip) = server_identity.try_as_ip() {
             ip.to_string()
@@ -425,9 +424,97 @@ mod concrete_transport_tests {
     use super::*;
     use rama_net::{
         Protocol,
-        address::SocketAddress,
+        address::{HostWithPort, SocketAddress},
         client::{ConnectionErrorDomain, ProxyRoutes, ProxyRoutesConnector},
+        tls::TlsAlpn,
     };
+
+    use rama_core::extensions::Extensions;
+    use rama_quic::tls::TlsConfigError;
+    use rama_tls::client::{ServerVerifyMode, TlsClientConfigProvider, TlsPoolId, TlsServerVerify};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Debug, Default)]
+    struct CustomProvider {
+        calls: AtomicUsize,
+        authenticated_checks: AtomicUsize,
+    }
+
+    impl TlsClientConfigProvider for CustomProvider {
+        fn pool_id(&self, extensions: &Extensions) -> Option<TlsPoolId> {
+            TlsPoolId::builder()
+                .maybe_with_verify(extensions.get_ref::<TlsServerVerify>())
+                .build()
+        }
+
+        fn authenticates_server(&self, extensions: &Extensions) -> bool {
+            self.authenticated_checks.fetch_add(1, Ordering::Relaxed);
+            assert_eq!(
+                extensions.get_ref::<TlsAlpn>().unwrap().0.as_slice(),
+                &[ApplicationProtocol::HTTP_3]
+            );
+            extensions
+                .get_ref::<TlsServerVerify>()
+                .is_none_or(|verify| verify.0 != ServerVerifyMode::Disable)
+        }
+    }
+
+    impl QuicClientConfigProvider for CustomProvider {
+        fn client_config(
+            &self,
+            config: &TlsClientConfig,
+            _: TlsOptions,
+        ) -> Result<ClientConfig, TlsConfigError> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            assert_eq!(
+                config
+                    .as_extensions()
+                    .get_ref::<TlsAlpn>()
+                    .unwrap()
+                    .0
+                    .as_slice(),
+                &[ApplicationProtocol::HTTP_3]
+            );
+            assert_eq!(
+                config
+                    .as_extensions()
+                    .get_ref::<TlsServerVerify>()
+                    .unwrap()
+                    .0,
+                ServerVerifyMode::Disable
+            );
+            Err(TlsConfigError::InvalidConfiguration(
+                BoxError::from_static_str("custom factory invoked"),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn custom_factory_uses_public_builder_without_builtin_provider() {
+        let provider = Arc::new(CustomProvider::default());
+        let connector = Http3Connector::builder(Executor::default())
+            .with_tls_provider(provider.clone())
+            .with_tls_config(TlsClientConfig::new().with_server_verify(ServerVerifyMode::Auto))
+            .build()
+            .await
+            .unwrap();
+        let input = ConnectRequest::new(HostWithPort::local_ipv4(443))
+            .with_application_protocol(Protocol::HTTPS);
+        input
+            .extensions
+            .insert(TlsServerVerify(ServerVerifyMode::Disable));
+        let classifier: Arc<dyn TlsClientConfigProvider> = connector.tls_provider().clone();
+        assert_eq!(
+            classifier.pool_id(input.extensions()),
+            provider.pool_id(input.extensions())
+        );
+
+        let error = connector.serve(input).await.err().unwrap();
+        assert_eq!(error.kind(), ConnectionErrorKind::InvalidInput);
+        assert_eq!(provider.calls.load(Ordering::Relaxed), 1);
+        assert_eq!(provider.authenticated_checks.load(Ordering::Relaxed), 1);
+        connector.endpoint.close(0u32, b"test complete");
+    }
 
     #[tokio::test]
     async fn proxy_only_route_never_implicitly_dials_direct_quic() {
@@ -441,7 +528,7 @@ mod concrete_transport_tests {
         let http3 = Http3Connector {
             endpoint: endpoint.clone(),
             tls: TlsClientConfig::default_http(),
-            backend: TlsBackend::Auto,
+            provider: Arc::new(CustomProvider::default()),
             transport: Arc::new(TransportConfig::default()),
             config: Config::default(),
             executor,

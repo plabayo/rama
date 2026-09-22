@@ -32,9 +32,10 @@ pub use pool::{TlsPoolId, TlsPoolIdBuilder};
 use rama_crypto::pki_types::CertificateDer;
 
 use super::ProtocolVersion;
-use rama_core::extensions::Extension;
+use rama_core::extensions::{Extension, Extensions};
 use rama_net::address::Domain;
 use rama_net::tls::ApplicationProtocol;
+use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq, Extension)]
 #[extension(tags(tls))]
@@ -94,6 +95,18 @@ pub fn merge_client_hello_lists(
     }
 
     output
+}
+
+/// Classify the request overrides understood by a fixed TLS configuration provider.
+///
+/// Pools must retain the same provider and connector defaults for their lifetime.
+/// Custom providers participate through the same interface as built-in providers.
+pub trait TlsClientConfigProvider: fmt::Debug + Send + Sync {
+    /// Identity of request overrides, before connector defaults are applied.
+    fn pool_id(&self, extensions: &Extensions) -> Option<TlsPoolId>;
+
+    /// Whether the effective configuration establishes the server identity.
+    fn authenticates_server(&self, extensions: &Extensions) -> bool;
 }
 
 #[cfg(test)]

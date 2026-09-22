@@ -286,7 +286,9 @@ pub fn rama_client_config_for(
     } else {
         options
     };
-    ClientConfig::try_from_rama_tls(&tls, options).expect("the client config is built")
+    crate::backend::tls_provider()
+        .client_config(&tls, options)
+        .expect("the client config is built")
 }
 
 /// The first connection: an exchange after the handshake, which is when the session ticket
@@ -560,7 +562,8 @@ pub fn rama_resuming_server_config(
             native.session_storage = sessions.clone();
             crate::backend::verify_server(native)
         });
-    ServerConfig::try_from_rama_tls(&tls, crate::backend::options().with_early_data(early_data))
+    crate::backend::server_tls_provider()
+        .server_config(&tls, crate::backend::options().with_early_data(early_data))
         .expect("the server config is built")
 }
 
@@ -587,11 +590,9 @@ impl RamaResumptionConfigs {
             let tls = TlsServerConfig::new()
                 .with_alpn(smallvec![alpn()])
                 .with_server_auth(identity.clone());
-            let mut config = ServerConfig::try_from_rama_tls(
-                &tls,
-                crate::backend::options().with_early_data(early_data),
-            )
-            .unwrap();
+            let mut config = crate::backend::server_tls_provider()
+                .server_config(&tls, crate::backend::options().with_early_data(early_data))
+                .unwrap();
             config.set_transport_config(Arc::new(
                 rama::quic::TransportConfig::default()
                     .with_receive_window(rama::quic::proto::VarInt::from(65536u32)),

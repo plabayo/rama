@@ -27,15 +27,6 @@ use rama_net::Protocol;
 pub mod alpn;
 mod enums;
 
-/// Select a TLS implementation independently of the enabled implementations.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub enum TlsBackend {
-    /// Use the caller's documented default among the available implementations.
-    #[default]
-    Auto,
-    Rustls,
-    Boring,
-}
 pub use enums::{
     CertificateCompressionAlgorithm, CipherSuite, CompressionAlgorithm, ECPointFormat, ExtensionId,
     ProtocolVersion, SignatureScheme, SupportedGroup,

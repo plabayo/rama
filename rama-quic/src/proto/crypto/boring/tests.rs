@@ -1,3 +1,8 @@
+use crate::tls::{BoringTlsProvider, QuicClientConfigProvider, QuicServerConfigProvider};
+#[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+use crate::{proto::crypto::rustls::configured_provider, tls::RustlsTlsProvider};
+trait TestTlsProvider: QuicClientConfigProvider + QuicServerConfigProvider {}
+impl<T: QuicClientConfigProvider + QuicServerConfigProvider> TestTlsProvider for T {}
 use super::*;
 use crate::proto::crypto::{
     self, ClientConfig as _, HandshakeEvent, ServerConfig as _, Session, config::TlsOptions,
@@ -590,7 +595,6 @@ fn client_authentication_is_verified_and_retained_on_resumption() {
         pki_types::{CertificateDer, PrivatePkcs8KeyDer},
     };
     use rama_tls::{
-        TlsBackend,
         client::{ClientAuth, ClientAuthData},
         server::ClientVerifyMode,
     };
@@ -627,18 +631,28 @@ fn client_authentication_is_verified_and_retained_on_resumption() {
     let trusted = identity("trusted client");
     let stranger = identity("untrusted client");
     for (client_backend, server_backend) in [
-        (TlsBackend::Boring, TlsBackend::Boring),
+        (
+            &BoringTlsProvider as &dyn TestTlsProvider,
+            &BoringTlsProvider as &dyn TestTlsProvider,
+        ),
         #[cfg(all(feature = "rustls", any(feature = "ring", feature = "aws-lc")))]
-        (TlsBackend::Rustls, TlsBackend::Boring),
+        (
+            &RustlsTlsProvider::new(configured_provider()) as &dyn TestTlsProvider,
+            &BoringTlsProvider as &dyn TestTlsProvider,
+        ),
         #[cfg(all(feature = "rustls", any(feature = "ring", feature = "aws-lc")))]
-        (TlsBackend::Boring, TlsBackend::Rustls),
+        (
+            &BoringTlsProvider as &dyn TestTlsProvider,
+            &RustlsTlsProvider::new(configured_provider()) as &dyn TestTlsProvider,
+        ),
     ] {
         let (base_client, server) = configs();
         let server =
             server.with_client_verify(ClientVerifyMode::ClientAuth(trusted.cert_chain.clone()));
-        let server = crate::ServerConfig::try_from_rama_tls(
+        let server = crate::ServerConfig::try_from_rama_tls_with_provider(
             &server,
-            TlsOptions::default().with_backend(server_backend),
+            TlsOptions::default(),
+            server_backend,
         )
         .unwrap()
         .crypto;
@@ -651,9 +665,10 @@ fn client_authentication_is_verified_and_retained_on_resumption() {
             if let Some(identity) = identity {
                 client = client.with_client_auth(ClientAuth::Single(identity));
             }
-            let client = crate::ClientConfig::try_from_rama_tls(
+            let client = crate::ClientConfig::try_from_rama_tls_with_provider(
                 &client,
-                TlsOptions::default().with_backend(client_backend),
+                TlsOptions::default(),
+                client_backend,
             )
             .unwrap()
             .crypto;
@@ -734,25 +749,33 @@ async fn udp_endpoints_exchange_streams_datagrams_and_early_data() {
     use crate::{ClientConfig, Endpoint, ServerConfig};
     use rama_core::{bytes::Bytes, rt::Executor};
     use rama_quic_proto::VarInt;
-    use rama_tls::TlsBackend;
     use std::{net::UdpSocket, time::Duration};
 
     let pairs = [
-        (TlsBackend::Boring, TlsBackend::Boring),
+        (
+            &BoringTlsProvider as &dyn TestTlsProvider,
+            &BoringTlsProvider as &dyn TestTlsProvider,
+        ),
         #[cfg(all(feature = "rustls", any(feature = "ring", feature = "aws-lc")))]
-        (TlsBackend::Boring, TlsBackend::Rustls),
+        (
+            &BoringTlsProvider as &dyn TestTlsProvider,
+            &RustlsTlsProvider::new(configured_provider()) as &dyn TestTlsProvider,
+        ),
         #[cfg(all(feature = "rustls", any(feature = "ring", feature = "aws-lc")))]
-        (TlsBackend::Rustls, TlsBackend::Boring),
+        (
+            &RustlsTlsProvider::new(configured_provider()) as &dyn TestTlsProvider,
+            &BoringTlsProvider as &dyn TestTlsProvider,
+        ),
     ];
     for (client_backend, server_backend) in pairs {
         tokio::time::timeout(Duration::from_secs(10), async {
             let (client_tls, server_tls) = configs();
             let options = TlsOptions::default().with_early_data(true);
             let client_config =
-                ClientConfig::try_from_rama_tls(&client_tls, options.with_backend(client_backend))
+                ClientConfig::try_from_rama_tls_with_provider(&client_tls, options, client_backend)
                     .unwrap();
             let server_config =
-                ServerConfig::try_from_rama_tls(&server_tls, options.with_backend(server_backend))
+                ServerConfig::try_from_rama_tls_with_provider(&server_tls, options, server_backend)
                     .unwrap();
             let client = Endpoint::new_client_with_std_socket(
                 Executor::new(),
