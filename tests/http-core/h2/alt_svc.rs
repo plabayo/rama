@@ -4,6 +4,15 @@ use rama::http::proto::h2::alt_svc::{
     ALT_SVC_QUEUE_CAPACITY, AltSvcEvent, AltSvcObserver, AltSvcObserverExtension, AltSvcOrigin,
     AltSvcSendError, AltSvcSender,
 };
+use rama::{
+    Layer as _, Service as _,
+    http::{
+        conn::HttpOrigin,
+        layer::alt_svc::{AltSvcCache, AltSvcLayer},
+    },
+    net::Protocol as OriginProtocol,
+    service::service_fn,
+};
 use rama_core::{
     extensions::{Extensions, ExtensionsRef},
     futures::StreamExt,
@@ -195,7 +204,11 @@ async fn altsvc_server_emission_is_bounded_and_drains_while_idle() {
     let extensions = io.extensions().clone();
     let peer_extensions = extensions.clone();
     let server = async move {
-        let mut connection = server::handshake(io).await.unwrap();
+        let mut connection = server::Builder::new()
+            .with_alt_svc(true)
+            .handshake::<_, Bytes>(io)
+            .await
+            .unwrap();
         let sender = extensions.get_ref::<AltSvcSender>().unwrap().clone();
         for _ in 0..ALT_SVC_QUEUE_CAPACITY {
             connection
@@ -237,4 +250,123 @@ async fn altsvc_server_emission_is_bounded_and_drains_while_idle() {
         );
     };
     join(server, peer).await;
+}
+
+#[tokio::test]
+async fn altsvc_server_emission_is_opt_in() {
+    let (io, mut peer) = mock::new();
+    let extensions = io.extensions().clone();
+    let server = async move {
+        let mut connection = server::handshake(io).await.unwrap();
+        assert!(!extensions.contains::<AltSvcSender>());
+        assert_eq!(
+            connection.send_alt_svc(advertisement(0, "https://example.com")),
+            Err(AltSvcSendError::Disabled)
+        );
+        assert!(connection.accept().await.is_none());
+    };
+    let peer = async move {
+        peer.assert_server_handshake().await;
+        peer.send_frame(frames::ping([7; 8])).await;
+        peer.recv_frame(frames::ping([7; 8]).pong()).await;
+    };
+    join(server, peer).await;
+}
+
+struct CacheObserver {
+    cache: AltSvcCache,
+    origin: HttpOrigin,
+}
+
+impl AltSvcObserver for CacheObserver {
+    fn observe(&self, event: AltSvcEvent, _: &Extensions) {
+        self.cache.record_frame(
+            &self.origin,
+            event.field_value,
+            event.received_at.into_std(),
+        );
+    }
+}
+
+#[tokio::test]
+async fn same_flush_altsvc_headers_and_frames_follow_wire_order() {
+    for (header, advertisement, expected_port, frame_first) in [
+        ("h3=\":8443\"", "clear", None, false),
+        ("clear", "h3=\":9443\"", Some(9443), false),
+        ("h3=\":8443\"", "h3=\":9443\"", Some(9443), false),
+        ("h3=\":8443\"", "clear", Some(8443), true),
+        ("clear", "h3=\":9443\"", None, true),
+        ("h3=\":8443\"", "h3=\":9443\"", Some(8443), true),
+    ] {
+        let (io, mut peer) = mock::new();
+        let cache = AltSvcCache::default();
+        let origin =
+            HttpOrigin::new(OriginProtocol::HTTPS, "example.com:443".parse().unwrap()).unwrap();
+        io.extensions()
+            .insert(AltSvcObserverExtension::new(CacheObserver {
+                cache: cache.clone(),
+                origin: origin.clone(),
+            }));
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let client = async move {
+            let (mut client, mut connection) = client::handshake(io).await.unwrap();
+            connection.drive(async { ready_rx.await.unwrap() }).await;
+            let (response, body) = client
+                .send_request(Request::get("https://example.com/").body(()).unwrap(), true)
+                .unwrap();
+            let response = Mutex::new(Some(response));
+            let service = AltSvcLayer::new(origin.clone())
+                .with_cache(cache.clone())
+                .with_authenticated(true)
+                .layer(service_fn(move |_: Request<()>| {
+                    response.lock().take().unwrap()
+                }));
+            connection
+                .drive(service.serve(Request::new(())))
+                .await
+                .unwrap();
+            assert_eq!(
+                cache
+                    .lookup(&origin)
+                    .map(|snapshot| snapshot.get(0).unwrap().target.port),
+                expected_port
+            );
+            drop(body);
+            drop(client);
+        };
+        let server = async move {
+            peer.assert_client_handshake().await;
+            ready_tx.send(()).unwrap();
+            peer.recv_frame(
+                frames::headers(1)
+                    .request("GET", "https://example.com/")
+                    .eos(),
+            )
+            .await;
+            let headers: SendFrame = frames::headers(1)
+                .response(200)
+                .field("alt-svc", header)
+                .eos()
+                .into();
+            let advertisement: SendFrame = frame::AltSvc::new(
+                StreamId::zero(),
+                Bytes::from_static(b"https://example.com"),
+                Bytes::from_static(advertisement.as_bytes()),
+            )
+            .unwrap()
+            .into();
+            let frames = if frame_first {
+                [advertisement, headers]
+            } else {
+                [headers, advertisement]
+            };
+            for frame in frames {
+                peer.codec_mut().buffer(frame).unwrap();
+            }
+            std::future::poll_fn(|cx| peer.codec_mut().flush(cx))
+                .await
+                .unwrap();
+        };
+        join(client, server).await;
+    }
 }

@@ -7,6 +7,10 @@ use rama_core::{
     extensions::{Extension, Extensions},
 };
 use rama_utils::octets::kib;
+use std::{
+    sync::atomic::{AtomicU64, Ordering},
+    time::{Instant as StdInstant, SystemTime},
+};
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 
@@ -33,6 +37,34 @@ pub struct AltSvcEvent {
     pub origin: AltSvcOrigin,
     pub field_value: Bytes,
     pub received_at: Instant,
+    /// Tie-breaker for receipts within the same monotonic clock tick.
+    pub sequence: u64,
+}
+
+/// Receipt time of an HTTP/2 response carrying an Alt-Svc field.
+///
+/// Installed by an observing connection before handing headers to the response
+/// consumer. This preserves ordering against subsequent ALTSVC frames even when
+/// the application polls its response later. Wall time is captured alongside the
+/// monotonic time so response age does not depend on application scheduling.
+#[derive(Clone, Copy, Debug, Extension)]
+pub struct AltSvcReceivedAt {
+    pub instant: StdInstant,
+    pub wall: SystemTime,
+    /// Process-local ordering for receipts within the same clock tick.
+    pub sequence: u64,
+}
+
+impl AltSvcReceivedAt {
+    /// Capture receipt time before publishing an advertisement to consumers.
+    pub fn now() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        Self {
+            instant: StdInstant::now(),
+            wall: SystemTime::now(),
+            sequence: NEXT.fetch_add(1, Ordering::Relaxed),
+        }
+    }
 }
 
 /// Receive connection-local alternative-service observations directly.
@@ -74,7 +106,8 @@ impl std::fmt::Debug for AltSvcObserverExtension {
 
 /// Explicit server-side ALTSVC emission on one HTTP/2 connection.
 ///
-/// Installed on server connection extensions and inherited by its requests.
+/// Installed on server connection extensions when ALTSVC emission is enabled
+/// on the server builder, and inherited by its requests.
 /// Advertisements are never copied from received frames automatically.
 #[derive(Clone, Debug, Extension)]
 pub struct AltSvcSender(mpsc::Sender<frame::AltSvc>);
@@ -100,6 +133,7 @@ impl AltSvcSender {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AltSvcSendError {
+    Disabled,
     TooLarge,
     Full,
     Closed,
@@ -108,6 +142,7 @@ pub enum AltSvcSendError {
 impl std::fmt::Display for AltSvcSendError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
+            Self::Disabled => "ALTSVC emission was not enabled before the handshake",
             Self::TooLarge => "ALTSVC advertisement exceeds the connection limit",
             Self::Full => "ALTSVC advertisement queue is full",
             Self::Closed => "HTTP/2 connection is closed",

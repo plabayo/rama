@@ -37,7 +37,14 @@ use std::{
     },
     time::Duration,
 };
-use tokio::{fs, process::Command, sync::oneshot, task::JoinHandle, time::timeout};
+use tokio::{
+    fs,
+    net::{TcpListener as TokioTcpListener, UdpSocket},
+    process::Command,
+    sync::oneshot,
+    task::JoinHandle,
+    time::timeout,
+};
 
 type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
 const DEADLINE: Duration = Duration::from_secs(20);
@@ -67,6 +74,7 @@ impl Fixture {
 
     async fn send(&self, url: &str, args: &[&str]) -> TestResult<Output> {
         let mut command = Command::new(env!("CARGO_BIN_EXE_rama"));
+        let no_proxy = if args.contains(&"--proxy") { "" } else { "*" };
         command
             .kill_on_drop(true)
             .arg("send")
@@ -76,8 +84,8 @@ impl Fixture {
             .arg(self.directory.path().join("trace.log"))
             .env("SSL_CERT_FILE", &self.ca)
             .env_remove("SSL_CERT_DIR")
-            .env("NO_PROXY", "*")
-            .env("no_proxy", "*")
+            .env("NO_PROXY", no_proxy)
+            .env("no_proxy", no_proxy)
             .env("RUST_LOG", "off")
             .env("NO_COLOR", "1");
         for variable in [
@@ -431,8 +439,7 @@ async fn unavailable_h3_obeys_explicit_version_and_connection_deadline() -> Test
     let fixture = Fixture::new().await?;
     let origin = Server::start(fixture.auth.clone(), Version::HTTP_11).await?;
     // Retain a silent UDP socket so failure is a timeout on every platform.
-    let silent =
-        tokio::net::UdpSocket::bind(SocketAddr::from(SocketAddress::local_ipv4(0))).await?;
+    let silent = UdpSocket::bind(SocketAddr::from(SocketAddress::local_ipv4(0))).await?;
     let address = silent.local_addr()?;
     origin.reply(Reply::redirect(Some(address)));
     let output = fixture
@@ -547,4 +554,27 @@ async fn explicit_h3_rejects_wrong_alpn_and_incompatible_tls() -> TestResult {
             .contains("WebSocket over HTTP/3 requires Extended CONNECT")
     );
     server.close().await
+}
+
+#[tokio::test]
+async fn explicit_h3_never_bypasses_an_explicit_proxy() -> TestResult {
+    let fixture = Fixture::new().await?;
+    let origin = Server::start(fixture.auth.clone(), Version::HTTP_3).await?;
+    let proxy = TokioTcpListener::bind(SocketAddr::from(SocketAddress::local_ipv4(0))).await?;
+    let proxy_url = format!("http://{}", proxy.local_addr()?);
+    let output = fixture
+        .send(&origin.url(), &["--http3", "--proxy", &proxy_url])
+        .await?;
+    failed(&output);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("QUIC connector does not support proxy routes"),
+        "{stderr}"
+    );
+    assert!(origin.requests.lock().is_empty());
+    assert_eq!(origin.accepted.load(Ordering::Relaxed), 0);
+    timeout(Duration::from_millis(20), proxy.accept())
+        .await
+        .unwrap_err();
+    origin.close().await
 }

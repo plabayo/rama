@@ -2,7 +2,7 @@
 
 use super::{LIMIT, Pair};
 use crate::h3::{
-    client,
+    Error, client,
     connection::{Config, initial_control},
     qpack::{Encoder, EncoderConfig, ErrorScope},
     quic::Writer,
@@ -14,14 +14,16 @@ use rama_core::{
     rt::{Executor, spawn},
 };
 use rama_http_types::{
-    Body, Method, Request, Response,
-    body::util::BodyExt,
+    Body, HeaderMap, Method, Request, Response, StatusCode,
+    body::{Frame, util::BodyExt},
     proto::h3::{Code, FrameHeader, FrameType},
 };
+use rama_net::uri::Uri;
 use rama_quic::TransportConfig;
 use rama_quic_proto::{Dir, MAX_STREAM_COUNT, Side, StreamId, VarInt, coding::Codec};
 use std::{
     convert::Infallible,
+    error::Error as _,
     future::poll_fn,
     pin::pin,
     sync::{
@@ -243,6 +245,11 @@ async fn check_malformed_control_streams_close_connection_and_wake_accept(in_mem
             Code::H3_MISSING_SETTINGS,
         ),
         (
+            "truncated setting integer",
+            &[&[0, 4, 1, 0x40]],
+            Code::H3_FRAME_ERROR,
+        ),
+        (
             "duplicate SETTINGS",
             &[&[0, 4, 0, 4, 0]],
             Code::H3_FRAME_UNEXPECTED,
@@ -320,7 +327,7 @@ async fn check_malformed_request_streams_leave_connection_and_admission_usable(i
             (b"x-whitespace", b" leading-space"),
         ];
         for &(name, value) in malformed {
-            let (send, recv) = pair.client.open_bi().await.unwrap();
+            let (send, mut recv) = pair.client.open_bi().await.unwrap();
             let id = u64::from(send.id());
             let fields = [
                 (b":method".as_slice(), b"GET".as_slice()),
@@ -347,7 +354,9 @@ async fn check_malformed_request_streams_leave_connection_and_admission_usable(i
             assert_eq!(error.code(), Code::H3_MESSAGE_ERROR, "field {name:?}");
             assert_eq!(error.scope(), ErrorScope::Stream);
             assert!(pair.server.close_reason().is_none());
-            drop(recv);
+            let error = recv.read_chunk(1024, true).await.unwrap_err();
+            assert!(matches!(error, rama_quic::ReadError::Reset(code)
+                if code.into_inner() == Code::H3_MESSAGE_ERROR.value()));
         }
         let serve = spawn(async move {
             let (request, response) = server.accept().await.unwrap().resolve().await.unwrap();
@@ -565,4 +574,376 @@ async fn pair(
     } else {
         Pair::new(client, server).await
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn memory_reset_before_headers_does_not_fragment_priority_history() {
+    const REQUESTS: usize = 300;
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::in_memory(None, None).await;
+        let (mut client, client_driver) =
+            client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
+                .unwrap();
+        let (mut server, server_driver) =
+            server::handshake(pair.server.clone(), Config::default()).unwrap();
+        let client_driver = spawn(client_driver.run());
+        let server_driver = spawn(server_driver.run());
+        let serve = spawn(async move {
+            for _ in 0..REQUESTS {
+                let error = server
+                    .accept()
+                    .await
+                    .unwrap()
+                    .resolve()
+                    .await
+                    .err()
+                    .unwrap();
+                assert_eq!(error.scope(), ErrorScope::Stream);
+                let (request, response) = server.accept().await.unwrap().resolve().await.unwrap();
+                request.into_body().collect().await.unwrap();
+                response
+                    .send_response(Response::new(Body::from("ok")))
+                    .await
+                    .unwrap();
+            }
+        });
+        for _ in 0..REQUESTS {
+            let (mut send, mut recv) = pair.client.open_bi().await.unwrap();
+            // A partial HEADERS frame followed by reset must release admission,
+            // scheduling and compression bookkeeping just like a valid request.
+            send.write_all(&[1]).await.unwrap();
+            send.reset(Code::H3_REQUEST_CANCELLED.value() as u32)
+                .unwrap();
+            recv.stop(Code::H3_REQUEST_CANCELLED.value() as u32)
+                .unwrap();
+            let response = client
+                .send_request(
+                    Request::builder()
+                        .uri("https://localhost/survivor")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.into_body().collect().await.unwrap().to_bytes(),
+                "ok"
+            );
+            assert!(pair.client.close_reason().is_none());
+        }
+        serve.await.unwrap();
+        pair.client
+            .close(Code::H3_NO_ERROR.value() as u32, b"complete");
+        client_driver.await.unwrap().unwrap();
+        server_driver.await.unwrap().unwrap();
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn memory_clean_peer_close_has_one_driver_result() {
+    tokio::time::timeout(LIMIT, async {
+        for _ in 0..32 {
+            let pair = Pair::in_memory(None, None).await;
+            let (mut client, driver) =
+                client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
+                    .unwrap();
+            let (server, server_driver) =
+                server::handshake(pair.server.clone(), Config::default()).unwrap();
+            let driver = spawn(driver.run());
+            let server_driver = spawn(server_driver.run());
+            client.ready().await.unwrap();
+            pair.server
+                .close(Code::H3_NO_ERROR.value() as u32, b"graceful peer close");
+            driver.await.unwrap().unwrap();
+            server_driver.await.unwrap().unwrap();
+            drop(server);
+            pair.close().await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn memory_drained_server_driver_drop_sends_no_error() {
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::in_memory(None, None).await;
+        let (mut client, driver) =
+            client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
+                .unwrap();
+        let (mut server, server_driver) =
+            server::handshake(pair.server.clone(), Config::default()).unwrap();
+        let driver = spawn(driver.run());
+        let server_driver = spawn(server_driver.run());
+        client.ready().await.unwrap();
+        server.shutdown().unwrap();
+        server.drained().await.unwrap();
+        server_driver.abort();
+        assert!(server_driver.await.unwrap_err().is_cancelled());
+        let reason = pair.client.closed().await;
+        let rama_quic::ConnectionError::ApplicationClosed(close) = reason else {
+            panic!("expected HTTP/3 application close: {reason:?}");
+        };
+        assert_eq!(close.error_code.into_inner(), Code::H3_NO_ERROR.value());
+        driver.await.unwrap().unwrap();
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn memory_oversized_outgoing_trailers_preserve_connection() {
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::in_memory(None, None).await;
+        let mut config = Config::default();
+        config.decoder.max_field_section_size = 256;
+        config.max_pushes = 1;
+        let (mut client, client_driver) =
+            client::handshake::<Body>(pair.client.clone(), config, Executor::new()).unwrap();
+        let (mut server, server_driver) = server::handshake(
+            pair.server.clone(),
+            Config {
+                max_pushes: 1,
+                ..Config::default()
+            },
+        )
+        .unwrap();
+        let client_driver = spawn(client_driver.run());
+        let server_driver = spawn(server_driver.run());
+        let serve = spawn(async move {
+            let (request, response) = server.accept().await.unwrap().resolve().await.unwrap();
+            request.into_body().collect().await.unwrap();
+            // MAX_PUSH_ID follows SETTINGS on the control stream, providing a
+            // wire-level barrier before we exercise the advertised field limit.
+            response.ready_for_push().await.unwrap();
+            let mut trailers = HeaderMap::new();
+            trailers.insert("x-too-large", "a".repeat(256).parse().unwrap());
+            let body = Body::from_frame_stream(stream::iter([
+                Ok::<_, Infallible>(Frame::data(Bytes::from_static(b"prefix"))),
+                Ok(Frame::trailers(trailers)),
+            ]));
+            let error = response
+                .send_response(Response::new(body))
+                .await
+                .unwrap_err();
+            assert_eq!(error.scope(), ErrorScope::Stream);
+            assert_eq!(error.code(), Code::H3_MESSAGE_ERROR);
+            let (request, response) = server.accept().await.unwrap().resolve().await.unwrap();
+            request.into_body().collect().await.unwrap();
+            response
+                .send_response(Response::new(Body::from("survived")))
+                .await
+                .unwrap();
+        });
+        let request = || {
+            Request::builder()
+                .uri("https://localhost/")
+                .body(Body::empty())
+                .unwrap()
+        };
+        match client.send_request(request()).await {
+            Ok(response) => {
+                let error = response.into_body().collect().await.unwrap_err();
+                let error = error.source().unwrap().downcast_ref::<Error>().unwrap();
+                assert_eq!(error.code(), Code::H3_MESSAGE_ERROR);
+            }
+            Err(error) => {
+                assert_eq!(error.scope(), ErrorScope::Stream);
+                assert_eq!(error.code(), Code::H3_MESSAGE_ERROR);
+            }
+        }
+        assert!(pair.client.close_reason().is_none());
+        let response = client.send_request(request()).await.unwrap();
+        assert_eq!(
+            response.into_body().collect().await.unwrap().to_bytes(),
+            "survived"
+        );
+        serve.await.unwrap();
+        pair.client
+            .close(Code::H3_NO_ERROR.value() as u32, b"complete");
+        client_driver.await.unwrap().unwrap();
+        server_driver.await.unwrap().unwrap();
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn memory_unread_request_body_is_stopped_without_error() {
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::in_memory(None, None).await;
+        let (_client, client_driver) =
+            client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
+                .unwrap();
+        let (mut server, server_driver) =
+            server::handshake(pair.server.clone(), Config::default()).unwrap();
+        let client_driver = spawn(client_driver.run());
+        let server_driver = spawn(server_driver.run());
+        let (send, mut recv) = pair.client.open_bi().await.unwrap();
+        let stopped = send.stopped();
+        let mut writer = Writer::new(send);
+        let mut encoder = Encoder::before_peer_settings(EncoderConfig::default());
+        let fields = encoder
+            .encode(
+                0,
+                [
+                    (":method", "POST"),
+                    (":scheme", "https"),
+                    (":authority", "localhost"),
+                    (":path", "/"),
+                    ("content-length", "100"),
+                ],
+            )
+            .unwrap();
+        writer.queue(FrameType::HEADERS, fields).unwrap();
+        poll_fn(|cx| writer.poll_flush(cx)).await.unwrap();
+        let (request, response) = server.accept().await.unwrap().resolve().await.unwrap();
+        response
+            .send_response(Response::new(Body::from("done")))
+            .await
+            .unwrap();
+        drop(request);
+        assert_eq!(
+            stopped.await.unwrap().unwrap().into_inner(),
+            Code::H3_NO_ERROR.value()
+        );
+        recv.read_to_end(1024).await.unwrap();
+        assert!(pair.client.close_reason().is_none());
+        pair.client
+            .close(Code::H3_NO_ERROR.value() as u32, b"complete");
+        client_driver.await.unwrap().unwrap();
+        server_driver.await.unwrap().unwrap();
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn memory_malformed_request_body_and_trailers_abort_both_directions() {
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::in_memory(None, None).await;
+        let (_client, client_driver) = client::handshake::<Body>(
+            pair.client.clone(), Config::default(), Executor::new()).unwrap();
+        let (mut server, server_driver) = server::handshake(
+            pair.server.clone(), Config::default()).unwrap();
+        let client_driver = spawn(client_driver.run());
+        let server_driver = spawn(server_driver.run());
+        let mut encoder = Encoder::before_peer_settings(EncoderConfig::default());
+        for malformed_trailers in [false, true] {
+            let (send, mut recv) = pair.client.open_bi().await.unwrap();
+            let id = u64::from(send.id());
+            let stopped = send.stopped();
+            let mut writer = Writer::new(send);
+            let fields = encoder.encode(id, [
+                (":method", "POST"), (":scheme", "https"), (":authority", "localhost"),
+                (":path", "/"), ("content-length", "1"),
+            ]).unwrap();
+            writer.queue(FrameType::HEADERS, fields).unwrap();
+            poll_fn(|cx| writer.poll_flush(cx)).await.unwrap();
+            if malformed_trailers {
+                let trailers = encoder.encode(id, [(":status", "200")]).unwrap();
+                writer.queue(FrameType::HEADERS, trailers).unwrap();
+            } else {
+                writer.queue(FrameType::DATA, Bytes::from_static(b"too long")).unwrap();
+            }
+            poll_fn(|cx| writer.poll_flush(cx)).await.unwrap();
+            let (request, response) = server.accept().await.unwrap().resolve().await.unwrap();
+            request.into_body().collect().await.unwrap_err();
+            assert_eq!(stopped.await.unwrap().unwrap().into_inner(), Code::H3_MESSAGE_ERROR.value());
+            assert!(matches!(recv.read_chunk(1024, true).await.unwrap_err(),
+                rama_quic::ReadError::Reset(code) if code.into_inner() == Code::H3_MESSAGE_ERROR.value()));
+            // The send direction is reset immediately, even while its application
+            // response handle remains alive in another task.
+            drop(response);
+            assert!(pair.client.close_reason().is_none());
+        }
+        pair.client.close(Code::H3_NO_ERROR.value() as u32, b"complete");
+        client_driver.await.unwrap().unwrap();
+        server_driver.await.unwrap().unwrap();
+        pair.close().await;
+    }).await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn memory_rejected_connect_retains_response_and_stops_without_error() {
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::in_memory(None, None).await;
+        let (mut client, client_driver) =
+            client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
+                .unwrap();
+        let (mut server, server_driver) =
+            server::handshake(pair.server.clone(), Config::default()).unwrap();
+        let client_driver = spawn(client_driver.run());
+        let server_driver = spawn(server_driver.run());
+        let (send, mut recv) = pair.client.open_bi().await.unwrap();
+        let stopped = send.stopped();
+        let mut writer = Writer::new(send);
+        let mut encoder = Encoder::before_peer_settings(EncoderConfig::default());
+        writer
+            .queue(
+                FrameType::HEADERS,
+                encoder
+                    .encode(0, [(":method", "CONNECT"), (":authority", "localhost:443")])
+                    .unwrap(),
+            )
+            .unwrap();
+        poll_fn(|cx| writer.poll_flush(cx)).await.unwrap();
+        let (_request, response) = server.accept().await.unwrap().resolve().await.unwrap();
+        response
+            .send_response(
+                Response::builder()
+                    .status(StatusCode::FORBIDDEN)
+                    .body(Body::from("denied"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            stopped.await.unwrap().unwrap().into_inner(),
+            Code::H3_NO_ERROR.value()
+        );
+        recv.read_to_end(1024).await.unwrap();
+        let serve = spawn(async move {
+            let (_request, response) = server.accept().await.unwrap().resolve().await.unwrap();
+            response
+                .send_response(
+                    Response::builder()
+                        .status(StatusCode::FORBIDDEN)
+                        .body(Body::from("denied"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+        });
+        let response = client
+            .send_request(
+                Request::builder()
+                    .method(Method::CONNECT)
+                    .uri(Uri::parse_http_request_target("localhost:443", true).unwrap())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            response.into_body().collect().await.unwrap().to_bytes(),
+            "denied"
+        );
+        serve.await.unwrap();
+        assert!(pair.client.close_reason().is_none());
+        pair.client
+            .close(Code::H3_NO_ERROR.value() as u32, b"complete");
+        client_driver.await.unwrap().unwrap();
+        server_driver.await.unwrap().unwrap();
+        pair.close().await;
+    })
+    .await
+    .unwrap();
 }

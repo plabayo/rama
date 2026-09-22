@@ -676,6 +676,11 @@ codegen-units = 1
 incremental = false
 
 [[bench]]
+name = "alt_svc"
+harness = false
+required-features = ["http-full"]
+
+[[bench]]
 name = "http3"
 path = "benches/http3.rs"
 harness = false

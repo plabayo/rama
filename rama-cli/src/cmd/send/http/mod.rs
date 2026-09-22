@@ -4,6 +4,7 @@ use rama::{
     graceful::{self, Shutdown},
     http::layer::har::recorder::{FileRecorder, Recorder as _},
     rt::Executor,
+    telemetry::tracing,
     utils::collections::NonEmptySmallVec,
 };
 
@@ -116,12 +117,9 @@ pub async fn run_inner(cfg: &SendCommand, is_ws: bool) -> Result<(), BoxError> {
     drop(executor);
     drop(guard);
     finished.send(()).unwrap_or_default();
-    let drained = shutdown.shutdown_with_limit(CLIENT_DRAIN_TIMEOUT).await;
+    drain_client(shutdown).await;
     if let Some(recorder) = &har_recorder {
         recorder.stop_record().await;
-    }
-    if result.is_ok() {
-        drained.context("drain HTTP client tasks")?;
     }
     if result.is_ok()
         && let Some(path) = &cfg.har
@@ -137,4 +135,47 @@ pub async fn run_inner(cfg: &SendCommand, is_ws: bool) -> Result<(), BoxError> {
     }
 
     result
+}
+
+async fn drain_client(shutdown: Shutdown) {
+    // A successful exchange has already consumed or written its response.
+    // Waiting for pooled connections to close is best-effort cleanup; it must
+    // not change that exchange's outcome. HAR finalization is handled separately.
+    if let Err(error) = shutdown.shutdown_with_limit(CLIENT_DRAIN_TIMEOUT).await {
+        tracing::warn!(%error, "timed out draining HTTP client tasks");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CLIENT_DRAIN_TIMEOUT, drain_client};
+    use rama::graceful::Shutdown;
+    use tokio::time::Instant;
+
+    #[tokio::test(start_paused = true)]
+    async fn client_drain_timeout_is_bounded_best_effort_cleanup() {
+        let shutdown = Shutdown::new(async {});
+        let guard = shutdown.guard();
+        let start = Instant::now();
+
+        drain_client(shutdown).await;
+
+        assert_eq!(start.elapsed(), CLIENT_DRAIN_TIMEOUT);
+        guard.cancelled().await;
+        drop(guard);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn client_drain_completes_without_waiting_for_timeout() {
+        let shutdown = Shutdown::new(async {});
+        let guard = shutdown.guard();
+        let start = Instant::now();
+
+        tokio::spawn(async move {
+            guard.cancelled().await;
+        });
+        drain_client(shutdown).await;
+
+        assert!(start.elapsed() < CLIENT_DRAIN_TIMEOUT);
+    }
 }

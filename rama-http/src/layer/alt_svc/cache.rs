@@ -7,11 +7,15 @@ use rama_http_types::{
     HeaderMap, HeaderValue,
     conn::{HttpOrigin, HttpServiceCandidate, HttpServiceCandidates, HttpServiceSource},
     header,
+    proto::h2::alt_svc::AltSvcReceivedAt,
 };
 use rama_net::address::{Host, HostWithPort};
 use rama_utils::macros::generate_set_and_with;
 use std::{
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, Instant, SystemTime},
 };
 
@@ -21,23 +25,40 @@ const DEFAULT_ADVERTISEMENT_BYTES: usize = rama_utils::octets::kib(16);
 #[derive(Clone, Debug)]
 struct Availability {
     expires: Instant,
-    suppressed_until: Option<Instant>,
+    failure: Option<Failure>,
     persist: bool,
     removed: bool,
 }
 
 impl Availability {
-    fn fresh_at(&self, now: Instant) -> bool {
-        !self.removed && now < self.expires
+    fn fresh_at(&self, now: Instant, network: u64) -> bool {
+        !self.removed
+            && now < self.expires
+            && self.failure.as_ref().is_none_or(|failure| {
+                failure.network != network || !failure.all_routes || now >= failure.until
+            })
     }
 
-    fn usable_at(&self, now: Instant) -> bool {
-        self.fresh_at(now) && self.suppressed_until.is_none_or(|until| now >= until)
+    fn usable_at(&self, now: Instant, network: u64) -> bool {
+        self.fresh_at(now, network)
+            && self
+                .failure
+                .as_ref()
+                .is_none_or(|failure| failure.network != network || now >= failure.until)
     }
 }
 
 #[derive(Clone, Debug)]
+struct Failure {
+    network: u64,
+    until: Instant,
+    attempts: u32,
+    all_routes: bool,
+}
+
+#[derive(Clone, Debug)]
 struct Advertisement {
+    received_at: (Instant, u64),
     services: Arc<HttpServiceCandidates>,
     availability: Arc<[Availability]>,
 }
@@ -61,6 +82,8 @@ struct Advertisement {
 #[derive(Clone, Debug)]
 pub struct AltSvcCache {
     entries: Cache<HttpOrigin, Advertisement>,
+    failures: Cache<(u64, HttpOrigin, HttpServiceCandidate), Failure>,
+    network: Arc<AtomicU64>,
     max_age: Duration,
     failure_backoff: Duration,
     max_alternatives_per_origin: usize,
@@ -69,7 +92,7 @@ pub struct AltSvcCache {
 
 impl Default for AltSvcCache {
     fn default() -> Self {
-        Self::new(1024, Duration::from_secs(86_400), Duration::from_secs(30))
+        Self::new(1024, Duration::from_hours(24), Duration::from_secs(30))
     }
 }
 
@@ -82,6 +105,12 @@ impl AltSvcCache {
                 .eviction_policy(EvictionPolicy::lru())
                 .time_to_live(max_age)
                 .build(),
+            failures: Cache::builder()
+                .max_capacity(capacity.saturating_mul(DEFAULT_ALTERNATIVES_PER_ORIGIN as u64))
+                .eviction_policy(EvictionPolicy::lru())
+                .time_to_live(max_age)
+                .build(),
+            network: Arc::new(AtomicU64::new(0)),
             max_age,
             failure_backoff,
             max_alternatives_per_origin: DEFAULT_ALTERNATIVES_PER_ORIGIN,
@@ -125,16 +154,6 @@ impl AltSvcCache {
         );
     }
 
-    /// Record hints from an explicitly authenticated origin connection.
-    pub fn record_authenticated(
-        &self,
-        origin: &HttpOrigin,
-        headers: &HeaderMap,
-        response_delay: Duration,
-    ) {
-        self.record(origin, headers, response_delay);
-    }
-
     /// Record the field value of an HTTP/2 ALTSVC frame for its verified origin.
     ///
     /// The caller must validate the frame's stream/origin association and ensure
@@ -143,6 +162,22 @@ impl AltSvcCache {
     /// extend it. Response `Age`, `Date` and request latency do not apply to frames.
     /// Malformed or oversized values leave existing advertisements unchanged.
     pub fn record_frame(&self, origin: &HttpOrigin, field_value: Bytes, received_at: Instant) {
+        self.record_frame_received(
+            origin,
+            field_value,
+            AltSvcReceivedAt {
+                instant: received_at,
+                ..AltSvcReceivedAt::now()
+            },
+        );
+    }
+
+    pub(super) fn record_frame_received(
+        &self,
+        origin: &HttpOrigin,
+        field_value: Bytes,
+        received: AltSvcReceivedAt,
+    ) {
         if field_value.len() > self.max_advertisement_bytes {
             return;
         }
@@ -152,16 +187,35 @@ impl AltSvcCache {
         let Ok(advertisement) = AltSvc::decode(&mut std::iter::once(&value)) else {
             return;
         };
-        self.record_advertisement(origin, &advertisement, Duration::ZERO, received_at);
+        self.record_advertisement(origin, &advertisement, Duration::ZERO, received);
     }
 
-    fn record_at(
+    pub(super) fn record_at(
         &self,
         origin: &HttpOrigin,
         headers: &HeaderMap,
         response_delay: Duration,
         wall: SystemTime,
         now: Instant,
+    ) {
+        self.record_received(
+            origin,
+            headers,
+            response_delay,
+            AltSvcReceivedAt {
+                instant: now,
+                wall,
+                ..AltSvcReceivedAt::now()
+            },
+        );
+    }
+
+    pub(super) fn record_received(
+        &self,
+        origin: &HttpOrigin,
+        headers: &HeaderMap,
+        response_delay: Duration,
+        received: AltSvcReceivedAt,
     ) {
         let bounded = headers
             .get_all(header::ALT_SVC)
@@ -179,7 +233,7 @@ impl AltSvcCache {
             return;
         };
         if header.is_clear() {
-            self.clear(origin);
+            self.record_advertisement(origin, &header, Duration::ZERO, received);
             return;
         }
         if headers.contains_key(header::AGE) && headers.typed_get::<Age>().is_none() {
@@ -191,10 +245,10 @@ impl AltSvcCache {
             .saturating_add(response_delay);
         let apparent_age = headers
             .typed_get::<Date>()
-            .and_then(|date| wall.duration_since(SystemTime::from(date)).ok())
+            .and_then(|date| received.wall.duration_since(SystemTime::from(date)).ok())
             .unwrap_or_default();
         let age = age.max(apparent_age);
-        self.record_advertisement(origin, &header, age, now);
+        self.record_advertisement(origin, &header, age, received);
     }
 
     fn record_advertisement(
@@ -202,12 +256,10 @@ impl AltSvcCache {
         origin: &HttpOrigin,
         advertisement: &AltSvc,
         age: Duration,
-        now: Instant,
+        received: AltSvcReceivedAt,
     ) {
-        if advertisement.is_clear() {
-            self.clear(origin);
-            return;
-        }
+        let now = received.instant;
+        let order = (now, received.sequence);
         let mut candidates = Vec::new();
         let mut availability = Vec::new();
         if let Some(alternatives) = advertisement.alternatives() {
@@ -243,23 +295,35 @@ impl AltSvcCache {
                 candidates.push(candidate);
                 availability.push(Availability {
                     expires,
-                    suppressed_until: None,
+                    failure: None,
                     persist: alternative.persist(),
                     removed: false,
                 });
             }
         }
-        if candidates.is_empty() {
-            self.clear(origin);
-            return;
-        }
-        let advertisement = Advertisement {
-            services: Arc::new(HttpServiceCandidates::new(origin.clone(), candidates)),
-            availability: availability.into(),
-        };
         self.entries
             .entry(origin.clone())
-            .and_compute_with(|_| Op::Put(advertisement));
+            .and_compute_with(|current| {
+                if current
+                    .as_ref()
+                    .is_some_and(|entry| entry.value().received_at > order)
+                {
+                    return Op::Nop;
+                }
+                let network = self.network_epoch();
+                for (candidate, availability) in candidates.iter().zip(&mut availability) {
+                    availability.failure =
+                        self.failures
+                            .get(&(network, origin.clone(), candidate.clone()));
+                }
+                // Empty advertisements are bounded tombstones: a delayed response
+                // must not resurrect a hint cleared by a later frame.
+                Op::Put(Advertisement {
+                    received_at: order,
+                    services: Arc::new(HttpServiceCandidates::new(origin.clone(), candidates)),
+                    availability: availability.into(),
+                })
+            });
     }
 
     /// Share a snapshot when at least one candidate is currently usable.
@@ -291,31 +355,15 @@ impl AltSvcCache {
         apply_backoff: bool,
     ) -> Option<Arc<HttpServiceCandidates>> {
         let entry = self.entries.get(origin)?;
+        let network = self.network_epoch();
         if entry.availability.iter().any(|value| {
             if apply_backoff {
-                value.usable_at(now)
+                value.usable_at(now, network)
             } else {
-                value.fresh_at(now)
+                value.fresh_at(now, network)
             }
         }) {
             return Some(entry.services);
-        }
-        if entry
-            .availability
-            .iter()
-            .all(|value| value.removed || now >= value.expires)
-        {
-            self.entries
-                .entry(origin.clone())
-                .and_compute_with(|current| {
-                    if current.is_some_and(|current| {
-                        Arc::ptr_eq(&current.value().services, &entry.services)
-                    }) {
-                        Op::Remove
-                    } else {
-                        Op::Nop
-                    }
-                });
         }
         None
     }
@@ -334,7 +382,7 @@ impl AltSvcCache {
                 && entry
                     .availability
                     .get(index)
-                    .is_some_and(|value| value.fresh_at(Instant::now()))
+                    .is_some_and(|value| value.fresh_at(Instant::now(), self.network_epoch()))
         })
     }
 
@@ -349,7 +397,7 @@ impl AltSvcCache {
                 && entry
                     .availability
                     .get(index)
-                    .is_some_and(|value| value.usable_at(now))
+                    .is_some_and(|value| value.usable_at(now, self.network_epoch()))
         })
     }
 
@@ -357,19 +405,83 @@ impl AltSvcCache {
     ///
     /// Do not report proxy-route failures here: reachability can differ by route.
     /// Proxy selection uses [`Self::lookup_fresh`] instead of this direct-path
-    /// backoff. A subsequent advertisement of the same endpoint is unaffected.
+    /// backoff. Re-advertising an endpoint preserves its failure history.
     pub fn failed(&self, snapshot: &Arc<HttpServiceCandidates>, index: usize) {
         self.failed_at(snapshot, index, Instant::now());
     }
 
     fn failed_at(&self, snapshot: &Arc<HttpServiceCandidates>, index: usize, now: Instant) {
-        self.update_candidate(snapshot, index, |value| {
-            value.suppressed_until = Some(
-                now.checked_add(self.failure_backoff)
-                    .unwrap_or(value.expires)
-                    .min(value.expires),
-            );
-        });
+        self.suppress(snapshot, index, now, false, None);
+    }
+
+    pub(crate) fn network_epoch(&self) -> u64 {
+        self.network.load(Ordering::Acquire)
+    }
+
+    /// Record a completed attempt even when its endpoint was re-advertised
+    /// during the dial. A network change invalidates the captured path context.
+    pub(crate) fn failed_attempt(
+        &self,
+        snapshot: &Arc<HttpServiceCandidates>,
+        index: usize,
+        network: u64,
+        terminal: bool,
+    ) {
+        self.suppress(snapshot, index, Instant::now(), terminal, Some(network));
+    }
+
+    fn suppress(
+        &self,
+        snapshot: &Arc<HttpServiceCandidates>,
+        index: usize,
+        now: Instant,
+        all_routes: bool,
+        network: Option<u64>,
+    ) {
+        let Some(candidate) = snapshot.get(index) else {
+            return;
+        };
+        self.entries
+            .entry(snapshot.origin().clone())
+            .and_compute_with(|current| {
+                let Some(current) = current else {
+                    return Op::Nop;
+                };
+                let mut current = current.into_value();
+                let current_network = self.network_epoch();
+                if network.is_some_and(|network| network != current_network)
+                    || (network.is_none() && !Arc::ptr_eq(&current.services, snapshot))
+                {
+                    return Op::Nop;
+                }
+                let key = (
+                    current_network,
+                    snapshot.origin().clone(),
+                    candidate.clone(),
+                );
+                let previous = self.failures.get(&key);
+                let attempts = previous
+                    .as_ref()
+                    .map_or(1, |failure| failure.attempts.saturating_add(1));
+                let backoff = self
+                    .failure_backoff
+                    .saturating_mul(2u32.saturating_pow(attempts.saturating_sub(1)))
+                    .min(self.max_age);
+                let failure = Failure {
+                    network: current_network,
+                    until: now.checked_add(backoff).unwrap_or(now),
+                    attempts,
+                    all_routes: all_routes || previous.is_some_and(|failure| failure.all_routes),
+                };
+                self.failures.insert(key, failure.clone());
+                let index = current.services.iter().position(|item| item == candidate);
+                if let Some(index) = index {
+                    Arc::make_mut(&mut current.availability)[index].failure = Some(failure);
+                    Op::Put(current)
+                } else {
+                    Op::Nop
+                }
+            });
     }
 
     /// Remove only the alternative that returned 421, without replaying a request.
@@ -401,6 +513,8 @@ impl AltSvcCache {
 
     /// Forget network-specific alternatives while retaining `persist=1` entries.
     pub fn network_changed(&self) {
+        self.network.fetch_add(1, Ordering::AcqRel);
+        self.failures.invalidate_all();
         for (origin, observed) in &self.entries {
             self.entries
                 .entry(origin.as_ref().clone())
@@ -416,7 +530,7 @@ impl AltSvcCache {
                     for value in values.iter_mut() {
                         if value.persist {
                             // Old-network failures do not describe the new path.
-                            value.suppressed_until = None;
+                            value.failure = None;
                         } else {
                             value.removed = true;
                         }
@@ -438,9 +552,12 @@ impl AltSvcCache {
 
     /// Explicitly invalidate this origin's advertisements.
     pub fn clear(&self, origin: &HttpOrigin) {
-        self.entries
-            .entry(origin.clone())
-            .and_compute_with(|_| Op::Remove);
+        self.record_advertisement(
+            origin,
+            &AltSvc::Clear,
+            Duration::ZERO,
+            AltSvcReceivedAt::now(),
+        );
     }
 }
 
@@ -614,7 +731,7 @@ mod tests {
     #[test]
     fn schemes_hosts_and_effective_ports_have_distinct_cache_entries() {
         let cache = AltSvcCache::default();
-        cache.record_authenticated(&origin(), &headers("h2=\":8443\""), Duration::ZERO);
+        cache.record(&origin(), &headers("h2=\":8443\""), Duration::ZERO);
         for (scheme, authority) in [
             (Protocol::HTTP, "example.com:443"),
             (Protocol::HTTPS, "example.com:8443"),
@@ -626,6 +743,149 @@ mod tests {
         let uppercase =
             HttpOrigin::new(Protocol::HTTPS, "EXAMPLE.COM:443".parse().unwrap()).unwrap();
         assert!(cache.lookup(&uppercase).is_some());
+    }
+
+    #[test]
+    fn readvertisement_and_temporary_removal_preserve_exponential_backoff() {
+        let cache = AltSvcCache::new(16, Duration::from_secs(120), Duration::from_secs(5));
+        let now = Instant::now();
+        record(&cache, "h2=\":443\"", now);
+        let snapshot = cache.lookup_at(&origin(), now).unwrap();
+        cache.failed_at(&snapshot, 0, now);
+        record(&cache, "clear", now);
+        record(&cache, "h2=\":443\"", now);
+        assert!(cache.lookup_at(&origin(), now).is_none());
+        let retry = now + Duration::from_secs(5);
+        let snapshot = cache.lookup_at(&origin(), retry).unwrap();
+        cache.failed_at(&snapshot, 0, retry);
+        record(&cache, "h2=\":443\"", retry);
+        assert!(
+            cache
+                .lookup_at(&origin(), retry + Duration::from_secs(5))
+                .is_none()
+        );
+        assert!(
+            cache
+                .lookup_at(&origin(), retry + Duration::from_secs(10))
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn in_flight_failure_survives_readvertisement_but_not_a_network_change() {
+        for network_changed in [false, true] {
+            let cache = AltSvcCache::default();
+            let now = Instant::now();
+            record(&cache, "h3=\":443\"; persist=1", now);
+            let snapshot = cache.lookup(&origin()).unwrap();
+            let network = cache.network_epoch();
+            record(&cache, "clear", Instant::now());
+            record(&cache, "h3=\":443\"; persist=1", Instant::now());
+            if network_changed {
+                cache.network_changed();
+            }
+            cache.failed_attempt(&snapshot, 0, network, true);
+            assert_eq!(cache.lookup(&origin()).is_some(), network_changed);
+        }
+    }
+
+    #[test]
+    fn rejected_alternative_is_suppressed_on_every_route_and_after_readvertisement() {
+        let cache = AltSvcCache::default();
+        let now = Instant::now();
+        record(&cache, "h2=\":443\"", now);
+        let snapshot = cache.lookup_at(&origin(), now).unwrap();
+        cache.failed_attempt(&snapshot, 0, cache.network_epoch(), true);
+        assert!(!cache.is_fresh(&snapshot, 0));
+        record(&cache, "h2=\":443\"", Instant::now());
+        assert!(cache.lookup_fresh(&origin()).is_none());
+    }
+
+    #[test]
+    fn delayed_headers_do_not_replace_newer_frames_or_clear_tombstones() {
+        for (header, frame, expected_port) in [
+            ("h3=\":8443\"", "clear", None),
+            ("clear", "h3=\":9443\"", Some(9443)),
+            ("h3=\":8443\"", "h3=\":9443\"", Some(9443)),
+        ] {
+            let cache = AltSvcCache::default();
+            let first = Instant::now();
+            let second = first + Duration::from_millis(1);
+            cache.record_frame(&origin(), Bytes::from_static(frame.as_bytes()), second);
+            record(&cache, header, first);
+            let snapshot = cache.lookup_at(&origin(), second);
+            assert_eq!(
+                snapshot.map(|snapshot| snapshot.get(0).unwrap().target.port),
+                expected_port
+            );
+        }
+    }
+
+    #[test]
+    fn receive_sequence_breaks_clock_ties_without_processing_order_bias() {
+        let first = AltSvcReceivedAt::now();
+        let second = AltSvcReceivedAt {
+            sequence: first.sequence + 1,
+            ..first
+        };
+        for delayed_header in [false, true] {
+            let cache = AltSvcCache::default();
+            let record_header = || {
+                cache.record_received(&origin(), &headers("h3=\":8443\""), Duration::ZERO, first)
+            };
+            let record_frame =
+                || cache.record_frame_received(&origin(), Bytes::from_static(b"clear"), second);
+            if delayed_header {
+                record_frame();
+                record_header();
+            } else {
+                record_header();
+                record_frame();
+            }
+            assert!(cache.lookup(&origin()).is_none());
+        }
+    }
+
+    #[test]
+    fn failures_and_clear_tombstones_remain_bounded() {
+        let cache = AltSvcCache::new(2, Duration::from_secs(60), Duration::from_secs(5));
+        for port in 1..100 {
+            let origin = HttpOrigin::new(
+                Protocol::HTTPS,
+                HostWithPort::new("example.com".parse().unwrap(), port),
+            )
+            .unwrap();
+            cache.record(&origin, &headers("h3=\":443\""), Duration::ZERO);
+            if let Some(snapshot) = cache.lookup(&origin) {
+                cache.failed(&snapshot, 0);
+            }
+            cache.clear(&origin);
+        }
+        cache.entries.run_pending_tasks();
+        cache.failures.run_pending_tasks();
+        assert!(cache.entries.entry_count() <= 2);
+        assert!(cache.failures.entry_count() <= 2 * DEFAULT_ALTERNATIVES_PER_ORIGIN as u64);
+    }
+
+    #[test]
+    fn ignored_advertisements_do_not_advance_receive_order() {
+        let cache = AltSvcCache::default().with_max_advertisement_bytes(16);
+        let first = Instant::now();
+        let second = first + Duration::from_millis(1);
+        for ignored in ["invalid", "h3=\":9443\"; ignored=too-long"] {
+            cache.record_frame(&origin(), Bytes::from_static(ignored.as_bytes()), second);
+            record(&cache, "h3=\":8443\"", first);
+            assert_eq!(
+                cache
+                    .lookup_at(&origin(), first)
+                    .unwrap()
+                    .get(0)
+                    .unwrap()
+                    .target
+                    .port,
+                8443
+            );
+        }
     }
 
     #[test]
@@ -786,7 +1046,7 @@ mod tests {
                 HostWithPort::new(Host::try_from("example.com").unwrap(), port),
             )
             .unwrap();
-            cache.record_authenticated(&origin, &headers("h2=\":443\""), Duration::ZERO);
+            cache.record(&origin, &headers("h2=\":443\""), Duration::ZERO);
         }
         cache.entries.run_pending_tasks();
         assert!(cache.entries.entry_count() <= 2);

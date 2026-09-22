@@ -21,9 +21,12 @@ pub enum ErrorScope {
 pub enum QpackError {
     /// Local output backpressure: drain queued instructions and retry without changing the input.
     OutputBlocked,
-    /// An individual field-section value exceeds decoding limits (RFC 9204 §7.4).
+    /// A field section or individual value exceeds decoding limits (RFC 9204 §7.4).
     /// Reset this stream with QPACK_DECOMPRESSION_FAILED; compression state remains usable.
     FieldSectionLimit(&'static str),
+    /// An outgoing section exceeds the peer's or local field-section limit.
+    /// Reject only this message; no compression state was changed (RFC 9114 §4.2.2).
+    EncodeFieldSectionLimit(&'static str),
     /// A configured local resource budget was exceeded.
     ResourceLimit(&'static str),
     /// `QPACK_DECOMPRESSION_FAILED` (0x0200): a field section could not be decoded.
@@ -41,6 +44,7 @@ impl QpackError {
         Some(match self {
             Self::OutputBlocked => return None,
             Self::ResourceLimit(_) => Code::H3_EXCESSIVE_LOAD,
+            Self::EncodeFieldSectionLimit(_) => Code::H3_MESSAGE_ERROR,
             Self::FieldSectionLimit(_) | Self::DecompressionFailed(_) => {
                 Code::QPACK_DECOMPRESSION_FAILED
             }
@@ -54,7 +58,9 @@ impl QpackError {
     pub const fn scope(self) -> Option<ErrorScope> {
         match self {
             Self::OutputBlocked => None,
-            Self::FieldSectionLimit(_) => Some(ErrorScope::Stream),
+            Self::FieldSectionLimit(_) | Self::EncodeFieldSectionLimit(_) => {
+                Some(ErrorScope::Stream)
+            }
             _ => Some(ErrorScope::Connection),
         }
     }
@@ -66,6 +72,7 @@ impl QpackError {
             Self::OutputBlocked => "QPACK output queue full",
             Self::ResourceLimit(r)
             | Self::FieldSectionLimit(r)
+            | Self::EncodeFieldSectionLimit(r)
             | Self::DecompressionFailed(r)
             | Self::EncoderStreamError(r)
             | Self::DecoderStreamError(r) => r,

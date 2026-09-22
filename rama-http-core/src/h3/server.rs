@@ -8,12 +8,18 @@ use super::{
     quic::Writer,
     stream::{Phase, Reader},
 };
-use rama_core::{error::BoxError, extensions::ExtensionsRef};
-use rama_http_types::{
-    Method, Request, Response,
-    body::StreamingBody,
-    proto::h3::{Code, FrameType},
+use rama_core::{bytes::BytesMut, error::BoxError, extensions::ExtensionsRef};
+use rama_http::{
+    headers::{HeaderMapExt as _, Priority},
+    io::upgrade::{self, Pending},
 };
+use rama_http_types::{
+    Method, Request, Response, StatusCode,
+    body::StreamingBody,
+    proto::h3::{Code, FrameType, StreamType},
+};
+use rama_net::uri::Uri;
+use rama_quic_proto::{VarInt, coding::Codec as _};
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 
@@ -91,11 +97,21 @@ impl Connection {
             .map_err(|error| Error::from_transport(&error))?;
         let id = u64::from(send.id());
         self.next_id = self.next_id.max(id.saturating_add(4));
+        self.shared
+            .schedule
+            .lock()
+            .register(id, Priority::default())?;
+        let mut reader = Reader::new(recv, self.shared.clone(), id);
+        reader.abort = Some(send.abort_handle());
         Ok(RequestStream {
             connection: self.connection.clone(),
-            reader: Reader::new(recv, self.shared.clone(), id),
+            reader,
             writer: Writer::new(send),
             permit,
+            priority: super::priority::Lease {
+                shared: self.shared.clone(),
+                id,
+            },
         })
     }
 }
@@ -106,6 +122,7 @@ pub struct RequestStream {
     reader: Reader<rama_quic::RecvStream>,
     writer: Writer<rama_quic::SendStream>,
     permit: Arc<tokio::sync::OwnedSemaphorePermit>,
+    priority: super::priority::Lease,
 }
 
 impl RequestStream {
@@ -113,11 +130,12 @@ impl RequestStream {
     pub async fn resolve(
         mut self,
     ) -> Result<(Request<crate::body::Incoming>, SendResponse), Error> {
-        let request = headers::request(self.reader.headers().await?)
-            .map_err(|error| self.reader.reject(error))?;
+        let request = match self.reader.headers().await.and_then(headers::request) {
+            Ok(request) => request,
+            Err(error) => return Err(self.reader.reject(error)),
+        };
         let remaining = headers::content_length(request.headers())?;
         let method = request.method().clone();
-        use rama_http::headers::{HeaderMapExt as _, Priority};
         let priority = request
             .headers()
             .typed_get::<Priority>()
@@ -126,7 +144,7 @@ impl RequestStream {
             .shared
             .schedule
             .lock()
-            .register(self.reader.id, priority)?;
+            .initial_priority(self.reader.id, priority);
         self.reader.phase = Phase::Body;
         let mut response = SendResponse {
             connection: self.connection,
@@ -138,17 +156,17 @@ impl RequestStream {
             writer: self.writer,
             permit: self.permit.clone(),
             method,
-            _priority: super::priority::Lease {
-                shared: self.reader.shared.clone(),
-                id: self.reader.id,
-            },
+            _priority: self.priority,
         };
         if response.method == Method::CONNECT {
-            let (pending, upgrade) = rama_http::io::upgrade::pending();
+            let (pending, upgrade) = upgrade::pending();
             request.extensions().insert(upgrade);
             response.connect = Some((self.reader, pending));
             return Ok((request.map(|()| crate::body::Incoming::empty()), response));
         }
+        // RFC 9114 section 4.1: discarding an otherwise valid request body
+        // asks the client to stop its upload without invalidating the response.
+        self.reader.cancel_code = Code::H3_NO_ERROR;
         let incoming = body::Body::new(self.reader, remaining, self.permit);
         Ok((
             request.map(|()| crate::body::Incoming::h3(incoming)),
@@ -160,12 +178,9 @@ impl RequestStream {
 /// Sends informational responses and a final response on one request stream.
 pub struct SendResponse {
     connection: rama_quic::Connection,
-    origin: rama_net::uri::Uri,
+    origin: Uri,
     outgoing_push: Option<super::push::Lease>,
-    connect: Option<(
-        Reader<rama_quic::RecvStream>,
-        rama_http::io::upgrade::Pending,
-    )>,
+    connect: Option<(Reader<rama_quic::RecvStream>, Pending)>,
     shared: Arc<Shared>,
     id: u64,
     writer: Writer<rama_quic::SendStream>,
@@ -228,8 +243,6 @@ impl SendResponse {
     /// Promise a same-origin GET/HEAD and open its independently framed response stream.
     /// Both peers must opt into push. The configured quota is a lifetime bound.
     pub async fn push(&mut self, request: Request<()>) -> Result<Self, Error> {
-        use rama_core::bytes::BytesMut;
-        use rama_quic_proto::coding::Codec as _;
         if !self.id.is_multiple_of(4)
             || !matches!(*request.method(), Method::GET | Method::HEAD)
             || request.uri().authority() != self.origin.authority()
@@ -251,7 +264,7 @@ impl SendResponse {
         let lease = super::push::Lease::new(self.shared.clone(), id);
         let encoded = headers::encode_request(&self.shared, self.id, &request)?;
         let mut promise = BytesMut::with_capacity(8 + encoded.len());
-        rama_quic_proto::VarInt::from_u64(id)
+        VarInt::from_u64(id)
             .map_err(|_error| Error::stream(Code::H3_INTERNAL_ERROR, "invalid push ID"))?
             .encode(&mut promise);
         promise.extend_from_slice(&encoded);
@@ -272,11 +285,8 @@ impl SendResponse {
         };
         let stream_id = u64::from(stream.id());
         let mut prefix = BytesMut::with_capacity(9);
-        rama_quic_proto::VarInt::from_u32(
-            rama_http_types::proto::h3::StreamType::PUSH.value() as u32
-        )
-        .encode(&mut prefix);
-        rama_quic_proto::VarInt::from_u64(id)
+        VarInt::from_u32(StreamType::PUSH.value() as u32).encode(&mut prefix);
+        VarInt::from_u64(id)
             .map_err(|_error| Error::stream(Code::H3_INTERNAL_ERROR, "invalid push ID"))?
             .encode(&mut prefix);
         let mut writer = Writer::with_prefix(stream, prefix.freeze());
@@ -308,7 +318,7 @@ impl SendResponse {
     }
 
     /// Override peer priority using application knowledge.
-    pub fn set_priority(&mut self, priority: rama_http::headers::Priority) {
+    pub fn set_priority(&mut self, priority: Priority) {
         self.shared
             .schedule
             .lock()
@@ -318,7 +328,7 @@ impl SendResponse {
     /// Send a non-101 informational response before the final response.
     pub async fn send_informational(&mut self, response: Response<()>) -> Result<(), Error> {
         if !response.status().is_informational()
-            || response.status() == rama_http_types::StatusCode::SWITCHING_PROTOCOLS
+            || response.status() == StatusCode::SWITCHING_PROTOCOLS
         {
             return Err(Error::stream(
                 Code::H3_INTERNAL_ERROR,
@@ -361,10 +371,12 @@ impl SendResponse {
             ));
             return Ok(());
         }
-        drop(self.connect.take());
+        if let Some((mut reader, _pending)) = self.connect.take() {
+            reader.cancel_code = Code::H3_NO_ERROR;
+        }
         let bodyless = self.method == Method::HEAD
-            || response.status() == rama_http_types::StatusCode::NOT_MODIFIED
-            || response.status() == rama_http_types::StatusCode::NO_CONTENT;
+            || response.status() == StatusCode::NOT_MODIFIED
+            || response.status() == StatusCode::NO_CONTENT;
         self.flush(false).await?;
         let bytes = headers::encode_response(&self.shared, self.id, &response)?;
         self.writer.queue(FrameType::HEADERS, bytes)?;

@@ -1562,6 +1562,7 @@ where
                 remote_reset_stream_max: builder.pending_accept_reset_stream_max,
                 local_error_reset_streams_max: builder.local_max_error_reset_streams,
                 settings: initial_settings,
+                send_alt_svc: false,
                 headers_pseudo_order: builder.headers_pseudo_order,
                 early_frame_ctx,
             },

@@ -2,12 +2,14 @@
 
 use super::{
     Error,
+    client::ConnectionLifetime,
     connection::Shared,
     frame::{FrameDecoder, FrameEvent},
     quic::RecvStream,
 };
 use rama_core::bytes::Bytes;
-use rama_http_types::proto::h3::{Code, FrameType};
+use rama_http_types::proto::h3::{Code, FrameType, VarInt};
+use rama_quic::StreamAbortHandle;
 use std::{
     sync::Arc,
     task::{Context, Poll, ready},
@@ -27,7 +29,9 @@ pub(crate) struct Reader<R: RecvStream> {
     pub(crate) shared: Arc<Shared>,
     pub(crate) id: u64,
     pub(crate) phase: Phase,
-    pub(crate) client_lifetime: Option<Arc<super::client::ConnectionLifetime>>,
+    pub(crate) cancel_code: Code,
+    pub(crate) abort: Option<StreamAbortHandle>,
+    pub(crate) client_lifetime: Option<Arc<ConnectionLifetime>>,
     frames: FrameDecoder,
     pub(crate) push_id: Option<u64>,
     pub(crate) origin: Option<rama_net::uri::Uri>,
@@ -47,6 +51,8 @@ impl<R: RecvStream> Reader<R> {
             shared,
             id,
             phase: Phase::Headers,
+            cancel_code: Code::H3_REQUEST_CANCELLED,
+            abort: None,
             client_lifetime: None,
             frames,
             origin: None,
@@ -76,7 +82,14 @@ impl<R: RecvStream> Reader<R> {
     }
 
     pub(crate) fn reject(&mut self, error: Error) -> Error {
-        self.stream.stop(error.code());
+        self.cancel_code = error.code();
+        if let Some(abort) = &self.abort
+            && let Ok(code) = VarInt::from_u64(error.code().value())
+        {
+            abort.abort(code);
+        } else {
+            self.stream.stop(error.code());
+        }
         if error.scope() == super::qpack::ErrorScope::Connection {
             self.shared.fail(error);
         }
@@ -212,7 +225,7 @@ impl<R: RecvStream> Reader<R> {
 impl<R: RecvStream> Drop for Reader<R> {
     fn drop(&mut self) {
         if self.phase != Phase::Finished {
-            self.stream.stop(Code::H3_REQUEST_CANCELLED);
+            self.stream.stop(self.cancel_code);
             self.shared.cancel(self.id);
         }
     }

@@ -3,7 +3,6 @@
 use super::Error;
 use rama_http::headers::Priority;
 use rama_http_types::proto::h3::Code;
-use rama_quic_proto::range_set::ArrayRangeSet;
 use std::{
     collections::BTreeMap,
     task::{Context, Poll, Waker},
@@ -63,6 +62,7 @@ impl PriorityHandle {
 struct Entry {
     priority: Priority,
     overridden: bool,
+    peer_updated: bool,
     ready: bool,
     order: u64,
     waker: Option<Waker>,
@@ -71,7 +71,9 @@ struct Entry {
 pub(crate) struct Schedule {
     active: BTreeMap<u64, Entry>,
     pending: BTreeMap<u64, Priority>,
-    completed: ArrayRangeSet,
+    // Request streams are admitted in increasing QUIC stream-ID order.
+    // Older inactive IDs can never become future priority targets.
+    accepted_until: u64,
     limit: usize,
     clock: u64,
 }
@@ -81,7 +83,7 @@ impl Schedule {
         Self {
             active: BTreeMap::new(),
             pending: BTreeMap::new(),
-            completed: ArrayRangeSet::default(),
+            accepted_until: 0,
             limit,
             clock: 0,
         }
@@ -94,12 +96,24 @@ impl Schedule {
                 "priority active stream budget exceeded",
             ));
         }
-        let priority = self.pending.remove(&id).unwrap_or(priority);
+        let pending = self.pending.remove(&id);
+        let priority = pending.unwrap_or(priority);
+        if id.is_multiple_of(4) {
+            self.accepted_until = self.accepted_until.max(id.saturating_add(4));
+            while self
+                .pending
+                .first_key_value()
+                .is_some_and(|(id, _)| *id < self.accepted_until)
+            {
+                self.pending.pop_first();
+            }
+        }
         self.active.insert(
             id,
             Entry {
                 priority,
                 overridden: false,
+                peer_updated: pending.is_some(),
                 ready: false,
                 order: self.clock,
                 waker: None,
@@ -116,14 +130,12 @@ impl Schedule {
                 "priority target is not a request stream",
             ));
         }
-        if self.completed.contains(id / 4) {
-            return Ok(());
-        }
         if let Some(entry) = self.active.get_mut(&id) {
             if !entry.overridden {
                 entry.priority = priority;
+                entry.peer_updated = true;
             }
-        } else {
+        } else if id >= self.accepted_until {
             if self.pending.len() >= self.limit && !self.pending.contains_key(&id) {
                 return Err(Error::connection(
                     Code::H3_EXCESSIVE_LOAD,
@@ -134,6 +146,17 @@ impl Schedule {
         }
         self.wake_next();
         Ok(())
+    }
+
+    /// The field is the initial priority; an earlier PRIORITY_UPDATE takes precedence.
+    pub(crate) fn initial_priority(&mut self, id: u64, priority: Priority) {
+        if let Some(entry) = self.active.get_mut(&id)
+            && !entry.overridden
+            && !entry.peer_updated
+        {
+            entry.priority = priority;
+        }
+        self.wake_next();
     }
 
     pub(crate) fn peer_priority(&mut self, id: u64, priority: Priority) {
@@ -207,20 +230,10 @@ impl Schedule {
         self.wake_next();
     }
 
-    pub(crate) fn complete(&mut self, id: u64) -> Result<(), Error> {
+    pub(crate) fn complete(&mut self, id: u64) {
         self.active.remove(&id);
         self.pending.remove(&id);
-        if id.is_multiple_of(4) {
-            self.completed.insert(id / 4..id / 4 + 1);
-        }
         self.wake_next();
-        if self.completed.len() > self.limit + 1 {
-            return Err(Error::connection(
-                Code::H3_EXCESSIVE_LOAD,
-                "completed priority range budget exceeded",
-            ));
-        }
-        Ok(())
     }
 }
 
@@ -231,16 +244,14 @@ pub(crate) struct Lease {
 
 impl Drop for Lease {
     fn drop(&mut self) {
-        let result = self.shared.schedule.lock().complete(self.id);
-        if let Err(error) = result {
-            self.shared.fail(error);
-        }
+        self.shared.schedule.lock().complete(self.id);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn transport_priority_preserves_http_urgency_order() {
         for urgency in 0..=7 {
@@ -265,10 +276,39 @@ mod tests {
             schedule.poll_turn(4, &cx),
             Poll::Ready(Priority::new(2, true).unwrap())
         );
-        schedule.complete(4).unwrap();
+        schedule.complete(4);
         schedule.update(4, Priority::default()).unwrap();
         assert!(schedule.pending.is_empty());
         schedule.update(1, Priority::default()).unwrap_err();
+    }
+
+    #[test]
+    fn skipped_requests_do_not_retain_history_or_late_updates() {
+        let mut schedule = Schedule::new(1);
+        for id in (4..4000).step_by(8) {
+            schedule.update(id - 4, Priority::default()).unwrap();
+            schedule.register(id, Priority::default()).unwrap();
+            schedule.complete(id);
+            schedule.update(id, Priority::default()).unwrap();
+            schedule.update(id - 4, Priority::default()).unwrap();
+            assert!(schedule.pending.is_empty());
+            assert!(schedule.active.is_empty());
+        }
+    }
+
+    #[test]
+    fn priority_updates_precede_initial_header_even_before_decoding() {
+        let mut schedule = Schedule::new(2);
+        let peer = Priority::new(1, true).unwrap();
+        let header = Priority::new(5, false).unwrap();
+        schedule.update(0, peer).unwrap();
+        schedule.register(0, Priority::default()).unwrap();
+        schedule.initial_priority(0, header);
+        schedule.register(4, Priority::default()).unwrap();
+        schedule.update(4, peer).unwrap();
+        schedule.initial_priority(4, header);
+        assert_eq!(schedule.active[&0].priority, peer);
+        assert_eq!(schedule.active[&4].priority, peer);
     }
 
     #[test]

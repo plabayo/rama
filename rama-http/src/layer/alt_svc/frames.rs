@@ -5,7 +5,9 @@ use crate::layer::http_service::authenticates;
 use rama_core::extensions::Extensions;
 use rama_http_types::{
     conn::HttpOrigin,
-    proto::h2::alt_svc::{AltSvcEvent, AltSvcObserver, AltSvcObserverExtension, AltSvcOrigin},
+    proto::h2::alt_svc::{
+        AltSvcEvent, AltSvcObserver, AltSvcObserverExtension, AltSvcOrigin, AltSvcReceivedAt,
+    },
 };
 use rama_net::{
     Protocol,
@@ -44,10 +46,14 @@ impl FrameObserver {
             _ => None,
         };
         if origin.as_ref() == Some(&self.origin) {
-            self.cache.record_frame(
+            self.cache.record_frame_received(
                 &self.origin,
                 event.field_value,
-                event.received_at.into_std(),
+                AltSvcReceivedAt {
+                    instant: event.received_at.into_std(),
+                    sequence: event.sequence,
+                    ..AltSvcReceivedAt::now()
+                },
             );
         }
     }
@@ -95,6 +101,7 @@ mod tests {
             origin,
             field_value: Bytes::from_static(field),
             received_at: Instant::now(),
+            sequence: AltSvcReceivedAt::now().sequence,
         }
     }
 

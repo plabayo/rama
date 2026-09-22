@@ -819,6 +819,20 @@ impl Driver {
     /// Run until the transport closes or a connection-level protocol error occurs.
     pub async fn run(self) -> Result<(), Error> {
         let result = self.run_inner().await;
+        // Stream operations wake together with `closed()`. Whichever branch won,
+        // preserve the connection's actual close code rather than a secondary
+        // critical-stream or accept error caused by that same closure.
+        let result = match self.connection.close_reason() {
+            Some(reason) => {
+                let error = Error::from_transport(&reason);
+                if error.code() == Code::H3_NO_ERROR {
+                    Ok(())
+                } else {
+                    Err(error)
+                }
+            }
+            None => result,
+        };
         if let Err(error) = result {
             self.shared.fail(error);
             if let Ok(code) = VarInt::from_u64(error.code().value()) {

@@ -12,6 +12,7 @@ use rama::{
             client,
             connection::Config,
             frame::{FrameDecoder, FrameEvent},
+            qpack::{Decoder, DecoderConfig, Encoder, EncoderConfig},
             server,
         },
     },
@@ -206,7 +207,6 @@ fn fragmented_headers(bencher: divan::Bencher, fragment: usize) {
 
 #[divan::bench(args = [false, true])]
 fn qpack_round_trip(bencher: divan::Bencher, dynamic: bool) {
-    use rama::http::core::h3::qpack::{Decoder, DecoderConfig, Encoder, EncoderConfig};
     let mut encoder = Encoder::new(EncoderConfig {
         max_table_capacity: if dynamic { kib(4) as u64 } else { 0 },
         ..EncoderConfig::default()
@@ -234,5 +234,28 @@ fn qpack_round_trip(bencher: divan::Bencher, dynamic: bool) {
             .unwrap();
         id += 4;
         divan::black_box(fields);
+    });
+}
+
+// Unknown cancellations are valid feedback even when no dynamic section was
+// emitted for that stream. Their cost must not scale with unrelated sections.
+#[divan::bench(args = [0, 16, 1024])]
+fn qpack_unknown_cancellations(bencher: divan::Bencher, outstanding: usize) {
+    let mut encoder = Encoder::new(EncoderConfig {
+        max_blocked_streams: outstanding as u64,
+        ..EncoderConfig::default()
+    });
+    for stream in 0..outstanding {
+        encoder
+            .encode((stream as u64 + 1) * 4, [("x-shared", "value")])
+            .unwrap();
+    }
+    assert_eq!(encoder.tracked_section_count(), outstanding);
+    // 0x40 is a complete Stream Cancellation instruction for stream zero.
+    let cancellations = vec![0x40; kib(64)];
+    bencher.bench_local(|| {
+        encoder
+            .feed_decoder_stream(divan::black_box(&cancellations))
+            .unwrap();
     });
 }

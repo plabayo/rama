@@ -254,6 +254,9 @@ pub struct Builder {
     /// Time to keep locally reset streams around before reaping.
     reset_stream_duration: Duration,
 
+    /// Whether application handlers can emit ALTSVC frames.
+    send_alt_svc: bool,
+
     /// Maximum number of locally reset streams to keep at a time.
     reset_stream_max: usize,
 
@@ -396,6 +399,7 @@ where
 {
     /// Queue a bounded, connection-local alternative-service advertisement.
     ///
+    /// Enable this with [`Builder::with_alt_svc`] before the handshake.
     /// Stream zero requires an explicit origin; request-stream frames must
     /// omit it. The connection must continue being polled to transmit the frame.
     pub fn send_alt_svc(&self, frame: frame::AltSvc) -> Result<(), AltSvcSendError> {
@@ -701,6 +705,7 @@ impl Builder {
     pub fn new() -> Self {
         Self {
             reset_stream_duration: Duration::from_secs(proto::DEFAULT_RESET_STREAM_SECS),
+            send_alt_svc: false,
             reset_stream_max: proto::DEFAULT_RESET_STREAM_MAX,
             pending_accept_reset_stream_max: proto::DEFAULT_REMOTE_RESET_STREAM_MAX,
             settings: Settings::default(),
@@ -708,6 +713,17 @@ impl Builder {
             max_send_buffer_size: proto::DEFAULT_MAX_SEND_BUFFER_SIZE,
 
             local_max_error_reset_streams: Some(proto::DEFAULT_LOCAL_RESET_COUNT_MAX),
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Enable bounded server-side ALTSVC frame emission.
+        ///
+        /// Disabled by default, so ordinary connections allocate no advertisement
+        /// queue. When enabled, request extensions expose an `AltSvcSender`.
+        pub fn alt_svc(mut self, enabled: bool) -> Self {
+            self.send_alt_svc = enabled;
+            self
         }
     }
 
@@ -1613,6 +1629,7 @@ where
                                 .builder
                                 .local_max_error_reset_streams,
                             settings: self.builder.settings.clone(),
+                            send_alt_svc: self.builder.send_alt_svc,
                             headers_pseudo_order: None,
                             early_frame_ctx: EarlyFrameStreamContext::new_recorder(),
                         },

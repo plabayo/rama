@@ -1,9 +1,10 @@
 //! HTTP/3 establishment using Rama DNS candidates and the existing multiplex pool.
 
 use super::Http3Transport;
+use parking_lot::Mutex;
 use rama_core::{
     Service,
-    error::{BoxError, BoxErrorExt as _, error_chain},
+    error::{ArcError, BoxError, BoxErrorExt as _, error_chain},
     extensions::ExtensionsRef,
     futures::{StreamExt as _, stream},
     rt::Executor,
@@ -16,21 +17,32 @@ use rama_net::{
     ConnectorTargetInputExt, ProtocolInputExt,
     address::{Host, SocketAddress},
     client::{
-        ConnectRequest, ConnectionError, ConnectionErrorKind, ConnectorTargetStream,
-        EstablishedClientConnection, EstablishedProxyRoute, ProxyRoute, race_connect,
+        ConnectRequest, ConnectionError, ConnectionErrorDomain,
+        ConnectionErrorDomain::{Application, Local, Transport},
+        ConnectionErrorKind,
+        ConnectionErrorKind::{Internal, InvalidInput, Rejected, Timeout, Unavailable},
+        ConnectorTargetStream, EstablishedClientConnection, EstablishedProxyRoute, ProxyRoute,
+        race_connect,
     },
     stream::SocketInfo,
     tls::ApplicationProtocol,
 };
 use rama_quic::{
-    ClientConfig, Connection, ConnectionError as QuicConnectionError, Endpoint, TransportConfig,
+    ClientConfig, ConnectError as QuicConnectError, Connection,
+    ConnectionError as QuicConnectionError, Endpoint, TransportConfig,
     tls::{QuicClientConfigProvider, TlsOptions, default_tls_provider},
 };
+use rama_quic_proto::TransportErrorCode;
 use rama_tls::client::{
     TlsClientConfig, TlsServerAuthentication, TlsServerName, TlsStoreServerCertChain,
 };
 use rama_utils::macros::generate_set_and_with;
-use std::{net::SocketAddr, sync::Arc};
+use std::{
+    error::Error as StdError,
+    io::{Error as IoError, ErrorKind as IoErrorKind},
+    net::SocketAddr,
+    sync::Arc,
+};
 
 /// Establish authenticated QUIC transports for the common HTTP handshake.
 ///
@@ -39,7 +51,8 @@ use std::{net::SocketAddr, sync::Arc};
 /// Rama’s easy client builder assembles this policy automatically.
 /// The connector selects `h3` ALPN; the origin hostname remains the TLS
 /// verification target even when routing selects a different physical address.
-/// TCP proxy routes are rejected before any UDP connection is attempted.
+/// This direct UDP connector rejects proxy routes before any connection attempt.
+/// Proxy-capable QUIC connectors can be injected separately.
 pub struct Http3Connector {
     endpoint: Endpoint,
     tls: TlsClientConfig,
@@ -259,6 +272,8 @@ impl Http3Connector {
             .get_arc::<HttpServiceAttempt>()
             .unwrap_or_default();
         let attempt = &attempt;
+        let failures = ConnectFailures::default();
+        let failures = &failures;
         let dial = |address| async move {
             let result: Result<_, BoxError> = async {
                 let connection = self
@@ -272,17 +287,16 @@ impl Http3Connector {
                     != Some(ApplicationProtocol::HTTP_3)
                 {
                     connection.close(0u32, b"h3 ALPN required");
-                    return Err(BoxError::from_static_str("HTTP/3 requires h3 ALPN"));
+                    return Err(ConnectionError::application(
+                        BoxError::from_static_str("HTTP/3 requires h3 ALPN"),
+                        ConnectionErrorKind::Protocol,
+                    )
+                    .into());
                 }
                 Ok(connection)
             }
             .await;
-            if let Err(error) = &result
-                && !availability_error(error.as_ref())
-            {
-                attempt.reject();
-            }
-            result
+            result.map_err(|error| failures.record(error, attempt))
         };
         if let Ok(ip) = target.host.try_as_ip() {
             race_connect(
@@ -307,12 +321,9 @@ impl Http3Connector {
             race_connect(addresses, 2, dial).await
         }
         .map_err(|error| {
-            let error = if attempt.failed() {
-                ConnectionError::application(error, ConnectionErrorKind::Authentication)
-            } else {
-                ConnectionError::transport(error, ConnectionErrorKind::Unavailable)
-            };
-            error.context("HTTP/3 connection establishment")
+            failures
+                .finish(error)
+                .context("HTTP/3 connection establishment")
         })
     }
 
@@ -352,8 +363,8 @@ impl Service<ConnectRequest> for Http3Connector {
             .and_then(ProxyRoute::proxy_address)
             .is_some()
         {
-            return Err(ConnectionError::transport(
-                BoxError::from_static_str("HTTP/3 is not available over this TCP proxy route"),
+            return Err(ConnectionError::local(
+                BoxError::from_static_str("this QUIC connector does not support proxy routes"),
                 ConnectionErrorKind::Unavailable,
             ));
         }
@@ -393,30 +404,122 @@ fn validate_version(input: &ConnectRequest) -> Result<(), ConnectionError> {
     Ok(())
 }
 
+// Keep the first terminal failure when a later address merely times out. An
+// authentication failure takes precedence, including when an outer speculative
+// deadline cancels the race. Only failed dials acquire this lock or share errors.
+#[derive(Default)]
+struct ConnectFailures(Mutex<Option<ConnectionError>>);
+
+impl ConnectFailures {
+    fn record(&self, error: BoxError, attempt: &HttpServiceAttempt) -> BoxError {
+        let (domain, kind) = classify_connect_error(error.as_ref());
+        if domain == Transport && matches!(kind, Unavailable | Timeout) {
+            return error;
+        }
+        attempt.reject_with_kind(kind);
+        let mut terminal = self.0.lock();
+        if terminal.is_none() || kind == ConnectionErrorKind::Authentication {
+            let error = ArcError::from_box_error(error);
+            *terminal = Some(ConnectionError::new(error.clone(), domain, kind));
+            return error.into();
+        }
+        error
+    }
+
+    fn finish(&self, error: BoxError) -> ConnectionError {
+        self.0.lock().take().unwrap_or_else(|| {
+            let (domain, kind) = classify_connect_error(error.as_ref());
+            ConnectionError::new(error, domain, kind)
+        })
+    }
+}
+
 // Classify QUIC address-race failures at the transport boundary. Generic HTTP
 // service selection consumes ConnectionError classifications, never QUIC errors.
 const MAX_ERROR_CHAIN_DEPTH: usize = 32;
+// RFC 7301 §3.2: negotiation failed because the peer supports no offered ALPN.
+const TLS_NO_APPLICATION_PROTOCOL: u8 = 120;
 
-fn availability_error(error: &(dyn std::error::Error + 'static)) -> bool {
-    error_chain(error, MAX_ERROR_CHAIN_DEPTH).any(|error| {
-        error
-            .downcast_ref::<QuicConnectionError>()
-            .is_some_and(|error| {
-                matches!(
-                    error,
-                    QuicConnectionError::TimedOut | QuicConnectionError::VersionMismatch { .. }
-                )
-            })
-            || error.downcast_ref::<std::io::Error>().is_some_and(|error| {
-                matches!(
-                    error.kind(),
-                    std::io::ErrorKind::TimedOut
-                        | std::io::ErrorKind::ConnectionRefused
-                        | std::io::ErrorKind::NetworkUnreachable
-                        | std::io::ErrorKind::HostUnreachable
-                )
-            })
-    })
+fn classify_connect_error(
+    error: &(dyn StdError + 'static),
+) -> (ConnectionErrorDomain, ConnectionErrorKind) {
+    for error in error_chain(error, MAX_ERROR_CHAIN_DEPTH) {
+        if let Some(error) = error.downcast_ref::<ConnectionError>() {
+            return (error.domain(), error.kind());
+        }
+        if let Some(error) = error.downcast_ref::<QuicConnectionError>() {
+            return match error {
+                QuicConnectionError::TimedOut => (Transport, Timeout),
+                QuicConnectionError::VersionMismatch { .. } | QuicConnectionError::Reset => {
+                    (Transport, Unavailable)
+                }
+                QuicConnectionError::ApplicationClosed(_) => (Application, Rejected),
+                QuicConnectionError::CidsExhausted | QuicConnectionError::LocallyClosed => {
+                    (Local, Unavailable)
+                }
+                QuicConnectionError::TransportError(error) => classify_transport_code(error.code),
+                QuicConnectionError::ConnectionClosed(error) => {
+                    classify_transport_code(error.error_code)
+                }
+            };
+        }
+        if let Some(error) = error.downcast_ref::<QuicConnectError>() {
+            return match error {
+                QuicConnectError::EndpointStopping | QuicConnectError::CidsExhausted => {
+                    (Local, Unavailable)
+                }
+                QuicConnectError::Crypto(error) => classify_transport_code(error.code),
+                QuicConnectError::InvalidRemoteAddress(address)
+                    if address.port() != 0 && !address.ip().is_unspecified() =>
+                {
+                    // A valid address may have an unsupported family for the
+                    // configured endpoint. Other candidates can still work.
+                    (Transport, Unavailable)
+                }
+                _ => (Local, InvalidInput),
+            };
+        }
+        if let Some(error) = error.downcast_ref::<IoError>() {
+            return match error.kind() {
+                IoErrorKind::TimedOut => (Transport, Timeout),
+                IoErrorKind::ConnectionRefused
+                | IoErrorKind::ConnectionReset
+                | IoErrorKind::ConnectionAborted
+                | IoErrorKind::NetworkUnreachable
+                | IoErrorKind::HostUnreachable => (Transport, Unavailable),
+                _ => (Local, Internal),
+            };
+        }
+    }
+    // DNS streams may finish without an address or return resolver-specific errors.
+    (Transport, Unavailable)
+}
+
+fn classify_transport_code(
+    code: TransportErrorCode,
+) -> (ConnectionErrorDomain, ConnectionErrorKind) {
+    if code == TransportErrorCode::CONNECTION_REFUSED {
+        (
+            ConnectionErrorDomain::Transport,
+            ConnectionErrorKind::Unavailable,
+        )
+    } else if code.tls_alert() == Some(TLS_NO_APPLICATION_PROTOCOL) {
+        (
+            ConnectionErrorDomain::Application,
+            ConnectionErrorKind::Protocol,
+        )
+    } else if code.tls_alert().is_some() {
+        // TLS alerts include certificate failures; fail closed across speculative races.
+        (
+            ConnectionErrorDomain::Application,
+            ConnectionErrorKind::Authentication,
+        )
+    } else {
+        (
+            ConnectionErrorDomain::Application,
+            ConnectionErrorKind::Protocol,
+        )
+    }
 }
 
 #[cfg(test)]
@@ -425,12 +528,16 @@ mod concrete_transport_tests {
     use rama_net::{
         Protocol,
         address::{HostWithPort, SocketAddress},
-        client::{ConnectionErrorDomain, ProxyRoutes, ProxyRoutesConnector},
+        client::{
+            ConnectionErrorDomain, ProxyRouteFailureCache, ProxyRouteFailureCacheConnector,
+            ProxyRoutes, ProxyRoutesConnector,
+        },
         tls::TlsAlpn,
     };
 
     use rama_core::extensions::Extensions;
     use rama_quic::tls::TlsConfigError;
+    use rama_quic_proto::{TransportError, frame::ApplicationClose};
     use rama_tls::client::{ServerVerifyMode, TlsClientConfigProvider, TlsPoolId, TlsServerVerify};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -533,20 +640,124 @@ mod concrete_transport_tests {
             config: Config::default(),
             executor,
         };
-        let connector = ProxyRoutesConnector::new(http3);
-        let input = ConnectRequest::new("origin.example:443".parse().unwrap())
-            .with_application_protocol(Protocol::HTTPS);
-        input
-            .extensions()
-            .insert(TargetHttpVersion(Version::HTTP_3));
-        input
-            .extensions()
-            .insert(ProxyRoutes::new(vec![ProxyRoute::Proxy(
-                "http://proxy.example:8080".parse().unwrap(),
-            )]));
-        let error = connector.serve(input).await.err().unwrap();
-        assert_eq!(error.domain(), ConnectionErrorDomain::Transport);
-        assert_eq!(error.kind(), ConnectionErrorKind::Unavailable);
+        let cache = ProxyRouteFailureCache::default();
+        let connector =
+            ProxyRoutesConnector::new(ProxyRouteFailureCacheConnector::new(http3, cache.clone()));
+        let proxy = ProxyRoute::Proxy("http://proxy.example:8080".parse().unwrap());
+        for routes in [vec![proxy.clone()], vec![proxy, ProxyRoute::Direct]] {
+            for _ in 0..2 {
+                let input = ConnectRequest::new("origin.example:443".parse().unwrap())
+                    .with_application_protocol(Protocol::HTTPS);
+                input
+                    .extensions()
+                    .insert(TargetHttpVersion(Version::HTTP_3));
+                input.extensions().insert(ProxyRoutes::new(routes.clone()));
+                let error = connector.serve(input).await.err().unwrap();
+                assert_eq!(error.domain(), ConnectionErrorDomain::Local);
+                assert_eq!(error.kind(), ConnectionErrorKind::Unavailable);
+                assert_eq!(cache.entry_count(), 0);
+            }
+        }
+        // A direct fallback would reach provider configuration and return InvalidInput.
         endpoint.close(0u32, b"test complete");
+    }
+
+    #[test]
+    fn later_address_timeout_preserves_authentication_failure_and_cause() {
+        let failures = ConnectFailures::default();
+        let attempt = HttpServiceAttempt::default();
+        let authentication =
+            QuicConnectionError::TransportError(TransportErrorCode::crypto(42).into());
+        drop(failures.record(authentication.clone().into(), &attempt));
+        let timeout = failures.record(QuicConnectionError::TimedOut.into(), &attempt);
+        let error = failures.finish(timeout);
+        assert!(attempt.failed());
+        assert_eq!(error.kind(), ConnectionErrorKind::Authentication);
+        assert!(
+            error_chain(error.get_ref(), MAX_ERROR_CHAIN_DEPTH).any(|cause| cause
+                .downcast_ref::<QuicConnectionError>(
+            ) == Some(
+                &authentication
+            ))
+        );
+    }
+
+    #[test]
+    fn unsupported_address_family_does_not_poison_the_address_race() {
+        let failures = ConnectFailures::default();
+        let attempt = HttpServiceAttempt::default();
+        let ipv6 = QuicConnectError::InvalidRemoteAddress(SocketAddress::local_ipv6(443).into());
+        drop(failures.record(ipv6.into(), &attempt));
+        let timeout = failures.record(QuicConnectionError::TimedOut.into(), &attempt);
+        let error = failures.finish(timeout);
+        assert!(!attempt.failed());
+        assert_eq!((error.domain(), error.kind()), (Transport, Timeout));
+        for address in [
+            SocketAddress::local_ipv4(0),
+            SocketAddress::default_ipv6(443),
+        ] {
+            assert_eq!(
+                classify_connect_error(&QuicConnectError::InvalidRemoteAddress(address.into())),
+                (Local, InvalidInput)
+            );
+        }
+    }
+
+    #[test]
+    fn quic_establishment_failures_preserve_their_domain() {
+        let cases = [
+            (QuicConnectionError::Reset, Transport, Unavailable),
+            (QuicConnectionError::TimedOut, Transport, Timeout),
+            (QuicConnectionError::CidsExhausted, Local, Unavailable),
+            (QuicConnectionError::LocallyClosed, Local, Unavailable),
+            (
+                QuicConnectionError::TransportError(TransportErrorCode::CONNECTION_REFUSED.into()),
+                Transport,
+                Unavailable,
+            ),
+            (
+                QuicConnectionError::ConnectionClosed(
+                    TransportError::from(TransportErrorCode::CONNECTION_REFUSED).into(),
+                ),
+                Transport,
+                Unavailable,
+            ),
+            (
+                QuicConnectionError::TransportError(TransportErrorCode::PROTOCOL_VIOLATION.into()),
+                Application,
+                ConnectionErrorKind::Protocol,
+            ),
+            (
+                QuicConnectionError::TransportError(TransportErrorCode::crypto(42).into()),
+                Application,
+                ConnectionErrorKind::Authentication,
+            ),
+            (
+                QuicConnectionError::TransportError(
+                    TransportErrorCode::crypto(TLS_NO_APPLICATION_PROTOCOL).into(),
+                ),
+                Application,
+                ConnectionErrorKind::Protocol,
+            ),
+            (
+                QuicConnectionError::ApplicationClosed(ApplicationClose {
+                    error_code: 0u32.into(),
+                    reason: Default::default(),
+                }),
+                Application,
+                Rejected,
+            ),
+        ];
+        for (error, domain, kind) in cases {
+            assert_eq!(classify_connect_error(&error), (domain, kind), "{error}");
+        }
+        let alpn = ConnectionError::application(
+            BoxError::from_static_str("wrong ALPN"),
+            ConnectionErrorKind::Protocol,
+        );
+        assert_eq!(
+            classify_connect_error(&alpn),
+            (Application, ConnectionErrorKind::Protocol)
+        );
     }
 }

@@ -173,8 +173,9 @@ where
             streams = self.connection.open_bi() => streams.map_err(|_error| Error::connection(Code::H3_GENERAL_PROTOCOL_ERROR, "cannot open request stream"))?,
         };
         let id = u64::from(send.id());
-        let mut writer = Writer::new(send);
         let mut reader = Reader::new(recv, self.shared.clone(), id);
+        reader.abort = Some(send.abort_handle());
+        let mut writer = Writer::new(send);
         reader.client_lifetime = Some(self.lifetime.clone());
         // GOAWAY and newly available stream credit can become ready together.
         // Its limit classifies existing requests; even the maximum limit forbids

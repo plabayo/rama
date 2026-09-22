@@ -4450,6 +4450,7 @@ dependencies = [
  "rama-http-types",
  "rama-net",
  "rama-quic",
+ "rama-quic-proto",
  "rama-tcp",
  "rama-tls",
  "rama-unix",

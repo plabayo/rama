@@ -40,13 +40,15 @@ use rama_net::{
 use rama_tls::client::{NegotiatedTlsParameters, TlsServerAuthentication};
 use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
 use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, OnceLock},
     time::Duration,
 };
 use tokio::time::Instant;
+
+// Speculation is sequential: cap its cost before trying the next service. Slow
+// networks can increase this budget; it includes DNS and transport/TLS setup.
+const DEFAULT_ATTEMPT_TIMEOUT: Duration = Duration::from_millis(300);
+const DEFAULT_MAX_ATTEMPTS: usize = 8;
 
 /// Preserve a terminal failure observed by an address race across cancellation.
 ///
@@ -54,16 +56,21 @@ use tokio::time::Instant;
 /// failure. An outer timeout then cannot disguise that failure as unavailability
 /// and cause fallback to another service.
 #[derive(Debug, Default, Extension)]
-pub struct HttpServiceAttempt(AtomicBool);
+pub struct HttpServiceAttempt(OnceLock<ConnectionErrorKind>);
 
 impl HttpServiceAttempt {
     pub fn reject(&self) {
-        self.0.store(true, Ordering::Release);
+        self.reject_with_kind(ConnectionErrorKind::Authentication);
+    }
+
+    /// Preserve the first terminal failure observed during an address race.
+    pub fn reject_with_kind(&self, kind: ConnectionErrorKind) {
+        self.0.get_or_init(|| kind);
     }
 
     #[must_use]
     pub fn failed(&self) -> bool {
-        self.0.load(Ordering::Acquire)
+        self.0.get().is_some()
     }
 }
 
@@ -73,7 +80,7 @@ pub struct HttpServiceLayer {
     cache: Option<AltSvcCache>,
     protocols: Arc<[ApplicationProtocol]>,
     attempt_timeout: Duration,
-    timeout: Duration,
+    timeout: Option<Duration>,
     max_attempts: usize,
 }
 
@@ -82,9 +89,9 @@ impl Default for HttpServiceLayer {
         Self {
             cache: None,
             protocols: Arc::from([]),
-            attempt_timeout: Duration::from_millis(300),
-            timeout: Duration::from_secs(30),
-            max_attempts: 8,
+            attempt_timeout: DEFAULT_ATTEMPT_TIMEOUT,
+            timeout: None,
+            max_attempts: DEFAULT_MAX_ATTEMPTS,
         }
     }
 }
@@ -112,7 +119,10 @@ impl HttpServiceLayer {
     }
 
     generate_set_and_with! {
-        /// Bound one alternative connection attempt.
+        /// Bound one alternative connection attempt, including DNS and handshakes.
+        ///
+        /// Defaults to 300 ms to bound sequential speculation before origin fallback.
+        /// Increase this for high-latency paths; this connector does not race the origin.
         pub fn attempt_timeout(mut self, timeout: Duration) -> Self {
             self.attempt_timeout = timeout;
             self
@@ -121,7 +131,8 @@ impl HttpServiceLayer {
 
     generate_set_and_with! {
         /// Bound the entire connection-selection operation, including fallback.
-        pub fn timeout(mut self, timeout: Duration) -> Self {
+        /// Disabled by default; the caller's transport deadlines remain authoritative.
+        pub fn timeout(mut self, timeout: Option<Duration>) -> Self {
             self.timeout = timeout;
             self
         }
@@ -183,7 +194,10 @@ impl<S> HttpServiceConnector<S> {
     }
 
     generate_set_and_with! {
-        /// Bound one alternative connection attempt.
+        /// Bound one alternative connection attempt, including DNS and handshakes.
+        ///
+        /// Defaults to 300 ms to bound sequential speculation before origin fallback.
+        /// Increase this for high-latency paths; this connector does not race the origin.
         pub fn attempt_timeout(mut self, timeout: Duration) -> Self {
             self.policy.attempt_timeout = timeout;
             self
@@ -192,7 +206,8 @@ impl<S> HttpServiceConnector<S> {
 
     generate_set_and_with! {
         /// Bound the complete selection operation, including origin fallback.
-        pub fn timeout(mut self, timeout: Duration) -> Self {
+        /// Disabled by default; the caller's transport deadlines remain authoritative.
+        pub fn timeout(mut self, timeout: Option<Duration>) -> Self {
             self.policy.timeout = timeout;
             self
         }
@@ -369,7 +384,7 @@ where
     async fn attempt(
         &self,
         input: ConnectRequest,
-        deadline: Instant,
+        deadline: Option<Instant>,
         speculative: bool,
     ) -> Result<EstablishedClientConnection<S::Connection, ConnectRequest>, ConnectionError> {
         let state = speculative.then(|| Arc::new(HttpServiceAttempt::default()));
@@ -377,48 +392,50 @@ where
             input.extensions().insert_arc(state.clone());
         }
         let attempt_deadline = if speculative {
-            Instant::now()
+            let speculative_deadline = Instant::now()
                 .checked_add(self.policy.attempt_timeout)
-                .unwrap_or(deadline)
-                .min(deadline)
+                .ok_or_else(|| invalid("HTTP service attempt timeout is too large"))?;
+            Some(deadline.map_or(speculative_deadline, |deadline| {
+                deadline.min(speculative_deadline)
+            }))
         } else {
             deadline
         };
+        let Some(attempt_deadline) = attempt_deadline else {
+            return self.inner.connect(input).await;
+        };
         if Instant::now() >= attempt_deadline {
             let error = BoxError::from_static_str("HTTP service connection budget exhausted");
-            return Err(if attempt_deadline == deadline {
+            return Err(if Some(attempt_deadline) == deadline {
                 ConnectionError::local(error, ConnectionErrorKind::Timeout)
             } else {
                 ConnectionError::transport(error, ConnectionErrorKind::Timeout)
             });
         }
 
-        match tokio::time::timeout_at(attempt_deadline, self.inner.connect(input)).await {
-            Ok(Err(error))
-                if state.as_ref().is_some_and(|state| state.failed()) && availability(&error) =>
-            {
-                Err(
-                    ConnectionError::application(error, ConnectionErrorKind::Authentication)
-                        .context("terminal failure during service address race"),
-                )
+        let result = tokio::time::timeout_at(attempt_deadline, self.inner.connect(input)).await;
+        let rejected = state.as_ref().and_then(|state| state.0.get().copied());
+        match (result, rejected) {
+            (Ok(Err(error)), Some(kind)) if availability(&error) => {
+                Err(ConnectionError::application(error, kind)
+                    .context("terminal failure during service address race"))
             }
-            Ok(result) => result,
-            Err(_) if state.as_ref().is_some_and(|state| state.failed()) => {
-                Err(ConnectionError::application(
-                    BoxError::from_static_str(
-                        "terminal connection failure preceded service attempt timeout",
-                    ),
-                    ConnectionErrorKind::Authentication,
-                ))
-            }
-            Err(error) if attempt_deadline == deadline => {
+            (Ok(result), _) => result,
+            (Err(_), Some(kind)) => Err(ConnectionError::application(
+                BoxError::from_static_str(
+                    "terminal connection failure preceded service attempt timeout",
+                ),
+                kind,
+            )),
+            (Err(error), None) if Some(attempt_deadline) == deadline => {
                 Err(ConnectionError::local(error, ConnectionErrorKind::Timeout)
                     .context("HTTP service selection deadline"))
             }
-            Err(error) => Err(
-                ConnectionError::transport(error, ConnectionErrorKind::Timeout)
-                    .context("HTTP service candidate deadline"),
-            ),
+            (Err(error), None) => Err(ConnectionError::transport(
+                error,
+                ConnectionErrorKind::Timeout,
+            )
+            .context("HTTP service candidate deadline")),
         }
     }
 
@@ -440,14 +457,11 @@ where
                             && service.candidate.source == HttpServiceSource::AltSvc
                     })
                     .map(|service| service.candidate.target.clone());
-                let mut layer = AltSvcLayer::new(self.policy.cache.clone(), origin)
+                let mut layer = AltSvcLayer::new(origin)
+                    .maybe_with_cache(self.policy.cache.clone())
                     .with_authenticated(authenticated)
                     .maybe_with_alternative(established_alternative);
-                if let Some((snapshot, index)) = selection
-                    && snapshot
-                        .get(index)
-                        .is_some_and(|candidate| candidate.source == HttpServiceSource::AltSvc)
-                {
+                if let Some((snapshot, index)) = selection {
                     layer = layer.with_selection(snapshot, index);
                 }
                 layer.layer(conn)
@@ -473,9 +487,15 @@ where
             ));
         }
 
-        let deadline = Instant::now()
-            .checked_add(self.policy.timeout)
-            .ok_or_else(|| invalid("HTTP service timeout is too large"))?;
+        let deadline = self
+            .policy
+            .timeout
+            .map(|timeout| {
+                Instant::now()
+                    .checked_add(timeout)
+                    .ok_or_else(|| invalid("HTTP service timeout is too large"))
+            })
+            .transpose()?;
         let origin = origin(&input);
         if let (Some(cache), Some(origin)) = (&self.policy.cache, &origin)
             && !input.extensions().contains::<AltSvcObserverExtension>()
@@ -485,11 +505,15 @@ where
                 .insert(cache.frame_observer(origin.clone()));
         }
         let required = required_version(&input);
-        let proxy_context = input.extensions().contains::<ProxyRoutes>()
-            || input
-                .extensions()
-                .get_ref::<ProxyRoute>()
-                .is_some_and(|route| route.proxy_address().is_some());
+        let proxy_context = input.extensions().get_ref::<ProxyRoutes>().map_or_else(
+            || {
+                input
+                    .extensions()
+                    .get_ref::<ProxyRoute>()
+                    .is_some_and(|route| route.proxy_address().is_some())
+            },
+            |routes| routes.iter().any(|route| route.proxy_address().is_some()),
+        );
         let (snapshot, from_cache) = self.candidates(&input, origin.as_ref(), proxy_context);
         let mut attempts = 0;
 
@@ -525,29 +549,65 @@ where
                     .extensions()
                     .insert(SelectedHttpService::new(origin.clone(), candidate.clone()));
                 attempts += 1;
+                let failure_context = self
+                    .policy
+                    .cache
+                    .as_ref()
+                    .map(|cache| (cache, cache.network_epoch()));
                 match self.attempt(attempt, deadline, true).await {
                     Ok(established) => {
-                        verify_alternative(&established.conn, origin, candidate)
-                            .inspect_err(|_| discard_connection(&established.conn))?;
-                        established
-                            .conn
-                            .extensions()
-                            .insert(EstablishedHttpService::new(
+                        verify_alternative(&established.conn, origin, candidate).inspect_err(
+                            |_| {
+                                discard_connection(&established.conn);
+                                if candidate.source == HttpServiceSource::AltSvc
+                                    && let Some((cache, network)) = failure_context
+                                {
+                                    cache.failed_attempt(snapshot, index, network, true);
+                                }
+                            },
+                        )?;
+                        let extensions = established.conn.extensions();
+                        if let Some(current) = extensions.get_ref::<EstablishedHttpService>() {
+                            if current.origin != *origin
+                                || current.candidate.protocol != candidate.protocol
+                                || current.candidate.target != candidate.target
+                            {
+                                discard_connection(&established.conn);
+                                return Err(ConnectionError::application(
+                                    BoxError::from_static_str(
+                                        "pooled connection does not match selected service",
+                                    ),
+                                    ConnectionErrorKind::Protocol,
+                                ));
+                            }
+                        } else {
+                            extensions.insert(EstablishedHttpService::new(
                                 origin.clone(),
                                 candidate.clone(),
                             ));
+                        }
                         return Ok(self.wrap(
                             established,
                             Some(origin.clone()),
                             Some((snapshot.clone(), index)),
                         ));
                     }
+                    Err(error)
+                        if error.domain() == ConnectionErrorDomain::Local
+                            && error.kind() == ConnectionErrorKind::Unavailable =>
+                    {
+                        tracing::debug!(
+                            ?error,
+                            ?candidate,
+                            "connector cannot reach this service; trying next service"
+                        );
+                    }
                     Err(error) if availability(&error) => {
                         if !proxy_context
                             && candidate.source == HttpServiceSource::AltSvc
-                            && let Some(cache) = &self.policy.cache
+                            && let Some((cache, network)) = failure_context
                         {
-                            cache.failed(snapshot, index);
+                            cache.failed_attempt(snapshot, index, network, false);
                         }
                         tracing::debug!(
                             ?error,
@@ -555,7 +615,33 @@ where
                             "HTTP alternative unavailable; trying next service"
                         );
                     }
-                    Err(error) => return Err(error),
+                    Err(error) => {
+                        let endpoint_failed = match error.domain() {
+                            ConnectionErrorDomain::Application => matches!(
+                                error.kind(),
+                                ConnectionErrorKind::Authentication
+                                    | ConnectionErrorKind::Protocol
+                                    | ConnectionErrorKind::Rejected
+                            ),
+                            ConnectionErrorDomain::Transport if !proxy_context => matches!(
+                                error.kind(),
+                                ConnectionErrorKind::Authentication | ConnectionErrorKind::Protocol
+                            ),
+                            _ => false,
+                        };
+                        if endpoint_failed
+                            && candidate.source == HttpServiceSource::AltSvc
+                            && let Some((cache, network)) = failure_context
+                        {
+                            cache.failed_attempt(
+                                snapshot,
+                                index,
+                                network,
+                                error.domain() == ConnectionErrorDomain::Application,
+                            );
+                        }
+                        return Err(error);
+                    }
                 }
             }
         }

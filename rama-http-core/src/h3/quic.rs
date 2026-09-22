@@ -113,6 +113,7 @@ pub(crate) struct Writer<S: SendStream> {
     stream: S,
     chunks: [Bytes; 2],
     data_header: Option<(usize, Bytes)>,
+    priority: Option<i32>,
     finished: bool,
 }
 
@@ -123,6 +124,14 @@ impl Writer<rama_quic::SendStream> {
 }
 
 impl<S: SendStream> Writer<S> {
+    /// Abort the send direction using the same cause as the receive direction.
+    pub(crate) fn reset(&mut self, code: Code) {
+        if !self.finished {
+            self.stream.reset(code);
+            self.finished = true;
+        }
+    }
+
     pub(crate) fn stopped(&self) -> impl Future<Output = Error> + Send + 'static {
         self.stream.stopped()
     }
@@ -133,6 +142,7 @@ impl<S: SendStream> Writer<S> {
             chunks: [Bytes::new(), Bytes::new()],
             finished: false,
             data_header: None,
+            priority: None,
         }
     }
 
@@ -142,6 +152,7 @@ impl<S: SendStream> Writer<S> {
             chunks: [prefix, Bytes::new()],
             finished: false,
             data_header: None,
+            priority: None,
         }
     }
 
@@ -150,7 +161,11 @@ impl<S: SendStream> Writer<S> {
     }
 
     pub(crate) fn priority(&mut self, priority: i32) -> Result<(), Error> {
-        self.stream.priority(priority)
+        if self.priority != Some(priority) {
+            self.stream.priority(priority)?;
+            self.priority = Some(priority);
+        }
+        Ok(())
     }
 
     pub(crate) fn queue(&mut self, ty: FrameType, payload: Bytes) -> Result<(), Error> {
@@ -226,6 +241,7 @@ mod tests {
         finished: bool,
         pending: bool,
         always_ready: bool,
+        priority_updates: usize,
     }
     struct Fake(Arc<Mutex<State>>);
     impl SendStream for Fake {
@@ -234,6 +250,7 @@ mod tests {
         }
 
         fn priority(&mut self, _priority: i32) -> Result<(), Error> {
+            self.0.lock().priority_updates += 1;
             Ok(())
         }
         fn poll_chunks(
@@ -259,6 +276,18 @@ mod tests {
         fn reset(&mut self, code: Code) {
             self.0.lock().reset = Some(code);
         }
+    }
+
+    #[test]
+    fn unchanged_priority_does_not_touch_transport_per_frame() {
+        let state = Arc::new(Mutex::new(State::default()));
+        let mut writer = Writer::new(Fake(state.clone()));
+        for _ in 0..100 {
+            writer.priority(4).unwrap();
+        }
+        assert_eq!(state.lock().priority_updates, 1);
+        writer.priority(5).unwrap();
+        assert_eq!(state.lock().priority_updates, 2);
     }
 
     #[test]

@@ -8,7 +8,7 @@ use rama_net::{
     address::{AuthorityRef, Host, HostRef, HostWithPort, OptPort},
     tls::ApplicationProtocol,
 };
-use rama_utils::collections::NonEmptyVec;
+use rama_utils::{collections::NonEmptyVec, macros::generate_set_and_with};
 
 use crate::util::{
     ListMembers, QuotedString, Seconds, is_http_token_byte, scan_quoted_string, skip_ows, trim_ows,
@@ -121,36 +121,40 @@ impl AlternativeService {
         })
     }
 
-    /// Try to use a different host than the origin.
-    ///
-    /// An empty host is normalized to the origin host.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when `host` has no strict RFC 3986 presentation.
-    pub fn try_with_host(mut self, host: impl Into<Host>) -> Result<Self, BoxError> {
-        let host = host.into();
-        if host.is_empty() {
-            self.host = None;
-        } else {
-            validate_alternative_host(&host)?;
-            self.host = Some(host);
+    generate_set_and_with! {
+        /// Try to use a different host than the origin.
+        ///
+        /// An empty host is normalized to the origin host.
+        ///
+        /// # Errors
+        ///
+        /// Returns an error when `host` has no strict RFC 3986 presentation.
+        pub fn host(mut self, host: impl Into<Host>) -> Result<Self, BoxError> {
+            let host = host.into();
+            if host.is_empty() {
+                self.host = None;
+            } else {
+                validate_alternative_host(&host)?;
+                self.host = Some(host);
+            }
+            Ok(self)
         }
-        Ok(self)
     }
 
-    /// Set the alternative-service freshness lifetime in whole seconds.
-    #[must_use]
-    pub fn with_max_age_seconds(mut self, max_age: u64) -> Self {
-        self.max_age = Seconds::new(max_age);
-        self
+    generate_set_and_with! {
+        /// Set the alternative-service freshness lifetime in whole seconds.
+        pub fn max_age_seconds(mut self, max_age: u64) -> Self {
+            self.max_age = Seconds::new(max_age);
+            self
+        }
     }
 
-    /// Set whether this service may survive network changes.
-    #[must_use]
-    pub fn with_persist(mut self, persist: bool) -> Self {
-        self.persist = persist;
-        self
+    generate_set_and_with! {
+        /// Set whether this service may survive network changes.
+        pub fn persist(mut self, persist: bool) -> Self {
+            self.persist = persist;
+            self
+        }
     }
 
     /// Return the ALPN protocol identifier.
@@ -646,6 +650,7 @@ fn validate_strict_host_bytes(input: &[u8]) -> Result<(), BoxError> {
 mod tests {
     use super::*;
     use crate::{HeaderDecode, HeaderEncode};
+    use rama_net::uri::Uri;
 
     fn decode(values: &[&str]) -> Option<AltSvc> {
         let values: Vec<_> = values
@@ -928,6 +933,32 @@ mod tests {
         validate_strict_host_bytes(b"user@example.com").unwrap_err();
         validate_strict_host_bytes(b"example.com:443").unwrap_err();
         validate_strict_host_bytes("münchen.de".as_bytes()).unwrap_err();
+    }
+
+    #[test]
+    fn generated_setters_preserve_validation_and_normalization() {
+        let mut service = AlternativeService::new(ApplicationProtocol::HTTP_3, 443).unwrap();
+        service
+            .try_set_host(Host::from_static("alt.example"))
+            .unwrap();
+        service.set_max_age_seconds(60).set_persist(true);
+        let original = service.clone();
+        service
+            .try_set_host(Host::try_from("münchen!").unwrap())
+            .unwrap_err();
+        assert_eq!(service, original);
+        service
+            .try_set_host(
+                Uri::try_from("file:///tmp")
+                    .unwrap()
+                    .host()
+                    .unwrap()
+                    .into_owned(),
+            )
+            .unwrap();
+        assert!(service.host().is_none());
+        assert_eq!(service.max_age(), Duration::from_secs(60));
+        assert!(service.persist());
     }
 
     #[test]

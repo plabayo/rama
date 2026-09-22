@@ -10,7 +10,7 @@ use rama_http::proto::h2::frame::EarlyFrameStreamContext;
 use rama_http_types::proto::h2::PseudoHeaderOrder;
 use rama_http_types::proto::h2::alt_svc::{
     ALT_SVC_MAX_PAYLOAD, ALT_SVC_QUEUE_CAPACITY, AltSvcEvent, AltSvcObserverExtension,
-    AltSvcOrigin, AltSvcSendError, AltSvcSender,
+    AltSvcOrigin, AltSvcReceivedAt, AltSvcSendError, AltSvcSender,
 };
 use rama_http_types::proto::h2::frame::DEFAULT_INITIAL_WINDOW_SIZE;
 use rama_http_types::proto::h2::frame::{Reason, StreamId};
@@ -22,7 +22,6 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 use tokio::io::AsyncRead;
 use tokio::sync::mpsc;
-use tokio::time::Instant;
 
 /// An H2 connection
 #[derive(Debug)]
@@ -101,6 +100,7 @@ pub(crate) struct Config {
     pub remote_reset_stream_max: usize,
     pub local_error_reset_streams_max: Option<usize>,
     pub settings: frame::Settings,
+    pub send_alt_svc: bool,
     pub headers_pseudo_order: Option<PseudoHeaderOrder>,
     pub early_frame_ctx: EarlyFrameStreamContext,
 }
@@ -161,9 +161,12 @@ where
         // Transfer ownership of extensions to Streams as at this point our connection is esthablished
         // and we only need these extensions as parents for our inner Stream's
         let (alt_svc_observer, alt_svc_send) = if P::r#dyn().is_server() {
-            let (sender, receiver) = AltSvcSender::channel();
-            codec.extensions().insert(sender);
-            (None, Some(receiver))
+            let receiver = config.send_alt_svc.then(|| {
+                let (sender, receiver) = AltSvcSender::channel();
+                codec.extensions().insert(sender);
+                receiver
+            });
+            (None, receiver)
         } else {
             let observer = codec
                 .extensions()
@@ -688,11 +691,13 @@ where
                         self.streams.alt_svc_origin(id).map(AltSvcOrigin::Request)
                     };
                     if let Some(origin) = origin {
+                        let received = AltSvcReceivedAt::now();
                         observer.observe(
                             AltSvcEvent {
                                 origin,
                                 field_value,
-                                received_at: Instant::now(),
+                                received_at: received.instant.into(),
+                                sequence: received.sequence,
                             },
                             extensions,
                         );
@@ -741,7 +746,7 @@ where
         self.codec
             .extensions()
             .get_ref::<AltSvcSender>()
-            .ok_or(AltSvcSendError::Closed)?
+            .ok_or(AltSvcSendError::Disabled)?
             .try_send(frame)
     }
 

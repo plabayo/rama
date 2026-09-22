@@ -234,6 +234,7 @@ impl Shared {
         if entry.cancelled {
             return Ok(());
         }
+        let send = send && (self.role != Role::Client || !entry.stream_seen);
         entry.cancelled = true;
         entry.request = None;
         if let Some(abort) = entry.server_abort.take() {
@@ -461,6 +462,8 @@ mod tests {
         connection::Config,
         qpack::{Encoder, EncoderConfig},
     };
+    use rama_core::futures::FutureExt as _;
+
     fn shared() -> Arc<Shared> {
         let shared = Shared::new(
             Config {
@@ -488,6 +491,52 @@ mod tests {
                 ],
             )
             .unwrap()
+    }
+
+    #[test]
+    fn client_cancels_only_pushes_whose_stream_has_not_arrived() {
+        for stream_seen in [false, true] {
+            let shared = shared();
+            shared.pushes.lock().entries.insert(
+                0,
+                Entry {
+                    stream_seen,
+                    ..Entry::default()
+                },
+            );
+            shared.cancel_push(0, true).unwrap();
+            assert_eq!(
+                shared.control_flushed().now_or_never().is_some(),
+                stream_seen
+            );
+        }
+    }
+
+    #[test]
+    fn server_announces_cancel_even_after_opening_a_push_stream() {
+        let shared = Shared::new(
+            Config {
+                max_pushes: 1,
+                ..Config::default()
+            },
+            Role::Server,
+            Default::default(),
+        )
+        .unwrap();
+        {
+            let mut pushes = shared.pushes.lock();
+            pushes.next = 1;
+            pushes.entries.insert(
+                0,
+                Entry {
+                    promised: true,
+                    stream_seen: true,
+                    ..Entry::default()
+                },
+            );
+        }
+        shared.cancel_push(0, true).unwrap();
+        assert!(shared.control_flushed().now_or_never().is_none());
     }
 
     #[tokio::test]

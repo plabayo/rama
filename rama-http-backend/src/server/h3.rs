@@ -6,17 +6,19 @@ use rama_core::{
     extensions::{ExtensionsRef, Ingress},
     futures::{StreamExt, stream::FuturesUnordered},
     graceful::ShutdownGuard,
+    telemetry::tracing,
 };
 use rama_http::service::web::response::IntoResponse;
 use rama_http_core::{
     h3::{connection::Config, qpack::ErrorScope, server},
     service::RamaHttpService,
 };
-use rama_http_types::Request;
+use rama_http_types::{Request, proto::h3::Code};
+use rama_quic::Connection;
 use std::convert::Infallible;
 
 pub(super) async fn serve<S, R>(
-    input: rama_quic::Connection,
+    input: Connection,
     config: Config,
     guard: Option<ShutdownGuard>,
     service: S,
@@ -49,7 +51,7 @@ where
             accepted = connection.accept(), if !draining => {
                 let stream = match accepted {
                     Ok(stream) => stream,
-                    Err(error) if error.code() == rama_http_types::proto::h3::Code::H3_NO_ERROR => return Ok(()),
+                    Err(error) if error.code() == Code::H3_NO_ERROR => return Ok(()),
                     Err(error) => return Err(error.into()),
                 };
                 let service = service.clone();
@@ -66,10 +68,11 @@ where
                 });
             }
             result = requests.next(), if !requests.is_empty() => {
-                if let Some(Err(error)) = result
-                    && error.scope() == ErrorScope::Connection
-                {
-                    return Err(error.into());
+                if let Some(Err(error)) = result {
+                    if error.scope() == ErrorScope::Connection {
+                        return Err(error.into());
+                    }
+                    tracing::debug!(%error, "HTTP/3 request stream failed");
                 }
             }
         }

@@ -27,7 +27,10 @@ use rama_core::{
     extensions::{Extensions, ExtensionsRef},
 };
 use rama_http_headers::{AltUsed, HeaderMapExt as _, TypedHeader as _};
-use rama_http_types::conn::{HttpOrigin, HttpServiceCandidates, HttpServiceSource};
+use rama_http_types::{
+    conn::{HttpOrigin, HttpServiceCandidates, HttpServiceSource},
+    proto::h2::alt_svc::AltSvcReceivedAt,
+};
 use rama_net::address::HostWithPort;
 use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
 use std::{sync::Arc, time::Instant};
@@ -49,13 +52,21 @@ pub struct AltSvcLayer {
 
 impl AltSvcLayer {
     /// Create middleware scoped to the logical origin, independently of the dial target.
-    pub fn new(cache: Option<AltSvcCache>, origin: HttpOrigin) -> Self {
+    pub fn new(origin: HttpOrigin) -> Self {
         Self {
-            cache,
+            cache: None,
             origin,
             authenticated: false,
             alternative: None,
             selection: None,
+        }
+    }
+
+    generate_set_and_with! {
+        /// Share an advertisement cache; `None` disables learning.
+        pub fn cache(mut self, cache: Option<AltSvcCache>) -> Self {
+            self.cache = cache;
+            self
         }
     }
 
@@ -162,7 +173,16 @@ where
                     cache.misdirected(snapshot, *index);
                 }
             } else if policy.authenticated || !policy.origin.is_secure() {
-                cache.record(&policy.origin, response.headers(), started.elapsed());
+                if let Some(received) = response.extensions().get_ref::<AltSvcReceivedAt>() {
+                    cache.record_received(
+                        &policy.origin,
+                        response.headers(),
+                        received.instant.saturating_duration_since(started),
+                        *received,
+                    );
+                } else {
+                    cache.record(&policy.origin, response.headers(), started.elapsed());
+                }
             }
         }
         Ok(response)
@@ -198,7 +218,8 @@ mod tests {
         ] {
             let cache = AltSvcCache::default();
             let origin = origin(protocol);
-            let service = AltSvcLayer::new(enabled.then(|| cache.clone()), origin.clone())
+            let service = AltSvcLayer::new(origin.clone())
+                .maybe_with_cache(enabled.then(|| cache.clone()))
                 .with_authenticated(authenticated)
                 .layer(service_fn(async |request: Request| {
                     assert!(!request.headers().contains_key(AltUsed::name()));
@@ -233,11 +254,12 @@ mod tests {
                 .parse()
                 .unwrap(),
         );
-        cache.record_authenticated(&origin, &headers, Duration::ZERO);
+        cache.record(&origin, &headers, Duration::ZERO);
         let snapshot = cache.lookup(&origin).unwrap();
         let target = snapshot.get(0).unwrap().target.clone();
         let dispatched = Arc::new(AtomicUsize::new(0));
-        let service = AltSvcLayer::new(Some(cache.clone()), origin.clone())
+        let service = AltSvcLayer::new(origin.clone())
+            .with_cache(cache.clone())
             .with_authenticated(true)
             .with_selection(snapshot.clone(), 0)
             .layer(service_fn({
@@ -280,16 +302,17 @@ mod tests {
         let origin = origin(Protocol::HTTPS);
         let mut headers = crate::HeaderMap::new();
         headers.insert("alt-svc", "h2=\":8443\"".parse().unwrap());
-        cache.record_authenticated(&origin, &headers, Duration::ZERO);
+        cache.record(&origin, &headers, Duration::ZERO);
         let snapshot = cache.lookup(&origin).unwrap();
-        let service = AltSvcLayer::new(Some(cache.clone()), origin.clone())
+        let service = AltSvcLayer::new(origin.clone())
+            .with_cache(cache.clone())
             .with_authenticated(true)
             .with_selection(snapshot, 0)
             .layer(service_fn({
                 let cache = cache.clone();
                 let origin = origin.clone();
                 move |_: Request| {
-                    cache.record_authenticated(&origin, &headers, Duration::ZERO);
+                    cache.record(&origin, &headers, Duration::ZERO);
                     async {
                         Ok::<_, Infallible>(
                             Response::builder()
@@ -315,7 +338,7 @@ mod tests {
                 "configured.example:443".parse().unwrap(),
             )],
         ));
-        let service = AltSvcLayer::new(None, origin)
+        let service = AltSvcLayer::new(origin)
             .with_selection(snapshot, 0)
             .layer(service_fn(async |request: Request| {
                 assert!(!request.headers().contains_key(AltUsed::name()));

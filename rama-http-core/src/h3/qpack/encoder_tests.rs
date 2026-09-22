@@ -1,7 +1,12 @@
 use super::{EncodeField, Encoder, EncoderConfig};
-use crate::h3::qpack::{Decoder, DecoderConfig, QpackError};
+use crate::h3::qpack::{Decoder, DecoderConfig, ErrorScope, QpackError};
 use rama_core::bytes::{Bytes, BytesMut};
-use rama_http_types::proto::h3::qpack::{DecoderInstruction, FieldLine, HeaderPrefix};
+use rama_http_types::proto::h3::{
+    Code,
+    qpack::{DecoderInstruction, FieldLine, HeaderPrefix},
+};
+use rama_utils::octets::kib;
+use std::collections::BTreeMap;
 
 fn feedback(inst: DecoderInstruction) -> Bytes {
     let mut b = BytesMut::new();
@@ -400,4 +405,130 @@ fn adaptive_insert_budget_matches_exact_wire_and_one_byte_short() {
             }
         }
     }
+}
+
+// Recompute from the actual outstanding sections as an independent oracle for
+// the incremental accounting. Required Insert Counts need not be FIFO ordered.
+fn assert_blocking_accounting(encoder: &Encoder) {
+    let mut index = BTreeMap::new();
+    let mut streams = 0;
+    for (&stream_id, sections) in &encoder.sections {
+        let mut blocking = 0;
+        for section in &sections.queue {
+            if section.required_insert_count > encoder.known_received_count() {
+                blocking += 1;
+                *index
+                    .entry((section.required_insert_count, stream_id))
+                    .or_insert(0) += 1;
+            }
+        }
+        assert_eq!(sections.blocking, blocking);
+        streams += u64::from(blocking != 0);
+    }
+    assert_eq!(encoder.blocking_streams, streams);
+    assert_eq!(encoder.blocking_sections, index);
+}
+
+#[test]
+fn blocking_accounting_handles_shared_nonmonotonic_sections_and_feedback() {
+    let mut encoder = Encoder::new(EncoderConfig {
+        max_blocked_streams: 64,
+        ..EncoderConfig::default()
+    });
+    let values = ["first", "second", "third", "fourth"];
+    for value in values {
+        encoder.encode(0, [("x-shared", value)]).unwrap();
+    }
+    // Later sections can refer to older entries, and multiple sections on one
+    // stream may have the same Required Insert Count.
+    for stream in 1..32 {
+        for value in [values[3], values[0], values[3], values[1]] {
+            encoder.encode(stream * 4, [("x-shared", value)]).unwrap();
+            assert_blocking_accounting(&encoder);
+        }
+    }
+    for increment in [1, 1] {
+        encoder
+            .on_decoder_instruction(DecoderInstruction::InsertCountIncrement { increment })
+            .unwrap();
+        assert_blocking_accounting(&encoder);
+    }
+    for stream in 0..32 {
+        if stream % 2 == 0 {
+            encoder
+                .on_decoder_instruction(DecoderInstruction::StreamCancellation {
+                    stream_id: stream * 4,
+                })
+                .unwrap();
+        } else {
+            for _ in 0..4 {
+                encoder
+                    .on_decoder_instruction(DecoderInstruction::SectionAcknowledgment {
+                        stream_id: stream * 4,
+                    })
+                    .unwrap();
+                assert_blocking_accounting(&encoder);
+            }
+        }
+        assert_blocking_accounting(&encoder);
+    }
+    assert_eq!(encoder.tracked_section_count(), 0);
+    assert_eq!(encoder.tracked_reference_count(), 0);
+    assert_eq!(encoder.known_received_count(), 4);
+    encoder.encode(128, [("x-shared", "fifth")]).unwrap();
+    assert_eq!(encoder.blocking_streams, 1);
+    assert_blocking_accounting(&encoder);
+    encoder
+        .on_decoder_instruction(DecoderInstruction::InsertCountIncrement { increment: 1 })
+        .unwrap();
+    assert_eq!(encoder.blocking_streams, 0);
+    assert_blocking_accounting(&encoder);
+}
+
+#[test]
+fn unknown_cancellation_flood_preserves_outstanding_sections_and_recovers() {
+    let mut encoder = Encoder::new(EncoderConfig {
+        max_blocked_streams: 1024,
+        ..EncoderConfig::default()
+    });
+    for stream in 1..=1024 {
+        encoder.encode(stream * 4, [("x-shared", "value")]).unwrap();
+    }
+    encoder.feed_decoder_stream(&vec![0x40; kib(64)]).unwrap();
+    assert_eq!(encoder.tracked_section_count(), 1024);
+    assert_eq!(encoder.tracked_reference_count(), 1024);
+    assert_eq!(encoder.known_received_count(), 0);
+    assert_blocking_accounting(&encoder);
+    for stream in 1..=1024 {
+        encoder
+            .on_decoder_instruction(DecoderInstruction::StreamCancellation {
+                stream_id: stream * 4,
+            })
+            .unwrap();
+    }
+    assert_eq!(encoder.tracked_section_count(), 0);
+    assert_eq!(encoder.tracked_reference_count(), 0);
+    assert_blocking_accounting(&encoder);
+    encoder.encode(0, [("x-new", "next")]).unwrap();
+    assert_eq!(encoder.blocking_streams, 1);
+    assert_blocking_accounting(&encoder);
+}
+
+#[test]
+fn outgoing_section_size_limit_is_stream_scoped_and_recovers() {
+    let mut encoder = Encoder::new(EncoderConfig {
+        max_field_section_size: 34,
+        ..EncoderConfig::default()
+    });
+    let error = encoder.encode(0, [("a", "bc")]).unwrap_err();
+    assert_eq!(
+        error,
+        QpackError::EncodeFieldSectionLimit("field section too large")
+    );
+    assert_eq!(error.scope(), Some(ErrorScope::Stream));
+    assert_eq!(error.code(), Some(Code::H3_MESSAGE_ERROR));
+    assert_eq!(encoder.insert_count(), 0);
+    assert_eq!(encoder.encoder_stream_len(), 0);
+    encoder.encode(4, [("a", "b")]).unwrap();
+    assert_eq!(encoder.tracked_section_count(), 1);
 }

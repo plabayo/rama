@@ -108,6 +108,12 @@ struct Section {
     required_insert_count: u64,
 }
 
+#[derive(Default)]
+struct StreamSections {
+    queue: VecDeque<Section>,
+    blocking: usize,
+}
+
 /// Stateful encoder for one connection. Dynamic insertion and references fall back to literals
 /// when budgets are exhausted; invalid/oversized input fails before any state changes.
 pub struct Encoder {
@@ -116,7 +122,10 @@ pub struct Encoder {
     encoder_output: BytesMut,
     known_received_count: u64,
     capacity_initialized: bool,
-    sections: BTreeMap<u64, VecDeque<Section>>,
+    sections: BTreeMap<u64, StreamSections>,
+    // Counts sections by (Required Insert Count, stream). Advancing the Known
+    // Received Count visits only newly unblocked sections, never unrelated ones.
+    blocking_sections: BTreeMap<(u64, u64), usize>,
     section_count: usize,
     reference_count: usize,
     blocking_streams: u64,
@@ -138,6 +147,7 @@ impl Encoder {
             known_received_count: 0,
             capacity_initialized: false,
             sections: BTreeMap::new(),
+            blocking_sections: BTreeMap::new(),
             section_count: 0,
             reference_count: 0,
             blocking_streams: 0,
@@ -221,22 +231,41 @@ impl Encoder {
     }
 
     fn is_stream_blocking(&self, stream_id: u64) -> bool {
-        self.sections.get(&stream_id).is_some_and(|queue| {
-            queue
-                .iter()
-                .any(|s| s.required_insert_count > self.known_received_count)
-        })
+        self.sections
+            .get(&stream_id)
+            .is_some_and(|sections| sections.blocking > 0)
     }
 
-    fn refresh_blocking_count(&mut self) {
-        self.blocking_streams = self
-            .sections
-            .values()
-            .filter(|q| {
-                q.iter()
-                    .any(|s| s.required_insert_count > self.known_received_count)
-            })
-            .count() as u64;
+    fn advance_known_received_count(&mut self, count: u64) {
+        self.known_received_count = self.known_received_count.max(count);
+        while self
+            .blocking_sections
+            .first_key_value()
+            .is_some_and(|((required, _), _)| *required <= self.known_received_count)
+        {
+            let Some(((_, stream_id), count)) = self.blocking_sections.pop_first() else {
+                break;
+            };
+            if let Some(sections) = self.sections.get_mut(&stream_id) {
+                sections.blocking -= count;
+                if sections.blocking == 0 {
+                    self.blocking_streams -= 1;
+                }
+            }
+        }
+    }
+
+    fn remove_blocking_section(&mut self, stream_id: u64, required: u64) {
+        if required <= self.known_received_count {
+            return;
+        }
+        let key = (required, stream_id);
+        if let Some(count) = self.blocking_sections.get_mut(&key) {
+            *count -= 1;
+            if *count == 0 {
+                self.blocking_sections.remove(&key);
+            }
+        }
     }
 
     /// Bound newly generated instructions by credit atomically reserved by the transport.
@@ -313,7 +342,9 @@ impl Encoder {
                 .and_then(|n| n.checked_add(field.value.as_ref().len()))
                 .and_then(|n| n.checked_add(ENTRY_OVERHEAD as usize))
                 .filter(|n| *n <= self.config.max_field_section_size)
-                .ok_or(QpackError::ResourceLimit("field section too large"))?;
+                .ok_or(QpackError::EncodeFieldSectionLimit(
+                    "field section too large",
+                ))?;
             input.push(field);
         }
         self.ensure_capacity();
@@ -397,16 +428,18 @@ impl Encoder {
         let prefix_len = PREFIX_HEADROOM - cursor.len();
         out[PREFIX_HEADROOM - prefix_len..PREFIX_HEADROOM].copy_from_slice(&prefix[..prefix_len]);
         if ric > 0 {
-            self.sections
-                .entry(stream_id)
-                .or_default()
-                .push_back(Section {
-                    refs,
-                    required_insert_count: ric,
-                });
+            let sections = self.sections.entry(stream_id).or_default();
+            sections.queue.push_back(Section {
+                refs,
+                required_insert_count: ric,
+            });
             self.section_count += 1;
-            if !was_blocking && ric > self.known_received_count {
-                self.blocking_streams += 1;
+            if ric > self.known_received_count {
+                *self.blocking_sections.entry((ric, stream_id)).or_default() += 1;
+                sections.blocking += 1;
+                if !was_blocking {
+                    self.blocking_streams += 1;
+                }
             }
         }
         Ok(out.freeze().slice(PREFIX_HEADROOM - prefix_len..))
@@ -480,23 +513,33 @@ impl Encoder {
                     .ok_or(QpackError::DecoderStreamError(
                         "insert count increment exceeds inserts",
                     ))?;
-                self.known_received_count = new;
+                self.advance_known_received_count(new);
             }
             DecoderInstruction::SectionAcknowledgment { stream_id } => {
-                let queue =
+                let sections =
                     self.sections
                         .get_mut(&stream_id)
                         .ok_or(QpackError::DecoderStreamError(
                             "acknowledgment for unknown section",
                         ))?;
-                let section = queue.pop_front().ok_or(QpackError::DecoderStreamError(
-                    "acknowledgment for unknown section",
-                ))?;
-                if queue.is_empty() {
+                let section = sections
+                    .queue
+                    .pop_front()
+                    .ok_or(QpackError::DecoderStreamError(
+                        "acknowledgment for unknown section",
+                    ))?;
+                let required = section.required_insert_count;
+                if required > self.known_received_count {
+                    sections.blocking -= 1;
+                    if sections.blocking == 0 {
+                        self.blocking_streams -= 1;
+                    }
+                }
+                if sections.queue.is_empty() {
                     self.sections.remove(&stream_id);
                 }
-                self.known_received_count =
-                    self.known_received_count.max(section.required_insert_count);
+                self.remove_blocking_section(stream_id, required);
+                self.advance_known_received_count(required);
                 self.release_section(section);
             }
             DecoderInstruction::StreamCancellation { stream_id } => {
@@ -505,14 +548,17 @@ impl Encoder {
                         "stream ID exceeds QUIC integer range",
                     ));
                 }
-                if let Some(queue) = self.sections.remove(&stream_id) {
-                    for section in queue {
+                if let Some(sections) = self.sections.remove(&stream_id) {
+                    if sections.blocking > 0 {
+                        self.blocking_streams -= 1;
+                    }
+                    for section in sections.queue {
+                        self.remove_blocking_section(stream_id, section.required_insert_count);
                         self.release_section(section);
                     }
                 }
             }
         }
-        self.refresh_blocking_count();
         Ok(())
     }
 

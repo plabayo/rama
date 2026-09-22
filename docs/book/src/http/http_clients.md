@@ -30,6 +30,38 @@ More client examples:
 - [/examples/src/http_pooled_client.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_pooled_client.rs):
   an example demonstrating how to create a pooled HTTP client that can be used to make concurrent requests to the same host;
 
+## Alternative services and custom connectors
+
+Alternative services change where and how Rama connects, while preserving the
+request's origin and certificate identity. The easy client selects a service
+before choosing a proxy route and consulting the connection pool.
+
+`AltSvcLayer` learns response headers and sets `Alt-Used`. An optional H2 observer
+feeds ALTSVC frames into the same cache. Advertisements are not automatically
+forwarded. To send H2 advertisements, enable `set_alt_svc(true)` before the server
+handshake and use `AltSvcSender`; ordinary connections allocate no sender queue.
+
+Selection tries alternatives sequentially, with a configurable 300 ms
+`attempt_timeout` including DNS and TLS. Increase it for slower networks. There
+is no overall deadline unless `timeout` is set. Authentication or protocol
+failure ends the current request and suppresses the endpoint for later requests;
+re-advertising it does not reset backoff.
+
+Custom connectors use these contracts:
+
+| Type | Responsibility |
+| --- | --- |
+| `TargetHttpVersion` | Honor the requested version; report the established version. |
+| `ConnectorTarget` / `ConnectorTargetStream` | Dial the selected endpoint using matching DNS results, preserving the origin. |
+| `TlsServerAuthentication` / `NegotiatedTlsParameters` | Report verified origin identity and actual ALPN; missing proof prevents alternative use. |
+| `TlsClientConfigProvider` | Identify compatible TLS policies for safe pooling. |
+| `AltSvcObserverExtension` | Install before H2 handshake; authorize origins and process frames promptly. |
+| `HttpServiceAttempt` | Preserve terminal address-race failures across timeouts. |
+
+Report unsupported routes as local capability failures, not unreachable proxies.
+In the CLI, `--alt-svc` enables command-local discovery; `--http3` requires H3
+directly. Disk persistence and DNS HTTPS/SVCB discovery are not implemented yet.
+
 ## Server certificate pinning
 
 Rama clients can pin the server leaf through `TlsServerCertPins`, backend

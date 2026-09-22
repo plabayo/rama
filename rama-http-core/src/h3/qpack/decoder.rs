@@ -541,7 +541,7 @@ impl Decoder {
             section_size =
                 section_size.saturating_add(pair.name.len() as u64 + pair.value.len() as u64 + 32);
             if section_size > self.config.max_field_section_size as u64 {
-                return Err(QpackError::ResourceLimit("field section too large"));
+                return Err(QpackError::FieldSectionLimit("field section too large"));
             }
             fields.push(pair);
         }

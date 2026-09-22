@@ -517,7 +517,7 @@ fn field_section_size_limit_enforced() {
     // :authority: abcde  (uncompressed size 32 + 10 + 5 = 47 > 8)
     assert_eq!(
         dec.decode_field_section(0, hex("000050056162636465")),
-        Err(QpackError::ResourceLimit("field section too large"))
+        Err(QpackError::FieldSectionLimit("field section too large"))
     );
 }
 

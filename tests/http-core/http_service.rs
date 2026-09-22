@@ -238,6 +238,8 @@ impl Server {
             Version::HTTP_2 => config.with_alpn_http_2(),
             _ => panic!("test server only supports HTTP/1.1 and HTTP/2"),
         };
+        let mut http = HttpServer::auto(executor);
+        http.h2_mut().set_alt_svc(true);
         let service = (
             MapInputLayer::new({
                 let accepted = accepted.clone();
@@ -248,7 +250,7 @@ impl Server {
             }),
             TlsAcceptorLayer::new(config).with_store_client_hello(true),
         )
-            .into_layer(HttpServer::auto(executor).service(handler));
+            .into_layer(http.service(handler));
         let task = spawn(listener.serve(service));
         Self {
             version,
@@ -406,7 +408,7 @@ async fn complete(
 fn seed(cache: &AltSvcCache, origin: &HttpOrigin, advertisement: &str) {
     let mut headers = HeaderMap::new();
     headers.insert(header::ALT_SVC, advertisement.parse().unwrap());
-    cache.record_authenticated(origin, &headers, Duration::ZERO);
+    cache.record(origin, &headers, Duration::ZERO);
 }
 
 #[tokio::test]
@@ -778,7 +780,8 @@ async fn timed_out_alternative_cannot_bypass_new_pins_on_pooled_origin() {
 async fn alternative_target_is_reached_through_selected_proxy_route() {
     let (auth, tls) = credentials();
     let origin = Server::start(auth.clone(), Version::HTTP_2).await;
-    let alternative = Server::start(auth, Version::HTTP_2).await;
+    let alternative = Server::start(auth.clone(), Version::HTTP_2).await;
+    let quic_alternative = Server::start(auth, Version::HTTP_3).await;
     let cancel = CancellationToken::new();
     let shutdown = Shutdown::new(cancel.clone().cancelled_owned());
     let executor = Executor::graceful(shutdown.guard());
@@ -823,7 +826,7 @@ async fn alternative_target_is_reached_through_selected_proxy_route() {
         &origin.origin(),
         &format!("h2=\"{}\"", alternative.address),
     );
-    let client = client(tls, cache);
+    let client = client(tls.clone(), cache);
     let request = origin.request();
     request.extensions().insert(ProxyRoutes::new([
         ProxyRoute::from(
@@ -850,6 +853,50 @@ async fn alternative_target_is_reached_through_selected_proxy_route() {
         );
     }
     drop(client);
+
+    // An unsupported local QUIC proxy capability must leave the working proxy
+    // available for origin fallback, including on the next request. An explicit
+    // DIRECT backup must not bypass it merely because H3 was advertised.
+    let proxy = ProxyRoute::from(
+        format!("http://{proxy_address}")
+            .parse::<ProxyAddress>()
+            .unwrap(),
+    );
+    for routes in [vec![proxy.clone()], vec![proxy, ProxyRoute::Direct]] {
+        let cache = AltSvcCache::default();
+        seed(
+            &cache,
+            &origin.origin(),
+            &format!("h3=\"{}\"", quic_alternative.address),
+        );
+        let (client, endpoint) = client_with_http3_cache(tls.clone(), cache).await;
+        let before = targets.lock().len();
+        for _ in 0..2 {
+            let request = origin.request();
+            request
+                .extensions()
+                .insert(ProxyRoutes::new(routes.clone()));
+            assert_eq!(complete(&client, request).await.1, Version::HTTP_2);
+        }
+        assert_eq!(
+            targets.lock().len(),
+            before + 1,
+            "origin connection must traverse the proxy and then be pooled"
+        );
+        assert_eq!(
+            targets.lock().last().unwrap(),
+            &format!("localhost:{}", origin.address.port())
+        );
+        assert_eq!(
+            quic_alternative.request_count(),
+            0,
+            "the direct QUIC connector must never bypass the selected proxy"
+        );
+        drop(client);
+        close_client_endpoint(endpoint).await;
+    }
+    assert_eq!(origin.request_count(), 4);
+    quic_alternative.close().await;
     cancel.cancel();
     shutdown.shutdown_with_limit(TEST_TIMEOUT).await.unwrap();
     task.await.unwrap();

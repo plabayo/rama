@@ -5,7 +5,7 @@ use super::{
     connection::Shared,
     frame::FrameEvent,
     headers,
-    quic::{RecvStream, SendStream, Writer},
+    quic::{SendStream, Writer},
     stream::{Phase, Reader},
 };
 use rama_core::bytes::{Buf, Bytes};
@@ -149,10 +149,7 @@ impl StreamingBody for Body {
             Poll::Ready(Some(Err(error))) => {
                 self.failed = true;
                 self._permit.take();
-                RecvStream::stop(&mut self.reader.stream, error.code());
-                if error.scope() == super::qpack::ErrorScope::Connection {
-                    self.reader.shared.fail(error);
-                }
+                self.reader.reject(error);
                 Poll::Ready(Some(Err(crate::Error::new_body(error))))
             }
             result => result.map(|frame| frame.map(|frame| frame.map_err(crate::Error::new_body))),
@@ -174,7 +171,7 @@ impl StreamingBody for Body {
 }
 
 pub(crate) async fn send<B, S>(
-    writer: Writer<S>,
+    mut writer: Writer<S>,
     body: B,
     shared: Arc<Shared>,
     id: u64,
@@ -189,16 +186,20 @@ where
     // An idle application body must not retain a request's admission permit
     // after STOP_SENDING or connection failure. Watching write readiness alone
     // misses cancellation while awaiting the next application frame.
-    tokio::select! {
+    let result = tokio::select! {
         biased;
-        result = send_inner(writer, body, shared.clone(), id, remaining) => result,
+        result = send_inner(&mut writer, body, shared.clone(), id, remaining) => result,
         error = stopped => Err(error),
         error = shared.failed() => Err(error),
+    };
+    if let Err(error) = result {
+        writer.reset(error.code());
     }
+    result
 }
 
 async fn send_inner<B, S>(
-    mut writer: Writer<S>,
+    writer: &mut Writer<S>,
     mut body: B,
     shared: Arc<Shared>,
     id: u64,
@@ -209,7 +210,7 @@ where
     B::Error: Into<BoxError>,
     S: SendStream,
 {
-    flush(&shared, id, &mut writer).await?;
+    flush(&shared, id, writer).await?;
     let mut trailers_seen = false;
     let mut budget = super::cooperative::Budget::default();
     while let Some(frame) = std::future::poll_fn(|cx| {
@@ -246,7 +247,7 @@ where
                     let len = data.remaining().min(shared.config.read_chunk_size);
                     budget.consume().await;
                     writer.queue(FrameType::DATA, data.copy_to_bytes(len))?;
-                    flush(&shared, id, &mut writer).await?;
+                    flush(&shared, id, writer).await?;
                 }
             }
             Err(frame) => {
@@ -260,7 +261,7 @@ where
                     trailers_seen = true;
                     let bytes = super::stream::encode_trailers(&shared, id, &trailers)?;
                     writer.queue(FrameType::HEADERS, bytes)?;
-                    flush(&shared, id, &mut writer).await?;
+                    flush(&shared, id, writer).await?;
                 }
             }
         }

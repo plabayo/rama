@@ -3,10 +3,11 @@ use crate::h2::codec::UserError;
 use crate::h2::proto;
 use rama_core::extensions::{Egress, Extensions, Ingress};
 use rama_core::telemetry::tracing::{self, warn};
+use rama_http_types::proto::h2::alt_svc::{AltSvcObserverExtension, AltSvcReceivedAt};
 use rama_http_types::proto::h2::frame::{
     DEFAULT_INITIAL_WINDOW_SIZE, PushPromiseHeaderError, Reason,
 };
-use rama_http_types::{HeaderMap, Request, Response};
+use rama_http_types::{HeaderMap, Request, Response, header};
 use rama_net::conn::ConnectionHealthWatcher;
 
 use std::cmp::Ordering;
@@ -320,6 +321,12 @@ impl Recv {
                         Extensions::new()
                     })
             };
+            if !counts.peer().is_server()
+                && fields.contains_key(header::ALT_SVC)
+                && stream.extensions.contains::<AltSvcObserverExtension>()
+            {
+                extensions.insert(AltSvcReceivedAt::now());
+            }
             let message = counts.peer().convert_poll_message(
                 pseudo,
                 fields,
