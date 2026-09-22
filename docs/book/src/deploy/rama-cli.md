@@ -12,6 +12,19 @@ It also allows you to run a `rama` proxy, configured to your needs.
 rama --help
 ```
 
+### Alternative HTTP services
+
+`rama send --alt-svc --location https://example.com` opts in to learning and
+using alternative services advertised through response headers or HTTP/2 ALTSVC
+frames. Advertisements are kept in memory for that command only, so a redirect
+can use an alternative learned from an earlier response. No cache file is read
+or written. Alternative-service discovery is disabled by default in the CLI.
+
+`--http3` requires HTTP/3 directly, without an advertisement or `--alt-svc`.
+Explicit HTTP version flags continue to constrain selection when `--alt-svc`
+is enabled. WebSockets over HTTP/3 require Extended CONNECT support, which is
+not yet implemented.
+
 ## Hosted services
 
 Rama also exposes public services that are useful while developing and testing

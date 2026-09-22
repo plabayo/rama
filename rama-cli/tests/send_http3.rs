@@ -361,12 +361,43 @@ async fn redirects_discover_h3_and_reuse_its_connection() -> TestResult {
     let alternative = Server::start(fixture.auth.clone(), Version::HTTP_3).await?;
     origin.reply(Reply::redirect(Some(alternative.address)));
     alternative.reply(Reply::redirect(None));
-    let output = fixture.send(&origin.url(), &["--location"]).await?;
+    let output = fixture
+        .send(&origin.url(), &["--location", "--alt-svc"])
+        .await?;
     succeeded(&output);
     assert_eq!(output.stdout, b"hello from rama");
     assert_eq!(origin.requests.lock().len(), 1);
     assert_eq!(alternative.requests.lock().len(), 2);
     assert_eq!(alternative.accepted.load(Ordering::Relaxed), 1);
+
+    let output = fixture.send(&origin.url(), &["--alt-svc"]).await?;
+    succeeded(&output);
+    assert_eq!(origin.requests.lock().len(), 2);
+    assert_eq!(alternative.requests.lock().len(), 2);
+    origin.close().await?;
+    alternative.close().await
+}
+
+#[tokio::test]
+async fn alternative_services_require_opt_in_and_respect_explicit_versions() -> TestResult {
+    let fixture = Fixture::new().await?;
+    let origin = Server::start(fixture.auth.clone(), Version::HTTP_2).await?;
+    let alternative = Server::start(fixture.auth.clone(), Version::HTTP_3).await?;
+
+    for args in [
+        vec!["--location"],
+        vec!["--location", "--alt-svc", "--http2"],
+    ] {
+        origin.reply(Reply::redirect(Some(alternative.address)));
+        let before = origin.requests.lock().len();
+        let output = fixture.send(&origin.url(), &args).await?;
+        succeeded(&output);
+        assert_eq!(output.stdout, b"hello from rama");
+        assert_eq!(origin.requests.lock().len(), before + 2);
+        assert!(alternative.requests.lock().is_empty());
+        assert_eq!(alternative.accepted.load(Ordering::Relaxed), 0);
+    }
+
     origin.close().await?;
     alternative.close().await
 }
@@ -381,7 +412,9 @@ async fn h3_authentication_failure_does_not_fall_back() -> TestResult {
     )
     .await?;
     origin.reply(Reply::redirect(Some(untrusted.address)));
-    let output = fixture.send(&origin.url(), &["--location"]).await?;
+    let output = fixture
+        .send(&origin.url(), &["--location", "--alt-svc"])
+        .await?;
     failed(&output);
     assert_eq!(origin.requests.lock().len(), 1);
     assert!(untrusted.requests.lock().is_empty());
@@ -405,7 +438,14 @@ async fn unavailable_h3_obeys_explicit_version_and_connection_deadline() -> Test
     let output = fixture
         .send(
             &origin.url(),
-            &["--location", "--connect-timeout", "1", "--max-time", "5"],
+            &[
+                "--location",
+                "--alt-svc",
+                "--connect-timeout",
+                "1",
+                "--max-time",
+                "5",
+            ],
         )
         .await?;
     succeeded(&output);
@@ -503,7 +543,8 @@ async fn explicit_h3_rejects_wrong_alpn_and_incompatible_tls() -> TestResult {
     let output = fixture.send("wss://localhost:1/", &["--http3"]).await?;
     failed(&output);
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains("WebSocket over HTTP/3 is not supported")
+        String::from_utf8_lossy(&output.stderr)
+            .contains("WebSocket over HTTP/3 requires Extended CONNECT")
     );
     server.close().await
 }

@@ -326,7 +326,7 @@ async fn new_inner_client(
         && !cfg.http_10
         && !cfg.http_11
         && !cfg.http_2
-        && (cfg.http_3 || matches!(cfg.tls_max, None | Some(TlsVersion::V13)));
+        && (cfg.http_3 || (cfg.alt_svc && matches!(cfg.tls_max, None | Some(TlsVersion::V13))));
     // Erase the deep transport futures before adding diagnostics and timeouts.
     // Otherwise constructing their combined future can exhaust a worker stack.
     // This boundary is only crossed for a new connection; pool hits bypass it.
@@ -343,7 +343,7 @@ async fn new_inner_client(
         builder.map_connector(|connector| connector.boxed())
     };
 
-    let client = builder
+    let builder = builder
         .with_custom_connector(layer_fn(logger_l4::TransportConnInfoLogger))
         .with_custom_connector(layer_fn(logger_tls::TlsInfoLogger))
         .with_custom_connector(
@@ -355,7 +355,14 @@ async fn new_inner_client(
                 TimeoutLayer::never()
             },
         )
-        .with_default_connection_pool()
+        .with_default_connection_pool();
+    let builder = if cfg.alt_svc {
+        builder
+    } else {
+        builder.without_alt_svc()
+    };
+
+    let client = builder
         .build_client()
         .with_forward_proxy_auth(!cfg.no_proxy_forward_auth)
         .with_tunnel_plaintext_http(cfg.proxy_tunnel)

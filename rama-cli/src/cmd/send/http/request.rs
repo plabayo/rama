@@ -20,7 +20,7 @@ use super::SendCommand;
 pub(super) async fn build(cfg: &SendCommand, is_ws: bool) -> Result<Request, BoxError> {
     if is_ws && cfg.http_3 {
         return Err(BoxError::from_static_str(
-            "WebSocket over HTTP/3 is not supported",
+            "WebSocket over HTTP/3 requires Extended CONNECT, which is not yet supported",
         ));
     }
     let mut request = Request::new(Body::empty());

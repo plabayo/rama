@@ -49,6 +49,11 @@ struct Advertisement {
 /// per origin are bounded. Lookup shares immutable candidate storage; freshness,
 /// persistence and temporary failure state remain private to this cache.
 ///
+/// Headers and HTTP/2 ALTSVC frames update the same origin entry: each accepted
+/// advertisement replaces the previous list, and either source can clear it.
+/// Neither source has precedence. RFC 7838 section 4 discourages mixing them
+/// because their processing order can be difficult to predict.
+///
 /// These are hints, not proof of authority. An HTTPS alternative must authenticate
 /// the logical origin and negotiate its advertised protocol. Using an alternative
 /// for an HTTP origin additionally requires RFC 8164's origin authorization; TLS

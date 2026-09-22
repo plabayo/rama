@@ -470,6 +470,65 @@ async fn h2_altsvc_frame_discovers_h3_without_a_response_header() {
 }
 
 #[tokio::test]
+async fn h2_alt_svc_headers_and_frames_replace_and_clear_the_same_cache() {
+    let (auth, tls) = credentials();
+    let origin = Server::start(auth, Version::HTTP_2).await;
+    let cache = AltSvcCache::default();
+    // This client cannot use H3, so each exchange stays on the origin while
+    // still recording its advertisements, independently of supported protocols.
+    let client = client(tls, cache.clone());
+
+    for (frame, advertisement, expected_port) in [
+        (false, "h3=\":8443\"", Some(8443)),
+        (true, "h3=\":9443\"", Some(9443)),
+        (false, "clear", None),
+        (true, "h3=\":8443\"", Some(8443)),
+        (false, "h3=\":9443\"", Some(9443)),
+        (true, "clear", None),
+    ] {
+        let reply = if frame {
+            Reply {
+                alt_svc_frame: Some(
+                    AltSvcFrame::new(
+                        StreamId::zero(),
+                        Bytes::from(format!("https://localhost:{}", origin.address.port())),
+                        Bytes::from_static(advertisement.as_bytes()),
+                    )
+                    .unwrap(),
+                ),
+                ..Reply::default()
+            }
+        } else {
+            Reply::advertise(advertisement)
+        };
+        origin.reply(reply);
+        assert_eq!(complete(&client, origin.request()).await.1, Version::HTTP_2);
+
+        // Frames are connection-level events; wait for observation before the
+        // next exchange so this tests replacement, not task scheduling order.
+        timeout(TEST_TIMEOUT, async {
+            loop {
+                let snapshot = cache.lookup(&origin.origin());
+                let actual = snapshot.as_ref().map(|snapshot| {
+                    assert_eq!(snapshot.len(), 1, "advertisements must replace, not merge");
+                    snapshot.get(0).unwrap().target.port
+                });
+                if actual == expected_port {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    assert_eq!(origin.request_count(), 6);
+    drop(client);
+    origin.close().await;
+}
+
+#[tokio::test]
 async fn learns_h1_and_h2_alternatives_and_preserves_origin_and_sni() {
     for (protocol, version) in [("http%2F1.1", Version::HTTP_11), ("h2", Version::HTTP_2)] {
         let (auth, tls) = credentials();
