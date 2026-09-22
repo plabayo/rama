@@ -5,7 +5,12 @@ use rama_core::{
 };
 use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer};
 use rama_utils::{collections::smallvec::SmallVec, macros::generate_set_and_with};
-use std::{borrow::Cow, net::IpAddr, sync::Arc};
+use std::{
+    borrow::Cow,
+    hash::{Hash, Hasher},
+    net::IpAddr,
+    sync::Arc,
+};
 
 use crate::{KeyLogIntent, ProtocolVersion, TlsKeyLog, TlsSupportedVersions};
 use rama_net::{
@@ -291,9 +296,26 @@ pub struct TlsServerVerify(pub ServerVerifyMode);
 /// names applies globally; otherwise it is considered only when the effective
 /// TLS server name matches. Names are configured explicitly rather than inferred
 /// from certificate contents.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Extension)]
+#[derive(Debug, Clone, Extension)]
 #[extension(tags(tls))]
-pub struct TlsServerCertPins(Arc<Vec<TlsServerCertPinSet>>);
+pub struct TlsServerCertPins {
+    sets: Arc<Vec<TlsServerCertPinSet>>,
+    digest: [u8; 32],
+}
+
+impl PartialEq for TlsServerCertPins {
+    fn eq(&self, other: &Self) -> bool {
+        self.sets == other.sets
+    }
+}
+
+impl Eq for TlsServerCertPins {}
+
+impl Hash for TlsServerCertPins {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.digest.hash(state);
+    }
+}
 
 /// A single accepted server leaf pin.
 ///
@@ -463,13 +485,16 @@ impl TlsServerCertPins {
     ///
     /// A single pin or certificate converts into a global single-pin set.
     pub fn new(set: impl Into<TlsServerCertPinSet>) -> Self {
-        Self(Arc::new(vec![set.into()]))
+        let sets = Arc::new(vec![set.into()]);
+        let digest = super::pool::policy_digest(b"rama.tls.pins.v1", sets.as_ref());
+        Self { sets, digest }
     }
 
     generate_set_and_with! {
         /// Add an alternative pin set.
         pub fn pin_set(mut self, set: impl Into<TlsServerCertPinSet>) -> Self {
-            Arc::make_mut(&mut self.0).push(set.into());
+            Arc::make_mut(&mut self.sets).push(set.into());
+            self.digest = super::pool::policy_digest(b"rama.tls.pins.v1", self.sets.as_ref());
             self
         }
     }
@@ -485,7 +510,7 @@ impl TlsServerCertPins {
         // an unparsable leaf simply never matches a key pin
         let mut leaf_spki: Option<Option<[u8; 32]>> = None;
         let mut applicable = false;
-        for pin_set in self.0.iter() {
+        for pin_set in self.sets.iter() {
             if !pin_set.applies_to(server_name) {
                 continue;
             }
@@ -512,7 +537,9 @@ impl TlsServerCertPins {
     /// Return whether at least one pin set applies to `server_name`.
     #[doc(hidden)]
     pub fn applies_to(&self, server_name: Option<&Host>) -> bool {
-        self.0.iter().any(|pin_set| pin_set.applies_to(server_name))
+        self.sets
+            .iter()
+            .any(|pin_set| pin_set.applies_to(server_name))
     }
 }
 
@@ -522,8 +549,25 @@ impl TlsServerCertPins {
 /// terminate a verified chain at a configured root, intermediate, or end-entity
 /// certificate. Use certificate pinning when exact certificate or SPKI matching
 /// is required instead of trust-anchor semantics.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct TlsServerTrustAnchors(Arc<[CertificateDer<'static>]>);
+#[derive(Debug, Clone)]
+pub struct TlsServerTrustAnchors {
+    certificates: Arc<[CertificateDer<'static>]>,
+    digest: [u8; 32],
+}
+
+impl PartialEq for TlsServerTrustAnchors {
+    fn eq(&self, other: &Self) -> bool {
+        self.certificates == other.certificates
+    }
+}
+
+impl Eq for TlsServerTrustAnchors {}
+
+impl Hash for TlsServerTrustAnchors {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.digest.hash(state);
+    }
+}
 
 impl TlsServerTrustAnchors {
     /// Create a non-empty set of server trust anchors.
@@ -536,12 +580,16 @@ impl TlsServerTrustAnchors {
                 "server trust anchor set cannot be empty",
             ));
         }
-        Ok(Self(certificates))
+        let digest = super::pool::policy_digest(b"rama.tls.trust-anchors.v1", &certificates);
+        Ok(Self {
+            certificates,
+            digest,
+        })
     }
 
     /// Return the configured trust-anchor certificates.
     pub fn certificates(&self) -> &[CertificateDer<'static>] {
-        &self.0
+        &self.certificates
     }
 }
 

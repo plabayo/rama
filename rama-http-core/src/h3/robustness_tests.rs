@@ -3,22 +3,225 @@
 use super::{LIMIT, Pair};
 use crate::h3::{
     client,
-    connection::Config,
+    connection::{Config, initial_control},
     qpack::{Encoder, EncoderConfig, ErrorScope},
     quic::Writer,
     server,
 };
 use rama_core::{
-    bytes::Bytes,
+    bytes::{Bytes, BytesMut},
+    futures::{FutureExt as _, stream},
     rt::{Executor, spawn},
 };
 use rama_http_types::{
     Body, Method, Request, Response,
     body::util::BodyExt,
-    proto::h3::{Code, FrameType},
+    proto::h3::{Code, FrameHeader, FrameType},
 };
-use std::{convert::Infallible, sync::Arc};
-use tokio::sync::Barrier;
+use rama_quic::TransportConfig;
+use rama_quic_proto::{Dir, MAX_STREAM_COUNT, Side, StreamId, VarInt, coding::Codec};
+use std::{
+    convert::Infallible,
+    future::poll_fn,
+    pin::pin,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    task::Poll,
+};
+use tokio::sync::{Barrier, oneshot};
+
+#[tokio::test(start_paused = true)]
+async fn memory_goaway_prevents_new_headers_when_stream_credit_arrives_concurrently() {
+    // RFC 9114 section 5.2 permits a first GOAWAY at the maximum request ID.
+    // That still prohibits new requests whose IDs would fall below this limit.
+    const WAITERS: u32 = 32;
+    tokio::time::timeout(LIMIT, async {
+        let mut transport = TransportConfig::default();
+        Config::default()
+            .configure_transport(&mut transport)
+            .unwrap();
+        transport.set_max_concurrent_bidi_streams(0u32);
+        let pair = Pair::in_memory(None, Some(transport)).await;
+        let (mut client, driver) =
+            client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
+                .unwrap();
+        let driver = spawn(driver.run());
+        client.ready().await.unwrap();
+        let mut requests = Vec::with_capacity(WAITERS as usize);
+        for _ in 0..WAITERS {
+            let mut sender = client.clone();
+            let mut request = Box::pin(async move {
+                sender
+                    .send_request(
+                        Request::builder()
+                            .method(Method::POST)
+                            .uri("https://localhost/stop-before-headers")
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+            });
+            assert!(poll_fn(|cx| Poll::Ready(request.as_mut().poll(cx).is_pending())).await);
+            requests.push(request);
+        }
+        let mut control = pair.server.open_uni().await.unwrap();
+        control
+            .write_all(&initial_control(&Config::default()).unwrap())
+            .await
+            .unwrap();
+        let limit = VarInt::from_u64(u64::from(StreamId::new(
+            Side::Client,
+            Dir::Bi,
+            MAX_STREAM_COUNT - 1,
+        )))
+        .unwrap();
+        let mut bytes = BytesMut::new();
+        FrameHeader::new(FrameType::GOAWAY, limit.size() as u64)
+            .encode(&mut bytes)
+            .unwrap();
+        limit.encode(&mut bytes);
+        control.write_all(&bytes).await.unwrap();
+        _ = client.closed_or_draining().await;
+
+        // Make both cancellation and opening ready before repolling the pending
+        // requests. The unused probe confirms receipt of the new MAX_STREAMS.
+        pair.server.set_max_concurrent_bi_streams(WAITERS + 1);
+        let _probe = pair.client.open_bi().await.unwrap();
+        for mut request in requests {
+            let result = poll_fn(|cx| Poll::Ready(request.as_mut().poll(cx))).await;
+            let Poll::Ready(Err(error)) = result else {
+                panic!(
+                    "GOAWAY must reject before sending HEADERS, even with available stream credit"
+                );
+            };
+            assert_eq!(error.code(), Code::H3_REQUEST_REJECTED);
+        }
+        pair.client.close(0u32, b"test complete");
+        _ = driver.await.unwrap();
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn memory_goaway_releases_saturated_admission_and_preserves_active_response() {
+    check_goaway_preserves_active_response(1).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn memory_goaway_releases_stream_credit_waiter_and_preserves_active_response() {
+    check_goaway_preserves_active_response(2).await;
+}
+
+async fn check_goaway_preserves_active_response(max_requests: usize) {
+    // RFC 9114 section 5.2: stop opening requests after GOAWAY, while an
+    // accepted request below its limit can still complete. Exercise the two
+    // distinct waits before stream creation with the same one-stream peer.
+    tokio::time::timeout(LIMIT, async {
+        let mut transport = TransportConfig::default();
+        Config::default()
+            .configure_transport(&mut transport)
+            .unwrap();
+        transport.set_max_concurrent_bidi_streams(1u32);
+        let pair = Pair::in_memory(None, Some(transport)).await;
+        let (mut client, client_driver) = client::handshake::<Body>(
+            pair.client.clone(),
+            Config {
+                max_requests,
+                ..Config::default()
+            },
+            Executor::new(),
+        )
+        .unwrap();
+        let (mut server, server_driver) =
+            server::handshake(pair.server.clone(), Config::default()).unwrap();
+        let client_driver = spawn(client_driver.run());
+        let server_driver = spawn(server_driver.run());
+        let accepted = spawn({
+            let mut sender = client.clone();
+            async move {
+                sender
+                    .send_request(
+                        Request::builder()
+                            .method(Method::POST)
+                            .uri("https://localhost/accepted")
+                            .body(Body::from("process once"))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap()
+            }
+        });
+        let (request, response) = server.accept().await.unwrap().resolve().await.unwrap();
+        assert_eq!(request.method(), Method::POST);
+        assert_eq!(
+            request.into_body().collect().await.unwrap().to_bytes(),
+            "process once"
+        );
+        let (release, wait) = oneshot::channel();
+        let respond = spawn(async move {
+            let body = Body::from_stream(stream::once(async move {
+                wait.await.unwrap();
+                Ok::<_, Infallible>(Bytes::from_static(b"completed after GOAWAY"))
+            }));
+            response.send_response(Response::new(body)).await.unwrap();
+        });
+        let active_response = accepted.await.unwrap();
+        let body_polls = Arc::new(AtomicUsize::new(0));
+        let request = || {
+            let polls = body_polls.clone();
+            Request::builder()
+                .method(Method::POST)
+                .uri("https://localhost/not-replayed")
+                .body(Body::from_stream(stream::once(async move {
+                    polls.fetch_add(1, Ordering::SeqCst);
+                    Ok::<_, Infallible>(Bytes::from_static(b"side effect"))
+                })))
+                .unwrap()
+        };
+        {
+            let mut blocked = pin!(client.send_request(request()));
+            assert!(poll_fn(|cx| Poll::Ready(blocked.as_mut().poll(cx).is_pending())).await);
+            server.shutdown().unwrap();
+            let error = blocked.await.unwrap_err();
+            assert_eq!(error.code(), Code::H3_REQUEST_REJECTED);
+            assert_eq!(error.scope(), ErrorScope::Stream);
+        }
+        assert!(client.is_draining());
+        assert!(!client.is_closed());
+        assert_eq!(
+            client.send_request(request()).await.unwrap_err().code(),
+            Code::H3_REQUEST_REJECTED
+        );
+        assert_eq!(body_polls.load(Ordering::SeqCst), 0);
+
+        // Keep the active stream's credit held until both rejections arrive.
+        release.send(()).unwrap();
+        assert_eq!(
+            active_response
+                .into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes(),
+            "completed after GOAWAY"
+        );
+        respond.await.unwrap();
+        server.drained().await.unwrap();
+        assert!(pair.server.accept_bi().now_or_never().is_none());
+        assert_eq!(body_polls.load(Ordering::SeqCst), 0);
+        assert!(pair.client.close_reason().is_none());
+        pair.client.close(0u32, b"test complete");
+        _ = client_driver.await.unwrap();
+        _ = server_driver.await.unwrap();
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
 
 #[tokio::test]
 async fn malformed_control_streams_close_connection_and_wake_accept() {

@@ -4,10 +4,10 @@ use rama_core::error::BoxError;
 use rama_core::extensions::{Extension, FromExtensions};
 use rama_net::tls::TlsAlpn;
 use rama_tls::client::{
-    TlsClientAuth, TlsClientConfig, TlsServerCertPins, TlsServerName, TlsServerTrust,
+    TlsClientAuth, TlsClientConfig, TlsPoolId, TlsServerCertPins, TlsServerName, TlsServerTrust,
     TlsServerVerify, TlsStoreServerCertChain,
 };
-use rama_tls::{TlsKeyLog, TlsSupportedVersions};
+use rama_tls::{KeyLogIntent, TlsKeyLog, TlsSupportedVersions};
 use rama_utils::macros::generate_set_and_with;
 use std::sync::Arc;
 
@@ -28,12 +28,9 @@ pub struct RustlsTlsConnectorConfig<'a> {
 }
 
 impl RustlsTlsConnectorConfig<'_> {
-    /// Whether no request-level TLS configuration is present.
-    ///
-    /// A connection pool dedicated to a fixed connector policy can reuse its
-    /// connections only when request extensions do not override that policy.
-    /// Inspect the request extensions before layering connector defaults.
-    pub fn is_empty(&self) -> bool {
+    /// Whether any supported request-level TLS override is present.
+    /// Inspect request extensions before layering connector defaults.
+    pub fn has_overrides(&self) -> bool {
         // Name every field so additions require an explicit pooling decision.
         let Self {
             alpn,
@@ -49,17 +46,67 @@ impl RustlsTlsConnectorConfig<'_> {
             modify,
         } = self;
 
-        alpn.is_none()
-            && versions.is_none()
-            && verify.is_none()
-            && keylog.is_none()
-            && server_name.is_none()
-            && store_chain.is_none()
-            && client_auth.is_none()
-            && server_cert_pins.is_none()
-            && server_trust.is_none()
-            && verifier.is_none()
-            && modify.is_none()
+        alpn.is_some()
+            || versions.is_some()
+            || verify.is_some()
+            || keylog.is_some()
+            || server_name.is_some()
+            || store_chain.is_some()
+            || client_auth.is_some()
+            || server_cert_pins.is_some()
+            || server_trust.is_some()
+            || verifier.is_some()
+            || modify.is_some()
+    }
+
+    /// Compact identity of request-level overrides, or `None` for the baseline.
+    ///
+    /// Explicit defaults remain distinct from absence. Common settings compare
+    /// across providers; native settings have their own namespace. Opaque
+    /// credentials, hooks, verifiers and custom log sinks disable reuse.
+    /// Connector defaults are fixed for the lifetime of the pool and must not
+    /// be layered onto this request-only view.
+    pub fn pool_id(&self) -> Option<TlsPoolId> {
+        if !self.has_overrides() {
+            return None;
+        }
+        let Self {
+            alpn,
+            versions,
+            verify,
+            keylog,
+            server_name,
+            store_chain,
+            client_auth,
+            server_cert_pins,
+            server_trust,
+            verifier,
+            modify,
+        } = self;
+        if client_auth.is_some()
+            || keylog.is_some_and(|value| matches!(value.0, KeyLogIntent::Custom(_)))
+            || verifier.is_some()
+            || modify.is_some()
+        {
+            return Some(TlsPoolId::non_reusable());
+        }
+        let keylog = keylog.map(|value| match &value.0 {
+            KeyLogIntent::Environment => (0_u8, None),
+            KeyLogIntent::Disabled => (1, None),
+            KeyLogIntent::File(path) => (2, Some(path.as_str())),
+            KeyLogIntent::Custom(_) => (3, None),
+        });
+        let common = (
+            alpn.map(|value| &value.0),
+            versions.map(|value| &value.0),
+            verify.map(|value| value.0),
+            keylog,
+            server_name.map(|value| &value.0),
+            store_chain.map(|value| value.0),
+            server_cert_pins,
+            server_trust,
+        );
+        Some(TlsPoolId::from_hash(&(common, None::<(&str, ())>)))
     }
 
     /// Whether a successful handshake establishes the configured server identity.
@@ -172,5 +219,144 @@ impl std::fmt::Debug for ModifyRustlsClientConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ModifyRustlsClientConfig")
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod pool_tests {
+    use super::*;
+    use rama_core::extensions::Extensions;
+    use rama_tls::ProtocolVersion;
+    use rama_tls::client::{ClientAuth, ServerVerifyMode, TlsServerCertPin, TlsServerTrustAnchors};
+    use rama_tls::keylog::NoopKeyLogSink;
+
+    #[test]
+    fn every_comparable_override_preserves_presence_and_value() {
+        type Insert = fn(&Extensions, u8);
+        let cases: &[(&str, Insert)] = &[
+            ("empty_alpn", |ext, value| {
+                ext.insert(if value == 0 {
+                    TlsAlpn::empty()
+                } else {
+                    TlsAlpn::http_2()
+                });
+            }),
+            ("keylog_environment_disabled", |ext, value| {
+                ext.insert(TlsKeyLog(if value == 0 {
+                    KeyLogIntent::Environment
+                } else {
+                    KeyLogIntent::Disabled
+                }));
+            }),
+            ("alpn", |ext, value| {
+                ext.insert(if value == 0 {
+                    TlsAlpn::http_1()
+                } else {
+                    TlsAlpn::http_2()
+                });
+            }),
+            ("versions", |ext, value| {
+                ext.insert(TlsSupportedVersions(vec![if value == 0 {
+                    ProtocolVersion::TLSv1_2
+                } else {
+                    ProtocolVersion::TLSv1_3
+                }]));
+            }),
+            ("verify", |ext, value| {
+                ext.insert(TlsServerVerify(if value == 0 {
+                    ServerVerifyMode::Auto
+                } else {
+                    ServerVerifyMode::Disable
+                }));
+            }),
+            ("keylog", |ext, value| {
+                ext.insert(TlsKeyLog(KeyLogIntent::File(format!("pool-test-{value}"))));
+            }),
+            ("server_name", |ext, value| {
+                ext.insert(TlsServerName(
+                    if value == 0 {
+                        "one.example"
+                    } else {
+                        "two.example"
+                    }
+                    .parse()
+                    .unwrap(),
+                ));
+            }),
+            ("store_chain", |ext, value| {
+                ext.insert(TlsStoreServerCertChain(value != 0));
+            }),
+            ("pins", |ext, value| {
+                ext.insert(TlsServerCertPins::new(TlsServerCertPin::SpkiSha256(
+                    [value; 32],
+                )));
+            }),
+            ("trust", |ext, value| {
+                ext.insert(TlsServerTrust::custom(
+                    TlsServerTrustAnchors::try_new([vec![value; 4096].into()]).unwrap(),
+                ));
+            }),
+        ];
+        for (name, insert) in cases {
+            let first = Extensions::new();
+            let empty = RustlsTlsConnectorConfig::from_extensions(&first);
+            assert!(!empty.has_overrides(), "{name}");
+            assert_eq!(empty.pool_id(), None, "{name}");
+            insert(&first, 0);
+            let view = RustlsTlsConnectorConfig::from_extensions(&first);
+            assert!(view.has_overrides(), "{name}");
+            let id = view.pool_id().unwrap();
+            assert!(id.is_reusable(), "{name}");
+            let equal = Extensions::new();
+            insert(&equal, 0);
+            assert_eq!(
+                Some(id),
+                RustlsTlsConnectorConfig::from_extensions(&equal).pool_id(),
+                "{name}"
+            );
+            let changed = Extensions::new();
+            insert(&changed, 1);
+            assert_ne!(
+                Some(id),
+                RustlsTlsConnectorConfig::from_extensions(&changed).pool_id(),
+                "{name}"
+            );
+            // Newest request settings replace older values of the same type.
+            insert(&first, 1);
+            assert_eq!(
+                RustlsTlsConnectorConfig::from_extensions(&first).pool_id(),
+                RustlsTlsConnectorConfig::from_extensions(&changed).pool_id(),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn opaque_overrides_are_present_but_never_reusable() {
+        let cases: &[fn(&Extensions)] = &[
+            |ext| {
+                ext.insert(TlsClientAuth(ClientAuth::SelfSigned));
+            },
+            |ext| {
+                ext.insert(TlsKeyLog(KeyLogIntent::Custom(Arc::new(NoopKeyLogSink))));
+            },
+            |ext| {
+                ext.insert(ModifyRustlsClientConfig::new(Ok));
+            },
+            |ext| {
+                ext.insert(RustlsServerCertVerifier(Arc::new(
+                    crate::verify::NoServerCertVerifier::new(),
+                )));
+            },
+        ];
+        for insert in cases {
+            let extensions = Extensions::new();
+            insert(&extensions);
+            let view = RustlsTlsConnectorConfig::from_extensions(&extensions);
+            assert!(view.has_overrides());
+            let id = view.pool_id().unwrap();
+            assert!(!id.is_reusable());
+            assert_eq!(Some(id), view.pool_id());
+        }
     }
 }

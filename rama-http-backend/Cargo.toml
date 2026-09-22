@@ -31,6 +31,8 @@ targets = [
 
 [features]
 default = []
+rustls = ["tls", "dep:rama-tls-rustls"]
+boring = ["tls", "dep:rama-tls-boring"]
 opentelemetry = ["rama-core/opentelemetry", "rama-net/opentelemetry"]
 # `rama-http-types/tls` is required so its `input_ext` protocol resolution sees the
 # real `rama_tls::SecureTransport` (not its tls-off dummy); otherwise an
@@ -49,6 +51,8 @@ rama-net = { workspace = true, features = ["std"] }
 rama-quic = { workspace = true }
 rama-tcp = { workspace = true }
 rama-tls = { workspace = true }
+rama-tls-rustls = { workspace = true, optional = true }
+rama-tls-boring = { workspace = true, optional = true }
 rama-utils = { workspace = true, features = ["std"] }
 tokio = { workspace = true, features = ["macros"] }
 tokio-util = { workspace = true }

@@ -72,28 +72,6 @@ pub mod tls {
             .ok()
     }
 
-    /// Check whether request extensions preserve the connector's fixed TLS policy.
-    ///
-    /// Resolve the provider once when assembling a connection pool. The returned
-    /// check reads request overrides only, before layering connector defaults.
-    pub fn client_connection_reuse_check(
-        backend: rama_tls::TlsBackend,
-    ) -> fn(&rama_core::extensions::Extensions) -> bool {
-        match selected_backend(backend) {
-            #[cfg(feature = "rustls")]
-            Some(rama_tls::TlsBackend::Rustls) => |extensions| {
-                rama_tls_rustls::client::RustlsTlsConnectorConfig::from_extensions(extensions)
-                    .is_empty()
-            },
-            #[cfg(feature = "boring")]
-            Some(rama_tls::TlsBackend::Boring) => |extensions| {
-                rama_tls_boring::client::BoringTlsConnectorConfig::from_extensions(extensions)
-                    .is_empty()
-            },
-            _ => |_| false,
-        }
-    }
-
     /// Summarize whether the selected provider establishes server identity.
     #[cfg_attr(
         not(any(feature = "rustls", feature = "boring")),
@@ -135,41 +113,18 @@ pub mod tls {
         #[test]
         fn native_hooks_only_affect_the_selected_provider() {
             let extensions = Extensions::new();
-            assert!(client_connection_reuse_check(TlsBackend::Boring)(
-                &extensions
-            ));
-            assert!(client_connection_reuse_check(TlsBackend::Rustls)(
-                &extensions
-            ));
             extensions.insert(rama_tls_rustls::client::ModifyRustlsClientConfig::new(Ok));
-            assert!(client_connection_reuse_check(TlsBackend::Boring)(
-                &extensions
-            ));
             assert!(client_authenticates_server(&extensions, TlsBackend::Boring));
-            assert!(!client_connection_reuse_check(TlsBackend::Rustls)(
-                &extensions
-            ));
             assert!(!client_authenticates_server(
                 &extensions,
                 TlsBackend::Rustls
             ));
-            assert_eq!(
-                client_connection_reuse_check(TlsBackend::Auto)(&extensions),
-                client_connection_reuse_check(TlsBackend::Rustls)(&extensions)
-            );
             assert!(!client_authenticates_server(&extensions, TlsBackend::Auto));
 
             extensions.insert(TlsServerVerify(ServerVerifyMode::Disable));
             assert!(!client_authenticates_server(
                 &extensions,
                 TlsBackend::Boring
-            ));
-            extensions.insert(TlsServerVerify(ServerVerifyMode::Auto));
-            assert!(!client_connection_reuse_check(TlsBackend::Boring)(
-                &extensions
-            ));
-            assert!(!client_connection_reuse_check(TlsBackend::Rustls)(
-                &extensions
             ));
         }
     }

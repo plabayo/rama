@@ -20,6 +20,7 @@ pub use parser::{
 };
 
 mod config;
+mod pool;
 #[doc(inline)]
 pub use config::{
     ClientAuth, ClientAuthData, ServerTrustRoots, ServerVerifyMode, TlsClientAuth, TlsClientConfig,
@@ -27,6 +28,7 @@ pub use config::{
     TlsServerIdentity, TlsServerName, TlsServerTrust, TlsServerTrustAnchors, TlsServerVerify,
     TlsStoreServerCertChain,
 };
+pub use pool::TlsPoolId;
 use rama_crypto::pki_types::CertificateDer;
 
 use super::ProtocolVersion;

@@ -4,7 +4,7 @@ use super::Http3Transport;
 use rama_core::{
     Service,
     error::{BoxError, BoxErrorExt as _, error_chain},
-    extensions::{Extensions, ExtensionsRef},
+    extensions::ExtensionsRef,
     futures::{StreamExt as _, stream},
     rt::Executor,
 };
@@ -23,7 +23,7 @@ use rama_net::{
 };
 use rama_quic::{
     ClientConfig, Connection, ConnectionError as QuicConnectionError, Endpoint, TransportConfig,
-    tls::{TlsOptions, client_authenticates_server, client_connection_reuse_check},
+    tls::{TlsOptions, client_authenticates_server},
 };
 use rama_tls::{
     TlsBackend,
@@ -35,7 +35,7 @@ use std::{net::SocketAddr, sync::Arc};
 /// Establish authenticated QUIC transports for the common HTTP handshake.
 ///
 /// Wrap this connector with Rama's DNS connector and HTTP connection pool,
-/// then configure the pool with [`Self::connection_reuse_check`] so overrides affect lookup.
+/// then configure the pool with [`Self::tls_backend`] so overrides affect lookup.
 /// The connector selects `h3` ALPN; the origin hostname remains the TLS
 /// verification target even when routing selects a different physical address.
 /// TCP proxy routes are rejected before any UDP connection is attempted.
@@ -110,7 +110,7 @@ impl Http3Connector {
         &self.tls
     }
 
-    /// Provider selection used for establishment and connection reuse checks.
+    /// Provider selection used for establishment and TLS pool identity.
     #[must_use]
     pub fn tls_backend(&self) -> TlsBackend {
         self.backend
@@ -209,11 +209,6 @@ struct PreparedTls {
 }
 
 impl Http3Connector {
-    /// Reject request-local TLS overrides when reusing this connector's pool.
-    pub fn connection_reuse_check(&self) -> fn(&Extensions) -> bool {
-        client_connection_reuse_check(self.backend)
-    }
-
     fn prepare_tls(&self, input: &ConnectRequest) -> Result<PreparedTls, ConnectionError> {
         let tls = self.tls.clone().with_overrides(input.extensions());
         let server_identity = tls

@@ -4452,6 +4452,8 @@ dependencies = [
  "rama-quic",
  "rama-tcp",
  "rama-tls",
+ "rama-tls-boring",
+ "rama-tls-rustls",
  "rama-unix",
  "rama-utils",
  "rama-ws",

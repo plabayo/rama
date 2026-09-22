@@ -176,10 +176,13 @@ where
         let mut writer = Writer::new(send);
         let mut reader = Reader::new(recv, self.shared.clone(), id);
         reader.client_lifetime = Some(self.lifetime.clone());
-        if self.shared.goaway().is_some_and(|limit| id >= limit) {
+        // GOAWAY and newly available stream credit can become ready together.
+        // Its limit classifies existing requests; even the maximum limit forbids
+        // starting this new request (RFC 9114 section 5.2).
+        if self.shared.goaway().is_some() {
             return Err(Error::stream(
                 Code::H3_REQUEST_REJECTED,
-                "request excluded by GOAWAY",
+                "connection draining",
             ));
         }
         reader.origin = Some(request.uri().clone());

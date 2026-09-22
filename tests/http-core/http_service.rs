@@ -5,11 +5,12 @@ use rama::{
     bytes::Bytes,
     dns::client::DnsConnector,
     extensions::ExtensionsRef,
+    futures::stream,
     graceful::Shutdown,
     http::{
         Body, HeaderMap, Method, Request, Response, StatusCode, Version,
-        body::util::BodyExt as _,
-        client::{EasyHttpConnectorBuilder, Http3Transport, http_connect},
+        body::{Frame, util::BodyExt as _},
+        client::{EasyHttpConnectorBuilder, Http3Connector, Http3Transport, http_connect},
         conn::{HttpOrigin, TargetHttpVersion},
         core::h3::connection::Config as Http3Config,
         header,
@@ -23,7 +24,7 @@ use rama::{
     layer::MapInputLayer,
     net::{
         Protocol,
-        address::{HostWithPort, ProxyAddress, SocketAddress},
+        address::{Host, HostWithPort, ProxyAddress, SocketAddress},
         client::{ConnectRequest, ProxyRoute, ProxyRoutes},
         conn::MaxConcurrency,
         proxy::IoForwardService,
@@ -56,6 +57,7 @@ use std::{
 #[cfg(feature = "boring")]
 use rama::tls::boring::{
     client::{BoringClientConfigExt as _, TlsConnectorLayer},
+    core::x509::{X509, store::X509StoreBuilder},
     server::TlsAcceptorLayer,
 };
 #[cfg(not(feature = "boring"))]
@@ -85,6 +87,7 @@ struct Observation {
 
 #[derive(Default)]
 struct Reply {
+    body: Option<Body>,
     status: StatusCode,
     headers: HeaderMap,
 }
@@ -101,6 +104,8 @@ impl Reply {
 }
 
 struct Server {
+    version: Version,
+    endpoint: Option<Endpoint>,
     address: SocketAddr,
     accepted: Arc<AtomicUsize>,
     observations: Arc<Mutex<Vec<Observation>>>,
@@ -115,10 +120,6 @@ impl Server {
         let cancel = CancellationToken::new();
         let shutdown = Shutdown::new(cancel.clone().cancelled_owned());
         let executor = Executor::graceful(shutdown.guard());
-        let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), executor.clone())
-            .await
-            .unwrap();
-        let address = listener.local_addr().unwrap();
         let observations = Arc::new(Mutex::new(Vec::new()));
         let replies = Arc::new(Mutex::new(VecDeque::<Reply>::new()));
         let accepted = Arc::new(AtomicUsize::new(0));
@@ -156,7 +157,8 @@ impl Server {
                     };
                     observations.lock().push(observation);
                     let reply = replies.lock().pop_front().unwrap_or_default();
-                    let mut response = Response::new(Body::from("delivered"));
+                    let mut response =
+                        Response::new(reply.body.unwrap_or_else(|| Body::from("delivered")));
                     *response.status_mut() = reply.status;
                     *response.headers_mut() = reply.headers;
                     Ok::<_, Infallible>(response)
@@ -164,6 +166,49 @@ impl Server {
             }
         });
         let config = TlsServerConfig::new().with_server_auth(auth);
+        if version == Version::HTTP_3 {
+            let config = config.with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
+            let endpoint = Endpoint::build(executor.clone())
+                .with_server_config(
+                    ServerConfig::try_from_rama_tls(&config, TlsOptions::default()).unwrap(),
+                )
+                .bind_address(SocketAddress::local_ipv4(0))
+                .await
+                .unwrap();
+            let address = endpoint.local_addr().unwrap();
+            let task = spawn({
+                let endpoint = endpoint.clone();
+                let accepted = accepted.clone();
+                let server = HttpServer::new_http3(executor.clone());
+                async move {
+                    while let Some(incoming) = endpoint.accept().await {
+                        accepted.fetch_add(1, Ordering::SeqCst);
+                        let server = server.clone();
+                        let handler = handler.clone();
+                        executor.spawn_task(async move {
+                            if let Ok(connection) = incoming.await {
+                                _ = server.serve(connection, handler).await;
+                            }
+                        });
+                    }
+                }
+            });
+            return Self {
+                version,
+                endpoint: Some(endpoint),
+                address,
+                accepted,
+                observations,
+                replies,
+                shutdown,
+                cancel,
+                task,
+            };
+        }
+        let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), executor.clone())
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
         let config = match version {
             Version::HTTP_11 => config.with_alpn_http_1(),
             Version::HTTP_2 => config.with_alpn_http_2(),
@@ -182,6 +227,8 @@ impl Server {
             .into_layer(HttpServer::auto(executor).service(handler));
         let task = spawn(listener.serve(service));
         Self {
+            version,
+            endpoint: None,
             address,
             accepted,
             observations,
@@ -202,6 +249,11 @@ impl Server {
 
     fn request(&self) -> Request {
         Request::builder()
+            .version(if self.version == Version::HTTP_3 {
+                Version::HTTP_3
+            } else {
+                Version::HTTP_11
+            })
             .method(Method::POST)
             .uri(format!(
                 "https://localhost:{}/resource",
@@ -221,6 +273,10 @@ impl Server {
 
     async fn close(self) {
         self.cancel.cancel();
+        if let Some(endpoint) = self.endpoint {
+            endpoint.close(0u32, b"done");
+            timeout(TEST_TIMEOUT, endpoint.shutdown()).await.unwrap();
+        }
         self.shutdown
             .shutdown_with_limit(TEST_TIMEOUT)
             .await
@@ -247,6 +303,44 @@ fn client(
         .with_default_connection_pool()
         .with_alt_svc_cache(cache)
         .build_client()
+}
+
+async fn client_with_http3(
+    tls: TlsClientConfig,
+) -> (
+    impl Service<Request, Output = Response, Error: Debug>,
+    Endpoint,
+) {
+    let endpoint = Endpoint::build(Executor::new())
+        .bind_address(SocketAddress::local_ipv4(0))
+        .await
+        .unwrap();
+    let h3 = Http3Connector::builder(Executor::new())
+        .with_endpoint(endpoint.clone())
+        .with_tls_config(tls.clone())
+        .build()
+        .await
+        .unwrap();
+    let builder = EasyHttpConnectorBuilder::new()
+        .with_default_transport_connector()
+        .with_default_dns_connector()
+        .without_tls_proxy_support()
+        .with_http_proxy_support();
+    #[cfg(feature = "boring")]
+    let builder = builder.with_tls_support_using_boringssl(tls);
+    #[cfg(not(feature = "boring"))]
+    let builder = builder.with_tls_support_using_rustls(tls);
+    let client = builder
+        .with_default_http_connector(Executor::new())
+        .with_http3_support(h3)
+        .with_default_connection_pool()
+        .build_client();
+    (client, endpoint)
+}
+
+async fn close_client_endpoint(endpoint: Endpoint) {
+    endpoint.close(0u32, b"done");
+    timeout(TEST_TIMEOUT, endpoint.shutdown()).await.unwrap();
 }
 
 fn credentials() -> (ServerAuthData, TlsClientConfig) {
@@ -717,38 +811,267 @@ async fn fixed_custom_tls_connector_reuses_connections() {
     }
 }
 
-#[tokio::test]
-async fn request_tls_overrides_neither_borrow_nor_return_pooled_connections() {
-    for version in [Version::HTTP_11, Version::HTTP_2] {
-        let (auth, tls) = credentials();
-        let origin = Server::start(auth, version).await;
-        let client = client(tls, AltSvcCache::default());
+fn explicit_tls_policy(auth: &ServerAuthData) -> TlsClientConfig {
+    TlsClientConfig::new()
+        .try_with_server_trust_anchors(auth.cert_chain.clone())
+        .unwrap()
+        .with_server_verify(ServerVerifyMode::Auto)
+        .with_server_name(Host::LOCALHOST_NAME)
+        .with_server_cert_pins(TlsServerCertPins::new(TlsServerCertPin::ExactDer(
+            auth.cert_chain[0].clone(),
+        )))
+        .with_store_server_cert_chain(false)
+}
 
-        // An overridden connection must not enter an otherwise empty pool.
+#[derive(Debug, Clone, Copy)]
+enum PolicyVariation {
+    Original,
+    Pins,
+    Trust,
+    Verification,
+    CaptureChain,
+}
+
+#[tokio::test]
+async fn equivalent_request_tls_policies_reuse_only_compatible_connections() {
+    for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
+        let (auth, tls) = credentials();
+        let (other_auth, _) = credentials();
+        let origin = Server::start(auth.clone(), version).await;
+        let (client, endpoint) = client_with_http3(tls).await;
+        assert_eq!(complete(&client, origin.request()).await.1, version);
+        assert_eq!(origin.accepted.load(Ordering::SeqCst), 1);
+
+        for (policy_index, variation) in [
+            PolicyVariation::Original,
+            PolicyVariation::Pins,
+            PolicyVariation::Trust,
+            PolicyVariation::Verification,
+            PolicyVariation::CaptureChain,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            for _ in 0..2 {
+                // Rebuild every config and its certificate collections independently.
+                let policy = explicit_tls_policy(&auth);
+                let policy = match variation {
+                    PolicyVariation::Original => policy,
+                    PolicyVariation::Pins => policy.with_server_cert_pins(TlsServerCertPins::new(
+                        TlsServerCertPin::spki_sha256_of(&auth.cert_chain[0]).unwrap(),
+                    )),
+                    PolicyVariation::Trust => policy
+                        .try_with_server_trust_anchors(
+                            auth.cert_chain
+                                .iter()
+                                .chain(other_auth.cert_chain.iter())
+                                .cloned(),
+                        )
+                        .unwrap(),
+                    PolicyVariation::Verification => {
+                        policy.with_server_verify(ServerVerifyMode::Disable)
+                    }
+                    PolicyVariation::CaptureChain => policy.with_store_server_cert_chain(true),
+                };
+                let request = origin.request();
+                request.extensions().extend(policy.as_extensions());
+                assert_eq!(complete(&client, request).await.1, version);
+                assert_eq!(origin.accepted.load(Ordering::SeqCst), policy_index + 2);
+            }
+        }
+        // Both the original override pool and the connector baseline remain reusable.
+        let request = origin.request();
+        request
+            .extensions()
+            .extend(explicit_tls_policy(&auth).as_extensions());
+        assert_eq!(complete(&client, request).await.1, version);
+        assert_eq!(complete(&client, origin.request()).await.1, version);
+        assert_eq!(origin.accepted.load(Ordering::SeqCst), 6);
+        drop(client);
+        close_client_endpoint(endpoint).await;
+        origin.close().await;
+    }
+}
+
+#[tokio::test]
+async fn changed_request_tls_identity_cannot_borrow_an_authenticated_connection() {
+    for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
+        let (auth, tls) = credentials();
+        let (untrusted, _) = credentials();
+        let origin = Server::start(auth.clone(), version).await;
+        let (client, endpoint) = client_with_http3(tls).await;
+        let request = origin.request();
+        request
+            .extensions()
+            .extend(explicit_tls_policy(&auth).as_extensions());
+        assert_eq!(complete(&client, request).await.1, version);
+
+        let invalid_policies = [
+            explicit_tls_policy(&auth).with_server_cert_pins(TlsServerCertPins::new(
+                TlsServerCertPin::SpkiSha256([1; 32]),
+            )),
+            explicit_tls_policy(&auth)
+                .try_with_server_trust_anchors(untrusted.cert_chain)
+                .unwrap(),
+            explicit_tls_policy(&auth).with_server_name(Host::EXAMPLE_NAME),
+        ];
+        for (index, policy) in invalid_policies.into_iter().enumerate() {
+            let request = origin.request();
+            request.extensions().extend(policy.as_extensions());
+            assert!(
+                timeout(TEST_TIMEOUT, client.serve(request))
+                    .await
+                    .unwrap()
+                    .is_err()
+            );
+            assert_eq!(
+                origin.request_count(),
+                index + 1,
+                "failed authentication must not dispatch a body"
+            );
+            assert_eq!(origin.accepted.load(Ordering::SeqCst), index + 2);
+            let request = origin.request();
+            request
+                .extensions()
+                .extend(explicit_tls_policy(&auth).as_extensions());
+            assert_eq!(complete(&client, request).await.1, version);
+            assert_eq!(origin.accepted.load(Ordering::SeqCst), index + 2);
+        }
+        drop(client);
+        close_client_endpoint(endpoint).await;
+        origin.close().await;
+    }
+}
+
+#[tokio::test]
+async fn explicit_default_tls_overrides_remain_distinct_from_nondefault_baseline() {
+    for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
+        let (auth, _) = credentials();
+        let origin = Server::start(auth, version).await;
+        let tls = TlsClientConfig::default_http()
+            .with_server_verify(ServerVerifyMode::Disable)
+            .with_store_server_cert_chain(true);
+        let (client, endpoint) = client_with_http3(tls).await;
+        assert_eq!(complete(&client, origin.request()).await.1, version);
+        assert_eq!(origin.accepted.load(Ordering::SeqCst), 1);
+
+        // Explicit false replaces the fixed true; repeated false overrides reuse.
+        for _ in 0..2 {
+            let request = origin.request();
+            request.extensions().extend(
+                TlsClientConfig::new()
+                    .with_store_server_cert_chain(false)
+                    .as_extensions(),
+            );
+            assert_eq!(complete(&client, request).await.1, version);
+            assert_eq!(origin.accepted.load(Ordering::SeqCst), 2);
+        }
         let request = origin.request();
         request
             .extensions()
             .insert(TlsServerVerify(ServerVerifyMode::Auto));
-        assert_eq!(complete(&client, request).await.1, version);
-        assert_eq!(origin.accepted.load(Ordering::SeqCst), 1);
+        assert!(
+            timeout(TEST_TIMEOUT, client.serve(request))
+                .await
+                .unwrap()
+                .is_err()
+        );
+        assert_eq!(origin.accepted.load(Ordering::SeqCst), 3);
+        assert_eq!(origin.request_count(), 3);
         assert_eq!(complete(&client, origin.request()).await.1, version);
-        assert_eq!(origin.accepted.load(Ordering::SeqCst), 2);
+        assert_eq!(origin.accepted.load(Ordering::SeqCst), 3);
+        drop(client);
+        close_client_endpoint(endpoint).await;
+        origin.close().await;
+    }
+}
 
-        // Even an override equal to the default policy must bypass lookup.
-        // Repeating it must perform another fresh handshake each time.
-        for expected_connections in 3..=4 {
+#[tokio::test]
+async fn http3_unknown_length_trailers_and_head_preserve_the_pooled_connection() {
+    let (auth, tls) = credentials();
+    let origin = Server::start(auth, Version::HTTP_3).await;
+    let (client, endpoint) = client_with_http3(tls).await;
+    let mut trailers = HeaderMap::new();
+    trailers.insert("x-complete", "yes".parse().unwrap());
+    origin.reply(Reply {
+        body: Some(Body::from_frame_stream(stream::iter([
+            Ok::<_, Infallible>(Frame::data(Bytes::from_static(b"streamed "))),
+            Ok(Frame::data(Bytes::from_static(b"body"))),
+            Ok(Frame::trailers(trailers)),
+        ]))),
+        ..Default::default()
+    });
+    let response = timeout(TEST_TIMEOUT, client.serve(origin.request()))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!response.headers().contains_key(header::CONTENT_LENGTH));
+    let body = timeout(TEST_TIMEOUT, response.into_body().collect())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(body.trailers().unwrap()["x-complete"], "yes");
+    assert_eq!(body.to_bytes(), "streamed body");
+
+    let mut headers = HeaderMap::new();
+    headers.insert(header::CONTENT_LENGTH, "9".parse().unwrap());
+    origin.reply(Reply {
+        headers,
+        body: Some(Body::empty()),
+        ..Default::default()
+    });
+    let mut request = origin.request();
+    *request.method_mut() = Method::HEAD;
+    *request.body_mut() = Body::empty();
+    let response = timeout(TEST_TIMEOUT, client.serve(request))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(response.headers()[header::CONTENT_LENGTH], "9");
+    assert!(
+        timeout(TEST_TIMEOUT, response.into_body().collect())
+            .await
+            .unwrap()
+            .unwrap()
+            .to_bytes()
+            .is_empty()
+    );
+    assert_eq!(complete(&client, origin.request()).await.1, Version::HTTP_3);
+    assert_eq!(origin.accepted.load(Ordering::SeqCst), 1);
+    drop(client);
+    close_client_endpoint(endpoint).await;
+    origin.close().await;
+}
+
+#[tokio::test]
+async fn opaque_request_tls_hooks_remain_unpooled() {
+    for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
+        let (auth, tls) = credentials();
+        let origin = Server::start(auth.clone(), version).await;
+        let (client, endpoint) = client_with_http3(tls).await;
+        #[cfg(feature = "boring")]
+        let policy = {
+            let mut store = X509StoreBuilder::new().unwrap();
+            for certificate in &auth.cert_chain {
+                store
+                    .add_cert(X509::from_der(certificate).unwrap())
+                    .unwrap();
+            }
+            TlsClientConfig::new().with_server_verify_cert_store(Arc::new(store.build()))
+        };
+        #[cfg(not(feature = "boring"))]
+        let policy = TlsClientConfig::new().with_modify_rustls_config(Ok);
+        for expected_connections in 1..=2 {
             let request = origin.request();
-            request
-                .extensions()
-                .insert(TlsServerVerify(ServerVerifyMode::Auto));
+            request.extensions().extend(policy.as_extensions());
             assert_eq!(complete(&client, request).await.1, version);
             assert_eq!(origin.accepted.load(Ordering::SeqCst), expected_connections);
         }
-
         assert_eq!(complete(&client, origin.request()).await.1, version);
-        assert_eq!(origin.accepted.load(Ordering::SeqCst), 4);
-        assert_eq!(origin.request_count(), 5);
+        assert_eq!(complete(&client, origin.request()).await.1, version);
+        assert_eq!(origin.accepted.load(Ordering::SeqCst), 3);
         drop(client);
+        close_client_endpoint(endpoint).await;
         origin.close().await;
     }
 }
