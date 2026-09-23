@@ -2778,8 +2778,9 @@ async fn path_size_decrease_after_a_larger_mtu_was_learned() {
 /// upper bound. What this pins is the policy above that requirement: the probe is built as a
 /// packet of its own, padded to exactly that size, with nothing coalesced into it.
 ///
-/// Nothing else is ever sent to the destination the probes are read from, so every datagram on
-/// it is one of them, and each is one UDP datagram rather than a segmented descriptor.
+/// Observe this client's accepted sends rather than everything arriving at the destination:
+/// parallel tests can leave late traffic for a reused loopback port. The recording socket
+/// disables segmentation, so each recorded send is one UDP datagram.
 #[tokio::test]
 async fn a_path_validation_probe_is_a_dedicated_packet_padded_to_the_smallest_allowed_datagram() {
     let (mut client_config, mut server_config) = configs();
@@ -2797,7 +2798,7 @@ async fn a_path_validation_probe_is_a_dedicated_packet_padded_to_the_smallest_al
     client_config.set_transport_config(transport.clone());
     server_config.set_transport_config(transport);
     let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
-    let (socket, _log) = recording_socket();
+    let (socket, log) = recording_socket();
     let client = endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), None, socket);
     let connecting = client
         .connect_with(client_config, server.local_addr().unwrap(), "localhost")
@@ -2809,20 +2810,28 @@ async fn a_path_validation_probe_is_a_dedicated_packet_padded_to_the_smallest_al
     let (c, s) = handshake(connecting, incoming).await;
 
     wait_for(
-        "probes towards the preferred address",
+        "all three probes towards the preferred address",
         Duration::from_secs(5),
-        || c.stats().path.preferred_address_probes >= 1,
+        || c.stats().path.preferred_address_probes == 3,
     )
     .await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let mut sizes = Vec::new();
-    let mut buffer = [0u8; 4096];
-    while let Ok((size, from)) = silent.recv_from(&mut buffer) {
-        assert_eq!(from, client.local_addr().unwrap());
-        sizes.push(size);
-    }
-    assert!(!sizes.is_empty(), "the probes arrived");
+    // Model a late packet from another test after the OS reuses a loopback port.
+    let unrelated = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    unrelated
+        .send_to(b"unrelated loopback traffic", preferred)
+        .unwrap();
+
+    // The completed probe sequence makes the send log and counter stable, without a sleep.
+    let destination = SocketAddress::from(SocketAddr::from(preferred));
+    let sizes: Vec<_> = log
+        .lock()
+        .sent
+        .iter()
+        .filter(|datagram| datagram.destination == destination)
+        .map(|datagram| datagram.bytes.len())
+        .collect();
+    assert!(!sizes.is_empty(), "the probes were transmitted");
     assert_eq!(
         sizes.len() as u64,
         c.stats().path.preferred_address_probes,
