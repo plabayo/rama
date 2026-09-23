@@ -29,7 +29,7 @@ use rama::{
     net::{
         Protocol,
         address::{Host, HostWithPort, ProxyAddress, SocketAddress},
-        client::{ConnectRequest, ProxyRoute, ProxyRoutes},
+        client::{ConnectRequest, ConnectorTarget, ProxyRoute, ProxyRoutes},
         conn::MaxConcurrency,
         proxy::IoForwardService,
         tls::ApplicationProtocol,
@@ -1543,5 +1543,65 @@ async fn custom_quic_transport_validates_negotiation_and_concurrency() {
         })
         .await
         .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn pooled_explicit_target_with_insecure_defaults_cannot_poison_discovery() {
+    for (protocol, version) in [("h2", Version::HTTP_2), ("h3", Version::HTTP_3)] {
+        let (auth, tls) = credentials();
+        let origin = Server::start(auth.clone(), version).await;
+        let alternative = Server::start(auth, version).await;
+        let cache = AltSvcCache::default();
+        let (client, endpoint) = client_with_http3_cache(
+            tls.with_server_verify(ServerVerifyMode::Disable),
+            cache.clone(),
+        )
+        .await;
+
+        // Explicit targets are allowed under the caller's insecure policy.
+        // Warm the exact pool key that discovery will use for this endpoint.
+        let direct = origin.request();
+        direct
+            .extensions()
+            .insert(ConnectorTarget(alternative.address.into()));
+        direct.extensions().insert(TargetHttpVersion(version));
+        assert_eq!(complete(&client, direct).await.1, version);
+        assert_eq!(alternative.request_count(), 1);
+        seed(
+            &cache,
+            &origin.origin(),
+            &format!("{protocol}=\"{}\"", alternative.address),
+        );
+        let snapshot = cache.lookup(&origin.origin()).unwrap();
+
+        for _ in 0..2 {
+            let request = origin.request();
+            request.extensions().insert(TargetHttpVersion(version));
+            assert_eq!(complete(&client, request).await.1, version);
+            assert!(cache.is_usable(&snapshot, 0));
+        }
+        assert_eq!(origin.request_count(), 2);
+        assert_eq!(
+            alternative.request_count(),
+            1,
+            "an advertisement requires origin authentication even on a pool hit"
+        );
+        let direct = origin.request();
+        direct
+            .extensions()
+            .insert(ConnectorTarget(alternative.address.into()));
+        direct.extensions().insert(TargetHttpVersion(version));
+        assert_eq!(complete(&client, direct).await.1, version);
+        assert_eq!(alternative.request_count(), 2);
+        assert_eq!(
+            alternative.accepted.load(Ordering::SeqCst),
+            1,
+            "discovery must retain connections valid for explicit targets"
+        );
+        drop(client);
+        close_client_endpoint(endpoint).await;
+        origin.close().await;
+        alternative.close().await;
     }
 }

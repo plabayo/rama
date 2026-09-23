@@ -11,7 +11,7 @@ use crate::{
         DnsConnector, DnsConnectorLayer, GlobalDnsResolver, resolver::DnsAddressResolver,
     },
     error::BoxError,
-    extensions::{Extensions, ExtensionsRef},
+    extensions::ExtensionsRef,
     http::{
         Request, StreamingBody, Version, client::proxy::layer::HttpProxyConnector,
         layer::version_adapter::RequestVersionAdapter,
@@ -25,12 +25,8 @@ use crate::{
     tcp::client::service::TcpConnector,
 };
 use rama_http::layer::{alt_svc::AltSvcCache, http_service::HttpServiceConnector};
-use rama_net::{
-    HttpVersionInputExt, TargetHttpVersionInputExt,
-    address::Host,
-    tls::{ApplicationProtocol, TlsAlpn},
-};
-use rama_tls::client::{TlsClientConfig, TlsClientConfigProvider, TlsPoolId};
+use rama_net::{HttpVersionInputExt, TargetHttpVersionInputExt, tls::ApplicationProtocol};
+use rama_tls::client::{TlsClientConfigProvider, TlsPoolId};
 use rama_utils::macros::generate_set_and_with;
 use std::{sync::Arc, time::Duration};
 
@@ -40,7 +36,7 @@ use crate::tls::boring::client as boring_client;
 #[cfg(feature = "rustls")]
 use crate::tls::rustls::client as rustls_client;
 #[cfg(any(feature = "rustls", feature = "boring"))]
-use rama_core::layer::AddInputExtension;
+use {rama_core::layer::AddInputExtension, rama_tls::client::TlsClientConfig};
 
 #[cfg(feature = "socks5")]
 use crate::{http::client::proxy_connector::ProxyConnector, proxy::socks5::Socks5ProxyConnector};
@@ -483,11 +479,8 @@ impl<T, D, const PROXY: bool> EasyHttpConnectorBuilder<T, ProxyStage<PROXY>, D> 
         self,
         config: TlsClientConfig,
     ) -> EasyHttpConnectorBuilder<boring_client::TlsConnector<T>, TlsStage<PROXY>, D> {
-        let tls = Some(Arc::new(ConfiguredTlsProvider::new(
-            Arc::new(boring_client::BoringTlsClientConfigProvider),
-            config.clone(),
-            None,
-        )) as Arc<dyn TlsClientConfigProvider>);
+        let tls = Some(Arc::new(boring_client::BoringTlsClientConfigProvider)
+            as Arc<dyn TlsClientConfigProvider>);
         let connector = boring_client::TlsConnector::auto(self.connector).with_base_config(config);
 
         EasyHttpConnectorBuilder {
@@ -517,11 +510,8 @@ impl<T, D, const PROXY: bool> EasyHttpConnectorBuilder<T, ProxyStage<PROXY>, D> 
         TlsStage<PROXY>,
         D,
     > {
-        let tls = Some(Arc::new(ConfiguredTlsProvider::new(
-            Arc::new(boring_client::BoringTlsClientConfigProvider),
-            config.clone(),
-            None,
-        )) as Arc<dyn TlsClientConfigProvider>);
+        let tls = Some(Arc::new(boring_client::BoringTlsClientConfigProvider)
+            as Arc<dyn TlsClientConfigProvider>);
         let connector = boring_client::TlsConnector::auto(self.connector).with_base_config(config);
         let connector =
             AddInputExtension::new(connector, FallbackHttpVersion(default_http_version))
@@ -544,11 +534,8 @@ impl<T, D, const PROXY: bool> EasyHttpConnectorBuilder<T, ProxyStage<PROXY>, D> 
         self,
         config: TlsClientConfig,
     ) -> EasyHttpConnectorBuilder<rustls_client::TlsConnector<T>, TlsStage<PROXY>, D> {
-        let tls = Some(Arc::new(ConfiguredTlsProvider::new(
-            Arc::new(rustls_client::RustlsTlsClientConfigProvider),
-            config.clone(),
-            None,
-        )) as Arc<dyn TlsClientConfigProvider>);
+        let tls = Some(Arc::new(rustls_client::RustlsTlsClientConfigProvider)
+            as Arc<dyn TlsClientConfigProvider>);
         let connector = rustls_client::TlsConnector::auto(self.connector).with_base_config(config);
 
         EasyHttpConnectorBuilder {
@@ -578,11 +565,8 @@ impl<T, D, const PROXY: bool> EasyHttpConnectorBuilder<T, ProxyStage<PROXY>, D> 
         TlsStage<PROXY>,
         D,
     > {
-        let tls = Some(Arc::new(ConfiguredTlsProvider::new(
-            Arc::new(rustls_client::RustlsTlsClientConfigProvider),
-            config.clone(),
-            None,
-        )) as Arc<dyn TlsClientConfigProvider>);
+        let tls = Some(Arc::new(rustls_client::RustlsTlsClientConfigProvider)
+            as Arc<dyn TlsClientConfigProvider>);
         let connector = rustls_client::TlsConnector::auto(self.connector).with_base_config(config);
         let connector =
             AddInputExtension::new(connector, FallbackHttpVersion(default_http_version))
@@ -607,12 +591,10 @@ impl<T, D, const PROXY: bool> EasyHttpConnectorBuilder<T, ProxyStage<PROXY>, D> 
 
 impl<T, D, const PROXY: bool> EasyHttpConnectorBuilder<T, TlsStage<PROXY>, D> {
     generate_set_and_with! {
-        /// Describe the fixed TLS provider used by a custom stream connector.
+        /// Identify TLS request overrides for a custom stream connector's pool.
         ///
-        /// The provider must classify the same request overrides as the connector.
+        /// The provider's `pool_id` must describe the same overrides as the connector.
         /// Its defaults and behavior must remain fixed for the lifetime of the pool.
-        /// Authentication checks must account for those defaults as well as request
-        /// overrides, so discovery can skip alternatives before an unsafe handshake.
         /// Without a provider, custom connectors may supply a request `TlsPoolId`.
         pub fn tls_config_provider(mut self, provider: Arc<dyn TlsClientConfigProvider>) -> Self {
             self.stage.tls = Some(provider);
@@ -698,73 +680,11 @@ impl<T, Body, D, const PROXY: bool>
     where
         D: Layer<super::Http3Connector>,
     {
-        let tls = Some(Arc::new(ConfiguredTlsProvider::new(
-            connector.tls_provider().clone(),
-            connector.tls_config().clone(),
-            Some(TlsAlpn([ApplicationProtocol::HTTP_3].into_iter().collect())),
-        )) as Arc<dyn TlsClientConfigProvider>);
+        let tls = Some(connector.tls_provider().clone() as Arc<dyn TlsClientConfigProvider>);
         let connector = self.dns.layer(connector);
         let mut builder = self.with_http3_connector(connector);
         builder.stage.h3 = Some(H3State { tls });
         builder
-    }
-}
-
-/// Bind the provider's classification to the defaults of its actual connector.
-/// Pool identities continue to describe request overrides only.
-#[derive(Debug)]
-struct ConfiguredTlsProvider {
-    provider: Arc<dyn TlsClientConfigProvider>,
-    defaults: TlsClientConfig,
-    forced_alpn: Option<Arc<TlsAlpn>>,
-}
-
-impl ConfiguredTlsProvider {
-    fn new(
-        provider: Arc<dyn TlsClientConfigProvider>,
-        defaults: TlsClientConfig,
-        forced_alpn: Option<TlsAlpn>,
-    ) -> Self {
-        let forced_alpn = forced_alpn.map(Arc::new);
-        if let Some(alpn) = &forced_alpn {
-            defaults.as_extensions().insert_arc(alpn.clone());
-        }
-        Self {
-            provider,
-            defaults,
-            forced_alpn,
-        }
-    }
-
-    // The ordinary pooled request has no TLS overrides. Classify the retained
-    // defaults directly in that case, without allocating an extension scope.
-    fn effective(&self, request: &Extensions) -> Option<Extensions> {
-        self.provider.pool_id(request)?;
-        let config = request.fork().with_base(self.defaults.as_extensions());
-        if let Some(alpn) = &self.forced_alpn {
-            config.insert_arc(alpn.clone());
-        }
-        Some(config)
-    }
-}
-
-impl TlsClientConfigProvider for ConfiguredTlsProvider {
-    fn pool_id(&self, extensions: &Extensions) -> Option<TlsPoolId> {
-        self.provider.pool_id(extensions)
-    }
-
-    fn authenticates_server(&self, extensions: &Extensions) -> bool {
-        let effective = self.effective(extensions);
-        self.provider
-            .authenticates_server(effective.as_ref().unwrap_or(self.defaults.as_extensions()))
-    }
-
-    fn authenticates_origin(&self, extensions: &Extensions, origin: &Host) -> bool {
-        let effective = self.effective(extensions);
-        self.provider.authenticates_origin(
-            effective.as_ref().unwrap_or(self.defaults.as_extensions()),
-            origin,
-        )
     }
 }
 
@@ -815,11 +735,7 @@ where
     ConnectorServiceAdapter(connector).boxed()
 }
 
-fn finalize_http_connector<T>(
-    connector: T,
-    h3_enabled: bool,
-    tls: &EasyHttpConnIdentifier,
-) -> DefaultHttpConnector<T> {
+fn finalize_http_connector<T>(connector: T, h3_enabled: bool) -> DefaultHttpConnector<T> {
     let connector = ProxyRoutesConnector::new(connector);
     let connector = HttpServiceConnector::new(connector)
         .with_protocols(
@@ -831,9 +747,7 @@ fn finalize_http_connector<T>(
             .into_iter()
             .chain(h3_enabled.then_some(ApplicationProtocol::HTTP_3)),
         )
-        .with_cache(AltSvcCache::default())
-        .maybe_with_tls_provider(tls.stream_tls.clone())
-        .maybe_with_http3_tls_provider(tls.h3_tls.clone());
+        .with_cache(AltSvcCache::default());
     adapt_http_service_connector(connector)
 }
 
@@ -865,10 +779,10 @@ fn finish_without_connection_pool<T, Stage: PoolConfig, D>(
 where
     T: ConnectorService<ConnectRequest>,
 {
-    let (identifier, h3_enabled) = builder.stage.into_pool_setup();
+    let (_, h3_enabled) = builder.stage.into_pool_setup();
     EasyHttpConnectorBuilder {
         dns: (),
-        connector: finalize_http_connector(builder.connector, h3_enabled, &identifier),
+        connector: finalize_http_connector(builder.connector, h3_enabled),
         stage: Default::default(),
     }
 }
@@ -923,24 +837,26 @@ trait PoolConfig {
 
 impl<const PROXY: bool> PoolConfig for HttpStage<PROXY> {
     fn into_pool_setup(self) -> (EasyHttpConnIdentifier, bool) {
+        let h3_enabled = self.h3.is_some();
         (
             EasyHttpConnIdentifier {
                 stream_tls: self.tls,
-                h3_tls: self.h3.as_ref().and_then(|h3| h3.tls.clone()),
+                h3_tls: self.h3.and_then(|h3| h3.tls),
             },
-            self.h3.is_some(),
+            h3_enabled,
         )
     }
 }
 
 impl PoolConfig for ProxyRouteFailureCacheStage {
     fn into_pool_setup(self) -> (EasyHttpConnIdentifier, bool) {
+        let h3_enabled = self.h3.is_some();
         (
             EasyHttpConnIdentifier {
                 stream_tls: self.tls,
-                h3_tls: self.h3.as_ref().and_then(|h3| h3.tls.clone()),
+                h3_tls: self.h3.and_then(|h3| h3.tls),
             },
-            self.h3.is_some(),
+            h3_enabled,
         )
     }
 }
@@ -953,11 +869,10 @@ where
     T: ConnectorService<ConnectRequest>,
 {
     let (identifier, h3_enabled) = builder.stage.into_pool_setup();
-    let connector =
-        config.try_build_connector_with_identifier(builder.connector, identifier.clone())?;
+    let connector = config.try_build_connector_with_identifier(builder.connector, identifier)?;
     Ok(EasyHttpConnectorBuilder {
         dns: (),
-        connector: finalize_http_connector(connector, h3_enabled, &identifier),
+        connector: finalize_http_connector(connector, h3_enabled),
         stage: Default::default(),
     })
 }
@@ -971,11 +886,11 @@ where
     let (identifier, h3_enabled) = builder.stage.into_pool_setup();
     let connector = HttpPooledConnectorConfig::build_default_connector_with_identifier(
         builder.connector,
-        identifier.clone(),
+        identifier,
     );
     EasyHttpConnectorBuilder {
         dns: (),
-        connector: finalize_http_connector(connector, h3_enabled, &identifier),
+        connector: finalize_http_connector(connector, h3_enabled),
         stage: Default::default(),
     }
 }
@@ -1286,9 +1201,7 @@ mod tests {
             pool::{ConnID as _, ReqToConnID},
         },
     };
-    use rama_tls::client::{
-        ServerVerifyMode, TlsClientConfigProvider, TlsPoolId, TlsServerName, TlsServerVerify,
-    };
+    use rama_tls::client::{ServerVerifyMode, TlsClientConfigProvider, TlsPoolId, TlsServerVerify};
     use rama_utils::octets::kib;
     #[cfg(feature = "rustls")]
     use {
@@ -1331,71 +1244,6 @@ mod tests {
         fn authenticates_server(&self, _: &Extensions) -> bool {
             false
         }
-    }
-
-    #[derive(Debug)]
-    struct OriginPolicy;
-
-    impl TlsClientConfigProvider for OriginPolicy {
-        fn pool_id(&self, extensions: &Extensions) -> Option<TlsPoolId> {
-            TlsPoolId::builder()
-                .maybe_with_verify(extensions.get_ref::<TlsServerVerify>())
-                .maybe_with_server_name(extensions.get_ref::<TlsServerName>())
-                .maybe_with_alpn(extensions.get_ref::<TlsAlpn>())
-                .build()
-        }
-
-        fn authenticates_server(&self, extensions: &Extensions) -> bool {
-            extensions
-                .get_ref::<TlsServerVerify>()
-                .is_none_or(|verify| verify.0 != ServerVerifyMode::Disable)
-        }
-    }
-
-    #[test]
-    fn discovery_classification_layers_actual_tls_defaults_and_request_overrides() {
-        let origin = Host::from_static("origin.example");
-        let provider = ConfiguredTlsProvider::new(
-            Arc::new(OriginPolicy),
-            TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable),
-            None,
-        );
-        let request = Extensions::new();
-        assert!(
-            provider.effective(&request).is_none(),
-            "fixed defaults require no request overlay"
-        );
-        assert!(!provider.authenticates_origin(&request, &origin));
-        request.insert(TlsServerVerify(ServerVerifyMode::Auto));
-        assert!(provider.authenticates_origin(&request, &origin));
-        request.insert(TlsServerName(Host::from_static("other.example")));
-        assert!(!provider.authenticates_origin(&request, &origin));
-        request.insert(TlsServerName(origin.clone()));
-        assert!(provider.authenticates_origin(&request, &origin));
-
-        let provider = ConfiguredTlsProvider::new(
-            Arc::new(OriginPolicy),
-            TlsClientConfig::new().with_server_name(Host::from_static("other.example")),
-            Some(TlsAlpn([ApplicationProtocol::HTTP_3].into_iter().collect())),
-        );
-        assert!(!provider.authenticates_origin(&Extensions::new(), &origin));
-        request.insert(TlsAlpn::http_2());
-        assert!(provider.authenticates_origin(&request, &origin));
-        assert_eq!(
-            provider
-                .effective(&request)
-                .unwrap()
-                .get_ref::<TlsAlpn>()
-                .unwrap()
-                .0
-                .as_slice(),
-            &[ApplicationProtocol::HTTP_3]
-        );
-        assert_eq!(
-            request.get_ref::<TlsAlpn>().unwrap().0.as_slice(),
-            &[ApplicationProtocol::HTTP_2],
-            "classification must leave request policy intact"
-        );
     }
 
     fn assert_future_budget(connector: &impl Service<Request>, name: &str) {

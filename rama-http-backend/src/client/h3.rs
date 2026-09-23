@@ -10,19 +10,18 @@ use rama_core::{
     rt::Executor,
     telemetry::tracing,
 };
-use rama_http::layer::http_service::HttpServiceAttempt;
 use rama_http_core::h3::connection::Config;
 use rama_http_types::{Version, conn::TargetHttpVersion};
 use rama_net::{
     ConnectorTargetInputExt, ProtocolInputExt,
     address::{Host, SocketAddress},
     client::{
-        ConnectRequest, ConnectionError, ConnectionErrorDomain,
+        ConnectRequest, ConnectionAttempt, ConnectionError, ConnectionErrorDomain,
         ConnectionErrorDomain::{Application, Local, Transport},
         ConnectionErrorKind,
         ConnectionErrorKind::{Internal, InvalidInput, Rejected, Timeout, Unavailable},
-        ConnectorTargetStream, EstablishedClientConnection, EstablishedProxyRoute, ProxyRoute,
-        race_connect,
+        ConnectionPolicyScope, ConnectorTargetStream, EstablishedClientConnection,
+        EstablishedProxyRoute, ProxyRoute, race_connect,
     },
     stream::SocketInfo,
     tls::ApplicationProtocol,
@@ -215,6 +214,7 @@ struct PreparedTls {
     server_name: String,
     authenticated_identity: Option<Host>,
     capture_chain: bool,
+    policy_scope: ConnectionPolicyScope,
 }
 
 impl Http3Connector {
@@ -232,6 +232,19 @@ impl Http3Connector {
             .provider
             .authenticates_server(tls.as_extensions())
             .then(|| server_identity.clone());
+        let policy_scope = if self.provider.pool_id(input.extensions()).is_some() {
+            ConnectionPolicyScope::Request
+        } else {
+            ConnectionPolicyScope::Connector
+        };
+        if let Some(attempt) = input.extensions().get_ref::<ConnectionAttempt>() {
+            let identity = self
+                .provider
+                .authenticates_origin(tls.as_extensions(), &input.authority.host)
+                .then_some(authenticated_identity.as_ref())
+                .flatten();
+            attempt.check_policy(policy_scope, identity)?;
+        }
         let capture_chain = tls
             .as_extensions()
             .get_ref::<TlsStoreServerCertChain>()
@@ -254,6 +267,7 @@ impl Http3Connector {
             server_name,
             authenticated_identity,
             capture_chain,
+            policy_scope,
         })
     }
 
@@ -269,7 +283,7 @@ impl Http3Connector {
             .ok_or_else(|| invalid("HTTP/3 connector target is missing"))?;
         let attempt = input
             .extensions()
-            .get_arc::<HttpServiceAttempt>()
+            .get_arc::<ConnectionAttempt>()
             .unwrap_or_default();
         let attempt = &attempt;
         let failures = ConnectFailures::default();
@@ -333,6 +347,7 @@ impl Http3Connector {
         let extensions = connection.extensions();
         extensions.insert(TargetHttpVersion(Version::HTTP_3));
         extensions.insert(TlsServerAuthentication(prepared.authenticated_identity));
+        extensions.insert(prepared.policy_scope);
         extensions.insert(EstablishedProxyRoute::Direct);
         extensions.insert(SocketInfo::new(
             known_local_address(self.endpoint.local_addr().ok(), connection.local_ip()),
@@ -419,7 +434,7 @@ fn validate_version(input: &ConnectRequest) -> Result<(), ConnectionError> {
 struct ConnectFailures(Mutex<Option<ConnectionError>>);
 
 impl ConnectFailures {
-    fn record(&self, error: BoxError, attempt: &HttpServiceAttempt) -> BoxError {
+    fn record(&self, error: BoxError, attempt: &ConnectionAttempt) -> BoxError {
         let (domain, kind) = classify_connect_error(error.as_ref());
         if domain == Transport && matches!(kind, Unavailable | Timeout) {
             return error;
@@ -711,7 +726,7 @@ mod concrete_transport_tests {
             ],
         ] {
             let failures = ConnectFailures::default();
-            let attempt = HttpServiceAttempt::default();
+            let attempt = ConnectionAttempt::default();
             for error in errors {
                 drop(failures.record(error.into(), &attempt));
             }
@@ -734,7 +749,7 @@ mod concrete_transport_tests {
     #[test]
     fn unsupported_address_family_does_not_poison_the_address_race() {
         let failures = ConnectFailures::default();
-        let attempt = HttpServiceAttempt::default();
+        let attempt = ConnectionAttempt::default();
         let ipv6 = QuicConnectError::InvalidRemoteAddress(SocketAddress::local_ipv6(443).into());
         drop(failures.record(ipv6.into(), &attempt));
         let timeout = failures.record(QuicConnectionError::TimedOut.into(), &attempt);

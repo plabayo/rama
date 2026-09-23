@@ -7,6 +7,10 @@ use rama_net::client::{
     ProxyRoutesConnector,
 };
 use rama_net::{ConnectorTargetInputExt as _, address::HostWithPort};
+#[cfg(feature = "tls")]
+use rama_tls::client::{
+    ServerVerifyMode, TlsServerCertPins, TlsServerName, TlsServerTrust, TlsServerVerify,
+};
 use std::{
     collections::VecDeque,
     sync::atomic::{AtomicUsize, Ordering},
@@ -41,6 +45,7 @@ enum Outcome {
 
 #[derive(Clone, Debug)]
 struct FakeConnector {
+    policy_scope: ConnectionPolicyScope,
     outcomes: Arc<Mutex<VecDeque<Outcome>>>,
     records: Arc<Mutex<Vec<Record>>>,
     dispatched: Arc<AtomicUsize>,
@@ -50,6 +55,7 @@ struct FakeConnector {
 impl FakeConnector {
     fn new(outcomes: impl IntoIterator<Item = Outcome>) -> Self {
         Self {
+            policy_scope: ConnectionPolicyScope::Connector,
             outcomes: Arc::new(Mutex::new(outcomes.into_iter().collect())),
             records: Arc::default(),
             dispatched: Arc::default(),
@@ -98,6 +104,37 @@ impl Service<ConnectRequest> for FakeConnector {
     type Error = ConnectionError;
 
     async fn serve(&self, input: ConnectRequest) -> Result<Self::Output, Self::Error> {
+        let policy_scope = self.policy_scope;
+        #[cfg(feature = "tls")]
+        let policy_scope = if input.extensions().contains::<TlsServerName>()
+            || input.extensions().contains::<TlsServerVerify>()
+            || input.extensions().contains::<TlsServerTrust>()
+            || input.extensions().contains::<TlsServerCertPins>()
+        {
+            ConnectionPolicyScope::Request
+        } else {
+            policy_scope
+        };
+        if let Some(attempt) = input.extensions().get_ref::<HttpServiceAttempt>() {
+            #[cfg(not(feature = "tls"))]
+            let identity = Some(&input.authority.host);
+            #[cfg(feature = "tls")]
+            let identity = if input
+                .extensions()
+                .get_ref::<TlsServerVerify>()
+                .is_some_and(|verify| verify.0 == ServerVerifyMode::Disable)
+            {
+                None
+            } else {
+                Some(
+                    input
+                        .extensions()
+                        .get_ref::<TlsServerName>()
+                        .map_or(&input.authority.host, |name| &name.0),
+                )
+            };
+            attempt.check_policy(policy_scope, identity)?;
+        }
         let expected_alt_used = input
             .extensions()
             .get_ref::<SelectedHttpService>()
@@ -166,6 +203,7 @@ impl Service<ConnectRequest> for FakeConnector {
             Outcome::WrongIdentity | Outcome::WrongAlpn => ApplicationProtocol::HTTP_2,
         };
         let extensions = Extensions::new();
+        extensions.insert(policy_scope);
         let health = Arc::new(rama_net::conn::ConnectionHealthWatcher::default());
         self.health.lock().push(health.clone());
         extensions.insert_arc(health);
@@ -372,7 +410,6 @@ async fn fallback_keeps_original_input_and_dispatches_body_once() {
 #[tokio::test]
 async fn explicit_version_keeps_authentication_alpn_and_policy_failures_terminal() {
     for outcome in [
-        Outcome::WrongIdentity,
         Outcome::WrongAlpn,
         Outcome::Failure(
             ConnectionErrorDomain::Application,
@@ -853,7 +890,6 @@ async fn terminal_alternative_failure_is_not_retried_by_the_next_request() {
             ConnectionErrorDomain::Application,
             ConnectionErrorKind::Rejected,
         ),
-        Outcome::WrongIdentity,
         Outcome::WrongAlpn,
         Outcome::Failure(
             ConnectionErrorDomain::Application,
@@ -1027,7 +1063,15 @@ async fn readvertisement_during_a_failed_dial_does_not_reset_backoff() {
         let inner = rama_core::service::service_fn({
             let cache = cache.clone();
             let origin = origin.clone();
-            move |_request: ConnectRequest| {
+            move |request: ConnectRequest| {
+                if let Some(attempt) = request.extensions().get_ref::<HttpServiceAttempt>() {
+                    attempt
+                        .check_policy(
+                            ConnectionPolicyScope::Connector,
+                            Some(&request.authority.host),
+                        )
+                        .unwrap();
+                }
                 cache.record(&origin, &headers, Duration::ZERO);
                 if network_changed {
                     cache.network_changed();
@@ -1393,5 +1437,104 @@ async fn address_race_preserves_authentication_over_protocol_and_timeout_results
             .await
             .unwrap_err();
         assert_eq!(error.kind(), ConnectionErrorKind::Authentication);
+    }
+}
+
+#[cfg(feature = "tls")]
+#[tokio::test]
+async fn connector_reported_request_and_unknown_policies_do_not_poison_shared_cache() {
+    for scope in [
+        ConnectionPolicyScope::Request,
+        ConnectionPolicyScope::Unknown,
+    ] {
+        for outcome in [
+            Outcome::Failure(
+                ConnectionErrorDomain::Application,
+                ConnectionErrorKind::Authentication,
+            ),
+            Outcome::WrongIdentity,
+            Outcome::WrongAlpn,
+            Outcome::Pending(true),
+        ] {
+            let cache = AltSvcCache::default();
+            let origin = origin(&input()).unwrap();
+            let mut headers = crate::HeaderMap::new();
+            headers.insert(
+                crate::header::ALT_SVC,
+                crate::HeaderValue::from_static("h2=\"alt.example:8443\""),
+            );
+            cache.record(&origin, &headers, Duration::ZERO);
+            let snapshot = cache.lookup(&origin).unwrap();
+            let mut fake = FakeConnector::new([
+                outcome.clone(),
+                Outcome::Success(ApplicationProtocol::HTTP_2),
+                outcome,
+                Outcome::Success(ApplicationProtocol::HTTP_2),
+            ]);
+            // No built-in TLS override extension: only this custom connector
+            // knows which policy it applied. Unknown reports are conservative too.
+            fake.policy_scope = scope;
+            let connector = capabilities(fake.clone())
+                .with_cache(cache.clone())
+                .with_attempt_timeout(Duration::from_millis(10));
+            for _ in 0..2 {
+                connector.serve(input()).await.unwrap();
+                assert!(cache.is_usable(&snapshot, 0), "{scope:?}");
+            }
+            let records = fake.records.lock();
+            assert_eq!(records.len(), 4);
+            assert_eq!(records[0].target.to_string(), "alt.example:8443");
+            assert_eq!(records[2].target.to_string(), "alt.example:8443");
+        }
+    }
+}
+
+#[cfg(feature = "tls")]
+#[tokio::test]
+async fn pooled_policy_scope_survives_without_a_new_handshake_report() {
+    for scope in [
+        ConnectionPolicyScope::Connector,
+        ConnectionPolicyScope::Request,
+        ConnectionPolicyScope::Unknown,
+    ] {
+        let mut fake = FakeConnector::new([Outcome::WrongIdentity]);
+        fake.policy_scope = scope;
+        let cached_connection = fake.serve(input()).await.unwrap().conn;
+        let fallback = FakeConnector::new([
+            Outcome::Success(ApplicationProtocol::HTTP_2),
+            Outcome::Success(ApplicationProtocol::HTTP_2),
+        ]);
+        let inner = rama_core::service::service_fn(move |request: ConnectRequest| {
+            let conn = cached_connection.clone();
+            let fallback = fallback.clone();
+            async move {
+                if request.extensions().contains::<SelectedHttpService>() {
+                    Ok(EstablishedClientConnection {
+                        input: request,
+                        conn,
+                    })
+                } else {
+                    fallback.serve(request).await
+                }
+            }
+        });
+        let cache = AltSvcCache::default();
+        let origin = origin(&input()).unwrap();
+        let mut headers = crate::HeaderMap::new();
+        headers.insert(
+            crate::header::ALT_SVC,
+            crate::HeaderValue::from_static("h2=\"alt.example:8443\""),
+        );
+        cache.record(&origin, &headers, Duration::ZERO);
+        let snapshot = cache.lookup(&origin).unwrap();
+        let connector = capabilities(inner).with_cache(cache.clone());
+        for _ in 0..2 {
+            let request = input();
+            request
+                .extensions()
+                .insert(TargetHttpVersion(Version::HTTP_2));
+            connector.serve(request).await.unwrap();
+            assert!(cache.is_usable(&snapshot, 0));
+        }
     }
 }

@@ -35,9 +35,10 @@ pub struct FallbackHttpVersion(pub Version);
 
 /// HTTP version carried by the request that initiated a connection attempt.
 ///
-/// This is descriptive input context, not an egress requirement. Connectors
-/// must not use it to constrain protocol negotiation as they would a
-/// [`TargetHttpVersion`].
+/// Ordinary H1/H2 values describe the input, leaving egress negotiation open.
+/// Rama's HTTP client treats [`Version::HTTP_3`] as prior knowledge when no
+/// [`TargetHttpVersion`] is set, allowing direct H3 use without discovery.
+/// An explicit target takes precedence and can require any HTTP version.
 #[derive(Debug, Copy, Clone, Default, PartialEq, Eq, Extension)]
 #[extension(tags(http))]
 pub struct HttpRequestVersion(pub Version);

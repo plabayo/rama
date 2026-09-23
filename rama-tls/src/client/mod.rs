@@ -114,10 +114,10 @@ pub trait TlsClientConfigProvider: fmt::Debug + Send + Sync {
 
     /// Whether this effective policy authenticates the requested HTTP origin.
     ///
-    /// Discovery must not redirect a request whose TLS server-name override
-    /// authenticates a different identity. Providers with additional identity
-    /// semantics can refine this check; connection authentication is still
-    /// verified after the handshake.
+    /// Connectors call this with their effective configuration when checking
+    /// an attempt's peer requirement. Providers with additional identity semantics
+    /// can refine it; successful handshake authentication is still reported
+    /// separately on the established connection.
     fn authenticates_origin(&self, extensions: &Extensions, origin: &Host) -> bool {
         extensions
             .get_ref::<TlsServerName>()

@@ -1,5 +1,9 @@
 //! generic client net logic
 
+mod attempt;
+#[doc(inline)]
+pub use attempt::{ConnectionAttempt, ConnectionPolicyScope};
+
 mod conn;
 #[doc(inline)]
 pub use conn::{BoxedConnectorService, ConnectorService, EstablishedClientConnection};

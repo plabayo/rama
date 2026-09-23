@@ -56,8 +56,10 @@ Custom connectors use these contracts:
 | `TlsServerAuthentication` / `NegotiatedTlsParameters` | Report verified origin identity and actual ALPN; missing proof prevents alternative use. |
 | `TlsClientConfigProvider` | Identify compatible TLS policies for safe pooling. |
 | `AltSvcObserverExtension` | Install before H2 handshake; authorize origins and process frames promptly. |
-| `HttpServiceAttempt` | Preserve terminal address-race failures across timeouts. |
+| `ConnectionAttempt` / `ConnectionPolicyScope` | Check peer requirements using actual connector policy; preserve failure scope across timeouts and pool hits. |
 
+TLS providers belong to connectors and pool identities; selection consumes their
+reported results. Unclassified policy failures never suppress shared alternatives.
 Report unsupported routes as local capability failures, not unreachable proxies.
 In the CLI, `--alt-svc` enables command-local discovery; `--http3` requires H3
 directly. Disk persistence and DNS HTTPS/SVCB discovery are not implemented yet.

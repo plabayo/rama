@@ -1,27 +1,71 @@
-//! Select an HTTP service before establishing a connection.
+//! Select a physical endpoint and HTTP protocol without changing the logical origin.
 //!
-//! Place this connector outside proxy-route selection and connection pools. Each
-//! candidate receives an isolated connection request; the logical origin remains
-//! unchanged while `ConnectorTarget` selects the endpoint to reach through the
-//! configured route. No HTTP request body enters this selection loop.
+//! An alternative is another way to reach the same origin, not an HTTP redirect
+//! ([RFC 7838 §2]). Its address goes in [`ConnectorTarget`]; the request authority,
+//! TLS server name and verification policy still belong to the origin. Selection
+//! happens before dispatch: this connector never consumes or replays an HTTP body.
 //!
-//! Automatic alternative discovery currently applies to HTTPS origins. Plain
-//! HTTP advertisements can be cached, but using them requires the separate
-//! opportunistic-security authorization described by RFC 8164.
-//! Retries must fork the original connection request; returned input includes
-//! the operational state of the established connection.
+//! ```text
+//! ConnectRequest: logical origin + optional required HTTP version
+//!     |
+//!     v
+//! Request-supplied candidates, otherwise Alt-Svc cache
+//!     |
+//!     v
+//! Filter by protocol support, required version and backoff
+//!     |
+//!     v
+//! Try alternative ----------------------> Verify origin + protocol
+//!     | failure                                  | valid
+//!     v                                          v
+//! Next alternative (repeat)               AltSvc response wrapper
+//!     | none usable                              ^
+//!     v                                          |
+//! Original endpoint -------- success ------------+
 //!
-//! Failed speculative endpoints fall back while preserving the origin's request
-//! and TLS policy. An explicitly required version keeps failures terminal.
-//! Local configuration and policy errors also remain terminal. Request-specific
-//! TLS policy failures do not suppress alternatives for other cache users.
+//! Every attempt: proxy-route selection -> pool -> transport/TLS/HTTP
+//! The actual connector enforces peer requirements using its effective policy.
+//! Learning: response headers + H2 ALTSVC observer -> shared cache
+//! ```
+//!
+//! Place [`HttpServiceConnector`] **outside** proxy-route selection and pooling:
+//! each candidate is reached through the configured routes, with a pool key that
+//! includes its physical target. Attempts fork the original connection input so
+//! failed attempts cannot leave routing state behind; the winner returns its own
+//! established input. One attempt is reserved for the original endpoint.
+//!
+//! [RFC 7838 §2.4] permits fallback. Rama tries alternatives sequentially, with a
+//! per-alternative deadline and an optional overall deadline. Remote failures
+//! allow fallback unless a version was explicitly required. Unsupported local
+//! transport capabilities allow another attempt; other local policy/configuration
+//! errors stop selection. A request-specific TLS failure does not mark an
+//! alternative broken for clients using the default policy. Connectors report
+//! [`ConnectionPolicyScope`] during setup and on pooled connections; an unknown
+//! scope permits use of a verified connection but never shares policy failures.
+//!
+//! Discovery and use are separate: HTTP advertisements can be cached, but this
+//! selector currently uses alternatives only for HTTPS. It verifies the origin's
+//! authenticated identity ([RFC 7838 §2.1]), advertised ALPN and established HTTP
+//! version even on pool hits. Serving `http` origins over TLS additionally needs
+//! the opt-in checks of [RFC 8164 §2], which are not implemented here. WebSocket
+//! handshakes can learn hints but do not select alternative endpoints here.
+//!
+//! [`AltSvc`] handles response headers ([RFC 7838 §3]), `Alt-Used` (§5) and 421
+//! invalidation (§6). The H2 observer learns connection-level advertisements
+//! ([RFC 7838 §4]); both feed the same cache in receive order.
+//!
+//! [RFC 7838 §2]: https://www.rfc-editor.org/rfc/rfc7838.html#section-2
+//! [RFC 7838 §2.1]: https://www.rfc-editor.org/rfc/rfc7838.html#section-2.1
+//! [RFC 7838 §2.4]: https://www.rfc-editor.org/rfc/rfc7838.html#section-2.4
+//! [RFC 7838 §3]: https://www.rfc-editor.org/rfc/rfc7838.html#section-3
+//! [RFC 7838 §4]: https://www.rfc-editor.org/rfc/rfc7838.html#section-4
+//! [RFC 8164 §2]: https://www.rfc-editor.org/rfc/rfc8164.html#section-2
 
 use crate::layer::alt_svc::{AltSvc, AltSvcCache, AltSvcLayer, RouteContext};
-use parking_lot::Mutex;
 use rama_core::{
     Fork as _, Layer, Service,
     error::{BoxError, BoxErrorExt as _},
-    extensions::{Extension, ExtensionsRef},
+    extensions::ExtensionsRef,
     telemetry::tracing,
 };
 use rama_http_types::{
@@ -36,17 +80,14 @@ use rama_net::{
     Protocol,
     client::{
         ConnectRequest, ConnectionError, ConnectionErrorDomain, ConnectionErrorKind,
-        ConnectorService, ConnectorTarget, EstablishedClientConnection,
+        ConnectionPolicyScope, ConnectorService, ConnectorTarget, EstablishedClientConnection,
     },
     conn::ConnectionHealthWatcher,
     http::{HttpRequestVersion, TargetHttpVersion},
     tls::ApplicationProtocol,
 };
 #[cfg(feature = "tls")]
-use rama_tls::client::{
-    NegotiatedTlsParameters, ServerVerifyMode, TlsClientConfigProvider, TlsServerAuthentication,
-    TlsServerCertPins, TlsServerName, TlsServerTrust, TlsServerVerify,
-};
+use rama_tls::client::{NegotiatedTlsParameters, TlsServerAuthentication};
 use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
 use std::{sync::Arc, time::Duration};
 use tokio::time::Instant;
@@ -56,47 +97,16 @@ use tokio::time::Instant;
 const DEFAULT_ATTEMPT_TIMEOUT: Duration = Duration::from_millis(300);
 const DEFAULT_MAX_ATTEMPTS: usize = 8;
 
-/// Preserve a terminal failure observed by an address race across cancellation.
+/// Connection-attempt observations used by service selection and address races.
 ///
-/// A transport calls [`Self::reject`] after an authentication, protocol or policy
-/// failure. An outer timeout cannot disguise its cause as mere unavailability;
-/// explicit-version requests retain that terminal classification.
-#[derive(Debug, Default, Extension)]
-pub struct HttpServiceAttempt(Mutex<Option<ConnectionErrorKind>>);
-
-impl HttpServiceAttempt {
-    pub fn reject(&self) {
-        self.reject_with_kind(ConnectionErrorKind::Authentication);
-    }
-
-    /// Preserve terminal address-race failures, with authentication taking
-    /// precedence over protocol or policy errors regardless of completion order.
-    pub fn reject_with_kind(&self, kind: ConnectionErrorKind) {
-        let mut failure = self.0.lock();
-        if kind == ConnectionErrorKind::Authentication || failure.is_none() {
-            *failure = Some(kind);
-        }
-    }
-
-    /// The strongest terminal failure observed during this attempt.
-    pub fn failure_kind(&self) -> Option<ConnectionErrorKind> {
-        *self.0.lock()
-    }
-
-    #[must_use]
-    pub fn failed(&self) -> bool {
-        self.failure_kind().is_some()
-    }
-}
+/// Kept as an HTTP-facing name for the protocol-independent connector contract.
+/// Actual connectors report policy scope; the selector never inspects TLS config.
+pub use rama_net::client::ConnectionAttempt as HttpServiceAttempt;
 
 /// HTTP service discovery and bounded connection-selection policy.
 #[derive(Clone, Debug)]
 pub struct HttpServiceLayer {
     cache: Option<AltSvcCache>,
-    #[cfg(feature = "tls")]
-    tls_provider: Option<Arc<dyn TlsClientConfigProvider>>,
-    #[cfg(feature = "tls")]
-    http3_tls_provider: Option<Arc<dyn TlsClientConfigProvider>>,
     protocols: Arc<[ApplicationProtocol]>,
     attempt_timeout: Duration,
     timeout: Option<Duration>,
@@ -107,10 +117,6 @@ impl Default for HttpServiceLayer {
     fn default() -> Self {
         Self {
             cache: None,
-            #[cfg(feature = "tls")]
-            tls_provider: None,
-            #[cfg(feature = "tls")]
-            http3_tls_provider: None,
             protocols: Arc::from([]),
             attempt_timeout: DEFAULT_ATTEMPT_TIMEOUT,
             timeout: None,
@@ -120,24 +126,6 @@ impl Default for HttpServiceLayer {
 }
 
 impl HttpServiceLayer {
-    #[cfg(feature = "tls")]
-    generate_set_and_with! {
-        /// Supply the fixed TLS provider for stream-based HTTP alternative eligibility.
-        pub fn tls_provider(mut self, provider: Option<Arc<dyn TlsClientConfigProvider>>) -> Self {
-            self.tls_provider = provider;
-            self
-        }
-    }
-
-    #[cfg(feature = "tls")]
-    generate_set_and_with! {
-        /// Supply the fixed TLS provider for HTTP/3 alternative eligibility.
-        pub fn http3_tls_provider(mut self, provider: Option<Arc<dyn TlsClientConfigProvider>>) -> Self {
-            self.http3_tls_provider = provider;
-            self
-        }
-    }
-
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -208,24 +196,6 @@ pub struct HttpServiceConnector<S> {
 }
 
 impl<S> HttpServiceConnector<S> {
-    #[cfg(feature = "tls")]
-    generate_set_and_with! {
-        /// Supply the fixed TLS provider for stream-based HTTP alternative eligibility.
-        pub fn tls_provider(mut self, provider: Option<Arc<dyn TlsClientConfigProvider>>) -> Self {
-            self.policy.tls_provider = provider;
-            self
-        }
-    }
-
-    #[cfg(feature = "tls")]
-    generate_set_and_with! {
-        /// Supply the fixed TLS provider for HTTP/3 alternative eligibility.
-        pub fn http3_tls_provider(mut self, provider: Option<Arc<dyn TlsClientConfigProvider>>) -> Self {
-            self.policy.http3_tls_provider = provider;
-            self
-        }
-    }
-
     #[must_use]
     pub fn new(inner: S) -> Self {
         Self {
@@ -296,6 +266,8 @@ fn availability(error: &ConnectionError) -> bool {
         )
 }
 
+/// WebSocket handshakes use HTTP: map WS/WSS to HTTP/HTTPS for learning,
+/// preserving the original security scheme.
 fn origin(input: &ConnectRequest) -> Option<HttpOrigin> {
     let protocol = match input.application_protocol.as_ref()? {
         protocol if protocol == &Protocol::HTTP || protocol == &Protocol::HTTPS => protocol.clone(),
@@ -306,6 +278,9 @@ fn origin(input: &ConnectRequest) -> Option<HttpOrigin> {
     HttpOrigin::new(protocol, input.authority.clone()).ok()
 }
 
+/// Explicit targets constrain every HTTP version; H3 request metadata also means
+/// prior knowledge in Rama. Ordinary H1/H2 metadata leaves negotiation open.
+/// This is client policy, not a version-selection rule imposed by RFC 7838.
 fn required_version(input: &ConnectRequest) -> Option<Version> {
     input
         .extensions()
@@ -320,13 +295,15 @@ fn required_version(input: &ConnectRequest) -> Option<Version> {
         })
 }
 
+/// Require the authenticated TLS name to match the origin, not the dial target.
+/// `Host` equality already compares canonical identities without cloning them.
 #[cfg(feature = "tls")]
 pub(super) fn authenticates<C: ExtensionsRef>(connection: &C, origin: &HttpOrigin) -> bool {
     connection
         .extensions()
         .get_ref::<TlsServerAuthentication>()
         .and_then(|identity| identity.0.as_ref())
-        .is_some_and(|identity| identity.clone().canonicalize() == origin.authority().host)
+        .is_some_and(|identity| identity == &origin.authority().host)
 }
 
 #[cfg(not(feature = "tls"))]
@@ -334,23 +311,29 @@ pub(super) fn authenticates<C: ExtensionsRef>(_connection: &C, _origin: &HttpOri
     false
 }
 
+/// Keep a connection rejected by post-connect validation out of its pool.
 fn discard_connection(connection: &impl ExtensionsRef) {
     if let Some(health) = connection.extensions().get_ref::<ConnectionHealthWatcher>() {
         health.mark_broken();
     }
 }
 
+/// Validate the established peer, including pool hits: origin authentication
+/// (RFC 7838 §2.1), advertised ALPN (§2), and the actual HTTP connection version.
 fn verify_alternative<C: ExtensionsRef>(
     connection: &C,
     origin: &HttpOrigin,
     candidate: &HttpServiceCandidate,
 ) -> Result<(), ConnectionError> {
     if !authenticates(connection, origin) {
-        return Err(ConnectionError::application(
+        // A pooled connection may have been opened explicitly under a policy
+        // that cannot authenticate this origin. It remains valid for that use,
+        // but cannot serve an advertisement. This is not an endpoint failure.
+        return Err(ConnectionError::local(
             BoxError::from_static_str(
-                "alternative service did not authenticate the logical origin",
+                "connection policy does not authenticate the alternative's origin",
             ),
-            ConnectionErrorKind::Authentication,
+            ConnectionErrorKind::Unavailable,
         ));
     }
     #[cfg(feature = "tls")]
@@ -374,6 +357,7 @@ fn verify_alternative<C: ExtensionsRef>(
     verify_version(connection, expected)
 }
 
+/// Check the connection's negotiated version rather than trusting request intent.
 fn verify_version<C: ExtensionsRef>(
     connection: &C,
     expected: Version,
@@ -397,6 +381,9 @@ where
     S: ConnectorService<ConnectRequest>,
     S::Connection: ExtensionsRef,
 {
+    /// Prefer caller-supplied discovery; otherwise consult the shared cache.
+    /// The boolean marks cache-owned candidates whose backoff we must check.
+    /// Explicit dial targets win; plaintext and WebSocket routing stay unchanged.
     fn candidates(
         &self,
         input: &ConnectRequest,
@@ -419,6 +406,8 @@ where
         let candidates = origin.and_then(|origin| {
             let cache = self.policy.cache.as_ref()?;
             if proxy_context {
+                // Direct-path backoff says nothing about proxy reachability.
+                // Filter this fresh snapshot using route-specific backoff below.
                 cache.lookup_fresh(origin)
             } else {
                 cache.lookup(origin)
@@ -427,6 +416,8 @@ where
         (candidates, true)
     }
 
+    /// Install learning before an H2 handshake can receive ALTSVC frames
+    /// (RFC 7838 §4). Preserve caller observers; other pinned versions cannot use it.
     fn observe_frames(&self, input: &ConnectRequest, origin: Option<&HttpOrigin>) {
         if required_version(input).is_some_and(|version| version != Version::HTTP_2) {
             return;
@@ -440,6 +431,7 @@ where
         }
     }
 
+    /// Intersect advertised ALPNs with connector capabilities and caller intent.
     fn candidate_version(
         &self,
         candidate: &HttpServiceCandidate,
@@ -455,16 +447,20 @@ where
             .then_some(version)
     }
 
+    /// Bound connection setup, preserving terminal address-race failures if the
+    /// attempt times out. Only alternatives consume the speculative time budget;
+    /// origin fallback shares the optional overall deadline.
     async fn attempt(
         &self,
         input: ConnectRequest,
         deadline: Option<Instant>,
         speculative: bool,
     ) -> Result<EstablishedClientConnection<S::Connection, ConnectRequest>, ConnectionError> {
-        let state = speculative.then(|| Arc::new(HttpServiceAttempt::default()));
-        if let Some(state) = &state {
-            input.extensions().insert_arc(state.clone());
-        }
+        let state = if speculative {
+            input.extensions().get_arc::<HttpServiceAttempt>()
+        } else {
+            None
+        };
         let attempt_deadline = if speculative {
             let speculative_deadline = Instant::now()
                 .checked_add(self.policy.attempt_timeout)
@@ -488,6 +484,8 @@ where
         }
 
         let result = tokio::time::timeout_at(attempt_deadline, self.inner.connect(input)).await;
+        // An address race may still be pending after one address rejected TLS.
+        // Cancellation must not turn that rejection into an availability failure.
         let rejected = state.as_ref().and_then(|state| state.failure_kind());
         match (result, rejected) {
             (Ok(Err(error)), Some(kind))
@@ -517,6 +515,9 @@ where
         }
     }
 
+    /// Add response learning and Alt-Used bookkeeping after connection selection.
+    /// Read provenance from the connection too: a pool hit can reuse an alternative
+    /// without selecting a fresh advertisement on this request.
     fn wrap(
         &self,
         established: EstablishedClientConnection<S::Connection, ConnectRequest>,
@@ -575,6 +576,8 @@ where
             })
             .transpose()?;
         let required = required_version(&input);
+        // No discovery: move the input directly, avoiding a fork or origin
+        // allocation unless a pooled alternative needs Alt-Used bookkeeping.
         if self.policy.cache.is_none() && !input.extensions().contains::<HttpServiceCandidates>() {
             if let Some(version) = required {
                 input.extensions().insert(TargetHttpVersion(version));
@@ -591,6 +594,8 @@ where
                 .and_then(|_| origin(&established.input));
             return Ok(self.wrap(established, origin, None));
         }
+        // Snapshot discovery once; freshness and route backoff are rechecked
+        // before each attempt because other requests can update the shared cache.
         let origin = origin(&input);
         let route = RouteContext::for_request(input.extensions());
         let (snapshot, from_cache) = self.candidates(&input, origin.as_ref(), route.is_some());
@@ -600,42 +605,12 @@ where
             && snapshot.origin() == origin
         {
             for (index, candidate) in snapshot.iter().enumerate() {
+                // Always reserve the final attempt for the original endpoint.
                 if attempts >= self.policy.max_attempts.saturating_sub(1) {
                     break;
                 }
                 let Some(version) = self.candidate_version(candidate, required) else {
                     continue;
-                };
-
-                #[cfg(not(feature = "tls"))]
-                let custom_tls_policy = false;
-                #[cfg(feature = "tls")]
-                let custom_tls_policy = {
-                    let extensions = input.extensions();
-                    let provider = if version == Version::HTTP_3 {
-                        &self.policy.http3_tls_provider
-                    } else {
-                        &self.policy.tls_provider
-                    };
-                    if extensions
-                        .get_ref::<TlsServerVerify>()
-                        .is_some_and(|verify| verify.0 == ServerVerifyMode::Disable)
-                        || extensions.get_ref::<TlsServerName>().is_some_and(|name| {
-                            name.0.clone().canonicalize() != origin.authority().host
-                        })
-                        || provider.as_ref().is_some_and(|provider| {
-                            !provider.authenticates_origin(extensions, &origin.authority().host)
-                        })
-                    {
-                        continue;
-                    }
-                    // A custom trust/pin/hook failure describes this request's
-                    // policy, not the shared endpoint's availability.
-                    extensions.contains::<TlsServerTrust>()
-                        || extensions.contains::<TlsServerCertPins>()
-                        || provider
-                            .as_ref()
-                            .is_some_and(|provider| provider.pool_id(extensions).is_some())
                 };
 
                 if from_cache
@@ -649,7 +624,14 @@ where
                     continue;
                 }
 
+                // Change the route and required protocol, never the logical
+                // authority or TLS policy (RFC 7838 §§2, 2.3).
+                let state = Arc::new(
+                    HttpServiceAttempt::new()
+                        .with_authenticated_peer(origin.authority().host.clone()),
+                );
                 let attempt = input.fork();
+                attempt.extensions().insert_arc(state.clone());
                 attempt.extensions().insert_arc(snapshot.clone());
                 attempt
                     .extensions()
@@ -660,6 +642,7 @@ where
                     .insert(SelectedHttpService::new(origin.clone(), candidate.clone()));
                 self.observe_frames(&attempt, Some(origin));
                 attempts += 1;
+                // Outcomes must not update availability after a network change.
                 let failure_context = self
                     .policy
                     .cache
@@ -667,10 +650,29 @@ where
                     .map(|cache| (cache, cache.network_epoch()));
                 match self.attempt(attempt, deadline, true).await {
                     Ok(established) => {
+                        // Pool hits carry the original connector's policy scope.
+                        // Unknown custom policies never change shared backoff.
+                        let shared_policy = established
+                            .conn
+                            .extensions()
+                            .get_ref::<ConnectionPolicyScope>()
+                            .copied()
+                            .unwrap_or_else(|| state.policy_scope())
+                            == ConnectionPolicyScope::Connector;
                         if let Err(error) = verify_alternative(&established.conn, origin, candidate)
                         {
+                            if error.domain() == ConnectionErrorDomain::Local
+                                && error.kind() == ConnectionErrorKind::Unavailable
+                            {
+                                tracing::debug!(
+                                    ?error,
+                                    ?candidate,
+                                    "pooled policy cannot serve alternative"
+                                );
+                                continue;
+                            }
                             discard_connection(&established.conn);
-                            if !custom_tls_policy
+                            if shared_policy
                                 && candidate.source == HttpServiceSource::AltSvc
                                 && let Some((cache, network)) = failure_context
                             {
@@ -690,9 +692,11 @@ where
                             );
                             continue;
                         }
-                        if !custom_tls_policy && let Some((cache, network)) = failure_context {
+                        if shared_policy && let Some((cache, network)) = failure_context {
                             cache.succeeded(snapshot, index, route.as_ref(), network);
                         }
+                        // A pool hit must describe this same service. Insert
+                        // provenance only once; Extensions are append-only.
                         let extensions = established.conn.extensions();
                         if let Some(current) = extensions.get_ref::<EstablishedHttpService>() {
                             if current.origin != *origin
@@ -736,7 +740,8 @@ where
                         if error.domain() == ConnectionErrorDomain::Local {
                             return Err(error);
                         }
-                        if (!custom_tls_policy || availability(&error))
+                        if (state.policy_scope() == ConnectionPolicyScope::Connector
+                            || availability(&error))
                             && candidate.source == HttpServiceSource::AltSvc
                             && let Some((cache, network)) = failure_context
                         {
@@ -764,6 +769,8 @@ where
             }
         }
 
+        // Alternatives were absent, filtered out, or failed. Try the original
+        // endpoint with the original policy, preserving any explicit version.
         let attempt = input;
         if let Some(snapshot) = &snapshot {
             attempt.extensions().insert_arc(snapshot.clone());
