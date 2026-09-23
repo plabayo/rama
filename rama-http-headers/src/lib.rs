@@ -42,6 +42,9 @@ mod map_ext;
 mod req_builder_ext;
 mod resp_builder_ext;
 
+pub mod datastar;
+pub use datastar::DatastarRequest;
+
 pub mod exotic;
 pub mod privacy;
 

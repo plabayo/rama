@@ -1139,6 +1139,9 @@ standard_headers! {
     /// `Last-Event-ID` — Server-Sent Events resumption id.
     (LastEventId, LAST_EVENT_ID, b"last-event-id");
 
+    /// `Datastar-Request` — marks a request made by the Datastar client.
+    (DatastarRequest, DATASTAR_REQUEST, b"datastar-request");
+
     /// `CF-Connecting-IP` — Cloudflare client IP.
     (CfConnectingIp, CF_CONNECTING_IP, b"cf-connecting-ip");
 
