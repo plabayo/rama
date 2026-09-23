@@ -1,0 +1,97 @@
+# Build output crosses this boundary as data only; the publisher never runs an image.
+name: Build and publish container images
+'on':
+  workflow_call:
+    inputs:
+      source-ref:
+        type: string
+        required: true
+      image-tag:
+        type: string
+        required: true
+      floating-tag:
+        type: string
+        required: true
+    secrets:
+      DOCKERHUB_USERNAME:
+        required: true
+      DOCKERHUB_TOKEN:
+        required: true
+permissions: {}
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+        ref: ${{ inputs.source-ref }}
+    - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      with:
+        platforms: arm64
+    - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+    - name: Build rama without registry credentials
+      uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+      with:
+        context: .
+        file: rama-cli/infra/Dockerfile
+        push: false
+        platforms: linux/amd64
+        outputs: type=oci,dest=${{ runner.temp }}/rama.tar
+    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: rama-oci
+        path: ${{ runner.temp }}/rama.tar
+        if-no-files-found: error
+        retention-days: 1
+    - name: Build rama-quic-interop without registry credentials
+      uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+      with:
+        context: .
+        file: rama-quic/e2e/interop-runner/Dockerfile
+        push: false
+        platforms: linux/amd64,linux/arm64
+        outputs: type=oci,dest=${{ runner.temp }}/rama-quic-interop.tar
+    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: rama-quic-interop-oci
+        path: ${{ runner.temp }}/rama-quic-interop.tar
+        if-no-files-found: error
+        retention-days: 1
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+    - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      with:
+        name: rama-oci
+        path: images
+    - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      with:
+        name: rama-quic-interop-oci
+        path: images
+    - name: Install image transport tool
+      run: |
+        sudo apt-get update
+        sudo apt-get install --yes --no-install-recommends skopeo
+    - name: Publish images without executing them
+      env:
+        DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+        DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        IMAGE_TAG: ${{ inputs.image-tag }}
+        FLOATING_TAG: ${{ inputs.floating-tag }}
+      run: |
+        set -euo pipefail
+        [[ "$IMAGE_TAG" =~ ^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,127}$ ]]
+        [[ "$FLOATING_TAG" == edge || "$FLOATING_TAG" == latest ]]
+        authfile="$RUNNER_TEMP/registry-auth.json"
+        trap 'rm -f "$authfile"' EXIT
+        printf '%s' "$DOCKERHUB_TOKEN" | skopeo login --authfile "$authfile" --username "$DOCKERHUB_USERNAME" --password-stdin docker.io
+        for image in rama rama-quic-interop; do
+          for tag in "$IMAGE_TAG" "$FLOATING_TAG"; do
+            skopeo copy --all --authfile "$authfile" "oci-archive:images/$image.tar" "docker://docker.io/glendc/$image:$tag"
+          done
+        done

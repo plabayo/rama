@@ -1,48 +1,68 @@
+# Build, sign, smoke-test, and publish on separate hosted runners.
+# Privileged jobs never restore build caches or execute produced binaries.
 name: Build Rama CLI Releases
-on:
+'on':
   push:
     tags:
-      - rama-*
+    - rama-*
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release Tag"
+        description: Release Tag
         required: true
         type: string
       build_docker:
-        description: "Build Docker"
+        description: Build Docker
         required: true
         type: boolean
         default: true
       build_linux:
-        description: "Build Linux"
+        description: Build Linux
         required: true
         type: boolean
         default: true
       build_macos:
-        description: "Build macOS"
+        description: Build macOS
         required: true
         type: boolean
         default: true
       build_windows:
-        description: "Build Windows"
+        description: Build Windows
         required: true
         type: boolean
         default: true
-
 env:
   CARGO_TERM_COLOR: always
   RUST_TOOLCHAIN: stable
   SEGMENT_DOWNLOAD_TIMEOUT_MINS: 5
-
-permissions:
-  contents: read
-
+permissions: {}
 jobs:
-  build-release-linux:
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_linux }}
+  resolve-release:
     permissions:
-      contents: write
+      contents: read
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.source.outputs.sha }}
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+    - name: Validate release tag
+      id: tag
+      env:
+        RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+      run: |
+        set -euo pipefail
+        [[ "$RELEASE_TAG" =~ ^rama-[0-9]+\.[0-9]+\.[0-9]+([.-][a-zA-Z0-9.-]+)?$ ]]
+        printf 'tag=%s\n' "$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+        ref: refs/tags/${{ steps.tag.outputs.tag }}
+    - id: source
+      run: printf "sha=%s\n" "$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+  build-release-linux:
+    permissions:
+      contents: read
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_linux }}
     runs-on: ubuntu-latest
     env:
       RUST_BACKTRACE: full
@@ -50,120 +70,215 @@ jobs:
       fail-fast: true
       matrix:
         target:
-          - name: x86_64-unknown-linux-gnu
-          - name: x86_64-unknown-linux-musl
-          - name: aarch64-unknown-linux-gnu
-          - name: aarch64-unknown-linux-musl
-          - name: armv7-unknown-linux-gnueabi
-          - name: armv7-unknown-linux-gnueabihf
-
+        - name: x86_64-unknown-linux-gnu
+        - name: x86_64-unknown-linux-musl
+        - name: aarch64-unknown-linux-gnu
+        - name: aarch64-unknown-linux-musl
+        - name: armv7-unknown-linux-gnueabi
+        - name: armv7-unknown-linux-gnueabihf
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
-        with:
-          toolchain: ${{env.RUST_TOOLCHAIN}}
-          targets: ${{ matrix.target.name }}
-
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          env-vars: RUST_TOOLCHAIN
-          cache-bin: false
-
-      - uses: ./.github/actions/sccache
-
-      - name: Install Zig
-        if: contains(matrix.target.name, 'unknown-linux-musl')
-        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
-        with:
-          version: 0.13.0
-
-      - name: Install cargo-zigbuild
-        if: contains(matrix.target.name, 'unknown-linux-musl')
-        run: cargo install --version 0.23.0 --locked cargo-zigbuild
-
-      - name: Install cross
-        if: contains(matrix.target.name, 'unknown-linux-musl') == false
-        run: |
-          cargo install --git https://github.com/cross-rs/cross --rev 1b8cf50d20180c1a394099e608141480f934b7f7 cross
-
-      - name: Install bindgen-cli
-        run: |
-          cargo install --force --version 0.72.1 --locked bindgen-cli
-
-      - name: Build release (musl)
-        if: contains(matrix.target.name, 'unknown-linux-musl')
-        timeout-minutes: 120
-        run: |
-          cargo zigbuild --release -p rama-cli --target "${{ matrix.target.name }}"
-
-      - name: Build release (cross)
-        if: contains(matrix.target.name, 'unknown-linux-musl') == false
-        timeout-minutes: 120
-        env:
-          # Multiple getrandom versions publish package-level cross metadata for
-          # NetBSD. That warning is unrelated to our Linux targets but recent
-          # cross aborts before building unless package metadata warnings are
-          # explicitly allowed.
-          CROSS_NO_WARNINGS: "0"
-          # The host wrapper is not installed inside cross containers.
-          RUSTC_WRAPPER: ""
-        run: |
-          cross build --release -p rama-cli --target "${{ matrix.target.name }}"
-
-      - name: Package
-        run: |
-          cd target/${{ matrix.target.name }}/release && tar -cJf rama.${{ matrix.target.name }}.tar.xz rama
-
-      - name: Generate checksums
-        run: |
-          cd target/${{ matrix.target.name }}/release
-          sha256sum rama.${{ matrix.target.name }}.tar.xz > rama.${{ matrix.target.name }}.tar.xz.sha256
-
-      - name: Ensure Github Release
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
-        run: |
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            echo "Release $RELEASE_TAG already exists; leaving prerelease/latest settings unchanged."
-            exit 0
-          fi
-
-          version="${RELEASE_TAG#rama-}"
-          release_args=("$RELEASE_TAG" "--verify-tag")
-          if [[ "$version" == *-* ]]; then
-            release_args+=("--prerelease" "--latest=false")
-          else
-            release_args+=("--latest")
-          fi
-
-          if gh release create "${release_args[@]}"; then
-            exit 0
-          fi
-
-          gh release view "$RELEASE_TAG" >/dev/null
-
-      - name: Upload Github Assets
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
-        run: |
-          gh release upload "$RELEASE_TAG" \
-            target/${{ matrix.target.name }}/release/*.tar.xz \
-            target/${{ matrix.target.name }}/release/*.sha256 \
-            --clobber
-
-  build-release-macos:
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_macos }}
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+        ref: ${{ needs.resolve-release.outputs.sha }}
+    - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
+    - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+      with:
+        toolchain: ${{env.RUST_TOOLCHAIN}}
+        targets: ${{ matrix.target.name }}
+    # Release builds are intentionally cold: never trust a shared build cache.
+    - name: Install Zig
+      if: contains(matrix.target.name, 'unknown-linux-musl')
+      uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+      with:
+        version: 0.13.0
+        use-cache: false
+    - name: Install cargo-zigbuild
+      if: contains(matrix.target.name, 'unknown-linux-musl')
+      run: cargo install --version 0.23.0 --locked cargo-zigbuild
+    - name: Install cross
+      if: contains(matrix.target.name, 'unknown-linux-musl') == false
+      run: |
+        cargo install --git https://github.com/cross-rs/cross --rev 1b8cf50d20180c1a394099e608141480f934b7f7 cross
+    - name: Install bindgen-cli
+      run: |
+        cargo install --force --version 0.72.1 --locked bindgen-cli
+    - name: Build release (musl)
+      if: contains(matrix.target.name, 'unknown-linux-musl')
+      timeout-minutes: 120
+      run: |
+        cargo zigbuild --release -p rama-cli --target "${{ matrix.target.name }}"
+    - name: Build release (cross)
+      if: contains(matrix.target.name, 'unknown-linux-musl') == false
+      timeout-minutes: 120
+      env:
+        CROSS_NO_WARNINGS: '0'
+        RUSTC_WRAPPER: ''
+      run: |
+        cross build --release -p rama-cli --target "${{ matrix.target.name }}"
+    - name: Package
+      run: |
+        cd target/${{ matrix.target.name }}/release && tar -cJf rama.${{ matrix.target.name }}.tar.xz rama
+    - name: Generate checksums
+      run: |
+        cd target/${{ matrix.target.name }}/release
+        sha256sum rama.${{ matrix.target.name }}.tar.xz > rama.${{ matrix.target.name }}.tar.xz.sha256
+    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: release-${{ matrix.target.name }}
+        path: |-
+          target/${{ matrix.target.name }}/release/*.tar.xz
+          target/${{ matrix.target.name }}/release/*.sha256
+        if-no-files-found: error
+        retention-days: 1
+    needs: resolve-release
+  publish-release-linux:
+    needs:
+    - resolve-release
+    - build-release-linux
+    runs-on: ubuntu-latest
     permissions:
       contents: write
+    strategy:
+      fail-fast: true
+      matrix:
+        target:
+        - name: x86_64-unknown-linux-gnu
+        - name: x86_64-unknown-linux-musl
+        - name: aarch64-unknown-linux-gnu
+        - name: aarch64-unknown-linux-musl
+        - name: armv7-unknown-linux-gnueabi
+        - name: armv7-unknown-linux-gnueabihf
+    steps:
+    - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      with:
+        name: release-${{ matrix.target.name }}
+        path: assets
+    - name: Ensure Github Release
+      shell: bash
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        RELEASE_TAG: ${{ needs.resolve-release.outputs.tag }}
+        GH_REPO: ${{ github.repository }}
+      run: |
+        set -euo pipefail
+        if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+          echo "Release $RELEASE_TAG already exists; leaving prerelease/latest settings unchanged."
+          exit 0
+        fi
+
+        version="${RELEASE_TAG#rama-}"
+        release_args=("$RELEASE_TAG" "--verify-tag")
+        if [[ "$version" == *-* ]]; then
+          release_args+=("--prerelease" "--latest=false")
+        else
+          release_args+=("--latest")
+        fi
+
+        if gh release create "${release_args[@]}"; then
+          exit 0
+        fi
+
+        gh release view "$RELEASE_TAG" >/dev/null
+    - name: Upload Github Assets
+      shell: bash
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        RELEASE_TAG: ${{ needs.resolve-release.outputs.tag }}
+        GH_REPO: ${{ github.repository }}
+      run: |
+        gh release upload "$RELEASE_TAG" \
+          assets/*.tar.xz \
+          assets/*.sha256 \
+          --clobber
+  sign-release-macos:
+    permissions:
+      contents: read
+    needs:
+    - resolve-release
+    - build-release-macos
+    runs-on: macos-latest
+    concurrency:
+      group: ${{ matrix.target == 'x86_64-apple-darwin' && 'rama-macos-slot-0' || 'rama-macos-slot-1' }}
+      cancel-in-progress: false
+      queue: max
+    strategy:
+      fail-fast: true
+      matrix:
+        target:
+        - x86_64-apple-darwin
+        - aarch64-apple-darwin
+    timeout-minutes: 60
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+        ref: ${{ github.workflow_sha }}
+        sparse-checkout: rama-cli/scripts
+        sparse-checkout-cone-mode: false
+    - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      with:
+        name: unsigned-${{ matrix.target }}
+        path: target/${{ matrix.target }}/release
+    - name: Sign and notarize without building or executing the binary
+      run: |
+        chmod +x "target/${{ matrix.target }}/release/rama"
+        bash rama-cli/scripts/sign_macos.sh "${{ matrix.target }}"
+      env:
+        MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+        MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        MACOS_CERT_COMMON_NAME: ${{ secrets.MACOS_CERT_COMMON_NAME }}
+        AC_API_KEY_ID: ${{ secrets.AC_API_KEY_ID }}
+        AC_API_ISSUER_ID: ${{ secrets.AC_API_ISSUER_ID }}
+        AC_API_KEY: ${{ secrets.AC_API_KEY }}
+    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: signed-${{ matrix.target }}
+        path: target/${{ matrix.target }}/release/rama
+        if-no-files-found: error
+        retention-days: 1
+  test-release-macos:
+    needs: sign-release-macos
+    runs-on: macos-latest
+    concurrency:
+      group: ${{ matrix.target == 'x86_64-apple-darwin' && 'rama-macos-slot-0' || 'rama-macos-slot-1' }}
+      cancel-in-progress: false
+      queue: max
+    strategy:
+      fail-fast: true
+      matrix:
+        target:
+        - x86_64-apple-darwin
+        - aarch64-apple-darwin
+    permissions: {}
+    steps:
+    - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      with:
+        name: signed-${{ matrix.target }}
+        path: target/${{ matrix.target }}/release
+    - name: Smoke test signed binary without credentials
+      run: |
+        chmod +x "target/${{ matrix.target }}/release/rama"
+        "target/${{ matrix.target }}/release/rama" pac eval --offline --source 'function FindProxyForURL(url, host) { return "DIRECT"; }' https://example.com
+    - name: Package
+      run: |
+        cd target/${{ matrix.target }}/release && tar -cJf rama.${{ matrix.target }}.tar.xz rama
+    - name: Generate checksums
+      run: |
+        cd target/${{ matrix.target }}/release
+        shasum -a 256 rama.${{ matrix.target }}.tar.xz > rama.${{ matrix.target }}.tar.xz.sha256
+    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: release-${{ matrix.target }}
+        path: |-
+          target/${{ matrix.target }}/release/*.tar.xz
+          target/${{ matrix.target }}/release/*.sha256
+        if-no-files-found: error
+        retention-days: 1
+  build-release-macos:
+    permissions:
+      contents: read
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_macos }}
     runs-on: macos-latest
     concurrency:
       group: ${{ matrix.target == 'x86_64-apple-darwin' && 'rama-macos-slot-0' || 'rama-macos-slot-1' }}
@@ -175,93 +290,152 @@ jobs:
       fail-fast: true
       matrix:
         target:
-          - x86_64-apple-darwin
-          - aarch64-apple-darwin
+        - x86_64-apple-darwin
+        - aarch64-apple-darwin
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Install GNU tar
-        if: runner.os == 'macOS'
-        run: |
-          brew install gnu-tar
-          echo "/usr/local/opt/gnu-tar/libexec/gnubin" >> "$GITHUB_PATH"
-
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
-        with:
-          toolchain: ${{env.RUST_TOOLCHAIN}}
-          targets: ${{ matrix.target }}
-
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          env-vars: RUST_TOOLCHAIN
-          cache-bin: false
-
-      - uses: ./.github/actions/sccache
-
-      - name: Build and Sign
-        run: |
-          bash ./rama-cli/scripts/build_and_sign_macos.sh "${{ matrix.target }}"
-        env:
-          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
-          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
-          MACOS_CERT_COMMON_NAME: ${{ secrets.MACOS_CERT_COMMON_NAME }}
-          AC_API_KEY_ID: ${{ secrets.AC_API_KEY_ID }}
-          AC_API_ISSUER_ID: ${{ secrets.AC_API_ISSUER_ID }}
-          AC_API_KEY: ${{ secrets.AC_API_KEY }}
-
-      - name: Package
-        run: |
-          cd target/${{ matrix.target }}/release && tar -cJf rama.${{ matrix.target }}.tar.xz rama
-
-      - name: Generate checksums
-        run: |
-          cd target/${{ matrix.target }}/release
-          shasum -a 256 rama.${{ matrix.target }}.tar.xz > rama.${{ matrix.target }}.tar.xz.sha256
-
-      - name: Ensure Github Release
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
-        run: |
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            echo "Release $RELEASE_TAG already exists; leaving prerelease/latest settings unchanged."
-            exit 0
-          fi
-
-          version="${RELEASE_TAG#rama-}"
-          release_args=("$RELEASE_TAG" "--verify-tag")
-          if [[ "$version" == *-* ]]; then
-            release_args+=("--prerelease" "--latest=false")
-          else
-            release_args+=("--latest")
-          fi
-
-          if gh release create "${release_args[@]}"; then
-            exit 0
-          fi
-
-          gh release view "$RELEASE_TAG" >/dev/null
-
-      - name: Upload Github Assets
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
-        run: |
-          gh release upload "$RELEASE_TAG" \
-            target/${{ matrix.target }}/release/*.tar.xz \
-            target/${{ matrix.target }}/release/*.sha256 \
-            --clobber
-
-  build-release-windows:
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_windows }}
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+        ref: ${{ needs.resolve-release.outputs.sha }}
+    - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
+    - name: Install GNU tar
+      if: runner.os == 'macOS'
+      run: |
+        brew install gnu-tar
+        echo "/usr/local/opt/gnu-tar/libexec/gnubin" >> "$GITHUB_PATH"
+    - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+      with:
+        toolchain: ${{env.RUST_TOOLCHAIN}}
+        targets: ${{ matrix.target }}
+    # Release builds are intentionally cold: never trust a shared build cache.
+    - name: Build unsigned release
+      run: cargo build --locked --release -p rama-cli --target "${{ matrix.target }}"
+    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: unsigned-${{ matrix.target }}
+        path: target/${{ matrix.target }}/release/rama
+        if-no-files-found: error
+        retention-days: 1
+    needs: resolve-release
+  publish-release-macos:
+    needs:
+    - resolve-release
+    - test-release-macos
+    runs-on: ubuntu-latest
     permissions:
       contents: write
+    strategy:
+      fail-fast: true
+      matrix:
+        target:
+        - x86_64-apple-darwin
+        - aarch64-apple-darwin
+    steps:
+    - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      with:
+        name: release-${{ matrix.target }}
+        path: assets
+    - name: Ensure Github Release
+      shell: bash
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        RELEASE_TAG: ${{ needs.resolve-release.outputs.tag }}
+        GH_REPO: ${{ github.repository }}
+      run: |
+        set -euo pipefail
+        if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+          echo "Release $RELEASE_TAG already exists; leaving prerelease/latest settings unchanged."
+          exit 0
+        fi
+
+        version="${RELEASE_TAG#rama-}"
+        release_args=("$RELEASE_TAG" "--verify-tag")
+        if [[ "$version" == *-* ]]; then
+          release_args+=("--prerelease" "--latest=false")
+        else
+          release_args+=("--latest")
+        fi
+
+        if gh release create "${release_args[@]}"; then
+          exit 0
+        fi
+
+        gh release view "$RELEASE_TAG" >/dev/null
+    - name: Upload Github Assets
+      shell: bash
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        RELEASE_TAG: ${{ needs.resolve-release.outputs.tag }}
+        GH_REPO: ${{ github.repository }}
+      run: |
+        gh release upload "$RELEASE_TAG" \
+          assets/*.tar.xz \
+          assets/*.sha256 \
+          --clobber
+  sign-release-windows:
+    needs: build-release-windows
+    runs-on: windows-latest
+    concurrency:
+      group: rama-windows-slot-0
+      cancel-in-progress: false
+      queue: max
+    strategy:
+      fail-fast: true
+      matrix:
+        target:
+        - x86_64-pc-windows-msvc
+    permissions:
+      actions: read
+    timeout-minutes: 60
+    steps:
+    - id: artifact
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        ARTIFACT_NAME: unsigned-${{ matrix.target }}
+      run: |
+        set -euo pipefail
+        id=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" --jq ".artifacts[] | select(.name == \"$ARTIFACT_NAME\" and .expired == false) | .id")
+        [[ "$id" =~ ^[0-9]+$ ]]
+        printf 'id=%s\n' "$id" >> "$GITHUB_OUTPUT"
+    - id: optional_step_id
+      uses: signpath/github-action-submit-signing-request@c92b958760219087e01f8d67a1669ed57afe2627 # v2.3
+      with:
+        api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+        organization-id: 177e81da-21f7-469e-823f-a924bcc9f474
+        project-slug: rama
+        signing-policy-slug: release-signing
+        github-artifact-id: ${{ steps.artifact.outputs.id }}
+        wait-for-completion: true
+        output-artifact-directory: target/${{ matrix.target }}/release
+    - name: Package (zip)
+      shell: pwsh
+      run: |
+        $BinPath = "target/${{ matrix.target }}/release"
+        $Exe     = Join-Path $BinPath "rama.exe"
+        if (!(Test-Path $Exe)) { throw "Binary not found: $Exe" }
+        $Zip = Join-Path $BinPath "rama.${{ matrix.target }}.zip"
+        if (Test-Path $Zip) { Remove-Item $Zip }
+        Compress-Archive -Path $Exe -DestinationPath $Zip -Force
+    - name: Generate checksums
+      shell: pwsh
+      run: |
+        $BinPath = "target/${{ matrix.target }}/release"
+        $Zip     = Join-Path $BinPath "rama.${{ matrix.target }}.zip"
+        $Hash    = (Get-FileHash -Path $Zip -Algorithm SHA256).Hash.ToLower()
+        Set-Content -NoNewline -Path "$Zip.sha256" -Value "$Hash  $(Split-Path -Leaf $Zip)`n"
+    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: release-${{ matrix.target }}
+        path: |-
+          target/${{ matrix.target }}/release/*.zip
+          target/${{ matrix.target }}/release/*.sha256
+        if-no-files-found: error
+        retention-days: 1
+  build-release-windows:
+    permissions:
+      contents: read
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_windows }}
     runs-on: windows-latest
     concurrency:
       group: rama-windows-slot-0
@@ -273,105 +447,148 @@ jobs:
       fail-fast: true
       matrix:
         target:
-          - x86_64-pc-windows-msvc
-
+        - x86_64-pc-windows-msvc
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
-      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
-          targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          env-vars: RUST_TOOLCHAIN
-          cache-bin: false
-
-      - uses: ./.github/actions/sccache
-
-      - name: Build release (Windows)
-        shell: bash
-        run: |
-          cargo build --release -p rama-cli --target ${{ matrix.target }}
-
-      - name: upload-unsigned-artifact
-        id: upload-unsigned-artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          path: "target/${{ matrix.target }}/release/rama.exe"
-
-      - id: optional_step_id
-        uses: signpath/github-action-submit-signing-request@c92b958760219087e01f8d67a1669ed57afe2627 # v2.3
-        with:
-          api-token: "${{ secrets.SIGNPATH_API_TOKEN }}"
-          organization-id: "177e81da-21f7-469e-823f-a924bcc9f474"
-          project-slug: "rama"
-          signing-policy-slug: "release-signing"
-          github-artifact-id: "${{ steps.upload-unsigned-artifact.outputs.artifact-id }}"
-          wait-for-completion: true
-          output-artifact-directory: "target/${{ matrix.target }}/release"
-
-      - name: Package (zip)
-        shell: pwsh
-        run: |
-          $BinPath = "target/${{ matrix.target }}/release"
-          $Exe     = Join-Path $BinPath "rama.exe"
-          if (!(Test-Path $Exe)) { throw "Binary not found: $Exe" }
-          $Zip = Join-Path $BinPath "rama.${{ matrix.target }}.zip"
-          if (Test-Path $Zip) { Remove-Item $Zip }
-          Compress-Archive -Path $Exe -DestinationPath $Zip -Force
-
-      - name: Generate checksums
-        shell: pwsh
-        run: |
-          $BinPath = "target/${{ matrix.target }}/release"
-          $Zip     = Join-Path $BinPath "rama.${{ matrix.target }}.zip"
-          $Hash    = (Get-FileHash -Path $Zip -Algorithm SHA256).Hash.ToLower()
-          Set-Content -NoNewline -Path "$Zip.sha256" -Value "$Hash  $(Split-Path -Leaf $Zip)`n"
-
-      - name: Ensure Github Release
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
-        run: |
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            echo "Release $RELEASE_TAG already exists; leaving prerelease/latest settings unchanged."
-            exit 0
-          fi
-
-          version="${RELEASE_TAG#rama-}"
-          release_args=("$RELEASE_TAG" "--verify-tag")
-          if [[ "$version" == *-* ]]; then
-            release_args+=("--prerelease" "--latest=false")
-          else
-            release_args+=("--latest")
-          fi
-
-          if gh release create "${release_args[@]}"; then
-            exit 0
-          fi
-
-          gh release view "$RELEASE_TAG" >/dev/null
-
-      - name: Upload Github Assets
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
-        run: |
-          gh release upload "$RELEASE_TAG" \
-            target/${{ matrix.target }}/release/*.zip \
-            target/${{ matrix.target }}/release/*.sha256 \
-            --clobber
-
-  build-release-windows-arm:
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_windows }}
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+        ref: ${{ needs.resolve-release.outputs.sha }}
+    - uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
+    - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
+    - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+      with:
+        toolchain: ${{ env.RUST_TOOLCHAIN }}
+        targets: ${{ matrix.target }}
+    # Release builds are intentionally cold: never trust a shared build cache.
+    - name: Build release (Windows)
+      shell: bash
+      run: |
+        cargo build --release -p rama-cli --target ${{ matrix.target }}
+    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: unsigned-${{ matrix.target }}
+        path: target/${{ matrix.target }}/release/rama.exe
+        if-no-files-found: error
+        retention-days: 1
+    needs: resolve-release
+  publish-release-windows:
+    needs:
+    - resolve-release
+    - sign-release-windows
+    runs-on: ubuntu-latest
     permissions:
       contents: write
+    strategy:
+      fail-fast: true
+      matrix:
+        target:
+        - x86_64-pc-windows-msvc
+    steps:
+    - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      with:
+        name: release-${{ matrix.target }}
+        path: assets
+    - name: Ensure Github Release
+      shell: bash
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        RELEASE_TAG: ${{ needs.resolve-release.outputs.tag }}
+        GH_REPO: ${{ github.repository }}
+      run: |
+        set -euo pipefail
+        if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+          echo "Release $RELEASE_TAG already exists; leaving prerelease/latest settings unchanged."
+          exit 0
+        fi
+
+        version="${RELEASE_TAG#rama-}"
+        release_args=("$RELEASE_TAG" "--verify-tag")
+        if [[ "$version" == *-* ]]; then
+          release_args+=("--prerelease" "--latest=false")
+        else
+          release_args+=("--latest")
+        fi
+
+        if gh release create "${release_args[@]}"; then
+          exit 0
+        fi
+
+        gh release view "$RELEASE_TAG" >/dev/null
+    - name: Upload Github Assets
+      shell: bash
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        RELEASE_TAG: ${{ needs.resolve-release.outputs.tag }}
+        GH_REPO: ${{ github.repository }}
+      run: |
+        gh release upload "$RELEASE_TAG" \
+          assets/*.zip \
+          assets/*.sha256 \
+          --clobber
+  sign-release-windows-arm:
+    needs: build-release-windows-arm
+    runs-on: windows-11-arm
+    concurrency:
+      group: rama-windows-slot-1
+      cancel-in-progress: false
+      queue: max
+    strategy:
+      fail-fast: true
+      matrix:
+        target:
+        - aarch64-pc-windows-msvc
+    permissions:
+      actions: read
+    timeout-minutes: 60
+    steps:
+    - id: artifact
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        ARTIFACT_NAME: unsigned-${{ matrix.target }}
+      run: |
+        set -euo pipefail
+        id=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" --jq ".artifacts[] | select(.name == \"$ARTIFACT_NAME\" and .expired == false) | .id")
+        [[ "$id" =~ ^[0-9]+$ ]]
+        printf 'id=%s\n' "$id" >> "$GITHUB_OUTPUT"
+    - id: optional_step_id
+      uses: signpath/github-action-submit-signing-request@c92b958760219087e01f8d67a1669ed57afe2627 # v2.3
+      with:
+        api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+        organization-id: 177e81da-21f7-469e-823f-a924bcc9f474
+        project-slug: rama
+        signing-policy-slug: release-signing
+        github-artifact-id: ${{ steps.artifact.outputs.id }}
+        wait-for-completion: true
+        output-artifact-directory: target/${{ matrix.target }}/release
+    - name: Package (zip)
+      shell: pwsh
+      run: |
+        $BinPath = "target/${{ matrix.target }}/release"
+        $Exe     = Join-Path $BinPath "rama.exe"
+        if (!(Test-Path $Exe)) { throw "Binary not found: $Exe" }
+        $Zip = Join-Path $BinPath "rama.${{ matrix.target }}.zip"
+        if (Test-Path $Zip) { Remove-Item $Zip }
+        Compress-Archive -Path $Exe -DestinationPath $Zip -Force
+    - name: Generate checksums
+      shell: pwsh
+      run: |
+        $BinPath = "target/${{ matrix.target }}/release"
+        $Zip     = Join-Path $BinPath "rama.${{ matrix.target }}.zip"
+        $Hash    = (Get-FileHash -Path $Zip -Algorithm SHA256).Hash.ToLower()
+        Set-Content -NoNewline -Path "$Zip.sha256" -Value "$Hash  $(Split-Path -Leaf $Zip)`n"
+    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: release-${{ matrix.target }}
+        path: |-
+          target/${{ matrix.target }}/release/*.zip
+          target/${{ matrix.target }}/release/*.sha256
+        if-no-files-found: error
+        retention-days: 1
+  build-release-windows-arm:
+    permissions:
+      contents: read
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_windows }}
     runs-on: windows-11-arm
     concurrency:
       group: rama-windows-slot-1
@@ -383,155 +600,122 @@ jobs:
       fail-fast: true
       matrix:
         target:
-          - aarch64-pc-windows-msvc
-
+        - aarch64-pc-windows-msvc
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
-      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
-          targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          env-vars: RUST_TOOLCHAIN
-          cache-bin: false
-
-      - uses: ./.github/actions/sccache
-
-      - name: Build release (Windows)
-        shell: bash
-        run: |
-          cargo build --release -p rama-cli --target ${{ matrix.target }}
-
-      - name: upload-unsigned-artifact
-        id: upload-unsigned-artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          path: "target/${{ matrix.target }}/release/rama.exe"
-
-      - id: optional_step_id
-        uses: signpath/github-action-submit-signing-request@c92b958760219087e01f8d67a1669ed57afe2627 # v2.3
-        with:
-          api-token: "${{ secrets.SIGNPATH_API_TOKEN }}"
-          organization-id: "177e81da-21f7-469e-823f-a924bcc9f474"
-          project-slug: "rama"
-          signing-policy-slug: "release-signing"
-          github-artifact-id: "${{ steps.upload-unsigned-artifact.outputs.artifact-id }}"
-          wait-for-completion: true
-          output-artifact-directory: "target/${{ matrix.target }}/release"
-
-      - name: Package (zip)
-        shell: pwsh
-        run: |
-          $BinPath = "target/${{ matrix.target }}/release"
-          $Exe     = Join-Path $BinPath "rama.exe"
-          if (!(Test-Path $Exe)) { throw "Binary not found: $Exe" }
-          $Zip = Join-Path $BinPath "rama.${{ matrix.target }}.zip"
-          if (Test-Path $Zip) { Remove-Item $Zip }
-          Compress-Archive -Path $Exe -DestinationPath $Zip -Force
-
-      - name: Generate checksums
-        shell: pwsh
-        run: |
-          $BinPath = "target/${{ matrix.target }}/release"
-          $Zip     = Join-Path $BinPath "rama.${{ matrix.target }}.zip"
-          $Hash    = (Get-FileHash -Path $Zip -Algorithm SHA256).Hash.ToLower()
-          Set-Content -NoNewline -Path "$Zip.sha256" -Value "$Hash  $(Split-Path -Leaf $Zip)`n"
-
-      - name: Ensure Github Release
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
-        run: |
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            echo "Release $RELEASE_TAG already exists; leaving prerelease/latest settings unchanged."
-            exit 0
-          fi
-
-          version="${RELEASE_TAG#rama-}"
-          release_args=("$RELEASE_TAG" "--verify-tag")
-          if [[ "$version" == *-* ]]; then
-            release_args+=("--prerelease" "--latest=false")
-          else
-            release_args+=("--latest")
-          fi
-
-          if gh release create "${release_args[@]}"; then
-            exit 0
-          fi
-
-          gh release view "$RELEASE_TAG" >/dev/null
-
-      - name: Upload Github Assets
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
-        run: |
-          gh release upload "$RELEASE_TAG" \
-            target/${{ matrix.target }}/release/*.zip \
-            target/${{ matrix.target }}/release/*.sha256 \
-            --clobber
-
-  release-rama-docker:
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_docker }}
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+        ref: ${{ needs.resolve-release.outputs.sha }}
+    - uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
+    - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
+    - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+      with:
+        toolchain: ${{ env.RUST_TOOLCHAIN }}
+        targets: ${{ matrix.target }}
+    # Release builds are intentionally cold: never trust a shared build cache.
+    - name: Build release (Windows)
+      shell: bash
+      run: |
+        cargo build --release -p rama-cli --target ${{ matrix.target }}
+    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: unsigned-${{ matrix.target }}
+        path: target/${{ matrix.target }}/release/rama.exe
+        if-no-files-found: error
+        retention-days: 1
+    needs: resolve-release
+  publish-release-windows-arm:
+    needs:
+    - resolve-release
+    - sign-release-windows-arm
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: true
+      matrix:
+        target:
+        - aarch64-pc-windows-msvc
     steps:
-      - name: Set up emulation for the interop endpoint image
-        uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a
-        with:
-          platforms: arm64
-      - name: Set up Docker buildx
-        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
-      - name: Login to Docker Hub
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+    - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      with:
+        name: release-${{ matrix.target }}
+        path: assets
+    - name: Ensure Github Release
+      shell: bash
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        RELEASE_TAG: ${{ needs.resolve-release.outputs.tag }}
+        GH_REPO: ${{ github.repository }}
+      run: |
+        set -euo pipefail
+        if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+          echo "Release $RELEASE_TAG already exists; leaving prerelease/latest settings unchanged."
+          exit 0
+        fi
 
-      - name: Build and push
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
-        with:
-          push: true
-          tags: glendc/rama:latest,glendc/rama:${{ inputs.tag || github.ref_name }}
-          file: rama-cli/infra/Dockerfile
+        version="${RELEASE_TAG#rama-}"
+        release_args=("$RELEASE_TAG" "--verify-tag")
+        if [[ "$version" == *-* ]]; then
+          release_args+=("--prerelease" "--latest=false")
+        else
+          release_args+=("--latest")
+        fi
 
-      - name: Build and push QUIC interop endpoints
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
-        with:
-          push: true
-          platforms: linux/amd64,linux/arm64
-          tags: glendc/rama-quic-interop:latest,glendc/rama-quic-interop:${{ inputs.tag || github.ref_name }}
-          file: rama-quic/e2e/interop-runner/Dockerfile
+        if gh release create "${release_args[@]}"; then
+          exit 0
+        fi
 
+        gh release view "$RELEASE_TAG" >/dev/null
+    - name: Upload Github Assets
+      shell: bash
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        RELEASE_TAG: ${{ needs.resolve-release.outputs.tag }}
+        GH_REPO: ${{ github.repository }}
+      run: |
+        gh release upload "$RELEASE_TAG" \
+          assets/*.zip \
+          assets/*.sha256 \
+          --clobber
+  release-rama-docker:
+    permissions:
+      contents: read
+    needs: resolve-release
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_docker }}
+    uses: ./.github/workflows/publish-containers.yml
+    with:
+      source-ref: ${{ needs.resolve-release.outputs.sha }}
+      image-tag: ${{ needs.resolve-release.outputs.tag }}
+      floating-tag: latest
+    secrets:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
   update-homebrew-tap:
     needs:
-      - build-release-macos
-    if: ${{ always() && needs.build-release-macos.result == 'success' }}
+    - resolve-release
+    - publish-release-macos
+    if: ${{ always() && needs.publish-release-macos.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
-      - name: Dispatch Homebrew tap update
-        env:
-          GH_TOKEN: ${{ secrets.HOMEBREW_RAMA_DISPATCH_TOKEN }}
-          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
-        run: |
-          if [[ -z "$GH_TOKEN" ]]; then
-            echo "The Homebrew tap polls stable releases; skipping immediate dispatch because HOMEBREW_RAMA_DISPATCH_TOKEN is not configured."
-            exit 0
-          fi
+    - name: Dispatch Homebrew tap update
+      env:
+        GH_TOKEN: ${{ secrets.HOMEBREW_RAMA_DISPATCH_TOKEN }}
+        RELEASE_TAG: ${{ needs.resolve-release.outputs.tag }}
+      run: |
+        if [[ -z "$GH_TOKEN" ]]; then
+          echo "The Homebrew tap polls stable releases; skipping immediate dispatch because HOMEBREW_RAMA_DISPATCH_TOKEN is not configured."
+          exit 0
+        fi
 
-          version="${RELEASE_TAG#rama-}"
-          if [[ "$version" == *-* ]]; then
-            echo "Skipping Homebrew tap update for prerelease $RELEASE_TAG."
-            exit 0
-          fi
+        version="${RELEASE_TAG#rama-}"
+        if [[ "$version" == *-* ]]; then
+          echo "Skipping Homebrew tap update for prerelease $RELEASE_TAG."
+          exit 0
+        fi
 
-          gh api repos/plabayo/homebrew-rama/dispatches \
-            --method POST \
-            --field event_type=rama-release \
-            --raw-field client_payload="{\"version\":\"$version\",\"versioned\":true}"
+        gh api repos/plabayo/homebrew-rama/dispatches \
+          --method POST \
+          --field event_type=rama-release \
+          --raw-field client_payload="{\"version\":\"$version\",\"versioned\":true}"
+    permissions: {}

@@ -487,16 +487,16 @@ vet:
     cargo vet
 
 miri:
-    cargo +nightly miri test
+    cargo +"${MIRI_TOOLCHAIN:-nightly}" miri test
 
 # Narrow Miri pass for the Apple NetworkExtension crate's pure Rust FFI
 # ownership/conversion tests. Keep this separate from `miri`: the full
 # workspace pass is broader, while this target is intended as the fast
 # preflight for Apple bridge hardening work.
 miri-apple-ne-ffi:
-    cargo +nightly miri test -p rama-net-apple-networkextension ffi::bytes --lib
-    cargo +nightly miri test -p rama-net-apple-networkextension ffi::tproxy::tests::ffi_enum_decoders_fail_safe_on_bad_byte --lib
-    cargo +nightly miri test -p rama-net-apple-networkextension ffi::tproxy::tests::ffi_struct_layout_matches_c_header_on_64_bit_targets --lib
+    cargo +"${MIRI_TOOLCHAIN:-nightly}" miri test -p rama-net-apple-networkextension ffi::bytes --lib
+    cargo +"${MIRI_TOOLCHAIN:-nightly}" miri test -p rama-net-apple-networkextension ffi::tproxy::tests::ffi_enum_decoders_fail_safe_on_bad_byte --lib
+    cargo +"${MIRI_TOOLCHAIN:-nightly}" miri test -p rama-net-apple-networkextension ffi::tproxy::tests::ffi_struct_layout_matches_c_header_on_64_bit_targets --lib
 
 detect-unused-deps:
     @cargo install cargo-machete

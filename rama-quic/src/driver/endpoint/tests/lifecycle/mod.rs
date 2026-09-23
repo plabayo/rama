@@ -5234,7 +5234,13 @@ async fn an_accepted_prefix_is_reported_before_its_descriptor_completes() {
 /// cannot stand in for it.
 #[tokio::test]
 async fn an_accepted_prefix_is_reported_when_the_descriptor_then_fails() {
-    let (client_config, server_config) = configs();
+    let (mut client_config, server_config) = configs();
+    // Disable pacing so RTT cannot keep offers below the fixture's three-segment threshold.
+    client_config.set_transport_config(Arc::new(
+        TransportConfig::default()
+            .try_with_initial_congestion_window(u64::from(u32::MAX) + 1)
+            .unwrap(),
+    ));
     let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
     let (socket, log, segments) = segmenting_socket(1);
     let client = endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), None, socket);
