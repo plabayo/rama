@@ -471,6 +471,11 @@ impl Event {
         u16::try_from(self.0["port"].as_u64().expect("a port")).expect("a port that fits")
     }
 
+    /// The actual socket family, before any IPv4-mapped address normalization.
+    pub fn socket_is_ipv6(&self) -> bool {
+        self.0["socket_ipv6"].as_bool().expect("a socket family")
+    }
+
     pub fn len(&self) -> usize {
         usize::try_from(self.0["len"].as_u64().expect("a length")).expect("a length that fits")
     }

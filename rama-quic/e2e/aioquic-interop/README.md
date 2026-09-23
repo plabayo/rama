@@ -8,6 +8,11 @@ The project is standalone: it is not a member of the rama workspace and has its 
 separate interpreter running `peer/interop_peer.py`, with its own TLS (aioquic on
 `cryptography`/OpenSSL), so the only thing the two stacks share is the wire.
 
+All client scenarios bind a concrete source in the destination's address family.
+On macOS, an automatic dual-stack IPv6 port can overlap an existing IPv4 bind,
+diverting replies to another test. The name cases verify the actual socket family
+for IPv4 and IPv6; TLS and QUIC processing remain aioquic's.
+
 ## What is covered
 
 `tests/interop.rs` has the handshakes, streams, the two certificate-refusal controls and the

@@ -122,7 +122,9 @@ async fn name_cases_rama_server() {
             )
             .await;
             peer.expect("handshake", run.deadline).await;
-            peer.expect("connected", run.deadline).await;
+            let connected = peer.expect("connected", run.deadline).await;
+            // A dual-stack ephemeral bind can overlap another test's IPv4 port on macOS.
+            assert_eq!(connected.socket_is_ipv6(), addr.is_ipv6());
             let back = peer.expect("stream", run.deadline).await;
             back.reported()
                 .check(&run.what, "probe", run.scenario.probe);
