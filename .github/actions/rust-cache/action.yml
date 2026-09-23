@@ -38,10 +38,11 @@ runs:
     - name: Rust cache
       uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       with:
+        prefix-key: rama-ci-v1
         key: ${{ inputs.key }}
         shared-key: ${{ inputs.shared-key }}
         env-vars: ${{ inputs.env-vars }}
-        save-if: ${{ inputs.save-if }}
+        save-if: ${{ inputs.save-if == 'true' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
         cache-bin: ${{ inputs.cache-bin }}
         workspaces: ${{ inputs.workspaces }}
     # Activate the wrapper after restore to preserve dependency-cache keys.

@@ -28,8 +28,7 @@ on:
     branches: ["main"]
   workflow_dispatch:
 
-permissions:
-  contents: read
+permissions: {}
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -37,12 +36,16 @@ concurrency:
 
 jobs:
   precheck:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     env:
       RUSTUP_TOOLCHAIN: stable
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: stable
           components: rustfmt
@@ -55,11 +58,15 @@ jobs:
   # The merge `build` job assembles them into a single site.
 
   doc-linux:
+    permissions:
+      contents: read
     needs: precheck
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{ env.RUSTDOC_TOOLCHAIN }}
       - uses: ./.github/actions/rust-cache
@@ -78,6 +85,8 @@ jobs:
           retention-days: 1
 
   doc-macos:
+    permissions:
+      contents: read
     needs: precheck
     runs-on: macos-latest
     concurrency:
@@ -86,7 +95,9 @@ jobs:
       queue: max
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{ env.RUSTDOC_TOOLCHAIN }}
       - uses: ./.github/actions/rust-cache
@@ -105,6 +116,8 @@ jobs:
           retention-days: 1
 
   doc-windows:
+    permissions:
+      contents: read
     needs: precheck
     runs-on: windows-latest
     env:
@@ -117,8 +130,10 @@ jobs:
       queue: max
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{ env.RUSTDOC_TOOLCHAIN }}
       - uses: ./.github/actions/rust-cache
@@ -138,17 +153,18 @@ jobs:
 
   # ---- Compose the site --------------------------------------------------
   build:
-    runs-on: ubuntu-latest
-    needs: [doc-linux, doc-macos, doc-windows]
     permissions:
       contents: read
-      pages: write
+    runs-on: ubuntu-latest
+    needs: [doc-linux, doc-macos, doc-windows]
     env:
       MDBOOK_VERSION: 0.5.2
       MDBOOK_GRAPHVIZ_VERSION: 0.3.1
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - name: Install Graphviz
@@ -157,9 +173,6 @@ jobs:
         run: |
           cargo install --version "${MDBOOK_VERSION}" mdbook 2>/dev/null || true
           cargo install --version "${MDBOOK_GRAPHVIZ_VERSION}" mdbook-graphviz 2>/dev/null || true
-      - name: Setup Pages
-        id: pages
-        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
       - name: Build with mdBook
         working-directory: ./docs/book
         run: mdbook build
@@ -216,7 +229,7 @@ jobs:
     steps:
       - name: Deploy to GitHub Pages (attempt 1)
         id: deployment_1
-        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
         continue-on-error: true
 
       - name: Wait before Pages deployment retry 2
@@ -225,7 +238,7 @@ jobs:
       - name: Deploy to GitHub Pages (attempt 2)
         if: steps.deployment_1.outcome == 'failure'
         id: deployment_2
-        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
         continue-on-error: true
 
       - name: Wait before Pages deployment retry 3
@@ -234,7 +247,7 @@ jobs:
       - name: Deploy to GitHub Pages (attempt 3)
         if: steps.deployment_2.outcome == 'failure'
         id: deployment_3
-        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
         continue-on-error: true
 
       - name: Wait before Pages deployment retry 4
@@ -243,7 +256,7 @@ jobs:
       - name: Deploy to GitHub Pages (attempt 4)
         if: steps.deployment_3.outcome == 'failure'
         id: deployment_4
-        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
         continue-on-error: true
 
       - name: Wait before Pages deployment retry 5
@@ -252,4 +265,4 @@ jobs:
       - name: Deploy to GitHub Pages (attempt 5)
         if: steps.deployment_4.outcome == 'failure'
         id: deployment_5
-        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

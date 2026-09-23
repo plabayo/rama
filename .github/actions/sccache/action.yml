@@ -10,8 +10,14 @@ runs:
         version: v0.18.0
     - name: Enable compiler cache
       shell: bash
+      env:
+        CACHE_WRITE_ALLOWED: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
       run: |
         echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+        echo "SCCACHE_GHA_VERSION=rama-ci-v1" >> "$GITHUB_ENV"
         echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
         echo "CARGO_INCREMENTAL=0" >> "$GITHUB_ENV"
         echo "SCCACHE_IGNORE_SERVER_IO_ERROR=1" >> "$GITHUB_ENV"
+        if [[ "$CACHE_WRITE_ALLOWED" != true ]]; then
+          echo "SCCACHE_GHA_RW_MODE=READ_ONLY" >> "$GITHUB_ENV"
+        fi

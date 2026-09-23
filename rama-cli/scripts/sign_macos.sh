@@ -1,5 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
+
+# Input is an unsigned artifact. Never build or execute it in this job.
+# CI must not silently publish an unsigned or unnotarized release.
+: "${MACOS_CERT_P12:?Missing signing certificate}"
+: "${MACOS_CERT_PASSWORD:?Missing signing certificate password}"
+: "${AC_API_KEY:?Missing notarization private key}"
+: "${AC_API_KEY_ID:?Missing notarization key ID}"
+: "${AC_API_ISSUER_ID:?Missing notarization issuer ID}"
 
 # -----------------------------
 # Config / defaults
@@ -42,7 +51,10 @@ log() { printf "\n\033[1;34m==> %s\033[0m\n" "$*"; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
 cleanup() {
-  rm -f cert.p12 key.p8 2>/dev/null || true
+  rm -f "$RUNNER_TEMP/rama-cert.p12" "$RUNNER_TEMP/rama-key.p8" 2>/dev/null || true
+  if [[ "$KEYCHAIN_NAME" != "login.keychain-db" ]]; then
+    security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true
+  fi
 }
 trap cleanup EXIT
 
@@ -70,8 +82,8 @@ fi
 # -----------------------------
 if [[ -n "$CERT_P12_B64" ]]; then
   log "Importing Developer ID .p12 into keychain ${KEYCHAIN_PATH}"
-  printf "%s" "$CERT_P12_B64" | base64 --decode > cert.p12
-  security import cert.p12 -k "$KEYCHAIN_PATH" -P "${CERT_P12_PASS}" -T /usr/bin/codesign
+  printf "%s" "$CERT_P12_B64" | base64 --decode > "$RUNNER_TEMP/rama-cert.p12"
+  security import "$RUNNER_TEMP/rama-cert.p12" -k "$KEYCHAIN_PATH" -P "${CERT_P12_PASS}" -T /usr/bin/codesign
   # allow non-interactive use by codesign and notarytool
   if [ "$KEYCHAIN_NAME" = "login.keychain-db" ]; then
       security set-key-partition-list -S apple-tool:,apple: -s "$KEYCHAIN_PATH"
@@ -83,24 +95,11 @@ else
 fi
 
 # -----------------------------
-# Build
-# -----------------------------
-log "Building release for ${TARGET}"
-cargo build --release -p rama-cli --target "${TARGET}"
-
-# -----------------------------
 # Codesign
 # -----------------------------
 log "Codesigning ${BIN} with '${CERT_COMMON_NAME}'"
 codesign --force --timestamp --options runtime --entitlements "${ENTITLEMENTS}" --sign "${CERT_COMMON_NAME}" --keychain "${KEYCHAIN_PATH}" "${BIN}"
 codesign --verify --strict --keychain "${KEYCHAIN_PATH}" --verbose=4 "${BIN}"
-
-# Exercise JavaScript after signing. This catches execution backends that are
-# incompatible with the hardened runtime before a broken binary is released.
-log "Smoke testing signed PAC evaluation"
-"${BIN}" pac eval --offline \
-  --source 'function FindProxyForURL(url, host) { return "DIRECT"; }' \
-  https://example.com
 
 # -----------------------------
 # Prepare zip for notarization
@@ -117,12 +116,12 @@ log "Creating zip for notarization: ${ZIP}"
 if [[ -n "$AC_API_KEY_ID" && -n "$AC_API_ISSUER_ID" && -n "$AC_API_KEY" ]]; then
   log "Submitting to notarytool using API key"
   umask 077
-  printf "%s" "${AC_API_KEY}" > key.p8
+  printf "%s" "${AC_API_KEY}" > "$RUNNER_TEMP/rama-key.p8"
 
   # run submit non-fatally so set -e doesn't kill the script
   set +e
   REQ_OUT=$(xcrun notarytool submit "target/${TARGET}/release/${ZIP}" \
-    --key key.p8 \
+    --key "$RUNNER_TEMP/rama-key.p8" \
     --key-id "${AC_API_KEY_ID}" \
     --issuer "${AC_API_ISSUER_ID}" 2>&1)
   SUBMIT_STATUS=$?
@@ -153,7 +152,7 @@ if [[ -n "$AC_API_KEY_ID" && -n "$AC_API_ISSUER_ID" && -n "$AC_API_KEY" ]]; then
     log "Poll..."
     set +e
     LOG_OUT=$(xcrun notarytool log "$REQ_ID" \
-      --key key.p8 \
+      --key "$RUNNER_TEMP/rama-key.p8" \
       --issuer "${AC_API_ISSUER_ID}" \
       --key-id "${AC_API_KEY_ID}" 2>&1)
     LOG_STATUS=$?
@@ -177,7 +176,7 @@ if [[ -n "$AC_API_KEY_ID" && -n "$AC_API_ISSUER_ID" && -n "$AC_API_KEY" ]]; then
           ;;
       esac
       break
-    elif echo "$LOG_OUT" | grep -q "^\"status\":[[:space:]]*\"Invalid"; then
+    elif echo "$LOG_OUT" | grep -q "\"status\":[[:space:]]*\"Invalid"; then
       echo "❌ Notarization Invalid — see issues above."
       exit 1
     fi

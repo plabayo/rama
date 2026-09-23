@@ -15,8 +15,7 @@ on:
       - main
   pull_request: {}
 
-permissions:
-  contents: read
+permissions: {}
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -29,13 +28,17 @@ concurrency:
 
 jobs:
   precheck-rust:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     env:
       RUSTUP_TOOLCHAIN: stable
       RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - uses: ./.github/actions/rust-cache
@@ -50,9 +53,13 @@ jobs:
         run: RUSTFLAGS="${RUSTFLAGS} --cfg fuzzing" cargo check -p rama-fuzz --all-targets
 
   precheck-docs:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: verify embedded JavaScript engine artifact
         run: |
           node rama-js/engine/starling/verify-artifact.mjs
@@ -66,6 +73,8 @@ jobs:
           ./scripts/extra-checks.sh
 
   precheck-fmt:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -75,7 +84,9 @@ jobs:
       RUSTUP_TOOLCHAIN: ${{ matrix.toolchain }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{ matrix.toolchain }}
           components: rustfmt
@@ -83,18 +94,22 @@ jobs:
         run: bash scripts/ci/check-format.sh
 
   meta-lints:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
-      - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
+      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
         with:
           tool: cargo-sort,just
       - name: cargo sort (dependencies)
         run: cargo sort --workspace --grouped --check
-      - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
+      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
         with:
           tool: cargo-hack@0.6.45
       - name: Install actionlint
@@ -106,7 +121,10 @@ jobs:
           echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  $archive" | sha256sum --check
           tar -xzf "$archive" -C "$HOME/.cargo/bin" actionlint
           actionlint --version
-      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          # Preserve the cache pruning policy from setup-uv v6.
+          prune-cache: true
       - name: Validate workflow scheduling and gates
         run: just scripts/ci/qa
       - name: actionlint
@@ -118,6 +136,8 @@ jobs:
           rust-version: ${{env.RUST_TOOLCHAIN}}
 
   check-rust:
+    permissions:
+      contents: read
     timeout-minutes: 120
     strategy:
       fail-fast: false
@@ -151,9 +171,11 @@ jobs:
       RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
         if: startsWith(matrix.os, 'windows')
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{ matrix.toolchain }}
           components: clippy, rustfmt
@@ -180,7 +202,7 @@ jobs:
         run: |
           cargo doc --all-features --no-deps --workspace --exclude rama-cli --exclude rama-net-apple-xpc
           cargo doc --all-features --no-deps -p rama-cli
-      - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
+      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
         if: ${{ !cancelled() && matrix.toolchain == 'stable' && matrix.os == 'macos-latest' }}
         with:
           tool: just
@@ -196,6 +218,8 @@ jobs:
           fi
 
   doc-rust:
+    permissions:
+      contents: read
     strategy:
       matrix:
         os:
@@ -211,9 +235,11 @@ jobs:
       RUSTDOCFLAGS: -D warnings
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
         if: startsWith(matrix.os, 'windows')
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - uses: ./.github/actions/rust-cache
@@ -226,6 +252,8 @@ jobs:
           cargo doc --all-features --no-deps -p rama-cli
 
   test-rust-base:
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -251,13 +279,15 @@ jobs:
       RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
         if: startsWith(matrix.os, 'windows')
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{ matrix.toolchain }}
           components: clippy, rustfmt
-      - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
+      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
         with:
           tool: nextest
       - uses: ./.github/actions/rust-cache
@@ -336,6 +366,8 @@ jobs:
           fi
 
   test-datastar-sdk:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     timeout-minutes: 30
     needs:
@@ -347,7 +379,9 @@ jobs:
       RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -362,6 +396,8 @@ jobs:
         run: ./scripts/test-datastar-sdk.sh
 
   test-ffi-apple-example-transparent-proxy-e2e:
+    permissions:
+      contents: read
     runs-on: macos-latest
     concurrency:
       # Idle in regular CI, so this long job runs beside the macOS checks
@@ -379,7 +415,9 @@ jobs:
       RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
       - uses: ./.github/actions/rust-cache
@@ -391,7 +429,7 @@ jobs:
             ffi/apple/examples/transparent_proxy/tproxy_ffi_e2e
       - name: Install Apple Rust targets
         run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
-      - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
+      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
         with:
           tool: just,nextest,cargo-sort
       - name: Install Apple example build and lint tools
@@ -437,6 +475,8 @@ jobs:
         run: just ./ffi/apple/examples/transparent_proxy/run-tproxy-ffi-e2e-swift-release
 
   test-rama-dial9:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     needs:
       - precheck-rust
@@ -445,11 +485,13 @@ jobs:
       - meta-lints
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
           components: clippy
-      - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
+      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
         with:
           tool: just,nextest
       - uses: ./.github/actions/rust-cache
@@ -460,6 +502,8 @@ jobs:
         run: just qa-dial9
 
   test-fastcgi-php:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     needs:
       - precheck-rust
@@ -468,10 +512,12 @@ jobs:
       - meta-lints
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
-      - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
+      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
         with:
           tool: just
       - uses: ./.github/actions/rust-cache
@@ -487,6 +533,8 @@ jobs:
         run: just test-fastcgi-php
 
   test-icap-oracle:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     timeout-minutes: 30
     needs:
@@ -498,10 +546,12 @@ jobs:
       RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
-      - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
+      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
         with:
           tool: just
       - uses: ./.github/actions/rust-cache
@@ -529,6 +579,8 @@ jobs:
   # each upstream implementation resolves its own dependencies and none of them reach the
   # workspace. They are built and run here rather than in the workspace jobs for that reason.
   test-quic-interop-qa:
+    permissions:
+      contents: read
     name: test-quic-interop-qa-${{ matrix.backends }}-${{ matrix.toolchain }}-${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     concurrency:
@@ -575,7 +627,9 @@ jobs:
             backends: all
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{ matrix.toolchain }}
           components: clippy, rustfmt
@@ -593,11 +647,11 @@ jobs:
           cmake --version
           cc --version
       # aioquic runs as a real peer process from a locked Python environment.
-      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           # Preserve the cache pruning policy from setup-uv v6.
           prune-cache: true
-      - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
+      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
         with:
           tool: just
       - uses: ./.github/actions/rust-cache
@@ -774,6 +828,8 @@ jobs:
         run: just rama-quic/qa-interop-runner rustls-aws-lc
 
   test-quic-external-gnutls:
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -786,7 +842,9 @@ jobs:
       RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{ matrix.toolchain }}
           components: clippy, rustfmt
@@ -795,8 +853,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends libgnutls28-dev gnutls-bin pkg-config
           certtool --version
-      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
-      - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          # Preserve the cache pruning policy from setup-uv v6.
+          prune-cache: true
+      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
         with:
           tool: just
       - uses: ./.github/actions/rust-cache
@@ -808,6 +869,8 @@ jobs:
         run: just rama-quic/qa-interop-gnutls
 
   test-quic-interop-runner:
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -821,6 +884,8 @@ jobs:
       - meta-lints
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Install packet analysis tools
         run: |
           sudo add-apt-repository --yes ppa:wireshark-dev/stable
@@ -830,11 +895,11 @@ jobs:
           tshark --version
           docker compose version
       - name: Set up Docker Engine
-        uses: docker/setup-docker-action@77e84dbf09b47d1e29270283c22f16145aa85ca1 # v5.4.0
+        uses: docker/setup-docker-action@2bf61fb9464cc67f0cbdeabed6aa0380accd1c70 # v5.5.0
         with:
           version: v29.3.0
-      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
-      - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
         with:
           tool: just
       - name: Test both roles against quic-go and ngtcp2
@@ -849,6 +914,8 @@ jobs:
           retention-days: 7
 
   check-rama-icap-feature-boundaries:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     needs:
       - precheck-rust
@@ -859,7 +926,9 @@ jobs:
       RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
           targets: x86_64-unknown-none
@@ -879,6 +948,8 @@ jobs:
           --target x86_64-unknown-none
 
   test-rust-linux-musl:
+    permissions:
+      contents: read
     strategy:
       matrix:
         include:
@@ -899,7 +970,9 @@ jobs:
       RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{ matrix.toolchain }}
           targets: ${{ matrix.target }}
@@ -912,7 +985,7 @@ jobs:
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.13.0
-      - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
+      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
         with:
           tool: cargo-zigbuild
       - name: Build Workspace
@@ -924,7 +997,7 @@ jobs:
         run: |
           cargo zigbuild -p rama -p rama-cli --target ${{ matrix.target }} --all-features
       - name: Setup Docker buildx
-        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Scratch run test (rama-cli, with diagnostics)
         shell: bash
@@ -983,6 +1056,8 @@ jobs:
           fi
 
   precheck-rust-tier2:
+    permissions:
+      contents: read
     strategy:
       matrix:
         thing:
@@ -1029,7 +1104,9 @@ jobs:
       RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{ matrix.rust }}
       - uses: ./.github/actions/rust-cache
@@ -1084,6 +1161,8 @@ jobs:
 
   # The rest of CI builds rama on stable tokio. This job covers dial9's full-fidelity path
   test-dial9-tokio-unstable:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     needs:
       - precheck-rust
@@ -1092,11 +1171,13 @@ jobs:
       - meta-lints
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
           components: clippy
-      - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
+      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
         with:
           tool: just,nextest
       - uses: ./.github/actions/rust-cache
@@ -1109,6 +1190,8 @@ jobs:
         run: just qa-dial9-tokio-unstable
 
   test-loom:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     needs:
       - precheck-rust
@@ -1117,10 +1200,12 @@ jobs:
       - meta-lints
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
-      - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
+      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
         with:
           tool: nextest
       - uses: ./.github/actions/rust-cache
@@ -1133,6 +1218,8 @@ jobs:
             cargo nextest run --all-features -p rama-utils
 
   cargo-hack:
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -1147,10 +1234,12 @@ jobs:
       RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
-      - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
+      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
         with:
           tool: cargo-hack@0.6.45
       - uses: ./.github/actions/rust-cache
@@ -1166,6 +1255,8 @@ jobs:
         run: cargo hack check --each-feature --no-dev-deps --workspace --partition ${{ matrix.partition }}/2
 
   test-rust-e2e-release:
+    permissions:
+      contents: read
     strategy:
       matrix:
         toolchain:
@@ -1184,13 +1275,15 @@ jobs:
       RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
         if: startsWith(matrix.os, 'windows')
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{ matrix.toolchain }}
           components: clippy, rustfmt
-      - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
+      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
         with:
           tool: nextest
       - uses: ./.github/actions/rust-cache
@@ -1210,6 +1303,8 @@ jobs:
           /usr/bin/time -v cargo nextest run --build-jobs 2 --profile ci --all-features --release --workspace --run-ignored=only
 
   test-ws-autobahn-server:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     needs:
       - precheck-rust
@@ -1222,7 +1317,9 @@ jobs:
       RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - uses: ./.github/actions/rust-cache
@@ -1238,6 +1335,8 @@ jobs:
         run: ./autobahn/server.sh
 
   test-ws-autobahn-client:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     needs:
       - precheck-rust
@@ -1251,7 +1350,9 @@ jobs:
       RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - uses: ./.github/actions/rust-cache
@@ -1267,6 +1368,8 @@ jobs:
         run: ./autobahn/client.sh
 
   test-spec-h2:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     needs:
       - precheck-rust
@@ -1275,7 +1378,9 @@ jobs:
       - meta-lints
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
       - uses: ./.github/actions/sccache
@@ -1284,6 +1389,8 @@ jobs:
           bash rama-http-core/ci/h2spec.sh -F
 
   semver-checks:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     needs:
       - precheck-rust
@@ -1298,6 +1405,8 @@ jobs:
       RUSTFLAGS: --cfg tokio_unstable
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Check semver
         uses: obi1kenobi/cargo-semver-checks-action@6b69fcf40e9b5fb17adeb57e4b6ecd020649a239 # v2.9
         with:
@@ -1342,43 +1451,29 @@ jobs:
           echo "$RESULTS" | jq -e 'all(.[]; .result == "success")'
 
   deploy-rama-cli-docker:
-    runs-on: ubuntu-latest
+    permissions:
+      contents: read
     needs: ci-success
     if: github.ref == 'refs/heads/main'
-    steps:
-      - name: Set up emulation for the interop endpoint image
-        uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a
-        with:
-          platforms: arm64
-      - name: Set up Docker buildx
-        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
-      - name: Login to Docker Hub
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Build and push
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
-        with:
-          push: true
-          tags: glendc/rama:edge
-          file: rama-cli/infra/Dockerfile
-
-      - name: Build and push QUIC interop endpoints
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
-        with:
-          push: true
-          platforms: linux/amd64,linux/arm64
-          tags: glendc/rama-quic-interop:edge
-          file: rama-quic/e2e/interop-runner/Dockerfile
+    uses: ./.github/workflows/publish-containers.yml
+    with:
+      source-ref: ${{ github.sha }}
+      image-tag: edge
+      floating-tag: edge
+    secrets:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
 
   deploy-rama-fp-fly:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     needs: deploy-rama-cli-docker
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # Node 24
+        with:
+          persist-credentials: false
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # master (Node 24)
       - run: |
           cd rama-fp/infra/deployments/fp
           flyctl scale count app_secure=1 app_insecure=1 --yes
@@ -1387,11 +1482,15 @@ jobs:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
   deploy-rama-fp-h1-fly:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     needs: deploy-rama-cli-docker
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # Node 24
+        with:
+          persist-credentials: false
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # master (Node 24)
       - run: |
           cd rama-fp/infra/deployments/fp-h1
           flyctl scale count app_secure=1 app_insecure=1 --yes
@@ -1400,11 +1499,15 @@ jobs:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
   deploy-rama-ip-ipv4-fly:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     needs: deploy-rama-cli-docker
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # Node 24
+        with:
+          persist-credentials: false
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # master (Node 24)
       - run: |
           cd rama-fp/infra/deployments/ipv4
           flyctl scale count app_secure=1 app_insecure=1 --yes
@@ -1413,11 +1516,15 @@ jobs:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
   deploy-rama-ip-ipv6-fly:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     needs: deploy-rama-cli-docker
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # Node 24
+        with:
+          persist-credentials: false
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # master (Node 24)
       - run: |
           cd rama-fp/infra/deployments/ipv6
           flyctl scale count app_secure=1 app_insecure=1 --yes
@@ -1426,11 +1533,15 @@ jobs:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
   deploy-rama-echo-fly:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     needs: deploy-rama-cli-docker
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # Node 24
+        with:
+          persist-credentials: false
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # master (Node 24)
       - run: |
           cd rama-fp/infra/deployments/echo
           flyctl scale count app_secure=1 app_insecure=1 --yes
@@ -1439,11 +1550,15 @@ jobs:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
   deploy-rama-http-test-fly:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     needs: deploy-rama-cli-docker
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # Node 24
+        with:
+          persist-credentials: false
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # master (Node 24)
       - run: |
           cd rama-fp/infra/deployments/http-test
           flyctl scale count app_secure=1 app_insecure=1 --yes
