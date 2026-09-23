@@ -43,8 +43,8 @@ pub(crate) fn new(
             writer,
             buffer: Bytes::new(),
             extensions,
-            _priority: priority,
-            _permit: Some(permit),
+            priority_lease: priority,
+            permit: Some(permit),
             shutdown: None,
             acknowledged: None,
         },
@@ -59,17 +59,17 @@ struct Tunnel<R: RecvStream, S: SendStream> {
     writer: Writer<S>,
     buffer: Bytes,
     extensions: Extensions,
-    _permit: Option<Arc<OwnedSemaphorePermit>>,
+    permit: Option<Arc<OwnedSemaphorePermit>>,
     shutdown: Option<Result<(), Error>>,
     acknowledged: Option<Acknowledged>,
-    _priority: Option<super::priority::Lease>,
+    priority_lease: Option<super::priority::Lease>,
 }
 
 impl<R: RecvStream, S: SendStream> Tunnel<R, S> {
     fn release_finished(&mut self) {
         if self.shutdown == Some(Ok(())) && self.reader.phase == Phase::Finished {
-            self._priority.take();
-            self._permit.take();
+            self.priority_lease.take();
+            self.permit.take();
         }
     }
 
@@ -261,10 +261,10 @@ mod tests {
             writer: Writer::new(ReadySend(output, Arc::new(AtomicBool::new(false)), None)),
             buffer: Bytes::new(),
             extensions: Extensions::new(),
-            _permit: None,
+            permit: None,
             shutdown: None,
             acknowledged: None,
-            _priority: None,
+            priority_lease: None,
         }
     }
 
@@ -311,8 +311,8 @@ mod tests {
         let acknowledged = Arc::new(AtomicBool::new(false));
         tunnel.writer = Writer::new(ReadySend(output, acknowledged.clone(), None));
         tunnel.reader.phase = Phase::Finished;
-        tunnel._permit = Some(permit.clone());
-        tunnel._priority = Some(Lease {
+        tunnel.permit = Some(permit.clone());
+        tunnel.priority_lease = Some(Lease {
             shared: shared.clone(),
             id: 0,
             permit,

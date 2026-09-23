@@ -90,7 +90,7 @@ impl<'a, R: crate::client::resolver::DnsAddressResolver> HappyEyeballAddressReso
         let ip_mode = self
             .extensions
             .as_ref()
-            .and_then(|ext| ext.get_ref().copied())
+            .and_then(|ext| ext.get_ref::<ConnectIpMode>().copied())
             .unwrap_or_default();
         let dns_mode = self
             .extensions
@@ -103,21 +103,10 @@ impl<'a, R: crate::client::resolver::DnsAddressResolver> HappyEyeballAddressReso
         // both via pct-decode + IDN. Non-promotable hosts (sub-delim
         // reg-name, IPvFuture) error — DNS can't resolve them.
         if let Ok(ip) = self.host.try_as_ip() {
-            // fold v4-mapped down to IPv4 (RFC 4291, Section 2.5.5.2)
-            // before the family checks below
-            let ip = ip.into_canonical_ip_addr();
             return HappyEyeballIpStream::Once {
-                stream: rama_core::stream::once(match (ip, ip_mode) {
-                    (IpAddr::V4(_), ConnectIpMode::Ipv6) => {
-                        Err(BoxError::from_static_str("IPv4 address is not allowed")
-                            .into_opaque_error())
-                    }
-                    (IpAddr::V6(_), ConnectIpMode::Ipv4) => {
-                        Err(BoxError::from_static_str("IPv6 address is not allowed")
-                            .into_opaque_error())
-                    }
-                    _ => Ok(ip),
-                }),
+                stream: rama_core::stream::once(
+                    ip_mode.validate_ip(ip).map_err(ErrorExt::into_opaque_error),
+                ),
             };
         }
         let Ok(domain) = self.host.try_into_domain() else {

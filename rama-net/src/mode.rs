@@ -1,4 +1,10 @@
-use rama_core::extensions::Extension;
+use core::net::IpAddr;
+use rama_core::{
+    error::{BoxError, BoxErrorExt as _},
+    extensions::Extension,
+};
+
+use crate::address::ip::IntoCanonicalIpAddr as _;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash, Extension)]
 #[extension(tags(net))]
@@ -24,6 +30,7 @@ impl DnsResolveIpMode {
         matches!(self, Self::Dual | Self::SingleIpV6 | Self::DualPreferIpV4)
     }
 }
+
 /// Mode for establishing a connection.
 ///
 /// Classification is by wire family: an IPv4-mapped IPv6 address
@@ -38,4 +45,45 @@ pub enum ConnectIpMode {
     Dual,
     Ipv4,
     Ipv6,
+}
+
+impl ConnectIpMode {
+    /// Validate the destination's wire family and return its canonical address.
+    ///
+    /// Shared by IP-literal connectors and DNS address selection. Mapped IPv6
+    /// addresses become IPv4 before applying the connection policy.
+    pub fn validate_ip(self, ip: IpAddr) -> Result<IpAddr, BoxError> {
+        let ip = ip.into_canonical_ip_addr();
+        match (ip, self) {
+            (IpAddr::V4(_), Self::Ipv6) => {
+                Err(BoxError::from_static_str("IPv4 address is not allowed"))
+            }
+            (IpAddr::V6(_), Self::Ipv4) => {
+                Err(BoxError::from_static_str("IPv6 address is not allowed"))
+            }
+            _ => Ok(ip),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ConnectIpMode;
+    use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+    #[test]
+    fn connect_ip_modes_classify_canonical_wire_families() {
+        let ipv4 = Ipv4Addr::LOCALHOST;
+        let ipv6 = IpAddr::V6(Ipv6Addr::LOCALHOST);
+        for address in [IpAddr::V4(ipv4), IpAddr::V6(ipv4.to_ipv6_mapped())] {
+            for mode in [ConnectIpMode::Dual, ConnectIpMode::Ipv4] {
+                assert_eq!(mode.validate_ip(address).unwrap(), IpAddr::V4(ipv4));
+            }
+            ConnectIpMode::Ipv6.validate_ip(address).unwrap_err();
+        }
+        for mode in [ConnectIpMode::Dual, ConnectIpMode::Ipv6] {
+            assert_eq!(mode.validate_ip(ipv6).unwrap(), ipv6);
+        }
+        ConnectIpMode::Ipv4.validate_ip(ipv6).unwrap_err();
+    }
 }

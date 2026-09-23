@@ -1,15 +1,11 @@
 use rama_core::error::{BoxError, ErrorContext};
-use rama_core::error::{BoxErrorExt as _, ErrorExt as _};
 use rama_core::extensions::Extensions;
 use rama_core::telemetry::tracing;
 use rama_net::address::{HostWithPort, ip::IntoCanonicalIpAddr as _};
 use rama_net::mode::ConnectIpMode;
 use rama_net::{address::SocketAddress, socket::SocketOptions};
 use rama_utils::macros::error::static_str_error;
-use std::{
-    net::{IpAddr, SocketAddr},
-    sync::Arc,
-};
+use std::{net::SocketAddr, sync::Arc};
 
 use crate::TcpStream;
 
@@ -240,23 +236,11 @@ where
 
     let ip = host
         .try_as_ip()
-        .context("tcp connector target host is not an IP address")?
-        .into_canonical_ip_addr();
-
-    match (ip, connect_ip_mode) {
-        (IpAddr::V4(_), ConnectIpMode::Ipv6) => {
-            return Err(BoxError::from_static_str("IPv4 address is not allowed")
-                .context_field("host", host)
-                .context_field("port", port));
-        }
-        (IpAddr::V6(_), ConnectIpMode::Ipv4) => {
-            return Err(BoxError::from_static_str("IPv6 address is not allowed")
-                .context_field("host", host)
-                .context_field("port", port));
-        }
-        (IpAddr::V4(_), ConnectIpMode::Ipv4 | ConnectIpMode::Dual)
-        | (IpAddr::V6(_), ConnectIpMode::Ipv6 | ConnectIpMode::Dual) => (),
-    }
+        .context("tcp connector target host is not an IP address")?;
+    let ip = connect_ip_mode
+        .validate_ip(ip)
+        .context_field("host", host)
+        .context_field("port", port)?;
 
     let addr = SocketAddr::from((ip, port));
     tracing::trace!(
@@ -279,7 +263,7 @@ where
 mod tests {
     use std::{
         convert::Infallible,
-        net::{Ipv4Addr, Ipv6Addr},
+        net::{IpAddr, Ipv4Addr, Ipv6Addr},
     };
 
     use super::*;

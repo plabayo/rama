@@ -416,15 +416,20 @@ where
     let plaintext_origin = input
         .protocol()
         .is_some_and(|protocol| protocol.is_http_based() && !protocol.is_secure());
+    // A secure (or unknown) origin needs rules from its own TLS connector;
+    // proxy-leg rules alone cannot establish whether origin TLS can be reused.
     let endpoint_policy_required =
         matches!(&transport, HttpTransport::Quic(_)) || !plaintext_origin;
     let reuse = transport.extensions().get_ref::<ConnectionReuse>();
     let classified = if endpoint_policy_required {
         reuse.is_some_and(ConnectionReuse::is_complete)
     } else {
+        // Plain HTTP can rely on the route key. If TLS was used to reach a
+        // proxy, retain its restrictions even though the origin is plaintext.
         !transport.extensions().contains::<NegotiatedTlsParameters>() || reuse.is_some()
     };
     if !classified {
+        // Missing metadata prevents future reuse, not this request's handshake.
         transport
             .extensions()
             .insert(ConnectionReuse::new(UnclassifiedSecureTransport));

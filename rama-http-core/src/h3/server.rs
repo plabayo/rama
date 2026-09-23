@@ -158,7 +158,7 @@ impl RequestStream {
             id: self.reader.id,
             writer: self.writer,
             method,
-            _priority: self.priority,
+            priority_lease: self.priority,
         };
         if response.method == Method::CONNECT {
             let (pending, upgrade) = upgrade::pending();
@@ -187,7 +187,7 @@ pub struct SendResponse {
     id: u64,
     writer: Writer<rama_quic::SendStream>,
     method: Method,
-    _priority: super::priority::Lease,
+    priority_lease: super::priority::Lease,
 }
 
 impl SendResponse {
@@ -310,10 +310,10 @@ impl SendResponse {
             id: stream_id,
             writer,
             method: request.method().clone(),
-            _priority: super::priority::Lease {
+            priority_lease: super::priority::Lease {
                 shared: self.shared.clone(),
                 id: stream_id,
-                permit: self._priority.permit.clone(),
+                permit: self.priority_lease.permit.clone(),
             },
         })
     }
@@ -365,8 +365,8 @@ impl SendResponse {
             pending.fulfill(super::upgrade::new(
                 reader,
                 self.writer,
-                self._priority.permit.clone(),
-                Some(self._priority),
+                self.priority_lease.permit.clone(),
+                Some(self.priority_lease),
             ));
             return Ok(());
         }

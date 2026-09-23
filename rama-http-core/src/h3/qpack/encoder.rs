@@ -16,6 +16,10 @@ use rama_utils::octets::{kib, kib_u64};
 use super::dynamic_table::{DynamicTable, ENTRY_OVERHEAD, entry_size};
 use super::{FieldPair, QpackError};
 
+// RFC 9000 §2.1: the low bits identify the stream's initiator and direction.
+const STREAM_CLASS_MASK: u64 = 0b11;
+const STREAM_CLASS_COUNT: usize = (STREAM_CLASS_MASK + 1) as usize;
+
 /// Encoder input preserving the never-index requirement across intermediary hops.
 #[derive(Clone, Debug)]
 pub struct EncodeField<N, V> {
@@ -134,7 +138,7 @@ pub struct Encoder {
     // first encode or races later trailers. Retaining individual cancelled IDs
     // would let peer feedback grow state without bound; instead,
     // older streams conservatively use static/literal representations too.
-    cancelled_through: [Option<u64>; 4],
+    cancelled_through: [Option<u64>; STREAM_CLASS_COUNT],
     decoder_partial: [u8; 11],
     decoder_partial_len: usize,
     pending_target_capacity: Option<u64>,
@@ -157,7 +161,7 @@ impl Encoder {
             section_count: 0,
             reference_count: 0,
             blocking_streams: 0,
-            cancelled_through: [None; 4],
+            cancelled_through: [None; STREAM_CLASS_COUNT],
             decoder_partial: [0; 11],
             decoder_partial_len: 0,
             pending_target_capacity: None,
@@ -362,7 +366,7 @@ impl Encoder {
         let base = self.table.insert_count();
         let was_blocking = self.is_stream_blocking(stream_id);
         let may_block = was_blocking || self.blocking_streams < self.config.max_blocked_streams;
-        let cancelled_through = self.cancelled_through[(stream_id & 0b11) as usize];
+        let cancelled_through = self.cancelled_through[(stream_id & STREAM_CLASS_MASK) as usize];
         let may_track = self.section_count < self.config.max_outstanding_sections
             && cancelled_through.is_none_or(|cancelled| stream_id > cancelled);
         let mut refs = Vec::new();
@@ -561,7 +565,8 @@ impl Encoder {
                         "stream ID exceeds QUIC integer range",
                     ));
                 }
-                let cancelled = &mut self.cancelled_through[(stream_id & 0b11) as usize];
+                let cancelled =
+                    &mut self.cancelled_through[(stream_id & STREAM_CLASS_MASK) as usize];
                 *cancelled = Some(cancelled.map_or(stream_id, |previous| previous.max(stream_id)));
                 if let Some(sections) = self.sections.remove(&stream_id) {
                     if sections.blocking > 0 {

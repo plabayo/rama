@@ -179,10 +179,11 @@ pub(crate) fn request(fields: Vec<FieldPair>) -> Result<Request<()>, Error> {
         )
         .map_err(|_error| malformed("invalid CONNECT authority"))?
     } else {
-        let scheme = text(fields.scheme.as_ref().ok_or(malformed("missing scheme"))?)?;
+        let scheme = text(fields.scheme.as_ref().ok_or(malformed("missing scheme"))?)?
+            .parse::<Protocol>()
+            .map_err(|_error| malformed("invalid scheme"))?;
         let path = text(fields.path.as_ref().ok_or(malformed("missing path"))?)?;
-        let http_scheme = scheme.eq_ignore_ascii_case(Protocol::HTTP_SCHEME)
-            || scheme.eq_ignore_ascii_case(Protocol::HTTPS_SCHEME);
+        let http_scheme = scheme.is_http();
         if http_scheme
             && (authority.is_none() || authority.is_some_and(|value| value.contains('@')))
         {
@@ -195,9 +196,6 @@ pub(crate) fn request(fields: Vec<FieldPair>) -> Result<Request<()>, Error> {
         {
             return Err(malformed("invalid request path"));
         }
-        let scheme = scheme
-            .parse::<Protocol>()
-            .map_err(|_error| malformed("invalid scheme"))?;
         if path == "*" {
             asterisk_scheme = Some(scheme.clone());
         }
@@ -341,16 +339,12 @@ pub(crate) fn encode_request<B>(
             return Err(malformed("invalid Host or authority mismatch"));
         }
     } else if target.is_empty()
-        && (connect
-            || matches!(
-                request.uri().scheme_str(),
-                Some(Protocol::HTTP_SCHEME | Protocol::HTTPS_SCHEME)
-            ))
+        && (connect || request.uri().scheme().is_some_and(Protocol::is_http))
     {
         return Err(malformed("missing request authority"));
     }
     let scheme = if connect {
-        ""
+        None
     } else if request.uri().is_asterisk() {
         if request.method() != Method::OPTIONS {
             return Err(malformed("asterisk requires OPTIONS"));
@@ -362,33 +356,29 @@ pub(crate) fn encode_request<B>(
         if let Some(host) = request.headers().get(header::HOST) {
             target.extend_from_slice(host.as_bytes());
         }
-        protocol.as_str()
+        Some(protocol)
     } else {
-        request
-            .uri()
-            .scheme_str()
-            .ok_or(malformed("missing request scheme"))?
+        Some(
+            request
+                .uri()
+                .scheme()
+                .ok_or(malformed("missing request scheme"))?,
+        )
     };
+    let http_scheme = scheme.is_some_and(Protocol::is_http);
 
     let authority_len = target.len();
-    if !connect
-        && (request.uri().is_asterisk()
-            || matches!(scheme, Protocol::HTTP_SCHEME | Protocol::HTTPS_SCHEME)
-            || !request.uri().is_path_empty())
-    {
+    if !connect && (request.uri().is_asterisk() || http_scheme || !request.uri().is_path_empty()) {
         request.uri().write_h2_path(&mut target);
     }
     let (authority, path) = target.split_at(authority_len);
-    if matches!(scheme, Protocol::HTTP_SCHEME | Protocol::HTTPS_SCHEME)
-        && authority.is_empty()
-        && !request.headers().contains_key(header::HOST)
-    {
+    if http_scheme && authority.is_empty() && !request.headers().contains_key(header::HOST) {
         return Err(malformed("HTTP URI requires authority"));
     }
     let mut pseudo = [
         Some((PseudoHeader::Method, request.method().as_str().as_bytes())),
         (!authority.is_empty()).then_some((PseudoHeader::Authority, authority)),
-        (!connect).then_some((PseudoHeader::Scheme, scheme.as_bytes())),
+        scheme.map(|scheme| (PseudoHeader::Scheme, scheme.as_str().as_bytes())),
         (!connect).then_some((PseudoHeader::Path, path)),
     ];
     let mut order = request
@@ -551,6 +541,45 @@ mod tests {
                 .insert(header::TE, HeaderValue::from_static("gzip"));
             validate_regular(request.headers(), false).unwrap_err();
         }
+    }
+
+    #[test]
+    fn typed_schemes_preserve_http_validation_and_custom_scheme_paths() {
+        for scheme in ["http", "HTTPS", "HtTp", "hTtPs"] {
+            for authority in [None, Some("user@example.com")] {
+                let mut input = fields(&[(":method", "GET"), (":scheme", scheme), (":path", "/")]);
+                if let Some(authority) = authority {
+                    input.extend(fields(&[(":authority", authority)]));
+                }
+                request(input).unwrap_err();
+            }
+            let request = request(fields(&[
+                (":method", "GET"),
+                (":scheme", scheme),
+                (":authority", "example.com"),
+                (":path", "/"),
+            ]))
+            .unwrap();
+            assert!(request.uri().scheme().unwrap().is_http());
+            let encoded = decode(encode_request(&shared(), 0, &request).unwrap());
+            let decoded = super::request(encoded).unwrap();
+            assert_eq!(decoded.uri(), request.uri());
+        }
+
+        // H3 also carries non-HTTP URI schemes; their empty paths stay empty.
+        let request = request(fields(&[
+            (":method", "GET"),
+            (":scheme", "custom"),
+            (":path", ""),
+        ]))
+        .unwrap();
+        let encoded = decode(encode_request(&shared(), 0, &request).unwrap());
+        assert!(
+            encoded
+                .iter()
+                .any(|field| field.name == ":path" && field.value.is_empty())
+        );
+        assert_eq!(super::request(encoded).unwrap().uri(), request.uri());
     }
 
     #[test]

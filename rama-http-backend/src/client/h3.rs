@@ -14,7 +14,7 @@ use rama_http_core::h3::connection::Config;
 use rama_http_types::{Version, conn::TargetHttpVersion};
 use rama_net::{
     ConnectorTargetInputExt, ProtocolInputExt,
-    address::{Host, SocketAddress, ip::IntoCanonicalIpAddr as _},
+    address::{Host, SocketAddress},
     client::{
         ConnectRequest, ConnectionAttempt, ConnectionError, ConnectionErrorDomain,
         ConnectionErrorDomain::{Application, Local, Transport},
@@ -205,6 +205,9 @@ impl Http3ConnectorBuilder {
 // separately so changing overrides cannot evict its resumption state.
 const MAX_CACHED_TLS_OVERRIDES: usize = 64;
 
+/// Native QUIC configurations own TLS session state; rebuilding loses resumption.
+/// This connector-local cache is consulted only when opening a new connection.
+/// Repeated overrides retain their own state without evicting the default policy.
 #[derive(Default)]
 struct TlsConfigs {
     default: Option<(Option<TlsPoolId>, ClientConfig)>,
@@ -419,14 +422,13 @@ impl Http3Connector {
             result.map_err(|error| failures.record(error, attempt))
         };
         if let Ok(ip) = target.host.try_as_ip() {
-            let ip = validate_connect_ip_mode(
-                ip,
-                input
-                    .extensions()
-                    .get_ref::<ConnectIpMode>()
-                    .copied()
-                    .unwrap_or_default(),
-            )?;
+            let ip = input
+                .extensions()
+                .get_ref::<ConnectIpMode>()
+                .copied()
+                .unwrap_or_default()
+                .validate_ip(ip)
+                .map_err(|error| ConnectionError::local(error, InvalidInput))?;
             race_connect(
                 stream::once(async { Ok(SocketAddr::new(ip, target.port)) }),
                 1,
@@ -479,15 +481,6 @@ impl Http3Connector {
             }
             extensions.insert(parameters);
         }
-    }
-}
-
-fn validate_connect_ip_mode(ip: IpAddr, mode: ConnectIpMode) -> Result<IpAddr, ConnectionError> {
-    let ip = ip.into_canonical_ip_addr();
-    match (ip, mode) {
-        (IpAddr::V4(_), ConnectIpMode::Ipv6) => Err(invalid("IPv4 address is not allowed")),
-        (IpAddr::V6(_), ConnectIpMode::Ipv4) => Err(invalid("IPv6 address is not allowed")),
-        _ => Ok(ip),
     }
 }
 
@@ -697,10 +690,7 @@ mod concrete_transport_tests {
         transport_parameters::TransportParameters,
     };
     use rama_tls::client::{ServerVerifyMode, TlsClientConfigProvider, TlsPoolId, TlsServerVerify};
-    use std::{
-        net::Ipv6Addr,
-        sync::atomic::{AtomicUsize, Ordering},
-    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct UnusedCrypto;
 
@@ -745,39 +735,6 @@ mod concrete_transport_tests {
         assert!(
             cache.get(Some(policy(1)), false).is_none(),
             "least recently used policy is evicted"
-        );
-    }
-
-    #[test]
-    fn literal_ip_modes_use_the_wire_family() {
-        let ipv4 = IpAddr::from([127, 0, 0, 1]);
-        let mapped = IpAddr::V6("::ffff:127.0.0.1".parse().unwrap());
-        let ipv6 = IpAddr::V6(Ipv6Addr::LOCALHOST);
-        for address in [ipv4, mapped] {
-            assert_eq!(
-                validate_connect_ip_mode(address, ConnectIpMode::Ipv4).unwrap(),
-                ipv4
-            );
-            assert_eq!(
-                validate_connect_ip_mode(address, ConnectIpMode::Dual).unwrap(),
-                ipv4
-            );
-            assert_eq!(
-                validate_connect_ip_mode(address, ConnectIpMode::Ipv6)
-                    .unwrap_err()
-                    .kind(),
-                InvalidInput
-            );
-        }
-        assert_eq!(
-            validate_connect_ip_mode(ipv6, ConnectIpMode::Ipv6).unwrap(),
-            ipv6
-        );
-        assert_eq!(
-            validate_connect_ip_mode(ipv6, ConnectIpMode::Ipv4)
-                .unwrap_err()
-                .kind(),
-            InvalidInput
         );
     }
 
