@@ -65,6 +65,9 @@ pub use proto::{KEY_MATERIAL_SIZE, StatelessResetKey};
 /// carries only what QUIC adds to it. Inject a configuration provider explicitly,
 /// or use the convenience constructors to select the feature-default provider.
 pub mod tls {
+    mod cache;
+    pub use cache::ClientConfigCache;
+
     mod factory;
     pub use factory::*;
 

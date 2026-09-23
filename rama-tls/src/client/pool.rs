@@ -570,15 +570,26 @@ mod tests {
             .publish(&connection);
         let policy = connection.get_ref::<ConnectionReuse>().unwrap();
         assert!(policy.is_complete());
-        assert!(policy.matches(&request));
-        assert!(!policy.matches(&Extensions::new()));
-
-        request.insert(TlsTunnel {
-            server_identity: Some(Host::from_static("proxy.example")),
-            application_protocol: None,
-            alpn: None,
-        });
-        assert!(!policy.matches(&request));
+        for proxy_matches in [false, true] {
+            for origin_matches in [false, true] {
+                let next = Extensions::new();
+                if origin_matches {
+                    next.insert(TlsServerVerify(ServerVerifyMode::Disable));
+                }
+                if !proxy_matches {
+                    next.insert(TlsTunnel {
+                        server_identity: Some(Host::from_static("proxy.example")),
+                        application_protocol: None,
+                        alpn: None,
+                    });
+                }
+                assert_eq!(
+                    policy.matches(&next),
+                    proxy_matches && origin_matches,
+                    "proxy_matches={proxy_matches}, origin_matches={origin_matches}"
+                );
+            }
+        }
 
         let connection = Extensions::new();
         TlsConnectionReuse::tunnel(TestProvider, Some(TlsPoolId::non_reusable()))
