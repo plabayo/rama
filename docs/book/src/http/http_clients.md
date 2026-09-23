@@ -45,7 +45,8 @@ Selection tries alternatives sequentially, with a configurable 300 ms
 `attempt_timeout` including DNS and TLS. Increase it for slower networks. There
 is no overall deadline unless `timeout` is set. Failed alternatives back off;
 selection can fall back to the origin with the same TLS policy. Explicit version
-requirements remain binding. Re-advertising an endpoint does not reset backoff.
+requirements remain binding. A completed response resets backoff; reconnecting
+or re-advertising does not. Request-specific TLS trust cannot change shared discovery.
 
 Custom connectors use these contracts:
 
@@ -59,7 +60,8 @@ Custom connectors use these contracts:
 | `ConnectionAttempt` / `ConnectionPolicyScope` | Check peer requirements using actual connector policy; preserve failure scope across timeouts and pool hits. |
 
 TLS configuration stays in its connector. Built-in connectors publish reuse rules
-automatically; custom secure connectors without them receive fresh connections.
+automatically, including fixed client credentials. Opaque request overrides and
+custom secure connectors without reuse rules receive fresh connections.
 Unclassified policy failures never suppress shared alternatives.
 Report unsupported routes as local capability failures, not unreachable proxies.
 In the CLI, `--alt-svc` enables command-local discovery; `--http3` requires H3

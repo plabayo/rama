@@ -23,8 +23,8 @@ use crate::{
 /// Capture request overrides before applying connector defaults, and publish only
 /// after a successful handshake. Pools borrow the next request's extensions to
 /// check compatibility; callers need not configure the provider on the pool.
-/// Connector defaults must remain fixed for the lifetime of its pool. Dynamic
-/// or opaque policies must report a non-reusable effective identity.
+/// Connector defaults, including credentials and hooks, remain fixed for the
+/// lifetime of its pool. Only opaque request overrides prevent reuse.
 #[derive(Debug)]
 pub struct TlsConnectionReuse<P> {
     provider: P,
@@ -39,14 +39,13 @@ enum ReuseScope {
 }
 
 impl<P: TlsClientConfigProvider + 'static> TlsConnectionReuse<P> {
-    /// Capture the request policy and whether the actual handshake policy is reusable.
-    pub fn new(provider: P, request: &Extensions, effective_id: Option<TlsPoolId>) -> Self {
+    /// Capture request overrides relative to this connector's fixed defaults.
+    pub fn new(provider: P, request: &Extensions) -> Self {
         let identity = provider.pool_id(request);
         Self {
             provider,
             scope: ReuseScope::Origin(identity),
-            reusable: identity.is_none_or(|id| id.is_reusable())
-                && effective_id.is_none_or(|id| id.is_reusable()),
+            reusable: identity.is_none_or(|id| id.is_reusable()),
         }
     }
 
@@ -55,11 +54,11 @@ impl<P: TlsClientConfigProvider + 'static> TlsConnectionReuse<P> {
     /// The pool's route key identifies the proxy. Explicit request-level tunnel
     /// configuration requires a fresh connection; route-generated tunnel context
     /// is applied inside the connector and does not appear at pool lookup.
-    pub fn tunnel(provider: P, effective_id: Option<TlsPoolId>) -> Self {
+    pub fn tunnel(provider: P) -> Self {
         Self {
             provider,
             scope: ReuseScope::Tunnel,
-            reusable: effective_id.is_none_or(|id| id.is_reusable()),
+            reusable: true,
         }
     }
 
@@ -423,14 +422,15 @@ impl<'a> TlsPoolIdBuilder<'a> {
             server_cert_pins,
             server_trust,
         } = self.overrides;
-        if self.opaque_override || client_auth.is_some() {
-            return Some(TlsPoolId::non_reusable());
-        }
+        let mut reusable = !self.opaque_override && client_auth.is_none();
         let keylog = match keylog.map(|value| &value.0) {
             Some(KeyLogIntent::Environment) => Some(ComparableKeyLog::Environment),
             Some(KeyLogIntent::Disabled) => Some(ComparableKeyLog::Disabled),
             Some(KeyLogIntent::File(path)) => Some(ComparableKeyLog::File(path)),
-            Some(KeyLogIntent::Custom(_)) => return Some(TlsPoolId::non_reusable()),
+            Some(KeyLogIntent::Custom(_)) => {
+                reusable = false;
+                Some(ComparableKeyLog::Custom)
+            }
             None => None,
         };
         let settings = ComparableOverrides {
@@ -444,9 +444,11 @@ impl<'a> TlsPoolIdBuilder<'a> {
             server_trust,
             client_hello: self.client_hello,
         };
-        (settings != ComparableOverrides::default()).then(|| TlsPoolId {
+        // Preserve comparable fields even with fixed opaque credentials: native
+        // configuration caches must still notice changed trust, ALPN or versions.
+        (!reusable || settings != ComparableOverrides::default()).then(|| TlsPoolId {
             digest: policy_digest(b"rama.tls.overrides.v2", &settings),
-            reusable: true,
+            reusable,
         })
     }
 }
@@ -469,6 +471,7 @@ enum ComparableKeyLog<'a> {
     Environment,
     Disabled,
     File(&'a str),
+    Custom,
 }
 
 pub(crate) type PolicyDigest = [u64; 2];
@@ -490,7 +493,7 @@ pub(crate) fn policy_digest(domain: &[u8], settings: &impl Hash) -> PolicyDigest
 mod tests {
     use super::*;
     use crate::client::{
-        TlsServerCertPin, TlsServerCertPinSet, TlsServerCertPins, TlsServerTrustAnchors,
+        ClientAuth, TlsServerCertPin, TlsServerCertPinSet, TlsServerCertPins, TlsServerTrustAnchors,
     };
     use rama_utils::octets::kib;
     use std::hash::Hasher;
@@ -502,6 +505,7 @@ mod tests {
         fn pool_id(&self, extensions: &Extensions) -> Option<TlsPoolId> {
             TlsPoolId::builder()
                 .maybe_with_verify(extensions.get_ref::<TlsServerVerify>())
+                .maybe_with_client_auth(extensions.get_ref::<TlsClientAuth>())
                 .maybe_with_server_name(extensions.get_ref::<TlsServerName>())
                 .build()
         }
@@ -523,9 +527,8 @@ mod tests {
         let explicit_default = Extensions::new();
         explicit_default.insert(TlsServerVerify(ServerVerifyMode::Auto));
 
-        let default_policy = TlsConnectionReuse::new(TestProvider, &plain, None);
-        let insecure_policy =
-            TlsConnectionReuse::new(TestProvider, &insecure, TestProvider.pool_id(&insecure));
+        let default_policy = TlsConnectionReuse::new(TestProvider, &plain);
+        let insecure_policy = TlsConnectionReuse::new(TestProvider, &insecure);
         assert!(default_policy.matches(&plain));
         assert!(!default_policy.matches(&insecure));
         assert!(!default_policy.matches(&explicit_default));
@@ -538,20 +541,13 @@ mod tests {
     }
 
     #[test]
-    fn opaque_effective_defaults_prevent_reuse_without_request_overrides() {
+    fn opaque_request_credentials_prevent_reuse() {
         let request = Extensions::new();
-        let policy =
-            TlsConnectionReuse::new(TestProvider, &request, Some(TlsPoolId::non_reusable()));
+        request.insert(TlsClientAuth(ClientAuth::SelfSigned));
+        let policy = TlsConnectionReuse::new(TestProvider, &request);
         assert!(!policy.is_reusable());
         assert!(!policy.matches(&request));
-        let connection = Extensions::new();
-        policy.publish(&connection);
-        assert!(
-            !connection
-                .get_ref::<ConnectionReuse>()
-                .unwrap()
-                .is_reusable()
-        );
+        assert!(!policy.matches(&Extensions::new()));
     }
 
     #[test]
@@ -559,15 +555,14 @@ mod tests {
         let request = Extensions::new();
         request.insert(TlsServerVerify(ServerVerifyMode::Disable));
         let connection = Extensions::new();
-        TlsConnectionReuse::tunnel(TestProvider, None).publish(&connection);
+        TlsConnectionReuse::tunnel(TestProvider).publish(&connection);
         assert!(
             !connection
                 .get_ref::<ConnectionReuse>()
                 .unwrap()
                 .is_complete()
         );
-        TlsConnectionReuse::new(TestProvider, &request, TestProvider.pool_id(&request))
-            .publish(&connection);
+        TlsConnectionReuse::new(TestProvider, &request).publish(&connection);
         let policy = connection.get_ref::<ConnectionReuse>().unwrap();
         assert!(policy.is_complete());
         for proxy_matches in [false, true] {
@@ -592,11 +587,10 @@ mod tests {
         }
 
         let connection = Extensions::new();
-        TlsConnectionReuse::tunnel(TestProvider, Some(TlsPoolId::non_reusable()))
-            .publish(&connection);
-        TlsConnectionReuse::new(TestProvider, &Extensions::new(), None).publish(&connection);
+        TlsConnectionReuse::tunnel(TestProvider).publish(&connection);
+        TlsConnectionReuse::new(TestProvider, &Extensions::new()).publish(&connection);
         assert!(
-            !connection
+            connection
                 .get_ref::<ConnectionReuse>()
                 .unwrap()
                 .is_reusable()
@@ -690,7 +684,7 @@ mod tests {
     }
 
     #[test]
-    fn opaque_override_dominates_comparable_settings() {
+    fn opaque_override_prevents_reuse_but_retains_comparable_settings() {
         let verify = TlsServerVerify(ServerVerifyMode::Disable);
         let alone = TlsPoolId::builder()
             .with_opaque_override(true)
@@ -702,7 +696,8 @@ mod tests {
             .with_opaque_override(true)
             .build()
             .unwrap();
-        assert_eq!(alone, combined);
+        assert_ne!(alone, combined);
+        assert!(!alone.is_reusable());
         assert!(!combined.is_reusable());
         assert_eq!(
             TlsPoolId::builder().with_opaque_override(false).build(),

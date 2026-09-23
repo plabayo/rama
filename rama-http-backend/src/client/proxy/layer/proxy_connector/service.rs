@@ -20,9 +20,9 @@ use rama_net::{
     AuthorityInputExt, ConnectorTargetInputExt, HttpVersionInputExt, Protocol, ProtocolInputExt,
     TargetHttpVersionInputExt,
     client::{
-        ConnectionError, ConnectionErrorKind, ConnectorService, ConnectorTarget,
-        ConnectorTransportProtocol, EstablishedClientConnection, EstablishedProxyRoute, ProxyRoute,
-        pool::ConnectionReuse,
+        ConnectionError, ConnectionErrorKind, ConnectionPolicyScope, ConnectorService,
+        ConnectorTarget, ConnectorTransportProtocol, EstablishedClientConnection,
+        EstablishedProxyRoute, ProxyRoute, pool::ConnectionReuse,
     },
     http::TargetHttpVersion,
     transport::TransportProtocol,
@@ -241,6 +241,20 @@ where
             .protocol
             .as_ref()
             .is_some_and(Protocol::is_secure);
+        // HTTPS routes supply their own tunnel policy below. An explicit
+        // tunnel on a plaintext route belongs only to this request; failure
+        // under that policy says nothing about the shared proxy's health.
+        #[cfg(feature = "tls")]
+        let request_tunnel = !proxy_is_secure && input.extensions().contains::<TlsTunnel>();
+        #[cfg(not(feature = "tls"))]
+        let request_tunnel = false;
+        let scope_tunnel_error = |error: ConnectionError| {
+            if request_tunnel {
+                error.with_policy_scope(ConnectionPolicyScope::Request)
+            } else {
+                error
+            }
+        };
         let requested_http_version = crate::client::conn::resolve_input_target_http_version(&input);
 
         if app_is_http && !use_forward_proxy && requested_http_version == Some(Version::HTTP_3) {
@@ -293,13 +307,17 @@ where
             });
         }
 
-        let EstablishedClientConnection { input, conn } =
-            self.inner.connect(input).await.map_err(|error| {
+        let EstablishedClientConnection { input, conn } = self
+            .inner
+            .connect(input)
+            .await
+            .map_err(|error| {
                 error
                     .context("establish connection to proxy")
                     .context_field("address", proxy_info.address.clone())
                     .context_debug_field("protocol", proxy_info.protocol.clone())
-            })?;
+            })
+            .map_err(scope_tunnel_error)?;
 
         tracing::trace!(
             server.address = %authority.host,
@@ -374,7 +392,7 @@ where
             .handshake(conn)
             .await
             .map_err(ConnectionError::from)
-            .map_err(|error| error.context("http proxy handshake"))?;
+            .map_err(|error| scope_tunnel_error(error.context("http proxy handshake")))?;
 
         let conn = MaybeHttpProxiedConnection::upgraded_proxy(conn, proxy_info);
         // The inner connector classified the proxy endpoint. CONNECT changes
@@ -736,6 +754,11 @@ mod tests {
     use rama_http_types::{
         Body, Method, Request, Response, StatusCode, conn::FallbackHttpVersion, header,
     };
+    #[cfg(feature = "tls")]
+    use rama_net::client::{
+        ProxyRouteFailureCache, ProxyRouteFailureCacheConfig, ProxyRouteFailureCacheConnector,
+        ProxyRouteFailureCacheScope,
+    };
     use rama_net::{
         Protocol,
         address::{Domain, HostWithPort, ProxyAddress},
@@ -784,6 +807,63 @@ mod tests {
             _: &'a Extensions,
         ) -> core::pin::Pin<Box<dyn Stream<Item = Result<IpAddr, BoxError>> + Send + 'a>> {
             Box::pin(stream::iter([Ok(self.ip_addr)]))
+        }
+    }
+
+    #[cfg(feature = "tls")]
+    #[tokio::test]
+    async fn request_tunnel_failure_does_not_poison_plaintext_proxy_route() {
+        for scope in [
+            ProxyRouteFailureCacheScope::PerDestination,
+            ProxyRouteFailureCacheScope::PerProxy,
+        ] {
+            let attempts = Arc::new(AtomicUsize::new(0));
+            let transport = service_fn({
+                let attempts = attempts.clone();
+                move |input: ConnectRequest| {
+                    attempts.fetch_add(1, Ordering::Relaxed);
+                    async move {
+                        if input.extensions().contains::<TlsTunnel>() {
+                            return Err(ConnectionError::transport(
+                                BoxError::from_static_str("plaintext proxy rejected TLS handshake"),
+                                ConnectionErrorKind::Protocol,
+                            ));
+                        }
+                        let (stream, _peer) = tokio::io::duplex(64);
+                        Ok(EstablishedClientConnection {
+                            input,
+                            conn: MockSocket::new(stream),
+                        })
+                    }
+                }
+            });
+            let mut config = ProxyRouteFailureCacheConfig::default();
+            config.scope = scope;
+            let cache = ProxyRouteFailureCache::try_new(config).unwrap();
+            let connector = ProxyRouteFailureCacheConnector::new(
+                HttpProxyConnector::required(transport),
+                cache,
+            );
+            let request = || {
+                let input = ConnectRequest::new(HostWithPort::example_domain_http())
+                    .with_application_protocol(Protocol::HTTP);
+                input.extensions().insert(ProxyRoute::Proxy(
+                    "http://proxy.example:8080".parse().unwrap(),
+                ));
+                input
+            };
+            let customized = request();
+            customized.extensions().insert(TlsTunnel {
+                server_identity: Some("proxy.example".parse().unwrap()),
+                application_protocol: Some(Protocol::HTTP),
+                alpn: None,
+            });
+            let error = connector.serve(customized).await.unwrap_err();
+            assert_eq!(error.domain(), ConnectionErrorDomain::Transport);
+            assert_eq!(error.kind(), ConnectionErrorKind::Protocol);
+            assert_eq!(error.policy_scope(), ConnectionPolicyScope::Request);
+            connector.serve(request()).await.unwrap();
+            assert_eq!(attempts.load(Ordering::Relaxed), 2);
         }
     }
 

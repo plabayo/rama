@@ -48,9 +48,9 @@ use rama::{
     tls::{
         SecureTransport,
         client::{
-            NegotiatedTlsParameters, ServerVerifyMode, TlsClientConfig, TlsClientConfigProvider,
-            TlsPoolId, TlsServerCertPin, TlsServerCertPins, TlsServerVerify,
-            TlsStoreServerCertChain,
+            ClientAuth, ClientAuthData, NegotiatedTlsParameters, ServerVerifyMode, TlsClientConfig,
+            TlsClientConfigProvider, TlsPoolId, TlsServerCertPin, TlsServerCertPins,
+            TlsServerVerify, TlsStoreServerCertChain,
         },
         server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
     },
@@ -438,11 +438,11 @@ fn seed(cache: &AltSvcCache, origin: &HttpOrigin, advertisement: &str) {
 }
 
 #[tokio::test]
-async fn default_client_discovers_h3_and_reuses_it_across_clones() {
+async fn default_client_request_trust_does_not_publish_shared_discovery() {
     let (auth, tls) = credentials();
     let origin = Server::start(auth.clone(), Version::HTTP_2).await;
     let alternative = Server::start(auth, Version::HTTP_3).await;
-    // Leave the host implicit so the default QUIC path must resolve localhost.
+    // Request-specific trust must not publish discovery to the shared client cache.
     origin.reply(Reply::advertise(&format!(
         "h3=\":{}\"",
         alternative.address.port()
@@ -455,18 +455,14 @@ async fn default_client_discovers_h3_and_reuses_it_across_clones() {
     };
 
     assert_eq!(complete(&client, request()).await.1, Version::HTTP_2);
-    assert_eq!(complete(&client, request()).await.1, Version::HTTP_3);
+    assert_eq!(complete(&client, request()).await.1, Version::HTTP_2);
     assert_eq!(
         complete(&client.clone(), request()).await.1,
-        Version::HTTP_3
+        Version::HTTP_2
     );
-    assert_eq!(origin.request_count(), 1);
-    assert_eq!(alternative.request_count(), 2);
-    assert_eq!(alternative.accepted.load(Ordering::SeqCst), 1);
-    assert!(alternative.observations.lock().iter().all(|observation| {
-        observation.authority == format!("localhost:{}", origin.address.port())
-            && observation.sni.as_deref() == Some("localhost")
-    }));
+    assert_eq!(origin.request_count(), 3);
+    assert_eq!(alternative.request_count(), 0);
+    assert_eq!(alternative.accepted.load(Ordering::SeqCst), 0);
 
     drop(client);
     alternative.close().await;
@@ -495,7 +491,7 @@ async fn default_client_supports_h3_prior_knowledge() {
 }
 
 #[tokio::test]
-async fn default_client_falls_back_when_advertised_h3_is_unreachable() {
+async fn client_falls_back_when_advertised_h3_is_unreachable() {
     let (auth, tls) = credentials();
     let origin = Server::start(auth, Version::HTTP_2).await;
     // Keep the port bound but never answer: deterministically model blocked UDP.
@@ -506,12 +502,8 @@ async fn default_client_falls_back_when_advertised_h3_is_unreachable() {
         "h3=\"{}\"",
         unavailable.local_addr().unwrap()
     )));
-    let client = DefaultHttpWebClient::default();
-    let request = || {
-        let request = origin.request();
-        request.extensions().extend(tls.as_extensions());
-        request
-    };
+    let (client, endpoint) = client_with_http3(tls).await;
+    let request = || origin.request();
     assert_eq!(complete(&client, request()).await.1, Version::HTTP_2);
 
     // Windows reports an error when recv_from truncates a UDP datagram.
@@ -527,6 +519,7 @@ async fn default_client_falls_back_when_advertised_h3_is_unreachable() {
     assert_eq!(origin.accepted.load(Ordering::SeqCst), 1);
 
     drop(client);
+    close_client_endpoint(endpoint).await;
     origin.close().await;
 }
 
@@ -1317,6 +1310,44 @@ async fn ordinary_origin_pool_does_not_reuse_unverified_connection_for_verified_
 }
 
 #[tokio::test]
+async fn connector_client_credentials_pool_but_request_credentials_do_not() {
+    for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
+        let (auth, tls) = credentials();
+        let credentials = ClientAuth::Single(ClientAuthData {
+            private_key: auth.private_key.clone_key(),
+            cert_chain: auth.cert_chain.clone(),
+        });
+        let origin = Server::start(auth, version).await;
+        let (client, endpoint) = client_with_http3(tls.with_client_auth(credentials.clone())).await;
+        for _ in 0..3 {
+            assert_eq!(complete(&client, origin.request()).await.1, version);
+        }
+        assert_eq!(origin.accepted.load(Ordering::SeqCst), 1, "{version:?}");
+        for _ in 0..2 {
+            let request = origin.request();
+            TlsClientConfig::new()
+                .with_client_auth(credentials.clone())
+                .write_to(request.extensions());
+            assert_eq!(complete(&client, request).await.1, version);
+        }
+        assert_eq!(
+            origin.accepted.load(Ordering::SeqCst),
+            3,
+            "opaque request credentials need fresh handshakes"
+        );
+        assert_eq!(complete(&client, origin.request()).await.1, version);
+        assert_eq!(
+            origin.accepted.load(Ordering::SeqCst),
+            3,
+            "fixed credentials retain their pooled connection"
+        );
+        drop(client);
+        close_client_endpoint(endpoint).await;
+        origin.close().await;
+    }
+}
+
+#[tokio::test]
 async fn fixed_custom_tls_connector_reuses_connections() {
     for version in [Version::HTTP_11, Version::HTTP_2] {
         let (auth, tls) = credentials();
@@ -1899,6 +1930,10 @@ impl QuicClientConfigProvider for CountingQuicProvider {
 async fn check_http3_connector_resumption(provider: Arc<dyn QuicClientConfigProvider>) {
     timeout(TEST_TIMEOUT, async {
         let (auth, tls) = credentials();
+        let tls = tls.with_client_auth(ClientAuth::Single(ClientAuthData {
+            private_key: auth.private_key.clone_key(),
+            cert_chain: auth.cert_chain.clone(),
+        }));
         let server = Server::start(auth, Version::HTTP_3).await;
         for opaque in [false, true] {
             let provider = Arc::new(CountingQuicProvider {
@@ -1969,6 +2004,10 @@ async fn check_http3_config_cache_tracks_mutated_defaults(
 ) {
     timeout(TEST_TIMEOUT, async {
         let (auth, _) = credentials();
+        let client_auth = ClientAuth::Single(ClientAuthData {
+            private_key: auth.private_key.clone_key(),
+            cert_chain: auth.cert_chain.clone(),
+        });
         let server = Server::start(auth, Version::HTTP_3).await;
         let endpoint = Endpoint::bind_client(Executor::new(), SocketAddress::local_ipv4(0))
             .await
@@ -1976,7 +2015,9 @@ async fn check_http3_config_cache_tracks_mutated_defaults(
         let connector = Http3Connector::builder(Executor::new())
             .with_endpoint(endpoint.clone())
             .with_tls_config(
-                TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable),
+                TlsClientConfig::default_http()
+                    .with_client_auth(client_auth)
+                    .with_server_verify(ServerVerifyMode::Disable),
             )
             .with_tls_provider(provider)
             .build()

@@ -97,9 +97,16 @@ impl AltSvcLayer {
         connection: &impl ExtensionsRef,
         route: Option<RouteContext>,
     ) -> Self {
+        // A request's trust anchors must not publish hints to clients using
+        // the connector's default policy, including an advertisement of clear.
+        let connector_policy = connection.extensions().get_ref::<ConnectionPolicyScope>()
+            == Some(&ConnectionPolicyScope::Connector);
+        if self.origin.is_secure() && !connector_policy {
+            self.cache = None;
+            return self;
+        }
         if let Some(cache) = &self.cache
-            && connection.extensions().get_ref::<ConnectionPolicyScope>()
-                == Some(&ConnectionPolicyScope::Connector)
+            && connector_policy
             && let Some(service) = connection.extensions().get_arc::<EstablishedHttpService>()
             && service.origin == self.origin
             && service.candidate.source == HttpServiceSource::AltSvc
@@ -241,8 +248,9 @@ impl<S: ExtensionsRef> ExtensionsRef for AltSvc<S> {
 
 pin_project! {
     /// Response body preserving the underlying frames and errors while recording
-    /// confirmed remote failures of a discovered alternative. Dropping an unread
-    /// body is not evidence of endpoint failure. The wrapper does not allocate.
+    /// complete responses and remote failures of a discovered alternative.
+    /// Dropping an unread body is not evidence of success or endpoint failure.
+    /// The wrapper does not allocate.
     #[derive(Debug)]
     pub struct AltSvcBody<B> {
         #[pin]
@@ -256,10 +264,23 @@ struct BodyFailure {
     cache: AltSvcCache,
     alternative: AlternativeFailure,
     started: Instant,
+    accepted: bool,
 }
 
-impl<B> AltSvcBody<B> {
-    fn new(inner: B, policy: &AltSvcLayer, started: Instant) -> Self {
+impl BodyFailure {
+    fn succeeded(self) {
+        if self.accepted {
+            self.cache.succeeded_service(
+                &self.alternative.service,
+                self.alternative.route.as_ref(),
+                self.alternative.network,
+            );
+        }
+    }
+}
+
+impl<B: StreamingBody> AltSvcBody<B> {
+    fn new(inner: B, policy: &AltSvcLayer, started: Instant, accepted: bool) -> Self {
         let failure =
             policy
                 .failure
@@ -269,7 +290,17 @@ impl<B> AltSvcBody<B> {
                     cache: cache.clone(),
                     alternative: alternative.clone(),
                     started,
+                    accepted,
                 });
+        // Empty responses are complete without ever being polled.
+        let failure = if inner.is_end_stream() {
+            if let Some(failure) = failure {
+                failure.succeeded();
+            }
+            None
+        } else {
+            failure
+        };
         Self { inner, failure }
     }
 }
@@ -280,6 +311,9 @@ impl AltSvcBody<Body> {
     /// failure observation until their bodies complete.
     pub fn into_body(self) -> Body {
         if self.failure.is_none() || self.inner.is_end_stream() {
+            if let Some(failure) = self.failure {
+                failure.succeeded();
+            }
             self.inner
         } else {
             Body::new(self)
@@ -304,8 +338,8 @@ where
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        let this = self.project();
-        let result = this.inner.poll_frame(cx);
+        let mut this = self.project();
+        let result = this.inner.as_mut().poll_frame(cx);
         match &result {
             Poll::Ready(Some(Err(error))) => {
                 if let Some(failure) = this.failure.take()
@@ -320,7 +354,14 @@ where
                 }
             }
             Poll::Ready(None) => {
-                this.failure.take();
+                if let Some(failure) = this.failure.take() {
+                    failure.succeeded();
+                }
+            }
+            Poll::Ready(Some(Ok(_))) if this.inner.is_end_stream() => {
+                if let Some(failure) = this.failure.take() {
+                    failure.succeeded();
+                }
             }
             _ => {}
         }
@@ -340,7 +381,7 @@ impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for AltSvc<S>
 where
     S: Service<Request<ReqBody>, Output = Response<ResBody>>,
     ReqBody: Send + 'static,
-    ResBody: Send + 'static,
+    ResBody: StreamingBody + Send + 'static,
 {
     type Output = Response<AltSvcBody<ResBody>>;
     type Error = S::Error;
@@ -385,7 +426,8 @@ where
                 }
             }
         }
-        Ok(response.map(|body| AltSvcBody::new(body, policy, started)))
+        let accepted = response.status() != StatusCode::MISDIRECTED_REQUEST;
+        Ok(response.map(|body| AltSvcBody::new(body, policy, started, accepted)))
     }
 }
 
@@ -529,6 +571,49 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(cache.lookup(&origin).is_some(), expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn request_authentication_cannot_replace_or_clear_shared_advertisements() {
+        for scope in [
+            ConnectionPolicyScope::Connector,
+            ConnectionPolicyScope::Request,
+            ConnectionPolicyScope::Unknown,
+        ] {
+            for advertisement in ["clear", "h3=\":9443\""] {
+                let cache = AltSvcCache::default();
+                let origin = origin(Protocol::HTTPS);
+                let mut headers = crate::HeaderMap::new();
+                headers.insert("alt-svc", "h2=\":8443\"".parse().unwrap());
+                cache.record(&origin, &headers, Duration::ZERO);
+                let before = cache.lookup(&origin).unwrap();
+                let connection = Extensions::new();
+                connection.insert(scope);
+                let service = AltSvcLayer::new(origin.clone())
+                    .with_cache(cache.clone())
+                    .with_authenticated(true)
+                    .with_connection(&connection, None)
+                    .layer(service_fn(move |_: Request| async move {
+                        Ok::<_, Infallible>(
+                            Response::builder()
+                                .header("alt-svc", advertisement)
+                                .body(Body::empty())
+                                .unwrap(),
+                        )
+                    }));
+                service.serve(Request::new(Body::empty())).await.unwrap();
+                let after = cache.lookup(&origin);
+                if scope == ConnectionPolicyScope::Connector {
+                    assert!(
+                        after
+                            .as_ref()
+                            .is_none_or(|after| !Arc::ptr_eq(&before, after))
+                    );
+                } else {
+                    assert!(Arc::ptr_eq(&before, &after.unwrap()));
+                }
+            }
         }
     }
 

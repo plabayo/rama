@@ -15,6 +15,7 @@ use rama_http_types::{
     body::StreamingBody,
     proto::{
         h1::ext::informational::OnInformational,
+        h2::ext::Protocol,
         h3::{Code, FrameType},
     },
 };
@@ -189,10 +190,20 @@ where
     B::Error: Into<BoxError>,
 {
     /// Send a request on its own bidirectional QUIC stream.
+    ///
+    /// Extended CONNECT is not yet supported and is rejected before opening a stream.
     pub async fn send_request(
         &mut self,
         request: Request<B>,
     ) -> Result<Response<crate::body::Incoming>, Error> {
+        // RFC 9220 section 3 requires negotiated extended CONNECT support.
+        // Until implemented, never downgrade :protocol to an ordinary tunnel.
+        if request.extensions().contains::<Protocol>() {
+            return Err(Error::stream(
+                Code::H3_MESSAGE_ERROR,
+                "extended CONNECT is not supported",
+            ));
+        }
         self.ready().await?;
         let permit = tokio::select! {
             biased;

@@ -7,6 +7,7 @@ use rama::http::proto::h2::alt_svc::{
 use rama::{
     Layer as _, Service as _,
     http::{
+        Body,
         conn::HttpOrigin,
         layer::alt_svc::{AltSvcCache, AltSvcLayer},
     },
@@ -319,7 +320,12 @@ async fn same_flush_altsvc_headers_and_frames_follow_wire_order() {
                 .with_cache(cache.clone())
                 .with_authenticated(true)
                 .layer(service_fn(move |_: Request<()>| {
-                    response.lock().take().unwrap()
+                    let response = response.lock().take().unwrap();
+                    async move {
+                        response
+                            .await
+                            .map(|response| response.map(|_| Body::empty()))
+                    }
                 }));
             connection
                 .drive(service.serve(Request::new(())))

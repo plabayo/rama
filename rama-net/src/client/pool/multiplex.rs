@@ -782,6 +782,7 @@ mod tests {
     use std::{
         convert::Infallible,
         sync::{LazyLock, Weak},
+        task::Poll,
     };
 
     static EMPTY_INPUT: LazyLock<Extensions> = LazyLock::new(Extensions::new);
@@ -919,7 +920,7 @@ mod tests {
         assert!(waiter.poll().is_pending());
         drop(first);
         match waiter.poll() {
-            std::task::Poll::Ready(Ok(ConnectionResult::CreatePermit(_))) => {}
+            Poll::Ready(Ok(ConnectionResult::CreatePermit(_))) => {}
             other => panic!("fresh capacity must be released on drop: {other:?}"),
         }
         let second = connect(&svc, u32::MAX).await;
@@ -954,13 +955,16 @@ mod tests {
                 &pool.storage,
             ))));
         let permit = pool.total_slots.clone().try_acquire_owned().unwrap();
+        let mut waiter = tokio_test::task::spawn(pool.get_conn(&TestId(0), &EMPTY_INPUT));
+        assert!(waiter.poll().is_pending());
+
+        // Only the total-slot semaphore wakes this waiter. Its admission path
+        // must recheck the established policy before selecting spare capacity.
+        drop(permit);
+        assert!(waiter.is_woken());
         assert!(matches!(
-            pool.admit_with_permit(&TestId(0), permit, &EMPTY_INPUT),
-            ConnectionResult::CreatePermit(_)
-        ));
-        assert!(matches!(
-            pool.get_conn(&TestId(0), &EMPTY_INPUT).await.unwrap(),
-            ConnectionResult::CreatePermit(_)
+            waiter.poll(),
+            Poll::Ready(Ok(ConnectionResult::CreatePermit(_)))
         ));
     }
 
@@ -1149,7 +1153,7 @@ mod tests {
             "a capacity raise must wake the parked waiter"
         );
         match waiter.poll() {
-            std::task::Poll::Ready(Ok(ConnectionResult::Connection(_))) => {}
+            Poll::Ready(Ok(ConnectionResult::Connection(_))) => {}
             other => panic!("waiter must admit on the raised capacity, got: {other:?}"),
         }
     }
@@ -1248,7 +1252,7 @@ mod tests {
         drop(a2);
         assert!(a_waiter.is_woken(), "the matching-ID waiter must wake");
         match a_waiter.poll() {
-            std::task::Poll::Ready(Ok(ConnectionResult::Connection(_))) => {}
+            Poll::Ready(Ok(ConnectionResult::Connection(_))) => {}
             other => panic!("matching-ID waiter did not reuse A: {other:?}"),
         }
         assert!(b_waiter.poll().is_pending());
@@ -1527,11 +1531,11 @@ mod tests {
         drop(active);
         let mut evicting = tokio_test::task::spawn(pool.get_conn(&TestId(2), &EMPTY_INPUT));
         let evicting_permit = match evicting.poll() {
-            std::task::Poll::Ready(Ok(ConnectionResult::CreatePermit(permit))) => permit,
-            std::task::Poll::Ready(Ok(ConnectionResult::Connection(_))) => {
+            Poll::Ready(Ok(ConnectionResult::CreatePermit(permit))) => permit,
+            Poll::Ready(Ok(ConnectionResult::Connection(_))) => {
                 panic!("different-id idle connection was unexpectedly reused")
             }
-            std::task::Poll::Ready(Err(error)) => panic!("pool lookup failed: {error}"),
+            Poll::Ready(Err(error)) => panic!("pool lookup failed: {error}"),
             std::task::Poll::Pending => {
                 panic!("evicting caller lost the released slot to a parked waiter")
             }
@@ -1542,7 +1546,7 @@ mod tests {
         drop(evicting_permit);
         assert!(parked.is_woken());
         match parked.poll() {
-            std::task::Poll::Ready(Ok(ConnectionResult::CreatePermit(_))) => {}
+            Poll::Ready(Ok(ConnectionResult::CreatePermit(_))) => {}
             other => panic!("parked waiter did not receive the released slot: {other:?}"),
         }
     }
@@ -1574,7 +1578,7 @@ mod tests {
         assert!(first.is_woken());
         assert!(!last.is_woken());
         let first_permit = match first.poll() {
-            std::task::Poll::Ready(Ok(ConnectionResult::CreatePermit(permit))) => permit,
+            Poll::Ready(Ok(ConnectionResult::CreatePermit(permit))) => permit,
             other => panic!("oldest waiter did not receive the slot first: {other:?}"),
         };
         assert!(last.poll().is_pending());
@@ -1582,7 +1586,7 @@ mod tests {
         drop(first_permit);
         assert!(last.is_woken());
         match last.poll() {
-            std::task::Poll::Ready(Ok(ConnectionResult::CreatePermit(_))) => {}
+            Poll::Ready(Ok(ConnectionResult::CreatePermit(_))) => {}
             other => panic!("remaining waiter did not progress after cancellation: {other:?}"),
         }
     }

@@ -161,12 +161,18 @@ impl Shared {
             ));
         }
         entry.stream_seen = true;
-        if entry.cancelled {
+        let cancelled_stream = if entry.cancelled {
+            let id = u64::from(stream.id());
             _ = stream.stop(Code::H3_REQUEST_CANCELLED.value() as u32);
+            Some(id)
         } else {
             entry.stream = Some((stream, prefix));
-        }
+            None
+        };
         drop(pushes);
+        if let Some(id) = cancelled_stream {
+            self.cancel(id);
+        }
         self.push_ready.notify_waiters();
         Ok(())
     }
@@ -240,10 +246,17 @@ impl Shared {
         if let Some(abort) = entry.server_abort.take() {
             abort.abort(Code::H3_REQUEST_CANCELLED.value() as u32);
         }
-        if let Some((mut stream, _)) = entry.stream.take() {
+        let cancelled_stream = entry.stream.take().map(|(mut stream, _)| {
+            let id = u64::from(stream.id());
             _ = stream.stop(Code::H3_REQUEST_CANCELLED.value() as u32);
-        }
+            id
+        });
         drop(pushes);
+        // Buffered streams have no Reader to release QPACK references on drop
+        // (RFC 9204 section 2.2.2.2), so cancellation must do that here.
+        if let Some(id) = cancelled_stream {
+            self.cancel(id);
+        }
         if send {
             self.send_control_id(FrameType::CANCEL_PUSH, id)?;
         }

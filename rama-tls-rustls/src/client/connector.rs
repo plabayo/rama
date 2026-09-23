@@ -18,7 +18,7 @@ use rama_net::{
     AuthorityInputExt, Protocol, ProtocolInputExt,
     tls::{ApplicationProtocol, TlsAlpn, default_tls_alpn},
 };
-use rama_tls::client::{NegotiatedTlsParameters, TlsClientConfig, TlsConnectionReuse, TlsPoolId};
+use rama_tls::client::{NegotiatedTlsParameters, TlsClientConfig, TlsConnectionReuse};
 use rama_tls::{TlsTunnelMode, resolve_tls_tunnel};
 #[cfg(feature = "http")]
 use rama_utils::collections::smallvec::smallvec;
@@ -225,7 +225,7 @@ where
             app_protocol,
         );
 
-        let (connector_data, effective_id) = self
+        let connector_data = self
             .connector_data(input.extensions(), app_protocol)
             .map_err(|error| {
                 ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
@@ -233,11 +233,7 @@ where
             })?;
 
         let scope = Self::check_connector_data(&input, &connector_data, &authority.host)?;
-        let reuse = TlsConnectionReuse::new(
-            RustlsTlsClientConfigProvider,
-            input.extensions(),
-            effective_id,
-        );
+        let reuse = TlsConnectionReuse::new(RustlsTlsClientConfigProvider, input.extensions());
 
         let (stream, negotiated_params) = self
             .handshake(connector_data, Some(server_host), conn)
@@ -305,7 +301,7 @@ where
         let server_host = &authority.host;
 
         let app_protocol = input.protocol();
-        let (connector_data, effective_id) = self
+        let connector_data = self
             .connector_data(input.extensions(), app_protocol)
             .map_err(|error| {
                 ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
@@ -313,11 +309,7 @@ where
             })?;
 
         let scope = Self::check_connector_data(&input, &connector_data, &authority.host)?;
-        let reuse = TlsConnectionReuse::new(
-            RustlsTlsClientConfigProvider,
-            input.extensions(),
-            effective_id,
-        );
+        let reuse = TlsConnectionReuse::new(RustlsTlsClientConfigProvider, input.extensions());
 
         let (conn, negotiated_params) = self
             .handshake(connector_data, Some(server_host), conn)
@@ -379,7 +371,7 @@ where
         let tunnel_protocol = tunnel
             .as_ref()
             .and_then(|tunnel| tunnel.application_protocol.as_ref());
-        let (connector_data, effective_id) = self
+        let connector_data = self
             .tunnel_connector_data(tunnel.as_ref(), tunnel_protocol)
             .map_err(|error| {
                 ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
@@ -395,8 +387,7 @@ where
             })?;
         let conn = AutoTlsStream::secure(conn);
 
-        TlsConnectionReuse::tunnel(RustlsTlsClientConfigProvider, effective_id)
-            .publish(conn.extensions());
+        TlsConnectionReuse::tunnel(RustlsTlsClientConfigProvider).publish(conn.extensions());
         conn.extensions().insert(negotiated_params);
         conn.extensions().insert(StreamTransformed {
             by: "rama-tls-rustls::TlsConnector",
@@ -411,12 +402,11 @@ impl<S, K> TlsConnector<S, K> {
         &self,
         tunnel: Option<&TlsTunnel>,
         application_protocol: Option<&Protocol>,
-    ) -> Result<(TlsConnectorData, Option<TlsPoolId>), BoxError> {
+    ) -> Result<TlsConnectorData, BoxError> {
         let effective = self.tunnel_config_extensions(tunnel, application_protocol);
 
         let config = RustlsTlsConnectorConfig::from_extensions(&effective);
-        let effective_id = config.pool_id();
-        Ok((TlsConnectorData::try_from(config)?, effective_id))
+        TlsConnectorData::try_from(config)
     }
 
     fn tunnel_config_extensions(
@@ -507,7 +497,7 @@ impl<S, K> TlsConnector<S, K> {
         &self,
         request_extensions: &Extensions,
         application_protocol: Option<&Protocol>,
-    ) -> Result<(TlsConnectorData, Option<TlsPoolId>), BoxError> {
+    ) -> Result<TlsConnectorData, BoxError> {
         let effective = request_extensions.fork();
         let extensions = if let Some(base) = &self.base_config {
             effective.with_base(base.as_extensions())
@@ -523,8 +513,7 @@ impl<S, K> TlsConnector<S, K> {
         resolve_http_alpn(&extensions, application_protocol)?;
 
         let config = RustlsTlsConnectorConfig::from_extensions(&extensions);
-        let effective_id = config.pool_id();
-        Ok((TlsConnectorData::try_from(config)?, effective_id))
+        TlsConnectorData::try_from(config)
     }
 
     async fn handshake<T>(
@@ -1070,10 +1059,9 @@ mod tests {
         );
         assert!(config.modify.is_some());
 
-        let (data, effective_id) = connector
+        let data = connector
             .tunnel_connector_data(tunnel, Some(&Protocol::HTTPS))
             .expect("resolved tunnel connector data");
-        assert!(effective_id.is_some_and(|id| !id.is_reusable()));
         assert!(base_modifier_used.load(Ordering::SeqCst));
         assert_eq!(data.server_name, Some(base_name));
         assert!(data.store_server_certificate_chain);

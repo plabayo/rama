@@ -44,6 +44,30 @@ fn fixture() -> (AltSvcCache, HttpOrigin, HeaderMap) {
     (cache, origin, headers)
 }
 
+/// Construction and destruction should allocate only shared lazy storage, not
+/// four populated cache engines for clients which never discover alternatives.
+#[divan::bench]
+fn cache_construction(b: divan::Bencher) {
+    b.bench_local(|| black_box(AltSvcCache::default()));
+}
+
+#[divan::bench]
+fn first_advertisement(b: divan::Bencher) {
+    let (_, origin, headers) = fixture();
+    b.with_inputs(AltSvcCache::default)
+        .bench_local_values(|cache| {
+            cache.record(black_box(&origin), black_box(&headers), Duration::ZERO);
+            black_box(cache)
+        });
+}
+
+#[divan::bench]
+fn empty_lookup(b: divan::Bencher) {
+    let cache = AltSvcCache::default();
+    let origin = HttpOrigin::new(Protocol::HTTPS, "example.com:443".parse().unwrap()).unwrap();
+    b.bench_local(|| black_box(cache.lookup(black_box(&origin))));
+}
+
 #[divan::bench]
 fn shared_lookup(b: divan::Bencher) {
     let (cache, origin, _) = fixture();

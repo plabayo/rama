@@ -1481,7 +1481,7 @@ async fn proxy_negative_cache_is_scoped_to_the_advertised_connect_target() {
                 headers.insert(
                     crate::header::ALT_SVC,
                     crate::HeaderValue::from_static(if same_target {
-                        "h3=\":443\""
+                        "h2=\":443\""
                     } else {
                         "h2=\"alt.example:8443\""
                     }),
@@ -1500,6 +1500,11 @@ async fn proxy_negative_cache_is_scoped_to_the_advertised_connect_target() {
                 );
                 let connector = capabilities(routed).with_cache(cache.clone());
                 let request = input();
+                // Keep the version identical across alternative and origin;
+                // only the dial target may isolate their negative entries.
+                request
+                    .extensions()
+                    .insert(TargetHttpVersion(Version::HTTP_2));
                 request
                     .extensions()
                     .insert(ProxyRoutes::new([ProxyRoute::Proxy(
@@ -1518,14 +1523,7 @@ async fn proxy_negative_cache_is_scoped_to_the_advertised_connect_target() {
                         "alt.example:8443"
                     }
                 );
-                assert_eq!(
-                    records[0].required,
-                    Some(if same_target {
-                        Version::HTTP_3
-                    } else {
-                        Version::HTTP_2
-                    })
-                );
+                assert_eq!(records[0].required, Some(Version::HTTP_2));
                 for record in &records[1..] {
                     assert_eq!(record.target.to_string(), "origin.example:443");
                     assert_eq!(record.proxy.as_deref(), Some("proxy.example:3128"));

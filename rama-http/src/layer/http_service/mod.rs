@@ -695,9 +695,6 @@ where
                             );
                             continue;
                         }
-                        if shared_policy && let Some((cache, network, _)) = failure_context {
-                            cache.succeeded(snapshot, index, route.as_ref(), network);
-                        }
                         // A pool hit must describe this same service. Insert
                         // provenance only once; Extensions are append-only.
                         let extensions = established.conn.extensions();

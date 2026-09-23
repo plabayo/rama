@@ -10,8 +10,8 @@ use rama_core::{
 use rama_utils::macros::generate_set_and_with;
 
 /// Whether an establishment result describes a connector's fixed policy or a
-/// request override. Publish this on established connections, including those
-/// retained by a pool, so discovery can scope availability updates correctly.
+/// request override. Publish this on established connections or classified
+/// errors so discovery and failure caches can scope availability updates correctly.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Extension)]
 #[extension(tags(net))]
 pub enum ConnectionPolicyScope {

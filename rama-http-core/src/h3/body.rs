@@ -290,7 +290,11 @@ where
 
 impl Drop for Body {
     fn drop(&mut self) {
-        if let Some(upload) = &self.upload {
+        // The response and request body are independent stream directions.
+        // A fully consumed response must not cancel a still-running upload.
+        if (self.failed || self.reader.phase != Phase::Finished)
+            && let Some(upload) = &self.upload
+        {
             upload.abort();
         }
     }

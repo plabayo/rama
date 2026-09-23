@@ -619,6 +619,15 @@ impl Endpoint {
         self.inner.state.lock().inner.open_connections()
     }
 
+    /// Whether this endpoint has stopped accepting new connections.
+    ///
+    /// This includes explicit closure, graceful shutdown and loss of its runtime driver.
+    /// Once closed, an endpoint cannot be reopened; create a new one to connect again.
+    pub fn is_closed(&self) -> bool {
+        let state = self.inner.state.lock();
+        state.driver_lost || state.shutdown || state.recv_state.connections.close.is_some()
+    }
+
     /// Close all of this endpoint's connections immediately and cease accepting new connections.
     ///
     /// See [`Connection::close()`] for details.

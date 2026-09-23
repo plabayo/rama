@@ -12,6 +12,7 @@ use rama_http_types::{
 use rama_net::{
     Protocol,
     address::{HostWithPort, OptPort},
+    client::ConnectionPolicyScope,
     uri::AbsoluteUriRef,
 };
 
@@ -20,7 +21,7 @@ use std::sync::Arc;
 impl AltSvcCache {
     pub(crate) fn frame_observer(&self, origin: HttpOrigin) -> Arc<AltSvcObserverExtension> {
         if let Some(observer) = self
-            .observers
+            .observers()
             .get(&origin)
             .and_then(|observer| observer.upgrade())
         {
@@ -32,7 +33,7 @@ impl AltSvcCache {
         }));
         // Weak storage avoids a cycle through the observer's cache handle.
         // Racing first connections may each create an observer; both are valid.
-        self.observers.insert(origin, Arc::downgrade(&observer));
+        self.observers().insert(origin, Arc::downgrade(&observer));
         observer
     }
 }
@@ -44,6 +45,13 @@ struct FrameObserver {
 
 impl AltSvcObserver for FrameObserver {
     fn observe(&self, event: AltSvcEvent, connection: &Extensions) {
+        // Frame and header advertisements share the same trust boundary.
+        if self.origin.is_secure()
+            && connection.get_ref::<ConnectionPolicyScope>()
+                != Some(&ConnectionPolicyScope::Connector)
+        {
+            return;
+        }
         self.record(event, authenticates(connection, &self.origin));
     }
 }
@@ -201,6 +209,7 @@ mod tests {
         let cache = AltSvcCache::default();
         let observer = cache.frame_observer(origin());
         let connection = Extensions::new();
+        connection.insert(ConnectionPolicyScope::Connector);
         for identity in [None, Some("other.example"), Some("example.com")] {
             connection.insert(TlsServerAuthentication(
                 identity.map(|host| host.parse().unwrap()),
@@ -223,6 +232,39 @@ mod tests {
         );
         assert!(cache.lookup(&origin()).is_none());
     }
+
+    #[cfg(feature = "tls")]
+    #[test]
+    fn request_authentication_cannot_publish_shared_frame_advertisements() {
+        for scope in [
+            ConnectionPolicyScope::Request,
+            ConnectionPolicyScope::Unknown,
+        ] {
+            for field in [b"clear".as_slice(), b"h3=\":9443\""] {
+                let cache = AltSvcCache::default();
+                cache.record_frame(
+                    &origin(),
+                    Bytes::from_static(b"h2=\":8443\""),
+                    Instant::now().into_std(),
+                );
+                let before = cache.lookup(&origin()).unwrap();
+                let observer = cache.frame_observer(origin());
+                let connection = Extensions::new();
+                connection.insert(scope);
+                connection.insert(TlsServerAuthentication(Some(
+                    "example.com".parse().unwrap(),
+                )));
+                for source in [
+                    AltSvcOrigin::Request(origin()),
+                    AltSvcOrigin::Explicit(Bytes::from_static(b"https://example.com")),
+                ] {
+                    observer.observe(event(source, field), &connection);
+                    assert!(Arc::ptr_eq(&before, &cache.lookup(&origin()).unwrap()));
+                }
+            }
+        }
+    }
+
     #[test]
     fn observers_share_per_origin_without_retaining_themselves() {
         let cache = AltSvcCache::default();

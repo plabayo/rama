@@ -14,9 +14,9 @@ const MAX_CACHED_OVERRIDES: usize = 64;
 ///
 /// A cache belongs to one provider and fixed QUIC TLS options. Clones share its
 /// state: one protected default entry and up to 64 recently used override entries.
-/// Opaque policies bypass caching, and failed builds are never retained.
-/// Provider defaults must remain fixed for the cache's lifetime; dynamic policy
-/// must be represented in its identity or classified as non-reusable.
+/// Opaque request overrides bypass caching; fixed default credentials and hooks
+/// retain session state. Failed builds are never retained. Replace the cache when
+/// changing opaque defaults: their contents cannot be compared by the provider.
 ///
 /// This does not pool connections or apply request overrides. Supply the final
 /// TLS configuration to [`Self::client_config`], then customize transport settings
@@ -58,9 +58,10 @@ impl ClientConfigCache {
     /// `overrides` contains request settings before connector defaults are applied.
     /// It selects the protected default slot or bounded override cache and makes
     /// opaque request policies bypass caching even if later settings mask them.
-    /// The cache key always describes `config`, including defaults and any final
-    /// application requirements such as ALPN. Changed defaults cannot reuse stale
-    /// configuration. Provider classification must include every relevant setting.
+    /// The key combines the request identity with the effective configuration
+    /// identity, including final application requirements such as ALPN. Comparable
+    /// defaults are checked on each call; opaque defaults must stay fixed for this
+    /// cache's lifetime. Provider classification must cover every relevant setting.
     ///
     /// Provider code runs outside the cache lock. Concurrent equivalent builds
     /// may do redundant work, but converge on the same retained configuration.
@@ -71,29 +72,32 @@ impl ClientConfigCache {
     ) -> Result<ClientConfig, TlsConfigError> {
         let request_policy = self.provider.pool_id(overrides);
         let effective_policy = self.provider.pool_id(config.as_extensions());
-        if request_policy.is_some_and(|id| !id.is_reusable())
-            || effective_policy.is_some_and(|id| !id.is_reusable())
-        {
+        if request_policy.is_some_and(|id| !id.is_reusable()) {
             return self.provider.client_config(config, self.options);
         }
 
+        // An opaque default is scoped to this cache, not shared across connectors.
+        // Keep comparable request overrides distinct even if the effective ID is opaque.
+        let policy = (request_policy, effective_policy);
         let is_default = request_policy.is_none();
-        if let Some(config) = self.configs.lock().get(effective_policy, is_default) {
+        if let Some(config) = self.configs.lock().get(policy, is_default) {
             return Ok(config);
         }
 
         let config = self.provider.client_config(config, self.options)?;
         let mut configs = self.configs.lock();
-        if let Some(existing) = configs.get(effective_policy, is_default) {
+        if let Some(existing) = configs.get(policy, is_default) {
             return Ok(existing);
         }
-        configs.insert(effective_policy, is_default, config.clone());
+        configs.insert(policy, is_default, config.clone());
         Ok(config)
     }
 }
 
+type Policy = (Option<TlsPoolId>, Option<TlsPoolId>);
+
 struct Entry {
-    policy: Option<TlsPoolId>,
+    policy: Policy,
     config: ClientConfig,
 }
 
@@ -104,7 +108,7 @@ struct Configs {
 }
 
 impl Configs {
-    fn get(&mut self, policy: Option<TlsPoolId>, is_default: bool) -> Option<ClientConfig> {
+    fn get(&mut self, policy: Policy, is_default: bool) -> Option<ClientConfig> {
         if is_default {
             return self
                 .default
@@ -122,7 +126,7 @@ impl Configs {
         Some(config)
     }
 
-    fn insert(&mut self, policy: Option<TlsPoolId>, is_default: bool, config: ClientConfig) {
+    fn insert(&mut self, policy: Policy, is_default: bool, config: ClientConfig) {
         let entry = Entry { policy, config };
         if is_default {
             self.default = Some(entry);
@@ -274,7 +278,7 @@ mod tests {
     }
 
     #[test]
-    fn changed_defaults_and_opaque_settings_cannot_reuse_native_configuration() {
+    fn comparable_defaults_invalidate_and_opaque_requests_bypass_the_cache() {
         let cache =
             ClientConfigCache::new(Arc::new(TestProvider::default()), TlsOptions::default());
         let overrides = Extensions::new();
@@ -291,10 +295,30 @@ mod tests {
         let first = cache.client_config(&config, &overrides).unwrap();
         let second = cache.client_config(&config, &overrides).unwrap();
         assert!(!Arc::ptr_eq(&first.crypto, &second.crypto));
+    }
+
+    #[test]
+    fn fixed_opaque_defaults_retain_sessions_without_merging_request_policies() {
+        let provider = Arc::new(TestProvider::default());
+        let cache = ClientConfigCache::new(provider.clone(), TlsOptions::default());
+        let config = TlsClientConfig::new();
         config.as_extensions().insert(OpaquePolicy);
-        let first = cache.client_config(&config, &Extensions::new()).unwrap();
-        let second = cache.client_config(&config, &Extensions::new()).unwrap();
-        assert!(!Arc::ptr_eq(&first.crypto, &second.crypto));
+        let original = cache.client_config(&config, &Extensions::new()).unwrap();
+        let repeated = cache.client_config(&config, &Extensions::new()).unwrap();
+        assert!(Arc::ptr_eq(&original.crypto, &repeated.crypto));
+        let overrides = named(0);
+        let effective = config.clone().with_overrides(overrides.as_extensions());
+        let changed = cache
+            .client_config(&effective, overrides.as_extensions())
+            .unwrap();
+        let repeated = cache
+            .client_config(&effective, overrides.as_extensions())
+            .unwrap();
+        assert!(Arc::ptr_eq(&changed.crypto, &repeated.crypto));
+        assert!(!Arc::ptr_eq(&original.crypto, &changed.crypto));
+        let defaults = cache.client_config(&config, &Extensions::new()).unwrap();
+        assert!(Arc::ptr_eq(&original.crypto, &defaults.crypto));
+        assert_eq!(provider.calls.load(Ordering::Relaxed), 2);
     }
 
     #[test]

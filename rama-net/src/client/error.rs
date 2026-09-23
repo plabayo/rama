@@ -4,6 +4,9 @@ use rama_core::{
     error::{BoxError, ErrorExt as _, error_chain, extra::OpaqueError},
     telemetry::tracing,
 };
+use rama_utils::macros::generate_set_and_with;
+
+use super::ConnectionPolicyScope;
 
 /// The architectural domain in which establishing or using a client connection failed.
 ///
@@ -103,6 +106,7 @@ pub struct ConnectionError {
     source: BoxError,
     domain: ConnectionErrorDomain,
     kind: ConnectionErrorKind,
+    policy_scope: ConnectionPolicyScope,
 }
 
 impl ConnectionError {
@@ -112,10 +116,14 @@ impl ConnectionError {
         domain: ConnectionErrorDomain,
         kind: ConnectionErrorKind,
     ) -> Self {
+        let source = source.into();
+        let policy_scope = Self::classification_in_source_chain(source.as_ref())
+            .map_or(ConnectionPolicyScope::Unknown, |(_, _, scope)| scope);
         Self {
-            source: source.into(),
+            source,
             domain,
             kind,
+            policy_scope,
         }
     }
 
@@ -156,6 +164,22 @@ impl ConnectionError {
     #[inline]
     pub fn kind(&self) -> ConnectionErrorKind {
         self.kind
+    }
+
+    /// Policy under which this failure was observed.
+    /// Negative caches must not apply request-specific failures to other requests.
+    pub fn policy_scope(&self) -> ConnectionPolicyScope {
+        self.policy_scope
+    }
+
+    generate_set_and_with! {
+        /// Identify the policy that produced this failure without changing its
+        /// domain or kind. Request-specific failures are neutral for shared
+        /// endpoint availability and must not clear or increase shared backoff.
+        pub fn policy_scope(mut self, scope: ConnectionPolicyScope) -> Self {
+            self.policy_scope = scope;
+            self
+        }
     }
 
     /// Return the original error, including any attached context.
@@ -323,13 +347,17 @@ impl ConnectionError {
 
     fn classification_in_source_chain(
         source: &(dyn core::error::Error + 'static),
-    ) -> Option<(ConnectionErrorDomain, ConnectionErrorKind)> {
+    ) -> Option<(
+        ConnectionErrorDomain,
+        ConnectionErrorKind,
+        ConnectionPolicyScope,
+    )> {
         let mut timeout = false;
         // Protect conversion from a malformed error implementation with a cyclic
         // source chain. Rama's own wrappers are shallow and acyclic.
         for error in error_chain(source, 64) {
             if let Some(error) = error.downcast_ref::<Self>() {
-                return Some((error.domain, error.kind));
+                return Some((error.domain, error.kind, error.policy_scope));
             }
             timeout |= error.is::<rama_core::layer::timeout::Elapsed>()
                 || error.is::<tokio::time::error::Elapsed>();
@@ -337,6 +365,7 @@ impl ConnectionError {
         timeout.then_some((
             ConnectionErrorDomain::Transport,
             ConnectionErrorKind::Timeout,
+            ConnectionPolicyScope::Unknown,
         ))
     }
 }
@@ -348,18 +377,23 @@ impl From<BoxError> for ConnectionError {
             Err(source) => source,
         };
 
-        let (domain, kind) =
-            Self::classification_in_source_chain(source.as_ref()).unwrap_or_else(|| {
+        let (domain, kind, policy_scope) = Self::classification_in_source_chain(source.as_ref())
+            .unwrap_or_else(|| {
                 tracing::debug!(
                     "connector error is unclassified; retry-based routing will treat it as terminal"
                 );
-                (ConnectionErrorDomain::Unknown, ConnectionErrorKind::Other)
+                (
+                    ConnectionErrorDomain::Unknown,
+                    ConnectionErrorKind::Other,
+                    ConnectionPolicyScope::Unknown,
+                )
             });
 
         Self {
             source,
             domain,
             kind,
+            policy_scope,
         }
     }
 }
@@ -375,6 +409,7 @@ impl fmt::Debug for ConnectionError {
         f.debug_struct("ConnectionError")
             .field("domain", &self.domain)
             .field("kind", &self.kind)
+            .field("policy_scope", &self.policy_scope)
             .field("source", &self.source)
             .finish()
     }
@@ -433,6 +468,20 @@ mod tests {
     fn assert_unavailable_transport(error: &ConnectionError) {
         assert_eq!(error.domain(), ConnectionErrorDomain::Transport);
         assert_eq!(error.kind(), ConnectionErrorKind::Unavailable);
+    }
+
+    #[test]
+    fn request_policy_scope_survives_context_boxing_and_reclassification() {
+        let error = unavailable_transport_error()
+            .with_policy_scope(ConnectionPolicyScope::Request)
+            .context("request tunnel policy");
+        let error = ConnectionError::from(error.into_box_error().context("proxy route"));
+        assert_eq!(error.policy_scope(), ConnectionPolicyScope::Request);
+        assert_unavailable_transport(&error);
+        let error = ConnectionError::application(error, ConnectionErrorKind::Protocol);
+        assert_eq!(error.policy_scope(), ConnectionPolicyScope::Request);
+        assert_eq!(error.domain(), ConnectionErrorDomain::Application);
+        assert_eq!(error.kind(), ConnectionErrorKind::Protocol);
     }
 
     #[test]

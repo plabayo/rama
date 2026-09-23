@@ -334,8 +334,7 @@ async fn new_inner_client(
         let connector = Http3Connector::builder(executor)
             .with_tls_provider(Arc::new(BoringTlsProvider))
             .with_tls_config(tls_config)
-            .build()
-            .await?;
+            .build_lazy()?;
         builder
             .with_http3_support(connector)
             .map_connector(|connector| connector.boxed())
@@ -419,6 +418,7 @@ mod tests {
 
     use clap::Parser as _;
     use rama::{
+        futures::FutureExt as _,
         http::{
             StatusCode,
             header::{AUTHORIZATION, COOKIE, LOCATION, PROXY_AUTHORIZATION, SET_COOKIE},
@@ -447,6 +447,15 @@ mod tests {
 
     fn send_cfg(args: &[&str]) -> SendCommand {
         TestCli::parse_from(std::iter::once("rama-send-test").chain(args.iter().copied())).send
+    }
+
+    #[test]
+    fn alt_svc_client_construction_needs_no_udp_socket_or_runtime() {
+        let cfg = send_cfg(&["--alt-svc", "https://example.com/"]);
+        let _client = new_inner_client(&cfg, Executor::new())
+            .now_or_never()
+            .expect("construct the client without binding a QUIC endpoint")
+            .unwrap();
     }
 
     async fn read_http_head(stream: &mut tokio::net::TcpStream) -> String {
