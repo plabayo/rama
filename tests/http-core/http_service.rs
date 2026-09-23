@@ -11,7 +11,10 @@ use rama::{
     http::{
         Body, HeaderMap, Method, Request, Response, StatusCode, Version,
         body::{Frame, util::BodyExt as _},
-        client::{EasyHttpConnectorBuilder, Http3Connector, Http3Transport, http_connect},
+        client::{
+            DefaultHttpWebClient, EasyHttpConnectorBuilder, Http3Connector, Http3Transport,
+            http_connect,
+        },
         conn::{HttpOrigin, TargetHttpVersion},
         core::h3::connection::Config as Http3Config,
         header,
@@ -84,7 +87,7 @@ use rama::{
 
 use parking_lot::Mutex;
 use tokio::{
-    net::TcpListener as TokioTcpListener,
+    net::{TcpListener as TokioTcpListener, UdpSocket},
     sync::oneshot,
     task::{JoinHandle, spawn},
     time::timeout,
@@ -432,6 +435,99 @@ fn seed(cache: &AltSvcCache, origin: &HttpOrigin, advertisement: &str) {
     let mut headers = HeaderMap::new();
     headers.insert(header::ALT_SVC, advertisement.parse().unwrap());
     cache.record(origin, &headers, Duration::ZERO);
+}
+
+#[tokio::test]
+async fn default_client_discovers_h3_and_reuses_it_across_clones() {
+    let (auth, tls) = credentials();
+    let origin = Server::start(auth.clone(), Version::HTTP_2).await;
+    let alternative = Server::start(auth, Version::HTTP_3).await;
+    // Leave the host implicit so the default QUIC path must resolve localhost.
+    origin.reply(Reply::advertise(&format!(
+        "h3=\":{}\"",
+        alternative.address.port()
+    )));
+    let client = DefaultHttpWebClient::default();
+    let request = || {
+        let request = origin.request();
+        request.extensions().extend(tls.as_extensions());
+        request
+    };
+
+    assert_eq!(complete(&client, request()).await.1, Version::HTTP_2);
+    assert_eq!(complete(&client, request()).await.1, Version::HTTP_3);
+    assert_eq!(
+        complete(&client.clone(), request()).await.1,
+        Version::HTTP_3
+    );
+    assert_eq!(origin.request_count(), 1);
+    assert_eq!(alternative.request_count(), 2);
+    assert_eq!(alternative.accepted.load(Ordering::SeqCst), 1);
+    assert!(alternative.observations.lock().iter().all(|observation| {
+        observation.authority == format!("localhost:{}", origin.address.port())
+            && observation.sni.as_deref() == Some("localhost")
+    }));
+
+    drop(client);
+    alternative.close().await;
+    origin.close().await;
+}
+
+#[tokio::test]
+async fn default_client_supports_h3_prior_knowledge() {
+    let (auth, tls) = credentials();
+    let server = Server::start(auth, Version::HTTP_3).await;
+    let cancel = CancellationToken::new();
+    let shutdown = Shutdown::new(cancel.clone().cancelled_owned());
+    let client = DefaultHttpWebClient::default_with_executor(Executor::graceful(shutdown.guard()));
+    for _ in 0..2 {
+        let request = server.request();
+        assert_eq!(request.version(), Version::HTTP_3);
+        request.extensions().extend(tls.as_extensions());
+        assert_eq!(complete(&client, request).await.1, Version::HTTP_3);
+    }
+    assert_eq!(server.accepted.load(Ordering::SeqCst), 1);
+
+    drop(client);
+    cancel.cancel();
+    shutdown.shutdown_with_limit(TEST_TIMEOUT).await.unwrap();
+    server.close().await;
+}
+
+#[tokio::test]
+async fn default_client_falls_back_when_advertised_h3_is_unreachable() {
+    let (auth, tls) = credentials();
+    let origin = Server::start(auth, Version::HTTP_2).await;
+    // Keep the port bound but never answer: deterministically model blocked UDP.
+    let unavailable = UdpSocket::bind(SocketAddr::from(SocketAddress::local_ipv4(0)))
+        .await
+        .unwrap();
+    origin.reply(Reply::advertise(&format!(
+        "h3=\"{}\"",
+        unavailable.local_addr().unwrap()
+    )));
+    let client = DefaultHttpWebClient::default();
+    let request = || {
+        let request = origin.request();
+        request.extensions().extend(tls.as_extensions());
+        request
+    };
+    assert_eq!(complete(&client, request()).await.1, Version::HTTP_2);
+
+    // Windows reports an error when recv_from truncates a UDP datagram.
+    let mut datagram = vec![0; usize::from(u16::MAX)];
+    let (response, attempted) = tokio::join!(
+        complete(&client, request()),
+        timeout(TEST_TIMEOUT, unavailable.recv_from(&mut datagram)),
+    );
+    attempted.unwrap().unwrap();
+    assert_eq!(response.1, Version::HTTP_2);
+    assert_eq!(complete(&client, request()).await.1, Version::HTTP_2);
+    assert_eq!(origin.request_count(), 3);
+    assert_eq!(origin.accepted.load(Ordering::SeqCst), 1);
+
+    drop(client);
+    origin.close().await;
 }
 
 #[tokio::test]

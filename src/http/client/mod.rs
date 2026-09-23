@@ -35,6 +35,12 @@ use rama_http::{
     proxy::PlaintextHttpProxyMode,
 };
 
+#[cfg(any(feature = "boring", feature = "rustls"))]
+use crate::tls::client::TlsClientConfig;
+
+#[cfg(feature = "boring")]
+use {crate::quic::tls::BoringTlsProvider, std::sync::Arc};
+
 pub mod builder;
 #[doc(inline)]
 pub use builder::EasyHttpConnectorBuilder;
@@ -118,6 +124,10 @@ impl EasyHttpWebClient<(), (), ()> {
 
 /// Rama's default asynchronous HTTP(S) client, including its default
 /// multiplexing connection pool.
+///
+/// With BoringSSL or Rustls plus `ring`/`aws-lc`, HTTP/3 is available through
+/// alternative-service discovery or an explicit HTTP/3 request. Its shared UDP
+/// endpoint is bound lazily, so constructing the client requires no runtime.
 pub type DefaultHttpWebClient<Body = crate::http::Body> = EasyHttpWebClient<
     Body,
     EstablishedClientConnection<
@@ -154,7 +164,16 @@ where
     core::cfg_select! {
         feature = "boring" => {
             pub fn default_with_executor(exec: Executor) -> Self {
-                let tls_config = crate::tls::client::TlsClientConfig::default_http();
+                let tls_config = TlsClientConfig::default_http();
+                #[expect(
+                    clippy::expect_used,
+                    reason = "fixed default H3 limits and the explicit BoringSSL provider are valid"
+                )]
+                let h3 = Http3Connector::builder(exec.clone())
+                    .with_tls_config(tls_config.clone())
+                    .with_tls_provider(Arc::new(BoringTlsProvider))
+                    .build_lazy()
+                    .expect("default BoringSSL HTTP/3 configuration is valid");
 
                 EasyHttpConnectorBuilder::new()
                     .with_default_transport_connector()
@@ -163,21 +182,35 @@ where
                     .with_proxy_support()
                     .with_tls_support_using_boringssl(tls_config)
                     .with_default_http_connector(exec)
+                    .with_http3_support(h3)
                     .with_default_connection_pool()
                     .build_client()
             }
         }
         feature = "rustls" => {
             pub fn default_with_executor(exec: Executor) -> Self {
-                let tls_config = crate::tls::client::TlsClientConfig::default_http();
+                let tls_config = TlsClientConfig::default_http();
+                #[cfg(any(feature = "ring", feature = "aws-lc"))]
+                #[expect(
+                    clippy::expect_used,
+                    reason = "fixed default H3 limits and a compiled-in Rustls crypto provider are valid"
+                )]
+                let h3 = Http3Connector::builder(exec.clone())
+                    .with_tls_config(tls_config.clone())
+                    .build_lazy()
+                    .expect("default Rustls HTTP/3 configuration is valid");
 
-                EasyHttpConnectorBuilder::new()
+                let builder = EasyHttpConnectorBuilder::new()
                     .with_default_transport_connector()
                     .with_default_dns_connector()
                     .with_tls_proxy_support_using_rustls()
                     .with_proxy_support()
                     .with_tls_support_using_rustls(tls_config)
-                    .with_default_http_connector(exec)
+                    .with_default_http_connector(exec);
+                #[cfg(any(feature = "ring", feature = "aws-lc"))]
+                let builder = builder.with_http3_support(h3);
+
+                builder
                     .with_default_connection_pool()
                     .build_client()
             }
@@ -455,6 +488,13 @@ mod tests {
             size <= kib(16),
             "default client request future is {size} bytes"
         );
+    }
+
+    #[test]
+    fn default_client_can_be_constructed_and_cloned_without_a_runtime() {
+        let client = DefaultHttpWebClient::<Body>::default();
+        drop(client.clone());
+        drop(client);
     }
 
     #[derive(Debug, Clone, Default)]

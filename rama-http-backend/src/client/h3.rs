@@ -45,6 +45,7 @@ use std::{
     net::{IpAddr, SocketAddr},
     sync::Arc,
 };
+use tokio::sync::OnceCell;
 
 /// Establish authenticated QUIC transports for the common HTTP handshake.
 ///
@@ -56,7 +57,7 @@ use std::{
 /// This direct UDP connector rejects proxy routes before any connection attempt.
 /// Proxy-capable QUIC connectors can be injected separately.
 pub struct Http3Connector {
-    endpoint: Endpoint,
+    endpoint: Arc<OnceCell<Endpoint>>,
     tls: TlsClientConfig,
     provider: Arc<dyn QuicClientConfigProvider>,
     tls_configs: Arc<Mutex<TlsConfigs>>,
@@ -170,6 +171,17 @@ impl Http3ConnectorBuilder {
 
     /// Validate the limits and bind a default outbound endpoint when needed.
     pub async fn build(self) -> Result<Http3Connector, BoxError> {
+        let connector = self.build_lazy()?;
+        connector.endpoint().await?;
+        Ok(connector)
+    }
+
+    /// Validate configuration now and bind the endpoint on the first connection attempt.
+    ///
+    /// Construction requires no runtime or socket. Clones share initialization
+    /// and the resulting endpoint; failed or cancelled initialization can be retried.
+    /// An application-supplied endpoint is used immediately.
+    pub fn build_lazy(self) -> Result<Http3Connector, BoxError> {
         let mut transport = TransportConfig::default();
         self.config.configure_transport(&mut transport)?;
         let provider = match self.provider {
@@ -177,26 +189,8 @@ impl Http3ConnectorBuilder {
             None => default_tls_provider()?,
         };
 
-        let endpoint = match self.endpoint {
-            Some(endpoint) => endpoint,
-            None => {
-                // Reuse QUIC's dual-stack socket policy; fall back when the host
-                // cannot bind IPv6. Both attempts use the same graceful executor.
-                match Endpoint::bind_client(self.executor.clone(), SocketAddress::default_ipv6(0))
-                    .await
-                {
-                    Ok(endpoint) => endpoint,
-                    Err(error) => {
-                        tracing::debug!(%error, "binding IPv4 H3 endpoint after IPv6 bind failed");
-                        Endpoint::bind_client(self.executor.clone(), SocketAddress::default_ipv4(0))
-                            .await?
-                    }
-                }
-            }
-        };
-
         Ok(Http3Connector {
-            endpoint,
+            endpoint: Arc::new(OnceCell::new_with(self.endpoint)),
             tls: self.tls,
             provider,
             tls_configs: Arc::default(),
@@ -263,6 +257,28 @@ struct PreparedTls {
 }
 
 impl Http3Connector {
+    async fn endpoint(&self) -> Result<&Endpoint, BoxError> {
+        self.endpoint
+            .get_or_try_init(|| async {
+                // Reuse QUIC's dual-stack socket policy, including IPv4 fallback.
+                // Both attempts use the connector's graceful executor.
+                match Endpoint::bind_client(self.executor.clone(), SocketAddress::default_ipv6(0))
+                    .await
+                {
+                    Ok(endpoint) => Ok(endpoint),
+                    Err(error) => {
+                        tracing::debug!(%error, "binding IPv4 H3 endpoint after IPv6 bind failed");
+                        Ok(Endpoint::bind_client(
+                            self.executor.clone(),
+                            SocketAddress::default_ipv4(0),
+                        )
+                        .await?)
+                    }
+                }
+            })
+            .await
+    }
+
     fn prepare_tls(&self, input: &ConnectRequest) -> Result<PreparedTls, ConnectionError> {
         let tls = self
             .tls
@@ -376,10 +392,12 @@ impl Http3Connector {
         let attempt = &attempt;
         let failures = ConnectFailures::default();
         let failures = &failures;
+        let endpoint = self.endpoint().await.map_err(|error| {
+            ConnectionError::local(error, Unavailable).context("binding HTTP/3 endpoint")
+        })?;
         let dial = |address| async move {
             let result: Result<_, BoxError> = async {
-                let connection = self
-                    .endpoint
+                let connection = endpoint
                     .connect_with(tls.clone(), address, server_name)?
                     .await?;
                 connection.handshake_confirmed().await?;
@@ -447,7 +465,12 @@ impl Http3Connector {
         extensions.insert(prepared.policy_scope);
         extensions.insert(EstablishedProxyRoute::Direct);
         extensions.insert(SocketInfo::new(
-            known_local_address(self.endpoint.local_addr().ok(), connection.local_ip()),
+            known_local_address(
+                self.endpoint
+                    .get()
+                    .and_then(|endpoint| endpoint.local_addr().ok()),
+                connection.local_ip(),
+            ),
             connection.remote_address().into(),
         ));
         if let Some(mut parameters) = connection.handshake_data() {
@@ -813,6 +836,29 @@ mod concrete_transport_tests {
         }
     }
 
+    #[test]
+    fn lazy_connector_construction_needs_no_runtime() {
+        let connector = Http3Connector::builder(Executor::new())
+            .with_tls_provider(Arc::new(CustomProvider::default()))
+            .build_lazy()
+            .unwrap();
+        assert!(connector.endpoint.get().is_none());
+    }
+
+    #[tokio::test]
+    async fn lazy_connector_clones_share_concurrent_endpoint_initialization() {
+        let connector = Http3Connector::builder(Executor::new())
+            .with_tls_provider(Arc::new(CustomProvider::default()))
+            .build_lazy()
+            .unwrap();
+        let clone = connector.clone();
+        let (first, second) = tokio::join!(connector.endpoint(), clone.endpoint());
+        let first = first.unwrap();
+        assert!(std::ptr::eq(first, second.unwrap()));
+        first.close(0u32, b"test complete");
+        first.shutdown().await;
+    }
+
     #[tokio::test]
     async fn custom_factory_uses_public_builder_without_builtin_provider() {
         let provider = Arc::new(CustomProvider::default());
@@ -837,7 +883,11 @@ mod concrete_transport_tests {
         assert_eq!(error.kind(), ConnectionErrorKind::InvalidInput);
         assert_eq!(provider.calls.load(Ordering::Relaxed), 1);
         assert_eq!(provider.authenticated_checks.load(Ordering::Relaxed), 1);
-        connector.endpoint.close(0u32, b"test complete");
+        connector
+            .endpoint
+            .get()
+            .unwrap()
+            .close(0u32, b"test complete");
     }
 
     #[tokio::test]
@@ -850,7 +900,7 @@ mod concrete_transport_tests {
         // Deliberately omit a TLS provider: reaching direct establishment would
         // fail locally instead of returning the proxy capability error.
         let http3 = Http3Connector {
-            endpoint: endpoint.clone(),
+            endpoint: Arc::new(OnceCell::new_with(Some(endpoint.clone()))),
             tls: TlsClientConfig::default_http(),
             provider: Arc::new(CustomProvider::default()),
             tls_configs: Arc::default(),
