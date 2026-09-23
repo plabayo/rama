@@ -16,7 +16,7 @@ use rama::{
         server::HttpServer,
     },
     layer::MapInputLayer,
-    net::{address::SocketAddress, tls::ApplicationProtocol},
+    net::{address::SocketAddress, tls::ApplicationProtocol, uri::Uri},
     quic::{Endpoint, ServerConfig, tls::TlsOptions},
     rt::Executor,
     service::service_fn,
@@ -32,7 +32,7 @@ use std::{
     convert::Infallible,
     error::Error,
     net::SocketAddr,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Output,
     sync::{
         Arc,
@@ -544,6 +544,32 @@ async fn unavailable_h3_obeys_explicit_version_and_connection_deadline() -> Test
     origin.close().await
 }
 
+// Filesystem paths are not URI text: Windows drive paths need a leading
+// slash, and names can contain spaces or URI delimiters.
+fn local_file_uri(path: &Path) -> Uri {
+    let mut path = path
+        .to_str()
+        .expect("UTF-8 fixture path")
+        .replace('\\', "/");
+    if !path.starts_with('/') {
+        path.insert(0, '/');
+    }
+    "file://".parse::<Uri>().unwrap().with_path(path)
+}
+
+#[test]
+fn local_file_uri_encodes_windows_and_unix_paths() {
+    for (path, expected) in [
+        (
+            r"C:\Users\rama user\local #1.txt",
+            "file:///C:/Users/rama%20user/local%20%231.txt",
+        ),
+        ("/tmp/local #1.txt", "file:///tmp/local%20%231.txt"),
+    ] {
+        assert_eq!(local_file_uri(Path::new(path)).to_string(), expected);
+    }
+}
+
 #[tokio::test]
 async fn h1_h2_tls_limits_and_local_uri_schemes_remain_usable() -> TestResult {
     let fixture = Fixture::new().await?;
@@ -565,10 +591,10 @@ async fn h1_h2_tls_limits_and_local_uri_schemes_remain_usable() -> TestResult {
     let output = fixture.send("data:text/plain,local-data", &[]).await?;
     succeeded(&output);
     assert_eq!(output.stdout, b"local-data");
-    let file = fixture.directory.path().join("local.txt");
+    let file = fixture.directory.path().join("local #1.txt");
     fs::write(&file, b"local-file").await?;
     let output = fixture
-        .send(&format!("file://{}", file.display()), &[])
+        .send(&local_file_uri(&file).to_string(), &[])
         .await?;
     succeeded(&output);
     assert_eq!(output.stdout, b"local-file");
