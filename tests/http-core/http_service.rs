@@ -315,6 +315,14 @@ fn client(
     tls: TlsClientConfig,
     cache: AltSvcCache,
 ) -> impl Service<Request, Output = Response, Error: Debug> {
+    client_with_attempt_timeout(tls, cache, None)
+}
+
+fn client_with_attempt_timeout(
+    tls: TlsClientConfig,
+    cache: AltSvcCache,
+    attempt_timeout: Option<Duration>,
+) -> impl Service<Request, Output = Response, Error: Debug> {
     let builder = EasyHttpConnectorBuilder::new()
         .with_default_transport_connector()
         .with_default_dns_connector()
@@ -328,6 +336,12 @@ fn client(
         .with_default_http_connector(Executor::new())
         .with_default_connection_pool()
         .with_alt_svc_cache(cache)
+        .map_connector(|mut connector| {
+            if let Some(timeout) = attempt_timeout {
+                connector.get_mut().get_mut().set_attempt_timeout(timeout);
+            }
+            connector
+        })
         .build_client()
 }
 
@@ -941,7 +955,10 @@ async fn alternative_target_is_reached_through_selected_proxy_route() {
         &origin.origin(),
         &format!("h2=\"{}\"", alternative.address),
     );
-    let initial_client = client(tls.clone(), cache);
+    // A refused TCP connect can take seconds on Windows. This checks route
+    // fallback, not the default 300 ms speculative deadline: allow the first
+    // proxy refusal and the second proxy's TLS handshake to finish.
+    let initial_client = client_with_attempt_timeout(tls.clone(), cache, Some(TEST_TIMEOUT / 2));
     let request = origin.request();
     request.extensions().insert(ProxyRoutes::new([
         ProxyRoute::from(

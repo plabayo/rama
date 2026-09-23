@@ -392,8 +392,10 @@ final class TcpFlowSessionHalfCloseTests: XCTestCase {
         waitFor("promoted egress data send") { conn.pendingSendCount == 1 }
 
         XCTAssertTrue(conn.completePendingSend(error: .posix(.ECONNRESET)))
+        // Read-close precedes write-close within teardown. Observe completion
+        // on the flow queue before inspecting either half's terminal error.
         waitFor("promoted terminal error tears the session down") {
-            flow.closeReadCallCount > 0
+            queue.sync { session.ctx.isDone }
         }
         guard case .posix(.ECONNRESET)? = flow.lastCloseReadError as? NWError else {
             return XCTFail("promoted read close must preserve the send error")
@@ -554,7 +556,9 @@ final class TcpFlowSessionHalfCloseTests: XCTestCase {
         queue.sync { session.closeEgressAfterRustDrain() }
         waitFor("later egress FIN is issued") { conn.pendingSendCount == 1 }
         XCTAssertTrue(conn.completePendingSend(error: nil))
-        waitFor("both directions finalize") { flow.closeReadCallCount == 1 }
+        waitFor("both directions finalize") {
+            queue.sync { session.ctx.isDone }
+        }
         XCTAssertEqual(flow.closeWriteCallCount, 1)
         XCTAssertEqual(flow.closeReadCallCount, 1)
     }
@@ -581,7 +585,9 @@ final class TcpFlowSessionHalfCloseTests: XCTestCase {
         XCTAssertEqual(conn.cancelCount, 0)
 
         queue.sync { session.closeClientAfterRustDrain() }
-        waitFor("later client drain finalizes") { flow.closeReadCallCount == 1 }
+        waitFor("later client drain finalizes") {
+            queue.sync { session.ctx.isDone }
+        }
         XCTAssertEqual(flow.closeWriteCallCount, 1)
         XCTAssertEqual(flow.closeReadCallCount, 1)
     }
@@ -635,7 +641,10 @@ final class TcpFlowSessionHalfCloseTests: XCTestCase {
             "backstop must remain armed until every writer drain finishes")
 
         XCTAssertTrue(flow.completeNextWrite())
-        waitFor("client drain finishes teardown") { flow.closeReadCallCount == 1 }
+        waitFor("client drain finishes teardown") {
+            queue.sync { session.ctx.isDone }
+        }
+        XCTAssertEqual(flow.closeReadCallCount, 1)
         drain(queue)
         XCTAssertFalse(session.ctx.maintenanceSnapshot().drainClosePending)
         let disarmed = TestValue(false)
@@ -681,7 +690,10 @@ final class TcpFlowSessionHalfCloseTests: XCTestCase {
         XCTAssertTrue(session.ctx.maintenanceSnapshot().drainClosePending)
 
         XCTAssertTrue(conn.completePendingSend(error: nil))
-        waitFor("last drain performs final teardown") { flow.closeReadCallCount == 1 }
+        waitFor("last drain performs final teardown") {
+            queue.sync { session.ctx.isDone }
+        }
+        XCTAssertEqual(flow.closeReadCallCount, 1)
         XCTAssertFalse(session.ctx.maintenanceSnapshot().drainClosePending)
         XCTAssertEqual(conn.cancelCount, 1)
     }
