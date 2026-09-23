@@ -14,7 +14,7 @@ use rama_http_core::h3::connection::Config;
 use rama_http_types::{Version, conn::TargetHttpVersion};
 use rama_net::{
     ConnectorTargetInputExt, ProtocolInputExt,
-    address::{Host, SocketAddress},
+    address::{Host, SocketAddress, ip::IntoCanonicalIpAddr as _},
     client::{
         ConnectRequest, ConnectionAttempt, ConnectionError, ConnectionErrorDomain,
         ConnectionErrorDomain::{Application, Local, Transport},
@@ -23,6 +23,7 @@ use rama_net::{
         ConnectionPolicyScope, ConnectorTargetStream, EstablishedClientConnection,
         EstablishedProxyRoute, ProxyRoute, race_connect,
     },
+    mode::ConnectIpMode,
     stream::SocketInfo,
     tls::ApplicationProtocol,
 };
@@ -33,10 +34,12 @@ use rama_quic::{
 };
 use rama_quic_proto::TransportErrorCode;
 use rama_tls::client::{
-    TlsClientConfig, TlsServerAuthentication, TlsServerName, TlsStoreServerCertChain,
+    TlsClientConfig, TlsConnectionReuse, TlsPoolId, TlsServerAuthentication, TlsServerName,
+    TlsStoreServerCertChain,
 };
 use rama_utils::macros::generate_set_and_with;
 use std::{
+    collections::VecDeque,
     error::Error as StdError,
     io::{Error as IoError, ErrorKind as IoErrorKind},
     net::{IpAddr, SocketAddr},
@@ -46,8 +49,8 @@ use std::{
 /// Establish authenticated QUIC transports for the common HTTP handshake.
 ///
 /// Wrap this connector with Rama's DNS connector and HTTP connection pool,
-/// with a connection identifier that classifies TLS overrides before lookup.
-/// Rama’s easy client builder assembles this policy automatically.
+/// which checks the reuse policy published by this connector. TLS overrides
+/// are classified by the same provider that configures the handshake.
 /// The connector selects `h3` ALPN; the origin hostname remains the TLS
 /// verification target even when routing selects a different physical address.
 /// This direct UDP connector rejects proxy routes before any connection attempt.
@@ -56,6 +59,7 @@ pub struct Http3Connector {
     endpoint: Endpoint,
     tls: TlsClientConfig,
     provider: Arc<dyn QuicClientConfigProvider>,
+    tls_configs: Arc<Mutex<TlsConfigs>>,
     transport: Arc<TransportConfig>,
     config: Config,
     executor: Executor,
@@ -67,6 +71,7 @@ impl Clone for Http3Connector {
             endpoint: self.endpoint.clone(),
             tls: self.tls.clone(),
             provider: self.provider.clone(),
+            tls_configs: self.tls_configs.clone(),
             transport: self.transport.clone(),
             config: self.config.clone(),
             executor: self.executor.clone(),
@@ -194,10 +199,49 @@ impl Http3ConnectorBuilder {
             endpoint,
             tls: self.tls,
             provider,
+            tls_configs: Arc::default(),
             transport: Arc::new(transport),
             config: self.config,
             executor: self.executor,
         })
+    }
+}
+
+// Most connections share the fixed policy. Bound less common request policies
+// separately so changing overrides cannot evict its resumption state.
+const MAX_CACHED_TLS_OVERRIDES: usize = 64;
+
+#[derive(Default)]
+struct TlsConfigs {
+    default: Option<(Option<TlsPoolId>, ClientConfig)>,
+    overrides: VecDeque<(Option<TlsPoolId>, ClientConfig)>,
+}
+
+impl TlsConfigs {
+    fn get(&mut self, policy: Option<TlsPoolId>, is_default: bool) -> Option<ClientConfig> {
+        if is_default {
+            return self
+                .default
+                .as_ref()
+                .filter(|(id, _)| *id == policy)
+                .map(|(_, config)| config.clone());
+        }
+        let index = self.overrides.iter().position(|(id, _)| *id == policy)?;
+        let entry = self.overrides.remove(index)?;
+        let config = entry.1.clone();
+        self.overrides.push_front(entry);
+        Some(config)
+    }
+
+    fn insert(&mut self, policy: Option<TlsPoolId>, is_default: bool, config: ClientConfig) {
+        if is_default {
+            self.default = Some((policy, config));
+        } else {
+            if self.overrides.len() == MAX_CACHED_TLS_OVERRIDES {
+                self.overrides.pop_back();
+            }
+            self.overrides.push_front((policy, config));
+        }
     }
 }
 
@@ -215,6 +259,7 @@ struct PreparedTls {
     authenticated_identity: Option<Host>,
     capture_chain: bool,
     policy_scope: ConnectionPolicyScope,
+    reuse: TlsConnectionReuse<Arc<dyn QuicClientConfigProvider>>,
 }
 
 impl Http3Connector {
@@ -232,7 +277,8 @@ impl Http3Connector {
             .provider
             .authenticates_server(tls.as_extensions())
             .then(|| server_identity.clone());
-        let policy_scope = if self.provider.pool_id(input.extensions()).is_some() {
+        let request_policy = self.provider.pool_id(input.extensions());
+        let policy_scope = if request_policy.is_some() {
             ConnectionPolicyScope::Request
         } else {
             ConnectionPolicyScope::Connector
@@ -249,11 +295,48 @@ impl Http3Connector {
             .as_extensions()
             .get_ref::<TlsStoreServerCertChain>()
             .is_some_and(|capture| capture.0);
-        let mut tls = self
-            .provider
-            .client_config(&tls, TlsOptions::default())
-            .map_err(|error| ConnectionError::local(error, ConnectionErrorKind::InvalidInput))?;
-        tls.set_transport_config(self.transport.clone());
+        let build_config = || {
+            let mut config = self
+                .provider
+                .client_config(&tls, TlsOptions::default())
+                .map_err(|error| {
+                    ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
+                })?;
+            config.set_transport_config(self.transport.clone());
+            Ok::<_, ConnectionError>(config)
+        };
+        // Opaque hooks or credentials can change independently of their identity.
+        // Never retain their session state, including when supplied as defaults.
+        // Default settings can change through the public extension store, and
+        // cloned connectors may diverge. Even the default slot must match the
+        // full effective policy before sharing native TLS or session state.
+        let effective_policy = self.provider.pool_id(tls.as_extensions());
+        let reusable = request_policy.is_none_or(|id| id.is_reusable())
+            && effective_policy.is_none_or(|id| id.is_reusable());
+        let is_default = request_policy.is_none();
+        let cached = if reusable {
+            self.tls_configs.lock().get(effective_policy, is_default)
+        } else {
+            None
+        };
+        let config = if let Some(config) = cached {
+            config
+        } else {
+            // Configuring native TLS may run application hooks. Keep that work
+            // outside the shared cache lock so unrelated policies can proceed.
+            let config = build_config()?;
+            if reusable {
+                let mut configs = self.tls_configs.lock();
+                if let Some(existing) = configs.get(effective_policy, is_default) {
+                    existing
+                } else {
+                    configs.insert(effective_policy, is_default, config.clone());
+                    config
+                }
+            } else {
+                config
+            }
+        };
         let server_name = if let Ok(ip) = server_identity.try_as_ip() {
             ip.to_string()
         } else {
@@ -263,11 +346,16 @@ impl Http3Connector {
                 .to_string()
         };
         Ok(PreparedTls {
-            config: tls,
+            config,
             server_name,
             authenticated_identity,
             capture_chain,
             policy_scope,
+            reuse: TlsConnectionReuse::new(
+                self.provider.clone(),
+                input.extensions(),
+                effective_policy,
+            ),
         })
     }
 
@@ -313,6 +401,14 @@ impl Http3Connector {
             result.map_err(|error| failures.record(error, attempt))
         };
         if let Ok(ip) = target.host.try_as_ip() {
+            let ip = validate_connect_ip_mode(
+                ip,
+                input
+                    .extensions()
+                    .get_ref::<ConnectIpMode>()
+                    .copied()
+                    .unwrap_or_default(),
+            )?;
             race_connect(
                 stream::once(async { Ok(SocketAddr::new(ip, target.port)) }),
                 1,
@@ -345,6 +441,7 @@ impl Http3Connector {
         // Populate only connection facts: inheriting the request store here would
         // retain request metadata and could create a cycle through Egress.
         let extensions = connection.extensions();
+        prepared.reuse.publish(extensions);
         extensions.insert(TargetHttpVersion(Version::HTTP_3));
         extensions.insert(TlsServerAuthentication(prepared.authenticated_identity));
         extensions.insert(prepared.policy_scope);
@@ -359,6 +456,15 @@ impl Http3Connector {
             }
             extensions.insert(parameters);
         }
+    }
+}
+
+fn validate_connect_ip_mode(ip: IpAddr, mode: ConnectIpMode) -> Result<IpAddr, ConnectionError> {
+    let ip = ip.into_canonical_ip_addr();
+    match (ip, mode) {
+        (IpAddr::V4(_), ConnectIpMode::Ipv6) => Err(invalid("IPv4 address is not allowed")),
+        (IpAddr::V6(_), ConnectIpMode::Ipv4) => Err(invalid("IPv6 address is not allowed")),
+        _ => Ok(ip),
     }
 }
 
@@ -559,10 +665,98 @@ mod concrete_transport_tests {
     };
 
     use rama_core::extensions::Extensions;
-    use rama_quic::tls::TlsConfigError;
-    use rama_quic_proto::{TransportError, frame::ApplicationClose};
+    use rama_quic::tls::{
+        TlsConfigError,
+        provider::{ClientConfig as CryptoClientConfig, Session},
+    };
+    use rama_quic_proto::{
+        TransportError, Version as QuicVersion, frame::ApplicationClose,
+        transport_parameters::TransportParameters,
+    };
     use rama_tls::client::{ServerVerifyMode, TlsClientConfigProvider, TlsPoolId, TlsServerVerify};
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::{
+        net::Ipv6Addr,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
+
+    struct UnusedCrypto;
+
+    impl CryptoClientConfig for UnusedCrypto {
+        fn start_session(
+            self: Arc<Self>,
+            _: QuicVersion,
+            _: &str,
+            _: &TransportParameters,
+        ) -> Result<Box<dyn Session>, QuicConnectError> {
+            Err(QuicConnectError::EndpointStopping)
+        }
+    }
+
+    #[test]
+    fn tls_config_cache_bounds_overrides_and_retains_defaults() {
+        let config = ClientConfig::new(Arc::new(UnusedCrypto));
+        let mut cache = TlsConfigs::default();
+        cache.insert(None, true, config.clone());
+        let policy = |index: usize| {
+            TlsPoolId::builder()
+                .with_server_name(&TlsServerName(
+                    Host::try_from(format!("host-{index}.example")).unwrap(),
+                ))
+                .build()
+                .unwrap()
+        };
+        for index in 0..MAX_CACHED_TLS_OVERRIDES {
+            cache.insert(Some(policy(index)), false, config.clone());
+        }
+        assert!(cache.get(Some(policy(0)), false).is_some());
+        cache.insert(Some(policy(MAX_CACHED_TLS_OVERRIDES)), false, config);
+        assert_eq!(cache.overrides.len(), MAX_CACHED_TLS_OVERRIDES);
+        assert!(
+            cache.get(None, true).is_some(),
+            "overrides never evict default session state"
+        );
+        assert!(
+            cache.get(Some(policy(0)), false).is_some(),
+            "recently used policy stays cached"
+        );
+        assert!(
+            cache.get(Some(policy(1)), false).is_none(),
+            "least recently used policy is evicted"
+        );
+    }
+
+    #[test]
+    fn literal_ip_modes_use_the_wire_family() {
+        let ipv4 = IpAddr::from([127, 0, 0, 1]);
+        let mapped = IpAddr::V6("::ffff:127.0.0.1".parse().unwrap());
+        let ipv6 = IpAddr::V6(Ipv6Addr::LOCALHOST);
+        for address in [ipv4, mapped] {
+            assert_eq!(
+                validate_connect_ip_mode(address, ConnectIpMode::Ipv4).unwrap(),
+                ipv4
+            );
+            assert_eq!(
+                validate_connect_ip_mode(address, ConnectIpMode::Dual).unwrap(),
+                ipv4
+            );
+            assert_eq!(
+                validate_connect_ip_mode(address, ConnectIpMode::Ipv6)
+                    .unwrap_err()
+                    .kind(),
+                InvalidInput
+            );
+        }
+        assert_eq!(
+            validate_connect_ip_mode(ipv6, ConnectIpMode::Ipv6).unwrap(),
+            ipv6
+        );
+        assert_eq!(
+            validate_connect_ip_mode(ipv6, ConnectIpMode::Ipv4)
+                .unwrap_err()
+                .kind(),
+            InvalidInput
+        );
+    }
 
     #[derive(Debug, Default)]
     struct CustomProvider {
@@ -659,6 +853,7 @@ mod concrete_transport_tests {
             endpoint: endpoint.clone(),
             tls: TlsClientConfig::default_http(),
             provider: Arc::new(CustomProvider::default()),
+            tls_configs: Arc::default(),
             transport: Arc::new(TransportConfig::default()),
             config: Config::default(),
             executor,

@@ -31,6 +31,7 @@ use std::{
     collections::VecDeque,
     convert::Infallible,
     error::Error,
+    fmt::Display,
     net::SocketAddr,
     path::{Path, PathBuf},
     process::Output,
@@ -75,13 +76,13 @@ impl Fixture {
         })
     }
 
-    async fn send(&self, url: &str, args: &[&str]) -> TestResult<Output> {
+    async fn send(&self, url: impl Display, args: &[&str]) -> TestResult<Output> {
         let mut command = Command::new(env!("CARGO_BIN_EXE_rama"));
         let no_proxy = if args.contains(&"--proxy") { "" } else { "*" };
         command
             .kill_on_drop(true)
             .arg("send")
-            .arg(url)
+            .arg(url.to_string())
             .args(args)
             .arg("--trace")
             .arg(self.directory.path().join("trace.log"))
@@ -323,7 +324,7 @@ async fn explicit_h3_get_streamed_post_resolve_and_diagnostics() -> TestResult {
     let resolve = format!("localhost:{}:127.0.0.1", server.address.port());
     let output = fixture
         .send(
-            &server.url(),
+            server.url(),
             &[
                 "--http3",
                 "--ipv4",
@@ -351,7 +352,7 @@ async fn explicit_h3_get_streamed_post_resolve_and_diagnostics() -> TestResult {
     fs::write(&body, b"streamed h3 upload").await?;
     let data = format!("@{}", body.display());
     let output = fixture
-        .send(&server.url(), &["--http3", "--data", &data])
+        .send(server.url(), &["--http3", "--data", &data])
         .await?;
     succeeded(&output);
     assert_eq!(output.stdout, b"streamed h3 upload");
@@ -377,7 +378,7 @@ async fn redirects_discover_h3_and_reuse_its_connection() -> TestResult {
     origin.reply(Reply::redirect(Some(alternative.address)));
     alternative.reply(Reply::redirect(None));
     let output = fixture
-        .send(&origin.url(), &["--location", "--alt-svc"])
+        .send(origin.url(), &["--location", "--alt-svc"])
         .await?;
     succeeded(&output);
     assert_eq!(output.stdout, b"hello from rama");
@@ -385,7 +386,7 @@ async fn redirects_discover_h3_and_reuse_its_connection() -> TestResult {
     assert_eq!(alternative.requests.lock().len(), 2);
     assert_eq!(alternative.accepted.load(Ordering::Relaxed), 1);
 
-    let output = fixture.send(&origin.url(), &["--alt-svc"]).await?;
+    let output = fixture.send(origin.url(), &["--alt-svc"]).await?;
     succeeded(&output);
     assert_eq!(origin.requests.lock().len(), 2);
     assert_eq!(alternative.requests.lock().len(), 2);
@@ -405,7 +406,7 @@ async fn alternative_services_require_opt_in_and_respect_explicit_versions() -> 
     ] {
         origin.reply(Reply::redirect(Some(alternative.address)));
         let before = origin.requests.lock().len();
-        let output = fixture.send(&origin.url(), &args).await?;
+        let output = fixture.send(origin.url(), &args).await?;
         succeeded(&output);
         assert_eq!(output.stdout, b"hello from rama");
         assert_eq!(origin.requests.lock().len(), before + 2);
@@ -431,7 +432,7 @@ async fn h3_response_trailers_complete_the_streamed_body() -> TestResult {
         ]))),
         ..Default::default()
     });
-    let output = fixture.send(&server.url(), &["--http3"]).await?;
+    let output = fixture.send(server.url(), &["--http3"]).await?;
     succeeded(&output);
     assert_eq!(output.stdout, b"streamed response");
     assert_eq!(server.requests.lock().len(), 1);
@@ -454,7 +455,7 @@ async fn h2_alternatives_require_opt_in_independently_of_h3_transport() -> TestR
             format!("h2=\":{}\"; ma=60", alternative.address.port()).parse()?,
         );
         origin.reply(redirect);
-        let output = fixture.send(&origin.url(), &args).await?;
+        let output = fixture.send(origin.url(), &args).await?;
         succeeded(&output);
         assert_eq!(output.stdout, b"hello from rama");
         assert_eq!(
@@ -478,13 +479,13 @@ async fn failed_alternative_authentication_falls_back_to_verified_origin() -> Te
     .await?;
     origin.reply(Reply::redirect(Some(untrusted.address)));
     let output = fixture
-        .send(&origin.url(), &["--location", "--alt-svc"])
+        .send(origin.url(), &["--location", "--alt-svc"])
         .await?;
     succeeded(&output);
     assert_eq!(origin.requests.lock().len(), 2);
     assert!(untrusted.requests.lock().is_empty());
     let output = fixture
-        .send(&untrusted.url(), &["--http3", "--insecure"])
+        .send(untrusted.url(), &["--http3", "--insecure"])
         .await?;
     succeeded(&output);
     origin.close().await?;
@@ -501,7 +502,7 @@ async fn unavailable_h3_obeys_explicit_version_and_connection_deadline() -> Test
     origin.reply(Reply::redirect(Some(address)));
     let output = fixture
         .send(
-            &origin.url(),
+            origin.url(),
             &[
                 "--location",
                 "--alt-svc",
@@ -516,14 +517,14 @@ async fn unavailable_h3_obeys_explicit_version_and_connection_deadline() -> Test
     assert_eq!(origin.requests.lock().len(), 2);
     let output = fixture
         .send(
-            &format!("https://localhost:{}/", address.port()),
+            format!("https://localhost:{}/", address.port()),
             &["--http3", "--connect-timeout", "1", "--max-time", "2"],
         )
         .await?;
     failed(&output);
     let output = fixture
         .send(
-            &origin.url(),
+            origin.url(),
             &["--http3", "--connect-timeout", "1", "--max-time", "2"],
         )
         .await?;
@@ -535,7 +536,7 @@ async fn unavailable_h3_obeys_explicit_version_and_connection_deadline() -> Test
     );
     let output = fixture
         .send(
-            &format!("https://localhost:{}/", address.port()),
+            format!("https://localhost:{}/", address.port()),
             &["--http3", "--max-time", "0.2"],
         )
         .await?;
@@ -579,11 +580,11 @@ async fn h1_h2_tls_limits_and_local_uri_schemes_remain_usable() -> TestResult {
     ] {
         let server = Server::start(fixture.auth.clone(), version).await?;
         let output = fixture
-            .send(&server.url(), &[flag, "--tls-max", "1.2"])
+            .send(server.url(), &[flag, "--tls-max", "1.2"])
             .await?;
         succeeded(&output);
         assert_eq!(server.requests.lock()[0].version, version);
-        let output = fixture.send(&server.url(), &["--tls-max", "1.2"]).await?;
+        let output = fixture.send(server.url(), &["--tls-max", "1.2"]).await?;
         succeeded(&output);
         assert_eq!(server.requests.lock()[1].version, version);
         server.close().await?;
@@ -593,9 +594,7 @@ async fn h1_h2_tls_limits_and_local_uri_schemes_remain_usable() -> TestResult {
     assert_eq!(output.stdout, b"local-data");
     let file = fixture.directory.path().join("local #1.txt");
     fs::write(&file, b"local-file").await?;
-    let output = fixture
-        .send(&local_file_uri(&file).to_string(), &[])
-        .await?;
+    let output = fixture.send(local_file_uri(&file), &[]).await?;
     succeeded(&output);
     assert_eq!(output.stdout, b"local-file");
     Ok(())
@@ -611,20 +610,20 @@ async fn explicit_h3_rejects_wrong_alpn_and_incompatible_tls() -> TestResult {
     )
     .await?;
     let output = fixture
-        .send(&server.url(), &["--http3", "--connect-timeout", "2"])
+        .send(server.url(), &["--http3", "--connect-timeout", "2"])
         .await?;
     failed(&output);
     assert!(server.requests.lock().is_empty());
     server.close().await?;
     let server = Server::start(fixture.auth.clone(), Version::HTTP_3).await?;
     let output = fixture
-        .send(&server.url(), &["--http3", "--tls-max", "1.2"])
+        .send(server.url(), &["--http3", "--tls-max", "1.2"])
         .await?;
     failed(&output);
     assert!(server.requests.lock().is_empty());
     let output = fixture
         .send(
-            &server.url().replacen("https://", "http://", 1),
+            server.url().replacen("https://", "http://", 1),
             &["--http3"],
         )
         .await?;
@@ -646,7 +645,7 @@ async fn explicit_h3_never_bypasses_an_explicit_proxy() -> TestResult {
     let proxy = TokioTcpListener::bind(SocketAddr::from(SocketAddress::local_ipv4(0))).await?;
     let proxy_url = format!("http://{}", proxy.local_addr()?);
     let output = fixture
-        .send(&origin.url(), &["--http3", "--proxy", &proxy_url])
+        .send(origin.url(), &["--http3", "--proxy", &proxy_url])
         .await?;
     failed(&output);
     let stderr = String::from_utf8_lossy(&output.stderr);

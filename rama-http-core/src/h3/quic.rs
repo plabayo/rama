@@ -3,11 +3,15 @@
 use super::Error;
 use rama_core::bytes::{Bytes, BytesMut};
 use rama_http_types::proto::h3::{Code, FrameHeader, FrameType, VarInt};
+use rama_quic::{
+    ReadError, RecvStream as QuicRecvStream, SendStream as QuicSendStream, StoppedError,
+    StreamAbortHandle, WriteError,
+};
 use std::task::{Context, Poll, ready};
 
 pub(crate) trait SendStream {
-    /// Observe cancellation independently of write readiness or application data.
-    fn stopped(&self) -> impl Future<Output = Error> + Send + 'static;
+    /// Wait for FIN acknowledgement, or observe cancellation before it arrives.
+    fn acknowledged(&self) -> impl Future<Output = Result<(), Error>> + Send + Sync + 'static;
 
     fn poll_chunks(
         &mut self,
@@ -28,18 +32,18 @@ pub(crate) trait RecvStream {
     fn stop(&mut self, code: Code);
 }
 
-impl SendStream for rama_quic::SendStream {
-    fn stopped(&self) -> impl Future<Output = Error> + Send + 'static {
+impl SendStream for QuicSendStream {
+    fn acknowledged(&self) -> impl Future<Output = Result<(), Error>> + Send + Sync + 'static {
         let stopped = self.stopped();
         async move {
             match stopped.await {
-                Ok(Some(code)) => Error::peer_stopped(Code::new(code.into_inner())),
-                Err(rama_quic::StoppedError::ConnectionLost(error)) => {
-                    Error::from_transport(&error)
-                }
-                Ok(None) | Err(rama_quic::StoppedError::ZeroRttRejected) => {
-                    Error::stream(Code::H3_REQUEST_CANCELLED, "send stream closed")
-                }
+                Ok(Some(code)) => Err(Error::peer_stopped(Code::new(code.into_inner()))),
+                Err(StoppedError::ConnectionLost(error)) => Err(Error::from_transport(&error)),
+                Ok(None) => Ok(()),
+                Err(StoppedError::ZeroRttRejected) => Err(Error::stream(
+                    Code::H3_REQUEST_CANCELLED,
+                    "send stream closed",
+                )),
             }
         }
     }
@@ -70,7 +74,7 @@ impl SendStream for rama_quic::SendStream {
     }
 }
 
-impl RecvStream for rama_quic::RecvStream {
+impl RecvStream for QuicRecvStream {
     fn poll_chunk(
         &mut self,
         cx: &mut Context<'_>,
@@ -90,22 +94,29 @@ impl RecvStream for rama_quic::RecvStream {
     }
 }
 
-fn write_error(error: &rama_quic::WriteError) -> Error {
+fn write_error(error: &WriteError) -> Error {
     match error {
-        rama_quic::WriteError::Stopped(code) => Error::peer_stopped(Code::new(code.into_inner())),
-        rama_quic::WriteError::ConnectionLost(error) => Error::from_transport(error),
+        WriteError::Stopped(code) => Error::peer_stopped(Code::new(code.into_inner())),
+        WriteError::ConnectionLost(error) => Error::from_transport(error),
         _ => Error::stream(Code::H3_REQUEST_CANCELLED, "QUIC send failed"),
     }
 }
 
-fn read_error(error: &rama_quic::ReadError) -> Error {
+fn read_error(error: &ReadError) -> Error {
     match error {
-        rama_quic::ReadError::Reset(code) => {
-            Error::stream(Code::new(code.into_inner()), "peer reset stream")
+        ReadError::Reset(code) => {
+            Error::stream(Code::new(code.into_inner()), "peer reset stream").remote()
         }
-        rama_quic::ReadError::ConnectionLost(error) => Error::from_transport(error),
+        ReadError::ConnectionLost(error) => Error::from_transport(error),
         _ => Error::stream(Code::H3_REQUEST_CANCELLED, "QUIC receive failed"),
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SendState {
+    Open,
+    FinQueued,
+    Complete,
 }
 
 /// At most one frame in flight. Dropping a poll future does not discard its remaining bytes.
@@ -114,12 +125,12 @@ pub(crate) struct Writer<S: SendStream> {
     chunks: [Bytes; 2],
     data_header: Option<(usize, Bytes)>,
     priority: Option<i32>,
-    finished: bool,
+    state: SendState,
     pub(crate) cancel_code: Code,
 }
 
-impl Writer<rama_quic::SendStream> {
-    pub(crate) fn abort_handle(&self) -> rama_quic::StreamAbortHandle {
+impl Writer<QuicSendStream> {
+    pub(crate) fn abort_handle(&self) -> StreamAbortHandle {
         self.stream.abort_handle()
     }
 }
@@ -127,21 +138,28 @@ impl Writer<rama_quic::SendStream> {
 impl<S: SendStream> Writer<S> {
     /// Abort the send direction using the same cause as the receive direction.
     pub(crate) fn reset(&mut self, code: Code) {
-        if !self.finished {
+        if self.state != SendState::Complete {
             self.stream.reset(code);
-            self.finished = true;
+            self.state = SendState::Complete;
         }
     }
 
-    pub(crate) fn stopped(&self) -> impl Future<Output = Error> + Send + 'static {
-        self.stream.stopped()
+    /// Record successful FIN delivery so dropping this writer no longer cancels it.
+    pub(crate) fn mark_acknowledged(&mut self) {
+        self.state = SendState::Complete;
+    }
+
+    pub(crate) fn acknowledged(
+        &self,
+    ) -> impl Future<Output = Result<(), Error>> + Send + Sync + 'static {
+        self.stream.acknowledged()
     }
 
     pub(crate) fn new(stream: S) -> Self {
         Self {
             stream,
             chunks: [Bytes::new(), Bytes::new()],
-            finished: false,
+            state: SendState::Open,
             cancel_code: Code::H3_REQUEST_CANCELLED,
             data_header: None,
             priority: None,
@@ -152,7 +170,7 @@ impl<S: SendStream> Writer<S> {
         Self {
             stream,
             chunks: [prefix, Bytes::new()],
-            finished: false,
+            state: SendState::Open,
             cancel_code: Code::H3_REQUEST_CANCELLED,
             data_header: None,
             priority: None,
@@ -172,7 +190,7 @@ impl<S: SendStream> Writer<S> {
     }
 
     pub(crate) fn queue(&mut self, ty: FrameType, payload: Bytes) -> Result<(), Error> {
-        if self.finished || self.chunks.iter().any(|chunk| !chunk.is_empty()) {
+        if self.state != SendState::Open || self.chunks.iter().any(|chunk| !chunk.is_empty()) {
             return Err(Error::stream(
                 Code::H3_INTERNAL_ERROR,
                 "write must be drained before queuing a frame",
@@ -215,9 +233,9 @@ impl<S: SendStream> Writer<S> {
 
     pub(crate) fn poll_finish(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
         ready!(self.poll_flush(cx))?;
-        if !self.finished {
+        if self.state == SendState::Open {
             self.stream.finish()?;
-            self.finished = true;
+            self.state = SendState::FinQueued;
         }
         Poll::Ready(Ok(()))
     }
@@ -225,7 +243,7 @@ impl<S: SendStream> Writer<S> {
 
 impl<S: SendStream> Drop for Writer<S> {
     fn drop(&mut self) {
-        if !self.finished {
+        if self.state != SendState::Complete {
             self.stream.reset(self.cancel_code);
         }
     }
@@ -248,7 +266,7 @@ mod tests {
     }
     struct Fake(Arc<Mutex<State>>);
     impl SendStream for Fake {
-        fn stopped(&self) -> impl Future<Output = Error> + Send + 'static {
+        fn acknowledged(&self) -> impl Future<Output = Result<(), Error>> + Send + Sync + 'static {
             std::future::pending()
         }
 
@@ -341,11 +359,23 @@ mod tests {
         assert_eq!(writer.chunks[1].as_ptr(), data.as_ptr());
         let mut cx = Context::from_waker(std::task::Waker::noop());
         while writer.poll_finish(&mut cx).is_pending() {}
+        writer.mark_acknowledged();
         drop(writer);
         let state = state.lock();
         assert_eq!(state.wire, b"\x00\x07payload");
         assert!(state.finished);
         assert!(state.reset.is_none());
+    }
+
+    #[test]
+    fn dropping_unacknowledged_fin_resets_the_stream() {
+        let state = Arc::new(Mutex::new(State::default()));
+        let mut writer = Writer::new(Fake(state.clone()));
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+        assert!(matches!(writer.poll_finish(&mut cx), Poll::Ready(Ok(()))));
+        assert!(state.lock().finished);
+        drop(writer);
+        assert_eq!(state.lock().reset, Some(Code::H3_REQUEST_CANCELLED));
     }
 
     #[test]

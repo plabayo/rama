@@ -8,7 +8,10 @@ use rama_core::{
 use rama_http_headers::{Age, AltSvc, Date, HeaderDecode as _, HeaderMapExt as _};
 use rama_http_types::{
     HeaderMap, HeaderValue,
-    conn::{HttpOrigin, HttpServiceCandidate, HttpServiceCandidates, HttpServiceSource},
+    conn::{
+        EstablishedHttpService, HttpOrigin, HttpServiceCandidate, HttpServiceCandidates,
+        HttpServiceSource,
+    },
     header,
     proto::h2::alt_svc::{AltSvcObserverExtension, AltSvcReceivedAt},
 };
@@ -489,7 +492,7 @@ impl AltSvcCache {
     }
 
     fn failed_at(&self, snapshot: &Arc<HttpServiceCandidates>, index: usize, now: Instant) {
-        self.suppress(snapshot, index, now, false, None);
+        self.suppress(snapshot, index, now, now, false, None);
     }
 
     pub(crate) fn network_epoch(&self) -> u64 {
@@ -503,15 +506,24 @@ impl AltSvcCache {
         snapshot: &Arc<HttpServiceCandidates>,
         index: usize,
         network: u64,
+        started: Instant,
         terminal: bool,
     ) {
-        self.suppress(snapshot, index, Instant::now(), terminal, Some(network));
+        self.suppress(
+            snapshot,
+            index,
+            started,
+            Instant::now(),
+            terminal,
+            Some(network),
+        );
     }
 
     fn suppress(
         &self,
         snapshot: &Arc<HttpServiceCandidates>,
         index: usize,
+        started: Instant,
         now: Instant,
         all_routes: bool,
         network: Option<u64>,
@@ -538,18 +550,10 @@ impl AltSvcCache {
                     candidate.clone(),
                 );
                 let previous = self.failures.get(&key);
-                let attempts = previous
-                    .as_ref()
-                    .map_or(1, |failure| failure.attempts.saturating_add(1));
-                let backoff = self
-                    .failure_backoff
-                    .saturating_mul(2u32.saturating_pow(attempts.saturating_sub(1)))
-                    .min(self.max_age);
-                let failure = Failure {
-                    network: current_network,
-                    until: now.checked_add(backoff).unwrap_or(now),
-                    attempts,
-                    all_routes: all_routes || previous.is_some_and(|failure| failure.all_routes),
+                let Some(failure) =
+                    self.next_failure(previous.as_ref(), current_network, started, now, all_routes)
+                else {
+                    return Op::Nop;
                 };
                 self.failures.insert(key, failure.clone());
                 let index = current.services.iter().position(|item| item == candidate);
@@ -588,6 +592,7 @@ impl AltSvcCache {
         snapshot: &Arc<HttpServiceCandidates>,
         index: usize,
         network: u64,
+        started: Instant,
         route: &RouteContext,
     ) {
         let Some(candidate) = snapshot.get(index) else {
@@ -603,19 +608,70 @@ impl AltSvcCache {
             route.clone(),
         );
         self.route_failures.entry(key).and_compute_with(|previous| {
-            let attempts = previous.map_or(1, |entry| entry.value().attempts.saturating_add(1));
-            let backoff = self
-                .failure_backoff
-                .saturating_mul(2u32.saturating_pow(attempts.saturating_sub(1)))
-                .min(self.max_age);
-            let now = Instant::now();
-            Op::Put(Failure {
+            match self.next_failure(
+                previous.as_ref().map(|entry| entry.value()),
                 network,
-                until: now.checked_add(backoff).unwrap_or(now),
-                attempts,
-                all_routes: false,
-            })
+                started,
+                Instant::now(),
+                false,
+            ) {
+                Some(failure) => Op::Put(failure),
+                None => Op::Nop,
+            }
         });
+    }
+
+    /// Requests already in flight belong to the same failed attempt window.
+    /// Count a new failure only after a retry began beyond that window; late
+    /// completions cannot stretch backoff or turn a burst into hours of delay.
+    fn next_failure(
+        &self,
+        previous: Option<&Failure>,
+        network: u64,
+        started: Instant,
+        now: Instant,
+        all_routes: bool,
+    ) -> Option<Failure> {
+        if let Some(previous) = previous
+            && started < previous.until
+        {
+            return (all_routes && !previous.all_routes).then(|| Failure {
+                all_routes: true,
+                ..previous.clone()
+            });
+        }
+        let attempts = previous.map_or(1, |failure| failure.attempts.saturating_add(1));
+        let backoff = self
+            .failure_backoff
+            .saturating_mul(2u32.saturating_pow(attempts.saturating_sub(1)))
+            .min(self.max_age);
+        Some(Failure {
+            network,
+            until: now.checked_add(backoff).unwrap_or(now),
+            attempts,
+            all_routes: all_routes || previous.is_some_and(|failure| failure.all_routes),
+        })
+    }
+
+    pub(crate) fn failed_service(
+        &self,
+        service: &EstablishedHttpService,
+        route: Option<&RouteContext>,
+        network: u64,
+        started: Instant,
+    ) {
+        // Only the error path needs a synthetic snapshot. Suppression resolves
+        // the actual endpoint against the current advertisement, not its index
+        // in the advertisement that originally established this connection.
+        let snapshot = Arc::new(HttpServiceCandidates::new(
+            service.origin.clone(),
+            vec![service.candidate.clone()],
+        ));
+        if let Some(route) = route {
+            self.failed_route(&snapshot, 0, network, started, route);
+        } else {
+            self.failed_attempt(&snapshot, 0, network, started, false);
+        }
     }
 
     /// A validated successful connection ends the selected path's failure streak.
@@ -976,7 +1032,7 @@ mod tests {
             if network_changed {
                 cache.network_changed();
             }
-            cache.failed_attempt(&snapshot, 0, network, true);
+            cache.failed_attempt(&snapshot, 0, network, Instant::now(), true);
             assert_eq!(cache.lookup(&origin()).is_some(), network_changed);
         }
     }
@@ -987,7 +1043,7 @@ mod tests {
         let now = Instant::now();
         record(&cache, "h2=\":443\"", now);
         let snapshot = cache.lookup_at(&origin(), now).unwrap();
-        cache.failed_attempt(&snapshot, 0, cache.network_epoch(), true);
+        cache.failed_attempt(&snapshot, 0, cache.network_epoch(), Instant::now(), true);
         assert!(!cache.is_fresh(&snapshot, 0));
         record(&cache, "h2=\":443\"", Instant::now());
         assert!(cache.lookup_fresh(&origin()).is_none());
@@ -1243,6 +1299,59 @@ mod tests {
         cache.entries.run_pending_tasks();
         assert!(cache.entries.entry_count() <= 2);
     }
+
+    #[test]
+    fn concurrent_and_late_failures_share_one_backoff_window() {
+        let cache = AltSvcCache::new(16, Duration::from_secs(60), Duration::from_secs(2));
+        let now = Instant::now();
+        record(&cache, "h2=\":443\"", now);
+        let snapshot = cache.lookup_at(&origin(), now).unwrap();
+        let network = cache.network_epoch();
+        std::thread::scope(|scope| {
+            for _ in 0..32 {
+                scope.spawn(|| cache.failed_attempt(&snapshot, 0, network, now, false));
+            }
+        });
+        let failure = cache
+            .failures
+            .get(&(network, origin(), snapshot.get(0).unwrap().clone()))
+            .unwrap();
+        assert_eq!(failure.attempts, 1);
+        let late = failure.until + Duration::from_secs(1);
+        cache.suppress(&snapshot, 0, now, late, false, Some(network));
+        assert!(cache.is_usable_at(&snapshot, 0, late));
+        cache.suppress(&snapshot, 0, late, late, false, Some(network));
+        assert!(!cache.is_usable_at(&snapshot, 0, late + Duration::from_secs(3)));
+        assert!(cache.is_usable_at(&snapshot, 0, late + Duration::from_secs(5)));
+
+        let route = RouteContext::Route(Arc::new(ProxyRoute::Proxy(
+            "http://proxy.example:3128".parse().unwrap(),
+        )));
+        for _ in 0..32 {
+            cache.failed_route(&snapshot, 0, network, now, &route);
+        }
+        let failure = cache
+            .route_failures
+            .get(&(network, origin(), snapshot.get(0).unwrap().clone(), route))
+            .unwrap();
+        assert_eq!(failure.attempts, 1);
+    }
+
+    #[test]
+    fn identical_advertisements_refresh_generation_and_lifetime() {
+        let cache = AltSvcCache::default();
+        let now = Instant::now();
+        record(&cache, "h2=\":443\"; ma=10", now);
+        let first = cache.lookup_at(&origin(), now).unwrap();
+        let later = now + Duration::from_secs(8);
+        record(&cache, "h2=\":443\"; ma=10", later);
+        let current = cache.lookup_at(&origin(), later).unwrap();
+        assert!(!Arc::ptr_eq(&first, &current));
+        cache.misdirected(&first, 0);
+        assert!(cache.is_usable_at(&current, 0, later + Duration::from_secs(5)));
+        assert!(!cache.is_usable_at(&current, 0, later + Duration::from_secs(11)));
+    }
+
     #[test]
     fn validated_success_restarts_failure_backoff() {
         let cache = AltSvcCache::new(16, Duration::from_secs(60), Duration::from_secs(2));
@@ -1250,12 +1359,14 @@ mod tests {
         record(&cache, "h2=\":443\"", now);
         let snapshot = cache.lookup_at(&origin(), now).unwrap();
         cache.failed_at(&snapshot, 0, now);
-        cache.failed_at(&snapshot, 0, now);
-        assert!(!cache.is_usable_at(&snapshot, 0, now + Duration::from_secs(3)));
+        let retry = now + Duration::from_secs(3);
+        cache.failed_at(&snapshot, 0, retry);
+        assert!(!cache.is_usable_at(&snapshot, 0, retry + Duration::from_secs(3)));
         cache.succeeded(&snapshot, 0, None, cache.network_epoch());
-        cache.failed_at(&snapshot, 0, now);
-        assert!(cache.is_usable_at(&snapshot, 0, now + Duration::from_secs(3)));
+        cache.failed_at(&snapshot, 0, retry);
+        assert!(cache.is_usable_at(&snapshot, 0, retry + Duration::from_secs(3)));
     }
+
     #[test]
     fn success_recovers_a_readvertised_endpoint_but_not_a_different_network() {
         let cache = AltSvcCache::default();
@@ -1274,6 +1385,7 @@ mod tests {
         cache.succeeded(&first, 0, None, network);
         assert!(!cache.is_usable_at(&current, 0, now));
     }
+
     #[test]
     fn opaque_route_configuration_does_not_poison_another_plan() {
         let cache = AltSvcCache::default();
@@ -1287,14 +1399,15 @@ mod tests {
         let second = RouteContext::Routes(Arc::new(
             [(proxy.clone(), Extensions::new())].into_iter().collect(),
         ));
-        cache.failed_route(&snapshot, 0, cache.network_epoch(), &first);
+        cache.failed_route(&snapshot, 0, cache.network_epoch(), Instant::now(), &first);
         assert!(cache.route_usable(&snapshot, 0, &second));
         let plain = RouteContext::Route(Arc::new(proxy));
         assert!(cache.route_usable(&snapshot, 0, &plain));
-        cache.failed_route(&snapshot, 0, cache.network_epoch(), &plain);
+        cache.failed_route(&snapshot, 0, cache.network_epoch(), Instant::now(), &plain);
         assert!(!cache.route_usable(&snapshot, 0, &plain));
         assert!(cache.route_usable(&snapshot, 0, &second));
     }
+
     #[test]
     fn direct_route_extensions_keep_their_policy_context() {
         let extensions = Extensions::new();
@@ -1308,7 +1421,13 @@ mod tests {
         let now = Instant::now();
         record(&cache, "h2=\":443\"", now);
         let snapshot = cache.lookup_at(&origin(), now).unwrap();
-        cache.failed_route(&snapshot, 0, cache.network_epoch(), &context);
+        cache.failed_route(
+            &snapshot,
+            0,
+            cache.network_epoch(),
+            Instant::now(),
+            &context,
+        );
         assert!(cache.is_usable_at(&snapshot, 0, now));
     }
 }

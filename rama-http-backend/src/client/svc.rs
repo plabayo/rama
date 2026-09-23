@@ -1,25 +1,37 @@
-use rama_core::error::BoxErrorExt as _;
 use rama_core::{
     Service,
-    error::{BoxError, ErrorExt},
+    error::{BoxError, BoxErrorExt as _, ErrorExt, error_chain},
     extensions::{Egress, Extensions, ExtensionsRef},
+    rt::Executor,
     telemetry::tracing,
 };
-use rama_http::StreamingBody;
-use rama_http::io::upgrade::OnUpgrade;
-use rama_http::layer::version_adapter::ensure_valid_request_for_version;
-use rama_http_types::body::OnIncompleteBody;
-use rama_http_types::proto::h1::ext::ConnectionClose;
-use rama_http_types::{Method, Request, Response, Version};
-use rama_net::conn::{ConnectionHealthWatcher, MaxConcurrency};
+use rama_http::{
+    StreamingBody, io::upgrade::OnUpgrade, layer::version_adapter::ensure_valid_request_for_version,
+};
+use rama_http_core::{
+    Error as HttpError,
+    client::conn::{http1, http2},
+    h2::Error as Http2Error,
+    h3::{Error as Http3Error, client as http3, connection::Config as Http3Config},
+};
+use rama_http_types::{
+    Body as ResponseBody, Method, Request, Response, Version,
+    body::{OnIncompleteBody, util::BodyExt as _},
+    proto::h1::ext::ConnectionClose,
+};
+use rama_net::{
+    client::{ConnectionError, ConnectionErrorKind},
+    conn::{ConnectionHealthWatcher, MaxConcurrency, is_connection_error},
+};
+use rama_quic::Connection as QuicConnection;
 use rama_utils::guard::DropGuard;
-use std::fmt;
+use std::{fmt, io, pin::pin};
 use tokio::sync::Mutex;
 
 pub(super) enum SendRequest<Body> {
-    Http1(Mutex<rama_http_core::client::conn::http1::SendRequest<Body>>),
-    Http2(rama_http_core::client::conn::http2::SendRequest<Body>),
-    Http3(rama_http_core::h3::client::SendRequest<Body>),
+    Http1(Mutex<http1::SendRequest<Body>>),
+    Http2(http2::SendRequest<Body>),
+    Http3(http3::SendRequest<Body>),
 }
 
 impl<Body: fmt::Debug> fmt::Debug for SendRequest<Body> {
@@ -91,7 +103,7 @@ where
                             sender.is_closed() || sender.is_draining(),
                             &self.extensions,
                         );
-                        return Err(error.into());
+                        return Err(classify_http3_error(error));
                     }
                 }
             }
@@ -104,7 +116,7 @@ where
                         sender_closed = sender.is_closed(),
                         "http1 upstream sender ready failed: {err}"
                     );
-                    return Err(err.into());
+                    return Err(classify_http_error(err));
                 }
                 // Dropping an in-flight h1 request future closes the shared
                 // connection, so mark it broken right here (guard) rather than on
@@ -125,7 +137,7 @@ where
                             sender_closed = sender.is_closed(),
                             "http1 upstream send_request failed: {err}"
                         );
-                        return Err(err.into());
+                        return Err(classify_http_error(err));
                     }
                 }
             }
@@ -137,7 +149,7 @@ where
                         sender_closed = sender.is_closed(),
                         "http2 upstream sender ready failed: {err}"
                     );
-                    return Err(err.into());
+                    return Err(classify_http_error(err));
                 }
                 match sender.send_request(req).await {
                     Ok(resp) => resp,
@@ -147,11 +159,15 @@ where
                             sender_closed = sender.is_closed(),
                             "http2 upstream send_request failed: {err}"
                         );
-                        return Err(err.into());
+                        return Err(classify_http_error(err));
                     }
                 }
             }
         };
+
+        // Keep classification inside the existing erased body, without an
+        // additional allocation or observing successful body frames.
+        let resp = resp.map(|body| body.map_err(classify_http_error));
 
         match &self.sender {
             SendRequest::Http1(_) => {
@@ -166,16 +182,78 @@ where
                 // errors, before the pool can hand it to the next request.
                 let extensions = self.extensions.clone();
                 Ok(resp.map(|body| {
-                    rama_http_types::Body::new(OnIncompleteBody::new(body, move || {
+                    ResponseBody::new(OnIncompleteBody::new(body, move || {
                         mark_broken(&extensions)
                     }))
                 }))
             }
             // h2 recovers per stream: an abandoned body resets only its stream.
-            SendRequest::Http2(_) | SendRequest::Http3(_) => {
-                Ok(resp.map(rama_http_types::Body::new))
-            }
+            SendRequest::Http2(_) | SendRequest::Http3(_) => Ok(resp.map(ResponseBody::new)),
         }
+    }
+}
+
+// Preserve the same provenance for response-head and streaming-body failures.
+// Classification never authorizes replay of a sent request.
+// Bound traversal of application-supplied sources, which can contain cycles.
+const MAX_RESPONSE_ERROR_DEPTH: usize = 32;
+
+fn classify_http_error(error: HttpError) -> BoxError {
+    if error_chain(&error, MAX_RESPONSE_ERROR_DEPTH).any(|cause| {
+        cause
+            .downcast_ref::<HttpError>()
+            .is_some_and(HttpError::is_user)
+    }) {
+        return ConnectionError::local(error, ConnectionErrorKind::Other).into_box_error();
+    }
+    let kind = if error.is_timeout() {
+        Some(ConnectionErrorKind::Timeout)
+    } else if error.is_parse() {
+        Some(ConnectionErrorKind::Protocol)
+    } else if error.is_incomplete_message() {
+        Some(ConnectionErrorKind::Unavailable)
+    } else {
+        error_chain(&error, MAX_RESPONSE_ERROR_DEPTH).find_map(|cause| {
+            if let Some(error) = cause.downcast_ref::<Http2Error>() {
+                // A reset generated by the caller's upload is not evidence
+                // that the advertised service is unhealthy.
+                return if error.is_remote() {
+                    Some(ConnectionErrorKind::Unavailable)
+                } else {
+                    error.get_io().and_then(remote_io_failure)
+                };
+            }
+            if let Some(error) = cause.downcast_ref::<Http3Error>() {
+                return error
+                    .is_remote_failure()
+                    .then_some(ConnectionErrorKind::Unavailable);
+            }
+            cause
+                .downcast_ref::<io::Error>()
+                .and_then(remote_io_failure)
+        })
+    };
+    match kind {
+        Some(kind) => ConnectionError::application(error, kind).into_box_error(),
+        None => ConnectionError::unknown(error).into_box_error(),
+    }
+}
+
+fn remote_io_failure(error: &io::Error) -> Option<ConnectionErrorKind> {
+    if error.kind() == io::ErrorKind::TimedOut {
+        Some(ConnectionErrorKind::Timeout)
+    } else if is_connection_error(error) && error.kind() != io::ErrorKind::Interrupted {
+        Some(ConnectionErrorKind::Unavailable)
+    } else {
+        None
+    }
+}
+
+fn classify_http3_error(error: Http3Error) -> BoxError {
+    if error.is_remote_failure() {
+        ConnectionError::application(error, ConnectionErrorKind::Unavailable).into_box_error()
+    } else {
+        ConnectionError::unknown(error).into_box_error()
     }
 }
 
@@ -200,19 +278,18 @@ impl<B> ExtensionsRef for HttpClientService<B> {
 impl<Body> HttpClientService<Body> {
     /// Build an HTTP/3 service on an established QUIC connection and drive its critical streams.
     pub(super) fn http3(
-        input: rama_quic::Connection,
-        config: rama_http_core::h3::connection::Config,
-        executor: rama_core::rt::Executor,
-    ) -> Result<Self, rama_http_core::h3::Error> {
+        input: QuicConnection,
+        config: Http3Config,
+        executor: Executor,
+    ) -> Result<Self, Http3Error> {
         let extensions = input.extensions().clone();
         extensions.insert(MaxConcurrency::new(config.max_requests));
-        let (sender, driver) =
-            rama_http_core::h3::client::handshake(input, config, executor.clone())?;
+        let (sender, driver) = http3::handshake(input, config, executor.clone())?;
         let driver_extensions = extensions.clone();
         let draining = sender.closed_or_draining();
         executor.into_spawn_task(async move {
             let driver = driver.run();
-            let mut driver = std::pin::pin!(driver);
+            let mut driver = pin!(driver);
             tokio::select! {
                 _ = &mut driver => mark_broken(&driver_extensions),
                 _ = draining => {
@@ -231,9 +308,30 @@ impl<Body> HttpClientService<Body> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rama_http_types::Body;
-    use rama_http_types::body::util::BodyExt as _;
-    use rama_net::conn::ConnectionHealth;
+    use rama_core::{ServiceInput, bytes::Bytes, futures::stream};
+    use rama_http_core::h2::{Reason as Http2Reason, server as http2_server};
+    use rama_http_types::{
+        Body,
+        body::{Frame, util::StreamBody},
+    };
+    use rama_net::{
+        address::ProxyAddress,
+        client::{ConnectionErrorDomain, EstablishedProxyRoute, ProxyRoute},
+        conn::ConnectionHealth,
+    };
+    use std::time::Duration;
+    use tokio::{
+        io::{AsyncReadExt as _, AsyncWriteExt as _, DuplexStream, copy, duplex, sink},
+        sync::oneshot,
+        time::timeout,
+    };
+
+    #[cfg(feature = "tls")]
+    use {
+        rama_http::header::HOST,
+        rama_net::{Protocol, ProtocolInputExt},
+        rama_tls::SecureTransport,
+    };
 
     fn is_broken(extensions: &Extensions) -> bool {
         extensions
@@ -250,14 +348,6 @@ mod tests {
 
     #[tokio::test]
     async fn http1_sender_replaces_stale_connection_snapshots_before_encoding() {
-        use rama_core::ServiceInput;
-        use rama_net::{
-            address::ProxyAddress,
-            client::{EstablishedProxyRoute, ProxyRoute},
-        };
-        use std::time::Duration;
-        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-
         let proxy: ProxyAddress = "http://proxy.example:8080".parse().unwrap();
         for route in [
             None,
@@ -271,11 +361,8 @@ mod tests {
             let is_forward = route
                 .as_ref()
                 .is_some_and(EstablishedProxyRoute::is_http_forward);
-            let (io, mut peer) = tokio::io::duplex(4096);
-            let (sender, connection) =
-                rama_http_core::client::conn::http1::handshake(ServiceInput::new(io))
-                    .await
-                    .unwrap();
+            let (io, mut peer) = duplex(4096);
+            let (sender, connection) = http1::handshake(ServiceInput::new(io)).await.unwrap();
             tokio::spawn(async move {
                 drop(connection.await);
             });
@@ -304,7 +391,7 @@ mod tests {
             stale_egress.insert(stale_route);
             request.extensions().insert(Egress(stale_egress));
 
-            let (response, head) = tokio::time::timeout(Duration::from_secs(2), async {
+            let (response, head) = timeout(Duration::from_secs(2), async {
                 tokio::join!(service.serve(request), async {
                     let mut head = Vec::new();
                     while !head.ends_with(b"\r\n\r\n") {
@@ -331,6 +418,223 @@ mod tests {
                 "route: {route:?}, head: {head:?}"
             );
         }
+    }
+
+    async fn http1_test_service() -> (HttpClientService<Body>, DuplexStream) {
+        let (io, peer) = duplex(4096);
+        let (sender, connection) = http1::handshake(ServiceInput::new(io)).await.unwrap();
+        tokio::spawn(async move { drop(connection.await) });
+        (
+            HttpClientService {
+                sender: SendRequest::Http1(Mutex::new(sender)),
+                extensions: Extensions::new(),
+            },
+            peer,
+        )
+    }
+
+    #[tokio::test]
+    async fn http1_remote_response_failures_retain_connection_classification() {
+        for malformed in [false, true] {
+            let (service, mut peer) = http1_test_service().await;
+            let peer = tokio::spawn(async move {
+                let mut head = Vec::new();
+                while !head.ends_with(b"\r\n\r\n") {
+                    let mut byte = [0];
+                    peer.read_exact(&mut byte).await.unwrap();
+                    head.push(byte[0]);
+                }
+                if malformed {
+                    peer.write_all(b"invalid response\r\n\r\n").await.unwrap();
+                }
+            });
+            let request = Request::builder()
+                .uri("http://origin.example/")
+                .body(Body::empty())
+                .unwrap();
+            let error = service.serve(request).await.unwrap_err();
+            let classified = error.downcast_ref::<ConnectionError>().unwrap();
+            assert_eq!(classified.domain(), ConnectionErrorDomain::Application);
+            assert_eq!(
+                classified.kind(),
+                if malformed {
+                    ConnectionErrorKind::Protocol
+                } else {
+                    ConnectionErrorKind::Unavailable
+                }
+            );
+            assert!(
+                error_chain(error.as_ref(), MAX_RESPONSE_ERROR_DEPTH)
+                    .any(|error| error.is::<HttpError>())
+            );
+            peer.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn http1_caller_body_failure_does_not_implicate_remote_service() {
+        let (service, mut peer) = http1_test_service().await;
+        let peer = tokio::spawn(async move {
+            drop(copy(&mut peer, &mut sink()).await);
+        });
+        // Even an application-supplied error carrying remote classification
+        // belongs to the caller when produced by its request body.
+        let body_error = ConnectionError::application(
+            io::Error::from(io::ErrorKind::ConnectionReset),
+            ConnectionErrorKind::Unavailable,
+        )
+        .into_box_error();
+        let body = Body::new(StreamBody::new(stream::iter([Err::<Frame<Bytes>, _>(
+            body_error,
+        )])));
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("http://origin.example/")
+            .body(body)
+            .unwrap();
+        let error = service.serve(request).await.unwrap_err();
+        let classified = error.downcast_ref::<ConnectionError>().unwrap();
+        assert_eq!(classified.domain(), ConnectionErrorDomain::Local);
+        assert!(is_broken(&service.extensions));
+        peer.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn http2_peer_reset_is_classified_but_caller_body_failure_is_not() {
+        for remote_reset in [true, false] {
+            let (io, peer) = duplex(4096);
+            let peer = tokio::spawn(async move {
+                let mut connection = http2_server::handshake(ServiceInput::new(peer))
+                    .await
+                    .unwrap();
+                while let Some(request) = connection.accept().await {
+                    if let Ok((_request, mut response)) = request
+                        && remote_reset
+                    {
+                        response.send_reset(Http2Reason::REFUSED_STREAM);
+                    }
+                }
+            });
+            let (sender, connection) = http2::handshake(Executor::new(), ServiceInput::new(io))
+                .await
+                .unwrap();
+            let connection = tokio::spawn(async move { drop(connection.await) });
+            let service = HttpClientService {
+                sender: SendRequest::Http2(sender),
+                extensions: Extensions::new(),
+            };
+            let body = if remote_reset {
+                Body::empty()
+            } else {
+                Body::new(StreamBody::new(stream::iter([Err::<Frame<Bytes>, _>(
+                    io::Error::from(io::ErrorKind::ConnectionReset),
+                )])))
+            };
+            let request = Request::builder()
+                .method(Method::POST)
+                .version(Version::HTTP_2)
+                .uri("https://origin.example/")
+                .body(body)
+                .unwrap();
+            let error = timeout(Duration::from_secs(2), service.serve(request))
+                .await
+                .expect("HTTP/2 failure did not complete")
+                .unwrap_err();
+            let classified = error.downcast_ref::<ConnectionError>().unwrap();
+            if remote_reset {
+                assert_eq!(classified.domain(), ConnectionErrorDomain::Application);
+                assert_eq!(classified.kind(), ConnectionErrorKind::Unavailable);
+            } else {
+                assert_ne!(classified.domain(), ConnectionErrorDomain::Application);
+                assert_ne!(classified.domain(), ConnectionErrorDomain::Transport);
+            }
+            peer.abort();
+            connection.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn http1_truncated_response_body_retains_remote_classification() {
+        let (service, mut peer) = http1_test_service().await;
+        let peer = tokio::spawn(async move {
+            let mut head = Vec::new();
+            while !head.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                peer.read_exact(&mut byte).await.unwrap();
+                head.push(byte[0]);
+            }
+            peer.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nx")
+                .await
+                .unwrap();
+        });
+        let request = Request::builder()
+            .uri("http://origin.example/")
+            .body(Body::empty())
+            .unwrap();
+        let mut response = service.serve(request).await.unwrap();
+        let error = timeout(Duration::from_secs(2), async {
+            loop {
+                if let Err(error) = response.body_mut().frame().await.expect("body truncated") {
+                    break error;
+                }
+            }
+        })
+        .await
+        .expect("response body failure timeout");
+        let classified = error.downcast_ref::<ConnectionError>().unwrap();
+        assert_eq!(classified.domain(), ConnectionErrorDomain::Application);
+        assert_eq!(classified.kind(), ConnectionErrorKind::Unavailable);
+        assert!(is_broken(&service.extensions));
+        peer.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn http2_response_body_reset_retains_remote_classification() {
+        let (io, peer) = duplex(4096);
+        let (reset_tx, reset_rx) = oneshot::channel();
+        let peer = tokio::spawn(async move {
+            let mut connection = http2_server::handshake(ServiceInput::new(peer))
+                .await
+                .unwrap();
+            let (_request, mut response) = connection.accept().await.unwrap().unwrap();
+            let mut body = response.send_response(Response::new(()), false).unwrap();
+            let reset = tokio::spawn(async move {
+                reset_rx.await.unwrap();
+                body.send_reset(Http2Reason::CANCEL);
+            });
+            while connection.accept().await.is_some() {}
+            reset.abort();
+        });
+        let (sender, connection) = http2::handshake(Executor::new(), ServiceInput::new(io))
+            .await
+            .unwrap();
+        let connection = tokio::spawn(async move { drop(connection.await) });
+        let service = HttpClientService {
+            sender: SendRequest::Http2(sender),
+            extensions: Extensions::new(),
+        };
+        let request = Request::builder()
+            .version(Version::HTTP_2)
+            .uri("https://origin.example/")
+            .body(Body::empty())
+            .unwrap();
+        let mut response = timeout(Duration::from_secs(2), service.serve(request))
+            .await
+            .expect("response headers timeout")
+            .unwrap();
+        // The peer resets only after successful response headers were delivered.
+        reset_tx.send(()).unwrap();
+        let error = timeout(Duration::from_secs(2), response.body_mut().frame())
+            .await
+            .expect("response body failure timeout")
+            .expect("reset body frame")
+            .unwrap_err();
+        let classified = error.downcast_ref::<ConnectionError>().unwrap();
+        assert_eq!(classified.domain(), ConnectionErrorDomain::Application);
+        assert_eq!(classified.kind(), ConnectionErrorKind::Unavailable);
+        assert!(!is_broken(&service.extensions));
+        peer.abort();
+        connection.abort();
     }
 
     #[test]
@@ -369,11 +673,6 @@ mod tests {
     #[cfg(feature = "tls")]
     #[test]
     fn origin_form_request_over_terminated_tls_resolves_https() {
-        use super::*;
-        use rama_http::header::HOST;
-        use rama_net::{Protocol, ProtocolInputExt};
-        use rama_tls::SecureTransport;
-
         let req = Request::builder()
             .uri("/ping")
             .header(HOST, "example.com:8443")

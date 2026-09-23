@@ -11,12 +11,13 @@ use crate::h3::{
 };
 use rama_core::bytes::Bytes;
 use rama_http_types::{
+    Body,
     body::{Frame, StreamingBody},
     proto::h3::Code,
 };
 use std::{
     future::Future,
-    pin::Pin,
+    pin::{Pin, pin},
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -118,12 +119,21 @@ struct Written {
     bytes: Vec<u8>,
     finished: bool,
     reset: bool,
+    delay_acknowledgement: bool,
 }
 
 struct ReadySend(Arc<parking_lot::Mutex<Written>>);
 impl SendStream for ReadySend {
-    fn stopped(&self) -> impl Future<Output = Error> + Send + 'static {
-        std::future::pending()
+    fn acknowledged(&self) -> impl Future<Output = Result<(), Error>> + Send + Sync + 'static {
+        let written = self.0.clone();
+        std::future::poll_fn(move |_| {
+            let written = written.lock();
+            if written.finished && !written.delay_acknowledgement {
+                Poll::Ready(Ok(()))
+            } else {
+                Poll::Pending
+            }
+        })
     }
 
     fn poll_chunks(
@@ -164,7 +174,7 @@ fn immediately_ready_empty_body_frames_yield_before_reaching_payload() {
         tail: Some(Bytes::from_static(b"payload")),
     };
     let written = Arc::new(parking_lot::Mutex::new(Written::default()));
-    let mut send = std::pin::pin!(body::send(
+    let mut send = pin!(body::send(
         Writer::new(ReadySend(written.clone())),
         body,
         shared,
@@ -190,4 +200,55 @@ fn immediately_ready_empty_body_frames_yield_before_reaching_payload() {
     let written = written.lock();
     assert_eq!(written.bytes, b"\x00\x07payload");
     assert!(written.finished && !written.reset);
+}
+
+#[test]
+fn finished_upload_waits_for_fin_acknowledgement() {
+    let shared = Shared::new(Config::default(), Role::Server, Default::default()).unwrap();
+    shared.schedule.register(0, Default::default()).unwrap();
+    let written = Arc::new(parking_lot::Mutex::new(Written {
+        delay_acknowledgement: true,
+        ..Written::default()
+    }));
+    let mut send = pin!(body::send(
+        Writer::new(ReadySend(written.clone())),
+        Body::empty(),
+        shared,
+        0,
+        Some(0),
+    ));
+    let mut cx = Context::from_waker(Waker::noop());
+    assert!(send.as_mut().poll(&mut cx).is_pending());
+    assert!(written.lock().finished, "FIN must already be queued");
+    // A poll after queueing still cannot release the response's admission lease.
+    assert!(send.as_mut().poll(&mut cx).is_pending());
+    written.lock().delay_acknowledgement = false;
+    assert!(matches!(send.as_mut().poll(&mut cx), Poll::Ready(Ok(()))));
+}
+
+#[test]
+fn cancelling_upload_after_queued_fin_resets_unacknowledged_stream() {
+    let shared = Shared::new(Config::default(), Role::Server, Default::default()).unwrap();
+    shared.schedule.register(0, Default::default()).unwrap();
+    let written = Arc::new(parking_lot::Mutex::new(Written {
+        delay_acknowledgement: true,
+        ..Written::default()
+    }));
+    {
+        let mut send = pin!(body::send(
+            Writer::new(ReadySend(written.clone())),
+            Body::empty(),
+            shared,
+            0,
+            Some(0),
+        ));
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(send.as_mut().poll(&mut cx).is_pending());
+        assert!(written.lock().finished);
+        assert!(!written.lock().reset);
+    }
+    assert!(
+        written.lock().reset,
+        "cancellation must reset even after FIN was queued"
+    );
 }

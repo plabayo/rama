@@ -14,6 +14,7 @@ use rama_net::{
     client::{
         ConnectionError, ConnectionErrorKind, ConnectorService, ConnectorTarget,
         ConnectorTransportProtocol, EstablishedClientConnection, EstablishedProxyRoute, ProxyRoute,
+        pool::ConnectionReuse,
     },
     transport::TransportProtocol,
     user::ProxyCredential,
@@ -471,6 +472,15 @@ where
             }
         }
 
+        // The established byte stream now addresses the destination rather
+        // than the proxy whose transport supplied the inherited policy.
+        let reuse = conn
+            .extensions()
+            .get_ref::<ConnectionReuse>()
+            .map(|policy| policy.clone().into_restriction());
+        if let Some(reuse) = reuse {
+            conn.extensions().insert(reuse);
+        }
         conn.extensions().insert(selected_route);
         Ok(EstablishedClientConnection { input, conn })
     }
@@ -478,16 +488,25 @@ where
 
 #[cfg(test)]
 mod tests {
-    use rama_core::{ServiceInput, service::service_fn};
+    use rama_core::{ServiceInput, extensions::Extensions, service::service_fn};
     use rama_net::{
         AuthorityInputExt, ConnectorTransportProtocolInputExt, Protocol, ProtocolInputExt,
         address::HostWithPort,
-        client::{ConnectRequest, ProxyRoute},
+        client::{ConnectRequest, ProxyRoute, pool::ConnectionReusePolicy},
     };
     use std::{convert::Infallible, sync::Arc, time::Duration};
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
     use super::*;
+
+    #[derive(Debug)]
+    struct FixedProxyPolicy;
+
+    impl ConnectionReusePolicy for FixedProxyPolicy {
+        fn matches(&self, _: &Extensions) -> bool {
+            true
+        }
+    }
 
     #[tokio::test]
     async fn optional_direct_connection_preserves_absent_or_explicit_route() {
@@ -561,10 +580,10 @@ mod tests {
                         .host,
                     "127.0.0.1".parse::<Host>().unwrap(),
                 );
-                Ok::<_, Infallible>(EstablishedClientConnection {
-                    input,
-                    conn: ServiceInput::new(io),
-                })
+                let conn = ServiceInput::new(io);
+                conn.extensions()
+                    .insert(ConnectionReuse::new(FixedProxyPolicy));
+                Ok::<_, Infallible>(EstablishedClientConnection { input, conn })
             }
         });
         let connector = Socks5ProxyConnector::optional(inner);
@@ -586,6 +605,16 @@ mod tests {
                 .extensions()
                 .get_ref::<EstablishedProxyRoute>(),
             Some(&EstablishedProxyRoute::Tunnel(selected)),
+        );
+        let reuse = established
+            .conn
+            .extensions()
+            .get_ref::<ConnectionReuse>()
+            .unwrap();
+        assert!(reuse.is_reusable());
+        assert!(
+            !reuse.is_complete(),
+            "proxy policy cannot classify the origin"
         );
         tokio::time::timeout(Duration::from_secs(2), peer_task)
             .await

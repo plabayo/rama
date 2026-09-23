@@ -414,6 +414,14 @@ impl Decoder {
         Ok(None)
     }
 
+    /// Discard feedback after the connection driver has stopped its writers.
+    /// Buffered encoder instructions can still unblock complete received fields;
+    /// transport output reservations must no longer prevent their decoding.
+    pub(crate) fn discard_output_after_close(&mut self) {
+        self.decoder_output.clear();
+        self.output_in_flight = 0;
+    }
+
     /// Decode buffered fields after connection close, when feedback can no longer be sent.
     /// Missing inserts remain terminal: do not retain a section that can never resume.
     pub(crate) fn decode_field_section_after_close(

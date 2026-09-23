@@ -1,6 +1,7 @@
 //! Ordinary CONNECT uses Rama's existing upgrade API and bounded DATA framing.
 
 use super::{
+    Error,
     frame::FrameEvent,
     quic::{RecvStream, SendStream, Writer},
     stream::{Phase, Reader},
@@ -44,11 +45,14 @@ pub(crate) fn new(
             extensions,
             _priority: priority,
             _permit: Some(permit),
-            write_finished: false,
+            shutdown: None,
+            acknowledged: None,
         },
         Bytes::new(),
     )
 }
+
+type Acknowledged = Pin<Box<dyn Future<Output = Result<(), Error>> + Send + Sync>>;
 
 struct Tunnel<R: RecvStream, S: SendStream> {
     reader: Reader<R>,
@@ -56,15 +60,16 @@ struct Tunnel<R: RecvStream, S: SendStream> {
     buffer: Bytes,
     extensions: Extensions,
     _permit: Option<Arc<OwnedSemaphorePermit>>,
-    write_finished: bool,
+    shutdown: Option<Result<(), Error>>,
+    acknowledged: Option<Acknowledged>,
     _priority: Option<super::priority::Lease>,
 }
 
 impl<R: RecvStream, S: SendStream> Tunnel<R, S> {
     fn release_finished(&mut self) {
-        if self.write_finished && self.reader.phase == Phase::Finished {
-            self._permit.take();
+        if self.shutdown == Some(Ok(())) && self.reader.phase == Phase::Finished {
             self._priority.take();
+            self._permit.take();
         }
     }
 
@@ -148,11 +153,26 @@ impl<R: RecvStream + Unpin, S: SendStream + Unpin> AsyncWrite for Tunnel<R, S> {
     }
 
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        if let Some(result) = self.shutdown {
+            return Poll::Ready(result.map_err(io::Error::other));
+        }
         ready!(self.flush(cx)).map_err(io::Error::other)?;
         ready!(self.writer.poll_finish(cx)).map_err(io::Error::other)?;
-        self.write_finished = true;
+        let Self {
+            writer,
+            acknowledged,
+            ..
+        } = &mut *self;
+        let wait = acknowledged.get_or_insert_with(|| Box::pin(writer.acknowledged()));
+        let result = ready!(wait.as_mut().poll(cx));
+        self.acknowledged = None;
+        self.shutdown = Some(result);
+        match result {
+            Ok(()) => self.writer.mark_acknowledged(),
+            Err(error) => self.writer.reset(error.code()),
+        }
         self.release_finished();
-        Poll::Ready(Ok(()))
+        Poll::Ready(result.map_err(io::Error::other))
     }
 }
 
@@ -163,11 +183,18 @@ mod tests {
         Error,
         connection::{Config, Shared},
         control::Role,
+        priority::Lease,
     };
     use parking_lot::Mutex;
     use rama_http::headers::Priority;
-    use std::{future::Future as _, pin::pin, task::Waker};
+    use std::{
+        future::Future as _,
+        pin::pin,
+        sync::atomic::{AtomicBool, Ordering},
+        task::Waker,
+    };
     use tokio::io::AsyncWriteExt as _;
+    use tokio::sync::Semaphore;
 
     struct IdleRecv;
 
@@ -183,11 +210,23 @@ mod tests {
         fn stop(&mut self, _: Code) {}
     }
 
-    struct ReadySend(Arc<Mutex<Vec<u8>>>);
+    struct ReadySend(Arc<Mutex<Vec<u8>>>, Arc<AtomicBool>, Option<Error>);
 
     impl SendStream for ReadySend {
-        fn stopped(&self) -> impl Future<Output = Error> + Send + 'static {
-            std::future::pending()
+        fn acknowledged(&self) -> impl Future<Output = Result<(), Error>> + Send + Sync + 'static {
+            let acknowledged = self.1.clone();
+            let error = self.2;
+            async move {
+                std::future::poll_fn(move |_| {
+                    if acknowledged.load(Ordering::Relaxed) {
+                        Poll::Ready(())
+                    } else {
+                        Poll::Pending
+                    }
+                })
+                .await;
+                error.map_or(Ok(()), Err)
+            }
         }
 
         fn poll_chunks(
@@ -219,13 +258,79 @@ mod tests {
     ) -> Tunnel<IdleRecv, ReadySend> {
         Tunnel {
             reader: Reader::new(IdleRecv, shared, id),
-            writer: Writer::new(ReadySend(output)),
+            writer: Writer::new(ReadySend(output, Arc::new(AtomicBool::new(false)), None)),
             buffer: Bytes::new(),
             extensions: Extensions::new(),
             _permit: None,
-            write_finished: false,
+            shutdown: None,
+            acknowledged: None,
             _priority: None,
         }
+    }
+
+    #[test]
+    fn repeated_tunnel_shutdown_preserves_peer_stop_without_repolling_future() {
+        let shared = Shared::new(Config::default(), Role::Server, Default::default()).unwrap();
+        shared.schedule.register(0, Priority::default()).unwrap();
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let mut tunnel = tunnel(shared, 0, output.clone());
+        let error = Error::peer_stopped(Code::H3_REQUEST_CANCELLED);
+        tunnel.writer = Writer::new(ReadySend(
+            output,
+            Arc::new(AtomicBool::new(true)),
+            Some(error),
+        ));
+        let mut cx = Context::from_waker(Waker::noop());
+        for _ in 0..3 {
+            let Poll::Ready(Err(actual)) = Pin::new(&mut tunnel).poll_shutdown(&mut cx) else {
+                panic!("shutdown must preserve its terminal error");
+            };
+            assert_eq!(
+                actual.get_ref().unwrap().downcast_ref::<Error>(),
+                Some(&error)
+            );
+        }
+    }
+
+    #[test]
+    fn tunnel_shutdown_retains_admission_until_fin_acknowledgement() {
+        let shared = Shared::new(
+            Config {
+                max_requests: 1,
+                ..Config::default()
+            },
+            Role::Server,
+            Default::default(),
+        )
+        .unwrap();
+        shared.schedule.register(0, Priority::default()).unwrap();
+        let admission = Arc::new(Semaphore::new(1));
+        let permit = Arc::new(admission.clone().try_acquire_owned().unwrap());
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let mut tunnel = tunnel(shared.clone(), 0, output.clone());
+        let acknowledged = Arc::new(AtomicBool::new(false));
+        tunnel.writer = Writer::new(ReadySend(output, acknowledged.clone(), None));
+        tunnel.reader.phase = Phase::Finished;
+        tunnel._permit = Some(permit.clone());
+        tunnel._priority = Some(Lease {
+            shared: shared.clone(),
+            id: 0,
+            permit,
+        });
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(Pin::new(&mut tunnel).poll_shutdown(&mut cx).is_pending());
+        assert_eq!(admission.available_permits(), 0);
+        acknowledged.store(true, Ordering::Relaxed);
+        assert!(matches!(
+            Pin::new(&mut tunnel).poll_shutdown(&mut cx),
+            Poll::Ready(Ok(()))
+        ));
+        assert_eq!(admission.available_permits(), 1);
+        shared.schedule.register(4, Priority::default()).unwrap();
+        assert!(matches!(
+            Pin::new(&mut tunnel).poll_shutdown(&mut cx),
+            Poll::Ready(Ok(()))
+        ));
     }
 
     #[test]

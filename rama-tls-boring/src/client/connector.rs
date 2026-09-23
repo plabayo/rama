@@ -19,8 +19,8 @@ use rama_net::{
     tls::{ApplicationProtocol, TlsAlpn, default_tls_alpn},
 };
 use rama_tls::client::{
-    NegotiatedTlsParameters, ServerVerifyMode, TlsClientConfig, TlsServerCertPinCheck,
-    TlsServerCertPins, TlsServerIdentity,
+    NegotiatedTlsParameters, ServerVerifyMode, TlsClientConfig, TlsConnectionReuse, TlsPoolId,
+    TlsServerCertPinCheck, TlsServerCertPins, TlsServerIdentity,
 };
 use rama_tls::{TlsTunnelMode, resolve_tls_tunnel};
 use rama_utils::macros::generate_set_and_with;
@@ -29,7 +29,8 @@ use std::fmt;
 #[cfg(feature = "http")]
 use super::set_alpn_with_coupled_alps;
 use super::{
-    AutoTlsStream, BoringTlsConnectorConfig, TlsConnectorData, set_alpn_list_with_coupled_alps,
+    AutoTlsStream, BoringTlsClientConfigProvider, BoringTlsConnectorConfig, TlsConnectorData,
+    set_alpn_list_with_coupled_alps,
 };
 
 use crate::{TlsStream, types::TlsTunnel};
@@ -226,7 +227,7 @@ where
         }
 
         // Use the authority host as the certificate identity unless overridden.
-        let connector_data = self
+        let (connector_data, effective_id) = self
             .connector_data(input.extensions(), app_protocol, Some(&authority.host))
             .map_err(|error| {
                 ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
@@ -234,6 +235,11 @@ where
             })?;
 
         let scope = Self::check_connector_data(&input, &connector_data, &authority.host)?;
+        let reuse = TlsConnectionReuse::new(
+            BoringTlsClientConfigProvider,
+            input.extensions(),
+            effective_id,
+        );
 
         let (stream, negotiated_params) =
             handshake(connector_data, conn).await.map_err(|error| {
@@ -261,6 +267,7 @@ where
                 .context("TlsConnector(auto): validate negotiated HTTP version")
         })?;
 
+        reuse.publish(conn.extensions());
         conn.extensions().insert(scope);
         conn.extensions().insert(negotiated_params);
         conn.extensions().insert(StreamTransformed {
@@ -296,7 +303,7 @@ where
         );
 
         let app_protocol = input.protocol();
-        let connector_data = self
+        let (connector_data, effective_id) = self
             .connector_data(input.extensions(), app_protocol, Some(&authority.host))
             .map_err(|error| {
                 ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
@@ -304,6 +311,11 @@ where
             })?;
 
         let scope = Self::check_connector_data(&input, &connector_data, &authority.host)?;
+        let reuse = TlsConnectionReuse::new(
+            BoringTlsClientConfigProvider,
+            input.extensions(),
+            effective_id,
+        );
 
         let (conn, negotiated_params) = handshake(connector_data, conn).await.map_err(|error| {
             ConnectionError::application(error, ConnectionErrorKind::Protocol)
@@ -323,6 +335,7 @@ where
                 .context("TlsConnector(secure): validate negotiated HTTP version")
         })?;
 
+        reuse.publish(conn.extensions());
         conn.extensions().insert(scope);
         conn.extensions().insert(negotiated_params);
         conn.extensions().insert(StreamTransformed {
@@ -360,7 +373,7 @@ where
         let tunnel_protocol = tunnel
             .as_ref()
             .and_then(|tunnel| tunnel.application_protocol.as_ref());
-        let connector_data = self
+        let (connector_data, effective_id) = self
             .tunnel_connector_data(tunnel.as_ref(), tunnel_protocol, maybe_server_host)
             .map_err(|error| {
                 ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
@@ -374,6 +387,8 @@ where
             })?;
         let conn = AutoTlsStream::secure(stream);
 
+        TlsConnectionReuse::tunnel(BoringTlsClientConfigProvider, effective_id)
+            .publish(conn.extensions());
         conn.extensions().insert(negotiated_params);
         conn.extensions().insert(StreamTransformed {
             by: "rama-tls-boring::TlsConnector",
@@ -429,15 +444,16 @@ impl<S, K> TlsConnector<S, K> {
         tunnel: Option<&TlsTunnel>,
         application_protocol: Option<&Protocol>,
         maybe_server_host: Option<&Host>,
-    ) -> Result<TlsConnectorData, BoxError> {
+    ) -> Result<(TlsConnectorData, Option<TlsPoolId>), BoxError> {
         let effective = self.tunnel_config_extensions(tunnel, application_protocol);
 
-        let mut data =
-            TlsConnectorData::try_from(BoringTlsConnectorConfig::from_extensions(&effective))?;
+        let config = BoringTlsConnectorConfig::from_extensions(&effective);
+        let effective_id = config.pool_id();
+        let mut data = TlsConnectorData::try_from(config)?;
         if data.server_name.is_none() {
             data.server_name = maybe_server_host.cloned();
         }
-        Ok(data)
+        Ok((data, effective_id))
     }
 
     fn tunnel_config_extensions(
@@ -528,7 +544,7 @@ impl<S, K> TlsConnector<S, K> {
         request_extensions: &Extensions,
         application_protocol: Option<&Protocol>,
         maybe_server_host: Option<&Host>,
-    ) -> Result<TlsConnectorData, BoxError> {
+    ) -> Result<(TlsConnectorData, Option<TlsPoolId>), BoxError> {
         // Create new extensions only for this function that also apply the base_config
         let effective = request_extensions.fork();
         let extensions = if let Some(base) = &self.base_config {
@@ -544,15 +560,16 @@ impl<S, K> TlsConnector<S, K> {
         #[cfg(feature = "http")]
         resolve_http_alpn(&extensions, application_protocol)?;
 
-        let mut data =
-            TlsConnectorData::try_from(BoringTlsConnectorConfig::from_extensions(&extensions))?;
+        let config = BoringTlsConnectorConfig::from_extensions(&extensions);
+        let effective_id = config.pool_id();
+        let mut data = TlsConnectorData::try_from(config)?;
 
         // A configured server identity overrides the transport host.
         if data.server_name.is_none() {
             data.server_name = maybe_server_host.cloned();
         }
 
-        Ok(data)
+        Ok((data, effective_id))
     }
 }
 
@@ -904,6 +921,7 @@ pub struct ConnectorKindTunnel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rama_net::client::pool::ConnectionReuse;
     #[cfg(feature = "http")]
     use rama_net::tls::TlsAlpn;
 
@@ -1081,7 +1099,7 @@ mod tests {
         let extensions = Extensions::new();
         let host = Host::from(std::net::Ipv4Addr::LOCALHOST);
 
-        let data = connector
+        let (data, _effective_id) = connector
             .connector_data(&extensions, None, Some(&host))
             .expect("connector data");
 
@@ -1148,6 +1166,20 @@ mod tests {
                     ConnectionPolicyScope::Connector
                 }),
             );
+            let reuse = established
+                .conn
+                .extensions()
+                .get_ref::<ConnectionReuse>()
+                .expect("native TLS connector publishes reuse policy");
+            let same = Extensions::new();
+            if request_override {
+                same.insert(TlsServerVerify(ServerVerifyMode::Auto));
+            }
+            assert!(reuse.is_reusable());
+            assert!(reuse.matches(&same));
+            let changed = same.fork();
+            changed.insert(TlsServerVerify(ServerVerifyMode::Disable));
+            assert!(!reuse.matches(&changed));
             drop(established);
             let _server_result = tokio::time::timeout(Duration::from_secs(5), server_task)
                 .await
@@ -1192,7 +1224,7 @@ mod tests {
             Some(ServerVerifyMode::Disable)
         );
 
-        let data = connector
+        let (data, _effective_id) = connector
             .tunnel_connector_data(Some(&tunnel), Some(&Protocol::HTTPS), None)
             .expect("tunnel connector data");
         assert_eq!(data.server_name, Some(base_name));
@@ -1285,9 +1317,10 @@ mod tests {
             TlsServerCertPinCheck::Matched
         );
 
-        let data = connector
+        let (data, effective_id) = connector
             .tunnel_connector_data(tunnel, Some(&Protocol::HTTPS), None)
             .expect("resolved tunnel connector data");
+        assert!(effective_id.is_some_and(|id| !id.is_reusable()));
         assert_eq!(data.server_name, Some(base_name));
         assert_eq!(data.server_verify_mode, ServerVerifyMode::Disable);
         assert!(data.store_server_certificate_chain);
@@ -1377,6 +1410,22 @@ mod tests {
         });
 
         let established = connector.serve(input).await.expect("proxy TLS handshake");
+        let reuse = established
+            .conn
+            .extensions()
+            .get_ref::<ConnectionReuse>()
+            .expect("proxy TLS connector publishes reuse policy");
+        let next_origin = Extensions::new();
+        next_origin.insert(TlsServerName(Host::from_static("another-origin.example")));
+        next_origin.insert(TlsServerVerify(ServerVerifyMode::Disable));
+        assert!(reuse.is_reusable());
+        assert!(reuse.matches(&next_origin));
+        next_origin.insert(TlsTunnel {
+            server_identity: None,
+            application_protocol: None,
+            alpn: None,
+        });
+        assert!(!reuse.matches(&next_origin));
         assert_eq!(
             established
                 .input

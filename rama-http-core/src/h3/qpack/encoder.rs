@@ -129,6 +129,12 @@ pub struct Encoder {
     section_count: usize,
     reference_count: usize,
     blocking_streams: u64,
+    // One high-water mark for each QUIC initiator/direction class. Cancellation
+    // abandons the entire stream (RFC 9204 §2.2.2.2), even if it precedes the
+    // first encode or races later trailers. Retaining individual cancelled IDs
+    // would let peer feedback grow state without bound; instead,
+    // older streams conservatively use static/literal representations too.
+    cancelled_through: [Option<u64>; 4],
     decoder_partial: [u8; 11],
     decoder_partial_len: usize,
     pending_target_capacity: Option<u64>,
@@ -151,6 +157,7 @@ impl Encoder {
             section_count: 0,
             reference_count: 0,
             blocking_streams: 0,
+            cancelled_through: [None; 4],
             decoder_partial: [0; 11],
             decoder_partial_len: 0,
             pending_target_capacity: None,
@@ -319,6 +326,10 @@ impl Encoder {
     ///
     /// Input size and stream ID are validated before any connection state changes. A tracking or
     /// encoder-output budget prevents optional dynamic compression rather than failing the section.
+    ///
+    /// After stream cancellation, this stream and older IDs in the same QUIC stream class use
+    /// static/literal representations. Later IDs can still use dynamic compression. This bounded
+    /// bookkeeping leaves previously outstanding references on other streams intact.
     pub fn encode<I, F, N, V>(&mut self, stream_id: u64, fields: I) -> Result<Bytes, QpackError>
     where
         I: IntoIterator<Item = F>,
@@ -351,7 +362,9 @@ impl Encoder {
         let base = self.table.insert_count();
         let was_blocking = self.is_stream_blocking(stream_id);
         let may_block = was_blocking || self.blocking_streams < self.config.max_blocked_streams;
-        let may_track = self.section_count < self.config.max_outstanding_sections;
+        let cancelled_through = self.cancelled_through[(stream_id & 0b11) as usize];
+        let may_track = self.section_count < self.config.max_outstanding_sections
+            && cancelled_through.is_none_or(|cancelled| stream_id > cancelled);
         let mut refs = Vec::new();
         let mut ric = 0;
         // Two u64 prefixed integers need at most 22 bytes. Backfill the prefix into this headroom
@@ -548,6 +561,8 @@ impl Encoder {
                         "stream ID exceeds QUIC integer range",
                     ));
                 }
+                let cancelled = &mut self.cancelled_through[(stream_id & 0b11) as usize];
+                *cancelled = Some(cancelled.map_or(stream_id, |previous| previous.max(stream_id)));
                 if let Some(sections) = self.sections.remove(&stream_id) {
                     if sections.blocking > 0 {
                         self.blocking_streams -= 1;

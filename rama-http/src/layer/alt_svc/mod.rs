@@ -22,19 +22,37 @@ mod frames;
 pub use cache::AltSvcCache;
 pub(crate) use cache::RouteContext;
 
-use crate::{Request, Response, StatusCode};
+use crate::{
+    Body, Request, Response, StatusCode, StreamingBody,
+    body::{Frame, SizeHint},
+};
+use pin_project_lite::pin_project;
 use rama_core::{
     Layer, Service,
+    error::{BoxError, error_chain},
     extensions::{Extensions, ExtensionsRef},
 };
 use rama_http_headers::{AltUsed, HeaderMapExt as _, TypedHeader as _};
 use rama_http_types::{
-    conn::{HttpOrigin, HttpServiceCandidates, HttpServiceSource},
+    conn::{EstablishedHttpService, HttpOrigin, HttpServiceCandidates, HttpServiceSource},
     proto::h2::alt_svc::AltSvcReceivedAt,
 };
-use rama_net::address::HostWithPort;
+use rama_net::{
+    address::HostWithPort,
+    client::{ConnectionError, ConnectionErrorDomain, ConnectionErrorKind, ConnectionPolicyScope},
+};
 use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
-use std::{sync::Arc, time::Instant};
+use std::{
+    any::Any,
+    error::Error as StdError,
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
+    time::Instant,
+};
+
+// Bound malformed/cyclic custom error chains without allocating.
+const MAX_ERROR_SOURCE_DEPTH: usize = 64;
 
 /// Learn alternatives for one logical HTTP origin over an established connection.
 ///
@@ -49,6 +67,16 @@ pub struct AltSvcLayer {
     authenticated: bool,
     alternative: Option<HostWithPort>,
     selection: Option<(Arc<HttpServiceCandidates>, usize)>,
+    failure: Option<AlternativeFailure>,
+}
+
+/// Established endpoint and fixed connector policy, independent of whichever
+/// advertisement is current when a response fails.
+#[derive(Clone, Debug)]
+struct AlternativeFailure {
+    service: Arc<EstablishedHttpService>,
+    route: Option<RouteContext>,
+    network: u64,
 }
 
 impl AltSvcLayer {
@@ -60,6 +88,41 @@ impl AltSvcLayer {
             authenticated: false,
             alternative: None,
             selection: None,
+            failure: None,
+        }
+    }
+
+    pub(crate) fn with_connection(
+        mut self,
+        connection: &impl ExtensionsRef,
+        route: Option<RouteContext>,
+    ) -> Self {
+        if let Some(cache) = &self.cache
+            && connection.extensions().get_ref::<ConnectionPolicyScope>()
+                == Some(&ConnectionPolicyScope::Connector)
+            && let Some(service) = connection.extensions().get_arc::<EstablishedHttpService>()
+            && service.origin == self.origin
+            && service.candidate.source == HttpServiceSource::AltSvc
+        {
+            self.failure = Some(AlternativeFailure {
+                service,
+                route,
+                network: cache.network_epoch(),
+            });
+        }
+        self
+    }
+
+    fn record_failure(&self, error: &dyn Any, started: Instant) {
+        if let (Some(cache), Some(failure)) = (&self.cache, &self.failure)
+            && is_remote_response_failure(error)
+        {
+            cache.failed_service(
+                &failure.service,
+                failure.route.as_ref(),
+                failure.network,
+                started,
+            );
         }
     }
 
@@ -111,6 +174,36 @@ impl AltSvcLayer {
     }
 }
 
+/// Recognize the standard classified error forms without restricting a service's
+/// error type. In particular, an `Err(Response)` or opaque application error is
+/// not evidence of endpoint failure. The first classification is authoritative:
+/// an outer local body error must not expose a remote error nested inside it.
+fn is_remote_response_failure(error: &dyn Any) -> bool {
+    let error: &(dyn StdError + 'static) =
+        if let Some(error) = error.downcast_ref::<ConnectionError>() {
+            error
+        } else if let Some(error) = error.downcast_ref::<BoxError>() {
+            error.as_ref()
+        } else {
+            return false;
+        };
+    error_chain(error, MAX_ERROR_SOURCE_DEPTH)
+        .find_map(|error| error.downcast_ref::<ConnectionError>())
+        .is_some_and(|error| {
+            matches!(
+                error.domain(),
+                ConnectionErrorDomain::Transport | ConnectionErrorDomain::Application
+            ) && matches!(
+                error.kind(),
+                ConnectionErrorKind::Unavailable
+                    | ConnectionErrorKind::Timeout
+                    | ConnectionErrorKind::Protocol
+                    | ConnectionErrorKind::Rejected
+                    | ConnectionErrorKind::Authentication
+            )
+        })
+}
+
 impl<S> Layer<S> for AltSvcLayer {
     type Service = AltSvc<S>;
     fn layer(&self, inner: S) -> Self::Service {
@@ -146,18 +239,120 @@ impl<S: ExtensionsRef> ExtensionsRef for AltSvc<S> {
     }
 }
 
+pin_project! {
+    /// Response body preserving the underlying frames and errors while recording
+    /// confirmed remote failures of a discovered alternative. Dropping an unread
+    /// body is not evidence of endpoint failure. The wrapper does not allocate.
+    #[derive(Debug)]
+    pub struct AltSvcBody<B> {
+        #[pin]
+        inner: B,
+        failure: Option<BodyFailure>,
+    }
+}
+
+#[derive(Debug)]
+struct BodyFailure {
+    cache: AltSvcCache,
+    alternative: AlternativeFailure,
+    started: Instant,
+}
+
+impl<B> AltSvcBody<B> {
+    fn new(inner: B, policy: &AltSvcLayer, started: Instant) -> Self {
+        let failure =
+            policy
+                .failure
+                .as_ref()
+                .zip(policy.cache.as_ref())
+                .map(|(alternative, cache)| BodyFailure {
+                    cache: cache.clone(),
+                    alternative: alternative.clone(),
+                    started,
+                });
+        Self { inner, failure }
+    }
+}
+
+impl AltSvcBody<Body> {
+    /// Normalize a response to Rama's common body type. Ordinary origin
+    /// responses retain their existing allocation; tracked alternatives retain
+    /// failure observation until their bodies complete.
+    pub fn into_body(self) -> Body {
+        if self.failure.is_none() || self.inner.is_end_stream() {
+            self.inner
+        } else {
+            Body::new(self)
+        }
+    }
+}
+
+impl From<AltSvcBody<Self>> for Body {
+    fn from(body: AltSvcBody<Self>) -> Self {
+        body.into_body()
+    }
+}
+
+impl<B> StreamingBody for AltSvcBody<B>
+where
+    B: StreamingBody<Error: 'static>,
+{
+    type Data = B::Data;
+    type Error = B::Error;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        let this = self.project();
+        let result = this.inner.poll_frame(cx);
+        match &result {
+            Poll::Ready(Some(Err(error))) => {
+                if let Some(failure) = this.failure.take()
+                    && is_remote_response_failure(error)
+                {
+                    failure.cache.failed_service(
+                        &failure.alternative.service,
+                        failure.alternative.route.as_ref(),
+                        failure.alternative.network,
+                        failure.started,
+                    );
+                }
+            }
+            Poll::Ready(None) => {
+                this.failure.take();
+            }
+            _ => {}
+        }
+        result
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.inner.is_end_stream()
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        self.inner.size_hint()
+    }
+}
+
 impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for AltSvc<S>
 where
     S: Service<Request<ReqBody>, Output = Response<ResBody>>,
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
 {
-    type Output = S::Output;
+    type Output = Response<AltSvcBody<ResBody>>;
     type Error = S::Error;
 
     async fn serve(&self, mut request: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         let Some(policy) = &self.policy else {
-            return self.inner.serve(request).await;
+            return self.inner.serve(request).await.map(|response| {
+                response.map(|inner| AltSvcBody {
+                    inner,
+                    failure: None,
+                })
+            });
         };
         if let Some(target) = &policy.alternative {
             request
@@ -167,7 +362,11 @@ where
             request.headers_mut().remove(AltUsed::name());
         }
         let started = Instant::now();
-        let response = self.inner.serve(request).await?;
+        let response = self
+            .inner
+            .serve(request)
+            .await
+            .inspect_err(|error| policy.record_failure(error, started))?;
         if let Some(cache) = &policy.cache {
             if response.status() == StatusCode::MISDIRECTED_REQUEST {
                 if let Some((snapshot, index)) = &policy.selection {
@@ -186,7 +385,7 @@ where
                 }
             }
         }
-        Ok(response)
+        Ok(response.map(|body| AltSvcBody::new(body, policy, started)))
     }
 }
 
@@ -194,7 +393,7 @@ where
 mod tests {
     use super::*;
     use crate::Body;
-    use rama_core::service::service_fn;
+    use rama_core::{error::BoxErrorExt as _, service::service_fn};
     use rama_net::Protocol;
     use std::{
         convert::Infallible,
@@ -207,6 +406,95 @@ mod tests {
 
     fn origin(protocol: Protocol) -> HttpOrigin {
         HttpOrigin::new(protocol, "example.com:443".parse().unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn remote_response_failures_suppress_the_actual_endpoint_without_replay() {
+        for scope in [
+            ConnectionPolicyScope::Connector,
+            ConnectionPolicyScope::Request,
+            ConnectionPolicyScope::Unknown,
+        ] {
+            let cache = AltSvcCache::default();
+            let origin = origin(Protocol::HTTPS);
+            let mut headers = crate::HeaderMap::new();
+            headers.insert(
+                "alt-svc",
+                "h2=\"first.example:443\", h3=\"second.example:443\""
+                    .parse()
+                    .unwrap(),
+            );
+            cache.record(&origin, &headers, Duration::ZERO);
+            let snapshot = cache.lookup(&origin).unwrap();
+            let connection = Extensions::new();
+            connection.insert(scope);
+            connection.insert(EstablishedHttpService {
+                origin: origin.clone(),
+                candidate: snapshot.get(0).unwrap().clone(),
+            });
+            let dispatched = Arc::new(AtomicUsize::new(0));
+            let service = AltSvcLayer::new(origin.clone())
+                .with_cache(cache.clone())
+                .with_connection(&connection, None)
+                .layer(service_fn({
+                    let dispatched = dispatched.clone();
+                    move |_: Request| {
+                        dispatched.fetch_add(1, Ordering::Relaxed);
+                        async {
+                            Err::<Response, BoxError>(Box::new(ConnectionError::application(
+                                BoxError::from_static_str("peer reset the response stream"),
+                                ConnectionErrorKind::Unavailable,
+                            )))
+                        }
+                    }
+                }));
+            // The current advertisement may have a different order from the
+            // one which established the still-healthy multiplexed connection.
+            headers.insert(
+                "alt-svc",
+                "h3=\"second.example:443\", h2=\"first.example:443\""
+                    .parse()
+                    .unwrap(),
+            );
+            cache.record(&origin, &headers, Duration::ZERO);
+            let current = cache.lookup(&origin).unwrap();
+            let error = service
+                .serve(Request::new(Body::empty()))
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("peer reset the response stream"));
+            assert_eq!(dispatched.load(Ordering::Relaxed), 1);
+            assert!(cache.is_usable(&current, 0));
+            assert_eq!(
+                cache.is_usable(&current, 1),
+                scope != ConnectionPolicyScope::Connector
+            );
+        }
+    }
+
+    #[test]
+    fn local_or_unclassified_response_errors_cannot_expose_nested_remote_failures() {
+        let remote = || {
+            ConnectionError::application(
+                BoxError::from_static_str("remote reset"),
+                ConnectionErrorKind::Unavailable,
+            )
+        };
+        assert!(is_remote_response_failure(&remote()));
+        let boxed: BoxError = Box::new(remote());
+        assert!(is_remote_response_failure(&boxed));
+        for domain in [ConnectionErrorDomain::Local, ConnectionErrorDomain::Unknown] {
+            let error: BoxError = Box::new(ConnectionError::new(
+                Box::new(remote()),
+                domain,
+                ConnectionErrorKind::Other,
+            ));
+            assert!(!is_remote_response_failure(&error));
+        }
+        assert!(!is_remote_response_failure(&Response::new(Body::empty())));
+        assert!(!is_remote_response_failure(&BoxError::from_static_str(
+            "application failure"
+        )));
     }
 
     #[tokio::test]

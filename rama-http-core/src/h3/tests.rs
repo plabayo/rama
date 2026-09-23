@@ -1,4 +1,8 @@
 //! Real QUIC round trips complement deterministic framing/cancellation tests.
+#[path = "close_tests.rs"]
+mod close;
+#[path = "credit_tests.rs"]
+mod credit;
 #[path = "fairness_tests.rs"]
 mod fairness;
 #[path = "loss_tests.rs"]

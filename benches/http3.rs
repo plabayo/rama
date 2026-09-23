@@ -16,7 +16,10 @@ use rama::{
             qpack::{Decoder, DecoderConfig, Encoder, EncoderConfig},
             server,
         },
-        proto::h3::qpack::EncoderInstruction,
+        proto::h3::{
+            VarInt,
+            qpack::{DecoderInstruction, EncoderInstruction},
+        },
     },
     net::address::SocketAddress,
     quic::{Endpoint, TransportConfig, tls::TlsOptions},
@@ -293,11 +296,43 @@ fn qpack_unknown_cancellations(bencher: divan::Bencher, outstanding: usize) {
     assert_eq!(encoder.tracked_section_count(), outstanding);
     // 0x40 is a complete Stream Cancellation instruction for stream zero.
     let cancellations = vec![0x40; kib(64)];
-    bencher.bench_local(|| {
-        encoder
-            .feed_decoder_stream(divan::black_box(&cancellations))
-            .unwrap();
+    bencher
+        .counter(divan::counter::BytesCount::new(cancellations.len()))
+        .bench_local(|| {
+            encoder
+                .feed_decoder_stream(divan::black_box(&cancellations))
+                .unwrap();
+        });
+}
+
+// Fragmented feedback repeatedly exercises the bounded partial-integer parser.
+// Cost per input byte should remain independent of unrelated live sections.
+#[divan::bench(args = [0, 16, 1024])]
+fn qpack_fragmented_decoder_feedback(bencher: divan::Bencher, outstanding: usize) {
+    let mut encoder = Encoder::new(EncoderConfig {
+        max_blocked_streams: outstanding as u64,
+        ..EncoderConfig::default()
     });
+    for stream in 0..outstanding {
+        encoder
+            .encode((stream as u64 + 1) * 4, [("x-shared", "value")])
+            .unwrap();
+    }
+    let mut instruction = BytesMut::new();
+    DecoderInstruction::StreamCancellation {
+        stream_id: VarInt::MAX.into_inner(),
+    }
+    .encode(&mut instruction);
+    let feedback = instruction.repeat(kib(4));
+    bencher
+        .counter(divan::counter::BytesCount::new(feedback.len()))
+        .bench_local(|| {
+            for byte in divan::black_box(&feedback) {
+                encoder
+                    .feed_decoder_stream(std::slice::from_ref(byte))
+                    .unwrap();
+            }
+        });
 }
 
 // Both literals use Huffman coding. Bytewise input must probe only their length

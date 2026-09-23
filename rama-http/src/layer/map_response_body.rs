@@ -80,7 +80,13 @@
 //! ```
 
 use crate::{Request, Response};
-use rama_core::{Layer, Service, bytes::Bytes, error::BoxError};
+use rama_core::{
+    Layer, Service,
+    bytes::Bytes,
+    error::BoxError,
+    extensions::{Extensions, ExtensionsRef},
+    futures::TryFutureExt as _,
+};
 use rama_http_types::StreamingBody;
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
@@ -158,6 +164,12 @@ pub struct MapResponseBody<S, F> {
     f: F,
 }
 
+impl<S: ExtensionsRef, F> ExtensionsRef for MapResponseBody<S, F> {
+    fn extensions(&self) -> &Extensions {
+        self.inner.extensions()
+    }
+}
+
 impl<S, F> MapResponseBody<S, F> {
     /// Create a new [`MapResponseBody`].
     ///
@@ -204,9 +216,13 @@ where
     type Output = Response<NewResBody>;
     type Error = S::Error;
 
-    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
-        let res = self.inner.serve(req).await?;
-        Ok(res.map(self.f.clone()))
+    fn serve(
+        &self,
+        req: Request<ReqBody>,
+    ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
+        self.inner
+            .serve(req)
+            .map_ok(|response| response.map(self.f.clone()))
     }
 }
 
@@ -219,5 +235,33 @@ where
             .field("inner", &self.inner)
             .field("f", &std::any::type_name::<F>())
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rama_core::service::service_fn;
+    use rama_utils::octets::kib;
+    use std::{convert::Infallible, future, mem::size_of_val};
+
+    #[test]
+    fn response_mapping_does_not_duplicate_inner_future_storage() {
+        let inner = service_fn(async |request: Request<[u8; kib(4)]>| {
+            future::pending::<()>().await;
+            Ok::<_, Infallible>(Response::new(request.into_body()))
+        });
+        let baseline = size_of_val(&inner.serve(Request::new([0; kib(4)])));
+        let mapping_state = [0_u8; kib(4)];
+        let mapped = MapResponseBody::new(inner, move |body| {
+            std::hint::black_box(&mapping_state);
+            body
+        });
+        let size = size_of_val(&mapped.serve(Request::new([0; kib(4)])));
+        let mapper_pointer_with_padding = size_of::<&()>() + align_of::<&()>();
+        assert!(
+            size <= baseline + mapper_pointer_with_padding,
+            "mapping grew the service future from {baseline} to {size} bytes"
+        );
     }
 }

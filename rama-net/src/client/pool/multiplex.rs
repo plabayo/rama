@@ -17,7 +17,7 @@
 //! handouts. A [`MultiplexedConnection`] is not meant to outlive a single logical request and
 //! when it does it should only be used for one input/request at a time.
 
-use super::{ConnID, ConnectionResult, Pool, PoolSlot};
+use super::{ConnID, ConnectionResult, ConnectionReuse, Pool, PoolSlot};
 use crate::conn::{ConnectionHealth, ConnectionHealthWatcher, MaxConcurrency};
 use ahash::{HashMap, HashMapExt as _};
 use parking_lot::Mutex;
@@ -69,7 +69,14 @@ struct StoredConnection<C, ID> {
     capacity_notify: Arc<Notify>,
     notify: Arc<Notify>,
     last_idle: AtomicInstant,
-    pool_slot: Mutex<Option<PoolSlot>>,
+    pool_slot: Mutex<ConnectionSlot>,
+}
+
+/// Admission and eviction share this lock so a previously captured snapshot
+/// cannot acquire a stream after the connection's capacity has been transferred.
+struct ConnectionSlot {
+    permit: Option<PoolSlot>,
+    retired: bool,
 }
 
 impl<C, ID> StoredConnection<C, ID> {
@@ -101,26 +108,17 @@ impl<C, ID> StoredConnection<C, ID> {
         self: &Arc<Self>,
         cap: usize,
     ) -> Option<MultiplexedConnection<C, ID>> {
-        let limit = self.effective_capacity(cap);
-        let mut active = self.active.load(Ordering::Relaxed);
-        loop {
-            if active >= limit {
-                return None;
-            }
-            match self.active.compare_exchange_weak(
-                active,
-                active + 1,
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => {
-                    return Some(MultiplexedConnection {
-                        inner: self.clone(),
-                    });
-                }
-                Err(found) => active = found,
-            }
+        let slot = self.pool_slot.lock();
+        if slot.retired || self.active.load(Ordering::Relaxed) >= self.effective_capacity(cap) {
+            return None;
         }
+        // Admission is serialized with retirement. Concurrent lease drops only
+        // decrease the count, so no compare/exchange loop is needed here.
+        self.active.fetch_add(1, Ordering::Relaxed);
+        drop(slot);
+        Some(MultiplexedConnection {
+            inner: self.clone(),
+        })
     }
 }
 
@@ -353,6 +351,7 @@ where
             if self.is_eligible(&bucket[i]) {
                 i += 1;
             } else {
+                bucket[i].pool_slot.lock().retired = true;
                 doomed.push(bucket.remove(i));
             }
         }
@@ -392,24 +391,34 @@ where
     fn evict_lru_idle(
         storage: &mut Storage<C, ID>,
     ) -> Option<(Arc<StoredConnection<C, ID>>, Option<PoolSlot>)> {
-        let (id, pos) = storage
-            .by_id
-            .iter()
-            .flat_map(|(id, bucket)| {
-                bucket
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, conn)| conn.is_idle())
-                    .map(move |(pos, conn)| (id, pos, conn.last_idle.as_nanos()))
-            })
-            .min_by_key(|(_, _, last_idle)| *last_idle)
-            .map(|(id, pos, _)| (id.clone(), pos))?;
+        let (id, pos, slot) = {
+            let mut candidate = None;
+            let mut oldest = u64::MAX;
+            for (id, bucket) in &storage.by_id {
+                for (pos, conn) in bucket.iter().enumerate() {
+                    let last_idle = conn.last_idle.as_nanos();
+                    if !conn.is_idle() || last_idle >= oldest {
+                        continue;
+                    }
+                    let slot = conn.pool_slot.lock();
+                    if slot.retired || !conn.is_idle() {
+                        continue;
+                    }
+                    // Keep the best candidate idle until its slot is transferred.
+                    // Admission takes this same lock; no retry loop is needed.
+                    oldest = last_idle;
+                    candidate = Some((id, pos, slot));
+                }
+            }
+            let (id, pos, mut slot) = candidate?;
+            slot.retired = true;
+            (id.clone(), pos, slot.permit.take())
+        };
         let bucket = storage.by_id.get_mut(&id)?;
         let evicted = bucket.remove(pos);
         if bucket.is_empty() {
             storage.by_id.remove(&id);
         }
-        let slot = evicted.pool_slot.lock().take();
         Some((evicted, slot))
     }
 
@@ -420,14 +429,21 @@ where
         &self,
         id: &ID,
         permit: OwnedSemaphorePermit,
+        input: &Extensions,
     ) -> ConnectionResult<MultiplexedConnection<C, ID>, PoolSlot> {
         let mut doomed = Vec::new();
-        let same_id = if id.is_reusable() {
+        let mut same_id = if id.is_reusable() {
             self.snapshot(&mut self.storage.lock(), id, &mut doomed)
         } else {
             Snapshot::new()
         };
         drop(doomed);
+        same_id.retain(|conn| {
+            conn.conn
+                .extensions()
+                .get_ref::<ConnectionReuse>()
+                .is_none_or(|policy| policy.matches(input))
+        });
         if let Some(conn) = select_and_admit(
             &same_id,
             id,
@@ -460,6 +476,7 @@ where
     async fn get_conn(
         &self,
         id: &ID,
+        input: &Extensions,
     ) -> Result<ConnectionResult<Self::Connection, Self::CreatePermit>, BoxError> {
         #[cfg(feature = "opentelemetry")]
         let metrics = self
@@ -480,12 +497,18 @@ where
             // Only this id's bucket is touched under the lock; swept
             // connections close after it is released.
             let mut doomed = Vec::new();
-            let same_id = if id.is_reusable() {
+            let mut same_id = if id.is_reusable() {
                 self.snapshot(&mut self.storage.lock(), id, &mut doomed)
             } else {
                 Snapshot::new()
             };
             doomed.clear();
+            same_id.retain(|conn| {
+                conn.conn
+                    .extensions()
+                    .get_ref::<ConnectionReuse>()
+                    .is_none_or(|policy| policy.matches(input))
+            });
 
             // Subscribe to same-id notifications BEFORE the capacity
             // check below (subscribe-then-check), so a handout release or
@@ -627,7 +650,7 @@ where
                         // the pool never closes its semaphore; treat as spurious
                         continue;
                     };
-                    match self.admit_with_permit(id, permit) {
+                    match self.admit_with_permit(id, permit, input) {
                         ConnectionResult::Connection(conn) => {
                             #[cfg(feature = "opentelemetry")]
                             if let Some((metrics, attrs)) = &metrics {
@@ -658,6 +681,11 @@ where
     }
 
     async fn create(&self, id: ID, conn: C, pool_slot: PoolSlot) -> Self::Connection {
+        let reusable = id.is_reusable()
+            && conn
+                .extensions()
+                .get_ref::<ConnectionReuse>()
+                .is_none_or(ConnectionReuse::is_reusable);
         let conn = Arc::new(StoredConnection {
             max_concurrency: conn.extensions().get_arc::<MaxConcurrency>(),
             conn,
@@ -666,11 +694,14 @@ where
             capacity_notify: Arc::new(Notify::new()),
             notify: self.notify.clone(),
             last_idle: AtomicInstant::now(),
-            pool_slot: Mutex::new(Some(pool_slot)),
+            pool_slot: Mutex::new(ConnectionSlot {
+                permit: Some(pool_slot),
+                retired: false,
+            }),
         });
 
         trace!(id = ?conn.id, "multiplex pool: adding new connection");
-        if conn.id.is_reusable() {
+        if reusable {
             self.storage
                 .lock()
                 .by_id
@@ -698,7 +729,7 @@ where
 
 /// Select a connection from `same_id` (all sharing `id`) that still has capacity
 /// and admit a stream on it (see [`StoredConnection::try_create_multiplexed`]),
-/// returning a ready handout. Pure atomics: no storage lock needed.
+/// returning a ready handout. Admission locks only the chosen connection's slot.
 fn select_and_admit<C, ID: PartialEq + Debug>(
     same_id: &[Arc<StoredConnection<C, ID>>],
     id: &ID,
@@ -720,7 +751,8 @@ fn select_and_admit<C, ID: PartialEq + Debug>(
             .iter()
             .filter(has_capacity)
             .min_by_key(|conn| conn.active.load(Ordering::Relaxed))
-            .and_then(create_conn),
+            .and_then(create_conn)
+            .or_else(|| same_id.iter().find_map(create_conn)),
         MuxSelection::RoundRobin => {
             let count = same_id.iter().filter(has_capacity).count();
             if count == 0 {
@@ -732,6 +764,7 @@ fn select_and_admit<C, ID: PartialEq + Debug>(
                     .filter(has_capacity)
                     .nth(idx)
                     .and_then(create_conn)
+                    .or_else(|| same_id.iter().find_map(create_conn))
             }
         }
     }
@@ -740,13 +773,18 @@ fn select_and_admit<C, ID: PartialEq + Debug>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::client::pool::PooledConnector;
+    use crate::client::pool::{ConnectionReusePolicy, PooledConnector};
     use crate::client::{
         ConnectionError, ConnectionErrorDomain, ConnectionErrorKind, ConnectorService,
         EstablishedClientConnection,
     };
     use rama_core::ServiceInput;
-    use std::convert::Infallible;
+    use std::{
+        convert::Infallible,
+        sync::{LazyLock, Weak},
+    };
+
+    static EMPTY_INPUT: LazyLock<Extensions> = LazyLock::new(Extensions::new);
 
     #[derive(Clone, Debug, PartialEq, Eq, Hash)]
     struct TestId(u32);
@@ -877,7 +915,7 @@ mod tests {
         let svc = connector(pool.clone());
         let first = connect(&svc, u32::MAX).await;
         assert!(pool.storage.lock().by_id.is_empty());
-        let mut waiter = tokio_test::task::spawn(pool.get_conn(&TestId(u32::MAX)));
+        let mut waiter = tokio_test::task::spawn(pool.get_conn(&TestId(u32::MAX), &EMPTY_INPUT));
         assert!(waiter.poll().is_pending());
         drop(first);
         match waiter.poll() {
@@ -889,6 +927,121 @@ mod tests {
         drop(second);
         assert!(pool.storage.lock().by_id.is_empty());
         assert_eq!(pool.total_slots.available_permits(), 1);
+    }
+
+    #[tokio::test]
+    async fn permit_wakeup_rechecks_compatibility_outside_storage_lock() {
+        #[derive(Debug)]
+        struct RejectReuse(Weak<Mutex<Storage<Conn, TestId>>>);
+
+        impl ConnectionReusePolicy for RejectReuse {
+            fn matches(&self, _: &Extensions) -> bool {
+                let storage = self.0.upgrade().unwrap();
+                assert!(
+                    storage.try_lock().is_some(),
+                    "connector policy must not run under the pool lock"
+                );
+                false
+            }
+        }
+
+        let pool = MultiplexPool::try_new(4, 2).unwrap();
+        let svc = connector(pool.clone());
+        let held = connect(&svc, 0).await;
+        held.conn
+            .extensions()
+            .insert(ConnectionReuse::new(RejectReuse(Arc::downgrade(
+                &pool.storage,
+            ))));
+        let permit = pool.total_slots.clone().try_acquire_owned().unwrap();
+        assert!(matches!(
+            pool.admit_with_permit(&TestId(0), permit, &EMPTY_INPUT),
+            ConnectionResult::CreatePermit(_)
+        ));
+        assert!(matches!(
+            pool.get_conn(&TestId(0), &EMPTY_INPUT).await.unwrap(),
+            ConnectionResult::CreatePermit(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn policy_check_cannot_admit_a_snapshot_retired_during_the_check() {
+        #[derive(Debug)]
+        struct RetireDuringMatch {
+            pool: MultiplexPool<Conn, TestId>,
+            evict: bool,
+        }
+
+        impl ConnectionReusePolicy for RetireDuringMatch {
+            fn matches(&self, _: &Extensions) -> bool {
+                if self.evict {
+                    let removed = MultiplexPool::evict_lru_idle(&mut self.pool.storage.lock());
+                    assert!(removed.is_some());
+                    drop(removed);
+                } else {
+                    let mut doomed = Vec::new();
+                    {
+                        let mut storage = self.pool.storage.lock();
+                        storage.by_id[&TestId(0)][0]
+                            .conn
+                            .extensions()
+                            .get_ref::<ConnectionHealthWatcher>()
+                            .unwrap()
+                            .mark_broken();
+                        self.pool.sweep_all(&mut storage, &mut doomed);
+                    }
+                    drop(doomed);
+                }
+                true
+            }
+        }
+
+        for evict in [false, true] {
+            let pool = MultiplexPool::try_new(4, 1).unwrap();
+            let svc = connector(pool.clone());
+            let held = connect(&svc, 0).await;
+            held.conn
+                .extensions()
+                .insert(ConnectionReuse::new(RetireDuringMatch {
+                    pool: pool.clone(),
+                    evict,
+                }));
+            drop(held);
+            let result = pool.get_conn(&TestId(0), &EMPTY_INPUT).await.unwrap();
+            assert!(
+                matches!(result, ConnectionResult::CreatePermit(_)),
+                "a retired snapshot must not bypass health or pool capacity (evict={evict})"
+            );
+            drop(result);
+            assert_eq!(pool.total_slots.available_permits(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn retired_preferred_candidate_does_not_hide_other_stream_capacity() {
+        let pool = MultiplexPool::try_new(1, 2).unwrap();
+        let svc = connector(pool.clone());
+        let first = connect(&svc, 0).await;
+        let second = connect(&svc, 0).await;
+        drop((first, second));
+        let mut doomed = Vec::new();
+        let mut snapshot = pool.snapshot(&mut pool.storage.lock(), &TestId(0), &mut doomed);
+        let (retired, transferred_slot) =
+            MultiplexPool::evict_lru_idle(&mut pool.storage.lock()).unwrap();
+        let retired_index = snapshot
+            .iter()
+            .position(|conn| Arc::ptr_eq(conn, &retired))
+            .unwrap();
+        snapshot.swap(0, retired_index);
+        // Retain the transferred permit as an unrelated dial would, so it
+        // cannot rescue a selection that overlooks the other idle connection.
+        for selection in [MuxSelection::LeastLoaded, MuxSelection::RoundRobin] {
+            let conn = select_and_admit(&snapshot, &TestId(0), selection, &AtomicUsize::new(0), 1)
+                .expect("another compatible connection still has stream capacity");
+            assert!(!Arc::ptr_eq(&conn.inner, &retired));
+            drop(conn);
+        }
+        drop(transferred_slot);
     }
 
     #[tokio::test]
@@ -979,7 +1132,7 @@ mod tests {
         // Connection A: at its advertised capacity of 1, holding the only slot.
         let c1 = svc.connect(ServiceInput::new(0u32)).await.unwrap();
 
-        let mut waiter = tokio_test::task::spawn(pool.get_conn(&TestId(0)));
+        let mut waiter = tokio_test::task::spawn(pool.get_conn(&TestId(0), &EMPTY_INPUT));
         assert!(
             waiter.poll().is_pending(),
             "waiter must park: A is at capacity"
@@ -1085,9 +1238,9 @@ mod tests {
 
         // Register B first. A pool-global `notify_one` would wake this
         // incompatible waiter and strand A even though A gains capacity.
-        let mut b_waiter = tokio_test::task::spawn(pool.get_conn(&TestId(1)));
+        let mut b_waiter = tokio_test::task::spawn(pool.get_conn(&TestId(1), &EMPTY_INPUT));
         assert!(b_waiter.poll().is_pending());
-        let mut a_waiter = tokio_test::task::spawn(pool.get_conn(&TestId(0)));
+        let mut a_waiter = tokio_test::task::spawn(pool.get_conn(&TestId(0), &EMPTY_INPUT));
         assert!(a_waiter.poll().is_pending());
 
         // A remains active, so only an A waiter can use the released stream;
@@ -1365,14 +1518,14 @@ mod tests {
             assert!(storage.by_id.contains_key(&TestId(0)));
             assert!(!storage.by_id.contains_key(&TestId(1)));
         }
-        let mut parked = tokio_test::task::spawn(pool.get_conn(&TestId(1)));
+        let mut parked = tokio_test::task::spawn(pool.get_conn(&TestId(1), &EMPTY_INPUT));
         assert!(parked.poll().is_pending());
 
         // Make connection 0 idle without polling the parked waiter. A caller
         // for id 2 must be able to evict it and immediately claim that slot.
         // A queued semaphore waiter used to steal the released permit here.
         drop(active);
-        let mut evicting = tokio_test::task::spawn(pool.get_conn(&TestId(2)));
+        let mut evicting = tokio_test::task::spawn(pool.get_conn(&TestId(2), &EMPTY_INPUT));
         let evicting_permit = match evicting.poll() {
             std::task::Poll::Ready(Ok(ConnectionResult::CreatePermit(permit))) => permit,
             std::task::Poll::Ready(Ok(ConnectionResult::Connection(_))) => {
@@ -1397,16 +1550,16 @@ mod tests {
     #[tokio::test]
     async fn total_slot_waiters_are_fifo_and_cancellation_safe() {
         let pool = MultiplexPool::<Conn, TestId>::try_new(1, 1).unwrap();
-        let held = match pool.get_conn(&TestId(0)).await.unwrap() {
+        let held = match pool.get_conn(&TestId(0), &EMPTY_INPUT).await.unwrap() {
             ConnectionResult::CreatePermit(permit) => permit,
             ConnectionResult::Connection(_) => panic!("empty pool unexpectedly reused a slot"),
         };
 
-        let mut first = tokio_test::task::spawn(pool.get_conn(&TestId(1)));
+        let mut first = tokio_test::task::spawn(pool.get_conn(&TestId(1), &EMPTY_INPUT));
         assert!(first.poll().is_pending());
-        let mut cancelled = tokio_test::task::spawn(pool.get_conn(&TestId(2)));
+        let mut cancelled = tokio_test::task::spawn(pool.get_conn(&TestId(2), &EMPTY_INPUT));
         assert!(cancelled.poll().is_pending());
-        let mut last = tokio_test::task::spawn(pool.get_conn(&TestId(3)));
+        let mut last = tokio_test::task::spawn(pool.get_conn(&TestId(3), &EMPTY_INPUT));
         assert!(last.poll().is_pending());
         drop(cancelled);
 

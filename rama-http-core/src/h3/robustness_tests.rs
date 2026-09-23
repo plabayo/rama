@@ -22,6 +22,7 @@ use rama_http_types::{
 use rama_net::uri::Uri;
 use rama_quic::TransportConfig;
 use rama_quic_proto::{Dir, MAX_STREAM_COUNT, Side, StreamId, VarInt, coding::Codec};
+use rama_utils::octets::kib;
 use std::{
     convert::Infallible,
     error::Error as _,
@@ -707,12 +708,13 @@ async fn memory_clean_close_preserves_buffered_response_and_trailers() {
 async fn memory_closed_connection_preserves_only_complete_successful_responses() {
     tokio::time::timeout(LIMIT, async {
         // All cases expose the headers before close, leaving the body buffered.
-        for (finish, declared_length, close_code, abort_driver) in [
-            (true, "4", Code::H3_NO_ERROR, false),
-            (false, "4", Code::H3_NO_ERROR, false),
-            (true, "5", Code::H3_NO_ERROR, false),
-            (true, "4", Code::H3_GENERAL_PROTOCOL_ERROR, false),
-            (true, "4", Code::H3_NO_ERROR, true),
+        for (finish, declared_length, close_code, abort_driver, local_close) in [
+            (true, "4", Code::H3_NO_ERROR, false, false),
+            (false, "4", Code::H3_NO_ERROR, false, false),
+            (false, "4", Code::H3_NO_ERROR, false, true),
+            (true, "5", Code::H3_NO_ERROR, false, false),
+            (true, "4", Code::H3_GENERAL_PROTOCOL_ERROR, false, false),
+            (true, "4", Code::H3_NO_ERROR, true, false),
         ] {
             let pair = Pair::in_memory(None, None).await;
             let (mut client, driver) =
@@ -759,7 +761,12 @@ async fn memory_closed_connection_preserves_only_complete_successful_responses()
                 driver.abort();
                 assert!(driver.await.unwrap_err().is_cancelled());
             } else {
-                pair.server.close(close_code.value() as u32, b"test close");
+                let connection = if local_close {
+                    &pair.client
+                } else {
+                    &pair.server
+                };
+                connection.close(close_code.value() as u32, b"test close");
                 let result = driver.await.unwrap();
                 assert_eq!(result.is_ok(), close_code == Code::H3_NO_ERROR);
             }
@@ -781,6 +788,7 @@ async fn memory_closed_connection_preserves_only_complete_successful_responses()
                     .downcast_ref::<Error>()
                     .unwrap();
                 assert_eq!(cause.code(), Code::H3_REQUEST_INCOMPLETE);
+                assert_eq!(cause.is_remote_failure(), !local_close);
             }
             pair.close().await;
         }
@@ -1832,6 +1840,130 @@ async fn memory_driver_drop_preserves_recorded_protocol_failure() {
             matches!(reason, rama_quic::ConnectionError::ApplicationClosed(close)
             if close.error_code.into_inner() == Code::QPACK_DECOMPRESSION_FAILED.value())
         );
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn memory_graceful_drain_delivers_queued_response_before_close() {
+    check_graceful_drain_delivers_queued_response_before_close(true).await;
+}
+
+#[tokio::test]
+async fn graceful_drain_delivers_queued_response_before_close() {
+    check_graceful_drain_delivers_queued_response_before_close(false).await;
+}
+
+async fn check_graceful_drain_delivers_queued_response_before_close(in_memory: bool) {
+    tokio::time::timeout(LIMIT, async {
+        let pair = pair(None, None, in_memory).await;
+        let payload = Bytes::from(vec![0x5a; kib(128)]);
+        let (mut client, client_driver) =
+            client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
+                .unwrap();
+        let (mut server, server_driver) =
+            server::handshake(pair.server.clone(), Config::default()).unwrap();
+        let client_driver = spawn(client_driver.run());
+        let server_driver = spawn(server_driver.run());
+        let expected = payload.clone();
+        let serve = spawn(async move {
+            let (request, response) = server.accept().await.unwrap().resolve().await.unwrap();
+            request.into_body().collect().await.unwrap();
+            server.shutdown().unwrap();
+            response
+                .send_response(Response::new(Body::from(payload)))
+                .await
+                .unwrap();
+            server.drained().await.unwrap();
+            // The backend closes its driver immediately after drain. Merely
+            // queueing FIN lets this discard data still waiting for QUIC credit.
+            server_driver.abort();
+            assert!(server_driver.await.unwrap_err().is_cancelled());
+        });
+        let response = client
+            .send_request(
+                Request::builder()
+                    .uri("https://localhost/drain")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let received = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(received, expected);
+        serve.await.unwrap();
+        client_driver.await.unwrap().unwrap();
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn memory_rejected_connect_preserves_response_and_connection() {
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::in_memory(None, None).await;
+        let (mut client, driver) =
+            client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
+                .unwrap();
+        let (mut server, server_driver) =
+            server::handshake(pair.server.clone(), Config::default()).unwrap();
+        let driver = spawn(driver.run());
+        let server_driver = spawn(server_driver.run());
+        let serve = spawn(async move {
+            let (request, response) = server.accept().await.unwrap().resolve().await.unwrap();
+            assert_eq!(request.method(), Method::CONNECT);
+            drop(request);
+            response
+                .send_response(
+                    Response::builder()
+                        .status(StatusCode::FORBIDDEN)
+                        .body(Body::from("denied"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let (request, response) = server.accept().await.unwrap().resolve().await.unwrap();
+            request.into_body().collect().await.unwrap();
+            response
+                .send_response(Response::new(Body::from("recovered")))
+                .await
+                .unwrap();
+        });
+        let response = client
+            .send_request(
+                Request::builder()
+                    .method(Method::CONNECT)
+                    .uri(Uri::parse_http_request_target("localhost:443", true).unwrap())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            response.into_body().collect().await.unwrap().to_bytes(),
+            "denied"
+        );
+        let response = client
+            .send_request(
+                Request::builder()
+                    .uri("https://localhost/recovered")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.into_body().collect().await.unwrap().to_bytes(),
+            "recovered"
+        );
+        serve.await.unwrap();
+        pair.client.close(Code::H3_NO_ERROR.value() as u32, b"done");
+        driver.await.unwrap().unwrap();
+        server_driver.await.unwrap().unwrap();
         pair.close().await;
     })
     .await

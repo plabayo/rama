@@ -509,8 +509,90 @@ fn unknown_cancellation_flood_preserves_outstanding_sections_and_recovers() {
     assert_eq!(encoder.tracked_section_count(), 0);
     assert_eq!(encoder.tracked_reference_count(), 0);
     assert_blocking_accounting(&encoder);
-    encoder.encode(0, [("x-new", "next")]).unwrap();
+    encoder.encode(1025 * 4, [("x-new", "next")]).unwrap();
     assert_eq!(encoder.blocking_streams, 1);
+    assert_blocking_accounting(&encoder);
+}
+
+#[test]
+fn cancellation_before_first_encode_never_leaks_late_sections() {
+    for class in 0..4 {
+        let mut encoder = Encoder::new(EncoderConfig::default());
+        let cancelled = 1100 * 4 + class;
+        encoder
+            .on_decoder_instruction(DecoderInstruction::StreamCancellation {
+                stream_id: cancelled,
+            })
+            .unwrap();
+        encoder
+            .on_decoder_instruction(DecoderInstruction::StreamCancellation { stream_id: class })
+            .unwrap();
+        // More late responses/trailers than the entire outstanding-section
+        // budget must not consume any references the peer will never release.
+        let mut decoder = Decoder::new(DecoderConfig::default());
+        for sequence in 0..=1100 {
+            let stream = sequence * 4 + class;
+            let section = encoder.encode(stream, [("x-late", "value")]).unwrap();
+            assert_eq!(
+                decoder
+                    .decode_field_section(stream, section)
+                    .unwrap()
+                    .unwrap()[0]
+                    .value,
+                "value"
+            );
+        }
+        assert_eq!(encoder.tracked_section_count(), 0);
+        assert_eq!(encoder.tracked_reference_count(), 0);
+        assert_eq!(encoder.insert_count(), 0);
+
+        let next = cancelled + 4;
+        let section = encoder.encode(next, [("x-new", "next")]).unwrap();
+        assert_eq!(encoder.tracked_section_count(), 1);
+        decoder
+            .feed_encoder_stream(&encoder.take_encoder_stream())
+            .unwrap();
+        assert_eq!(
+            decoder
+                .decode_field_section(next, section)
+                .unwrap()
+                .unwrap()[0]
+                .value,
+            "next"
+        );
+        encoder
+            .feed_decoder_stream(&decoder.take_decoder_stream())
+            .unwrap();
+        assert_eq!(encoder.tracked_reference_count(), 0);
+        assert_blocking_accounting(&encoder);
+    }
+}
+
+#[test]
+fn cancellation_preserves_older_references_and_other_stream_classes() {
+    let mut encoder = Encoder::new(EncoderConfig::default());
+    encoder.encode(0, [("x-existing", "value")]).unwrap();
+    encoder.encode(4, [("x-existing", "value")]).unwrap();
+    encoder
+        .on_decoder_instruction(DecoderInstruction::StreamCancellation { stream_id: 4 })
+        .unwrap();
+    for stream in [0, 4] {
+        encoder.encode(stream, [("x-existing", "value")]).unwrap();
+    }
+    // Only the original section remains outstanding; cancellation of stream 4
+    // must not release stream 0's references or acknowledge its insertion.
+    assert_eq!(encoder.tracked_reference_count(), 1);
+    assert_eq!(encoder.known_received_count(), 0);
+    encoder.encode(1, [("x-existing", "value")]).unwrap();
+    assert_eq!(encoder.tracked_reference_count(), 2);
+    encoder
+        .on_decoder_instruction(DecoderInstruction::SectionAcknowledgment { stream_id: 0 })
+        .unwrap();
+    assert_eq!(encoder.tracked_reference_count(), 1);
+    encoder
+        .on_decoder_instruction(DecoderInstruction::SectionAcknowledgment { stream_id: 1 })
+        .unwrap();
+    assert_eq!(encoder.tracked_reference_count(), 0);
     assert_blocking_accounting(&encoder);
 }
 

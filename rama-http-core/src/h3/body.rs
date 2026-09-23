@@ -16,7 +16,7 @@ use rama_http_types::{
     body::{Frame, SizeHint, StreamingBody},
 };
 use std::{
-    pin::Pin,
+    pin::{Pin, pin},
     sync::Arc,
     task::{Context, Poll, ready},
 };
@@ -91,10 +91,10 @@ impl Body {
             match ready!(self.reader.poll_event(cx))? {
                 Some(FrameEvent::DataHeader { len }) => {
                     if let Some(remaining) = &mut self.remaining {
-                        *remaining = remaining.checked_sub(len).ok_or(Error::stream(
-                            Code::H3_MESSAGE_ERROR,
-                            "body exceeds content-length",
-                        ))?;
+                        *remaining = remaining.checked_sub(len).ok_or(
+                            Error::stream(Code::H3_MESSAGE_ERROR, "body exceeds content-length")
+                                .remote(),
+                        )?;
                     }
                 }
                 Some(FrameEvent::DataChunk(bytes)) => {
@@ -110,6 +110,7 @@ impl Body {
                     let push = self.reader.push_id;
                     self.trailers = Some(Box::pin(async move {
                         headers::trailers(shared.decode_for_stream(id, push, bytes).await?)
+                            .map_err(Error::remote)
                     }));
                     return self.poll_inner(cx);
                 }
@@ -118,7 +119,8 @@ impl Body {
                         return Poll::Ready(Some(Err(Error::stream(
                             Code::H3_MESSAGE_ERROR,
                             "body shorter than content-length",
-                        ))));
+                        )
+                        .remote())));
                     }
                     if let Some(push) = &mut self.push {
                         push.finished = true;
@@ -130,7 +132,8 @@ impl Body {
                     return Poll::Ready(Some(Err(Error::connection(
                         Code::H3_FRAME_UNEXPECTED,
                         "unexpected body frame",
-                    ))));
+                    )
+                    .remote())));
                 }
             }
         }
@@ -183,18 +186,27 @@ where
     B::Error: Into<BoxError>,
     S: SendStream,
 {
-    let stopped = writer.stopped();
+    let acknowledged = writer.acknowledged();
+    let mut acknowledged = pin!(acknowledged);
     // An idle application body must not retain a request's admission permit
     // after STOP_SENDING or connection failure. Watching write readiness alone
     // misses cancellation while awaiting the next application frame.
     let result = tokio::select! {
         biased;
-        result = send_inner(&mut writer, body, shared.clone(), id, remaining) => result,
-        error = stopped => Err(error),
+        result = send_inner(&mut writer, body, shared.clone(), id, remaining) => {
+            match result {
+                // RFC 9114 Appendix A.1: queued FIN is not stream completion.
+                // Keep server admission alive while QUIC transmits and retries it.
+                Ok(()) => acknowledged.await,
+                Err(error) => Err(error),
+            }
+        },
+        result = &mut acknowledged => result,
         error = shared.failed() => Err(error),
     };
-    if let Err(error) = result {
-        writer.reset(error.code());
+    match result {
+        Ok(()) => writer.mark_acknowledged(),
+        Err(error) => writer.reset(error.code()),
     }
     result
 }

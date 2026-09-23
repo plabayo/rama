@@ -36,9 +36,10 @@
 //!
 //! [RFC 7838 §2.4] permits fallback. Rama tries alternatives sequentially, with a
 //! per-alternative deadline and an optional overall deadline. Remote failures
-//! allow fallback unless a version was explicitly required. Unsupported local
-//! transport capabilities allow another attempt; other local policy/configuration
-//! errors stop selection. A request-specific TLS failure does not mark an
+//! allow fallback while preserving any required version. Candidate-specific local
+//! failures also fall back; the original endpoint still enforces the unchanged
+//! policy. Only exhaustion of the overall deadline stops selection early.
+//! A request-specific TLS failure does not mark an
 //! alternative broken for clients using the default policy. Connectors report
 //! [`ConnectionPolicyScope`] during setup and on pooled connections; an unknown
 //! scope permits use of a verified connection but never shares policy failures.
@@ -89,7 +90,10 @@ use rama_net::{
 #[cfg(feature = "tls")]
 use rama_tls::client::{NegotiatedTlsParameters, TlsServerAuthentication};
 use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant as StdInstant},
+};
 use tokio::time::Instant;
 
 // Speculation is sequential: cap its cost before trying the next service. Slow
@@ -280,6 +284,7 @@ fn origin(input: &ConnectRequest) -> Option<HttpOrigin> {
 
 /// Explicit targets constrain every HTTP version; H3 request metadata also means
 /// prior knowledge in Rama. Ordinary H1/H2 metadata leaves negotiation open.
+/// `FallbackHttpVersion` is a connection default, not a constraint on discovery.
 /// This is client policy, not a version-selection rule imposed by RFC 7838.
 fn required_version(input: &ConnectRequest) -> Option<Version> {
     input
@@ -539,7 +544,8 @@ where
                 let mut layer = AltSvcLayer::new(origin)
                     .maybe_with_cache(self.policy.cache.clone())
                     .with_authenticated(authenticated)
-                    .maybe_with_alternative(established_alternative);
+                    .maybe_with_alternative(established_alternative)
+                    .with_connection(&conn, RouteContext::for_request(input.extensions()));
                 if let Some((snapshot, index)) = selection {
                     layer = layer.with_selection(snapshot, index);
                 }
@@ -647,7 +653,7 @@ where
                     .policy
                     .cache
                     .as_ref()
-                    .map(|cache| (cache, cache.network_epoch()));
+                    .map(|cache| (cache, cache.network_epoch(), StdInstant::now()));
                 match self.attempt(attempt, deadline, true).await {
                     Ok(established) => {
                         // Pool hits carry the original connector's policy scope.
@@ -674,16 +680,13 @@ where
                             discard_connection(&established.conn);
                             if shared_policy
                                 && candidate.source == HttpServiceSource::AltSvc
-                                && let Some((cache, network)) = failure_context
+                                && let Some((cache, network, started)) = failure_context
                             {
                                 if let Some(route) = &route {
-                                    cache.failed_route(snapshot, index, network, route);
+                                    cache.failed_route(snapshot, index, network, started, route);
                                 } else {
-                                    cache.failed_attempt(snapshot, index, network, true);
+                                    cache.failed_attempt(snapshot, index, network, started, true);
                                 }
-                            }
-                            if required.is_some() {
-                                return Err(error);
                             }
                             tracing::debug!(
                                 ?error,
@@ -692,7 +695,7 @@ where
                             );
                             continue;
                         }
-                        if shared_policy && let Some((cache, network)) = failure_context {
+                        if shared_policy && let Some((cache, network, _)) = failure_context {
                             cache.succeeded(snapshot, index, route.as_ref(), network);
                         }
                         // A pool hit must describe this same service. Insert
@@ -737,27 +740,26 @@ where
                         // The origin keeps exactly the same request TLS policy.
                         // Failure of a speculative endpoint does not authorize a
                         // weaker connection, nor dispatch or replay a request.
-                        if error.domain() == ConnectionErrorDomain::Local {
+                        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                             return Err(error);
                         }
-                        if (state.policy_scope() == ConnectionPolicyScope::Connector
-                            || availability(&error))
+                        if error.domain() != ConnectionErrorDomain::Local
+                            && (state.policy_scope() == ConnectionPolicyScope::Connector
+                                || availability(&error))
                             && candidate.source == HttpServiceSource::AltSvc
-                            && let Some((cache, network)) = failure_context
+                            && let Some((cache, network, started)) = failure_context
                         {
                             if let Some(route) = &route {
-                                cache.failed_route(snapshot, index, network, route);
+                                cache.failed_route(snapshot, index, network, started, route);
                             } else {
                                 cache.failed_attempt(
                                     snapshot,
                                     index,
                                     network,
+                                    started,
                                     !availability(&error),
                                 );
                             }
-                        }
-                        if required.is_some() {
-                            return Err(error);
                         }
                         tracing::debug!(
                             ?error,

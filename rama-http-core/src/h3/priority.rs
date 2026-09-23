@@ -12,6 +12,8 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
+use tokio::sync::OwnedSemaphorePermit;
+
 /// HTTP urgency runs from most to least urgent; QUIC schedules larger values
 /// first. Reserve priorities above this range for connection-critical streams.
 pub(super) fn transport_priority(priority: Priority) -> i32 {
@@ -360,6 +362,8 @@ impl State {
 pub(crate) struct Lease {
     pub(crate) shared: Arc<Shared>,
     pub(crate) id: u64,
+    // Release admission only after Drop removes this stream from the scheduler.
+    pub(crate) permit: Arc<OwnedSemaphorePermit>,
 }
 
 impl Drop for Lease {
@@ -371,10 +375,50 @@ impl Drop for Lease {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::h3::{connection::Config, control::Role};
     use std::{
+        pin::pin,
         sync::atomic::{AtomicUsize, Ordering},
         task::Wake,
     };
+    use tokio::sync::Semaphore;
+
+    #[test]
+    fn admission_wake_observes_completed_scheduler_lease() {
+        struct AdmitOnWake(Arc<Shared>);
+
+        impl Wake for AdmitOnWake {
+            fn wake(self: Arc<Self>) {
+                self.0.schedule.register(4, Priority::default()).unwrap();
+            }
+        }
+
+        let shared = Shared::new(
+            Config {
+                max_requests: 1,
+                ..Config::default()
+            },
+            Role::Server,
+            Default::default(),
+        )
+        .unwrap();
+        shared.schedule.register(0, Priority::default()).unwrap();
+        let admission = Arc::new(Semaphore::new(1));
+        let lease = Lease {
+            shared: shared.clone(),
+            id: 0,
+            permit: Arc::new(admission.clone().try_acquire_owned().unwrap()),
+        };
+        let mut next = pin!(admission.acquire_owned());
+        let waker = Waker::from(Arc::new(AdmitOnWake(shared.clone())));
+        let mut cx = Context::from_waker(&waker);
+        assert!(next.as_mut().poll(&mut cx).is_pending());
+        // Semaphore release may synchronously wake a receiver on another thread.
+        // Even a reentrant wake must see the old scheduler slot already removed.
+        drop(lease);
+        assert!(next.as_mut().poll(&mut cx).is_ready());
+        assert!(shared.schedule.state.lock().active.contains_key(&4));
+    }
 
     #[test]
     fn priority_churn_retains_a_bounded_ready_index() {

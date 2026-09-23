@@ -50,6 +50,9 @@ fn shared_lookup(b: divan::Bencher) {
     b.bench_local(|| black_box(cache.lookup(black_box(&origin))));
 }
 
+/// Identical fields still renew receipt order, lifetime and advertisement
+/// identity. Keep this cost visible: skipping replacement breaks stale-421
+/// isolation and header-versus-frame ordering.
 #[divan::bench]
 fn replacement(b: divan::Bencher) {
     let (cache, origin, headers) = fixture();

@@ -1,6 +1,7 @@
 //! HTTP/3 errors retain the protocol code and its connection/stream scope.
 
 use rama_http_types::proto::h3::Code;
+use rama_quic::ConnectionError as QuicConnectionError;
 
 use super::frame::FrameError;
 use super::qpack::{ErrorScope, QpackError};
@@ -11,7 +12,14 @@ pub struct Error {
     code: Code,
     scope: ErrorScope,
     reason: &'static str,
-    peer_stopped: bool,
+    source: Source,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Source {
+    Local,
+    Remote,
+    PeerStop,
 }
 
 impl Error {
@@ -22,7 +30,7 @@ impl Error {
             code,
             scope: ErrorScope::Connection,
             reason,
-            peer_stopped: false,
+            source: Source::Local,
         }
     }
 
@@ -33,7 +41,7 @@ impl Error {
             code,
             scope: ErrorScope::Stream,
             reason,
-            peer_stopped: false,
+            source: Source::Local,
         }
     }
 
@@ -42,43 +50,90 @@ impl Error {
             code,
             scope: ErrorScope::Stream,
             reason: "peer stopped sending",
-            peer_stopped: true,
+            source: Source::PeerStop,
         }
     }
 
     pub(crate) const fn is_peer_stop(self) -> bool {
-        self.peer_stopped
+        matches!(self.source, Source::PeerStop)
     }
 
     pub(crate) fn is_clean_close(self) -> bool {
-        self.scope == ErrorScope::Connection && self.code == Code::H3_NO_ERROR
+        self.scope == ErrorScope::Connection && self.code() == Code::H3_NO_ERROR
     }
 
-    pub(crate) fn from_transport(error: &rama_quic::ConnectionError) -> Self {
-        match error {
-            rama_quic::ConnectionError::ApplicationClosed(close) => Self::connection(
+    pub(crate) fn from_transport(error: &QuicConnectionError) -> Self {
+        let mapped = match error {
+            QuicConnectionError::ApplicationClosed(close) => Self::connection(
                 Code::new(close.error_code.into_inner()),
                 "peer closed HTTP/3 connection",
             ),
-            rama_quic::ConnectionError::LocallyClosed => {
+            QuicConnectionError::LocallyClosed => {
                 Self::connection(Code::H3_NO_ERROR, "local connection closed")
             }
             // HTTP/3 defines no timeout application code. Retain a terminal
             // local error, with an explicit transport cause rather than claiming
             // the peer violated HTTP/3. This code was not received from the peer.
-            rama_quic::ConnectionError::TimedOut => {
+            QuicConnectionError::TimedOut => {
                 Self::connection(Code::H3_GENERAL_PROTOCOL_ERROR, "QUIC connection timed out")
             }
             _ => Self::connection(Code::H3_GENERAL_PROTOCOL_ERROR, "QUIC connection failed"),
+        };
+        if matches!(
+            error,
+            QuicConnectionError::LocallyClosed | QuicConnectionError::CidsExhausted
+        ) {
+            mapped
+        } else {
+            mapped.remote()
         }
     }
 
-    /// The HTTP/3 application error code.
+    pub(crate) const fn remote(mut self) -> Self {
+        self.source = Source::Remote;
+        self
+    }
+
+    /// Convert closure into an incomplete message while preserving who closed it.
+    /// A graceful peer close is neutral by itself, but not when it truncates a
+    /// response; application-initiated shutdown must remain locally attributed.
+    pub(crate) const fn incomplete(self, reason: &'static str) -> Self {
+        Self {
+            code: Code::H3_REQUEST_INCOMPLETE,
+            scope: ErrorScope::Stream,
+            reason,
+            source: self.source,
+        }
+    }
+
+    /// Whether received protocol data or a transport failure caused this error.
+    ///
+    /// Local application failures and graceful connection closure are excluded.
+    /// This classification does not grant permission to retry a request.
+    #[must_use]
+    pub fn is_remote_failure(self) -> bool {
+        !matches!(self.source, Source::Local) && !self.is_clean_close()
+    }
+
+    /// The effective HTTP/3 application error code.
+    ///
+    /// Unknown and reserved wire values are equivalent to `H3_NO_ERROR`
+    /// (RFC 9114 section 8). [`Self::raw_code`] retains their diagnostic value.
     ///
     /// Transport failures use a local classification when no application code
     /// was received; a closed transport cannot deliver it to the peer.
     #[must_use]
     pub const fn code(self) -> Code {
+        if self.code.name().is_some() {
+            self.code
+        } else {
+            Code::H3_NO_ERROR
+        }
+    }
+
+    /// The original application code, including unknown and reserved values.
+    #[must_use]
+    pub const fn raw_code(self) -> Code {
         self.code
     }
 
@@ -91,7 +146,7 @@ impl Error {
     /// Whether the peer explicitly rejected this request without processing it.
     #[must_use]
     pub fn is_rejected(self) -> bool {
-        self.code == Code::H3_REQUEST_REJECTED
+        self.scope == ErrorScope::Stream && self.code == Code::H3_REQUEST_REJECTED
     }
 
     /// Map a terminal compression error, preserving local output backpressure as `None`.
@@ -101,7 +156,7 @@ impl Error {
             code: error.code()?,
             scope: error.scope()?,
             reason: error.reason(),
-            peer_stopped: false,
+            source: Source::Local,
         })
     }
 
@@ -134,10 +189,67 @@ impl std::error::Error for Error {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rama_quic_proto::{VarInt, frame::ApplicationClose};
+
+    #[test]
+    fn incomplete_messages_preserve_peer_or_local_close_provenance() {
+        let local = Error::from_transport(&QuicConnectionError::LocallyClosed);
+        assert!(!local.incomplete("missing FIN").is_remote_failure());
+        for code in [Code::H3_NO_ERROR, Code::new(0x21), Code::new(0xdead)] {
+            let peer =
+                Error::from_transport(&QuicConnectionError::ApplicationClosed(ApplicationClose {
+                    error_code: VarInt::from_u64(code.value()).unwrap(),
+                    reason: Default::default(),
+                }));
+            assert!(!peer.is_remote_failure());
+            assert!(peer.incomplete("missing FIN").is_remote_failure());
+            assert_eq!(
+                peer.incomplete("missing FIN").code(),
+                Code::H3_REQUEST_INCOMPLETE
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_codes_preserve_diagnostics_without_inventing_failure_semantics() {
+        for value in [0, 0x21, 0x40, 0xdead] {
+            let error = Error::connection(Code::new(value), "peer close").remote();
+            assert!(error.is_clean_close());
+            assert!(!error.is_remote_failure());
+            assert_eq!(error.code(), Code::H3_NO_ERROR);
+            assert_eq!(error.raw_code().value(), value);
+        }
+    }
+
+    #[test]
+    fn request_rejection_requires_stream_scope() {
+        assert!(Error::stream(Code::H3_REQUEST_REJECTED, "rejected").is_rejected());
+        assert!(!Error::connection(Code::H3_REQUEST_REJECTED, "peer close").is_rejected());
+    }
+
+    #[test]
+    fn remote_failure_provenance_does_not_classify_local_application_errors() {
+        assert!(
+            !Error::stream(Code::H3_MESSAGE_ERROR, "invalid application request")
+                .is_remote_failure()
+        );
+        assert!(
+            !Error::stream(Code::H3_INTERNAL_ERROR, "application body failed").is_remote_failure()
+        );
+        assert!(!Error::from_transport(&QuicConnectionError::LocallyClosed).is_remote_failure());
+        assert!(!Error::from_transport(&QuicConnectionError::CidsExhausted).is_remote_failure());
+        assert!(Error::peer_stopped(Code::H3_REQUEST_CANCELLED).is_remote_failure());
+        assert!(Error::from_transport(&QuicConnectionError::Reset).is_remote_failure());
+        assert!(
+            Error::stream(Code::H3_FRAME_ERROR, "malformed peer frame")
+                .remote()
+                .is_remote_failure()
+        );
+    }
 
     #[test]
     fn transport_timeout_remains_terminal_with_specific_cause() {
-        let error = Error::from_transport(&rama_quic::ConnectionError::TimedOut);
+        let error = Error::from_transport(&QuicConnectionError::TimedOut);
         assert!(!error.is_clean_close());
         assert_eq!(error.scope(), ErrorScope::Connection);
         assert!(error.to_string().contains("timed out"));

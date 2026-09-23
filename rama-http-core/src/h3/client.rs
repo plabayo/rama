@@ -9,20 +9,24 @@ use super::{
     stream::{Phase, Reader},
 };
 use rama_core::{error::BoxError, extensions::ExtensionsRef, rt::Executor};
+use rama_http::io::upgrade as http_upgrade;
 use rama_http_types::{
-    Method, Request, Response,
+    Method, Request, Response, StatusCode,
     body::StreamingBody,
     proto::{
         h1::ext::informational::OnInformational,
         h3::{Code, FrameType},
     },
 };
+use rama_net::tls::ApplicationProtocol;
+use rama_quic::Connection as QuicConnection;
+use rama_quic_proto::Side;
 use std::{marker::PhantomData, pin::pin, sync::Arc};
 use tokio::sync::Semaphore;
 
 /// Cloneable sender for a multiplexed HTTP/3 connection.
 pub struct SendRequest<B> {
-    connection: rama_quic::Connection,
+    connection: QuicConnection,
     shared: Arc<Shared>,
     admission: Arc<Semaphore>,
     lifetime: Arc<ConnectionLifetime>,
@@ -33,7 +37,7 @@ pub struct SendRequest<B> {
 // The driver owns a transport handle too, so transport reference counting alone
 // cannot detect when the application has stopped using this connection.
 pub(crate) struct ConnectionLifetime {
-    connection: rama_quic::Connection,
+    connection: QuicConnection,
     shared: Arc<Shared>,
 }
 
@@ -70,11 +74,11 @@ impl<B> std::fmt::Debug for SendRequest<B> {
 /// Application data is sent only after handshake confirmation. The QUIC endpoint
 /// must negotiate `h3` and allow at least three peer unidirectional streams.
 pub fn handshake<B>(
-    connection: rama_quic::Connection,
+    connection: QuicConnection,
     config: Config,
     executor: Executor,
 ) -> Result<(SendRequest<B>, Driver), Error> {
-    if connection.side() != rama_quic_proto::Side::Client {
+    if connection.side() != Side::Client {
         return Err(Error::connection(
             Code::H3_INTERNAL_ERROR,
             "client requires client-side QUIC connection",
@@ -128,6 +132,28 @@ impl<B> SendRequest<B> {
         async move { shared.rejected(None).await }
     }
 
+    /// A clean transport close can wake a request before the control driver has
+    /// consumed its buffered GOAWAY. Wait for that bounded drain before deciding
+    /// whether an incomplete response was explicitly rejected without processing.
+    async fn response_error(&self, id: u64, error: Error) -> Error {
+        if error.code() == Code::H3_REQUEST_INCOMPLETE
+            && self
+                .connection
+                .close_reason()
+                .as_ref()
+                .is_some_and(|reason| Error::from_transport(reason).is_clean_close())
+        {
+            let terminal = self.shared.failed().await;
+            if let Some(rejection) = self.shared.rejection(Some(id)) {
+                return rejection;
+            }
+            if !terminal.is_clean_close() {
+                return terminal;
+            }
+        }
+        self.shared.rejection(Some(id)).unwrap_or(error)
+    }
+
     /// Check whether this connection still admits new work.
     pub async fn ready(&mut self) -> Result<(), Error> {
         self.connection
@@ -145,7 +171,7 @@ impl<B> SendRequest<B> {
             .connection
             .handshake_data()
             .and_then(|data| data.application_layer_protocol)
-            != Some(rama_net::tls::ApplicationProtocol::HTTP_3)
+            != Some(ApplicationProtocol::HTTP_3)
         {
             return Err(Error::connection(
                 Code::H3_GENERAL_PROTOCOL_ERROR,
@@ -213,10 +239,13 @@ where
                 let fields = tokio::select! {
                     biased;
                     error = self.shared.rejected(Some(id)) => return Err(error),
-                    fields = reader.headers() => fields?,
+                    fields = reader.headers() => match fields {
+                        Ok(fields) => fields,
+                        Err(error) => return Err(self.response_error(id, error).await),
+                    },
                 };
                 let response = headers::response_for_method(fields, method == Method::CONNECT)
-                    .map_err(|error| reader.reject(error))?;
+                    .map_err(|error| reader.reject(error.remote()))?;
                 response
                     .extensions()
                     .insert(super::PriorityHandle::new(&self.shared, id, false));
@@ -228,12 +257,19 @@ where
                     continue;
                 }
                 if response.status().is_success() {
-                    let (pending, upgrade) = rama_http::io::upgrade::pending();
+                    let (pending, upgrade) = http_upgrade::pending();
                     pending.fulfill(super::upgrade::new(reader, writer, permit, None));
                     response.extensions().insert(upgrade);
                     return Ok(response.map(|()| crate::body::Incoming::empty()));
                 }
                 std::future::poll_fn(|cx| writer.poll_finish(cx)).await?;
+                match writer.acknowledged().await {
+                    Ok(()) => writer.mark_acknowledged(),
+                    // A final rejection can stop the CONNECT send direction while
+                    // its ordinary response body remains readable.
+                    Err(error) if error.is_peer_stop() => writer.reset(error.code()),
+                    Err(error) => return Err(error),
+                }
                 let length = headers::content_length(response.headers())?;
                 reader.phase = Phase::Body;
                 return Ok(response
@@ -251,6 +287,7 @@ where
             let result = body::send(writer, request_body, shared.clone(), id, remaining).await;
             if let Err(error) = result
                 && error.scope() == super::qpack::ErrorScope::Connection
+                && !error.is_clean_close()
             {
                 shared.fail(error);
             }
@@ -274,7 +311,10 @@ where
                     tokio::select! {
                         biased;
                         error = self.shared.rejected(Some(id)) => return Err(error),
-                        result = &mut head => break result?,
+                        result = &mut head => break match result {
+                            Ok(fields) => fields,
+                            Err(error) => return Err(self.response_error(id, error).await),
+                        },
                         result = async {
                             match upload.0.as_mut() {
                                 Some(task) => task.await,
@@ -289,7 +329,7 @@ where
                 }
             };
             let response = headers::response_for_method(fields, method == Method::CONNECT)
-                .map_err(|error| reader.reject(error))?;
+                .map_err(|error| reader.reject(error.remote()))?;
             response
                 .extensions()
                 .insert(super::PriorityHandle::new(&self.shared, id, false));
@@ -301,8 +341,8 @@ where
                 continue;
             }
             let length = if method == Method::HEAD
-                || response.status() == rama_http_types::StatusCode::NOT_MODIFIED
-                || response.status() == rama_http_types::StatusCode::NO_CONTENT
+                || response.status() == StatusCode::NOT_MODIFIED
+                || response.status() == StatusCode::NO_CONTENT
             {
                 Some(0)
             } else {

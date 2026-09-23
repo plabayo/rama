@@ -28,14 +28,14 @@ pub use config::{
     TlsServerIdentity, TlsServerName, TlsServerTrust, TlsServerTrustAnchors, TlsServerVerify,
     TlsStoreServerCertChain,
 };
-pub use pool::{TlsPoolId, TlsPoolIdBuilder};
+pub use pool::{TlsConnectionReuse, TlsPoolId, TlsPoolIdBuilder};
 use rama_crypto::pki_types::CertificateDer;
 
 use super::ProtocolVersion;
 use rama_core::extensions::{Extension, Extensions};
 use rama_net::address::{Domain, Host};
 use rama_net::tls::ApplicationProtocol;
-use std::fmt;
+use std::{fmt, sync::Arc};
 
 #[derive(Debug, Clone, PartialEq, Eq, Extension)]
 #[extension(tags(tls))]
@@ -99,8 +99,9 @@ pub fn merge_client_hello_lists(
 
 /// Classify the request overrides understood by a fixed TLS configuration provider.
 ///
-/// Pools must retain the same provider and connector defaults for their lifetime.
-/// Custom providers participate through the same interface as built-in providers.
+/// TLS connectors own this provider and publish their reuse rules after a
+/// handshake. Connector defaults remain fixed for the lifetime of its pool;
+/// custom providers participate through the same interface as built-in providers.
 pub trait TlsClientConfigProvider: fmt::Debug + Send + Sync {
     /// Identity of request overrides, before connector defaults are applied.
     ///
@@ -123,6 +124,20 @@ pub trait TlsClientConfigProvider: fmt::Debug + Send + Sync {
             .get_ref::<TlsServerName>()
             .is_none_or(|name| &name.0 == origin)
             && self.authenticates_server(extensions)
+    }
+}
+
+impl<P: TlsClientConfigProvider + ?Sized> TlsClientConfigProvider for Arc<P> {
+    fn pool_id(&self, extensions: &Extensions) -> Option<TlsPoolId> {
+        (**self).pool_id(extensions)
+    }
+
+    fn authenticates_server(&self, extensions: &Extensions) -> bool {
+        (**self).authenticates_server(extensions)
+    }
+
+    fn authenticates_origin(&self, extensions: &Extensions, origin: &Host) -> bool {
+        (**self).authenticates_origin(extensions, origin)
     }
 }
 

@@ -12,12 +12,17 @@ use rama_core::{
     extensions::{Extensions, ExtensionsRef},
     futures::{StreamExt, stream::FuturesUnordered},
 };
+use rama_http::headers::Priority;
 use rama_http_types::proto::h3::{
     Code, FrameHeader, FrameType, SettingId, Settings, StreamType, VarInt, VarIntDecoder,
 };
-use rama_net::stream::SocketInfo;
-use rama_quic::NegotiatedTlsParameters;
+use rama_net::{stream::SocketInfo, tls::ApplicationProtocol};
+use rama_quic::{
+    Connection as QuicConnection, NegotiatedTlsParameters, RecvStream as QuicRecvStream,
+    SendStream as QuicSendStream, TransportConfig,
+};
 use rama_quic_proto::{Dir, coding::Codec};
+use rama_utils::octets::{kib, mib};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     pin::pin,
@@ -51,8 +56,8 @@ impl Default for Config {
             encoder: EncoderConfig::default(),
             max_requests: 128,
             max_pushes: 0,
-            max_frame_size: rama_utils::octets::kib(64),
-            read_chunk_size: rama_utils::octets::kib(16),
+            max_frame_size: kib(64),
+            read_chunk_size: kib(16),
             max_pending_uni_streams: 32,
         }
     }
@@ -61,10 +66,7 @@ impl Default for Config {
 impl Config {
     /// Apply finite HTTP/3 receive budgets to a QUIC transport configuration.
     /// Configure the endpoint before establishing connections.
-    pub fn configure_transport(
-        &self,
-        transport: &mut rama_quic::TransportConfig,
-    ) -> Result<(), Error> {
+    pub fn configure_transport(&self, transport: &mut TransportConfig) -> Result<(), Error> {
         self.settings()?;
         transport.set_max_concurrent_bidi_streams(
             VarInt::from_u64(self.max_requests as u64).map_err(|_error| {
@@ -76,8 +78,8 @@ impl Config {
                 Error::connection(Code::H3_INTERNAL_ERROR, "stream limit too large")
             })?,
         );
-        transport.set_stream_receive_window(VarInt::from_u32(rama_utils::octets::kib(256) as u32));
-        transport.set_receive_window(VarInt::from_u32(rama_utils::octets::mib(8) as u32));
+        transport.set_stream_receive_window(VarInt::from_u32(kib(256) as u32));
+        transport.set_receive_window(VarInt::from_u32(mib(8) as u32));
         Ok(())
     }
 
@@ -138,6 +140,7 @@ struct State {
     error: Option<Error>,
     control_output: VecDeque<(Bytes, Option<u64>)>,
     control_in_flight: bool,
+    receive_closed: bool,
     local_goaway: Option<u64>,
 }
 
@@ -147,7 +150,7 @@ pub(crate) struct Shared {
     pub(crate) push_ready: Notify,
     pub(crate) transport_extensions: Extensions,
     state: Mutex<State>,
-    encoder_stream: Mutex<Option<rama_quic::SendStream>>,
+    encoder_stream: Mutex<Option<QuicSendStream>>,
     pub(crate) config: Config,
     output: [Notify; 2],
     progress: Notify,
@@ -160,7 +163,7 @@ impl Shared {
     pub(crate) fn from_connection(
         config: Config,
         role: Role,
-        connection: &rama_quic::Connection,
+        connection: &QuicConnection,
     ) -> Result<Arc<Self>, Error> {
         let extensions = connection.extensions().clone();
         // Preserve connector-provided certificate chains and local addresses.
@@ -195,6 +198,7 @@ impl Shared {
                 error: None,
                 control_output: VecDeque::new(),
                 control_in_flight: false,
+                receive_closed: false,
                 local_goaway: None,
             }),
             schedule: super::priority::Schedule::new(
@@ -245,7 +249,16 @@ impl Shared {
         if state.error.is_none_or(Error::is_clean_close) {
             state.error = Some(error);
         }
-        for (_, tx) in std::mem::take(&mut state.waiting) {
+        let error = state.error.unwrap_or(error);
+        for (id, tx) in std::mem::take(&mut state.waiting) {
+            state.decoder.drop_blocked_stream(id);
+            let error = if state.control.goaway().is_some_and(|limit| id >= limit) {
+                Error::stream(Code::H3_REQUEST_REJECTED, "request excluded by GOAWAY")
+            } else if error.is_clean_close() {
+                error.incomplete("connection closed before required QPACK inserts")
+            } else {
+                error
+            };
             _ = tx.send(Err(error));
         }
         drop(state);
@@ -297,7 +310,7 @@ impl Shared {
         &self,
         id: u64,
         push: bool,
-        priority: rama_http::headers::Priority,
+        priority: Priority,
     ) -> Result<(), Error> {
         let id = VarInt::from_u64(id)
             .map_err(|_error| Error::stream(Code::H3_ID_ERROR, "invalid priority target"))?;
@@ -456,11 +469,10 @@ impl Shared {
                         return state
                             .decoder
                             .decode_field_section_after_close(id, bytes)
-                            .map_err(compression_error)?
-                            .ok_or(Error::stream(
-                                Code::H3_REQUEST_INCOMPLETE,
-                                "connection closed before required QPACK inserts",
-                            ));
+                            .map_err(|error| compression_error(error).remote())?
+                            .ok_or(
+                                error.incomplete("connection closed before required QPACK inserts"),
+                            );
                     }
                     return Err(error);
                 }
@@ -480,7 +492,7 @@ impl Shared {
                         Some(rx)
                     }
                     Err(QpackError::OutputBlocked) => None,
-                    Err(error) => return Err(compression_error(error)),
+                    Err(error) => return Err(compression_error(error).remote()),
                 }
             };
             self.output[1].notify_one();
@@ -528,13 +540,16 @@ impl Shared {
 
     fn resume(state: &mut State) -> Result<(), Error> {
         for _ in 0..super::cooperative::OPERATIONS_PER_QUANTUM {
+            if state.receive_closed {
+                state.decoder.discard_output_after_close();
+            }
             let Some((id, result)) = state.decoder.resume_next() else {
                 break;
             };
             if matches!(result, Err(QpackError::OutputBlocked)) {
                 break;
             }
-            let result = result.map_err(compression_error);
+            let result = result.map_err(|error| compression_error(error).remote());
             let failure = result.as_ref().err().copied();
             if let Some(tx) = state.waiting.remove(&id) {
                 _ = tx.send(result);
@@ -568,6 +583,9 @@ impl Shared {
 
     pub(super) fn feed_instructions(&self, ty: StreamType, chunk: &[u8]) -> Result<bool, Error> {
         let mut state = self.state.lock();
+        if state.receive_closed {
+            state.decoder.discard_output_after_close();
+        }
         let result = if ty == StreamType::QPACK_ENCODER {
             state.decoder.feed_encoder_stream(chunk)
         } else {
@@ -629,7 +647,7 @@ fn compression_error(error: QpackError) -> Error {
 
 pub(crate) async fn write_instructions(
     shared: Arc<Shared>,
-    mut stream: rama_quic::SendStream,
+    mut stream: QuicSendStream,
     encoder: bool,
 ) -> Result<(), Error> {
     stream.set_priority(i32::MAX).map_err(|_error| {
@@ -678,9 +696,9 @@ pub(crate) async fn write_instructions(
 }
 
 pub(crate) async fn receive_uni(
-    connection: &rama_quic::Connection,
+    connection: &QuicConnection,
     shared: Arc<Shared>,
-    mut stream: rama_quic::RecvStream,
+    mut stream: QuicRecvStream,
 ) -> Result<(), Error> {
     let mut kind = VarIntDecoder::new();
     let (ty, mut chunk) = loop {
@@ -764,7 +782,7 @@ pub(crate) async fn receive_uni(
                 } = event
                 {
                     if push {
-                        let priority = rama_http::headers::Priority::parse(field_value).ok();
+                        let priority = Priority::parse(field_value).ok();
                         let stream_id = shared.pushes.lock().priority(element_id, priority)?;
                         if let Some(id) = stream_id
                             && let Some(priority) = priority
@@ -787,7 +805,7 @@ pub(crate) async fn receive_uni(
                             "priority target exceeds advertised request stream limit",
                         ));
                     }
-                    if let Ok(priority) = rama_http::headers::Priority::parse(field_value) {
+                    if let Ok(priority) = Priority::parse(field_value) {
                         shared.schedule.update(element_id, priority)?;
                     }
                 }
@@ -810,18 +828,22 @@ pub(crate) async fn receive_uni(
         chunk = stream
             .read_chunk(shared.config.read_chunk_size, true)
             .await
-            .map_err(|_error| {
-                Error::connection(
-                    Code::H3_CLOSED_CRITICAL_STREAM,
-                    "critical receive stream reset",
-                )
-            })?
-            .ok_or(Error::connection(
-                Code::H3_CLOSED_CRITICAL_STREAM,
-                "critical receive stream closed",
-            ))?
+            .map_err(|_error| critical_receive_closed(connection))?
+            .ok_or_else(|| critical_receive_closed(connection))?
             .bytes;
     }
+}
+
+fn critical_receive_closed(connection: &QuicConnection) -> Error {
+    connection.close_reason().as_ref().map_or_else(
+        || {
+            Error::connection(
+                Code::H3_CLOSED_CRITICAL_STREAM,
+                "critical receive stream closed",
+            )
+        },
+        Error::from_transport,
+    )
 }
 
 pub(crate) fn initial_control(config: &Config) -> Result<Bytes, Error> {
@@ -850,7 +872,7 @@ pub(crate) fn initial_control(config: &Config) -> Result<Bytes, Error> {
 /// Run this future for as long as the connection is used. Dropping it closes the
 /// connection and wakes blocked field sections.
 pub struct Driver {
-    connection: rama_quic::Connection,
+    connection: QuicConnection,
     shared: Arc<Shared>,
     role: Role,
 }
@@ -864,7 +886,7 @@ impl std::fmt::Debug for Driver {
 }
 
 impl Driver {
-    pub(crate) fn new(connection: rama_quic::Connection, shared: Arc<Shared>, role: Role) -> Self {
+    pub(crate) fn new(connection: QuicConnection, shared: Arc<Shared>, role: Role) -> Self {
         Self {
             connection,
             shared,
@@ -898,166 +920,230 @@ impl Driver {
             }
         } else {
             // Wake terminal waiters without making Drop discard complete buffered responses.
-            self.shared.fail(Error::connection(
-                Code::H3_NO_ERROR,
-                "HTTP/3 connection closed",
-            ));
+            let error = self.connection.close_reason().as_ref().map_or_else(
+                || Error::connection(Code::H3_NO_ERROR, "HTTP/3 connection closed"),
+                Error::from_transport,
+            );
+            self.shared.fail(error);
         }
         result
     }
 
     async fn run_inner(&self) -> Result<(), Error> {
-        self.connection
-            .handshake_confirmed()
-            .await
-            .map_err(|_error| {
-                Error::connection(Code::H3_GENERAL_PROTOCOL_ERROR, "QUIC handshake failed")
-            })?;
-        let alpn = self
-            .connection
-            .handshake_data()
-            .and_then(|data| data.application_layer_protocol);
-        if alpn != Some(rama_net::tls::ApplicationProtocol::HTTP_3) {
-            return Err(Error::connection(
-                Code::H3_GENERAL_PROTOCOL_ERROR,
-                "HTTP/3 requires h3 ALPN",
-            ));
-        }
-        if self
-            .connection
-            .max_concurrent_streams(rama_quic_proto::Dir::Uni)
-            < 3
-        {
-            return Err(Error::connection(
-                Code::H3_STREAM_CREATION_ERROR,
-                "local endpoint must permit three critical streams",
-            ));
-        }
-        let open = || async {
-            self.connection.open_uni().await.map_err(|_error| {
-                Error::connection(
-                    Code::H3_STREAM_CREATION_ERROR,
-                    "cannot open critical stream",
-                )
-            })
-        };
-        let (mut control, encoder, decoder) = tokio::try_join!(open(), open(), open())?;
-        let control_task = async {
-            control.set_priority(i32::MAX).map_err(|_error| {
-                Error::connection(Code::H3_CLOSED_CRITICAL_STREAM, "control stream closed")
-            })?;
-            let mut bytes = [initial_control(&self.shared.config)?];
-            if self.role == Role::Client && self.shared.config.max_pushes != 0 {
-                self.shared.send_control_id(
-                    FrameType::MAX_PUSH_ID,
-                    self.shared.config.max_pushes as u64 - 1,
-                )?;
-            }
-
-            while !bytes[0].is_empty() {
-                control.write_chunks(&mut bytes).await.map_err(|_error| {
-                    Error::connection(Code::H3_CLOSED_CRITICAL_STREAM, "control stream stopped")
+        // These futures own partially consumed chunks and frame/integer decoder state.
+        // Keep them outside the select so connection closure cannot discard that data.
+        let mut streams = FuturesUnordered::new();
+        let result = async {
+            self.connection
+                .handshake_confirmed()
+                .await
+                .map_err(|_error| {
+                    Error::connection(Code::H3_GENERAL_PROTOCOL_ERROR, "QUIC handshake failed")
                 })?;
-            }
-            loop {
-                let next = {
-                    let mut state = self.shared.state.lock();
-                    let next = state.control_output.pop_front();
-                    state.control_in_flight = next.is_some();
-                    next
-                };
-                if let Some((bytes, push_grant)) = next {
-                    let mut bytes = [bytes];
-                    while !bytes[0].is_empty() {
-                        std::future::poll_fn(|cx| {
-                            let mut pushes = self.shared.pushes.lock();
-                            let result = control.poll_write_chunks(cx, &mut bytes);
-                            if !matches!(result, std::task::Poll::Ready(Err(_)))
-                                && bytes[0].is_empty()
-                                && let Some(max) = push_grant
-                            {
-                                pushes.grant(max);
-                            }
-                            result
-                        })
-                        .await
-                        .map_err(|_error| {
-                            Error::connection(
-                                Code::H3_CLOSED_CRITICAL_STREAM,
-                                "control stream stopped",
-                            )
-                        })?;
-                    }
-                    self.shared.state.lock().control_in_flight = false;
-                    self.shared.progress.notify_waiters();
-                } else {
-                    tokio::select! {
-                        _ = self.shared.control_ready.notified() => (),
-                        _ = control.stopped() => return Err(Error::connection(Code::H3_CLOSED_CRITICAL_STREAM, "control stream stopped")),
-                    }
-                }
-            }
-        };
-        let receive = async {
-            let mut streams = FuturesUnordered::new();
-            loop {
-                tokio::select! {
-                    result = self.connection.accept_uni() => {
-                        let stream = result.map_err(|_error| Error::connection(Code::H3_GENERAL_PROTOCOL_ERROR, "QUIC accept failed"))?;
-                        if streams.len() >= self.shared.config.max_pending_uni_streams {
-                            return Err(Error::connection(Code::H3_EXCESSIVE_LOAD, "too many pending unidirectional streams"));
-                        }
-                        streams.push(receive_uni(&self.connection, self.shared.clone(), stream));
-                    }
-                    result = streams.next(), if !streams.is_empty() => {
-                        if let Some(result) = result { result?; }
-                    }
-                }
-            }
-        };
-        let reject_server_bidi = async {
-            if self.role == Role::Client {
-                _ = self.connection.accept_bi().await;
+            let alpn = self
+                .connection
+                .handshake_data()
+                .and_then(|data| data.application_layer_protocol);
+            if alpn != Some(ApplicationProtocol::HTTP_3) {
                 return Err(Error::connection(
-                    Code::H3_STREAM_CREATION_ERROR,
-                    "server initiated bidirectional stream",
+                    Code::H3_GENERAL_PROTOCOL_ERROR,
+                    "HTTP/3 requires h3 ALPN",
                 ));
             }
-            // Admission owns bidi streams until shutdown. Afterwards the driver
-            // rejects newly arriving requests while accepted work drains (§5.2).
-            loop {
-                let progress = self.shared.progress.notified();
-                let mut progress = pin!(progress);
-                progress.as_mut().enable();
-                if self.shared.state.lock().local_goaway.is_some() {
-                    break;
-                }
-                progress.await;
+            if self
+                .connection
+                .max_concurrent_streams(Dir::Uni)
+                < 3
+            {
+                return Err(Error::connection(
+                    Code::H3_STREAM_CREATION_ERROR,
+                    "local endpoint must permit three critical streams",
+                ));
             }
+            let open = || async {
+                self.connection.open_uni().await.map_err(|_error| {
+                    Error::connection(
+                        Code::H3_STREAM_CREATION_ERROR,
+                        "cannot open critical stream",
+                    )
+                })
+            };
+            let (mut control, encoder, decoder) = tokio::try_join!(open(), open(), open())?;
+            let control_task = async {
+                control.set_priority(i32::MAX).map_err(|_error| {
+                    Error::connection(Code::H3_CLOSED_CRITICAL_STREAM, "control stream closed")
+                })?;
+                let mut bytes = [initial_control(&self.shared.config)?];
+                if self.role == Role::Client && self.shared.config.max_pushes != 0 {
+                    self.shared.send_control_id(
+                        FrameType::MAX_PUSH_ID,
+                        self.shared.config.max_pushes as u64 - 1,
+                    )?;
+                }
+
+                while !bytes[0].is_empty() {
+                    control.write_chunks(&mut bytes).await.map_err(|_error| {
+                        Error::connection(Code::H3_CLOSED_CRITICAL_STREAM, "control stream stopped")
+                    })?;
+                }
+                loop {
+                    let next = {
+                        let mut state = self.shared.state.lock();
+                        let next = state.control_output.pop_front();
+                        state.control_in_flight = next.is_some();
+                        next
+                    };
+                    if let Some((bytes, push_grant)) = next {
+                        let mut bytes = [bytes];
+                        while !bytes[0].is_empty() {
+                            std::future::poll_fn(|cx| {
+                                let mut pushes = self.shared.pushes.lock();
+                                let result = control.poll_write_chunks(cx, &mut bytes);
+                                if !matches!(result, std::task::Poll::Ready(Err(_)))
+                                    && bytes[0].is_empty()
+                                    && let Some(max) = push_grant
+                                {
+                                    pushes.grant(max);
+                                }
+                                result
+                            })
+                            .await
+                            .map_err(|_error| {
+                                Error::connection(
+                                    Code::H3_CLOSED_CRITICAL_STREAM,
+                                    "control stream stopped",
+                                )
+                            })?;
+                        }
+                        self.shared.state.lock().control_in_flight = false;
+                        self.shared.progress.notify_waiters();
+                    } else {
+                        tokio::select! {
+                            _ = self.shared.control_ready.notified() => (),
+                            _ = control.stopped() => return Err(Error::connection(Code::H3_CLOSED_CRITICAL_STREAM, "control stream stopped")),
+                        }
+                    }
+                }
+            };
+            let receive = async {
+                loop {
+                    tokio::select! {
+                        result = self.connection.accept_uni() => {
+                            let stream = result.map_err(|_error| Error::connection(Code::H3_GENERAL_PROTOCOL_ERROR, "QUIC accept failed"))?;
+                            if streams.len() >= self.shared.config.max_pending_uni_streams {
+                                return Err(Error::connection(Code::H3_EXCESSIVE_LOAD, "too many pending unidirectional streams"));
+                            }
+                            streams.push(receive_uni(&self.connection, self.shared.clone(), stream));
+                        }
+                        result = streams.next(), if !streams.is_empty() => {
+                            if let Some(Err(error)) = result {
+                                if !error.is_clean_close() {
+                                    let error = error.remote();
+                                    self.shared.fail(error);
+                                    return Err(error);
+                                }
+                                return Err(error);
+                            }
+                        }
+                    }
+                }
+            };
+            let reject_server_bidi = async {
+                if self.role == Role::Client {
+                    _ = self.connection.accept_bi().await;
+                    return Err(Error::connection(
+                        Code::H3_STREAM_CREATION_ERROR,
+                        "server initiated bidirectional stream",
+                    ));
+                }
+                // Admission owns bidi streams until shutdown. Afterwards the driver
+                // rejects newly arriving requests while accepted work drains (§5.2).
+                loop {
+                    let progress = self.shared.progress.notified();
+                    let mut progress = pin!(progress);
+                    progress.as_mut().enable();
+                    if self.shared.state.lock().local_goaway.is_some() {
+                        break;
+                    }
+                    progress.await;
+                }
+                let mut budget = super::cooperative::Budget::default();
+                loop {
+                    budget.consume().await;
+                    let (send, _recv) = self
+                        .connection
+                        .accept_bi()
+                        .await
+                        .map_err(|error| Error::from_transport(&error))?;
+                    send.abort_handle()
+                        .abort(VarInt::from_u32(Code::H3_REQUEST_REJECTED.value() as u32));
+                }
+            };
+            tokio::select! {
+                error = self.shared.failed() => Err(error),
+                result = control_task => result,
+                result = write_instructions(self.shared.clone(), encoder, true) => result,
+                result = write_instructions(self.shared.clone(), decoder, false) => result,
+                result = receive => result,
+                result = reject_server_bidi => result,
+                error = self.connection.closed() => {
+                    let error = Error::from_transport(&error);
+                    if error.code() == Code::H3_NO_ERROR { Ok(()) } else { Err(error) }
+                },
+            }
+        }.await;
+
+        if self
+            .connection
+            .close_reason()
+            .as_ref()
+            .is_some_and(|reason| Error::from_transport(reason).is_clean_close())
+            && self.shared.receive_error().is_none()
+        {
+            // The sending futures above are gone, so their feedback reservations can
+            // be discarded. Keep blocked fields pending until all received inserts
+            // and GOAWAY frames have been processed.
+            self.shared.state.lock().receive_closed = true;
+            self.shared.progress.notify_waiters();
+            let mut accepting = true;
+            while accepting || !streams.is_empty() {
+                tokio::select! {
+                    incoming = self.connection.accept_uni(), if accepting && streams.len() < self.shared.config.max_pending_uni_streams => {
+                        match incoming {
+                            Ok(stream) => streams.push(receive_uni(&self.connection, self.shared.clone(), stream)),
+                            Err(_) => accepting = false,
+                        }
+                    }
+                    result = streams.next(), if !streams.is_empty() => {
+                        if let Some(Err(error)) = result && !error.is_clean_close() {
+                            let error = error.remote();
+                            self.shared.fail(error);
+                            return Err(error);
+                        }
+                    }
+                }
+            }
+            // A final insert can unblock more sections than one scheduling quantum.
+            // Resume all available sections cooperatively before failing the remainder.
             let mut budget = super::cooperative::Budget::default();
             loop {
+                let resumed = {
+                    let mut state = self.shared.state.lock();
+                    let before = state.waiting.len();
+                    if let Err(error) = Shared::resume(&mut state) {
+                        drop(state);
+                        self.shared.fail(error);
+                        return Err(error);
+                    }
+                    state.waiting.len() < before
+                };
+                if !resumed {
+                    break;
+                }
                 budget.consume().await;
-                let (send, _recv) = self
-                    .connection
-                    .accept_bi()
-                    .await
-                    .map_err(|error| Error::from_transport(&error))?;
-                send.abort_handle()
-                    .abort(VarInt::from_u32(Code::H3_REQUEST_REJECTED.value() as u32));
             }
-        };
-        tokio::select! {
-            error = self.shared.failed() => Err(error),
-            result = control_task => result,
-            result = write_instructions(self.shared.clone(), encoder, true) => result,
-            result = write_instructions(self.shared.clone(), decoder, false) => result,
-            result = receive => result,
-            result = reject_server_bidi => result,
-            error = self.connection.closed() => {
-                let error = Error::from_transport(&error);
-                if error.code() == Code::H3_NO_ERROR { Ok(()) } else { Err(error) }
-            },
         }
+        result
     }
 }
 

@@ -21,9 +21,14 @@ use rama_http_types::{
 };
 use rama_net::client::{
     ConnectionError, ConnectionErrorKind, ConnectorService, EstablishedClientConnection,
+    pool::{ConnectionReuse, ConnectionReusePolicy},
 };
 use rama_net::conn::is_connection_error;
-use rama_net::{AuthorityInputExt, HttpVersionInputExt, TargetHttpVersionInputExt};
+use rama_net::{
+    AuthorityInputExt, HttpVersionInputExt, ProtocolInputExt, TargetHttpVersionInputExt,
+    tls::ApplicationProtocol,
+};
+use rama_tls::client::NegotiatedTlsParameters;
 use tokio::sync::Mutex;
 
 use rama_core::telemetry::tracing::{self, Instrument};
@@ -372,9 +377,24 @@ impl<S, Body> HttpConnector<S, Body> {
     define_inner_service_accessors!();
 }
 
+#[derive(Debug)]
+struct UnclassifiedSecureTransport;
+
+impl ConnectionReusePolicy for UnclassifiedSecureTransport {
+    fn is_reusable(&self) -> bool {
+        false
+    }
+
+    fn matches(&self, _: &Extensions) -> bool {
+        false
+    }
+}
+
 /// Perform the HTTP handshake on an established byte stream or QUIC transport.
 /// The selected protocol must agree with the transport; metadata remains attached
-/// to the resulting service for pooling and request adaptation.
+/// to the resulting service for pooling and request adaptation. The input's
+/// protocol distinguishes secure origins without inferring TLS from a port.
+/// Custom secure transports must publish [`ConnectionReuse`] to enable pooling.
 pub async fn http_connect<T, Input, BodyConnection>(
     transport: T,
     input: Input,
@@ -383,6 +403,7 @@ pub async fn http_connect<T, Input, BodyConnection>(
 where
     T: IntoHttpTransport,
     Input: AuthorityInputExt
+        + ProtocolInputExt
         + ExtensionsRef
         + HttpVersionInputExt
         + TargetHttpVersionInputExt
@@ -392,6 +413,22 @@ where
         StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
 {
     let transport = transport.into_http_transport();
+    let plaintext_origin = input
+        .protocol()
+        .is_some_and(|protocol| protocol.is_http_based() && !protocol.is_secure());
+    let endpoint_policy_required =
+        matches!(&transport, HttpTransport::Quic(_)) || !plaintext_origin;
+    let reuse = transport.extensions().get_ref::<ConnectionReuse>();
+    let classified = if endpoint_policy_required {
+        reuse.is_some_and(ConnectionReuse::is_complete)
+    } else {
+        !transport.extensions().contains::<NegotiatedTlsParameters>() || reuse.is_some()
+    };
+    if !classified {
+        transport
+            .extensions()
+            .insert(ConnectionReuse::new(UnclassifiedSecureTransport));
+    }
     let version = match &transport {
         HttpTransport::Stream(io) => resolve_target_http_version(io, &input),
         HttpTransport::Quic(_) => Some(Version::HTTP_3),
@@ -425,16 +462,27 @@ where
                 .handshake_confirmed()
                 .await
                 .into_opaque_error()?;
-            if quic
-                .connection
-                .handshake_data()
-                .and_then(|data| data.application_layer_protocol)
-                != Some(rama_net::tls::ApplicationProtocol::HTTP_3)
+            let parameters = quic.connection.handshake_data();
+            if parameters
+                .as_ref()
+                .and_then(|data| data.application_layer_protocol.as_ref())
+                != Some(&ApplicationProtocol::HTTP_3)
             {
                 return Err(
                     BoxError::from_static_str("QUIC transport did not negotiate h3 ALPN")
                         .into_opaque_error(),
                 );
+            }
+            // A custom QUIC connector need not copy handshake metadata itself.
+            // Keep richer metadata (such as a requested certificate chain) when
+            // the transport connector already published it.
+            if !quic
+                .connection
+                .extensions()
+                .contains::<NegotiatedTlsParameters>()
+                && let Some(parameters) = parameters
+            {
+                quic.connection.extensions().insert(parameters);
             }
             input
                 .extensions()
@@ -467,6 +515,7 @@ async fn http_stream_connect<IO, Input, BodyConnection>(
 where
     IO: Io + Unpin + ExtensionsRef,
     Input: AuthorityInputExt
+        + ProtocolInputExt
         + ExtensionsRef
         + HttpVersionInputExt
         + TargetHttpVersionInputExt
@@ -631,6 +680,7 @@ impl<S, Input, BodyConnection> Service<Input> for HttpConnector<S, BodyConnectio
 where
     S: ConnectorService<Input, Connection: IntoHttpTransport>,
     Input: AuthorityInputExt
+        + ProtocolInputExt
         + ExtensionsRef
         + HttpVersionInputExt
         + TargetHttpVersionInputExt
@@ -724,6 +774,7 @@ mod http3_dispatch_tests {
         Protocol as ApplicationProtocol,
         client::{ConnectRequest, ConnectorTarget, ProxyRoute},
     };
+    use rama_tls::ProtocolVersion;
 
     fn stream_connector_must_not_connect()
     -> impl ConnectorService<ConnectRequest, Connection = ServiceInput<tokio::io::DuplexStream>>
@@ -736,6 +787,72 @@ mod http3_dispatch_tests {
                 panic!("HTTP/3 must not dial the byte-stream connector");
             },
         )
+    }
+
+    #[derive(Debug)]
+    struct FixedTransportPolicy;
+
+    impl ConnectionReusePolicy for FixedTransportPolicy {
+        fn matches(&self, _: &Extensions) -> bool {
+            true
+        }
+    }
+
+    #[tokio::test]
+    async fn secure_transport_requires_complete_endpoint_reuse_policy() {
+        for protocol in [
+            None,
+            Some(ApplicationProtocol::HTTP),
+            Some(ApplicationProtocol::HTTPS),
+            Some(ApplicationProtocol::WS),
+        ] {
+            for negotiated in [false, true] {
+                for complete in [None, Some(false), Some(true)] {
+                    let (io, _peer) = tokio::io::duplex(4096);
+                    let transport = ServiceInput::new(io);
+                    if negotiated {
+                        transport.extensions().insert(NegotiatedTlsParameters {
+                            protocol_version: ProtocolVersion::TLSv1_3,
+                            application_layer_protocol: None,
+                            peer_certificate_chain: None,
+                            server_name: None,
+                            resumed: None,
+                        });
+                    }
+                    if let Some(complete) = complete {
+                        let policy = ConnectionReuse::new(FixedTransportPolicy);
+                        transport.extensions().insert(if complete {
+                            policy
+                        } else {
+                            policy.into_restriction()
+                        });
+                    }
+                    let mut input = ConnectRequest::new("origin.example:443".parse().unwrap());
+                    input.application_protocol = protocol.clone();
+                    input
+                        .extensions()
+                        .insert(TargetHttpVersion(Version::HTTP_11));
+                    let established =
+                        http_connect::<_, _, Body>(transport, input, Executor::default())
+                            .await
+                            .unwrap();
+                    let reusable = established
+                        .conn
+                        .extensions()
+                        .get_ref::<ConnectionReuse>()
+                        .is_none_or(ConnectionReuse::is_reusable);
+                    let plaintext = protocol
+                        .as_ref()
+                        .is_some_and(|protocol| !protocol.is_secure());
+                    assert_eq!(
+                        reusable,
+                        complete == Some(true)
+                            || (plaintext && (!negotiated || complete.is_some())),
+                        "protocol={protocol:?}, negotiated={negotiated}, complete={complete:?}"
+                    );
+                }
+            }
+        }
     }
 
     #[tokio::test]

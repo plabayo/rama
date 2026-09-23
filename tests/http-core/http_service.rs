@@ -4,8 +4,9 @@ use rama::{
     Layer, Service,
     bytes::Bytes,
     dns::client::DnsConnector,
-    extensions::ExtensionsRef,
-    futures::stream,
+    error::{BoxError, BoxErrorExt as _},
+    extensions::{Extensions, ExtensionsRef},
+    futures::{StreamExt as _, stream},
     graceful::Shutdown,
     http::{
         Body, HeaderMap, Method, Request, Response, StatusCode, Version,
@@ -29,20 +30,24 @@ use rama::{
     net::{
         Protocol,
         address::{Host, HostWithPort, ProxyAddress, SocketAddress},
-        client::{ConnectRequest, ConnectorTarget, ProxyRoute, ProxyRoutes},
+        client::{ConnectRequest, ConnectorTarget, ProxyRoute, ProxyRoutes, pool::ConnectionReuse},
         conn::MaxConcurrency,
         proxy::IoForwardService,
         tls::ApplicationProtocol,
     },
-    quic::{ClientConfig, Endpoint, ServerConfig, tls::TlsOptions},
+    quic::{
+        ClientConfig, Endpoint, ServerConfig,
+        tls::{QuicClientConfigProvider, TlsConfigError, TlsOptions},
+    },
     rt::Executor,
     service::service_fn,
     tcp::{TcpStream, client::service::TcpConnector, server::TcpListener},
     tls::{
         SecureTransport,
         client::{
-            NegotiatedTlsParameters, ServerVerifyMode, TlsClientConfig, TlsServerCertPin,
-            TlsServerCertPins, TlsServerVerify,
+            NegotiatedTlsParameters, ServerVerifyMode, TlsClientConfig, TlsClientConfigProvider,
+            TlsPoolId, TlsServerCertPin, TlsServerCertPins, TlsServerVerify,
+            TlsStoreServerCertChain,
         },
         server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
     },
@@ -58,6 +63,9 @@ use std::{
     },
     time::Duration,
 };
+
+#[cfg(feature = "rustls")]
+use rama::quic::tls::default_tls_provider;
 
 #[cfg(not(feature = "boring"))]
 use rama::tls::rustls::{
@@ -77,6 +85,7 @@ use rama::{
 use parking_lot::Mutex;
 use tokio::{
     net::TcpListener as TokioTcpListener,
+    sync::oneshot,
     task::{JoinHandle, spawn},
     time::timeout,
 };
@@ -654,6 +663,65 @@ async fn pooled_service_refreshes_advertisement_generation_before_421() {
 }
 
 #[tokio::test]
+async fn alternative_response_reset_after_data_suppresses_later_selection() {
+    for (protocol, version) in [("h2", Version::HTTP_2), ("h3", Version::HTTP_3)] {
+        let (auth, tls) = credentials();
+        let origin = Server::start(auth.clone(), Version::HTTP_2).await;
+        let alternative = Server::start(auth, version).await;
+        let cache = AltSvcCache::default();
+        seed(
+            &cache,
+            &origin.origin(),
+            &format!("{protocol}=\"{}\"", alternative.address),
+        );
+        let snapshot = cache.lookup(&origin.origin()).unwrap();
+        let (reset, wait_for_reset) = oneshot::channel();
+        let data = stream::once(async {
+            Ok::<_, BoxError>(Frame::data(Bytes::from_static(b"received before reset")))
+        });
+        let failure = stream::once(async move {
+            wait_for_reset.await.unwrap();
+            Err::<Frame<Bytes>, _>(BoxError::from_static_str("server response interrupted"))
+        });
+        alternative.reply(Reply {
+            body: Some(Body::from_frame_stream(data.chain(failure))),
+            ..Reply::default()
+        });
+        let (client, endpoint) = client_with_http3_cache(tls, cache.clone()).await;
+        let response = timeout(TEST_TIMEOUT, client.serve(origin.request()))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.version(), version);
+        let mut body = response.into_body();
+        let first = timeout(TEST_TIMEOUT, body.frame())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.into_data().unwrap(), "received before reset");
+        assert!(cache.is_usable(&snapshot, 0));
+        reset.send(()).unwrap();
+        timeout(TEST_TIMEOUT, body.collect())
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert!(
+            !cache.is_usable(&snapshot, 0),
+            "{protocol} peer reset after response headers must suppress the alternative"
+        );
+        assert_eq!(complete(&client, origin.request()).await.0, StatusCode::OK);
+        assert_eq!(origin.request_count(), 1);
+        assert_eq!(alternative.request_count(), 1);
+        drop(client);
+        close_client_endpoint(endpoint).await;
+        origin.close().await;
+        alternative.close().await;
+    }
+}
+
+#[tokio::test]
 async fn advertised_protocol_mismatch_falls_back_without_dispatching_to_alternative() {
     let (auth, tls) = credentials();
     let origin = Server::start(auth.clone(), Version::HTTP_2).await;
@@ -1161,8 +1229,7 @@ async fn fixed_custom_tls_connector_reuses_connections() {
         // alone must not disable reuse of connections created by that connector.
         #[cfg(feature = "boring")]
         let tls = tls.with_grease(true);
-        #[cfg(not(feature = "boring"))]
-        let tls = tls.with_modify_rustls_config(Ok);
+        let tls = tls.with_store_server_cert_chain(true);
         let client = EasyHttpConnectorBuilder::new()
             .with_default_transport_connector()
             .with_default_dns_connector()
@@ -1178,9 +1245,85 @@ async fn fixed_custom_tls_connector_reuses_connections() {
         }
         assert_eq!(origin.accepted.load(Ordering::SeqCst), 1);
         assert_eq!(origin.request_count(), 3);
+        for _ in 0..2 {
+            let request = origin.request();
+            request.extensions().insert(TlsStoreServerCertChain(false));
+            assert_eq!(complete(&client, request).await.1, version);
+        }
+        assert_eq!(
+            origin.accepted.load(Ordering::SeqCst),
+            2,
+            "custom connector automatically separates and reuses its request policies"
+        );
+        let request = origin.request();
+        request
+            .extensions()
+            .insert(TlsServerCertPins::new(TlsServerCertPin::SpkiSha256(
+                [1; 32],
+            )));
+        assert!(
+            timeout(TEST_TIMEOUT, client.serve(request))
+                .await
+                .unwrap()
+                .is_err()
+        );
+        assert_eq!(complete(&client, origin.request()).await.1, version);
+        assert_eq!(
+            origin.accepted.load(Ordering::SeqCst),
+            3,
+            "failed override leaves the compatible original connection reusable"
+        );
         drop(client);
         origin.close().await;
     }
+}
+
+#[tokio::test]
+async fn custom_http3_connector_publishes_its_own_pool_policy() {
+    let (auth, tls) = credentials();
+    let origin = Server::start(auth, Version::HTTP_3).await;
+    let endpoint = Endpoint::bind_client(Executor::new(), SocketAddress::local_ipv4(0))
+        .await
+        .unwrap();
+    let h3 = Http3Connector::builder(Executor::new())
+        .with_endpoint(endpoint.clone())
+        .with_tls_config(tls)
+        .build()
+        .await
+        .unwrap();
+    // The generic custom path receives only the connector. Pooling learns TLS
+    // compatibility from its returned connection, without duplicate setup.
+    let client = EasyHttpConnectorBuilder::new()
+        .with_default_transport_connector()
+        .with_default_dns_connector()
+        .without_tls_proxy_support()
+        .without_proxy_support()
+        .without_tls_support()
+        .with_default_http_connector(Executor::new())
+        .with_http3_connector(DnsConnector::new(h3))
+        .with_default_connection_pool()
+        .build_client();
+    for _ in 0..2 {
+        assert_eq!(complete(&client, origin.request()).await.1, Version::HTTP_3);
+    }
+    assert_eq!(origin.accepted.load(Ordering::SeqCst), 1);
+    for _ in 0..2 {
+        let request = origin.request();
+        request
+            .extensions()
+            .insert(TlsServerVerify(ServerVerifyMode::Disable));
+        assert_eq!(complete(&client, request).await.1, Version::HTTP_3);
+    }
+    assert_eq!(origin.accepted.load(Ordering::SeqCst), 2);
+    assert_eq!(complete(&client, origin.request()).await.1, Version::HTTP_3);
+    assert_eq!(
+        origin.accepted.load(Ordering::SeqCst),
+        2,
+        "verified request must select its verified connection"
+    );
+    drop(client);
+    close_client_endpoint(endpoint).await;
+    origin.close().await;
 }
 
 fn explicit_tls_policy(auth: &ServerAuthData) -> TlsClientConfig {
@@ -1523,6 +1666,25 @@ async fn custom_quic_transport_validates_negotiation_and_concurrency() {
             assert!(error.to_string().contains(expected_error), "{error}");
         } else {
             let established = result.unwrap();
+            assert!(
+                !established
+                    .conn
+                    .extensions()
+                    .get_ref::<ConnectionReuse>()
+                    .unwrap()
+                    .is_reusable(),
+                "a custom secure connector without complete policy metadata must not be pooled"
+            );
+            assert_eq!(
+                established
+                    .conn
+                    .extensions()
+                    .get_ref::<NegotiatedTlsParameters>()
+                    .unwrap()
+                    .application_layer_protocol,
+                Some(ApplicationProtocol::HTTP_3),
+                "HTTP boundary publishes real handshake metadata for custom QUIC connectors",
+            );
             assert_eq!(
                 established
                     .conn
@@ -1604,4 +1766,186 @@ async fn pooled_explicit_target_with_insecure_defaults_cannot_poison_discovery()
         origin.close().await;
         alternative.close().await;
     }
+}
+
+#[derive(Debug)]
+struct CountingQuicProvider {
+    inner: Arc<dyn QuicClientConfigProvider>,
+    configurations: AtomicUsize,
+    opaque: bool,
+}
+
+impl TlsClientConfigProvider for CountingQuicProvider {
+    fn pool_id(&self, extensions: &Extensions) -> Option<TlsPoolId> {
+        if self.opaque {
+            Some(TlsPoolId::non_reusable())
+        } else {
+            self.inner.pool_id(extensions)
+        }
+    }
+
+    fn authenticates_server(&self, extensions: &Extensions) -> bool {
+        self.inner.authenticates_server(extensions)
+    }
+}
+
+impl QuicClientConfigProvider for CountingQuicProvider {
+    fn client_config(
+        &self,
+        config: &TlsClientConfig,
+        options: TlsOptions,
+    ) -> Result<ClientConfig, TlsConfigError> {
+        self.configurations.fetch_add(1, Ordering::SeqCst);
+        self.inner.client_config(config, options)
+    }
+}
+
+async fn check_http3_connector_resumption(provider: Arc<dyn QuicClientConfigProvider>) {
+    timeout(TEST_TIMEOUT, async {
+        let (auth, tls) = credentials();
+        let server = Server::start(auth, Version::HTTP_3).await;
+        for opaque in [false, true] {
+            let provider = Arc::new(CountingQuicProvider {
+                inner: provider.clone(),
+                configurations: AtomicUsize::new(0),
+                opaque,
+            });
+            let endpoint = Endpoint::bind_client(Executor::new(), SocketAddress::local_ipv4(0))
+                .await
+                .unwrap();
+            let connector = Http3Connector::builder(Executor::new())
+                .with_endpoint(endpoint.clone())
+                .with_tls_config(tls.clone())
+                .with_tls_provider(provider.clone())
+                .build()
+                .await
+                .unwrap();
+            for (capture, resumed) in [
+                (false, false),
+                (false, true),
+                (true, false),
+                (true, true),
+                (false, true),
+            ] {
+                let input = ConnectRequest::new(HostWithPort::localhost_domain_with_port(
+                    server.address.port(),
+                ))
+                .with_application_protocol(Protocol::HTTPS);
+                input
+                    .extensions
+                    .insert(ConnectorTarget(server.address.into()));
+                if capture {
+                    input.extensions.insert(TlsStoreServerCertChain(true));
+                }
+                // Clones must share session state as well as the UDP endpoint.
+                let established = connector.clone().serve(input).await.unwrap();
+                let connection = established.conn.connection.clone();
+                assert_eq!(
+                    connection.handshake_data().unwrap().resumed,
+                    Some(resumed && !opaque)
+                );
+                let established = http_connect::<_, _, Body>(
+                    established.conn,
+                    established.input,
+                    Executor::new(),
+                )
+                .await
+                .unwrap();
+                let response = established.conn.serve(server.request()).await.unwrap();
+                response.into_body().collect().await.unwrap();
+                connection.close(0u32, b"fresh connection next time");
+            }
+            assert_eq!(
+                provider.configurations.load(Ordering::SeqCst),
+                if opaque { 5 } else { 2 }
+            );
+            drop(connector);
+            close_client_endpoint(endpoint).await;
+        }
+        server.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+async fn check_http3_config_cache_tracks_mutated_defaults(
+    provider: Arc<dyn QuicClientConfigProvider>,
+) {
+    timeout(TEST_TIMEOUT, async {
+        let (auth, _) = credentials();
+        let server = Server::start(auth, Version::HTTP_3).await;
+        let endpoint = Endpoint::bind_client(Executor::new(), SocketAddress::local_ipv4(0))
+            .await
+            .unwrap();
+        let connector = Http3Connector::builder(Executor::new())
+            .with_endpoint(endpoint.clone())
+            .with_tls_config(
+                TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable),
+            )
+            .with_tls_provider(provider)
+            .build()
+            .await
+            .unwrap();
+        let input = || {
+            let input = ConnectRequest::new(HostWithPort::localhost_domain_with_port(
+                server.address.port(),
+            ))
+            .with_application_protocol(Protocol::HTTPS);
+            input
+                .extensions
+                .insert(ConnectorTarget(server.address.into()));
+            input
+        };
+        let connection = connector.serve(input()).await.unwrap().conn.connection;
+        connection.close(0u32, b"warm insecure config");
+        let clone = connector.clone();
+        clone
+            .tls_config()
+            .as_extensions()
+            .insert(TlsServerVerify(ServerVerifyMode::Auto));
+        assert!(
+            clone.serve(input()).await.is_err(),
+            "cached disabled verification must never satisfy authenticated defaults"
+        );
+        let connection = connector.serve(input()).await.unwrap().conn.connection;
+        connection.close(0u32, b"original clone still disables verification");
+        connector
+            .tls_config()
+            .as_extensions()
+            .insert(TlsServerVerify(ServerVerifyMode::Auto));
+        assert!(
+            connector.serve(input()).await.is_err(),
+            "mutating the original defaults must invalidate cached crypto too"
+        );
+        drop(clone);
+        drop(connector);
+        close_client_endpoint(endpoint).await;
+        server.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+#[cfg(feature = "rustls")]
+#[tokio::test]
+async fn http3_connector_rustls_cache_tracks_mutated_defaults() {
+    check_http3_config_cache_tracks_mutated_defaults(default_tls_provider().unwrap()).await;
+}
+
+#[cfg(feature = "boring")]
+#[tokio::test]
+async fn http3_connector_boring_cache_tracks_mutated_defaults() {
+    check_http3_config_cache_tracks_mutated_defaults(Arc::new(BoringTlsProvider)).await;
+}
+
+#[cfg(feature = "rustls")]
+#[tokio::test]
+async fn http3_connector_rustls_reuses_compatible_resumption_state() {
+    check_http3_connector_resumption(default_tls_provider().unwrap()).await;
+}
+
+#[cfg(feature = "boring")]
+#[tokio::test]
+async fn http3_connector_boring_reuses_compatible_resumption_state() {
+    check_http3_connector_resumption(Arc::new(BoringTlsProvider)).await;
 }

@@ -1,21 +1,98 @@
 use std::{hash::Hash, sync::LazyLock};
 
 use ahash::RandomState;
-use rama_core::extensions::Extension;
+use rama_core::extensions::{Extension, Extensions};
 use rama_net::{
     address::Host,
+    client::pool::{ConnectionReuse, ConnectionReusePolicy},
     tls::{ApplicationProtocol, TlsAlpn},
 };
 use rama_utils::macros::generate_set_and_with;
 
 use crate::client::{
-    ServerVerifyMode, TlsClientAuth, TlsServerCertPins, TlsServerName, TlsServerTrust,
-    TlsServerVerify, TlsStoreServerCertChain,
+    ServerVerifyMode, TlsClientAuth, TlsClientConfigProvider, TlsServerCertPins, TlsServerName,
+    TlsServerTrust, TlsServerVerify, TlsStoreServerCertChain,
 };
 use crate::{
     CertificateCompressionAlgorithm, CipherSuite, ExtensionId, KeyLogIntent, ProtocolVersion,
-    SignatureScheme, SupportedGroup, TlsKeyLog, TlsSupportedVersions,
+    SignatureScheme, SupportedGroup, TlsKeyLog, TlsSupportedVersions, TlsTunnel,
 };
+
+/// Reuse rules published by the connector that performed a TLS handshake.
+///
+/// Capture request overrides before applying connector defaults, and publish only
+/// after a successful handshake. Pools borrow the next request's extensions to
+/// check compatibility; callers need not configure the provider on the pool.
+/// Connector defaults must remain fixed for the lifetime of its pool. Dynamic
+/// or opaque policies must report a non-reusable effective identity.
+#[derive(Debug)]
+pub struct TlsConnectionReuse<P> {
+    provider: P,
+    scope: ReuseScope,
+    reusable: bool,
+}
+
+#[derive(Debug)]
+enum ReuseScope {
+    Origin(Option<TlsPoolId>),
+    Tunnel,
+}
+
+impl<P: TlsClientConfigProvider + 'static> TlsConnectionReuse<P> {
+    /// Capture the request policy and whether the actual handshake policy is reusable.
+    pub fn new(provider: P, request: &Extensions, effective_id: Option<TlsPoolId>) -> Self {
+        let identity = provider.pool_id(request);
+        Self {
+            provider,
+            scope: ReuseScope::Origin(identity),
+            reusable: identity.is_none_or(|id| id.is_reusable())
+                && effective_id.is_none_or(|id| id.is_reusable()),
+        }
+    }
+
+    /// Capture fixed proxy TLS policy, independently of origin TLS overrides.
+    ///
+    /// The pool's route key identifies the proxy. Explicit request-level tunnel
+    /// configuration requires a fresh connection; route-generated tunnel context
+    /// is applied inside the connector and does not appear at pool lookup.
+    pub fn tunnel(provider: P, effective_id: Option<TlsPoolId>) -> Self {
+        Self {
+            provider,
+            scope: ReuseScope::Tunnel,
+            reusable: effective_id.is_none_or(|id| id.is_reusable()),
+        }
+    }
+
+    /// Publish this handshake's rules while retaining restrictions from inner layers.
+    pub fn publish(self, connection: &Extensions) {
+        let tunnel = matches!(self.scope, ReuseScope::Tunnel);
+        let policy = ConnectionReuse::new(self);
+        let policy = match connection.get_ref::<ConnectionReuse>() {
+            Some(inner) => inner.clone().and(policy),
+            None => policy,
+        };
+        // Securing a proxy says nothing about the eventual origin handshake.
+        connection.insert(if tunnel {
+            policy.into_restriction()
+        } else {
+            policy
+        });
+    }
+}
+
+impl<P: TlsClientConfigProvider + 'static> ConnectionReusePolicy for TlsConnectionReuse<P> {
+    fn is_reusable(&self) -> bool {
+        self.reusable
+    }
+
+    fn matches(&self, input: &Extensions) -> bool {
+        self.reusable
+            && match self.scope {
+                ReuseScope::Origin(identity) => self.provider.pool_id(input) == identity,
+                ReuseScope::Tunnel => !input.contains::<TlsTunnel>(),
+            }
+    }
+}
 
 /// Compact, process-local identity of request-level TLS overrides.
 ///
@@ -417,6 +494,103 @@ mod tests {
     };
     use rama_utils::octets::kib;
     use std::hash::Hasher;
+
+    #[derive(Debug, Clone, Copy)]
+    struct TestProvider;
+
+    impl TlsClientConfigProvider for TestProvider {
+        fn pool_id(&self, extensions: &Extensions) -> Option<TlsPoolId> {
+            TlsPoolId::builder()
+                .maybe_with_verify(extensions.get_ref::<TlsServerVerify>())
+                .maybe_with_server_name(extensions.get_ref::<TlsServerName>())
+                .build()
+        }
+
+        fn authenticates_server(&self, extensions: &Extensions) -> bool {
+            extensions
+                .get_ref::<TlsServerVerify>()
+                .is_none_or(|verify| verify.0 != ServerVerifyMode::Disable)
+        }
+    }
+
+    #[test]
+    fn established_policy_matches_equal_overrides_in_both_directions() {
+        let plain = Extensions::new();
+        let insecure = Extensions::new();
+        insecure.insert(TlsServerVerify(ServerVerifyMode::Disable));
+        let equivalent = Extensions::new();
+        equivalent.insert(TlsServerVerify(ServerVerifyMode::Disable));
+        let explicit_default = Extensions::new();
+        explicit_default.insert(TlsServerVerify(ServerVerifyMode::Auto));
+
+        let default_policy = TlsConnectionReuse::new(TestProvider, &plain, None);
+        let insecure_policy =
+            TlsConnectionReuse::new(TestProvider, &insecure, TestProvider.pool_id(&insecure));
+        assert!(default_policy.matches(&plain));
+        assert!(!default_policy.matches(&insecure));
+        assert!(!default_policy.matches(&explicit_default));
+        assert!(insecure_policy.matches(&equivalent));
+        assert!(!insecure_policy.matches(&plain));
+        assert!(!insecure_policy.matches(&explicit_default));
+
+        equivalent.insert(TlsServerName(Host::from_static("other.example")));
+        assert!(!insecure_policy.matches(&equivalent));
+    }
+
+    #[test]
+    fn opaque_effective_defaults_prevent_reuse_without_request_overrides() {
+        let request = Extensions::new();
+        let policy =
+            TlsConnectionReuse::new(TestProvider, &request, Some(TlsPoolId::non_reusable()));
+        assert!(!policy.is_reusable());
+        assert!(!policy.matches(&request));
+        let connection = Extensions::new();
+        policy.publish(&connection);
+        assert!(
+            !connection
+                .get_ref::<ConnectionReuse>()
+                .unwrap()
+                .is_reusable()
+        );
+    }
+
+    #[test]
+    fn origin_and_proxy_reuse_restrictions_compose() {
+        let request = Extensions::new();
+        request.insert(TlsServerVerify(ServerVerifyMode::Disable));
+        let connection = Extensions::new();
+        TlsConnectionReuse::tunnel(TestProvider, None).publish(&connection);
+        assert!(
+            !connection
+                .get_ref::<ConnectionReuse>()
+                .unwrap()
+                .is_complete()
+        );
+        TlsConnectionReuse::new(TestProvider, &request, TestProvider.pool_id(&request))
+            .publish(&connection);
+        let policy = connection.get_ref::<ConnectionReuse>().unwrap();
+        assert!(policy.is_complete());
+        assert!(policy.matches(&request));
+        assert!(!policy.matches(&Extensions::new()));
+
+        request.insert(TlsTunnel {
+            server_identity: Some(Host::from_static("proxy.example")),
+            application_protocol: None,
+            alpn: None,
+        });
+        assert!(!policy.matches(&request));
+
+        let connection = Extensions::new();
+        TlsConnectionReuse::tunnel(TestProvider, Some(TlsPoolId::non_reusable()))
+            .publish(&connection);
+        TlsConnectionReuse::new(TestProvider, &Extensions::new(), None).publish(&connection);
+        assert!(
+            !connection
+                .get_ref::<ConnectionReuse>()
+                .unwrap()
+                .is_reusable()
+        );
+    }
 
     fn id_from_hash(value: &impl Hash) -> TlsPoolId {
         TlsPoolId {

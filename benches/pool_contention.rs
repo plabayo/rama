@@ -7,13 +7,19 @@
 use divan::{AllocProfiler, black_box, counter::ItemsCount};
 use rama::{
     ServiceInput,
-    extensions::ExtensionsRef as _,
+    extensions::{Extensions, ExtensionsRef as _},
     net::{
-        client::pool::{ConnID, ConnectionResult, MultiplexPool, Pool},
+        client::pool::{
+            ConnID, ConnectionResult, ConnectionReuse, ConnectionReusePolicy, LruDropPool,
+            MultiplexPool, Pool,
+        },
         conn::MaxConcurrency,
     },
 };
-use std::{num::NonZeroUsize, sync::Arc};
+use std::{
+    num::NonZeroUsize,
+    sync::{Arc, LazyLock},
+};
 
 #[global_allocator]
 static ALLOC: AllocProfiler = AllocProfiler::system();
@@ -39,6 +45,8 @@ fn main() {
     divan::main();
 }
 
+static EMPTY_INPUT: LazyLock<Extensions> = LazyLock::new(Extensions::new);
+
 const RESIDENT_IDS: &[usize] = &[1, 256, 4096];
 
 /// A pool holding one idle connection for each of `resident` distinct ids.
@@ -49,7 +57,7 @@ async fn pool_with_resident_ids(resident: usize) -> Arc<MultiplexPool<ServiceInp
     ));
     for n in 0..resident {
         let id = HostId::nth(n);
-        let permit = match pool.get_conn(&id).await.unwrap() {
+        let permit = match pool.get_conn(&id, &EMPTY_INPUT).await.unwrap() {
             ConnectionResult::CreatePermit(permit) => permit,
             ConnectionResult::Connection(_) => unreachable!("this id has no connection yet"),
         };
@@ -59,7 +67,7 @@ async fn pool_with_resident_ids(resident: usize) -> Arc<MultiplexPool<ServiceInp
 }
 
 async fn hit_resident_id(pool: &MultiplexPool<ServiceInput<()>, HostId>, id: &HostId) {
-    let handout = match pool.get_conn(id).await.unwrap() {
+    let handout = match pool.get_conn(id, &EMPTY_INPUT).await.unwrap() {
         ConnectionResult::Connection(handout) => handout,
         ConnectionResult::CreatePermit(_) => unreachable!("the id has an idle connection"),
     };
@@ -67,7 +75,7 @@ async fn hit_resident_id(pool: &MultiplexPool<ServiceInput<()>, HostId>, id: &Ho
 }
 
 async fn miss_evicts_lru(pool: &MultiplexPool<ServiceInput<()>, HostId>, id: HostId) {
-    let permit = match pool.get_conn(&id).await.unwrap() {
+    let permit = match pool.get_conn(&id, &EMPTY_INPUT).await.unwrap() {
         ConnectionResult::CreatePermit(permit) => permit,
         ConnectionResult::Connection(_) => unreachable!("a fresh id has no connection"),
     };
@@ -106,7 +114,7 @@ async fn hand_off_one_stream_at_a_time(waiters: usize) {
         NonZeroUsize::new(1).unwrap(),
         NonZeroUsize::new(1).unwrap(),
     ));
-    let permit = match pool.get_conn(&BenchId(0)).await.unwrap() {
+    let permit = match pool.get_conn(&BenchId(0), &EMPTY_INPUT).await.unwrap() {
         ConnectionResult::CreatePermit(permit) => permit,
         ConnectionResult::Connection(_) => unreachable!("a fresh pool is empty"),
     };
@@ -118,7 +126,7 @@ async fn hand_off_one_stream_at_a_time(waiters: usize) {
     for _ in 0..waiters {
         let pool = Arc::clone(&pool);
         tasks.push(tokio::spawn(async move {
-            let handout = match pool.get_conn(&BenchId(0)).await.unwrap() {
+            let handout = match pool.get_conn(&BenchId(0), &EMPTY_INPUT).await.unwrap() {
                 ConnectionResult::Connection(handout) => handout,
                 ConnectionResult::CreatePermit(_) => {
                     unreachable!("the sole connection remains in the pool")
@@ -144,16 +152,18 @@ async fn hand_off_streams_for_two_ids(waiters_per_id: usize) {
     let mut releases = Vec::with_capacity(2);
     for id in 0..2 {
         let id = BenchId(id);
-        let permit = match pool.get_conn(&id).await.unwrap() {
+        let permit = match pool.get_conn(&id, &EMPTY_INPUT).await.unwrap() {
             ConnectionResult::CreatePermit(permit) => permit,
             ConnectionResult::Connection(_) => unreachable!("this ID has no connection yet"),
         };
         let connection = ServiceInput::new(());
         connection.extensions().insert(MaxConcurrency::new(2));
         anchors.push(pool.create(id.clone(), connection, permit).await);
-        releases.push(match pool.get_conn(&id).await.unwrap() {
+        releases.push(match pool.get_conn(&id, &EMPTY_INPUT).await.unwrap() {
             ConnectionResult::Connection(handout) => handout,
-            ConnectionResult::CreatePermit(_) => unreachable!("the connection has spare capacity"),
+            ConnectionResult::CreatePermit(_) => {
+                unreachable!("the connection has spare capacity")
+            }
         });
     }
 
@@ -164,7 +174,7 @@ async fn hand_off_streams_for_two_ids(waiters_per_id: usize) {
         for id in [BenchId(1), BenchId(0)] {
             let pool = Arc::clone(&pool);
             tasks.push(tokio::spawn(async move {
-                let handout = match pool.get_conn(&id).await.unwrap() {
+                let handout = match pool.get_conn(&id, &EMPTY_INPUT).await.unwrap() {
                     ConnectionResult::Connection(handout) => handout,
                     ConnectionResult::CreatePermit(_) => {
                         unreachable!("both pool slots remain occupied")
@@ -203,4 +213,100 @@ fn multiplex_two_id_waiter_handoff(bencher: divan::Bencher, waiters_per_id: usiz
     bencher
         .counter(ItemsCount::new(waiters_per_id * 2))
         .bench_local(|| runtime.block_on(hand_off_streams_for_two_ids(waiters_per_id)));
+}
+
+#[derive(Debug)]
+struct EstablishedPolicy;
+
+impl ConnectionReusePolicy for EstablishedPolicy {
+    fn matches(&self, input: &Extensions) -> bool {
+        input
+            .get_ref::<MaxConcurrency>()
+            .is_some_and(|limit| limit.get() == 4)
+    }
+}
+
+/// First-compatible checkout with independently published per-connection policy
+/// metadata. Increasing idle connections must not add allocation or policy scans.
+#[divan::bench(args = [1_usize, 16, 128], sample_count = 100)]
+fn exclusive_policy_hit(bencher: divan::Bencher, resident: usize) {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let pool = LruDropPool::<ServiceInput<()>, BenchId>::try_new(resident, resident)
+        .unwrap()
+        .with_drop_connection_if_no_response(false);
+    let input = Extensions::new();
+    input.insert(MaxConcurrency::new(4));
+    runtime.block_on(async {
+        let mut held = Vec::with_capacity(resident);
+        for _ in 0..resident {
+            let ConnectionResult::CreatePermit(permit) =
+                pool.get_conn(&BenchId(0), &input).await.unwrap()
+            else {
+                unreachable!("all previous connections are still leased");
+            };
+            let conn = ServiceInput::new(());
+            conn.extensions()
+                .insert(ConnectionReuse::new(EstablishedPolicy));
+            held.push(pool.create(BenchId(0), conn, permit).await);
+        }
+        drop(held);
+    });
+    bencher.bench_local(|| {
+        runtime.block_on(async {
+            let ConnectionResult::Connection(conn) =
+                pool.get_conn(&BenchId(0), &input).await.unwrap()
+            else {
+                unreachable!("all resident policies are compatible");
+            };
+            black_box(conn);
+        })
+    });
+}
+
+fn bench_multiplex_same_id(bencher: divan::Bencher, resident: usize, with_policy: bool) {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let pool = MultiplexPool::<ServiceInput<()>, BenchId>::try_new(1, resident).unwrap();
+    let input = Extensions::new();
+    input.insert(MaxConcurrency::new(4));
+    runtime.block_on(async {
+        let mut held = Vec::with_capacity(resident);
+        for _ in 0..resident {
+            let ConnectionResult::CreatePermit(permit) =
+                pool.get_conn(&BenchId(0), &input).await.unwrap()
+            else {
+                unreachable!("all previous connections are at capacity");
+            };
+            let conn = ServiceInput::new(());
+            if with_policy {
+                conn.extensions()
+                    .insert(ConnectionReuse::new(EstablishedPolicy));
+            }
+            held.push(pool.create(BenchId(0), conn, permit).await);
+        }
+        drop(held);
+    });
+    bencher.bench_local(|| {
+        runtime.block_on(async {
+            let ConnectionResult::Connection(conn) =
+                pool.get_conn(&BenchId(0), &input).await.unwrap()
+            else {
+                unreachable!("resident connections have capacity");
+            };
+            black_box(conn);
+        })
+    });
+}
+
+#[divan::bench(args = [1_usize, 16, 128], sample_count = 100)]
+fn multiplex_policy_hit(bencher: divan::Bencher, resident: usize) {
+    bench_multiplex_same_id(bencher, resident, true);
+}
+
+#[divan::bench(args = [1_usize, 16, 128], sample_count = 100)]
+fn multiplex_plain_hit(bencher: divan::Bencher, resident: usize) {
+    bench_multiplex_same_id(bencher, resident, false);
 }

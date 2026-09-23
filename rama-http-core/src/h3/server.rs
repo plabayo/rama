@@ -68,7 +68,9 @@ impl Connection {
     }
 
     /// Wait for accepted bodies, push senders and upgraded tunnels to be released,
-    /// and for the queued GOAWAY to be handed to QUIC. Run the driver concurrently.
+    /// including acknowledgement of response FINs, and for the queued GOAWAY to
+    /// be handed to QUIC. Run the driver concurrently. Apply a shutdown deadline
+    /// around this operation when the peer may stop acknowledging data.
     pub async fn drained(&self) -> Result<(), Error> {
         let _all = self
             .admission
@@ -107,10 +109,10 @@ impl Connection {
             connection: self.connection.clone(),
             reader,
             writer,
-            permit,
             priority: super::priority::Lease {
                 shared: self.shared.clone(),
                 id,
+                permit,
             },
         })
     }
@@ -121,7 +123,6 @@ pub struct RequestStream {
     connection: rama_quic::Connection,
     reader: Reader<rama_quic::RecvStream>,
     writer: Writer<rama_quic::SendStream>,
-    permit: Arc<tokio::sync::OwnedSemaphorePermit>,
     priority: super::priority::Lease,
 }
 
@@ -147,6 +148,7 @@ impl RequestStream {
         self.reader.phase = Phase::Body;
         self.reader.cancel_code = Code::H3_REQUEST_CANCELLED;
         self.writer.cancel_code = Code::H3_REQUEST_CANCELLED;
+        let permit = self.priority.permit.clone();
         let mut response = SendResponse {
             connection: self.connection,
             origin: request.uri().clone(),
@@ -155,7 +157,6 @@ impl RequestStream {
             shared: self.reader.shared.clone(),
             id: self.reader.id,
             writer: self.writer,
-            permit: self.permit.clone(),
             method,
             _priority: self.priority,
         };
@@ -168,7 +169,7 @@ impl RequestStream {
         // RFC 9114 section 4.1: discarding an otherwise valid request body
         // asks the client to stop its upload without invalidating the response.
         self.reader.cancel_code = Code::H3_NO_ERROR;
-        let incoming = body::Body::new(self.reader, remaining, self.permit);
+        let incoming = body::Body::new(self.reader, remaining, permit);
         Ok((
             request.map(|()| crate::body::Incoming::h3(incoming)),
             response,
@@ -185,7 +186,6 @@ pub struct SendResponse {
     shared: Arc<Shared>,
     id: u64,
     writer: Writer<rama_quic::SendStream>,
-    permit: Arc<tokio::sync::OwnedSemaphorePermit>,
     method: Method,
     _priority: super::priority::Lease,
 }
@@ -309,11 +309,11 @@ impl SendResponse {
             shared: self.shared.clone(),
             id: stream_id,
             writer,
-            permit: self.permit.clone(),
             method: request.method().clone(),
             _priority: super::priority::Lease {
                 shared: self.shared.clone(),
                 id: stream_id,
+                permit: self._priority.permit.clone(),
             },
         })
     }
@@ -340,6 +340,7 @@ impl SendResponse {
     }
 
     /// Send final headers followed by the streaming response body and trailers.
+    /// Completion waits for the peer to acknowledge the finished send direction.
     pub async fn send_response<B>(mut self, mut response: Response<B>) -> Result<(), Error>
     where
         B: StreamingBody + Unpin,
@@ -364,7 +365,7 @@ impl SendResponse {
             pending.fulfill(super::upgrade::new(
                 reader,
                 self.writer,
-                self.permit,
+                self._priority.permit.clone(),
                 Some(self._priority),
             ));
             return Ok(());
@@ -380,12 +381,13 @@ impl SendResponse {
         self.writer.queue(FrameType::HEADERS, bytes)?;
         if bodyless {
             self.flush(true).await?;
+            self.writer.acknowledged().await?;
+            self.writer.mark_acknowledged();
             if let Some(push) = &mut self.outgoing_push {
                 push.finished = true;
             }
             return Ok(());
         }
-        let _permit = self.permit;
         let remaining = headers::content_length(response.headers())?;
         let (_, response_body) = response.into_parts();
         let shared = self.shared.clone();

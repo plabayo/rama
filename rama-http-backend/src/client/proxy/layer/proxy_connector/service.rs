@@ -22,6 +22,7 @@ use rama_net::{
     client::{
         ConnectionError, ConnectionErrorKind, ConnectorService, ConnectorTarget,
         ConnectorTransportProtocol, EstablishedClientConnection, EstablishedProxyRoute, ProxyRoute,
+        pool::ConnectionReuse,
     },
     http::TargetHttpVersion,
     transport::TransportProtocol,
@@ -376,6 +377,15 @@ where
             .map_err(|error| error.context("http proxy handshake"))?;
 
         let conn = MaybeHttpProxiedConnection::upgraded_proxy(conn, proxy_info);
+        // The inner connector classified the proxy endpoint. CONNECT changes
+        // the endpoint, so origin TLS must publish its own complete policy.
+        let reuse = conn
+            .extensions()
+            .get_ref::<ConnectionReuse>()
+            .map(|policy| policy.clone().into_restriction());
+        if let Some(reuse) = reuse {
+            conn.extensions().insert(reuse);
+        }
 
         // A CONNECT upgrade inherits proxy-leg connection metadata. Shadow the
         // proxy's wire version before the outer origin HTTP connector runs.
@@ -712,7 +722,10 @@ impl<Conn: AsyncRead> AsyncRead for MaybeHttpProxiedConnection<Conn> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{client::proxy::layer::HttpProxyConnectorLayer, server::HttpServer};
+    use crate::{
+        client::{conn::http_connect, proxy::layer::HttpProxyConnectorLayer},
+        server::HttpServer,
+    };
     use rama_core::{
         Layer,
         futures::{Stream, stream},
@@ -729,6 +742,7 @@ mod tests {
         client::{
             AddressCandidates, ConnectRequest, ConnectionErrorDomain, ConnectionErrorKind,
             ConnectorService, ConnectorTargetStream, ProxyRoute, ProxyRoutes, ProxyRoutesConnector,
+            pool::ConnectionReusePolicy,
         },
         http::HttpRequestVersion,
         test_utils::client::{MockConnectorService, MockSocket},
@@ -745,6 +759,15 @@ mod tests {
     #[derive(Debug, Clone, Extension)]
     #[extension(tags(http))]
     struct ConnMarker(u32);
+
+    #[derive(Debug)]
+    struct FixedProxyPolicy;
+
+    impl ConnectionReusePolicy for FixedProxyPolicy {
+        fn matches(&self, _: &Extensions) -> bool {
+            true
+        }
+    }
 
     struct OneCandidate {
         domain: Domain,
@@ -1867,6 +1890,9 @@ mod tests {
             HttpProxyConnectorLayer::required(),
             MapOutputLayer::new(|out: EstablishedClientConnection<MockSocket, Request>| {
                 out.conn.extensions().insert(ConnMarker(42));
+                out.conn
+                    .extensions()
+                    .insert(ConnectionReuse::new(FixedProxyPolicy));
                 out
             }),
         )
@@ -1883,7 +1909,7 @@ mod tests {
             protocol: Some(Protocol::HTTP),
         }));
 
-        let EstablishedClientConnection { conn, .. } = proxy_connector
+        let EstablishedClientConnection { conn, input } = proxy_connector
             .serve(req)
             .await
             .expect("proxy CONNECT handshake succeeds");
@@ -1893,6 +1919,25 @@ mod tests {
             .get_ref::<ConnMarker>()
             .expect("ConnMarker set on the pre-CONNECT connection must survive the upgrade");
         assert_eq!(marker.0, 42);
+        let reuse = conn.extensions().get_ref::<ConnectionReuse>().unwrap();
+        assert!(reuse.is_reusable());
+        assert!(
+            !reuse.is_complete(),
+            "proxy policy cannot classify the origin"
+        );
+
+        let established = http_connect::<_, _, Body>(conn, input, Executor::new())
+            .await
+            .expect("HTTP connector accepts the custom transport");
+        assert!(
+            !established
+                .conn
+                .extensions()
+                .get_ref::<ConnectionReuse>()
+                .unwrap()
+                .is_reusable(),
+            "an unclassified secure origin must not borrow the proxy's complete policy"
+        );
     }
 
     #[test]

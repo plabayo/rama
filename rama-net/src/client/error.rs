@@ -5,7 +5,7 @@ use rama_core::{
     telemetry::tracing,
 };
 
-/// The architectural domain in which establishing a client connection failed.
+/// The architectural domain in which establishing or using a client connection failed.
 ///
 /// Domains describe the role a protocol or component plays in a connector stack
 /// rather than assigning protocols to fixed OSI layers. For example, TLS to a
@@ -14,13 +14,13 @@ use rama_core::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ConnectionErrorDomain {
-    /// Establishing the usable transport path selected for the connection.
+    /// Establishing or using the transport path selected for the connection.
     ///
     /// This is the route-dependent domain. A route planner can generally use
     /// it as the signal that trying the next route may produce a different
     /// outcome.
     Transport,
-    /// Establishing the end-to-end connection over the selected transport path.
+    /// Establishing or using the end-to-end connection over the selected transport path.
     ///
     /// This is not limited to a strict OSI application-layer protocol. It also
     /// includes protocols and handshakes between the transport path and the final
@@ -54,19 +54,19 @@ impl fmt::Display for ConnectionErrorDomain {
     }
 }
 
-/// A protocol-independent description of what prevented connection setup.
+/// A protocol-independent description of a failed connection operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ConnectionErrorKind {
     /// An endpoint, route, or required resource was unavailable.
     Unavailable,
-    /// Connection setup exceeded its allowed duration.
+    /// The connection operation exceeded its allowed duration.
     Timeout,
     /// A peer explicitly rejected the connection operation.
     Rejected,
     /// Connection setup requires authentication or authentication failed.
     Authentication,
-    /// A protocol handshake or negotiation failed.
+    /// A protocol handshake, negotiation, or subsequent exchange failed.
     Protocol,
     /// The connection input or configuration is invalid.
     InvalidInput,
@@ -91,7 +91,10 @@ impl fmt::Display for ConnectionErrorKind {
     }
 }
 
-/// A classified error produced while establishing a client connection.
+/// A classified error produced while establishing or using a client connection.
+///
+/// Classification can inform endpoint availability; it does not grant permission
+/// to replay an application operation that might already have been processed.
 ///
 /// The original error remains available as the source. Adding context only
 /// wraps that source and therefore preserves the classification.

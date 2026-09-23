@@ -1750,6 +1750,78 @@ fn streams_blocked_retransmitted_after_loss() {
     );
 }
 
+/// Streams allocated without a STREAM frame are invisible to the peer. A
+/// STREAMS_BLOCKED frame must release earned credit even when observed IDs
+/// have not exhausted the grant and the ordinary batching threshold is unmet.
+#[test]
+fn streams_blocked_releases_batched_credit_for_unannounced_streams() {
+    const CREDIT: u32 = 16;
+    let _guard = subscribe();
+    for dir in Dir::iter() {
+        let mut pair = Pair::new(
+            Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+            ServerConfig {
+                transport: Arc::new(TransportConfig {
+                    max_concurrent_uni_streams: CREDIT.into(),
+                    max_concurrent_bidi_streams: CREDIT.into(),
+                    ..TransportConfig::default()
+                }),
+                ..server_config()
+            },
+        );
+        let (client_ch, server_ch) = pair.connect();
+        let first = pair.client_streams(client_ch).open(dir).unwrap();
+        for _ in 1..CREDIT {
+            pair.client_streams(client_ch).open(dir).unwrap();
+        }
+        // Only stream zero reaches the peer; the other slots remain reserved.
+        pair.client_send(client_ch, first).finish().unwrap();
+        pair.drive();
+        assert_eq!(pair.server_streams(server_ch).accept(dir), Some(first));
+        assert_eq!(pair.server_streams(server_ch).accept(dir), None);
+        let mut recv = pair.server_recv(server_ch, first);
+        let mut chunks = recv.read(true).unwrap();
+        assert!(chunks.next(1).unwrap().is_none());
+        let _transmit = chunks.finalize();
+        if dir == Dir::Bi {
+            pair.server_send(server_ch, first).finish().unwrap();
+            pair.drive();
+            let mut recv = pair.client_recv(client_ch, first);
+            let mut chunks = recv.read(true).unwrap();
+            assert!(chunks.next(1).unwrap().is_none());
+            let _transmit = chunks.finalize();
+        }
+        pair.drive();
+        let stats = pair.server_conn_mut(server_ch).stats().frame_tx;
+        assert_eq!(stats.max_streams_bidi + stats.max_streams_uni, 0);
+
+        assert_eq!(pair.client_streams(client_ch).open(dir), None);
+        pair.drive();
+        let stats = pair.server_conn_mut(server_ch).stats();
+        assert_eq!(
+            stats.frame_rx.streams_blocked_bidi + stats.frame_rx.streams_blocked_uni,
+            1
+        );
+        assert_eq!(
+            stats.frame_tx.max_streams_bidi + stats.frame_tx.max_streams_uni,
+            1
+        );
+        let next = pair
+            .client_streams(client_ch)
+            .open(dir)
+            .expect("freed slot advertised");
+        assert_eq!(next.index(), u64::from(CREDIT));
+        assert_eq!(pair.client_streams(client_ch).open(dir), None);
+        pair.drive();
+        let stats = pair.server_conn_mut(server_ch).stats().frame_tx;
+        assert_eq!(
+            stats.max_streams_bidi + stats.max_streams_uni,
+            1,
+            "unchanged credit must not trigger another MAX_STREAMS frame"
+        );
+    }
+}
+
 /// Once the peer raises the limit (MAX_STREAMS), the blocked flag is cleared and a subsequent
 /// successful `open` does not emit STREAMS_BLOCKED.
 #[test]

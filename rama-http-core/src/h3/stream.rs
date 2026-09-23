@@ -8,7 +8,11 @@ use super::{
     quic::RecvStream,
 };
 use rama_core::bytes::Bytes;
-use rama_http_types::proto::h3::{Code, FrameType, VarInt};
+use rama_http_types::{
+    HeaderMap,
+    proto::h3::{Code, FrameType, VarInt},
+};
+use rama_net::uri::Uri;
 use rama_quic::StreamAbortHandle;
 use std::{
     sync::Arc,
@@ -34,7 +38,7 @@ pub(crate) struct Reader<R: RecvStream> {
     pub(crate) client_lifetime: Option<Arc<ConnectionLifetime>>,
     frames: FrameDecoder,
     pub(crate) push_id: Option<u64>,
-    pub(crate) origin: Option<rama_net::uri::Uri>,
+    pub(crate) origin: Option<Uri>,
     push_cancelled: Option<std::pin::Pin<Box<dyn Future<Output = Error> + Send + Sync>>>,
     promise: Option<std::pin::Pin<Box<dyn Future<Output = Result<(), Error>> + Send + Sync>>>,
 }
@@ -130,10 +134,12 @@ impl<R: RecvStream> Reader<R> {
                 return Poll::Ready(Err(error));
             }
             let event = self.frames.poll().map_err(|e| {
-                Error::from_frame(&e).unwrap_or(Error::connection(
-                    Code::H3_INTERNAL_ERROR,
-                    "frame input backpressure",
-                ))
+                Error::from_frame(&e)
+                    .map(Error::remote)
+                    .unwrap_or(Error::connection(
+                        Code::H3_INTERNAL_ERROR,
+                        "frame input backpressure",
+                    ))
             })?;
             match event {
                 Some(FrameEvent::Header(header)) => {
@@ -160,7 +166,8 @@ impl<R: RecvStream> Reader<R> {
                         return Poll::Ready(Err(Error::connection(
                             Code::H3_FRAME_UNEXPECTED,
                             "frame forbidden in request stream phase",
-                        )));
+                        )
+                        .remote()));
                     }
                 }
                 Some(FrameEvent::PushPromise {
@@ -185,10 +192,7 @@ impl<R: RecvStream> Reader<R> {
                     )
                     .map_err(|error| {
                         if error.is_clean_close() {
-                            Error::stream(
-                                Code::H3_REQUEST_INCOMPLETE,
-                                "connection closed before stream FIN",
-                            )
+                            error.incomplete("connection closed before stream FIN")
                         } else {
                             error
                         }
@@ -201,13 +205,15 @@ impl<R: RecvStream> Reader<R> {
                             return Poll::Ready(Err(Error::connection(
                                 Code::H3_FRAME_ERROR,
                                 "truncated frame",
-                            )));
+                            )
+                            .remote()));
                         }
                         if self.phase == Phase::Headers {
                             return Poll::Ready(Err(Error::stream(
                                 Code::H3_REQUEST_INCOMPLETE,
                                 "stream ended before final headers",
-                            )));
+                            )
+                            .remote()));
                         }
                         self.phase = Phase::Finished;
                         return Poll::Ready(Ok(None));
@@ -248,7 +254,7 @@ impl<R: RecvStream> Drop for Reader<R> {
 pub(crate) fn encode_trailers(
     shared: &Shared,
     id: u64,
-    headers: &rama_http_types::HeaderMap,
+    headers: &HeaderMap,
 ) -> Result<Bytes, Error> {
     super::headers::validate_regular(headers, true)?;
     shared.encode(

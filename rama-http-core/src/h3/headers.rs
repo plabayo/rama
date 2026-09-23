@@ -1,7 +1,13 @@
 //! Validate decoded HTTP fields before normalization can hide malformed input.
 
-use super::{Error, qpack::FieldPair};
-use rama_core::{bytes::Bytes, extensions::ExtensionsRef};
+use super::{
+    Error,
+    qpack::{EncodeField, FieldPair},
+};
+use rama_core::{
+    bytes::{Bytes, BytesMut},
+    extensions::ExtensionsRef,
+};
 use rama_http_types::proto::h3::{Code, PseudoHeader, PseudoHeaderOrder, PseudoHeaderSensitivity};
 use rama_http_types::{
     HeaderMap, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Version, header,
@@ -175,8 +181,8 @@ pub(crate) fn request(fields: Vec<FieldPair>) -> Result<Request<()>, Error> {
     } else {
         let scheme = text(fields.scheme.as_ref().ok_or(malformed("missing scheme"))?)?;
         let path = text(fields.path.as_ref().ok_or(malformed("missing path"))?)?;
-        let http_scheme =
-            scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https");
+        let http_scheme = scheme.eq_ignore_ascii_case(Protocol::HTTP_SCHEME)
+            || scheme.eq_ignore_ascii_case(Protocol::HTTPS_SCHEME);
         if http_scheme
             && (authority.is_none() || authority.is_some_and(|value| value.contains('@')))
         {
@@ -231,7 +237,12 @@ pub(crate) fn request(fields: Vec<FieldPair>) -> Result<Request<()>, Error> {
             let mut host = HeaderValue::from_maybe_shared(authority)
                 .map_err(|_error| malformed("invalid authority"))?;
             host.set_sensitive(fields.sensitivity.is_sensitive(PseudoHeader::Authority));
-            request.headers_mut().insert(header::HOST, host);
+            request
+                .headers_mut()
+                .try_insert(header::HOST, host)
+                .map_err(|_error| {
+                    Error::stream(Code::H3_EXCESSIVE_LOAD, "too many header fields")
+                })?;
         }
     }
     // Preserve split Cookie lines in this H3 context, as the H2 decoder does.
@@ -301,8 +312,6 @@ pub(crate) fn encode_request<B>(
     id: u64,
     request: &Request<B>,
 ) -> Result<Bytes, Error> {
-    use super::qpack::EncodeField;
-    use rama_core::bytes::BytesMut;
     validate_regular(request.headers(), false)?;
     let connect = request.method() == Method::CONNECT;
     if request.uri().fragment().is_some() || (connect && request.uri().port_u16().is_none()) {
@@ -332,7 +341,11 @@ pub(crate) fn encode_request<B>(
             return Err(malformed("invalid Host or authority mismatch"));
         }
     } else if target.is_empty()
-        && (connect || matches!(request.uri().scheme_str(), Some("http" | "https")))
+        && (connect
+            || matches!(
+                request.uri().scheme_str(),
+                Some(Protocol::HTTP_SCHEME | Protocol::HTTPS_SCHEME)
+            ))
     {
         return Err(malformed("missing request authority"));
     }
@@ -360,13 +373,13 @@ pub(crate) fn encode_request<B>(
     let authority_len = target.len();
     if !connect
         && (request.uri().is_asterisk()
-            || matches!(scheme, "http" | "https")
+            || matches!(scheme, Protocol::HTTP_SCHEME | Protocol::HTTPS_SCHEME)
             || !request.uri().is_path_empty())
     {
         request.uri().write_h2_path(&mut target);
     }
     let (authority, path) = target.split_at(authority_len);
-    if matches!(scheme, "http" | "https")
+    if matches!(scheme, Protocol::HTTP_SCHEME | Protocol::HTTPS_SCHEME)
         && authority.is_empty()
         && !request.headers().contains_key(header::HOST)
     {
@@ -427,7 +440,6 @@ pub(crate) fn encode_response<B>(
     id: u64,
     response: &Response<B>,
 ) -> Result<Bytes, Error> {
-    use super::qpack::EncodeField;
     validate_regular(response.headers(), false)?;
     if response.headers().contains_key(header::TE) {
         return Err(malformed("TE forbidden in response"));
@@ -461,6 +473,11 @@ pub(crate) fn encode_response<B>(
 mod tests {
     use super::*;
     use crate::h3::qpack::ErrorScope;
+    use rama_core::bytes::BufMut;
+    use rama_http_types::proto::h2::{
+        frame::{self, StreamId},
+        hpack,
+    };
 
     fn fields(values: &[(&'static str, &'static str)]) -> Vec<FieldPair> {
         values
@@ -695,9 +712,6 @@ mod tests {
 
     #[test]
     fn qpack_never_index_requirements_survive_hpack_forwarding() {
-        use rama_core::bytes::{BufMut, BytesMut};
-        use rama_http_types::proto::h2::{frame, hpack};
-
         let mut input = fields(&[
             (":method", "GET"),
             (":scheme", "https"),
@@ -881,8 +895,6 @@ mod tests {
 
     #[test]
     fn sensitive_host_fallback_preserves_synthesized_authority_sensitivity() {
-        use rama_http_types::proto::h2::frame::StreamId;
-
         for path in ["/", "*"] {
             let mut input = fields(&[
                 (":method", "OPTIONS"),
@@ -933,6 +945,37 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn options_asterisk_host_synthesis_respects_header_capacity() {
+        let mut headers = HeaderMap::new();
+        for index in 0.. {
+            let name = HeaderName::try_from(format!("x-field-{index}")).unwrap();
+            if headers
+                .try_insert(name, HeaderValue::from_static("value"))
+                .is_err()
+            {
+                break;
+            }
+        }
+        let mut input = fields(&[
+            (":method", "OPTIONS"),
+            (":scheme", "https"),
+            (":authority", "example.com"),
+            (":path", "*"),
+        ]);
+        input.extend(headers.iter().map(|(name, value)| FieldPair {
+            name: Bytes::copy_from_slice(name.as_str().as_bytes()),
+            value: Bytes::copy_from_slice(value.as_bytes()),
+            never_index: false,
+        }));
+        // The received fields fit; only the additional synthesized Host exceeds
+        // capacity. It must reject this request without panicking the driver.
+        parse(input.clone(), false).unwrap();
+        let error = request(input).unwrap_err();
+        assert_eq!(error.code(), Code::H3_EXCESSIVE_LOAD);
+        assert_eq!(error.scope(), ErrorScope::Stream);
     }
 
     #[test]

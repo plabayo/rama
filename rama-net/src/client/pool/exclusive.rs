@@ -6,7 +6,7 @@
 
 #[cfg(feature = "opentelemetry")]
 use super::metrics;
-use super::{ActiveSlot, ConnID, ConnectionResult, Pool, PoolSlot};
+use super::{ActiveSlot, ConnID, ConnectionResult, ConnectionReuse, Pool, PoolSlot};
 use crate::address::SocketAddress;
 use crate::conn::{ConnectionHealth, ConnectionHealthWatcher};
 use crate::stream::Socket;
@@ -71,6 +71,7 @@ struct PooledConnection<C, ID> {
     pool_slot: PoolSlot,
     last_used: Instant,
     reusable: bool,
+    reuse_policy: Option<Arc<ConnectionReuse>>,
 }
 
 impl<C: ExtensionsRef, ID> ExtensionsRef for PooledConnection<C, ID> {
@@ -238,6 +239,96 @@ impl<C, ID> LruDropPool<C, ID> {
     }
 }
 
+impl<C: ExtensionsRef, ID: ConnID> LruDropPool<C, ID> {
+    /// Inspect one candidate at a time so the common first hit needs no snapshot
+    /// allocation or scan of the remaining idle connections. The cursor advances
+    /// on rejection. Bound inspection by the initial idle count: concurrent
+    /// changes may skip a candidate, but cannot admit an unchecked policy or
+    /// keep this synchronous search running indefinitely.
+    fn take_compatible(
+        &self,
+        id: &ID,
+        input: &Extensions,
+        doomed: &mut Vec<C>,
+    ) -> Option<(usize, PooledConnection<C, ID>)> {
+        if !id.is_reusable() {
+            return None;
+        }
+        let mut cursor = 0;
+        let mut inspections_left = None;
+        loop {
+            let mut storage = self.storage.lock();
+            let left = inspections_left.get_or_insert(storage.len());
+            if *left == 0 {
+                return None;
+            }
+            *left -= 1;
+            if self.retired.load(Ordering::Acquire) {
+                return None;
+            }
+            let index = match self.reuse_strategy {
+                ReuseStrategy::FiFo => storage
+                    .iter()
+                    .enumerate()
+                    .skip(cursor)
+                    .find(|(_, conn)| &conn.id == id)
+                    .map(|(index, _)| index)?,
+                ReuseStrategy::RoundRobin => storage
+                    .iter()
+                    .enumerate()
+                    .rev()
+                    .skip(cursor)
+                    .find(|(_, conn)| &conn.id == id)
+                    .map(|(index, _)| index)?,
+            };
+            cursor = match self.reuse_strategy {
+                ReuseStrategy::FiFo => index + 1,
+                ReuseStrategy::RoundRobin => storage.len() - index,
+            };
+            let policy = storage[index].reuse_policy.clone();
+            let (index, conn) = if let Some(policy) = policy {
+                drop(storage);
+                if !policy.matches(input) {
+                    continue;
+                }
+                let mut storage = self.storage.lock();
+                if self.retired.load(Ordering::Acquire) {
+                    return None;
+                }
+                // A concurrent checkout may have removed the candidate while
+                // its policy was evaluated. Recheck the same shared policy.
+                let matches = |conn: &PooledConnection<C, ID>| {
+                    &conn.id == id
+                        && conn
+                            .reuse_policy
+                            .as_ref()
+                            .is_some_and(|stored| Arc::ptr_eq(stored, &policy))
+                };
+                let index = match self.reuse_strategy {
+                    ReuseStrategy::FiFo => storage.iter().position(matches),
+                    ReuseStrategy::RoundRobin => storage.iter().rposition(matches),
+                };
+                let Some(index) = index else {
+                    continue;
+                };
+                (index, storage.remove(index)?)
+            } else {
+                (index, storage.remove(index)?)
+            };
+            if conn
+                .extensions()
+                .get_ref::<ConnectionHealthWatcher>()
+                .is_some_and(|watcher| watcher.health() == ConnectionHealth::Broken)
+            {
+                park(conn, doomed);
+                cursor = 0;
+                continue;
+            }
+            return Some((index, conn));
+        }
+    }
+}
+
 impl<C, ID> Pool<C, ID> for LruDropPool<C, ID>
 where
     C: Send + ExtensionsRef + 'static,
@@ -249,6 +340,7 @@ where
     async fn get_conn(
         &self,
         id: &ID,
+        input: &Extensions,
     ) -> Result<ConnectionResult<Self::Connection, Self::CreatePermit>, BoxError> {
         if self.retired.load(Ordering::Acquire) {
             return Err(BoxError::from_static_str(
@@ -284,14 +376,8 @@ where
         // lock is released.
         let mut doomed: Vec<C> = Vec::new();
 
-        let mut storage = self.storage.lock();
-        if self.retired.load(Ordering::Acquire) {
-            return Err(BoxError::from_static_str(
-                "connection pool has been retired",
-            ));
-        }
-
         if let Some(timeout) = self.idle_timeout {
+            let mut storage = self.storage.lock();
             // Since new connections are always returned to the front of the
             // queue, they are ordered from most to least recently used. To
             // provide a stable predicate, we load `now` once and use it for all
@@ -313,31 +399,8 @@ where
             }
         }
 
-        let mut get_conn = || loop {
-            if !id.is_reusable() {
-                return None;
-            }
-            let idx = match self.reuse_strategy {
-                ReuseStrategy::FiFo => storage.iter().position(|stored| &stored.id == id)?,
-                ReuseStrategy::RoundRobin => storage.iter().rposition(|stored| &stored.id == id)?,
-            };
-
-            let pooled_conn = storage.remove(idx)?;
-
-            // This will make sure we skip and drop broken connections
-            if let Some(watcher) = pooled_conn
-                .extensions()
-                .get_ref::<ConnectionHealthWatcher>()
-                && watcher.health() == ConnectionHealth::Broken
-            {
-                park(pooled_conn, &mut doomed);
-                continue;
-            }
-
-            return Some((idx, pooled_conn));
-        };
-
-        let result = if let Some((idx, pooled_conn)) = get_conn() {
+        let reused = self.take_compatible(id, input, &mut doomed);
+        let result = if let Some((idx, pooled_conn)) = reused {
             trace!("LRU connection pool: connection #{idx} found for given id {id:?}");
 
             #[cfg(feature = "opentelemetry")]
@@ -356,6 +419,12 @@ where
                 drop_connection_if_no_response: self.drop_connection_if_no_response,
             }))
         } else {
+            let mut storage = self.storage.lock();
+            if self.retired.load(Ordering::Acquire) {
+                return Err(BoxError::from_static_str(
+                    "connection pool has been retired",
+                ));
+            }
             let pool_slot = match self.total_slots.clone().try_acquire_owned() {
                 Ok(permit) => Ok(PoolSlot(permit)),
                 Err(err) => {
@@ -390,7 +459,6 @@ where
             })
         };
 
-        drop(storage);
         drop(doomed);
         result
     }
@@ -406,11 +474,18 @@ where
             metrics.created_connections.add(1, &metric_attrs);
         }
 
+        let reuse_policy = conn.extensions().get_arc::<ConnectionReuse>();
+        let reusable = id.is_reusable()
+            && reuse_policy
+                .as_ref()
+                .is_none_or(|policy| policy.is_reusable());
+
         LeasedConnection {
             active_slot,
             returner: self.returner.clone(),
             pooled_conn: ManuallyDrop::new(PooledConnection {
-                reusable: id.is_reusable(),
+                reusable,
+                reuse_policy,
                 id,
                 conn,
                 pool_slot,
@@ -671,6 +746,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::client::pool::ConnectionReusePolicy;
     use crate::client::pool::{PooledConnector, ReqToConnID};
     use crate::client::{ConnectorService, EstablishedClientConnection};
     use rama_core::ServiceInput;
@@ -790,7 +866,9 @@ mod tests {
             }
         }
         let pool: LruDropPool<InnerService, Fresh> = LruDropPool::try_new(1, 1).unwrap();
-        let ConnectionResult::CreatePermit(permit) = pool.get_conn(&Fresh).await.unwrap() else {
+        let ConnectionResult::CreatePermit(permit) =
+            pool.get_conn(&Fresh, &Extensions::new()).await.unwrap()
+        else {
             panic!("non-reusable policy must acquire a fresh connection");
         };
         let connection = pool.create(Fresh, InnerService::default(), permit).await;
@@ -798,6 +876,71 @@ mod tests {
         drop(connection);
         assert!(pool.storage.lock().is_empty());
         assert_eq!(pool.total_slots.available_permits(), 1);
+    }
+
+    #[tokio::test]
+    async fn reuse_policy_runs_outside_exclusive_storage_lock() {
+        #[derive(Debug)]
+        struct LockProbe(Weak<Mutex<VecDeque<PooledConnection<Conn, usize>>>>);
+
+        impl ConnectionReusePolicy for LockProbe {
+            fn matches(&self, _: &Extensions) -> bool {
+                let storage = self.0.upgrade().unwrap();
+                assert!(
+                    storage.try_lock().is_some(),
+                    "connector policy must not run under the pool lock"
+                );
+                true
+            }
+        }
+
+        let pool = LruDropPool::try_new(1, 1)
+            .unwrap()
+            .with_drop_connection_if_no_response(false);
+        let input = Extensions::new();
+        let ConnectionResult::CreatePermit(permit) = pool.get_conn(&0, &input).await.unwrap()
+        else {
+            panic!("empty pool must allow creation");
+        };
+        let conn = Conn::new();
+        conn.extensions
+            .insert(ConnectionReuse::new(LockProbe(Arc::downgrade(
+                &pool.storage,
+            ))));
+        drop(pool.create(0, conn, permit).await);
+        assert!(matches!(
+            pool.get_conn(&0, &input).await.unwrap(),
+            ConnectionResult::Connection(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn retirement_during_policy_check_cannot_return_connection_or_permit() {
+        #[derive(Debug)]
+        struct RetireOnMatch(LruDropPool<Conn, usize>);
+
+        impl ConnectionReusePolicy for RetireOnMatch {
+            fn matches(&self, _: &Extensions) -> bool {
+                self.0.retire();
+                true
+            }
+        }
+
+        let pool = LruDropPool::try_new(1, 1)
+            .unwrap()
+            .with_drop_connection_if_no_response(false);
+        let input = Extensions::new();
+        let ConnectionResult::CreatePermit(permit) = pool.get_conn(&0, &input).await.unwrap()
+        else {
+            panic!("empty pool must allow creation");
+        };
+        let conn = Conn::new();
+        conn.extensions
+            .insert(ConnectionReuse::new(RetireOnMatch(pool.clone())));
+        drop(pool.create(0, conn, permit).await);
+        pool.get_conn(&0, &input).await.unwrap_err();
+        assert_eq!(pool.total_slots.available_permits(), 1);
+        assert_eq!(pool.active_slots.available_permits(), 1);
     }
 
     #[tokio::test]

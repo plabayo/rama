@@ -1,10 +1,8 @@
 use rama_core::rt::Executor;
 
 use super::{
-    HttpConnId, HttpConnIdentifier, HttpConnectRequestAdapter, HttpConnector, HttpPooledConnector,
-    HttpPooledConnectorConfig,
+    HttpConnectRequestAdapter, HttpConnector, HttpPooledConnector, HttpPooledConnectorConfig,
 };
-use crate::http::conn::FallbackHttpVersion;
 use crate::{
     Layer, Service,
     dns::client::{
@@ -13,22 +11,21 @@ use crate::{
     error::BoxError,
     extensions::ExtensionsRef,
     http::{
-        Request, StreamingBody, Version, client::proxy::layer::HttpProxyConnector,
+        Request, StreamingBody, client::proxy::layer::HttpProxyConnector,
         layer::version_adapter::RequestVersionAdapter,
     },
     net::client::{
         ConnectRequest, ConnectionError, ConnectorService, EstablishedClientConnection,
         ProxyRouteFailureCache, ProxyRouteFailureCacheConnector, ProxyRoutesConnector,
-        pool::{PooledConnector, ReqToConnID},
+        pool::PooledConnector,
     },
     service::BoxService,
     tcp::client::service::TcpConnector,
 };
 use rama_http::layer::{alt_svc::AltSvcCache, http_service::HttpServiceConnector};
-use rama_net::{HttpVersionInputExt, TargetHttpVersionInputExt, tls::ApplicationProtocol};
-use rama_tls::client::{TlsClientConfigProvider, TlsPoolId};
+use rama_net::tls::ApplicationProtocol;
 use rama_utils::macros::generate_set_and_with;
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 
 #[cfg(feature = "boring")]
 use crate::tls::boring::client as boring_client;
@@ -36,7 +33,10 @@ use crate::tls::boring::client as boring_client;
 #[cfg(feature = "rustls")]
 use crate::tls::rustls::client as rustls_client;
 #[cfg(any(feature = "rustls", feature = "boring"))]
-use {rama_core::layer::AddInputExtension, rama_tls::client::TlsClientConfig};
+use {
+    crate::http::conn::FallbackHttpVersion, rama_core::layer::AddInputExtension,
+    rama_tls::client::TlsClientConfig,
+};
 
 #[cfg(feature = "socks5")]
 use crate::{http::client::proxy_connector::ProxyConnector, proxy::socks5::Socks5ProxyConnector};
@@ -68,27 +68,18 @@ pub struct ProxyStage<const PROXY: bool = true>;
 
 #[non_exhaustive]
 #[derive(Debug, Default)]
-pub struct TlsStage<const PROXY: bool = true> {
-    tls: Option<Arc<dyn TlsClientConfigProvider>>,
-}
+pub struct TlsStage<const PROXY: bool = true>;
 
 #[non_exhaustive]
 #[derive(Debug, Default)]
 pub struct HttpStage<const PROXY: bool = true> {
-    tls: Option<Arc<dyn TlsClientConfigProvider>>,
-    h3: Option<H3State>,
+    h3: bool,
 }
 
 #[non_exhaustive]
 #[derive(Debug, Default)]
 pub struct ProxyRouteFailureCacheStage {
-    tls: Option<Arc<dyn TlsClientConfigProvider>>,
-    h3: Option<H3State>,
-}
-
-#[derive(Debug)]
-struct H3State {
-    tls: Option<Arc<dyn TlsClientConfigProvider>>,
+    h3: bool,
 }
 
 #[non_exhaustive]
@@ -445,10 +436,9 @@ impl<T: Clone, D, const TLS_PROXY: bool>
 impl<T, D, const PROXY: bool> EasyHttpConnectorBuilder<T, ProxyStage<PROXY>, D> {
     /// Add a custom tls connector that will be used by the client.
     ///
-    /// The default pool assumes this connector has a fixed TLS policy. If it
-    /// consumes request overrides, configure `with_tls_config_provider` before
-    /// adding HTTP, or supply an appropriate `TlsPoolId` before pool lookup.
-    /// Opaque policies must use `TlsPoolId::non_reusable()` or a custom pool.
+    /// TLS connectors publish connection reuse policies on their established
+    /// transports. Custom secure connectors without this metadata are not pooled;
+    /// implement the generic connection reuse policy to support safe pooling.
     ///
     /// The final HTTP transition applies a [`RequestVersionAdapter`] outside
     /// the complete connection attempt so it can apply the negotiated version
@@ -479,14 +469,12 @@ impl<T, D, const PROXY: bool> EasyHttpConnectorBuilder<T, ProxyStage<PROXY>, D> 
         self,
         config: TlsClientConfig,
     ) -> EasyHttpConnectorBuilder<boring_client::TlsConnector<T>, TlsStage<PROXY>, D> {
-        let tls = Some(Arc::new(boring_client::BoringTlsClientConfigProvider)
-            as Arc<dyn TlsClientConfigProvider>);
         let connector = boring_client::TlsConnector::auto(self.connector).with_base_config(config);
 
         EasyHttpConnectorBuilder {
             dns: self.dns,
             connector,
-            stage: TlsStage { tls },
+            stage: Default::default(),
         }
     }
 
@@ -510,8 +498,6 @@ impl<T, D, const PROXY: bool> EasyHttpConnectorBuilder<T, ProxyStage<PROXY>, D> 
         TlsStage<PROXY>,
         D,
     > {
-        let tls = Some(Arc::new(boring_client::BoringTlsClientConfigProvider)
-            as Arc<dyn TlsClientConfigProvider>);
         let connector = boring_client::TlsConnector::auto(self.connector).with_base_config(config);
         let connector =
             AddInputExtension::new(connector, FallbackHttpVersion(default_http_version))
@@ -520,7 +506,7 @@ impl<T, D, const PROXY: bool> EasyHttpConnectorBuilder<T, ProxyStage<PROXY>, D> 
         EasyHttpConnectorBuilder {
             dns: self.dns,
             connector,
-            stage: TlsStage { tls },
+            stage: Default::default(),
         }
     }
 
@@ -534,14 +520,12 @@ impl<T, D, const PROXY: bool> EasyHttpConnectorBuilder<T, ProxyStage<PROXY>, D> 
         self,
         config: TlsClientConfig,
     ) -> EasyHttpConnectorBuilder<rustls_client::TlsConnector<T>, TlsStage<PROXY>, D> {
-        let tls = Some(Arc::new(rustls_client::RustlsTlsClientConfigProvider)
-            as Arc<dyn TlsClientConfigProvider>);
         let connector = rustls_client::TlsConnector::auto(self.connector).with_base_config(config);
 
         EasyHttpConnectorBuilder {
             dns: self.dns,
             connector,
-            stage: TlsStage { tls },
+            stage: Default::default(),
         }
     }
 
@@ -565,8 +549,6 @@ impl<T, D, const PROXY: bool> EasyHttpConnectorBuilder<T, ProxyStage<PROXY>, D> 
         TlsStage<PROXY>,
         D,
     > {
-        let tls = Some(Arc::new(rustls_client::RustlsTlsClientConfigProvider)
-            as Arc<dyn TlsClientConfigProvider>);
         let connector = rustls_client::TlsConnector::auto(self.connector).with_base_config(config);
         let connector =
             AddInputExtension::new(connector, FallbackHttpVersion(default_http_version))
@@ -575,7 +557,7 @@ impl<T, D, const PROXY: bool> EasyHttpConnectorBuilder<T, ProxyStage<PROXY>, D> 
         EasyHttpConnectorBuilder {
             dns: self.dns,
             connector,
-            stage: TlsStage { tls },
+            stage: Default::default(),
         }
     }
 
@@ -590,18 +572,6 @@ impl<T, D, const PROXY: bool> EasyHttpConnectorBuilder<T, ProxyStage<PROXY>, D> 
 }
 
 impl<T, D, const PROXY: bool> EasyHttpConnectorBuilder<T, TlsStage<PROXY>, D> {
-    generate_set_and_with! {
-        /// Identify TLS request overrides for a custom stream connector's pool.
-        ///
-        /// The provider's `pool_id` must describe the same overrides as the connector.
-        /// Its defaults and behavior must remain fixed for the lifetime of the pool.
-        /// Without a provider, custom connectors may supply a request `TlsPoolId`.
-        pub fn tls_config_provider(mut self, provider: Arc<dyn TlsClientConfigProvider>) -> Self {
-            self.stage.tls = Some(provider);
-            self
-        }
-    }
-
     /// Add http support to this connector
     pub fn with_default_http_connector<Body>(
         self,
@@ -612,10 +582,7 @@ impl<T, D, const PROXY: bool> EasyHttpConnectorBuilder<T, TlsStage<PROXY>, D> {
         EasyHttpConnectorBuilder {
             dns: self.dns,
             connector,
-            stage: HttpStage {
-                tls: self.stage.tls,
-                h3: None,
-            },
+            stage: HttpStage { h3: false },
         }
     }
 
@@ -632,10 +599,7 @@ impl<T, D, const PROXY: bool> EasyHttpConnectorBuilder<T, TlsStage<PROXY>, D> {
         EasyHttpConnectorBuilder {
             dns: self.dns,
             connector,
-            stage: HttpStage {
-                tls: self.stage.tls,
-                h3: None,
-            },
+            stage: HttpStage { h3: false },
         }
     }
 }
@@ -645,8 +609,8 @@ impl<T, Body, D, const PROXY: bool>
 {
     /// Add a separately configured QUIC transport below the common HTTP handshake.
     /// The connector supplies its own transport, DNS and TLS policy. Its policy
-    /// must remain fixed for the lifetime of the pool. Custom request policies
-    /// can provide a `TlsPoolId` extension before pool lookup or a custom `ReqToConnID`.
+    /// publishes connection reuse metadata for its effective policy. Custom
+    /// connectors without that metadata are not pooled.
     /// Use [`Self::with_http3_support`] for the built-in connector.
     pub fn with_http3_connector<C>(
         mut self,
@@ -656,7 +620,7 @@ impl<T, Body, D, const PROXY: bool>
         HttpStage<PROXY>,
         D,
     > {
-        self.stage.h3 = Some(H3State { tls: None });
+        self.stage.h3 = true;
         EasyHttpConnectorBuilder {
             dns: self.dns,
             connector: self.connector.with_http3_connector(connector),
@@ -680,11 +644,8 @@ impl<T, Body, D, const PROXY: bool>
     where
         D: Layer<super::Http3Connector>,
     {
-        let tls = Some(connector.tls_provider().clone() as Arc<dyn TlsClientConfigProvider>);
         let connector = self.dns.layer(connector);
-        let mut builder = self.with_http3_connector(connector);
-        builder.stage.h3 = Some(H3State { tls });
-        builder
+        self.with_http3_connector(connector)
     }
 }
 
@@ -693,10 +654,8 @@ type DefaultHttpConnector<T> =
 
 type ConfiguredConnectionBuilder<T> = EasyHttpConnectorBuilder<DefaultHttpConnector<T>, PoolStage>;
 
-type ConfiguredConnectionPoolBuilder<T> = EasyHttpConnectorBuilder<
-    DefaultHttpConnector<HttpPooledConnector<T, EasyHttpConnIdentifier>>,
-    PoolStage,
->;
+type ConfiguredConnectionPoolBuilder<T> =
+    EasyHttpConnectorBuilder<DefaultHttpConnector<HttpPooledConnector<T>>, PoolStage>;
 
 type ErasedConnector<C> =
     BoxService<ConnectRequest, EstablishedClientConnection<C, ConnectRequest>, ConnectionError>;
@@ -779,7 +738,7 @@ fn finish_without_connection_pool<T, Stage: PoolConfig, D>(
 where
     T: ConnectorService<ConnectRequest>,
 {
-    let (_, h3_enabled) = builder.stage.into_pool_setup();
+    let h3_enabled = builder.stage.h3_enabled();
     EasyHttpConnectorBuilder {
         dns: (),
         connector: finalize_http_connector(builder.connector, h3_enabled),
@@ -787,77 +746,19 @@ where
     }
 }
 
-/// Pool identity for the fixed transports assembled by [`EasyHttpConnectorBuilder`].
-///
-/// The connector's TLS provider classifies request overrides before defaults are
-/// applied. The resulting HTTP connection identity contains only protocol policy,
-/// never the provider. Custom transports can supply a `TlsPoolId` extension or
-/// configure their own `ReqToConnID` with a custom pool.
-#[derive(Clone, Debug, Default)]
-pub struct EasyHttpConnIdentifier {
-    stream_tls: Option<Arc<dyn TlsClientConfigProvider>>,
-    h3_tls: Option<Arc<dyn TlsClientConfigProvider>>,
-}
-
-impl EasyHttpConnIdentifier {
-    fn tls_pool_id(&self, input: &ConnectRequest) -> Option<TlsPoolId> {
-        let fallback = input
-            .extensions()
-            .get_ref::<FallbackHttpVersion>()
-            .map(|v| v.0);
-        let version = input
-            .target_http_version_with_fallback(fallback)
-            .or_else(|| input.http_version());
-        let provider = if version == Some(Version::HTTP_3) {
-            self.h3_tls.as_ref()
-        } else {
-            self.stream_tls.as_ref()
-        };
-
-        // A caller-supplied identity must not hide overrides from the provider
-        // actually configured to perform this transport's handshake.
-        match provider {
-            Some(provider) => provider.pool_id(input.extensions()),
-            None => input.extensions().get_ref::<TlsPoolId>().copied(),
-        }
-    }
-}
-
-impl ReqToConnID<ConnectRequest> for EasyHttpConnIdentifier {
-    type ID = HttpConnId;
-
-    fn id(&self, input: &ConnectRequest) -> Result<Self::ID, BoxError> {
-        HttpConnIdentifier::new().id_with_tls(input, self.tls_pool_id(input))
-    }
-}
-
 trait PoolConfig {
-    fn into_pool_setup(self) -> (EasyHttpConnIdentifier, bool);
+    fn h3_enabled(self) -> bool;
 }
 
 impl<const PROXY: bool> PoolConfig for HttpStage<PROXY> {
-    fn into_pool_setup(self) -> (EasyHttpConnIdentifier, bool) {
-        let h3_enabled = self.h3.is_some();
-        (
-            EasyHttpConnIdentifier {
-                stream_tls: self.tls,
-                h3_tls: self.h3.and_then(|h3| h3.tls),
-            },
-            h3_enabled,
-        )
+    fn h3_enabled(self) -> bool {
+        self.h3
     }
 }
 
 impl PoolConfig for ProxyRouteFailureCacheStage {
-    fn into_pool_setup(self) -> (EasyHttpConnIdentifier, bool) {
-        let h3_enabled = self.h3.is_some();
-        (
-            EasyHttpConnIdentifier {
-                stream_tls: self.tls,
-                h3_tls: self.h3.and_then(|h3| h3.tls),
-            },
-            h3_enabled,
-        )
+    fn h3_enabled(self) -> bool {
+        self.h3
     }
 }
 
@@ -868,8 +769,8 @@ fn finish_with_connection_pool<T, Stage: PoolConfig, D>(
 where
     T: ConnectorService<ConnectRequest>,
 {
-    let (identifier, h3_enabled) = builder.stage.into_pool_setup();
-    let connector = config.try_build_connector_with_identifier(builder.connector, identifier)?;
+    let h3_enabled = builder.stage.h3_enabled();
+    let connector = config.try_build_connector(builder.connector)?;
     Ok(EasyHttpConnectorBuilder {
         dns: (),
         connector: finalize_http_connector(connector, h3_enabled),
@@ -883,11 +784,8 @@ fn finish_with_default_connection_pool<T, Stage: PoolConfig, D>(
 where
     T: ConnectorService<ConnectRequest>,
 {
-    let (identifier, h3_enabled) = builder.stage.into_pool_setup();
-    let connector = HttpPooledConnectorConfig::build_default_connector_with_identifier(
-        builder.connector,
-        identifier,
-    );
+    let h3_enabled = builder.stage.h3_enabled();
+    let connector = HttpPooledConnectorConfig::build_default_connector(builder.connector);
     EasyHttpConnectorBuilder {
         dns: (),
         connector: finalize_http_connector(connector, h3_enabled),
@@ -931,10 +829,7 @@ impl<T, D, const PROXY: bool> EasyHttpConnectorBuilder<T, HttpStage<PROXY>, D> {
         EasyHttpConnectorBuilder {
             dns: self.dns,
             connector: ProxyRouteFailureCacheConnector::new(erase_connector(self.connector), cache),
-            stage: ProxyRouteFailureCacheStage {
-                tls: self.stage.tls,
-                h3: self.stage.h3,
-            },
+            stage: ProxyRouteFailureCacheStage { h3: self.stage.h3 },
         }
     }
 
@@ -946,10 +841,7 @@ impl<T, D, const PROXY: bool> EasyHttpConnectorBuilder<T, HttpStage<PROXY>, D> {
         EasyHttpConnectorBuilder {
             dns: self.dns,
             connector: self.connector,
-            stage: ProxyRouteFailureCacheStage {
-                tls: self.stage.tls,
-                h3: self.stage.h3,
-            },
+            stage: ProxyRouteFailureCacheStage { h3: self.stage.h3 },
         }
     }
 }
@@ -973,7 +865,7 @@ impl<T, D> EasyHttpConnectorBuilder<T, HttpStage<true>, D> {
     ///
     /// This will create a [`MultiplexPool`](crate::net::client::pool::MultiplexPool)
     /// using the provided limits and will use
-    /// [`HttpConnIdentifier`] to group connections on
+    /// [`super::HttpConnIdentifier`] to group connections on
     /// protocol, authority, selected route, physical transport, any HTTP
     /// version requirement, and the selected plaintext HTTP proxy mode. This
     /// keeps forward-proxy connections separate from CONNECT tunnels to the
@@ -1031,16 +923,16 @@ impl<T, D> EasyHttpConnectorBuilder<T, HttpStage<true>, D> {
     /// When the connector supports plaintext HTTP through an HTTP proxy, the
     /// custom [`ReqToConnId`] must keep ordinary forward-proxy connections
     /// separate from CONNECT tunnels to the same proxy. Rama's
-    /// [`HttpConnIdentifier`] includes this
+    /// [`super::HttpConnIdentifier`] includes this
     /// distinction automatically.
     ///
     /// [`Pool`]: rama_net::client::pool::Pool
     /// [`ReqToConnId`]: rama_net::client::pool::ReqToConnID
     ///
-    /// The supplied `ReqToConnID` replaces the built-in TLS pool identity. It owns
-    /// request-override compatibility and must separate incompatible connector
-    /// policies when the pool is shared. Return a non-reusable `ConnID` when a
-    /// request needs a fresh connection that must not return to the pool.
+    /// The supplied `ReqToConnID` partitions routes and application protocols.
+    /// The pool must also honor connection-owned reuse policies published by
+    /// transport connectors. Return a non-reusable `ConnID` to require a fresh
+    /// connection that must not return to the pool.
     pub fn with_custom_connection_pool<P, R>(
         self,
         pool: P,
@@ -1097,10 +989,10 @@ impl<T, D> EasyHttpConnectorBuilder<T, HttpStage<false>, D> {
 
     /// Use a custom connection pool without a proxy-route failure cache.
     ///
-    /// The supplied `ReqToConnID` replaces the built-in TLS pool identity. It owns
-    /// request-override compatibility and must separate incompatible connector
-    /// policies when the pool is shared. Return a non-reusable `ConnID` when a
-    /// request needs a fresh connection that must not return to the pool.
+    /// The supplied `ReqToConnID` partitions routes and application protocols.
+    /// The pool must also honor connection-owned reuse policies published by
+    /// transport connectors. Return a non-reusable `ConnID` to require a fresh
+    /// connection that must not return to the pool.
     pub fn with_custom_connection_pool<P, R>(
         self,
         pool: P,
@@ -1143,15 +1035,15 @@ impl<T, D> EasyHttpConnectorBuilder<T, ProxyRouteFailureCacheStage, D> {
     /// Use a custom connection pool with the selected failure-cache policy.
     ///
     /// For a proxy-capable connector, the custom
-    /// [`ReqToConnID`] must partition
+    /// [`ReqToConnID`](rama_net::client::pool::ReqToConnID) must partition
     /// plaintext HTTP forward-proxy connections from CONNECT tunnels to the
-    /// same proxy. [`HttpConnIdentifier`] does so by
+    /// same proxy. [`super::HttpConnIdentifier`] does so by
     /// default.
     ///
-    /// The supplied `ReqToConnID` replaces the built-in TLS pool identity. It owns
-    /// request-override compatibility and must separate incompatible connector
-    /// policies when the pool is shared. Return a non-reusable `ConnID` when a
-    /// request needs a fresh connection that must not return to the pool.
+    /// The supplied `ReqToConnID` partitions routes and application protocols.
+    /// The pool must also honor connection-owned reuse policies published by
+    /// transport connectors. Return a non-reusable `ConnID` to require a fresh
+    /// connection that must not return to the pool.
     pub fn with_custom_connection_pool<P, R>(
         self,
         pool: P,
@@ -1192,7 +1084,7 @@ impl<T, S, D> EasyHttpConnectorBuilder<T, S, D> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::http::Body;
+    use crate::http::{Body, client::HttpConnIdentifier};
     use rama_net::{
         Protocol,
         address::HostWithPort,
@@ -1201,21 +1093,16 @@ mod tests {
             pool::{ConnID as _, ReqToConnID},
         },
     };
-    use rama_tls::client::{ServerVerifyMode, TlsClientConfigProvider, TlsPoolId, TlsServerVerify};
+    use rama_tls::client::{ServerVerifyMode, TlsPoolId, TlsServerVerify};
     use rama_utils::octets::kib;
-    #[cfg(feature = "rustls")]
-    use {
-        rama_net::http::{HttpRequestVersion, TargetHttpVersion},
-        rama_tls::client::TlsServerCertPin,
-    };
 
-    use rama_core::{extensions::Extensions, layer::layer_fn};
+    use rama_core::layer::layer_fn;
     #[cfg(any(
         feature = "boring",
         all(feature = "rustls", any(feature = "ring", feature = "aws-lc"))
     ))]
     use {
-        crate::http::client::Http3Connector,
+        crate::http::{Version, client::Http3Connector},
         crate::quic::Endpoint,
         rama_core::futures::{Stream, stream},
         rama_http::layer::http_service::HttpServiceAttempt,
@@ -1227,24 +1114,12 @@ mod tests {
         std::{
             convert::Infallible,
             net::{Ipv4Addr, Ipv6Addr, SocketAddr},
-            sync::atomic::{AtomicUsize, Ordering},
+            sync::{
+                Arc,
+                atomic::{AtomicUsize, Ordering},
+            },
         },
     };
-
-    #[derive(Debug)]
-    struct CustomTlsPolicy;
-
-    impl TlsClientConfigProvider for CustomTlsPolicy {
-        fn pool_id(&self, extensions: &Extensions) -> Option<TlsPoolId> {
-            TlsPoolId::builder()
-                .maybe_with_verify(extensions.get_ref::<TlsServerVerify>())
-                .build()
-        }
-
-        fn authenticates_server(&self, _: &Extensions) -> bool {
-            false
-        }
-    }
 
     fn assert_future_budget(connector: &impl Service<Request>, name: &str) {
         let request = Request::builder()
@@ -1301,31 +1176,8 @@ mod tests {
     }
 
     #[test]
-    fn custom_stream_provider_classifies_overrides_before_pool_lookup() {
-        let builder = EasyHttpConnectorBuilder {
-            dns: (),
-            connector: (),
-            stage: ProxyStage::<false>::default(),
-        }
-        .with_custom_tls_connector(layer_fn(|inner| inner))
-        .with_tls_config_provider(Arc::new(CustomTlsPolicy))
-        .with_default_http_connector::<()>(Executor::default());
-        let (identifier, h3_enabled) = builder.stage.into_pool_setup();
-        assert!(!h3_enabled);
-        let input = ConnectRequest::new(HostWithPort::example_domain_https())
-            .with_application_protocol(Protocol::HTTPS);
-        let baseline = identifier.id(&input).unwrap();
-        input
-            .extensions
-            .insert(TlsServerVerify(ServerVerifyMode::Disable));
-        assert_ne!(identifier.id(&input).unwrap(), baseline);
-        input.extensions.insert(TlsPoolId::non_reusable());
-        assert!(identifier.id(&input).unwrap().is_reusable());
-    }
-
-    #[test]
     fn custom_fixed_policy_pool_respects_explicit_override_identity() {
-        let identifier = EasyHttpConnIdentifier::default();
+        let identifier = HttpConnIdentifier::default();
         let input = ConnectRequest::new(HostWithPort::example_domain_https());
         let fixed = identifier.id(&input).unwrap();
         assert!(fixed.is_reusable());
@@ -1484,176 +1336,5 @@ mod tests {
             "a mismatched candidate family must not turn the IPv4 timeout into an authentication failure"
         );
         endpoint.close(0u32, b"test complete");
-    }
-
-    #[cfg(feature = "rustls")]
-    fn custom_tls_pool_id(verify: ServerVerifyMode) -> TlsPoolId {
-        TlsPoolId::builder()
-            .with_verify(&TlsServerVerify(verify))
-            .build()
-            .unwrap()
-    }
-
-    #[cfg(feature = "rustls")]
-    #[test]
-    fn tls_identity_follows_the_connectors_version_resolution() {
-        let identifier = EasyHttpConnIdentifier {
-            stream_tls: Some(Arc::new(rustls_client::RustlsTlsClientConfigProvider)
-                as Arc<dyn TlsClientConfigProvider>),
-            h3_tls: None,
-        };
-        let input = ConnectRequest::new(HostWithPort::example_domain_https())
-            .with_application_protocol(Protocol::HTTPS);
-        input
-            .extensions
-            .insert(TlsServerVerify(ServerVerifyMode::Disable));
-        input.extensions.insert(HttpRequestVersion(Version::HTTP_3));
-        let h3 = identifier.id(&input).unwrap();
-        assert_eq!(identifier.tls_pool_id(&input), None);
-
-        input
-            .extensions
-            .insert(FallbackHttpVersion(Version::HTTP_2));
-        let fallback = identifier.id(&input).unwrap();
-        assert!(identifier.tls_pool_id(&input).is_some());
-        assert_ne!(h3, fallback);
-        input.extensions.insert(TargetHttpVersion(Version::HTTP_3));
-        assert_eq!(identifier.tls_pool_id(&input), None);
-        input.extensions.insert(TargetHttpVersion(Version::HTTP_2));
-        assert_eq!(identifier.id(&input).unwrap(), fallback);
-    }
-
-    #[cfg(all(feature = "rustls", feature = "boring"))]
-    #[test]
-    fn native_tls_identity_uses_selected_transport_provider() {
-        let identifier = EasyHttpConnIdentifier {
-            stream_tls: Some(Arc::new(rustls_client::RustlsTlsClientConfigProvider)
-                as Arc<dyn TlsClientConfigProvider>),
-            h3_tls: Some(Arc::new(boring_client::BoringTlsClientConfigProvider)
-                as Arc<dyn TlsClientConfigProvider>),
-        };
-        let input = ConnectRequest::new(HostWithPort::example_domain_https());
-        input
-            .extensions
-            .insert(rama_tls_boring::client::BoringGrease(true));
-        input.extensions.insert(TargetHttpVersion(Version::HTTP_2));
-        assert_eq!(identifier.tls_pool_id(&input), None);
-        input.extensions.insert(TargetHttpVersion(Version::HTTP_3));
-        assert!(identifier.tls_pool_id(&input).is_some());
-        let boring = identifier.id(&input).unwrap();
-        input
-            .extensions
-            .insert(rama_tls_rustls::client::ModifyRustlsClientConfig::new(Ok));
-        assert_eq!(identifier.id(&input).unwrap(), boring);
-        input.extensions.insert(TargetHttpVersion(Version::HTTP_2));
-        assert!(!identifier.id(&input).unwrap().is_reusable());
-
-        let reversed = EasyHttpConnIdentifier {
-            stream_tls: Some(Arc::new(boring_client::BoringTlsClientConfigProvider)
-                as Arc<dyn TlsClientConfigProvider>),
-            h3_tls: Some(Arc::new(rustls_client::RustlsTlsClientConfigProvider)
-                as Arc<dyn TlsClientConfigProvider>),
-        };
-        assert!(reversed.id(&input).unwrap().is_reusable());
-        input.extensions.insert(TargetHttpVersion(Version::HTTP_3));
-        assert!(!reversed.id(&input).unwrap().is_reusable());
-    }
-
-    #[cfg(all(feature = "rustls", feature = "boring"))]
-    #[test]
-    fn common_tls_identity_agrees_across_providers_and_preserves_presence() {
-        use rama_tls::client::{
-            ServerVerifyMode, TlsClientConfig, TlsServerCertPins, TlsServerName, TlsServerVerify,
-            TlsStoreServerCertChain,
-        };
-        let input = ConnectRequest::new(HostWithPort::example_domain_https());
-        let rustls = EasyHttpConnIdentifier {
-            stream_tls: Some(Arc::new(rustls_client::RustlsTlsClientConfigProvider)
-                as Arc<dyn TlsClientConfigProvider>),
-            h3_tls: None,
-        };
-        let boring = EasyHttpConnIdentifier {
-            stream_tls: Some(Arc::new(boring_client::BoringTlsClientConfigProvider)
-                as Arc<dyn TlsClientConfigProvider>),
-            h3_tls: None,
-        };
-        let baseline = rustls.id(&input).unwrap();
-        assert_eq!(baseline, boring.id(&input).unwrap());
-        for intent in [
-            rama_tls::KeyLogIntent::Disabled,
-            rama_tls::KeyLogIntent::Environment,
-            rama_tls::KeyLogIntent::File("pool-test-keylog.txt".into()),
-        ] {
-            input.extensions.insert(rama_tls::TlsKeyLog(intent));
-            assert_ne!(baseline, rustls.id(&input).unwrap());
-            assert_eq!(rustls.id(&input).unwrap(), boring.id(&input).unwrap());
-        }
-        let input = ConnectRequest::new(HostWithPort::example_domain_https());
-        for alpn in [
-            rama_net::tls::TlsAlpn(Default::default()),
-            rama_net::tls::TlsAlpn::http_1(),
-        ] {
-            input.extensions.insert(alpn);
-            assert_ne!(baseline, rustls.id(&input).unwrap());
-            assert_eq!(rustls.id(&input).unwrap(), boring.id(&input).unwrap());
-        }
-        input.extensions.insert(rama_tls::TlsSupportedVersions(vec![
-            rama_tls::ProtocolVersion::TLSv1_3,
-        ]));
-        assert_eq!(rustls.id(&input).unwrap(), boring.id(&input).unwrap());
-        let input = ConnectRequest::new(HostWithPort::example_domain_https());
-        input
-            .extensions
-            .insert(TlsServerVerify(ServerVerifyMode::Auto));
-        assert_ne!(baseline, rustls.id(&input).unwrap());
-        assert_eq!(rustls.id(&input).unwrap(), boring.id(&input).unwrap());
-        input
-            .extensions
-            .insert(TlsServerName("example.com".parse().unwrap()));
-        input.extensions.insert(TlsStoreServerCertChain(true));
-        assert_eq!(rustls.id(&input).unwrap(), boring.id(&input).unwrap());
-        input
-            .extensions
-            .insert(TlsServerCertPins::new(TlsServerCertPin::SpkiSha256(
-                [1; 32],
-            )));
-        assert_eq!(rustls.id(&input).unwrap(), boring.id(&input).unwrap());
-        TlsClientConfig::new()
-            .try_with_server_trust_anchors([vec![4, 5, 6].into()])
-            .unwrap()
-            .write_to(&input.extensions);
-        assert_eq!(rustls.id(&input).unwrap(), boring.id(&input).unwrap());
-    }
-
-    #[cfg(feature = "rustls")]
-    #[test]
-    fn explicit_custom_identity_cannot_mask_builtin_tls_policy() {
-        use rama_tls::client::TlsServerCertPins;
-        let input = ConnectRequest::new(HostWithPort::example_domain_https());
-        let identifier = EasyHttpConnIdentifier {
-            stream_tls: Some(Arc::new(rustls_client::RustlsTlsClientConfigProvider)
-                as Arc<dyn TlsClientConfigProvider>),
-            h3_tls: None,
-        };
-        input
-            .extensions
-            .insert(custom_tls_pool_id(ServerVerifyMode::Auto));
-        let baseline = identifier.id(&input).unwrap();
-        assert_eq!(identifier.tls_pool_id(&input), None);
-        input
-            .extensions
-            .insert(TlsServerCertPins::new(TlsServerCertPin::SpkiSha256(
-                [2; 32],
-            )));
-        let pins = identifier.id(&input).unwrap();
-        assert_ne!(baseline, pins);
-        input
-            .extensions
-            .insert(custom_tls_pool_id(ServerVerifyMode::Disable));
-        assert_eq!(pins, identifier.id(&input).unwrap());
-        input
-            .extensions
-            .insert(rama_tls_rustls::client::ModifyRustlsClientConfig::new(Ok));
-        assert!(!identifier.id(&input).unwrap().is_reusable());
     }
 }

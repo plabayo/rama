@@ -29,9 +29,10 @@ pub type HttpPooledConnector<S, R = HttpConnIdentifier> = BindBodyToConnector<
 /// requirement that constrains the physical connection, and whether plaintext
 /// HTTP uses forward-proxy or CONNECT-tunnel semantics.
 ///
-/// A pool belongs to a fixed connector policy. Custom connectors reuse by
-/// default; varying policies can insert a [`TlsPoolId`] before lookup
-/// or use a custom [`ReqToConnID`] that distinguishes those settings. Injecting
+/// A pool belongs to a fixed connector policy. TLS connectors publish their
+/// compatibility rules on established connections; pool checkout checks these
+/// rules against request extensions. An explicit [`TlsPoolId`] may additionally
+/// partition custom connection identities. Injecting
 /// the same pool into multiple connectors requires compatible fixed policies
 /// or a custom connection-ID namespace. Retire the pool before changing those
 /// defaults or the behavior of mutable native hooks.
@@ -44,32 +45,6 @@ impl HttpConnIdentifier {
     #[must_use]
     pub const fn new() -> Self {
         Self
-    }
-
-    /// Derive an HTTP identity with the TLS settings classified by the connector.
-    ///
-    /// This explicit value takes precedence over a request's `TlsPoolId` extension.
-    /// Classify request overrides before layering fixed connector defaults.
-    /// Connector assemblies in other crates can then compose their own
-    /// [`ReqToConnID`] without changing the input's extensions or duplicating
-    /// HTTP identity rules.
-    pub fn id_with_tls(
-        &self,
-        input: &ConnectRequest,
-        tls: Option<TlsPoolId>,
-    ) -> Result<HttpConnId, BoxError> {
-        let network = BasicConnIdentifier::new().id(input)?;
-        Ok(HttpConnId {
-            // A request-supplied tunnel changes proxy-side TLS even when there
-            // is no origin TLS provider. Route-generated tunnels are added
-            // below the pool and remain part of the fixed proxy policy.
-            reusable: !input.extensions().contains::<TlsTunnel>()
-                && tls.is_none_or(|id| id.is_reusable()),
-            tls,
-            network,
-            required_version: connection_version_requirement(input),
-            http_proxy_mode: http_proxy_mode_requirement(input),
-        })
     }
 }
 
@@ -109,7 +84,17 @@ impl ReqToConnID<ConnectRequest> for HttpConnIdentifier {
     type ID = HttpConnId;
 
     fn id(&self, input: &ConnectRequest) -> Result<Self::ID, BoxError> {
-        self.id_with_tls(input, input.extensions().get_ref::<TlsPoolId>().copied())
+        let tls = input.extensions().get_ref::<TlsPoolId>().copied();
+        let network = BasicConnIdentifier::new().id(input)?;
+        Ok(HttpConnId {
+            // Request-supplied tunnel policies must not reuse a route's fixed TLS.
+            reusable: !input.extensions().contains::<TlsTunnel>()
+                && tls.is_none_or(|id| id.is_reusable()),
+            tls,
+            network,
+            required_version: connection_version_requirement(input),
+            http_proxy_mode: http_proxy_mode_requirement(input),
+        })
     }
 }
 
@@ -236,9 +221,8 @@ impl HttpPooledConnectorConfig {
     /// Unlike [`Self::try_build_connector`], this constructor is infallible because
     /// its connection and concurrency limits are non-zero constants owned by
     /// Rama.
-    /// The pool belongs to one fixed connector policy. If request extensions can
-    /// change connection settings, supply a TLS-aware identifier through
-    /// [`Self::build_default_connector_with_identifier`].
+    /// The pool belongs to one fixed connector policy and checks connection-owned
+    /// reuse rules published by transport connectors before every checkout.
     pub fn build_default_connector<S>(inner: S) -> HttpPooledConnector<S>
     where
         S: ConnectorService<ConnectRequest>,
@@ -246,7 +230,7 @@ impl HttpPooledConnectorConfig {
         Self::build_default_connector_with_identifier(inner, HttpConnIdentifier::new())
     }
 
-    /// Build the default pool with a TLS-aware identifier.
+    /// Build the default pool with a custom connection identifier.
     pub fn build_default_connector_with_identifier<S, R>(
         inner: S,
         identifier: R,
@@ -273,10 +257,9 @@ impl HttpPooledConnectorConfig {
     /// services and can be layered around the returned connector when needed.
     /// The pool belongs to one fixed connector policy, including TLS defaults
     /// and native hooks. Retire it before changing that policy or mutable hook
-    /// behavior. A custom connector that changes its connection policy
-    /// per request must supply a TLS-aware identifier through
-    /// [`Self::try_build_connector_with_identifier`], or use a custom
-    /// [`ReqToConnID`] with [`PooledConnector`].
+    /// behavior. Transport connectors publish their request compatibility rules
+    /// as connection metadata. Custom identifiers may further partition routes
+    /// through [`Self::try_build_connector_with_identifier`].
     ///
     /// A pool injected through request extensions must obey the same fixed-policy
     /// contract. Share it only between compatible connectors, or supply a custom
@@ -297,7 +280,7 @@ impl HttpPooledConnectorConfig {
         self.try_build_connector_with_identifier(inner, HttpConnIdentifier::new())
     }
 
-    /// Build a pool with a TLS-aware identifier for the fixed policy of `inner`.
+    /// Build a pool with a custom identifier for the fixed policy of `inner`.
     pub fn try_build_connector_with_identifier<S, R>(
         self,
         inner: S,
@@ -362,7 +345,7 @@ mod tests {
 
     fn create_test_request(version: Version) -> Request {
         Request::builder()
-            .uri("https://www.example.com")
+            .uri("http://www.example.com")
             .version(version)
             .body(Body::from("a random request body"))
             .unwrap()
@@ -394,7 +377,6 @@ mod tests {
         let customized = identifier.id(&input).unwrap();
         assert!(customized.is_reusable());
         assert_ne!(baseline, customized);
-        assert_eq!(baseline, identifier.id_with_tls(&input, None).unwrap());
         assert_eq!(customized, identifier.id(&input).unwrap());
         input.extensions.insert(TlsPoolId::non_reusable());
         assert!(!identifier.id(&input).unwrap().is_reusable());
@@ -1309,6 +1291,7 @@ mod tests {
         let req = || {
             let req = create_test_request(Version::HTTP_11);
             req.extensions().insert(proxy.clone());
+            req.extensions().insert(PlaintextHttpProxyMode::Tunnel);
             req
         };
 

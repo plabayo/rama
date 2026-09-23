@@ -9,7 +9,7 @@ use crate::{
     Layer, Service,
     error::BoxError,
     extensions::ExtensionsRef,
-    http::{Request, Response, StreamingBody},
+    http::{Body as ResponseBody, Request, Response, StreamingBody},
     net::client::EstablishedClientConnection,
     rt::Executor,
     service::BoxService,
@@ -28,7 +28,10 @@ use rama_core::{
     layer::MapErr,
 };
 use rama_http::{
-    layer::forward_proxy::{HttpForwardProxyLayer, HttpForwardProxyService},
+    layer::{
+        forward_proxy::{HttpForwardProxyLayer, HttpForwardProxyService},
+        map_response_body::MapResponseBody,
+    },
     proxy::PlaintextHttpProxyMode,
 };
 
@@ -337,18 +340,20 @@ impl<BodyIn, ConnResponse, L> EasyHttpWebClient<BodyIn, ConnResponse, L> {
     }
 }
 
-impl<Body, ConnectionBody, Connection, L> Service<Request<Body>>
+impl<Body, ConnectionBody, Connection, IncomingBody, L> Service<Request<Body>>
     for EasyHttpWebClient<Body, EstablishedClientConnection<Connection, Request<ConnectionBody>>, L>
 where
     Body: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
-    Connection:
-        Service<Request<ConnectionBody>, Output = Response, Error = BoxError> + ExtensionsRef,
+    Connection: Service<Request<ConnectionBody>, Output = Response<IncomingBody>, Error = BoxError>
+        + ExtensionsRef,
+    IncomingBody: Send + Sync + 'static,
+    ResponseBody: From<IncomingBody>,
     // Body type this connection will be able to send, this is not necessarily the same one that
     // was used in the request that created this connection
     ConnectionBody:
         StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
     L: Layer<
-            HttpForwardProxyService<Connection>,
+            HttpForwardProxyService<MapResponseBody<Connection, fn(IncomingBody) -> ResponseBody>>,
             Service: Service<Request<ConnectionBody>, Output = Response, Error = BoxError>,
         > + Send
         + Sync
@@ -375,6 +380,7 @@ where
         req.extensions()
             .insert(Egress(http_connection.extensions().clone()));
 
+        let http_connection = MapResponseBody::into_boxed_streaming_body(http_connection);
         let http_connection = self.forward_proxy_layer.layer(http_connection);
         let http_connection = self.jit_layers.layer(http_connection);
 
@@ -421,6 +427,7 @@ mod tests {
         },
         test_utils::client::{MockConnectorService, MockSocket},
     };
+    use rama_utils::octets::kib;
     use serde::{Deserialize, Serialize};
     use tokio::time::sleep;
 
@@ -430,6 +437,24 @@ mod tests {
     struct Output {
         conn: usize,
         resp: usize,
+    }
+
+    #[tokio::test]
+    async fn default_client_request_future_stays_within_stack_budget() {
+        let client = DefaultHttpWebClient::<Body>::default();
+        let request = Request::builder()
+            .uri("https://example.com/")
+            .body(Body::empty())
+            .unwrap();
+        let request = client.serve(request);
+        let inner_size = std::mem::size_of_val(&request);
+        let request = tokio::time::timeout(Duration::from_secs(1), request);
+        let size = std::mem::size_of_val(&request);
+        eprintln!("default client request: {inner_size} bytes; with timeout: {size} bytes");
+        assert!(
+            size <= kib(16),
+            "default client request future is {size} bytes"
+        );
     }
 
     #[derive(Debug, Clone, Default)]

@@ -68,8 +68,8 @@ use rama::{
     graceful::{Shutdown, WeakShutdownGuard, default_signal},
     net::tls::ApplicationProtocol,
     quic::{
-        ClientConfig, Connection, Endpoint, ReadError, RecvStream, SendStream, ServerConfig,
-        StoppedError, proto::VarInt, tls::TlsOptions,
+        ClientConfig, Connection, ConnectionError, Endpoint, ReadError, RecvStream, SendStream,
+        ServerConfig, StoppedError, proto::VarInt, tls::TlsOptions,
     },
     rt::{Executor, spawn},
     telemetry::tracing::{
@@ -427,7 +427,12 @@ async fn carry(
     // below cannot wait on a peer that will never answer.
     // Closing the downstream endpoint wakes this task before the upstream
     // endpoint necessarily closes. Preserve the shutdown reason in that race.
-    if stopping.cancelled().now_or_never().is_some() {
+    if stopping.cancelled().now_or_never().is_some()
+        || matches!(
+            downstream.close_reason(),
+            Some(ConnectionError::LocallyClosed)
+        )
+    {
         upstream.close(RELAY_STOPPING, b"relay stopping");
     } else {
         upstream.close(0u32, b"done");

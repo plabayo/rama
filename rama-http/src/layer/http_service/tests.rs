@@ -1,10 +1,15 @@
 use super::*;
+use crate::{Body, Request, Response, body::util::BodyExt as _};
 use parking_lot::Mutex;
-use rama_core::extensions::{Extension, Extensions};
+use rama_core::{
+    bytes::Bytes,
+    extensions::{Extension, Extensions},
+    futures::stream,
+};
 #[cfg(feature = "tls")]
 use rama_net::client::{
-    ProxyRoute, ProxyRouteFailureCache, ProxyRouteFailureCacheLayer, ProxyRoutes,
-    ProxyRoutesConnector,
+    ProxyRoute, ProxyRouteFailureCache, ProxyRouteFailureCacheConfig, ProxyRouteFailureCacheLayer,
+    ProxyRouteFailureCacheScope, ProxyRoutes, ProxyRoutesConnector,
 };
 use rama_net::{ConnectorTargetInputExt as _, address::HostWithPort};
 #[cfg(feature = "tls")]
@@ -45,6 +50,7 @@ enum Outcome {
 
 #[derive(Clone, Debug)]
 struct FakeConnector {
+    response_failure: Option<ConnectionErrorDomain>,
     policy_scope: ConnectionPolicyScope,
     outcomes: Arc<Mutex<VecDeque<Outcome>>>,
     records: Arc<Mutex<Vec<Record>>>,
@@ -55,6 +61,7 @@ struct FakeConnector {
 impl FakeConnector {
     fn new(outcomes: impl IntoIterator<Item = Outcome>) -> Self {
         Self {
+            response_failure: None,
             policy_scope: ConnectionPolicyScope::Connector,
             outcomes: Arc::new(Mutex::new(outcomes.into_iter().collect())),
             records: Arc::default(),
@@ -69,6 +76,7 @@ struct FakeConnection {
     extensions: Extensions,
     dispatched: Arc<AtomicUsize>,
     expected_alt_used: Option<String>,
+    response_failure: Option<ConnectionErrorDomain>,
 }
 
 impl ExtensionsRef for FakeConnection {
@@ -77,12 +85,11 @@ impl ExtensionsRef for FakeConnection {
     }
 }
 
-impl Service<crate::Request> for FakeConnection {
-    type Output = crate::Response;
+impl Service<Request> for FakeConnection {
+    type Output = Response;
     type Error = std::convert::Infallible;
 
-    async fn serve(&self, request: crate::Request) -> Result<Self::Output, Self::Error> {
-        use crate::body::util::BodyExt as _;
+    async fn serve(&self, request: Request) -> Result<Self::Output, Self::Error> {
         assert_eq!(
             request
                 .headers()
@@ -95,7 +102,29 @@ impl Service<crate::Request> for FakeConnection {
             "dispatch once"
         );
         self.dispatched.fetch_add(1, Ordering::SeqCst);
-        Ok(crate::Response::new(crate::Body::empty()))
+        let body = match self.response_failure {
+            Some(domain) => {
+                let remote = ConnectionError::application(
+                    BoxError::from_static_str("remote stream reset"),
+                    ConnectionErrorKind::Unavailable,
+                );
+                let error: BoxError = if domain == ConnectionErrorDomain::Application {
+                    Box::new(remote)
+                } else {
+                    Box::new(ConnectionError::new(
+                        remote,
+                        domain,
+                        ConnectionErrorKind::Other,
+                    ))
+                };
+                Body::from_stream(stream::iter([
+                    Ok(Bytes::from_static(b"partial")),
+                    Err(error),
+                ]))
+            }
+            None => Body::empty(),
+        };
+        Ok(Response::new(body))
     }
 }
 
@@ -233,6 +262,7 @@ impl Service<ConnectRequest> for FakeConnector {
             conn: FakeConnection {
                 extensions,
                 dispatched: self.dispatched.clone(),
+                response_failure: expected_alt_used.as_ref().and(self.response_failure),
                 expected_alt_used,
             },
         })
@@ -400,7 +430,7 @@ async fn fallback_keeps_original_input_and_dispatches_body_once() {
     }
     established
         .conn
-        .serve(crate::Request::new(crate::Body::from("dispatch once")))
+        .serve(Request::new(Body::from("dispatch once")))
         .await
         .unwrap();
     assert_eq!(fake.dispatched.load(Ordering::SeqCst), 1);
@@ -408,32 +438,39 @@ async fn fallback_keeps_original_input_and_dispatches_body_once() {
 
 #[cfg(feature = "tls")]
 #[tokio::test]
-async fn explicit_version_keeps_authentication_alpn_and_policy_failures_terminal() {
-    for outcome in [
-        Outcome::WrongAlpn,
-        Outcome::Failure(
-            ConnectionErrorDomain::Application,
-            ConnectionErrorKind::Authentication,
-        ),
-        Outcome::Failure(
-            ConnectionErrorDomain::Local,
-            ConnectionErrorKind::InvalidInput,
-        ),
-        Outcome::Failure(
-            ConnectionErrorDomain::Transport,
-            ConnectionErrorKind::Protocol,
-        ),
+async fn explicit_version_falls_back_to_origin_without_changing_protocol() {
+    for (protocol, version) in [
+        (ApplicationProtocol::HTTP_2, Version::HTTP_2),
+        (ApplicationProtocol::HTTP_3, Version::HTTP_3),
     ] {
-        let input = input();
-        advertise(&input, &[(ApplicationProtocol::HTTP_2, "alt.example:8443")]);
-        input
-            .extensions()
-            .insert(TargetHttpVersion(Version::HTTP_2));
-        let fake = FakeConnector::new([outcome]);
-        drop(capabilities(fake.clone()).serve(input).await.unwrap_err());
-        assert_eq!(fake.records.lock().len(), 1);
-        for health in fake.health.lock().iter() {
-            assert_eq!(health.health(), rama_net::conn::ConnectionHealth::Broken);
+        for outcome in [
+            Outcome::WrongAlpn,
+            Outcome::Failure(
+                ConnectionErrorDomain::Application,
+                ConnectionErrorKind::Authentication,
+            ),
+            Outcome::Failure(
+                ConnectionErrorDomain::Local,
+                ConnectionErrorKind::InvalidInput,
+            ),
+            Outcome::Failure(
+                ConnectionErrorDomain::Transport,
+                ConnectionErrorKind::Protocol,
+            ),
+        ] {
+            let input = input();
+            advertise(&input, &[(protocol.clone(), "alt.example:8443")]);
+            input.extensions().insert(TargetHttpVersion(version));
+            let fake = FakeConnector::new([outcome, Outcome::Success(protocol.clone())]);
+            capabilities(fake.clone()).serve(input).await.unwrap();
+            let records = fake.records.lock();
+            assert_eq!(records.len(), 2);
+            assert_eq!(records[1].target, records[1].origin);
+            assert!(
+                records
+                    .iter()
+                    .all(|record| record.required == Some(version))
+            );
         }
     }
 }
@@ -489,9 +526,10 @@ async fn terminal_failure_latch_survives_timeout_or_later_unavailability() {
         request
             .extensions()
             .insert(TargetHttpVersion(Version::HTTP_3));
+        request.extensions().insert(HttpServiceAttempt::default());
         let error = capabilities(fake.clone())
             .with_attempt_timeout(Duration::from_millis(5))
-            .serve(request)
+            .attempt(request, None, true)
             .await
             .unwrap_err();
         assert_eq!(error.kind(), ConnectionErrorKind::Authentication);
@@ -668,7 +706,7 @@ async fn only_alt_svc_discovery_adds_alt_used() {
         );
         established
             .conn
-            .serve(crate::Request::new(crate::Body::from("dispatch once")))
+            .serve(Request::new(Body::from("dispatch once")))
             .await
             .unwrap();
         assert_eq!(fake.dispatched.load(Ordering::SeqCst), 1);
@@ -698,7 +736,7 @@ async fn baseline_pool_hit_retains_established_alternative_provenance() {
     let established = capabilities(inner).serve(input()).await.unwrap();
     established
         .conn
-        .serve(crate::Request::new(crate::Body::from("dispatch once")))
+        .serve(Request::new(Body::from("dispatch once")))
         .await
         .unwrap();
 }
@@ -1040,9 +1078,10 @@ async fn speculative_deadline_preserves_recorded_protocol_failure_kind() {
     request
         .extensions()
         .insert(TargetHttpVersion(Version::HTTP_2));
+    request.extensions().insert(HttpServiceAttempt::default());
     let error = capabilities(inner)
         .with_attempt_timeout(Duration::from_millis(1))
-        .serve(request)
+        .attempt(request, None, true)
         .await
         .unwrap_err();
     assert_eq!(error.kind(), ConnectionErrorKind::Protocol);
@@ -1151,21 +1190,128 @@ async fn local_and_proxy_rejection_do_not_suppress_the_remote_service() {
             Outcome::Success(ApplicationProtocol::HTTP_2),
         ]);
         let connector = capabilities(fake.clone()).with_cache(cache.clone());
-        if domain == ConnectionErrorDomain::Local {
-            let error = connector.serve(request.fork()).await.unwrap_err();
-            assert_eq!(error.domain(), domain);
-            assert_eq!(error.kind(), kind);
-            assert_eq!(fake.records.lock().len(), 1);
-            assert!(cache.is_usable(&snapshot, 0));
-            connector.serve(request).await.unwrap();
+        connector.serve(request).await.unwrap();
+        assert_eq!(
+            fake.records.lock()[1].target.to_string(),
+            "origin.example:443"
+        );
+        assert_eq!(
+            cache.is_usable(&snapshot, 0),
+            domain == ConnectionErrorDomain::Local || proxied
+        );
+    }
+}
+
+#[cfg(feature = "tls")]
+#[tokio::test]
+async fn unusable_advertised_address_falls_back_and_origin_enforces_local_policy() {
+    for origin_allowed in [false, true] {
+        let request = input();
+        advertise(&request, &[(ApplicationProtocol::HTTP_3, "[::]:443")]);
+        let origin_outcome = if origin_allowed {
+            Outcome::Success(ApplicationProtocol::HTTP_2)
         } else {
-            connector.serve(request).await.unwrap();
-            assert_eq!(
-                fake.records.lock()[1].target.to_string(),
-                "origin.example:443"
-            );
-            assert_eq!(cache.is_usable(&snapshot, 0), proxied);
+            Outcome::Failure(ConnectionErrorDomain::Local, ConnectionErrorKind::Rejected)
+        };
+        let fake = FakeConnector::new([
+            Outcome::Failure(
+                ConnectionErrorDomain::Local,
+                ConnectionErrorKind::InvalidInput,
+            ),
+            origin_outcome,
+        ]);
+        let result = capabilities(fake.clone()).serve(request).await;
+        if origin_allowed {
+            result.unwrap();
+        } else {
+            let error = result.unwrap_err();
+            assert_eq!(error.domain(), ConnectionErrorDomain::Local);
+            assert_eq!(error.kind(), ConnectionErrorKind::Rejected);
         }
+        let records = fake.records.lock();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[1].target, records[1].origin);
+    }
+}
+
+#[cfg(feature = "tls")]
+#[tokio::test]
+async fn response_body_reset_suppresses_alternative_but_local_errors_and_drops_do_not() {
+    for (domain, consume, scope) in [
+        (
+            ConnectionErrorDomain::Application,
+            true,
+            ConnectionPolicyScope::Connector,
+        ),
+        (
+            ConnectionErrorDomain::Local,
+            true,
+            ConnectionPolicyScope::Connector,
+        ),
+        (
+            ConnectionErrorDomain::Unknown,
+            true,
+            ConnectionPolicyScope::Connector,
+        ),
+        (
+            ConnectionErrorDomain::Application,
+            false,
+            ConnectionPolicyScope::Connector,
+        ),
+        (
+            ConnectionErrorDomain::Application,
+            true,
+            ConnectionPolicyScope::Request,
+        ),
+    ] {
+        let cache = AltSvcCache::default();
+        let origin = origin(&input()).unwrap();
+        let mut headers = crate::HeaderMap::new();
+        headers.insert(
+            crate::header::ALT_SVC,
+            crate::HeaderValue::from_static("h2=\"alt.example:8443\""),
+        );
+        cache.record(&origin, &headers, Duration::ZERO);
+        let mut fake = FakeConnector::new([
+            Outcome::Success(ApplicationProtocol::HTTP_2),
+            Outcome::Success(ApplicationProtocol::HTTP_2),
+        ]);
+        fake.response_failure = Some(domain);
+        fake.policy_scope = scope;
+        let connector = capabilities(fake.clone()).with_cache(cache.clone());
+        let established = connector.serve(input()).await.unwrap();
+        let response = established
+            .conn
+            .serve(Request::new(Body::from("dispatch once")))
+            .await
+            .unwrap();
+        // Header delivery succeeds; only consuming the later body reveals the reset.
+        let mut body = response.into_body();
+        assert_eq!(
+            body.frame().await.unwrap().unwrap().into_data().unwrap(),
+            "partial"
+        );
+        if consume {
+            let error = body.frame().await.unwrap().unwrap_err();
+            assert!(error.to_string().contains("remote stream reset"));
+        }
+        drop(body);
+        let suppressed = domain == ConnectionErrorDomain::Application
+            && consume
+            && scope == ConnectionPolicyScope::Connector;
+        assert_eq!(cache.lookup(&origin).is_none(), suppressed);
+        connector.serve(input()).await.unwrap();
+        let records = fake.records.lock();
+        assert_eq!(records.len(), 2);
+        assert_eq!(
+            records[1].target.to_string(),
+            if suppressed {
+                "origin.example:443"
+            } else {
+                "alt.example:8443"
+            }
+        );
+        assert_eq!(fake.dispatched.load(Ordering::SeqCst), 1);
     }
 }
 
@@ -1320,43 +1466,71 @@ async fn ordinary_connection_moves_input_without_allocating_retry_extensions() {
 #[cfg(feature = "tls")]
 #[tokio::test]
 async fn proxy_negative_cache_is_scoped_to_the_advertised_connect_target() {
-    for kind in [
-        ConnectionErrorKind::Rejected,
-        ConnectionErrorKind::Unavailable,
+    for scope in [
+        ProxyRouteFailureCacheScope::PerDestination,
+        ProxyRouteFailureCacheScope::PerProxy,
     ] {
-        let cache = AltSvcCache::default();
-        let origin = origin(&input()).unwrap();
-        let mut headers = crate::HeaderMap::new();
-        headers.insert(
-            crate::header::ALT_SVC,
-            crate::HeaderValue::from_static("h2=\"alt.example:8443\""),
-        );
-        cache.record(&origin, &headers, Duration::ZERO);
-        let fake = FakeConnector::new([
-            Outcome::Failure(ConnectionErrorDomain::Transport, kind),
-            Outcome::Success(ApplicationProtocol::HTTP_2),
-            Outcome::Success(ApplicationProtocol::HTTP_2),
-        ]);
-        let proxy_cache = ProxyRouteFailureCache::default();
-        let routed = ProxyRoutesConnector::new(
-            ProxyRouteFailureCacheLayer::new(proxy_cache).layer(fake.clone()),
-        );
-        let connector = capabilities(routed).with_cache(cache.clone());
-        let request = input();
-        request
-            .extensions()
-            .insert(ProxyRoutes::new([ProxyRoute::Proxy(
-                "http://proxy.example:3128".parse().unwrap(),
-            )]));
-        connector.serve(request.fork()).await.unwrap();
-        cache.record(&origin, &headers, Duration::ZERO);
-        connector.serve(request).await.unwrap();
-        let records = fake.records.lock();
-        assert_eq!(records.len(), 3);
-        assert_eq!(records[0].target.to_string(), "alt.example:8443");
-        for record in &records[1..] {
-            assert_eq!(record.target.to_string(), "origin.example:443");
-            assert_eq!(record.proxy.as_deref(), Some("proxy.example:3128"));
+        for same_target in [false, true] {
+            for kind in [
+                ConnectionErrorKind::Rejected,
+                ConnectionErrorKind::Unavailable,
+            ] {
+                let cache = AltSvcCache::default();
+                let origin = origin(&input()).unwrap();
+                let mut headers = crate::HeaderMap::new();
+                headers.insert(
+                    crate::header::ALT_SVC,
+                    crate::HeaderValue::from_static(if same_target {
+                        "h3=\":443\""
+                    } else {
+                        "h2=\"alt.example:8443\""
+                    }),
+                );
+                cache.record(&origin, &headers, Duration::ZERO);
+                let fake = FakeConnector::new([
+                    Outcome::Failure(ConnectionErrorDomain::Transport, kind),
+                    Outcome::Success(ApplicationProtocol::HTTP_2),
+                    Outcome::Success(ApplicationProtocol::HTTP_2),
+                ]);
+                let mut config = ProxyRouteFailureCacheConfig::default();
+                config.scope = scope;
+                let proxy_cache = ProxyRouteFailureCache::try_new(config).unwrap();
+                let routed = ProxyRoutesConnector::new(
+                    ProxyRouteFailureCacheLayer::new(proxy_cache).layer(fake.clone()),
+                );
+                let connector = capabilities(routed).with_cache(cache.clone());
+                let request = input();
+                request
+                    .extensions()
+                    .insert(ProxyRoutes::new([ProxyRoute::Proxy(
+                        "http://proxy.example:3128".parse().unwrap(),
+                    )]));
+                connector.serve(request.fork()).await.unwrap();
+                cache.record(&origin, &headers, Duration::ZERO);
+                connector.serve(request).await.unwrap();
+                let records = fake.records.lock();
+                assert_eq!(records.len(), 3);
+                assert_eq!(
+                    records[0].target.to_string(),
+                    if same_target {
+                        "origin.example:443"
+                    } else {
+                        "alt.example:8443"
+                    }
+                );
+                assert_eq!(
+                    records[0].required,
+                    Some(if same_target {
+                        Version::HTTP_3
+                    } else {
+                        Version::HTTP_2
+                    })
+                );
+                for record in &records[1..] {
+                    assert_eq!(record.target.to_string(), "origin.example:443");
+                    assert_eq!(record.proxy.as_deref(), Some("proxy.example:3128"));
+                }
+            }
         }
     }
 }
@@ -1431,9 +1605,10 @@ async fn address_race_preserves_authentication_over_protocol_and_timeout_results
         request
             .extensions()
             .insert(TargetHttpVersion(Version::HTTP_3));
+        request.extensions().insert(HttpServiceAttempt::default());
         let error = capabilities(inner)
             .with_attempt_timeout(Duration::from_millis(1))
-            .serve(request)
+            .attempt(request, None, true)
             .await
             .unwrap_err();
         assert_eq!(error.kind(), ConnectionErrorKind::Authentication);
