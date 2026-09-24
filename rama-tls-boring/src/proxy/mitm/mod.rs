@@ -50,7 +50,7 @@ pub mod issuer;
 pub mod revocation;
 
 mod egress;
-pub use self::egress::TlsMitmEgressServerAuth;
+pub use self::egress::{TlsMitmEgressClientAuth, TlsMitmEgressServerAuth};
 
 mod service;
 pub use self::service::TlsMitmRelayService;
@@ -108,6 +108,7 @@ pub struct TlsMitmRelay<Issuer> {
     grease_enabled: bool,
     keylog_intent: KeyLogIntent,
     egress_server_auth: Option<TlsMitmEgressServerAuth>,
+    egress_client_auth: Option<TlsMitmEgressClientAuth>,
     acceptors: Option<Cache<AcceptorKey, SslAcceptor>>,
 }
 
@@ -118,6 +119,7 @@ impl<Issuer: fmt::Debug> fmt::Debug for TlsMitmRelay<Issuer> {
             .field("grease_enabled", &self.grease_enabled)
             .field("keylog_intent", &self.keylog_intent)
             .field("egress_server_auth", &self.egress_server_auth)
+            .field("egress_client_auth", &self.egress_client_auth)
             .field(
                 "acceptors",
                 &self.acceptors.as_ref().map(|cache| cache.policy()),
@@ -135,6 +137,7 @@ impl<Issuer> TlsMitmRelay<Issuer> {
             grease_enabled: true,
             keylog_intent: KeyLogIntent::Environment,
             egress_server_auth: None,
+            egress_client_auth: None,
             acceptors: Some(build_acceptor_cache(MitmAcceptorCacheConfig::default())),
         }
     }
@@ -217,6 +220,24 @@ impl<Issuer> TlsMitmRelay<Issuer> {
     #[must_use]
     pub fn egress_server_auth_ref(&self) -> Option<&TlsMitmEgressServerAuth> {
         self.egress_server_auth.as_ref()
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the default client identity (mTLS) presented to upstream servers.
+        ///
+        /// A [`TlsMitmEgressClientAuth`] in the ingress flow extensions overrides
+        /// it per connection. Like [`Self::with_egress_server_auth`], it is not
+        /// applied to explicit `connector_data` passed to [`Self::handshake`].
+        pub fn egress_client_auth(mut self, identity: Option<TlsMitmEgressClientAuth>) -> Self {
+            self.egress_client_auth = identity;
+            self
+        }
+    }
+
+    /// Borrow the configured default upstream client identity, if any.
+    #[must_use]
+    pub fn egress_client_auth_ref(&self) -> Option<&TlsMitmEgressClientAuth> {
+        self.egress_client_auth.as_ref()
     }
 }
 
@@ -756,7 +777,8 @@ where
     /// (egress).
     ///
     /// When `connector_data` is `None`, the relay derives it from its key-log
-    /// intent and [`TlsMitmEgressServerAuth`]. With no authentication policy,
+    /// intent, [`TlsMitmEgressServerAuth`] and [`TlsMitmEgressClientAuth`]
+    /// (the flow extension over the relay default). With no authentication policy,
     /// upstream verification remains disabled to preserve transparent relay
     /// behavior. The direct handshake has no peeked ClientHello to mirror; it
     /// can use a [`ConnectorTarget`] from the ingress extensions as a fallback
@@ -789,11 +811,19 @@ where
                 self.keylog_intent_ref().clone(),
                 server_auth,
             );
-            client::TlsConnectorData::try_from(&config).map_err(|error| {
-                TlsMitmRelayError::config(
-                    error.context("tls mitm relay: build direct egress connector data"),
-                )
-            })?
+            client::TlsConnectorData::try_from(&config)
+                .and_then(|data| {
+                    self::egress::with_client_auth(
+                        data,
+                        input.extensions(),
+                        self.egress_client_auth_ref(),
+                    )
+                })
+                .map_err(|error| {
+                    TlsMitmRelayError::config(
+                        error.context("tls mitm relay: build direct egress connector data"),
+                    )
+                })?
         };
         let BridgeIo(mut ingress_stream, egress_stream) = input;
         let store_server_certificate_chain = connector_data.store_server_certificate_chain;
