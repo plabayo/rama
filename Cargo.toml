@@ -186,8 +186,9 @@ quickcheck_macros = "1.2"
 quote = "1.0"
 radix_trie = "0.3"
 rama = { version = "0.5.0", path = ".", default-features = false }
-rama-boring = { version = "0.6.9", default-features = false }
-rama-boring-tokio = { version = "0.6.9", default-features = false }
+# Temporary until plabayo/rama-boring#10 is released.
+rama-boring = { version = "0.6.9", git = "https://github.com/yfe404/rama-boring", rev = "e674af1133633bb09c698323009411e15eba2294", default-features = false }
+rama-boring-tokio = { version = "0.6.9", git = "https://github.com/yfe404/rama-boring", rev = "e674af1133633bb09c698323009411e15eba2294", default-features = false }
 rama-core = { version = "0.5.0", path = "./rama-core", default-features = false }
 rama-crypto = { version = "0.5.0", path = "./rama-crypto", default-features = false }
 rama-dns = { version = "0.5.0", path = "./rama-dns", default-features = false }

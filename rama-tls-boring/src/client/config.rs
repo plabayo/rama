@@ -17,6 +17,7 @@ use std::sync::Arc;
 #[cfg(feature = "http")]
 use rama_utils::collections::smallvec::smallvec;
 
+use super::{BoringRequestedTrustAnchors, trust_anchors::TRUST_ANCHORS_EXTENSION_ID};
 use crate::RamaTlsBoringCrateMarker;
 
 /// Gather all the TLS extensions supported by boringssl
@@ -37,6 +38,8 @@ pub struct BoringTlsConnectorConfig<'a> {
     pub grease: Option<&'a BoringGrease>,
     pub alps: Option<&'a BoringAlps>,
     pub extension_order: Option<&'a BoringExtensionOrder>,
+    pub permute_extensions: Option<&'a BoringPermuteExtensions>,
+    pub requested_trust_anchors: Option<&'a BoringRequestedTrustAnchors>,
     pub cert_compression: Option<&'a BoringCertCompression>,
     pub delegated_credentials: Option<&'a BoringDelegatedCredentials>,
     pub record_size_limit: Option<&'a BoringRecordSizeLimit>,
@@ -81,6 +84,18 @@ pub trait BoringClientConfigExt: Sized {
     rama_utils::macros::generate_set_and_with! {
         /// Set the ClientHello extension ordering.
         fn extension_order(self, order: Vec<ExtensionId>) -> Self;
+    }
+    rama_utils::macros::generate_set_and_with! {
+        /// Enable native per-handshake extension permutation (default: disabled).
+        ///
+        /// A nonempty explicit extension order takes precedence. Clear that
+        /// order with an empty vector to permute a mimicked ClientHello. Native
+        /// GREASE and pre-shared-key placement rules remain in force.
+        fn permute_extensions(self, enabled: bool) -> Self;
+    }
+    rama_utils::macros::generate_set_and_with! {
+        /// Set requested trust anchor identifiers without changing certificate verification.
+        fn requested_trust_anchors(self, anchors: BoringRequestedTrustAnchors) -> Self;
     }
     rama_utils::macros::generate_set_and_with! {
         /// Set certificate compression algorithms to advertise.
@@ -173,6 +188,18 @@ impl BoringClientConfigExt for TlsClientConfig {
     generate_set_and_with! {
         fn extension_order(mut self, order: Vec<ExtensionId>) -> Self {
             self.insert(BoringExtensionOrder(order));
+            self
+        }
+    }
+    generate_set_and_with! {
+        fn permute_extensions(mut self, enabled: bool) -> Self {
+            self.insert(BoringPermuteExtensions(enabled));
+            self
+        }
+    }
+    generate_set_and_with! {
+        fn requested_trust_anchors(mut self, anchors: BoringRequestedTrustAnchors) -> Self {
+            self.insert(anchors);
             self
         }
     }
@@ -336,6 +363,11 @@ pub(crate) fn set_alpn_with_coupled_alps(
 #[extension(tags(tls))]
 pub struct BoringExtensionOrder(pub Vec<ExtensionId>);
 
+/// Native per-handshake permutation, used when the explicit order is empty or unset.
+#[derive(Debug, Clone, Extension)]
+#[extension(tags(tls))]
+pub struct BoringPermuteExtensions(pub bool);
+
 /// Certificate compression algorithms to advertise.
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(tls))]
@@ -453,6 +485,13 @@ impl RamaFrom<&ClientHello, RamaTlsBoringCrateMarker> for TlsClientConfig {
                     new_codepoint,
                 } => {
                     config.set_alps(protocols.clone(), *new_codepoint);
+                }
+                ClientHelloExtension::Opaque { id, data }
+                    if u16::from(*id) == TRUST_ANCHORS_EXTENSION_ID =>
+                {
+                    config.set_requested_trust_anchors(
+                        BoringRequestedTrustAnchors::from_raw_extension_body(data.clone()),
+                    );
                 }
                 other => match other.id() {
                     ExtensionId::STATUS_REQUEST | ExtensionId::STATUS_REQUEST_V2 => {

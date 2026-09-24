@@ -396,11 +396,21 @@ impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorContextBuilder {
             });
         }
 
+        if let Some(permute) = value.permute_extensions {
+            cfg_builder.set_permute_extensions(permute.0);
+        }
+
         if let Some(order) = &extension_order {
             trace!(?order, "boring connector: set extension order");
             cfg_builder
                 .set_extension_order(order)
                 .context("build (boring) ssl connector: set extension order")?;
+        }
+
+        if let Some(anchors) = value.requested_trust_anchors {
+            cfg_builder
+                .set_requested_trust_anchors(anchors.identifier_list()?)
+                .context("build (boring) ssl connector: set requested trust anchors")?;
         }
 
         if let Some(list) = &cipher_list {
