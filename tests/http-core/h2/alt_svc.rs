@@ -5,13 +5,13 @@ use rama::http::proto::h2::alt_svc::{
     AltSvcSendError, AltSvcSender,
 };
 use rama::{
-    Layer as _, Service as _,
+    Layer as _, Service,
     http::{
         Body,
         conn::HttpOrigin,
         layer::alt_svc::{AltSvcCache, AltSvcLayer},
     },
-    net::Protocol as OriginProtocol,
+    net::{Protocol as OriginProtocol, client::ConnectionPolicyScope},
     service::service_fn,
 };
 use rama_core::{
@@ -19,6 +19,30 @@ use rama_core::{
     futures::StreamExt,
 };
 use std::sync::Arc;
+
+struct ResponseService<S> {
+    inner: S,
+    extensions: Extensions,
+}
+
+impl<S> ExtensionsRef for ResponseService<S> {
+    fn extensions(&self) -> &Extensions {
+        &self.extensions
+    }
+}
+
+impl<S, Input> Service<Input> for ResponseService<S>
+where
+    S: Service<Input>,
+    Input: Send + 'static,
+{
+    type Output = S::Output;
+    type Error = S::Error;
+
+    async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
+        self.inner.serve(input).await
+    }
+}
 
 #[derive(Clone, Default)]
 struct Observer(Arc<Mutex<Vec<AltSvcEvent>>>);
@@ -302,7 +326,7 @@ async fn same_flush_altsvc_headers_and_frames_follow_wire_order() {
         let (io, mut peer) = mock::new();
         let cache = AltSvcCache::default();
         let origin =
-            HttpOrigin::new(OriginProtocol::HTTPS, "example.com:443".parse().unwrap()).unwrap();
+            HttpOrigin::new(OriginProtocol::HTTP, "example.com:80".parse().unwrap()).unwrap();
         io.extensions()
             .insert(AltSvcObserverExtension::new(CacheObserver {
                 cache: cache.clone(),
@@ -313,22 +337,24 @@ async fn same_flush_altsvc_headers_and_frames_follow_wire_order() {
             let (mut client, mut connection) = client::handshake(io).await.unwrap();
             connection.drive(async { ready_rx.await.unwrap() }).await;
             let (response, body) = client
-                .send_request(Request::get("https://example.com/").body(()).unwrap(), true)
+                .send_request(Request::get("http://example.com/").body(()).unwrap(), true)
                 .unwrap();
             let response = Mutex::new(Some(response));
-            let service = AltSvcLayer::new(origin.clone())
-                .with_cache(cache.clone())
-                .with_authenticated(true)
-                .layer(service_fn(move |_: Request<()>| {
+            let extensions = Extensions::new();
+            extensions.insert(ConnectionPolicyScope::Connector);
+            let service = AltSvcLayer::new(cache.clone()).layer(ResponseService {
+                extensions,
+                inner: service_fn(move |_: Request<()>| {
                     let response = response.lock().take().unwrap();
                     async move {
                         response
                             .await
                             .map(|response| response.map(|_| Body::empty()))
                     }
-                }));
+                }),
+            });
             connection
-                .drive(service.serve(Request::new(())))
+                .drive(service.serve(Request::get("http://example.com/").body(()).unwrap()))
                 .await
                 .unwrap();
             assert_eq!(
@@ -345,7 +371,7 @@ async fn same_flush_altsvc_headers_and_frames_follow_wire_order() {
             ready_tx.send(()).unwrap();
             peer.recv_frame(
                 frames::headers(1)
-                    .request("GET", "https://example.com/")
+                    .request("GET", "http://example.com/")
                     .eos(),
             )
             .await;
@@ -356,7 +382,7 @@ async fn same_flush_altsvc_headers_and_frames_follow_wire_order() {
                 .into();
             let advertisement: SendFrame = frame::AltSvc::new(
                 StreamId::zero(),
-                Bytes::from_static(b"https://example.com"),
+                Bytes::from_static(b"http://example.com"),
                 Bytes::from_static(advertisement.as_bytes()),
             )
             .unwrap()

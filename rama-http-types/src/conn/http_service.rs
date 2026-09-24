@@ -14,6 +14,7 @@ use rama_net::{
     tls::ApplicationProtocol,
 };
 use rama_utils::macros::generate_set_and_with;
+use std::sync::Arc;
 
 /// An HTTP origin, including its scheme and effective port.
 ///
@@ -163,6 +164,22 @@ impl HttpServiceCandidates {
     pub fn is_empty(&self) -> bool {
         self.candidates.is_empty()
     }
+}
+
+/// Advertisement selected for this request, independent of pooled connection state.
+///
+/// Selectors publish this on the winning input, never on a shared connection.
+/// Response middleware uses the snapshot to invalidate a rejected advertisement
+/// without deleting a newer one. Consumers must verify that the candidate matches
+/// the request origin and [`EstablishedHttpService`]; selection alone proves no
+/// successful connection or authentication.
+#[derive(Clone, Debug, Extension)]
+#[extension(tags(http))]
+pub struct HttpServiceSelection {
+    /// Immutable discovery generation used for selection.
+    pub candidates: Arc<HttpServiceCandidates>,
+    /// Candidate index within this generation.
+    pub index: usize,
 }
 
 /// One candidate selected for an isolated connection attempt.

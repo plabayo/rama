@@ -351,7 +351,11 @@ fn client_with_attempt_timeout(
         .with_alt_svc_cache(cache)
         .map_connector(|mut connector| {
             if let Some(timeout) = attempt_timeout {
-                connector.get_mut().get_mut().set_attempt_timeout(timeout);
+                connector
+                    .get_mut()
+                    .get_mut()
+                    .get_mut()
+                    .set_attempt_timeout(timeout);
             }
             connector
         })

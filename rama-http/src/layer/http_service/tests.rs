@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(feature = "tls")]
+use crate::layer::alt_svc::{AltSvc, AltSvcBody, AltSvcLayer};
 use crate::{Body, Request, Response, body::util::BodyExt as _};
 use parking_lot::Mutex;
 use rama_core::{
@@ -20,6 +22,23 @@ use std::{
     collections::VecDeque,
     sync::atomic::{AtomicUsize, Ordering},
 };
+
+#[cfg(feature = "tls")]
+async fn dispatch(
+    established: EstablishedClientConnection<FakeConnection, ConnectRequest>,
+    cache: Option<AltSvcCache>,
+) -> Response<AltSvcBody<Body>> {
+    let request = Request::builder()
+        .uri(format!("https://{}/", established.input.authority))
+        .body(Body::from("dispatch once"))
+        .unwrap();
+    request.extensions().extend(established.input.extensions());
+    let service = match cache {
+        Some(cache) => AltSvcLayer::new(cache).layer(established.conn),
+        None => AltSvc::passthrough(established.conn),
+    };
+    service.serve(request).await.unwrap()
+}
 
 #[derive(Debug, Clone, Extension)]
 struct AttemptMarker;
@@ -428,11 +447,7 @@ async fn fallback_keeps_original_input_and_dispatches_body_once() {
         assert_eq!(records[1].required, None);
         assert!(!records[1].prior_attempt_marker);
     }
-    established
-        .conn
-        .serve(Request::new(Body::from("dispatch once")))
-        .await
-        .unwrap();
+    dispatch(established, None).await;
     assert_eq!(fake.dispatched.load(Ordering::SeqCst), 1);
 }
 
@@ -704,11 +719,7 @@ async fn only_alt_svc_discovery_adds_alt_used() {
                 .source,
             source
         );
-        established
-            .conn
-            .serve(Request::new(Body::from("dispatch once")))
-            .await
-            .unwrap();
+        dispatch(established, None).await;
         assert_eq!(fake.dispatched.load(Ordering::SeqCst), 1);
     }
 }
@@ -734,11 +745,7 @@ async fn baseline_pool_hit_retains_established_alternative_provenance() {
         Ok::<_, ConnectionError>(established)
     });
     let established = capabilities(inner).serve(input()).await.unwrap();
-    established
-        .conn
-        .serve(Request::new(Body::from("dispatch once")))
-        .await
-        .unwrap();
+    dispatch(established, None).await;
 }
 
 #[cfg(feature = "tls")]
@@ -1280,11 +1287,7 @@ async fn response_body_reset_suppresses_alternative_but_local_errors_and_drops_d
         fake.policy_scope = scope;
         let connector = capabilities(fake.clone()).with_cache(cache.clone());
         let established = connector.serve(input()).await.unwrap();
-        let response = established
-            .conn
-            .serve(Request::new(Body::from("dispatch once")))
-            .await
-            .unwrap();
+        let response = dispatch(established, Some(cache.clone())).await;
         // Header delivery succeeds; only consuming the later body reveals the reset.
         let mut body = response.into_body();
         assert_eq!(
@@ -1710,4 +1713,58 @@ async fn pooled_policy_scope_survives_without_a_new_handshake_report() {
             assert!(cache.is_usable(&snapshot, 0));
         }
     }
+}
+
+#[tokio::test]
+async fn selection_preserves_a_non_http_connection_type() {
+    // A selector does not impose HTTP dispatch middleware or HTTP body types.
+    let inner = rama_core::service::service_fn(async |input: ConnectRequest| {
+        Ok::<_, ConnectionError>(EstablishedClientConnection {
+            input,
+            conn: Extensions::new(),
+        })
+    });
+    let established = HttpServiceConnector::new(inner)
+        .serve(input())
+        .await
+        .unwrap();
+    let _: Extensions = established.conn;
+}
+
+#[cfg(feature = "tls")]
+#[tokio::test]
+async fn custom_observer_can_consume_selection_without_ramas_http_wrapper() {
+    let request = input();
+    advertise(
+        &request,
+        &[(ApplicationProtocol::HTTP_2, "alt.example:8443")],
+    );
+    let selector = capabilities(FakeConnector::new([Outcome::Success(
+        ApplicationProtocol::HTTP_2,
+    )]));
+    let established = selector.serve(request).await.unwrap();
+    let receipt = established
+        .input
+        .extensions()
+        .get_ref::<HttpServiceSelection>()
+        .unwrap();
+    let service = established
+        .conn
+        .extensions()
+        .get_ref::<EstablishedHttpService>()
+        .unwrap();
+    assert_eq!(receipt.candidates.origin(), &service.origin);
+    assert_eq!(
+        receipt.candidates.get(receipt.index),
+        Some(&service.candidate)
+    );
+    // HTTP-specific composition remains the observer's choice. No AltSvc wrapper
+    // obscures the connection, and the selection receipt never enters the pool.
+    let _: &FakeConnection = &established.conn;
+    assert!(
+        !established
+            .conn
+            .extensions()
+            .contains::<HttpServiceSelection>()
+    );
 }

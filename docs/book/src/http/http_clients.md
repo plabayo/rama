@@ -36,7 +36,10 @@ Alternative services change where and how Rama connects, while preserving the
 request's origin and certificate identity. The easy client selects a service
 before choosing a proxy route and consulting the connection pool.
 
-`AltSvcLayer` learns response headers and sets `Alt-Used`. An optional H2 observer
+`HttpServiceConnector` returns the underlying connection unchanged. Compose
+`AltSvcLayer::new(cache)` separately with `LayeredConnector`; the easy client does
+this automatically. The layer resolves each request’s origin, learns response
+headers and sets `Alt-Used` from the established endpoint. An optional H2 observer
 feeds ALTSVC frames into the same cache. Advertisements are not automatically
 forwarded. To send H2 advertisements, enable `set_alt_svc(true)` before the server
 handshake and use `AltSvcSender`; ordinary connections allocate no sender queue.
@@ -52,6 +55,9 @@ Custom connectors use these contracts:
 
 | Type | Responsibility |
 | --- | --- |
+| `HttpServiceSelection` | Request-local advertisement snapshot/index; never store it on a pooled connection. |
+| `EstablishedHttpService` | Verified connection endpoint and logical origin; selection alone proves neither. |
+| `TlsTunnel::from_extensions` | Resolve routing-supplied tunnel settings before caller settings; preserve their distinct reuse scopes. |
 | `TargetHttpVersion` | Honor the requested version; report the established version. |
 | `ConnectorTarget` / `ConnectorTargetStream` | Dial the selected endpoint using matching DNS results, preserving the origin. |
 | `TlsServerAuthentication` / `NegotiatedTlsParameters` | Report verified origin identity and actual ALPN; missing proof prevents alternative use. |
@@ -62,7 +68,8 @@ Custom connectors use these contracts:
 TLS configuration stays in its connector. Built-in connectors publish reuse rules
 automatically. Equal credentials and shared custom sinks or hooks can reuse
 connections. Replace a shared component when its policy changes; custom secure
-connectors without reuse rules receive fresh connections.
+connectors without reuse rules receive fresh connections. Apply request-policy
+middleware outside the pool so lookup and establishment see the same input.
 Unclassified policy failures never suppress shared alternatives.
 Report unsupported routes as local capability failures, not unreachable proxies.
 In the CLI, `--alt-svc` enables command-local discovery; `--http3` requires H3

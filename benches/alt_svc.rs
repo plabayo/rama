@@ -1,20 +1,25 @@
 #![expect(clippy::unwrap_used, reason = "benchmark fixtures must be valid")]
 
 use rama::{
-    Service,
+    Layer, Service,
     bytes::Bytes,
     extensions::{Extensions, ExtensionsRef},
     http::{
-        HeaderMap, HeaderValue, Version,
+        Body, HeaderMap, HeaderValue, Request, Response, Version,
         conn::{HttpOrigin, TargetHttpVersion},
         core::h2::server,
         header,
-        layer::{alt_svc::AltSvcCache, http_service::HttpServiceConnector},
+        layer::{
+            alt_svc::{AltSvc, AltSvcCache, AltSvcLayer},
+            http_service::HttpServiceConnector,
+        },
         proto::h2::alt_svc::AltSvcObserverExtension,
     },
     net::{
         Protocol,
-        client::{ConnectRequest, ConnectionError, EstablishedClientConnection},
+        client::{
+            ConnectRequest, ConnectionError, ConnectionPolicyScope, EstablishedClientConnection,
+        },
         tls::ApplicationProtocol,
     },
     service::service_fn,
@@ -90,6 +95,79 @@ impl ExtensionsRef for Connection {
     fn extensions(&self) -> &Extensions {
         &self.0
     }
+}
+
+impl Service<Request> for Connection {
+    type Output = Response;
+    type Error = ConnectionError;
+
+    async fn serve(&self, _: Request) -> Result<Response, ConnectionError> {
+        Ok(Response::new(Body::empty()))
+    }
+}
+
+/// Exercise selection and separately composed observation on the pooled path.
+/// Keep receipt and origin-resolution allocation costs visible without network noise.
+#[divan::bench(args = [false, true])]
+fn pooled_dispatch(b: divan::Bencher, discovery: bool) {
+    let (cache, origin, _) = fixture();
+    let extensions = Extensions::new();
+    extensions.insert(ConnectionPolicyScope::Connector);
+    extensions.insert(TargetHttpVersion(Version::HTTP_2));
+    extensions.insert(TlsServerAuthentication(Some(
+        origin.authority().host.clone(),
+    )));
+    extensions.insert(NegotiatedTlsParameters {
+        protocol_version: ProtocolVersion::TLSv1_3,
+        application_layer_protocol: Some(ApplicationProtocol::HTTP_2),
+        peer_certificate_chain: None,
+        server_name: None,
+        resumed: None,
+    });
+    let connector = HttpServiceConnector::new(service_fn(move |input: ConnectRequest| {
+        let conn = Connection(extensions.clone());
+        // A real pooled H2 driver retains its observer for the connection lifetime.
+        if !conn.extensions().contains::<AltSvcObserverExtension>()
+            && let Some(observer) = input.extensions().get_arc::<AltSvcObserverExtension>()
+        {
+            conn.extensions().insert_arc(observer);
+        }
+        async move { Ok::<_, ConnectionError>(EstablishedClientConnection { conn, input }) }
+    }))
+    .maybe_with_cache(discovery.then_some(cache.clone()))
+    .with_protocols([ApplicationProtocol::HTTP_2]);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    let dispatch = |request: Request| {
+        let connector = &connector;
+        let cache = &cache;
+        let origin = &origin;
+        async move {
+            let input = ConnectRequest::new(origin.authority().clone())
+                .with_application_protocol(Protocol::HTTPS);
+            let EstablishedClientConnection { conn, input } = connector.serve(input).await.unwrap();
+            let (mut parts, body) = request.into_parts();
+            parts.extensions = input.extensions().clone();
+            let request = Request::from_parts(parts, body);
+            let service = if discovery {
+                AltSvcLayer::new(cache.clone()).layer(conn)
+            } else {
+                AltSvc::passthrough(conn)
+            };
+            service.serve(request).await.unwrap()
+        }
+    };
+    let request = || {
+        Request::builder()
+            .uri("https://example.com/")
+            .body(Body::empty())
+            .unwrap()
+    };
+    runtime.block_on(dispatch(request()));
+    b.with_inputs(request)
+        .bench_local_values(|request| black_box(runtime.block_on(dispatch(request))));
 }
 
 /// Repeatedly select the same pooled connection. The allocation profiler catches

@@ -8,6 +8,10 @@ mod conn;
 #[doc(inline)]
 pub use conn::{BoxedConnectorService, ConnectorService, EstablishedClientConnection};
 
+mod layered;
+#[doc(inline)]
+pub use layered::LayeredConnector;
+
 mod error;
 #[doc(inline)]
 pub use error::{ConnectionError, ConnectionErrorDomain, ConnectionErrorKind};

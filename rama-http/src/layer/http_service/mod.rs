@@ -4,6 +4,10 @@
 //! ([RFC 7838 §2]). Its address goes in [`ConnectorTarget`]; the request authority,
 //! TLS server name and verification policy still belong to the origin. Selection
 //! happens before dispatch: this connector never consumes or replays an HTTP body.
+//! The connection type is unchanged. [`HttpServiceSelection`] is published on the
+//! winning input; [`EstablishedHttpService`] belongs to the connection. An HTTP
+//! observer can use these public contracts without coupling this selector to its
+//! service type. Compose response middleware separately, after selection.
 //!
 //! ```text
 //! ConnectRequest: logical origin + optional required HTTP version
@@ -18,7 +22,7 @@
 //! Try alternative ----------------------> Verify origin + protocol
 //!     | failure                                  | valid
 //!     v                                          v
-//! Next alternative (repeat)               AltSvc response wrapper
+//! Next alternative (repeat)               Return connection + winning input
 //!     | none usable                              ^
 //!     v                                          |
 //! Original endpoint -------- success ------------+
@@ -51,7 +55,8 @@
 //! the opt-in checks of [RFC 8164 §2], which are not implemented here. WebSocket
 //! handshakes can learn hints but do not select alternative endpoints here.
 //!
-//! [`AltSvc`] handles response headers ([RFC 7838 §3]), `Alt-Used` (§5) and 421
+//! Separately composed [`crate::layer::alt_svc::AltSvc`] handles response
+//! headers ([RFC 7838 §3]), `Alt-Used` (§5) and 421
 //! invalidation (§6). The H2 observer learns connection-level advertisements
 //! ([RFC 7838 §4]); both feed the same cache in receive order.
 //!
@@ -62,7 +67,7 @@
 //! [RFC 7838 §4]: https://www.rfc-editor.org/rfc/rfc7838.html#section-4
 //! [RFC 8164 §2]: https://www.rfc-editor.org/rfc/rfc8164.html#section-2
 
-use crate::layer::alt_svc::{AltSvc, AltSvcCache, AltSvcLayer, RouteContext};
+use crate::layer::alt_svc::{AltSvcCache, RouteContext};
 use rama_core::{
     Fork as _, Layer, Service,
     error::{BoxError, BoxErrorExt as _},
@@ -73,7 +78,7 @@ use rama_http_types::{
     Version,
     conn::{
         EstablishedHttpService, HttpOrigin, HttpServiceCandidate, HttpServiceCandidates,
-        HttpServiceSource, SelectedHttpService,
+        HttpServiceSelection, HttpServiceSource, SelectedHttpService,
     },
     proto::h2::alt_svc::AltSvcObserverExtension,
 };
@@ -136,7 +141,8 @@ impl HttpServiceLayer {
     }
 
     generate_set_and_with! {
-        /// Share an Alt-Svc cache. `None` disables learning and cached discovery.
+        /// Share cached candidates and HTTP/2 frame learning; `None` disables both.
+        /// Response observation is composed separately with `AltSvcLayer`.
         pub fn cache(mut self, cache: Option<AltSvcCache>) -> Self {
             self.cache = cache;
             self
@@ -211,7 +217,8 @@ impl<S> HttpServiceConnector<S> {
     define_inner_service_accessors!();
 
     generate_set_and_with! {
-        /// Share an Alt-Svc cache; `None` disables cached discovery and learning.
+        /// Share cached candidates and HTTP/2 frame learning; `None` disables both.
+        /// Response observation is composed separately with `AltSvcLayer`.
         pub fn cache(mut self, cache: Option<AltSvcCache>) -> Self {
             self.policy.cache = cache;
             self
@@ -519,42 +526,6 @@ where
             .context("HTTP service candidate deadline")),
         }
     }
-
-    /// Add response learning and Alt-Used bookkeeping after connection selection.
-    /// Read provenance from the connection too: a pool hit can reuse an alternative
-    /// without selecting a fresh advertisement on this request.
-    fn wrap(
-        &self,
-        established: EstablishedClientConnection<S::Connection, ConnectRequest>,
-        origin: Option<HttpOrigin>,
-        selection: Option<(Arc<HttpServiceCandidates>, usize)>,
-    ) -> EstablishedClientConnection<AltSvc<S::Connection>, ConnectRequest> {
-        let EstablishedClientConnection { conn, input } = established;
-        let conn = match origin {
-            Some(origin) => {
-                let authenticated = authenticates(&conn, &origin);
-                let established_alternative = conn
-                    .extensions()
-                    .get_ref::<EstablishedHttpService>()
-                    .filter(|service| {
-                        service.origin == origin
-                            && service.candidate.source == HttpServiceSource::AltSvc
-                    })
-                    .map(|service| service.candidate.target.clone());
-                let mut layer = AltSvcLayer::new(origin)
-                    .maybe_with_cache(self.policy.cache.clone())
-                    .with_authenticated(authenticated)
-                    .maybe_with_alternative(established_alternative)
-                    .with_connection(&conn, RouteContext::for_request(input.extensions()));
-                if let Some((snapshot, index)) = selection {
-                    layer = layer.with_selection(snapshot, index);
-                }
-                layer.layer(conn)
-            }
-            None => AltSvc::passthrough(conn),
-        };
-        EstablishedClientConnection { conn, input }
-    }
 }
 
 impl<S> Service<ConnectRequest> for HttpServiceConnector<S>
@@ -562,7 +533,7 @@ where
     S: ConnectorService<ConnectRequest>,
     S::Connection: ExtensionsRef,
 {
-    type Output = EstablishedClientConnection<AltSvc<S::Connection>, ConnectRequest>;
+    type Output = EstablishedClientConnection<S::Connection, ConnectRequest>;
     type Error = ConnectionError;
 
     async fn serve(&self, input: ConnectRequest) -> Result<Self::Output, Self::Error> {
@@ -593,12 +564,7 @@ where
                 verify_version(&established.conn, version)
                     .inspect_err(|_| discard_connection(&established.conn))?;
             }
-            let origin = established
-                .conn
-                .extensions()
-                .get_ref::<EstablishedHttpService>()
-                .and_then(|_| origin(&established.input));
-            return Ok(self.wrap(established, origin, None));
+            return Ok(established);
         }
         // Snapshot discovery once; freshness and route backoff are rechecked
         // before each attempt because other requests can update the shared cache.
@@ -717,11 +683,11 @@ where
                                 candidate.clone(),
                             ));
                         }
-                        return Ok(self.wrap(
-                            established,
-                            Some(origin.clone()),
-                            Some((snapshot.clone(), index)),
-                        ));
+                        established.input.extensions().insert(HttpServiceSelection {
+                            candidates: snapshot.clone(),
+                            index,
+                        });
+                        return Ok(established);
                     }
                     Err(error)
                         if error.domain() == ConnectionErrorDomain::Local
@@ -783,7 +749,7 @@ where
             verify_version(&established.conn, version)
                 .inspect_err(|_| discard_connection(&established.conn))?;
         }
-        Ok(self.wrap(established, origin, None))
+        Ok(established)
     }
 }
 

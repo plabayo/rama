@@ -36,13 +36,16 @@ const DEFAULT_ADVERTISEMENT_BYTES: usize = rama_utils::octets::kib(16);
 /// copied into every candidate's failure key. A failure of the entire plan says
 /// nothing about a different plan or the direct path.
 #[derive(Clone, Debug, FromExtensions)]
-pub(crate) enum RouteContext {
+pub enum RouteContext {
+    /// The route chosen for a successful connection.
     Route(Arc<ProxyRoute>),
+    /// A configured route plan, before one route succeeds.
     Routes(Arc<ProxyRoutes>),
 }
 
 impl RouteContext {
-    pub(crate) fn for_request(extensions: &Extensions) -> Option<Self> {
+    /// Capture the selected route, or route plan before selection, from input metadata.
+    pub fn for_request(extensions: &Extensions) -> Option<Self> {
         Self::from_extensions(extensions).filter(|context| {
             !context.cacheable()
                 || context
@@ -288,7 +291,10 @@ impl AltSvcCache {
         );
     }
 
-    pub(super) fn record_frame_received(
+    /// Record an authorized frame using its original receive ordering metadata.
+    /// Custom observers must apply the same origin and shared-policy checks as
+    /// the response middleware before calling this method.
+    pub fn record_frame_received(
         &self,
         origin: &HttpOrigin,
         field_value: Bytes,
@@ -326,7 +332,11 @@ impl AltSvcCache {
         );
     }
 
-    pub(super) fn record_received(
+    /// Record a response advertisement in transport receive order. Use the
+    /// response's `AltSvcReceivedAt` when available so delayed header delivery
+    /// cannot overwrite a newer HTTP/2 ALTSVC frame. The caller must first
+    /// authorize this origin under the cache's shared trust policy.
+    pub fn record_received(
         &self,
         origin: &HttpOrigin,
         headers: &HeaderMap,
@@ -541,13 +551,15 @@ impl AltSvcCache {
         self.suppress(snapshot, index, now, now, false, None);
     }
 
-    pub(crate) fn network_epoch(&self) -> u64 {
+    /// Capture the current network generation before an attempt or dispatch.
+    /// Reports from older generations are ignored after [`Self::network_changed`].
+    pub fn network_epoch(&self) -> u64 {
         self.storage.network.load(Ordering::Acquire)
     }
 
     /// Record a completed attempt even when its endpoint was re-advertised
     /// during the dial. A network change invalidates the captured path context.
-    pub(crate) fn failed_attempt(
+    pub fn failed_attempt(
         &self,
         snapshot: &Arc<HttpServiceCandidates>,
         index: usize,
@@ -612,7 +624,8 @@ impl AltSvcCache {
             });
     }
 
-    pub(crate) fn route_usable(
+    /// Check freshness and backoff for a particular proxy route plan.
+    pub fn route_usable(
         &self,
         snapshot: &Arc<HttpServiceCandidates>,
         index: usize,
@@ -637,7 +650,8 @@ impl AltSvcCache {
         })
     }
 
-    pub(crate) fn failed_route(
+    /// Report an unsuccessful connection attempt on the captured route.
+    pub fn failed_route(
         &self,
         snapshot: &Arc<HttpServiceCandidates>,
         index: usize,
@@ -705,7 +719,10 @@ impl AltSvcCache {
         })
     }
 
-    pub(crate) fn failed_service(
+    /// Report a remote response failure under the shared connector policy.
+    /// Caller cancellation, local body errors and request-only trust failures
+    /// must not be reported as evidence that this endpoint is unavailable.
+    pub fn failed_service(
         &self,
         service: &EstablishedHttpService,
         route: Option<&RouteContext>,
@@ -728,7 +745,7 @@ impl AltSvcCache {
 
     /// A complete response ends the selected path's failure streak. Merely
     /// connecting or receiving response headers does not establish stream health.
-    pub(crate) fn succeeded_service(
+    pub fn succeeded_service(
         &self,
         service: &EstablishedHttpService,
         route: Option<&RouteContext>,
@@ -883,12 +900,13 @@ mod tests {
     #[cfg(feature = "tls")]
     use {
         crate::{
-            Body, Request, Response, body::util::BodyExt as _,
-            layer::http_service::HttpServiceConnector,
+            Body, Request, Response,
+            body::util::BodyExt as _,
+            layer::{alt_svc::AltSvcLayer, http_service::HttpServiceConnector},
         },
         parking_lot::Mutex,
         rama_core::{
-            Service,
+            Layer as _, Service,
             error::{BoxError, BoxErrorExt as _},
             extensions::ExtensionsRef,
             futures::stream,
@@ -1024,6 +1042,18 @@ mod tests {
                     ConnectRequest::new(origin().authority().clone())
                         .with_application_protocol(Protocol::HTTPS)
                 };
+                let dispatch = |established: EstablishedClientConnection<
+                    ResponseConnection,
+                    ConnectRequest,
+                >| {
+                    let request =
+                        Request::builder_with_extensions(established.input.extensions().clone())
+                            .uri("https://example.com/")
+                            .body(Body::empty())
+                            .unwrap();
+                    let service = AltSvcLayer::new(cache.clone()).layer(established.conn);
+                    async move { service.serve(request).await }
+                };
 
                 for expected in 1..=3 {
                     let established = connector.serve(input()).await.unwrap();
@@ -1036,7 +1066,7 @@ mod tests {
                             .map_or(0, |failure| failure.attempts),
                         expected - 1
                     );
-                    let result = established.conn.serve(Request::new(Body::empty())).await;
+                    let result = dispatch(established).await;
                     if failure_response == ResponseKind::ResetBeforeHeaders {
                         assert!(result.is_err());
                     } else {
@@ -1048,24 +1078,13 @@ mod tests {
                 // An unread response is not a successful retry, either.
                 *response.lock() = ResponseKind::Full;
                 let established = connector.serve(input()).await.unwrap();
-                drop(
-                    established
-                        .conn
-                        .serve(Request::new(Body::empty()))
-                        .await
-                        .unwrap(),
-                );
+                drop(dispatch(established).await.unwrap());
                 assert_eq!(cache.failures().get(&key).unwrap().attempts, 3);
 
                 *response.lock() = success_response;
                 let established = connector.serve(input()).await.unwrap();
                 assert_eq!(cache.failures().get(&key).unwrap().attempts, 3);
-                let response_body = established
-                    .conn
-                    .serve(Request::new(Body::empty()))
-                    .await
-                    .unwrap()
-                    .into_body();
+                let response_body = dispatch(established).await.unwrap().into_body();
                 if success_response == ResponseKind::Full {
                     assert_eq!(cache.failures().get(&key).unwrap().attempts, 3);
                 }
@@ -1073,7 +1092,7 @@ mod tests {
                 assert!(cache.failures().get(&key).is_none());
                 *response.lock() = failure_response;
                 let established = connector.serve(input()).await.unwrap();
-                let result = established.conn.serve(Request::new(Body::empty())).await;
+                let result = dispatch(established).await;
                 if let Ok(response) = result {
                     _ = response.into_body().collect().await.unwrap_err();
                 }

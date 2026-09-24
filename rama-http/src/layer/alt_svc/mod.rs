@@ -8,8 +8,8 @@
 //! DNS HTTPS/SVCB discovery is a
 //! separate mechanism and must not be recorded as an Alt-Svc advertisement.
 //!
-//! The transport supplies the logical origin and whether it authenticated that
-//! origin. The middleware records response hints and sets the typed `Alt-Used`
+//! Each request supplies its logical origin; connection metadata supplies the
+//! actual endpoint, authenticated identity and policy scope. The middleware records response hints and sets the typed `Alt-Used`
 //! request header. Connection selection, authentication and retry policy remain
 //! the transport's responsibility; a request is dispatched exactly once.
 //!
@@ -18,10 +18,12 @@
 
 mod cache;
 mod frames;
+#[cfg(test)]
+mod provenance_tests;
 #[doc(inline)]
-pub use cache::AltSvcCache;
-pub(crate) use cache::RouteContext;
+pub use cache::{AltSvcCache, RouteContext};
 
+use crate::layer::http_service::authenticates;
 use crate::{
     Body, Request, Response, StatusCode, StreamingBody,
     body::{Frame, SizeHint},
@@ -34,14 +36,14 @@ use rama_core::{
 };
 use rama_http_headers::{AltUsed, HeaderMapExt as _, TypedHeader as _};
 use rama_http_types::{
-    conn::{EstablishedHttpService, HttpOrigin, HttpServiceCandidates, HttpServiceSource},
+    conn::{EstablishedHttpService, HttpOrigin, HttpServiceSelection, HttpServiceSource},
     proto::h2::alt_svc::AltSvcReceivedAt,
 };
 use rama_net::{
-    address::HostWithPort,
+    AuthorityInputExt as _, Protocol, ProtocolInputExt as _,
     client::{ConnectionError, ConnectionErrorDomain, ConnectionErrorKind, ConnectionPolicyScope},
 };
-use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
+use rama_utils::macros::define_inner_service_accessors;
 use std::{
     any::Any,
     error::Error as StdError,
@@ -51,24 +53,42 @@ use std::{
     time::Instant,
 };
 
-/// Learn alternatives for one logical HTTP origin over an established connection.
+/// Observe alternative services on an HTTP request service.
 ///
-/// HTTPS learning requires [`Self::with_authenticated`] from a transport that
-/// verified the origin. Plaintext HTTP may supply hints, but automatic selection
-/// requires the additional origin authorization from RFC 8164. Passing no cache
-/// disables learning.
+/// Configure once with a shared cache. Every call resolves its own logical origin
+/// and reads the actual connection's [`EstablishedHttpService`] and authentication
+/// metadata. A selector may supply [`HttpServiceSelection`] on the request; no
+/// particular selector implementation is required.
+///
+/// HTTPS advertisements can update shared discovery only when the connection
+/// authenticated this origin under [`ConnectionPolicyScope::Connector`].
+/// Request-specific trust never changes the configured cache or other requests'
+/// discovery state. Plaintext advertisements remain hints (RFC 8164).
+///
+/// Remote failures are recognized as [`ConnectionError`], directly or inside
+/// [`BoxError`]. Other error types pass through without changing shared backoff;
+/// custom services can box classified source chains to participate.
 #[derive(Clone, Debug)]
 pub struct AltSvcLayer {
-    cache: Option<AltSvcCache>,
+    cache: AltSvcCache,
+}
+
+impl AltSvcLayer {
+    /// Share discovery state with a selector or another HTTP client.
+    pub fn new(cache: AltSvcCache) -> Self {
+        Self { cache }
+    }
+}
+
+/// Outcome context for one dispatch, never stored on a shared service.
+struct Observation {
     origin: HttpOrigin,
-    authenticated: bool,
-    alternative: Option<HostWithPort>,
-    selection: Option<(Arc<HttpServiceCandidates>, usize)>,
+    may_learn: bool,
+    selection: Option<Arc<HttpServiceSelection>>,
     failure: Option<AlternativeFailure>,
 }
 
-/// Established endpoint and fixed connector policy, independent of whichever
-/// advertisement is current when a response fails.
+/// Established endpoint and route whose body outcome updates backoff.
 #[derive(Clone, Debug)]
 struct AlternativeFailure {
     service: Arc<EstablishedHttpService>,
@@ -76,49 +96,39 @@ struct AlternativeFailure {
     network: u64,
 }
 
-impl AltSvcLayer {
-    /// Create middleware scoped to the logical origin, independently of the dial target.
-    pub fn new(origin: HttpOrigin) -> Self {
-        Self {
-            cache: None,
-            origin,
-            authenticated: false,
-            alternative: None,
-            selection: None,
-            failure: None,
-        }
-    }
-
-    pub(crate) fn with_connection(
-        mut self,
+impl Observation {
+    fn new(
+        cache: &AltSvcCache,
+        origin: HttpOrigin,
         connection: &impl ExtensionsRef,
-        route: Option<RouteContext>,
+        request: &impl ExtensionsRef,
+        alternative: Option<SelectedAlternative>,
     ) -> Self {
-        // A request's trust anchors must not publish hints to clients using
-        // the connector's default policy, including an advertisement of clear.
         let connector_policy = connection.extensions().get_ref::<ConnectionPolicyScope>()
             == Some(&ConnectionPolicyScope::Connector);
-        if self.origin.is_secure() && !connector_policy {
-            self.cache = None;
-            return self;
+        let (service, selection) = alternative.map_or((None, None), |(service, selection)| {
+            (Some(service), selection)
+        });
+        let failure = connector_policy
+            .then(|| {
+                service.map(|service| AlternativeFailure {
+                    service,
+                    route: RouteContext::for_request(request.extensions()),
+                    network: cache.network_epoch(),
+                })
+            })
+            .flatten();
+        Self {
+            may_learn: !origin.is_secure()
+                || (connector_policy && authenticates(connection, &origin)),
+            origin,
+            selection,
+            failure,
         }
-        if let Some(cache) = &self.cache
-            && connector_policy
-            && let Some(service) = connection.extensions().get_arc::<EstablishedHttpService>()
-            && service.origin == self.origin
-            && service.candidate.source == HttpServiceSource::AltSvc
-        {
-            self.failure = Some(AlternativeFailure {
-                service,
-                route,
-                network: cache.network_epoch(),
-            });
-        }
-        self
     }
 
-    fn record_failure(&self, error: &dyn Any, started: Instant) {
-        if let (Some(cache), Some(failure)) = (&self.cache, &self.failure)
+    fn record_failure(&self, cache: &AltSvcCache, error: &dyn Any, started: Instant) {
+        if let Some(failure) = &self.failure
             && is_remote_response_failure(error)
         {
             cache.failed_service(
@@ -129,53 +139,68 @@ impl AltSvcLayer {
             );
         }
     }
+}
 
-    generate_set_and_with! {
-        /// Share an advertisement cache; `None` disables learning.
-        pub fn cache(mut self, cache: Option<AltSvcCache>) -> Self {
-            self.cache = cache;
-            self
-        }
-    }
+type SelectedAlternative = (
+    Arc<EstablishedHttpService>,
+    Option<Arc<HttpServiceSelection>>,
+);
 
-    generate_set_and_with! {
-        /// Declare whether this connection authenticated the logical HTTPS origin.
-        ///
-        /// This must represent successful certificate and configured peer-policy
-        /// verification, not merely the presence of encryption or a peer certificate.
-        pub fn authenticated(mut self, authenticated: bool) -> Self {
-            self.authenticated = authenticated;
-            self
+/// Match request-local discovery against immutable connection endpoint facts.
+/// The same pooled endpoint can be selected from different discovery sources.
+fn alternative_for_request(
+    connection: &impl ExtensionsRef,
+    request: &impl ExtensionsRef,
+    origin: &HttpOrigin,
+) -> Option<SelectedAlternative> {
+    let established = connection
+        .extensions()
+        .get_arc::<EstablishedHttpService>()
+        .filter(|service| &service.origin == origin)?;
+    let selection = request
+        .extensions()
+        .get_arc::<HttpServiceSelection>()
+        .filter(|selection| {
+            selection.candidates.origin() == origin
+                && selection
+                    .candidates
+                    .get(selection.index)
+                    .is_some_and(|candidate| {
+                        candidate.protocol == established.candidate.protocol
+                            && candidate.target == established.candidate.target
+                    })
+        });
+    if let Some(selection) = selection {
+        let candidate = selection.candidates.get(selection.index)?;
+        if candidate.source != HttpServiceSource::AltSvc {
+            return None;
         }
+        let service = if established.candidate.source == candidate.source {
+            established
+        } else {
+            Arc::new(EstablishedHttpService::new(
+                origin.clone(),
+                candidate.clone(),
+            ))
+        };
+        Some((service, Some(selection)))
+    } else {
+        (established.candidate.source == HttpServiceSource::AltSvc).then_some((established, None))
     }
+}
 
-    generate_set_and_with! {
-        /// Set the selected alternative authority to report in `Alt-Used`.
-        pub fn alternative(mut self, alternative: Option<HostWithPort>) -> Self {
-            self.alternative = alternative;
-            self.selection = None;
-            self
-        }
-    }
-
-    generate_set_and_with! {
-        /// Identify the exact cached candidate used by this connection.
-        ///
-        /// Carries advertisement identity so a 421 cannot remove a newer hint for
-        /// the same endpoint. Also sets `Alt-Used` from the selected candidate.
-        pub fn selection(mut self, snapshot: Arc<HttpServiceCandidates>, index: usize) -> Self {
-            self.alternative = None;
-            self.selection = None;
-            if snapshot.origin() == &self.origin
-                && let Some(candidate) = snapshot.get(index)
-                && candidate.source == HttpServiceSource::AltSvc
-            {
-                self.alternative = Some(candidate.target.clone());
-                self.selection = Some((snapshot, index));
-            }
-            self
-        }
-    }
+/// Resolve the logical request target, never the physical alternative endpoint.
+/// WebSocket opening handshakes belong to the corresponding HTTP(S) origin.
+fn request_origin<B>(request: &Request<B>) -> Option<HttpOrigin> {
+    let protocol = match request.protocol()? {
+        protocol if protocol == &Protocol::WS => Protocol::HTTP,
+        protocol if protocol == &Protocol::WSS => Protocol::HTTPS,
+        protocol => protocol.clone(),
+    };
+    let authority = request
+        .authority()?
+        .into_host_with_port(protocol.default_port())?;
+    HttpOrigin::new(protocol, authority).ok()
 }
 
 /// Recognize the standard classified error forms without restricting a service's
@@ -213,7 +238,7 @@ impl<S> Layer<S> for AltSvcLayer {
     fn layer(&self, inner: S) -> Self::Service {
         AltSvc {
             inner,
-            policy: Some(self.clone()),
+            cache: Some(self.cache.clone()),
         }
     }
 }
@@ -222,18 +247,15 @@ impl<S> Layer<S> for AltSvcLayer {
 #[derive(Clone, Debug)]
 pub struct AltSvc<S> {
     inner: S,
-    policy: Option<AltSvcLayer>,
+    cache: Option<AltSvcCache>,
 }
 
 impl<S> AltSvc<S> {
     define_inner_service_accessors!();
 
-    /// Wrap a connection without changing requests or learning advertisements.
+    /// Disable advertisement learning while preserving actual Alt-Used bookkeeping.
     pub fn passthrough(inner: S) -> Self {
-        Self {
-            inner,
-            policy: None,
-        }
+        Self { inner, cache: None }
     }
 }
 
@@ -277,18 +299,19 @@ impl BodyFailure {
 }
 
 impl<B: StreamingBody> AltSvcBody<B> {
-    fn new(inner: B, policy: &AltSvcLayer, started: Instant, accepted: bool) -> Self {
-        let failure =
-            policy
-                .failure
-                .as_ref()
-                .zip(policy.cache.as_ref())
-                .map(|(alternative, cache)| BodyFailure {
-                    cache: cache.clone(),
-                    alternative: alternative.clone(),
-                    started,
-                    accepted,
-                });
+    fn new(
+        inner: B,
+        cache: &AltSvcCache,
+        policy: &Observation,
+        started: Instant,
+        accepted: bool,
+    ) -> Self {
+        let failure = policy.failure.as_ref().map(|alternative| BodyFailure {
+            cache: cache.clone(),
+            alternative: alternative.clone(),
+            started,
+            accepted,
+        });
         // Empty responses are complete without ever being polled.
         let failure = if inner.is_end_stream() {
             if let Some(failure) = failure {
@@ -376,7 +399,7 @@ where
 
 impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for AltSvc<S>
 where
-    S: Service<Request<ReqBody>, Output = Response<ResBody>>,
+    S: Service<Request<ReqBody>, Output = Response<ResBody>> + ExtensionsRef,
     ReqBody: Send + 'static,
     ResBody: StreamingBody + Send + 'static,
 {
@@ -384,33 +407,44 @@ where
     type Error = S::Error;
 
     async fn serve(&self, mut request: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
-        let Some(policy) = &self.policy else {
+        // Disabled discovery on an ordinary connection is a true passthrough:
+        // do not allocate request-origin metadata or rewrite caller headers.
+        if self.cache.is_none() && !self.inner.extensions().contains::<EstablishedHttpService>() {
             return self.inner.serve(request).await.map(|response| {
                 response.map(|inner| AltSvcBody {
                     inner,
                     failure: None,
                 })
             });
-        };
-        if let Some(target) = &policy.alternative {
+        }
+        let origin = request_origin(&request);
+        let alternative = origin
+            .as_ref()
+            .and_then(|origin| alternative_for_request(&self.inner, &request, origin));
+        if let Some((service, _)) = &alternative {
             request
                 .headers_mut()
-                .typed_insert(AltUsed::from(target.clone()));
-        } else {
+                .typed_insert(AltUsed::from(service.candidate.target.clone()));
+        } else if origin.is_some() {
             request.headers_mut().remove(AltUsed::name());
         }
+        let observation = self.cache.as_ref().zip(origin).map(|(cache, origin)| {
+            Observation::new(cache, origin, &self.inner, &request, alternative)
+        });
         let started = Instant::now();
-        let response = self
-            .inner
-            .serve(request)
-            .await
-            .inspect_err(|error| policy.record_failure(error, started))?;
-        if let Some(cache) = &policy.cache {
+        let response = self.inner.serve(request).await.inspect_err(|error| {
+            if let (Some(cache), Some(observation)) = (&self.cache, &observation) {
+                observation.record_failure(cache, error, started);
+            }
+        })?;
+        if let (Some(cache), Some(policy)) = (&self.cache, &observation) {
             if response.status() == StatusCode::MISDIRECTED_REQUEST {
-                if let Some((snapshot, index)) = &policy.selection {
-                    cache.misdirected(snapshot, *index);
+                if policy.may_learn
+                    && let Some(selection) = &policy.selection
+                {
+                    cache.misdirected(&selection.candidates, selection.index);
                 }
-            } else if policy.authenticated || !policy.origin.is_secure() {
+            } else if policy.may_learn {
                 if let Some(received) = response.extensions().get_ref::<AltSvcReceivedAt>() {
                     cache.record_received(
                         &policy.origin,
@@ -424,7 +458,13 @@ where
             }
         }
         let accepted = response.status() != StatusCode::MISDIRECTED_REQUEST;
-        Ok(response.map(|body| AltSvcBody::new(body, policy, started, accepted)))
+        Ok(response.map(|body| match (&self.cache, &observation) {
+            (Some(cache), Some(policy)) => AltSvcBody::new(body, cache, policy, started, accepted),
+            _ => AltSvcBody {
+                inner: body,
+                failure: None,
+            },
+        }))
     }
 }
 
@@ -433,7 +473,13 @@ mod tests {
     use super::*;
     use crate::Body;
     use rama_core::{error::BoxErrorExt as _, service::service_fn};
-    use rama_net::Protocol;
+    use rama_http_types::conn::{
+        HttpServiceCandidate, HttpServiceCandidates, HttpServiceSelection,
+    };
+    use rama_net::{Protocol, address::HostWithPort, tls::ApplicationProtocol};
+    #[cfg(feature = "tls")]
+    use rama_tls::client::TlsServerAuthentication;
+
     use std::{
         convert::Infallible,
         sync::{
@@ -442,6 +488,71 @@ mod tests {
         },
         time::Duration,
     };
+
+    struct Connection<S> {
+        inner: S,
+        extensions: Extensions,
+    }
+
+    impl<S> ExtensionsRef for Connection<S> {
+        fn extensions(&self) -> &Extensions {
+            &self.extensions
+        }
+    }
+
+    impl<S, Input> Service<Input> for Connection<S>
+    where
+        S: Service<Input>,
+        Input: Send + 'static,
+    {
+        type Output = S::Output;
+        type Error = S::Error;
+
+        async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
+            self.inner.serve(input).await
+        }
+    }
+
+    fn connection<S>(inner: S, extensions: Extensions) -> Connection<S> {
+        Connection { inner, extensions }
+    }
+
+    fn authenticated_connection(origin: &HttpOrigin) -> Extensions {
+        let extensions = Extensions::new();
+        extensions.insert(ConnectionPolicyScope::Connector);
+        #[cfg(feature = "tls")]
+        extensions.insert(TlsServerAuthentication(Some(
+            origin.authority().host.clone(),
+        )));
+        #[cfg(not(feature = "tls"))]
+        let _ = origin;
+        extensions
+    }
+
+    fn selected_connection(snapshot: &Arc<HttpServiceCandidates>) -> Extensions {
+        let extensions = authenticated_connection(snapshot.origin());
+        extensions.insert(EstablishedHttpService {
+            origin: snapshot.origin().clone(),
+            candidate: snapshot.get(0).unwrap().clone(),
+        });
+        extensions
+    }
+
+    fn request(origin: &HttpOrigin) -> Request {
+        Request::builder()
+            .uri(format!("{}://{}/", origin.protocol(), origin.authority()))
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    fn selected_request(snapshot: Arc<HttpServiceCandidates>) -> Request {
+        let request = request(snapshot.origin());
+        request.extensions().insert(HttpServiceSelection {
+            candidates: snapshot,
+            index: 0,
+        });
+        request
+    }
 
     fn origin(protocol: Protocol) -> HttpOrigin {
         HttpOrigin::new(protocol, "example.com:443".parse().unwrap()).unwrap()
@@ -472,10 +583,8 @@ mod tests {
                 candidate: snapshot.get(0).unwrap().clone(),
             });
             let dispatched = Arc::new(AtomicUsize::new(0));
-            let service = AltSvcLayer::new(origin.clone())
-                .with_cache(cache.clone())
-                .with_connection(&connection, None)
-                .layer(service_fn({
+            let service = AltSvcLayer::new(cache.clone()).layer(self::connection(
+                service_fn({
                     let dispatched = dispatched.clone();
                     move |_: Request| {
                         dispatched.fetch_add(1, Ordering::Relaxed);
@@ -486,7 +595,9 @@ mod tests {
                             )))
                         }
                     }
-                }));
+                }),
+                connection,
+            ));
             // The current advertisement may have a different order from the
             // one which established the still-healthy multiplexed connection.
             headers.insert(
@@ -497,10 +608,7 @@ mod tests {
             );
             cache.record(&origin, &headers, Duration::ZERO);
             let current = cache.lookup(&origin).unwrap();
-            let error = service
-                .serve(Request::new(Body::empty()))
-                .await
-                .unwrap_err();
+            let error = service.serve(request(&origin)).await.unwrap_err();
             assert!(error.to_string().contains("peer reset the response stream"));
             assert_eq!(dispatched.load(Ordering::Relaxed), 1);
             assert!(cache.is_usable(&current, 0));
@@ -546,28 +654,42 @@ mod tests {
         ] {
             let cache = AltSvcCache::default();
             let origin = origin(protocol);
-            let service = AltSvcLayer::new(origin.clone())
-                .maybe_with_cache(enabled.then(|| cache.clone()))
-                .with_authenticated(authenticated)
-                .layer(service_fn(async |request: Request| {
-                    assert!(!request.headers().contains_key(AltUsed::name()));
+            let extensions = if authenticated {
+                authenticated_connection(&origin)
+            } else {
+                Extensions::new()
+            };
+            let inner = connection(
+                service_fn(move |request: Request| async move {
+                    assert_eq!(request.headers().contains_key(AltUsed::name()), !enabled);
                     Ok::<_, Infallible>(
                         Response::builder()
                             .header("alt-svc", "h2=\":8443\", h3=\":443\"")
                             .body(Body::empty())
                             .unwrap(),
                     )
-                }));
+                }),
+                extensions,
+            );
+            let service = if enabled {
+                AltSvcLayer::new(cache.clone()).layer(inner)
+            } else {
+                AltSvc::passthrough(inner)
+            };
             service
                 .serve(
                     Request::builder()
+                        .uri(format!("{}://{}/", origin.protocol(), origin.authority()))
                         .header("alt-used", "stale.example:443")
                         .body(Body::empty())
                         .unwrap(),
                 )
                 .await
                 .unwrap();
-            assert_eq!(cache.lookup(&origin).is_some(), expected);
+            assert_eq!(
+                cache.lookup(&origin).is_some(),
+                expected && (!origin.is_secure() || cfg!(feature = "tls"))
+            );
         }
     }
 
@@ -585,23 +707,22 @@ mod tests {
                 headers.insert("alt-svc", "h2=\":8443\"".parse().unwrap());
                 cache.record(&origin, &headers, Duration::ZERO);
                 let before = cache.lookup(&origin).unwrap();
-                let connection = Extensions::new();
-                connection.insert(scope);
-                let service = AltSvcLayer::new(origin.clone())
-                    .with_cache(cache.clone())
-                    .with_authenticated(true)
-                    .with_connection(&connection, None)
-                    .layer(service_fn(move |_: Request| async move {
+                let extensions = authenticated_connection(&origin);
+                extensions.insert(scope);
+                let service = AltSvcLayer::new(cache.clone()).layer(connection(
+                    service_fn(move |_: Request| async move {
                         Ok::<_, Infallible>(
                             Response::builder()
                                 .header("alt-svc", advertisement)
                                 .body(Body::empty())
                                 .unwrap(),
                         )
-                    }));
-                service.serve(Request::new(Body::empty())).await.unwrap();
+                    }),
+                    extensions,
+                ));
+                service.serve(request(&origin)).await.unwrap();
                 let after = cache.lookup(&origin);
-                if scope == ConnectionPolicyScope::Connector {
+                if scope == ConnectionPolicyScope::Connector && cfg!(feature = "tls") {
                     assert!(
                         after
                             .as_ref()
@@ -629,11 +750,9 @@ mod tests {
         let snapshot = cache.lookup(&origin).unwrap();
         let target = snapshot.get(0).unwrap().target.clone();
         let dispatched = Arc::new(AtomicUsize::new(0));
-        let service = AltSvcLayer::new(origin.clone())
-            .with_cache(cache.clone())
-            .with_authenticated(true)
-            .with_selection(snapshot.clone(), 0)
-            .layer(service_fn({
+        let extensions = selected_connection(&snapshot);
+        let service = AltSvcLayer::new(cache.clone()).layer(connection(
+            service_fn({
                 let dispatched = dispatched.clone();
                 move |request: Request| {
                     let dispatched = dispatched.clone();
@@ -653,17 +772,19 @@ mod tests {
                         )
                     }
                 }
-            }));
+            }),
+            extensions,
+        ));
         assert_eq!(
             service
-                .serve(Request::new(Body::empty()))
+                .serve(selected_request(snapshot.clone()))
                 .await
                 .unwrap()
                 .status(),
             StatusCode::MISDIRECTED_REQUEST
         );
         assert_eq!(dispatched.load(Ordering::SeqCst), 1);
-        assert!(!cache.is_usable(&snapshot, 0));
+        assert_eq!(cache.is_usable(&snapshot, 0), !cfg!(feature = "tls"));
         assert!(cache.is_usable(&snapshot, 1));
     }
 
@@ -675,11 +796,9 @@ mod tests {
         headers.insert("alt-svc", "h2=\":8443\"".parse().unwrap());
         cache.record(&origin, &headers, Duration::ZERO);
         let snapshot = cache.lookup(&origin).unwrap();
-        let service = AltSvcLayer::new(origin.clone())
-            .with_cache(cache.clone())
-            .with_authenticated(true)
-            .with_selection(snapshot, 0)
-            .layer(service_fn({
+        let extensions = selected_connection(&snapshot);
+        let service = AltSvcLayer::new(cache.clone()).layer(connection(
+            service_fn({
                 let cache = cache.clone();
                 let origin = origin.clone();
                 move |_: Request| {
@@ -693,8 +812,10 @@ mod tests {
                         )
                     }
                 }
-            }));
-        service.serve(Request::new(Body::empty())).await.unwrap();
+            }),
+            extensions,
+        ));
+        service.serve(selected_request(snapshot)).await.unwrap();
         let replacement = cache.lookup(&origin).unwrap();
         assert!(cache.is_usable(&replacement, 0));
     }
@@ -704,29 +825,129 @@ mod tests {
         let origin = origin(Protocol::HTTPS);
         let snapshot = Arc::new(HttpServiceCandidates::new(
             origin.clone(),
-            vec![rama_http_types::conn::HttpServiceCandidate::new(
-                rama_net::tls::ApplicationProtocol::HTTP_2,
+            vec![HttpServiceCandidate::new(
+                ApplicationProtocol::HTTP_2,
                 "configured.example:443".parse().unwrap(),
             )],
         ));
-        let service = AltSvcLayer::new(origin)
-            .with_selection(snapshot, 0)
-            .layer(service_fn(async |request: Request| {
+        let extensions = selected_connection(&snapshot);
+        let service = AltSvcLayer::new(AltSvcCache::default()).layer(connection(
+            service_fn(async |request: Request| {
                 assert!(!request.headers().contains_key(AltUsed::name()));
                 Ok::<_, Infallible>(Response::new(Body::empty()))
-            }));
-        service.serve(Request::new(Body::empty())).await.unwrap();
+            }),
+            extensions,
+        ));
+        service.serve(selected_request(snapshot)).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn custom_selection_is_checked_against_origin_and_established_endpoint() {
+        let cache = AltSvcCache::default();
+        let origin = origin(Protocol::HTTP);
+        let other = HttpOrigin::new(Protocol::HTTP, "other.example:443".parse().unwrap()).unwrap();
+        let mut headers = crate::HeaderMap::new();
+        headers.insert(
+            "alt-svc",
+            "h2=\"actual.example:8443\", h3=\"other.example:9443\""
+                .parse()
+                .unwrap(),
+        );
+        cache.record(&origin, &headers, Duration::ZERO);
+        cache.record(&other, &headers, Duration::ZERO);
+        let snapshot = cache.lookup(&origin).unwrap();
+        let other_snapshot = cache.lookup(&other).unwrap();
+        let service = AltSvcLayer::new(cache.clone()).layer(connection(
+            service_fn(async |request: Request| {
+                assert_eq!(
+                    request.headers().typed_get::<AltUsed>(),
+                    Some(AltUsed::from(
+                        "actual.example:8443".parse::<HostWithPort>().unwrap()
+                    ))
+                );
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .status(StatusCode::MISDIRECTED_REQUEST)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+            }),
+            selected_connection(&snapshot),
+        ));
+        // A replacement selector may publish these extensions, but mismatched
+        // origins, endpoints and indexes must not invalidate unrelated hints.
+        for (candidates, index) in [
+            (snapshot.clone(), 1),
+            (snapshot.clone(), usize::MAX),
+            (other_snapshot.clone(), 0),
+        ] {
+            let request = request(&origin);
+            request
+                .extensions()
+                .insert(HttpServiceSelection { candidates, index });
+            service.serve(request).await.unwrap();
+            assert!(cache.is_usable(&snapshot, 0));
+            assert!(cache.is_usable(&snapshot, 1));
+            assert!(cache.is_usable(&other_snapshot, 0));
+        }
+        service
+            .serve(selected_request(snapshot.clone()))
+            .await
+            .unwrap();
+        assert!(!cache.is_usable(&snapshot, 0));
+        assert!(cache.is_usable(&snapshot, 1));
+        assert!(cache.is_usable(&other_snapshot, 0));
+    }
+
+    #[tokio::test]
+    async fn established_endpoint_sets_alt_used_only_for_its_origin_without_a_cache() {
+        let established_origin = origin(Protocol::HTTPS);
+        let other_origin =
+            HttpOrigin::new(Protocol::HTTPS, "other.example:443".parse().unwrap()).unwrap();
+        let extensions = Extensions::new();
+        extensions.insert(EstablishedHttpService {
+            origin: established_origin.clone(),
+            candidate: HttpServiceCandidate {
+                protocol: ApplicationProtocol::HTTP_2,
+                target: "alternative.example:8443".parse().unwrap(),
+                source: HttpServiceSource::AltSvc,
+            },
+        });
+        let service = AltSvc::passthrough(connection(
+            service_fn(async |request: Request| {
+                let expected = if request.uri().host_str().as_deref() == Some("example.com") {
+                    Some(AltUsed::from(
+                        "alternative.example:8443".parse::<HostWithPort>().unwrap(),
+                    ))
+                } else {
+                    None
+                };
+                assert_eq!(request.headers().typed_get::<AltUsed>(), expected);
+                Ok::<_, Infallible>(Response::new(Body::empty()))
+            }),
+            extensions,
+        ));
+        for origin in [&established_origin, &other_origin, &established_origin] {
+            let mut request = request(origin);
+            request
+                .headers_mut()
+                .insert(AltUsed::name(), "stale.example:443".parse().unwrap());
+            service.serve(request).await.unwrap();
+        }
     }
 
     #[tokio::test]
     async fn passthrough_preserves_headers() {
-        let service = AltSvc::passthrough(service_fn(async |request: Request| {
-            assert_eq!(
-                request.headers().get(AltUsed::name()).unwrap(),
-                "existing.example:443"
-            );
-            Ok::<_, Infallible>(Response::new(Body::empty()))
-        }));
+        let service = AltSvc::passthrough(connection(
+            service_fn(async |request: Request| {
+                assert_eq!(
+                    request.headers().get(AltUsed::name()).unwrap(),
+                    "existing.example:443"
+                );
+                Ok::<_, Infallible>(Response::new(Body::empty()))
+            }),
+            Extensions::new(),
+        ));
         service
             .serve(
                 Request::builder()
@@ -736,5 +957,47 @@ mod tests {
             )
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn long_lived_layer_keeps_concurrent_origins_independent() {
+        let cache = AltSvcCache::default();
+        let first = HttpOrigin::new(Protocol::HTTP, "first.example:80".parse().unwrap()).unwrap();
+        let second = HttpOrigin::new(Protocol::HTTP, "second.example:80".parse().unwrap()).unwrap();
+        let barrier = Arc::new(tokio::sync::Barrier::new(2));
+        let service = AltSvcLayer::new(cache.clone()).layer(connection(
+            service_fn(move |request: Request| {
+                let barrier = barrier.clone();
+                async move {
+                    let advertisement = match request.uri().host_str().as_deref() {
+                        Some("first.example") => "h2=\":8443\"",
+                        Some("second.example") => "h3=\":9443\"",
+                        _ => panic!("unexpected request origin"),
+                    };
+                    barrier.wait().await;
+                    Ok::<_, Infallible>(
+                        Response::builder()
+                            .header("alt-svc", advertisement)
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                }
+            }),
+            Extensions::new(),
+        ));
+        for _ in 0..2 {
+            let (first_response, second_response) = tokio::join!(
+                service.serve(request(&first)),
+                service.serve(request(&second)),
+            );
+            first_response.unwrap();
+            second_response.unwrap();
+            let first_candidates = cache.lookup(&first).unwrap();
+            let second_candidates = cache.lookup(&second).unwrap();
+            assert_eq!(first_candidates.origin(), &first);
+            assert_eq!(first_candidates.get(0).unwrap().target.port, 8443);
+            assert_eq!(second_candidates.origin(), &second);
+            assert_eq!(second_candidates.get(0).unwrap().target.port, 9443);
+        }
     }
 }

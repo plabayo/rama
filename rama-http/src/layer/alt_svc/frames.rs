@@ -19,7 +19,10 @@ use rama_net::{
 use std::sync::Arc;
 
 impl AltSvcCache {
-    pub(crate) fn frame_observer(&self, origin: HttpOrigin) -> Arc<AltSvcObserverExtension> {
+    /// Observe HTTP/2 advertisements for this logical origin using connection
+    /// authentication metadata. Install on the connection input before handshake;
+    /// the observer also handles frames received while requests are idle.
+    pub fn frame_observer(&self, origin: HttpOrigin) -> Arc<AltSvcObserverExtension> {
         if let Some(observer) = self
             .observers()
             .get(&origin)
