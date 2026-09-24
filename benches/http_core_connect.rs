@@ -18,7 +18,11 @@ fn main() {
 
 #[cfg(feature = "tls")]
 mod policy_identity {
-    use rama::tls::{KeyLogIntent, TlsKeyLog, client::TlsPoolId, keylog::NoopKeyLogSink};
+    use rama::tls::{
+        KeyLogIntent, TlsKeyLog,
+        client::{TlsComponentIdentity, TlsPoolComponent, TlsPoolId},
+        keylog::NoopKeyLogSink,
+    };
     use std::{hint::black_box, sync::Arc};
 
     #[divan::bench]
@@ -31,6 +35,36 @@ mod policy_identity {
     fn shared_keylog(bencher: divan::Bencher) {
         let keylog = TlsKeyLog(KeyLogIntent::Custom(Arc::new(NoopKeyLogSink)));
         bencher.bench_local(|| TlsPoolId::builder().with_keylog(black_box(&keylog)).build());
+    }
+
+    struct Verifier;
+
+    impl TlsPoolComponent for Verifier {
+        fn pool_component_identity(&self) -> TlsComponentIdentity<'_> {
+            TlsComponentIdentity::borrowed(self)
+        }
+    }
+
+    struct ConfigHook;
+
+    impl TlsPoolComponent for ConfigHook {
+        fn pool_component_identity(&self) -> TlsComponentIdentity<'_> {
+            TlsComponentIdentity::borrowed(self)
+        }
+    }
+
+    #[divan::bench]
+    fn shared_verifier_hook_and_keylog(bencher: divan::Bencher) {
+        let keylog = TlsKeyLog(KeyLogIntent::Custom(Arc::new(NoopKeyLogSink)));
+        let verifier = Arc::new(Verifier);
+        let hook = Arc::new(ConfigHook);
+        bencher.bench_local(|| {
+            TlsPoolId::builder()
+                .with_keylog(black_box(&keylog))
+                .with_shared_component(black_box(&verifier))
+                .with_shared_component(black_box(&hook))
+                .build()
+        });
     }
 
     #[divan::bench]

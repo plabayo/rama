@@ -6,15 +6,13 @@ use rama_net::tls::TlsAlpn;
 #[cfg(test)]
 use rama_tls::KeyLogIntent;
 use rama_tls::client::{
-    TlsClientAuth, TlsClientConfig, TlsClientConfigProvider, TlsPoolId, TlsServerCertPins,
-    TlsServerName, TlsServerTrust, TlsServerVerify, TlsStoreServerCertChain,
+    TlsClientAuth, TlsClientConfig, TlsClientConfigProvider, TlsComponentIdentity,
+    TlsPoolComponent, TlsPoolId, TlsServerCertPins, TlsServerName, TlsServerTrust, TlsServerVerify,
+    TlsStoreServerCertChain,
 };
 use rama_tls::{TlsKeyLog, TlsSupportedVersions};
 use rama_utils::macros::generate_set_and_with;
-use std::{
-    hash::{Hash, Hasher},
-    sync::Arc,
-};
+use std::sync::Arc;
 
 /// Gather all the TLS extensions supported by rustls
 #[derive(FromExtensions)]
@@ -188,9 +186,9 @@ impl RustlsClientConfigExt for TlsClientConfig {
 /// A custom rustls server certificate verifier
 pub struct RustlsServerCertVerifier(pub Arc<dyn ServerCertVerifier>);
 
-impl Hash for RustlsServerCertVerifier {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        Arc::as_ptr(&self.0).cast::<()>().hash(state);
+impl TlsPoolComponent for RustlsServerCertVerifier {
+    fn pool_component_identity(&self) -> TlsComponentIdentity<'_> {
+        TlsComponentIdentity::shared(&self.0)
     }
 }
 
@@ -204,10 +202,10 @@ impl Hash for RustlsServerCertVerifier {
 /// builder for anything the common pieces can't express.
 pub struct ModifyRustlsClientConfig(pub Box<ModifyFn>);
 
-impl Hash for ModifyRustlsClientConfig {
-    fn hash<H: Hasher>(&self, state: &mut H) {
+impl TlsPoolComponent for ModifyRustlsClientConfig {
+    fn pool_component_identity(&self) -> TlsComponentIdentity<'_> {
         // Extensions retain this wrapper in an Arc, including zero-sized closures.
-        std::ptr::from_ref(self).hash(state);
+        TlsComponentIdentity::borrowed(self)
     }
 }
 

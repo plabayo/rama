@@ -11,7 +11,7 @@ use rama_net::client::pool::{
 };
 use rama_net::client::{ConnectRequest, ConnectorService, ProxyRoute};
 use rama_net::{HttpVersionInputExt, ProtocolInputExt, TargetHttpVersionInputExt};
-use rama_tls::{TlsTunnel, client::TlsPoolId};
+use rama_tls::client::TlsPoolId;
 
 use super::{BindBodyToConnLayer, BindBodyToConnector};
 
@@ -87,9 +87,7 @@ impl ReqToConnID<ConnectRequest> for HttpConnIdentifier {
         let tls = input.extensions().get_ref::<TlsPoolId>().cloned();
         let network = BasicConnIdentifier::new().id(input)?;
         Ok(HttpConnId {
-            // Request-supplied tunnel policies must not reuse a route's fixed TLS.
-            reusable: !input.extensions().contains::<TlsTunnel>()
-                && tls.as_ref().is_none_or(TlsPoolId::is_reusable),
+            reusable: tls.as_ref().is_none_or(TlsPoolId::is_reusable),
             tls,
             network,
             required_version: connection_version_requirement(input),
@@ -310,7 +308,7 @@ mod tests {
 
     use rama_core::bytes::Bytes;
     use rama_core::error::{BoxError, BoxErrorExt as _};
-    use rama_core::extensions::ExtensionsRef;
+    use rama_core::extensions::{Extensions, ExtensionsRef};
     use rama_core::futures::stream;
     use rama_core::rt::Executor;
     use rama_core::service::service_fn;
@@ -331,7 +329,13 @@ mod tests {
     use rama_net::http::{HttpRequestVersion, TargetHttpVersion};
     use rama_net::test_utils::client::MockConnectorService;
     use rama_net::{HttpVersionInputExt, Protocol, transport::TransportProtocol};
-    use rama_tls::client::{ServerVerifyMode, TlsPoolId, TlsServerVerify};
+    use rama_tls::{
+        TlsTunnel,
+        client::{
+            ServerVerifyMode, TlsClientConfigProvider, TlsConnectionReuse, TlsPoolId,
+            TlsServerVerify,
+        },
+    };
     use rama_utils::octets::kib;
     use tokio::time::sleep;
 
@@ -382,20 +386,31 @@ mod tests {
         assert!(!identifier.id(&input).unwrap().is_reusable());
     }
 
-    #[tokio::test]
-    async fn request_tls_tunnel_bypasses_proxy_pool_lookup_and_return() {
-        use rama_tls::TlsTunnel;
+    #[derive(Debug)]
+    struct FixedTunnelProvider;
 
+    impl TlsClientConfigProvider for FixedTunnelProvider {
+        fn pool_id(&self, _: &Extensions) -> Option<TlsPoolId> {
+            None
+        }
+
+        fn authenticates_server(&self, _: &Extensions) -> bool {
+            true
+        }
+    }
+
+    #[tokio::test]
+    async fn request_tls_tunnel_reuses_only_matching_policy() {
         let attempts = Arc::new(AtomicUsize::new(0));
         let inner = service_fn({
             let attempts = Arc::clone(&attempts);
             move |input: ConnectRequest| {
                 attempts.fetch_add(1, Ordering::Relaxed);
                 async move {
-                    Ok::<_, ConnectionError>(EstablishedClientConnection {
-                        input,
-                        conn: ServiceInput::new(()),
-                    })
+                    let conn = ServiceInput::new(());
+                    TlsConnectionReuse::tunnel(FixedTunnelProvider, input.extensions())
+                        .publish(conn.extensions());
+                    Ok::<_, ConnectionError>(EstablishedClientConnection { input, conn })
                 }
             }
         });
@@ -403,7 +418,7 @@ mod tests {
         // No origin TLS provider is installed.
         let connector = PooledConnector::new(inner, pool, HttpConnIdentifier::new());
         let proxy: ProxyAddress = "http://proxy.example:8080".parse().unwrap();
-        for (tunnel, expected_attempts) in [(true, 1), (false, 2), (true, 3), (true, 4), (false, 4)]
+        for (tunnel, expected_attempts) in [(true, 1), (false, 2), (true, 2), (true, 2), (false, 2)]
         {
             let input = ConnectRequest::new(HostWithPort::example_domain_http())
                 .with_application_protocol(Protocol::HTTP);

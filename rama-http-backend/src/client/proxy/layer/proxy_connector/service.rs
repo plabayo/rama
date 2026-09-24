@@ -39,7 +39,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 #[cfg(feature = "tls")]
 use rama_net::tls::TlsAlpn;
 #[cfg(feature = "tls")]
-use rama_tls::{TlsTunnel, client::NegotiatedTlsParameters};
+use rama_tls::{TlsTunnel, TlsTunnelRoute, client::NegotiatedTlsParameters};
 
 /// A connector which can be used to establish a connection over an HTTP Proxy.
 ///
@@ -297,14 +297,14 @@ where
                 server.port = proxy_info.address.port,
                 "http proxy connector: preparing proxy connection for tls tunnel",
             );
-            input.extensions().insert(TlsTunnel {
+            input.extensions().insert(TlsTunnelRoute(TlsTunnel {
                 server_identity: Some(proxy_info.address.host.clone()),
                 application_protocol: Some(Protocol::HTTPS),
                 alpn: self
                     .version_policy
                     .connect_version()
                     .and_then(connect_version_alpn),
-            });
+            }));
         }
 
         let EstablishedClientConnection { input, conn } = self
@@ -1517,9 +1517,14 @@ mod tests {
         let transport = service_fn(move |input: ConnectRequest| {
             let transport = transport.clone();
             async move {
-                let tunnel = input.extensions.get_ref::<TlsTunnel>().unwrap();
+                let tunnel = TlsTunnel::from_extensions(&input.extensions).unwrap();
                 assert_eq!(tunnel.application_protocol.as_ref(), Some(&Protocol::HTTPS),);
                 assert_eq!(tunnel.alpn.as_ref(), Some(&TlsAlpn::http_1()));
+                assert_eq!(
+                    input.extensions.get_ref::<TlsTunnel>().unwrap().alpn,
+                    Some(TlsAlpn::http_2()),
+                    "route policy must not overwrite the caller's reusable settings",
+                );
                 let established = transport.serve(input).await?;
                 established
                     .conn
@@ -1537,6 +1542,11 @@ mod tests {
         let connector = HttpProxyConnectorLayer::required().into_layer(transport);
         let input = ConnectRequest::new(HostWithPort::example_domain_https())
             .with_application_protocol(Protocol::ICAPS);
+        input.extensions.insert(TlsTunnel {
+            server_identity: None,
+            application_protocol: Some(Protocol::ICAPS),
+            alpn: Some(TlsAlpn::http_2()),
+        });
         input.extensions.insert(ProxyRoute::Proxy(ProxyAddress {
             address: HostWithPort::example_domain_https(),
             credential: None,
@@ -1830,7 +1840,7 @@ mod tests {
         let transport = service_fn(move |input: ConnectRequest| {
             let transport = transport.clone();
             async move {
-                let tunnel = input.extensions.get_ref::<TlsTunnel>().unwrap();
+                let tunnel = TlsTunnel::from_extensions(&input.extensions).unwrap();
                 assert!(tunnel.alpn.is_none());
                 let established = transport.serve(input).await?;
                 established

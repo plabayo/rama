@@ -7,18 +7,15 @@ use rama_net::tls::{ApplicationProtocol, TlsAlpn};
 use rama_tls::KeyLogIntent;
 use rama_tls::client::{
     ClientHello, ClientHelloExtension, TlsClientAuth, TlsClientConfig, TlsClientConfigProvider,
-    TlsPoolId, TlsServerCertPins, TlsServerName, TlsServerTrust, TlsServerVerify,
-    TlsStoreServerCertChain,
+    TlsComponentIdentity, TlsPoolComponent, TlsPoolId, TlsServerCertPins, TlsServerName,
+    TlsServerTrust, TlsServerVerify, TlsStoreServerCertChain,
 };
 use rama_tls::{
     CertificateCompressionAlgorithm, CipherSuite, ExtensionId, ProtocolVersion, SignatureScheme,
     SupportedGroup, TlsKeyLog, TlsSupportedVersions,
 };
 use rama_utils::macros::generate_set_and_with;
-use std::{
-    hash::{Hash, Hasher},
-    sync::Arc,
-};
+use std::sync::Arc;
 
 #[cfg(feature = "http")]
 use rama_utils::collections::smallvec::smallvec;
@@ -552,9 +549,9 @@ pub struct BoringMaxVersion(pub ProtocolVersion);
 #[extension(tags(tls))]
 pub struct BoringServerVerifyCertStore(pub Arc<X509Store>);
 
-impl Hash for BoringServerVerifyCertStore {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        Arc::as_ptr(&self.0).hash(state);
+impl TlsPoolComponent for BoringServerVerifyCertStore {
+    fn pool_component_identity(&self) -> TlsComponentIdentity<'_> {
+        TlsComponentIdentity::shared(&self.0)
     }
 }
 

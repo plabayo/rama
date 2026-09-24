@@ -353,7 +353,8 @@ where
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let EstablishedClientConnection { input, conn } = self.inner.connect(input).await?;
 
-        let tunnel = input.extensions().get_ref::<TlsTunnel>().cloned();
+        let tunnel = TlsTunnel::from_extensions(input.extensions()).cloned();
+        let reuse = TlsConnectionReuse::tunnel(RustlsTlsClientConfigProvider, input.extensions());
 
         let TlsTunnelMode::Tls(maybe_server_host) =
             resolve_tls_tunnel(tunnel.as_ref(), self.kind.host.as_ref())
@@ -362,6 +363,7 @@ where
                 "TlsConnector(tunnel): return inner connection: no Tls tunnel is requested"
             );
 
+            reuse.publish(conn.extensions());
             return Ok(EstablishedClientConnection {
                 input,
                 conn: AutoTlsStream::plain(conn),
@@ -387,7 +389,7 @@ where
             })?;
         let conn = AutoTlsStream::secure(conn);
 
-        TlsConnectionReuse::tunnel(RustlsTlsClientConfigProvider).publish(conn.extensions());
+        reuse.publish(conn.extensions());
         conn.extensions().insert(negotiated_params);
         conn.extensions().insert(StreamTransformed {
             by: "rama-tls-rustls::TlsConnector",
@@ -735,6 +737,32 @@ mod tests {
             ConnectionAttempt::new().with_authenticated_peer(Host::from_static("origin.example")),
         );
         input
+    }
+
+    #[tokio::test]
+    async fn plaintext_tunnel_bypass_rejects_later_tls_activation() {
+        let transport = service_fn(async |input: ServiceInput<()>| {
+            let (stream, _peer) = tokio::io::duplex(64);
+            Ok::<_, ConnectionError>(EstablishedClientConnection {
+                input,
+                conn: ServiceInput::new(stream),
+            })
+        });
+        let connector = TlsConnector::tunnel(transport, None);
+        let established = connector.serve(ServiceInput::new(())).await.unwrap();
+        let reuse = established
+            .conn
+            .extensions()
+            .get_ref::<ConnectionReuse>()
+            .unwrap();
+        let next = Extensions::new();
+        assert!(reuse.matches(&next));
+        next.insert(TlsTunnel {
+            server_identity: Some(Host::from_static("proxy.example")),
+            application_protocol: Some(Protocol::HTTPS),
+            alpn: None,
+        });
+        assert!(!reuse.matches(&next));
     }
 
     #[tokio::test]
@@ -1169,6 +1197,15 @@ mod tests {
         next_origin.insert(TlsServerName(Host::from_static("another-origin.example")));
         next_origin.insert(TlsServerVerify(ServerVerifyMode::Disable));
         assert!(reuse.is_reusable());
+        assert!(!reuse.matches(&next_origin));
+        next_origin.insert(
+            established
+                .input
+                .extensions()
+                .get_ref::<TlsTunnel>()
+                .unwrap()
+                .clone(),
+        );
         assert!(reuse.matches(&next_origin));
         next_origin.insert(TlsTunnel {
             server_identity: None,
