@@ -23,7 +23,7 @@ use rama_net::{
 };
 use rama_tls::{
     KeyLogIntent, ProtocolVersion,
-    client::{NegotiatedTlsParameters, TlsServerIdentity},
+    client::{NegotiatedTlsParameters, TlsClientAuth, TlsServerIdentity},
     server::SelfSignedCaConfig,
 };
 use rama_utils::str::any_submatch_ignore_ascii_case;
@@ -108,9 +108,9 @@ pub struct TlsMitmRelay<Issuer> {
     grease_enabled: bool,
     keylog_intent: KeyLogIntent,
     egress_server_auth: Option<TlsMitmEgressServerAuth>,
+    egress_client_auth: Option<TlsClientAuth>,
     acceptors: Option<Cache<AcceptorKey, SslAcceptor>>,
 }
-
 impl<Issuer: fmt::Debug> fmt::Debug for TlsMitmRelay<Issuer> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TlsMitmRelay")
@@ -118,6 +118,7 @@ impl<Issuer: fmt::Debug> fmt::Debug for TlsMitmRelay<Issuer> {
             .field("grease_enabled", &self.grease_enabled)
             .field("keylog_intent", &self.keylog_intent)
             .field("egress_server_auth", &self.egress_server_auth)
+            .field("egress_client_auth", &self.egress_client_auth)
             .field(
                 "acceptors",
                 &self.acceptors.as_ref().map(|cache| cache.policy()),
@@ -135,6 +136,7 @@ impl<Issuer> TlsMitmRelay<Issuer> {
             grease_enabled: true,
             keylog_intent: KeyLogIntent::Environment,
             egress_server_auth: None,
+            egress_client_auth: None,
             acceptors: Some(build_acceptor_cache(MitmAcceptorCacheConfig::default())),
         }
     }
@@ -193,8 +195,8 @@ impl<Issuer> TlsMitmRelay<Issuer> {
         ///
         /// This policy controls only upstream certificate and identity
         /// verification. It cannot override the ClientHello fingerprint,
-        /// protocol negotiation, client authentication, or key logging.
-        ///
+        /// protocol negotiation, or key logging. Upstream client identity
+        /// (mTLS) is configured separately via [`Self::with_egress_client_auth`].
         /// Upstream certificate verification is disabled by default, both with
         /// no policy and for [`TlsMitmEgressServerAuth::default`]. This preserves
         /// transparent relay behavior for certificates the intercepted client
@@ -217,6 +219,30 @@ impl<Issuer> TlsMitmRelay<Issuer> {
     #[must_use]
     pub fn egress_server_auth_ref(&self) -> Option<&TlsMitmEgressServerAuth> {
         self.egress_server_auth.as_ref()
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the default client identity presented to upstream TLS (mTLS).
+        ///
+        /// A per-connection [`TlsClientAuth`] on the ingress flow extensions
+        /// wins over this default. With neither set the relay presents no
+        /// client certificate upstream, preserving previous behavior.
+        ///
+        /// Direct [`Self::handshake`] calls apply the effective identity when
+        /// their `connector_data` argument is `None`. Explicit connector data
+        /// is authoritative because it is already a fully-resolved backend
+        /// configuration; [`TlsMitmRelayService`] supplies such data only after
+        /// applying the effective identity itself.
+        pub fn egress_client_auth(mut self, identity: Option<TlsClientAuth>) -> Self {
+            self.egress_client_auth = identity;
+            self
+        }
+    }
+
+    /// Borrow the configured default upstream client identity (mTLS), if any.
+    #[must_use]
+    pub fn egress_client_auth_ref(&self) -> Option<&TlsClientAuth> {
+        self.egress_client_auth.as_ref()
     }
 }
 
@@ -756,13 +782,17 @@ where
     /// (egress).
     ///
     /// When `connector_data` is `None`, the relay derives it from its key-log
-    /// intent and [`TlsMitmEgressServerAuth`]. With no authentication policy,
-    /// upstream verification remains disabled to preserve transparent relay
-    /// behavior. The direct handshake has no peeked ClientHello to mirror; it
-    /// can use a [`ConnectorTarget`] from the ingress extensions as a fallback
-    /// identity only when verification or pinning requires one.
+    /// intent, [`TlsMitmEgressServerAuth`], and the effective upstream client
+    /// identity: a per-connection [`TlsClientAuth`] on the ingress flow
+    /// extensions wins over the [`Self::with_egress_client_auth`] default. With
+    /// neither set the relay presents no client certificate upstream. With no
+    /// authentication policy, upstream verification remains disabled to preserve
+    /// transparent relay behavior. The direct handshake has no peeked ClientHello
+    /// to mirror; it can use a [`ConnectorTarget`] from the ingress extensions
+    /// as a fallback identity only when verification or pinning requires one.
     ///
-    /// Explicit `connector_data` is authoritative. This is primarily used by
+    /// Explicit `connector_data` is authoritative and bypasses both the relay
+    /// defaults and the flow-extension override. This is primarily used by
     /// [`TlsMitmRelayService`], which has already combined the relay policy with
     /// the peeked ClientHello and per-flow preferences.
     pub async fn handshake<Ingress, Egress>(
@@ -778,6 +808,8 @@ where
             data
         } else {
             let server_auth = self.egress_server_auth_ref();
+            let client_auth =
+                self::egress::egress_client_auth(&input, self.egress_client_auth_ref());
             let connector_target = input
                 .extensions()
                 .get_ref::<ConnectorTarget>()
@@ -788,6 +820,7 @@ where
                 server_name,
                 self.keylog_intent_ref().clone(),
                 server_auth,
+                client_auth.as_ref(),
             );
             client::TlsConnectorData::try_from(&config).map_err(|error| {
                 TlsMitmRelayError::config(

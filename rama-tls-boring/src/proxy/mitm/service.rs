@@ -26,7 +26,8 @@ use {
 };
 
 use super::egress::{
-    server_name as relay_server_name, tls_client_config as egress_tls_client_config,
+    egress_client_auth as resolve_egress_client_auth, server_name as relay_server_name,
+    tls_client_config as egress_tls_client_config,
 };
 
 /// Prefer a concrete target HTTP version only when the ingress side can use the
@@ -138,7 +139,6 @@ impl<Issuer, Inner> TlsMitmRelayService<Issuer, Inner> {
     pub fn new(relay: TlsMitmRelay<Issuer>, inner: Inner) -> Self {
         Self { relay, inner }
     }
-
     fn prepare_egress<Ingress, Egress>(
         &self,
         input: &BridgeIo<Ingress, Egress>,
@@ -150,6 +150,7 @@ impl<Issuer, Inner> TlsMitmRelayService<Issuer, Inner> {
         let maybe_sni = client_hello.and_then(ClientHello::ext_server_name).cloned();
         let connector_target = connector_target(input);
         let server_auth = self.relay.egress_server_auth_ref();
+        let client_auth = resolve_egress_client_auth(input, self.relay.egress_client_auth_ref());
         let server_name =
             relay_server_name(maybe_sni.as_ref(), connector_target.as_ref(), server_auth);
         let keylog = self.relay.keylog_intent_ref().clone();
@@ -159,6 +160,7 @@ impl<Issuer, Inner> TlsMitmRelayService<Issuer, Inner> {
             server_name.clone(),
             keylog.clone(),
             server_auth,
+            client_auth.as_ref(),
         );
         #[cfg(feature = "http")]
         apply_target_http_version(client_hello, input.extensions(), &config);
@@ -174,8 +176,13 @@ impl<Issuer, Inner> TlsMitmRelayService<Issuer, Inner> {
                 );
                 // Keep identity, relay policy, and per-flow preferences; only
                 // discard fingerprint pieces which BoringSSL could not model.
-                let fallback =
-                    egress_tls_client_config(None, server_name, keylog, server_auth);
+                let fallback = egress_tls_client_config(
+                    None,
+                    server_name,
+                    keylog,
+                    server_auth,
+                    client_auth.as_ref(),
+                );
                 #[cfg(feature = "http")]
                 apply_target_http_version(client_hello, input.extensions(), &fallback);
                 TlsConnectorData::try_from(&fallback)
@@ -297,8 +304,8 @@ mod tests {
     use rama_tls::{
         CipherSuite, KeyLogIntent, ProtocolVersion, TlsKeyLog,
         client::{
-            ClientHelloExtension, ServerTrustRoots, ServerVerifyMode, TlsServerCertPins,
-            TlsServerTrust, TlsServerVerify,
+            ClientAuth, ClientAuthData, ClientHelloExtension, ServerTrustRoots, ServerVerifyMode,
+            TlsClientAuth, TlsServerCertPins, TlsServerTrust, TlsServerVerify,
         },
         server::{GeneratedServerAuthConfig, SelfSignedCaConfig, ServerAuthData, TlsServerConfig},
     };
@@ -347,6 +354,7 @@ mod tests {
             Some(sni.clone().into()),
             KeyLogIntent::Disabled,
             None,
+            None,
         );
         let data = TlsConnectorData::try_from(&config).expect("build egress connector data");
         assert_eq!(data.server_name, Some(sni.into()));
@@ -370,6 +378,7 @@ mod tests {
             Some(Host::from_static("example.com")),
             KeyLogIntent::Disabled,
             Some(&policy),
+            None,
         );
 
         let data = TlsConnectorData::try_from(&config).expect("build verified connector data");
@@ -394,7 +403,8 @@ mod tests {
             .unwrap()
             .try_with_extra_server_trust_anchors([additional.clone()])
             .unwrap();
-        let config = egress_tls_client_config(None, None, KeyLogIntent::Disabled, Some(&policy));
+        let config =
+            egress_tls_client_config(None, None, KeyLogIntent::Disabled, Some(&policy), None);
 
         let trust = config
             .as_extensions()
@@ -421,6 +431,7 @@ mod tests {
             Some(Host::from_static("example.com")),
             KeyLogIntent::Disabled,
             Some(&policy),
+            None,
         );
 
         let data = TlsConnectorData::try_from(&config).expect("build insecure connector data");
@@ -452,6 +463,7 @@ mod tests {
             Some(server_name),
             KeyLogIntent::Disabled,
             policy.as_ref(),
+            None,
         );
         let connector_data =
             TlsConnectorData::try_from(&config).expect("build egress connector data");
@@ -693,6 +705,7 @@ mod tests {
             relay_server_name(None, Some(&target), None),
             KeyLogIntent::Disabled,
             None,
+            None,
         );
 
         let data = TlsConnectorData::try_from(&config).expect("build no-policy connector data");
@@ -708,6 +721,7 @@ mod tests {
             relay_server_name(None, Some(&target), Some(&policy)),
             KeyLogIntent::Disabled,
             Some(&policy),
+            None,
         );
 
         let data = TlsConnectorData::try_from(&config).expect("build disabled connector data");
@@ -723,6 +737,7 @@ mod tests {
             relay_server_name(None, Some(&target), Some(&policy)),
             KeyLogIntent::Disabled,
             Some(&policy),
+            None,
         );
 
         let data = TlsConnectorData::try_from(&config).expect("build fallback connector data");
@@ -739,6 +754,7 @@ mod tests {
             relay_server_name(None, Some(&target), Some(&policy)),
             KeyLogIntent::Disabled,
             Some(&policy),
+            None,
         );
 
         let data = TlsConnectorData::try_from(&config).expect("build pinned connector data");
@@ -755,6 +771,7 @@ mod tests {
             Some(ingress_sni.into()),
             KeyLogIntent::Disabled,
             Some(&policy),
+            None,
         );
 
         let data = TlsConnectorData::try_from(&config).expect("build connector data");
@@ -776,8 +793,13 @@ mod tests {
         let policy = TlsMitmEgressServerAuth::new()
             .with_server_verify(ServerVerifyMode::Auto)
             .with_webpki_roots();
-        let mirrored =
-            egress_tls_client_config(Some(&hello), None, KeyLogIntent::Disabled, Some(&policy));
+        let mirrored = egress_tls_client_config(
+            Some(&hello),
+            None,
+            KeyLogIntent::Disabled,
+            Some(&policy),
+            None,
+        );
         assert_eq!(
             mirrored
                 .as_extensions()
@@ -815,6 +837,7 @@ mod tests {
             Some(Host::from_static("example.com")),
             KeyLogIntent::Disabled,
             Some(&policy),
+            None,
         );
         let flow = Extensions::new();
         flow.insert(TlsServerVerify(ServerVerifyMode::Disable));
@@ -845,6 +868,7 @@ mod tests {
             Some(Host::from_static("example.com")),
             KeyLogIntent::Disabled,
             Some(&policy),
+            None,
         );
 
         assert!(
@@ -859,6 +883,94 @@ mod tests {
                 .get_ref::<BoringServerVerifyCertStore>()
                 .is_some()
         );
+    }
+    #[test]
+    fn egress_client_auth_builder_carries_explicit_identity() {
+        let auth = TlsClientAuth(ClientAuth::SelfSigned);
+        let config = egress_tls_client_config(
+            None,
+            Some(Host::from_static("example.com")),
+            KeyLogIntent::Disabled,
+            None,
+            Some(&auth),
+        );
+
+        assert!(matches!(
+            config.as_extensions().get_ref::<TlsClientAuth>(),
+            Some(TlsClientAuth(ClientAuth::SelfSigned))
+        ));
+    }
+
+    #[test]
+    fn egress_client_auth_builder_defaults_to_absent() {
+        let config = egress_tls_client_config(
+            None,
+            Some(Host::from_static("example.com")),
+            KeyLogIntent::Disabled,
+            None,
+            None,
+        );
+
+        assert!(config.as_extensions().get_ref::<TlsClientAuth>().is_none());
+    }
+
+    fn single_client_auth(tag: u8) -> TlsClientAuth {
+        use rama_crypto::pki_types::PrivatePkcs8KeyDer;
+
+        TlsClientAuth(ClientAuth::Single(ClientAuthData {
+            cert_chain: vec![CertificateDer::from(vec![tag])],
+            private_key: PrivatePkcs8KeyDer::from(vec![tag]).into(),
+        }))
+    }
+
+    fn resolved_client_auth_tag(auth: Option<TlsClientAuth>) -> u8 {
+        let Some(TlsClientAuth(ClientAuth::Single(data))) = auth else {
+            panic!("expected a single client identity");
+        };
+        let [tag] = data.cert_chain.as_slice() else {
+            panic!("expected a single-tag cert chain");
+        };
+        tag.as_ref()[0]
+    }
+
+    #[test]
+    fn egress_client_auth_resolution_prefers_flow_extension_over_static_default() {
+        use rama_core::extensions::Extensions;
+
+        let flow = Extensions::new();
+        flow.insert(single_client_auth(1));
+        let fallback = single_client_auth(2);
+
+        let resolved = resolve_egress_client_auth(&flow, Some(&fallback));
+        assert_eq!(resolved_client_auth_tag(resolved), 1);
+    }
+
+    #[test]
+    fn egress_client_auth_resolution_falls_back_to_static_default() {
+        use rama_core::extensions::Extensions;
+
+        let fallback = single_client_auth(2);
+
+        let resolved = resolve_egress_client_auth(&Extensions::new(), Some(&fallback));
+        assert_eq!(resolved_client_auth_tag(resolved), 2);
+    }
+
+    #[test]
+    fn egress_client_auth_resolution_reads_flow_extension_without_static_default() {
+        use rama_core::extensions::Extensions;
+
+        let flow = Extensions::new();
+        flow.insert(single_client_auth(1));
+
+        let resolved = resolve_egress_client_auth(&flow, None);
+        assert_eq!(resolved_client_auth_tag(resolved), 1);
+    }
+
+    #[test]
+    fn egress_client_auth_resolution_absent_without_extension_or_default() {
+        use rama_core::extensions::Extensions;
+
+        assert!(resolve_egress_client_auth(&Extensions::new(), None).is_none());
     }
 
     #[cfg(feature = "http")]
@@ -891,6 +1003,7 @@ mod tests {
                 Some(&hello),
                 Some(Host::from_static("example.com")),
                 KeyLogIntent::Disabled,
+                None,
                 None,
             );
             let flow = Extensions::new();
@@ -959,7 +1072,8 @@ mod tests {
         );
         let flow = Extensions::new();
         flow.insert(TargetHttpVersion(Version::HTTP_2));
-        let config = egress_tls_client_config(Some(&hello), None, KeyLogIntent::Disabled, None);
+        let config =
+            egress_tls_client_config(Some(&hello), None, KeyLogIntent::Disabled, None, None);
 
         apply_target_http_version(Some(&hello), &flow, &config);
         assert_eq!(
@@ -976,7 +1090,7 @@ mod tests {
     fn target_without_a_peeked_client_hello_is_ignored() {
         let flow = Extensions::new();
         flow.insert(TargetHttpVersion(Version::HTTP_11));
-        let config = egress_tls_client_config(None, None, KeyLogIntent::Disabled, None);
+        let config = egress_tls_client_config(None, None, KeyLogIntent::Disabled, None, None);
 
         apply_target_http_version(None, &flow, &config);
         assert!(config.as_extensions().get_ref::<TlsAlpn>().is_none());
@@ -1170,7 +1284,8 @@ mod tests {
             if let Some(fallback) = fallback {
                 flow.insert(FallbackHttpVersion(fallback));
             }
-            let config = egress_tls_client_config(Some(&hello), None, KeyLogIntent::Disabled, None);
+            let config =
+                egress_tls_client_config(Some(&hello), None, KeyLogIntent::Disabled, None, None);
             assert_eq!(
                 {
                     apply_target_http_version(Some(&hello), &flow, &config);

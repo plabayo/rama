@@ -1,12 +1,12 @@
 use rama_boring::x509::store::X509Store;
-use rama_core::error::BoxError;
+use rama_core::{error::BoxError, extensions::ExtensionsRef};
 use rama_crypto::pki_types::CertificateDer;
 use rama_net::address::{Domain, Host, HostWithPort};
 use rama_tls::{
     KeyLogIntent,
     client::{
-        ClientHello, ServerVerifyMode, TlsClientConfig, TlsServerCertPins, TlsServerTrust,
-        TlsServerVerify,
+        ClientHello, ServerVerifyMode, TlsClientAuth, TlsClientConfig, TlsServerCertPins,
+        TlsServerTrust, TlsServerVerify,
     },
 };
 use rama_utils::macros::generate_set_and_with;
@@ -166,11 +166,17 @@ impl TlsMitmEgressServerAuth {
 /// direct [`TlsMitmRelay::handshake`](super::TlsMitmRelay::handshake) calls so
 /// the policy, key logging, and transparent verification default cannot drift
 /// between the two entry points.
+///
+/// `client_auth` carries the relay's effective upstream client identity (mTLS).
+/// Resolve it with [`egress_client_auth`] so a per-connection [`TlsClientAuth`]
+/// flow extension wins over the relay's static default. [`None`] preserves the
+/// previous behavior of presenting no client certificate upstream.
 pub(super) fn tls_client_config(
     client_hello: Option<&ClientHello>,
     server_name: Option<Host>,
     keylog: KeyLogIntent,
     server_auth: Option<&TlsMitmEgressServerAuth>,
+    client_auth: Option<&TlsClientAuth>,
 ) -> TlsClientConfig {
     let mut config = match client_hello {
         Some(hello) => TlsClientConfig::new_from_client_hello(hello),
@@ -189,7 +195,27 @@ pub(super) fn tls_client_config(
         }
     }
 
+    if let Some(client_auth) = client_auth {
+        config.as_extensions().insert(client_auth.clone());
+    }
+
     config
+}
+
+/// Resolve the relay's effective upstream client identity (mTLS).
+///
+/// A per-connection [`TlsClientAuth`] on the ingress flow extensions wins over
+/// the relay's static default. [`None`] means the relay presents no client
+/// certificate upstream.
+pub(super) fn egress_client_auth(
+    input: &impl ExtensionsRef,
+    fallback: Option<&TlsClientAuth>,
+) -> Option<TlsClientAuth> {
+    input
+        .extensions()
+        .get_ref::<TlsClientAuth>()
+        .cloned()
+        .or_else(|| fallback.cloned())
 }
 
 /// Resolve the relay's effective upstream identity without changing transparent
