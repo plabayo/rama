@@ -16,6 +16,31 @@ fn main() {
     divan::main();
 }
 
+#[cfg(feature = "tls")]
+mod policy_identity {
+    use rama::tls::{KeyLogIntent, TlsKeyLog, client::TlsPoolId, keylog::NoopKeyLogSink};
+    use std::{hint::black_box, sync::Arc};
+
+    #[divan::bench]
+    fn ordinary_keylog(bencher: divan::Bencher) {
+        let keylog = TlsKeyLog(KeyLogIntent::Disabled);
+        bencher.bench_local(|| TlsPoolId::builder().with_keylog(black_box(&keylog)).build());
+    }
+
+    #[divan::bench]
+    fn shared_keylog(bencher: divan::Bencher) {
+        let keylog = TlsKeyLog(KeyLogIntent::Custom(Arc::new(NoopKeyLogSink)));
+        bencher.bench_local(|| TlsPoolId::builder().with_keylog(black_box(&keylog)).build());
+    }
+
+    #[divan::bench]
+    fn clone_shared_identity(bencher: divan::Bencher) {
+        let keylog = TlsKeyLog(KeyLogIntent::Custom(Arc::new(NoopKeyLogSink)));
+        let identity = TlsPoolId::builder().with_keylog(&keylog).build().unwrap();
+        bencher.bench_local(|| black_box(&identity).clone());
+    }
+}
+
 /// Boxing an unpolled connector isolates future storage from network and TLS
 /// work. Pooled requests still construct this future, so its allocation size
 /// matters even when no new handshake runs.

@@ -11,7 +11,10 @@ use rama_tls::client::{
 };
 use rama_tls::{TlsKeyLog, TlsSupportedVersions};
 use rama_utils::macros::generate_set_and_with;
-use std::sync::Arc;
+use std::{
+    hash::{Hash, Hasher},
+    sync::Arc,
+};
 
 /// Gather all the TLS extensions supported by rustls
 #[derive(FromExtensions)]
@@ -25,8 +28,8 @@ pub struct RustlsTlsConnectorConfig<'a> {
     pub client_auth: Option<&'a TlsClientAuth>,
     pub server_cert_pins: Option<&'a TlsServerCertPins>,
     pub server_trust: Option<&'a TlsServerTrust>,
-    pub verifier: Option<&'a RustlsServerCertVerifier>,
-    pub modify: Option<&'a ModifyRustlsClientConfig>,
+    pub verifier: Option<Arc<RustlsServerCertVerifier>>,
+    pub modify: Option<Arc<ModifyRustlsClientConfig>>,
 }
 
 impl RustlsTlsConnectorConfig<'_> {
@@ -64,8 +67,8 @@ impl RustlsTlsConnectorConfig<'_> {
     /// Compact identity of request-level overrides, or `None` for the baseline.
     ///
     /// Explicit defaults remain distinct from absence. Equivalent settings compare
-    /// independently of the TLS implementation. Opaque
-    /// credentials, hooks, verifiers and custom log sinks disable reuse.
+    /// independently of the TLS implementation. Shared hooks, verifiers and log
+    /// sinks reuse connections while retaining their original instance identity.
     /// Connector defaults are fixed for the lifetime of the pool and must not
     /// be layered onto this request-only view.
     pub fn pool_id(&self) -> Option<TlsPoolId> {
@@ -85,7 +88,7 @@ impl RustlsTlsConnectorConfig<'_> {
             verifier,
             modify,
         } = self;
-        TlsPoolId::builder()
+        let mut builder = TlsPoolId::builder()
             .maybe_with_alpn(*alpn)
             .maybe_with_versions(*versions)
             .maybe_with_verify(*verify)
@@ -94,9 +97,14 @@ impl RustlsTlsConnectorConfig<'_> {
             .maybe_with_store_chain(*store_chain)
             .maybe_with_client_auth(*client_auth)
             .maybe_with_server_cert_pins(*server_cert_pins)
-            .maybe_with_server_trust(*server_trust)
-            .with_opaque_override(verifier.is_some() || modify.is_some())
-            .build()
+            .maybe_with_server_trust(*server_trust);
+        if let Some(verifier) = verifier {
+            builder.set_shared_component(verifier);
+        }
+        if let Some(modify) = modify {
+            builder.set_shared_component(modify);
+        }
+        builder.build()
     }
 
     /// Whether a successful handshake establishes the configured server identity.
@@ -180,6 +188,12 @@ impl RustlsClientConfigExt for TlsClientConfig {
 /// A custom rustls server certificate verifier
 pub struct RustlsServerCertVerifier(pub Arc<dyn ServerCertVerifier>);
 
+impl Hash for RustlsServerCertVerifier {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        Arc::as_ptr(&self.0).cast::<()>().hash(state);
+    }
+}
+
 #[derive(Extension)]
 #[extension(tags(tls))]
 /// Escape hatch: take over the final rustls [`ClientConfig`] build.
@@ -189,6 +203,13 @@ pub struct RustlsServerCertVerifier(pub Arc<dyn ServerCertVerifier>);
 /// and return it, or ignore it and build a fresh one through the full rustls
 /// builder for anything the common pieces can't express.
 pub struct ModifyRustlsClientConfig(pub Box<ModifyFn>);
+
+impl Hash for ModifyRustlsClientConfig {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        // Extensions retain this wrapper in an Arc, including zero-sized closures.
+        std::ptr::from_ref(self).hash(state);
+    }
+}
 
 type ModifyFn = dyn Fn(ClientConfig) -> Result<ClientConfig, BoxError> + Send + Sync + 'static;
 
@@ -229,6 +250,7 @@ impl TlsClientConfigProvider for RustlsTlsClientConfigProvider {
 #[cfg(test)]
 mod pool_tests {
     use super::*;
+    use crate::verify::NoServerCertVerifier;
     use rama_core::extensions::Extensions;
     use rama_tls::ProtocolVersion;
     use rama_tls::client::{ClientAuth, ServerVerifyMode, TlsServerCertPin, TlsServerTrustAnchors};
@@ -314,7 +336,7 @@ mod pool_tests {
             let equal = Extensions::new();
             insert(&equal, 0);
             assert_eq!(
-                Some(id),
+                Some(id.clone()),
                 RustlsTlsConnectorConfig::from_extensions(&equal).pool_id(),
                 "{name}"
             );
@@ -336,7 +358,7 @@ mod pool_tests {
     }
 
     #[test]
-    fn opaque_overrides_are_present_but_never_reusable() {
+    fn custom_overrides_reuse_their_shared_policy() {
         let cases: &[fn(&Extensions)] = &[
             |ext| {
                 ext.insert(TlsClientAuth(ClientAuth::SelfSigned));
@@ -349,7 +371,7 @@ mod pool_tests {
             },
             |ext| {
                 ext.insert(RustlsServerCertVerifier(Arc::new(
-                    crate::verify::NoServerCertVerifier::new(),
+                    NoServerCertVerifier::new(),
                 )));
             },
         ];
@@ -359,8 +381,29 @@ mod pool_tests {
             let view = RustlsTlsConnectorConfig::from_extensions(&extensions);
             assert!(view.has_overrides());
             let id = view.pool_id().unwrap();
-            assert!(!id.is_reusable());
+            assert!(id.is_reusable());
             assert_eq!(Some(id), view.pool_id());
         }
+    }
+
+    #[test]
+    fn cloned_native_components_match_but_replacements_do_not() {
+        let verifier = RustlsServerCertVerifier(Arc::new(NoServerCertVerifier::new()));
+        let modify = Arc::new(ModifyRustlsClientConfig::new(Ok));
+        let first = Extensions::new();
+        first.insert(verifier.clone());
+        first.insert_arc(modify.clone());
+        let same = Extensions::new();
+        same.insert_arc(modify);
+        same.insert(verifier);
+        let identity = RustlsTlsClientConfigProvider.pool_id(&first);
+        assert_eq!(identity, RustlsTlsClientConfigProvider.pool_id(&same));
+        same.insert(ModifyRustlsClientConfig::new(Ok));
+        assert_ne!(identity, RustlsTlsClientConfigProvider.pool_id(&same));
+        let same = first.fork();
+        same.insert(RustlsServerCertVerifier(Arc::new(
+            NoServerCertVerifier::new(),
+        )));
+        assert_ne!(identity, RustlsTlsClientConfigProvider.pool_id(&same));
     }
 }

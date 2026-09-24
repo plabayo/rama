@@ -153,7 +153,7 @@ pub(super) fn build_client_config(
                 .set_certificate_verifier(Arc::new(NoServerCertVerifier::default()));
         }
         (ServerVerifyMode::Auto, Some(pins)) => {
-            let child = match value.verifier {
+            let child = match &value.verifier {
                 Some(verifier) => verifier.0.clone(),
                 None => {
                     WebPkiServerVerifier::builder_with_provider(root_certs, provider).build()?
@@ -164,7 +164,7 @@ pub(super) fn build_client_config(
             ));
         }
         (ServerVerifyMode::Auto, None) => {
-            if let Some(verifier) = value.verifier {
+            if let Some(verifier) = &value.verifier {
                 client_config
                     .dangerous()
                     .set_certificate_verifier(verifier.0.clone());
@@ -186,7 +186,7 @@ pub(super) fn build_client_config(
         client_config.key_log = Arc::new(RamaKeyLog::new(sink));
     }
 
-    if let Some(modify) = value.modify {
+    if let Some(modify) = &value.modify {
         client_config = modify.apply(client_config)?;
     }
 

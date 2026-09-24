@@ -1,21 +1,29 @@
-use std::{hash::Hash, sync::LazyLock};
+use std::{
+    any::{Any, TypeId},
+    fmt,
+    hash::{Hash, Hasher},
+    mem::{Discriminant, discriminant},
+    sync::{Arc, LazyLock},
+};
 
 use ahash::RandomState;
 use rama_core::extensions::{Extension, Extensions};
+use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer};
 use rama_net::{
     address::Host,
     client::pool::{ConnectionReuse, ConnectionReusePolicy},
     tls::{ApplicationProtocol, TlsAlpn},
 };
-use rama_utils::macros::generate_set_and_with;
+use rama_utils::{collections::smallvec::SmallVec, macros::generate_set_and_with};
 
 use crate::client::{
-    ServerVerifyMode, TlsClientAuth, TlsClientConfigProvider, TlsServerCertPins, TlsServerName,
-    TlsServerTrust, TlsServerVerify, TlsStoreServerCertChain,
+    ClientAuth, ServerVerifyMode, TlsClientAuth, TlsClientConfigProvider, TlsServerCertPins,
+    TlsServerName, TlsServerTrust, TlsServerVerify, TlsStoreServerCertChain,
 };
 use crate::{
     CertificateCompressionAlgorithm, CipherSuite, ExtensionId, KeyLogIntent, ProtocolVersion,
     SignatureScheme, SupportedGroup, TlsKeyLog, TlsSupportedVersions, TlsTunnel,
+    keylog::KeyLogSink,
 };
 
 /// Reuse rules published by the connector that performed a TLS handshake.
@@ -24,7 +32,7 @@ use crate::{
 /// after a successful handshake. Pools borrow the next request's extensions to
 /// check compatibility; callers need not configure the provider on the pool.
 /// Connector defaults, including credentials and hooks, remain fixed for the
-/// lifetime of its pool. Only opaque request overrides prevent reuse.
+/// lifetime of its pool. Shared custom components retain their instance identity.
 #[derive(Debug)]
 pub struct TlsConnectionReuse<P> {
     provider: P,
@@ -44,8 +52,8 @@ impl<P: TlsClientConfigProvider + 'static> TlsConnectionReuse<P> {
         let identity = provider.pool_id(request);
         Self {
             provider,
+            reusable: identity.as_ref().is_none_or(TlsPoolId::is_reusable),
             scope: ReuseScope::Origin(identity),
-            reusable: identity.is_none_or(|id| id.is_reusable()),
         }
     }
 
@@ -86,8 +94,10 @@ impl<P: TlsClientConfigProvider + 'static> ConnectionReusePolicy for TlsConnecti
 
     fn matches(&self, input: &Extensions) -> bool {
         self.reusable
-            && match self.scope {
-                ReuseScope::Origin(identity) => self.provider.pool_id(input) == identity,
+            && match &self.scope {
+                ReuseScope::Origin(identity) => {
+                    self.provider.pool_id(input).as_ref() == identity.as_ref()
+                }
                 ReuseScope::Tunnel => !input.contains::<TlsTunnel>(),
             }
     }
@@ -97,17 +107,57 @@ impl<P: TlsClientConfigProvider + 'static> ConnectionReusePolicy for TlsConnecti
 ///
 /// Construct with [`Self::builder`]. An absent override differs from an explicit
 /// default: the latter might replace a different connector default. Equivalent
-/// settings have the same identity regardless of the TLS implementation.
+/// common settings have the same identity regardless of the TLS implementation.
 ///
 /// This identifies overrides within a pool with fixed connector defaults. It
 /// neither identifies a destination nor authenticates a peer, and is not a stable
-/// serialization or a TLS wire fingerprint. Opaque policies cannot be compared
-/// by value; pools must check [`Self::is_reusable`] at checkout and return.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Extension)]
+/// serialization or a TLS wire fingerprint. Shared custom components are retained
+/// for the identity's lifetime, preventing address reuse from matching a different
+/// instance. Pools must check [`Self::is_reusable`] at checkout and return.
+#[derive(Clone, Extension)]
 #[extension(tags(tls))]
 pub struct TlsPoolId {
     digest: PolicyDigest,
     reusable: bool,
+    _retained: Option<Arc<RetainedComponents>>,
+}
+
+// Identity equality is encoded in the digest, not in the retaining allocation.
+impl PartialEq for TlsPoolId {
+    fn eq(&self, other: &Self) -> bool {
+        self.digest == other.digest && self.reusable == other.reusable
+    }
+}
+
+impl Eq for TlsPoolId {}
+
+impl Hash for TlsPoolId {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.digest.hash(state);
+        self.reusable.hash(state);
+    }
+}
+
+impl fmt::Debug for TlsPoolId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TlsPoolId")
+            .field("digest", &self.digest)
+            .field("reusable", &self.reusable)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Default)]
+struct RetainedComponents {
+    keylog: Option<Arc<dyn KeyLogSink>>,
+    shared: SmallVec<[SharedComponent; 2]>,
+}
+
+struct SharedComponent {
+    kind: TypeId,
+    digest: PolicyDigest,
+    // Keep the underlying object alive even when only its pool ID remains.
+    _owner: Arc<dyn Any + Send + Sync>,
 }
 
 impl TlsPoolId {
@@ -133,6 +183,7 @@ impl TlsPoolId {
             overrides: Overrides::default(),
             client_hello: ClientHelloSettings::default(),
             opaque_override: false,
+            retained: RetainedComponents::default(),
         }
     }
 
@@ -142,6 +193,7 @@ impl TlsPoolId {
         Self {
             digest: [0; 2],
             reusable: false,
+            _retained: None,
         }
     }
 
@@ -193,7 +245,8 @@ struct AlpsSettings<'a> {
 
 /// Build a backend-independent identity with shared presence and field encoding.
 ///
-/// The builder borrows configuration and allocates no storage. Settings are
+/// Ordinary settings are borrowed without allocation. Custom components retain
+/// their owners in shared storage. Settings are
 /// encoded in one canonical order, independent of setter order. Library adapters
 /// should exhaustively destructure their configuration before setting fields,
 /// so additions require an explicit pooling decision.
@@ -201,6 +254,7 @@ pub struct TlsPoolIdBuilder<'a> {
     overrides: Overrides<'a>,
     client_hello: ClientHelloSettings<'a>,
     opaque_override: bool,
+    retained: RetainedComponents,
 }
 
 impl<'a> TlsPoolIdBuilder<'a> {
@@ -229,7 +283,7 @@ impl<'a> TlsPoolIdBuilder<'a> {
     }
 
     generate_set_and_with! {
-        /// Key logging policy; custom sinks prevent reuse.
+        /// Key logging policy; a custom sink is identified by its shared instance.
         pub fn keylog(mut self, value: Option<&'a TlsKeyLog>) -> Self {
             self.overrides.keylog = value;
             self
@@ -253,7 +307,7 @@ impl<'a> TlsPoolIdBuilder<'a> {
     }
 
     generate_set_and_with! {
-        /// Client credentials; opaque credentials prevent reuse.
+        /// Client credentials, compared by certificate chain and private key contents.
         pub fn client_auth(mut self, value: Option<&'a TlsClientAuth>) -> Self {
             self.overrides.client_auth = value;
             self
@@ -399,18 +453,40 @@ impl<'a> TlsPoolIdBuilder<'a> {
     }
 
     generate_set_and_with! {
-        /// Mark whether a verifier, native trust store or hook cannot be compared by value.
+        /// Explicitly disable reuse for policy that can change within one instance.
         ///
-        /// Such overrides require a fresh connection. Never substitute an object
-        /// address for the semantics of a mutable or opaque policy.
+        /// Stable shared components should use [`Self::with_shared_component`].
         pub fn opaque_override(mut self, present: bool) -> Self {
             self.opaque_override = present;
             self
         }
     }
 
+    generate_set_and_with! {
+        /// Include a custom component and retain it for the ID's lifetime.
+        ///
+        /// Its `Hash` must describe the policy or a stable shared-instance identity.
+        /// Components are keyed by type, independently of setter order. Replacing
+        /// one changes the identity; cloning its shared instance preserves it.
+        /// A component's policy must stay fixed while pooled connections use it.
+        /// Change the component or its hash when its policy changes, or explicitly
+        /// disable reuse with [`Self::with_opaque_override`].
+        pub fn shared_component(mut self, value: &Arc<impl Any + Hash + Send + Sync>) -> Self {
+            let component = SharedComponent {
+                kind: value.as_ref().type_id(),
+                digest: policy_digest(b"rama.tls.component.v1", value.as_ref()),
+                _owner: value.clone(),
+            };
+            match self.retained.shared.binary_search_by_key(&component.kind, |value| value.kind) {
+                Ok(index) => self.retained.shared[index] = component,
+                Err(index) => self.retained.shared.insert(index, component),
+            }
+            self
+        }
+    }
+
     /// Finish the identity, returning `None` when no overrides are present.
-    pub fn build(self) -> Option<TlsPoolId> {
+    pub fn build(mut self) -> Option<TlsPoolId> {
         let Overrides {
             alpn,
             versions,
@@ -422,14 +498,16 @@ impl<'a> TlsPoolIdBuilder<'a> {
             server_cert_pins,
             server_trust,
         } = self.overrides;
-        let mut reusable = !self.opaque_override && client_auth.is_none();
+        let reusable = !self.opaque_override;
         let keylog = match keylog.map(|value| &value.0) {
             Some(KeyLogIntent::Environment) => Some(ComparableKeyLog::Environment),
             Some(KeyLogIntent::Disabled) => Some(ComparableKeyLog::Disabled),
             Some(KeyLogIntent::File(path)) => Some(ComparableKeyLog::File(path)),
-            Some(KeyLogIntent::Custom(_)) => {
-                reusable = false;
-                Some(ComparableKeyLog::Custom)
+            Some(KeyLogIntent::Custom(sink)) => {
+                self.retained.keylog = Some(sink.clone());
+                Some(ComparableKeyLog::Custom(
+                    Arc::as_ptr(sink).cast::<()>() as usize
+                ))
             }
             None => None,
         };
@@ -443,12 +521,29 @@ impl<'a> TlsPoolIdBuilder<'a> {
             server_cert_pins,
             server_trust,
             client_hello: self.client_hello,
+            client_auth: client_auth.map(|auth| match &auth.0 {
+                ClientAuth::SelfSigned => ComparableClientAuth::SelfSigned,
+                ClientAuth::Single(data) => ComparableClientAuth::Single {
+                    format: discriminant(&data.private_key),
+                    private_key: data.private_key.secret_der(),
+                    cert_chain: &data.cert_chain,
+                },
+            }),
         };
-        // Preserve comparable fields even with fixed opaque credentials: native
-        // configuration caches must still notice changed trust, ALPN or versions.
-        (!reusable || settings != ComparableOverrides::default()).then(|| TlsPoolId {
-            digest: policy_digest(b"rama.tls.overrides.v2", &settings),
+        let has_shared = self.retained.keylog.is_some() || !self.retained.shared.is_empty();
+        if reusable && !has_shared && settings == ComparableOverrides::default() {
+            return None;
+        }
+        let shared: SmallVec<[_; 2]> = self
+            .retained
+            .shared
+            .iter()
+            .map(|component| (component.kind, component.digest))
+            .collect();
+        Some(TlsPoolId {
+            digest: policy_digest(b"rama.tls.overrides.v3", &(settings, shared.as_slice())),
             reusable,
+            _retained: has_shared.then(|| Arc::new(self.retained)),
         })
     }
 }
@@ -464,6 +559,7 @@ struct ComparableOverrides<'a> {
     server_cert_pins: Option<&'a TlsServerCertPins>,
     server_trust: Option<&'a TlsServerTrust>,
     client_hello: ClientHelloSettings<'a>,
+    client_auth: Option<ComparableClientAuth<'a>>,
 }
 
 #[derive(PartialEq, Eq, Hash)]
@@ -471,7 +567,17 @@ enum ComparableKeyLog<'a> {
     Environment,
     Disabled,
     File(&'a str),
-    Custom,
+    Custom(usize),
+}
+
+#[derive(PartialEq, Eq, Hash)]
+enum ComparableClientAuth<'a> {
+    SelfSigned,
+    Single {
+        format: Discriminant<PrivateKeyDer<'static>>,
+        private_key: &'a [u8],
+        cert_chain: &'a [CertificateDer<'static>],
+    },
 }
 
 pub(crate) type PolicyDigest = [u64; 2];
@@ -493,8 +599,11 @@ pub(crate) fn policy_digest(domain: &[u8], settings: &impl Hash) -> PolicyDigest
 mod tests {
     use super::*;
     use crate::client::{
-        ClientAuth, TlsServerCertPin, TlsServerCertPinSet, TlsServerCertPins, TlsServerTrustAnchors,
+        ClientAuth, ClientAuthData, TlsServerCertPin, TlsServerCertPinSet, TlsServerCertPins,
+        TlsServerTrustAnchors,
     };
+    use crate::keylog::NoopKeyLogSink;
+    use rama_crypto::pki_types::PrivatePkcs8KeyDer;
     use rama_utils::octets::kib;
     use std::hash::Hasher;
 
@@ -541,13 +650,108 @@ mod tests {
     }
 
     #[test]
-    fn opaque_request_credentials_prevent_reuse() {
+    fn equivalent_request_credentials_allow_reuse() {
         let request = Extensions::new();
         request.insert(TlsClientAuth(ClientAuth::SelfSigned));
         let policy = TlsConnectionReuse::new(TestProvider, &request);
-        assert!(!policy.is_reusable());
-        assert!(!policy.matches(&request));
+        assert!(policy.is_reusable());
+        assert!(policy.matches(&request));
         assert!(!policy.matches(&Extensions::new()));
+    }
+
+    #[test]
+    fn custom_keylog_identity_retains_and_distinguishes_sinks() {
+        let sink: Arc<dyn KeyLogSink> = Arc::new(NoopKeyLogSink);
+        let weak = Arc::downgrade(&sink);
+        let intent = TlsKeyLog(KeyLogIntent::Custom(sink.clone()));
+        let id = TlsPoolId::builder().with_keylog(&intent).build().unwrap();
+        let clone = TlsKeyLog(KeyLogIntent::Custom(sink.clone()));
+        assert!(id.is_reusable());
+        assert_eq!(
+            Some(id.clone()),
+            TlsPoolId::builder().with_keylog(&clone).build()
+        );
+        let replacement = TlsKeyLog(KeyLogIntent::Custom(Arc::new(NoopKeyLogSink)));
+        assert_ne!(
+            Some(id.clone()),
+            TlsPoolId::builder().with_keylog(&replacement).build()
+        );
+        drop((sink, intent, clone));
+        assert!(
+            weak.upgrade().is_some(),
+            "the identity must prevent address reuse"
+        );
+        drop(id);
+        assert!(weak.upgrade().is_none());
+    }
+
+    #[test]
+    fn shared_component_order_replacement_and_lifetime_are_preserved() {
+        #[derive(Hash)]
+        struct Verifier(u64);
+
+        #[derive(Hash)]
+        struct Hook(u64);
+
+        let verifier = Arc::new(Verifier(1));
+        let hook = Arc::new(Hook(2));
+        let weak = Arc::downgrade(&verifier);
+        let id = TlsPoolId::builder()
+            .with_shared_component(&verifier)
+            .with_shared_component(&hook)
+            .build()
+            .unwrap();
+        assert_eq!(
+            Some(id.clone()),
+            TlsPoolId::builder()
+                .with_shared_component(&hook)
+                .with_shared_component(&verifier)
+                .build()
+        );
+        let replacement = Arc::new(Verifier(3));
+        assert_ne!(
+            Some(id.clone()),
+            TlsPoolId::builder()
+                .with_shared_component(&verifier)
+                .with_shared_component(&hook)
+                .with_shared_component(&replacement)
+                .build()
+        );
+        drop(verifier);
+        assert!(weak.upgrade().is_some());
+        drop(id);
+        assert!(weak.upgrade().is_none());
+    }
+
+    #[test]
+    fn credentials_compare_both_private_key_and_certificate_chain() {
+        let make = |key: u8, cert: u8| {
+            TlsClientAuth(ClientAuth::Single(ClientAuthData {
+                private_key: PrivatePkcs8KeyDer::from(vec![key]).into(),
+                cert_chain: vec![CertificateDer::from(vec![cert])],
+            }))
+        };
+        let original = make(1, 2);
+        let cloned = original.clone();
+        let id = TlsPoolId::builder()
+            .with_client_auth(&original)
+            .build()
+            .unwrap();
+        assert!(id.is_reusable());
+        assert_eq!(
+            Some(id.clone()),
+            TlsPoolId::builder().with_client_auth(&cloned).build()
+        );
+        for changed in [
+            make(2, 2),
+            make(1, 3),
+            TlsClientAuth(ClientAuth::SelfSigned),
+        ] {
+            assert_ne!(
+                Some(id.clone()),
+                TlsPoolId::builder().with_client_auth(&changed).build()
+            );
+        }
     }
 
     #[test]
@@ -601,6 +805,7 @@ mod tests {
         TlsPoolId {
             digest: policy_digest(b"test", value),
             reusable: true,
+            _retained: None,
         }
     }
 
@@ -745,7 +950,7 @@ mod tests {
 
     #[test]
     fn compact_identity_preserves_presence_and_reflexive_equality() {
-        assert!(std::mem::size_of::<TlsPoolId>() <= 24);
+        assert!(std::mem::size_of::<TlsPoolId>() <= 32);
         assert_ne!(id_from_hash(&None::<bool>), id_from_hash(&Some(false)));
         let opaque = TlsPoolId::non_reusable();
         assert_eq!(opaque, opaque);

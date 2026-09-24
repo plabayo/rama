@@ -332,10 +332,10 @@ jobs:
         if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'boring') }}
         run: >-
           cargo test -p rama-examples --no-default-features --features http-full,boring --test integration http3_client_server:: --locked -- --include-ignored
-      - name: Default HTTP client HTTP/3 behavior (boring)
+      - name: HTTP client protocol and TLS reuse behavior (boring)
         if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'boring') }}
         run: >-
-          cargo test -p rama --no-default-features --features http-full,boring --test http-core http_service::default_client_ --locked
+          cargo test -p rama --no-default-features --features http-full,boring --test http-core http_service:: --locked
       - name: Concurrent QUIC transfers (boring)
         if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'boring') }}
         run: cargo test -p rama-quic --no-default-features --features boring --test many_connections --locked -- --include-ignored
@@ -383,10 +383,10 @@ jobs:
         if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-ring') }}
         run: >-
           cargo test -p rama-examples --no-default-features --features http-full,rustls,ring --test integration http3_client_server:: --locked -- --include-ignored
-      - name: Default HTTP client HTTP/3 behavior (rustls-ring)
+      - name: HTTP client protocol and TLS reuse behavior (rustls-ring)
         if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-ring') }}
         run: >-
-          cargo test -p rama --no-default-features --features http-full,rustls,ring --test http-core http_service::default_client_ --locked
+          cargo test -p rama --no-default-features --features http-full,rustls,ring --test http-core http_service:: --locked
       - name: Concurrent QUIC transfers (rustls-ring)
         if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-ring') }}
         run: cargo test -p rama-quic --no-default-features --features rustls,ring --test many_connections --locked -- --include-ignored
@@ -434,10 +434,10 @@ jobs:
         if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-aws-lc') }}
         run: >-
           cargo test -p rama-examples --no-default-features --features http-full,rustls,aws-lc --test integration http3_client_server:: --locked -- --include-ignored
-      - name: Default HTTP client HTTP/3 behavior (rustls-aws-lc)
+      - name: HTTP client protocol and TLS reuse behavior (rustls-aws-lc)
         if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-aws-lc') }}
         run: >-
-          cargo test -p rama --no-default-features --features http-full,rustls,aws-lc --test http-core http_service::default_client_ --locked
+          cargo test -p rama --no-default-features --features http-full,rustls,aws-lc --test http-core http_service:: --locked
       - name: Concurrent QUIC transfers (rustls-aws-lc)
         if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-aws-lc') }}
         run: cargo test -p rama-quic --no-default-features --features rustls,aws-lc --test many_connections --locked -- --include-ignored

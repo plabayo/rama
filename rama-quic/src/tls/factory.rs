@@ -238,8 +238,10 @@ mod tests {
         extensions.insert(ModifyRustlsClientConfig::new(|_| {
             Err(BoxError::from_static_str("custom rustls hook"))
         }));
-        assert!(!rustls.pool_id(extensions).unwrap().is_reusable());
-        assert_ne!(rustls.pool_id(extensions), baseline_rustls);
+        let identity = rustls.pool_id(extensions).unwrap();
+        assert!(identity.is_reusable());
+        assert_ne!(Some(identity.clone()), baseline_rustls);
+        assert_eq!(Some(identity.clone()), rustls.pool_id(extensions));
         assert!(boring.pool_id(extensions).unwrap().is_reusable());
         assert!(!rustls.authenticates_server(extensions));
         assert!(boring.authenticates_server(extensions));
@@ -249,5 +251,9 @@ mod tests {
         boring
             .client_config(&config, TlsOptions::default())
             .unwrap();
+        extensions.insert(ModifyRustlsClientConfig::new(|_| {
+            Err(BoxError::from_static_str("replacement rustls hook"))
+        }));
+        assert_ne!(Some(identity), rustls.pool_id(extensions));
     }
 }

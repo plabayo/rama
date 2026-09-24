@@ -84,12 +84,12 @@ impl ReqToConnID<ConnectRequest> for HttpConnIdentifier {
     type ID = HttpConnId;
 
     fn id(&self, input: &ConnectRequest) -> Result<Self::ID, BoxError> {
-        let tls = input.extensions().get_ref::<TlsPoolId>().copied();
+        let tls = input.extensions().get_ref::<TlsPoolId>().cloned();
         let network = BasicConnIdentifier::new().id(input)?;
         Ok(HttpConnId {
             // Request-supplied tunnel policies must not reuse a route's fixed TLS.
             reusable: !input.extensions().contains::<TlsTunnel>()
-                && tls.is_none_or(|id| id.is_reusable()),
+                && tls.as_ref().is_none_or(TlsPoolId::is_reusable),
             tls,
             network,
             required_version: connection_version_requirement(input),

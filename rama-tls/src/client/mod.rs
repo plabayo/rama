@@ -107,7 +107,8 @@ pub trait TlsClientConfigProvider: fmt::Debug + Send + Sync {
     ///
     /// `None` means the request does not change the provider's fixed TLS policy,
     /// including server identity and authentication. Callers may then classify
-    /// the fixed defaults directly. Opaque overrides must return a non-reusable ID.
+    /// the fixed defaults directly. Use the builder to retain shared components;
+    /// return a non-reusable ID only for policies whose identity cannot be tracked.
     fn pool_id(&self, extensions: &Extensions) -> Option<TlsPoolId>;
 
     /// Whether the effective configuration establishes the server identity.

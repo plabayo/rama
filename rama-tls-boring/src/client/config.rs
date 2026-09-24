@@ -15,7 +15,10 @@ use rama_tls::{
     SupportedGroup, TlsKeyLog, TlsSupportedVersions,
 };
 use rama_utils::macros::generate_set_and_with;
-use std::sync::Arc;
+use std::{
+    hash::{Hash, Hasher},
+    sync::Arc,
+};
 
 #[cfg(feature = "http")]
 use rama_utils::collections::smallvec::smallvec;
@@ -46,7 +49,7 @@ pub struct BoringTlsConnectorConfig<'a> {
     pub encrypted_client_hello: Option<&'a BoringEncryptedClientHello>,
     pub ocsp_stapling: Option<&'a BoringOcspStapling>,
     pub signed_cert_timestamps: Option<&'a BoringSignedCertTimestamps>,
-    pub verify_cert_store: Option<&'a BoringServerVerifyCertStore>,
+    pub verify_cert_store: Option<Arc<BoringServerVerifyCertStore>>,
     pub min_version: Option<&'a BoringMinVersion>,
     pub max_version: Option<&'a BoringMaxVersion>,
 }
@@ -112,8 +115,8 @@ impl BoringTlsConnectorConfig<'_> {
     /// Compact identity of request-level overrides, or `None` for the baseline.
     ///
     /// Explicit defaults remain distinct from absence. Equivalent settings compare
-    /// independently of the TLS implementation. Opaque
-    /// credentials, hooks, verifiers and custom log sinks disable reuse.
+    /// independently of the TLS implementation. Shared stores and log sinks reuse
+    /// connections while retaining their original instance identity.
     /// Connector defaults are fixed for the lifetime of the pool and must not
     /// be layered onto this request-only view.
     pub fn pool_id(&self) -> Option<TlsPoolId> {
@@ -168,8 +171,10 @@ impl BoringTlsConnectorConfig<'_> {
             .maybe_with_ocsp_stapling(ocsp_stapling.map(|value| value.0))
             .maybe_with_signed_cert_timestamps(signed_cert_timestamps.map(|value| value.0))
             .maybe_with_min_version(min_version.map(|value| value.0))
-            .maybe_with_max_version(max_version.map(|value| value.0))
-            .with_opaque_override(verify_cert_store.is_some());
+            .maybe_with_max_version(max_version.map(|value| value.0));
+        if let Some(store) = verify_cert_store {
+            builder.set_shared_component(store);
+        }
 
         if let Some(alps) = alps {
             builder.set_alps(&alps.protocols, alps.new_codepoint);
@@ -547,6 +552,12 @@ pub struct BoringMaxVersion(pub ProtocolVersion);
 #[extension(tags(tls))]
 pub struct BoringServerVerifyCertStore(pub Arc<X509Store>);
 
+impl Hash for BoringServerVerifyCertStore {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        Arc::as_ptr(&self.0).hash(state);
+    }
+}
+
 impl std::fmt::Debug for BoringServerVerifyCertStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BoringServerVerifyCertStore")
@@ -775,6 +786,7 @@ mod tests {
 mod pool_tests {
     use super::*;
     use itertools::iproduct;
+    use rama_boring::x509::store::X509StoreBuilder;
     use rama_core::extensions::Extensions;
     use rama_tls::ProtocolVersion;
     use rama_tls::client::{ClientAuth, ServerVerifyMode, TlsServerCertPin, TlsServerTrustAnchors};
@@ -923,7 +935,7 @@ mod pool_tests {
             let equal = Extensions::new();
             insert(&equal, 0);
             assert_eq!(
-                Some(id),
+                Some(id.clone()),
                 BoringTlsConnectorConfig::from_extensions(&equal).pool_id(),
                 "{name}"
             );
@@ -1008,7 +1020,7 @@ mod pool_tests {
     }
 
     #[test]
-    fn opaque_overrides_are_present_but_never_reusable() {
+    fn custom_overrides_reuse_their_shared_policy() {
         let cases: &[fn(&Extensions)] = &[
             |ext| {
                 ext.insert(TlsClientAuth(ClientAuth::SelfSigned));
@@ -1018,9 +1030,7 @@ mod pool_tests {
             },
             |ext| {
                 ext.insert(BoringServerVerifyCertStore(Arc::new(
-                    rama_boring::x509::store::X509StoreBuilder::new()
-                        .unwrap()
-                        .build(),
+                    X509StoreBuilder::new().unwrap().build(),
                 )));
             },
         ];
@@ -1030,8 +1040,23 @@ mod pool_tests {
             let view = BoringTlsConnectorConfig::from_extensions(&extensions);
             assert!(view.has_overrides());
             let id = view.pool_id().unwrap();
-            assert!(!id.is_reusable());
+            assert!(id.is_reusable());
             assert_eq!(Some(id), view.pool_id());
         }
+    }
+
+    #[test]
+    fn cloned_native_store_matches_but_replacements_do_not() {
+        let store = BoringServerVerifyCertStore(Arc::new(X509StoreBuilder::new().unwrap().build()));
+        let first = Extensions::new();
+        first.insert(store.clone());
+        let same = Extensions::new();
+        same.insert(store);
+        let identity = BoringTlsClientConfigProvider.pool_id(&first);
+        assert_eq!(identity, BoringTlsClientConfigProvider.pool_id(&same));
+        same.insert(BoringServerVerifyCertStore(Arc::new(
+            X509StoreBuilder::new().unwrap().build(),
+        )));
+        assert_ne!(identity, BoringTlsClientConfigProvider.pool_id(&same));
     }
 }

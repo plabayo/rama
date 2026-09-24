@@ -46,12 +46,13 @@ use rama::{
     service::service_fn,
     tcp::{TcpStream, client::service::TcpConnector, server::TcpListener},
     tls::{
-        SecureTransport,
+        KeyLogIntent, SecureTransport,
         client::{
             ClientAuth, ClientAuthData, NegotiatedTlsParameters, ServerVerifyMode, TlsClientConfig,
             TlsClientConfigProvider, TlsPoolId, TlsServerCertPin, TlsServerCertPins,
             TlsServerVerify, TlsStoreServerCertChain,
         },
+        keylog::KeyLogSink,
         server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
     },
 };
@@ -1310,7 +1311,7 @@ async fn ordinary_origin_pool_does_not_reuse_unverified_connection_for_verified_
 }
 
 #[tokio::test]
-async fn connector_client_credentials_pool_but_request_credentials_do_not() {
+async fn connector_and_request_client_credentials_reuse_compatible_connections() {
     for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
         let (auth, tls) = credentials();
         let credentials = ClientAuth::Single(ClientAuthData {
@@ -1332,13 +1333,13 @@ async fn connector_client_credentials_pool_but_request_credentials_do_not() {
         }
         assert_eq!(
             origin.accepted.load(Ordering::SeqCst),
-            3,
-            "opaque request credentials need fresh handshakes"
+            2,
+            "equivalent request credentials share their connection"
         );
         assert_eq!(complete(&client, origin.request()).await.1, version);
         assert_eq!(
             origin.accepted.load(Ordering::SeqCst),
-            3,
+            2,
             "fixed credentials retain their pooled connection"
         );
         drop(client);
@@ -1686,7 +1687,47 @@ async fn http3_unknown_length_trailers_and_head_preserve_the_pooled_connection()
 }
 
 #[tokio::test]
-async fn opaque_request_tls_hooks_remain_unpooled() {
+async fn shared_custom_keylog_reuses_connections_and_replacements_are_isolated() {
+    #[derive(Debug, Default)]
+    struct Capture(AtomicUsize);
+
+    impl KeyLogSink for Capture {
+        fn write_line(&self, _: &str) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
+        let (auth, tls) = credentials();
+        let origin = Server::start(auth, version).await;
+        let (client, endpoint) = client_with_http3(tls).await;
+        let first = Arc::new(Capture::default());
+        let second = Arc::new(Capture::default());
+        for (sink, connections) in [(&first, 1), (&first, 1), (&second, 2), (&first, 2)] {
+            let request = origin.request();
+            // A fresh wrapper around the same sink must preserve its identity.
+            TlsClientConfig::new()
+                .with_keylog(KeyLogIntent::Custom(sink.clone()))
+                .write_to(request.extensions());
+            assert_eq!(complete(&client, request).await.1, version);
+            assert_eq!(
+                origin.accepted.load(Ordering::SeqCst),
+                connections,
+                "{version:?}"
+            );
+        }
+        assert!(first.0.load(Ordering::SeqCst) > 0);
+        assert!(second.0.load(Ordering::SeqCst) > 0);
+        assert_eq!(complete(&client, origin.request()).await.1, version);
+        assert_eq!(origin.accepted.load(Ordering::SeqCst), 3);
+        drop(client);
+        close_client_endpoint(endpoint).await;
+        origin.close().await;
+    }
+}
+
+#[tokio::test]
+async fn shared_request_tls_hooks_reuse_connections() {
     for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
         let (auth, tls) = credentials();
         let origin = Server::start(auth.clone(), version).await;
@@ -1703,15 +1744,15 @@ async fn opaque_request_tls_hooks_remain_unpooled() {
         };
         #[cfg(not(feature = "boring"))]
         let policy = TlsClientConfig::new().with_modify_rustls_config(Ok);
-        for expected_connections in 1..=2 {
+        for _ in 0..3 {
             let request = origin.request();
             request.extensions().extend(policy.as_extensions());
             assert_eq!(complete(&client, request).await.1, version);
-            assert_eq!(origin.accepted.load(Ordering::SeqCst), expected_connections);
+            assert_eq!(origin.accepted.load(Ordering::SeqCst), 1);
         }
         assert_eq!(complete(&client, origin.request()).await.1, version);
         assert_eq!(complete(&client, origin.request()).await.1, version);
-        assert_eq!(origin.accepted.load(Ordering::SeqCst), 3);
+        assert_eq!(origin.accepted.load(Ordering::SeqCst), 2);
         drop(client);
         close_client_endpoint(endpoint).await;
         origin.close().await;

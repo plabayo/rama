@@ -60,8 +60,9 @@ Custom connectors use these contracts:
 | `ConnectionAttempt` / `ConnectionPolicyScope` | Check peer requirements using actual connector policy; preserve failure scope across timeouts and pool hits. |
 
 TLS configuration stays in its connector. Built-in connectors publish reuse rules
-automatically, including fixed client credentials. Opaque request overrides and
-custom secure connectors without reuse rules receive fresh connections.
+automatically. Equal credentials and shared custom sinks or hooks can reuse
+connections. Replace a shared component when its policy changes; custom secure
+connectors without reuse rules receive fresh connections.
 Unclassified policy failures never suppress shared alternatives.
 Report unsupported routes as local capability failures, not unreachable proxies.
 In the CLI, `--alt-svc` enables command-local discovery; `--http3` requires H3
