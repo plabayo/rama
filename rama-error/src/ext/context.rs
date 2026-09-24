@@ -1,7 +1,7 @@
 use core::fmt::{self, Write as _};
 
 use crate::{
-    BoxError, error_chain,
+    BoxError, error_chain_with_limit,
     std::{Box, String},
 };
 
@@ -250,7 +250,7 @@ impl fmt::Display for ErrorWithContext {
         const MAX_CAUSE_DEPTH: usize = 64;
         if let Some(source) = self.source.as_ref().source() {
             writeln!(f, "Caused by:")?;
-            for (idx, err) in error_chain(source, MAX_CAUSE_DEPTH + 1).enumerate() {
+            for (idx, err) in error_chain_with_limit(source, MAX_CAUSE_DEPTH + 1).enumerate() {
                 if idx == MAX_CAUSE_DEPTH {
                     writeln!(f, "  ... (truncated)")?;
                     break;

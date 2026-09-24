@@ -355,7 +355,7 @@ impl ConnectionError {
         let mut timeout = false;
         // Protect conversion from a malformed error implementation with a cyclic
         // source chain. Rama's own wrappers are shallow and acyclic.
-        for error in error_chain(source, 64) {
+        for error in error_chain(source) {
             if let Some(error) = error.downcast_ref::<Self>() {
                 return Some((error.domain, error.kind, error.policy_scope));
             }

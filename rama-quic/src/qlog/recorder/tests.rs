@@ -1586,7 +1586,7 @@ async fn error_sink_and_completion_retain_operation_context_and_original_error()
     for error in [reports[0].as_ref(), &flushed, &completed, &observed] {
         assert!(error.to_string().contains("qlog event output failed"));
         assert!(
-            error_chain(error, 32).any(|cause| {
+            error_chain(error).any(|cause| {
                 cause.downcast_ref::<StorageFailure>().is_some()
                     || cause
                         .downcast_ref::<io::Error>()

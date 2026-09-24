@@ -621,9 +621,6 @@ mod tests {
 
     use super::*;
 
-    // Route errors wrap the cached cause with several metadata contexts.
-    const MAX_ROUTE_ERROR_DEPTH: usize = 16;
-
     fn cache(scope: ProxyRouteFailureCacheScope) -> ProxyRouteFailureCache {
         ProxyRouteFailureCache::try_new(ProxyRouteFailureCacheConfig {
             initial_backoff: Duration::from_millis(20),
@@ -938,7 +935,7 @@ mod tests {
                         "{scope:?}, {target}, {kind}"
                     );
                     assert!(
-                        error_chain(&cached, MAX_ROUTE_ERROR_DEPTH)
+                        error_chain(&cached)
                             .any(|error| error.is::<ProxyRouteFailureCachedError>())
                     );
                 }
@@ -1002,10 +999,7 @@ mod tests {
                 .await
                 .unwrap_err();
             assert_eq!(attempts.load(Ordering::SeqCst), 2, "{scope:?}");
-            assert!(
-                error_chain(&cached, MAX_ROUTE_ERROR_DEPTH)
-                    .any(|error| error.is::<ProxyRouteFailureCachedError>())
-            );
+            assert!(error_chain(&cached).any(|error| error.is::<ProxyRouteFailureCachedError>()));
         }
     }
 
@@ -1064,8 +1058,7 @@ mod tests {
                     "{scope:?}, {transport:?}"
                 );
                 assert!(
-                    error_chain(&cached, MAX_ROUTE_ERROR_DEPTH)
-                        .any(|error| error.is::<ProxyRouteFailureCachedError>())
+                    error_chain(&cached).any(|error| error.is::<ProxyRouteFailureCachedError>())
                 );
             }
         }

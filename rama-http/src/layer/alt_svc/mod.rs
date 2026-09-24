@@ -51,9 +51,6 @@ use std::{
     time::Instant,
 };
 
-// Bound malformed/cyclic custom error chains without allocating.
-const MAX_ERROR_SOURCE_DEPTH: usize = 64;
-
 /// Learn alternatives for one logical HTTP origin over an established connection.
 ///
 /// HTTPS learning requires [`Self::with_authenticated`] from a transport that
@@ -194,7 +191,7 @@ fn is_remote_response_failure(error: &dyn Any) -> bool {
         } else {
             return false;
         };
-    error_chain(error, MAX_ERROR_SOURCE_DEPTH)
+    error_chain(error)
         .find_map(|error| error.downcast_ref::<ConnectionError>())
         .is_some_and(|error| {
             matches!(

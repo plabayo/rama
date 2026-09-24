@@ -288,7 +288,7 @@ mod tests {
                 .is_some_and(|source| source.downcast_ref::<Cause>().is_some()),
             "the source is the cause itself, so it can be recovered by type"
         );
-        let chain: Vec<String> = error_chain(&shared, 8).map(ToString::to_string).collect();
+        let chain: Vec<String> = error_chain(&shared).map(ToString::to_string).collect();
         assert_eq!(
             chain.len(),
             3,
@@ -322,7 +322,7 @@ mod tests {
         let rendered = once.to_string();
         assert!(rendered.contains("note 1"), "{rendered}");
         assert!(rendered.contains("note 2"), "{rendered}");
-        let wrappers = error_chain(&once, 8)
+        let wrappers = error_chain(&once)
             .filter(|error| error.downcast_ref::<ErrorWithContext>().is_some())
             .count();
         assert_eq!(
@@ -337,7 +337,7 @@ mod tests {
             .context(Note(7))
             .context_field("k", "v");
         assert!(
-            error_chain(&sole, 8).any(|error| error.downcast_ref::<Cause>().is_some()),
+            error_chain(&sole).any(|error| error.downcast_ref::<Cause>().is_some()),
             "the cause is recoverable by type through the only owner's context: {sole}"
         );
 
@@ -346,15 +346,15 @@ mod tests {
         let annotated = shared.context(Note(7));
         assert!(annotated.to_string().contains("note 7"));
         assert!(
-            error_chain(&annotated, 8).any(|error| error.downcast_ref::<Cause>().is_some()),
+            error_chain(&annotated).any(|error| error.downcast_ref::<Cause>().is_some()),
             "and through a shared one's: {annotated}"
         );
         assert!(
-            error_chain(&kept, 8).any(|error| error.downcast_ref::<Cause>().is_some()),
+            error_chain(&kept).any(|error| error.downcast_ref::<Cause>().is_some()),
             "the clone made before the context still has it"
         );
         assert!(
-            error_chain(&annotated, 8).any(|error| error.downcast_ref::<Cause>().is_some()),
+            error_chain(&annotated).any(|error| error.downcast_ref::<Cause>().is_some()),
             "and so does the one it was cloned from"
         );
     }
@@ -376,7 +376,7 @@ mod tests {
         };
         let annotated = ArcError::new(deep).context_field("stage", "one");
         assert!(
-            error_chain(&annotated, 8).any(|error| error.downcast_ref::<Deepest>().is_some()),
+            error_chain(&annotated).any(|error| error.downcast_ref::<Deepest>().is_some()),
             "the error under the cause is still in the chain: {annotated}"
         );
     }
@@ -401,7 +401,7 @@ mod tests {
         drop::<ArcError>(shared.clone().with_context_debug_field("k", || 11u8));
         let last: ArcError = shared.with_context_hex_field("k", || 12u8);
         assert!(
-            error_chain(&last, 8).any(|error| error.downcast_ref::<Cause>().is_some()),
+            error_chain(&last).any(|error| error.downcast_ref::<Cause>().is_some()),
             "and each of them keeps the cause"
         );
     }
@@ -429,9 +429,9 @@ mod tests {
 
         let shared = ArcError::new(Loop).context(Note(1));
         assert_eq!(
-            error_chain(&shared, 4).count(),
-            4,
-            "the walk stops at the bound it was given"
+            error_chain(&shared).count(),
+            64,
+            "the walk stops at the default bound"
         );
         assert!(
             format!("{shared}").contains("note 1"),

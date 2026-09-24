@@ -522,16 +522,15 @@ impl ConnectFailures {
     }
 }
 
-// Classify QUIC address-race failures at the transport boundary. Generic HTTP
-// service selection consumes ConnectionError classifications, never QUIC errors.
-const MAX_ERROR_CHAIN_DEPTH: usize = 32;
 // RFC 7301 §3.2: negotiation failed because the peer supports no offered ALPN.
 const TLS_NO_APPLICATION_PROTOCOL: u8 = 120;
 
+// Classify QUIC address-race failures at the transport boundary. Generic HTTP
+// service selection consumes ConnectionError classifications, never QUIC errors.
 fn classify_connect_error(
     error: &(dyn StdError + 'static),
 ) -> (ConnectionErrorDomain, ConnectionErrorKind) {
-    for error in error_chain(error, MAX_ERROR_CHAIN_DEPTH) {
+    for error in error_chain(error) {
         if let Some(error) = error.downcast_ref::<ConnectionError>() {
             return (error.domain(), error.kind());
         }
@@ -892,11 +891,9 @@ mod concrete_transport_tests {
             );
             assert_eq!(error.domain(), ConnectionErrorDomain::Application);
             assert_eq!(error.kind(), ConnectionErrorKind::Authentication);
-            assert!(
-                error_chain(error.get_ref(), MAX_ERROR_CHAIN_DEPTH).any(|cause| {
-                    cause.downcast_ref::<QuicConnectionError>() == Some(&authentication)
-                })
-            );
+            assert!(error_chain(error.get_ref()).any(|cause| {
+                cause.downcast_ref::<QuicConnectionError>() == Some(&authentication)
+            }));
         }
     }
 

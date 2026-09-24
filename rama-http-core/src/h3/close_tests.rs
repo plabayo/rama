@@ -319,7 +319,7 @@ async fn memory_response_failure_provenance_separates_peer_reset_from_applicatio
         send.reset(VarInt::from_u32(Code::H3_REQUEST_CANCELLED.value() as u32))
             .unwrap();
         let error = body.frame().await.unwrap().unwrap_err();
-        let cause = error_chain(&error, 8)
+        let cause = error_chain(&error)
             .find_map(|cause| cause.downcast_ref::<Error>())
             .unwrap();
         assert_eq!(cause.scope(), ErrorScope::Stream);
@@ -409,7 +409,7 @@ async fn memory_received_body_length_and_trailer_errors_are_remote() {
                 .collect()
                 .await
                 .unwrap_err();
-            let cause = error_chain(&error, 8)
+            let cause = error_chain(&error)
                 .find_map(|cause| cause.downcast_ref::<Error>())
                 .unwrap();
             assert_eq!(cause.code(), Code::H3_MESSAGE_ERROR);
