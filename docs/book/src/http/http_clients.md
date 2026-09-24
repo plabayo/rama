@@ -67,8 +67,9 @@ Custom connectors use these contracts:
 
 TLS configuration stays in its connector. Built-in connectors publish reuse rules
 automatically. Custom components publish owned `TlsPoolComponent::Identity`
-values: equal identities permit reuse. Shared-instance identity is optional;
-policy changes need a new identity. Custom secure connectors without reuse rules
+values: equal identities permit reuse. `with_shared_instance` instead retains an
+existing `Arc` and compares allocation identity without boxing a snapshot.
+Policy changes need a new identity. Custom secure connectors without reuse rules
 receive fresh connections. Apply request-policy
 middleware outside the pool so lookup and establishment see the same input.
 Unclassified policy failures never suppress shared alternatives.

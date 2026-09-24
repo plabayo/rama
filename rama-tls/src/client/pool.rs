@@ -271,6 +271,7 @@ impl<T: TlsPoolComponent> ErasedIdentity for ComponentIdentity<T> {
 // Keep keylog's already-erased Arc directly, without allocating another adapter.
 enum SharedComponent {
     Custom(Box<dyn ErasedIdentity>),
+    Instance(Arc<dyn Any + Send + Sync>),
     KeyLog(TlsComponentIdentity<dyn KeyLogSink>),
 }
 
@@ -289,6 +290,7 @@ impl SharedComponent {
     fn kind(&self) -> TypeId {
         match self {
             Self::Custom(identity) => identity.kind(),
+            Self::Instance(owner) => owner.as_ref().type_id(),
             Self::KeyLog(_) => TypeId::of::<TlsKeyLog>(),
         }
     }
@@ -300,6 +302,7 @@ impl PartialEq for SharedComponent {
             (Self::Custom(identity), Self::Custom(other_identity)) => {
                 identity.eq(other_identity.as_ref())
             }
+            (Self::Instance(owner), Self::Instance(other_owner)) => Arc::ptr_eq(owner, other_owner),
             (Self::KeyLog(sink), Self::KeyLog(other_sink)) => sink == other_sink,
             _ => false,
         }
@@ -313,6 +316,7 @@ impl Hash for SharedComponent {
         self.kind().hash(state);
         match self {
             Self::Custom(identity) => identity.hash_erased(state),
+            Self::Instance(owner) => Arc::as_ptr(owner).cast::<()>().hash(state),
             Self::KeyLog(sink) => sink.hash(state),
         }
     }
@@ -632,6 +636,23 @@ impl<'a> TlsPoolIdBuilder<'a> {
         }
     }
 
+    generate_set_and_with! {
+        /// Identify a component by its existing shared allocation.
+        ///
+        /// Cloned `Arc`s match; separate allocations differ even for equal values.
+        /// Retaining the owner prevents address reuse without allocating an identity
+        /// snapshot. The final component list still uses shared storage.
+        ///
+        /// Policy must remain fixed for the instance's lifetime. Use
+        /// [`Self::with_component`] for semantic or revision-based identities.
+        /// Both setters replace the previous identity for the same component type;
+        /// an instance identity never equals a semantic identity.
+        pub fn shared_instance(mut self, value: &Arc<impl Any + Send + Sync>) -> Self {
+            self.insert_component(SharedComponent::Instance(value.clone()));
+            self
+        }
+    }
+
     fn insert_component(&mut self, component: SharedComponent) {
         match self
             .components
@@ -836,6 +857,98 @@ mod tests {
         );
         drop(id);
         assert!(weak.upgrade().is_none());
+    }
+
+    #[test]
+    fn shared_instance_identity_retains_the_allocation_and_distinguishes_replacements() {
+        // Even zero-sized components need distinct owning allocations: a boxed
+        // zero-sized callback's data pointer alone cannot identify its policy.
+        let instance = Arc::new(());
+        let weak = Arc::downgrade(&instance);
+        let clone = instance.clone();
+        let replacement = Arc::new(());
+        let id = TlsPoolId::builder()
+            .with_shared_instance(&instance)
+            .build()
+            .unwrap();
+        let same = TlsPoolId::builder().with_shared_instance(&clone).build();
+        assert!(id.is_reusable());
+        assert_eq!(Some(id.clone()), same);
+        assert_eq!(
+            policy_digest(b"test", &Some(id.clone())),
+            policy_digest(b"test", &same)
+        );
+        assert_ne!(
+            Some(id.clone()),
+            TlsPoolId::builder()
+                .with_shared_instance(&replacement)
+                .build(),
+        );
+
+        drop((instance, clone, same));
+        assert!(
+            weak.upgrade().is_some(),
+            "the pool identity retains the owner"
+        );
+        drop(id);
+        assert!(weak.upgrade().is_none());
+    }
+
+    #[test]
+    fn shared_and_semantic_identity_setters_replace_by_component_type() {
+        struct Policy(u64);
+
+        impl TlsPoolComponent for Policy {
+            type Identity = u64;
+
+            fn pool_component_identity(&self) -> Self::Identity {
+                self.0
+            }
+        }
+
+        let instance = Arc::new(Policy(1));
+        let semantic = TlsPoolId::builder()
+            .with_component(instance.as_ref())
+            .build();
+        let shared = TlsPoolId::builder().with_shared_instance(&instance).build();
+        assert_ne!(
+            semantic, shared,
+            "different identity contracts never compare equal"
+        );
+        assert_eq!(
+            semantic,
+            TlsPoolId::builder()
+                .with_shared_instance(&instance)
+                .with_component(instance.as_ref())
+                .build(),
+        );
+        assert_eq!(
+            shared,
+            TlsPoolId::builder()
+                .with_component(instance.as_ref())
+                .with_shared_instance(&instance)
+                .build(),
+        );
+
+        // Distinct component types coexist, regardless of the setter order or
+        // whether their captured identities are values or shared allocations.
+        let other = Arc::new(());
+        let first = TlsPoolId::builder()
+            .with_component(instance.as_ref())
+            .with_shared_instance(&other)
+            .build()
+            .unwrap();
+        let reordered = TlsPoolId::builder()
+            .with_shared_instance(&other)
+            .with_component(instance.as_ref())
+            .build()
+            .unwrap();
+        assert_eq!(first.components.as_ref().unwrap().len(), 2);
+        assert_eq!(first, reordered);
+        assert_eq!(
+            policy_digest(b"test", &first),
+            policy_digest(b"test", &reordered)
+        );
     }
 
     #[test]

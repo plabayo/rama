@@ -52,12 +52,10 @@ pub trait IntoHttpTransport: ExtensionsRef + Send + 'static {
 
     /// Whether this transport type can carry the requested HTTP version.
     ///
-    /// The HTTP connector checks this before dialing. Return `false` only for
-    /// impossible combinations; route-specific support remains the connector's
-    /// responsibility. Custom transport types default to deferring that decision.
-    fn supports_http_version(_version: Version) -> bool {
-        true
-    }
+    /// The HTTP connector checks this before dialing. Explicitly accept only
+    /// understood versions; route-specific support remains the connector's
+    /// responsibility. The HTTP handshake still validates the actual transport.
+    fn supports_http_version(version: Version) -> bool;
 
     fn into_http_transport(self) -> HttpTransport<Self::Stream>;
 }
@@ -66,7 +64,10 @@ impl<IO: Io + Unpin + ExtensionsRef> IntoHttpTransport for IO {
     type Stream = IO;
 
     fn supports_http_version(version: Version) -> bool {
-        version != Version::HTTP_3
+        matches!(
+            version,
+            Version::HTTP_09 | Version::HTTP_10 | Version::HTTP_11 | Version::HTTP_2
+        )
     }
 
     fn into_http_transport(self) -> HttpTransport<Self::Stream> {
@@ -76,6 +77,17 @@ impl<IO: Io + Unpin + ExtensionsRef> IntoHttpTransport for IO {
 
 impl<IO: Io + Unpin + ExtensionsRef> IntoHttpTransport for HttpTransport<IO> {
     type Stream = IO;
+
+    fn supports_http_version(version: Version) -> bool {
+        matches!(
+            version,
+            Version::HTTP_09
+                | Version::HTTP_10
+                | Version::HTTP_11
+                | Version::HTTP_2
+                | Version::HTTP_3
+        )
+    }
 
     fn into_http_transport(self) -> Self {
         self
@@ -87,7 +99,7 @@ impl IntoHttpTransport for Http3Transport {
     type Stream = ServiceInput<Box<dyn Io + Unpin>>;
 
     fn supports_http_version(version: Version) -> bool {
-        version == Version::HTTP_3
+        matches!(version, Version::HTTP_3)
     }
 
     fn into_http_transport(self) -> HttpTransport<Self::Stream> {
@@ -134,6 +146,36 @@ where
                 input,
                 conn: conn.into_http_transport(),
             })
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transport_support_matches_understood_http_versions() {
+        type Stream = ServiceInput<tokio::io::DuplexStream>;
+
+        for (version, stream, quic) in [
+            (Version::HTTP_09, true, false),
+            (Version::HTTP_10, true, false),
+            (Version::HTTP_11, true, false),
+            (Version::HTTP_2, true, false),
+            (Version::HTTP_3, false, true),
+        ] {
+            assert_eq!(
+                Stream::supports_http_version(version),
+                stream,
+                "{version:?}"
+            );
+            assert_eq!(
+                Http3Transport::supports_http_version(version),
+                quic,
+                "{version:?}"
+            );
+            assert!(HttpTransport::<Stream>::supports_http_version(version));
         }
     }
 }

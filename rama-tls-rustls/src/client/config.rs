@@ -100,7 +100,7 @@ impl RustlsTlsConnectorConfig<'_> {
             builder.set_component(verifier.as_ref());
         }
         if let Some(modify) = modify {
-            builder.set_component(modify.as_ref());
+            builder.set_shared_instance(modify);
         }
         builder.build()
     }
@@ -194,7 +194,7 @@ impl TlsPoolComponent for RustlsServerCertVerifier {
     }
 }
 
-#[derive(Clone, Extension)]
+#[derive(Extension)]
 #[extension(tags(tls))]
 /// Escape hatch: take over the final rustls [`ClientConfig`] build.
 ///
@@ -202,15 +202,10 @@ impl TlsPoolComponent for RustlsServerCertVerifier {
 /// last step of building, hands it to this function. Either tweak the input
 /// and return it, or ignore it and build a fresh one through the full rustls
 /// builder for anything the common pieces can't express.
-pub struct ModifyRustlsClientConfig(pub Arc<ModifyFn>);
-
-impl TlsPoolComponent for ModifyRustlsClientConfig {
-    type Identity = TlsComponentIdentity<ModifyFn>;
-
-    fn pool_component_identity(&self) -> Self::Identity {
-        TlsComponentIdentity::shared(&self.0)
-    }
-}
+///
+/// For request overrides, pool reuse follows the shared extension owner. Share
+/// its `Arc` across requests to retain the same hook identity.
+pub struct ModifyRustlsClientConfig(pub Box<ModifyFn>);
 
 type ModifyFn = dyn Fn(ClientConfig) -> Result<ClientConfig, BoxError> + Send + Sync + 'static;
 
@@ -219,7 +214,7 @@ impl ModifyRustlsClientConfig {
     where
         F: Fn(ClientConfig) -> Result<ClientConfig, BoxError> + Send + Sync + 'static,
     {
-        Self(Arc::new(modify))
+        Self(Box::new(modify))
     }
 
     pub(crate) fn apply(&self, config: ClientConfig) -> Result<ClientConfig, BoxError> {
@@ -395,7 +390,7 @@ mod pool_tests {
         first.insert(verifier.clone());
         first.insert_arc(modify.clone());
         let same = Extensions::new();
-        same.insert(modify.as_ref().clone());
+        same.insert_arc(modify);
         same.insert(verifier);
         let identity = RustlsTlsClientConfigProvider.pool_id(&first);
         assert_eq!(identity, RustlsTlsClientConfigProvider.pool_id(&same));
@@ -406,5 +401,19 @@ mod pool_tests {
             NoServerCertVerifier::new(),
         )));
         assert_ne!(identity, RustlsTlsClientConfigProvider.pool_id(&same));
+    }
+
+    #[test]
+    fn hook_pool_identity_keeps_the_extension_owner_alive() {
+        let hook = Arc::new(ModifyRustlsClientConfig::new(Ok));
+        let weak = Arc::downgrade(&hook);
+        let extensions = Extensions::new();
+        extensions.insert_arc(hook.clone());
+        let identity = RustlsTlsClientConfigProvider.pool_id(&extensions).unwrap();
+
+        drop((hook, extensions));
+        assert!(weak.upgrade().is_some());
+        drop(identity);
+        assert!(weak.upgrade().is_none());
     }
 }

@@ -1767,7 +1767,7 @@ async fn shared_request_tls_hooks_reuse_connections() {
         let origin = Server::start(auth.clone(), version).await;
         let (client, endpoint) = client_with_http3(tls).await;
         #[cfg(feature = "boring")]
-        let policy = {
+        let new_policy = || {
             let mut store = X509StoreBuilder::new().unwrap();
             for certificate in &auth.cert_chain {
                 store
@@ -1777,16 +1777,26 @@ async fn shared_request_tls_hooks_reuse_connections() {
             TlsClientConfig::new().with_server_verify_cert_store(Arc::new(store.build()))
         };
         #[cfg(not(feature = "boring"))]
-        let policy = TlsClientConfig::new().with_modify_rustls_config(Ok);
+        let new_policy = || TlsClientConfig::new().with_modify_rustls_config(Ok);
+        let policy = new_policy();
         for _ in 0..3 {
             let request = origin.request();
             request.extensions().extend(policy.as_extensions());
             assert_eq!(complete(&client, request).await.1, version);
             assert_eq!(origin.accepted.load(Ordering::SeqCst), 1);
         }
+        // Replacing a hook/store cannot borrow a connection authenticated under
+        // the previous instance, even if the callback happens to do the same work.
+        let replacement = new_policy();
+        for _ in 0..2 {
+            let request = origin.request();
+            request.extensions().extend(replacement.as_extensions());
+            assert_eq!(complete(&client, request).await.1, version);
+            assert_eq!(origin.accepted.load(Ordering::SeqCst), 2);
+        }
         assert_eq!(complete(&client, origin.request()).await.1, version);
         assert_eq!(complete(&client, origin.request()).await.1, version);
-        assert_eq!(origin.accepted.load(Ordering::SeqCst), 2);
+        assert_eq!(origin.accepted.load(Ordering::SeqCst), 3);
         drop(client);
         close_client_endpoint(endpoint).await;
         origin.close().await;

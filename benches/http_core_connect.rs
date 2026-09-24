@@ -37,6 +37,22 @@ mod policy_identity {
         bencher.bench_local(|| TlsPoolId::builder().with_keylog(black_box(&keylog)).build());
     }
 
+    #[divan::bench]
+    fn capture_shared_instance(bencher: divan::Bencher) {
+        let hook = Arc::new(());
+        bencher.bench_local(|| TlsPoolId::builder().with_shared_instance(black_box(&hook)));
+    }
+
+    #[divan::bench]
+    fn shared_instance(bencher: divan::Bencher) {
+        let hook = Arc::new(());
+        bencher.bench_local(|| {
+            TlsPoolId::builder()
+                .with_shared_instance(black_box(&hook))
+                .build()
+        });
+    }
+
     struct Verifier(Arc<()>);
 
     impl TlsPoolComponent for Verifier {
@@ -67,6 +83,20 @@ mod policy_identity {
                 .with_keylog(black_box(&keylog))
                 .with_component(black_box(verifier.as_ref()))
                 .with_component(black_box(hook.as_ref()))
+                .build()
+        });
+    }
+
+    #[divan::bench]
+    fn verifier_with_shared_hook_and_keylog(bencher: divan::Bencher) {
+        let keylog = TlsKeyLog(KeyLogIntent::Custom(Arc::new(NoopKeyLogSink)));
+        let verifier = Verifier(Arc::new(()));
+        let hook = Arc::new(());
+        bencher.bench_local(|| {
+            TlsPoolId::builder()
+                .with_keylog(black_box(&keylog))
+                .with_component(black_box(&verifier))
+                .with_shared_instance(black_box(&hook))
                 .build()
         });
     }
