@@ -1,6 +1,10 @@
 //! Real TCP/TLS coverage of protocol-independent alternative-service selection.
 
 mod deployment;
+mod discovery_outcomes;
+mod ip_policy;
+#[cfg(all(feature = "boring", feature = "rustls"))]
+mod mixed_tls;
 mod redirects;
 
 use rama::{
@@ -42,7 +46,7 @@ use rama::{
         tls::ApplicationProtocol,
     },
     quic::{
-        ClientConfig, Endpoint, ServerConfig,
+        ClientConfig, Endpoint, ServerConfig, TransportConfig,
         tls::{QuicClientConfigProvider, TlsConfigError, TlsOptions},
     },
     rt::Executor,
@@ -59,6 +63,8 @@ use rama::{
         server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
     },
 };
+use tokio::sync::Notify;
+
 use std::{
     collections::VecDeque,
     convert::Infallible,
@@ -2170,4 +2176,112 @@ async fn http3_connector_rustls_reuses_compatible_resumption_state() {
 #[tokio::test]
 async fn http3_connector_boring_reuses_compatible_resumption_state() {
     check_http3_connector_resumption(Arc::new(BoringTlsProvider)).await;
+}
+
+#[tokio::test]
+async fn http3_pool_opens_another_connection_when_response_body_holds_peer_credit() {
+    check_http3_busy_peer_credit(false).await;
+}
+
+#[tokio::test]
+async fn http3_pool_opens_another_connection_after_early_response_while_upload_stays_open() {
+    check_http3_busy_peer_credit(true).await;
+}
+
+async fn check_http3_busy_peer_credit(early_response: bool) {
+    let (auth, tls) = credentials();
+    let executor = Executor::new();
+    let config = TlsServerConfig::new()
+        .with_server_auth(auth)
+        .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
+    let mut server_config =
+        ServerConfig::try_from_rama_tls(&config, TlsOptions::default()).unwrap();
+    let mut transport = TransportConfig::default();
+    transport.set_max_concurrent_bidi_streams(1u32);
+    server_config.set_transport_config(Arc::new(transport));
+    let endpoint = Endpoint::build(executor.clone())
+        .with_server_config(server_config)
+        .bind_address(SocketAddress::local_ipv4(0))
+        .await
+        .unwrap();
+    let address = endpoint.local_addr().unwrap();
+    let accepted = Arc::new(AtomicUsize::new(0));
+    let release = Arc::new(Notify::new());
+    let handler = service_fn({
+        let release = release.clone();
+        move |request: Request| {
+            let release = release.clone();
+            async move {
+                let body = if request.uri().path().is_some_and(|path| path == "/hold") {
+                    if early_response {
+                        spawn(async move {
+                            let _body = request.into_body();
+                            release.notified().await;
+                        });
+                        Body::empty()
+                    } else {
+                        Body::from_frame_stream(
+                            stream::pending::<Result<Frame<Bytes>, Infallible>>(),
+                        )
+                    }
+                } else {
+                    Body::from("delivered")
+                };
+                Ok::<_, Infallible>(Response::new(body))
+            }
+        }
+    });
+    let task = spawn({
+        let endpoint = endpoint.clone();
+        let accepted = accepted.clone();
+        let server = HttpServer::new_http3(executor.clone());
+        async move {
+            while let Some(incoming) = endpoint.accept().await {
+                accepted.fetch_add(1, Ordering::SeqCst);
+                let server = server.clone();
+                let handler = handler.clone();
+                spawn(async move {
+                    if let Ok(connection) = incoming.await {
+                        _ = server.serve(connection, handler).await;
+                    }
+                });
+            }
+        }
+    });
+    let (client, client_endpoint) = client_with_http3(tls).await;
+    let request = |path: &str| {
+        Request::builder()
+            .version(Version::HTTP_3)
+            .uri(format!("https://localhost:{}{path}", address.port()))
+            .body(if early_response && path == "/hold" {
+                Body::from_frame_stream(stream::pending::<Result<Frame<Bytes>, Infallible>>())
+            } else {
+                Body::empty()
+            })
+            .unwrap()
+    };
+    // A long-lived response occupies the peer's only granted request stream.
+    let held = timeout(TEST_TIMEOUT, client.serve(request("/hold")))
+        .await
+        .unwrap()
+        .unwrap();
+    let held = if early_response {
+        held.into_body().collect().await.unwrap();
+        None
+    } else {
+        Some(held)
+    };
+    // No yield between completing the first response and checking out again:
+    // correctness must not depend on an asynchronous capacity mirror.
+    let second = timeout(Duration::from_secs(5), client.serve(request("/second"))).await;
+    drop(held);
+    release.notify_waiters();
+    close_client_endpoint(client_endpoint).await;
+    endpoint.close(0u32, b"done");
+    task.abort();
+    assert!(
+        second.unwrap().is_ok(),
+        "second request uses another connection"
+    );
+    assert_eq!(accepted.load(Ordering::SeqCst), 2);
 }

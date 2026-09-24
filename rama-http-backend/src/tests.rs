@@ -13,7 +13,7 @@ use tokio::{
 };
 
 use rama_core::{
-    Layer, Service,
+    Layer, Service, ServiceInput,
     bytes::Bytes,
     extensions::ExtensionsRef,
     futures::{
@@ -40,7 +40,10 @@ use rama_http_types::{
 use rama_net::{
     TargetHttpVersionInputExt,
     address::HostWithPort,
-    client::{ConnectRequest, ConnectionErrorDomain, ConnectionErrorKind},
+    client::{
+        ConnectRequest, ConnectionError, ConnectionErrorDomain, ConnectionErrorKind,
+        EstablishedClientConnection,
+    },
     test_utils::client::{MockConnectorService, MockSocket},
 };
 use rama_utils::octets::kib;
@@ -49,25 +52,80 @@ use tokio_util::sync::CancellationToken;
 use crate::proxy::mitm::DefaultErrorResponse;
 
 use super::{
-    client::{HttpConnectRequestAdapter, HttpConnectorLayer, http_connect},
+    client::{HttpConnectRequestAdapter, HttpConnectorLayer, HttpTransport, http_connect},
     proxy::mitm::HttpMitmRelay,
     server::HttpServer,
 };
 
 #[tokio::test]
-async fn byte_stream_transport_rejects_http3_handshake() {
-    let connector =
-        HttpConnectorLayer::<Body>::default().into_layer(MockConnectorService::new(|| {
+async fn byte_stream_transport_rejects_http3_before_dialing() {
+    let dials = Arc::new(AtomicUsize::new(0));
+    let connector = HttpConnectorLayer::<Body>::default().into_layer(MockConnectorService::new({
+        let dials = dials.clone();
+        move || {
+            dials.fetch_add(1, Ordering::SeqCst);
             HttpServer::auto(Executor::default()).service(service_fn(server_svc_fn))
-        }));
+        }
+    }));
 
     let error = connector
         .serve(create_test_request(Version::HTTP_3))
         .await
         .err()
         .expect("HTTP/3 requires a QUIC transport");
+    assert_eq!(error.domain(), ConnectionErrorDomain::Local);
+    assert_eq!(error.kind(), ConnectionErrorKind::Unavailable);
+    assert_eq!(dials.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn mixed_transport_rejects_a_byte_stream_for_required_http3_after_dialing() {
+    let dials = Arc::new(AtomicUsize::new(0));
+    let transport = service_fn({
+        let dials = dials.clone();
+        move |input: ConnectRequest| {
+            dials.fetch_add(1, Ordering::SeqCst);
+            async move {
+                let (io, _peer) = tokio::io::duplex(kib(4));
+                Ok::<_, ConnectionError>(EstablishedClientConnection {
+                    input,
+                    conn: HttpTransport::Stream(ServiceInput::new(io)),
+                })
+            }
+        }
+    });
+    let connector = HttpConnectorLayer::<Body>::default().into_layer(transport);
+    let input = ConnectRequest::new(HostWithPort::example_domain_https());
+    input.extensions.insert(TargetHttpVersion(Version::HTTP_3));
+
+    let error = connector
+        .serve(input)
+        .await
+        .err()
+        .expect("a byte stream cannot carry HTTP/3");
+    assert_eq!(dials.load(Ordering::SeqCst), 1);
     assert_eq!(error.domain(), ConnectionErrorDomain::Application);
     assert_eq!(error.kind(), ConnectionErrorKind::Protocol);
+}
+
+#[tokio::test]
+async fn negotiated_stream_version_must_match_the_required_version() {
+    for (negotiated, required) in [
+        (Version::HTTP_11, Version::HTTP_2),
+        (Version::HTTP_2, Version::HTTP_11),
+    ] {
+        let (io, _peer) = tokio::io::duplex(kib(4));
+        let io = ServiceInput::new(io);
+        io.extensions().insert(TargetHttpVersion(negotiated));
+        let input = ConnectRequest::new(HostWithPort::example_domain_https());
+        input.extensions.insert(TargetHttpVersion(required));
+
+        let error = http_connect::<_, _, Body>(io, input, Executor::default())
+            .await
+            .err()
+            .expect("negotiated protocol must satisfy the required version");
+        assert!(error.to_string().contains("conflicts"), "{error}");
+    }
 }
 
 #[tokio::test]

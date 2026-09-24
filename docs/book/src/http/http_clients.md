@@ -32,6 +32,13 @@ More client examples:
 
 ## Alternative services and custom connectors
 
+The easy client enables Alt-Svc discovery by default. With a QUIC TLS provider,
+this can open UDP connections for HTTP/3. Use `without_alt_svc()` to disable
+advertised-endpoint selection; explicit HTTP/3 requests remain supported.
+Clear shared discovery with `AltSvcCache::clear_all()`, and report network changes
+with `network_changed()`. Apply destination restrictions in your connector so
+they cover origins, advertisements and DNS results alike.
+
 Alternative services change where and how Rama connects, while preserving the
 request's origin and certificate identity. The easy client selects a service
 before choosing a proxy route and consulting the connection pool.
@@ -55,7 +62,7 @@ Custom connectors use these contracts:
 
 | Type | Responsibility |
 | --- | --- |
-| `HttpServiceSelection` | Request-local advertisement snapshot/index; never store it on a pooled connection. |
+| `HttpServiceSelection` | Request-local advertisement snapshot, index and lookup route plan; never store it on a pooled connection. |
 | `EstablishedHttpService` | Verified connection endpoint and logical origin; selection alone proves neither. |
 | `TlsTunnel::from_extensions` | Resolve routing-supplied tunnel settings before caller settings; preserve their distinct reuse scopes. |
 | `TargetHttpVersion` | Honor the requested version; report the established version. |
@@ -63,7 +70,7 @@ Custom connectors use these contracts:
 | `TlsServerAuthentication` / `NegotiatedTlsParameters` | Report verified origin identity and actual ALPN; missing proof prevents alternative use. |
 | `ConnectionReuse` | Publish endpoint reuse rules after connecting; pools check them against each request. |
 | `AltSvcObserverExtension` | Install before H2 handshake; authorize origins and process frames promptly. |
-| `ConnectionAttempt` / `ConnectionPolicyScope` | Check peer requirements using actual connector policy; preserve failure scope across timeouts and pool hits. |
+| `ConnectionAttempt` / `ConnectionPolicyScope` | Check peer requirements and restrict request-specific DNS/TLS policy; preserve failure scope across timeouts and pool hits. |
 
 TLS configuration stays in its connector. Built-in connectors publish reuse rules
 automatically. Custom components publish owned `TlsPoolComponent::Identity`

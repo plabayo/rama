@@ -232,7 +232,7 @@ pub(crate) fn is_websocket_protocol(protocol: &Protocol) -> bool {
 /// extension on a `CONNECT`). HTTP/1 carries it in the `Upgrade` header, but only
 /// counts as a genuine switch when accompanied by `Connection: Upgrade` — otherwise
 /// it is a mere protocol advertisement, which is ignored (not an error).
-pub(crate) fn request_connect_protocol<Body>(request: &Request<Body>) -> Option<Protocol> {
+pub fn request_connect_protocol<Body>(request: &Request<Body>) -> Option<Protocol> {
     if request.method() == Method::CONNECT
         && let Some(protocol) = request.extensions().get_ref::<Protocol>()
     {

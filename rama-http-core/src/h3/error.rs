@@ -2,6 +2,7 @@
 
 use rama_http_types::proto::h3::Code;
 use rama_quic::ConnectionError as QuicConnectionError;
+use rama_quic_proto::TransportErrorCode;
 
 use super::frame::FrameError;
 use super::qpack::{ErrorScope, QpackError};
@@ -68,6 +69,13 @@ impl Error {
                 Code::new(close.error_code.into_inner()),
                 "peer closed HTTP/3 connection",
             ),
+            // RFC 9000 section 20.1: transport NO_ERROR is a graceful close,
+            // just like HTTP/3's application-level H3_NO_ERROR.
+            QuicConnectionError::ConnectionClosed(close)
+                if close.error_code == TransportErrorCode::NO_ERROR =>
+            {
+                Self::connection(Code::H3_NO_ERROR, "peer closed QUIC connection")
+            }
             QuicConnectionError::LocallyClosed => {
                 Self::connection(Code::H3_NO_ERROR, "local connection closed")
             }
@@ -112,7 +120,10 @@ impl Error {
     /// This classification does not grant permission to retry a request.
     #[must_use]
     pub fn is_remote_failure(self) -> bool {
-        !matches!(self.source, Source::Local) && !self.is_clean_close()
+        !matches!(self.source, Source::Local)
+            && !self.is_clean_close()
+            && !(self.scope == ErrorScope::Stream
+                && matches!(self.code(), Code::H3_REQUEST_REJECTED | Code::H3_NO_ERROR))
     }
 
     /// The effective HTTP/3 application error code.
@@ -189,7 +200,10 @@ impl std::error::Error for Error {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rama_quic_proto::{VarInt, frame::ApplicationClose};
+    use rama_quic_proto::{
+        VarInt,
+        frame::{ApplicationClose, ConnectionClose},
+    };
 
     #[test]
     fn incomplete_messages_preserve_peer_or_local_close_provenance() {
@@ -245,6 +259,41 @@ mod tests {
                 .remote()
                 .is_remote_failure()
         );
+    }
+
+    #[test]
+    fn peer_rejection_is_not_an_endpoint_failure() {
+        for code in [Code::H3_REQUEST_REJECTED, Code::H3_NO_ERROR] {
+            assert!(
+                !Error::stream(code, "peer reset")
+                    .remote()
+                    .is_remote_failure()
+            );
+            assert!(!Error::peer_stopped(code).is_remote_failure());
+        }
+        assert!(
+            Error::connection(Code::H3_REQUEST_REJECTED, "peer close")
+                .remote()
+                .is_remote_failure()
+        );
+    }
+
+    #[test]
+    fn transport_close_distinguishes_success_from_transport_failure() {
+        for (code, clean) in [
+            (TransportErrorCode::NO_ERROR, true),
+            (TransportErrorCode::INTERNAL_ERROR, false),
+        ] {
+            let error =
+                Error::from_transport(&QuicConnectionError::ConnectionClosed(ConnectionClose {
+                    error_code: code,
+                    frame_type: None,
+                    reason: Default::default(),
+                }));
+            assert_eq!(error.is_clean_close(), clean);
+            assert_eq!(error.is_remote_failure(), !clean);
+            assert!(error.incomplete("missing FIN").is_remote_failure());
+        }
     }
 
     #[test]

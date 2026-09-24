@@ -152,6 +152,11 @@ impl Extensions {
         self.extensions[idx].cloned_downcast::<T>().unwrap()
     }
 
+    /// Insert an already erased extension, retaining its original type identity.
+    pub fn insert_erased(&self, extension: TypeErasedExtension) {
+        self.extensions.push(extension);
+    }
+
     /// Extend this [`Extensions`] store with the other [`Extensions`].
     ///
     /// The other [`Extensions`]s will be appended behind the current ones
@@ -921,6 +926,39 @@ pub trait ExtensionsRef {
     fn extensions(&self) -> &Extensions;
 }
 
+/// Exclusive access to an owned input's extension store.
+///
+/// Replacing the store permits request-local overlays without mutating stores
+/// shared by cloned inputs. Individual extension values remain shared.
+pub trait ExtensionsMut: ExtensionsRef {
+    /// Get the replaceable extension store owned by this input.
+    fn extensions_mut(&mut self) -> &mut Extensions;
+}
+
+impl ExtensionsMut for Extensions {
+    fn extensions_mut(&mut self) -> &mut Extensions {
+        self
+    }
+}
+
+impl<T: ExtensionsMut> ExtensionsMut for &mut T {
+    fn extensions_mut(&mut self) -> &mut Extensions {
+        (**self).extensions_mut()
+    }
+}
+
+impl<T: ExtensionsMut> ExtensionsMut for Box<T> {
+    fn extensions_mut(&mut self) -> &mut Extensions {
+        (**self).extensions_mut()
+    }
+}
+
+impl<T: ExtensionsMut + Unpin> ExtensionsMut for Pin<Box<T>> {
+    fn extensions_mut(&mut self) -> &mut Extensions {
+        self.as_mut().get_mut().extensions_mut()
+    }
+}
+
 impl ExtensionsRef for Extensions {
     fn extensions(&self) -> &Extensions {
         self
@@ -983,6 +1021,17 @@ macro_rules! impl_extensions_either {
             fn extensions(&self) -> &Extensions {
                 match self {
                     $(crate::combinators::$id::$param(s) => s.extensions(),)+
+                }
+            }
+        }
+
+        impl<$($param),+,> ExtensionsMut for crate::combinators::$id<$($param),+>
+        where
+            $($param: ExtensionsMut,)+
+        {
+            fn extensions_mut(&mut self) -> &mut Extensions {
+                match self {
+                    $(crate::combinators::$id::$param(s) => s.extensions_mut(),)+
                 }
             }
         }

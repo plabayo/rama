@@ -10,15 +10,19 @@ use rama_net::{
     ConnectorTargetInputExt,
     address::{Domain, Host, HostWithPort},
     client::{
-        AddressCandidates, ConnectionError, ConnectionErrorKind, ConnectorService,
-        ConnectorTargetStream, EstablishedClientConnection,
+        AddressCandidates, ConnectionAttempt, ConnectionError, ConnectionErrorKind,
+        ConnectorService, ConnectorTargetStream, EstablishedClientConnection,
     },
+    mode::{ConnectIpMode, DnsResolveIpMode},
 };
 use rama_utils::macros::define_inner_service_accessors;
 
 use crate::client::resolver::HappyEyeballAddressResolverExt;
 
-use super::{GlobalDnsResolver, resolver::DnsAddressResolver};
+use super::{
+    GlobalDnsResolver,
+    resolver::{DnsAddressResolver, DnsAddresssResolverOverwrite},
+};
 
 #[derive(Debug, Clone)]
 /// A [`Layer`] which wraps a transport connector with DNS resolution.
@@ -110,6 +114,19 @@ where
     type Error = ConnectionError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
+        let extensions = input.extensions();
+        if extensions.contains::<DnsAddresssResolverOverwrite>()
+            || extensions.contains::<ConnectIpMode>()
+            || extensions.contains::<DnsResolveIpMode>()
+        {
+            if let Some(attempt) = extensions.get_ref::<ConnectionAttempt>() {
+                attempt.restrict_to_request_policy();
+            } else {
+                let attempt = ConnectionAttempt::new();
+                attempt.restrict_to_request_policy();
+                extensions.insert(attempt);
+            }
+        }
         let HostWithPort { host, .. } = input.connector_target().ok_or_else(|| {
             ConnectionError::local(
                 BoxError::from_static_str("dns connector: connector target missing from input"),

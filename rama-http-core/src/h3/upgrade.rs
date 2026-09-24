@@ -18,15 +18,12 @@ use std::{
     sync::Arc,
     task::{Context, Poll, ready},
 };
-use tokio::{
-    io::{AsyncRead, AsyncWrite, ReadBuf},
-    sync::OwnedSemaphorePermit,
-};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 pub(crate) fn new(
     mut reader: Reader<rama_quic::RecvStream>,
     writer: Writer<rama_quic::SendStream>,
-    permit: Arc<OwnedSemaphorePermit>,
+    permit: Arc<dyn Send + Sync>,
     priority: Option<super::priority::Lease>,
 ) -> Upgraded {
     reader.phase = Phase::Tunnel;
@@ -59,7 +56,7 @@ struct Tunnel<R: RecvStream, S: SendStream> {
     writer: Writer<S>,
     buffer: Bytes,
     extensions: Extensions,
-    permit: Option<Arc<OwnedSemaphorePermit>>,
+    permit: Option<Arc<dyn Send + Sync>>,
     shutdown: Option<Result<(), Error>>,
     acknowledged: Option<Acknowledged>,
     priority_lease: Option<super::priority::Lease>,

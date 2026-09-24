@@ -34,6 +34,11 @@ impl Connection {
         )
     }
 
+    #[cfg(feature = "test-utils")]
+    pub(crate) fn close_transport(&mut self, now: Instant, error: rama_quic_proto::TransportError) {
+        self.close_inner(now, error.into());
+    }
+
     pub(super) fn close_inner(&mut self, now: Instant, reason: Close) {
         let was_closed = self.state.is_closed();
         if !was_closed {

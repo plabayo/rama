@@ -11,7 +11,7 @@ use rama_http::{
 use rama_http_core::{
     Error as HttpError,
     client::conn::{http1, http2},
-    h2::Error as Http2Error,
+    h2::{Error as Http2Error, Reason as Http2Reason},
     h3::{Error as Http3Error, client as http3, connection::Config as Http3Config},
 };
 use rama_http_types::{
@@ -96,7 +96,7 @@ where
         let resp = match &self.sender {
             SendRequest::Http3(sender) => {
                 let mut sender = sender.clone();
-                match sender.send_request(req).await {
+                match Box::pin(sender.send_request(req)).await {
                     Ok(response) => response,
                     Err(error) => {
                         mark_broken_if_closed(
@@ -204,6 +204,15 @@ fn classify_http_error(error: HttpError) -> BoxError {
     }) {
         return ConnectionError::local(error, ConnectionErrorKind::Other).into_box_error();
     }
+    // REFUSED_STREAM explicitly says this request was not processed. It does
+    // not establish an unhealthy alternative, unlike a reset mid-response.
+    if error_chain(&error).any(|cause| {
+        cause.downcast_ref::<Http2Error>().is_some_and(|error| {
+            error.is_reset() && error.reason() == Some(Http2Reason::REFUSED_STREAM)
+        })
+    }) {
+        return ConnectionError::unknown(error).into_box_error();
+    }
     let kind = if error.is_timeout() {
         Some(ConnectionErrorKind::Timeout)
     } else if error.is_parse() {
@@ -283,6 +292,7 @@ impl<Body> HttpClientService<Body> {
         let extensions = input.extensions().clone();
         extensions.insert(MaxConcurrency::new(config.max_requests));
         let (sender, driver) = http3::handshake(input, config, executor.clone())?;
+        extensions.insert(sender.connection_admission());
         let driver_extensions = extensions.clone();
         let draining = sender.closed_or_draining();
         executor.into_spawn_task(async move {
@@ -307,7 +317,7 @@ impl<Body> HttpClientService<Body> {
 mod tests {
     use super::*;
     use rama_core::{ServiceInput, bytes::Bytes, futures::stream};
-    use rama_http_core::h2::{Reason as Http2Reason, server as http2_server};
+    use rama_http_core::h2::server as http2_server;
     use rama_http_types::{
         Body,
         body::{Frame, util::StreamBody},
@@ -317,6 +327,7 @@ mod tests {
         client::{ConnectionErrorDomain, EstablishedProxyRoute, ProxyRoute},
         conn::ConnectionHealth,
     };
+    use rama_utils::octets::kib;
     use std::time::Duration;
     use tokio::{
         io::{AsyncReadExt as _, AsyncWriteExt as _, DuplexStream, copy, duplex, sink},
@@ -432,6 +443,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn request_future_keeps_cold_http3_state_out_of_stream_requests() {
+        let (service, _peer) = http1_test_service().await;
+        let request = Request::builder()
+            .uri("http://origin.example/")
+            .body(Body::empty())
+            .unwrap();
+        let future = service.serve(request);
+        // H3's larger handshake/request state is allocated only on the H3 path.
+        // Keep a structural budget rather than platform-sensitive timing assertions.
+        assert!(
+            std::mem::size_of_val(&future) <= kib(1),
+            "request future is {} bytes",
+            std::mem::size_of_val(&future)
+        );
+    }
+
+    #[tokio::test]
     async fn http1_remote_response_failures_retain_connection_classification() {
         for malformed in [false, true] {
             let (service, mut peer) = http1_test_service().await;
@@ -496,7 +524,12 @@ mod tests {
 
     #[tokio::test]
     async fn http2_peer_reset_is_classified_but_caller_body_failure_is_not() {
-        for remote_reset in [true, false] {
+        for reset in [
+            Some(Http2Reason::CANCEL),
+            Some(Http2Reason::REFUSED_STREAM),
+            None,
+        ] {
+            let remote_reset = reset.is_some();
             let (io, peer) = duplex(4096);
             let peer = tokio::spawn(async move {
                 let mut connection = http2_server::handshake(ServiceInput::new(peer))
@@ -506,7 +539,7 @@ mod tests {
                     if let Ok((_request, mut response)) = request
                         && remote_reset
                     {
-                        response.send_reset(Http2Reason::REFUSED_STREAM);
+                        response.send_reset(reset.unwrap());
                     }
                 }
             });
@@ -536,7 +569,9 @@ mod tests {
                 .expect("HTTP/2 failure did not complete")
                 .unwrap_err();
             let classified = error.downcast_ref::<ConnectionError>().unwrap();
-            if remote_reset {
+            if reset == Some(Http2Reason::REFUSED_STREAM) {
+                assert_eq!(classified.domain(), ConnectionErrorDomain::Unknown);
+            } else if remote_reset {
                 assert_eq!(classified.domain(), ConnectionErrorDomain::Application);
                 assert_eq!(classified.kind(), ConnectionErrorKind::Unavailable);
             } else {

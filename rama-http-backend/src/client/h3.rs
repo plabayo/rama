@@ -46,6 +46,10 @@ use std::{
 };
 use tokio::sync::Mutex as AsyncMutex;
 
+// Allow the alternate address family to progress while one QUIC handshake is waiting,
+// without starting a handshake (and its retransmission state) for every DNS result.
+const MAX_IN_FLIGHT_CONNECT_ATTEMPTS: usize = 2;
+
 /// Establish authenticated QUIC transports for the common HTTP handshake.
 ///
 /// Wrap this connector with Rama's DNS connector and HTTP connection pool,
@@ -285,14 +289,18 @@ impl Http3Connector {
         } else {
             ConnectionPolicyScope::Connector
         };
-        if let Some(attempt) = input.extensions().get_ref::<ConnectionAttempt>() {
+        let policy_scope = if let Some(attempt) = input.extensions().get_ref::<ConnectionAttempt>()
+        {
             let identity = self
                 .tls_provider()
                 .authenticates_origin(tls.as_extensions(), &input.authority.host)
                 .then_some(authenticated_identity.as_ref())
                 .flatten();
             attempt.check_policy(policy_scope, identity)?;
-        }
+            attempt.policy_scope()
+        } else {
+            policy_scope
+        };
         let capture_chain = tls
             .as_extensions()
             .get_ref::<TlsStoreServerCertChain>()
@@ -388,10 +396,22 @@ impl Http3Connector {
                 .get_ref::<ConnectorTargetStream>()
                 .filter(|c| c.domain() == domain.as_ref())
                 .ok_or_else(|| invalid("HTTP/3 domain targets require an outer DNS connector"))?;
-            let addresses = candidates
-                .stream(input.extensions())
-                .map(|result| result.map(|ip| SocketAddr::new(ip, target.port)));
-            race_connect(addresses, 2, dial).await
+            // Resolution policy chooses which records to query; connection
+            // policy independently constrains every result, including custom
+            // candidate sources and IPv4-mapped IPv6 answers.
+            let mode = input
+                .extensions()
+                .get_ref::<ConnectIpMode>()
+                .copied()
+                .unwrap_or_default();
+            let addresses = candidates.stream(input.extensions()).map(|result| {
+                result.and_then(|ip| {
+                    mode.validate_ip(ip)
+                        .map(|ip| SocketAddr::new(ip, target.port))
+                        .map_err(|error| ConnectionError::local(error, InvalidInput).into())
+                })
+            });
+            race_connect(addresses, MAX_IN_FLIGHT_CONNECT_ATTEMPTS, dial).await
         }
         .map(|(_, connection)| (endpoint, connection))
         .map_err(|error| {

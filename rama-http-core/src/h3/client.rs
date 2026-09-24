@@ -8,7 +8,12 @@ use super::{
     quic::Writer,
     stream::{Phase, Reader},
 };
-use rama_core::{error::BoxError, extensions::ExtensionsRef, rt::Executor};
+use parking_lot::Mutex;
+use rama_core::{
+    error::BoxError,
+    extensions::{Extension, Extensions, ExtensionsRef},
+    rt::Executor,
+};
 use rama_http::io::upgrade as http_upgrade;
 use rama_http_types::{
     Method, Request, Response, StatusCode,
@@ -19,17 +24,29 @@ use rama_http_types::{
         h3::{Code, FrameType},
     },
 };
-use rama_net::tls::ApplicationProtocol;
-use rama_quic::Connection as QuicConnection;
-use rama_quic_proto::Side;
-use std::{marker::PhantomData, pin::pin, sync::Arc};
-use tokio::sync::Semaphore;
+use rama_net::{
+    client::{
+        ConnectionError, ConnectionErrorKind,
+        pool::{ConnectionAdmission, ConnectionAdmissionLease, ConnectionAdmissionPolicy},
+    },
+    tls::ApplicationProtocol,
+};
+use rama_quic::{
+    BiStreamReservation, Connection as QuicConnection, ConnectionError as QuicConnectionError,
+};
+use rama_quic_proto::{Dir, Side};
+use rama_utils::reactive::Reactive;
+use std::{
+    marker::PhantomData,
+    pin::{Pin, pin},
+    sync::{Arc, Weak},
+};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 /// Cloneable sender for a multiplexed HTTP/3 connection.
 pub struct SendRequest<B> {
     connection: QuicConnection,
     shared: Arc<Shared>,
-    admission: Arc<Semaphore>,
     lifetime: Arc<ConnectionLifetime>,
     executor: Executor,
     _body: PhantomData<fn(B)>,
@@ -40,6 +57,8 @@ pub struct SendRequest<B> {
 pub(crate) struct ConnectionLifetime {
     connection: QuicConnection,
     shared: Arc<Shared>,
+    admission: Arc<Semaphore>,
+    admission_changed: Reactive<usize>,
 }
 
 impl Drop for ConnectionLifetime {
@@ -54,7 +73,6 @@ impl<B> Clone for SendRequest<B> {
         Self {
             connection: self.connection.clone(),
             shared: self.shared.clone(),
-            admission: self.admission.clone(),
             lifetime: self.lifetime.clone(),
             executor: self.executor.clone(),
             _body: PhantomData,
@@ -94,10 +112,11 @@ pub fn handshake<B>(
             lifetime: Arc::new(ConnectionLifetime {
                 connection: connection.clone(),
                 shared: shared.clone(),
+                admission,
+                admission_changed: Reactive::new(0),
             }),
             connection,
             shared,
-            admission,
             executor,
             _body: PhantomData,
         },
@@ -106,6 +125,17 @@ pub fn handshake<B>(
 }
 
 impl<B> SendRequest<B> {
+    /// Publish exact request admission for a multiplexing connection pool.
+    ///
+    /// A checkout reserves local request capacity and peer QUIC stream credit.
+    /// The request consumes its own ticket; abandoned checkouts return both.
+    /// The policy holds a weak connection reference, avoiding an extension cycle.
+    pub fn connection_admission(&self) -> ConnectionAdmission {
+        ConnectionAdmission::new(RequestAdmission {
+            lifetime: Arc::downgrade(&self.lifetime),
+        })
+    }
+
     #[cfg(test)]
     pub(crate) fn dynamic_insert_count(&self) -> u64 {
         self.shared.dynamic_insert_count()
@@ -183,6 +213,121 @@ impl<B> SendRequest<B> {
     }
 }
 
+struct RequestPermit {
+    permit: Option<OwnedSemaphorePermit>,
+    lifetime: Weak<ConnectionLifetime>,
+}
+
+impl RequestPermit {
+    fn new(permit: OwnedSemaphorePermit, lifetime: &Arc<ConnectionLifetime>) -> Self {
+        Self {
+            permit: Some(permit),
+            lifetime: Arc::downgrade(lifetime),
+        }
+    }
+}
+
+impl Drop for RequestPermit {
+    fn drop(&mut self) {
+        // Release first, then wake subscribers: acquiring after a wake must see
+        // the returned local admission permit.
+        self.permit.take();
+        if let Some(lifetime) = self.lifetime.upgrade() {
+            let changed = &lifetime.admission_changed;
+            changed.set(changed.get().wrapping_add(1));
+        }
+    }
+}
+
+struct ReservedRequest {
+    connection_id: usize,
+    stream: Mutex<Option<BiStreamReservation>>,
+    _permit: RequestPermit,
+}
+
+/// A checkout publishes only a weak ticket: dropping its owning pool handout
+/// immediately releases unused resources, even if request extensions survive.
+#[derive(Clone, Debug, Extension)]
+struct RequestReservation(Weak<ReservedRequest>);
+
+#[derive(Debug)]
+struct RequestAdmission {
+    lifetime: Weak<ConnectionLifetime>,
+}
+
+/// No request was dispatched. Graceful drain means another connection can serve
+/// it; an actual HTTP/3 protocol error still identifies a failing endpoint.
+fn admission_error(error: Error) -> BoxError {
+    let kind = if error.is_clean_close() || error.is_rejected() {
+        ConnectionErrorKind::Unavailable
+    } else {
+        ConnectionErrorKind::Protocol
+    };
+    ConnectionError::application(error, kind).into()
+}
+
+impl ConnectionAdmissionPolicy for RequestAdmission {
+    fn try_acquire(
+        &self,
+        _input: &Extensions,
+    ) -> Result<Option<ConnectionAdmissionLease>, BoxError> {
+        let lifetime = self.lifetime.upgrade().ok_or_else(|| {
+            admission_error(Error::stream(
+                Code::H3_REQUEST_REJECTED,
+                "HTTP/3 client released",
+            ))
+        })?;
+        if let Some(error) = lifetime
+            .shared
+            .rejection(None)
+            .or_else(|| lifetime.shared.error())
+        {
+            return Err(admission_error(error));
+        }
+        let Ok(permit) = lifetime.admission.clone().try_acquire_owned() else {
+            return Ok(None);
+        };
+        let Some(stream) = lifetime.connection.try_reserve_bi().map_err(|error| {
+            let kind = if matches!(error, QuicConnectionError::TimedOut) {
+                ConnectionErrorKind::Timeout
+            } else {
+                ConnectionErrorKind::Unavailable
+            };
+            ConnectionError::transport(error, kind)
+        })?
+        else {
+            // This tentative semaphore acquisition never became a ticket;
+            // returning it must not wake our own failed acquisition loop.
+            return Ok(None);
+        };
+        let ticket = Arc::new(ReservedRequest {
+            connection_id: lifetime.connection.stable_id(),
+            stream: Mutex::new(Some(stream)),
+            _permit: RequestPermit::new(permit, &lifetime),
+        });
+        let binding = RequestReservation(Arc::downgrade(&ticket));
+        Ok(Some(ConnectionAdmissionLease::new(ticket, binding)))
+    }
+
+    fn watch(&self) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+        let Some(lifetime) = self.lifetime.upgrade() else {
+            return Box::pin(async {});
+        };
+        // Capture subscriptions before the pool tries to acquire, including
+        // local-permit releases that do not alter the transport's stream limit.
+        let mut local = lifetime.admission_changed.watch();
+        let mut transport = lifetime.connection.stream_budget_watch(Dir::Bi);
+        Box::pin(async move {
+            tokio::select! {
+                _ = local.changed() => (),
+                _ = transport.changed() => (),
+                _ = lifetime.connection.closed() => (),
+                _ = lifetime.shared.rejected(None) => (),
+            }
+        })
+    }
+}
+
 impl<B> SendRequest<B>
 where
     B: StreamingBody + Unpin + Send + 'static,
@@ -205,15 +350,34 @@ where
             ));
         }
         self.ready().await?;
-        let permit = tokio::select! {
-            biased;
-            error = self.shared.rejected(None) => return Err(error),
-            permit = self.admission.clone().acquire_owned() => Arc::new(permit.map_err(|_error| Error::stream(Code::H3_REQUEST_REJECTED, "connection draining"))?),
-        };
-        let (send, recv) = tokio::select! {
-            biased;
-            error = self.shared.rejected(None) => return Err(error),
-            streams = self.connection.open_bi() => streams.map_err(|_error| Error::connection(Code::H3_GENERAL_PROTOCOL_ERROR, "cannot open request stream"))?,
+        let reserved = request
+            .extensions()
+            .get_ref::<RequestReservation>()
+            .and_then(|reservation| reservation.0.upgrade())
+            .filter(|ticket| ticket.connection_id == self.connection.stable_id())
+            .and_then(|ticket| {
+                let stream = ticket.stream.lock().take()?;
+                Some((stream, ticket))
+            });
+        let (send, recv, permit): (_, _, Arc<dyn Send + Sync>) = if let Some((stream, ticket)) =
+            reserved
+        {
+            let (send, recv) = stream
+                .open()
+                .map_err(|error| Error::from_transport(&error))?;
+            (send, recv, ticket)
+        } else {
+            let permit = tokio::select! {
+                biased;
+                error = self.shared.rejected(None) => return Err(error),
+                permit = self.lifetime.admission.clone().acquire_owned() => Arc::new(RequestPermit::new(permit.map_err(|_error| Error::stream(Code::H3_REQUEST_REJECTED, "connection draining"))?, &self.lifetime)),
+            };
+            let (send, recv) = tokio::select! {
+                biased;
+                error = self.shared.rejected(None) => return Err(error),
+                streams = self.connection.open_bi() => streams.map_err(|error| Error::from_transport(&error))?,
+            };
+            (send, recv, permit)
         };
         let id = u64::from(send.id());
         let mut reader = Reader::new(recv, self.shared.clone(), id);

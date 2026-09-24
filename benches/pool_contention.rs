@@ -61,7 +61,11 @@ async fn pool_with_resident_ids(resident: usize) -> Arc<MultiplexPool<ServiceInp
             ConnectionResult::CreatePermit(permit) => permit,
             ConnectionResult::Connection(_) => unreachable!("this id has no connection yet"),
         };
-        drop(pool.create(id, ServiceInput::new(()), permit).await);
+        drop(
+            pool.create(id, ServiceInput::new(()), permit, &Extensions::new())
+                .await
+                .unwrap(),
+        );
     }
     pool
 }
@@ -79,7 +83,11 @@ async fn miss_evicts_lru(pool: &MultiplexPool<ServiceInput<()>, HostId>, id: Hos
         ConnectionResult::CreatePermit(permit) => permit,
         ConnectionResult::Connection(_) => unreachable!("a fresh id has no connection"),
     };
-    drop(pool.create(id, ServiceInput::new(()), permit).await);
+    drop(
+        pool.create(id, ServiceInput::new(()), permit, &Extensions::new())
+            .await
+            .unwrap(),
+    );
 }
 
 /// Pool hit on one id while many other ids are resident: must not scale with
@@ -120,7 +128,10 @@ async fn hand_off_one_stream_at_a_time(waiters: usize) {
     };
     let connection = ServiceInput::new(());
     connection.extensions().insert(MaxConcurrency::new(1));
-    let held = pool.create(BenchId(0), connection, permit).await;
+    let held = pool
+        .create(BenchId(0), connection, permit, &Extensions::new())
+        .await
+        .unwrap();
 
     let mut tasks = Vec::with_capacity(waiters);
     for _ in 0..waiters {
@@ -158,7 +169,11 @@ async fn hand_off_streams_for_two_ids(waiters_per_id: usize) {
         };
         let connection = ServiceInput::new(());
         connection.extensions().insert(MaxConcurrency::new(2));
-        anchors.push(pool.create(id.clone(), connection, permit).await);
+        anchors.push(
+            pool.create(id.clone(), connection, permit, &Extensions::new())
+                .await
+                .unwrap(),
+        );
         releases.push(match pool.get_conn(&id, &EMPTY_INPUT).await.unwrap() {
             ConnectionResult::Connection(handout) => handout,
             ConnectionResult::CreatePermit(_) => {
@@ -249,7 +264,11 @@ fn exclusive_policy_hit(bencher: divan::Bencher, resident: usize) {
             let conn = ServiceInput::new(());
             conn.extensions()
                 .insert(ConnectionReuse::new(EstablishedPolicy));
-            held.push(pool.create(BenchId(0), conn, permit).await);
+            held.push(
+                pool.create(BenchId(0), conn, permit, &Extensions::new())
+                    .await
+                    .unwrap(),
+            );
         }
         drop(held);
     });
@@ -285,7 +304,11 @@ fn bench_multiplex_same_id(bencher: divan::Bencher, resident: usize, with_policy
                 conn.extensions()
                     .insert(ConnectionReuse::new(EstablishedPolicy));
             }
-            held.push(pool.create(BenchId(0), conn, permit).await);
+            held.push(
+                pool.create(BenchId(0), conn, permit, &Extensions::new())
+                    .await
+                    .unwrap(),
+            );
         }
         drop(held);
     });

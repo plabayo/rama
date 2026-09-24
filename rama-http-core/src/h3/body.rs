@@ -18,7 +18,7 @@ use rama_http_types::{
 use std::{
     pin::{Pin, pin},
     sync::Arc,
-    task::{Context, Poll, ready},
+    task::{Context, Poll, Waker, ready},
 };
 
 type Trailers = Pin<Box<dyn Future<Output = Result<HeaderMap, Error>> + Send + Sync>>;
@@ -32,14 +32,14 @@ pub(crate) struct Body {
     push: Option<super::push::Lease>,
     upload: Option<tokio::task::JoinHandle<Result<(), Error>>>,
     // Holds the request's admission permit until both body directions finish.
-    _permit: Option<Arc<tokio::sync::OwnedSemaphorePermit>>,
+    _permit: Option<Arc<dyn Send + Sync>>,
 }
 
 impl Body {
     pub(crate) fn new(
         reader: Reader<rama_quic::RecvStream>,
         remaining: Option<u64>,
-        permit: Arc<tokio::sync::OwnedSemaphorePermit>,
+        permit: Arc<dyn Send + Sync>,
     ) -> Self {
         Self {
             reader,
@@ -290,6 +290,15 @@ where
 
 impl Drop for Body {
     fn drop(&mut self) {
+        // Bodyless responses (and the last consumed DATA frame) need no extra
+        // application poll to preserve an upload. Observe an already buffered
+        // FIN without waiting or draining an abandoned response body.
+        if !self.failed && self.payload_remaining == Some(0) && self.reader.phase == Phase::Body {
+            let mut cx = Context::from_waker(Waker::noop());
+            if let Poll::Ready(Err(_)) = self.reader.poll_event(&mut cx) {
+                self.failed = true;
+            }
+        }
         // The response and request body are independent stream directions.
         // A fully consumed response must not cancel a still-running upload.
         if (self.failed || self.reader.phase != Phase::Finished)

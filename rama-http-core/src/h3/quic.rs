@@ -40,6 +40,10 @@ impl SendStream for QuicSendStream {
                 Ok(Some(code)) => Err(Error::peer_stopped(Code::new(code.into_inner()))),
                 Err(StoppedError::ConnectionLost(error)) => Err(Error::from_transport(&error)),
                 Ok(None) => Ok(()),
+                Err(StoppedError::LocallyReset(code)) => Err(Error::stream(
+                    Code::new(code.into_inner()),
+                    "send stream locally reset",
+                )),
                 Err(StoppedError::ZeroRttRejected) => Err(Error::stream(
                     Code::H3_REQUEST_CANCELLED,
                     "send stream closed",

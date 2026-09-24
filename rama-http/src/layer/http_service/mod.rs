@@ -617,7 +617,6 @@ where
                 );
                 let attempt = input.fork();
                 attempt.extensions().insert_arc(state.clone());
-                attempt.extensions().insert_arc(snapshot.clone());
                 attempt
                     .extensions()
                     .insert(ConnectorTarget(candidate.target.clone()));
@@ -637,13 +636,14 @@ where
                     Ok(established) => {
                         // Pool hits carry the original connector's policy scope.
                         // Unknown custom policies never change shared backoff.
-                        let shared_policy = established
-                            .conn
-                            .extensions()
-                            .get_ref::<ConnectionPolicyScope>()
-                            .copied()
-                            .unwrap_or_else(|| state.policy_scope())
-                            == ConnectionPolicyScope::Connector;
+                        let shared_policy = state.policy_scope() != ConnectionPolicyScope::Request
+                            && established
+                                .conn
+                                .extensions()
+                                .get_ref::<ConnectionPolicyScope>()
+                                .copied()
+                                .unwrap_or_else(|| state.policy_scope())
+                                == ConnectionPolicyScope::Connector;
                         if let Err(error) = verify_alternative(&established.conn, origin, candidate)
                         {
                             if error.domain() == ConnectionErrorDomain::Local
@@ -699,6 +699,7 @@ where
                         established.input.extensions().insert(HttpServiceSelection {
                             candidates: snapshot.clone(),
                             index,
+                            route: route.clone(),
                         });
                         return Ok(established);
                     }
@@ -723,6 +724,7 @@ where
                             return Err(error);
                         }
                         if error.domain() != ConnectionErrorDomain::Local
+                            && state.policy_scope() != ConnectionPolicyScope::Request
                             && (state.policy_scope() == ConnectionPolicyScope::Connector
                                 || availability(&error))
                             && candidate.source == HttpServiceSource::AltSvc
@@ -753,9 +755,6 @@ where
         // Alternatives were absent, filtered out, or failed. Try the original
         // endpoint with the original policy, preserving any explicit version.
         let attempt = input;
-        if let Some(snapshot) = &snapshot {
-            attempt.extensions().insert_arc(snapshot.clone());
-        }
         if let Some(version) = required {
             attempt.extensions().insert(TargetHttpVersion(version));
         }

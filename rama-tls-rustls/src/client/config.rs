@@ -62,6 +62,29 @@ impl RustlsTlsConnectorConfig<'_> {
             || modify.is_some()
     }
 
+    /// Whether provider-specific settings are present.
+    ///
+    /// A different TLS implementation cannot silently ignore these settings when
+    /// selecting another transport. Common Rama TLS settings remain portable.
+    pub fn has_native_overrides(&self) -> bool {
+        // Exhaustive matching makes each new field an explicit policy decision.
+        let Self {
+            alpn: _,
+            versions: _,
+            verify: _,
+            keylog: _,
+            server_name: _,
+            store_chain: _,
+            client_auth: _,
+            server_cert_pins: _,
+            server_trust: _,
+            verifier,
+            modify,
+        } = self;
+
+        verifier.is_some() || modify.is_some()
+    }
+
     /// Compact identity of request-level overrides, or `None` for the baseline.
     ///
     /// Explicit defaults remain distinct from absence. Equivalent settings compare
@@ -204,7 +227,9 @@ impl TlsPoolComponent for RustlsServerCertVerifier {
 /// builder for anything the common pieces can't express.
 ///
 /// For request overrides, pool reuse follows the shared extension owner. Share
-/// its `Arc` across requests to retain the same hook identity.
+/// its `Arc` across requests to retain the same hook identity. Its TLS policy
+/// must remain fixed while connections or cached configurations can be reused;
+/// replace the extension owner when captured mutable state changes that policy.
 pub struct ModifyRustlsClientConfig(pub Box<ModifyFn>);
 
 type ModifyFn = dyn Fn(ClientConfig) -> Result<ClientConfig, BoxError> + Send + Sync + 'static;

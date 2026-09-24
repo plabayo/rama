@@ -127,6 +127,13 @@ impl Schedule {
         self.access(|state| state.update(id, priority))
     }
 
+    /// Buffer permitted future requests independently of application admission.
+    pub(crate) fn update_pending_limit(&self, advertised: u64) {
+        self.access(|state| {
+            state.pending_limit = usize::try_from(advertised).unwrap_or(usize::MAX);
+        });
+    }
+
     pub(crate) fn initial_priority(&self, id: u64, priority: Priority) {
         self.access(|state| state.initial_priority(id, priority));
     }
@@ -159,6 +166,7 @@ struct State {
     // Older inactive IDs can never become future priority targets.
     accepted_until: u64,
     limit: usize,
+    pending_limit: usize,
     clock: u64,
     ready: BinaryHeap<Reverse<Ready>>,
     wake: Option<Waker>,
@@ -172,6 +180,7 @@ impl State {
             pending: BTreeMap::new(),
             accepted_until: 0,
             limit,
+            pending_limit: limit,
             clock: 0,
             ready: BinaryHeap::new(),
             wake: None,
@@ -227,7 +236,7 @@ impl State {
                 entry.peer_updated = true;
             }
         } else if id >= self.accepted_until {
-            if self.pending.len() >= self.limit && !self.pending.contains_key(&id) {
+            if self.pending.len() >= self.pending_limit && !self.pending.contains_key(&id) {
                 return Err(Error::connection(
                     Code::H3_EXCESSIVE_LOAD,
                     "pending priority budget exceeded",

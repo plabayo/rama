@@ -21,7 +21,7 @@ use rama::{
             qpack::{DecoderInstruction, EncoderInstruction},
         },
     },
-    net::address::SocketAddress,
+    net::{address::SocketAddress, tls::ApplicationProtocol},
     quic::{Endpoint, TransportConfig, tls::TlsOptions},
     rt::Executor,
     tls::{
@@ -101,10 +101,10 @@ fn round_trip(bencher: divan::Bencher, size: usize, abandon: bool, idle: usize) 
         let client_tls = TlsClientConfig::new()
             .try_with_server_trust_anchors(auth.cert_chain.clone())
             .unwrap()
-            .with_alpn([b"h3".as_slice().into()].into_iter().collect());
+            .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
         let server_tls = TlsServerConfig::new()
             .with_server_auth(auth)
-            .with_alpn([b"h3".as_slice().into()].into_iter().collect());
+            .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
         let mut transport = TransportConfig::default();
         let config = Config {
             max_requests: Config::default().max_requests.max(idle + 1),

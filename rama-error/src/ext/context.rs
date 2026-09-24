@@ -1,7 +1,9 @@
 use core::fmt::{self, Write as _};
 
 use crate::{
-    BoxError, error_chain_with_limit,
+    BoxError,
+    chain::DEFAULT_MAX_DEPTH,
+    error_chain_with_limit,
     std::{Box, String},
 };
 
@@ -247,11 +249,10 @@ impl fmt::Display for ErrorWithContext {
 
         // Cap the cause-chain walk so a malformed Error impl that returns a
         // cycle from .source() cannot produce an unbounded loop here.
-        const MAX_CAUSE_DEPTH: usize = 64;
         if let Some(source) = self.source.as_ref().source() {
             writeln!(f, "Caused by:")?;
-            for (idx, err) in error_chain_with_limit(source, MAX_CAUSE_DEPTH + 1).enumerate() {
-                if idx == MAX_CAUSE_DEPTH {
+            for (idx, err) in error_chain_with_limit(source, DEFAULT_MAX_DEPTH + 1).enumerate() {
+                if idx == DEFAULT_MAX_DEPTH {
                     writeln!(f, "  ... (truncated)")?;
                     break;
                 }

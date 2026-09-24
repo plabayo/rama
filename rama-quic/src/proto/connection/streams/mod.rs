@@ -149,6 +149,11 @@ impl<'a> Streams<'a> {
         self.state.send_streams
     }
 
+    /// Unassigned stream IDs permitted by the peer.
+    pub(crate) fn available_local_streams(&self, dir: Dir) -> u64 {
+        self.state.max[dir as usize].saturating_sub(self.state.next[dir as usize])
+    }
+
     /// Exclusive cumulative remote stream-index limit already advertised to the peer.
     pub(crate) fn remote_stream_limit(&self, dir: Dir) -> u64 {
         self.state.sent_max_remote[dir as usize]

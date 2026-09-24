@@ -17,6 +17,10 @@ use tokio::time::timeout;
 #[cfg_attr(docsrs, doc(cfg(feature = "opentelemetry")))]
 pub mod metrics;
 
+mod admission;
+#[doc(inline)]
+pub use admission::{ConnectionAdmission, ConnectionAdmissionLease, ConnectionAdmissionPolicy};
+
 mod exclusive;
 #[doc(inline)]
 pub use exclusive::{LeasedConnection, LruDropPool, ReuseStrategy};
@@ -135,7 +139,9 @@ pub trait Pool<C, ID>: Send + Sync + 'static {
     ///
     /// Implementations must check [`ConnectionReuse`] against `input` before
     /// admitting a stored connection, and honor its retention policy in `create`.
-    /// Evaluate connector-owned policies outside storage locks.
+    /// Pools which retain connections must honor [`ConnectionAdmission`] before
+    /// handout and hold its lease until consumed or dropped. Evaluate providers
+    /// and compatibility policies outside storage and admission locks.
     ///
     /// A [`Pool::CreatePermit`] is needed to add a new connection to the pool. Depending on how
     /// the [`Pool::CreatePermit`] is used a pool can implement policies for max connection and max
@@ -148,16 +154,18 @@ pub trait Pool<C, ID>: Send + Sync + 'static {
         Output = Result<ConnectionResult<Self::Connection, Self::CreatePermit>, BoxError>,
     > + Send;
 
-    /// Create/add a new connection to the pool
+    /// Admit the establishing request before publishing its new connection.
     ///
-    /// To be able to a connection to the pool you need a [`Pool::CreatePermit`], depending on
-    /// how the pool implements this you might need to call [`Pool::get_conn`] to get this first.
+    /// Retaining pools reserve any [`ConnectionAdmission`] resources against
+    /// `input` before exposing the connection to concurrent checkouts. Obtain
+    /// the creation permit from [`Self::get_conn`].
     fn create(
         &self,
         id: ID,
         conn: C,
         create_permit: Self::CreatePermit,
-    ) -> impl Future<Output = Self::Connection> + Send;
+        input: &Extensions,
+    ) -> impl Future<Output = Result<Self::Connection, BoxError>> + Send;
 }
 
 /// Result returned by a successful call to [`Pool::get_conn`]
@@ -184,7 +192,8 @@ impl<C: Debug, P: Debug> Debug for ConnectionResult<C, P> {
 ///
 /// Basically this pool operates like there would be no connection pooling.
 /// Can be used in places where were we work with a [`PooledConnector`], but
-/// don't want connection pooling to happen.
+/// don't want connection pooling to happen. Since every request establishes
+/// its own connection, resource admission remains with the transport itself.
 pub struct NoPool;
 
 impl<C, ID> Pool<C, ID> for NoPool
@@ -203,8 +212,14 @@ where
         Ok(ConnectionResult::CreatePermit(()))
     }
 
-    async fn create(&self, _id: ID, conn: C, _permit: Self::CreatePermit) -> Self::Connection {
-        conn
+    async fn create(
+        &self,
+        _id: ID,
+        conn: C,
+        _permit: Self::CreatePermit,
+        _input: &Extensions,
+    ) -> Result<Self::Connection, BoxError> {
+        Ok(conn)
     }
 }
 
@@ -283,10 +298,9 @@ impl<S, P, R> PooledConnector<S, P, R> {
     }
 
     generate_set_and_with!(
-        /// Set timeout after which requesting a connection from the pool will timeout
+        /// Bound each wait for a pool slot or newly established transport credit.
         ///
-        /// If no timeout is specified there will be no limit, this could be dangerous
-        /// depending on how many users are waiting for a connection
+        /// The transport handshake is separate. `None` leaves these waits unbounded.
         pub fn wait_for_pool_timeout(mut self, timeout: Option<Duration>) -> Self {
             self.wait_for_pool_timeout = timeout;
             self
@@ -358,7 +372,18 @@ where
                 trace!(
                     "pooled connector: returning new pooled connection (w/ conn id: {conn_id:?}"
                 );
-                let conn = pool.create(conn_id, conn, permit).await;
+                let admission = pool.create(conn_id, conn, permit, input.extensions());
+                let conn = if let Some(duration) = self.wait_for_pool_timeout {
+                    timeout(duration, admission).await.map_err(|error| {
+                        ConnectionError::local(error, ConnectionErrorKind::Timeout)
+                            .context("pooled connector: wait for new connection admission")
+                    })?
+                } else {
+                    admission.await
+                }
+                .map_err(|error| {
+                    ConnectionError::from(error).context("pooled connector: admit new connection")
+                })?;
                 Ok(EstablishedClientConnection { input, conn })
             }
         }

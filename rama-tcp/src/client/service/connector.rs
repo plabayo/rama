@@ -10,9 +10,10 @@ use rama_core::{
 use rama_net::{
     ConnectorTargetInputExt, ConnectorTransportProtocolInputExt,
     client::{
-        ConnectionError, ConnectionErrorKind, ConnectorTargetStream, EstablishedClientConnection,
-        EstablishedProxyRoute, ProxyRoute, race_connect,
+        ConnectionError, ConnectionErrorDomain, ConnectionErrorKind, ConnectorTargetStream,
+        EstablishedClientConnection, EstablishedProxyRoute, ProxyRoute, race_connect,
     },
+    mode::ConnectIpMode,
     stream::{Socket, SocketInfo},
     transport::TransportProtocol,
 };
@@ -116,24 +117,35 @@ where
             .filter(|candidates| candidate_domain_matches_target(candidates, &authority))
         {
             let port = authority.port;
-            let stream = candidates
-                .stream(input.extensions())
-                .map(move |result| result.map(|ip| SocketAddr::new(ip, port)));
+            // A resolver chooses addresses, never permission to dial their
+            // family. Apply the same policy as the IP-literal connection path.
+            let mode = input
+                .extensions()
+                .get_ref::<ConnectIpMode>()
+                .copied()
+                .unwrap_or_default();
+            let stream = candidates.stream(input.extensions()).map(move |result| {
+                result.and_then(|ip| {
+                    mode.validate_ip(ip)
+                        .map(|ip| SocketAddr::new(ip, port))
+                        .map_err(|error| {
+                            ConnectionError::local(error, ConnectionErrorKind::InvalidInput).into()
+                        })
+                })
+            });
             let (addr, conn) = race_connect(stream, self.max_in_flight, |addr| async move {
                 self.connector.connect(addr).await.map_err(Into::into)
             })
             .await
             .map_err(|error| {
-                ConnectionError::transport(error, ConnectionErrorKind::Unavailable)
-                    .context("tcp connector: connect to resolved candidate")
+                classify_dial_error(error).context("tcp connector: connect to resolved candidate")
             })?;
             (conn, addr)
         } else {
             crate::client::tcp_connect(input.extensions(), authority, &self.connector)
                 .await
                 .map_err(|error| {
-                    ConnectionError::transport(error, ConnectionErrorKind::Unavailable)
-                        .context("tcp connector: connect to server")
+                    classify_dial_error(error).context("tcp connector: connect to server")
                 })?
         };
 
@@ -168,9 +180,23 @@ fn candidate_domain_matches_target(
         .is_ok_and(|domain| domain.as_ref() == candidates.domain())
 }
 
+// Preserve policy/capability failures emitted before a dial. Unclassified
+// socket/resolver failures retain the connector's availability classification.
+fn classify_dial_error(error: BoxError) -> ConnectionError {
+    let error = ConnectionError::from(error);
+    if error.domain() == ConnectionErrorDomain::Unknown {
+        ConnectionError::transport(error, ConnectionErrorKind::Unavailable)
+    } else {
+        error
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::{net::IpAddr, sync::Arc};
+    use std::{
+        net::{IpAddr, Ipv4Addr, Ipv6Addr},
+        sync::Arc,
+    };
 
     use rama_core::{
         error::BoxError,
@@ -272,6 +298,63 @@ mod tests {
             _: &'a Extensions,
         ) -> core::pin::Pin<Box<dyn Stream<Item = Result<IpAddr, BoxError>> + Send + 'a>> {
             Box::pin(stream::iter([Ok(self.ip_addr)]))
+        }
+    }
+
+    #[tokio::test]
+    async fn connection_ip_mode_applies_to_custom_candidates_and_literals() {
+        let v4 = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let v6 = IpAddr::V6(Ipv6Addr::LOCALHOST);
+        let mapped = IpAddr::V6(Ipv4Addr::LOCALHOST.to_ipv6_mapped());
+        for ip in [v4, v6, mapped] {
+            for mode in [
+                ConnectIpMode::Dual,
+                ConnectIpMode::Ipv4,
+                ConnectIpMode::Ipv6,
+            ] {
+                for domain in [false, true] {
+                    let recorded =
+                        Arc::new(rama_utils::collections::AppendOnlyVec::<SocketAddr>::new());
+                    let connector = TcpConnector::new().with_connector({
+                        let recorded = recorded.clone();
+                        move |addr| {
+                            recorded.push(addr);
+                            async { Err::<TcpStream, _>(std::io::Error::other("recorded")) }
+                        }
+                    });
+                    let target = if domain {
+                        HostWithPort::example_domain_https()
+                    } else {
+                        HostWithPort::new(ip.into(), 443)
+                    };
+                    let input = ConnectRequest::new(target);
+                    input.extensions.insert(mode);
+                    if domain {
+                        input
+                            .extensions
+                            .insert(ConnectorTargetStream::new(OneCandidate {
+                                domain: Domain::example(),
+                                ip_addr: ip,
+                            }));
+                    }
+                    let error = connector.serve(input).await.unwrap_err();
+                    if mode.validate_ip(ip).is_err() {
+                        assert_eq!(error.domain(), ConnectionErrorDomain::Local);
+                        assert_eq!(error.kind(), ConnectionErrorKind::InvalidInput);
+                    }
+                    let expected: Vec<_> = mode
+                        .validate_ip(ip)
+                        .ok()
+                        .map(|ip| SocketAddr::new(ip, 443))
+                        .into_iter()
+                        .collect();
+                    assert_eq!(
+                        recorded.iter().copied().collect::<Vec<_>>(),
+                        expected,
+                        "mode={mode:?}, ip={ip}, domain={domain}"
+                    );
+                }
+            }
         }
     }
 

@@ -188,9 +188,6 @@ impl Service<ConnectRequest> for FakeConnector {
             .get_ref::<SelectedHttpService>()
             .filter(|selected| selected.candidate.source == HttpServiceSource::AltSvc)
             .map(|selected| selected.candidate.target.to_string());
-        if input.extensions().contains::<SelectedHttpService>() {
-            assert!(input.extensions().contains::<HttpServiceCandidates>());
-        }
         self.records.lock().push(Record {
             target: input.connector_target().unwrap(),
             origin: input.authority.clone(),
@@ -309,6 +306,52 @@ fn advertise(input: &ConnectRequest, candidates: &[(ApplicationProtocol, &'stati
             })
             .collect::<Vec<_>>(),
     ));
+}
+
+#[cfg(feature = "tls")]
+#[tokio::test]
+async fn selected_cache_snapshot_is_not_republished_as_caller_discovery() {
+    let cache = AltSvcCache::default();
+    let request = input();
+    let origin = origin(&request).unwrap();
+    cache.record_frame(
+        &origin,
+        Bytes::from_static(b"h2=\":8443\""),
+        StdInstant::now(),
+    );
+    let connector = HttpServiceConnector::new(FakeConnector::new([
+        Outcome::Success(ApplicationProtocol::HTTP_2),
+        Outcome::Success(ApplicationProtocol::HTTP_2),
+    ]))
+    .with_cache(cache.clone());
+    let selected = connector.serve(request).await.unwrap();
+    assert!(
+        selected
+            .input
+            .extensions()
+            .contains::<HttpServiceSelection>()
+    );
+    assert!(
+        !selected
+            .input
+            .extensions()
+            .contains::<HttpServiceCandidates>()
+    );
+    let snapshot = cache.lookup(&origin).unwrap();
+    cache.failed(&snapshot, 0);
+    let origin_connection = connector.serve(input()).await.unwrap();
+    assert!(
+        !origin_connection
+            .input
+            .extensions()
+            .contains::<HttpServiceCandidates>()
+    );
+    assert!(
+        !origin_connection
+            .input
+            .extensions()
+            .contains::<SelectedHttpService>()
+    );
 }
 
 #[tokio::test]

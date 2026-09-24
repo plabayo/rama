@@ -527,6 +527,7 @@ impl<S, K> TlsConnector<S, K> {
             let peer = (data.server_verify_mode != ServerVerifyMode::Disable)
                 .then_some(data.server_name.as_ref().unwrap_or(server_host));
             attempt.check_policy(scope, peer)?;
+            return Ok(attempt.policy_scope());
         }
         Ok(scope)
     }

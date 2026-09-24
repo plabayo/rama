@@ -56,6 +56,15 @@ fn cache_construction(b: divan::Bencher) {
     b.bench_local(|| black_box(AltSvcCache::default()));
 }
 
+/// H1 connections also install a possible H2 observer before negotiation. Keep
+/// this first-use allocation cost separate from advertisement storage.
+#[divan::bench]
+fn first_frame_observer(b: divan::Bencher) {
+    let origin = HttpOrigin::new(Protocol::HTTPS, "example.com:443".parse().unwrap()).unwrap();
+    b.with_inputs(AltSvcCache::default)
+        .bench_local_values(|cache| black_box(cache.frame_observer(origin.clone())));
+}
+
 #[divan::bench]
 fn first_advertisement(b: divan::Bencher) {
     let (_, origin, headers) = fixture();

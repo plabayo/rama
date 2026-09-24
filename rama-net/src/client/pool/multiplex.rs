@@ -17,14 +17,17 @@
 //! handouts. A [`MultiplexedConnection`] is not meant to outlive a single logical request and
 //! when it does it should only be used for one input/request at a time.
 
-use super::{ConnID, ConnectionResult, ConnectionReuse, Pool, PoolSlot};
+use super::{
+    ConnID, ConnectionAdmission, ConnectionAdmissionLease, ConnectionResult, ConnectionReuse, Pool,
+    PoolSlot,
+};
 use crate::conn::{ConnectionHealth, ConnectionHealthWatcher, MaxConcurrency};
 use ahash::{HashMap, HashMapExt as _};
 use parking_lot::Mutex;
 use rama_core::Service;
 use rama_core::error::BoxErrorExt as _;
 use rama_core::error::{BoxError, ErrorExt};
-use rama_core::extensions::{Extension, Extensions, ExtensionsRef, NetExtension};
+use rama_core::extensions::{Extension, Extensions, ExtensionsMut, ExtensionsRef, NetExtension};
 use rama_core::futures::StreamExt as _;
 use rama_core::futures::stream::FuturesUnordered;
 use rama_core::telemetry::tracing::trace;
@@ -107,9 +110,49 @@ impl<C, ID> StoredConnection<C, ID> {
     fn try_create_multiplexed(
         self: &Arc<Self>,
         cap: usize,
-    ) -> Option<MultiplexedConnection<C, ID>> {
+        input: &Extensions,
+    ) -> Option<MultiplexedConnection<C, ID>>
+    where
+        C: ExtensionsRef,
+    {
+        // Resource providers run outside all pool locks. If admission loses a
+        // race below, dropping this reservation immediately returns its credit.
+        let admission = match self.conn.extensions().get_ref::<ConnectionAdmission>() {
+            Some(provider) => match provider.try_acquire(input) {
+                Ok(Some(lease)) => Some(lease),
+                Ok(None) => return None,
+                Err(error) => {
+                    // Publish retirement through the existing health signal so
+                    // later sweeps need no additional lock on healthy lookups.
+                    if let Some(health) =
+                        self.conn.extensions().get_ref::<ConnectionHealthWatcher>()
+                    {
+                        health.mark_broken();
+                    } else {
+                        let health = ConnectionHealthWatcher::default();
+                        health.mark_broken();
+                        self.conn.extensions().insert(health);
+                    }
+                    self.pool_slot.lock().retired = true;
+                    trace!(%error, "multiplex pool: resource provider retired connection");
+                    return None;
+                }
+            },
+            None => None,
+        };
         let slot = self.pool_slot.lock();
-        if slot.retired || self.active.load(Ordering::Relaxed) >= self.effective_capacity(cap) {
+        // A close can be reported while the connector's compatibility policy
+        // runs outside the storage lock. Do not hand out a known-broken
+        // connection merely because its earlier snapshot was healthy.
+        let broken = self
+            .conn
+            .extensions()
+            .get_ref::<ConnectionHealthWatcher>()
+            .is_some_and(|health| health.health() == ConnectionHealth::Broken);
+        if slot.retired
+            || broken
+            || self.active.load(Ordering::Relaxed) >= self.effective_capacity(cap)
+        {
             return None;
         }
         // Admission is serialized with retirement. Concurrent lease drops only
@@ -118,6 +161,7 @@ impl<C, ID> StoredConnection<C, ID> {
         drop(slot);
         Some(MultiplexedConnection {
             inner: self.clone(),
+            admission,
         })
     }
 }
@@ -129,10 +173,13 @@ impl<C, ID> StoredConnection<C, ID> {
 /// released on drop.
 pub struct MultiplexedConnection<C, ID> {
     inner: Arc<StoredConnection<C, ID>>,
+    admission: Option<ConnectionAdmissionLease>,
 }
 
 impl<C, ID> Drop for MultiplexedConnection<C, ID> {
     fn drop(&mut self) {
+        // Return unused transport credit before waking pool-capacity waiters.
+        self.admission.take();
         let prev = self.inner.active.fetch_sub(1, Ordering::Release);
         if prev == 1 {
             // last in-flight stream released: the connection just went idle
@@ -158,12 +205,16 @@ impl<Input, C, ID> Service<Input> for MultiplexedConnection<C, ID>
 where
     C: Service<Input> + ExtensionsRef,
     ID: Send + Sync + 'static,
-    Input: Send + 'static,
+    Input: ExtensionsMut + Send + 'static,
 {
     type Output = C::Output;
     type Error = C::Error;
 
-    async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
+    async fn serve(&self, mut input: Input) -> Result<Self::Output, Self::Error> {
+        if let Some(admission) = &self.admission {
+            admission.bind(input.extensions_mut());
+        }
+
         self.inner.conn.serve(input).await
     }
 }
@@ -450,6 +501,7 @@ where
             self.selection,
             &self.rr_cursor,
             self.max_concurrent_streams,
+            input,
         ) {
             trace!(
                 ?id,
@@ -492,7 +544,11 @@ where
         // matching connections.
         let attempt = |want_cap_changes: bool| -> Result<
             ConnectionResult<_, _>,
-            (FuturesUnordered<_>, FuturesUnordered<_>),
+            (
+                FuturesUnordered<_>,
+                FuturesUnordered<_>,
+                FuturesUnordered<_>,
+            ),
         > {
             // Only this id's bucket is touched under the lock; swept
             // connections close after it is released.
@@ -538,12 +594,27 @@ where
                 FuturesUnordered::new()
             };
 
+            let admission_changes: FuturesUnordered<_> = if want_cap_changes {
+                same_id
+                    .iter()
+                    .filter_map(|conn| {
+                        conn.conn
+                            .extensions()
+                            .get_ref::<ConnectionAdmission>()
+                            .map(ConnectionAdmission::watch)
+                    })
+                    .collect()
+            } else {
+                FuturesUnordered::new()
+            };
+
             if let Some(conn) = select_and_admit(
                 &same_id,
                 id,
                 self.selection,
                 &self.rr_cursor,
                 self.max_concurrent_streams,
+                input,
             ) {
                 trace!(?id, "multiplex pool: reusing connection");
                 #[cfg(feature = "opentelemetry")]
@@ -613,7 +684,7 @@ where
                 return Ok(ConnectionResult::CreatePermit(pool_slot));
             }
 
-            Err((stream_capacity, cap_changes))
+            Err((stream_capacity, cap_changes, admission_changes))
         };
 
         // Keep one semaphore acquisition alive across unrelated capacity
@@ -632,7 +703,8 @@ where
             // to make sure we don't miss a notify while our check logic is running
             let mut notified = std::pin::pin!(self.notify.notified());
             notified.as_mut().enable();
-            let (mut stream_capacity, mut cap_changes) = match attempt(true) {
+            let (mut stream_capacity, mut cap_changes, mut admission_changes) = match attempt(true)
+            {
                 Ok(result) => return Ok(result),
                 Err(cap_changes) => cap_changes,
             };
@@ -645,6 +717,7 @@ where
                 _ = notified => {}
                 _ = stream_capacity.next(), if !stream_capacity.is_empty() => {}
                 _ = cap_changes.next(), if !cap_changes.is_empty() => {}
+                _ = admission_changes.next(), if !admission_changes.is_empty() => {}
                 permit = &mut total_slot_wait => {
                     let Ok(permit) = permit else {
                         // the pool never closes its semaphore; treat as spurious
@@ -680,7 +753,19 @@ where
         }
     }
 
-    async fn create(&self, id: ID, conn: C, pool_slot: PoolSlot) -> Self::Connection {
+    async fn create(
+        &self,
+        id: ID,
+        conn: C,
+        pool_slot: PoolSlot,
+        input: &Extensions,
+    ) -> Result<Self::Connection, BoxError> {
+        // The establishing request owns the first reservation before concurrent
+        // checkouts can see this connection in storage.
+        let admission = match conn.extensions().get_ref::<ConnectionAdmission>() {
+            Some(provider) => Some(provider.acquire(input).await?),
+            None => None,
+        };
         let reusable = id.is_reusable()
             && conn
                 .extensions()
@@ -723,65 +808,80 @@ where
             metrics.concurrent_streams.record(1.0, &attrs);
         }
 
-        MultiplexedConnection { inner: conn }
+        Ok(MultiplexedConnection {
+            inner: conn,
+            admission,
+        })
     }
 }
 
 /// Select a connection from `same_id` (all sharing `id`) that still has capacity
 /// and admit a stream on it (see [`StoredConnection::try_create_multiplexed`]),
 /// returning a ready handout. Admission locks only the chosen connection's slot.
-fn select_and_admit<C, ID: PartialEq + Debug>(
+fn select_and_admit<C: ExtensionsRef, ID: PartialEq + Debug>(
     same_id: &[Arc<StoredConnection<C, ID>>],
     id: &ID,
     selection: MuxSelection,
     rr_cursor: &AtomicUsize,
     cap: usize,
+    input: &Extensions,
 ) -> Option<MultiplexedConnection<C, ID>> {
     debug_assert!(same_id.iter().all(|conn| &conn.id == id), "{id:?}");
-    let has_capacity = |conn: &&Arc<StoredConnection<C, ID>>| {
+    let has_capacity = |conn: &Arc<StoredConnection<C, ID>>| {
         conn.active.load(Ordering::Relaxed) < conn.effective_capacity(cap)
     };
-    let create_conn = |conn: &Arc<StoredConnection<C, ID>>| conn.try_create_multiplexed(cap);
-
-    match selection {
-        // Admit on the first same-id connection that accepts a stream.
-        MuxSelection::FirstAvailable => same_id.iter().find_map(create_conn),
-        // Admit on the least-loaded (fewest active) same-id connection.
+    let preferred = match selection {
+        MuxSelection::FirstAvailable => None,
         MuxSelection::LeastLoaded => same_id
             .iter()
-            .filter(has_capacity)
-            .min_by_key(|conn| conn.active.load(Ordering::Relaxed))
-            .and_then(create_conn)
-            .or_else(|| same_id.iter().find_map(create_conn)),
+            .enumerate()
+            .filter(|(_, conn)| has_capacity(conn))
+            .min_by_key(|(_, conn)| conn.active.load(Ordering::Relaxed))
+            .map(|(index, _)| index),
         MuxSelection::RoundRobin => {
-            let count = same_id.iter().filter(has_capacity).count();
+            let count = same_id.iter().filter(|conn| has_capacity(conn)).count();
             if count == 0 {
-                None
-            } else {
-                let idx = rr_cursor.fetch_add(1, Ordering::Relaxed) % count;
-                same_id
-                    .iter()
-                    .filter(has_capacity)
-                    .nth(idx)
-                    .and_then(create_conn)
-                    .or_else(|| same_id.iter().find_map(create_conn))
+                return None;
             }
+            let position = rr_cursor.fetch_add(1, Ordering::Relaxed) % count;
+            same_id
+                .iter()
+                .enumerate()
+                .filter(|(_, conn)| has_capacity(conn))
+                .nth(position)
+                .map(|(index, _)| index)
+        }
+    };
+    // Try the preferred candidate once, then the others without allocating an
+    // ordering buffer. A resource reservation is never taken for a full slot.
+    for index in preferred
+        .into_iter()
+        .chain((0..same_id.len()).filter(|index| Some(*index) != preferred))
+    {
+        let conn = &same_id[index];
+        if has_capacity(conn)
+            && let Some(handout) = conn.try_create_multiplexed(cap, input)
+        {
+            return Some(handout);
         }
     }
+    None
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::client::pool::{ConnectionReusePolicy, PooledConnector};
+    use crate::client::pool::{
+        ConnectionAdmissionPolicy, ConnectionReusePolicy, LruDropPool, PooledConnector,
+    };
     use crate::client::{
         ConnectionError, ConnectionErrorDomain, ConnectionErrorKind, ConnectorService,
         EstablishedClientConnection,
     };
-    use rama_core::ServiceInput;
+    use rama_core::{ServiceInput, service::service_fn};
     use std::{
         convert::Infallible,
-        sync::{LazyLock, Weak},
+        sync::{LazyLock, Weak, atomic::AtomicBool},
         task::Poll,
     };
 
@@ -807,13 +907,442 @@ mod tests {
         }
     }
 
-    impl Service<()> for Conn {
+    impl Service<ServiceInput<()>> for Conn {
         type Output = usize;
         type Error = Infallible;
 
-        async fn serve(&self, (): ()) -> Result<Self::Output, Self::Error> {
+        async fn serve(&self, _: ServiceInput<()>) -> Result<Self::Output, Self::Error> {
             Ok(self.serial)
         }
+    }
+
+    impl Service<Extensions> for Conn {
+        type Output = Extensions;
+        type Error = Infallible;
+
+        async fn serve(&self, input: Extensions) -> Result<Self::Output, Self::Error> {
+            Ok(input)
+        }
+    }
+
+    #[derive(Debug)]
+    struct AdmissionState {
+        limit: AtomicUsize,
+        reserved: AtomicUsize,
+        failed: AtomicBool,
+        changed: Arc<Notify>,
+        storage: Weak<Mutex<Storage<Conn, TestId>>>,
+    }
+
+    impl AdmissionState {
+        fn set_limit(&self, limit: usize) {
+            self.limit.store(limit, Ordering::SeqCst);
+            self.changed.notify_waiters();
+        }
+    }
+
+    #[derive(Debug)]
+    struct FakeAdmission(Arc<AdmissionState>);
+
+    #[derive(Debug)]
+    struct Reservation(Arc<AdmissionState>);
+
+    impl Drop for Reservation {
+        fn drop(&mut self) {
+            self.0.reserved.fetch_sub(1, Ordering::SeqCst);
+            self.0.changed.notify_waiters();
+        }
+    }
+
+    #[derive(Debug, Extension)]
+    struct ReservationToken(Weak<Reservation>);
+
+    impl ConnectionAdmissionPolicy for FakeAdmission {
+        fn try_acquire(
+            &self,
+            _input: &Extensions,
+        ) -> Result<Option<ConnectionAdmissionLease>, BoxError> {
+            if let Some(storage) = self.0.storage.upgrade() {
+                assert!(
+                    storage.try_lock().is_some(),
+                    "resource provider called under storage lock"
+                );
+            }
+            if self.0.failed.load(Ordering::SeqCst) {
+                return Err(BoxError::from_static_str("admission failed"));
+            }
+            if self
+                .0
+                .reserved
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |reserved| {
+                    (reserved < self.0.limit.load(Ordering::SeqCst)).then_some(reserved + 1)
+                })
+                .is_err()
+            {
+                return Ok(None);
+            }
+            let reservation = Arc::new(Reservation(self.0.clone()));
+            let binding = ReservationToken(Arc::downgrade(&reservation));
+            Ok(Some(ConnectionAdmissionLease::new(reservation, binding)))
+        }
+
+        fn watch(&self) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send>> {
+            let mut changed = Box::pin(self.0.changed.clone().notified_owned());
+            changed.as_mut().enable();
+            changed
+        }
+    }
+
+    fn admission_connection(
+        pool: &MultiplexPool<Conn, TestId>,
+        limit: usize,
+    ) -> (Conn, Arc<AdmissionState>) {
+        let state = Arc::new(AdmissionState {
+            limit: AtomicUsize::new(limit),
+            reserved: AtomicUsize::new(0),
+            failed: AtomicBool::new(false),
+            changed: Arc::new(Notify::new()),
+            storage: Arc::downgrade(&pool.storage),
+        });
+        let conn = Conn {
+            serial: 1,
+            extensions: Extensions::new(),
+        };
+        conn.extensions
+            .insert(ConnectionAdmission::new(FakeAdmission(state.clone())));
+        (conn, state)
+    }
+
+    async fn new_slot(pool: &MultiplexPool<Conn, TestId>) -> PoolSlot {
+        match pool.get_conn(&TestId(0), &EMPTY_INPUT).await.unwrap() {
+            ConnectionResult::CreatePermit(permit) => permit,
+            ConnectionResult::Connection(_) => panic!("expected an empty pool"),
+        }
+    }
+
+    #[tokio::test]
+    async fn admission_reserves_before_publication_and_releases_unused_handouts() {
+        let pool = MultiplexPool::try_new(32, 1).unwrap();
+        let permit = new_slot(&pool).await;
+        let (conn, state) = admission_connection(&pool, 0);
+        let input = Extensions::new();
+        let mut create = tokio_test::task::spawn(pool.create(TestId(0), conn, permit, &input));
+        assert!(create.poll().is_pending());
+        assert!(pool.storage.lock().by_id.is_empty());
+        state.set_limit(1);
+        assert!(create.is_woken());
+        let Poll::Ready(Ok(first)) = create.poll() else {
+            panic!("first credit must admit establishment")
+        };
+        assert_eq!(state.reserved.load(Ordering::SeqCst), 1);
+        assert!(!input.contains::<ReservationToken>());
+        let mut bound = input.clone();
+        first.admission.as_ref().unwrap().bind(&mut bound);
+        let token = bound.get_ref::<ReservationToken>().unwrap();
+        assert!(token.0.upgrade().is_some());
+        drop(first);
+        assert_eq!(state.reserved.load(Ordering::SeqCst), 0);
+        assert!(token.0.upgrade().is_none());
+    }
+
+    #[tokio::test]
+    async fn cloned_request_metadata_cannot_exchange_or_retain_handout_reservations() {
+        let pool = MultiplexPool::try_new(32, 1).unwrap();
+        let permit = new_slot(&pool).await;
+        let (conn, state) = admission_connection(&pool, 2);
+        let shared = Extensions::new();
+        let first = pool.create(TestId(0), conn, permit, &shared).await.unwrap();
+        let ConnectionResult::Connection(second) =
+            pool.get_conn(&TestId(0), &shared).await.unwrap()
+        else {
+            panic!("second reserved checkout")
+        };
+        assert_eq!(state.reserved.load(Ordering::SeqCst), 2);
+        // Dispatch in reverse checkout order against clones of the same store.
+        let second_metadata = second.serve(shared.clone()).await.unwrap();
+        let first_metadata = first.serve(shared.clone()).await.unwrap();
+        assert!(!shared.contains::<ReservationToken>());
+        let a = &first_metadata.get_ref::<ReservationToken>().unwrap().0;
+        let b = &second_metadata.get_ref::<ReservationToken>().unwrap().0;
+        assert!(!Weak::ptr_eq(a, b));
+        drop(first);
+        assert!(
+            a.upgrade().is_none(),
+            "saved metadata must not own unused credit"
+        );
+        assert!(
+            b.upgrade().is_some(),
+            "other handout keeps its own reservation"
+        );
+        let second_again = second.serve(shared.clone()).await.unwrap();
+        assert!(Weak::ptr_eq(
+            b,
+            &second_again.get_ref::<ReservationToken>().unwrap().0
+        ));
+        drop(second);
+        assert!(b.upgrade().is_none());
+        assert_eq!(state.reserved.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn admission_wakes_on_transport_credit_without_releasing_pool_handout() {
+        for selection in [
+            MuxSelection::FirstAvailable,
+            MuxSelection::LeastLoaded,
+            MuxSelection::RoundRobin,
+        ] {
+            let pool = MultiplexPool::try_new(32, 1)
+                .unwrap()
+                .with_selection(selection);
+            let permit = new_slot(&pool).await;
+            let (conn, state) = admission_connection(&pool, 1);
+            let input = Extensions::new();
+            let first = pool.create(TestId(0), conn, permit, &input).await.unwrap();
+            let next_input = Extensions::new();
+            let mut next = tokio_test::task::spawn(pool.get_conn(&TestId(0), &next_input));
+            assert!(next.poll().is_pending());
+            state.set_limit(2);
+            assert!(next.is_woken());
+            let Poll::Ready(Ok(ConnectionResult::Connection(second))) = next.poll() else {
+                panic!("transport credit must wake saturated pool")
+            };
+            assert_eq!(state.reserved.load(Ordering::SeqCst), 2);
+            drop((first, second));
+            assert_eq!(state.reserved.load(Ordering::SeqCst), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn admission_failure_does_not_publish_or_leak_new_connection_slot() {
+        let pool = MultiplexPool::try_new(32, 1).unwrap();
+        let permit = new_slot(&pool).await;
+        let (conn, state) = admission_connection(&pool, 1);
+        state.failed.store(true, Ordering::SeqCst);
+        let error = pool
+            .create(TestId(0), conn, permit, &EMPTY_INPUT)
+            .await
+            .unwrap_err();
+        assert_eq!(error.to_string(), "admission failed");
+        assert!(pool.storage.lock().by_id.is_empty());
+        assert_eq!(pool.total_slots.available_permits(), 1);
+        assert_eq!(state.reserved.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn admission_cancellation_before_publication_releases_create_permit() {
+        let pool = MultiplexPool::try_new(32, 1).unwrap();
+        let permit = new_slot(&pool).await;
+        let (conn, state) = admission_connection(&pool, 0);
+        let mut create =
+            tokio_test::task::spawn(pool.create(TestId(0), conn, permit, &EMPTY_INPUT));
+        assert!(create.poll().is_pending());
+        drop(create);
+        assert!(pool.storage.lock().by_id.is_empty());
+        assert_eq!(pool.total_slots.available_permits(), 1);
+        assert_eq!(state.reserved.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn pool_timeout_also_bounds_fresh_transport_admission() {
+        let pool = MultiplexPool::try_new(32, 1).unwrap();
+        let (_, state) = admission_connection(&pool, 0);
+        let connector_state = state.clone();
+        let inner = service_fn(move |input: ServiceInput<u32>| {
+            let state = connector_state.clone();
+            async move {
+                let conn = Conn {
+                    serial: 1,
+                    extensions: Extensions::new(),
+                };
+                conn.extensions
+                    .insert(ConnectionAdmission::new(FakeAdmission(state)));
+                Ok::<_, Infallible>(EstablishedClientConnection { input, conn })
+            }
+        });
+        let client = PooledConnector::new(
+            inner,
+            pool.clone(),
+            id_fn as fn(&ServiceInput<u32>) -> Result<TestId, BoxError>,
+        )
+        .with_wait_for_pool_timeout(Duration::from_secs(1));
+        let error = client.connect(ServiceInput::new(0)).await.unwrap_err();
+        assert_eq!(error.kind(), ConnectionErrorKind::Timeout);
+        assert!(pool.storage.lock().by_id.is_empty());
+        assert_eq!(pool.total_slots.available_permits(), 1);
+        assert_eq!(state.reserved.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn admission_failure_on_cached_connection_tries_another_candidate() {
+        for selection in [
+            MuxSelection::FirstAvailable,
+            MuxSelection::LeastLoaded,
+            MuxSelection::RoundRobin,
+        ] {
+            let pool = MultiplexPool::try_new(32, 2)
+                .unwrap()
+                .with_selection(selection);
+            let permit = new_slot(&pool).await;
+            let (conn, state) = admission_connection(&pool, 1);
+            let first = pool
+                .create(TestId(0), conn, permit, &EMPTY_INPUT)
+                .await
+                .unwrap();
+            let permit = new_slot(&pool).await;
+            let second = pool
+                .create(
+                    TestId(0),
+                    Conn {
+                        serial: 2,
+                        extensions: Extensions::new(),
+                    },
+                    permit,
+                    &EMPTY_INPUT,
+                )
+                .await
+                .unwrap();
+            drop((first, second));
+            state.failed.store(true, Ordering::SeqCst);
+            let ConnectionResult::Connection(next) =
+                pool.get_conn(&TestId(0), &EMPTY_INPUT).await.unwrap()
+            else {
+                panic!("healthy candidate must be reused")
+            };
+            assert_eq!(next.serve(ServiceInput::new(())).await.unwrap(), 2);
+            assert_eq!(state.reserved.load(Ordering::SeqCst), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn admission_returns_reserved_credit_when_connection_closes_during_reservation() {
+        #[derive(Debug)]
+        struct CloseDuringAdmission {
+            inner: FakeAdmission,
+            enabled: Arc<AtomicBool>,
+            health: Arc<ConnectionHealthWatcher>,
+        }
+
+        impl ConnectionAdmissionPolicy for CloseDuringAdmission {
+            fn try_acquire(
+                &self,
+                input: &Extensions,
+            ) -> Result<Option<ConnectionAdmissionLease>, BoxError> {
+                let reservation = self.inner.try_acquire(input)?;
+                if self.enabled.load(Ordering::SeqCst) {
+                    self.health.mark_broken();
+                }
+                Ok(reservation)
+            }
+
+            fn watch(&self) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send>> {
+                self.inner.watch()
+            }
+        }
+
+        let pool = MultiplexPool::try_new(32, 2).unwrap();
+        let permit = new_slot(&pool).await;
+        let (conn, state) = admission_connection(&pool, 2);
+        let health = Arc::new(ConnectionHealthWatcher::default());
+        let enabled = Arc::new(AtomicBool::new(false));
+        conn.extensions.insert_arc(health.clone());
+        conn.extensions
+            .insert(ConnectionAdmission::new(CloseDuringAdmission {
+                inner: FakeAdmission(state.clone()),
+                enabled: enabled.clone(),
+                health,
+            }));
+        let first = pool
+            .create(TestId(0), conn, permit, &EMPTY_INPUT)
+            .await
+            .unwrap();
+        enabled.store(true, Ordering::SeqCst);
+        let permit = new_slot(&pool).await;
+        assert_eq!(
+            state.reserved.load(Ordering::SeqCst),
+            1,
+            "rejected reservation must be returned"
+        );
+        drop((permit, first));
+        assert_eq!(state.reserved.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn admission_failure_on_only_cached_connection_returns_fresh_slot() {
+        let pool = MultiplexPool::try_new(32, 1).unwrap();
+        let permit = new_slot(&pool).await;
+        let (conn, state) = admission_connection(&pool, 1);
+        drop(
+            pool.create(TestId(0), conn, permit, &EMPTY_INPUT)
+                .await
+                .unwrap(),
+        );
+        state.failed.store(true, Ordering::SeqCst);
+        let permit = new_slot(&pool).await;
+        assert_eq!(state.reserved.load(Ordering::SeqCst), 0);
+        drop(permit);
+        assert_eq!(pool.total_slots.available_permits(), 1);
+    }
+
+    #[tokio::test]
+    async fn concurrent_pool_checkouts_cannot_oversubscribe_transport_credit() {
+        let pool = MultiplexPool::try_new(32, 1).unwrap();
+        let permit = new_slot(&pool).await;
+        let (conn, state) = admission_connection(&pool, 4);
+        let first = pool
+            .create(TestId(0), conn, permit, &EMPTY_INPUT)
+            .await
+            .unwrap();
+        let inputs: Vec<_> = (0..16).map(|_| Extensions::new()).collect();
+        let mut pending: Vec<_> = inputs
+            .iter()
+            .map(|input| tokio_test::task::spawn(pool.get_conn(&TestId(0), input)))
+            .collect();
+        let mut admitted = vec![first];
+        for waiter in &mut pending {
+            if let Poll::Ready(Ok(ConnectionResult::Connection(conn))) = waiter.poll() {
+                admitted.push(conn);
+            }
+        }
+        assert_eq!(admitted.len(), 4);
+        assert_eq!(state.reserved.load(Ordering::SeqCst), 4);
+        drop(pending);
+        drop(admitted);
+        assert_eq!(state.reserved.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn exclusive_pool_replaces_connection_with_exhausted_transport_credit() {
+        let pool = LruDropPool::try_new(1, 1)
+            .unwrap()
+            .with_drop_connection_if_no_response(false);
+        let state = Arc::new(AdmissionState {
+            limit: AtomicUsize::new(1),
+            reserved: AtomicUsize::new(0),
+            failed: AtomicBool::new(false),
+            changed: Arc::new(Notify::new()),
+            storage: Weak::new(),
+        });
+        let conn = Conn {
+            serial: 1,
+            extensions: Extensions::new(),
+        };
+        conn.extensions
+            .insert(ConnectionAdmission::new(FakeAdmission(state.clone())));
+        let ConnectionResult::CreatePermit(permit) =
+            pool.get_conn(&TestId(0), &EMPTY_INPUT).await.unwrap()
+        else {
+            panic!("new connection required")
+        };
+        let input = Extensions::new();
+        let first = pool.create(TestId(0), conn, permit, &input).await.unwrap();
+        assert_eq!(state.reserved.load(Ordering::SeqCst), 1);
+        drop(first);
+        assert_eq!(state.reserved.load(Ordering::SeqCst), 0);
+        state.set_limit(0);
+        assert!(matches!(
+            pool.get_conn(&TestId(0), &EMPTY_INPUT).await.unwrap(),
+            ConnectionResult::CreatePermit(_)
+        ));
     }
 
     #[derive(Default)]
@@ -969,6 +1498,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn policy_check_cannot_admit_a_connection_marked_broken_during_the_check() {
+        #[derive(Debug)]
+        struct CloseDuringMatch {
+            health: Arc<ConnectionHealthWatcher>,
+            enabled: Arc<AtomicBool>,
+        }
+
+        impl ConnectionReusePolicy for CloseDuringMatch {
+            fn matches(&self, _: &Extensions) -> bool {
+                if !self.enabled.load(Ordering::Relaxed) {
+                    return false;
+                }
+                self.health.mark_broken();
+                true
+            }
+        }
+
+        for selection in [
+            MuxSelection::FirstAvailable,
+            MuxSelection::LeastLoaded,
+            MuxSelection::RoundRobin,
+        ] {
+            for after_wait in [false, true] {
+                let pool = MultiplexPool::try_new(4, 2)
+                    .unwrap()
+                    .with_selection(selection);
+                let svc = connector(pool.clone());
+                let held = connect(&svc, 0).await;
+                let health = held
+                    .conn
+                    .extensions()
+                    .get_arc::<ConnectionHealthWatcher>()
+                    .unwrap();
+                let enabled = Arc::new(AtomicBool::new(!after_wait));
+                held.conn
+                    .extensions()
+                    .insert(ConnectionReuse::new(CloseDuringMatch {
+                        health,
+                        enabled: enabled.clone(),
+                    }));
+                let reserved =
+                    after_wait.then(|| pool.total_slots.clone().try_acquire_owned().unwrap());
+                let mut waiter = tokio_test::task::spawn(pool.get_conn(&TestId(0), &EMPTY_INPUT));
+                if after_wait {
+                    assert!(waiter.poll().is_pending());
+                    enabled.store(true, Ordering::Relaxed);
+                    drop(reserved);
+                    assert!(waiter.is_woken());
+                }
+                assert!(
+                    matches!(
+                        waiter.poll(),
+                        Poll::Ready(Ok(ConnectionResult::CreatePermit(_)))
+                    ),
+                    "a close reported during policy evaluation must not yield a broken connection"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn policy_check_cannot_admit_a_snapshot_retired_during_the_check() {
         #[derive(Debug)]
         struct RetireDuringMatch {
@@ -1040,8 +1630,15 @@ mod tests {
         // Retain the transferred permit as an unrelated dial would, so it
         // cannot rescue a selection that overlooks the other idle connection.
         for selection in [MuxSelection::LeastLoaded, MuxSelection::RoundRobin] {
-            let conn = select_and_admit(&snapshot, &TestId(0), selection, &AtomicUsize::new(0), 1)
-                .expect("another compatible connection still has stream capacity");
+            let conn = select_and_admit(
+                &snapshot,
+                &TestId(0),
+                selection,
+                &AtomicUsize::new(0),
+                1,
+                &EMPTY_INPUT,
+            )
+            .expect("another compatible connection still has stream capacity");
             assert!(!Arc::ptr_eq(&conn.inner, &retired));
             drop(conn);
         }
@@ -1063,7 +1660,7 @@ mod tests {
             "all 4 handouts should share one connection"
         );
         for h in &handles {
-            assert_eq!(h.conn.serve(()).await.unwrap(), 0);
+            assert_eq!(h.conn.serve(ServiceInput::new(())).await.unwrap(), 0);
         }
     }
 
@@ -1226,7 +1823,7 @@ mod tests {
             2,
             "a 3rd concurrent handout needs a new connection"
         );
-        assert_eq!(c3.conn.serve(()).await.unwrap(), 1);
+        assert_eq!(c3.conn.serve(ServiceInput::new(())).await.unwrap(), 1);
     }
 
     #[tokio::test]
@@ -1294,11 +1891,11 @@ mod tests {
         // a fresh handout must not reuse the broken connection
         let c3 = connect(&svc, 0).await;
         assert_eq!(created(&svc), 2);
-        assert_eq!(c3.conn.serve(()).await.unwrap(), 1);
+        assert_eq!(c3.conn.serve(ServiceInput::new(())).await.unwrap(), 1);
 
         // the in-flight handles still work on the (removed but alive) connection
-        assert_eq!(c1.conn.serve(()).await.unwrap(), 0);
-        assert_eq!(c2.conn.serve(()).await.unwrap(), 0);
+        assert_eq!(c1.conn.serve(ServiceInput::new(())).await.unwrap(), 0);
+        assert_eq!(c2.conn.serve(ServiceInput::new(())).await.unwrap(), 0);
 
         // once they drop, the slot frees and a new handout can be created again
         drop(c1);
@@ -1343,7 +1940,7 @@ mod tests {
 
         let c5 = connect(&svc, 0).await;
         assert_eq!(
-            c5.conn.serve(()).await.unwrap(),
+            c5.conn.serve(ServiceInput::new(())).await.unwrap(),
             1,
             "least-loaded should pick connection 1 (more free streams)"
         );
@@ -1366,7 +1963,7 @@ mod tests {
 
         let c5 = connect(&svc, 0).await;
         assert_eq!(
-            c5.conn.serve(()).await.unwrap(),
+            c5.conn.serve(ServiceInput::new(())).await.unwrap(),
             0,
             "first-available should pick connection 0 (first with a free slot)"
         );
@@ -1382,9 +1979,9 @@ mod tests {
         let c3 = connect(&svc, 0).await;
         assert_eq!(created(&svc), 3, "capacity 1 never shares a connection");
         // each landed on a distinct connection
-        assert_eq!(c1.conn.serve(()).await.unwrap(), 0);
-        assert_eq!(c2.conn.serve(()).await.unwrap(), 1);
-        assert_eq!(c3.conn.serve(()).await.unwrap(), 2);
+        assert_eq!(c1.conn.serve(ServiceInput::new(())).await.unwrap(), 0);
+        assert_eq!(c2.conn.serve(ServiceInput::new(())).await.unwrap(), 1);
+        assert_eq!(c3.conn.serve(ServiceInput::new(())).await.unwrap(), 2);
     }
 
     #[tokio::test(start_paused = true)]

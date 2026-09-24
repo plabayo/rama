@@ -68,7 +68,11 @@ impl ConnectionAttempt {
         scope: ConnectionPolicyScope,
         authenticated_peer: Option<&Host>,
     ) -> Result<(), ConnectionError> {
-        self.observations.lock().policy_scope = scope;
+        let mut observations = self.observations.lock();
+        if observations.policy_scope != ConnectionPolicyScope::Request {
+            observations.policy_scope = scope;
+        }
+        drop(observations);
         if self
             .authenticated_peer
             .as_ref()
@@ -82,6 +86,13 @@ impl ConnectionAttempt {
             ));
         }
         Ok(())
+    }
+
+    /// Prevent request-specific DNS, routing or transport configuration from
+    /// updating shared endpoint health. Later TLS classification cannot erase
+    /// this restriction; all components participate in the same attempt.
+    pub fn restrict_to_request_policy(&self) {
+        self.observations.lock().policy_scope = ConnectionPolicyScope::Request;
     }
 
     /// Policy used by this attempt. Unknown is deliberately conservative for
@@ -144,6 +155,16 @@ mod tests {
                 Some(&Host::from_static("ORIGIN.Example")),
             )
             .unwrap();
+    }
+
+    #[test]
+    fn request_network_policy_survives_later_tls_classification() {
+        let attempt = ConnectionAttempt::new();
+        attempt.restrict_to_request_policy();
+        attempt
+            .check_policy(ConnectionPolicyScope::Connector, None)
+            .unwrap();
+        assert_eq!(attempt.policy_scope(), ConnectionPolicyScope::Request);
     }
 
     #[test]

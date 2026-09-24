@@ -7,15 +7,16 @@ use rama::{
     extensions::{Egress, Extensions, ExtensionsRef as _},
     futures::{StreamExt as _, stream},
     http::{
-        Body, HeaderMap, Request, Response, Version,
+        Body, HeaderMap, Method, Request, Response, Version,
         body::{Frame, util::BodyExt as _},
         client::{EasyHttpConnectorBuilder, Http3Connector},
+        core::h3::{client as h3_client, connection::Config as H3Config},
         server::HttpServer,
         service::client::HttpClientExt as _,
     },
     layer::MapInputLayer,
-    net::address::SocketAddress,
-    quic::{Endpoint, ServerConfig, TransportConfig, tls::TlsOptions},
+    net::{address::SocketAddress, tls::ApplicationProtocol},
+    quic::{ClientConfig, Endpoint, ServerConfig, TransportConfig, tls::TlsOptions},
     rt::Executor,
     service::service_fn,
     tls::{
@@ -114,18 +115,78 @@ async fn test_http3_client_server() {
             3
         );
     }
-    assert!(
-        server
-            .interrupt_within(Duration::from_secs(20))
+    // Keep an accepted echo response open across Ctrl-C. GOAWAY must reach the
+    // client while QUIC remains alive to deliver and acknowledge its last bytes.
+    let endpoint = Endpoint::build(Executor::new())
+        .bind_address(SocketAddress::local_ipv4(0))
+        .await
+        .unwrap();
+    let tls = TlsClientConfig::new()
+        .try_with_server_trust_anchors(auth.cert_chain.clone())
+        .unwrap()
+        .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
+    let config = ClientConfig::try_from_rama_tls(&tls, TlsOptions::default()).unwrap();
+    let connection = endpoint
+        .connect_with(config, address, "localhost")
+        .unwrap()
+        .await
+        .unwrap();
+    let (mut client, driver) =
+        h3_client::handshake::<Body>(connection, H3Config::default(), Executor::new()).unwrap();
+    let driver = spawn(driver.run());
+    let (sender, receiver) = tokio::sync::mpsc::channel(1);
+    let body = Body::from_frame_stream(stream::unfold(receiver, |mut receiver| async {
+        receiver.recv().await.map(|frame| (frame, receiver))
+    }));
+    sender
+        .send(Ok::<_, Infallible>(Frame::data(Bytes::from_static(
+            b"before shutdown",
+        ))))
+        .await
+        .unwrap();
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri(url)
+        .body(body)
+        .unwrap();
+    let mut response = timeout(REQUEST_TIMEOUT, client.send_request(request))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        timeout(REQUEST_TIMEOUT, response.body_mut().frame())
             .await
-            .success(),
-        "{}",
-        server.said()
+            .unwrap()
+            .unwrap()
+            .unwrap()
+            .into_data()
+            .unwrap(),
+        "before shutdown"
     );
+    let (status, ()) = tokio::join!(server.interrupt_within(Duration::from_secs(20)), async {
+        timeout(REQUEST_TIMEOUT, client.closed_or_draining())
+            .await
+            .unwrap();
+        assert!(client.is_draining(), "HTTP/3 drains before QUIC closes");
+        sender
+            .send(Ok(Frame::data(Bytes::from_static(b"after shutdown"))))
+            .await
+            .unwrap();
+        drop(sender);
+        let received = timeout(REQUEST_TIMEOUT, response.into_body().collect())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(received.to_bytes(), "after shutdown");
+    });
+    assert!(status.success(), "{}", server.said());
+    drop(client);
+    endpoint.shutdown().await;
+    let _result = driver.await.unwrap();
     assert_eq!(
         server.said().matches("accepted HTTP/3 connection").count(),
-        2,
-        "each executable client reuses one connection"
+        3,
+        "each executable client reuses one connection; a third drains during Ctrl-C"
     );
     assert!(server.said().contains("HTTP/3 shutdown joined"));
 }
@@ -141,7 +202,7 @@ async fn public_builders_reuse_h3_with_common_bodies_and_trailers() -> Result<()
                 .with_store_server_cert_chain(capture_chain);
             let server_tls = TlsServerConfig::new()
                 .with_server_auth(auth)
-                .with_alpn([b"h3".as_slice().into()].into_iter().collect());
+                .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
             let server = HttpServer::new_http3(Executor::new());
             let mut transport = TransportConfig::default();
             server.http3().configure_transport(&mut transport)?;

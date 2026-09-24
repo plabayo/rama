@@ -2,6 +2,7 @@ use rama_core::error::{BoxError, ErrorContext};
 use rama_core::extensions::Extensions;
 use rama_core::telemetry::tracing;
 use rama_net::address::{HostWithPort, ip::IntoCanonicalIpAddr as _};
+use rama_net::client::{ConnectionError, ConnectionErrorKind};
 use rama_net::mode::ConnectIpMode;
 use rama_net::{address::SocketAddress, socket::SocketOptions};
 use rama_utils::macros::error::static_str_error;
@@ -239,6 +240,7 @@ where
         .context("tcp connector target host is not an IP address")?;
     let ip = connect_ip_mode
         .validate_ip(ip)
+        .map_err(|error| ConnectionError::local(error, ConnectionErrorKind::InvalidInput))
         .context_field("host", host)
         .context_field("port", port)?;
 

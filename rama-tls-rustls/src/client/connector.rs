@@ -491,6 +491,7 @@ impl<S, K> TlsConnector<S, K> {
                 .verification_enabled
                 .then_some(data.server_name.as_ref().unwrap_or(server_host));
             attempt.check_policy(scope, peer)?;
+            return Ok(attempt.policy_scope());
         }
         Ok(scope)
     }

@@ -8,8 +8,7 @@ use super::Header;
 
 use fnv::FnvHasher;
 
-use crate::header;
-use crate::method::Method;
+use crate::{header, method::Method, proto::h2::PseudoHeader};
 
 use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
@@ -742,7 +741,6 @@ fn index_static(header: &Header) -> Option<(usize, bool)> {
             _ => None,
         },
         Header::NeverIndexed(ref value) => {
-            use crate::proto::h2::PseudoHeader;
             let index = match value.name() {
                 PseudoHeader::Authority => 1,
                 PseudoHeader::Method => 2,

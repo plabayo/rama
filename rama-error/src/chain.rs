@@ -1,6 +1,6 @@
 use core::error::Error;
 
-const DEFAULT_MAX_DEPTH: usize = 64;
+pub(crate) const DEFAULT_MAX_DEPTH: usize = 64;
 
 /// Iterate over an error and its sources, visiting at most 64 errors.
 ///

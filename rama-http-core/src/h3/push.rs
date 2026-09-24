@@ -8,7 +8,7 @@ use super::{
     qpack::FieldPair,
     stream::{Phase, Reader},
 };
-use rama_core::bytes::Bytes;
+use rama_core::{bytes::Bytes, extensions::ExtensionsRef as _};
 use rama_http_types::{
     Method, Request, Response,
     proto::h3::{Code, FrameType},
@@ -412,7 +412,6 @@ impl Push {
     pub async fn response(mut self) -> Result<Response<crate::body::Incoming>, Error> {
         loop {
             let response = headers::response_for_method(self.reader.headers().await?, false)?;
-            use rama_core::extensions::ExtensionsRef as _;
             response.extensions().insert(self.priority_handle());
             if response.status().is_informational() {
                 tokio::task::yield_now().await;

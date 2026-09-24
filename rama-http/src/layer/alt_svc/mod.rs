@@ -21,7 +21,8 @@ mod frames;
 #[cfg(test)]
 mod provenance_tests;
 #[doc(inline)]
-pub use cache::{AltSvcCache, RouteContext};
+pub use cache::AltSvcCache;
+pub use rama_http_types::conn::HttpServiceRoute as RouteContext;
 
 use crate::layer::http_service::authenticates;
 use crate::{
@@ -41,7 +42,10 @@ use rama_http_types::{
 };
 use rama_net::{
     AuthorityInputExt as _, Protocol, ProtocolInputExt as _,
-    client::{ConnectionError, ConnectionErrorDomain, ConnectionErrorKind, ConnectionPolicyScope},
+    client::{
+        ConnectionAttempt, ConnectionError, ConnectionErrorDomain, ConnectionErrorKind,
+        ConnectionPolicyScope,
+    },
 };
 use rama_utils::macros::define_inner_service_accessors;
 use std::{
@@ -105,7 +109,11 @@ impl Observation {
         alternative: Option<SelectedAlternative>,
     ) -> Self {
         let connector_policy = connection.extensions().get_ref::<ConnectionPolicyScope>()
-            == Some(&ConnectionPolicyScope::Connector);
+            == Some(&ConnectionPolicyScope::Connector)
+            && request
+                .extensions()
+                .get_ref::<ConnectionAttempt>()
+                .is_none_or(|attempt| attempt.policy_scope() != ConnectionPolicyScope::Request);
         let (service, selection) = alternative.map_or((None, None), |(service, selection)| {
             (Some(service), selection)
         });
@@ -113,7 +121,10 @@ impl Observation {
             .then(|| {
                 service.map(|service| AlternativeFailure {
                     service,
-                    route: RouteContext::for_request(request.extensions()),
+                    route: selection.as_ref().map_or_else(
+                        || RouteContext::for_request(request.extensions()),
+                        |selection| selection.route.clone(),
+                    ),
                     network: cache.network_epoch(),
                 })
             })
@@ -550,6 +561,7 @@ mod tests {
         request.extensions().insert(HttpServiceSelection {
             candidates: snapshot,
             index: 0,
+            route: None,
         });
         request
     }
@@ -882,9 +894,11 @@ mod tests {
             (other_snapshot.clone(), 0),
         ] {
             let request = request(&origin);
-            request
-                .extensions()
-                .insert(HttpServiceSelection { candidates, index });
+            request.extensions().insert(HttpServiceSelection {
+                candidates,
+                index,
+                route: None,
+            });
             service.serve(request).await.unwrap();
             assert!(cache.is_usable(&snapshot, 0));
             assert!(cache.is_usable(&snapshot, 1));

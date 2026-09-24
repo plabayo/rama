@@ -10,7 +10,7 @@ use rama_core::{
 };
 use rama_http::service::web::response::IntoResponse;
 use rama_http_core::{
-    h3::{connection::Config, qpack::ErrorScope, server},
+    h3::{Error, connection::Config, qpack::ErrorScope, server},
     service::RamaHttpService,
 };
 use rama_http_types::{Request, proto::h3::Code};
@@ -43,7 +43,7 @@ where
     let mut draining = false;
     loop {
         tokio::select! {
-            result = &mut driver => return result.map_err(Into::into),
+            result = &mut driver => return completed(result),
             _ = &mut cancelled, if !draining => {
                 connection.shutdown()?;
                 draining = true;
@@ -51,7 +51,7 @@ where
             accepted = connection.accept(), if !draining => {
                 let stream = match accepted {
                     Ok(stream) => stream,
-                    Err(error) if error.code() == Code::H3_NO_ERROR => return Ok(()),
+                    Err(error) if clean_close(error) => return Ok(()),
                     Err(error) => return Err(error.into()),
                 };
                 let service = service.clone();
@@ -70,7 +70,7 @@ where
             result = requests.next(), if !requests.is_empty() => {
                 if let Some(Err(error)) = result {
                     if error.scope() == ErrorScope::Connection {
-                        return Err(error.into());
+                        return completed(Err(error));
                     }
                     tracing::debug!(%error, "HTTP/3 request stream failed");
                 }
@@ -78,9 +78,23 @@ where
         }
         if draining && requests.is_empty() {
             return tokio::select! {
-                result = &mut driver => result.map_err(Into::into),
-                result = connection.drained() => result.map_err(Into::into),
+                result = &mut driver => completed(result),
+                result = connection.drained() => completed(result),
             };
         }
     }
+}
+
+// Every completion path can race the same graceful peer close: acceptance,
+// response FIN acknowledgement and the final drain must agree on its meaning.
+fn completed(result: Result<(), Error>) -> HttpServeResult {
+    match result {
+        Ok(()) => Ok(()),
+        Err(error) if clean_close(error) => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn clean_close(error: Error) -> bool {
+    error.scope() == ErrorScope::Connection && error.code() == Code::H3_NO_ERROR
 }

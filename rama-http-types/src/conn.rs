@@ -3,7 +3,7 @@
 mod http_service;
 pub use http_service::{
     EstablishedHttpService, HttpOrigin, HttpServiceCandidate, HttpServiceCandidates,
-    HttpServiceSelection, HttpServiceSource, SelectedHttpService,
+    HttpServiceRoute, HttpServiceSelection, HttpServiceSource, SelectedHttpService,
 };
 
 use std::time::Duration;

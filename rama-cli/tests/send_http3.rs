@@ -339,9 +339,14 @@ async fn explicit_h3_get_streamed_post_resolve_and_diagnostics() -> TestResult {
     succeeded(&output);
     assert_eq!(output.stdout, b"hello from rama");
     let stderr = String::from_utf8(output.stderr)?;
-    assert!(stderr.contains("HTTP/3"), "{stderr}");
-    assert!(stderr.contains("server selected h3"), "{stderr}");
-    assert!(!stderr.contains("[HTTP/2]"), "{stderr}");
+    let version_line = format!("* using {:?}", Version::HTTP_3);
+    assert!(stderr.lines().any(|line| line == version_line), "{stderr}");
+    let alpn_line = format!("* ALPN: server selected {}", ApplicationProtocol::HTTP_3);
+    assert!(stderr.lines().any(|line| line == alpn_line), "{stderr}");
+    assert!(
+        !stderr.contains(&format!("[{:?}]", Version::HTTP_2)),
+        "{stderr}"
+    );
     let har: serde_json::Value = serde_json::from_slice(&fs::read(har).await?)?;
     assert_eq!(
         har["log"]["entries"][0]["response"]["httpVersion"],
@@ -580,10 +585,16 @@ async fn h1_h2_tls_limits_and_local_uri_schemes_remain_usable() -> TestResult {
     ] {
         let server = Server::start(fixture.auth.clone(), version).await?;
         let output = fixture
-            .send(server.url(), &[flag, "--tls-max", "1.2"])
+            .send(server.url(), &[flag, "--tls-max", "1.2", "--verbose"])
             .await?;
         succeeded(&output);
         assert_eq!(server.requests.lock()[0].version, version);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let expected = format!("* using {version:?}");
+        assert!(stderr.lines().any(|line| line == expected), "{stderr}");
+        if version == Version::HTTP_2 {
+            assert!(stderr.contains(&format!("[{version:?}]")), "{stderr}");
+        }
         let output = fixture.send(server.url(), &["--tls-max", "1.2"]).await?;
         succeeded(&output);
         assert_eq!(server.requests.lock()[1].version, version);

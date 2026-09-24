@@ -1,10 +1,10 @@
 //! Bounded, origin-scoped HTTP alternative-service advertisements.
 
+use super::RouteContext;
+use ahash::HashMap;
 use moka::{ops::compute::Op, policy::EvictionPolicy, sync::Cache};
-use rama_core::{
-    bytes::Bytes,
-    extensions::{Extensions, FromExtensions},
-};
+use parking_lot::Mutex;
+use rama_core::bytes::Bytes;
 use rama_http_headers::{Age, AltSvc, Date, HeaderDecode as _, HeaderMapExt as _};
 use rama_http_types::{
     HeaderMap, HeaderValue,
@@ -15,81 +15,26 @@ use rama_http_types::{
     header,
     proto::h2::alt_svc::{AltSvcObserverExtension, AltSvcReceivedAt},
 };
-use rama_net::{
-    address::{Host, HostWithPort},
-    client::{ProxyRoute, ProxyRoutes},
-};
+use rama_net::address::{Host, HostWithPort};
 use rama_utils::macros::generate_set_and_with;
 use std::{
-    hash::{Hash, Hasher},
     sync::{
         Arc, OnceLock, Weak,
         atomic::{AtomicU64, Ordering},
     },
     time::{Duration, Instant, SystemTime},
 };
+#[cfg(test)]
+use {
+    rama_core::extensions::Extensions,
+    rama_net::client::{ProxyRoute, ProxyRoutes},
+};
 
+const DEFAULT_ORIGIN_CAPACITY: u64 = 1024;
+const DEFAULT_MAX_AGE: Duration = Duration::from_hours(24);
+const DEFAULT_FAILURE_BACKOFF: Duration = Duration::from_secs(30);
 const DEFAULT_ALTERNATIVES_PER_ORIGIN: usize = 16;
 const DEFAULT_ADVERTISEMENT_BYTES: usize = rama_utils::octets::kib(16);
-
-/// The configured route plan is shared, including its credentials, rather than
-/// copied into every candidate's failure key. A failure of the entire plan says
-/// nothing about a different plan or the direct path.
-#[derive(Clone, Debug, FromExtensions)]
-pub enum RouteContext {
-    /// The route chosen for a successful connection.
-    Route(Arc<ProxyRoute>),
-    /// A configured route plan, before one route succeeds.
-    Routes(Arc<ProxyRoutes>),
-}
-
-impl RouteContext {
-    /// Capture the selected route, or route plan before selection, from input metadata.
-    pub fn for_request(extensions: &Extensions) -> Option<Self> {
-        Self::from_extensions(extensions).filter(|context| {
-            !context.cacheable()
-                || context
-                    .routes()
-                    .iter()
-                    .any(|route| route.proxy_address().is_some())
-        })
-    }
-
-    fn cacheable(&self) -> bool {
-        match self {
-            Self::Route(_) => true,
-            // Route-local extensions are opaque to this outer selector. They
-            // may change DNS, TLS or network policy despite identical addresses.
-            Self::Routes(routes) => {
-                (0..routes.as_slice().len()).all(|index| routes.route_extensions(index).is_none())
-            }
-        }
-    }
-
-    fn routes(&self) -> &[ProxyRoute] {
-        match self {
-            Self::Route(route) => std::slice::from_ref(route.as_ref()),
-            Self::Routes(routes) => routes.as_slice(),
-        }
-    }
-}
-
-impl PartialEq for RouteContext {
-    fn eq(&self, other: &Self) -> bool {
-        self.routes() == other.routes()
-    }
-}
-
-impl Eq for RouteContext {}
-
-impl Hash for RouteContext {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.routes().len().hash(state);
-        for route in self.routes() {
-            route.proxy_address().hash(state);
-        }
-    }
-}
 
 #[derive(Clone, Debug)]
 struct Availability {
@@ -168,7 +113,7 @@ pub struct AltSvcCache {
 #[derive(Debug, Default)]
 struct Storage {
     entries: OnceLock<Cache<HttpOrigin, Advertisement>>,
-    observers: OnceLock<Cache<HttpOrigin, Weak<AltSvcObserverExtension>>>,
+    observers: Mutex<HashMap<HttpOrigin, Weak<AltSvcObserverExtension>>>,
     failures: OnceLock<Cache<(u64, HttpOrigin, HttpServiceCandidate), Failure>>,
     route_failures: OnceLock<Cache<(u64, HttpOrigin, HttpServiceCandidate, RouteContext), Failure>>,
     network: AtomicU64,
@@ -176,7 +121,11 @@ struct Storage {
 
 impl Default for AltSvcCache {
     fn default() -> Self {
-        Self::new(1024, Duration::from_hours(24), Duration::from_secs(30))
+        Self::new(
+            DEFAULT_ORIGIN_CAPACITY,
+            DEFAULT_MAX_AGE,
+            DEFAULT_FAILURE_BACKOFF,
+        )
     }
 }
 
@@ -203,10 +152,23 @@ impl AltSvcCache {
         })
     }
 
-    pub(super) fn observers(&self) -> &Cache<HttpOrigin, Weak<AltSvcObserverExtension>> {
-        self.storage
-            .observers
-            .get_or_init(|| Cache::builder().max_capacity(self.capacity).build())
+    pub(super) fn cached_observer(
+        &self,
+        origin: HttpOrigin,
+        create: impl FnOnce() -> Arc<AltSvcObserverExtension>,
+    ) -> Arc<AltSvcObserverExtension> {
+        let mut observers = self.storage.observers.lock();
+        if let Some(observer) = observers.get(&origin).and_then(Weak::upgrade) {
+            return observer;
+        }
+        let observer = create();
+        if (observers.len() as u64) >= self.capacity {
+            observers.retain(|_, observer| observer.strong_count() > 0);
+        }
+        if (observers.len() as u64) < self.capacity {
+            observers.insert(origin, Arc::downgrade(&observer));
+        }
+        observer
     }
 
     fn failures(&self) -> &Cache<(u64, HttpOrigin, HttpServiceCandidate), Failure> {
@@ -803,9 +765,12 @@ impl AltSvcCache {
         }
     }
 
-    /// Remove only the alternative that returned 421, without replaying a request.
-    /// Delayed responses cannot invalidate a newer advertisement of that endpoint.
+    /// Remove the alternative that returned 421 without replaying a request.
+    /// Retain failure backoff across repeated advertisements of that endpoint;
+    /// delayed responses from older discovery generations remain harmless.
     pub fn misdirected(&self, snapshot: &Arc<HttpServiceCandidates>, index: usize) {
+        let now = Instant::now();
+        self.suppress(snapshot, index, now, now, true, None);
         self.update_candidate(snapshot, index, |value| value.removed = true);
     }
 
@@ -879,6 +844,22 @@ impl AltSvcCache {
                         Op::Put(entry)
                     }
                 });
+        }
+    }
+
+    /// Forget all advertisements and failure history, for example when clearing
+    /// browsing data (RFC 7838 §9.4). Existing connections remain usable; later
+    /// responses can advertise again. This does not allocate unused stores.
+    pub fn clear_all(&self) {
+        self.storage.network.fetch_add(1, Ordering::AcqRel);
+        if let Some(entries) = self.storage.entries.get() {
+            entries.invalidate_all();
+        }
+        if let Some(failures) = self.storage.failures.get() {
+            failures.invalidate_all();
+        }
+        if let Some(failures) = self.storage.route_failures.get() {
+            failures.invalidate_all();
         }
     }
 
@@ -1109,21 +1090,21 @@ mod tests {
         cache.network_changed();
         assert_eq!(shared.network_epoch(), 1);
         assert!(cache.storage.entries.get().is_none());
-        assert!(cache.storage.observers.get().is_none());
+        assert!(cache.storage.observers.lock().is_empty());
         assert!(cache.storage.failures.get().is_none());
         assert!(cache.storage.route_failures.get().is_none());
 
         record(&shared, "h2=\":443\"", Instant::now());
         assert!(cache.lookup(&origin()).is_some());
         assert!(cache.storage.entries.get().is_some());
-        assert!(cache.storage.observers.get().is_none());
+        assert!(cache.storage.observers.lock().is_empty());
         assert!(cache.storage.failures.get().is_none());
         assert!(cache.storage.route_failures.get().is_none());
 
         let observing = AltSvcCache::default();
         let observing_clone = observing.clone();
         let observer = observing.frame_observer(origin());
-        assert!(observing.storage.observers.get().is_some());
+        assert!(!observing.storage.observers.lock().is_empty());
         assert!(observing.storage.entries.get().is_none());
         assert!(observing.storage.failures.get().is_none());
         assert!(observing.storage.route_failures.get().is_none());
@@ -1488,6 +1469,37 @@ mod tests {
         cache.failed_at(&new, 0, now);
         cache.misdirected(&new, 1);
         assert!(cache.lookup_at(&origin(), now).is_none());
+    }
+
+    #[test]
+    fn observer_registry_is_bounded_and_does_not_initialize_advertisement_stores() {
+        let cache = AltSvcCache::new(1, Duration::from_hours(1), Duration::from_secs(30));
+        let first = cache.frame_observer(origin());
+        assert!(Arc::ptr_eq(&first, &cache.frame_observer(origin())));
+        let other = HttpOrigin::new(Protocol::HTTPS, "other.example:443".parse().unwrap()).unwrap();
+        let second = cache.frame_observer(other.clone());
+        assert_eq!(cache.storage.observers.lock().len(), 1);
+        assert!(cache.storage.entries.get().is_none());
+        assert!(cache.storage.failures.get().is_none());
+        assert!(cache.storage.route_failures.get().is_none());
+        drop(first);
+        let replacement = cache.frame_observer(other.clone());
+        assert_eq!(cache.storage.observers.lock().len(), 1);
+        assert!(Arc::ptr_eq(&replacement, &cache.frame_observer(other)));
+        drop(second);
+    }
+
+    #[test]
+    fn clear_all_forgets_advertisements_and_backoff() {
+        let cache = AltSvcCache::default();
+        let now = Instant::now();
+        record(&cache, "h3=\":8443\"", now);
+        let snapshot = cache.lookup(&origin()).unwrap();
+        cache.misdirected(&snapshot, 0);
+        cache.clear_all();
+        assert!(cache.lookup(&origin()).is_none());
+        record(&cache, "h3=\":8443\"", Instant::now());
+        assert!(cache.is_usable(&cache.lookup(&origin()).unwrap(), 0));
     }
 
     #[test]

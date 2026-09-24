@@ -42,6 +42,11 @@ pub struct Config {
     /// Lifetime push quota; zero disables push. Bounds reordered push state.
     pub max_pushes: usize,
     /// Maximum buffered encoded non-DATA frame.
+    ///
+    /// This local wire-memory budget is independent of the decoded field-section
+    /// size advertised in SETTINGS. QPACK literals can expand on the wire, so
+    /// exceeding this bound is excessive load even for an otherwise valid field
+    /// section (RFC 9114 §10.5.1). Increase both limits for large-header peers.
     pub max_frame_size: usize,
     /// Maximum QUIC chunk held by a stream reader.
     pub read_chunk_size: usize,
@@ -154,6 +159,7 @@ pub(crate) struct Shared {
     pub(crate) config: Config,
     output: [Notify; 2],
     progress: Notify,
+    request_rejected: Notify,
     failure: Notify,
     control_ready: Notify,
     pub(crate) schedule: super::priority::Schedule,
@@ -207,6 +213,7 @@ impl Shared {
             config,
             output: [Notify::new(), Notify::new()],
             progress: Notify::new(),
+            request_rejected: Notify::new(),
             failure: Notify::new(),
             control_ready: Notify::new(),
         }))
@@ -265,6 +272,7 @@ impl Shared {
         self.progress.notify_waiters();
         self.push_ready.notify_waiters();
         self.failure.notify_waiters();
+        self.request_rejected.notify_waiters();
         for output in &self.output {
             output.notify_one();
         }
@@ -291,7 +299,7 @@ impl Shared {
 
     pub(crate) async fn rejected(&self, id: Option<u64>) -> Error {
         loop {
-            let progress = self.progress.notified();
+            let progress = self.request_rejected.notified();
             let mut progress = pin!(progress);
             progress.as_mut().enable();
             if let Some(error) = self.rejection(id) {
@@ -433,7 +441,11 @@ impl Shared {
         match state.decoder.cancel_stream(id) {
             Ok(()) => (),
             Err(QpackError::OutputBlocked) => {
-                if state.cancelled.len() >= self.config.max_requests
+                if state.cancelled.len()
+                    >= self
+                        .config
+                        .max_requests
+                        .saturating_add(self.config.max_pushes)
                     && !state.cancelled.contains(&id)
                 {
                     state.error = Some(Error::connection(
@@ -770,10 +782,11 @@ pub(crate) async fn receive_uni(
                 if let FrameEvent::CancelPush(id) = event {
                     shared.cancel_push(id, false)?;
                 }
-                if let FrameEvent::GoAway(limit) = event
-                    && shared.role == Role::Server
-                {
-                    shared.pushes.lock().reject_from(limit);
+                if let FrameEvent::GoAway(limit) = event {
+                    if shared.role == Role::Server {
+                        shared.pushes.lock().reject_from(limit);
+                    }
+                    shared.request_rejected.notify_waiters();
                 }
                 if let FrameEvent::PriorityUpdate {
                     push,
@@ -806,6 +819,9 @@ pub(crate) async fn receive_uni(
                         ));
                     }
                     if let Ok(priority) = Priority::parse(field_value) {
+                        shared
+                            .schedule
+                            .update_pending_limit(connection.max_concurrent_streams(Dir::Bi));
                         shared.schedule.update(element_id, priority)?;
                     }
                 }
@@ -960,6 +976,12 @@ impl Driver {
                     "local endpoint must permit three critical streams",
                 ));
             }
+            if self.connection.available_streams(Dir::Uni) < 3 {
+                return Err(Error::connection(
+                    Code::H3_STREAM_CREATION_ERROR,
+                    "peer must permit three critical streams",
+                ));
+            }
             let open = || async {
                 self.connection.open_uni().await.map_err(|_error| {
                     Error::connection(
@@ -1075,6 +1097,7 @@ impl Driver {
                         .accept_bi()
                         .await
                         .map_err(|error| Error::from_transport(&error))?;
+                    self.shared.cancel(send.id().into());
                     send.abort_handle()
                         .abort(VarInt::from_u32(Code::H3_REQUEST_REJECTED.value() as u32));
                 }
@@ -1163,6 +1186,79 @@ impl Drop for Driver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        future::Future as _,
+        sync::atomic::{AtomicUsize, Ordering},
+        task::{Context, Wake, Waker},
+    };
+
+    #[test]
+    fn ordinary_compression_progress_does_not_wake_request_rejection_waiters() {
+        struct CountWakes(AtomicUsize);
+        impl Wake for CountWakes {
+            fn wake(self: Arc<Self>) {
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        let shared = Shared::new(Config::default(), Role::Client, Extensions::default()).unwrap();
+        let wakes = Arc::new(CountWakes(AtomicUsize::new(0)));
+        let waker = Waker::from(wakes.clone());
+        let mut cx = Context::from_waker(&waker);
+        let mut waiters: Vec<_> = (0..512)
+            .map(|id| Box::pin(shared.rejected(Some(id * 4))))
+            .collect();
+        for waiter in &mut waiters {
+            assert!(waiter.as_mut().poll(&mut cx).is_pending());
+        }
+        for _ in 0..128 {
+            shared.take_output(false).unwrap();
+            shared.decoder_output_written(0).unwrap();
+        }
+        assert_eq!(wakes.0.load(Ordering::Relaxed), 0);
+        shared.fail(Error::connection(Code::H3_INTERNAL_ERROR, "test shutdown"));
+        assert_eq!(wakes.0.load(Ordering::Relaxed), waiters.len());
+        for waiter in &mut waiters {
+            assert!(waiter.as_mut().poll(&mut cx).is_ready());
+        }
+    }
+
+    #[test]
+    fn cancellation_retries_after_decoder_output_credit_returns() {
+        let shared = Shared::new(
+            Config {
+                decoder: DecoderConfig {
+                    max_decoder_stream_bytes: 10,
+                    ..DecoderConfig::default()
+                },
+                ..Config::default()
+            },
+            Role::Server,
+            Extensions::default(),
+        )
+        .unwrap();
+        let mut encoder = Encoder::new(EncoderConfig::default());
+        for id in 0..12 {
+            // No encoder instructions are delivered: cancellation must release
+            // the peer's tracked section even if no HEADERS were decoded.
+            encoder
+                .encode(id * 4, [("x-cancel", "repeated value")])
+                .unwrap();
+            shared.cancel(id * 4);
+        }
+        assert!(!shared.state.lock().cancelled.is_empty());
+        while encoder.tracked_section_count() != 0 {
+            let output = shared.take_output(false).unwrap();
+            assert!(
+                !output.is_empty(),
+                "queued cancellations must eventually drain"
+            );
+            encoder.feed_decoder_stream(&output).unwrap();
+            shared.decoder_output_written(output.len()).unwrap();
+        }
+        assert!(shared.state.lock().cancelled.is_empty());
+        assert_eq!(encoder.tracked_reference_count(), 0);
+    }
 
     #[test]
     fn cancelling_after_connection_failure_releases_blocked_fields_without_feedback() {

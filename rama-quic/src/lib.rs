@@ -99,11 +99,12 @@ mod driver;
 // The runtime: endpoints, connections, streams and the errors they report. Rama owns these
 // types; the engine that drives them and the TLS provider behind them stay private.
 pub use driver::{
-    Accept, AcceptBi, AcceptUni, Connecting, Connection, DEFAULT_SHUTDOWN_BUDGET,
-    DEFAULT_SOCKET_BUFFER_SIZE, DriverStats, Endpoint, EndpointBuilder, EndpointStats, Incoming,
-    IncomingFuture, OpenBi, OpenUni, PacketQueueStats, ReadDatagram, ReadError, ReadExactError,
-    ReadToEndError, RecvStream, ResetError, RetryError, SendDatagram, SendDatagramError,
-    SendStream, ShutdownOutcome, StoppedError, StreamAbortHandle, WriteError, ZeroRttAccepted,
+    Accept, AcceptBi, AcceptUni, BiStreamReservation, Connecting, Connection,
+    DEFAULT_SHUTDOWN_BUDGET, DEFAULT_SOCKET_BUFFER_SIZE, DriverStats, Endpoint, EndpointBuilder,
+    EndpointStats, Incoming, IncomingFuture, OpenBi, OpenUni, PacketQueueStats, ReadDatagram,
+    ReadError, ReadExactError, ReadToEndError, RecvStream, ResetError, RetryError, SendDatagram,
+    SendDatagramError, SendStream, ShutdownOutcome, StoppedError, StreamAbortHandle, WriteError,
+    ZeroRttAccepted,
 };
 
 #[cfg(fuzzing)]

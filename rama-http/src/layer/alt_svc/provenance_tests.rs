@@ -54,6 +54,7 @@ fn selected_request(candidate: HttpServiceCandidate) -> Request {
     request.extensions().insert(HttpServiceSelection {
         candidates: Arc::new(HttpServiceCandidates::new(origin(), vec![candidate])),
         index: 0,
+        route: None,
     });
     request
 }

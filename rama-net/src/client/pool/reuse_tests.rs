@@ -61,7 +61,9 @@ async fn establish<P: Pool<ServiceInput<()>, Route>>(
     else {
         panic!("a distinct policy must establish its own connection");
     };
-    pool.create(Route, connection(id, reusable), permit).await
+    pool.create(Route, connection(id, reusable), permit, &Extensions::new())
+        .await
+        .unwrap()
 }
 
 async fn idle_incompatible_is_replaced<P: Pool<ServiceInput<()>, Route>>(pool: P) {
@@ -257,7 +259,11 @@ async fn exclusive_only_evaluates_the_first_compatible_policy() {
         let conn = ServiceInput::new(());
         conn.extensions()
             .insert(ConnectionReuse::new(CountPolicy(calls.clone())));
-        held.push(pool.create(Route, conn, permit).await);
+        held.push(
+            pool.create(Route, conn, permit, &Extensions::new())
+                .await
+                .unwrap(),
+        );
     }
     drop(held);
     assert!(matches!(
@@ -288,6 +294,78 @@ async fn exclusive_skips_incompatible_policies_in_both_reuse_orders() {
                 panic!("matching idle policy must be found after a mismatch");
             };
             assert_eq!(conn.extensions().get_ref::<PolicyId>().unwrap().0, id);
+        }
+    }
+}
+
+#[derive(Debug, Extension)]
+struct ProxyPolicyId(u8);
+
+#[derive(Debug)]
+struct ProxyPolicy;
+
+impl ConnectionReusePolicy for ProxyPolicy {
+    fn matches(&self, input: &Extensions) -> bool {
+        input.get_ref::<ProxyPolicyId>().is_some_and(|id| id.0 == 1)
+    }
+}
+
+#[tokio::test]
+async fn semaphore_handoff_rechecks_origin_and_proxy_policy_against_current_input() {
+    for selection in [
+        MuxSelection::FirstAvailable,
+        MuxSelection::LeastLoaded,
+        MuxSelection::RoundRobin,
+    ] {
+        for (origin_policy, proxy_policy, reuse) in [(1, 1, true), (2, 1, false), (1, 2, false)] {
+            let pool = MultiplexPool::try_new(4, 2)
+                .unwrap()
+                .with_selection(selection);
+            let held = establish(&pool, 1, true).await;
+            held.extensions().insert(
+                ConnectionReuse::new(Policy {
+                    id: 1,
+                    reusable: true,
+                })
+                .and(ConnectionReuse::restriction(ProxyPolicy)),
+            );
+            let request = input(2);
+            request.insert(ProxyPolicyId(1));
+            let ConnectionResult::CreatePermit(reserved) =
+                pool.get_conn(&Route, &request).await.unwrap()
+            else {
+                panic!("different origin policy must reserve the unused connection slot");
+            };
+            let mut waiter = tokio_test::task::spawn(pool.get_conn(&Route, &request));
+            assert!(waiter.poll().is_pending());
+
+            // The connection remains active with spare stream capacity. Only
+            // total-slot release wakes this waiter; both policy layers must be
+            // evaluated again, using the current request extensions.
+            request.insert(PolicyId(origin_policy));
+            request.insert(ProxyPolicyId(proxy_policy));
+            drop(reserved);
+            assert!(waiter.is_woken());
+            match waiter.poll() {
+                Poll::Ready(Ok(ConnectionResult::Connection(conn))) if reuse => {
+                    assert_eq!(conn.extensions().get_ref::<PolicyId>().unwrap().0, 1);
+                    drop(conn);
+                }
+                Poll::Ready(Ok(ConnectionResult::CreatePermit(permit))) if !reuse => drop(permit),
+                result => panic!(
+                    "unexpected handoff for origin={origin_policy}, proxy={proxy_policy}, selection={selection:?}: {result:?}"
+                ),
+            }
+            drop(waiter);
+            drop(held);
+            // Neither a rejected policy nor returning an unused create permit
+            // may strand the slot needed by the next incompatible request.
+            let ConnectionResult::CreatePermit(permit) =
+                pool.get_conn(&Route, &input(3)).await.unwrap()
+            else {
+                panic!("incompatible request must retain a fresh-connection path");
+            };
+            drop(permit);
         }
     }
 }
