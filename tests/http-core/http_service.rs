@@ -1,5 +1,8 @@
 //! Real TCP/TLS coverage of protocol-independent alternative-service selection.
 
+mod deployment;
+mod redirects;
+
 use rama::{
     Layer, Service,
     bytes::Bytes,
@@ -103,6 +106,7 @@ struct Observation {
     authority: String,
     sni: Option<String>,
     alt_used: Option<String>,
+    headers: HeaderMap,
     body: Bytes,
 }
 
@@ -184,6 +188,7 @@ impl Server {
                             .headers()
                             .get(header::ALT_USED)
                             .map(|value| value.to_str().unwrap().to_owned()),
+                        headers: request.headers().clone(),
                         body: request.into_body().collect().await.unwrap().to_bytes(),
                     };
                     observations.lock().push(observation);
@@ -378,6 +383,17 @@ async fn client_with_http3_cache(
     impl Service<Request, Output = Response, Error: Debug>,
     Endpoint,
 ) {
+    client_with_http3_cache_and_timeout(tls, cache, None).await
+}
+
+async fn client_with_http3_cache_and_timeout(
+    tls: TlsClientConfig,
+    cache: AltSvcCache,
+    attempt_timeout: Option<Duration>,
+) -> (
+    impl Service<Request, Output = Response, Error: Debug>,
+    Endpoint,
+) {
     let endpoint = Endpoint::build(Executor::new())
         .bind_address(SocketAddress::local_ipv4(0))
         .await
@@ -403,6 +419,16 @@ async fn client_with_http3_cache(
         .with_http3_support(h3)
         .with_default_connection_pool()
         .with_alt_svc_cache(cache)
+        .map_connector(|mut connector| {
+            if let Some(timeout) = attempt_timeout {
+                connector
+                    .get_mut()
+                    .get_mut()
+                    .get_mut()
+                    .set_attempt_timeout(timeout);
+            }
+            connector
+        })
         .build_client();
     (client, endpoint)
 }
@@ -430,7 +456,11 @@ async fn complete(
         .unwrap();
     let result = (response.status(), response.version());
     assert_eq!(
-        response.into_body().collect().await.unwrap().to_bytes(),
+        timeout(TEST_TIMEOUT, response.into_body().collect())
+            .await
+            .unwrap()
+            .unwrap()
+            .to_bytes(),
         "delivered"
     );
     result
