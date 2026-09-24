@@ -28,10 +28,10 @@ impl SocketId {
 
 /// Total sockets an endpoint retains at once: the active one plus retiring ones.
 ///
-/// The bound caps the operating-system sockets and response queues an endpoint can hold after
-/// a burst of rebinds (interface churn, repeated address changes) while earlier paths drain;
-/// eight leaves room for several overlapping rebinds without letting a rebind storm accumulate
-/// sockets. A rebind past the bound is refused and the previous state is kept. Exposing the bound
+/// The bound caps retained datagram transports and their response queues. A native Apple
+/// dual-stack transport owns two operating-system sockets, one per address family. Eight
+/// leaves room for overlapping rebinds during interface churn while earlier paths drain,
+/// without letting a rebind storm accumulate sockets. A rebind past the bound is refused and the previous state is kept. Exposing the bound
 /// through `EndpointConfig` is facade work; the value is a constant until then.
 pub(crate) const MAX_RETAINED_SOCKETS: usize = 8;
 

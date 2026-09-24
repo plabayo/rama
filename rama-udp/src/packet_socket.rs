@@ -11,6 +11,7 @@ use std::{
 use tokio::io::Interest;
 use tokio_util::sync::ReusableBoxFuture;
 
+use rama_core::error::BoxError;
 use rama_net::{
     address::{SocketAddress, ip::IntoCanonicalIpAddr as _},
     stream::Socket,
@@ -23,22 +24,191 @@ use crate::{
 };
 
 /// Packet-oriented Tokio UDP socket with portable ancillary metadata.
+///
+/// Factory-created dual-stack wildcard sockets on Apple platforms own one socket per IP
+/// family, bound to the same port. This prevents IPv4 sockets from taking traffic destined for
+/// a dual-stack socket whose ephemeral allocation did not reserve that port in both families.
 #[derive(Debug)]
 pub struct UdpPacketSocket {
+    primary: PacketSocket,
+    #[cfg(target_vendor = "apple")]
+    ipv4: Option<PacketSocket>,
+    #[cfg(target_vendor = "apple")]
+    receive_ipv4_first: bool,
+}
+
+impl UdpPacketSocket {
+    /// Bind a packet-oriented socket using default socket options.
+    pub async fn bind(
+        address: impl TryInto<SocketAddress, Error: Into<BoxError>>,
+    ) -> Result<Self, DatagramError> {
+        crate::UdpSocketFactory::default().bind(address).await
+    }
+
+    fn single(primary: PacketSocket) -> Self {
+        Self {
+            primary,
+            #[cfg(target_vendor = "apple")]
+            ipv4: None,
+            #[cfg(target_vendor = "apple")]
+            receive_ipv4_first: false,
+        }
+    }
+
+    pub(crate) fn from_registered(
+        socket: UdpSocket,
+        receive_original_destination: bool,
+    ) -> Result<Self, DatagramError> {
+        PacketSocket::from_registered(socket, receive_original_destination).map(Self::single)
+    }
+
+    /// Wrap an existing Tokio UDP socket and enable best-effort packet metadata.
+    ///
+    /// The caller retains responsibility for the bound socket's address-family coverage.
+    pub fn from_socket(socket: UdpSocket) -> Result<Self, DatagramError> {
+        Self::from_registered(socket, false)
+    }
+
+    pub(crate) fn from_std(
+        socket: std::net::UdpSocket,
+        receive_original_destination: bool,
+    ) -> Result<Self, DatagramError> {
+        PacketSocket::from_std(socket, receive_original_destination).map(Self::single)
+    }
+
+    pub(crate) fn cache_bound_address(&mut self) -> Result<(), DatagramError> {
+        self.primary.cache_bound_address()
+    }
+
+    #[cfg(target_vendor = "apple")]
+    pub(crate) fn with_ipv4(mut self, ipv4: Self) -> Self {
+        self.ipv4 = Some(ipv4.primary);
+        self
+    }
+}
+
+impl DatagramSocket for UdpPacketSocket {
+    type Sender = UdpPacketSender;
+
+    fn create_sender(&self) -> Self::Sender {
+        UdpPacketSender {
+            primary: self.primary.create_sender(),
+            #[cfg(target_vendor = "apple")]
+            ipv4: self.ipv4.as_ref().map(DatagramSocket::create_sender),
+        }
+    }
+
+    fn poll_recv(
+        &mut self,
+        cx: &mut Context<'_>,
+        buffers: &mut [IoSliceMut<'_>],
+        metadata: &mut [DatagramMetadata],
+    ) -> Poll<Result<usize, DatagramError>> {
+        #[cfg(target_vendor = "apple")]
+        if let Some(ipv4) = &mut self.ipv4 {
+            // Alternate the first poll so a busy family cannot starve the other. If the first
+            // socket is pending, polling the second registers both with the same task waker.
+            let (first, second) = if self.receive_ipv4_first {
+                (ipv4, &mut self.primary)
+            } else {
+                (&mut self.primary, ipv4)
+            };
+            self.receive_ipv4_first = !self.receive_ipv4_first;
+            if let ready @ Poll::Ready(_) = first.poll_recv(cx, buffers, metadata) {
+                return ready;
+            }
+            return second.poll_recv(cx, buffers, metadata);
+        }
+        self.primary.poll_recv(cx, buffers, metadata)
+    }
+
+    fn capabilities(&self) -> DatagramCapabilities {
+        let primary = self.primary.capabilities();
+        #[cfg(target_vendor = "apple")]
+        if let Some(ipv4) = &self.ipv4 {
+            return common_capabilities(primary, ipv4.capabilities());
+        }
+        primary
+    }
+}
+
+impl Socket for UdpPacketSocket {
+    fn local_addr(&self) -> io::Result<SocketAddress> {
+        self.primary.local_addr()
+    }
+
+    fn peer_addr(&self) -> io::Result<SocketAddress> {
+        self.primary.peer_addr()
+    }
+}
+
+/// Send handle for a [`UdpPacketSocket`].
+#[derive(Debug)]
+pub struct UdpPacketSender {
+    primary: PacketSender,
+    #[cfg(target_vendor = "apple")]
+    ipv4: Option<PacketSender>,
+}
+
+impl DatagramSender for UdpPacketSender {
+    fn poll_send(
+        &mut self,
+        cx: &mut Context<'_>,
+        datagram: &SendDatagram<'_>,
+    ) -> Poll<Result<(), DatagramError>> {
+        #[cfg(target_vendor = "apple")]
+        if datagram.destination().ip_addr.is_ipv4()
+            && let Some(ipv4) = &mut self.ipv4
+        {
+            return ipv4.poll_send(cx, datagram);
+        }
+        self.primary.poll_send(cx, datagram)
+    }
+
+    fn capabilities(&self) -> DatagramCapabilities {
+        let primary = self.primary.capabilities();
+        #[cfg(target_vendor = "apple")]
+        if let Some(ipv4) = &self.ipv4 {
+            return common_capabilities(primary, ipv4.capabilities());
+        }
+        primary
+    }
+}
+
+// A paired socket promises only features available on both underlying sockets. Keep this
+// exhaustive so a new capability cannot accidentally be advertised for only one family.
+#[cfg(target_vendor = "apple")]
+fn common_capabilities(a: DatagramCapabilities, b: DatagramCapabilities) -> DatagramCapabilities {
+    DatagramCapabilities {
+        max_payload_ipv4: b.max_payload_ipv4,
+        max_payload_ipv6: a.max_payload_ipv6,
+        max_receive_batch: a.max_receive_batch.min(b.max_receive_batch),
+        max_send_batch: a.max_send_batch.min(b.max_send_batch),
+        max_send_segments: a.max_send_segments.min(b.max_send_segments),
+        max_receive_segments: a.max_receive_segments.min(b.max_receive_segments),
+        may_fragment: a.may_fragment || b.may_fragment,
+        send_ecn: a.send_ecn && b.send_ecn,
+        receive_ecn: a.receive_ecn && b.receive_ecn,
+        send_source_ip: a.send_source_ip && b.send_source_ip,
+        receive_local_ip: a.receive_local_ip && b.receive_local_ip,
+        receive_interface: a.receive_interface && b.receive_interface,
+        receive_original_destination: a.receive_original_destination
+            && b.receive_original_destination,
+        receive_timestamp: a.receive_timestamp && b.receive_timestamp,
+        receive_truncation: a.receive_truncation && b.receive_truncation,
+    }
+}
+
+/// Packet-oriented Tokio UDP socket with portable ancillary metadata.
+#[derive(Debug)]
+struct PacketSocket {
     io: Arc<UdpSocket>,
     state: Arc<sys::UdpSocketState>,
     socket_is_ipv6: bool,
     cached_bound_address: Option<SocketAddr>,
 }
 
-impl UdpPacketSocket {
-    /// Bind a packet-oriented socket using default socket options.
-    pub async fn bind(
-        address: impl TryInto<SocketAddress, Error: Into<rama_core::error::BoxError>>,
-    ) -> Result<Self, DatagramError> {
-        crate::UdpSocketFactory::default().bind(address).await
-    }
-
+impl PacketSocket {
     /// Wrap a socket already registered with the runtime, with the metadata a configuration asks
     /// for.
     ///
@@ -56,11 +226,6 @@ impl UdpPacketSocket {
             socket_is_ipv6,
             cached_bound_address: None,
         })
-    }
-
-    /// Wrap an existing Tokio UDP socket and enable best-effort packet metadata.
-    pub fn from_socket(socket: UdpSocket) -> Result<Self, DatagramError> {
-        Self::from_registered(socket, false)
     }
 
     /// Wrap a bound socket with the metadata a configuration asks for.
@@ -109,11 +274,11 @@ impl UdpPacketSocket {
     }
 }
 
-impl DatagramSocket for UdpPacketSocket {
-    type Sender = UdpPacketSender;
+impl DatagramSocket for PacketSocket {
+    type Sender = PacketSender;
 
     fn create_sender(&self) -> Self::Sender {
-        UdpPacketSender {
+        PacketSender {
             io: self.io.clone(),
             state: self.state.clone(),
             socket_is_ipv6: self.socket_is_ipv6,
@@ -187,7 +352,7 @@ impl DatagramSocket for UdpPacketSocket {
     }
 }
 
-impl Socket for UdpPacketSocket {
+impl Socket for PacketSocket {
     fn local_addr(&self) -> io::Result<SocketAddress> {
         self.io
             .local_addr()
@@ -208,22 +373,22 @@ async fn wait_writable(io: Arc<UdpSocket>) -> io::Result<()> {
 }
 
 /// Send handle for a [`UdpPacketSocket`].
-pub struct UdpPacketSender {
+struct PacketSender {
     io: Arc<UdpSocket>,
     state: Arc<sys::UdpSocketState>,
     socket_is_ipv6: bool,
     writable: Option<ReusableBoxFuture<'static, io::Result<()>>>,
 }
 
-impl std::fmt::Debug for UdpPacketSender {
+impl std::fmt::Debug for PacketSender {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
-            .debug_struct("UdpPacketSender")
+            .debug_struct("PacketSender")
             .finish_non_exhaustive()
     }
 }
 
-impl DatagramSender for UdpPacketSender {
+impl DatagramSender for PacketSender {
     fn poll_send(
         &mut self,
         cx: &mut Context<'_>,
@@ -368,6 +533,8 @@ mod tests {
     use super::*;
     use crate::{DatagramSenderExt as _, DatagramSocketExt as _, EcnCodepoint};
     use rama_net::socket::SocketOptions;
+    #[cfg(target_vendor = "apple")]
+    use rama_net::socket::core::SockRef;
 
     async fn bind_pair(ipv6: bool) -> (UdpPacketSocket, UdpPacketSocket) {
         let address: SocketAddr = if ipv6 {
@@ -422,8 +589,8 @@ mod tests {
     async fn factory_cache_preserves_bound_and_wildcard_receive_metadata() {
         for address in ["127.0.0.1:0", "[::1]:0", "0.0.0.0:0", "[::]:0"] {
             let mut receiver = UdpPacketSocket::bind(address).await.unwrap();
-            let bound = receiver.io.local_addr().unwrap();
-            assert_eq!(receiver.cached_bound_address, Some(bound));
+            let bound = receiver.primary.io.local_addr().unwrap();
+            assert_eq!(receiver.primary.cached_bound_address, Some(bound));
             assert_ne!(bound.port(), 0);
             let sender_address = if bound.is_ipv6() {
                 "[::1]:0"
@@ -472,9 +639,10 @@ mod tests {
                     .wrap_std(original)
                     .unwrap()
             };
-            assert!(socket.cached_bound_address.is_none());
+            assert!(socket.primary.cached_bound_address.is_none());
             assert!(
                 socket
+                    .primary
                     .receive_bound_address()
                     .unwrap()
                     .ip()
@@ -488,7 +656,8 @@ mod tests {
 
             // Exercise the same fallback construction used when a receive supplies no dst_ip.
             // Kernels with destination ancillary data would otherwise hide a stale bound IP.
-            let fallback = receive_local_address(socket.receive_bound_address().unwrap(), None);
+            let fallback =
+                receive_local_address(socket.primary.receive_bound_address().unwrap(), None);
             assert_eq!(SocketAddr::from(fallback), changed);
         }
     }
@@ -690,7 +859,7 @@ mod tests {
 
         for (payload, sender, wake) in &mut senders {
             let sender = sender.as_mut().unwrap();
-            assert!(sender.writable.is_none());
+            assert!(sender.primary.writable.is_none());
             let waker = Waker::from(wake.clone());
             assert!(
                 sender
@@ -862,6 +1031,73 @@ mod tests {
         let mut sender_socket = sender_socket;
         let reply = sender_socket.recv(&mut buffer).await.unwrap();
         assert_eq!(&buffer[..reply.len], b"reply");
+    }
+
+    #[cfg(target_vendor = "apple")]
+    #[tokio::test]
+    async fn dual_stack_receive_rotates_between_ready_families() {
+        let mut options = SocketOptions::default_udp();
+        options.only_v6 = Some(false);
+        options.unicast_hops_v6 = Some(42);
+        options.multicast_loop_v6 = Some(false);
+        options.recv_hoplimit_v6 = Some(true);
+        let mut socket = crate::UdpSocketFactory::new(
+            crate::UdpSocketConfig::new().with_socket_options(options),
+        )
+        .bind(SocketAddress::default_ipv6(0))
+        .await
+        .unwrap();
+        assert_eq!(
+            SockRef::from(&*socket.primary.io)
+                .unicast_hops_v6()
+                .unwrap(),
+            42,
+        );
+        assert!(
+            !SockRef::from(&*socket.primary.io)
+                .multicast_loop_v6()
+                .unwrap()
+        );
+        let port = socket.local_addr().unwrap().port;
+        for address in [
+            SocketAddress::local_ipv4(port),
+            SocketAddress::local_ipv6(port),
+        ] {
+            let peer = UdpPacketSocket::bind(SocketAddress::new(address.ip_addr, 0))
+                .await
+                .unwrap();
+            for _ in 0..4 {
+                peer.create_sender()
+                    .send(SendDatagram::new(address, b"queued"))
+                    .await
+                    .unwrap();
+            }
+        }
+        tokio::time::timeout(Duration::from_secs(2), async {
+            socket.primary.io.readable().await.unwrap();
+            socket.ipv4.as_ref().unwrap().io.readable().await.unwrap();
+            let mut buffer = [0; 8];
+            for _ in 0..4 {
+                let first = socket.recv(&mut buffer).await.unwrap();
+                let second = socket.recv(&mut buffer).await.unwrap();
+                assert_ne!(first.peer.ip_addr.is_ipv4(), second.peer.ip_addr.is_ipv4());
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    #[cfg(target_vendor = "apple")]
+    #[test]
+    fn dual_stack_capabilities_do_not_overpromise_either_family() {
+        let mut ipv6 = DatagramCapabilities::portable();
+        ipv6.send_ecn = true;
+        ipv6.max_send_segments = 8;
+        ipv6.may_fragment = false;
+        let ipv4 = DatagramCapabilities::portable();
+        assert_eq!(common_capabilities(ipv6, ipv4), ipv4);
+        assert_eq!(common_capabilities(ipv4, ipv6), ipv4);
+        assert_eq!(common_capabilities(ipv6, ipv6), ipv6);
     }
 
     #[cfg(any(target_os = "linux", target_os = "android", windows))]

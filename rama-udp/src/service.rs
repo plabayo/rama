@@ -1,5 +1,8 @@
 //! Socket configuration and Rama service integration.
 
+#[cfg(target_vendor = "apple")]
+use std::net::SocketAddr;
+
 use rama_core::{Service, error::BoxError, telemetry::tracing};
 use rama_net::{
     address::SocketAddress,
@@ -11,6 +14,9 @@ use rama_net::{
 };
 
 use crate::{DatagramError, DatagramFeature, DatagramSocket as _, UdpPacketSocket, UdpSocket};
+
+#[cfg(target_vendor = "apple")]
+mod dual_stack;
 
 /// Configuration shared by UDP packet-socket factories.
 #[derive(Debug, Clone)]
@@ -240,6 +246,12 @@ impl UdpSocketFactory {
     }
 
     /// Bind a configured packet socket.
+    ///
+    /// On Apple platforms a dual-stack IPv6 wildcard binding uses two sockets on the same
+    /// port. Both binds must succeed before this returns; without explicit reuse options, an
+    /// occupied port in either family fails the bind. IPv6-only bindings and caller-wrapped
+    /// sockets keep their native behavior. Common socket options apply to both sockets; IPv6 options apply only to
+    /// the IPv6 socket.
     pub async fn bind<A>(&self, address: A) -> Result<UdpPacketSocket, DatagramError>
     where
         A: TryInto<SocketAddress, Error: Into<BoxError>>,
@@ -253,9 +265,28 @@ impl UdpSocketFactory {
     async fn bind_address(&self, address: SocketAddress) -> Result<UdpPacketSocket, DatagramError> {
         let mut options = self.config.socket_options.clone();
         options.address = Some(address);
+        #[cfg(target_vendor = "apple")]
+        {
+            options.address = None;
+        }
         options.r#type = Type::Datagram;
         options.protocol = Some(Protocol::UDP);
         let socket = options.try_build_socket(Domain::from(address))?;
+        #[cfg(target_vendor = "apple")]
+        {
+            if address.ip_addr.is_ipv6() && address.ip_addr.is_unspecified() && !socket.only_v6()? {
+                return dual_stack::bind(self, options, socket, address);
+            }
+            socket.bind(&SocketAddr::from(address).into())?;
+        }
+        self.prepare_socket(socket, &options)
+    }
+
+    fn prepare_socket(
+        &self,
+        socket: Socket,
+        options: &SocketOptions,
+    ) -> Result<UdpPacketSocket, DatagramError> {
         if let Some(wanted) = self.config.min_buffer_size {
             if options.recv_buffer_size.is_none() {
                 grow_buffer(&socket, Buffer::Receive, wanted);
