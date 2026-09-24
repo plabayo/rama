@@ -109,56 +109,6 @@ impl BoringTlsConnectorConfig<'_> {
             || max_version.is_some()
     }
 
-    /// Whether provider-specific settings are present.
-    ///
-    /// A different TLS implementation cannot silently ignore these settings when
-    /// selecting another transport. Common Rama TLS settings remain portable.
-    pub fn has_native_overrides(&self) -> bool {
-        // Exhaustive matching makes each new field an explicit policy decision.
-        let Self {
-            alpn: _,
-            versions: _,
-            verify: _,
-            keylog: _,
-            server_name: _,
-            store_chain: _,
-            client_auth: _,
-            server_cert_pins: _,
-            server_trust: _,
-            cipher_suites,
-            supported_groups,
-            signature_schemes,
-            grease,
-            alps,
-            extension_order,
-            cert_compression,
-            delegated_credentials,
-            record_size_limit,
-            encrypted_client_hello,
-            ocsp_stapling,
-            signed_cert_timestamps,
-            verify_cert_store,
-            min_version,
-            max_version,
-        } = self;
-
-        cipher_suites.is_some()
-            || supported_groups.is_some()
-            || signature_schemes.is_some()
-            || grease.is_some()
-            || alps.is_some()
-            || extension_order.is_some()
-            || cert_compression.is_some()
-            || delegated_credentials.is_some()
-            || record_size_limit.is_some()
-            || encrypted_client_hello.is_some()
-            || ocsp_stapling.is_some()
-            || signed_cert_timestamps.is_some()
-            || verify_cert_store.is_some()
-            || min_version.is_some()
-            || max_version.is_some()
-    }
-
     /// Compact identity of request-level overrides, or `None` for the baseline.
     ///
     /// Explicit defaults remain distinct from absence. Equivalent settings compare

@@ -1,6 +1,5 @@
 use super::{QuicClientConfig, QuicServerConfig, rustls};
 pub(crate) use crate::proto::crypto::config::{AlpnPolicy, TlsConfigError, TlsOptions};
-use crate::tls::rustls_supports_client_overrides;
 use rama_tls::{
     ProtocolVersion, TlsSupportedVersions, client::TlsClientConfig, server::TlsServerConfig,
 };
@@ -18,9 +17,6 @@ impl QuicClientConfig {
         provider: Arc<rustls::crypto::CryptoProvider>,
         options: TlsOptions,
     ) -> Result<Self, TlsConfigError> {
-        if !rustls_supports_client_overrides(config.as_extensions()) {
-            return Err(TlsConfigError::UnsupportedClientOverrides);
-        }
         let mut pieces = RustlsTlsConnectorConfig::from_extensions(config.as_extensions());
         validate_versions(pieces.versions)?;
         let versions = TlsSupportedVersions(vec![ProtocolVersion::TLSv1_3]);

@@ -8,11 +8,6 @@ use rama_tls::{
 };
 use std::{fmt, sync::Arc};
 
-#[cfg(all(
-    feature = "rustls",
-    any(feature = "boring", feature = "aws-lc", feature = "ring")
-))]
-use rama_tls_rustls::client::RustlsTlsConnectorConfig;
 #[cfg(feature = "boring")]
 use {
     crate::proto::crypto::boring as boring_crypto,
@@ -21,7 +16,7 @@ use {
 #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 use {
     crate::proto::crypto::rustls as rustls_crypto,
-    rama_tls_rustls::dep::rustls::crypto::CryptoProvider,
+    rama_tls_rustls::{client::RustlsTlsConnectorConfig, dep::rustls::crypto::CryptoProvider},
 };
 #[cfg(any(
     feature = "boring",
@@ -35,13 +30,10 @@ use {rama_core::extensions::Extensions, rama_tls::client::TlsPoolId};
 /// interface remains available through `ClientConfig::new`. Custom providers use
 /// this same interface for construction, pool identity and server authentication.
 ///
-/// Common Rama TLS policies work across implementations. Native settings require
-/// a provider that understands them: built-in providers reject another enabled
-/// implementation's overrides. When composing different built-in stream and QUIC
-/// implementations, enable both corresponding `rama-quic` features so both sets
-/// of native settings can be checked. Custom providers must reject unsupported
-/// policy, return a non-reusable pool identity and decline authentication claims;
-/// silently ignoring restrictions would make transport selection change trust.
+/// Built-in providers apply common Rama TLS settings and their own native
+/// extensions, ignoring other providers' native settings. Construction,
+/// authentication claims and pool identity describe the settings actually applied.
+/// Different connectors can therefore use different TLS policies.
 pub trait QuicClientConfigProvider: TlsClientConfigProvider {
     fn client_config(
         &self,
@@ -104,15 +96,11 @@ impl RustlsTlsProvider {
 #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 impl TlsClientConfigProvider for RustlsTlsProvider {
     fn pool_id(&self, extensions: &Extensions) -> Option<TlsPoolId> {
-        if !rustls_supports_client_overrides(extensions) {
-            return Some(TlsPoolId::non_reusable());
-        }
         RustlsTlsConnectorConfig::from_extensions(extensions).pool_id()
     }
 
     fn authenticates_server(&self, extensions: &Extensions) -> bool {
-        rustls_supports_client_overrides(extensions)
-            && RustlsTlsConnectorConfig::from_extensions(extensions).authenticates_server()
+        RustlsTlsConnectorConfig::from_extensions(extensions).authenticates_server()
     }
 }
 
@@ -150,15 +138,11 @@ pub struct BoringTlsProvider;
 #[cfg(feature = "boring")]
 impl TlsClientConfigProvider for BoringTlsProvider {
     fn pool_id(&self, extensions: &Extensions) -> Option<TlsPoolId> {
-        if !boring_supports_client_overrides(extensions) {
-            return Some(TlsPoolId::non_reusable());
-        }
         BoringTlsConnectorConfig::from_extensions(extensions).pool_id()
     }
 
     fn authenticates_server(&self, extensions: &Extensions) -> bool {
-        boring_supports_client_overrides(extensions)
-            && BoringTlsConnectorConfig::from_extensions(extensions).authenticates_server()
+        BoringTlsConnectorConfig::from_extensions(extensions).authenticates_server()
     }
 }
 
@@ -185,36 +169,6 @@ impl QuicServerConfigProvider for BoringTlsProvider {
         Ok(ServerConfig::with_crypto(Arc::new(
             boring_crypto::QuicServerConfig::from_rama(config, options)?,
         )))
-    }
-}
-
-#[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
-/// Reject native policy Rustls cannot enforce, such as a BoringSSL trust store.
-/// Otherwise choosing QUIC could silently weaken a stream connector's TLS policy.
-pub(crate) fn rustls_supports_client_overrides(extensions: &Extensions) -> bool {
-    #[cfg(feature = "boring")]
-    {
-        !BoringTlsConnectorConfig::from_extensions(extensions).has_native_overrides()
-    }
-    #[cfg(not(feature = "boring"))]
-    {
-        let _ = extensions;
-        true
-    }
-}
-
-#[cfg(feature = "boring")]
-/// Reject native policy BoringSSL cannot enforce, such as a Rustls verifier.
-/// Common Rama TLS settings remain portable across providers.
-pub(crate) fn boring_supports_client_overrides(extensions: &Extensions) -> bool {
-    #[cfg(feature = "rustls")]
-    {
-        !RustlsTlsConnectorConfig::from_extensions(extensions).has_native_overrides()
-    }
-    #[cfg(not(feature = "rustls"))]
-    {
-        let _ = extensions;
-        true
     }
 }
 
@@ -276,51 +230,50 @@ mod tests {
     use rama_net::tls::ApplicationProtocol;
     use rama_tls_boring::client::BoringGrease;
     use rama_tls_rustls::client::ModifyRustlsClientConfig;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
-    fn native_client_overrides_cannot_cross_quic_providers() {
+    fn native_settings_affect_only_the_selected_provider() {
         let rustls = RustlsTlsProvider::new(rustls_crypto::configured_provider());
         let boring = BoringTlsProvider;
         let config =
             TlsClientConfig::new().with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
         let extensions = config.as_extensions();
-        assert!(rustls.authenticates_server(extensions));
-        assert!(boring.authenticates_server(extensions));
-        assert_eq!(rustls.pool_id(extensions), boring.pool_id(extensions));
+        let baseline = rustls.pool_id(extensions);
+        assert_eq!(baseline, boring.pool_id(extensions));
 
         extensions.insert(BoringGrease(true));
-        assert!(boring.pool_id(extensions).unwrap().is_reusable());
-        assert!(!rustls.pool_id(extensions).unwrap().is_reusable());
-        assert!(!rustls.authenticates_server(extensions));
-        assert!(matches!(
-            rustls.client_config(&config, TlsOptions::default()),
-            Err(TlsConfigError::UnsupportedClientOverrides)
-        ));
+        assert_eq!(baseline, rustls.pool_id(extensions));
+        let boring_policy = boring.pool_id(extensions);
+        assert_ne!(baseline, boring_policy);
+        assert!(rustls.authenticates_server(extensions));
+        assert!(boring.authenticates_server(extensions));
+        rustls
+            .client_config(&config, TlsOptions::default())
+            .unwrap();
         boring
             .client_config(&config, TlsOptions::default())
             .unwrap();
 
-        let config =
-            TlsClientConfig::new().with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
-        let extensions = config.as_extensions();
+        // Both native configurations may coexist. Only Rustls executes this hook.
         extensions.insert(ModifyRustlsClientConfig::new(|_| {
             Err(BoxError::from_static_str("custom rustls hook"))
         }));
-        assert!(rustls.pool_id(extensions).unwrap().is_reusable());
-        assert!(!boring.pool_id(extensions).unwrap().is_reusable());
-        assert!(!boring.authenticates_server(extensions));
-        assert!(matches!(
-            boring.client_config(&config, TlsOptions::default()),
-            Err(TlsConfigError::UnsupportedClientOverrides)
-        ));
+        assert_ne!(baseline, rustls.pool_id(extensions));
+        assert_eq!(boring_policy, boring.pool_id(extensions));
+        assert!(!rustls.authenticates_server(extensions));
+        assert!(boring.authenticates_server(extensions));
         assert!(matches!(
             rustls.client_config(&config, TlsOptions::default()),
             Err(TlsConfigError::InvalidConfiguration(_))
         ));
+        boring
+            .client_config(&config, TlsOptions::default())
+            .unwrap();
     }
 
     #[test]
-    fn warmed_quic_configs_do_not_hide_incompatible_native_overrides() {
+    fn config_caches_reuse_foreign_changes_and_apply_own_changes() {
         let rustls = ClientConfigCache::new(
             Arc::new(RustlsTlsProvider::new(rustls_crypto::configured_provider())),
             TlsOptions::default(),
@@ -329,19 +282,62 @@ mod tests {
         let config =
             TlsClientConfig::new().with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
         let request = Extensions::new();
-        rustls.client_config(&config, &request).unwrap();
-        boring.client_config(&config, &request).unwrap();
+        let baseline_rustls = rustls.client_config(&config, &request).unwrap();
+        let baseline_boring = boring.client_config(&config, &request).unwrap();
 
         request.insert(BoringGrease(true));
-        assert!(matches!(
-            rustls.client_config(&config.clone().with_overrides(&request), &request),
-            Err(TlsConfigError::UnsupportedClientOverrides)
+        let effective = config.clone().with_overrides(&request);
+        let retained_rustls = rustls.client_config(&effective, &request).unwrap();
+        let changed_boring = boring.client_config(&effective, &request).unwrap();
+        assert!(Arc::ptr_eq(
+            &baseline_rustls.crypto,
+            &retained_rustls.crypto
         ));
-        let request = Extensions::new();
-        request.insert(ModifyRustlsClientConfig::new(Ok));
+        assert!(!Arc::ptr_eq(
+            &baseline_boring.crypto,
+            &changed_boring.crypto
+        ));
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        request.insert(ModifyRustlsClientConfig::new({
+            let calls = calls.clone();
+            move |config| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok(config)
+            }
+        }));
+        let effective = config.clone().with_overrides(&request);
+        let changed_rustls = rustls.client_config(&effective, &request).unwrap();
+        assert!(!Arc::ptr_eq(
+            &baseline_rustls.crypto,
+            &changed_rustls.crypto
+        ));
+        let retained_boring = boring.client_config(&effective, &request).unwrap();
+        assert!(Arc::ptr_eq(&changed_boring.crypto, &retained_boring.crypto));
+
+        request.insert(BoringGrease(false));
+        let effective = config.clone().with_overrides(&request);
+        let retained_rustls = rustls.client_config(&effective, &request).unwrap();
+        assert!(Arc::ptr_eq(&changed_rustls.crypto, &retained_rustls.crypto));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let replaced_boring = boring.client_config(&effective, &request).unwrap();
+        assert!(!Arc::ptr_eq(
+            &changed_boring.crypto,
+            &replaced_boring.crypto
+        ));
+
+        request.insert(ModifyRustlsClientConfig::new(|_| {
+            Err(BoxError::from_static_str("replacement rejects this policy"))
+        }));
+        let effective = config.with_overrides(&request);
         assert!(matches!(
-            boring.client_config(&config.with_overrides(&request), &request),
-            Err(TlsConfigError::UnsupportedClientOverrides)
+            rustls.client_config(&effective, &request),
+            Err(TlsConfigError::InvalidConfiguration(_))
+        ));
+        let retained_boring = boring.client_config(&effective, &request).unwrap();
+        assert!(Arc::ptr_eq(
+            &replaced_boring.crypto,
+            &retained_boring.crypto
         ));
     }
 }

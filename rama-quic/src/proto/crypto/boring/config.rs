@@ -1,4 +1,3 @@
-use crate::tls::boring_supports_client_overrides;
 use parking_lot::Mutex;
 use rama_crypto::dep::boring::{
     error::ErrorStack,
@@ -93,9 +92,6 @@ impl QuicClientConfig {
         config: &TlsClientConfig,
         options: TlsOptions,
     ) -> Result<Self, TlsConfigError> {
-        if !boring_supports_client_overrides(config.as_extensions()) {
-            return Err(TlsConfigError::UnsupportedClientOverrides);
-        }
         let pieces = BoringTlsConnectorConfig::from_extensions(config.as_extensions());
         validate_versions(pieces.versions)?;
         validate_alpn(pieces.alpn, options)?;
