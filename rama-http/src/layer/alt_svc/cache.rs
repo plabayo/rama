@@ -1,6 +1,5 @@
 //! Bounded, origin-scoped HTTP alternative-service advertisements.
 
-use super::RouteContext;
 use ahash::HashMap;
 use moka::{ops::compute::Op, policy::EvictionPolicy, sync::Cache};
 use parking_lot::Mutex;
@@ -15,7 +14,10 @@ use rama_http_types::{
     header,
     proto::h2::alt_svc::{AltSvcObserverExtension, AltSvcReceivedAt},
 };
-use rama_net::address::{Host, HostWithPort};
+use rama_net::{
+    address::{Host, HostWithPort},
+    client::ProxyRouteContext,
+};
 use rama_utils::macros::generate_set_and_with;
 use std::{
     sync::{
@@ -115,7 +117,8 @@ struct Storage {
     entries: OnceLock<Cache<HttpOrigin, Advertisement>>,
     observers: Mutex<HashMap<HttpOrigin, Weak<AltSvcObserverExtension>>>,
     failures: OnceLock<Cache<(u64, HttpOrigin, HttpServiceCandidate), Failure>>,
-    route_failures: OnceLock<Cache<(u64, HttpOrigin, HttpServiceCandidate, RouteContext), Failure>>,
+    route_failures:
+        OnceLock<Cache<(u64, HttpOrigin, HttpServiceCandidate, ProxyRouteContext), Failure>>,
     network: AtomicU64,
 }
 
@@ -186,7 +189,7 @@ impl AltSvcCache {
 
     fn route_failures(
         &self,
-    ) -> &Cache<(u64, HttpOrigin, HttpServiceCandidate, RouteContext), Failure> {
+    ) -> &Cache<(u64, HttpOrigin, HttpServiceCandidate, ProxyRouteContext), Failure> {
         self.storage.route_failures.get_or_init(|| {
             Cache::builder()
                 .max_capacity(
@@ -591,7 +594,7 @@ impl AltSvcCache {
         &self,
         snapshot: &Arc<HttpServiceCandidates>,
         index: usize,
-        route: &RouteContext,
+        route: &ProxyRouteContext,
     ) -> bool {
         snapshot.get(index).is_some_and(|candidate| {
             self.is_fresh(snapshot, index)
@@ -619,7 +622,7 @@ impl AltSvcCache {
         index: usize,
         network: u64,
         started: Instant,
-        route: &RouteContext,
+        route: &ProxyRouteContext,
     ) {
         let Some(candidate) = snapshot.get(index) else {
             return;
@@ -687,7 +690,7 @@ impl AltSvcCache {
     pub fn failed_service(
         &self,
         service: &EstablishedHttpService,
-        route: Option<&RouteContext>,
+        route: Option<&ProxyRouteContext>,
         network: u64,
         started: Instant,
     ) {
@@ -710,7 +713,7 @@ impl AltSvcCache {
     pub fn succeeded_service(
         &self,
         service: &EstablishedHttpService,
-        route: Option<&RouteContext>,
+        route: Option<&ProxyRouteContext>,
         network: u64,
     ) {
         self.succeeded(&service.origin, &service.candidate, route, network);
@@ -720,7 +723,7 @@ impl AltSvcCache {
         &self,
         origin: &HttpOrigin,
         candidate: &HttpServiceCandidate,
-        route: Option<&RouteContext>,
+        route: Option<&ProxyRouteContext>,
         network: u64,
     ) {
         if self.network_epoch() != network {
@@ -1635,7 +1638,7 @@ mod tests {
         assert!(!cache.is_usable_at(&snapshot, 0, late + Duration::from_secs(3)));
         assert!(cache.is_usable_at(&snapshot, 0, late + Duration::from_secs(5)));
 
-        let route = RouteContext::Route(Arc::new(ProxyRoute::Proxy(
+        let route = ProxyRouteContext::Route(Arc::new(ProxyRoute::Proxy(
             "http://proxy.example:3128".parse().unwrap(),
         )));
         for _ in 0..32 {
@@ -1709,15 +1712,15 @@ mod tests {
         record(&cache, "h2=\":443\"", now);
         let snapshot = cache.lookup_at(&origin(), now).unwrap();
         let proxy = ProxyRoute::Proxy("http://proxy.example:3128".parse().unwrap());
-        let first = RouteContext::Routes(Arc::new(
+        let first = ProxyRouteContext::Routes(Arc::new(
             [(proxy.clone(), Extensions::new())].into_iter().collect(),
         ));
-        let second = RouteContext::Routes(Arc::new(
+        let second = ProxyRouteContext::Routes(Arc::new(
             [(proxy.clone(), Extensions::new())].into_iter().collect(),
         ));
         cache.failed_route(&snapshot, 0, cache.network_epoch(), Instant::now(), &first);
         assert!(cache.route_usable(&snapshot, 0, &second));
-        let plain = RouteContext::Route(Arc::new(proxy));
+        let plain = ProxyRouteContext::Route(Arc::new(proxy));
         assert!(cache.route_usable(&snapshot, 0, &plain));
         cache.failed_route(&snapshot, 0, cache.network_epoch(), Instant::now(), &plain);
         assert!(!cache.route_usable(&snapshot, 0, &plain));
@@ -1731,7 +1734,7 @@ mod tests {
             ProxyRoute::Direct,
             Extensions::new(),
         )]));
-        let context = RouteContext::for_request(&extensions).unwrap();
+        let context = ProxyRouteContext::for_request(&extensions).unwrap();
         assert!(!context.cacheable());
         let cache = AltSvcCache::default();
         let now = Instant::now();

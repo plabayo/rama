@@ -189,6 +189,8 @@ impl QuicServerConfigProvider for BoringTlsProvider {
 }
 
 #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+/// Reject native policy Rustls cannot enforce, such as a BoringSSL trust store.
+/// Otherwise choosing QUIC could silently weaken a stream connector's TLS policy.
 pub(crate) fn rustls_supports_client_overrides(extensions: &Extensions) -> bool {
     #[cfg(feature = "boring")]
     {
@@ -202,6 +204,8 @@ pub(crate) fn rustls_supports_client_overrides(extensions: &Extensions) -> bool 
 }
 
 #[cfg(feature = "boring")]
+/// Reject native policy BoringSSL cannot enforce, such as a Rustls verifier.
+/// Common Rama TLS settings remain portable across providers.
 pub(crate) fn boring_supports_client_overrides(extensions: &Extensions) -> bool {
     #[cfg(feature = "rustls")]
     {

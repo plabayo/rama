@@ -6,8 +6,9 @@ use rama_http_types::header::{CONTENT_LENGTH, SEC_WEBSOCKET_ACCEPT};
 use rama_http_types::proto::h2::ext::Protocol;
 use rama_http_types::{Request, Response, StatusCode, Version};
 
-use super::request::{is_websocket_protocol, request_connect_protocol};
+use super::request::is_websocket_protocol;
 use crate::layer::remove_header::remove_illegal_h2_response_headers;
+use crate::utils::request_connect_protocol;
 
 #[derive(Clone, Debug)]
 /// [`Service`] which will adapt the response version to the original request version.

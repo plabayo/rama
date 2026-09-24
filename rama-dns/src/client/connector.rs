@@ -115,6 +115,9 @@ where
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let extensions = input.extensions();
+        // Request-local DNS and address-family policy can change which peers are
+        // reachable. Keep its outcomes out of shared discovery/backoff, including
+        // IP literals. Include future request-level resolver controls here too.
         if extensions.contains::<DnsAddresssResolverOverwrite>()
             || extensions.contains::<ConnectIpMode>()
             || extensions.contains::<DnsResolveIpMode>()

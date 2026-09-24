@@ -6,19 +6,16 @@
 
 use rama_core::{
     error::{BoxError, BoxErrorExt as _},
-    extensions::{Extension, Extensions, FromExtensions},
+    extensions::Extension,
 };
 use rama_net::{
     Protocol,
     address::{Host, HostWithPort},
-    client::{ProxyRoute, ProxyRoutes},
+    client::ProxyRouteContext,
     tls::ApplicationProtocol,
 };
 use rama_utils::macros::generate_set_and_with;
-use std::{
-    hash::{Hash, Hasher},
-    sync::Arc,
-};
+use std::sync::Arc;
 
 /// An HTTP origin, including its scheme and effective port.
 ///
@@ -170,67 +167,6 @@ impl HttpServiceCandidates {
     }
 }
 
-/// The configured route plan is shared, including its credentials, rather than
-/// copied into every candidate's failure key. A failure of the entire plan says
-/// nothing about a different plan or the direct path.
-#[derive(Clone, Debug, FromExtensions)]
-pub enum HttpServiceRoute {
-    /// The route chosen for a successful connection.
-    Route(Arc<ProxyRoute>),
-    /// A configured route plan, before one route succeeds.
-    Routes(Arc<ProxyRoutes>),
-}
-
-impl HttpServiceRoute {
-    /// Capture the selected route, or route plan before selection, from input metadata.
-    pub fn for_request(extensions: &Extensions) -> Option<Self> {
-        Self::from_extensions(extensions).filter(|context| {
-            !context.cacheable()
-                || context
-                    .routes()
-                    .iter()
-                    .any(|route| route.proxy_address().is_some())
-        })
-    }
-
-    /// Whether the route plan contains only stable, comparable route policies.
-    /// Opaque route-local extensions must not contribute to shared backoff.
-    pub fn cacheable(&self) -> bool {
-        match self {
-            Self::Route(_) => true,
-            // Route-local extensions are opaque to this outer selector. They
-            // may change DNS, TLS or network policy despite identical addresses.
-            Self::Routes(routes) => {
-                (0..routes.as_slice().len()).all(|index| routes.route_extensions(index).is_none())
-            }
-        }
-    }
-
-    fn routes(&self) -> &[ProxyRoute] {
-        match self {
-            Self::Route(route) => std::slice::from_ref(route.as_ref()),
-            Self::Routes(routes) => routes.as_slice(),
-        }
-    }
-}
-
-impl PartialEq for HttpServiceRoute {
-    fn eq(&self, other: &Self) -> bool {
-        self.routes() == other.routes()
-    }
-}
-
-impl Eq for HttpServiceRoute {}
-
-impl Hash for HttpServiceRoute {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.routes().len().hash(state);
-        for route in self.routes() {
-            route.proxy_address().hash(state);
-        }
-    }
-}
-
 /// Advertisement selected for this request, independent of pooled connection state.
 ///
 /// Selectors publish this on the winning input, never on a shared connection.
@@ -247,7 +183,7 @@ pub struct HttpServiceSelection {
     pub index: usize,
     /// Route plan used for availability lookup, before an inner connector chooses
     /// a winning route. Response outcomes must update this same discovery scope.
-    pub route: Option<HttpServiceRoute>,
+    pub route: Option<ProxyRouteContext>,
 }
 
 /// One candidate selected for an isolated connection attempt.

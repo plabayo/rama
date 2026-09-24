@@ -1,3 +1,4 @@
+use crate::utils::request_connect_protocol;
 use rama_core::Layer;
 use rama_core::Service;
 use rama_core::error::BoxError;
@@ -223,33 +224,6 @@ pub fn ensure_valid_h2_or_h3_request<Body>(request: &mut Request<Body>) -> Resul
 /// Whether a [`Protocol`] is the WebSocket Extended CONNECT / `Upgrade` protocol.
 pub(crate) fn is_websocket_protocol(protocol: &Protocol) -> bool {
     protocol.as_str().eq_ignore_ascii_case("websocket")
-}
-
-/// The Extended CONNECT / `Upgrade` application protocol a request is *genuinely*
-/// switching to (e.g. `websocket`), if any.
-///
-/// HTTP/2 and HTTP/3 carry it in the `:protocol` pseudo-header (the [`Protocol`]
-/// extension on a `CONNECT`). HTTP/1 carries it in the `Upgrade` header, but only
-/// counts as a genuine switch when accompanied by `Connection: Upgrade` — otherwise
-/// it is a mere protocol advertisement, which is ignored (not an error).
-pub fn request_connect_protocol<Body>(request: &Request<Body>) -> Option<Protocol> {
-    if request.method() == Method::CONNECT
-        && let Some(protocol) = request.extensions().get_ref::<Protocol>()
-    {
-        return Some(protocol.clone());
-    }
-
-    let is_genuine_upgrade = request
-        .headers()
-        .typed_get::<Connection>()
-        .is_some_and(|connection| connection.contains_upgrade());
-    if !is_genuine_upgrade {
-        return None;
-    }
-    let upgrade = request.headers().typed_get::<Upgrade>()?;
-    let token = std::str::from_utf8(upgrade.as_bytes()).ok()?.trim();
-    // A non-token upgrade value cannot be a `:protocol`; treat it as a mere advertisement.
-    Protocol::try_from(token).ok()
 }
 
 /// Translate the handshake envelope of an HTTP/1.x request up to HTTP/2 or HTTP/3.

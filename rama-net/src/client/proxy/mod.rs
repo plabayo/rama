@@ -17,10 +17,11 @@ mod load;
 mod route;
 #[doc(inline)]
 pub use route::{
-    EstablishedProxyRoute, ProxyRoute, ProxyRouteConnectError, ProxyRouteFailureCache,
-    ProxyRouteFailureCacheConfig, ProxyRouteFailureCacheConnector, ProxyRouteFailureCacheLayer,
-    ProxyRouteFailureCacheScope, ProxyRouteFailureCachedError, ProxyRouteIndex, ProxyRoutes,
-    ProxyRoutesConnector, ProxyRoutesConnectorLayer, ProxyRoutesLayer, ProxyRoutesService,
+    EstablishedProxyRoute, ProxyRoute, ProxyRouteConnectError, ProxyRouteContext,
+    ProxyRouteFailureCache, ProxyRouteFailureCacheConfig, ProxyRouteFailureCacheConnector,
+    ProxyRouteFailureCacheLayer, ProxyRouteFailureCacheScope, ProxyRouteFailureCachedError,
+    ProxyRouteIndex, ProxyRoutes, ProxyRoutesConnector, ProxyRoutesConnectorLayer,
+    ProxyRoutesLayer, ProxyRoutesService,
 };
 
 mod system;

@@ -3,7 +3,7 @@ use rama_core::{
     error::{BoxError, BoxErrorExt as _},
     extensions::ExtensionsRef,
 };
-use rama_http::layer::version_adapter::request_connect_protocol;
+use rama_http::utils::request_connect_protocol;
 use rama_http_types::Request;
 use rama_net::{
     AuthorityInputExt, ProtocolInputExt, TransportProtocolInputExt,

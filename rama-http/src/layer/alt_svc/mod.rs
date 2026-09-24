@@ -22,7 +22,6 @@ mod frames;
 mod provenance_tests;
 #[doc(inline)]
 pub use cache::AltSvcCache;
-pub use rama_http_types::conn::HttpServiceRoute as RouteContext;
 
 use crate::layer::http_service::authenticates;
 use crate::{
@@ -44,7 +43,7 @@ use rama_net::{
     AuthorityInputExt as _, Protocol, ProtocolInputExt as _,
     client::{
         ConnectionAttempt, ConnectionError, ConnectionErrorDomain, ConnectionErrorKind,
-        ConnectionPolicyScope,
+        ConnectionPolicyScope, ProxyRouteContext,
     },
 };
 use rama_utils::macros::define_inner_service_accessors;
@@ -96,7 +95,7 @@ struct Observation {
 #[derive(Clone, Debug)]
 struct AlternativeFailure {
     service: Arc<EstablishedHttpService>,
-    route: Option<RouteContext>,
+    route: Option<ProxyRouteContext>,
     network: u64,
 }
 
@@ -122,7 +121,7 @@ impl Observation {
                 service.map(|service| AlternativeFailure {
                     service,
                     route: selection.as_ref().map_or_else(
-                        || RouteContext::for_request(request.extensions()),
+                        || ProxyRouteContext::for_request(request.extensions()),
                         |selection| selection.route.clone(),
                     ),
                     network: cache.network_epoch(),

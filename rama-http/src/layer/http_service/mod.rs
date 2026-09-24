@@ -69,7 +69,7 @@
 //! [RFC 7838 §4]: https://www.rfc-editor.org/rfc/rfc7838.html#section-4
 //! [RFC 8164 §2]: https://www.rfc-editor.org/rfc/rfc8164.html#section-2
 
-use crate::layer::alt_svc::{AltSvcCache, RouteContext};
+use crate::layer::alt_svc::AltSvcCache;
 use rama_core::{
     Fork as _, Layer, Service,
     error::{BoxError, BoxErrorExt as _},
@@ -89,6 +89,7 @@ use rama_net::{
     client::{
         ConnectRequest, ConnectionError, ConnectionErrorDomain, ConnectionErrorKind,
         ConnectionPolicyScope, ConnectorService, ConnectorTarget, EstablishedClientConnection,
+        ProxyRouteContext,
     },
     conn::ConnectionHealthWatcher,
     http::{HttpRequestVersion, TargetHttpVersion},
@@ -582,7 +583,7 @@ where
         // Snapshot discovery once; freshness and route backoff are rechecked
         // before each attempt because other requests can update the shared cache.
         let origin = origin(&input);
-        let route = RouteContext::for_request(input.extensions());
+        let route = ProxyRouteContext::for_request(input.extensions());
         let (snapshot, from_cache) = self.candidates(&input, origin.as_ref(), route.is_some());
         let mut attempts = 0;
 
