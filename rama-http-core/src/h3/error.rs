@@ -120,10 +120,10 @@ impl Error {
     /// This classification does not grant permission to retry a request.
     #[must_use]
     pub fn is_remote_failure(self) -> bool {
-        !matches!(self.source, Source::Local)
-            && !self.is_clean_close()
-            && !(self.scope == ErrorScope::Stream
-                && matches!(self.code(), Code::H3_REQUEST_REJECTED | Code::H3_NO_ERROR))
+        !(matches!(self.source, Source::Local)
+            || self.is_clean_close()
+            || (self.scope == ErrorScope::Stream
+                && matches!(self.code(), Code::H3_REQUEST_REJECTED | Code::H3_NO_ERROR)))
     }
 
     /// The effective HTTP/3 application error code.

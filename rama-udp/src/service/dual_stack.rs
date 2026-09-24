@@ -36,7 +36,10 @@ pub(super) fn bind(
     ipv4_options.unicast_hops_v6 = None;
     ipv4_options.recv_hoplimit_v6 = None;
     ipv4_options.recv_tclass_v6 = None;
-    ipv4_options.tclass_v6 = None;
+    #[cfg(target_os = "macos")]
+    {
+        ipv4_options.tclass_v6 = None;
+    }
 
     let mut attempts_remaining = MAX_BIND_ATTEMPTS;
     loop {
