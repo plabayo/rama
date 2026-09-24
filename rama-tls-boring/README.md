@@ -63,7 +63,7 @@ The TLS features below are implemented on top of [`rama-boring`](https://github.
 
 Most negotiables (cipher suites, extension order, ALPN, groups, versions, signature schemes, cert compression, delegated credentials, record-size-limit, ECH, ALPS, OCSP/SCT, GREASE) can also be **derived from a captured `ClientHello`** for fingerprint mimicry — see [Proxy](#proxy-mitm--mirroring) and `new_from_client_hello`.
 
-**Important limits:** ClientHello mimicry is best-effort, not byte-for-byte arbitrary TLS message synthesis. Unsupported/unknown values may be ignored by `rama-boring`/BoringSSL. Client-side OCSP/CRL revocation verification, real ECH, and server-side TLS fingerprint controls are not currently wired at the rama config layer. The MITM relay intentionally disables upstream certificate verification on egress; use it only in flows where that trust model is acceptable.
+**Important limits:** ClientHello mimicry is best-effort, not byte-for-byte arbitrary TLS message synthesis. Unsupported/unknown values may be ignored by `rama-boring`/BoringSSL. Client-side OCSP/CRL revocation verification, real ECH, and server-side TLS fingerprint controls are not currently wired at the rama config layer. The MITM relay disables upstream certificate verification on egress by default; opt into verification with `TlsMitmEgressServerAuth`.
 
 ### Client
 
@@ -167,7 +167,7 @@ The inbound acceptor ([`TlsAcceptorLayer`](src/server/layer.rs) / [`TlsAcceptorS
 
 **GREASE & key logging:** ingress GREASE is on by default (`grease_enabled`); egress GREASE follows the mirrored hello. `keylog_intent` (default `Environment`) applies to **both** sides — the keylog exports session keys for the relay-mirrored client side *and* the upstream side, so treat the file as security-sensitive ([mod.rs#L73-L99](src/proxy/mitm/mod.rs#L73-L99)).
 
-**Trust:** egress verification is forced `Disable` (the relay accepts the upstream's real cert without verifying it); ingress loads no OS trust store and enforces no client-cert verification ([service.rs#L43-L93](src/proxy/mitm/service.rs#L43-L93), [mod.rs#L643-L650](src/proxy/mitm/mod.rs#L643-L650)).
+**Trust:** egress verification is disabled by default so the relay stays transparent to certificates the client may accept; `TlsMitmEgressServerAuth` (`with_egress_server_auth`) opts into verification, custom or additive trust anchors, and certificate pinning. Egress presents a client certificate (mTLS) only when a `TlsMitmEgressClientAuth` is set, as relay default or per-flow extension. Ingress loads no OS trust store and enforces no client-cert verification ([egress.rs](src/proxy/mitm/egress.rs), [service.rs](src/proxy/mitm/service.rs)).
 
 **Error classification:** `TlsMitmRelayError` carries a kind (Config / Handshake{direction, classification} / TlsServe). Handshake errors are classified `CertTrust` (cacheable bypass candidate) vs `TlsProtocol` vs `Transport` vs `Unclassified` from peer alerts and `rama-boring` reason strings, with direction (Ingress/Egress), `ConnectorTarget`, and SNI attached ([mod.rs#L188-L478](src/proxy/mitm/mod.rs#L188-L478)). A plaintext pre-handshake alert primitive exists in [alert.rs](src/proxy/mitm/alert.rs) but is currently **disabled** (`mod alert;` commented out) — failures are conveyed by transport close.
 

@@ -1,18 +1,21 @@
-use rama_boring::x509::store::X509Store;
-use rama_core::{error::BoxError, extensions::ExtensionsRef};
+use rama_boring::{ssl::SslRef, x509::store::X509Store};
+use rama_core::{
+    error::{BoxError, BoxErrorExt as _, ErrorContext as _},
+    extensions::{Extension, Extensions},
+};
 use rama_crypto::pki_types::CertificateDer;
 use rama_net::address::{Domain, Host, HostWithPort};
 use rama_tls::{
     KeyLogIntent,
     client::{
-        ClientHello, ServerVerifyMode, TlsClientAuth, TlsClientConfig, TlsServerCertPins,
+        ClientAuth, ClientHello, ServerVerifyMode, TlsClientConfig, TlsServerCertPins,
         TlsServerTrust, TlsServerVerify,
     },
 };
 use rama_utils::macros::generate_set_and_with;
 use std::sync::Arc;
 
-use crate::client::BoringClientConfigExt as _;
+use crate::client::{BoringClientConfigExt as _, ConnectorConfigClientAuth, TlsConnectorData};
 
 /// Server-authentication policy for upstream TLS connections made by a
 /// [`TlsMitmRelay`](super::TlsMitmRelay).
@@ -160,23 +163,94 @@ impl TlsMitmEgressServerAuth {
     }
 }
 
+/// Client identity (mTLS) presented by a [`TlsMitmRelay`](super::TlsMitmRelay)
+/// to upstream servers that request one.
+///
+/// Parsed and validated once. Insert it into the ingress flow extensions to
+/// override the relay default for that connection; share one identity across
+/// flows with [`Extensions::insert_arc`]. Generic [`TlsClientAuth`](rama_tls::client::TlsClientAuth)
+/// pieces found there are ignored, like any other ingress TLS client setting.
+///
+/// With TLS 1.3 an upstream rejecting this identity fails the connection
+/// after the relay handshake, not during it.
+#[derive(Debug, Clone, Extension)]
+#[extension(tags(tls))]
+pub struct TlsMitmEgressClientAuth(ConnectorConfigClientAuth);
+
+impl TryFrom<ConnectorConfigClientAuth> for TlsMitmEgressClientAuth {
+    type Error = BoxError;
+
+    fn try_from(auth: ConnectorConfigClientAuth) -> Result<Self, Self::Error> {
+        let leaf = auth
+            .cert_chain
+            .first()
+            .context("tls mitm egress client auth: empty cert chain")?;
+        let leaf_key = leaf
+            .public_key()
+            .context("tls mitm egress client auth: read leaf public key")?;
+        if !leaf_key.public_eq(&auth.private_key) {
+            return Err(BoxError::from_static_str(
+                "tls mitm egress client auth: private key does not match leaf certificate",
+            ));
+        }
+        Ok(Self(auth))
+    }
+}
+
+impl TryFrom<ClientAuth> for TlsMitmEgressClientAuth {
+    type Error = BoxError;
+
+    fn try_from(auth: ClientAuth) -> Result<Self, Self::Error> {
+        ConnectorConfigClientAuth::try_from(auth)?.try_into()
+    }
+}
+
+impl TlsMitmEgressClientAuth {
+    fn apply(&self, data: &mut TlsConnectorData) -> Result<(), BoxError> {
+        let ssl: &mut SslRef = &mut data.config;
+        let ConnectorConfigClientAuth {
+            cert_chain,
+            private_key,
+        } = &self.0;
+        let (leaf, chain) = cert_chain
+            .split_first()
+            .context("tls mitm egress client auth: empty cert chain")?;
+        ssl.set_certificate(leaf)
+            .context("tls mitm egress client auth: set leaf certificate")?;
+        ssl.set_private_key(private_key)
+            .context("tls mitm egress client auth: set private key")?;
+        for cert in chain {
+            ssl.add_chain_cert(cert)
+                .context("tls mitm egress client auth: add chain certificate")?;
+        }
+        Ok(())
+    }
+}
+
+/// Present the effective upstream client identity: the ingress flow's
+/// [`TlsMitmEgressClientAuth`] wins over the relay default.
+pub(super) fn with_client_auth(
+    mut data: TlsConnectorData,
+    flow: &Extensions,
+    default: Option<&TlsMitmEgressClientAuth>,
+) -> Result<TlsConnectorData, BoxError> {
+    if let Some(client_auth) = flow.get_ref::<TlsMitmEgressClientAuth>().or(default) {
+        client_auth.apply(&mut data)?;
+    }
+    Ok(data)
+}
+
 /// Build the relay-owned portion of an upstream TLS client config.
 ///
 /// This is shared by [`TlsMitmRelayService`](super::TlsMitmRelayService) and
 /// direct [`TlsMitmRelay::handshake`](super::TlsMitmRelay::handshake) calls so
 /// the policy, key logging, and transparent verification default cannot drift
 /// between the two entry points.
-///
-/// `client_auth` carries the relay's effective upstream client identity (mTLS).
-/// Resolve it with [`egress_client_auth`] so a per-connection [`TlsClientAuth`]
-/// flow extension wins over the relay's static default. [`None`] preserves the
-/// previous behavior of presenting no client certificate upstream.
 pub(super) fn tls_client_config(
     client_hello: Option<&ClientHello>,
     server_name: Option<Host>,
     keylog: KeyLogIntent,
     server_auth: Option<&TlsMitmEgressServerAuth>,
-    client_auth: Option<&TlsClientAuth>,
 ) -> TlsClientConfig {
     let mut config = match client_hello {
         Some(hello) => TlsClientConfig::new_from_client_hello(hello),
@@ -195,27 +269,7 @@ pub(super) fn tls_client_config(
         }
     }
 
-    if let Some(client_auth) = client_auth {
-        config.as_extensions().insert(client_auth.clone());
-    }
-
     config
-}
-
-/// Resolve the relay's effective upstream client identity (mTLS).
-///
-/// A per-connection [`TlsClientAuth`] on the ingress flow extensions wins over
-/// the relay's static default. [`None`] means the relay presents no client
-/// certificate upstream.
-pub(super) fn egress_client_auth(
-    input: &impl ExtensionsRef,
-    fallback: Option<&TlsClientAuth>,
-) -> Option<TlsClientAuth> {
-    input
-        .extensions()
-        .get_ref::<TlsClientAuth>()
-        .cloned()
-        .or_else(|| fallback.cloned())
 }
 
 /// Resolve the relay's effective upstream identity without changing transparent
