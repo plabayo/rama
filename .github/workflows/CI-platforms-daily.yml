@@ -170,24 +170,33 @@ jobs:
           # write bounces) and its failed entries evict useful macOS/Linux ones.
           sccache: ${{ startsWith(matrix.os, 'windows') && 'false' || 'true' }}
       - name: Build run tests (cargo test)
-        run: cargo nextest run --all-features --workspace --no-run
+        id: build_tests_all
+        run: cargo nextest run --profile ci --all-features --workspace --no-run
       - name: Run tests (cargo test)
-        run: cargo nextest run --all-features --workspace
+        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' }}
+        run: cargo nextest run --profile ci --all-features --workspace
       - name: Build run tests (--no-default--features)
-        run: cargo nextest run --no-default-features --workspace --no-run
+        id: build_tests_minimal
+        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' }}
+        run: cargo nextest run --profile ci --no-default-features --workspace --no-run
       - name: Run tests (--no-default--features)
-        run: cargo nextest run --no-default-features --workspace
+        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && steps.build_tests_minimal.outcome == 'success' }}
+        run: cargo nextest run --profile ci --no-default-features --workspace
       - name: Run crypto backend tests
+        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && steps.build_tests_minimal.outcome == 'success' }}
         shell: bash
         run: bash scripts/test-crypto.sh all --profile ci
       - name: Run doc tests (cargo test)
-        run: cargo test --doc --all-features --workspace
+        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && steps.build_tests_minimal.outcome == 'success' }}
+        run: cargo test --doc --all-features --workspace --no-fail-fast
       - name: Run example tests (cargo test)
-        run: |
-          cargo nextest run --all-features --examples --workspace --no-tests=pass
-          cargo nextest run --all-features --bins --package rama-examples --no-tests=pass
+        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && steps.build_tests_minimal.outcome == 'success' }}
+        run: cargo nextest run --profile ci --all-features --examples --workspace --no-tests=pass
+      - name: Run example binary tests
+        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && steps.build_tests_minimal.outcome == 'success' }}
+        run: cargo nextest run --profile ci --all-features --bins --package rama-examples --no-tests=pass
       - name: Run ignored tests
-        if: matrix.os == 'ubuntu-latest' || matrix.os == 'macos-15'
+        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && steps.build_tests_minimal.outcome == 'success' && (matrix.os == 'ubuntu-latest' || matrix.os == 'macos-15') }}
         timeout-minutes: ${{ matrix.os == 'macos-15' && 90 || 60 }}
         shell: bash
         run: |
@@ -207,7 +216,7 @@ jobs:
           time cargo nextest run --profile ci --all-features --workspace --run-ignored=only
       # The only ignored test whose interrupt path is Windows-specific.
       - name: Run the relay interrupt test
-        if: startsWith(matrix.os, 'windows')
+        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && steps.build_tests_minimal.outcome == 'success' && (startsWith(matrix.os, 'windows')) }}
         timeout-minutes: 60
         run: cargo nextest run --profile ci --all-features --package rama-examples --test integration --run-ignored=only -E 'test(an_interrupted_relay_stops_its_peers_and_exits)'
       # MITM revocation gate. Linux: hermetic staple matrix (curl --cert-status,
@@ -218,12 +227,12 @@ jobs:
       # where schannel enforces revocation (the customer scenario libcurl +
       # schannel can't resolve via a staple).
       - name: MITM revocation gate (curl + openssl + cargo)
-        if: matrix.os == 'ubuntu-latest'
+        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && steps.build_tests_minimal.outcome == 'success' && (matrix.os == 'ubuntu-latest') }}
         env:
           OCSP_GATE_REQUIRE: "1"
         run: bash scripts/ocsp-relay-gate.sh
       - name: MITM revocation gate (cargo / schannel)
-        if: matrix.os == 'windows-latest'
+        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && steps.build_tests_minimal.outcome == 'success' && (matrix.os == 'windows-latest') }}
         shell: pwsh
         run: ./scripts/ocsp-relay-gate.ps1
       - name: sccache stats
