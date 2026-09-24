@@ -353,13 +353,24 @@ mod tests {
     }
 
     #[test]
-    fn concurrent_builds_converge_without_holding_the_lock_during_provider_calls() {
+    fn provider_runs_without_holding_the_cache_lock() {
+        let provider = Arc::new(TestProvider::default());
+        let cache = ClientConfigCache::new(provider.clone(), TlsOptions::default());
+        *provider.cache.lock() = Arc::downgrade(&cache.configs);
+        let tls = TlsClientConfig::new();
+        cache.client_config(&tls, tls.as_extensions()).unwrap();
+        assert_eq!(provider.calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn concurrent_builds_converge() {
         let provider = Arc::new(TestProvider {
             rendezvous: Some(Barrier::new(2)),
             ..Default::default()
         });
         let cache = ClientConfigCache::new(provider.clone(), TlsOptions::default());
-        *provider.cache.lock() = Arc::downgrade(&cache.configs);
+        // A try_lock in either provider call could observe the other caller's
+        // cache lookup. Check lock ownership separately, without competing threads.
         let clone = cache.clone();
         let tls = TlsClientConfig::new();
         let (first, second) = thread::scope(|scope| {

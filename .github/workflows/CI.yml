@@ -900,9 +900,19 @@ jobs:
           persist-credentials: false
       - name: Install packet analysis tools
         run: |
-          sudo add-apt-repository --yes ppa:wireshark-dev/stable
-          sudo apt-get update
-          sudo env DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends tshark python3-venv
+          # Launchpad metadata requests can time out before apt runs. Retry only
+          # package setup; test failures below must still fail the job.
+          for attempt in 1 2 3; do
+            if sudo timeout 180s add-apt-repository --yes --no-update ppa:wireshark-dev/stable; then
+              break
+            fi
+            if [[ "$attempt" == 3 ]]; then
+              exit 1
+            fi
+            sleep 5
+          done
+          sudo apt-get -o Acquire::Retries=3 update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=3 install --yes --no-install-recommends tshark python3-venv
           sudo modprobe ip6table_filter
           tshark --version
           docker compose version
