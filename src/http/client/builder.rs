@@ -16,7 +16,7 @@ use crate::{
     },
     net::client::{
         ConnectRequest, ConnectionError, ConnectorService, EstablishedClientConnection,
-        LayeredConnector, ProxyRouteFailureCache, ProxyRouteFailureCacheConnector,
+        MapEstablishedConnection, ProxyRouteFailureCache, ProxyRouteFailureCacheConnector,
         ProxyRoutesConnector, pool::PooledConnector,
     },
     service::BoxService,
@@ -26,7 +26,6 @@ use rama_http::layer::{
     alt_svc::{AltSvc, AltSvcCache, AltSvcLayer},
     http_service::HttpServiceConnector,
 };
-use rama_net::tls::ApplicationProtocol;
 use rama_utils::macros::generate_set_and_with;
 use std::time::Duration;
 
@@ -75,15 +74,11 @@ pub struct TlsStage<const PROXY: bool = true>;
 
 #[non_exhaustive]
 #[derive(Debug, Default)]
-pub struct HttpStage<const PROXY: bool = true> {
-    h3: bool,
-}
+pub struct HttpStage<const PROXY: bool = true>;
 
 #[non_exhaustive]
 #[derive(Debug, Default)]
-pub struct ProxyRouteFailureCacheStage {
-    h3: bool,
-}
+pub struct ProxyRouteFailureCacheStage;
 
 #[non_exhaustive]
 #[derive(Debug, Default)]
@@ -585,7 +580,7 @@ impl<T, D, const PROXY: bool> EasyHttpConnectorBuilder<T, TlsStage<PROXY>, D> {
         EasyHttpConnectorBuilder {
             dns: self.dns,
             connector,
-            stage: HttpStage { h3: false },
+            stage: HttpStage,
         }
     }
 
@@ -602,7 +597,7 @@ impl<T, D, const PROXY: bool> EasyHttpConnectorBuilder<T, TlsStage<PROXY>, D> {
         EasyHttpConnectorBuilder {
             dns: self.dns,
             connector,
-            stage: HttpStage { h3: false },
+            stage: HttpStage,
         }
     }
 }
@@ -616,14 +611,13 @@ impl<T, Body, D, const PROXY: bool>
     /// connectors without that metadata are not pooled.
     /// Use [`Self::with_http3_support`] for the built-in connector.
     pub fn with_http3_connector<C>(
-        mut self,
+        self,
         connector: C,
     ) -> EasyHttpConnectorBuilder<
         HttpConnector<super::HttpTransportConnector<T, C>, Body>,
         HttpStage<PROXY>,
         D,
     > {
-        self.stage.h3 = true;
         EasyHttpConnectorBuilder {
             dns: self.dns,
             connector: self.connector.with_http3_connector(connector),
@@ -654,7 +648,10 @@ impl<T, Body, D, const PROXY: bool>
 
 type DefaultHttpConnector<T> = RequestVersionAdapter<
     HttpConnectRequestAdapter<
-        LayeredConnector<HttpServiceConnector<ProxyRoutesConnector<T>>, AltSvcConnectionLayer>,
+        MapEstablishedConnection<
+            HttpServiceConnector<ProxyRoutesConnector<T>>,
+            AltSvcConnectionLayer,
+        >,
     >,
 >;
 
@@ -721,20 +718,10 @@ where
     ConnectorServiceAdapter(connector).boxed()
 }
 
-fn finalize_http_connector<T>(connector: T, h3_enabled: bool) -> DefaultHttpConnector<T> {
+fn finalize_http_connector<T>(connector: T) -> DefaultHttpConnector<T> {
     let connector = ProxyRoutesConnector::new(connector);
     let cache = AltSvcCache::default();
-    let connector = HttpServiceConnector::new(connector)
-        .with_protocols(
-            [
-                ApplicationProtocol::HTTP_10,
-                ApplicationProtocol::HTTP_11,
-                ApplicationProtocol::HTTP_2,
-            ]
-            .into_iter()
-            .chain(h3_enabled.then_some(ApplicationProtocol::HTTP_3)),
-        )
-        .with_cache(cache.clone());
+    let connector = HttpServiceConnector::new(connector).with_cache(cache.clone());
     adapt_http_service_connector(connector, Some(cache))
 }
 
@@ -742,7 +729,7 @@ fn adapt_http_service_connector<T>(
     connector: HttpServiceConnector<ProxyRoutesConnector<T>>,
     cache: Option<AltSvcCache>,
 ) -> DefaultHttpConnector<T> {
-    let connector = LayeredConnector::new(connector, AltSvcConnectionLayer { cache });
+    let connector = MapEstablishedConnection::new(connector, AltSvcConnectionLayer { cache });
     RequestVersionAdapter::new(HttpConnectRequestAdapter::new(connector))
 }
 
@@ -751,21 +738,6 @@ impl<T> EasyHttpConnectorBuilder<DefaultHttpConnector<T>, PoolStage> {
     #[must_use]
     pub fn without_alt_svc(self) -> Self {
         self.maybe_with_alt_svc_cache(None)
-    }
-
-    generate_set_and_with! {
-        /// Declare the advertised HTTP protocols supported by the completed connector stack.
-        ///
-        /// Custom HTTP connectors can include HTTP/3 here without using Rama's
-        /// built-in QUIC connector. This controls discovery eligibility, not the
-        /// transport implementation or an explicit request's required version.
-        pub fn supported_http_service_protocols(
-            mut self,
-            protocols: impl IntoIterator<Item = ApplicationProtocol>,
-        ) -> Self {
-            self.connector.get_mut().get_mut().get_mut().set_protocols(protocols);
-            self
-        }
     }
 
     generate_set_and_with! {
@@ -779,63 +751,44 @@ impl<T> EasyHttpConnectorBuilder<DefaultHttpConnector<T>, PoolStage> {
     }
 }
 
-fn finish_without_connection_pool<T, Stage: PoolConfig, D>(
+fn finish_without_connection_pool<T, Stage, D>(
     builder: EasyHttpConnectorBuilder<T, Stage, D>,
 ) -> ConfiguredConnectionBuilder<T>
 where
     T: ConnectorService<ConnectRequest>,
 {
-    let h3_enabled = builder.stage.h3_enabled();
     EasyHttpConnectorBuilder {
         dns: (),
-        connector: finalize_http_connector(builder.connector, h3_enabled),
+        connector: finalize_http_connector(builder.connector),
         stage: Default::default(),
     }
 }
 
-trait PoolConfig {
-    fn h3_enabled(self) -> bool;
-}
-
-impl<const PROXY: bool> PoolConfig for HttpStage<PROXY> {
-    fn h3_enabled(self) -> bool {
-        self.h3
-    }
-}
-
-impl PoolConfig for ProxyRouteFailureCacheStage {
-    fn h3_enabled(self) -> bool {
-        self.h3
-    }
-}
-
-fn finish_with_connection_pool<T, Stage: PoolConfig, D>(
+fn finish_with_connection_pool<T, Stage, D>(
     builder: EasyHttpConnectorBuilder<T, Stage, D>,
     config: HttpPooledConnectorConfig,
 ) -> Result<ConfiguredConnectionPoolBuilder<T>, BoxError>
 where
     T: ConnectorService<ConnectRequest>,
 {
-    let h3_enabled = builder.stage.h3_enabled();
     let connector = config.try_build_connector(builder.connector)?;
     Ok(EasyHttpConnectorBuilder {
         dns: (),
-        connector: finalize_http_connector(connector, h3_enabled),
+        connector: finalize_http_connector(connector),
         stage: Default::default(),
     })
 }
 
-fn finish_with_default_connection_pool<T, Stage: PoolConfig, D>(
+fn finish_with_default_connection_pool<T, Stage, D>(
     builder: EasyHttpConnectorBuilder<T, Stage, D>,
 ) -> ConfiguredConnectionPoolBuilder<T>
 where
     T: ConnectorService<ConnectRequest>,
 {
-    let h3_enabled = builder.stage.h3_enabled();
     let connector = HttpPooledConnectorConfig::build_default_connector(builder.connector);
     EasyHttpConnectorBuilder {
         dns: (),
-        connector: finalize_http_connector(connector, h3_enabled),
+        connector: finalize_http_connector(connector),
         stage: Default::default(),
     }
 }
@@ -876,7 +829,7 @@ impl<T, D, const PROXY: bool> EasyHttpConnectorBuilder<T, HttpStage<PROXY>, D> {
         EasyHttpConnectorBuilder {
             dns: self.dns,
             connector: ProxyRouteFailureCacheConnector::new(erase_connector(self.connector), cache),
-            stage: ProxyRouteFailureCacheStage { h3: self.stage.h3 },
+            stage: ProxyRouteFailureCacheStage,
         }
     }
 
@@ -888,7 +841,7 @@ impl<T, D, const PROXY: bool> EasyHttpConnectorBuilder<T, HttpStage<PROXY>, D> {
         EasyHttpConnectorBuilder {
             dns: self.dns,
             connector: self.connector,
-            stage: ProxyRouteFailureCacheStage { h3: self.stage.h3 },
+            stage: ProxyRouteFailureCacheStage,
         }
     }
 }
@@ -1174,7 +1127,7 @@ mod tests {
             header::ALT_SVC,
         },
         rama_core::{ServiceInput, service::service_fn},
-        rama_net::http::TargetHttpVersion,
+        rama_net::{http::TargetHttpVersion, tls::ApplicationProtocol},
         rama_tls::{
             ProtocolVersion,
             client::{NegotiatedTlsParameters, TlsServerAuthentication},
@@ -1229,7 +1182,7 @@ mod tests {
 
     #[cfg(feature = "tls")]
     #[tokio::test]
-    async fn custom_http_connector_can_declare_h3_discovery_support() {
+    async fn custom_http_connector_discovers_h3_without_capability_configuration() {
         let cache = AltSvcCache::default();
         let origin =
             HttpOrigin::new(Protocol::HTTPS, HostWithPort::example_domain_https()).unwrap();
@@ -1237,46 +1190,41 @@ mod tests {
         headers.insert(ALT_SVC, "h3=\":8443\"".parse().unwrap());
         cache.record(&origin, &headers, Duration::ZERO);
 
-        for enabled in [false, true] {
-            let builder = EasyHttpConnectorBuilder::new()
-                .with_custom_transport_connector(())
-                .without_dns_connector()
-                .without_tls_proxy_support()
-                .without_proxy_support()
-                .without_tls_support()
-                .with_custom_http_connector(layer_fn(|()| {
-                    service_fn(|input: ConnectRequest| async move {
-                        let version = input
-                            .extensions()
-                            .get_ref::<TargetHttpVersion>()
-                            .map_or(Version::HTTP_2, |version| version.0);
-                        let conn = ServiceInput::new(());
-                        conn.extensions.insert(TargetHttpVersion(version));
-                        conn.extensions
-                            .insert(TlsServerAuthentication(Some(input.authority.host.clone())));
-                        conn.extensions.insert(NegotiatedTlsParameters {
-                            protocol_version: ProtocolVersion::TLSv1_3,
-                            application_layer_protocol: Some(if version == Version::HTTP_3 {
-                                ApplicationProtocol::HTTP_3
-                            } else {
-                                ApplicationProtocol::HTTP_2
-                            }),
-                            peer_certificate_chain: None,
-                            server_name: None,
-                            resumed: None,
-                        });
-                        Ok::<_, Infallible>(EstablishedClientConnection { input, conn })
-                    })
-                }))
-                .without_connection_pool()
-                .with_alt_svc_cache(cache.clone());
-            let builder = if enabled {
-                builder.with_supported_http_service_protocols([ApplicationProtocol::HTTP_3])
-            } else {
-                builder
-            };
-            let established = builder
-                .build_connector()
+        let builder = EasyHttpConnectorBuilder::new()
+            .with_custom_transport_connector(())
+            .without_dns_connector()
+            .without_tls_proxy_support()
+            .without_proxy_support()
+            .without_tls_support()
+            .with_custom_http_connector(layer_fn(|()| {
+                service_fn(|input: ConnectRequest| async move {
+                    let version = input
+                        .extensions()
+                        .get_ref::<TargetHttpVersion>()
+                        .map_or(Version::HTTP_2, |version| version.0);
+                    let conn = ServiceInput::new(());
+                    conn.extensions.insert(TargetHttpVersion(version));
+                    conn.extensions
+                        .insert(TlsServerAuthentication(Some(input.authority.host.clone())));
+                    conn.extensions.insert(NegotiatedTlsParameters {
+                        protocol_version: ProtocolVersion::TLSv1_3,
+                        application_layer_protocol: Some(if version == Version::HTTP_3 {
+                            ApplicationProtocol::HTTP_3
+                        } else {
+                            ApplicationProtocol::HTTP_2
+                        }),
+                        peer_certificate_chain: None,
+                        server_name: None,
+                        resumed: None,
+                    });
+                    Ok::<_, Infallible>(EstablishedClientConnection { input, conn })
+                })
+            }))
+            .without_connection_pool()
+            .with_alt_svc_cache(cache.clone());
+        let connector = builder.build_connector();
+        for _ in 0..2 {
+            let established = connector
                 .serve(
                     Request::builder()
                         .uri("https://example.com/")
@@ -1285,27 +1233,24 @@ mod tests {
                 )
                 .await
                 .unwrap();
+            assert!(
+                established
+                    .input
+                    .extensions()
+                    .contains::<SelectedHttpService>()
+            );
+            assert_eq!(established.input.version(), Version::HTTP_3);
             assert_eq!(
                 established
                     .input
                     .extensions()
-                    .contains::<SelectedHttpService>(),
-                enabled
+                    .get_ref::<SelectedHttpService>()
+                    .unwrap()
+                    .candidate
+                    .target
+                    .port,
+                8443
             );
-            if enabled {
-                assert_eq!(established.input.version(), Version::HTTP_3);
-                assert_eq!(
-                    established
-                        .input
-                        .extensions()
-                        .get_ref::<SelectedHttpService>()
-                        .unwrap()
-                        .candidate
-                        .target
-                        .port,
-                    8443
-                );
-            }
         }
     }
 

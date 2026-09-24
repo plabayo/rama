@@ -48,6 +48,21 @@ where
         .or_else(|| input.http_version())
 }
 
+/// Ordinary input versions permit negotiation; an explicit target or H3 prior
+/// knowledge constrains the transport before it is established.
+fn required_transport_http_version<Input>(input: &Input) -> Option<Version>
+where
+    Input: ExtensionsRef + HttpVersionInputExt + TargetHttpVersionInputExt,
+{
+    input
+        .extensions()
+        .get_ref::<TargetHttpVersion>()
+        .map(|version| version.0)
+        .or_else(|| {
+            resolve_input_target_http_version(input).filter(|version| *version == Version::HTTP_3)
+        })
+}
+
 fn resolve_target_http_version<IO, Input>(io: &IO, input: &Input) -> Option<Version>
 where
     IO: ExtensionsRef,
@@ -438,13 +453,7 @@ where
         HttpTransport::Stream(io) => resolve_target_http_version(io, &input),
         HttpTransport::Quic(_) => Some(Version::HTTP_3),
     };
-    let required = input
-        .extensions()
-        .get_ref::<TargetHttpVersion>()
-        .map(|version| version.0)
-        .or_else(|| {
-            resolve_input_target_http_version(&input).filter(|version| *version == Version::HTTP_3)
-        });
+    let required = required_transport_http_version(&input);
     if required
         .zip(version)
         .is_some_and(|(required, actual)| required != actual)
@@ -701,6 +710,17 @@ where
 
     #[inline]
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
+        // Reject impossible transports before DNS, TLS or socket work. The
+        // transport type is authoritative; selection keeps no capability list.
+        if required_transport_http_version(&input)
+            .is_some_and(|version| !S::Connection::supports_http_version(version))
+        {
+            return Err(ConnectionError::local(
+                BoxError::from_static_str("transport cannot carry the requested HTTP version"),
+                ConnectionErrorKind::Unavailable,
+            ));
+        }
+
         let EstablishedClientConnection { input, conn } = self.inner.connect(input).await?;
         let version = resolve_target_http_version(&conn, &input);
         http_connect(conn, input, self.exec.clone())
@@ -773,11 +793,13 @@ impl<S, Body> Layer<S> for HttpConnectorLayer<Body> {
 #[cfg(test)]
 mod http3_dispatch_tests {
     use super::*;
+    use crate::client::Http3Transport;
     use rama_core::{ServiceInput, service::service_fn};
     use rama_http_types::Body;
     use rama_net::{
         Protocol as ApplicationProtocol,
-        client::{ConnectRequest, ConnectorTarget, ProxyRoute},
+        client::{ConnectRequest, ConnectionErrorDomain, ConnectorTarget, ProxyRoute},
+        http::HttpRequestVersion,
     };
     use rama_tls::ProtocolVersion;
 
@@ -792,6 +814,66 @@ mod http3_dispatch_tests {
                 panic!("HTTP/3 must not dial the byte-stream connector");
             },
         )
+    }
+
+    #[tokio::test]
+    async fn stream_only_connector_rejects_h3_before_dialing() {
+        let connector =
+            HttpConnector::<_, Body>::new(stream_connector_must_not_connect(), Executor::default());
+        let input = ConnectRequest::new("origin.example:443".parse().unwrap());
+        input
+            .extensions()
+            .insert(TargetHttpVersion(Version::HTTP_3));
+        let error = connector.connect(input).await.err().unwrap();
+        assert_eq!(error.domain(), ConnectionErrorDomain::Local);
+        assert_eq!(error.kind(), ConnectionErrorKind::Unavailable);
+    }
+
+    #[tokio::test]
+    async fn quic_only_connector_rejects_h2_before_dialing() {
+        let connector = HttpConnector::<_, Body>::new(
+            service_fn(
+                async |_: ConnectRequest| -> Result<
+                    EstablishedClientConnection<Http3Transport, ConnectRequest>,
+                    ConnectionError,
+                > {
+                    panic!("HTTP/2 must not dial a QUIC-only connector");
+                },
+            ),
+            Executor::default(),
+        );
+        let input = ConnectRequest::new("origin.example:443".parse().unwrap());
+        input
+            .extensions()
+            .insert(TargetHttpVersion(Version::HTTP_2));
+        let error = connector.connect(input).await.err().unwrap();
+        assert_eq!(error.domain(), ConnectionErrorDomain::Local);
+        assert_eq!(error.kind(), ConnectionErrorKind::Unavailable);
+    }
+
+    #[tokio::test]
+    async fn quic_only_connector_allows_implicit_input_versions() {
+        let connector = HttpConnector::<_, Body>::new(
+            service_fn(
+                async |_: ConnectRequest| -> Result<
+                    EstablishedClientConnection<Http3Transport, ConnectRequest>,
+                    ConnectionError,
+                > {
+                    Err(ConnectionError::transport(
+                        BoxError::from_static_str("reached QUIC connector"),
+                        ConnectionErrorKind::Unavailable,
+                    ))
+                },
+            ),
+            Executor::default(),
+        );
+        for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
+            let input = ConnectRequest::new("origin.example:443".parse().unwrap());
+            input.extensions().insert(HttpRequestVersion(version));
+            let error = connector.connect(input).await.err().unwrap();
+            assert_eq!(error.domain(), ConnectionErrorDomain::Transport);
+            assert!(error.to_string().contains("reached QUIC connector"));
+        }
     }
 
     #[derive(Debug)]
@@ -890,20 +972,18 @@ mod http3_dispatch_tests {
 
     #[tokio::test]
     async fn common_handshake_rejects_http3_on_a_byte_stream() {
-        let stream = service_fn(async |input: ConnectRequest| {
-            let (io, _peer) = tokio::io::duplex(64);
-            Ok::<_, ConnectionError>(EstablishedClientConnection {
-                input,
-                conn: ServiceInput::new(io),
-            })
-        });
-        let connector = HttpConnector::<_, Body>::new(stream, Executor::default());
+        // Direct callers bypass connector preflight, so the established
+        // transport must still be checked before starting HTTP.
+        let (io, _peer) = tokio::io::duplex(64);
         let input = ConnectRequest::new("origin.example:443".parse().unwrap());
         input
             .extensions()
             .insert(TargetHttpVersion(Version::HTTP_3));
-        let error = connector.serve(input).await.err().unwrap();
-        assert_eq!(error.kind(), ConnectionErrorKind::Protocol);
+        let error = http_connect::<_, _, Body>(ServiceInput::new(io), input, Executor::default())
+            .await
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("unsupported Http version"));
     }
 
     #[tokio::test]

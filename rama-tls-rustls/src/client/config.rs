@@ -97,10 +97,10 @@ impl RustlsTlsConnectorConfig<'_> {
             .maybe_with_server_cert_pins(*server_cert_pins)
             .maybe_with_server_trust(*server_trust);
         if let Some(verifier) = verifier {
-            builder.set_shared_component(verifier);
+            builder.set_component(verifier.as_ref());
         }
         if let Some(modify) = modify {
-            builder.set_shared_component(modify);
+            builder.set_component(modify.as_ref());
         }
         builder.build()
     }
@@ -187,12 +187,14 @@ impl RustlsClientConfigExt for TlsClientConfig {
 pub struct RustlsServerCertVerifier(pub Arc<dyn ServerCertVerifier>);
 
 impl TlsPoolComponent for RustlsServerCertVerifier {
-    fn pool_component_identity(&self) -> TlsComponentIdentity<'_> {
+    type Identity = TlsComponentIdentity<dyn ServerCertVerifier>;
+
+    fn pool_component_identity(&self) -> Self::Identity {
         TlsComponentIdentity::shared(&self.0)
     }
 }
 
-#[derive(Extension)]
+#[derive(Clone, Extension)]
 #[extension(tags(tls))]
 /// Escape hatch: take over the final rustls [`ClientConfig`] build.
 ///
@@ -200,12 +202,13 @@ impl TlsPoolComponent for RustlsServerCertVerifier {
 /// last step of building, hands it to this function. Either tweak the input
 /// and return it, or ignore it and build a fresh one through the full rustls
 /// builder for anything the common pieces can't express.
-pub struct ModifyRustlsClientConfig(pub Box<ModifyFn>);
+pub struct ModifyRustlsClientConfig(pub Arc<ModifyFn>);
 
 impl TlsPoolComponent for ModifyRustlsClientConfig {
-    fn pool_component_identity(&self) -> TlsComponentIdentity<'_> {
-        // Extensions retain this wrapper in an Arc, including zero-sized closures.
-        TlsComponentIdentity::borrowed(self)
+    type Identity = TlsComponentIdentity<ModifyFn>;
+
+    fn pool_component_identity(&self) -> Self::Identity {
+        TlsComponentIdentity::shared(&self.0)
     }
 }
 
@@ -216,7 +219,7 @@ impl ModifyRustlsClientConfig {
     where
         F: Fn(ClientConfig) -> Result<ClientConfig, BoxError> + Send + Sync + 'static,
     {
-        Self(Box::new(modify))
+        Self(Arc::new(modify))
     }
 
     pub(crate) fn apply(&self, config: ClientConfig) -> Result<ClientConfig, BoxError> {
@@ -392,7 +395,7 @@ mod pool_tests {
         first.insert(verifier.clone());
         first.insert_arc(modify.clone());
         let same = Extensions::new();
-        same.insert_arc(modify);
+        same.insert(modify.as_ref().clone());
         same.insert(verifier);
         let identity = RustlsTlsClientConfigProvider.pool_id(&first);
         assert_eq!(identity, RustlsTlsClientConfigProvider.pool_id(&same));

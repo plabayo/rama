@@ -8,9 +8,9 @@ mod conn;
 #[doc(inline)]
 pub use conn::{BoxedConnectorService, ConnectorService, EstablishedClientConnection};
 
-mod layered;
+mod map_established_connection;
 #[doc(inline)]
-pub use layered::LayeredConnector;
+pub use map_established_connection::{MapEstablishedConnection, MapEstablishedConnectionLayer};
 
 mod error;
 #[doc(inline)]

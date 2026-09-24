@@ -50,11 +50,24 @@ impl<IO: ExtensionsRef> ExtensionsRef for HttpTransport<IO> {
 pub trait IntoHttpTransport: ExtensionsRef + Send + 'static {
     type Stream: Io + Unpin + ExtensionsRef;
 
+    /// Whether this transport type can carry the requested HTTP version.
+    ///
+    /// The HTTP connector checks this before dialing. Return `false` only for
+    /// impossible combinations; route-specific support remains the connector's
+    /// responsibility. Custom transport types default to deferring that decision.
+    fn supports_http_version(_version: Version) -> bool {
+        true
+    }
+
     fn into_http_transport(self) -> HttpTransport<Self::Stream>;
 }
 
 impl<IO: Io + Unpin + ExtensionsRef> IntoHttpTransport for IO {
     type Stream = IO;
+
+    fn supports_http_version(version: Version) -> bool {
+        version != Version::HTTP_3
+    }
 
     fn into_http_transport(self) -> HttpTransport<Self::Stream> {
         HttpTransport::Stream(self)
@@ -72,6 +85,10 @@ impl<IO: Io + Unpin + ExtensionsRef> IntoHttpTransport for HttpTransport<IO> {
 impl IntoHttpTransport for Http3Transport {
     // This stream variant is never constructed for a QUIC-only connector.
     type Stream = ServiceInput<Box<dyn Io + Unpin>>;
+
+    fn supports_http_version(version: Version) -> bool {
+        version == Version::HTTP_3
+    }
 
     fn into_http_transport(self) -> HttpTransport<Self::Stream> {
         HttpTransport::Quic(self)

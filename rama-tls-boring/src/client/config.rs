@@ -170,7 +170,7 @@ impl BoringTlsConnectorConfig<'_> {
             .maybe_with_min_version(min_version.map(|value| value.0))
             .maybe_with_max_version(max_version.map(|value| value.0));
         if let Some(store) = verify_cert_store {
-            builder.set_shared_component(store);
+            builder.set_component(store.as_ref());
         }
 
         if let Some(alps) = alps {
@@ -550,7 +550,9 @@ pub struct BoringMaxVersion(pub ProtocolVersion);
 pub struct BoringServerVerifyCertStore(pub Arc<X509Store>);
 
 impl TlsPoolComponent for BoringServerVerifyCertStore {
-    fn pool_component_identity(&self) -> TlsComponentIdentity<'_> {
+    type Identity = TlsComponentIdentity<X509Store>;
+
+    fn pool_component_identity(&self) -> Self::Identity {
         TlsComponentIdentity::shared(&self.0)
     }
 }

@@ -6,8 +6,8 @@
 //! https://www.rfc-editor.org/rfc/rfc7838.html
 
 use super::{
-    Reply, Server, TEST_TIMEOUT, client_with_http3_cache_and_timeout, close_client_endpoint,
-    complete, credentials,
+    Reply, Server, TEST_TIMEOUT, client_with_attempt_timeout, client_with_http3_cache_and_timeout,
+    close_client_endpoint, complete, credentials,
 };
 use rama::{
     Service,
@@ -376,4 +376,38 @@ async fn failed_first_candidate_uses_the_next_supported_service_without_replayin
             good.close().await;
         }
     }
+}
+
+#[tokio::test]
+async fn stream_only_client_skips_h3_without_dialing_or_suppressing_it() {
+    let (auth, tls) = credentials();
+    let origin = Server::start(auth.clone(), Version::HTTP_2).await;
+    // Advertise this listening stream endpoint as H3. A late transport check
+    // would dial it before rejecting H3, which the accept counter detects.
+    let unsupported = Server::start(auth.clone(), Version::HTTP_2).await;
+    let alternative = Server::start(auth, Version::HTTP_2).await;
+    origin.reply(Reply::advertise(&format!(
+        "h3=\":{}\", h2=\":{}\"",
+        unsupported.address.port(),
+        alternative.address.port(),
+    )));
+    let cache = AltSvcCache::default();
+    let client = client_with_attempt_timeout(tls, cache.clone(), Some(TEST_TIMEOUT));
+
+    assert_eq!(complete(&client, origin.request()).await.1, Version::HTTP_2);
+    for _ in 0..3 {
+        assert_eq!(complete(&client, origin.request()).await.1, Version::HTTP_2);
+    }
+    assert_eq!(origin.request_count(), 1);
+    assert_eq!(alternative.accepted.load(Ordering::SeqCst), 1);
+    assert_eq!(unsupported.accepted.load(Ordering::SeqCst), 0);
+    assert_origin(&alternative, &origin, 3);
+    let snapshot = cache.lookup(&origin.origin()).unwrap();
+    assert_eq!(snapshot.len(), 2);
+    assert!(cache.is_usable(&snapshot, 0), "unsupported is not broken");
+
+    drop(client);
+    origin.close().await;
+    unsupported.close().await;
+    alternative.close().await;
 }

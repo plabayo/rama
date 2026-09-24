@@ -37,32 +37,56 @@ mod policy_identity {
         bencher.bench_local(|| TlsPoolId::builder().with_keylog(black_box(&keylog)).build());
     }
 
-    struct Verifier;
+    struct Verifier(Arc<()>);
 
     impl TlsPoolComponent for Verifier {
-        fn pool_component_identity(&self) -> TlsComponentIdentity<'_> {
-            TlsComponentIdentity::borrowed(self)
+        type Identity = TlsComponentIdentity<()>;
+
+        fn pool_component_identity(&self) -> Self::Identity {
+            TlsComponentIdentity::shared(&self.0)
         }
     }
 
-    struct ConfigHook;
+    struct ConfigHook(Arc<()>);
 
     impl TlsPoolComponent for ConfigHook {
-        fn pool_component_identity(&self) -> TlsComponentIdentity<'_> {
-            TlsComponentIdentity::borrowed(self)
+        type Identity = TlsComponentIdentity<()>;
+
+        fn pool_component_identity(&self) -> Self::Identity {
+            TlsComponentIdentity::shared(&self.0)
         }
     }
 
     #[divan::bench]
     fn shared_verifier_hook_and_keylog(bencher: divan::Bencher) {
         let keylog = TlsKeyLog(KeyLogIntent::Custom(Arc::new(NoopKeyLogSink)));
-        let verifier = Arc::new(Verifier);
-        let hook = Arc::new(ConfigHook);
+        let verifier = Arc::new(Verifier(Arc::new(())));
+        let hook = Arc::new(ConfigHook(Arc::new(())));
         bencher.bench_local(|| {
             TlsPoolId::builder()
                 .with_keylog(black_box(&keylog))
-                .with_shared_component(black_box(&verifier))
-                .with_shared_component(black_box(&hook))
+                .with_component(black_box(verifier.as_ref()))
+                .with_component(black_box(hook.as_ref()))
+                .build()
+        });
+    }
+
+    struct PolicyRevision(u64);
+
+    impl TlsPoolComponent for PolicyRevision {
+        type Identity = u64;
+
+        fn pool_component_identity(&self) -> Self::Identity {
+            self.0
+        }
+    }
+
+    #[divan::bench]
+    fn value_identity(bencher: divan::Bencher) {
+        let policy = PolicyRevision(1);
+        bencher.bench_local(|| {
+            TlsPoolId::builder()
+                .with_component(black_box(&policy))
                 .build()
         });
     }

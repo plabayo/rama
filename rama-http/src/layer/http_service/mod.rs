@@ -16,7 +16,7 @@
 //! Request-supplied candidates, otherwise Alt-Svc cache
 //!     |
 //!     v
-//! Filter by protocol support, required version and backoff
+//! Filter known HTTP protocols, required version and backoff
 //!     |
 //!     v
 //! Try alternative ----------------------> Verify origin + protocol
@@ -43,6 +43,8 @@
 //! allow fallback while preserving any required version. Candidate-specific local
 //! failures also fall back; the original endpoint still enforces the unchanged
 //! policy. Only exhaustion of the overall deadline stops selection early.
+//! Unsupported protocols and routes are local refusals, not broken alternatives;
+//! they consume the candidate limit but leave the connection-attempt budget intact.
 //! A request-specific TLS failure does not mark an
 //! alternative broken for clients using the default policy. Connectors report
 //! [`ConnectionPolicyScope`] during setup and on pooled connections; an unknown
@@ -90,7 +92,6 @@ use rama_net::{
     },
     conn::ConnectionHealthWatcher,
     http::{HttpRequestVersion, TargetHttpVersion},
-    tls::ApplicationProtocol,
 };
 #[cfg(feature = "tls")]
 use rama_tls::client::{NegotiatedTlsParameters, TlsServerAuthentication};
@@ -105,6 +106,9 @@ use tokio::time::Instant;
 // networks can increase this budget; it includes DNS and transport/TLS setup.
 const DEFAULT_ATTEMPT_TIMEOUT: Duration = Duration::from_millis(300);
 const DEFAULT_MAX_ATTEMPTS: usize = 8;
+// Matches the cache's default retained advertisement size. Caller-supplied lists
+// also need a bound when locally unsupported protocols do not use dial attempts.
+const DEFAULT_MAX_CANDIDATES: usize = 16;
 
 /// Connection-attempt observations used by service selection and address races.
 ///
@@ -116,20 +120,20 @@ pub use rama_net::client::ConnectionAttempt as HttpServiceAttempt;
 #[derive(Clone, Debug)]
 pub struct HttpServiceLayer {
     cache: Option<AltSvcCache>,
-    protocols: Arc<[ApplicationProtocol]>,
     attempt_timeout: Duration,
     timeout: Option<Duration>,
     max_attempts: usize,
+    max_candidates: usize,
 }
 
 impl Default for HttpServiceLayer {
     fn default() -> Self {
         Self {
             cache: None,
-            protocols: Arc::from([]),
             attempt_timeout: DEFAULT_ATTEMPT_TIMEOUT,
             timeout: None,
             max_attempts: DEFAULT_MAX_ATTEMPTS,
+            max_candidates: DEFAULT_MAX_CANDIDATES,
         }
     }
 }
@@ -150,14 +154,6 @@ impl HttpServiceLayer {
     }
 
     generate_set_and_with! {
-        /// Declare the advertised protocols supported by the inner connector.
-        pub fn protocols(mut self, protocols: impl IntoIterator<Item = ApplicationProtocol>) -> Self {
-            self.protocols = protocols.into_iter().collect();
-            self
-        }
-    }
-
-    generate_set_and_with! {
         /// Bound one alternative connection attempt, including DNS and handshakes.
         ///
         /// Defaults to 300 ms to bound sequential speculation before origin fallback.
@@ -173,6 +169,18 @@ impl HttpServiceLayer {
         /// Disabled by default; the caller's transport deadlines remain authoritative.
         pub fn timeout(mut self, timeout: Option<Duration>) -> Self {
             self.timeout = timeout;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Bound inspected candidates, including unknown or unsupported protocols.
+        ///
+        /// Defaults to 16, matching the cache's default advertisement capacity.
+        /// Zero bypasses alternatives. Local capability refusals do not consume
+        /// `max_attempts`, so this separately bounds caller-supplied candidate lists.
+        pub fn max_candidates(mut self, count: usize) -> Self {
+            self.max_candidates = count;
             self
         }
     }
@@ -199,6 +207,11 @@ impl<S> Layer<S> for HttpServiceLayer {
 }
 
 /// Discover and select an HTTP service before invoking an inner route connector.
+///
+/// The inner connector honors [`TargetHttpVersion`] or rejects unsupported
+/// protocols and routes before network I/O with [`ConnectionErrorDomain::Local`]
+/// and [`ConnectionErrorKind::Unavailable`]. Such refusals leave cached endpoint
+/// health and the network-attempt budget unchanged; no capability list is needed.
 #[derive(Clone, Debug)]
 pub struct HttpServiceConnector<S> {
     inner: S,
@@ -226,14 +239,6 @@ impl<S> HttpServiceConnector<S> {
     }
 
     generate_set_and_with! {
-        /// Declare the advertised protocols supported by the inner connector.
-        pub fn protocols(mut self, protocols: impl IntoIterator<Item = ApplicationProtocol>) -> Self {
-            self.policy.protocols = protocols.into_iter().collect();
-            self
-        }
-    }
-
-    generate_set_and_with! {
         /// Bound one alternative connection attempt, including DNS and handshakes.
         ///
         /// Defaults to 300 ms to bound sequential speculation before origin fallback.
@@ -249,6 +254,18 @@ impl<S> HttpServiceConnector<S> {
         /// Disabled by default; the caller's transport deadlines remain authoritative.
         pub fn timeout(mut self, timeout: Option<Duration>) -> Self {
             self.policy.timeout = timeout;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Bound inspected candidates, including unknown or unsupported protocols.
+        ///
+        /// Defaults to 16, matching the cache's default advertisement capacity.
+        /// Zero bypasses alternatives. Local capability refusals do not consume
+        /// `max_attempts`, so this separately bounds caller-supplied candidate lists.
+        pub fn max_candidates(mut self, count: usize) -> Self {
+            self.policy.max_candidates = count;
             self
         }
     }
@@ -443,16 +460,12 @@ where
         }
     }
 
-    /// Intersect advertised ALPNs with connector capabilities and caller intent.
+    /// Recognize advertised HTTP protocols while preserving the caller's version.
+    /// The actual connector decides support, without a second capability list.
     fn candidate_version(
-        &self,
         candidate: &HttpServiceCandidate,
         required: Option<Version>,
     ) -> Option<Version> {
-        if !self.policy.protocols.contains(&candidate.protocol) {
-            return None;
-        }
-
         let version = Version::try_from(&candidate.protocol).ok()?;
         required
             .is_none_or(|required| required == version)
@@ -576,12 +589,12 @@ where
         if let (Some(origin), Some(snapshot)) = (origin.as_ref(), snapshot.as_ref())
             && snapshot.origin() == origin
         {
-            for (index, candidate) in snapshot.iter().enumerate() {
+            for (index, candidate) in snapshot.iter().enumerate().take(self.policy.max_candidates) {
                 // Always reserve the final attempt for the original endpoint.
                 if attempts >= self.policy.max_attempts.saturating_sub(1) {
                     break;
                 }
-                let Some(version) = self.candidate_version(candidate, required) else {
+                let Some(version) = Self::candidate_version(candidate, required) else {
                     continue;
                 };
 
@@ -693,6 +706,9 @@ where
                         if error.domain() == ConnectionErrorDomain::Local
                             && error.kind() == ConnectionErrorKind::Unavailable =>
                     {
+                        // An unsupported protocol or route has not consumed a
+                        // network attempt and says nothing about endpoint health.
+                        attempts -= 1;
                         tracing::debug!(
                             ?error,
                             ?candidate,

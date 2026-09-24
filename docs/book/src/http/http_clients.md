@@ -37,8 +37,8 @@ request's origin and certificate identity. The easy client selects a service
 before choosing a proxy route and consulting the connection pool.
 
 `HttpServiceConnector` returns the underlying connection unchanged. Compose
-`AltSvcLayer::new(cache)` separately with `LayeredConnector`; the easy client does
-this automatically. The layer resolves each request’s origin, learns response
+`AltSvcLayer::new(cache)` separately with `MapEstablishedConnection`; the easy
+client does this automatically. The layer resolves each request’s origin, learns response
 headers and sets `Alt-Used` from the established endpoint. An optional H2 observer
 feeds ALTSVC frames into the same cache. Advertisements are not automatically
 forwarded. To send H2 advertisements, enable `set_alt_svc(true)` before the server
@@ -66,12 +66,14 @@ Custom connectors use these contracts:
 | `ConnectionAttempt` / `ConnectionPolicyScope` | Check peer requirements using actual connector policy; preserve failure scope across timeouts and pool hits. |
 
 TLS configuration stays in its connector. Built-in connectors publish reuse rules
-automatically. Equal credentials and shared custom sinks or hooks can reuse
-connections. Replace a shared component when its policy changes; custom secure
-connectors without reuse rules receive fresh connections. Apply request-policy
+automatically. Custom components publish owned `TlsPoolComponent::Identity`
+values: equal identities permit reuse. Shared-instance identity is optional;
+policy changes need a new identity. Custom secure connectors without reuse rules
+receive fresh connections. Apply request-policy
 middleware outside the pool so lookup and establishment see the same input.
 Unclassified policy failures never suppress shared alternatives.
-Report unsupported routes as local capability failures, not unreachable proxies.
+Connectors report unsupported protocols or routes as local capability failures;
+clients need no separate protocol-support list. These refusals preserve cache health.
 In the CLI, `--alt-svc` enables command-local discovery; `--http3` requires H3
 directly. Disk persistence and DNS HTTPS/SVCB discovery are not implemented yet.
 

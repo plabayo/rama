@@ -13,7 +13,7 @@ use rama_net::client::{
     ProxyRoute, ProxyRouteFailureCache, ProxyRouteFailureCacheConfig, ProxyRouteFailureCacheLayer,
     ProxyRouteFailureCacheScope, ProxyRoutes, ProxyRoutesConnector,
 };
-use rama_net::{ConnectorTargetInputExt as _, address::HostWithPort};
+use rama_net::{ConnectorTargetInputExt as _, address::HostWithPort, tls::ApplicationProtocol};
 #[cfg(feature = "tls")]
 use rama_tls::client::{
     ServerVerifyMode, TlsServerCertPins, TlsServerName, TlsServerTrust, TlsServerVerify,
@@ -293,14 +293,6 @@ fn input() -> ConnectRequest {
         .with_application_protocol(Protocol::HTTPS)
 }
 
-fn capabilities<S>(inner: S) -> HttpServiceConnector<S> {
-    HttpServiceConnector::new(inner).with_protocols([
-        ApplicationProtocol::HTTP_11,
-        ApplicationProtocol::HTTP_2,
-        ApplicationProtocol::HTTP_3,
-    ])
-}
-
 #[cfg(feature = "tls")]
 fn advertise(input: &ConnectRequest, candidates: &[(ApplicationProtocol, &'static str)]) {
     let origin = HttpOrigin::new(
@@ -322,7 +314,7 @@ fn advertise(input: &ConnectRequest, candidates: &[(ApplicationProtocol, &'stati
 #[tokio::test]
 async fn frame_learning_is_opt_in_and_preserves_custom_observers() {
     for enabled in [false, true] {
-        let connector = capabilities(FakeConnector::new([Outcome::Success(
+        let connector = HttpServiceConnector::new(FakeConnector::new([Outcome::Success(
             ApplicationProtocol::HTTP_2,
         )]))
         .maybe_with_cache(enabled.then(AltSvcCache::default));
@@ -339,7 +331,7 @@ async fn frame_learning_is_opt_in_and_preserves_custom_observers() {
     let request = input();
     let custom = AltSvcCache::default().frame_observer(origin(&request).unwrap());
     request.extensions().insert_arc(custom.clone());
-    let established = capabilities(FakeConnector::new([Outcome::Success(
+    let established = HttpServiceConnector::new(FakeConnector::new([Outcome::Success(
         ApplicationProtocol::HTTP_2,
     )]))
     .with_cache(AltSvcCache::default())
@@ -382,7 +374,7 @@ async fn candidates_wrap_proxy_routes_and_preserve_origin_and_attempt_isolation(
         ),
         Outcome::Success(ApplicationProtocol::HTTP_2),
     ]);
-    let established = capabilities(ProxyRoutesConnector::new(fake.clone()))
+    let established = HttpServiceConnector::new(ProxyRoutesConnector::new(fake.clone()))
         .serve(input.fork())
         .await
         .unwrap();
@@ -439,7 +431,10 @@ async fn fallback_keeps_original_input_and_dispatches_body_once() {
         ),
         Outcome::Success(ApplicationProtocol::HTTP_11),
     ]);
-    let established = capabilities(fake.clone()).serve(input).await.unwrap();
+    let established = HttpServiceConnector::new(fake.clone())
+        .serve(input)
+        .await
+        .unwrap();
     assert_eq!(fake.dispatched.load(Ordering::SeqCst), 0);
     {
         let records = fake.records.lock();
@@ -466,6 +461,10 @@ async fn explicit_version_falls_back_to_origin_without_changing_protocol() {
             ),
             Outcome::Failure(
                 ConnectionErrorDomain::Local,
+                ConnectionErrorKind::Unavailable,
+            ),
+            Outcome::Failure(
+                ConnectionErrorDomain::Local,
                 ConnectionErrorKind::InvalidInput,
             ),
             Outcome::Failure(
@@ -477,7 +476,10 @@ async fn explicit_version_falls_back_to_origin_without_changing_protocol() {
             advertise(&input, &[(protocol.clone(), "alt.example:8443")]);
             input.extensions().insert(TargetHttpVersion(version));
             let fake = FakeConnector::new([outcome, Outcome::Success(protocol.clone())]);
-            capabilities(fake.clone()).serve(input).await.unwrap();
+            HttpServiceConnector::new(fake.clone())
+                .serve(input)
+                .await
+                .unwrap();
             let records = fake.records.lock();
             assert_eq!(records.len(), 2);
             assert_eq!(records[1].target, records[1].origin);
@@ -501,7 +503,10 @@ async fn required_h3_works_without_discovery_and_http11_input_does_not_pin() {
         let fake = FakeConnector::new([Outcome::Success(
             ApplicationProtocol::try_from(version).unwrap(),
         )]);
-        capabilities(fake.clone()).serve(input).await.unwrap();
+        HttpServiceConnector::new(fake.clone())
+            .serve(input)
+            .await
+            .unwrap();
         assert_eq!(fake.records.lock()[0].required, required);
     }
 }
@@ -518,7 +523,10 @@ async fn explicit_target_remains_authoritative() {
         &[(ApplicationProtocol::HTTP_3, "ignored.example:8443")],
     );
     let fake = FakeConnector::new([Outcome::Success(ApplicationProtocol::HTTP_2)]);
-    capabilities(fake.clone()).serve(input).await.unwrap();
+    HttpServiceConnector::new(fake.clone())
+        .serve(input)
+        .await
+        .unwrap();
     assert_eq!(
         fake.records.lock()[0].target.to_string(),
         "forced.example:443"
@@ -542,7 +550,7 @@ async fn terminal_failure_latch_survives_timeout_or_later_unavailability() {
             .extensions()
             .insert(TargetHttpVersion(Version::HTTP_3));
         request.extensions().insert(HttpServiceAttempt::default());
-        let error = capabilities(fake.clone())
+        let error = HttpServiceConnector::new(fake.clone())
             .with_attempt_timeout(Duration::from_millis(5))
             .attempt(request, None, true)
             .await
@@ -559,7 +567,7 @@ async fn speculative_timeout_allows_fallback_but_overall_timeout_does_not() {
         Outcome::Pending(false),
         Outcome::Success(ApplicationProtocol::HTTP_2),
     ]);
-    capabilities(fake.clone())
+    HttpServiceConnector::new(fake.clone())
         .with_attempt_timeout(Duration::from_millis(5))
         .serve(advertised_input())
         .await
@@ -567,7 +575,7 @@ async fn speculative_timeout_allows_fallback_but_overall_timeout_does_not() {
     assert_eq!(fake.records.lock().len(), 2);
 
     let fake = FakeConnector::new([Outcome::Pending(false)]);
-    let error = capabilities(fake.clone())
+    let error = HttpServiceConnector::new(fake.clone())
         .with_timeout(Duration::from_millis(5))
         .serve(advertised_input())
         .await
@@ -588,7 +596,10 @@ async fn unknown_and_websocket_protocols_keep_baseline_behavior() {
         let mut input = input();
         input.application_protocol = protocol;
         let fake = FakeConnector::new([Outcome::Success(ApplicationProtocol::HTTP_11)]);
-        capabilities(fake.clone()).serve(input).await.unwrap();
+        HttpServiceConnector::new(fake.clone())
+            .serve(input)
+            .await
+            .unwrap();
         let records = fake.records.lock();
         assert_eq!(records[0].required, None);
         assert_eq!(records[0].target, records[0].origin);
@@ -604,7 +615,10 @@ async fn plaintext_hints_do_not_authorize_opportunistic_tls() {
         .with_application_protocol(Protocol::HTTP);
     advertise(&input, &[(ApplicationProtocol::HTTP_2, "alt.example:443")]);
     let fake = FakeConnector::new([Outcome::Success(ApplicationProtocol::HTTP_11)]);
-    capabilities(fake.clone()).serve(input).await.unwrap();
+    HttpServiceConnector::new(fake.clone())
+        .serve(input)
+        .await
+        .unwrap();
     let records = fake.records.lock();
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].target.to_string(), "origin.example:80");
@@ -614,7 +628,7 @@ async fn plaintext_hints_do_not_authorize_opportunistic_tls() {
 
 #[cfg(feature = "tls")]
 #[tokio::test]
-async fn capabilities_and_required_version_filter_before_dialing() {
+async fn unknown_protocols_and_required_version_filter_before_dialing() {
     let input = input();
     advertise(
         &input,
@@ -628,7 +642,10 @@ async fn capabilities_and_required_version_filter_before_dialing() {
         .extensions()
         .insert(TargetHttpVersion(Version::HTTP_2));
     let fake = FakeConnector::new([Outcome::Success(ApplicationProtocol::HTTP_2)]);
-    capabilities(fake.clone()).serve(input).await.unwrap();
+    HttpServiceConnector::new(fake.clone())
+        .serve(input)
+        .await
+        .unwrap();
     let records = fake.records.lock();
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].target.to_string(), "h2.example:443");
@@ -652,7 +669,7 @@ async fn maximum_attempts_reserves_origin_fallback() {
         ),
         Outcome::Success(ApplicationProtocol::HTTP_11),
     ]);
-    capabilities(fake.clone())
+    HttpServiceConnector::new(fake.clone())
         .with_max_attempts(2)
         .serve(input)
         .await
@@ -669,7 +686,7 @@ async fn zero_budget_or_attempt_limit_does_not_dial() {
         (Duration::from_secs(1), 0, ConnectionErrorKind::InvalidInput),
     ] {
         let fake = FakeConnector::new([]);
-        let error = capabilities(fake.clone())
+        let error = HttpServiceConnector::new(fake.clone())
             .with_timeout(timeout)
             .with_max_attempts(attempts)
             .serve(input())
@@ -687,7 +704,10 @@ async fn explicit_version_must_be_established() {
         .extensions()
         .insert(TargetHttpVersion(Version::HTTP_2));
     let fake = FakeConnector::new([Outcome::Success(ApplicationProtocol::HTTP_11)]);
-    let error = capabilities(fake.clone()).serve(input).await.unwrap_err();
+    let error = HttpServiceConnector::new(fake.clone())
+        .serve(input)
+        .await
+        .unwrap_err();
     assert_eq!(error.kind(), ConnectionErrorKind::Protocol);
     assert_eq!(fake.records.lock().len(), 1);
 }
@@ -708,7 +728,10 @@ async fn only_alt_svc_discovery_adds_alt_used() {
             ],
         ));
         let fake = FakeConnector::new([Outcome::Success(ApplicationProtocol::HTTP_2)]);
-        let established = capabilities(fake.clone()).serve(input).await.unwrap();
+        let established = HttpServiceConnector::new(fake.clone())
+            .serve(input)
+            .await
+            .unwrap();
         assert_eq!(
             established
                 .conn
@@ -744,7 +767,10 @@ async fn baseline_pool_hit_retains_established_alternative_provenance() {
             ));
         Ok::<_, ConnectionError>(established)
     });
-    let established = capabilities(inner).serve(input()).await.unwrap();
+    let established = HttpServiceConnector::new(inner)
+        .serve(input())
+        .await
+        .unwrap();
     dispatch(established, None).await;
 }
 
@@ -766,7 +792,7 @@ async fn latest_cache_snapshot_is_used_and_proxies_ignore_direct_backoff() {
     );
     cache.record(&origin, &headers, Duration::ZERO);
     let fake = FakeConnector::new([Outcome::Success(ApplicationProtocol::HTTP_2)]);
-    capabilities(fake.clone())
+    HttpServiceConnector::new(fake.clone())
         .with_cache(cache.clone())
         .serve(input)
         .await
@@ -785,7 +811,7 @@ async fn latest_cache_snapshot_is_used_and_proxies_ignore_direct_backoff() {
             "http://proxy.example:3128".parse().unwrap(),
         ));
     let fake = FakeConnector::new([Outcome::Success(ApplicationProtocol::HTTP_2)]);
-    capabilities(fake.clone())
+    HttpServiceConnector::new(fake.clone())
         .with_cache(cache)
         .serve(input)
         .await
@@ -808,7 +834,10 @@ async fn alternatives_without_tls_verification_support_are_not_attempted() {
         )],
     ));
     let fake = FakeConnector::new([Outcome::Success(ApplicationProtocol::HTTP_11)]);
-    capabilities(fake.clone()).serve(input).await.unwrap();
+    HttpServiceConnector::new(fake.clone())
+        .serve(input)
+        .await
+        .unwrap();
     let records = fake.records.lock();
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].target.to_string(), "origin.example:443");
@@ -863,7 +892,7 @@ async fn retries_fork_original_request_and_use_current_cache() {
         Outcome::Success(ApplicationProtocol::HTTP_11),
         Outcome::Success(ApplicationProtocol::HTTP_11),
     ]);
-    let connector = capabilities(fake.clone()).with_cache(cache.clone());
+    let connector = HttpServiceConnector::new(fake.clone()).with_cache(cache.clone());
     let original = input();
     connector.serve(original.fork()).await.unwrap();
     headers.insert(
@@ -958,7 +987,7 @@ async fn terminal_alternative_failure_is_not_retried_by_the_next_request() {
             Outcome::Success(ApplicationProtocol::HTTP_2),
             Outcome::Success(ApplicationProtocol::HTTP_2),
         ]);
-        let connector = capabilities(fake.clone()).with_cache(cache.clone());
+        let connector = HttpServiceConnector::new(fake.clone()).with_cache(cache.clone());
         connector.serve(input()).await.unwrap();
         assert_eq!(fake.records.lock().len(), 2);
         cache.record(&origin, &headers, Duration::ZERO);
@@ -989,13 +1018,107 @@ async fn unavailable_connector_capability_falls_back_without_suppressing_service
         ),
         Outcome::Success(ApplicationProtocol::HTTP_2),
     ]);
-    capabilities(fake.clone())
+    HttpServiceConnector::new(fake.clone())
         .with_cache(cache.clone())
         .serve(input())
         .await
         .unwrap();
     assert_eq!(fake.records.lock().len(), 2);
     assert!(cache.lookup(&origin).is_some());
+}
+
+#[cfg(feature = "tls")]
+#[tokio::test]
+async fn unsupported_protocol_preserves_attempt_budget_and_shared_candidates() {
+    let cache = AltSvcCache::default();
+    let origin = origin(&input()).unwrap();
+    let mut headers = crate::HeaderMap::new();
+    headers.insert(
+        crate::header::ALT_SVC,
+        crate::HeaderValue::from_static("h3=\"h3.example:443\", h2=\"h2.example:443\""),
+    );
+    cache.record(&origin, &headers, Duration::ZERO);
+    let fake = FakeConnector::new([
+        Outcome::Failure(
+            ConnectionErrorDomain::Local,
+            ConnectionErrorKind::Unavailable,
+        ),
+        Outcome::Success(ApplicationProtocol::HTTP_2),
+    ]);
+    HttpServiceConnector::new(fake.clone())
+        .with_cache(cache.clone())
+        .with_max_attempts(2)
+        .serve(input())
+        .await
+        .unwrap();
+
+    let records = fake.records.lock();
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0].target.to_string(), "h3.example:443");
+    assert_eq!(records[1].target.to_string(), "h2.example:443");
+    let snapshot = cache.lookup(&origin).unwrap();
+    assert!(cache.is_usable(&snapshot, 0));
+    assert!(cache.is_usable(&snapshot, 1));
+}
+
+#[cfg(feature = "tls")]
+#[tokio::test]
+async fn candidate_limit_bounds_local_refusals_without_spending_network_attempts() {
+    for limit in [0, 1, 2] {
+        let input = input();
+        advertise(
+            &input,
+            &[
+                (ApplicationProtocol::HTTP_3, "first.example:443"),
+                (ApplicationProtocol::HTTP_3, "second.example:443"),
+                (ApplicationProtocol::HTTP_2, "third.example:443"),
+            ],
+        );
+        let fake = FakeConnector::new(
+            std::iter::repeat_n(
+                Outcome::Failure(
+                    ConnectionErrorDomain::Local,
+                    ConnectionErrorKind::Unavailable,
+                ),
+                limit,
+            )
+            .chain([Outcome::Success(ApplicationProtocol::HTTP_2)]),
+        );
+        HttpServiceConnector::new(fake.clone())
+            .with_max_attempts(2)
+            .with_max_candidates(limit)
+            .serve(input)
+            .await
+            .unwrap();
+
+        let records = fake.records.lock();
+        assert_eq!(records.len(), limit + 1);
+        assert_eq!(records[limit].target, records[limit].origin);
+    }
+}
+
+#[cfg(feature = "tls")]
+#[tokio::test]
+async fn candidate_limit_counts_unknown_protocols_before_a_supported_candidate() {
+    let input = input();
+    advertise(
+        &input,
+        &[
+            (ApplicationProtocol::HTTP_2_TCP, "unknown.example:443"),
+            (ApplicationProtocol::HTTP_2, "supported.example:443"),
+        ],
+    );
+    let fake = FakeConnector::new([Outcome::Success(ApplicationProtocol::HTTP_2)]);
+    HttpServiceLayer::new()
+        .with_max_candidates(1)
+        .layer(fake.clone())
+        .serve(input)
+        .await
+        .unwrap();
+
+    let records = fake.records.lock();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].target, records[0].origin);
 }
 
 #[cfg(feature = "tls")]
@@ -1008,7 +1131,7 @@ async fn pooled_alternative_metadata_does_not_grow_with_request_count() {
         let conn = connection.clone();
         async move { Ok::<_, ConnectionError>(EstablishedClientConnection { conn, input }) }
     });
-    let connector = capabilities(inner);
+    let connector = HttpServiceConnector::new(inner);
     for _ in 0..300 {
         let request = input();
         advertise(
@@ -1031,7 +1154,10 @@ async fn ordinary_connections_have_no_implicit_selection_deadline() {
             fake.serve(request).await
         }
     });
-    capabilities(inner).serve(input()).await.unwrap();
+    HttpServiceConnector::new(inner)
+        .serve(input())
+        .await
+        .unwrap();
 }
 
 #[cfg(feature = "tls")]
@@ -1050,7 +1176,7 @@ async fn direct_only_route_plan_respects_direct_failure_backoff() {
         let request = input();
         request.extensions().insert(routes);
         let fake = FakeConnector::new([Outcome::Success(ApplicationProtocol::HTTP_2)]);
-        capabilities(fake.clone())
+        HttpServiceConnector::new(fake.clone())
             .with_cache(cache.clone())
             .serve(request)
             .await
@@ -1086,7 +1212,7 @@ async fn speculative_deadline_preserves_recorded_protocol_failure_kind() {
         .extensions()
         .insert(TargetHttpVersion(Version::HTTP_2));
     request.extensions().insert(HttpServiceAttempt::default());
-    let error = capabilities(inner)
+    let error = HttpServiceConnector::new(inner)
         .with_attempt_timeout(Duration::from_millis(1))
         .attempt(request, None, true)
         .await
@@ -1132,7 +1258,7 @@ async fn readvertisement_during_a_failed_dial_does_not_reset_backoff() {
                 }
             }
         });
-        let error = capabilities(inner)
+        let error = HttpServiceConnector::new(inner)
             .with_cache(cache.clone())
             .serve(input())
             .await
@@ -1196,7 +1322,7 @@ async fn local_and_proxy_rejection_do_not_suppress_the_remote_service() {
             Outcome::Failure(domain, kind),
             Outcome::Success(ApplicationProtocol::HTTP_2),
         ]);
-        let connector = capabilities(fake.clone()).with_cache(cache.clone());
+        let connector = HttpServiceConnector::new(fake.clone()).with_cache(cache.clone());
         connector.serve(request).await.unwrap();
         assert_eq!(
             fake.records.lock()[1].target.to_string(),
@@ -1227,7 +1353,7 @@ async fn unusable_advertised_address_falls_back_and_origin_enforces_local_policy
             ),
             origin_outcome,
         ]);
-        let result = capabilities(fake.clone()).serve(request).await;
+        let result = HttpServiceConnector::new(fake.clone()).serve(request).await;
         if origin_allowed {
             result.unwrap();
         } else {
@@ -1285,7 +1411,7 @@ async fn response_body_reset_suppresses_alternative_but_local_errors_and_drops_d
         ]);
         fake.response_failure = Some(domain);
         fake.policy_scope = scope;
-        let connector = capabilities(fake.clone()).with_cache(cache.clone());
+        let connector = HttpServiceConnector::new(fake.clone()).with_cache(cache.clone());
         let established = connector.serve(input()).await.unwrap();
         let response = dispatch(established, Some(cache.clone())).await;
         // Header delivery succeeds; only consuming the later body reveals the reset.
@@ -1334,7 +1460,7 @@ async fn request_tls_policy_skips_alternatives_without_poisoning_shared_cache() 
             Outcome::Success(ApplicationProtocol::HTTP_2),
             Outcome::Success(ApplicationProtocol::HTTP_2),
         ]);
-        let connector = capabilities(fake.clone()).with_cache(cache.clone());
+        let connector = HttpServiceConnector::new(fake.clone()).with_cache(cache.clone());
         let request = input();
         if override_name {
             request
@@ -1377,7 +1503,7 @@ async fn proxy_alternative_failure_falls_back_and_remembers_only_that_route() {
             Outcome::Success(ApplicationProtocol::HTTP_2),
             Outcome::Success(ApplicationProtocol::HTTP_2),
         ]);
-        let connector = capabilities(fake.clone()).with_cache(cache.clone());
+        let connector = HttpServiceConnector::new(fake.clone()).with_cache(cache.clone());
         let request = input();
         request.extensions().insert(ProxyRoute::Proxy(
             "http://proxy.example:3128".parse().unwrap(),
@@ -1440,7 +1566,7 @@ async fn custom_trust_failure_keeps_origin_verification_and_shared_alternative()
             }
         }
     });
-    let connector = capabilities(inner).with_cache(cache.clone());
+    let connector = HttpServiceConnector::new(inner).with_cache(cache.clone());
     let request = input();
     request.extensions().insert(TlsServerTrust::webpki_roots());
     let error = connector.serve(request).await.unwrap_err();
@@ -1456,7 +1582,10 @@ async fn custom_trust_failure_keeps_origin_verification_and_shared_alternative()
 #[tokio::test]
 async fn ordinary_connection_moves_input_without_allocating_retry_extensions() {
     let fake = FakeConnector::new([Outcome::Success(ApplicationProtocol::HTTP_11)]);
-    let established = capabilities(fake).serve(input()).await.unwrap();
+    let established = HttpServiceConnector::new(fake)
+        .serve(input())
+        .await
+        .unwrap();
     assert!(established.input.extensions().parent().is_none());
     assert!(
         !established
@@ -1501,7 +1630,7 @@ async fn proxy_negative_cache_is_scoped_to_the_advertised_connect_target() {
                 let routed = ProxyRoutesConnector::new(
                     ProxyRouteFailureCacheLayer::new(proxy_cache).layer(fake.clone()),
                 );
-                let connector = capabilities(routed).with_cache(cache.clone());
+                let connector = HttpServiceConnector::new(routed).with_cache(cache.clone());
                 let request = input();
                 // Keep the version identical across alternative and origin;
                 // only the dial target may isolate their negative entries.
@@ -1542,7 +1671,7 @@ async fn required_h3_does_not_install_an_h2_frame_observer() {
     request
         .extensions()
         .insert(TargetHttpVersion(Version::HTTP_3));
-    let established = capabilities(FakeConnector::new([Outcome::Success(
+    let established = HttpServiceConnector::new(FakeConnector::new([Outcome::Success(
         ApplicationProtocol::HTTP_3,
     )]))
     .with_cache(AltSvcCache::default())
@@ -1607,7 +1736,7 @@ async fn address_race_preserves_authentication_over_protocol_and_timeout_results
             .extensions()
             .insert(TargetHttpVersion(Version::HTTP_3));
         request.extensions().insert(HttpServiceAttempt::default());
-        let error = capabilities(inner)
+        let error = HttpServiceConnector::new(inner)
             .with_attempt_timeout(Duration::from_millis(1))
             .attempt(request, None, true)
             .await
@@ -1650,7 +1779,7 @@ async fn connector_reported_request_and_unknown_policies_do_not_poison_shared_ca
             // No built-in TLS override extension: only this custom connector
             // knows which policy it applied. Unknown reports are conservative too.
             fake.policy_scope = scope;
-            let connector = capabilities(fake.clone())
+            let connector = HttpServiceConnector::new(fake.clone())
                 .with_cache(cache.clone())
                 .with_attempt_timeout(Duration::from_millis(10));
             for _ in 0..2 {
@@ -1703,7 +1832,7 @@ async fn pooled_policy_scope_survives_without_a_new_handshake_report() {
         );
         cache.record(&origin, &headers, Duration::ZERO);
         let snapshot = cache.lookup(&origin).unwrap();
-        let connector = capabilities(inner).with_cache(cache.clone());
+        let connector = HttpServiceConnector::new(inner).with_cache(cache.clone());
         for _ in 0..2 {
             let request = input();
             request
@@ -1739,7 +1868,7 @@ async fn custom_observer_can_consume_selection_without_ramas_http_wrapper() {
         &request,
         &[(ApplicationProtocol::HTTP_2, "alt.example:8443")],
     );
-    let selector = capabilities(FakeConnector::new([Outcome::Success(
+    let selector = HttpServiceConnector::new(FakeConnector::new([Outcome::Success(
         ApplicationProtocol::HTTP_2,
     )]));
     let established = selector.serve(request).await.unwrap();

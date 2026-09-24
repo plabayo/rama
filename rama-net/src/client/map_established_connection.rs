@@ -9,12 +9,44 @@ use super::{ConnectionError, ConnectorService, EstablishedClientConnection};
 /// The winning input and connection errors pass through unchanged. Place this
 /// outside a pool to wrap each checkout, or inside it to wrap new connections.
 #[derive(Debug, Clone)]
-pub struct LayeredConnector<S, L> {
+pub struct MapEstablishedConnection<S, L> {
     inner: S,
     layer: L,
 }
 
-impl<S, L> LayeredConnector<S, L> {
+/// A [`Layer`] that produces a [`MapEstablishedConnection`] service.
+///
+/// The supplied layer applies to successful connections, preserving the
+/// connector's winning input. Use [`rama_core::layer::layer_fn`] to map a
+/// connection with a closure.
+#[derive(Debug, Clone)]
+pub struct MapEstablishedConnectionLayer<L> {
+    layer: L,
+}
+
+impl<L> MapEstablishedConnectionLayer<L> {
+    /// Wrap connectors with middleware for their established connections.
+    pub const fn new(layer: L) -> Self {
+        Self { layer }
+    }
+}
+
+impl<S, L> Layer<S> for MapEstablishedConnectionLayer<L>
+where
+    L: Clone,
+{
+    type Service = MapEstablishedConnection<S, L>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        MapEstablishedConnection::new(inner, self.layer.clone())
+    }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        MapEstablishedConnection::new(inner, self.layer)
+    }
+}
+
+impl<S, L> MapEstablishedConnection<S, L> {
     /// Compose a connector with middleware for its established connections.
     pub const fn new(inner: S, layer: L) -> Self {
         Self { inner, layer }
@@ -38,7 +70,7 @@ impl<S, L> LayeredConnector<S, L> {
     }
 }
 
-impl<S, L, Input> Service<Input> for LayeredConnector<S, L>
+impl<S, L, Input> Service<Input> for MapEstablishedConnection<S, L>
 where
     S: ConnectorService<Input>,
     L: Layer<S::Connection, Service: ExtensionsRef + Send + 'static> + Send + Sync + 'static,
@@ -76,7 +108,10 @@ mod tests {
     use std::{
         convert::Infallible,
         mem::size_of_val,
-        sync::atomic::{AtomicUsize, Ordering},
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
     };
 
     #[test]
@@ -88,7 +123,7 @@ mod tests {
                 conn: ServiceInput::new(()),
             })
         });
-        let connector = LayeredConnector::new(inner, layer_fn(|conn| conn));
+        let connector = MapEstablishedConnection::new(inner, layer_fn(|conn| conn));
         let inner = connector.get_ref().connect([0; kib(4)]);
         let layered = connector.connect([0; kib(4)]);
         assert!(size_of_val(&layered) <= size_of_val(&inner) + 2 * size_of::<usize>());
@@ -110,13 +145,52 @@ mod tests {
                 extensions: conn.extensions,
             }
         });
-        let connector = LayeredConnector::new(connector, layer);
+        let connector = MapEstablishedConnection::new(connector, layer);
 
         for checkout in 0..3 {
             let established = connector.connect(42).await.unwrap();
             assert_eq!(established.input, 43);
             assert_eq!(established.conn.input, (42, checkout));
         }
+    }
+
+    #[tokio::test]
+    async fn reusable_layer_maps_connections_from_each_connector() {
+        let count = Arc::new(AtomicUsize::new(0));
+        let layer = MapEstablishedConnectionLayer::new(layer_fn({
+            let count = count.clone();
+            move |conn: ServiceInput<usize>| {
+                let checkout = count.fetch_add(1, Ordering::Relaxed);
+                ServiceInput {
+                    input: (conn.input, checkout),
+                    extensions: conn.extensions,
+                }
+            }
+        }));
+        let first = layer.layer(service_fn(|input: usize| async move {
+            Ok::<_, Infallible>(EstablishedClientConnection {
+                input: input + 1,
+                conn: ServiceInput::new(input),
+            })
+        }));
+        let second = layer.into_layer(service_fn(|input: usize| async move {
+            Ok::<_, Infallible>(EstablishedClientConnection {
+                input: input + 2,
+                conn: ServiceInput::new(input * 2),
+            })
+        }));
+
+        // Constructing connector stacks must not construct their connections.
+        assert_eq!(count.load(Ordering::Relaxed), 0);
+
+        let established = first.connect(10).await.unwrap();
+        assert_eq!(established.input, 11);
+        assert_eq!(established.conn.input, (10, 0));
+
+        let established = second.connect(10).await.unwrap();
+        assert_eq!(established.input, 12);
+        assert_eq!(established.conn.input, (20, 1));
+        assert_eq!(count.load(Ordering::Relaxed), 2);
     }
 
     #[tokio::test]
@@ -130,7 +204,7 @@ mod tests {
         let layer = layer_fn(|_: ServiceInput<()>| -> ServiceInput<()> {
             panic!("failed connections must not construct middleware")
         });
-        let error = LayeredConnector::new(connector, layer)
+        let error = MapEstablishedConnection::new(connector, layer)
             .connect(())
             .await
             .unwrap_err();

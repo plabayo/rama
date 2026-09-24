@@ -1036,8 +1036,7 @@ mod tests {
                             Ok::<_, ConnectionError>(EstablishedClientConnection { conn, input })
                         }
                     }))
-                    .with_cache(cache.clone())
-                    .with_protocols([ApplicationProtocol::HTTP_2]);
+                    .with_cache(cache.clone());
                 let input = || {
                     ConnectRequest::new(origin().authority().clone())
                         .with_application_protocol(Protocol::HTTPS)

@@ -134,8 +134,7 @@ fn pooled_dispatch(b: divan::Bencher, discovery: bool) {
         }
         async move { Ok::<_, ConnectionError>(EstablishedClientConnection { conn, input }) }
     }))
-    .maybe_with_cache(discovery.then_some(cache.clone()))
-    .with_protocols([ApplicationProtocol::HTTP_2]);
+    .maybe_with_cache(discovery.then_some(cache.clone()));
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_time()
         .build()
@@ -198,8 +197,7 @@ fn pooled_selection(b: divan::Bencher, discovery: bool) {
         }
         async move { Ok::<_, ConnectionError>(EstablishedClientConnection { conn, input }) }
     }))
-    .maybe_with_cache(discovery.then_some(cache))
-    .with_protocols([ApplicationProtocol::HTTP_2]);
+    .maybe_with_cache(discovery.then_some(cache));
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_time()
         .build()

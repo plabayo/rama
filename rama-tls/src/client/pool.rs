@@ -33,7 +33,7 @@ use crate::{
 /// after a successful handshake. Pools borrow the next request's extensions to
 /// check compatibility; callers need not configure the provider on the pool.
 /// Connector defaults, including credentials and hooks, remain fixed for the
-/// lifetime of its pool. Shared custom components retain their instance identity.
+/// lifetime of its pool. Custom components supply stable value or instance identities.
 #[derive(Debug)]
 pub struct TlsConnectionReuse<P> {
     provider: P,
@@ -112,9 +112,10 @@ impl<P: TlsClientConfigProvider + 'static> ConnectionReusePolicy for TlsConnecti
 ///
 /// This identifies overrides within a pool with fixed connector defaults. It
 /// neither identifies a destination nor authenticates a peer, and is not a stable
-/// serialization or a TLS wire fingerprint. Shared custom components are retained
-/// for the identity's lifetime, preventing address reuse from matching a different
-/// instance. Pools must check [`Self::is_reusable`] at checkout and return.
+/// serialization or a TLS wire fingerprint. Custom identities are captured by
+/// value; instance identities retain their owners to prevent address reuse from
+/// matching a different policy. Pools must check [`Self::is_reusable`] at checkout
+/// and return.
 #[derive(Clone, Extension)]
 #[extension(tags(tls))]
 pub struct TlsPoolId {
@@ -124,7 +125,7 @@ pub struct TlsPoolId {
 }
 
 // Common settings use a compact fingerprint; custom components compare their
-// actual retained identities, independently of this list's allocation.
+// actual captured identities, independently of this list's allocation.
 impl PartialEq for TlsPoolId {
     fn eq(&self, other: &Self) -> bool {
         self.digest == other.digest
@@ -152,40 +153,41 @@ impl fmt::Debug for TlsPoolId {
     }
 }
 
-/// Identity of a custom TLS component retained by a [`TlsPoolId`].
+/// Owning instance identity for components whose policy follows a shared object.
 ///
-/// The identity borrows the component, so it cannot outlive the object it names.
-/// The pool retains the owning component and compares identities only while it is
-/// alive. This prevents a recycled allocation address from matching an old policy.
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct TlsComponentIdentity<'a> {
-    address: *const (),
-    _borrow: PhantomData<&'a ()>,
-}
+/// Clones of the same `Arc` compare equal, regardless of its value. Retaining the
+/// owner prevents a recycled address from matching a different policy instance.
+/// Use a value identity instead when independently built policies are equivalent.
+pub struct TlsComponentIdentity<T: ?Sized>(Arc<T>);
 
-impl<'a> TlsComponentIdentity<'a> {
-    /// Identify an instance owned by the component, including an unsized trait object.
-    ///
-    /// Cloned `Arc`s have the same identity; separately allocated instances differ.
-    pub fn shared<T: ?Sized>(value: &'a Arc<T>) -> Self {
-        Self {
-            address: Arc::as_ptr(value).cast(),
-            _borrow: PhantomData,
-        }
-    }
-
-    /// Identify the retained component itself, such as an extension containing a hook.
-    ///
-    /// Use [`Self::shared`] instead when cloned wrappers share an inner `Arc`.
-    pub fn borrowed<T: ?Sized>(value: &'a T) -> Self {
-        Self {
-            address: std::ptr::from_ref(value).cast(),
-            _borrow: PhantomData,
-        }
+impl<T: ?Sized> TlsComponentIdentity<T> {
+    /// Retain a shared instance, including an unsized trait object.
+    pub fn shared(value: &Arc<T>) -> Self {
+        Self(value.clone())
     }
 }
 
-impl fmt::Debug for TlsComponentIdentity<'_> {
+impl<T: ?Sized> Clone for TlsComponentIdentity<T> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl<T: ?Sized> PartialEq for TlsComponentIdentity<T> {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl<T: ?Sized> Eq for TlsComponentIdentity<T> {}
+
+impl<T: ?Sized> Hash for TlsComponentIdentity<T> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        Arc::as_ptr(&self.0).cast::<()>().hash(state);
+    }
+}
+
+impl<T: ?Sized> fmt::Debug for TlsComponentIdentity<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TlsComponentIdentity")
             .finish_non_exhaustive()
@@ -194,11 +196,15 @@ impl fmt::Debug for TlsComponentIdentity<'_> {
 
 /// Explicit pooling identity for a custom TLS configuration component.
 ///
-/// Return the identity of this component or an instance it owns. Wrappers around
-/// the same instance may reuse connections. Its TLS policy must remain fixed while
-/// those connections exist: replace the component when policy changes, or use
-/// [`TlsPoolIdBuilder::with_opaque_override`] for untrackable mutable policies.
-/// Equality of arbitrary callbacks or mutable policies cannot be inferred.
+/// Equal identities promise equivalent connection reuse policies. The builder
+/// captures an owned identity; it never reads the component again. A value,
+/// immutable shared configuration, or [`TlsComponentIdentity`] can identify the
+/// policy without copying the component itself. Identity equality and hashing
+/// must remain stable for the identity's lifetime.
+///
+/// A mutable component must return a new identity when its policy changes. Use
+/// [`TlsPoolIdBuilder::with_opaque_override`] if that cannot be guaranteed.
+/// Equality of arbitrary callbacks cannot be inferred automatically.
 ///
 /// ```
 /// use std::sync::Arc;
@@ -207,26 +213,65 @@ impl fmt::Debug for TlsComponentIdentity<'_> {
 /// struct VerifyHook(Arc<dyn Fn() -> bool + Send + Sync>);
 ///
 /// impl TlsPoolComponent for VerifyHook {
-///     fn pool_component_identity(&self) -> TlsComponentIdentity<'_> {
+///     type Identity = TlsComponentIdentity<dyn Fn() -> bool + Send + Sync>;
+///
+///     fn pool_component_identity(&self) -> Self::Identity {
 ///         TlsComponentIdentity::shared(&self.0)
 ///     }
 /// }
 ///
 /// let hook = Arc::new(VerifyHook(Arc::new(|| true)));
-/// let identity = TlsPoolId::builder().with_shared_component(&hook).build();
+/// let identity = TlsPoolId::builder().with_component(hook.as_ref()).build();
 /// let clone = Arc::new(VerifyHook(hook.0.clone()));
-/// assert_eq!(identity, TlsPoolId::builder().with_shared_component(&clone).build());
+/// assert_eq!(identity, TlsPoolId::builder().with_component(clone.as_ref()).build());
 /// ```
 pub trait TlsPoolComponent: Any + Send + Sync {
-    /// Identify this component's stable TLS policy instance.
-    fn pool_component_identity(&self) -> TlsComponentIdentity<'_>;
+    /// An owned, stable snapshot of this component's reuse policy.
+    type Identity: Eq + Hash + Send + Sync + 'static;
+
+    /// Capture the current policy identity independently of this borrow.
+    fn pool_component_identity(&self) -> Self::Identity;
 }
 
-// Retain the existing sink Arc directly rather than allocating a sized adapter
-// around its trait object. Both variants use the same identity comparison path.
+// Erasure is internal: callers implement ordinary value equality and hashing,
+// and hash collisions never replace exact identity comparison.
+trait ErasedIdentity: Send + Sync {
+    fn kind(&self) -> TypeId;
+    fn as_any(&self) -> &dyn Any;
+    fn eq(&self, other: &dyn ErasedIdentity) -> bool;
+    fn hash_erased(&self, state: &mut dyn Hasher);
+}
+
+struct ComponentIdentity<T: TlsPoolComponent> {
+    value: T::Identity,
+    _component: PhantomData<fn() -> T>,
+}
+
+impl<T: TlsPoolComponent> ErasedIdentity for ComponentIdentity<T> {
+    fn kind(&self) -> TypeId {
+        TypeId::of::<T>()
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn eq(&self, other: &dyn ErasedIdentity) -> bool {
+        other
+            .as_any()
+            .downcast_ref::<Self>()
+            .is_some_and(|other| self.value == other.value)
+    }
+
+    fn hash_erased(&self, mut state: &mut dyn Hasher) {
+        self.value.hash(&mut state);
+    }
+}
+
+// Keep keylog's already-erased Arc directly, without allocating another adapter.
 enum SharedComponent {
-    Custom(Arc<dyn TlsPoolComponent>),
-    KeyLog(Arc<dyn KeyLogSink>),
+    Custom(Box<dyn ErasedIdentity>),
+    KeyLog(TlsComponentIdentity<dyn KeyLogSink>),
 }
 
 // Keep a custom verifier, configuration hook and keylog sink inline together.
@@ -234,24 +279,30 @@ const INLINE_SHARED_COMPONENTS: usize = 3;
 type SharedComponents = SmallVec<[SharedComponent; INLINE_SHARED_COMPONENTS]>;
 
 impl SharedComponent {
-    fn kind(&self) -> TypeId {
-        match self {
-            Self::Custom(component) => component.as_ref().type_id(),
-            Self::KeyLog(_) => TypeId::of::<TlsKeyLog>(),
-        }
+    fn capture<T: TlsPoolComponent>(component: &T) -> Self {
+        Self::Custom(Box::new(ComponentIdentity::<T> {
+            value: component.pool_component_identity(),
+            _component: PhantomData,
+        }))
     }
 
-    fn identity(&self) -> TlsComponentIdentity<'_> {
+    fn kind(&self) -> TypeId {
         match self {
-            Self::Custom(component) => component.pool_component_identity(),
-            Self::KeyLog(sink) => TlsComponentIdentity::shared(sink),
+            Self::Custom(identity) => identity.kind(),
+            Self::KeyLog(_) => TypeId::of::<TlsKeyLog>(),
         }
     }
 }
 
 impl PartialEq for SharedComponent {
     fn eq(&self, other: &Self) -> bool {
-        self.kind() == other.kind() && self.identity() == other.identity()
+        match (self, other) {
+            (Self::Custom(identity), Self::Custom(other_identity)) => {
+                identity.eq(other_identity.as_ref())
+            }
+            (Self::KeyLog(sink), Self::KeyLog(other_sink)) => sink == other_sink,
+            _ => false,
+        }
     }
 }
 
@@ -260,7 +311,10 @@ impl Eq for SharedComponent {}
 impl Hash for SharedComponent {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.kind().hash(state);
-        self.identity().hash(state);
+        match self {
+            Self::Custom(identity) => identity.hash_erased(state),
+            Self::KeyLog(sink) => sink.hash(state),
+        }
     }
 }
 
@@ -349,8 +403,8 @@ struct AlpsSettings<'a> {
 
 /// Build a backend-independent identity with shared presence and field encoding.
 ///
-/// Ordinary settings are borrowed without allocation. Custom components retain
-/// their owners in shared storage. Settings are
+/// Ordinary settings are borrowed without allocation. Custom component identities
+/// are captured in shared storage. Settings are
 /// encoded in one canonical order, independent of setter order. Library adapters
 /// should exhaustively destructure their configuration before setting fields,
 /// so additions require an explicit pooling decision.
@@ -559,7 +613,7 @@ impl<'a> TlsPoolIdBuilder<'a> {
     generate_set_and_with! {
         /// Explicitly disable reuse for policy that can change within one instance.
         ///
-        /// Stable shared components should use [`Self::with_shared_component`].
+        /// Components with stable identities should use [`Self::with_component`].
         pub fn opaque_override(mut self, present: bool) -> Self {
             self.opaque_override = present;
             self
@@ -567,13 +621,13 @@ impl<'a> TlsPoolIdBuilder<'a> {
     }
 
     generate_set_and_with! {
-        /// Include a custom component and retain it for the ID's lifetime.
+        /// Capture a custom component's owned policy identity.
         ///
-        /// Components are keyed by type, independently of setter order. Their
-        /// explicit identity contract handles wrappers around shared instances
-        /// without requiring a general-purpose `Hash` implementation.
-        pub fn shared_component(mut self, value: &Arc<impl TlsPoolComponent>) -> Self {
-            self.insert_component(SharedComponent::Custom(value.clone()));
+        /// Components are keyed by type, independently of setter order. Only the
+        /// identity is retained; the component needs no general-purpose `Hash`
+        /// implementation. Later policy changes cannot mutate this snapshot.
+        pub fn component(mut self, value: &impl TlsPoolComponent) -> Self {
+            self.insert_component(SharedComponent::capture(value));
             self
         }
     }
@@ -607,7 +661,7 @@ impl<'a> TlsPoolIdBuilder<'a> {
             Some(KeyLogIntent::Disabled) => Some(ComparableKeyLog::Disabled),
             Some(KeyLogIntent::File(path)) => Some(ComparableKeyLog::File(path)),
             Some(KeyLogIntent::Custom(sink)) => {
-                self.insert_component(SharedComponent::KeyLog(sink.clone()));
+                self.insert_component(SharedComponent::KeyLog(TlsComponentIdentity::shared(sink)));
                 Some(ComparableKeyLog::Custom)
             }
             None => None,
@@ -700,7 +754,11 @@ mod tests {
     use crate::keylog::NoopKeyLogSink;
     use rama_crypto::pki_types::PrivatePkcs8KeyDer;
     use rama_utils::octets::kib;
-    use std::hash::Hasher;
+    use std::{
+        hash::Hasher,
+        ptr,
+        sync::atomic::{AtomicU64, Ordering},
+    };
 
     #[derive(Debug, Clone, Copy)]
     struct TestProvider;
@@ -782,44 +840,48 @@ mod tests {
 
     #[test]
     fn shared_component_order_replacement_and_lifetime_are_preserved() {
-        struct Verifier;
+        struct Verifier(Arc<()>);
 
         impl TlsPoolComponent for Verifier {
-            fn pool_component_identity(&self) -> TlsComponentIdentity<'_> {
-                TlsComponentIdentity::borrowed(self)
+            type Identity = TlsComponentIdentity<()>;
+
+            fn pool_component_identity(&self) -> Self::Identity {
+                TlsComponentIdentity::shared(&self.0)
             }
         }
 
-        struct Hook;
+        struct Hook(Arc<()>);
 
         impl TlsPoolComponent for Hook {
-            fn pool_component_identity(&self) -> TlsComponentIdentity<'_> {
-                TlsComponentIdentity::borrowed(self)
+            type Identity = TlsComponentIdentity<()>;
+
+            fn pool_component_identity(&self) -> Self::Identity {
+                TlsComponentIdentity::shared(&self.0)
             }
         }
 
-        let verifier = Arc::new(Verifier);
-        let hook = Arc::new(Hook);
-        let weak = Arc::downgrade(&verifier);
+        let verifier = Arc::new(Verifier(Arc::new(())));
+        let hook = Arc::new(Hook(Arc::new(())));
+        let weak = Arc::downgrade(&verifier.0);
         let id = TlsPoolId::builder()
-            .with_shared_component(&verifier)
-            .with_shared_component(&hook)
+            .with_component(verifier.as_ref())
+            .with_component(hook.as_ref())
             .build()
             .unwrap();
         assert_eq!(
             Some(id.clone()),
             TlsPoolId::builder()
-                .with_shared_component(&hook)
-                .with_shared_component(&verifier)
+                .with_component(hook.as_ref())
+                .with_component(verifier.as_ref())
                 .build()
         );
-        let replacement = Arc::new(Verifier);
+        let replacement = Arc::new(Verifier(Arc::new(())));
         assert_ne!(
             Some(id.clone()),
             TlsPoolId::builder()
-                .with_shared_component(&verifier)
-                .with_shared_component(&hook)
-                .with_shared_component(&replacement)
+                .with_component(verifier.as_ref())
+                .with_component(hook.as_ref())
+                .with_component(replacement.as_ref())
                 .build()
         );
         drop(verifier);
@@ -833,7 +895,9 @@ mod tests {
         struct Hook(Arc<dyn Fn() + Send + Sync>);
 
         impl TlsPoolComponent for Hook {
-            fn pool_component_identity(&self) -> TlsComponentIdentity<'_> {
+            type Identity = TlsComponentIdentity<dyn Fn() + Send + Sync>;
+
+            fn pool_component_identity(&self) -> Self::Identity {
                 TlsComponentIdentity::shared(&self.0)
             }
         }
@@ -844,15 +908,15 @@ mod tests {
         let wrapper_clone = Arc::new(Hook(callback));
         let replacement = Arc::new(Hook(Arc::new(|| {})));
         let id = TlsPoolId::builder()
-            .with_shared_component(&hook)
+            .with_component(hook.as_ref())
             .build()
             .unwrap();
         let same = TlsPoolId::builder()
-            .with_shared_component(&wrapper_clone)
+            .with_component(wrapper_clone.as_ref())
             .build()
             .unwrap();
         let other = TlsPoolId::builder()
-            .with_shared_component(&replacement)
+            .with_component(replacement.as_ref())
             .build()
             .unwrap();
         assert_eq!(id.digest, other.digest, "common settings are identical");
@@ -868,6 +932,116 @@ mod tests {
         );
         drop(id);
         assert!(weak.upgrade().is_none());
+    }
+
+    #[test]
+    fn value_identities_compare_equal_across_distinct_components() {
+        struct Policy(&'static str);
+
+        impl TlsPoolComponent for Policy {
+            type Identity = &'static str;
+
+            fn pool_component_identity(&self) -> Self::Identity {
+                self.0
+            }
+        }
+
+        let first = Policy("trusted");
+        let equal = Policy("trusted");
+        let other = Policy("untrusted");
+        let id = |policy| TlsPoolId::builder().with_component(policy).build();
+        assert!(!ptr::eq(&first, &equal));
+        assert_eq!(id(&first), id(&equal));
+        assert_ne!(id(&first), id(&other));
+        assert_eq!(
+            policy_digest(b"test", &id(&first)),
+            policy_digest(b"test", &id(&equal))
+        );
+    }
+
+    #[test]
+    fn identity_hash_collisions_do_not_allow_reuse() {
+        #[derive(PartialEq, Eq)]
+        struct Identity(u64);
+
+        impl Hash for Identity {
+            fn hash<H: Hasher>(&self, state: &mut H) {
+                0_u8.hash(state);
+            }
+        }
+
+        struct Policy(u64);
+
+        impl TlsPoolComponent for Policy {
+            type Identity = Identity;
+
+            fn pool_component_identity(&self) -> Self::Identity {
+                Identity(self.0)
+            }
+        }
+
+        let first = TlsPoolId::builder().with_component(&Policy(1)).build();
+        let second = TlsPoolId::builder().with_component(&Policy(2)).build();
+        assert_eq!(
+            policy_digest(b"test", &first),
+            policy_digest(b"test", &second)
+        );
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn identity_snapshot_survives_policy_changes_and_component_drop() {
+        struct Policy(AtomicU64);
+
+        impl TlsPoolComponent for Policy {
+            type Identity = u64;
+
+            fn pool_component_identity(&self) -> Self::Identity {
+                self.0.load(Ordering::Relaxed)
+            }
+        }
+
+        let (first, first_hash, restored) = {
+            let policy = Policy(AtomicU64::new(1));
+            let first = TlsPoolId::builder().with_component(&policy).build();
+            let first_hash = policy_digest(b"test", &first);
+            policy.0.store(2, Ordering::Relaxed);
+            let second = TlsPoolId::builder().with_component(&policy).build();
+            assert_ne!(first, second);
+            policy.0.store(1, Ordering::Relaxed);
+            let restored = TlsPoolId::builder().with_component(&policy).build();
+            (first, first_hash, restored)
+        };
+        // The stack-allocated component is gone; only its captured values remain.
+        assert_eq!(first, restored);
+        assert_eq!(first_hash, policy_digest(b"test", &first));
+    }
+
+    #[test]
+    fn identical_values_from_different_component_types_do_not_match() {
+        struct Verifier;
+        struct Hook;
+
+        impl TlsPoolComponent for Verifier {
+            type Identity = u64;
+
+            fn pool_component_identity(&self) -> Self::Identity {
+                1
+            }
+        }
+
+        impl TlsPoolComponent for Hook {
+            type Identity = u64;
+
+            fn pool_component_identity(&self) -> Self::Identity {
+                1
+            }
+        }
+
+        assert_ne!(
+            TlsPoolId::builder().with_component(&Verifier).build(),
+            TlsPoolId::builder().with_component(&Hook).build(),
+        );
     }
 
     #[test]
