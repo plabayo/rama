@@ -1,8 +1,11 @@
 //! [🚀 Datastar](https://data-star.dev/) support extractor for rama.
 
-use crate::service::web::{
-    extract::{FromRequest, FromRequestBody, OptionalFromRequest, OptionalFromRequestBody},
-    response::IntoResponse,
+use crate::{
+    headers::{DatastarRequest, HeaderMapExt},
+    service::web::{
+        extract::{FromRequest, FromRequestBody, OptionalFromRequest, OptionalFromRequestBody},
+        response::IntoResponse,
+    },
 };
 use rama_core::telemetry::tracing;
 use rama_http_types::{BodyExtractExt, Method, Request, Response, StatusCode};
@@ -106,7 +109,7 @@ where
         parts: &crate::request::Parts,
         body: crate::Body,
     ) -> impl Future<Output = Result<Option<Self>, Self::Rejection>> + Send + 'static {
-        let future = if parts.headers.get("datastar-request").is_none() {
+        let future = if parts.headers.typed_get::<DatastarRequest>().is_none() {
             tracing::trace!(
                 "no datastar request header present: returning no read signals as such"
             );
@@ -127,6 +130,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::headers::HttpRequestBuilderExt;
 
     #[derive(Debug, Deserialize, PartialEq, Eq)]
     struct Signals {
@@ -218,7 +222,7 @@ mod tests {
         let request = Request::builder()
             .method(Method::GET)
             .uri("/?datastar=%7B%22count%22%3A42%7D")
-            .header("datastar-request", "true")
+            .typed_header(DatastarRequest::new())
             .body(crate::Body::empty())
             .unwrap();
 

@@ -188,6 +188,7 @@ pub use self::name::{
     KEEP_ALIVE,
     PROXY_CONNECTION,
     LAST_EVENT_ID,
+    DATASTAR_REQUEST,
     CF_CONNECTING_IP,
     TRUE_CLIENT_IP,
     CLIENT_IP,

@@ -28,6 +28,7 @@ mod mitm;
 pub use self::mitm::issuer as cert_issuer;
 pub use self::mitm::revocation;
 pub use self::mitm::{
-    HandshakeRelayClassification, MitmAcceptorCacheConfig, TlsMitmEgressServerAuth, TlsMitmRelay,
-    TlsMitmRelayError, TlsMitmRelayErrorDirection, TlsMitmRelayErrorKind, TlsMitmRelayService,
+    HandshakeRelayClassification, MitmAcceptorCacheConfig, TlsMitmEgressClientAuth,
+    TlsMitmEgressServerAuth, TlsMitmRelay, TlsMitmRelayError, TlsMitmRelayErrorDirection,
+    TlsMitmRelayErrorKind, TlsMitmRelayService,
 };
