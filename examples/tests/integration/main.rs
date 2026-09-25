@@ -256,4 +256,12 @@ mod http3_client_server;
         all(feature = "rustls", any(feature = "ring", feature = "aws-lc"))
     )
 ))]
+mod http_datagram_echo;
+#[cfg(all(
+    feature = "http-full",
+    any(
+        feature = "boring",
+        all(feature = "rustls", any(feature = "ring", feature = "aws-lc"))
+    )
+))]
 mod ws_over_h3;

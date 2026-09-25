@@ -391,6 +391,10 @@ impl ExampleRunner {
             }
             #[cfg(feature = "http-full")]
             "ws_over_h3" => std::process::Command::new(env!("CARGO_BIN_EXE_ws_over_h3")),
+            #[cfg(feature = "http-full")]
+            "http_datagram_echo" => {
+                std::process::Command::new(env!("CARGO_BIN_EXE_http_datagram_echo"))
+            }
             #[cfg(all(feature = "quic", feature = "tls"))]
             "quic_terminating_relay" => {
                 std::process::Command::new(env!("CARGO_BIN_EXE_quic_terminating_relay"))

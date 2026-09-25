@@ -520,6 +520,11 @@ path = "src/ws_over_h2.rs"
 required-features = ["http-full", "boring"]
 
 [[bin]]
+name = "http_datagram_echo"
+path = "src/http_datagram_echo.rs"
+required-features = ["http-full"]
+
+[[bin]]
 name = "ws_over_h3"
 path = "src/ws_over_h3.rs"
 required-features = ["http-full"]
