@@ -85,7 +85,7 @@ Messages can be either text or binary.
 
 ### h2 WebSocket support
 
-> RFC: Bootstrapping WebSockets with HTTP/2: <https://github.com/plabayo/rama/blob/main/rama-ws/specifications/rfc8441.txt>
+> RFC: Bootstrapping WebSockets with HTTP/2: <https://github.com/plabayo/rama/blob/main/rama-http-core/specifications/rfc8441.txt>
 
 While traditional WebSockets rely on HTTP/1.1's `Upgrade` and `Connection: upgrade` headers to switch protocols,
 HTTP/2 doesn’t support these connection-wide semantics due to its stream-multiplexing architecture.

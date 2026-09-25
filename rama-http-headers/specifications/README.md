@@ -21,6 +21,15 @@ if we have implemented it at all.
 * [rfc7239.txt](./rfc7239.txt)  
   Forwarded HTTP Extension.
 
+* [rfc9651.txt](./rfc9651.txt)  
+  Structured Field Values for HTTP. Parsed by `rama-http-types`'
+  `structured_fields` module; used by typed `Priority` and `Capsule-Protocol`.
+
+### Related, vendored in sibling crates
+
+* [rfc9297.txt](../../rama-http-core/specifications/rfc9297.txt) —
+  HTTP Datagrams and the Capsule Protocol (`Capsule-Protocol` field).
+
 ### WHATWG
 
 * [fetch.whatwg.org.md](./fetch.whatwg.org.md)  

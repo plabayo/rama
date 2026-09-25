@@ -32,6 +32,11 @@ relied upon by rama-http-core or related to.
 * [rfc7541.txt](./rfc7541.txt)  
   HPACK: Header Compression for HTTP/2
 
+* [rfc8441.txt](./rfc8441.txt)  
+  Bootstrapping WebSockets with HTTP/2. Defines Extended CONNECT, the
+  `:protocol` pseudo-header and `SETTINGS_ENABLE_CONNECT_PROTOCOL`, shared by
+  the h2 and h3 engines for every upgrade token, not only WebSockets.
+
 * [rfc8470.txt](./rfc8470.txt)  
   Using Early Data in HTTP
 
@@ -60,6 +65,15 @@ relied upon by rama-http-core or related to.
 
 * [rfc9218.txt](./rfc9218.txt): Extensible Prioritization Scheme for HTTP.
 
+* [rfc9220.txt](./rfc9220.txt)  
+  Bootstrapping WebSockets with HTTP/3. Registers Extended CONNECT for the
+  h3 engine; negotiation lives in `h3::connection`, validation in `h3::headers`.
+
+* [rfc9297.txt](./rfc9297.txt)  
+  HTTP Datagrams and the Capsule Protocol. Capsule values and the HTTP/3
+  Quarter Stream ID are in `rama-http-types`; the H3 native datagram
+  demultiplexer is `h3::datagram`.
+
 ### Related, vendored in sibling crates
 
 To avoid duplication, the following load-bearing specifications live next
@@ -72,7 +86,9 @@ to the crate that owns their primary concern:
 * [rfc7239.txt](../../rama-http-headers/specifications/rfc7239.txt) —
   `Forwarded` header.
 * [rfc7838.txt](../../rama-http/specifications/rfc7838.txt) — `Alt-Svc`.
-* [rfc8441.txt](../../rama-ws/specifications/rfc8441.txt) —
-  Bootstrapping WebSockets with HTTP/2 (Extended CONNECT / `:protocol`).
 * [rfc9111.txt](../../rama-http/specifications/rfc9111.txt) — HTTP Caching
   (hop-by-hop / `Cache-Control` semantics relevant to proxy forwarding).
+* [rfc9221.txt](../../rama-quic/specifications/rfc9221.txt) — QUIC DATAGRAM,
+  the unreliable transport for native HTTP/3 datagrams.
+* [rfc9651.txt](../../rama-http-headers/specifications/rfc9651.txt) —
+  Structured Field Values (`Capsule-Protocol`, `Priority`).
