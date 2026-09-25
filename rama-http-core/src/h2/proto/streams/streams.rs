@@ -1422,7 +1422,7 @@ impl<B> StreamRef<B> {
         })
     }
 
-    pub(crate) fn send_reset(&mut self, reason: Reason) {
+    pub(crate) fn send_reset(&self, reason: Reason) {
         let mut me = self.opaque.inner.lock();
         let me = &mut *me;
 

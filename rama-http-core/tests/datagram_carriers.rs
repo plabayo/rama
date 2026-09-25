@@ -73,6 +73,28 @@ fn capsule_service()
     }))
 }
 
+/// Ends its own direction first, then finds the peer's data malformed and keeps the tunnel.
+fn closing_service()
+-> RamaHttpService<impl rama_core::Service<Request, Output = Response, Error = Infallible> + Clone>
+{
+    RamaHttpService::new(service_fn(|request: Request| async move {
+        let protocol = validate_capsule_request(&request).unwrap();
+        let upgrade = handle_upgrade(&request);
+        tokio::spawn(async move {
+            let mut config = config();
+            config.capsules.max_capsule_size = 8;
+            let mut session = HttpDatagramSession::with_config(upgrade.await.unwrap(), config);
+            session.close().await.unwrap();
+            let error = session.recv().await.unwrap_err();
+            assert!(matches!(error, SessionError::Malformed(_)), "{error:?}");
+            // Neither a write nor a drop may be needed for the reset.
+            std::future::pending::<()>().await;
+            drop(session);
+        });
+        Ok::<_, Infallible>(capsule_response::<Body>(request.version(), &protocol).unwrap())
+    }))
+}
+
 fn capsule_request(version: Version) -> Request {
     let mut request = Request::builder()
         .version(version)
@@ -227,6 +249,43 @@ async fn truncated_capsules_reset_http2_streams_with_protocol_error() {
         prepare_capsule_request(&mut request, TOKEN).unwrap();
         let second = sender.send_request(request).await.unwrap();
         assert!(second.status().is_success());
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn malformed_http2_streams_reset_after_local_end_stream() {
+    tokio::time::timeout(LIMIT, async {
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        let (client_io, server_io) = (ServiceInput::new(client_io), ServiceInput::new(server_io));
+        tokio::spawn(
+            server::conn::http2::Builder::new(Executor::new())
+                .with_enable_connect_protocol()
+                .serve_connection(server_io, closing_service()),
+        );
+        let (mut sender, connection) = conn::http2::Builder::new(Executor::new())
+            .handshake(client_io)
+            .await
+            .unwrap();
+        tokio::spawn(connection);
+        let response = sender
+            .send_request(capsule_request(Version::HTTP_2))
+            .await
+            .unwrap();
+        let mut tunnel = handle_upgrade(&response).await.unwrap();
+        let mut rest = Vec::new();
+        tunnel.read_to_end(&mut rest).await.unwrap();
+        // A registered capsule above the server's 8 byte limit is malformed at once.
+        tunnel.write_all(b"\x2a\x40\x64").await.unwrap();
+        // Without the reset these writes stall on flow control and time out.
+        let error = loop {
+            if let Err(error) = tunnel.write_all(&[0; 1024]).await {
+                break error;
+            }
+            tokio::task::yield_now().await;
+        };
+        assert!(format!("{error:?}").contains("PROTOCOL_ERROR"), "{error:?}");
     })
     .await
     .unwrap();

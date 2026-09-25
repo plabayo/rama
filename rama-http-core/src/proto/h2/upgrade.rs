@@ -1,7 +1,7 @@
 use std::io::Cursor;
 use std::pin::Pin;
 use std::sync::{
-    Arc,
+    Arc, Weak,
     atomic::{AtomicBool, Ordering},
 };
 use std::task::{Context, Poll};
@@ -30,16 +30,24 @@ where
     // queued Upgraded, and may describe the opposite side of a proxy.
     let extensions = recv_stream.extensions();
     // RFC 9297 §3.3 via RFC 9113 §8.1.1: a malformed data stream resets PROTOCOL_ERROR
-    // rather than ending the stream cleanly.
-    let malformed = Arc::new(AtomicBool::new(false));
+    // at once, also after a local END_STREAM. The hook is stored in the stream's own
+    // extensions, so it only holds a weak reference to the tunnel's reset handle.
+    let reset: Arc<MalformedReset> = Arc::new(MalformedReset {
+        malformed: AtomicBool::new(false),
+        reset: Box::new(send_stream.reset_handle()),
+    });
     extensions.insert(OnMalformedMessage::new({
-        let malformed = malformed.clone();
-        move || malformed.store(true, Ordering::Release)
+        let reset = Arc::downgrade(&reset);
+        move || {
+            if let Some(reset) = Weak::upgrade(&reset) {
+                reset.trigger();
+            }
+        }
     }));
     H2Upgraded {
         send_stream: Box::new(send_stream),
         send_closed: false,
-        malformed,
+        reset,
         recv_stream,
         ping,
         buf: Bytes::new(),
@@ -59,7 +67,6 @@ trait TunnelSink: Send {
     fn poll_reset(&mut self, cx: &mut Context<'_>) -> Poll<Result<Reason, crate::h2::Error>>;
     fn send_data(&mut self, data: Box<[u8]>) -> Result<(), crate::h2::Error>;
     fn send_end_of_stream(&mut self) -> Result<(), crate::h2::Error>;
-    fn send_reset(&mut self, reason: Reason);
 }
 
 impl<B> TunnelSink for SendStream<SendBuf<B>>
@@ -88,9 +95,22 @@ where
     fn send_end_of_stream(&mut self) -> Result<(), crate::h2::Error> {
         Self::send_data(self, SendBuf::None, true)
     }
+}
 
-    fn send_reset(&mut self, reason: Reason) {
-        Self::send_reset(self, reason);
+struct MalformedReset {
+    malformed: AtomicBool,
+    reset: Box<dyn Fn(Reason) + Send + Sync>,
+}
+
+impl MalformedReset {
+    fn trigger(&self) {
+        if !self.malformed.swap(true, Ordering::AcqRel) {
+            (self.reset)(Reason::PROTOCOL_ERROR);
+        }
+    }
+
+    fn is_malformed(&self) -> bool {
+        self.malformed.load(Ordering::Acquire)
     }
 }
 
@@ -98,7 +118,7 @@ pub(super) struct H2Upgraded {
     ping: Recorder,
     send_stream: Box<dyn TunnelSink>,
     send_closed: bool,
-    malformed: Arc<AtomicBool>,
+    reset: Arc<MalformedReset>,
     recv_stream: RecvStream,
     buf: Bytes,
     extensions: Extensions,
@@ -111,14 +131,10 @@ impl ExtensionsRef for H2Upgraded {
 }
 
 impl H2Upgraded {
-    /// Reset a malformed tunnel instead of writing to or ending it.
-    fn reset_if_malformed(&mut self) -> Result<(), std::io::Error> {
-        if !self.malformed.load(Ordering::Acquire) {
+    /// A malformed tunnel was reset by its hook; never write to or end it.
+    fn reset_if_malformed(&self) -> Result<(), std::io::Error> {
+        if !self.reset.is_malformed() {
             return Ok(());
-        }
-        if !self.send_closed {
-            self.send_closed = true;
-            self.send_stream.send_reset(Reason::PROTOCOL_ERROR);
         }
         Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -197,7 +213,13 @@ impl AsyncWrite for H2Upgraded {
         self.send_stream.reserve_capacity(buf.len());
         let sent = loop {
             match ready!(self.send_stream.poll_capacity(cx)) {
-                None => break Some(0),
+                // No longer open for sending: report the reset rather than a zero write.
+                None => {
+                    return Poll::Ready(Err(match self.send_stream.poll_reset(cx) {
+                        Poll::Ready(result) => reset_to_io_error(result),
+                        Poll::Pending => std::io::ErrorKind::BrokenPipe.into(),
+                    }));
+                }
                 // a zero grant is not a grant yet; poll again
                 Some(Ok(0)) => {}
                 Some(Ok(cnt)) => {
@@ -215,18 +237,9 @@ impl AsyncWrite for H2Upgraded {
             return Poll::Ready(Ok(sent));
         }
 
-        Poll::Ready(Err(match ready!(self.send_stream.poll_reset(cx)) {
-            Ok(reason) => {
-                trace!("stream received RST_STREAM: {:?}", reason);
-                match reason {
-                    Reason::NO_ERROR | Reason::CANCEL | Reason::STREAM_CLOSED => {
-                        std::io::ErrorKind::BrokenPipe.into()
-                    }
-                    reason => h2_to_io_error(reason.into()),
-                }
-            }
-            Err(e) => h2_to_io_error(e),
-        }))
+        Poll::Ready(Err(reset_to_io_error(ready!(
+            self.send_stream.poll_reset(cx)
+        ))))
     }
 
     fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), std::io::Error>> {
@@ -248,6 +261,21 @@ impl AsyncWrite for H2Upgraded {
                 .send_end_of_stream()
                 .map_err(h2_to_io_error),
         )
+    }
+}
+
+fn reset_to_io_error(result: Result<Reason, crate::h2::Error>) -> std::io::Error {
+    match result {
+        Ok(reason) => {
+            trace!("stream received RST_STREAM: {:?}", reason);
+            match reason {
+                Reason::NO_ERROR | Reason::CANCEL | Reason::STREAM_CLOSED => {
+                    std::io::ErrorKind::BrokenPipe.into()
+                }
+                reason => h2_to_io_error(reason.into()),
+            }
+        }
+        Err(e) => h2_to_io_error(e),
     }
 }
 
