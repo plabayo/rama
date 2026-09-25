@@ -8,6 +8,8 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(all(not(feature = "std"), not(test)), no_std)]
 #![cfg_attr(test, allow(clippy::float_cmp))]
+// Nested HTTP connector futures exceed the default trait-solving depth.
+#![recursion_limit = "256"]
 
 #[doc(inline)]
 pub use ::rama_core::{

@@ -1,3 +1,5 @@
+// The harness instantiates nested HTTP connector futures from rama.
+#![recursion_limit = "256"]
 #![allow(
     clippy::expect_used,
     clippy::indexing_slicing,
