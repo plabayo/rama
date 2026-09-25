@@ -113,10 +113,26 @@ async fn refused_without_server_setting_and_opens_no_stream() {
         let (mut client, client_driver) =
             client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
                 .unwrap();
-        let (_server, server_driver) =
+        let (mut server, server_driver) =
             server::handshake(pair.server.clone(), Config::default()).unwrap();
         spawn(client_driver.run());
         spawn(server_driver.run());
+        // Any request that does reach the server is answered, so a missing local gate fails
+        // on the assertions below instead of waiting for the watchdog.
+        let accepted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        spawn({
+            let accepted = accepted.clone();
+            async move {
+                while let Ok(stream) = server.accept().await {
+                    accepted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    if let Ok((_request, response)) = stream.resolve().await {
+                        let mut refused = Response::new(Body::empty());
+                        *refused.status_mut() = StatusCode::BAD_REQUEST;
+                        _ = response.send_response(refused).await;
+                    }
+                }
+            }
+        });
         for _ in 0..3 {
             let error = client
                 .send_request(extended_connect(
@@ -124,12 +140,14 @@ async fn refused_without_server_setting_and_opens_no_stream() {
                     Protocol::WEBSOCKET,
                 ))
                 .await
+                .map(|response| response.status())
                 .unwrap_err();
             assert_eq!(error.code(), Code::H3_MESSAGE_ERROR);
         }
         // Refused requests must not consume even one stream ID.
         let (send, recv) = pair.client.open_bi().await.unwrap();
         assert_eq!(u64::from(send.id()), 0);
+        assert_eq!(accepted.load(std::sync::atomic::Ordering::SeqCst), 0);
         drop((send, recv, client));
         pair.close().await;
     })
@@ -292,6 +310,88 @@ async fn server_treats_unadvertised_protocol_as_malformed() {
             send.stopped().await.unwrap().map(u64::from),
             Some(Code::H3_MESSAGE_ERROR.value())
         );
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+/// RFC 9297 §3.2: Capsule messages must not carry Content-Length; a successful CONNECT keeps
+/// the received field visible (ignored for framing, RFC 9110 §9.3.6) so validation rejects it.
+#[tokio::test]
+async fn capsule_validation_sees_content_length_on_successful_connect() {
+    use rama_http::{
+        datagram::handshake::{
+            CapsuleHandshakeError, prepare_capsule_request, validate_capsule_response,
+        },
+        io::upgrade::OnMalformedMessage,
+    };
+    use rama_http_types::{Version, header};
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::in_memory(None, None).await;
+        let (mut client, client_driver) =
+            client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
+                .unwrap();
+        // The server engine only supplies SETTINGS; its request streams are answered raw.
+        let (_server, server_driver) =
+            server::handshake(pair.server.clone(), extended_connect_server()).unwrap();
+        spawn(client_driver.run());
+        spawn(server_driver.run());
+        let token = Protocol::from_static("x-capsule");
+        let lengths: [&[&str]; 5] = [&["0"], &["5"], &["invalid"], &["0", "0"], &[]];
+        for values in lengths {
+            let mut request = Request::builder()
+                .version(Version::HTTP_3)
+                .uri("https://localhost/capsules")
+                .body(Body::empty())
+                .unwrap();
+            prepare_capsule_request(&mut request, token.clone()).unwrap();
+            let serve = async {
+                let (mut send, mut recv) = pair.server.accept_bi().await.unwrap();
+                let id = u64::from(send.id());
+                // Consume the request HEADERS frame before answering.
+                recv.read_chunk(usize::MAX, true).await.unwrap().unwrap();
+                let mut fields = vec![(":status", "200"), ("capsule-protocol", "?1")];
+                fields.extend(values.iter().map(|value| ("content-length", *value)));
+                let encoded = Encoder::before_peer_settings(EncoderConfig::default())
+                    .encode(id, fields)
+                    .unwrap();
+                let mut frame = BytesMut::new();
+                FrameHeader::new(FrameType::HEADERS, encoded.len() as u64)
+                    .encode(&mut frame)
+                    .unwrap();
+                frame.extend_from_slice(&encoded);
+                send.write_chunk(frame.freeze()).await.unwrap();
+                (send, recv)
+            };
+            let (response, (send, _recv)) = tokio::join!(client.send_request(request), serve);
+            let response = response.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let result = validate_capsule_response(Version::HTTP_3, &token, &response);
+            let tunnel = handle_upgrade(&response).await.unwrap();
+            if values.is_empty() {
+                result.unwrap();
+                continue;
+            }
+            assert_eq!(
+                result,
+                Err(CapsuleHandshakeError::ForbiddenField(
+                    header::CONTENT_LENGTH
+                )),
+                "{values:?}"
+            );
+            // The malformed message resets only its own stream.
+            tunnel
+                .extensions()
+                .get_ref::<OnMalformedMessage>()
+                .unwrap()
+                .call();
+            assert_eq!(
+                send.stopped().await.unwrap().map(u64::from),
+                Some(Code::H3_MESSAGE_ERROR.value()),
+                "{values:?}"
+            );
+        }
         pair.close().await;
     })
     .await

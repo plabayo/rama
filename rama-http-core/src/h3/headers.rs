@@ -289,7 +289,7 @@ pub(crate) fn response_for_method(
     fields: Vec<FieldPair>,
     connect: bool,
 ) -> Result<Response<()>, Error> {
-    let mut fields = parse(fields, false)?;
+    let fields = parse(fields, false)?;
     if fields.headers.contains_key(header::TE) {
         return Err(malformed("TE forbidden in response"));
     }
@@ -311,10 +311,9 @@ pub(crate) fn response_for_method(
     if status == StatusCode::SWITCHING_PROTOCOLS {
         return Err(malformed("101 is forbidden in HTTP/3"));
     }
-    if connect && status.is_success() {
-        // RFC 9110 §9.3.6: successful CONNECT ignores Content-Length entirely.
-        fields.headers.remove(header::CONTENT_LENGTH);
-    } else {
+    // RFC 9110 §9.3.6: a successful CONNECT ignores Content-Length for framing. The field
+    // stays visible so protocols forbidding it can reject the message (RFC 9297 §3.2).
+    if !(connect && status.is_success()) {
         content_length(&fields.headers)?;
     }
     if (status.is_informational() || status == StatusCode::NO_CONTENT)
@@ -917,7 +916,7 @@ mod tests {
             true,
         )
         .unwrap();
-        assert!(!response.headers().contains_key(header::CONTENT_LENGTH));
+        assert_eq!(response.headers()[header::CONTENT_LENGTH], "invalid");
         trailers(fields(&[("x-checksum", "abc")])).unwrap();
     }
 
