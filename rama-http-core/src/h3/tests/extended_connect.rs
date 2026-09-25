@@ -29,6 +29,7 @@ use rama_http_types::{
         h3::{Code, FrameHeader, FrameType, PseudoHeader, PseudoHeaderOrder},
     },
 };
+use rama_net::uri::Uri;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -400,6 +401,61 @@ async fn capsule_validation_sees_content_length_on_successful_connect() {
                 Some(Code::H3_MESSAGE_ERROR.value()),
                 "{values:?}"
             );
+        }
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+/// RFC 9110 §9.3.6: any successful CONNECT, even `204` with Content-Length, is a tunnel.
+#[tokio::test]
+async fn ordinary_connect_tunnels_ignore_content_length_on_every_2xx() {
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::in_memory(None, None).await;
+        let (mut client, client_driver) =
+            client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
+                .unwrap();
+        let (_server, server_driver) =
+            server::handshake(pair.server.clone(), Config::default()).unwrap();
+        spawn(client_driver.run());
+        spawn(server_driver.run());
+        for status in ["200", "204", "206"] {
+            let request = Request::builder()
+                .method(Method::CONNECT)
+                .uri(Uri::parse_http_request_target("localhost:443", true).unwrap())
+                .body(Body::empty())
+                .unwrap();
+            let serve = async {
+                let (mut send, mut recv) = pair.server.accept_bi().await.unwrap();
+                recv.read_chunk(usize::MAX, true).await.unwrap().unwrap();
+                let encoded = Encoder::before_peer_settings(EncoderConfig::default())
+                    .encode(
+                        u64::from(send.id()),
+                        [(":status", status), ("content-length", "0")],
+                    )
+                    .unwrap();
+                let mut frame = BytesMut::new();
+                FrameHeader::new(FrameType::HEADERS, encoded.len() as u64)
+                    .encode(&mut frame)
+                    .unwrap();
+                frame.extend_from_slice(&encoded);
+                // Tunnel bytes beyond the declared zero length.
+                FrameHeader::new(FrameType::DATA, 1)
+                    .encode(&mut frame)
+                    .unwrap();
+                frame.extend_from_slice(b"x");
+                send.write_chunk(frame.freeze()).await.unwrap();
+                (send, recv)
+            };
+            let (response, _streams) = tokio::join!(client.send_request(request), serve);
+            let response =
+                response.unwrap_or_else(|error| panic!("ordinary CONNECT {status}: {error:?}"));
+            assert_eq!(response.headers()[header::CONTENT_LENGTH], "0");
+            let mut tunnel = handle_upgrade(&response).await.unwrap();
+            let mut byte = [0];
+            tunnel.read_exact(&mut byte).await.unwrap();
+            assert_eq!(&byte, b"x", "{status}");
         }
         pair.close().await;
     })

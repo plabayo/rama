@@ -311,12 +311,14 @@ pub(crate) fn response_for_method(
     if status == StatusCode::SWITCHING_PROTOCOLS {
         return Err(malformed("101 is forbidden in HTTP/3"));
     }
-    // RFC 9110 §9.3.6: a successful CONNECT ignores Content-Length for framing. The field
-    // stays visible so protocols forbidding it can reject the message (RFC 9297 §3.2).
-    if !(connect && status.is_success()) {
+    // RFC 9110 §9.3.6: a successful CONNECT (any 2xx) ignores Content-Length for framing.
+    // The field stays visible so protocols forbidding it can reject the message (RFC 9297 §3.2).
+    let tunnel = connect && status.is_success();
+    if !tunnel {
         content_length(&fields.headers)?;
     }
-    if (status.is_informational() || status == StatusCode::NO_CONTENT)
+    if !tunnel
+        && (status.is_informational() || status == StatusCode::NO_CONTENT)
         && fields.headers.contains_key(header::CONTENT_LENGTH)
     {
         return Err(malformed("content-length forbidden on this response"));
@@ -918,6 +920,52 @@ mod tests {
         .unwrap();
         assert_eq!(response.headers()[header::CONTENT_LENGTH], "invalid");
         trailers(fields(&[("x-checksum", "abc")])).unwrap();
+    }
+
+    #[test]
+    fn successful_connect_keeps_content_length_for_every_2xx() {
+        for status in ["200", "201", "204", "205", "206", "299"] {
+            for length in ["0", "5", "invalid"] {
+                let response = response_for_method(
+                    fields(&[(":status", status), ("content-length", length)]),
+                    true,
+                )
+                .unwrap_or_else(|error| panic!("CONNECT {status} CL={length}: {error:?}"));
+                assert_eq!(response.headers()[header::CONTENT_LENGTH], length);
+            }
+        }
+        // Without a tunnel the ordinary framing rules stay.
+        for (status, connect) in [("204", false), ("103", true), ("403", true)] {
+            let length = if status == "403" { "invalid" } else { "0" };
+            response_for_method(
+                fields(&[(":status", status), ("content-length", length)]),
+                connect,
+            )
+            .unwrap_err();
+        }
+        let refused =
+            response_for_method(fields(&[(":status", "403"), ("content-length", "5")]), true)
+                .unwrap();
+        assert_eq!(refused.headers()[header::CONTENT_LENGTH], "5");
+    }
+
+    #[test]
+    fn extended_connect_requests_keep_content_length() {
+        let head = |length| {
+            fields(&[
+                (":method", "CONNECT"),
+                (":scheme", "https"),
+                (":authority", "example.com"),
+                (":path", "/capsules"),
+                (":protocol", "x-capsule"),
+                ("content-length", length),
+            ])
+        };
+        for length in ["0", "5"] {
+            let request = request_head(head(length), true).unwrap();
+            assert_eq!(request.headers()[header::CONTENT_LENGTH], length);
+        }
+        request_head(head("invalid"), true).unwrap_err();
     }
 
     #[test]
