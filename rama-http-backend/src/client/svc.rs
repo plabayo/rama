@@ -1,6 +1,5 @@
 use rama_core::{
     Service,
-    combinators::Either,
     error::{BoxError, BoxErrorExt as _, ErrorExt, error_chain},
     extensions::{Egress, Extension, Extensions, ExtensionsRef},
     rt::Executor,
@@ -75,14 +74,15 @@ impl SendAttempts {
     }
 }
 
-/// Failed before the request was handed to the connection: its
-/// dispatcher was already closed, or dropped the request unsent.
-fn error_is_unsent(err: &BoxError) -> bool {
-    error_chain(err.as_ref()).any(|cause| {
-        cause
-            .downcast_ref::<HttpError>()
-            .is_some_and(|err| err.is_canceled() || err.is_closed())
-    })
+/// Record `err` as unsent when it failed before the request was handed
+/// to the connection: its dispatcher was already closed, or dropped the
+/// request unsent.
+fn note_unsent(attempts: Option<&SendAttempts>, err: &HttpError) {
+    if let Some(attempts) = attempts
+        && (err.is_canceled() || err.is_closed())
+    {
+        attempts.unsent.fetch_add(1, Ordering::AcqRel);
+    }
 }
 
 impl<Body> Service<Request<Body>> for HttpClientService<Body>
@@ -92,33 +92,13 @@ where
     type Output = Response;
     type Error = BoxError;
 
-    fn serve(
-        &self,
-        req: Request<Body>,
-    ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
-        let Some(attempts) = req.extensions().get_arc::<SendAttempts>() else {
-            return Either::A(self.send(req));
-        };
-        // boxed: only relays count attempts, keep the common future small
-        Either::B(Box::pin(async move {
-            // counted up front: a dropped attempt may have been sent
+    async fn serve(&self, mut req: Request<Body>) -> Result<Self::Output, Self::Error> {
+        // counted up front: a dropped attempt may have been sent
+        let attempts = req.extensions().get_arc::<SendAttempts>();
+        if let Some(attempts) = &attempts {
             attempts.started.fetch_add(1, Ordering::AcqRel);
-            let result = self.send(req).await;
-            if let Err(err) = &result
-                && error_is_unsent(err)
-            {
-                attempts.unsent.fetch_add(1, Ordering::AcqRel);
-            }
-            result
-        }))
-    }
-}
+        }
 
-impl<Body> HttpClientService<Body>
-where
-    Body: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
-{
-    async fn send(&self, mut req: Request<Body>) -> Result<Response, BoxError> {
         // Request-target encoding must follow the connection that survived
         // route fallback and pool selection, never the requested ProxyRoute.
         // A fresh snapshot also shadows stale markers when the connection
@@ -172,6 +152,7 @@ where
                 if let Err(err) = sender.ready().await {
                     // an h1 sender only fails readiness when its connection is gone
                     mark_broken(&self.extensions);
+                    note_unsent(attempts.as_deref(), &err);
                     tracing::debug!(
                         sender_closed = sender.is_closed(),
                         "http1 upstream sender ready failed: {err}"
@@ -193,6 +174,7 @@ where
                         // h1 has no request-level recovery: any send/receive error
                         // leaves the connection mid-message or closed.
                         cancel_guard.fire();
+                        note_unsent(attempts.as_deref(), &err);
                         tracing::debug!(
                             sender_closed = sender.is_closed(),
                             "http1 upstream send_request failed: {err}"
@@ -205,6 +187,7 @@ where
                 let mut sender = sender.clone();
                 if let Err(err) = sender.ready().await {
                     mark_broken_if_closed(sender.is_closed(), &self.extensions);
+                    note_unsent(attempts.as_deref(), &err);
                     tracing::debug!(
                         sender_closed = sender.is_closed(),
                         "http2 upstream sender ready failed: {err}"
@@ -215,6 +198,7 @@ where
                     Ok(resp) => resp,
                     Err(err) => {
                         mark_broken_if_closed(sender.is_closed(), &self.extensions);
+                        note_unsent(attempts.as_deref(), &err);
                         tracing::debug!(
                             sender_closed = sender.is_closed(),
                             "http2 upstream send_request failed: {err}"
