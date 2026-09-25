@@ -249,3 +249,11 @@ mod xpc_echo;
     )
 ))]
 mod http3_client_server;
+#[cfg(all(
+    feature = "http-full",
+    any(
+        feature = "boring",
+        all(feature = "rustls", any(feature = "ring", feature = "aws-lc"))
+    )
+))]
+mod ws_over_h3;

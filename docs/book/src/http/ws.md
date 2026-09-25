@@ -102,6 +102,18 @@ prioritization and flow control also apply, enabling better resource sharing.
 The core WebSocket protocol (RFC 6455) remains unchanged beyond the handshake;
 only the transport bootstrap differs.
 
+### h3 WebSocket support
+
+> RFC: Bootstrapping WebSockets with HTTP/3: <https://github.com/plabayo/rama/blob/main/rama-http-core/specifications/rfc9220.txt>
+
+RFC 9220 reuses the same Extended CONNECT mechanism on an HTTP/3 request stream.
+Enable it on a server with `HttpServer::new_http3(..).http3_mut().extended_connect = true`
+and route `CONNECT` requests to a `WebSocketAcceptor`; clients use `websocket_h3`
+(or `WebSocketRequestBuilder::new_h3`) on an HTTP client with HTTP/3 support.
+A client only sends the request once the server's SETTINGS enabled Extended CONNECT.
+An orderly close ends the QUIC stream with a FIN; an abort resets it.
+See the `ws_over_h3` example.
+
 ## Rama Support
 
 > 📚 Rust Docs: <https://ramaproxy.org/docs/rama/http/ws/index.html>

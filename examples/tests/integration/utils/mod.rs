@@ -389,6 +389,8 @@ impl ExampleRunner {
             "http3_client_server" => {
                 std::process::Command::new(env!("CARGO_BIN_EXE_http3_client_server"))
             }
+            #[cfg(feature = "http-full")]
+            "ws_over_h3" => std::process::Command::new(env!("CARGO_BIN_EXE_ws_over_h3")),
             #[cfg(all(feature = "quic", feature = "tls"))]
             "quic_terminating_relay" => {
                 std::process::Command::new(env!("CARGO_BIN_EXE_quic_terminating_relay"))
