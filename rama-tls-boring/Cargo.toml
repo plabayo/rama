@@ -48,6 +48,7 @@ rama-tls = { workspace = true }
 rama-ua = { workspace = true, optional = true, features = ["tls"] }
 rama-utils = { workspace = true, features = ["std"] }
 tokio = { workspace = true, features = ["macros", "io-std"] }
+zeroize = { workspace = true }
 zstd = { workspace = true, optional = true }
 
 [dev-dependencies]
