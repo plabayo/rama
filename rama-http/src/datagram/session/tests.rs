@@ -1,7 +1,7 @@
 use super::*;
 use crate::datagram::{
     NativeDatagramChannel, NativeRecvError,
-    capsule::{UnknownCapsules, encode_capsule},
+    capsule::{CapsuleError, UnknownCapsules, encode_capsule},
 };
 use parking_lot::Mutex;
 use rama_core::{ServiceInput, extensions::Extensions};
@@ -10,7 +10,7 @@ use std::{
     future::Future as _,
     sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     task::Waker,
 };
@@ -804,7 +804,8 @@ async fn recoverable_rejections_leave_the_sender_usable() {
         local.send_datagram(Bytes::from_static(b"closed")).await,
         Err(SessionError::Native(NativeSendError::Closed))
     ));
-    local.close().await.unwrap();
+    // Terminal for sending (see `native_closed_is_terminal_for_sending`).
+    drop(local);
     assert_eq!(native.0.lock().sent, [Bytes::from_static(b"ok")]);
     assert_eq!(
         peer.recv().await.unwrap(),
@@ -856,7 +857,7 @@ impl AsyncRead for Endless {
     ) -> Poll<io::Result<()>> {
         if !self.header_sent {
             self.header_sent = true;
-            // Type 0x17, length 2^40.
+            // Type 0x17, length 2^32.
             buf.put_slice(&[0x17, 0xc0, 0, 0, 0x01, 0, 0, 0, 0]);
         } else {
             let fill = buf.remaining();
@@ -978,4 +979,231 @@ async fn stream_failures_are_sticky_per_direction() {
             "{error:?}"
         );
     }
+}
+
+/// A custom carrier whose receive side has failed.
+struct FailedNative(NativeRecvError);
+
+impl NativeDatagramChannel for FailedNative {
+    fn max_payload_size(&self) -> Option<usize> {
+        Some(128)
+    }
+
+    fn send(&self, _: Bytes, _: NativeSendPolicy) -> Result<(), NativeSendError> {
+        Ok(())
+    }
+
+    fn poll_recv(&self, _: &mut Context<'_>) -> Poll<Result<Option<Bytes>, NativeRecvError>> {
+        Poll::Ready(Err(self.0))
+    }
+
+    fn dropped(&self) -> u64 {
+        0
+    }
+}
+
+#[tokio::test]
+async fn native_receive_failures_end_receiving() {
+    for error in [
+        NativeRecvError::Lost,
+        NativeRecvError::Reset(0x10e),
+        NativeRecvError::Aborted(0x10e),
+    ] {
+        // The reliable stream stays open and idle.
+        let (a, _b) = tokio::io::duplex(256);
+        let io = ServiceInput::new(a);
+        io.extensions()
+            .insert(NativeDatagrams::new(FailedNative(error)));
+        let (_, mut receiver) = HttpDatagramSession::with_config(io, config()).split();
+        let mut cx = Context::from_waker(Waker::noop());
+        for attempt in 0..2 {
+            let result = receiver.poll_recv(&mut cx);
+            assert!(
+                matches!(result, Poll::Ready(Err(SessionError::NativeRecv(e))) if e == error),
+                "{error:?} attempt {attempt}: {result:?}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn native_closed_is_terminal_for_sending() {
+    let native = FakeNative::default();
+    native.0.lock().max = Some(8);
+    let (mut local, mut peer) = native_pair(&native);
+    native.0.lock().next_error = Some(NativeSendError::Closed);
+    for _ in 0..2 {
+        assert!(matches!(
+            local.send_datagram(Bytes::from_static(b"closed")).await,
+            Err(SessionError::Native(NativeSendError::Closed))
+        ));
+    }
+    assert!(matches!(
+        local
+            .send_capsule(CONTROL, Bytes::from_static(b"after"))
+            .await,
+        Err(SessionError::Native(NativeSendError::Closed))
+    ));
+    // Nothing was written after the terminal result.
+    let mut cx = Context::from_waker(Waker::noop());
+    assert!(peer.receiver.poll_recv(&mut cx).is_pending());
+}
+
+#[tokio::test]
+async fn dropping_a_partial_sender_closes_hookless_carriers() {
+    for partial_header in [false, true] {
+        let (local, mut peer) = pair();
+        let (mut sender, mut receiver) = local.split();
+        if partial_header {
+            // Header bytes only, with the receiver half retained.
+            drop(receiver);
+            let (a, b) = tokio::io::duplex(256);
+            let mut sender_session = HttpDatagramSession::with_config(
+                Trickle {
+                    inner: a,
+                    pending: false,
+                    extensions: Extensions::new(),
+                },
+                config(),
+            );
+            let mut peer = HttpDatagramSession::with_config(ServiceInput::new(b), config());
+            {
+                let send = sender_session.send_capsule(CONTROL, Bytes::from_static(b"value"));
+                let mut send = std::pin::pin!(send);
+                let mut cx = Context::from_waker(Waker::noop());
+                for _ in 0..2 {
+                    assert!(send.as_mut().poll(&mut cx).is_pending());
+                }
+            }
+            let (sender, _retained) = sender_session.split();
+            drop(sender);
+            assert!(matches!(
+                peer.recv().await,
+                Err(SessionError::Malformed(CapsuleError::Truncated))
+            ));
+            continue;
+        }
+        sender.start_capsule(header(0x4242, 4)).await.unwrap();
+        sender
+            .send_capsule_data(Bytes::from_static(b"x"))
+            .await
+            .unwrap();
+        drop(sender);
+        // The peer sees the truncation instead of waiting for the missing value.
+        assert!(matches!(
+            peer.recv().await,
+            Err(SessionError::Malformed(CapsuleError::Truncated))
+        ));
+        // The retained half fails instead of hanging.
+        assert!(matches!(receiver.recv().await, Err(SessionError::Io(_))));
+    }
+}
+
+#[tokio::test]
+async fn malformed_input_closes_hookless_carriers_for_both_halves() {
+    let (a, mut raw) = tokio::io::duplex(256);
+    let (mut sender, mut receiver) =
+        HttpDatagramSession::with_config(ServiceInput::new(a), config()).split();
+    // A registered control capsule above its limit.
+    raw.write_all(b"\x2a\x21").await.unwrap();
+    assert!(matches!(
+        receiver.recv().await,
+        Err(SessionError::Malformed(_))
+    ));
+    let mut rest = Vec::new();
+    raw.read_to_end(&mut rest).await.unwrap();
+    assert!(rest.is_empty());
+    assert!(matches!(
+        sender.send_capsule(CONTROL, Bytes::from_static(b"x")).await,
+        Err(SessionError::Io(_))
+    ));
+}
+
+/// Shutdown stays pending until allowed, to cancel `close` after its commit.
+struct PendingShutdown {
+    inner: DuplexStream,
+    extensions: Extensions,
+    polled: Arc<AtomicUsize>,
+    allowed: Arc<AtomicBool>,
+}
+
+impl ExtensionsRef for PendingShutdown {
+    fn extensions(&self) -> &Extensions {
+        &self.extensions
+    }
+}
+
+impl AsyncRead for PendingShutdown {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_read(cx, buf)
+    }
+}
+
+impl AsyncWrite for PendingShutdown {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self.polled.fetch_add(1, Ordering::Relaxed);
+        if !self.allowed.load(Ordering::Relaxed) {
+            return Poll::Pending;
+        }
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
+#[tokio::test]
+async fn close_cancelled_after_its_commit_resumes_shutdown() {
+    let (a, b) = tokio::io::duplex(256);
+    let polled = Arc::new(AtomicUsize::new(0));
+    let allowed = Arc::new(AtomicBool::new(false));
+    let io = PendingShutdown {
+        inner: a,
+        extensions: Extensions::new(),
+        polled: polled.clone(),
+        allowed: allowed.clone(),
+    };
+    let mut local = HttpDatagramSession::with_config(io, config());
+    let mut peer = HttpDatagramSession::with_config(ServiceInput::new(b), config());
+    local
+        .send_capsule(CONTROL, Bytes::from_static(b"before"))
+        .await
+        .unwrap();
+    {
+        let close = local.close();
+        let mut close = std::pin::pin!(close);
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(close.as_mut().poll(&mut cx).is_pending());
+    }
+    assert_eq!(polled.load(Ordering::Relaxed), 1);
+    assert!(matches!(
+        local
+            .send_capsule(CONTROL, Bytes::from_static(b"after"))
+            .await,
+        Err(SessionError::SendClosed)
+    ));
+    allowed.store(true, Ordering::Relaxed);
+    local.close().await.unwrap();
+    assert_eq!(polled.load(Ordering::Relaxed), 2);
+    assert_eq!(
+        peer.recv().await.unwrap(),
+        Some(SessionEvent::Capsule {
+            ty: CONTROL,
+            value: Bytes::from_static(b"before")
+        })
+    );
+    assert_eq!(peer.recv().await.unwrap(), None);
 }

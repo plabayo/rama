@@ -2,9 +2,10 @@
 
 use super::{
     capsule::{CapsuleConfig, CapsuleDecoder, CapsuleError, CapsuleEvent},
-    native::{NativeDatagrams, NativeSendError, NativeSendPolicy},
+    native::{NativeDatagrams, NativeRecvError, NativeSendError, NativeSendPolicy},
 };
 use crate::io::upgrade::{OnMalformedMessage, Upgraded};
+use parking_lot::Mutex;
 use rama_core::{
     bytes::{Buf as _, Bytes, BytesMut},
     extensions::ExtensionsRef,
@@ -15,9 +16,10 @@ use rama_utils::octets::kib;
 use std::{
     fmt, io,
     pin::Pin,
+    sync::Arc,
     task::{Context, Poll, ready},
 };
-use tokio::io::{AsyncRead, AsyncWrite, ReadHalf, WriteHalf};
+use tokio::io::{AsyncRead, AsyncWrite};
 
 /// Configuration of an [`HttpDatagramSession`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -92,6 +94,8 @@ pub enum SessionError {
     Malformed(CapsuleError),
     /// A native datagram was not sent. [`NativeSendError::Closed`] is terminal.
     Native(NativeSendError),
+    /// The native carrier's receive side failed; terminal for receiving.
+    NativeRecv(NativeRecvError),
     /// A capsule exceeds the variable-length integer range.
     InvalidCapsule,
     /// A streamed capsule still expects value bytes; nothing else may use the data stream.
@@ -111,6 +115,7 @@ impl fmt::Display for SessionError {
         match self {
             Self::Malformed(error) => write!(f, "malformed capsule stream: {error}"),
             Self::Native(error) => write!(f, "native datagram: {error}"),
+            Self::NativeRecv(error) => write!(f, "native datagram receive: {error}"),
             Self::InvalidCapsule => f.write_str("capsule exceeds the varint range"),
             Self::CapsuleInProgress => f.write_str("a streamed capsule is still in progress"),
             Self::CapsuleNotStarted => f.write_str("capsule data without a started capsule"),
@@ -126,6 +131,7 @@ impl std::error::Error for SessionError {
         match self {
             Self::Malformed(error) => Some(error),
             Self::Native(error) => Some(error),
+            Self::NativeRecv(error) => Some(error),
             Self::Io(error) => Some(error),
             _ => None,
         }
@@ -153,8 +159,10 @@ impl From<InvalidCapsule> for SessionError {
 /// send or [`close`](Self::close). A future dropped before that point sent nothing. Capsule
 /// headers are never interleaved. [`recv`](Self::recv) is cancel safe.
 ///
-/// Dropping the sender while a capsule is partially on the wire aborts the stream through the
-/// carrier's [`OnMalformedMessage`] hook, so the peer never sees a clean end mid-value.
+/// Dropping the sender while a capsule is partially on the wire, or receiving a malformed
+/// data stream, aborts the carrier: through its [`OnMalformedMessage`] hook when published,
+/// and by closing the I/O in any case, even while the other half is retained. The peer never
+/// sees a clean end mid-value.
 pub struct HttpDatagramSession<T = Upgraded> {
     sender: SessionSender<T>,
     receiver: SessionReceiver<T>,
@@ -181,10 +189,10 @@ where
     pub fn with_config(io: T, config: SessionConfig) -> Self {
         let native = io.extensions().get_ref::<NativeDatagrams>().cloned();
         let malformed = io.extensions().get_ref::<OnMalformedMessage>().cloned();
-        let (read, write) = tokio::io::split(io);
+        let io = SharedIo(Arc::new(Mutex::new(Some(Box::pin(io)))));
         Self {
             sender: SessionSender {
-                io: write,
+                io: io.clone(),
                 native: native.clone(),
                 policy: config.native_send,
                 pending: [Bytes::new(), Bytes::new()],
@@ -195,7 +203,7 @@ where
                 malformed: malformed.clone(),
             },
             receiver: SessionReceiver {
-                io: read,
+                io,
                 native,
                 decoder: CapsuleDecoder::new(config.capsules),
                 buf: BytesMut::new(),
@@ -265,11 +273,49 @@ enum SendState {
     Closing,
     /// The data stream failed; later operations report the same kind.
     Failed(io::ErrorKind),
+    /// The native association's send side closed, and with it the request stream's.
+    NativeClosed,
+}
+
+/// The carrier I/O shared by both halves. Either half can abort it for both: dropping the
+/// I/O closes (HTTP/1.1) or resets (HTTP/2, HTTP/3) the carrier.
+struct SharedIo<T>(Arc<Mutex<Option<Pin<Box<T>>>>>);
+
+impl<T> Clone for SharedIo<T> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl<T> SharedIo<T> {
+    fn abort(&self) {
+        let io = self.0.lock().take();
+        drop(io);
+    }
+
+    fn with<R>(
+        &self,
+        poll: impl FnOnce(Pin<&mut T>) -> Poll<io::Result<R>>,
+    ) -> Poll<io::Result<R>> {
+        match self.0.lock().as_mut() {
+            Some(io) => poll(io.as_mut()),
+            None => Poll::Ready(Err(io::ErrorKind::ConnectionAborted.into())),
+        }
+    }
+}
+
+/// Abort a carrier whose message this session left malformed: through its hook when it
+/// publishes one, and by closing its I/O in any case.
+fn abort_carrier<T>(io: &SharedIo<T>, malformed: &mut Option<OnMalformedMessage>) {
+    if let Some(malformed) = malformed.take() {
+        malformed.call();
+    }
+    io.abort();
 }
 
 /// The sending half of an [`HttpDatagramSession`].
 pub struct SessionSender<T> {
-    io: WriteHalf<T>,
+    io: SharedIo<T>,
     native: Option<NativeDatagrams>,
     policy: NativeSendPolicy,
     // Accepted bytes not yet written: they stay owned here, so a cancelled send never
@@ -297,10 +343,8 @@ impl<T> fmt::Debug for SessionSender<T> {
 impl<T> Drop for SessionSender<T> {
     fn drop(&mut self) {
         // The peer must not see a clean end of stream in the middle of a capsule value.
-        if self.on_wire
-            && let Some(malformed) = self.malformed.take()
-        {
-            malformed.call();
+        if self.on_wire {
+            abort_carrier(&self.io, &mut self.malformed);
         }
     }
 }
@@ -329,6 +373,10 @@ impl<T: AsyncWrite> SessionSender<T> {
                 Ok(()) => return Ok(DatagramTransport::Native),
                 // Negotiation raced away: reliable delivery is still correct.
                 Err(NativeSendError::Unavailable) => (),
+                Err(NativeSendError::Closed) => {
+                    self.state = SendState::NativeClosed;
+                    return Err(SessionError::Native(NativeSendError::Closed));
+                }
                 Err(error) => return Err(SessionError::Native(error)),
             }
         }
@@ -417,9 +465,11 @@ impl<T: AsyncWrite> SessionSender<T> {
                     self.state = SendState::Closing;
                 }
                 SendState::Closing => (),
-                SendState::Failed(kind) => return Poll::Ready(Err(SessionError::Io(kind.into()))),
+                SendState::Failed(_) | SendState::NativeClosed => {
+                    return Poll::Ready(self.check_open());
+                }
             }
-            let result = ready!(Pin::new(&mut self.io).poll_shutdown(cx));
+            let result = ready!(self.io.with(|io| io.poll_shutdown(cx)));
             Poll::Ready(result.map_err(|error| self.failed(error)))
         })
         .await
@@ -430,6 +480,7 @@ impl<T: AsyncWrite> SessionSender<T> {
             SendState::Open => Ok(()),
             SendState::Closing => Err(SessionError::SendClosed),
             SendState::Failed(kind) => Err(SessionError::Io(kind.into())),
+            SendState::NativeClosed => Err(SessionError::Native(NativeSendError::Closed)),
         }
     }
 
@@ -450,7 +501,7 @@ impl<T: AsyncWrite> SessionSender<T> {
 
     fn poll_write_and_flush(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), SessionError>> {
         ready!(self.poll_write_pending(cx))?;
-        let result = ready!(Pin::new(&mut self.io).poll_flush(cx));
+        let result = ready!(self.io.with(|io| io.poll_flush(cx)));
         Poll::Ready(result.map_err(|error| self.failed(error)))
     }
 
@@ -458,8 +509,8 @@ impl<T: AsyncWrite> SessionSender<T> {
         self.check_open()?;
         for i in 0..self.pending.len() {
             while !self.pending[i].is_empty() {
-                let written = match ready!(Pin::new(&mut self.io).poll_write(cx, &self.pending[i]))
-                {
+                let chunk = &self.pending[i];
+                let written = match ready!(self.io.with(|io| io.poll_write(cx, chunk))) {
                     Ok(0) => return Poll::Ready(Err(self.failed(io::ErrorKind::WriteZero.into()))),
                     Ok(written) => written,
                     Err(error) => return Poll::Ready(Err(self.failed(error))),
@@ -486,6 +537,7 @@ enum RecvEnd {
     Clean,
     Malformed(CapsuleError),
     Failed(io::ErrorKind),
+    Native(NativeRecvError),
 }
 
 /// Reads and decoded skips a receive poll performs before yielding to other work.
@@ -493,7 +545,7 @@ const MAX_READS_PER_POLL: usize = 16;
 
 /// The receiving half of an [`HttpDatagramSession`].
 pub struct SessionReceiver<T> {
-    io: ReadHalf<T>,
+    io: SharedIo<T>,
     native: Option<NativeDatagrams>,
     decoder: CapsuleDecoder,
     buf: BytesMut,
@@ -553,23 +605,24 @@ impl<T: AsyncRead> SessionReceiver<T> {
                 RecvEnd::Clean => Ok(None),
                 RecvEnd::Malformed(error) => Err(SessionError::Malformed(error)),
                 RecvEnd::Failed(kind) => Err(SessionError::Io(kind.into())),
+                RecvEnd::Native(error) => Err(SessionError::NativeRecv(error)),
             });
         }
         // Alternate sources per event so neither can starve the other.
         self.native_first = !self.native_first;
         if self.native_first
-            && let Poll::Ready(Some(payload)) = self.poll_native(cx)
+            && let Poll::Ready(Some(result)) = self.poll_native(cx)
         {
-            return Poll::Ready(Ok(Some(native_event(payload))));
+            return Poll::Ready(result.map(|payload| Some(native_event(payload))));
         }
         match self.poll_stream(cx) {
             Poll::Ready(result) => return Poll::Ready(result),
             Poll::Pending => (),
         }
         if !self.native_first
-            && let Poll::Ready(Some(payload)) = self.poll_native(cx)
+            && let Poll::Ready(Some(result)) = self.poll_native(cx)
         {
-            return Poll::Ready(Ok(Some(native_event(payload))));
+            return Poll::Ready(result.map(|payload| Some(native_event(payload))));
         }
         Poll::Pending
     }
@@ -585,7 +638,8 @@ impl<T: AsyncRead> SessionReceiver<T> {
                 Err(error) => return Poll::Ready(Err(self.fail(error))),
             }
             self.buf.reserve(self.read_chunk_size);
-            match ready!(poll_read_buf(Pin::new(&mut self.io), cx, &mut self.buf)) {
+            let buf = &mut self.buf;
+            match ready!(self.io.with(|io| poll_read_buf(io, cx, buf))) {
                 Ok(0) => {
                     return Poll::Ready(match self.decoder.finish() {
                         Ok(()) => {
@@ -612,24 +666,27 @@ impl<T: AsyncRead> SessionReceiver<T> {
         Poll::Pending
     }
 
-    fn poll_native(&mut self, cx: &mut Context<'_>) -> Poll<Option<Bytes>> {
+    fn poll_native(&mut self, cx: &mut Context<'_>) -> Poll<Option<Result<Bytes, SessionError>>> {
         let Some(native) = self.native.as_ref().filter(|_| self.native_open) else {
             return Poll::Ready(None);
         };
-        if let Ok(Some(payload)) = ready!(native.channel().poll_recv(cx)) {
-            return Poll::Ready(Some(payload));
+        match ready!(native.channel().poll_recv(cx)) {
+            Ok(Some(payload)) => Poll::Ready(Some(Ok(payload))),
+            Ok(None) => {
+                self.native_open = false;
+                Poll::Ready(None)
+            }
+            Err(error) => {
+                self.end = Some(RecvEnd::Native(error));
+                Poll::Ready(Some(Err(SessionError::NativeRecv(error))))
+            }
         }
-        // Ended; a reset or lost connection also fails the data stream, which reports it.
-        self.native_open = false;
-        Poll::Ready(None)
     }
 
     fn fail(&mut self, error: CapsuleError) -> SessionError {
         self.end = Some(RecvEnd::Malformed(error));
         // RFC 9297 §3.3: treat the message as malformed; the carrier chooses the abort code.
-        if let Some(malformed) = self.malformed.take() {
-            malformed.call();
-        }
+        abort_carrier(&self.io, &mut self.malformed);
         SessionError::Malformed(error)
     }
 }

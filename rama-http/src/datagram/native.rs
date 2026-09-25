@@ -52,6 +52,8 @@ impl std::error::Error for NativeSendError {}
 pub enum NativeRecvError {
     /// The peer reset the request stream with this application error code.
     Reset(u64),
+    /// This endpoint aborted the request stream with this application error code.
+    Aborted(u64),
     /// The connection failed.
     Lost,
 }
@@ -60,6 +62,7 @@ impl fmt::Display for NativeRecvError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Reset(code) => write!(f, "request stream reset by peer (code {code:#x})"),
+            Self::Aborted(code) => write!(f, "request stream aborted locally (code {code:#x})"),
             Self::Lost => f.write_str("datagram connection lost"),
         }
     }
