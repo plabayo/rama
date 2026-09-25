@@ -301,8 +301,9 @@ mod tests {
     use rama_tls::{
         CipherSuite, KeyLogIntent, ProtocolVersion, TlsKeyLog,
         client::{
-            ClientAuth, ClientHelloExtension, NegotiatedTlsParameters, ServerTrustRoots,
-            ServerVerifyMode, TlsClientAuth, TlsServerCertPins, TlsServerTrust, TlsServerVerify,
+            ClientAuth, ClientAuthData, ClientHelloExtension, NegotiatedTlsParameters,
+            ServerTrustRoots, ServerVerifyMode, TlsClientAuth, TlsClientConfig, TlsServerCertPins,
+            TlsServerTrust, TlsServerVerify,
         },
         server::{
             ClientVerifyMode, GeneratedServerAuthConfig, SelfSignedCaConfig, ServerAuthData,
@@ -314,14 +315,15 @@ mod tests {
     use crate::{
         client::{
             BoringCipherSuites, BoringClientConfigExt as _, BoringServerVerifyCertStore,
-            tls_connect,
+            TlsConnectorData, tls_connect,
         },
         proxy::mitm::{
             HandshakeRelayClassification, TlsMitmEgressClientAuth, TlsMitmEgressServerAuth,
-            TlsMitmRelayErrorDirection, TlsMitmRelayErrorKind,
+            TlsMitmIngressClientAuth, TlsMitmRelayError, TlsMitmRelayErrorDirection,
+            TlsMitmRelayErrorKind,
         },
         server::TlsAcceptorLayer,
-        tests::client_identity,
+        tests::{client_identity, client_identity_with_cn},
     };
     #[cfg(feature = "http")]
     use {
@@ -595,6 +597,298 @@ mod tests {
         drop(bridged);
         drop(ingress_tls);
         drop(upstream_handle.await);
+    }
+    #[tokio::test]
+    async fn service_path_demands_guest_client_cert_when_configured() {
+        let (guest_root, _) = client_identity();
+        let storage = TlsMitmIngressClientAuth::new().with_trust_anchors([guest_root]);
+        let relay = TlsMitmRelay::try_new_with_self_signed_issuer(&SelfSignedCaConfig::default())
+            .expect("build MITM relay")
+            .with_keylog_intent(KeyLogIntent::Disabled)
+            .with_ingress_client_auth(storage);
+
+        let egress_config = TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable);
+
+        // Refusal surfaces server-side: TLS 1.3 delivers the server Finished
+        // before the server validates the client certificate, so the guest
+        // connect can succeed while the relay still refuses and never bridges.
+        for (label, auth) in [
+            ("certless", None),
+            ("self-signed", Some(ClientAuth::SelfSigned)),
+        ] {
+            let (cert_chain, private_key) =
+                generate_server_auth(GeneratedServerAuthConfig::default())
+                    .expect("generate private upstream identity");
+            let upstream =
+                TlsAcceptorLayer::new(TlsServerConfig::new().with_single_cert(ServerAuthData {
+                    cert_chain,
+                    private_key,
+                    ocsp: None,
+                }))
+                .into_layer(EchoService::new());
+
+            let guest_config = TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable);
+            let guest_config = match auth {
+                Some(auth) => guest_config.with_client_auth(auth),
+                None => guest_config,
+            };
+            let guest_connector_data =
+                TlsConnectorData::try_from(&guest_config).expect("build guest connector data");
+
+            let (guest_io, relay_ingress_io) = tokio::io::duplex(usize::MAX);
+            let (relay_egress_io, upstream_io) = tokio::io::duplex(usize::MAX);
+            let upstream_handle =
+                tokio::spawn(async move { upstream.serve(ServiceInput::new(upstream_io)).await });
+
+            let (relay_result, guest_result) = tokio::join!(
+                relay.handshake(
+                    BridgeIo(
+                        ServiceInput::new(relay_ingress_io),
+                        ServiceInput::new(relay_egress_io),
+                    ),
+                    Some(
+                        TlsConnectorData::try_from(&egress_config)
+                            .expect("build egress connector data"),
+                    ),
+                ),
+                tls_connect(ServiceInput::new(guest_io), Some(guest_connector_data)),
+            );
+
+            let err = relay_result
+                .map(|_| ())
+                .expect_err("relay refuses guest on the service path");
+            assert_eq!(
+                err.direction(),
+                Some(TlsMitmRelayErrorDirection::Ingress),
+                "refusal is an ingress failure for {label} guest"
+            );
+            drop(guest_result);
+            drop(upstream_handle.await);
+        }
+    }
+    /// Relay one storage connection to an mTLS upstream, returning the relay
+    /// outcome and the client leaf the upstream observed (if it accepted).
+    async fn storage_relay_to_mtls_upstream(
+        storage: TlsMitmIngressClientAuth,
+        guest: Option<ClientAuthData>,
+        upstream_client_root: CertificateDer<'static>,
+        flow: Option<TlsMitmEgressClientAuth>,
+        via_service: bool,
+    ) -> (Result<(), TlsMitmRelayError>, Option<Vec<u8>>) {
+        let (cert_chain, private_key) = generate_server_auth(GeneratedServerAuthConfig::default())
+            .expect("generate upstream identity");
+        let upstream = TlsAcceptorLayer::new(
+            TlsServerConfig::new()
+                .with_single_cert(ServerAuthData {
+                    cert_chain,
+                    private_key,
+                    ocsp: None,
+                })
+                .with_client_verify(ClientVerifyMode::ClientAuth(vec![upstream_client_root]))
+                .with_store_client_cert_chain(true),
+        )
+        .into_layer(service_fn(presented_client_leaf));
+
+        let relay = TlsMitmRelay::try_new_with_self_signed_issuer(&SelfSignedCaConfig::default())
+            .expect("build MITM relay")
+            .with_keylog_intent(KeyLogIntent::Disabled)
+            .with_ingress_client_auth(storage);
+
+        let (client_io, relay_ingress_io) = tokio::io::duplex(usize::MAX);
+        let (relay_egress_io, upstream_io) = tokio::io::duplex(usize::MAX);
+        let ingress = ServiceInput::new(relay_ingress_io);
+        if let Some(flow) = flow {
+            ingress.extensions().insert_arc(Arc::new(flow));
+        }
+        let bridge = BridgeIo(ingress, ServiceInput::new(relay_egress_io));
+        let guest_config = TlsClientConfig::new()
+            .with_server_verify(ServerVerifyMode::Disable)
+            .with_keylog(KeyLogIntent::Disabled);
+        let guest_config = match guest {
+            Some(guest) => guest_config.with_client_auth(ClientAuth::Single(guest)),
+            None => guest_config,
+        };
+        let ingress_connector_data =
+            TlsConnectorData::try_from(&guest_config).expect("build ingress TLS client config");
+        let ingress_client =
+            tls_connect(ServiceInput::new(client_io), Some(ingress_connector_data));
+        let upstream = upstream.serve(ServiceInput::new(upstream_io));
+        let inner = service_fn(
+            |_: BridgeIo<
+                TlsStream<ServiceInput<tokio::io::DuplexStream>>,
+                TlsStream<ServiceInput<tokio::io::DuplexStream>>,
+            >| async { Ok::<(), BoxError>(()) },
+        );
+        let service = TlsMitmRelayService::new(relay.clone(), inner);
+
+        let (relay_outcome, presented) = tokio::time::timeout(Duration::from_secs(10), async {
+            if via_service {
+                let input = InputWithClientHello {
+                    input: bridge,
+                    client_hello: ClientHello::new(
+                        ProtocolVersion::TLSv1_3,
+                        Vec::new(),
+                        Vec::new(),
+                        Vec::new(),
+                    ),
+                };
+                let (relay, _, upstream) =
+                    tokio::join!(service.serve(input), ingress_client, upstream);
+                (relay.map(|_| ()), upstream)
+            } else {
+                let (relay, _, upstream) =
+                    tokio::join!(relay.handshake(bridge, None), ingress_client, upstream);
+                (relay.map(|_| ()), upstream)
+            }
+        })
+        .await
+        .expect("storage relay timeout");
+
+        let presented = presented.ok().flatten();
+        (relay_outcome, presented)
+    }
+
+    #[tokio::test]
+    async fn storage_matched_guest_bridges_with_key_observed_upstream() {
+        let (guest_root, guest) = client_identity();
+        let guest_leaf = guest.cert_chain[0].as_ref().to_vec();
+        for via_service in [false, true] {
+            let storage = TlsMitmIngressClientAuth::new()
+                .with_trust_anchors([guest_root.clone()])
+                .with_identity(guest.clone());
+            let (relay, presented) = storage_relay_to_mtls_upstream(
+                storage,
+                Some(guest.clone()),
+                guest_root.clone(),
+                None,
+                via_service,
+            )
+            .await;
+            relay.expect("matched guest bridges");
+            assert_eq!(
+                presented,
+                Some(guest_leaf.clone()),
+                "upstream observes the matched key (via_service={via_service})"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn storage_unknown_and_absent_guests_rejected_with_nothing_bridged() {
+        let (guest_root, registered) = client_identity_with_cn("registered");
+        for via_service in [false, true] {
+            // Unknown: trusted leaf absent from the registry. Present a
+            // *different* trusted guest while the registry holds only the
+            // registered leaf. Two anchors share the verify store, proving
+            // multi-anchor trust works (distinct subjects required: identical
+            // names make BoringSSL build against the wrong candidate).
+            let (other_root, other_guest) = client_identity_with_cn("other");
+            let storage = TlsMitmIngressClientAuth::new()
+                .with_trust_anchors([guest_root.clone(), other_root])
+                .with_identity(registered.clone());
+            let (relay, presented) = storage_relay_to_mtls_upstream(
+                storage,
+                Some(other_guest),
+                guest_root.clone(),
+                None,
+                via_service,
+            )
+            .await;
+            let err = relay.expect_err("unknown guest rejected");
+            assert_eq!(err.direction(), Some(TlsMitmRelayErrorDirection::Ingress));
+            assert!(
+                !matches!(
+                    err.kind(),
+                    TlsMitmRelayErrorKind::Handshake {
+                        classification: HandshakeRelayClassification::CertTrust,
+                        ..
+                    }
+                ),
+                "miss must not classify as CertTrust (would poison SNI-bypass caches)"
+            );
+            assert_eq!(presented, None, "nothing bridged for unknown guest");
+
+            // Absent: no client certificate at all.
+            let storage = TlsMitmIngressClientAuth::new()
+                .with_trust_anchors([guest_root.clone()])
+                .with_identity(registered.clone());
+            let (relay, presented) = storage_relay_to_mtls_upstream(
+                storage,
+                None,
+                guest_root.clone(),
+                None,
+                via_service,
+            )
+            .await;
+            let err = relay.expect_err("absent guest rejected");
+            assert_eq!(err.direction(), Some(TlsMitmRelayErrorDirection::Ingress));
+            assert_eq!(presented, None, "nothing bridged for absent guest");
+        }
+    }
+
+    #[tokio::test]
+    async fn storage_flow_identity_wins_over_match() {
+        let (guest_root, guest) = client_identity();
+        let (flow_root, flow_identity) = client_identity();
+        let flow_leaf = flow_identity.cert_chain[0].as_ref().to_vec();
+        let flow = TlsMitmEgressClientAuth::try_from(ClientAuth::Single(flow_identity.clone()))
+            .expect("flow identity");
+        for via_service in [false, true] {
+            // Upstream trusts only the flow key: a storage match presenting
+            // the guest key would be rejected, so an accepted handshake with
+            // the flow leaf observed proves the flow won without installing.
+            let storage = TlsMitmIngressClientAuth::new()
+                .with_trust_anchors([guest_root.clone()])
+                .with_identity(guest.clone());
+            let (relay, presented) = storage_relay_to_mtls_upstream(
+                storage,
+                Some(guest.clone()),
+                flow_root.clone(),
+                Some(flow.clone()),
+                via_service,
+            )
+            .await;
+            relay.expect("flow override bridges");
+            assert_eq!(
+                presented,
+                Some(flow_leaf.clone()),
+                "flow identity wins over the storage match (via_service={via_service})"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn storage_upstream_rejection_of_bad_key_fails_guest() {
+        let (guest_root, guest) = client_identity();
+        let guest_leaf = guest.cert_chain[0].as_ref().to_vec();
+        let (_, other) = client_identity();
+        // Register the guest leaf but point the registry at nothing usable
+        // upstream: the upstream trusts an unrelated root, so it rejects the
+        // presented guest key. TLS 1.3 completes the client handshake before
+        // the server judges the certificate, so the failure surfaces
+        // post-handshake: the guest handshake may succeed but no data flows
+        // and the upstream never accepts.
+        for via_service in [false, true] {
+            let storage = TlsMitmIngressClientAuth::new()
+                .with_trust_anchors([guest_root.clone()])
+                .with_identity(guest.clone());
+            let (relay, presented) = storage_relay_to_mtls_upstream(
+                storage,
+                Some(guest.clone()),
+                other.cert_chain.last().expect("other root").clone(),
+                None,
+                via_service,
+            )
+            .await;
+            assert_eq!(presented, None, "upstream never accepts the bad key");
+            // Fail closed: either the handshake itself fails, or it completes
+            // but the guest leaf was presented to a rejecting upstream. The
+            // leaf must never be observed as accepted upstream.
+            assert!(
+                relay.is_err() || presented != Some(guest_leaf.clone()),
+                "bad key fails the guest (via_service={via_service})"
+            );
+        }
     }
 
     #[tokio::test]
