@@ -34,7 +34,7 @@
 //!
 //! ### Features
 //!
-//! - HTTP/1 and HTTP/2
+//! - HTTP/1, HTTP/2 and HTTP/3
 //! - Asynchronous design
 //! - Leading in performance
 //! - Tested and **correct**

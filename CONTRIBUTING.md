@@ -81,7 +81,7 @@ almost never need to understand all of it — the crate name tells you which
   - `rama-http-types` — shared HTTP types (request, response, headers, body).
   - `rama-http-headers` — typed HTTP headers.
   - `rama-http-backend` — the default HTTP client/server backend.
-  - `rama-http-core` — the low-level HTTP/1 and HTTP/2 protocol implementation.
+  - `rama-http-core` — the low-level HTTP/1, HTTP/2 and HTTP/3 protocol implementation.
   - `rama-http-macros` — proc-macros (e.g. the type-safe HTML templating).
 - **Transport & network** — `rama-net` (shared net types), `rama-tcp`,
   `rama-udp`, `rama-unix`.
