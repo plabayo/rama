@@ -179,7 +179,7 @@ On the 19th of August 2025 we released [the first episode][netstack-one] of [Net
 new podcast about networking, Rust and everything in between. In [the first episode][netstack-one]
 we went over the origins of [Glen](https://www.glendc.com), Rama and why the podcast was created.
 
-[netstack-one]: https://netstack.fm/#episode-1
+[netstack-one]: https://netstack.fm/episodes/welcome-to-netstack-fm
 
 Rama is also frequently featured in newsletters
 such as <https://this-week-in-rust.org/>.

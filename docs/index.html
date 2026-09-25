@@ -137,44 +137,61 @@
             <div class="features-grid">
                 <div class="feature-card">
                     <h3>🚦 Proxies</h3>
-                    <p>Build powerful network proxies including reverse proxies, TLS termination proxies, HTTP(S)
-                        proxies,
-                        SOCKS5 proxies, MITM proxies, and distortion proxies. Perfect for load balancing, security, and
-                        network analysis.</p>
+                    <p>Build reverse proxies, TLS termination proxies, HTTP(S) proxies, SOCKS5 proxies, SNI proxies,
+                        MITM proxies, transparent proxies and distortion proxies. Or combine them, as they are all made
+                        from the same building blocks.</p>
                     <div class="card-link">
                         <a href="https://ramaproxy.org/book/proxies/intro.html">Explore Proxies →</a>
                     </div>
                 </div>
                 <div class="feature-card">
                     <h3>🌐 Web Services</h3>
-                    <p>Create high-performance web servers, REST APIs, and static content servers. Built on <a
-                            href="https://tokio.rs">Tokio</a> for maximum performance and reliability.</p>
+                    <p>Web servers, REST APIs, static content, WebSockets, SSE and gRPC, served over HTTP/1.1, H2 or
+                        H3. Built on <a href="https://tokio.rs">Tokio</a>.</p>
                     <div class="card-link">
                         <a href="https://ramaproxy.org/book/web_servers.html">Build Web Services →</a>
                     </div>
                 </div>
                 <div class="feature-card">
                     <h3>🧑‍💻 HTTP Clients</h3>
-                    <p>Build sophisticated HTTP clients with user-agent emulation, proxy support, and advanced
-                        request/response handling. Perfect for web scraping and API interactions.</p>
+                    <p>HTTP clients for HTTP/1.1, H2 and H3, with User-Agent emulation, upstream proxy support and
+                        a connector stack you can change at every layer.</p>
                     <div class="card-link">
                         <a href="https://ramaproxy.org/book/http/http_clients.html">Create HTTP Clients →</a>
                     </div>
                 </div>
                 <div class="feature-card">
                     <h3>🔌 Modular Architecture</h3>
-                    <p>Pick and choose components from TCP/UDP to HTTP and TLS. Build your perfect stack with Rama's
-                        service-oriented architecture.</p>
+                    <p>Pick and choose components from TCP, UDP and QUIC up to TLS, DNS and HTTP. Services and
+                        layers all the way down, so you compose exactly the stack you need.</p>
                     <div class="card-link">
                         <a href="https://ramaproxy.org/book/intro/services_all_the_way_down.html">Discover Architecture
                             →</a>
                     </div>
                 </div>
                 <div class="feature-card">
+                    <h3>🔎 Traffic Inspection</h3>
+                    <p>Capture, inspect and intercept HTTP, WebSocket and TLS traffic, with HAR export. Use it as a
+                        library or through the MITM proxy and its web UI in the <code>rama</code> CLI.</p>
+                    <div class="card-link">
+                        <a href="https://ramaproxy.org/book/proxies/protocol_inspection.html">Inspect Traffic →</a>
+                    </div>
+                </div>
+                <div class="feature-card">
+                    <h3>🧭 Proxy Routing</h3>
+                    <p>Follow the system proxy settings on macOS, iOS, Windows and Linux, respect
+                        <code>HTTP_PROXY</code> and <code>NO_PROXY</code>, or evaluate PAC scripts to decide how each
+                        request leaves the machine.</p>
+                    <div class="card-link">
+                        <a href="https://ramaproxy.org/book/proxies/operate/system.html">Route via Proxies →</a>
+                    </div>
+                </div>
+                <div class="feature-card">
                     <h3>📊 Telemetry</h3>
-                    <p>Built-in support for tracing and metrics using <a href="https://tracing.rs">tracing</a> and <a
-                            href="https://opentelemetry.io">OpenTelemetry</a>. Monitor and debug your services with
-                        ease.
+                    <p>Tracing and metrics using <a href="https://tracing.rs">tracing</a> and <a
+                            href="https://opentelemetry.io">OpenTelemetry</a>, plus <a
+                            href="https://ramaproxy.org/book/dial9.html">dial9</a> runtime telemetry to see what
+                        your Tokio runtime is actually doing.
                     </p>
                     <div class="card-link">
                         <a href="https://ramaproxy.org/book/intro/telemetry.html">Monitor Services →</a>
@@ -182,26 +199,33 @@
                 </div>
                 <div class="feature-card">
                     <h3>🔍 Fingerprinting</h3>
-                    <p>Advanced fingerprinting capabilities for HTTP and TLS layers to help with emulation and security
-                        testing.</p>
+                    <p>JA3, JA4, JA4H, PeetPrint and Akamai H2 fingerprints for the TLS and HTTP layers. Useful for
+                        emulation, bot detection and security testing.</p>
                     <div class="card-link">
                         <a href="https://ramaproxy.org/book/intro/user_agent.html#fingerprinting">UA Fingerprinting
                             →</a>
                     </div>
                 </div>
                 <div class="feature-card">
+                    <h3>🖥️ Platform Integrations</h3>
+                    <p>Transparent proxies on Apple devices via Network Extension, on Windows via WFP and on Linux
+                        via TPROXY. XPC for Apple IPC.</p>
+                    <div class="card-link">
+                        <a href="https://ramaproxy.org/book/proxies/operate/transparent.html">Transparent Proxies →</a>
+                    </div>
+                </div>
+                <div class="feature-card">
                     <h3>🚀 Async Core, Blocking Boundaries</h3>
-                    <p>Build on <a href="https://tokio.rs">Tokio</a> for performance and concurrency, then expose the
-                        same service stack through a blocking API when synchronous applications need it.</p>
+                    <p>Everything is async and built on <a href="https://tokio.rs">Tokio</a>. When synchronous code
+                        needs it, you can put a blocking API in front of the same service stack.</p>
                     <div class="card-link">
                         <a href="https://ramaproxy.org/book/why_rama.html">Why Rama →</a>
                     </div>
                 </div>
                 <div class="feature-card">
                     <h3>🛡️ Type-Safe</h3>
-                    <p>Leverage Rust's powerful type system to build robust and maintainable network services. Catch
-                        errors
-                        at compile time.</p>
+                    <p>Rust's type system helps you build network services that are easier to maintain, and catches
+                        a lot of errors at compile time.</p>
                     <div class="card-link">
                         <a href="https://ramaproxy.org/book/rust.html">Built with Rust →</a>
                     </div>
@@ -209,12 +233,11 @@
                 <div class="feature-card">
                     <h3>📦 Binary</h3>
                     <p>
-                        Download and use Rama as a standalone binary CLI tool.
-                        No need to build from source or integrate into your Rust project to benefit from Rama's
-                        capabilities.
+                        Use Rama as a standalone CLI tool. HTTP client, DNS resolving, TLS probes, proxies, echo and
+                        test services, all without writing any code.
                     </p>
                     <div class="card-link">
-                        <a href="https://ramaproxy.org/book/deploy/rama-cli.html">Install Instructions →</a>
+                        <a href="https://ramaproxy.org/book/deploy/rama-cli.html">Rama CLI →</a>
                     </div>
                 </div>
             </div>
@@ -300,7 +323,7 @@
                         <li><span class="feature-status status-done">✅</span><a
                                 href="https://ramaproxy.org/docs/rama/unix/index.html">Unix (UDS)</a></li>
                         <li><span class="feature-status status-done">✅</span><a
-                                href="https://ramaproxy.org/docs/rama/quic/index.html">QUIC</a></li>
+                                href="https://ramaproxy.org/docs/rama/quic/index.html">QUIC v1 &amp; v2</a></li>
                         <li><span class="feature-status status-done">✅</span><a
                                 href="https://ramaproxy.org/docs/rama/net/stream/layer/index.html">Middleware</a></li>
                     </ul>
@@ -417,16 +440,24 @@
                 </div>
 
                 <div class="feature-category">
-                    <h3>DNS Client</h3>
+                    <h3>DNS</h3>
                     <ul class="feature-list">
                         <li><span class="feature-status status-done">✅</span><a
-                            href="https://ramaproxy.org/docs/rama/dns/client/resolver/trait.DnsAddressResolver.html">DNS Address Resolver</a></li>
+                                href="https://ramaproxy.org/docs/rama/dns/client/resolver/trait.DnsAddressResolver.html">Address (A/AAAA) Resolver</a></li>
                         <li><span class="feature-status status-done">✅</span><a
-                            href="https://ramaproxy.org/docs/rama/dns/client/resolver/trait.DnsTxtResolver.html">DNS Txt Resolver</a></li>
+                                href="https://ramaproxy.org/docs/rama/dns/client/resolver/trait.DnsTxtResolver.html">TXT Resolver</a></li>
                         <li><span class="feature-status status-done">✅</span><a
-                            href="https://ramaproxy.org/docs/rama/dns/client/type.NativeDnsResolver.html">Native Dns Resolver</a></li>
+                                href="https://ramaproxy.org/docs/rama/dns/client/resolver/trait.DnsCnameResolver.html">CNAME Resolver</a></li>
                         <li><span class="feature-status status-done">✅</span><a
-                            href="https://ramaproxy.org/docs/rama/dns/client/struct.HickoryDnsResolver.html">Hickory Dns Resolver</a></li>
+                                href="https://ramaproxy.org/docs/rama/dns/client/resolver/trait.DnsServiceBindingResolver.html">SVCB/HTTPS Resolver</a></li>
+                        <li><span class="feature-status status-done">✅</span><a
+                                href="https://ramaproxy.org/docs/rama/dns/client/type.NativeDnsResolver.html">Native OS Resolver</a></li>
+                        <li><span class="feature-status status-done">✅</span><a
+                                href="https://ramaproxy.org/docs/rama/dns/client/struct.HickoryDnsResolver.html">Hickory Resolver</a></li>
+                        <li><span class="feature-status status-done">✅</span><a
+                                href="https://ramaproxy.org/docs/rama/dns/client/lb/index.html">DNS Load Balancing</a></li>
+                        <li><span class="feature-status status-done">✅</span><a
+                                href="https://ramaproxy.org/docs/rama/dns/wire/index.html">Wire Message &amp; Record Parsers</a></li>
                     </ul>
                 </div>
 
@@ -554,6 +585,10 @@
                         <li><span class="feature-status status-done">✅</span><a
                                 href="https://ramaproxy.org/docs/rama/proxy/struct.ProxyFilter.html">Proxy Filters</a>
                         </li>
+                        <li><span class="feature-status status-done">✅</span><a
+                                href="https://ramaproxy.org/book/proxies/operate/system.html">System Proxy Config (macOS, iOS, Windows, Linux)</a></li>
+                        <li><span class="feature-status status-done">✅</span><a
+                                href="https://ramaproxy.org/book/proxies/operate/app.html">Env Proxy Config (<code>*_PROXY</code>, <code>NO_PROXY</code>)</a></li>
                     </ul>
                 </div>
 
@@ -616,13 +651,24 @@
                 </div>
 
                 <div class="feature-category">
-                    <h3>Graphical Interface</h3>
+                    <h3>Traffic Inspection</h3>
                     <ul class="feature-list">
-                        <li><span class="feature-status status-wip">🏗️</span>Traffic Logger</li>
-                        <li><span class="feature-status status-wip">🏗️</span><a href="https://ratatui.rs/">TUI
-                                Implementation</a></li>
-                        <li><span class="feature-status status-todo">❌</span>Traffic Intercept</li>
-                        <li><span class="feature-status status-todo">❌</span>Traffic Replay</li>
+                        <li><span class="feature-status status-done">✅</span><a
+                                href="https://ramaproxy.org/docs/rama/inspect/index.html">Capture &amp; Intercept Core</a></li>
+                        <li><span class="feature-status status-done">✅</span><a
+                                href="https://ramaproxy.org/docs/rama/http/inspect/index.html">HTTP Capture &amp; Intercept</a></li>
+                        <li><span class="feature-status status-done">✅</span><a
+                                href="https://ramaproxy.org/docs/rama/http/ws/inspect/index.html">WebSocket Capture &amp; Replay</a></li>
+                        <li><span class="feature-status status-done">✅</span><a
+                                href="https://ramaproxy.org/docs/rama/tls/inspect/index.html">TLS &amp; Transport Observations</a></li>
+                        <li><span class="feature-status status-done">✅</span><a
+                                href="https://ramaproxy.org/docs/rama/ua/inspect/index.html">Observed UA Profiles</a></li>
+                        <li><span class="feature-status status-done">✅</span><a
+                                href="https://ramaproxy.org/docs/rama/crypto/inspect/index.html">Encrypted Capture Storage</a></li>
+                        <li><span class="feature-status status-done">✅</span><a
+                                href="https://ramaproxy.org/book/deploy/rama-cli.html#mitm-proxy-with-web-ui">CLI MITM Proxy + Web UI</a></li>
+                        <li><span class="feature-status status-done">✅</span><a
+                                href="https://ramaproxy.org/book/deploy/rama-cli.html#inspect-capture-files">CLI HAR &amp; qlog Viewer (TUI)</a></li>
                     </ul>
                 </div>
 
@@ -630,9 +676,25 @@
                     <h3>Binary</h3>
                     <ul class="feature-list">
                         <li><span class="feature-status status-done">✅</span><a
-                                href="https://ramaproxy.org/book/deploy/rama-cli">Prebuilt Binaries</a></li>
-                        <li><span class="feature-status status-wip">🏗️</span>Proxy Config</li>
-                        <li><span class="feature-status status-done">✅</span>HTTP Client</li>
+                                href="https://ramaproxy.org/book/deploy/rama-cli.html#install">Prebuilt Binaries</a></li>
+                        <li><span class="feature-status status-done">✅</span><a
+                                href="https://ramaproxy.org/book/deploy/rama-cli.html#http-client">HTTP(S) &amp; WebSocket Client</a></li>
+                        <li><span class="feature-status status-done">✅</span><a
+                                href="https://ramaproxy.org/book/deploy/rama-cli.html#proxies">HTTP(S) &amp; SOCKS5 Proxy</a></li>
+                        <li><span class="feature-status status-done">✅</span><a
+                                href="https://ramaproxy.org/book/deploy/rama-cli.html#mitm-proxy-with-web-ui">Traffic Inspection</a></li>
+                        <li><span class="feature-status status-done">✅</span><a
+                                href="https://ramaproxy.org/book/deploy/rama-cli.html#dns">DNS Resolving</a></li>
+                        <li><span class="feature-status status-done">✅</span><a
+                                href="https://ramaproxy.org/book/deploy/rama-cli.html#probing">TLS, TCP &amp; Interface Probes</a></li>
+                        <li><span class="feature-status status-done">✅</span><a
+                                href="https://ramaproxy.org/book/deploy/rama-cli.html#pac">PAC Eval &amp; Generate</a></li>
+                        <li><span class="feature-status status-done">✅</span><a
+                                href="https://ramaproxy.org/book/deploy/rama-cli.html#test-and-diagnostic-services">Echo, IP &amp; Fingerprint Services</a></li>
+                        <li><span class="feature-status status-done">✅</span><a
+                                href="https://ramaproxy.org/book/deploy/rama-cli.html#test-and-diagnostic-services">HTTP Test Services</a></li>
+                        <li><span class="feature-status status-done">✅</span><a
+                                href="https://ramaproxy.org/book/deploy/rama-cli.html#tls-tunnels">TLS Tunnels (stunnel)</a></li>
                         <li><span class="feature-status status-todo">❌</span>WASM Plugins</li>
                     </ul>
                 </div>

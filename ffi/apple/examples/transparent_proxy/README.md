@@ -683,7 +683,7 @@ agent at it, or grep the NDJSON log alongside the binary trace.
 ### See also
 
 [dial9 book chapter](https://ramaproxy.org/book/dial9.html),
-[netstack.fm ep. 37](https://netstack.fm/#episode-37), and
+[netstack.fm ep. 37](https://netstack.fm/episodes/dial9-from-black-box-to-insight-in-tokio), and
 [`production_use.rs`](https://github.com/dial9-rs/dial9/blob/HEAD/dial9/examples/production_use.rs)
 for operator knobs (CPU profiling, S3 upload, schedule-event capture)
 the demo deliberately keeps off by default.

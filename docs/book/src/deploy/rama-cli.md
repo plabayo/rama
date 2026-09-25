@@ -1,16 +1,43 @@
 # ⌨️ `rama` binary
 
 The `rama` binary allows you to use a lot of what `rama` has to offer without
-having to code yourself. It comes with a working http client for CLI, which emulates
-User-Agents and has other utilities. And it also comes with IP/Echo services.
+having to code yourself. It has an HTTP client, a proxy with traffic inspection,
+DNS and TLS tools, and a bunch of small services that come in handy when
+testing network clients and proxies.
 
-It also allows you to run a `rama` proxy, configured to your needs.
+This page gives a short overview of what is there. The `--help` output of each
+command is the place to go for all flags and details.
 
 ## Usage
 
 ```bash
 rama --help
 ```
+
+Every command also has its own help, e.g. `rama serve proxy --help`.
+
+## HTTP client
+
+`rama <URI>` (or `rama send <URI>`) is the HTTP client. If you know `curl`
+you will feel at home, many of its flags work the same way. It speaks
+HTTP/1.1, H2 and H3.
+
+Some URIs open a terminal UI instead of printing the response:
+
+- a `ws://` or `wss://` URI opens a WebSocket client, where you can send
+  and receive messages;
+- an RSS or Atom feed opens in a feed reader. This is detected from the response,
+  so any URI serving a feed works. Write to a file with `-o` or pipe the output
+  and you get the plain feed instead.
+
+Some things it can do on top of that:
+
+- emulate a browser with `--emulate`, using the User-Agent profiles embedded in rama;
+- record the exchange to a HAR file with `--har`;
+- print the equivalent `curl` command with `--curl`, without sending anything;
+- select values from a JSON response with `--select-json`;
+- go via an upstream proxy with `--proxy`. Without it, proxy environment variables
+  and the system proxy settings are used.
 
 ### Alternative HTTP services
 
@@ -24,6 +51,84 @@ or written. Alternative-service discovery is disabled by default in the CLI.
 Explicit HTTP version flags continue to constrain selection when `--alt-svc`
 is enabled. WebSockets over HTTP/3 require Extended CONNECT support, which is
 not yet implemented.
+
+## Proxies
+
+`rama serve proxy` runs a forward proxy. By default it serves HTTP and SOCKS5
+on the same port (`127.0.0.1:8080`), and it can serve HTTPS as well. Use
+`--protocol` and the protocol specific bind flags to choose what runs where.
+
+### MITM proxy with web UI
+
+Add `--mitm` to `rama serve proxy` and the proxy starts to inspect the traffic
+that goes through it. You can follow it live in a web UI that is served by the
+proxy itself: requests and responses, WebSocket messages, TLS details and more.
+From there you can also export captures as HAR.
+
+The proxy uses an ephemeral CA to do this. Your clients need to trust it,
+which is why you can download it from the web UI or write it to a file with
+`--mitm-ca-cert`. Captured data is stored encrypted and is bounded by limits
+you can configure with the `--capture-*` flags.
+
+More background can be found in the blog article about the
+[proxy web GUI inspector](https://plabayo.tech/blog/rama-cli-0-5-proxy-inspector).
+
+### Inspect capture files
+
+`rama inspect <FILE>` opens a HAR or qlog file in a terminal viewer. Useful for
+captures you made with the rama CLI or proxy, but it works for files exported
+by browsers or other tools as well.
+
+## DNS
+
+`rama resolve <DOMAIN> [TYPE]` resolves DNS queries. Without a type it resolves
+the IP addresses using happy eyeballs, the same way the HTTP client would. It
+supports A, AAAA, CNAME, TXT, SVCB and HTTPS records. By default the system
+resolver is used, use `--nameserver` to query specific servers instead.
+
+## Probing
+
+`rama probe` has a couple of commands to find out things about a server or
+your own machine:
+
+- `rama probe tls` shows the TLS capabilities of a server;
+- `rama probe tcp` probes the TCP side of a server;
+- `rama probe iface` lists your local network interfaces and their addresses.
+
+## PAC
+
+`rama pac eval` evaluates a Proxy Auto-Configuration script for one or more URIs,
+so you can see which proxy a browser would pick. `rama pac generate` goes the
+other way and writes a PAC script from a list of domain routes.
+
+See the [PAC chapter](../proxies/operate/pac.md) for more about PAC in rama.
+
+## Test and diagnostic services
+
+`rama serve` has more than the proxy. These are small services that are useful
+when you develop or test clients and proxies:
+
+- `echo`: returns what it received. Over HTTP(S) that includes the HTTP and TLS
+  details of the request, otherwise it echoes raw TCP or UDP bytes;
+- `ip`: returns the IP address of the client;
+- `fp`: the fingerprinting service we use to collect User-Agent profiles;
+- `http-test`: endpoints for testing HTTP clients, such as compression,
+  streaming, SSE, multipart and methods;
+- `icap`: an ICAP echo service for REQMOD and RESPMOD;
+- `fs`: serves a file, a directory or a placeholder page;
+- `discard`: the RFC 863 discard service.
+
+All of them have flags to limit rate or throughput, which is handy to mimic
+slow or restricted servers. Most can run with TLS as well.
+
+## TLS tunnels
+
+`rama serve stunnel` runs a TLS tunnel, similar to `stunnel`. As an entry node
+it encrypts outgoing connections, as an exit node it decrypts incoming TLS and
+forwards the plaintext.
+
+We use it ourselves in the [c-icap interoperability tests](https://github.com/plabayo/rama/tree/main/rama-icap/tests/oracle/c-icap),
+where `rama serve stunnel exit` puts TLS in front of a plaintext c-icap server.
 
 ## Hosted services
 
