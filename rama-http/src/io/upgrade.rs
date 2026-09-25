@@ -101,6 +101,31 @@ impl fmt::Debug for OnUpstreamError {
     }
 }
 
+/// Abort a tunnel whose data stream is malformed, such as a Capsule Protocol violation
+/// (RFC 9297 §3.3). HTTP/2 resets the stream with `PROTOCOL_ERROR` and HTTP/3 with
+/// `H3_MESSAGE_ERROR`; without this extension a consumer closes the I/O instead.
+#[derive(Clone, Extension)]
+#[extension(tags(http))]
+pub struct OnMalformedMessage(Arc<dyn Fn() + Send + Sync>);
+
+impl OnMalformedMessage {
+    /// Install transport-specific malformed-message handling.
+    pub fn new(callback: impl Fn() + Send + Sync + 'static) -> Self {
+        Self(Arc::new(callback))
+    }
+
+    /// Notify the transport. Repeated calls are harmless for built-in transports.
+    pub fn call(&self) {
+        (self.0)();
+    }
+}
+
+impl fmt::Debug for OnMalformedMessage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OnMalformedMessage").finish_non_exhaustive()
+    }
+}
+
 /// A future for a possible HTTP upgrade.
 ///
 /// If no upgrade was available, or it doesn't succeed, yields an `Error`.
