@@ -31,12 +31,16 @@ use rama_http_core::server::conn::{
 };
 use rama_http_types::proto::{
     h1::ext::{CloseDelimitedResponse, ConnectionClose, OriginalResponseBodyFraming},
-    h2::frame::Settings,
+    h2::{
+        ext::ResetStream,
+        frame::{Reason, Settings},
+    },
 };
 use rama_net::client::EstablishedClientConnection;
+use rama_net::conn::{ConnectionHealth, ConnectionHealthWatcher};
 use rama_net::uri::Uri;
 
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, watch};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -80,8 +84,11 @@ impl DefaultErrorResponse {
             .into_response()
     }
 
+    /// `retry_safe` only for requests that provably never reached the
+    /// egress: h2 then resets the stream with `REFUSED_STREAM`, which
+    /// clients may replay (even a POST), so never for anything else.
     #[inline(always)]
-    fn response_for_version(version: Version) -> Response {
+    fn response_for_version(version: Version, retry_safe: bool) -> Response {
         let mut response = Self::response();
         if matches!(
             version,
@@ -92,24 +99,24 @@ impl DefaultErrorResponse {
                 HeaderValue::from_static("close"),
             );
         }
+        if retry_safe {
+            response
+                .extensions()
+                .insert(ResetStream(Reason::REFUSED_STREAM));
+        }
         response
     }
 
-    #[inline(always)]
-    fn best_effort_response_after_ingress_cancellation(version: Version) -> Response {
-        // Once ingress cancellation has fired, GracefulIo may cut off the downstream transport
-        // before this response can actually be written. This placeholder only exists because
-        // the service contract still requires a response value.
-        Self::response_for_version(version)
-    }
-
+    /// Once ingress is cancelled, `GracefulIo` may cut the transport before
+    /// this response is written; it only exists because the service
+    /// contract requires one.
     #[inline(always)]
     fn cancel_ingress_and_return_best_effort_response(
         version: Version,
         close_ingress: &CancellationToken,
     ) -> Response {
         close_ingress.cancel();
-        Self::best_effort_response_after_ingress_cancellation(version)
+        Self::response_for_version(version, false)
     }
 }
 
@@ -144,6 +151,12 @@ pub type DefaultMiddleware = (
 /// Middleware can select different framing by adding Content-Length or
 /// Transfer-Encoding; a Trailer header also prevents automatic EOF framing.
 /// HTTP/2 framing is unaffected.
+///
+/// When an HTTP/2 egress connection ends (EOF, `GOAWAY`, error), the
+/// ingress connection is shut down gracefully with a `GOAWAY`, so idle
+/// clients reconnect instead of sending into a dead relay. Ingress
+/// requests that raced that close and never reached the egress are
+/// reset with `REFUSED_STREAM`, which clients may safely retry.
 ///
 /// The relay does not consume proxy-authentication fields: a transparent
 /// intermediary may be forwarding them to the proxy that owns the exchange.
@@ -253,6 +266,8 @@ where
     ) -> Result<Self::Output, Self::Error> {
         let token = CancellationToken::new();
         let request_guard = self.exec.guard().cloned();
+        let (egress_health, egress_health_rx) = watch::channel(None);
+        let egress_health = Arc::new(egress_health);
 
         tracing::debug!("HTTP MITM Relay: start");
 
@@ -303,13 +318,15 @@ where
                         }
                     };
                     ingress_stream.extensions().insert(mirrored);
+                    let health = egress_connection_health(&conn);
+                    egress_health.send_replace(Some(health.clone()));
                     let client = (
                         RemoveRequestHeaderLayer::hop_by_hop(),
                         self.middleware.clone(),
                         RemoveResponseHeaderLayer::hop_by_hop(),
                     )
                         .layer(conn);
-                    Arc::new(Mutex::new(RelayState::Http2 { client }))
+                    Arc::new(Mutex::new(RelayState::Http2 { client, health }))
                 }
                 Err(err) => {
                     tracing::debug!("eager egress h2 handshake failed: {err}");
@@ -329,16 +346,23 @@ where
 
         let result = self
             .http_server
-            .serve(
+            .serve_with_graceful_shutdown(
                 GracefulIo::new(token.clone().cancelled_owned(), ingress_stream),
                 service_fn(move |req: Request| {
                     let relay_state = relay_state.clone();
                     let close_ingress = token.clone();
                     let guard = request_guard.clone();
+                    let egress_health = egress_health.clone();
                     async move {
                         let version = req.version();
-                        let resp =
-                            handle_relay_request(&relay_state, req, guard, close_ingress).await;
+                        let resp = handle_relay_request(
+                            &relay_state,
+                            req,
+                            guard,
+                            close_ingress,
+                            &egress_health,
+                        )
+                        .await;
                         // Hop sanitation has already consumed received framing headers.
                         // Use decoder metadata, while respecting framing originated by middleware.
                         if matches!(version, Version::HTTP_10 | Version::HTTP_11)
@@ -357,6 +381,7 @@ where
                         Ok(resp)
                     }
                 }),
+                egress_h2_gone(egress_health_rx),
             )
             .await
             .context("serve HTTP MITM relay");
@@ -410,8 +435,39 @@ where
     },
     Http2 {
         client: Middleware::Service,
+        health: Arc<ConnectionHealthWatcher>,
     },
     Closed,
+}
+
+/// Egress h2 connection health, published once that connection exists:
+/// before serving ingress (eager) or on the first request (lazy).
+type EgressHealth = watch::Sender<Option<Arc<ConnectionHealthWatcher>>>;
+
+fn egress_connection_health(conn: &HttpClientService<Body>) -> Arc<ConnectionHealthWatcher> {
+    conn.extensions()
+        .get_arc_or_insert(|| Arc::new(ConnectionHealthWatcher::default()))
+}
+
+/// Resolves once the egress h2 connection can no longer take requests
+/// (EOF, GOAWAY, connection error), so ingress can be told with a
+/// graceful GOAWAY instead of finding out on its next request.
+async fn egress_h2_gone(mut egress_health: watch::Receiver<Option<Arc<ConnectionHealthWatcher>>>) {
+    let health = match egress_health.wait_for(Option::is_some).await {
+        Ok(health) => health.clone(),
+        Err(_) => None,
+    };
+    let Some(health) = health else {
+        // never an h2 egress: nothing to follow
+        return std::future::pending().await;
+    };
+    let mut changed = health.watch();
+    while health.health() != ConnectionHealth::Broken {
+        if changed.changed().await.is_none() {
+            break;
+        }
+    }
+    tracing::debug!("egress h2 connection is gone: gracefully shut down ingress");
 }
 
 impl<Egress, Middleware> RelayState<Egress, Middleware>
@@ -432,6 +488,7 @@ async fn handle_relay_request<Egress, Middleware>(
     req: Request,
     guard: Option<ShutdownGuard>,
     close_ingress: CancellationToken,
+    egress_health: &EgressHealth,
 ) -> Response
 where
     Egress: Io + Unpin + ExtensionsRef,
@@ -484,46 +541,38 @@ where
                     "received response from MITM relay egress"
                 );
             }
-            resp.unwrap_or_else(|_| {
-                DefaultErrorResponse::best_effort_response_after_ingress_cancellation(version)
-            })
+            // on error the ingress is already cancelled
+            resp.unwrap_or_else(|_| DefaultErrorResponse::response_for_version(version, false))
         }
         RelayMode::Http2 => {
             // Acquire-release: only briefly grab the state lock to
             // ensure the egress h2 client is connected, then drop
             // it. The actual upstream serve must NOT hold the lock
-            // (see `serve_relay_request` rationale).
+            // (see `serve_http2_request` rationale).
             let client_and_req = {
                 let mut state = relay_state.lock().await;
-                relay_connect_http2_if_needed(&mut *state, req, guard, close_ingress.clone()).await
+                relay_connect_http2_if_needed(
+                    &mut *state,
+                    req,
+                    guard,
+                    close_ingress.clone(),
+                    egress_health,
+                )
+                .await
             };
 
             match client_and_req {
-                Ok((client, req)) => {
-                    let resp = serve_relay_request(
-                        &client,
-                        req,
-                        &method,
-                        &uri,
-                        version,
-                        close_ingress.clone(),
-                        relay_state,
-                    )
-                    .await;
-                    if let Ok(ref resp) = resp {
-                        tracing::trace!(
-                            http.request.method = %method,
-                            url.full = %uri,
-                            ?version,
-                            http.response.status_code = resp.status().as_u16(),
-                            "received response from MITM relay egress"
-                        );
-                    }
-                    resp.unwrap_or_else(|_| {
-                        DefaultErrorResponse::best_effort_response_after_ingress_cancellation(
-                            version,
-                        )
-                    })
+                Ok((client, health, req)) => {
+                    let resp =
+                        serve_http2_request(&client, &health, req, &method, &uri, version).await;
+                    tracing::trace!(
+                        http.request.method = %method,
+                        url.full = %uri,
+                        ?version,
+                        http.response.status_code = resp.status().as_u16(),
+                        "received response from MITM relay egress"
+                    );
+                    resp
                 }
                 Err(resp) => resp,
             }
@@ -587,11 +636,15 @@ where
                 }
             }
         }
-        RelayState::Closed => Ok(DefaultErrorResponse::response_for_version(version)),
+        RelayState::Closed => Ok(DefaultErrorResponse::response_for_version(version, false)),
         RelayState::Http2 { .. } | RelayState::Uninitialized { .. } => {
-            close_ingress.cancel();
             *state = RelayState::Closed;
-            Ok(DefaultErrorResponse::best_effort_response_after_ingress_cancellation(version))
+            Ok(
+                DefaultErrorResponse::cancel_ingress_and_return_best_effort_response(
+                    version,
+                    &close_ingress,
+                ),
+            )
         }
     }
 }
@@ -650,7 +703,8 @@ async fn relay_connect_http2_if_needed<Egress, Middleware>(
     req: Request,
     guard: Option<ShutdownGuard>,
     close_ingress: CancellationToken,
-) -> Result<(Middleware::Service, Request), Response>
+    egress_health: &EgressHealth,
+) -> Result<(Middleware::Service, Arc<ConnectionHealthWatcher>, Request), Response>
 where
     Egress: Io + Unpin + ExtensionsRef,
     Middleware: Layer<
@@ -659,7 +713,7 @@ where
         > + Clone,
 {
     match state {
-        RelayState::Http2 { client } => Ok((client.clone(), req)),
+        RelayState::Http2 { client, health } => Ok((client.clone(), health.clone(), req)),
         RelayState::Http1 { .. } => {
             tracing::debug!("received HTTP/2 relay request on HTTP/1 relay state; closing relay");
             *state = RelayState::Closed;
@@ -679,8 +733,9 @@ where
         RelayState::Uninitialized { .. } => {
             let version = req.version();
             let req = connect_relay(state, req, guard, close_ingress.clone()).await?;
-            if let RelayState::Http2 { client } = state {
-                Ok((client.clone(), req))
+            if let RelayState::Http2 { client, health } = state {
+                egress_health.send_replace(Some(health.clone()));
+                Ok((client.clone(), health.clone(), req))
             } else {
                 tracing::debug!("failed to initialize HTTP/2 relay state from first request");
                 *state = RelayState::Closed;
@@ -731,14 +786,16 @@ where
     match http_connect(egress_stream, req, exec).await {
         Ok(EstablishedClientConnection { input, conn }) => {
             let version = input.version();
-            let client = middleware.layer(conn);
             match RelayMode::try_from(version) {
                 Ok(RelayMode::Http1) => {
+                    let client = middleware.layer(conn);
                     *state = RelayState::Http1 { client };
                     Ok(input)
                 }
                 Ok(RelayMode::Http2) => {
-                    *state = RelayState::Http2 { client };
+                    let health = egress_connection_health(&conn);
+                    let client = middleware.layer(conn);
+                    *state = RelayState::Http2 { client, health };
                     Ok(input)
                 }
                 Err(err) => {
@@ -766,49 +823,41 @@ where
     }
 }
 
-async fn serve_relay_request<Egress, Middleware, Client>(
+async fn serve_http2_request<Client>(
     client: &Client,
+    health: &ConnectionHealthWatcher,
     req: Request,
     method: &Method,
     uri: &Uri,
     version: Version,
-    close_ingress: CancellationToken,
-    relay_state: &Arc<Mutex<RelayState<Egress, Middleware>>>,
-) -> Result<Response, BoxError>
+) -> Response
 where
-    Egress: Io + Unpin + ExtensionsRef,
-    Middleware: Layer<HttpClientService<Body>>,
     Client: Service<Request, Output = Response, Error: Into<BoxError>>,
 {
-    // Do NOT hold `relay_state.lock()` across the upstream serve.
-    // For h2, multiple streams share one `RelayState`; locking across
-    // `client.serve(req).await` serialises every stream on the
-    // mutex and kills multiplexing.
+    // No relay state lock across the upstream serve: h2 streams share
+    // one `RelayState`, holding it would serialise all of them.
     //
-    // The lock is only needed to mark state Closed on error.
+    // Egress failures never cut the ingress connection: other ingress
+    // streams may still be finishing on the same egress connection (e.g.
+    // after an upstream graceful GOAWAY). Once egress is gone for good,
+    // `egress_h2_gone` winds ingress down with a graceful GOAWAY.
     match client.serve(req).await {
-        Ok(resp) => Ok(resp),
+        Ok(resp) => resp,
         Err(err) => {
             let err = err.into_box_error();
             tracing::debug!(
                 http.request.method = %method,
                 url.full = %uri,
                 ?version,
+                egress.broken = health.health() == ConnectionHealth::Broken,
                 "upstream MITM relay request failed: {err}"
             );
-            // A peer `RST_STREAM` is scoped to this one h2 stream; the
-            // shared egress connection and its sibling streams are
-            // unaffected. Fail only this stream so we don't escalate to
-            // tearing down the whole ingress connection (GOAWAY for all
-            // siblings) — which would happen via the `Closed` + cancel
-            // below. `GOAWAY` / transport errors are connection-scoped
-            // and still take that path.
-            if egress_error_is_stream_scoped(&err) {
-                return Ok(DefaultErrorResponse::response_for_version(version));
+            if egress_request_was_not_sent(&err) {
+                // raced the egress close: the client can safely retry
+                health.mark_broken();
+                return DefaultErrorResponse::response_for_version(version, true);
             }
-            *relay_state.lock().await = RelayState::Closed;
-            close_ingress.cancel();
-            Err(err)
+            DefaultErrorResponse::response_for_version(version, false)
         }
     }
 }
@@ -839,19 +888,14 @@ fn mirror_peer_settings(settings: &Settings) -> H2ServerContextParams {
     }
 }
 
-/// Whether an egress request error is scoped to a single h2 stream (a
-/// `RST_STREAM`) rather than the whole connection. Walks the cause
-/// chain because the reset may be wrapped in a `rama_http_core::Error`.
-fn egress_error_is_stream_scoped(err: &BoxError) -> bool {
-    if let Some(h2) = err.downcast_ref::<rama_http_core::h2::Error>() {
-        return h2.is_reset();
-    }
-    let mut current = err.source();
-    while let Some(cause) = current {
-        if let Some(h2) = cause.downcast_ref::<rama_http_core::h2::Error>() {
-            return h2.is_reset();
-        }
-        current = cause.source();
-    }
-    false
+/// Whether an egress request failed before it was handed to the egress
+/// connection: its dispatcher was already closed or dropped the request
+/// unsent. Deliberately not h2 `GOAWAY` errors: those also end streams
+/// the peer did process.
+fn egress_request_was_not_sent(err: &BoxError) -> bool {
+    rama_core::error::error_chain(err.as_ref()).any(|cause| {
+        cause
+            .downcast_ref::<rama_http_core::Error>()
+            .is_some_and(|err| err.is_canceled() || err.is_closed())
+    })
 }

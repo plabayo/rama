@@ -15,7 +15,7 @@ use rama_core::telemetry::tracing::{Instrument, debug, trace, trace_root_span, w
 use rama_http::StreamingBody;
 use rama_http::io::upgrade::{self, Pending, Upgraded};
 use rama_http::opentelemetry::version_as_protocol_version;
-use rama_http_types::{Method, Request, Response, header};
+use rama_http_types::{Method, Request, Response, header, proto::h2::ext::ResetStream};
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use super::{PipeToSendStream, SendBuf, ping};
@@ -466,6 +466,12 @@ where
                             return Poll::Ready(Err(err));
                         }
                     };
+
+                    if let Some(ResetStream(reason)) = res.extensions().get_ref().copied() {
+                        debug!("reset stream as requested by response: {reason:?}");
+                        me.reply.send_reset(reason);
+                        return Poll::Ready(Ok(()));
+                    }
 
                     let (head, body) = res.into_parts();
                     let mut res = Response::from_parts(head, ());
