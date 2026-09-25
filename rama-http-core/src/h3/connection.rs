@@ -1,7 +1,7 @@
 //! Connection-owned compression and critical-stream state.
 
 use super::{
-    DatagramLimits, Error,
+    DatagramConfig, Error,
     control::{Control, Role},
     frame::{FrameDecoder, FrameEvent},
     qpack::{Decoder, DecoderConfig, Encoder, EncoderConfig, FieldPair, QpackError},
@@ -12,14 +12,17 @@ use rama_core::{
     extensions::{Extensions, ExtensionsRef},
     futures::{StreamExt, stream::FuturesUnordered},
 };
-use rama_http::headers::Priority;
+use rama_http::{
+    datagram::{NativeRecvError, ViolationPolicy},
+    headers::Priority,
+};
 use rama_http_types::proto::h3::{
     Code, FrameHeader, FrameType, SettingId, Settings, StreamType, VarInt, VarIntDecoder,
 };
 use rama_net::{stream::SocketInfo, tls::ApplicationProtocol};
 use rama_quic::{
     Connection as QuicConnection, NegotiatedTlsParameters, RecvStream as QuicRecvStream,
-    SendStream as QuicSendStream, TransportConfig,
+    SendStream as QuicSendStream, StreamAbortHandle, TransportConfig,
 };
 use rama_quic_proto::{Dir, coding::Codec};
 use rama_utils::octets::{kib, mib};
@@ -28,7 +31,7 @@ use std::{
     pin::pin,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, Ordering},
     },
     task::{Context, Poll, Waker},
 };
@@ -63,10 +66,12 @@ pub struct Config {
     /// `SETTINGS_ENABLE_CONNECT_PROTOCOL`. The service decides which `:protocol`
     /// tokens it serves; RFC 9220 §3 recommends `501` for others.
     pub extended_connect: bool,
-    /// Receive HTTP/3 datagrams (RFC 9297) with these buffering limits. When QUIC DATAGRAM is
-    /// negotiated this advertises `SETTINGS_H3_DATAGRAM`, as RFC 9297 §2.1.1 recommends for
-    /// every endpoint able to receive them; `None` never advertises nor delivers them.
-    pub datagrams: Option<DatagramLimits>,
+    /// Receive HTTP/3 datagrams (RFC 9297). When QUIC DATAGRAM is negotiated this advertises
+    /// `SETTINGS_H3_DATAGRAM`, as RFC 9297 §2.1.1 recommends for every endpoint able to
+    /// receive them; `None` never advertises nor delivers them. A request only has datagram
+    /// semantics once declared with
+    /// [`HttpDatagrams`](rama_http_types::proto::ext::HttpDatagrams).
+    pub datagrams: Option<DatagramConfig>,
 }
 
 impl Default for Config {
@@ -80,7 +85,7 @@ impl Default for Config {
             read_chunk_size: kib(16),
             max_pending_uni_streams: 32,
             extended_connect: false,
-            datagrams: Some(DatagramLimits::default()),
+            datagrams: Some(DatagramConfig::default()),
         }
     }
 }
@@ -208,8 +213,6 @@ pub(crate) struct Shared {
     control_ready: Notify,
     settings_ready: Notify,
     datagrams: DatagramDemux,
-    // Mirrors the demux pending count so request streams check it without locking.
-    pending_datagrams: AtomicUsize,
     local_datagrams: AtomicBool,
     peer_datagrams: AtomicBool,
     pub(crate) schedule: super::priority::Schedule,
@@ -230,7 +233,18 @@ impl Shared {
             extensions.insert(parameters);
         }
         extensions.get_ref_or_insert(|| SocketInfo::new(None, connection.remote_address().into()));
-        Self::new(config, role, extensions)
+        let shared = Self::new(config, role, extensions)?;
+        // Known from the transport parameters: request streams register from the start.
+        shared.local_datagrams.store(
+            shared.local_datagrams_supported(connection),
+            Ordering::Release,
+        );
+        Ok(shared)
+    }
+
+    /// Datagrams are enabled and QUIC DATAGRAM can carry them.
+    fn local_datagrams_supported(&self, connection: &QuicConnection) -> bool {
+        self.config.datagrams.is_some() && connection.max_datagram_size().is_some()
     }
 
     pub(crate) fn new(
@@ -268,7 +282,6 @@ impl Shared {
             control_ready: Notify::new(),
             settings_ready: Notify::new(),
             datagrams: Mutex::default(),
-            pending_datagrams: AtomicUsize::new(0),
             local_datagrams: AtomicBool::new(false),
             peer_datagrams: AtomicBool::new(false),
         }))
@@ -495,68 +508,77 @@ impl Shared {
         self.local_datagrams.load(Ordering::Acquire) && self.peer_datagrams.load(Ordering::Acquire)
     }
 
-    pub(crate) fn register_datagrams(&self, stream: u64) {
-        if let Some(limits) = &self.config.datagrams {
-            let mut demux = self.datagrams.lock();
-            demux.register(limits, stream, Instant::now());
-            self.pending_datagrams
-                .store(demux.pending_len(), Ordering::Release);
+    /// Register a request stream with the datagram demux, before any of its bytes are sent
+    /// (client) or as it is accepted (server). `None` when this connection cannot receive
+    /// datagrams.
+    pub(crate) fn register_datagrams(
+        self: &Arc<Self>,
+        stream: u64,
+        semantics: super::datagram::Semantics,
+        abort: StreamAbortHandle,
+    ) -> Option<Arc<super::datagram::Registration>> {
+        let config = self.config.datagrams.as_ref()?;
+        if !self.local_datagrams.load(Ordering::Acquire) {
+            return None;
+        }
+        let violated = Arc::new(AtomicBool::new(false));
+        let action = self.datagrams.lock().register(
+            config,
+            stream,
+            semantics,
+            abort,
+            violated.clone(),
+            Instant::now(),
+        );
+        action.run();
+        Some(Arc::new(super::datagram::Registration::new(
+            self.clone(),
+            stream,
+            violated,
+        )))
+    }
+
+    pub(crate) fn decide_datagrams(&self, stream: u64, claimed: bool) {
+        if let Some(config) = &self.config.datagrams {
+            let action = self.datagrams.lock().decide(config, stream, claimed);
+            action.run();
         }
     }
 
     pub(crate) fn unregister_datagrams(&self, stream: u64) {
-        let waker = {
-            let mut demux = self.datagrams.lock();
-            let waker = demux.unregister(stream);
-            self.pending_datagrams
-                .store(demux.pending_len(), Ordering::Release);
-            waker
-        };
+        let waker = self.datagrams.lock().unregister(stream);
         if let Some(waker) = waker {
             waker.wake();
         }
     }
 
-    /// The stream's receive side closed; later datagrams for it are dropped.
-    pub(crate) fn close_datagram_receive(&self, stream: u64) {
-        if self.config.datagrams.is_none() {
-            return;
-        }
-        let waker = {
-            let mut demux = self.datagrams.lock();
-            let waker = demux.receive_closed(stream);
-            self.pending_datagrams
-                .store(demux.pending_len(), Ordering::Release);
-            waker
-        };
+    /// The stream's receive side or consumer ended; later datagrams for it are dropped.
+    pub(crate) fn datagram_receive_ended(&self, stream: u64, end: super::datagram::ReceiveEnd) {
+        let waker = self.datagrams.lock().receive_ended(stream, end);
         if let Some(waker) = waker {
             waker.wake();
         }
     }
 
-    /// Whether a stream without datagram semantics received a datagram (RFC 9297 §2).
-    pub(crate) fn take_unclaimed_datagrams(&self, stream: u64) -> bool {
-        if self.pending_datagrams.load(Ordering::Acquire) == 0 {
-            return false;
-        }
-        let mut demux = self.datagrams.lock();
-        let found = demux.take_unclaimed(stream);
-        self.pending_datagrams
-            .store(demux.pending_len(), Ordering::Release);
-        found
-    }
-
-    pub(crate) fn poll_datagram(&self, stream: u64, cx: &Context<'_>) -> Poll<Option<Bytes>> {
+    pub(crate) fn poll_datagram(
+        &self,
+        stream: u64,
+        cx: &Context<'_>,
+    ) -> Poll<Result<Option<Bytes>, NativeRecvError>> {
         self.datagrams.lock().poll_recv(stream, cx)
     }
 
     #[cfg(test)]
-    pub(crate) fn pending_datagram_count(&self) -> usize {
-        self.pending_datagrams.load(Ordering::Acquire)
+    pub(crate) fn datagram_demux(&self) -> parking_lot::MutexGuard<'_, super::datagram::Demux> {
+        self.datagrams.lock()
     }
 
     pub(crate) fn datagrams_dropped(&self, stream: u64) -> u64 {
         self.datagrams.lock().slot_dropped(stream)
+    }
+
+    pub(crate) fn datagram_drops(&self) -> super::datagram::DatagramDrops {
+        self.datagrams.lock().drops()
     }
 
     /// File one QUIC DATAGRAM payload under its request stream.
@@ -565,29 +587,35 @@ impl Shared {
         datagram: Bytes,
         connection: &QuicConnection,
     ) -> Result<(), Error> {
-        let Some(limits) = &self.config.datagrams else {
+        let Some(config) = &self.config.datagrams else {
             return Ok(());
         };
-        let (stream, payload) = super::datagram::split(
-            datagram,
-            self.role == Role::Server,
-            connection.remote_stream_limit(Dir::Bi),
-        )?;
         if !self.local_datagrams.load(Ordering::Acquire) {
             // The peer sent before we advertised support; drop it.
             return Ok(());
         }
-        let lifetime = super::datagram::pending_lifetime(connection.rtt());
-        let waker = {
-            let mut demux = self.datagrams.lock();
-            let waker = demux.deliver(limits, stream, payload, Instant::now(), lifetime);
-            self.pending_datagrams
-                .store(demux.pending_len(), Ordering::Release);
-            waker
+        let split = super::datagram::split(
+            datagram,
+            self.role == Role::Server,
+            connection.remote_stream_limit(Dir::Bi),
+        );
+        let (stream, payload) = match split {
+            super::datagram::Split::Datagram(stream, payload) => (stream, payload),
+            super::datagram::Split::InvalidId | super::datagram::Split::BeyondLimit => {
+                let beyond_limit = matches!(split, super::datagram::Split::BeyondLimit);
+                if config.violations == ViolationPolicy::Reject {
+                    return Err(super::datagram::invalid_prefix_error(beyond_limit));
+                }
+                self.datagrams.lock().count_invalid(beyond_limit);
+                return Ok(());
+            }
         };
-        if let Some(waker) = waker {
-            waker.wake();
-        }
+        let lifetime = super::datagram::pending_lifetime(connection.rtt());
+        let action =
+            self.datagrams
+                .lock()
+                .deliver(config, stream, payload, Instant::now(), lifetime);
+        action.run();
         Ok(())
     }
 
@@ -1187,8 +1215,7 @@ impl Driver {
                     Error::connection(Code::H3_CLOSED_CRITICAL_STREAM, "control stream closed")
                 })?;
                 // Advertise datagrams only when QUIC DATAGRAM can carry them.
-                let datagrams = self.shared.config.datagrams.is_some()
-                    && self.connection.max_datagram_size().is_some();
+                let datagrams = self.shared.local_datagrams_supported(&self.connection);
                 self.shared
                     .local_datagrams
                     .store(datagrams, Ordering::Release);

@@ -4,6 +4,7 @@ use super::{
     Error, body,
     connection::{Config, Driver, Shared},
     control::Role,
+    datagram::{Association, DatagramDrops, Semantics},
     headers,
     quic::Writer,
     stream::{Phase, Reader},
@@ -19,7 +20,7 @@ use rama_http_types::{
     Method, Request, Response, StatusCode,
     body::StreamingBody,
     proto::{
-        ext::Protocol,
+        ext::{HttpDatagrams, Protocol},
         h1::ext::informational::OnInformational,
         h3::{Code, FrameType},
     },
@@ -134,6 +135,12 @@ impl<B> SendRequest<B> {
         ConnectionAdmission::new(RequestAdmission {
             lifetime: Arc::downgrade(&self.lifetime),
         })
+    }
+
+    /// Received HTTP/3 datagrams this connection discarded, by reason.
+    #[must_use]
+    pub fn datagram_drops(&self) -> DatagramDrops {
+        self.shared.datagram_drops()
     }
 
     #[cfg(test)]
@@ -409,15 +416,26 @@ where
         }
         reader.origin = Some(request.uri().clone());
         let method = request.method().clone();
-        // Claim datagrams before HEADERS leave, so early replies wait for the session.
-        let association = (method == Method::CONNECT
-            && self.shared.config.datagrams.is_some()
-            && request
-                .extensions()
-                .get_ref::<Protocol>()
-                .is_some_and(super::datagram::claims_datagrams))
-        .then(|| super::datagram::Association::register(self.shared.clone(), id));
-        reader.datagram_semantics = Some(association.is_some());
+        // Registered before HEADERS leave, so early replies wait for the session. Only a
+        // declared Extended CONNECT has datagram semantics (RFC 9297 §2).
+        let claimed = method == Method::CONNECT
+            && request.extensions().contains::<Protocol>()
+            && request.extensions().contains::<HttpDatagrams>();
+        let semantics = if claimed {
+            Semantics::Claimed
+        } else {
+            Semantics::None
+        };
+        reader.datagrams = reader
+            .abort
+            .clone()
+            .and_then(|abort| self.shared.register_datagrams(id, semantics, abort));
+        let association = reader
+            .datagrams
+            .clone()
+            .zip(reader.abort.clone())
+            .filter(|_| claimed)
+            .map(|(registration, send)| Association::new(registration, send));
         let informational = request.extensions().get_ref::<OnInformational>().cloned();
         if method == Method::CONNECT && !request.body().is_end_stream() {
             return Err(Error::stream(
@@ -463,7 +481,10 @@ where
                     return Ok(response.map(|()| crate::body::Incoming::empty()));
                 }
                 drop(association);
-                reader.datagram_semantics = Some(false);
+                // The remaining response body carries no datagrams.
+                if let Some(datagrams) = &reader.datagrams {
+                    datagrams.decide(false);
+                }
                 std::future::poll_fn(|cx| writer.poll_finish(cx)).await?;
                 match writer.acknowledged().await {
                     Ok(()) => writer.mark_acknowledged(),

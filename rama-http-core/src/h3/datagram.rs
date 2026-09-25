@@ -2,20 +2,18 @@
 //!
 //! The connection driver is the only reader of QUIC DATAGRAM frames. It splits the Quarter
 //! Stream ID prefix (sharing the frame's storage) and files each payload under its request
-//! stream: a claimed association's bounded queue, a short-lived pending ring for streams that
-//! are not associated yet, or nowhere once the stream's receive side closed.
+//! stream. Every request stream is registered while datagrams are enabled, so the driver
+//! alone decides, without any application poll, whether a datagram is queued, dropped or a
+//! violation of the request's datagram semantics.
 
 use super::{Error, connection::Shared};
 use ahash::HashMap;
 use rama_core::bytes::{BufMut as _, Bytes, BytesMut};
 use rama_http::datagram::{
-    NativeDatagramChannel, NativeRecvError, NativeSendError, NativeSendPolicy,
+    NativeDatagramChannel, NativeRecvError, NativeSendError, NativeSendPolicy, ViolationPolicy,
 };
-use rama_http_types::proto::{
-    ext::Protocol,
-    h3::{Code, QuarterStreamId},
-};
-use rama_quic::{Connection as QuicConnection, SendDatagramError};
+use rama_http_types::proto::h3::{Code, QuarterStreamId};
+use rama_quic::{Connection as QuicConnection, SendDatagramError, StreamAbortHandle};
 use rama_quic_proto::{Dir, Side, StreamId, VarInt};
 use rama_utils::octets::kib;
 use std::{
@@ -29,14 +27,30 @@ use std::{
 };
 use tokio::time::Instant;
 
-/// Buffering budgets for received HTTP/3 datagrams.
+/// HTTP/3 datagram support of a connection.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DatagramConfig {
+    /// Buffering budgets for received datagrams.
+    pub limits: DatagramLimits,
+    /// Reaction to peer violations of the datagram rules that do not affect framing.
+    ///
+    /// [`ViolationPolicy::Ignore`] (default) drops and counts: a datagram for a request
+    /// without datagram semantics, an invalid Quarter Stream ID, or one beyond the client
+    /// bidirectional stream limit. [`ViolationPolicy::Reject`] aborts the request with
+    /// `H3_DATAGRAM_ERROR`, or closes the connection with `H3_DATAGRAM_ERROR` and
+    /// `H3_ID_ERROR` respectively (RFC 9297 §2, §2.1).
+    pub violations: ViolationPolicy,
+}
+
+/// Buffering budgets for received HTTP/3 datagrams. A zero budget drops (and counts) every
+/// datagram it would hold; the request semantics are enforced regardless.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DatagramLimits {
-    /// Datagrams queued per association; the oldest is discarded when it is full.
+    /// Datagrams queued per request; the oldest is discarded when it is full.
     pub queue_len: usize,
-    /// Datagrams held briefly for request streams that are not associated yet.
+    /// Datagrams held briefly for request streams that do not exist yet.
     pub pending_len: usize,
-    /// Received payload bytes buffered per connection across all associations.
+    /// Received payload bytes buffered per connection across all requests.
     pub max_buffered_bytes: usize,
 }
 
@@ -50,22 +64,65 @@ impl Default for DatagramLimits {
     }
 }
 
+/// Received HTTP/3 datagrams a connection discarded, by reason.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct DatagramDrops {
+    /// For a request without datagram semantics.
+    pub no_semantics: u64,
+    /// With a truncated or out-of-range Quarter Stream ID.
+    pub invalid_id: u64,
+    /// For a stream beyond the client bidirectional stream limit.
+    pub beyond_limit: u64,
+    /// For a stream that was released (or never used).
+    pub unknown_stream: u64,
+    /// After the request's receive side, its consumer or the connection ended.
+    pub receive_closed: u64,
+    /// Displaced from a full request queue.
+    pub queue_full: u64,
+    /// Over the connection's buffered byte budget.
+    pub over_budget: u64,
+    /// Held for a future stream that did not appear in time.
+    pub expired: u64,
+}
+
 /// Pending datagrams wait "on the order of a round trip" (RFC 9297 §2.1); this floor keeps
 /// very short RTT estimates from discarding datagrams that merely beat their HEADERS.
 const PENDING_LIFETIME_FLOOR: Duration = Duration::from_millis(100);
 const PENDING_LIFETIME_RTTS: u32 = 3;
 
-/// Whether an Extended CONNECT protocol can own datagrams. RFC 9220 WebSockets define no
-/// datagram semantics; ordinary requests and plain CONNECT never get an association.
-pub(crate) fn claims_datagrams(protocol: &Protocol) -> bool {
-    *protocol != Protocol::WEBSOCKET
+/// Whether a request has datagram semantics (RFC 9297 §2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Semantics {
+    /// A server's Extended CONNECT awaiting its response; datagrams are held.
+    Provisional,
+    /// Declared with [`HttpDatagrams`](rama_http_types::proto::ext::HttpDatagrams).
+    Claimed,
+    /// Datagrams for it are violations.
+    None,
+}
+
+/// How a request's receive side ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ReceiveEnd {
+    /// The peer finished the stream.
+    Finished,
+    /// The peer reset the stream with this code.
+    Reset(u64),
+    /// Nobody consumes its datagrams any more.
+    Released,
 }
 
 struct Slot {
+    semantics: Semantics,
     queue: VecDeque<Bytes>,
     waker: Option<Waker>,
     dropped: u64,
-    receive_open: bool,
+    receive: Option<ReceiveEnd>,
+    // Set by every datagram routed here before the semantics are final, even one discarded.
+    observed: bool,
+    abort: StreamAbortHandle,
+    violated: Arc<AtomicBool>,
 }
 
 struct Pending {
@@ -74,131 +131,204 @@ struct Pending {
     expires: Instant,
 }
 
+/// Work to do once the demux lock is released.
+#[derive(Default)]
+#[must_use]
+pub(crate) struct Action {
+    wake: Option<Waker>,
+    abort: Option<StreamAbortHandle>,
+}
+
+impl Action {
+    pub(crate) fn run(self) {
+        if let Some(abort) = self.abort {
+            abort.abort(VarInt::from_u32(Code::H3_DATAGRAM_ERROR.value() as u32));
+        }
+        if let Some(waker) = self.wake {
+            waker.wake();
+        }
+    }
+}
+
 /// Connection-wide datagram routing state, guarded by one short-held lock.
 #[derive(Default)]
 pub(crate) struct Demux {
     slots: HashMap<u64, Slot>,
     pending: VecDeque<Pending>,
     buffered: usize,
-    dropped: u64,
+    // The lowest request stream id never registered: below it an unknown id was released.
+    watermark: u64,
+    drops: DatagramDrops,
     closed: bool,
 }
 
 impl Demux {
-    /// File a received payload. Returns a waker to wake after releasing the lock.
+    /// File a received payload.
     pub(crate) fn deliver(
         &mut self,
-        limits: &DatagramLimits,
+        config: &DatagramConfig,
         stream: u64,
         payload: Bytes,
         now: Instant,
         lifetime: Duration,
-    ) -> Option<Waker> {
+    ) -> Action {
         self.expire(now);
         if self.closed {
-            self.dropped += 1;
-            return None;
+            self.drops.receive_closed += 1;
+            return Action::default();
         }
-        if let Some(slot) = self.slots.get_mut(&stream) {
-            if !slot.receive_open {
-                // RFC 9297 §2.1: silently drop after the receive side closed.
-                slot.dropped += 1;
-                return None;
+        let Some(slot) = self.slots.get_mut(&stream) else {
+            if stream < self.watermark {
+                // RFC 9297 §2.1: a released stream's receive side is closed.
+                self.drops.unknown_stream += 1;
+            } else {
+                self.hold(&config.limits, stream, payload, now + lifetime);
             }
-            if slot.queue.len() >= limits.queue_len
-                && let Some(oldest) = slot.queue.pop_front()
-            {
-                self.buffered -= oldest.len();
-                slot.dropped += 1;
+            return Action::default();
+        };
+        if slot.receive.is_some() {
+            slot.dropped += 1;
+            self.drops.receive_closed += 1;
+            return Action::default();
+        }
+        match slot.semantics {
+            Semantics::None => violation(slot, config.violations, &mut self.drops),
+            Semantics::Provisional => {
+                slot.observed = true;
+                enqueue(
+                    slot,
+                    &config.limits,
+                    payload,
+                    &mut self.buffered,
+                    &mut self.drops,
+                )
             }
-            if self.buffered + payload.len() > limits.max_buffered_bytes {
-                slot.dropped += 1;
-                return None;
-            }
-            self.buffered += payload.len();
-            slot.queue.push_back(payload);
-            return slot.waker.take();
+            Semantics::Claimed => enqueue(
+                slot,
+                &config.limits,
+                payload,
+                &mut self.buffered,
+                &mut self.drops,
+            ),
         }
-        if limits.pending_len == 0 {
-            self.dropped += 1;
-            return None;
-        }
-        if self.pending.len() >= limits.pending_len
-            && let Some(oldest) = self.pending.pop_front()
-        {
-            self.buffered -= oldest.payload.len();
-            self.dropped += 1;
-        }
-        if self.buffered + payload.len() > limits.max_buffered_bytes {
-            self.dropped += 1;
-            return None;
-        }
-        self.buffered += payload.len();
-        self.pending.push_back(Pending {
-            stream,
-            payload,
-            expires: now + lifetime,
-        });
-        None
     }
 
-    /// Claim a stream's datagrams, adopting any that arrived before the association.
-    pub(crate) fn register(&mut self, limits: &DatagramLimits, stream: u64, now: Instant) {
+    /// Register a request stream, adopting datagrams that arrived before it existed.
+    pub(crate) fn register(
+        &mut self,
+        config: &DatagramConfig,
+        stream: u64,
+        semantics: Semantics,
+        abort: StreamAbortHandle,
+        violated: Arc<AtomicBool>,
+        now: Instant,
+    ) -> Action {
         self.expire(now);
+        self.watermark = self.watermark.max(stream.saturating_add(4));
         let mut slot = Slot {
+            semantics,
             queue: VecDeque::new(),
             waker: None,
             dropped: 0,
-            receive_open: true,
+            receive: None,
+            observed: false,
+            abort,
+            violated,
         };
-        let buffered = &mut self.buffered;
+        let mut action = Action::default();
+        let mut held = Vec::new();
         self.pending.retain(|pending| {
-            if pending.stream != stream {
-                return true;
+            let keep = pending.stream != stream;
+            if !keep {
+                held.push(pending.payload.clone());
             }
-            if slot.queue.len() >= limits.queue_len
-                && let Some(oldest) = slot.queue.pop_front()
-            {
-                *buffered -= oldest.len();
-                slot.dropped += 1;
-            }
-            slot.queue.push_back(pending.payload.clone());
-            false
+            keep
         });
+        for payload in held {
+            self.buffered -= payload.len();
+            slot.observed = true;
+            let next = match slot.semantics {
+                Semantics::None => violation(&mut slot, config.violations, &mut self.drops),
+                Semantics::Provisional | Semantics::Claimed => enqueue(
+                    &mut slot,
+                    &config.limits,
+                    payload,
+                    &mut self.buffered,
+                    &mut self.drops,
+                ),
+            };
+            action.merge(next);
+        }
         self.slots.insert(stream, slot);
+        action
     }
 
-    /// Release an association and anything still buffered for it.
+    /// Make a request's datagram semantics final.
+    pub(crate) fn decide(&mut self, config: &DatagramConfig, stream: u64, claimed: bool) -> Action {
+        let Some(slot) = self.slots.get_mut(&stream) else {
+            return Action::default();
+        };
+        if claimed {
+            slot.semantics = Semantics::Claimed;
+            return Action::default();
+        }
+        slot.semantics = Semantics::None;
+        self.drops.no_semantics += slot.queue.len() as u64;
+        self.buffered -= slot
+            .queue
+            .drain(..)
+            .map(|payload| payload.len())
+            .sum::<usize>();
+        if !slot.observed {
+            return Action::default();
+        }
+        reject(slot, config.violations)
+    }
+
+    /// Release a stream and anything still buffered for it.
     pub(crate) fn unregister(&mut self, stream: u64) -> Option<Waker> {
         let slot = self.slots.remove(&stream)?;
         self.buffered -= slot.queue.iter().map(Bytes::len).sum::<usize>();
-        self.purge_pending(stream);
         slot.waker
     }
 
-    /// The stream's receive side closed: later datagrams are dropped (RFC 9297 §2.1).
-    pub(crate) fn receive_closed(&mut self, stream: u64) -> Option<Waker> {
-        self.purge_pending(stream);
+    /// The stream's receive side or its consumer ended: later datagrams are dropped
+    /// (RFC 9297 §2.1). A released consumer's queue is discarded.
+    pub(crate) fn receive_ended(&mut self, stream: u64, end: ReceiveEnd) -> Option<Waker> {
         let slot = self.slots.get_mut(&stream)?;
-        slot.receive_open = false;
+        if slot.receive.is_none() || end == ReceiveEnd::Released {
+            slot.receive = Some(end);
+        }
+        if end == ReceiveEnd::Released {
+            self.drops.receive_closed += slot.queue.len() as u64;
+            self.buffered -= slot
+                .queue
+                .drain(..)
+                .map(|payload| payload.len())
+                .sum::<usize>();
+        }
         slot.waker.take()
     }
 
-    /// Whether a stream without datagram semantics received any, releasing them.
-    pub(crate) fn take_unclaimed(&mut self, stream: u64) -> bool {
-        self.purge_pending(stream)
-    }
-
-    pub(crate) fn poll_recv(&mut self, stream: u64, cx: &Context<'_>) -> Poll<Option<Bytes>> {
+    pub(crate) fn poll_recv(
+        &mut self,
+        stream: u64,
+        cx: &Context<'_>,
+    ) -> Poll<Result<Option<Bytes>, NativeRecvError>> {
         let Some(slot) = self.slots.get_mut(&stream) else {
-            return Poll::Ready(None);
+            return Poll::Ready(Ok(None));
         };
         if let Some(payload) = slot.queue.pop_front() {
             self.buffered -= payload.len();
-            return Poll::Ready(Some(payload));
+            return Poll::Ready(Ok(Some(payload)));
         }
-        if self.closed || !slot.receive_open {
-            return Poll::Ready(None);
+        match slot.receive {
+            Some(ReceiveEnd::Finished | ReceiveEnd::Released) => return Poll::Ready(Ok(None)),
+            Some(ReceiveEnd::Reset(code)) => {
+                return Poll::Ready(Err(NativeRecvError::Reset(code)));
+            }
+            None if self.closed => return Poll::Ready(Err(NativeRecvError::Lost)),
+            None => (),
         }
         if !slot
             .waker
@@ -214,31 +344,69 @@ impl Demux {
         self.slots.get(&stream).map_or(0, |slot| slot.dropped)
     }
 
+    pub(crate) fn drops(&self) -> DatagramDrops {
+        self.drops
+    }
+
+    pub(crate) fn count_invalid(&mut self, beyond_limit: bool) {
+        if beyond_limit {
+            self.drops.beyond_limit += 1;
+        } else {
+            self.drops.invalid_id += 1;
+        }
+    }
+
+    #[cfg(test)]
     pub(crate) fn pending_len(&self) -> usize {
         self.pending.len()
     }
 
-    /// Connection closed: wake every consumer; buffered datagrams stay readable.
+    #[cfg(test)]
+    pub(crate) fn buffered(&self) -> usize {
+        self.buffered
+    }
+
+    #[cfg(test)]
+    pub(crate) fn slot_count(&self) -> usize {
+        self.slots.len()
+    }
+
+    /// Connection closed: wake every consumer; queued datagrams stay readable.
     pub(crate) fn close(&mut self) -> Vec<Waker> {
         self.closed = true;
-        self.pending.clear();
+        self.drops.receive_closed += self.pending.len() as u64;
+        self.buffered -= self
+            .pending
+            .drain(..)
+            .map(|pending| pending.payload.len())
+            .sum::<usize>();
         self.slots
             .values_mut()
             .filter_map(|slot| slot.waker.take())
             .collect()
     }
 
-    fn purge_pending(&mut self, stream: u64) -> bool {
-        let before = self.pending.len();
-        let buffered = &mut self.buffered;
-        self.pending.retain(|pending| {
-            let keep = pending.stream != stream;
-            if !keep {
-                *buffered -= pending.payload.len();
-            }
-            keep
+    fn hold(&mut self, limits: &DatagramLimits, stream: u64, payload: Bytes, expires: Instant) {
+        if limits.pending_len == 0 {
+            self.drops.expired += 1;
+            return;
+        }
+        if self.pending.len() >= limits.pending_len
+            && let Some(oldest) = self.pending.pop_front()
+        {
+            self.buffered -= oldest.payload.len();
+            self.drops.expired += 1;
+        }
+        if self.buffered + payload.len() > limits.max_buffered_bytes {
+            self.drops.over_budget += 1;
+            return;
+        }
+        self.buffered += payload.len();
+        self.pending.push_back(Pending {
+            stream,
+            payload,
+            expires,
         });
-        before != self.pending.len()
     }
 
     fn expire(&mut self, now: Instant) {
@@ -246,57 +414,159 @@ impl Demux {
             && front.expires <= now
         {
             self.buffered -= front.payload.len();
-            self.dropped += 1;
+            self.drops.expired += 1;
             self.pending.pop_front();
         }
     }
 }
 
-/// How long a datagram for a not-yet-associated stream is kept.
+impl Action {
+    fn merge(&mut self, other: Self) {
+        self.wake = self.wake.take().or(other.wake);
+        self.abort = self.abort.take().or(other.abort);
+    }
+}
+
+fn enqueue(
+    slot: &mut Slot,
+    limits: &DatagramLimits,
+    payload: Bytes,
+    buffered: &mut usize,
+    drops: &mut DatagramDrops,
+) -> Action {
+    if limits.queue_len == 0 {
+        slot.dropped += 1;
+        drops.queue_full += 1;
+        return Action::default();
+    }
+    if slot.queue.len() >= limits.queue_len
+        && let Some(oldest) = slot.queue.pop_front()
+    {
+        *buffered -= oldest.len();
+        slot.dropped += 1;
+        drops.queue_full += 1;
+    }
+    if *buffered + payload.len() > limits.max_buffered_bytes {
+        slot.dropped += 1;
+        drops.over_budget += 1;
+        return Action::default();
+    }
+    *buffered += payload.len();
+    slot.queue.push_back(payload);
+    Action {
+        wake: slot.waker.take(),
+        abort: None,
+    }
+}
+
+/// A datagram for a request without datagram semantics (RFC 9297 §2).
+fn violation(slot: &mut Slot, policy: ViolationPolicy, drops: &mut DatagramDrops) -> Action {
+    drops.no_semantics += 1;
+    reject(slot, policy)
+}
+
+/// Under [`ViolationPolicy::Reject`], abort the request once (sticky).
+fn reject(slot: &mut Slot, policy: ViolationPolicy) -> Action {
+    if policy == ViolationPolicy::Reject && !slot.violated.swap(true, Ordering::AcqRel) {
+        return Action {
+            wake: slot.waker.take(),
+            abort: Some(slot.abort.clone()),
+        };
+    }
+    Action::default()
+}
+
+/// How long a datagram for a stream that does not exist yet is kept.
 pub(crate) fn pending_lifetime(rtt: Duration) -> Duration {
     (rtt * PENDING_LIFETIME_RTTS).max(PENDING_LIFETIME_FLOOR)
 }
 
-/// Validate and split a received QUIC DATAGRAM payload (RFC 9297 §2.1).
-pub(crate) fn split(
-    datagram: Bytes,
-    role_is_server: bool,
-    remote_bidi_limit: u64,
-) -> Result<(u64, Bytes), Error> {
-    let (id, payload) = QuarterStreamId::split_datagram(datagram).map_err(|_error| {
+/// A received QUIC DATAGRAM payload, split per RFC 9297 §2.1.
+pub(crate) enum Split {
+    Datagram(u64, Bytes),
+    InvalidId,
+    BeyondLimit,
+}
+
+pub(crate) fn split(datagram: Bytes, role_is_server: bool, remote_bidi_limit: u64) -> Split {
+    let Ok((id, payload)) = QuarterStreamId::split_datagram(datagram) else {
+        return Split::InvalidId;
+    };
+    // A stream beyond the advertised client bidirectional limit cannot exist.
+    if role_is_server && id.value() >= remote_bidi_limit {
+        return Split::BeyondLimit;
+    }
+    Split::Datagram(u64::from(VarInt::from(id.request_stream())), payload)
+}
+
+/// The connection error [`ViolationPolicy::Reject`] applies to an invalid prefix.
+pub(crate) fn invalid_prefix_error(beyond_limit: bool) -> Error {
+    if beyond_limit {
+        Error::connection(
+            Code::H3_ID_ERROR,
+            "datagram for a stream beyond the stream limit",
+        )
+    } else {
         Error::connection(
             Code::H3_DATAGRAM_ERROR,
             "invalid datagram quarter stream ID",
         )
-    })?;
-    // SHOULD: a stream beyond the advertised client bidirectional limit cannot exist.
-    if role_is_server && id.value() >= remote_bidi_limit {
-        return Err(Error::connection(
-            Code::H3_ID_ERROR,
-            "datagram for a stream beyond the stream limit",
-        ));
     }
-    Ok((u64::from(VarInt::from(id.request_stream())), payload))
 }
 
-/// Per-request association state shared by the tunnel and its native channel.
-pub(crate) struct Association {
+/// A request stream's entry in the connection demux, released when its last owner drops.
+pub(crate) struct Registration {
     shared: Arc<Shared>,
     stream: u64,
+    violated: Arc<AtomicBool>,
+}
+
+impl Registration {
+    pub(crate) fn new(shared: Arc<Shared>, stream: u64, violated: Arc<AtomicBool>) -> Self {
+        Self {
+            shared,
+            stream,
+            violated,
+        }
+    }
+
+    /// The driver aborted the request for a datagram without semantics.
+    pub(crate) fn violated(&self) -> bool {
+        self.violated.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn decide(&self, claimed: bool) {
+        self.shared.decide_datagrams(self.stream, claimed);
+    }
+
+    pub(crate) fn receive_ended(&self, end: ReceiveEnd) {
+        self.shared.datagram_receive_ended(self.stream, end);
+    }
+}
+
+impl Drop for Registration {
+    fn drop(&mut self) {
+        self.shared.unregister_datagrams(self.stream);
+    }
+}
+
+/// A claimed request's datagram association, shared by its tunnel and native channel.
+pub(crate) struct Association {
+    registration: Arc<Registration>,
+    send: StreamAbortHandle,
     send_open: AtomicBool,
 }
 
 impl Association {
-    pub(crate) fn register(shared: Arc<Shared>, stream: u64) -> Arc<Self> {
-        shared.register_datagrams(stream);
+    pub(crate) fn new(registration: Arc<Registration>, send: StreamAbortHandle) -> Arc<Self> {
         Arc::new(Self {
-            shared,
-            stream,
+            registration,
+            send,
             send_open: AtomicBool::new(true),
         })
     }
 
-    /// The stream's send side finished or reset: no datagrams may follow (RFC 9297 §2.1).
+    /// The stream's send side is finishing or reset: no datagrams may follow (RFC 9297 §2.1).
     pub(crate) fn close_send(&self) {
         self.send_open.store(false, Ordering::Release);
     }
@@ -304,13 +574,15 @@ impl Association {
     /// The tunnel is gone: neither direction carries datagrams any more.
     pub(crate) fn close(&self) {
         self.close_send();
-        self.shared.close_datagram_receive(self.stream);
+        self.registration.receive_ended(ReceiveEnd::Released);
     }
-}
 
-impl Drop for Association {
-    fn drop(&mut self) {
-        self.shared.unregister_datagrams(self.stream);
+    fn stream(&self) -> u64 {
+        self.registration.stream
+    }
+
+    fn shared(&self) -> &Shared {
+        &self.registration.shared
     }
 }
 
@@ -323,7 +595,7 @@ pub(crate) struct H3DatagramChannel {
 
 impl H3DatagramChannel {
     pub(crate) fn new(association: Arc<Association>, connection: QuicConnection) -> Option<Self> {
-        let stream = StreamId::from(VarInt::from_u64(association.stream).ok()?);
+        let stream = StreamId::from(VarInt::from_u64(association.stream()).ok()?);
         let id = QuarterStreamId::from_request_stream(stream).ok()?;
         debug_assert!(stream.initiator() == Side::Client && stream.dir() == Dir::Bi);
         let mut prefix = BytesMut::with_capacity(id.size());
@@ -334,16 +606,11 @@ impl H3DatagramChannel {
             prefix: prefix.freeze(),
         })
     }
-
-    fn available(&self) -> bool {
-        self.association.send_open.load(Ordering::Acquire)
-            && self.association.shared.native_datagrams()
-    }
 }
 
 impl NativeDatagramChannel for H3DatagramChannel {
     fn max_payload_size(&self) -> Option<usize> {
-        if !self.available() {
+        if !self.association.shared().native_datagrams() {
             return None;
         }
         self.connection
@@ -355,6 +622,9 @@ impl NativeDatagramChannel for H3DatagramChannel {
         let max = self
             .max_payload_size()
             .ok_or(NativeSendError::Unavailable)?;
+        if !self.association.send_open.load(Ordering::Acquire) {
+            return Err(NativeSendError::Closed);
+        }
         if payload.len() > max {
             return Err(NativeSendError::TooLarge { max });
         }
@@ -362,28 +632,39 @@ impl NativeDatagramChannel for H3DatagramChannel {
         datagram.put_slice(&self.prefix);
         datagram.put_slice(&payload);
         let datagram = datagram.freeze();
+        // The transport checks the stream's send state under the lock that queues it.
         let result = match policy {
-            NativeSendPolicy::DropOldest => self.connection.send_datagram(datagram),
-            NativeSendPolicy::RejectWhenFull => self.connection.try_send_datagram(datagram),
+            NativeSendPolicy::DropOldest => self.association.send.send_datagram(datagram),
+            NativeSendPolicy::RejectWhenFull => self.association.send.try_send_datagram(datagram),
         };
         result.map_err(|error| match error {
             SendDatagramError::TooLarge => NativeSendError::TooLarge { max },
             SendDatagramError::Blocked => NativeSendError::Full,
-            SendDatagramError::ConnectionLost(_) => NativeSendError::Closed,
-            _ => NativeSendError::Unavailable,
+            SendDatagramError::StreamClosed | SendDatagramError::ConnectionLost(_) => {
+                self.association.close_send();
+                NativeSendError::Closed
+            }
+            SendDatagramError::UnsupportedByPeer | SendDatagramError::Disabled => {
+                NativeSendError::Unavailable
+            }
         })
     }
 
     fn poll_recv(&self, cx: &mut Context<'_>) -> Poll<Result<Option<Bytes>, NativeRecvError>> {
         self.association
-            .shared
-            .poll_datagram(self.association.stream, cx)
-            .map(Ok)
+            .shared()
+            .poll_datagram(self.association.stream(), cx)
     }
 
     fn dropped(&self) -> u64 {
         self.association
-            .shared
-            .datagrams_dropped(self.association.stream)
+            .shared()
+            .datagrams_dropped(self.association.stream())
+    }
+
+    fn release_recv(&self) {
+        self.association
+            .registration
+            .receive_ended(ReceiveEnd::Released);
     }
 }

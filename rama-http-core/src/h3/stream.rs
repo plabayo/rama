@@ -39,8 +39,8 @@ pub(crate) struct Reader<R: RecvStream> {
     frames: FrameDecoder,
     pub(crate) push_id: Option<u64>,
     pub(crate) origin: Option<Uri>,
-    /// Whether this request owns datagrams; `None` until a server decoded the request.
-    pub(crate) datagram_semantics: Option<bool>,
+    /// The request's datagram demux entry while this connection receives datagrams.
+    pub(crate) datagrams: Option<Arc<super::datagram::Registration>>,
     push_cancelled: Option<std::pin::Pin<Box<dyn Future<Output = Error> + Send + Sync>>>,
     promise: Option<std::pin::Pin<Box<dyn Future<Output = Result<(), Error>> + Send + Sync>>>,
 }
@@ -52,8 +52,6 @@ impl<R: RecvStream> Reader<R> {
             shared.config.read_chunk_size,
         )
         .with_header_events();
-        // Clients know their requests; servers decide once the request head is decoded.
-        let datagram_semantics = (shared.role == super::control::Role::Client).then_some(false);
         Self {
             stream,
             shared,
@@ -64,7 +62,7 @@ impl<R: RecvStream> Reader<R> {
             client_lifetime: None,
             frames,
             origin: None,
-            datagram_semantics,
+            datagrams: None,
             push_id: None,
             promise: None,
             push_cancelled: None,
@@ -110,7 +108,15 @@ impl<R: RecvStream> Reader<R> {
         cx: &mut Context<'_>,
     ) -> Poll<Result<Option<FrameEvent>, Error>> {
         match self.poll_event_inner(cx) {
-            Poll::Ready(Err(error)) => Poll::Ready(Err(self.reject(error))),
+            Poll::Ready(Err(error)) => {
+                if let Some(datagrams) = &self.datagrams
+                    && error.scope() == super::qpack::ErrorScope::Stream
+                {
+                    datagrams
+                        .receive_ended(super::datagram::ReceiveEnd::Reset(error.code().value()));
+                }
+                Poll::Ready(Err(self.reject(error)))
+            }
             result => result,
         }
     }
@@ -128,9 +134,11 @@ impl<R: RecvStream> Reader<R> {
             return Poll::Ready(Ok(None));
         }
         for _ in 0..super::cooperative::OPERATIONS_PER_QUANTUM {
-            // RFC 9297 §2: a datagram on a request without datagram semantics terminates it.
-            if self.datagram_semantics == Some(false)
-                && self.shared.take_unclaimed_datagrams(self.id)
+            // RFC 9297 §2: the driver aborted a request that received datagrams without semantics.
+            if self
+                .datagrams
+                .as_ref()
+                .is_some_and(|datagrams| datagrams.violated())
             {
                 return Poll::Ready(Err(Error::stream(
                     Code::H3_DATAGRAM_ERROR,
@@ -231,8 +239,8 @@ impl<R: RecvStream> Reader<R> {
                             .remote()));
                         }
                         self.phase = Phase::Finished;
-                        if self.datagram_semantics == Some(true) {
-                            self.shared.close_datagram_receive(self.id);
+                        if let Some(datagrams) = &self.datagrams {
+                            datagrams.receive_ended(super::datagram::ReceiveEnd::Finished);
                         }
                         return Poll::Ready(Ok(None));
                     }

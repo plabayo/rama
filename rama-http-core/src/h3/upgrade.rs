@@ -182,12 +182,12 @@ impl<R: RecvStream + Unpin, S: SendStream + Unpin> AsyncWrite for Tunnel<R, S> {
         if let Some(result) = self.shutdown {
             return Poll::Ready(result.map_err(io::Error::other));
         }
-        ready!(self.flush(cx)).map_err(io::Error::other)?;
-        ready!(self.writer.poll_finish(cx)).map_err(io::Error::other)?;
-        // RFC 9297 §2.1: no datagrams once the send side is closed.
+        // RFC 9297 §2.1: no datagrams once the end of the send side is committed.
         if let Some(association) = &self.association {
             association.close_send();
         }
+        ready!(self.flush(cx)).map_err(io::Error::other)?;
+        ready!(self.writer.poll_finish(cx)).map_err(io::Error::other)?;
         let Self {
             writer,
             acknowledged,

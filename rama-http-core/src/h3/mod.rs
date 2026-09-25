@@ -21,10 +21,12 @@
 //!
 //! Ordinary CONNECT and Extended CONNECT (RFC 9220, when [`connection::Config::extended_connect`]
 //! is set on a server) expose their tunnels through Rama's upgrade API after a 2xx response.
-//! Extended CONNECT tunnels whose protocol may own HTTP Datagrams publish a
-//! [`rama_http::datagram::NativeDatagrams`] carrier once `SETTINGS_H3_DATAGRAM` was exchanged
-//! (RFC 9297 §2.1); the driver alone reads QUIC DATAGRAM frames and files them per request
-//! within [`DatagramLimits`]. Use [`rama_http::datagram::HttpDatagramSession`] on the tunnel.
+//! Extended CONNECT tunnels declared with
+//! [`HttpDatagrams`](rama_http_types::proto::ext::HttpDatagrams) (client request, server `2xx`
+//! response) publish a [`rama_http::datagram::NativeDatagrams`] carrier (RFC 9297 §2.1). The
+//! driver alone reads QUIC DATAGRAM frames and files them per request within
+//! [`DatagramConfig`]; datagrams for other requests follow its violation policy. Use
+//! [`rama_http::datagram::HttpDatagramSession`] on the tunnel.
 //!
 //! This is HTTP message forwarding, not a wire capture/replay API: URI serialization
 //! can normalize pseudo-field values, and connection settings, unknown frames, frame
@@ -77,7 +79,7 @@ pub use priority::PriorityHandle;
 mod upgrade;
 
 mod datagram;
-pub use datagram::DatagramLimits;
+pub use datagram::{DatagramConfig, DatagramDrops, DatagramLimits};
 
 pub mod push;
 
