@@ -217,9 +217,7 @@ async fn har_export_stages_one_capture_identity_for_successful_upgrades() {
             *request.method_mut() = rama_http::Method::CONNECT;
             request
                 .extensions()
-                .insert(rama_http::proto::h2::ext::Protocol::from_static(
-                    "websocket",
-                ));
+                .insert(rama_http::proto::ext::Protocol::from_static("websocket"));
         } else {
             request
                 .headers_mut()

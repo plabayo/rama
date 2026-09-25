@@ -37,12 +37,12 @@
 //! ```
 
 use rama_core::telemetry::tracing;
-use rama_utils::{
-    byte_set::{set_ascii_alphanum, set_each},
-    collections::smallvec::{IntoIter as SmallVecIntoIter, SmallVec},
-};
+use rama_utils::collections::smallvec::{IntoIter as SmallVecIntoIter, SmallVec};
 
-use crate::{HeaderMap, HeaderName, HeaderValue, Request, Response, StatusCode, Version, header};
+use crate::{
+    HeaderMap, HeaderName, HeaderValue, Request, Response, StatusCode, Version,
+    header::{self, is_token as is_http_token},
+};
 
 /// Connection-specific fields prohibited in both HTTP/2 and HTTP/3.
 ///
@@ -62,9 +62,6 @@ fn known_hop_by_hop_headers() -> impl Iterator<Item = &'static HeaderName> {
         .into_iter()
         .chain([&header::TE, &header::TRAILER])
 }
-
-const HTTP_TOKEN_BYTES: [bool; 256] =
-    set_each(set_ascii_alphanum([false; 256]), b"!#$%&'*+-.^_`|~");
 
 fn next_comma_separated_token(mut value: &[u8]) -> Option<(&[u8], &[u8])> {
     loop {
@@ -203,10 +200,6 @@ enum UpgradeProtocol {
     Http(UpgradeProtocolVersion),
     Tls(UpgradeProtocolVersion),
     Other { wire: Box<[u8]>, name_length: usize },
-}
-
-fn is_http_token(value: &[u8]) -> bool {
-    !value.is_empty() && value.iter().all(|byte| HTTP_TOKEN_BYTES[*byte as usize])
 }
 
 fn supports_trailer_fields(version: Version) -> bool {

@@ -8,7 +8,7 @@ use rama_core::{
 use rama_http::{
     Method, Request, Version,
     headers::{self, HeaderMapExt},
-    proto::h2::ext::Protocol,
+    proto::ext::Protocol,
     request::HttpRequestParts,
 };
 

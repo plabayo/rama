@@ -138,7 +138,7 @@ mod tests {
         service::service_fn,
     };
     use rama_http_types::{
-        Method, Request, Version, header, proto::h2::ext::Protocol as ConnectProtocol,
+        Method, Request, Version, header, proto::ext::Protocol as ConnectProtocol,
     };
     use rama_net::{
         Protocol, ProtocolInputExt, TransportProtocolInputExt,

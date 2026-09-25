@@ -8,6 +8,5 @@ pub use pseudo_header::{
     PseudoHeaderSensitivity,
 };
 
-pub mod ext;
 pub mod frame;
 pub mod hpack;

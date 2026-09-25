@@ -1,5 +1,5 @@
 use super::{DecoderError, NeedMore};
-use crate::proto::h2::{PseudoHeader, ext::Protocol};
+use crate::proto::{ext::Protocol, h2::PseudoHeader};
 use crate::{HeaderName, HeaderValue, Method, StatusCode};
 
 use rama_core::bytes::Bytes;

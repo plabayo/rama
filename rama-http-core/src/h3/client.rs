@@ -19,8 +19,8 @@ use rama_http_types::{
     Method, Request, Response, StatusCode,
     body::StreamingBody,
     proto::{
+        ext::Protocol,
         h1::ext::informational::OnInformational,
-        h2::ext::Protocol,
         h3::{Code, FrameType},
     },
 };

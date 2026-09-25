@@ -1,17 +1,17 @@
-//! Extensions specific to the HTTP/2 protocol.
+//! Message extensions shared by the HTTP protocol versions.
 
-use crate::proto::h2::hpack::BytesStr;
+use crate::{header::is_token, proto::h2::hpack::BytesStr};
 
 use rama_core::bytes::Bytes;
 use rama_core::extensions::Extension;
-use rama_utils::byte_set::{set_ascii_alphanum, set_each};
 use std::fmt;
 
-/// The `Protocol` extension carries the value of the `:protocol` pseudo-header used by the
-/// [Extended CONNECT Protocol](https://datatracker.ietf.org/doc/html/rfc8441#section-4).
+/// An HTTP upgrade token: the `:protocol` pseudo-header of
+/// [Extended CONNECT](https://datatracker.ietf.org/doc/html/rfc8441#section-4) on HTTP/2
+/// (RFC 8441) and HTTP/3 (RFC 9220), or the HTTP/1.1 `Upgrade` token it replaces.
 ///
-/// It is shared by HTTP/2 (RFC 8441) and HTTP/3 (RFC 9220): both carry the same `:protocol`
-/// pseudo-header, most commonly with the value `websocket`.
+/// Any registered or private token is representable (`websocket`, `connect-udp`, ...). Whether
+/// an application serves a token is its own policy; RFC 9220 §3 recommends `501` otherwise.
 ///
 /// The value is a validated, non-empty HTTP token (RFC 9110 §5.6.2). Every construction path
 /// enforces that invariant, so a `Protocol` can never hold an empty or non-token value that
@@ -21,7 +21,7 @@ use std::fmt;
 ///
 /// ```rust
 /// use rama_core::extensions::ExtensionsRef;
-/// use rama_http_types::proto::h2::ext::Protocol;
+/// use rama_http_types::proto::ext::Protocol;
 /// use rama_http_types::{Request, Method, Version};
 ///
 /// let mut req = Request::new(());
@@ -103,24 +103,6 @@ impl fmt::Debug for Protocol {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         self.value.fmt(f)
     }
-}
-
-/// RFC 9110 §5.6.2 `tchar` lookup table.
-const TCHAR_SET: [bool; 256] = set_each(set_ascii_alphanum([false; 256]), b"!#$%&'*+-.^_`|~");
-
-/// Returns whether `bytes` is a non-empty HTTP token (RFC 9110 §5.6.2, `1*tchar`).
-const fn is_token(bytes: &[u8]) -> bool {
-    if bytes.is_empty() {
-        return false;
-    }
-    let mut i = 0;
-    while i < bytes.len() {
-        if !TCHAR_SET[bytes[i] as usize] {
-            return false;
-        }
-        i += 1;
-    }
-    true
 }
 
 rama_utils::macros::error::static_str_error! {

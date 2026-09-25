@@ -26,7 +26,7 @@ use rama_http::{
     },
     io::upgrade,
     layer::upgrade::UpgradeResponse,
-    proto::h2::ext::Protocol,
+    proto::ext::Protocol,
     request,
     service::web::response::{self, Headers, IntoResponse},
 };

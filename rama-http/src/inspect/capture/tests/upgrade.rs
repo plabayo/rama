@@ -131,7 +131,7 @@ fn upgrade_request(version: Version) -> Request {
     if version == Version::HTTP_2 {
         request
             .extensions()
-            .insert(crate::proto::h2::ext::Protocol::from_static("websocket"));
+            .insert(crate::proto::ext::Protocol::from_static("websocket"));
     } else {
         request
             .headers_mut()

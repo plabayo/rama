@@ -135,7 +135,10 @@ use rama_http_types::proto::h2::alt_svc::AltSvcSendError;
 use rama_http_types::proto::h2::frame::{
     self, Pseudo, PushPromiseHeaderError, Reason, Settings, StreamId,
 };
-use rama_http_types::proto::h2::{PseudoHeaderOrder, PseudoHeaderSensitivity, ext};
+use rama_http_types::proto::{
+    ext,
+    h2::{PseudoHeaderOrder, PseudoHeaderSensitivity},
+};
 use rama_http_types::{HeaderMap, Method, Request, Response, Version};
 use rama_net::extensions::StreamTransformed;
 use rama_net::uri;

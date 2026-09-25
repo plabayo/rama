@@ -1,4 +1,4 @@
-use crate::{Method, Request, Version, proto::h2::ext::Protocol};
+use crate::{Method, Request, Version, proto::ext::Protocol};
 use rama_core::{
     extensions::{Extension, Extensions, ExtensionsRef as _},
     matcher::Matcher,

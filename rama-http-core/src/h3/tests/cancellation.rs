@@ -20,7 +20,7 @@ use rama_http_types::{
     Body, Method, Request, Response, StatusCode,
     body::{Frame, util::BodyExt},
     proto::{
-        h2::ext::Protocol,
+        ext::Protocol,
         h3::{Code, FrameHeader, FrameType},
     },
 };

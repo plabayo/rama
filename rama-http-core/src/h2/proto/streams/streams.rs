@@ -19,7 +19,7 @@ use rama_http::proto::h2::frame::EarlyFrameStreamContext;
 use rama_http_types::conn::HttpOrigin;
 use rama_http_types::proto::h2::PseudoHeaderOrder;
 use rama_http_types::proto::h2::alt_svc::AltSvcObserverExtension;
-use rama_http_types::proto::h2::ext::Protocol;
+use rama_http_types::proto::ext::Protocol;
 use rama_http_types::proto::h2::frame::{self, Frame, Reason, Settings};
 use rama_http_types::{HeaderMap, Request, Response};
 use rama_net::conn::{ConnectionHealthWatcher, MaxConcurrency};

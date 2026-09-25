@@ -1,6 +1,6 @@
 use rama_core::extensions::ExtensionsRef as _;
 use rama_http_headers::{Connection, HeaderMapExt as _, Upgrade};
-use rama_http_types::{Method, Request, proto::h2::ext::Protocol};
+use rama_http_types::{Method, Request, proto::ext::Protocol};
 
 /// Application protocol requested by an HTTP upgrade or Extended CONNECT.
 ///

@@ -27,7 +27,7 @@ use rama_http::headers::{
     HeaderMapExt, HttpRequestBuilderExt as _, SecWebSocketExtensions, SecWebSocketKey,
     SecWebSocketProtocol,
 };
-use rama_http::proto::h2::ext::Protocol;
+use rama_http::proto::ext::Protocol;
 use rama_http::service::client::blocking::Client as BlockingHttpClient;
 use rama_http::service::client::ext::{IntoHeaderName, IntoHeaderValue};
 use rama_http::service::client::{HttpClientExt, IntoUrl, RequestBuilder};

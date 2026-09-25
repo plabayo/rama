@@ -392,7 +392,7 @@ mod tests {
     use rama_http::{
         Body, Method, Request, Response,
         headers::{self, HeaderMapExt as _},
-        proto::h2::ext::Protocol,
+        proto::ext::Protocol,
     };
 
     fn websocket_request(version: Version) -> Request {

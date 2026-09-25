@@ -9,6 +9,7 @@ use rama_core::extensions::Extension;
 
 use crate::HeaderMap;
 
+pub mod ext;
 pub mod h1;
 pub mod h2;
 pub mod h3;

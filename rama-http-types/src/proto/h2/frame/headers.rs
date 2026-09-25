@@ -1,5 +1,5 @@
 use super::{StreamDependency, StreamId, util};
-use crate::proto::h2::ext::Protocol;
+use crate::proto::ext::Protocol;
 use crate::proto::h2::frame::{Error, Frame, Head, Kind};
 use crate::proto::h2::hpack::{self, BytesStr};
 

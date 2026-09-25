@@ -726,9 +726,7 @@ fn is_upgrade_request(parts: &crate::request::Parts) -> bool {
         Version::HTTP_10 | Version::HTTP_11 => parts.headers.contains_key(crate::header::UPGRADE),
         Version::HTTP_2 => {
             parts.method == Method::CONNECT
-                && parts
-                    .extensions
-                    .contains::<crate::proto::h2::ext::Protocol>()
+                && parts.extensions.contains::<crate::proto::ext::Protocol>()
         }
         _ => false,
     }

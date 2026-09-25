@@ -17,7 +17,7 @@ use rama_http_types::Version;
 use rama_http_types::conn::TargetHttpVersion;
 use rama_http_types::header::HOST;
 use rama_http_types::header::{SEC_WEBSOCKET_KEY, SEC_WEBSOCKET_VERSION};
-use rama_http_types::proto::h2::ext::Protocol;
+use rama_http_types::proto::ext::Protocol;
 use rama_net::client::{
     ConnectionError, ConnectionErrorKind, ConnectorService, EstablishedClientConnection,
 };

@@ -3,7 +3,7 @@ use rama_core::telemetry::tracing;
 use rama_core::{Layer, Service};
 use rama_http_headers::{Connection, HeaderMapExt, SecWebSocketAccept, SecWebSocketKey, Upgrade};
 use rama_http_types::header::{CONTENT_LENGTH, SEC_WEBSOCKET_ACCEPT};
-use rama_http_types::proto::h2::ext::Protocol;
+use rama_http_types::proto::ext::Protocol;
 use rama_http_types::{Request, Response, StatusCode, Version};
 
 use super::request::is_websocket_protocol;

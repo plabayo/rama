@@ -1707,8 +1707,8 @@ async fn extended_connect_protocol_enabled_during_handshake() {
 
         assert_eq!(
             req.extensions()
-                .get_ref::<rama::http::core::h2::ext::Protocol>(),
-            Some(&rama::http::core::h2::ext::Protocol::from_static(
+                .get_ref::<rama::http::proto::ext::Protocol>(),
+            Some(&rama::http::proto::ext::Protocol::from_static(
                 "the-bread-protocol"
             ))
         );

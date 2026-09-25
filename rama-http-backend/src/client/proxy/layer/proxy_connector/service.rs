@@ -1359,7 +1359,7 @@ mod tests {
                     assert_eq!(req.method(), Method::CONNECT);
                     assert!(
                         !req.extensions()
-                            .contains::<rama_http_types::proto::h2::ext::Protocol>()
+                            .contains::<rama_http_types::proto::ext::Protocol>()
                     );
                     Ok::<_, Infallible>(
                         Response::builder()
@@ -1375,7 +1375,7 @@ mod tests {
                 .with_application_protocol(protocol.clone());
             request
                 .extensions
-                .insert(rama_http_types::proto::h2::ext::Protocol::from_static(
+                .insert(rama_http_types::proto::ext::Protocol::from_static(
                     "websocket",
                 ));
             request.extensions.insert(ProxyRoute::Proxy(ProxyAddress {

@@ -146,7 +146,7 @@ use rama_core::extensions::{Extensions, ExtensionsRef};
 use rama_core::telemetry::tracing::{self, Instrument, debug, warn};
 use rama_http::proto::HeaderByteLength;
 use rama_http::proto::h2::frame::{EarlyFrame, EarlyFrameStreamContext};
-use rama_http_types::proto::h2::ext::Protocol;
+use rama_http_types::proto::ext::Protocol;
 use rama_http_types::proto::h2::frame::StreamDependency;
 use rama_http_types::proto::h2::frame::{Headers, Pseudo, Reason, Settings, StreamId};
 use rama_http_types::proto::h2::frame::{SettingOrder, SettingsConfig};

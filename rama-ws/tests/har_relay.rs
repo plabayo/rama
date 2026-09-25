@@ -22,7 +22,7 @@ use rama_http::{
         },
         upgrade::mitm::HttpUpgradeMitmRelayLayer,
     },
-    proto::h2::ext::Protocol,
+    proto::ext::Protocol,
 };
 use rama_ws::{
     AsyncWebSocket, Message,
