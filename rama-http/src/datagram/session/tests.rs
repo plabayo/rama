@@ -1,7 +1,10 @@
 use super::*;
-use crate::datagram::{NativeDatagramChannel, capsule::UnknownCapsules};
+use crate::datagram::{
+    NativeDatagramChannel, NativeRecvError,
+    capsule::{UnknownCapsules, encode_capsule},
+};
 use parking_lot::Mutex;
-use rama_core::ServiceInput;
+use rama_core::{ServiceInput, extensions::Extensions};
 use std::{
     collections::VecDeque,
     future::Future as _,
@@ -11,7 +14,7 @@ use std::{
     },
     task::Waker,
 };
-use tokio::io::{AsyncWriteExt as _, DuplexStream};
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _, DuplexStream, ReadBuf};
 
 const CONTROL: CapsuleType = match CapsuleType::new(0x2a) {
     Ok(ty) => ty,
@@ -141,6 +144,8 @@ struct FakeNativeState {
     inbox: VecDeque<Bytes>,
     closed: bool,
     waker: Option<Waker>,
+    next_error: Option<NativeSendError>,
+    released: usize,
 }
 
 /// A third-party carrier built only from the public contract.
@@ -153,17 +158,21 @@ impl NativeDatagramChannel for FakeNative {
     }
 
     fn send(&self, payload: Bytes, _policy: NativeSendPolicy) -> Result<(), NativeSendError> {
-        self.0.lock().sent.push(payload);
+        let mut state = self.0.lock();
+        if let Some(error) = state.next_error.take() {
+            return Err(error);
+        }
+        state.sent.push(payload);
         Ok(())
     }
 
-    fn poll_recv(&self, cx: &mut Context<'_>) -> Poll<Option<Bytes>> {
+    fn poll_recv(&self, cx: &mut Context<'_>) -> Poll<Result<Option<Bytes>, NativeRecvError>> {
         let mut state = self.0.lock();
         if let Some(payload) = state.inbox.pop_front() {
-            return Poll::Ready(Some(payload));
+            return Poll::Ready(Ok(Some(payload)));
         }
         if state.closed {
-            return Poll::Ready(None);
+            return Poll::Ready(Ok(None));
         }
         state.waker = Some(cx.waker().clone());
         Poll::Pending
@@ -171,6 +180,10 @@ impl NativeDatagramChannel for FakeNative {
 
     fn dropped(&self) -> u64 {
         0
+    }
+
+    fn release_recv(&self) {
+        self.0.lock().released += 1;
     }
 }
 
@@ -324,11 +337,11 @@ async fn malformed_streams_abort_through_the_transport_hook() {
 struct Trickle {
     inner: DuplexStream,
     pending: bool,
-    extensions: rama_core::extensions::Extensions,
+    extensions: Extensions,
 }
 
 impl ExtensionsRef for Trickle {
-    fn extensions(&self) -> &rama_core::extensions::Extensions {
+    fn extensions(&self) -> &Extensions {
         &self.extensions
     }
 }
@@ -459,4 +472,510 @@ async fn oversized_capsule_datagrams_are_counted_not_delivered() {
         Some(datagram(b"fits", DatagramTransport::Capsule))
     );
     assert_eq!(server.split().1.dropped_datagrams(), 1);
+}
+
+fn hooked(io: DuplexStream) -> (ServiceInput<DuplexStream>, Arc<AtomicUsize>) {
+    let io = ServiceInput::new(io);
+    let aborted = Arc::new(AtomicUsize::new(0));
+    io.extensions().insert(OnMalformedMessage::new({
+        let aborted = aborted.clone();
+        move || {
+            aborted.fetch_add(1, Ordering::Relaxed);
+        }
+    }));
+    (io, aborted)
+}
+
+fn header(ty: u64, length: u64) -> CapsuleHeader {
+    CapsuleHeader::new(CapsuleType::new(ty).unwrap(), length).unwrap()
+}
+
+#[tokio::test]
+async fn streamed_capsules_reject_interleaving_and_overruns() {
+    let native = FakeNative::default();
+    native.0.lock().max = Some(64);
+    let (mut local, mut peer) = native_pair(&native);
+    assert!(matches!(
+        local.send_capsule_data(Bytes::from_static(b"x")).await,
+        Err(SessionError::CapsuleNotStarted)
+    ));
+    local.start_capsule(header(0x4242, 6)).await.unwrap();
+    local
+        .send_capsule_data(Bytes::from_static(b"ab"))
+        .await
+        .unwrap();
+    for rejected in [
+        local.send_capsule(CONTROL, Bytes::from_static(b"c")).await,
+        local.start_capsule(header(0x4243, 1)).await,
+        local.close().await,
+    ] {
+        assert!(
+            matches!(rejected, Err(SessionError::CapsuleInProgress)),
+            "{rejected:?}"
+        );
+    }
+    assert!(matches!(
+        local.send_capsule_data(Bytes::from_static(b"cdefg")).await,
+        Err(SessionError::CapsuleLengthMismatch)
+    ));
+    // Native datagrams never wait for the reliable stream.
+    assert_eq!(
+        local
+            .send_datagram(Bytes::from_static(b"native"))
+            .await
+            .unwrap(),
+        DatagramTransport::Native
+    );
+    local
+        .send_capsule_data(Bytes::from_static(b"cdef"))
+        .await
+        .unwrap();
+    local
+        .send_capsule(CONTROL, Bytes::from_static(b"next"))
+        .await
+        .unwrap();
+    local.close().await.unwrap();
+    assert_eq!(
+        peer.recv().await.unwrap(),
+        Some(SessionEvent::Capsule {
+            ty: CONTROL,
+            value: Bytes::from_static(b"next")
+        })
+    );
+    assert_eq!(peer.recv().await.unwrap(), None);
+}
+
+#[tokio::test]
+async fn relays_forward_capsules_larger_than_every_buffer() {
+    let (client_io, relay_in) = tokio::io::duplex(64);
+    let (relay_out, server_io) = tokio::io::duplex(64);
+    let mut forward = config();
+    forward.capsules.unknown = UnknownCapsules::Forward;
+    forward.read_chunk_size = 16;
+    let relay_in = HttpDatagramSession::with_config(ServiceInput::new(relay_in), forward.clone());
+    let relay_out = HttpDatagramSession::with_config(ServiceInput::new(relay_out), config());
+    let mut server = HttpDatagramSession::with_config(ServiceInput::new(server_io), forward);
+    let big: Bytes = (0..4096u32).map(|i| i as u8).collect::<Vec<_>>().into();
+
+    let client = tokio::spawn({
+        let big = big.clone();
+        async move {
+            let mut client = client_io;
+            // A non-minimal header: 8-byte type and length integers.
+            let mut wire = vec![
+                0xc0, 0, 0, 0, 0, 0, 0x42, 0x42, 0xc0, 0, 0, 0, 0, 0, 0x10, 0,
+            ];
+            wire.extend_from_slice(&big);
+            wire.extend_from_slice(
+                &encode_capsule(CapsuleType::new(0x4243).unwrap(), b"").unwrap(),
+            );
+            wire.extend_from_slice(&encode_capsule(CapsuleType::DATAGRAM, b"dgram").unwrap());
+            client.write_all(&wire).await.unwrap();
+            client.shutdown().await.unwrap();
+            let mut rest = Vec::new();
+            client.read_to_end(&mut rest).await.unwrap();
+        }
+    });
+    // The relay uses only public API.
+    let relay = tokio::spawn(async move {
+        let (_, mut inbound) = relay_in.split();
+        let (mut outbound, _) = relay_out.split();
+        while let Some(event) = inbound.recv().await.unwrap() {
+            match event {
+                SessionEvent::UnknownCapsule(header) => outbound.start_capsule(header).await,
+                SessionEvent::UnknownCapsuleData(chunk) => outbound.send_capsule_data(chunk).await,
+                SessionEvent::Datagram { payload, .. } => {
+                    outbound.send_datagram(payload).await.map(drop)
+                }
+                SessionEvent::Capsule { ty, value } => outbound.send_capsule(ty, value).await,
+            }
+            .unwrap();
+        }
+        outbound.close().await.unwrap();
+    });
+
+    let Some(SessionEvent::UnknownCapsule(first)) = server.recv().await.unwrap() else {
+        panic!("expected the forwarded header");
+    };
+    assert_eq!(
+        (first.ty.value(), first.length.into_inner()),
+        (0x4242, 4096)
+    );
+    let mut value = Vec::new();
+    let empty = loop {
+        match server.recv().await.unwrap() {
+            Some(SessionEvent::UnknownCapsuleData(chunk)) => {
+                assert!(chunk.len() <= 64, "chunks stay bounded: {}", chunk.len());
+                value.extend_from_slice(&chunk);
+            }
+            Some(SessionEvent::UnknownCapsule(header)) => break header,
+            other => panic!("unexpected {other:?}"),
+        }
+    };
+    assert_eq!(value, big);
+    assert_eq!((empty.ty.value(), empty.length.into_inner()), (0x4243, 0));
+    assert_eq!(
+        server.recv().await.unwrap(),
+        Some(datagram(b"dgram", DatagramTransport::Capsule))
+    );
+    assert_eq!(server.recv().await.unwrap(), None);
+    relay.await.unwrap();
+    drop(server);
+    client.await.unwrap();
+}
+
+#[tokio::test]
+async fn sends_dropped_before_acceptance_send_nothing() {
+    let (a, b) = tokio::io::duplex(256);
+    let mut sender = HttpDatagramSession::with_config(
+        Trickle {
+            inner: a,
+            pending: false,
+            extensions: Extensions::new(),
+        },
+        config(),
+    );
+    let mut receiver = HttpDatagramSession::with_config(ServiceInput::new(b), config());
+    let mut cx = Context::from_waker(Waker::noop());
+    // Never polled.
+    drop(sender.send_capsule(CONTROL, Bytes::from_static(b"never")));
+    {
+        // Accepted at its first poll and left partially written.
+        let first = sender.send_capsule(CONTROL, Bytes::from_static(b"accepted"));
+        let mut first = std::pin::pin!(first);
+        assert!(first.as_mut().poll(&mut cx).is_pending());
+    }
+    {
+        // Still draining the earlier write when dropped: not accepted.
+        let second = sender.send_capsule(CONTROL, Bytes::from_static(b"dropped"));
+        let mut second = std::pin::pin!(second);
+        assert!(second.as_mut().poll(&mut cx).is_pending());
+    }
+    sender
+        .send_capsule(CONTROL, Bytes::from_static(b"third"))
+        .await
+        .unwrap();
+    sender.close().await.unwrap();
+    let mut values = Vec::new();
+    while let Some(SessionEvent::Capsule { value, .. }) = receiver.recv().await.unwrap() {
+        values.push(value);
+    }
+    assert_eq!(values, [&b"accepted"[..], b"third"]);
+}
+
+#[tokio::test]
+async fn close_commits_once_and_can_be_resumed() {
+    let (a, b) = tokio::io::duplex(256);
+    let mut sender = HttpDatagramSession::with_config(
+        Trickle {
+            inner: a,
+            pending: false,
+            extensions: Extensions::new(),
+        },
+        config(),
+    );
+    let mut receiver = HttpDatagramSession::with_config(ServiceInput::new(b), config());
+    let mut cx = Context::from_waker(Waker::noop());
+    {
+        let send = sender.send_capsule(CONTROL, Bytes::from_static(b"body"));
+        let mut send = std::pin::pin!(send);
+        assert!(send.as_mut().poll(&mut cx).is_pending());
+    }
+    {
+        // Cancelled while draining: nothing is committed.
+        let close = sender.close();
+        let mut close = std::pin::pin!(close);
+        assert!(close.as_mut().poll(&mut cx).is_pending());
+    }
+    sender
+        .send_capsule(CONTROL, Bytes::from_static(b"after"))
+        .await
+        .unwrap();
+    sender.close().await.unwrap();
+    for rejected in [
+        sender
+            .send_capsule(CONTROL, Bytes::from_static(b"late"))
+            .await,
+        sender
+            .send_datagram(Bytes::from_static(b"late"))
+            .await
+            .map(drop),
+        sender.start_capsule(header(0x4242, 1)).await,
+    ] {
+        assert!(
+            matches!(rejected, Err(SessionError::SendClosed)),
+            "{rejected:?}"
+        );
+    }
+    sender.close().await.unwrap();
+    let mut values = Vec::new();
+    while let Some(SessionEvent::Capsule { value, .. }) = receiver.recv().await.unwrap() {
+        values.push(value);
+    }
+    assert_eq!(values, [&b"body"[..], b"after"]);
+}
+
+#[tokio::test]
+async fn dropping_the_sender_mid_capsule_aborts_the_stream() {
+    // Header and part of the value on the wire.
+    let (a, _b) = tokio::io::duplex(256);
+    let (io, aborted) = hooked(a);
+    let (mut sender, receiver) = HttpDatagramSession::with_config(io, config()).split();
+    sender.start_capsule(header(0x4242, 10)).await.unwrap();
+    sender
+        .send_capsule_data(Bytes::from_static(b"part"))
+        .await
+        .unwrap();
+    drop(sender);
+    assert_eq!(aborted.load(Ordering::Relaxed), 1);
+    drop(receiver);
+
+    // At a capsule boundary, or with a header accepted but never written, nothing is aborted.
+    let (a, _b) = tokio::io::duplex(256);
+    let (io, aborted) = hooked(a);
+    let mut session = HttpDatagramSession::with_config(io, config());
+    session
+        .send_capsule(CONTROL, Bytes::from_static(b"whole"))
+        .await
+        .unwrap();
+    drop(session);
+    assert_eq!(aborted.load(Ordering::Relaxed), 0);
+
+    // A partially written header counts as on the wire.
+    let (a, _b) = tokio::io::duplex(256);
+    let io = Trickle {
+        inner: a,
+        pending: false,
+        extensions: Extensions::new(),
+    };
+    let aborted = Arc::new(AtomicUsize::new(0));
+    io.extensions.insert(OnMalformedMessage::new({
+        let aborted = aborted.clone();
+        move || {
+            aborted.fetch_add(1, Ordering::Relaxed);
+        }
+    }));
+    let mut sender = HttpDatagramSession::with_config(io, config());
+    let mut cx = Context::from_waker(Waker::noop());
+    {
+        // Two polls move exactly one of the two header bytes.
+        let send = sender.send_capsule(CONTROL, Bytes::from_static(b"value"));
+        let mut send = std::pin::pin!(send);
+        for _ in 0..2 {
+            assert!(send.as_mut().poll(&mut cx).is_pending());
+        }
+    }
+    drop(sender);
+    assert_eq!(aborted.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
+async fn recoverable_rejections_leave_the_sender_usable() {
+    let native = FakeNative::default();
+    native.0.lock().max = Some(8);
+    let (mut local, mut peer) = native_pair(&native);
+    native.0.lock().next_error = Some(NativeSendError::Full);
+    assert!(matches!(
+        local.send_datagram(Bytes::from_static(b"full")).await,
+        Err(SessionError::Native(NativeSendError::Full))
+    ));
+    assert!(matches!(
+        local.send_datagram(Bytes::from(vec![0; 9])).await,
+        Err(SessionError::Native(NativeSendError::TooLarge { max: 8 }))
+    ));
+    assert_eq!(
+        local
+            .send_datagram(Bytes::from_static(b"ok"))
+            .await
+            .unwrap(),
+        DatagramTransport::Native
+    );
+    // Unavailable falls back to reliable delivery; Closed never does.
+    native.0.lock().next_error = Some(NativeSendError::Unavailable);
+    assert_eq!(
+        local
+            .send_datagram(Bytes::from_static(b"reliable"))
+            .await
+            .unwrap(),
+        DatagramTransport::Capsule
+    );
+    native.0.lock().next_error = Some(NativeSendError::Closed);
+    assert!(matches!(
+        local.send_datagram(Bytes::from_static(b"closed")).await,
+        Err(SessionError::Native(NativeSendError::Closed))
+    ));
+    local.close().await.unwrap();
+    assert_eq!(native.0.lock().sent, [Bytes::from_static(b"ok")]);
+    assert_eq!(
+        peer.recv().await.unwrap(),
+        Some(datagram(b"reliable", DatagramTransport::Capsule))
+    );
+    assert_eq!(peer.recv().await.unwrap(), None);
+}
+
+#[tokio::test]
+async fn dropping_the_receiver_releases_native_receive_only() {
+    let native = FakeNative::default();
+    native.0.lock().max = Some(8);
+    let (local, mut peer) = native_pair(&native);
+    let (mut sender, receiver) = local.split();
+    drop(receiver);
+    assert_eq!(native.0.lock().released, 1);
+    sender
+        .send_datagram(Bytes::from_static(b"n"))
+        .await
+        .unwrap();
+    sender
+        .send_capsule(CONTROL, Bytes::from_static(b"still"))
+        .await
+        .unwrap();
+    sender.close().await.unwrap();
+    assert!(matches!(
+        peer.recv().await.unwrap(),
+        Some(SessionEvent::Capsule { .. })
+    ));
+}
+
+/// An always-ready reader: one unknown capsule that never ends.
+struct Endless {
+    header_sent: bool,
+    extensions: Extensions,
+}
+
+impl ExtensionsRef for Endless {
+    fn extensions(&self) -> &Extensions {
+        &self.extensions
+    }
+}
+
+impl AsyncRead for Endless {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        if !self.header_sent {
+            self.header_sent = true;
+            // Type 0x17, length 2^40.
+            buf.put_slice(&[0x17, 0xc0, 0, 0, 0x01, 0, 0, 0, 0]);
+        } else {
+            let fill = buf.remaining();
+            buf.put_slice(&vec![0; fill]);
+        }
+        Poll::Ready(Ok(()))
+    }
+}
+
+impl AsyncWrite for Endless {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Poll::Ready(Ok(buf.len()))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+#[tokio::test]
+async fn receive_polls_do_bounded_work_and_keep_native_flowing() {
+    let native = FakeNative::default();
+    let io = Endless {
+        header_sent: false,
+        extensions: Extensions::new(),
+    };
+    io.extensions.insert(NativeDatagrams::new(native.clone()));
+    let mut session = HttpDatagramSession::with_config(io, config());
+    let mut cx = Context::from_waker(Waker::noop());
+    // Skipping the endless value must yield instead of looping forever.
+    for _ in 0..4 {
+        assert!(session.receiver.poll_recv(&mut cx).is_pending());
+    }
+    native.push(b"n");
+    assert_eq!(
+        session.recv().await.unwrap(),
+        Some(datagram(b"n", DatagramTransport::Native))
+    );
+}
+
+/// Fails the first read and write, then behaves like a healthy, empty stream.
+struct FailsOnce {
+    read_failed: bool,
+    write_failed: bool,
+    extensions: Extensions,
+}
+
+impl ExtensionsRef for FailsOnce {
+    fn extensions(&self) -> &Extensions {
+        &self.extensions
+    }
+}
+
+impl AsyncRead for FailsOnce {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+        _: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        if std::mem::replace(&mut self.read_failed, true) {
+            return Poll::Ready(Ok(()));
+        }
+        Poll::Ready(Err(io::ErrorKind::ConnectionReset.into()))
+    }
+}
+
+impl AsyncWrite for FailsOnce {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        if std::mem::replace(&mut self.write_failed, true) {
+            return Poll::Ready(Ok(buf.len()));
+        }
+        Poll::Ready(Err(io::ErrorKind::BrokenPipe.into()))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+#[tokio::test]
+async fn stream_failures_are_sticky_per_direction() {
+    let io = FailsOnce {
+        read_failed: false,
+        write_failed: false,
+        extensions: Extensions::new(),
+    };
+    let mut session = HttpDatagramSession::with_config(io, config());
+    for _ in 0..2 {
+        let error = session
+            .send_capsule(CONTROL, Bytes::from_static(b"x"))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&error, SessionError::Io(error) if error.kind() == io::ErrorKind::BrokenPipe),
+            "{error:?}"
+        );
+    }
+    assert!(matches!(session.close().await, Err(SessionError::Io(_))));
+    for _ in 0..2 {
+        let error = session.recv().await.unwrap_err();
+        assert!(
+            matches!(&error, SessionError::Io(error) if error.kind() == io::ErrorKind::ConnectionReset),
+            "{error:?}"
+        );
+    }
 }

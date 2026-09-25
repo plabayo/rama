@@ -3,6 +3,11 @@
 //! HTTP/1.1 upgrades with `Upgrade` + `Connection: upgrade` and succeeds with `101`; HTTP/2 and
 //! HTTP/3 use Extended CONNECT (RFC 8441, RFC 9220) and succeed with any `2xx`. HTTP/1.0 cannot
 //! upgrade (RFC 9110 §7.8). These helpers keep that version mapping in one place.
+//!
+//! Received messages are checked under a [`ViolationPolicy`]. `Reject` treats every field
+//! RFC 9297 §3.2 forbids as malformed. `Ignore` only rejects fields that would frame request
+//! content ahead of the capsules (a non-zero `Content-Length`, any `Transfer-Encoding`); on a
+//! `101` or a `2xx` CONNECT response they never frame the tunnel and are left alone.
 
 use rama_core::extensions::ExtensionsRef as _;
 use rama_http_headers::{CapsuleProtocol, Connection, HeaderMapExt as _};
@@ -11,6 +16,8 @@ use rama_http_types::{
     proto::ext::Protocol,
 };
 use std::fmt;
+
+use super::ViolationPolicy;
 
 /// Message fields the Capsule Protocol forbids (RFC 9297 §3.2).
 const FORBIDDEN_FIELDS: [HeaderName; 3] = [
@@ -80,7 +87,7 @@ pub fn prepare_capsule_request<B>(
     protocol: Protocol,
 ) -> Result<(), CapsuleHandshakeError> {
     let carrier = carrier(request.version())?;
-    reject_forbidden_fields(request.headers())?;
+    reject_forbidden_fields(request.headers(), ViolationPolicy::Reject, Message::Request)?;
     match carrier {
         Carrier::Upgrade => {
             let upgrade = HeaderValue::from_str(protocol.as_str())
@@ -105,6 +112,7 @@ pub fn prepare_capsule_request<B>(
 /// Validate a received Capsule Protocol handshake request and return its upgrade token.
 pub fn validate_capsule_request<B>(
     request: &Request<B>,
+    violations: ViolationPolicy,
 ) -> Result<Protocol, CapsuleHandshakeError> {
     let protocol = match carrier(request.version())? {
         Carrier::Upgrade => {
@@ -133,7 +141,7 @@ pub fn validate_capsule_request<B>(
                 .ok_or(CapsuleHandshakeError::NotAnUpgrade)?
         }
     };
-    reject_forbidden_fields(request.headers())?;
+    reject_forbidden_fields(request.headers(), violations, Message::Request)?;
     Ok(protocol)
 }
 
@@ -167,11 +175,14 @@ pub fn capsule_response<B: Default>(
 
 /// Validate the response to a Capsule Protocol handshake for `protocol` sent on `version`.
 ///
-/// A refused handshake is [`CapsuleHandshakeError::Unsuccessful`]; its body can still be read.
+/// The request is the caller's own, prepared by [`prepare_capsule_request`]; only the response
+/// is checked here. A refused handshake is [`CapsuleHandshakeError::Unsuccessful`]; its body can
+/// still be read.
 pub fn validate_capsule_response<B>(
     version: Version,
     protocol: &Protocol,
     response: &Response<B>,
+    violations: ViolationPolicy,
 ) -> Result<(), CapsuleHandshakeError> {
     let carrier = carrier(version)?;
     let status = response.status();
@@ -188,7 +199,7 @@ pub fn validate_capsule_response<B>(
     if !accepted {
         return Err(CapsuleHandshakeError::Unsuccessful(status));
     }
-    reject_forbidden_fields(response.headers())?;
+    reject_forbidden_fields(response.headers(), violations, Message::Response)?;
     if carrier == Carrier::Upgrade {
         // RFC 9110 §7.8: the switched-to protocol in `Upgrade`, listed in `Connection`.
         let switched = single_token(response.headers())
@@ -215,10 +226,30 @@ fn single_token(headers: &HeaderMap) -> Option<Protocol> {
     Protocol::try_from(token).ok()
 }
 
-fn reject_forbidden_fields(headers: &HeaderMap) -> Result<(), CapsuleHandshakeError> {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Message {
+    Request,
+    Response,
+}
+
+fn reject_forbidden_fields(
+    headers: &HeaderMap,
+    violations: ViolationPolicy,
+    message: Message,
+) -> Result<(), CapsuleHandshakeError> {
+    let forbidden = |name: &HeaderName| match (violations, message) {
+        (ViolationPolicy::Reject, _) => headers.contains_key(name),
+        // Framing stays enforced: request content would precede the capsules.
+        (_, Message::Request) if *name == header::CONTENT_LENGTH => headers
+            .get_all(name)
+            .iter()
+            .any(|value| value.as_bytes().trim_ascii() != b"0"),
+        (_, Message::Request) if *name == header::TRANSFER_ENCODING => headers.contains_key(name),
+        _ => false,
+    };
     FORBIDDEN_FIELDS
         .iter()
-        .find(|name| headers.contains_key(*name))
+        .find(|name| forbidden(name))
         .map_or(Ok(()), |name| {
             Err(CapsuleHandshakeError::ForbiddenField(name.clone()))
         })
@@ -249,7 +280,10 @@ mod tests {
     fn requests_map_to_upgrade_or_extended_connect() {
         for version in VERSIONS {
             let request = request(version);
-            assert_eq!(validate_capsule_request(&request), Ok(TOKEN));
+            assert_eq!(
+                validate_capsule_request(&request, ViolationPolicy::Ignore),
+                Ok(TOKEN)
+            );
             assert_eq!(
                 request.headers().typed_get::<CapsuleProtocol>(),
                 Some(CapsuleProtocol::ENABLED)
@@ -284,18 +318,24 @@ mod tests {
             .body(())
             .unwrap();
         assert_eq!(
-            validate_capsule_request(&received),
+            validate_capsule_request(&received, ViolationPolicy::Ignore),
             Err(CapsuleHandshakeError::UnsupportedVersion(Version::HTTP_10))
         );
         *received.version_mut() = Version::HTTP_09;
-        validate_capsule_request(&received).unwrap_err();
+        validate_capsule_request(&received, ViolationPolicy::Ignore).unwrap_err();
         assert_eq!(
             capsule_response::<()>(Version::HTTP_10, &TOKEN).unwrap_err(),
             CapsuleHandshakeError::UnsupportedVersion(Version::HTTP_10)
         );
         let mut switching = response(Version::HTTP_11);
         *switching.version_mut() = Version::HTTP_10;
-        validate_capsule_response(Version::HTTP_10, &TOKEN, &switching).unwrap_err();
+        validate_capsule_response(
+            Version::HTTP_10,
+            &TOKEN,
+            &switching,
+            ViolationPolicy::Ignore,
+        )
+        .unwrap_err();
     }
 
     #[test]
@@ -304,7 +344,7 @@ mod tests {
             let mut get = request(version);
             *get.method_mut() = Method::GET;
             assert_eq!(
-                validate_capsule_request(&get),
+                validate_capsule_request(&get, ViolationPolicy::Ignore),
                 Err(CapsuleHandshakeError::NotAnUpgrade)
             );
             let upgrade_style = Request::builder()
@@ -314,7 +354,7 @@ mod tests {
                 .body(())
                 .unwrap();
             assert!(matches!(
-                validate_capsule_request(&upgrade_style),
+                validate_capsule_request(&upgrade_style, ViolationPolicy::Ignore),
                 Err(CapsuleHandshakeError::ConnectionSpecificField(_))
             ));
             let bare = Request::builder()
@@ -323,7 +363,7 @@ mod tests {
                 .body(())
                 .unwrap();
             assert_eq!(
-                validate_capsule_request(&bare),
+                validate_capsule_request(&bare, ViolationPolicy::Ignore),
                 Err(CapsuleHandshakeError::NotAnUpgrade)
             );
         }
@@ -331,7 +371,7 @@ mod tests {
         let mut connect = request(Version::HTTP_2);
         *connect.version_mut() = Version::HTTP_11;
         assert_eq!(
-            validate_capsule_request(&connect),
+            validate_capsule_request(&connect, ViolationPolicy::Ignore),
             Err(CapsuleHandshakeError::NotAnUpgrade)
         );
     }
@@ -339,11 +379,13 @@ mod tests {
     #[test]
     fn responses_follow_each_version_success_rule() {
         for version in VERSIONS {
-            validate_capsule_response(version, &TOKEN, &response(version)).unwrap();
+            validate_capsule_response(version, &TOKEN, &response(version), ViolationPolicy::Ignore)
+                .unwrap();
             if version != Version::HTTP_11 {
                 let mut created = response(version);
                 *created.status_mut() = StatusCode::CREATED;
-                validate_capsule_response(version, &TOKEN, &created).unwrap();
+                validate_capsule_response(version, &TOKEN, &created, ViolationPolicy::Ignore)
+                    .unwrap();
             }
             for status in [
                 StatusCode::OK,
@@ -356,7 +398,7 @@ mod tests {
                 let mut refused = Response::new(());
                 *refused.status_mut() = status;
                 assert_eq!(
-                    validate_capsule_response(version, &TOKEN, &refused),
+                    validate_capsule_response(version, &TOKEN, &refused, ViolationPolicy::Ignore),
                     Err(CapsuleHandshakeError::Unsuccessful(status)),
                     "{version:?} {status}"
                 );
@@ -365,7 +407,7 @@ mod tests {
                 let mut forbidden = Response::new(());
                 *forbidden.status_mut() = StatusCode::from_u16(status).unwrap();
                 assert!(matches!(
-                    validate_capsule_response(version, &TOKEN, &forbidden),
+                    validate_capsule_response(version, &TOKEN, &forbidden, ViolationPolicy::Ignore),
                     Err(CapsuleHandshakeError::ForbiddenStatus(_))
                 ));
             }
@@ -379,13 +421,18 @@ mod tests {
             .headers_mut()
             .insert(header::UPGRADE, HeaderValue::from_static("websocket"));
         assert_eq!(
-            validate_capsule_response(Version::HTTP_11, &TOKEN, &other),
+            validate_capsule_response(Version::HTTP_11, &TOKEN, &other, ViolationPolicy::Ignore),
             Err(CapsuleHandshakeError::UpgradeMismatch)
         );
         let mut no_connection = response(Version::HTTP_11);
         no_connection.headers_mut().remove(header::CONNECTION);
         assert_eq!(
-            validate_capsule_response(Version::HTTP_11, &TOKEN, &no_connection),
+            validate_capsule_response(
+                Version::HTTP_11,
+                &TOKEN,
+                &no_connection,
+                ViolationPolicy::Ignore
+            ),
             Err(CapsuleHandshakeError::UpgradeMismatch)
         );
         let mut repeated = response(Version::HTTP_11);
@@ -393,7 +440,7 @@ mod tests {
             .headers_mut()
             .append(header::UPGRADE, HeaderValue::from_static("connect-udp"));
         assert_eq!(
-            validate_capsule_response(Version::HTTP_11, &TOKEN, &repeated),
+            validate_capsule_response(Version::HTTP_11, &TOKEN, &repeated, ViolationPolicy::Ignore),
             Err(CapsuleHandshakeError::UpgradeMismatch)
         );
         // Upgrade tokens compare case-insensitively (RFC 9110 §16.7).
@@ -401,11 +448,12 @@ mod tests {
         shouted
             .headers_mut()
             .insert(header::UPGRADE, HeaderValue::from_static("CONNECT-UDP"));
-        validate_capsule_response(Version::HTTP_11, &TOKEN, &shouted).unwrap();
+        validate_capsule_response(Version::HTTP_11, &TOKEN, &shouted, ViolationPolicy::Ignore)
+            .unwrap();
     }
 
     #[test]
-    fn content_framing_fields_are_forbidden_in_both_directions() {
+    fn rejecting_forbids_every_capsule_field_in_both_directions() {
         for name in FORBIDDEN_FIELDS {
             for version in VERSIONS {
                 let mut request = request(version);
@@ -413,7 +461,7 @@ mod tests {
                     .headers_mut()
                     .insert(name.clone(), HeaderValue::from_static("0"));
                 assert_eq!(
-                    validate_capsule_request(&request),
+                    validate_capsule_request(&request, ViolationPolicy::Reject),
                     Err(CapsuleHandshakeError::ForbiddenField(name.clone()))
                 );
                 let mut response = response(version);
@@ -421,9 +469,10 @@ mod tests {
                     .headers_mut()
                     .insert(name.clone(), HeaderValue::from_static("0"));
                 assert_eq!(
-                    validate_capsule_response(version, &TOKEN, &response),
+                    validate_capsule_response(version, &TOKEN, &response, ViolationPolicy::Reject),
                     Err(CapsuleHandshakeError::ForbiddenField(name.clone()))
                 );
+                // Our own requests never carry them, whatever the policy.
                 let mut unprepared = Request::builder().version(version).body(()).unwrap();
                 unprepared
                     .headers_mut()
@@ -432,8 +481,58 @@ mod tests {
             }
         }
         assert_eq!(
-            validate_capsule_request(&Request::new(())),
+            validate_capsule_request(&Request::new(()), ViolationPolicy::Reject),
             Err(CapsuleHandshakeError::NotAnUpgrade)
         );
+    }
+
+    #[test]
+    fn ignoring_still_rejects_request_content_framing() {
+        for version in VERSIONS {
+            for (name, value, accepted) in [
+                (header::CONTENT_LENGTH, "0", true),
+                (header::CONTENT_LENGTH, " 0 ", true),
+                (header::CONTENT_LENGTH, "5", false),
+                (header::CONTENT_LENGTH, "invalid", false),
+                (header::TRANSFER_ENCODING, "chunked", false),
+                (header::CONTENT_TYPE, "application/octet-stream", true),
+            ] {
+                let mut request = request(version);
+                request
+                    .headers_mut()
+                    .insert(name.clone(), HeaderValue::from_static(value));
+                let result = validate_capsule_request(&request, ViolationPolicy::Ignore);
+                if accepted {
+                    assert_eq!(result, Ok(TOKEN), "{version:?} {name}: {value}");
+                } else {
+                    assert_eq!(
+                        result,
+                        Err(CapsuleHandshakeError::ForbiddenField(name.clone())),
+                        "{version:?} {name}: {value}"
+                    );
+                }
+            }
+            // Repeated zero lengths frame nothing; one non-zero value does.
+            let mut repeated = request(version);
+            for value in ["0", "0"] {
+                repeated
+                    .headers_mut()
+                    .append(header::CONTENT_LENGTH, HeaderValue::from_static(value));
+            }
+            validate_capsule_request(&repeated, ViolationPolicy::Ignore).unwrap();
+            repeated
+                .headers_mut()
+                .append(header::CONTENT_LENGTH, HeaderValue::from_static("1"));
+            validate_capsule_request(&repeated, ViolationPolicy::Ignore).unwrap_err();
+            // A 101 or 2xx CONNECT response never frames the tunnel with these fields.
+            for name in FORBIDDEN_FIELDS {
+                let mut response = response(version);
+                response
+                    .headers_mut()
+                    .insert(name.clone(), HeaderValue::from_static("5"));
+                validate_capsule_response(version, &TOKEN, &response, ViolationPolicy::Ignore)
+                    .unwrap();
+            }
+        }
     }
 }

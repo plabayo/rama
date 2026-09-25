@@ -118,6 +118,17 @@ impl From<std::str::Utf8Error> for InvalidProtocol {
     }
 }
 
+/// Declares that a message's upgrade token defines HTTP Datagram semantics (RFC 9297 §2).
+///
+/// A syntactically valid `:protocol` never implies datagrams. An HTTP/3 client sets this on
+/// the request extensions of an Extended CONNECT; a server sets it on the extensions of the
+/// `2xx` response it sends to one. Without it, received datagrams for the request are handled
+/// as violations. A relay may declare it on each leg based on `Capsule-Protocol: ?1` alone,
+/// without understanding the token (RFC 9297 §3.4).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Extension)]
+#[extension(tags(http))]
+pub struct HttpDatagrams;
+
 #[cfg(test)]
 mod tests {
     use super::*;

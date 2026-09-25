@@ -27,9 +27,10 @@ pub enum NativeSendError {
     },
     /// No room in the send buffer ([`NativeSendPolicy::RejectWhenFull`]).
     Full,
-    /// Not negotiated (yet), or the association's send side is closed.
+    /// Not negotiated (yet). Reliable delivery on the data stream remains possible.
     Unavailable,
-    /// The underlying connection is gone.
+    /// The association's send side is closed (finished, reset, stopped by the peer) or its
+    /// connection is gone. No datagram may follow (RFC 9297 §2.1).
     Closed,
 }
 
@@ -46,6 +47,41 @@ impl fmt::Display for NativeSendError {
 
 impl std::error::Error for NativeSendError {}
 
+/// The receive side of a native association ended abnormally.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeRecvError {
+    /// The peer reset the request stream with this application error code.
+    Reset(u64),
+    /// The connection failed.
+    Lost,
+}
+
+impl fmt::Display for NativeRecvError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Reset(code) => write!(f, "request stream reset by peer (code {code:#x})"),
+            Self::Lost => f.write_str("datagram connection lost"),
+        }
+    }
+}
+
+impl std::error::Error for NativeRecvError {}
+
+/// How peer violations of HTTP Datagram rules that do not affect framing are handled.
+///
+/// Rama is proxy-first: by default it drops and counts the offending item, so traffic
+/// between peers that tolerate each other keeps flowing. [`Reject`](Self::Reject) applies
+/// the RFC 9297 reaction instead.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ViolationPolicy {
+    /// Drop the offending item, count it and keep the exchange.
+    #[default]
+    Ignore,
+    /// Apply the RFC 9297 error.
+    Reject,
+}
+
 /// Unreliable delivery of HTTP Datagrams associated with one request, such as
 /// HTTP/3 QUIC DATAGRAM frames (RFC 9297 §2.1).
 ///
@@ -53,19 +89,26 @@ impl std::error::Error for NativeSendError {}
 /// upgraded I/O. Receiving is demultiplexed by the transport; one association has at most
 /// one consumer. Enqueueing a datagram never implies delivery.
 pub trait NativeDatagramChannel: Send + Sync + 'static {
-    /// The largest payload that can currently be sent, or `None` until both peers
-    /// negotiated native datagrams and while the send side is open.
+    /// The largest payload that can currently be sent, or `None` while native datagrams are
+    /// not negotiated. A snapshot: [`send`](Self::send) decides.
     fn max_payload_size(&self) -> Option<usize>;
 
     /// Hand a datagram to the transport without waiting.
+    ///
+    /// Eligibility follows the transport's send state of the request stream, whoever holds
+    /// the channel: once it is closed this returns [`NativeSendError::Closed`].
     fn send(&self, payload: Bytes, policy: NativeSendPolicy) -> Result<(), NativeSendError>;
 
-    /// Receive the next datagram, or `None` once the association is closed.
-    fn poll_recv(&self, cx: &mut Context<'_>) -> Poll<Option<Bytes>>;
+    /// Receive the next datagram. `Ok(None)` once the request's receive side ended cleanly.
+    fn poll_recv(&self, cx: &mut Context<'_>) -> Poll<Result<Option<Bytes>, NativeRecvError>>;
 
     /// Received datagrams discarded: this association's queue or the connection's buffer
     /// budget was full, or they arrived after its receive side closed.
     fn dropped(&self) -> u64;
+
+    /// The consumer is gone: discard queued datagrams and drop (count) later ones. The
+    /// request stream itself is unaffected.
+    fn release_recv(&self) {}
 }
 
 /// A request's native datagram carrier, published on the upgraded I/O's extensions.

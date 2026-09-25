@@ -14,8 +14,9 @@ use rama_core::{
     rt::{Executor, spawn},
 };
 use rama_http::{
-    datagram::handshake::{
-        CapsuleHandshakeError, prepare_capsule_request, validate_capsule_response,
+    datagram::{
+        ViolationPolicy,
+        handshake::{CapsuleHandshakeError, prepare_capsule_request, validate_capsule_response},
     },
     io::upgrade::{OnMalformedMessage, handle_upgrade},
 };
@@ -370,7 +371,12 @@ async fn capsule_validation_sees_content_length_on_successful_connect() {
             let (response, (send, _recv)) = tokio::join!(client.send_request(request), serve);
             let response = response.unwrap();
             assert_eq!(response.status(), StatusCode::OK);
-            let result = validate_capsule_response(Version::HTTP_3, &token, &response);
+            let result = validate_capsule_response(
+                Version::HTTP_3,
+                &token,
+                &response,
+                ViolationPolicy::Reject,
+            );
             let tunnel = handle_upgrade(&response).await.unwrap();
             if values.is_empty() {
                 result.unwrap();

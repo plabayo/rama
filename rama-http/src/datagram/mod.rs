@@ -10,7 +10,10 @@ pub mod capsule;
 pub mod handshake;
 
 mod native;
-pub use native::{NativeDatagramChannel, NativeDatagrams, NativeSendError, NativeSendPolicy};
+pub use native::{
+    NativeDatagramChannel, NativeDatagrams, NativeRecvError, NativeSendError, NativeSendPolicy,
+    ViolationPolicy,
+};
 
 mod session;
 pub use session::{

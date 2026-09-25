@@ -104,6 +104,9 @@ impl fmt::Debug for OnUpstreamError {
 /// Abort a tunnel whose data stream is malformed, such as a Capsule Protocol violation
 /// (RFC 9297 §3.3). HTTP/2 resets the stream with `PROTOCOL_ERROR` and HTTP/3 with
 /// `H3_MESSAGE_ERROR`; without this extension a consumer closes the I/O instead.
+///
+/// Custom carriers publish it on their I/O's extensions. The callback must abort at once,
+/// without waiting for a later write or drop, and both directions must fail afterwards.
 #[derive(Clone, Extension)]
 #[extension(tags(http))]
 pub struct OnMalformedMessage(Arc<dyn Fn() + Send + Sync>);

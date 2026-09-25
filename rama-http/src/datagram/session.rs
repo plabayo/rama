@@ -74,14 +74,34 @@ pub enum SessionEvent {
 }
 
 /// A session operation failed.
+///
+/// Rejections leave the session unchanged and usable: [`CapsuleInProgress`],
+/// [`CapsuleNotStarted`], [`CapsuleLengthMismatch`], [`InvalidCapsule`] and
+/// [`Native`] with [`NativeSendError::TooLarge`], [`NativeSendError::Full`] or
+/// [`NativeSendError::Unavailable`]. Every other error is terminal for its direction and
+/// returned again, without I/O, by later operations on it.
+///
+/// [`CapsuleInProgress`]: Self::CapsuleInProgress
+/// [`CapsuleNotStarted`]: Self::CapsuleNotStarted
+/// [`CapsuleLengthMismatch`]: Self::CapsuleLengthMismatch
+/// [`InvalidCapsule`]: Self::InvalidCapsule
+/// [`Native`]: Self::Native
 #[derive(Debug)]
 pub enum SessionError {
     /// The peer violated the Capsule Protocol; the stream was aborted as malformed.
     Malformed(CapsuleError),
-    /// A native datagram was not sent.
+    /// A native datagram was not sent. [`NativeSendError::Closed`] is terminal.
     Native(NativeSendError),
     /// A capsule exceeds the variable-length integer range.
     InvalidCapsule,
+    /// A streamed capsule still expects value bytes; nothing else may use the data stream.
+    CapsuleInProgress,
+    /// Capsule value data without a started capsule.
+    CapsuleNotStarted,
+    /// The chunk exceeds the declared length of the streamed capsule.
+    CapsuleLengthMismatch,
+    /// [`SessionSender::close`] already committed the end of the data stream.
+    SendClosed,
     /// The data stream failed.
     Io(io::Error),
 }
@@ -92,6 +112,10 @@ impl fmt::Display for SessionError {
             Self::Malformed(error) => write!(f, "malformed capsule stream: {error}"),
             Self::Native(error) => write!(f, "native datagram: {error}"),
             Self::InvalidCapsule => f.write_str("capsule exceeds the varint range"),
+            Self::CapsuleInProgress => f.write_str("a streamed capsule is still in progress"),
+            Self::CapsuleNotStarted => f.write_str("capsule data without a started capsule"),
+            Self::CapsuleLengthMismatch => f.write_str("capsule data exceeds its declared length"),
+            Self::SendClosed => f.write_str("session already closed for sending"),
             Self::Io(error) => write!(f, "data stream: {error}"),
         }
     }
@@ -102,8 +126,8 @@ impl std::error::Error for SessionError {
         match self {
             Self::Malformed(error) => Some(error),
             Self::Native(error) => Some(error),
-            Self::InvalidCapsule => None,
             Self::Io(error) => Some(error),
+            _ => None,
         }
     }
 }
@@ -121,6 +145,16 @@ impl From<InvalidCapsule> for SessionError {
 /// Datagrams use a [`NativeDatagrams`] carrier when the I/O publishes one (HTTP/3 with
 /// negotiated QUIC DATAGRAM) and DATAGRAM capsules otherwise. Control capsules always use
 /// the reliable data stream.
+///
+/// # Cancellation
+///
+/// A send accepts its value when a poll finds no earlier accepted bytes left to write; from
+/// then on the session owns it, and dropping the future leaves it to be written by the next
+/// send or [`close`](Self::close). A future dropped before that point sent nothing. Capsule
+/// headers are never interleaved. [`recv`](Self::recv) is cancel safe.
+///
+/// Dropping the sender while a capsule is partially on the wire aborts the stream through the
+/// carrier's [`OnMalformedMessage`] hook, so the peer never sees a clean end mid-value.
 pub struct HttpDatagramSession<T = Upgraded> {
     sender: SessionSender<T>,
     receiver: SessionReceiver<T>,
@@ -155,6 +189,10 @@ where
                 policy: config.native_send,
                 pending: [Bytes::new(), Bytes::new()],
                 scratch: BytesMut::new(),
+                remainder: 0,
+                on_wire: false,
+                state: SendState::Open,
+                malformed: malformed.clone(),
             },
             receiver: SessionReceiver {
                 io: read,
@@ -193,6 +231,16 @@ where
         self.sender.send_capsule(ty, value).await
     }
 
+    /// Begin a capsule whose value follows in chunks. See [`SessionSender::start_capsule`].
+    pub async fn start_capsule(&mut self, header: CapsuleHeader) -> Result<(), SessionError> {
+        self.sender.start_capsule(header).await
+    }
+
+    /// Append value bytes to the started capsule. See [`SessionSender::send_capsule_data`].
+    pub async fn send_capsule_data(&mut self, chunk: Bytes) -> Result<(), SessionError> {
+        self.sender.send_capsule_data(chunk).await
+    }
+
     /// Receive the next event. See [`SessionReceiver::recv`].
     pub async fn recv(&mut self) -> Result<Option<SessionEvent>, SessionError> {
         self.receiver.recv().await
@@ -210,14 +258,30 @@ where
     }
 }
 
+#[derive(Debug)]
+enum SendState {
+    Open,
+    /// The end of the data stream is committed.
+    Closing,
+    /// The data stream failed; later operations report the same kind.
+    Failed(io::ErrorKind),
+}
+
 /// The sending half of an [`HttpDatagramSession`].
 pub struct SessionSender<T> {
     io: WriteHalf<T>,
     native: Option<NativeDatagrams>,
     policy: NativeSendPolicy,
-    // A capsule stays owned here until written, so cancelling a send never truncates it.
+    // Accepted bytes not yet written: they stay owned here, so a cancelled send never
+    // truncates a capsule.
     pending: [Bytes; 2],
     scratch: BytesMut,
+    // Declared value bytes of a streamed capsule the application has not supplied yet.
+    remainder: u64,
+    // Part of an unfinished capsule reached the carrier.
+    on_wire: bool,
+    state: SendState,
+    malformed: Option<OnMalformedMessage>,
 }
 
 impl<T> fmt::Debug for SessionSender<T> {
@@ -225,7 +289,19 @@ impl<T> fmt::Debug for SessionSender<T> {
         f.debug_struct("SessionSender")
             .field("native", &self.native)
             .field("policy", &self.policy)
+            .field("state", &self.state)
             .finish_non_exhaustive()
+    }
+}
+
+impl<T> Drop for SessionSender<T> {
+    fn drop(&mut self) {
+        // The peer must not see a clean end of stream in the middle of a capsule value.
+        if self.on_wire
+            && let Some(malformed) = self.malformed.take()
+        {
+            malformed.call();
+        }
     }
 }
 
@@ -234,68 +310,186 @@ impl<T: AsyncWrite> SessionSender<T> {
     ///
     /// With a negotiated native carrier the datagram is handed to it without waiting and may
     /// be lost; a payload above the current native maximum fails with
-    /// [`NativeSendError::TooLarge`] rather than silently switching to reliable delivery
+    /// [`NativeSendError::TooLarge`], and a closed association with
+    /// [`NativeSendError::Closed`], rather than silently switching to reliable delivery
     /// (RFC 9297 §3.5). Otherwise it is written as a DATAGRAM capsule, waiting for
     /// data-stream flow control.
     pub async fn send_datagram(
         &mut self,
         payload: Bytes,
     ) -> Result<DatagramTransport, SessionError> {
+        self.check_open()?;
         if let Some(native) = &self.native
             && let Some(max) = native.channel().max_payload_size()
         {
             if payload.len() > max {
                 return Err(SessionError::Native(NativeSendError::TooLarge { max }));
             }
-            native
-                .channel()
-                .send(payload, self.policy)
-                .map_err(SessionError::Native)?;
-            return Ok(DatagramTransport::Native);
+            match native.channel().send(payload.clone(), self.policy) {
+                Ok(()) => return Ok(DatagramTransport::Native),
+                // Negotiation raced away: reliable delivery is still correct.
+                Err(NativeSendError::Unavailable) => (),
+                Err(error) => return Err(SessionError::Native(error)),
+            }
         }
         self.send_capsule(CapsuleType::DATAGRAM, payload).await?;
         Ok(DatagramTransport::Capsule)
     }
 
-    /// Send a capsule on the reliable data stream and flush it.
+    /// Send a complete capsule on the reliable data stream and flush it.
     pub async fn send_capsule(
         &mut self,
         ty: CapsuleType,
         value: Bytes,
     ) -> Result<(), SessionError> {
-        std::future::poll_fn(|cx| self.poll_write_pending(cx)).await?;
+        self.check_idle()?;
         let header = CapsuleHeader::new(ty, value.len() as u64)?;
-        self.scratch.reserve(CapsuleHeader::MAX_SIZE);
-        header.encode(&mut self.scratch);
-        self.pending = [self.scratch.split().freeze(), value];
-        std::future::poll_fn(|cx| self.poll_write_pending(cx)).await?;
-        std::future::poll_fn(|cx| Pin::new(&mut self.io).poll_flush(cx))
-            .await
-            .map_err(SessionError::Io)
+        let mut value = Some(value);
+        std::future::poll_fn(|cx| {
+            ready!(self.poll_write_pending(cx))?;
+            if let Some(value) = value.take() {
+                self.accept_header(header);
+                self.pending[1] = value;
+            }
+            self.poll_write_and_flush(cx)
+        })
+        .await
     }
 
-    /// Flush any partially sent capsule and finish the data stream cleanly.
+    /// Begin forwarding one capsule whose value arrives in chunks through
+    /// [`send_capsule_data`](Self::send_capsule_data).
+    ///
+    /// Until the declared length is supplied, other capsules, capsule-carried datagrams and
+    /// [`close`](Self::close) are rejected with [`SessionError::CapsuleInProgress`]; native
+    /// datagrams are unaffected. Forwarding preserves type, length and value; integers are
+    /// re-encoded minimally.
+    pub async fn start_capsule(&mut self, header: CapsuleHeader) -> Result<(), SessionError> {
+        self.check_idle()?;
+        let mut header = Some(header);
+        std::future::poll_fn(|cx| {
+            ready!(self.poll_write_pending(cx))?;
+            if let Some(header) = header.take() {
+                self.accept_header(header);
+                self.remainder = header.length.into_inner();
+            }
+            self.poll_write_and_flush(cx)
+        })
+        .await
+    }
+
+    /// Append value bytes to the capsule begun by [`start_capsule`](Self::start_capsule).
+    ///
+    /// A chunk beyond the declared length is rejected with
+    /// [`SessionError::CapsuleLengthMismatch`] and the capsule stays open.
+    pub async fn send_capsule_data(&mut self, chunk: Bytes) -> Result<(), SessionError> {
+        self.check_open()?;
+        if self.remainder == 0 {
+            return Err(SessionError::CapsuleNotStarted);
+        }
+        if chunk.len() as u64 > self.remainder {
+            return Err(SessionError::CapsuleLengthMismatch);
+        }
+        let mut chunk = Some(chunk);
+        std::future::poll_fn(|cx| {
+            ready!(self.poll_write_pending(cx))?;
+            if let Some(chunk) = chunk.take() {
+                self.remainder -= chunk.len() as u64;
+                self.pending[1] = chunk;
+            }
+            self.poll_write_and_flush(cx)
+        })
+        .await
+    }
+
+    /// Write any accepted bytes, then finish the data stream cleanly.
+    ///
+    /// Only the local direction ends; receiving continues until the peer ends its own. Once
+    /// the end is committed, sends return [`SessionError::SendClosed`] and calling `close`
+    /// again resumes finishing the stream.
     pub async fn close(&mut self) -> Result<(), SessionError> {
-        std::future::poll_fn(|cx| self.poll_write_pending(cx)).await?;
-        std::future::poll_fn(|cx| Pin::new(&mut self.io).poll_shutdown(cx))
-            .await
-            .map_err(SessionError::Io)
+        std::future::poll_fn(|cx| {
+            match self.state {
+                SendState::Open => {
+                    if self.remainder > 0 {
+                        return Poll::Ready(Err(SessionError::CapsuleInProgress));
+                    }
+                    ready!(self.poll_write_pending(cx))?;
+                    self.state = SendState::Closing;
+                }
+                SendState::Closing => (),
+                SendState::Failed(kind) => return Poll::Ready(Err(SessionError::Io(kind.into()))),
+            }
+            let result = ready!(Pin::new(&mut self.io).poll_shutdown(cx));
+            Poll::Ready(result.map_err(|error| self.failed(error)))
+        })
+        .await
+    }
+
+    fn check_open(&self) -> Result<(), SessionError> {
+        match self.state {
+            SendState::Open => Ok(()),
+            SendState::Closing => Err(SessionError::SendClosed),
+            SendState::Failed(kind) => Err(SessionError::Io(kind.into())),
+        }
+    }
+
+    /// Open and not inside a streamed capsule.
+    fn check_idle(&self) -> Result<(), SessionError> {
+        self.check_open()?;
+        if self.remainder > 0 {
+            return Err(SessionError::CapsuleInProgress);
+        }
+        Ok(())
+    }
+
+    fn accept_header(&mut self, header: CapsuleHeader) {
+        self.scratch.reserve(CapsuleHeader::MAX_SIZE);
+        header.encode(&mut self.scratch);
+        self.pending[0] = self.scratch.split().freeze();
+    }
+
+    fn poll_write_and_flush(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), SessionError>> {
+        ready!(self.poll_write_pending(cx))?;
+        let result = ready!(Pin::new(&mut self.io).poll_flush(cx));
+        Poll::Ready(result.map_err(|error| self.failed(error)))
     }
 
     fn poll_write_pending(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), SessionError>> {
-        for chunk in &mut self.pending {
-            while !chunk.is_empty() {
-                let written = ready!(Pin::new(&mut self.io).poll_write(cx, chunk))
-                    .map_err(SessionError::Io)?;
-                if written == 0 {
-                    return Poll::Ready(Err(SessionError::Io(io::ErrorKind::WriteZero.into())));
-                }
-                chunk.advance(written);
+        self.check_open()?;
+        for i in 0..self.pending.len() {
+            while !self.pending[i].is_empty() {
+                let written = match ready!(Pin::new(&mut self.io).poll_write(cx, &self.pending[i]))
+                {
+                    Ok(0) => return Poll::Ready(Err(self.failed(io::ErrorKind::WriteZero.into()))),
+                    Ok(written) => written,
+                    Err(error) => return Poll::Ready(Err(self.failed(error))),
+                };
+                self.on_wire = true;
+                self.pending[i].advance(written);
             }
+        }
+        if self.remainder == 0 {
+            self.on_wire = false;
         }
         Poll::Ready(Ok(()))
     }
+
+    fn failed(&mut self, error: io::Error) -> SessionError {
+        self.state = SendState::Failed(error.kind());
+        SessionError::Io(error)
+    }
 }
+
+/// How the receiving direction ended.
+#[derive(Clone, Copy, Debug)]
+enum RecvEnd {
+    Clean,
+    Malformed(CapsuleError),
+    Failed(io::ErrorKind),
+}
+
+/// Reads and decoded skips a receive poll performs before yielding to other work.
+const MAX_READS_PER_POLL: usize = 16;
 
 /// The receiving half of an [`HttpDatagramSession`].
 pub struct SessionReceiver<T> {
@@ -307,7 +501,7 @@ pub struct SessionReceiver<T> {
     malformed: Option<OnMalformedMessage>,
     native_first: bool,
     native_open: bool,
-    end: Option<Result<(), CapsuleError>>,
+    end: Option<RecvEnd>,
 }
 
 impl<T> fmt::Debug for SessionReceiver<T> {
@@ -319,12 +513,22 @@ impl<T> fmt::Debug for SessionReceiver<T> {
     }
 }
 
+impl<T> Drop for SessionReceiver<T> {
+    fn drop(&mut self) {
+        // Nobody consumes native datagrams any more; the transport stops queueing them.
+        if let Some(native) = &self.native {
+            native.channel().release_recv();
+        }
+    }
+}
+
 impl<T: AsyncRead> SessionReceiver<T> {
     /// Receive the next datagram or capsule.
     ///
     /// Native datagrams and the data stream are served fairly. `None` means the peer
     /// finished the data stream at a capsule boundary; later native datagrams are dropped
-    /// (RFC 9297 §2.1). A Capsule Protocol violation aborts the stream as malformed.
+    /// (RFC 9297 §2.1). A Capsule Protocol violation aborts the stream as malformed. Errors
+    /// are terminal and returned again by later calls.
     pub async fn recv(&mut self) -> Result<Option<SessionEvent>, SessionError> {
         std::future::poll_fn(|cx| self.poll_recv(cx)).await
     }
@@ -345,7 +549,11 @@ impl<T: AsyncRead> SessionReceiver<T> {
         cx: &mut Context<'_>,
     ) -> Poll<Result<Option<SessionEvent>, SessionError>> {
         if let Some(end) = self.end {
-            return Poll::Ready(end.map(|()| None).map_err(SessionError::Malformed));
+            return Poll::Ready(match end {
+                RecvEnd::Clean => Ok(None),
+                RecvEnd::Malformed(error) => Err(SessionError::Malformed(error)),
+                RecvEnd::Failed(kind) => Err(SessionError::Io(kind.into())),
+            });
         }
         // Alternate sources per event so neither can starve the other.
         self.native_first = !self.native_first;
@@ -370,7 +578,7 @@ impl<T: AsyncRead> SessionReceiver<T> {
         &mut self,
         cx: &mut Context<'_>,
     ) -> Poll<Result<Option<SessionEvent>, SessionError>> {
-        loop {
+        for _ in 0..MAX_READS_PER_POLL {
             match self.decoder.poll() {
                 Ok(Some(event)) => return Poll::Ready(Ok(Some(event.into()))),
                 Ok(None) => (),
@@ -379,10 +587,11 @@ impl<T: AsyncRead> SessionReceiver<T> {
             self.buf.reserve(self.read_chunk_size);
             match ready!(poll_read_buf(Pin::new(&mut self.io), cx, &mut self.buf)) {
                 Ok(0) => {
-                    let end = self.decoder.finish();
-                    self.end = Some(end);
-                    return Poll::Ready(match end {
-                        Ok(()) => Ok(None),
+                    return Poll::Ready(match self.decoder.finish() {
+                        Ok(()) => {
+                            self.end = Some(RecvEnd::Clean);
+                            Ok(None)
+                        }
                         Err(error) => Err(self.fail(error)),
                     });
                 }
@@ -392,24 +601,31 @@ impl<T: AsyncRead> SessionReceiver<T> {
                         return Poll::Ready(Err(self.fail(error)));
                     }
                 }
-                Err(error) => return Poll::Ready(Err(SessionError::Io(error))),
+                Err(error) => {
+                    self.end = Some(RecvEnd::Failed(error.kind()));
+                    return Poll::Ready(Err(SessionError::Io(error)));
+                }
             }
         }
+        // Budget spent on reads and skips without an event: let other work run first.
+        cx.waker().wake_by_ref();
+        Poll::Pending
     }
 
     fn poll_native(&mut self, cx: &mut Context<'_>) -> Poll<Option<Bytes>> {
         let Some(native) = self.native.as_ref().filter(|_| self.native_open) else {
             return Poll::Ready(None);
         };
-        let result = native.channel().poll_recv(cx);
-        if matches!(result, Poll::Ready(None)) {
-            self.native_open = false;
+        if let Ok(Some(payload)) = ready!(native.channel().poll_recv(cx)) {
+            return Poll::Ready(Some(payload));
         }
-        result
+        // Ended; a reset or lost connection also fails the data stream, which reports it.
+        self.native_open = false;
+        Poll::Ready(None)
     }
 
     fn fail(&mut self, error: CapsuleError) -> SessionError {
-        self.end = Some(Err(error));
+        self.end = Some(RecvEnd::Malformed(error));
         // RFC 9297 §3.3: treat the message as malformed; the carrier chooses the abort code.
         if let Some(malformed) = self.malformed.take() {
             malformed.call();

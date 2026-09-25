@@ -8,7 +8,9 @@
 use super::{Error, connection::Shared};
 use ahash::HashMap;
 use rama_core::bytes::{BufMut as _, Bytes, BytesMut};
-use rama_http::datagram::{NativeDatagramChannel, NativeSendError, NativeSendPolicy};
+use rama_http::datagram::{
+    NativeDatagramChannel, NativeRecvError, NativeSendError, NativeSendPolicy,
+};
 use rama_http_types::proto::{
     ext::Protocol,
     h3::{Code, QuarterStreamId},
@@ -372,10 +374,11 @@ impl NativeDatagramChannel for H3DatagramChannel {
         })
     }
 
-    fn poll_recv(&self, cx: &mut Context<'_>) -> Poll<Option<Bytes>> {
+    fn poll_recv(&self, cx: &mut Context<'_>) -> Poll<Result<Option<Bytes>, NativeRecvError>> {
         self.association
             .shared
             .poll_datagram(self.association.stream, cx)
+            .map(Ok)
     }
 
     fn dropped(&self) -> u64 {

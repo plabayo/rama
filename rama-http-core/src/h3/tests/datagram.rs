@@ -425,7 +425,7 @@ async fn datagrams_after_the_stream_closed_are_dropped() {
         let mut cx = Context::from_waker(Waker::noop());
         assert_eq!(
             server_native.channel().poll_recv(&mut cx),
-            Poll::Ready(None),
+            Poll::Ready(Ok(None)),
             "datagrams after the receive side closed are dropped"
         );
         pair.close().await;

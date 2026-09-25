@@ -8,6 +8,7 @@ use rama_http::{
     Body, Request, Response, Version,
     datagram::{
         DatagramTransport, HttpDatagramSession, SessionConfig, SessionError, SessionEvent,
+        ViolationPolicy,
         capsule::CapsuleConfig,
         handshake::{
             capsule_response, prepare_capsule_request, validate_capsule_request,
@@ -65,7 +66,7 @@ fn capsule_service()
 -> RamaHttpService<impl rama_core::Service<Request, Output = Response, Error = Infallible> + Clone>
 {
     RamaHttpService::new(service_fn(|request: Request| async move {
-        let protocol = validate_capsule_request(&request).unwrap();
+        let protocol = validate_capsule_request(&request, ViolationPolicy::Ignore).unwrap();
         assert_eq!(protocol, TOKEN);
         let upgrade = handle_upgrade(&request);
         tokio::spawn(async move { echo(upgrade.await.unwrap()).await });
@@ -78,7 +79,7 @@ fn closing_service()
 -> RamaHttpService<impl rama_core::Service<Request, Output = Response, Error = Infallible> + Clone>
 {
     RamaHttpService::new(service_fn(|request: Request| async move {
-        let protocol = validate_capsule_request(&request).unwrap();
+        let protocol = validate_capsule_request(&request, ViolationPolicy::Ignore).unwrap();
         let upgrade = handle_upgrade(&request);
         tokio::spawn(async move {
             let mut config = config();
@@ -131,7 +132,7 @@ async fn client_session(version: Version) -> HttpDatagramSession {
         tokio::spawn(connection.with_upgrades());
         sender.send_request(capsule_request(version)).await.unwrap()
     };
-    validate_capsule_response(version, &TOKEN, &response).unwrap();
+    validate_capsule_response(version, &TOKEN, &response, ViolationPolicy::Ignore).unwrap();
     HttpDatagramSession::with_config(handle_upgrade(&response).await.unwrap(), config())
 }
 
