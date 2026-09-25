@@ -164,6 +164,8 @@ impl AsyncRead for H2Upgraded {
         cx: &mut Context<'_>,
         read_buf: &mut ReadBuf<'_>,
     ) -> Poll<Result<(), std::io::Error>> {
+        // A malformed abort also discards data still buffered here.
+        self.reset_if_malformed()?;
         if self.buf.is_empty() {
             self.buf = loop {
                 match ready!(self.recv_stream.poll_data(cx)) {

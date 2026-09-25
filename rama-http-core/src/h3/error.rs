@@ -97,6 +97,11 @@ impl Error {
         }
     }
 
+    /// Whether the peer's data or reset caused this error.
+    pub(crate) const fn is_remote(self) -> bool {
+        matches!(self.source, Source::Remote)
+    }
+
     pub(crate) const fn remote(mut self) -> Self {
         self.source = Source::Remote;
         self

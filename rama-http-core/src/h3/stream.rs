@@ -112,8 +112,12 @@ impl<R: RecvStream> Reader<R> {
                 if let Some(datagrams) = &self.datagrams
                     && error.scope() == super::qpack::ErrorScope::Stream
                 {
-                    datagrams
-                        .receive_ended(super::datagram::ReceiveEnd::Reset(error.code().value()));
+                    let code = error.code().value();
+                    datagrams.receive_ended(if error.is_remote() {
+                        super::datagram::ReceiveEnd::Reset(code)
+                    } else {
+                        super::datagram::ReceiveEnd::Aborted(code)
+                    });
                 }
                 Poll::Ready(Err(self.reject(error)))
             }

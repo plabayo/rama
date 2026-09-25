@@ -2,7 +2,7 @@
 
 use super::{
     Error,
-    datagram::{Association, H3DatagramChannel},
+    datagram::{Association, H3DatagramChannel, ReceiveEnd},
     frame::FrameEvent,
     quic::{RecvStream, SendStream, Writer},
     stream::{Phase, Reader},
@@ -19,7 +19,10 @@ use rama_http_types::proto::h3::{Code, FrameType, VarInt};
 use std::{
     io,
     pin::Pin,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     task::{Context, Poll, ready},
 };
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
@@ -36,12 +39,23 @@ pub(crate) fn new(
 ) -> Upgraded {
     reader.phase = Phase::Tunnel;
     let extensions = reader.shared.transport_extensions.fork();
+    // A local abort fails both directions at once, independent of any later I/O poll.
+    let aborted = Arc::new(AtomicU64::new(0));
+    let registration = reader.datagrams.as_ref().map(Arc::downgrade);
     for (code, malformed) in [
         (Code::H3_CONNECT_ERROR, false),
         (Code::H3_MESSAGE_ERROR, true),
     ] {
-        let abort = writer.abort_handle();
-        let abort = move || abort.abort(VarInt::from_u32(code.value() as u32));
+        let handle = writer.abort_handle();
+        let aborted = aborted.clone();
+        let registration = registration.clone();
+        let abort = move || {
+            _ = aborted.compare_exchange(0, code.value(), Ordering::AcqRel, Ordering::Acquire);
+            if let Some(registration) = registration.as_ref().and_then(|weak| weak.upgrade()) {
+                registration.receive_ended(ReceiveEnd::Aborted(code.value()));
+            }
+            handle.abort(VarInt::from_u32(code.value() as u32));
+        };
         if malformed {
             extensions.insert(OnMalformedMessage::new(abort));
         } else {
@@ -64,6 +78,7 @@ pub(crate) fn new(
             shutdown: None,
             acknowledged: None,
             association,
+            aborted,
         },
         Bytes::new(),
     )
@@ -81,6 +96,8 @@ struct Tunnel<R: RecvStream, S: SendStream> {
     acknowledged: Option<Acknowledged>,
     priority_lease: Option<super::priority::Lease>,
     association: Option<Arc<Association>>,
+    // The code of a local abort through the tunnel's hooks, zero while open.
+    aborted: Arc<AtomicU64>,
 }
 
 impl<R: RecvStream, S: SendStream> Drop for Tunnel<R, S> {
@@ -92,6 +109,17 @@ impl<R: RecvStream, S: SendStream> Drop for Tunnel<R, S> {
 }
 
 impl<R: RecvStream, S: SendStream> Tunnel<R, S> {
+    /// Fail I/O, including still-buffered data, once a hook aborted the tunnel.
+    fn check_aborted(&self) -> io::Result<()> {
+        match self.aborted.load(Ordering::Acquire) {
+            0 => Ok(()),
+            code => Err(io::Error::other(Error::stream(
+                Code::new(code),
+                "tunnel aborted locally",
+            ))),
+        }
+    }
+
     fn release_finished(&mut self) {
         if self.shutdown == Some(Ok(())) && self.reader.phase == Phase::Finished {
             self.priority_lease.take();
@@ -127,6 +155,7 @@ impl<R: RecvStream + Unpin, S: SendStream + Unpin> AsyncRead for Tunnel<R, S> {
         cx: &mut Context<'_>,
         dst: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
+        self.check_aborted()?;
         if dst.remaining() == 0 {
             return Poll::Ready(Ok(()));
         }
@@ -163,6 +192,7 @@ impl<R: RecvStream + Unpin, S: SendStream + Unpin> AsyncWrite for Tunnel<R, S> {
         cx: &mut Context<'_>,
         src: &[u8],
     ) -> Poll<io::Result<usize>> {
+        self.check_aborted()?;
         ready!(self.flush(cx)).map_err(io::Error::other)?;
         let count = src.len().min(self.reader.shared.config.read_chunk_size);
         if count != 0 {
@@ -182,6 +212,7 @@ impl<R: RecvStream + Unpin, S: SendStream + Unpin> AsyncWrite for Tunnel<R, S> {
         if let Some(result) = self.shutdown {
             return Poll::Ready(result.map_err(io::Error::other));
         }
+        self.check_aborted()?;
         // RFC 9297 §2.1: no datagrams once the end of the send side is committed.
         if let Some(association) = &self.association {
             association.close_send();
@@ -296,6 +327,7 @@ mod tests {
             acknowledged: None,
             priority_lease: None,
             association: None,
+            aborted: Arc::new(AtomicU64::new(0)),
         }
     }
 

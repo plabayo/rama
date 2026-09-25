@@ -42,8 +42,9 @@ pub struct DatagramConfig {
     pub violations: ViolationPolicy,
 }
 
-/// Buffering budgets for received HTTP/3 datagrams. A zero budget drops (and counts) every
-/// datagram it would hold; the request semantics are enforced regardless.
+/// Buffering budgets for received HTTP/3 datagrams. A zero `queue_len` or `pending_len` drops
+/// (and counts) every datagram it would hold; a zero `max_buffered_bytes` still admits empty
+/// payloads, bounded by the entry counts. The request semantics are enforced regardless.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DatagramLimits {
     /// Datagrams queued per request; the oldest is discarded when it is full.
@@ -109,6 +110,8 @@ pub(crate) enum ReceiveEnd {
     Finished,
     /// The peer reset the stream with this code.
     Reset(u64),
+    /// This endpoint aborted the stream with this code.
+    Aborted(u64),
     /// Nobody consumes its datagrams any more.
     Released,
 }
@@ -203,13 +206,17 @@ impl Demux {
                     &mut self.drops,
                 )
             }
-            Semantics::Claimed => enqueue(
-                slot,
-                &config.limits,
-                payload,
-                &mut self.buffered,
-                &mut self.drops,
-            ),
+            Semantics::Claimed => {
+                // A client claim can still become None on a refused response.
+                slot.observed = true;
+                enqueue(
+                    slot,
+                    &config.limits,
+                    payload,
+                    &mut self.buffered,
+                    &mut self.drops,
+                )
+            }
         }
     }
 
@@ -293,13 +300,16 @@ impl Demux {
     }
 
     /// The stream's receive side or its consumer ended: later datagrams are dropped
-    /// (RFC 9297 §2.1). A released consumer's queue is discarded.
+    /// (RFC 9297 §2.1). A local end (released consumer, local abort) also discards the queue.
     pub(crate) fn receive_ended(&mut self, stream: u64, end: ReceiveEnd) -> Option<Waker> {
         let slot = self.slots.get_mut(&stream)?;
-        if slot.receive.is_none() || end == ReceiveEnd::Released {
+        let local = matches!(end, ReceiveEnd::Released | ReceiveEnd::Aborted(_));
+        if slot.receive.is_none()
+            || (local && !matches!(slot.receive, Some(ReceiveEnd::Aborted(_))))
+        {
             slot.receive = Some(end);
         }
-        if end == ReceiveEnd::Released {
+        if local {
             self.drops.receive_closed += slot.queue.len() as u64;
             self.buffered -= slot
                 .queue
@@ -326,6 +336,9 @@ impl Demux {
             Some(ReceiveEnd::Finished | ReceiveEnd::Released) => return Poll::Ready(Ok(None)),
             Some(ReceiveEnd::Reset(code)) => {
                 return Poll::Ready(Err(NativeRecvError::Reset(code)));
+            }
+            Some(ReceiveEnd::Aborted(code)) => {
+                return Poll::Ready(Err(NativeRecvError::Aborted(code)));
             }
             None if self.closed => return Poll::Ready(Err(NativeRecvError::Lost)),
             None => (),

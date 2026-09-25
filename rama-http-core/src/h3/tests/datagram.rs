@@ -15,8 +15,8 @@ use rama_core::{
 };
 use rama_http::{
     datagram::{
-        DatagramTransport, HttpDatagramSession, NativeDatagrams, NativeSendError, SessionError,
-        SessionEvent, ViolationPolicy,
+        DatagramTransport, HttpDatagramSession, NativeDatagrams, NativeRecvError, NativeSendError,
+        SessionError, SessionEvent, ViolationPolicy,
     },
     io::upgrade::{OnMalformedMessage, OnUpstreamError, Upgraded, handle_upgrade},
 };
@@ -984,4 +984,111 @@ async fn rejected_violations_abort_unpolled_requests_in_both_roles() {
     })
     .await
     .unwrap();
+}
+
+#[tokio::test]
+async fn refused_connects_remember_datagrams_routed_before_the_response() {
+    for queue_len in [0, 4] {
+        tokio::time::timeout(LIMIT, async {
+            let pair = Pair::in_memory(None, None).await;
+            let limits = DatagramLimits {
+                queue_len,
+                ..DatagramLimits::default()
+            };
+            let client_config = Config {
+                datagrams: datagrams(limits, ViolationPolicy::Reject),
+                ..Config::default()
+            };
+            let (mut client, mut server) = start_both(
+                &pair,
+                client_config,
+                server_config(Some(DatagramConfig::default())),
+            )
+            .await;
+            let observer = client.clone();
+            let serve = async {
+                let (_request, response) = server.accept().await.unwrap().resolve().await.unwrap();
+                pair.server
+                    .send_datagram(raw_datagram(0, b"early"))
+                    .unwrap();
+                // Routed to the client's claimed slot, retained or discarded, before the 403.
+                while observer.datagram_drops().queue_full == 0
+                    && observer.shared().datagram_demux().buffered() == 0
+                {
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+                let mut refused = Response::new(Body::from("refused"));
+                *refused.status_mut() = StatusCode::FORBIDDEN;
+                _ = response.send_response(refused).await;
+            };
+            let (response, ()) = tokio::join!(client.send_request(connect(TOKEN, true)), serve);
+            let rejected = match response {
+                Err(_) => true,
+                Ok(response) => response.into_body().collect().await.is_err(),
+            };
+            assert!(rejected, "queue_len={queue_len}");
+            let (_client_io, _server_io) = tunnel(&mut client, &mut server, TOKEN).await;
+            pair.close().await;
+        })
+        .await
+        .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn local_abort_hooks_end_both_directions_at_once() {
+    for malformed in [true, false] {
+        tokio::time::timeout(LIMIT, async {
+            let pair = Pair::in_memory(None, None).await;
+            let (mut client, mut server) =
+                start(&pair, server_config(Some(DatagramConfig::default()))).await;
+            let (mut client_io, mut server_io) = tunnel(&mut client, &mut server, TOKEN).await;
+            let native = server_io
+                .extensions()
+                .get_ref::<NativeDatagrams>()
+                .cloned()
+                .unwrap();
+            // Reliable bytes and a native datagram already buffered on the server side.
+            client_io.write_all(b"abc").await.unwrap();
+            client_io.flush().await.unwrap();
+            assert_eq!(server_io.read_u8().await.unwrap(), b'a');
+            pair.client
+                .send_datagram(raw_datagram(0, b"queued"))
+                .unwrap();
+            while server.shared().datagram_demux().buffered() != 6 {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+            let (code, upstream) = if malformed {
+                let hook = server_io
+                    .extensions()
+                    .get_ref::<OnMalformedMessage>()
+                    .cloned();
+                hook.unwrap().call();
+                (Code::H3_MESSAGE_ERROR, false)
+            } else {
+                let hook = server_io.extensions().get_ref::<OnUpstreamError>().cloned();
+                hook.unwrap().call();
+                (Code::H3_CONNECT_ERROR, true)
+            };
+            // Native receiving ends without any reliable read, discarding what was queued.
+            assert_eq!(server.shared().datagram_demux().buffered(), 0);
+            let mut cx = Context::from_waker(Waker::noop());
+            assert_eq!(
+                native.channel().poll_recv(&mut cx),
+                Poll::Ready(Err(NativeRecvError::Aborted(code.value()))),
+                "upstream={upstream}"
+            );
+            // Newly arriving datagrams are dropped, not delivered.
+            pair.client.send_datagram(raw_datagram(0, b"late")).unwrap();
+            wait_drops(&server, |drops| drops.receive_closed >= 1).await;
+            assert!(native.channel().poll_recv(&mut cx).is_ready());
+            assert_eq!(server.shared().datagram_demux().buffered(), 0);
+            // Buffered reliable bytes are not served after the abort.
+            assert_eq!(stream_error(&mut server_io).await, code);
+            let (_a, _b) = tunnel(&mut client, &mut server, TOKEN).await;
+            pair.close().await;
+        })
+        .await
+        .unwrap();
+    }
 }

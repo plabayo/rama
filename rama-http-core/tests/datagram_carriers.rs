@@ -3,7 +3,9 @@
 
 #![expect(clippy::unwrap_used, clippy::panic, reason = "test fixtures")]
 
-use rama_core::{ServiceInput, bytes::Bytes, rt::Executor, service::service_fn};
+use rama_core::{
+    ServiceInput, bytes::Bytes, extensions::ExtensionsRef as _, rt::Executor, service::service_fn,
+};
 use rama_http::{
     Body, Request, Response, StatusCode, Version,
     datagram::{
@@ -15,8 +17,11 @@ use rama_http::{
             validate_capsule_response,
         },
     },
-    io::upgrade::{Upgraded, handle_upgrade},
-    proto::{capsule::CapsuleType, ext::Protocol},
+    io::upgrade::{OnMalformedMessage, Upgraded, handle_upgrade},
+    proto::{
+        capsule::{CapsuleHeader, CapsuleType},
+        ext::Protocol,
+    },
 };
 use rama_http_core::{client::conn, server, service::RamaHttpService};
 use std::{convert::Infallible, time::Duration};
@@ -108,6 +113,10 @@ fn capsule_request(version: Version) -> Request {
 }
 
 async fn client_session(version: Version) -> HttpDatagramSession {
+    HttpDatagramSession::with_config(client_upgraded(version).await, config())
+}
+
+async fn client_upgraded(version: Version) -> Upgraded {
     let (client_io, server_io) = tokio::io::duplex(64 * 1024);
     let (client_io, server_io) = (ServiceInput::new(client_io), ServiceInput::new(server_io));
     let response = if version == Version::HTTP_2 {
@@ -133,7 +142,7 @@ async fn client_session(version: Version) -> HttpDatagramSession {
         sender.send_request(capsule_request(version)).await.unwrap()
     };
     validate_capsule_response(version, &TOKEN, &response, ViolationPolicy::Ignore).unwrap();
-    HttpDatagramSession::with_config(handle_upgrade(&response).await.unwrap(), config())
+    handle_upgrade(&response).await.unwrap()
 }
 
 #[tokio::test]
@@ -359,4 +368,44 @@ async fn http1_upgrades_with_request_content_are_refused() {
         .await
         .unwrap();
     }
+}
+
+#[tokio::test]
+async fn dropping_a_partial_sender_aborts_every_carrier() {
+    for version in [Version::HTTP_11, Version::HTTP_2] {
+        tokio::time::timeout(LIMIT, async {
+            let (mut sender, mut receiver) = client_session(version).await.split();
+            sender
+                .start_capsule(CapsuleHeader::new(CONTROL, 4).unwrap())
+                .await
+                .unwrap();
+            sender
+                .send_capsule_data(Bytes::from_static(b"x"))
+                .await
+                .unwrap();
+            drop(sender);
+            // The retained half ends instead of waiting for the abandoned value.
+            receiver.recv().await.unwrap_err();
+        })
+        .await
+        .unwrap_or_else(|_| panic!("{version:?} kept the abandoned capsule open"));
+    }
+}
+
+#[tokio::test]
+async fn http2_malformed_hook_discards_buffered_tunnel_data() {
+    tokio::time::timeout(LIMIT, async {
+        let mut io = client_upgraded(Version::HTTP_2).await;
+        // The echo server returns this control capsule in one DATA frame.
+        io.write_all(&[0x2a, 3, b'a', b'b', b'c']).await.unwrap();
+        io.flush().await.unwrap();
+        assert_eq!(io.read_u8().await.unwrap(), 0x2a);
+        io.extensions()
+            .get_ref::<OnMalformedMessage>()
+            .unwrap()
+            .call();
+        io.read_u8().await.unwrap_err();
+    })
+    .await
+    .unwrap();
 }

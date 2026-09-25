@@ -144,6 +144,11 @@ impl<B> SendRequest<B> {
     }
 
     #[cfg(test)]
+    pub(crate) fn shared(&self) -> &Arc<Shared> {
+        &self.shared
+    }
+
+    #[cfg(test)]
     pub(crate) fn dynamic_insert_count(&self) -> u64 {
         self.shared.dynamic_insert_count()
     }
