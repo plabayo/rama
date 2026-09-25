@@ -105,6 +105,22 @@ impl fmt::Debug for Protocol {
     }
 }
 
+/// The `:scheme` pseudo-header value of a request carrying `:protocol` (Extended CONNECT).
+///
+/// RFC 8441 §5 (reused by RFC 9220 §3 for HTTP/3) requires `https` for a `wss` target and
+/// `http` for a `ws` target; other schemes are sent as they are. Only the pseudo-header is
+/// mapped: the request URI keeps its `ws`/`wss` scheme.
+#[must_use]
+pub fn extended_connect_pseudo_scheme(scheme: &rama_net::Protocol) -> &rama_net::Protocol {
+    if *scheme == rama_net::Protocol::WSS {
+        &rama_net::Protocol::HTTPS
+    } else if *scheme == rama_net::Protocol::WS {
+        &rama_net::Protocol::HTTP
+    } else {
+        scheme
+    }
+}
+
 rama_utils::macros::error::static_str_error! {
     #[doc = "`:protocol` pseudo-header value is not a non-empty HTTP token"]
     #[derive(Copy)]

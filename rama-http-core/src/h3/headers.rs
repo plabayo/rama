@@ -383,6 +383,13 @@ pub(crate) fn encode_request<B>(
     }
     let scheme = if connect {
         None
+    } else if protocol.is_some() {
+        Some(ext::extended_connect_pseudo_scheme(
+            request
+                .uri()
+                .scheme()
+                .ok_or(malformed("missing request scheme"))?,
+        ))
     } else if request.uri().is_asterisk() {
         if request.method() != Method::OPTIONS {
             return Err(malformed("asterisk requires OPTIONS"));
@@ -1104,6 +1111,27 @@ mod tests {
         );
         *request.method_mut() = Method::GET;
         encode_request(&shared(), 0, &request).unwrap_err();
+    }
+
+    #[test]
+    fn websocket_uris_use_their_http_scheme() {
+        for (uri, scheme) in [
+            ("wss://example.com/chat", "https"),
+            ("ws://example.com/chat", "http"),
+        ] {
+            let request = Request::builder()
+                .method(Method::CONNECT)
+                .uri(uri)
+                .body(())
+                .unwrap();
+            request.extensions().insert(ext::Protocol::WEBSOCKET);
+            let output = decode(encode_request(&shared(), 0, &request).unwrap());
+            let value = output
+                .iter()
+                .find(|field| field.name == ":scheme")
+                .map(|field| field.value.clone());
+            assert_eq!(value.as_deref(), Some(scheme.as_bytes()), "{uri}");
+        }
     }
 
     #[test]

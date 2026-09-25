@@ -697,12 +697,15 @@ impl Pseudo {
             };
 
             // `:scheme` is only present when the URI carries one.
-            let scheme = {
+            let scheme = if let (Some(_), Some(scheme)) = (&protocol, uri.scheme()) {
+                Some(BytesStr::from(
+                    crate::proto::ext::extended_connect_pseudo_scheme(scheme).as_str(),
+                ))
+            } else {
                 let mut scheme_buf = BytesMut::new();
-                match uri.write_h2_scheme(&mut scheme_buf) {
-                    Ok(()) => Some(bytes_str_from(scheme_buf)),
-                    Err(_) => None,
-                }
+                uri.write_h2_scheme(&mut scheme_buf)
+                    .ok()
+                    .map(|()| bytes_str_from(scheme_buf))
             };
 
             (scheme, Some(path))
@@ -1270,6 +1273,23 @@ mod test {
                 ..Default::default()
             }
         );
+    }
+
+    #[test]
+    fn extended_connect_websocket_uses_the_http_scheme() {
+        // RFC 8441 §5: `https` for `wss`-schemed WebSockets, `http` for `ws`.
+        for (uri, scheme) in [
+            ("wss://example.com/chat", "https"),
+            ("ws://example.com/chat", "http"),
+        ] {
+            let pseudo = Pseudo::request(
+                Method::CONNECT,
+                &Uri::from_static(uri),
+                Protocol::WEBSOCKET.into(),
+            );
+            assert_eq!(pseudo.scheme.as_deref(), Some(scheme), "{uri}");
+            assert_eq!(pseudo.path.as_deref(), Some("/chat"));
+        }
     }
 
     #[test]
