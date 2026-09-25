@@ -1,7 +1,8 @@
 use rama_core::{
     Service,
+    combinators::Either,
     error::{BoxError, BoxErrorExt as _, ErrorExt, error_chain},
-    extensions::{Egress, Extensions, ExtensionsRef},
+    extensions::{Egress, Extension, Extensions, ExtensionsRef},
     rt::Executor,
     telemetry::tracing,
 };
@@ -25,7 +26,11 @@ use rama_net::{
 };
 use rama_quic::Connection as QuicConnection;
 use rama_utils::guard::DropGuard;
-use std::{fmt, io, pin::pin};
+use std::{
+    fmt, io,
+    pin::pin,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 use tokio::sync::Mutex;
 
 pub(super) enum SendRequest<Body> {
@@ -51,6 +56,35 @@ pub struct HttpClientService<Body> {
     pub(super) extensions: Extensions,
 }
 
+/// Counts the attempts to send one logical request (all hops a middleware
+/// makes for it, e.g. redirects or retries), and how many of those
+/// provably never left this client. Attempts are recognised by carrying
+/// (a fork of) the request's extensions, as rama's own layers do.
+#[derive(Debug, Default, Extension)]
+#[extension(tags(http))]
+pub(crate) struct SendAttempts {
+    started: AtomicUsize,
+    unsent: AtomicUsize,
+}
+
+impl SendAttempts {
+    /// At least one attempt was made and none of them was sent.
+    pub(crate) fn none_sent(&self) -> bool {
+        let started = self.started.load(Ordering::Acquire);
+        started > 0 && started == self.unsent.load(Ordering::Acquire)
+    }
+}
+
+/// Failed before the request was handed to the connection: its
+/// dispatcher was already closed, or dropped the request unsent.
+fn error_is_unsent(err: &BoxError) -> bool {
+    error_chain(err.as_ref()).any(|cause| {
+        cause
+            .downcast_ref::<HttpError>()
+            .is_some_and(|err| err.is_canceled() || err.is_closed())
+    })
+}
+
 impl<Body> Service<Request<Body>> for HttpClientService<Body>
 where
     Body: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
@@ -58,7 +92,33 @@ where
     type Output = Response;
     type Error = BoxError;
 
-    async fn serve(&self, mut req: Request<Body>) -> Result<Self::Output, Self::Error> {
+    fn serve(
+        &self,
+        req: Request<Body>,
+    ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
+        let Some(attempts) = req.extensions().get_arc::<SendAttempts>() else {
+            return Either::A(self.send(req));
+        };
+        // boxed: only relays count attempts, keep the common future small
+        Either::B(Box::pin(async move {
+            // counted up front: a dropped attempt may have been sent
+            attempts.started.fetch_add(1, Ordering::AcqRel);
+            let result = self.send(req).await;
+            if let Err(err) = &result
+                && error_is_unsent(err)
+            {
+                attempts.unsent.fetch_add(1, Ordering::AcqRel);
+            }
+            result
+        }))
+    }
+}
+
+impl<Body> HttpClientService<Body>
+where
+    Body: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
+{
+    async fn send(&self, mut req: Request<Body>) -> Result<Response, BoxError> {
         // Request-target encoding must follow the connection that survived
         // route fallback and pool selection, never the requested ProxyRoute.
         // A fresh snapshot also shadows stale markers when the connection

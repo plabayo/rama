@@ -35,10 +35,11 @@ use rama_core::{
     extensions::ExtensionsRef as _,
     graceful::Shutdown,
     io::BridgeIo,
-    layer::ArcLayer,
+    layer::{ArcLayer, ConsumeErrLayer},
     rt::Executor,
 };
-use rama_http_backend::proxy::mitm::HttpMitmRelay;
+use rama_http::layer::follow_redirect::FollowRedirectLayer;
+use rama_http_backend::proxy::mitm::{DefaultErrorResponse, HttpMitmRelay};
 use rama_http_core::h2::{self, Reason, client as h2_client, server as h2_server};
 use rama_http_types::{Request, Response, StatusCode, Version};
 use rama_net::{http::TargetHttpVersion, test_utils::client::MockSocket};
@@ -52,6 +53,8 @@ use tokio_util::sync::{CancellationToken, DropGuard};
 
 /// Relay middleware parks requests with this header until released.
 const HOLD_HEADER: &str = "x-test-hold";
+/// Same, for requests to this path (e.g. a redirect target).
+const HOLD_PATH: &str = "/held";
 /// Relay middleware fails requests with this header on its own.
 const FAIL_HEADER: &str = "x-test-fail";
 
@@ -70,6 +73,17 @@ enum OriginClose {
     Eof,
     /// Graceful `GOAWAY(NO_ERROR)`.
     GoAway,
+}
+
+/// Relay middleware wrapping the test gate.
+#[derive(Debug, Clone, Copy)]
+enum Middleware {
+    /// Egress errors reach the relay, like production relay middleware.
+    Propagate,
+    /// Like the relay's default middleware: errors become a `502`.
+    ConsumeErrors,
+    /// Follows redirects, so one request can make several egress hops.
+    FollowRedirects,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -114,7 +128,7 @@ where
         if req.headers().contains_key(FAIL_HEADER) {
             return Err(BoxError::from_static_str("middleware refused request"));
         }
-        if req.headers().contains_key(HOLD_HEADER) {
+        if req.headers().contains_key(HOLD_HEADER) || req.uri().to_string().ends_with(HOLD_PATH) {
             self.gates.arrived.send_replace(true);
             let mut release = self.gates.release.clone();
             release
@@ -140,6 +154,10 @@ struct Harness {
 }
 
 async fn harness(mode: EgressMode) -> Harness {
+    harness_with(mode, Middleware::Propagate).await
+}
+
+async fn harness_with(mode: EgressMode, middleware: Middleware) -> Harness {
     let (client_stream, relay_ingress_stream) = tokio::io::duplex(kib(64));
     let (relay_egress_stream, origin_stream) = tokio::io::duplex(kib(64));
 
@@ -170,11 +188,33 @@ async fn harness(mode: EgressMode) -> Harness {
 
     let relay_exec = Executor::graceful(graceful.guard());
     let relay = tokio::spawn(async move {
-        HttpMitmRelay::new(relay_exec)
-            // error propagating, like production relay middleware
-            .with_http_middleware((gate, ArcLayer::new()))
-            .serve(BridgeIo(MockSocket::new(relay_ingress_stream), egress))
-            .await
+        let relay = HttpMitmRelay::new(relay_exec);
+        let io = BridgeIo(MockSocket::new(relay_ingress_stream), egress);
+        match middleware {
+            Middleware::Propagate => {
+                relay
+                    .with_http_middleware((gate, ArcLayer::new()))
+                    .serve(io)
+                    .await
+            }
+            Middleware::ConsumeErrors => {
+                relay
+                    .with_http_middleware((
+                        ConsumeErrLayer::trace_as_debug()
+                            .with_response(DefaultErrorResponse::new()),
+                        gate,
+                        ArcLayer::new(),
+                    ))
+                    .serve(io)
+                    .await
+            }
+            Middleware::FollowRedirects => {
+                relay
+                    .with_http_middleware((FollowRedirectLayer::new(), gate, ArcLayer::new()))
+                    .serve(io)
+                    .await
+            }
+        }
     });
 
     let (client, client_conn) = h2_client::handshake(MockSocket::new(client_stream))
@@ -378,8 +418,8 @@ async fn idle_used_lazy_egress_goaway_goes_away_on_ingress() {
 /// The request was already on the ingress connection when the origin
 /// closed the egress: it never reached the origin, so it must be refused
 /// (client retries on a new connection), not failed or cut off.
-async fn request_racing_egress_close_is_refused(how: OriginClose) {
-    let mut h = harness(EgressMode::Eager).await;
+async fn request_racing_egress_close_is_refused(how: OriginClose, middleware: Middleware) {
+    let mut h = harness_with(EgressMode::Eager, middleware).await;
     let origin = h.origin().await;
 
     let resp = h.send(get("/navigate", &[HOLD_HEADER])).await;
@@ -406,12 +446,70 @@ async fn request_racing_egress_close_is_refused(how: OriginClose) {
 
 #[tokio::test(start_paused = true)]
 async fn request_racing_egress_eof_is_refused() {
-    request_racing_egress_close_is_refused(OriginClose::Eof).await;
+    request_racing_egress_close_is_refused(OriginClose::Eof, Middleware::Propagate).await;
 }
 
 #[tokio::test(start_paused = true)]
 async fn request_racing_egress_goaway_is_refused() {
-    request_racing_egress_close_is_refused(OriginClose::GoAway).await;
+    request_racing_egress_close_is_refused(OriginClose::GoAway, Middleware::Propagate).await;
+}
+
+/// The default relay middleware turns the egress error into a `502`
+/// before the relay sees it; the request must still be refused.
+#[tokio::test(start_paused = true)]
+async fn request_racing_egress_eof_is_refused_with_default_middleware() {
+    request_racing_egress_close_is_refused(OriginClose::Eof, Middleware::ConsumeErrors).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn request_racing_egress_goaway_is_refused_with_default_middleware() {
+    request_racing_egress_close_is_refused(OriginClose::GoAway, Middleware::ConsumeErrors).await;
+}
+
+/// A POST the origin processed must never be refused (a client would
+/// replay it), even when a later middleware hop for it (here: the
+/// redirected GET) raced the egress close and was never sent.
+#[tokio::test(start_paused = true)]
+async fn processed_request_is_not_refused_when_later_hop_is_unsent() {
+    let mut h = harness_with(EgressMode::Eager, Middleware::FollowRedirects).await;
+    let mut origin = h.origin().await;
+
+    let post = Request::builder()
+        .method("POST")
+        .uri("https://origin.example/submit")
+        .version(Version::HTTP_2)
+        .body(())
+        .unwrap();
+    let resp = h.send(post).await;
+    let (req, mut respond) = next_stream(&mut origin).await;
+    assert_eq!(req.method(), "POST", "origin processes the POST");
+    let see_other = rama_http_types::Response::builder()
+        .status(StatusCode::SEE_OTHER)
+        .header("location", format!("https://origin.example{HOLD_PATH}"))
+        .body(())
+        .unwrap();
+    respond
+        .send_response(see_other, true)
+        .expect("send redirect");
+
+    // drive the origin to flush the redirect, until the redirected GET
+    // is parked in the middleware; egress dies meanwhile
+    tokio::select! {
+        arrived = h.arrived.wait_for(|arrived| *arrived) => {
+            arrived.expect("redirect hop reached relay middleware");
+        }
+        accepted = origin.accept() => panic!("redirect hop must be held: {accepted:?}"),
+    }
+    close_origin(origin, OriginClose::Eof).await;
+    h.release.send_replace(true);
+
+    let resp = timeout(Duration::from_secs(1), resp)
+        .await
+        .expect("request must complete")
+        .expect("a processed request must get a response, not a retry safe reset");
+    assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+
+    h.assert_ingress_went_away().await;
 }
 
 /// Origin GOAWAY while a response is still streaming: that response must

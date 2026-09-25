@@ -3,6 +3,7 @@
 mod svc;
 #[doc(inline)]
 pub use svc::HttpClientService;
+pub(crate) use svc::SendAttempts;
 
 mod connect_request;
 #[doc(inline)]

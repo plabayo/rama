@@ -44,7 +44,7 @@ use tokio::sync::{Mutex, watch};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    client::{HttpClientService, http_connect, http2_eager_handshake},
+    client::{HttpClientService, SendAttempts, http_connect, http2_eager_handshake},
     server::HttpServer,
 };
 
@@ -155,8 +155,10 @@ pub type DefaultMiddleware = (
 /// When an HTTP/2 egress connection ends (EOF, `GOAWAY`, error), the
 /// ingress connection is shut down gracefully with a `GOAWAY`, so idle
 /// clients reconnect instead of sending into a dead relay. Ingress
-/// requests that raced that close and never reached the egress are
-/// reset with `REFUSED_STREAM`, which clients may safely retry.
+/// requests that raced that close and never reached the egress (over
+/// all attempts middleware made for them) are reset with
+/// `REFUSED_STREAM`, which clients may safely retry. This replaces any
+/// response middleware made for such a request, e.g. the default `502`.
 ///
 /// The relay does not consume proxy-authentication fields: a transparent
 /// intermediary may be forwarding them to the proxy that owns the exchange.
@@ -841,10 +843,29 @@ where
     // streams may still be finishing on the same egress connection (e.g.
     // after an upstream graceful GOAWAY). Once egress is gone for good,
     // `egress_h2_gone` winds ingress down with a graceful GOAWAY.
-    match client.serve(req).await {
+    //
+    // Retry safety is judged over every egress attempt middleware made
+    // for this request (redirects, retries), never the final error alone:
+    // an earlier hop may have reached the origin.
+    let attempts = req
+        .extensions()
+        .insert_arc(Arc::new(SendAttempts::default()));
+    let result = client.serve(req).await.map_err(Into::into);
+    if attempts.none_sent() {
+        // raced the egress close, also when middleware already turned
+        // that failure into a response: the client can safely retry
+        tracing::debug!(
+            http.request.method = %method,
+            url.full = %uri,
+            ?version,
+            "MITM relay request never reached egress: refuse it (retry safe)"
+        );
+        health.mark_broken();
+        return DefaultErrorResponse::response_for_version(version, true);
+    }
+    match result {
         Ok(resp) => resp,
         Err(err) => {
-            let err = err.into_box_error();
             tracing::debug!(
                 http.request.method = %method,
                 url.full = %uri,
@@ -852,11 +873,6 @@ where
                 egress.broken = health.health() == ConnectionHealth::Broken,
                 "upstream MITM relay request failed: {err}"
             );
-            if egress_request_was_not_sent(&err) {
-                // raced the egress close: the client can safely retry
-                health.mark_broken();
-                return DefaultErrorResponse::response_for_version(version, true);
-            }
             DefaultErrorResponse::response_for_version(version, false)
         }
     }
@@ -886,16 +902,4 @@ fn mirror_peer_settings(settings: &Settings) -> H2ServerContextParams {
         initial_connection_window_size: None,
         adaptive_window: None,
     }
-}
-
-/// Whether an egress request failed before it was handed to the egress
-/// connection: its dispatcher was already closed or dropped the request
-/// unsent. Deliberately not h2 `GOAWAY` errors: those also end streams
-/// the peer did process.
-fn egress_request_was_not_sent(err: &BoxError) -> bool {
-    rama_core::error::error_chain(err.as_ref()).any(|cause| {
-        cause
-            .downcast_ref::<rama_http_core::Error>()
-            .is_some_and(|err| err.is_canceled() || err.is_closed())
-    })
 }
