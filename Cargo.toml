@@ -123,8 +123,8 @@ compression-core = "0.4"
 const_format = "0.2"
 core-foundation = "0.10"
 csv = "1.4"
-dial9 = { version = "0.5.0", default-features = false, features = ["tokio"] }
-dial9-trace-format = "0.5.0"
+dial9 = { version = "0.5.2", default-features = false, features = ["tokio"] }
+dial9-trace-format = "0.5.1"
 divan = "0.1"
 escargot = "0.5"
 fastbloom = { version = "0.17", default-features = false }
@@ -166,9 +166,9 @@ multer = "3.1"
 ndk-context = "0.1"
 nom = "8.0.0"
 openssl-probe = "0.2"
-opentelemetry = { version = "0.32", default-features = false, features = ["trace", "internal-logs"] }
-opentelemetry-semantic-conventions = { version = "0.32", features = ["semconv_experimental"] }
-opentelemetry_sdk = { version = "0.32", default-features = false, features = ["trace", "rt-tokio"] }
+opentelemetry = { version = "0.33", default-features = false, features = ["trace", "internal-logs"] }
+opentelemetry-semantic-conventions = { version = "0.33", features = ["semconv_experimental"] }
+opentelemetry_sdk = { version = "0.33", default-features = false, features = ["trace", "rt-tokio"] }
 parking_lot = "0.12"
 percent-encoding = { version = "2.3", default-features = false }
 pin-project-lite = "0.2"
@@ -186,8 +186,8 @@ quickcheck_macros = "1.2"
 quote = "1.0"
 radix_trie = "0.3"
 rama = { version = "0.5.0", path = ".", default-features = false }
-rama-boring = { version = "0.6.9", default-features = false }
-rama-boring-tokio = { version = "0.6.9", default-features = false }
+rama-boring = { version = "0.6.10", default-features = false }
+rama-boring-tokio = { version = "0.6.10", default-features = false }
 rama-core = { version = "0.5.0", path = "./rama-core", default-features = false }
 rama-crypto = { version = "0.5.0", path = "./rama-crypto", default-features = false }
 rama-dns = { version = "0.5.0", path = "./rama-dns", default-features = false }
@@ -273,7 +273,7 @@ tower-layer = "0.3"
 tower-service = "0.3"
 tracing = { version = "0.1", default-features = false }
 tracing-appender = "0.2"
-tracing-opentelemetry = "0.33"
+tracing-opentelemetry = "0.34"
 tracing-subscriber = "0.3"
 tracing-test = "0.2"
 tracing-tree = "0.4"
@@ -284,7 +284,7 @@ unicode-normalization = "0.1"
 uuid = "1.26"
 venndb = "0.6"
 want = "0.3"
-wasmtime = { version = "48.0.2", default-features = false }
+wasmtime = { version = "49.0.1", default-features = false }
 webpki-root-certs = "1.0"
 webpki-roots = "1.0"
 wildcard = "0.3"
