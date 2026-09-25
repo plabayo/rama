@@ -11,7 +11,6 @@ use rama_core::{
 };
 use rama_http::{StreamingBody, opentelemetry::version_as_protocol_version};
 use rama_http_core::client::conn::http2::H2PeerSettingsHandle;
-use rama_http_types::proto::ext::Protocol;
 use rama_http_types::{
     Version,
     conn::{
@@ -284,14 +283,7 @@ fn log_connection_termination(err: &rama_http_core::Error) {
 fn apply_h2_client_extensions_to_builder(
     builder: &mut rama_http_core::client::conn::http2::Builder,
     extensions: &Extensions,
-    enable_connect_protocol: bool,
 ) {
-    if enable_connect_protocol {
-        // e.g. used for h2 bootstrap support for WebSocket — only ever
-        // requested on a per-request basis by the lazy path.
-        builder.set_enable_connect_protocol(1);
-    }
-
     if let Some(params) = extensions.get_ref::<H2ClientContextParams>() {
         if let Some(order) = params.headers_pseudo_order.clone() {
             builder.set_headers_pseudo_order(order);
@@ -563,12 +555,7 @@ where
 
             let mut builder = rama_http_core::client::conn::http2::Builder::new(exec.clone());
 
-            let enable_connect_protocol = input.extensions().get_ref::<Protocol>().is_some();
-            apply_h2_client_extensions_to_builder(
-                &mut builder,
-                input.extensions(),
-                enable_connect_protocol,
-            );
+            apply_h2_client_extensions_to_builder(&mut builder, input.extensions());
 
             let (sender, conn) = builder.handshake(io).await.into_opaque_error()?;
 
@@ -647,9 +634,7 @@ where
 /// downstream client. Like the h2 arm of [`http_connect`], request-
 /// scoped builder knobs ([`H2ClientContextParams`], [`PseudoHeaderOrder`])
 /// are read from the egress IO's extensions and applied — letting
-/// UA-emulation profiles flow through the eager path as well. The
-/// per-request `Protocol` extension is intentionally NOT honored here:
-/// there is no request yet at eager-handshake time.
+/// UA-emulation profiles flow through the eager path as well.
 pub async fn http2_eager_handshake<IO, BodyConnection>(
     io: IO,
     exec: Executor,
@@ -663,7 +648,7 @@ where
 
     tracing::trace!("eager h2 client handshake");
     let mut builder = rama_http_core::client::conn::http2::Builder::new(exec.clone());
-    apply_h2_client_extensions_to_builder(&mut builder, &extensions, false);
+    apply_h2_client_extensions_to_builder(&mut builder, &extensions);
     let (sender, conn) = builder.handshake(io).await.into_opaque_error()?;
     let peer_handle = conn.peer_settings_handle();
 

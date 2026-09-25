@@ -17,9 +17,9 @@ use rama_core::telemetry::tracing;
 use rama_http::proto::RequestHeaders;
 use rama_http::proto::h2::frame::EarlyFrameStreamContext;
 use rama_http_types::conn::HttpOrigin;
+use rama_http_types::proto::ext::Protocol;
 use rama_http_types::proto::h2::PseudoHeaderOrder;
 use rama_http_types::proto::h2::alt_svc::AltSvcObserverExtension;
-use rama_http_types::proto::ext::Protocol;
 use rama_http_types::proto::h2::frame::{self, Frame, Reason, Settings};
 use rama_http_types::{HeaderMap, Request, Response};
 use rama_net::conn::{ConnectionHealthWatcher, MaxConcurrency};
@@ -394,6 +394,9 @@ where
 
         me.actions.ensure_no_conn_error()?;
         me.actions.send.ensure_next_stream_id()?;
+        if protocol.is_some() && !me.actions.send.is_extended_connect_protocol_enabled() {
+            return Err(UserError::ExtendedConnectNotEnabled.into());
+        }
 
         // The `pending` argument is provided by the `Client`, and holds
         // a store `Key` of a `Stream` that may have been not been opened

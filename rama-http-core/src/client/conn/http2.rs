@@ -8,11 +8,12 @@ use std::time::Duration;
 
 use rama_core::error::BoxError;
 use rama_core::extensions::ExtensionsRef;
+use rama_core::futures::future::Either;
 use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{debug, trace};
 use rama_http::proto::h2::frame::EarlyFrame;
-use rama_http_types::proto::h2::PseudoHeaderOrder;
 use rama_http_types::proto::h2::frame::{SettingOrder, SettingsConfig};
+use rama_http_types::proto::{ext::Protocol, h2::PseudoHeaderOrder};
 use rama_http_types::{Request, Response, StreamingBody};
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -24,12 +25,14 @@ use crate::proto;
 /// The sender side of an established connection.
 pub struct SendRequest<B> {
     dispatch: dispatch::UnboundedSender<Request<B>, Response<IncomingBody>>,
+    peer_settings: H2PeerSettingsHandle,
 }
 
 impl<B> Clone for SendRequest<B> {
     fn clone(&self) -> Self {
         Self {
             dispatch: self.dispatch.clone(),
+            peer_settings: self.peer_settings.clone(),
         }
     }
 }
@@ -161,22 +164,22 @@ where
         &mut self,
         req: Request<B>,
     ) -> impl Future<Output = crate::Result<Response<IncomingBody>>> {
-        let sent = self.dispatch.send(req);
-
-        async move {
-            match sent {
-                Ok(rx) => match rx.await {
-                    Ok(Ok(resp)) => Ok(resp),
-                    Ok(Err(err)) => Err(err),
-                    // this is definite bug if it happens, but it shouldn't happen!
-                    Err(_canceled) => panic!("dispatch dropped without returning error"),
-                },
-                Err(_req) => {
-                    debug!("connection was not ready");
-                    Err(crate::Error::new_canceled().with("connection was not ready"))
+        // RFC 8441 §3: `:protocol` is only permitted once the server sent
+        // SETTINGS_ENABLE_CONNECT_PROTOCOL; wait for its SETTINGS first. This rare
+        // path is boxed so ordinary request futures keep their size.
+        if req.extensions().contains::<Protocol>() {
+            let peer_settings = self.peer_settings.clone();
+            let dispatch = self.dispatch.clone();
+            return Either::Left(Box::pin(async move {
+                if peer_settings.await_settings().await.is_none() {
+                    return Err(
+                        crate::Error::new_canceled().with("connection closed before peer SETTINGS")
+                    );
                 }
-            }
+                response(dispatch.send(req)).await
+            }));
         }
+        Either::Right(response(self.dispatch.send(req)))
     }
 
     /// Sends a `Request` on the associated connection.
@@ -191,24 +194,58 @@ where
         &mut self,
         req: Request<B>,
     ) -> impl Future<Output = Result<Response<IncomingBody>, TrySendError<Request<B>>>> {
-        let sent = self.dispatch.try_send(req);
-        async move {
-            match sent {
-                Ok(rx) => match rx.await {
-                    Ok(Ok(res)) => Ok(res),
-                    Ok(Err(err)) => Err(err),
-                    // this is definite bug if it happens, but it shouldn't happen!
-                    Err(_) => panic!("dispatch dropped without returning error"),
-                },
-                Err(req) => {
-                    debug!("connection was not ready");
-                    let error = crate::Error::new_canceled().with("connection was not ready");
-                    Err(TrySendError {
-                        error,
+        if req.extensions().contains::<Protocol>() {
+            let peer_settings = self.peer_settings.clone();
+            let mut dispatch = self.dispatch.clone();
+            return Either::Left(Box::pin(async move {
+                if peer_settings.await_settings().await.is_none() {
+                    return Err(TrySendError {
+                        error: crate::Error::new_canceled()
+                            .with("connection closed before peer SETTINGS"),
                         message: Some(req),
-                    })
+                    });
                 }
-            }
+                try_response(dispatch.try_send(req)).await
+            }));
+        }
+        Either::Right(try_response(self.dispatch.try_send(req)))
+    }
+}
+
+async fn response<B>(
+    sent: Result<dispatch::Promise<Response<IncomingBody>>, Request<B>>,
+) -> crate::Result<Response<IncomingBody>> {
+    match sent {
+        Ok(rx) => match rx.await {
+            Ok(Ok(resp)) => Ok(resp),
+            Ok(Err(err)) => Err(err),
+            // this is definite bug if it happens, but it shouldn't happen!
+            Err(_canceled) => panic!("dispatch dropped without returning error"),
+        },
+        Err(_req) => {
+            debug!("connection was not ready");
+            Err(crate::Error::new_canceled().with("connection was not ready"))
+        }
+    }
+}
+
+async fn try_response<B>(
+    sent: Result<dispatch::RetryPromise<Request<B>, Response<IncomingBody>>, Request<B>>,
+) -> Result<Response<IncomingBody>, TrySendError<Request<B>>> {
+    match sent {
+        Ok(rx) => match rx.await {
+            Ok(Ok(res)) => Ok(res),
+            Ok(Err(err)) => Err(err),
+            // this is definite bug if it happens, but it shouldn't happen!
+            Err(_) => panic!("dispatch dropped without returning error"),
+        },
+        Err(req) => {
+            debug!("connection was not ready");
+            let error = crate::Error::new_canceled().with("connection was not ready");
+            Err(TrySendError {
+                error,
+                message: Some(req),
+            })
         }
     }
 }
@@ -263,10 +300,7 @@ where
     /// initial h2 SETTINGS frame on this connection. The handle stays
     /// usable after the connection is spawned (consumed as a future),
     /// so callers can `spawn(conn)` first and then `await` the handle.
-    pub fn peer_settings_handle(&self) -> H2PeerSettingsHandle
-    where
-        B::Data: Send + Sync,
-    {
+    pub fn peer_settings_handle(&self) -> H2PeerSettingsHandle {
         self.inner.1.peer_settings_handle()
     }
 }
@@ -300,7 +334,7 @@ impl H2PeerSettingsHandle {
     /// the connection's lifetime.
     pub(crate) fn from_h2_sender<B>(sender: &crate::h2::client::SendRequest<B>) -> Self
     where
-        B: rama_core::bytes::Buf + Send + Sync + 'static,
+        B: rama_core::bytes::Buf,
     {
         Self {
             state: sender.peer_settings_state(),
@@ -726,6 +760,7 @@ impl Builder {
             Ok((
                 SendRequest {
                     dispatch: tx.unbound(),
+                    peer_settings: h2.peer_settings_handle(),
                 },
                 Connection {
                     inner: (PhantomData, h2),
@@ -756,6 +791,77 @@ mod tests {
             tokio::task::spawn(async move {
                 conn.await.unwrap();
             });
+        }
+    }
+
+    /// RFC 8441 §3: `:protocol` is only sent after the server enabled it, even when the
+    /// request is issued before the server's SETTINGS arrive.
+    #[tokio::test]
+    async fn extended_connect_waits_for_and_requires_server_setting() {
+        use crate::{server, service::RamaHttpService};
+        use rama_core::{ServiceInput, service::service_fn};
+        use rama_http_types::{Body, Method, Request, Response, proto::ext::Protocol};
+        use std::{
+            convert::Infallible,
+            sync::{
+                Arc,
+                atomic::{AtomicUsize, Ordering},
+            },
+        };
+
+        for enabled in [false, true] {
+            let (client_io, server_io) = tokio::io::duplex(65536);
+            let served = Arc::new(AtomicUsize::new(0));
+            let service = {
+                let served = served.clone();
+                service_fn(move |_request: Request| {
+                    served.fetch_add(1, Ordering::Relaxed);
+                    std::future::ready(Ok::<_, Infallible>(Response::new(Body::empty())))
+                })
+            };
+            let (mut sender, connection) = crate::client::conn::http2::handshake::<_, Body>(
+                Executor::default(),
+                ServiceInput::new(client_io),
+            )
+            .await
+            .unwrap();
+            tokio::spawn(connection);
+            let request = Request::builder()
+                .method(Method::CONNECT)
+                .uri("https://example.com/chat")
+                .body(Body::empty())
+                .unwrap();
+            request.extensions().insert(Protocol::WEBSOCKET);
+            // Issued before the server has written its SETTINGS.
+            let response = tokio::spawn(async move { sender.send_request(request).await });
+            tokio::task::yield_now().await;
+            let mut builder = server::conn::http2::Builder::new(Executor::default());
+            if enabled {
+                builder.set_enable_connect_protocol();
+            }
+            tokio::spawn(
+                builder
+                    .serve_connection(ServiceInput::new(server_io), RamaHttpService::new(service)),
+            );
+            let result = tokio::time::timeout(std::time::Duration::from_secs(10), response)
+                .await
+                .unwrap()
+                .unwrap();
+            match result {
+                Ok(_) => assert!(enabled),
+                // Refused locally: a server-side reset would also leave the service unserved.
+                Err(error) => {
+                    assert!(!enabled, "{error:?}");
+                    let h2 = std::error::Error::source(&error)
+                        .and_then(|source| source.downcast_ref::<crate::h2::Error>())
+                        .expect("h2 error");
+                    assert_eq!(
+                        h2.to_string(),
+                        "user error: peer did not enable extended CONNECT"
+                    );
+                }
+            }
+            assert_eq!(served.load(Ordering::Relaxed), usize::from(enabled));
         }
     }
 }
