@@ -1,11 +1,16 @@
 use std::io::Cursor;
 use std::pin::Pin;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::task::{Context, Poll};
 
 use rama_core::bytes::{Buf, Bytes};
 use rama_core::extensions::{Extensions, ExtensionsRef};
 use rama_core::futures::ready;
 use rama_core::telemetry::tracing::trace;
+use rama_http::io::upgrade::OnMalformedMessage;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use super::SendBuf;
@@ -24,9 +29,17 @@ where
     // extensions may contain OnUpgrade itself, creating a cycle through the
     // queued Upgraded, and may describe the opposite side of a proxy.
     let extensions = recv_stream.extensions();
+    // RFC 9297 §3.3 via RFC 9113 §8.1.1: a malformed data stream resets PROTOCOL_ERROR
+    // rather than ending the stream cleanly.
+    let malformed = Arc::new(AtomicBool::new(false));
+    extensions.insert(OnMalformedMessage::new({
+        let malformed = malformed.clone();
+        move || malformed.store(true, Ordering::Release)
+    }));
     H2Upgraded {
         send_stream: Box::new(send_stream),
         send_closed: false,
+        malformed,
         recv_stream,
         ping,
         buf: Bytes::new(),
@@ -46,6 +59,7 @@ trait TunnelSink: Send {
     fn poll_reset(&mut self, cx: &mut Context<'_>) -> Poll<Result<Reason, crate::h2::Error>>;
     fn send_data(&mut self, data: Box<[u8]>) -> Result<(), crate::h2::Error>;
     fn send_end_of_stream(&mut self) -> Result<(), crate::h2::Error>;
+    fn send_reset(&mut self, reason: Reason);
 }
 
 impl<B> TunnelSink for SendStream<SendBuf<B>>
@@ -74,12 +88,17 @@ where
     fn send_end_of_stream(&mut self) -> Result<(), crate::h2::Error> {
         Self::send_data(self, SendBuf::None, true)
     }
+
+    fn send_reset(&mut self, reason: Reason) {
+        Self::send_reset(self, reason);
+    }
 }
 
 pub(super) struct H2Upgraded {
     ping: Recorder,
     send_stream: Box<dyn TunnelSink>,
     send_closed: bool,
+    malformed: Arc<AtomicBool>,
     recv_stream: RecvStream,
     buf: Bytes,
     extensions: Extensions,
@@ -91,8 +110,28 @@ impl ExtensionsRef for H2Upgraded {
     }
 }
 
+impl H2Upgraded {
+    /// Reset a malformed tunnel instead of writing to or ending it.
+    fn reset_if_malformed(&mut self) -> Result<(), std::io::Error> {
+        if !self.malformed.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        if !self.send_closed {
+            self.send_closed = true;
+            self.send_stream.send_reset(Reason::PROTOCOL_ERROR);
+        }
+        Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "malformed tunnel data stream",
+        ))
+    }
+}
+
 impl Drop for H2Upgraded {
     fn drop(&mut self) {
+        if self.reset_if_malformed().is_err() {
+            return;
+        }
         // Half-close the tunnel for a peer that is still reading, as a
         // shutdown would have. Nothing to do if the stream is already gone.
         if !self.send_closed {
@@ -147,6 +186,7 @@ impl AsyncWrite for H2Upgraded {
         if buf.is_empty() {
             return Poll::Ready(Ok(0));
         }
+        self.reset_if_malformed()?;
         if self.send_closed {
             return Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into()));
         }
@@ -198,6 +238,7 @@ impl AsyncWrite for H2Upgraded {
         mut self: Pin<&mut Self>,
         _cx: &mut Context<'_>,
     ) -> Poll<Result<(), std::io::Error>> {
+        self.reset_if_malformed()?;
         if self.send_closed {
             return Poll::Ready(Ok(()));
         }
