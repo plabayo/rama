@@ -707,10 +707,15 @@ async fn released_streams_never_hold_datagrams() {
         pair.client.send_datagram(raw_datagram(0, b"late")).unwrap();
         wait_drops(&server, |drops| drops.unknown_stream == 1).await;
         assert_eq!(server.shared().datagram_demux().pending_len(), 0);
-        // A future stream is still held.
+        // A future stream is still held, and late traffic for a released one never evicts it.
         pair.client
             .send_datagram(raw_datagram(8, b"early"))
             .unwrap();
+        wait_pending(&server, 1).await;
+        pair.client
+            .send_datagram(raw_datagram(0, b"later"))
+            .unwrap();
+        wait_drops(&server, |drops| drops.unknown_stream == 2).await;
         wait_pending(&server, 1).await;
         pair.close().await;
         while server.shared().datagram_demux().buffered() != 0 {
@@ -919,6 +924,62 @@ async fn datagram_floods_do_not_starve_request_streams() {
             assert!(demux.buffered() <= DatagramLimits::default().max_buffered_bytes);
         }
         flood.abort();
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+/// The peer's error code on an aborted request stream.
+async fn stream_error(io: &mut Upgraded) -> Code {
+    let mut byte = [0; 1];
+    let error = io.read(&mut byte).await.unwrap_err();
+    error
+        .get_ref()
+        .and_then(|error| error.downcast_ref::<H3Error>())
+        .copied()
+        .expect("h3 error")
+        .code()
+}
+
+#[tokio::test]
+async fn rejected_violations_abort_unpolled_requests_in_both_roles() {
+    // No buffering at all: eligibility is decided without any retained payload.
+    let limits = DatagramLimits {
+        queue_len: 0,
+        pending_len: 0,
+        max_buffered_bytes: 0,
+    };
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::in_memory(None, None).await;
+        let strict = || Config {
+            extended_connect: true,
+            datagrams: datagrams(limits.clone(), ViolationPolicy::Reject),
+            ..Config::default()
+        };
+        let (mut client, mut server) = start_both(&pair, strict(), strict()).await;
+        // Server role: a datagram for an undeclared tunnel nobody polls.
+        let (mut client_io, mut server_io) =
+            tunnel_with(&mut client, &mut server, Protocol::WEBSOCKET, false, false).await;
+        pair.client.send_datagram(raw_datagram(0, b"x")).unwrap();
+        assert_eq!(stream_error(&mut client_io).await, Code::H3_DATAGRAM_ERROR);
+        server_io.read(&mut [0; 1]).await.unwrap_err();
+        // Client role, likewise.
+        let (mut client_io, mut server_io) =
+            tunnel_with(&mut client, &mut server, Protocol::WEBSOCKET, false, false).await;
+        pair.server.send_datagram(raw_datagram(4, b"y")).unwrap();
+        assert_eq!(stream_error(&mut server_io).await, Code::H3_DATAGRAM_ERROR);
+        client_io.read(&mut [0; 1]).await.unwrap_err();
+        assert_eq!(server.datagram_drops().no_semantics, 1);
+        assert_eq!(client.datagram_drops().no_semantics, 1);
+        // Later requests, control and QPACK keep working.
+        for _ in 0..2 {
+            let (mut a, mut b) = tunnel(&mut client, &mut server, TOKEN).await;
+            a.write_all(b"ok").await.unwrap();
+            a.flush().await.unwrap();
+            let mut buf = [0; 2];
+            b.read_exact(&mut buf).await.unwrap();
+        }
         pair.close().await;
     })
     .await

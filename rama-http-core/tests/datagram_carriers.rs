@@ -5,7 +5,7 @@
 
 use rama_core::{ServiceInput, bytes::Bytes, rt::Executor, service::service_fn};
 use rama_http::{
-    Body, Request, Response, Version,
+    Body, Request, Response, StatusCode, Version,
     datagram::{
         DatagramTransport, HttpDatagramSession, SessionConfig, SessionError, SessionEvent,
         ViolationPolicy,
@@ -290,4 +290,73 @@ async fn malformed_http2_streams_reset_after_local_end_stream() {
     })
     .await
     .unwrap();
+}
+
+/// Accepts the handshake only when the capsule validator does (the default `Ignore` policy).
+fn validating_service()
+-> RamaHttpService<impl rama_core::Service<Request, Output = Response, Error = Infallible> + Clone>
+{
+    RamaHttpService::new(service_fn(|request: Request| async move {
+        let Ok(protocol) = validate_capsule_request(&request, ViolationPolicy::Ignore) else {
+            let mut refused = Response::new(Body::empty());
+            *refused.status_mut() = StatusCode::BAD_REQUEST;
+            return Ok::<_, Infallible>(refused);
+        };
+        let upgrade = handle_upgrade(&request);
+        tokio::spawn(async move { echo(upgrade.await.unwrap()).await });
+        Ok(capsule_response::<Body>(request.version(), &protocol).unwrap())
+    }))
+}
+
+/// RFC 9112 §6.3: request content precedes an upgrade; it is never read as capsules.
+#[tokio::test]
+async fn http1_upgrades_with_request_content_are_refused() {
+    let head = "GET /capsules HTTP/1.1\r\nhost: proxy.example\r\nconnection: upgrade\r\n\
+                upgrade: x-capsule-test\r\ncapsule-protocol: ?1\r\n";
+    // A DATAGRAM capsule "hi" hidden where request content would be.
+    for (framing, content, switches) in [
+        ("content-length: 0\r\n", "", true),
+        ("", "", true),
+        ("content-length: 4\r\n", "\x00\x02hi", false),
+        (
+            "transfer-encoding: chunked\r\n",
+            "4\r\n\x00\x02hi\r\n0\r\n\r\n",
+            false,
+        ),
+        (
+            "expect: 100-continue\r\ncontent-length: 4\r\n",
+            "\x00\x02hi",
+            false,
+        ),
+    ] {
+        tokio::time::timeout(LIMIT, async {
+            let (mut client_io, server_io) = tokio::io::duplex(64 * 1024);
+            tokio::spawn(
+                server::conn::http1::Builder::new()
+                    .serve_connection(ServiceInput::new(server_io), validating_service())
+                    .with_upgrades(),
+            );
+            client_io
+                .write_all(format!("{head}{framing}\r\n{content}").as_bytes())
+                .await
+                .unwrap();
+            let mut response = vec![0; 1024];
+            let read = client_io.read(&mut response).await.unwrap();
+            let response = String::from_utf8_lossy(&response[..read]).into_owned();
+            let status = if switches { "101" } else { "400" };
+            assert!(
+                response.contains(&format!("HTTP/1.1 {status}")),
+                "{framing:?}: {response}"
+            );
+            if switches {
+                // Capsules start after the empty line: the echo proves they are parsed.
+                client_io.write_all(b"\x00\x02hi").await.unwrap();
+                let mut echo = [0; 4];
+                client_io.read_exact(&mut echo).await.unwrap();
+                assert_eq!(&echo, b"\x00\x02hi");
+            }
+        })
+        .await
+        .unwrap();
+    }
 }
