@@ -336,20 +336,34 @@ where
 {
     /// Send a request on its own bidirectional QUIC stream.
     ///
-    /// Extended CONNECT is not yet supported and is rejected before opening a stream.
+    /// A request carrying a [`Protocol`] is sent as Extended CONNECT (RFC 9220) once the
+    /// server's SETTINGS enable it; otherwise it fails locally before a stream is opened.
+    /// A successful (2xx) response exposes the tunnel through the upgrade API.
     pub async fn send_request(
         &mut self,
         request: Request<B>,
     ) -> Result<Response<crate::body::Incoming>, Error> {
-        // RFC 9220 section 3 requires negotiated extended CONNECT support.
-        // Until implemented, never downgrade :protocol to an ordinary tunnel.
-        if request.extensions().contains::<Protocol>() {
-            return Err(Error::stream(
-                Code::H3_MESSAGE_ERROR,
-                "extended CONNECT is not supported",
-            ));
-        }
         self.ready().await?;
+        if request.extensions().contains::<Protocol>() {
+            if request.method() != Method::CONNECT {
+                return Err(Error::stream(
+                    Code::H3_MESSAGE_ERROR,
+                    ":protocol requires CONNECT",
+                ));
+            }
+            // RFC 8441 §3: :protocol requires the server's SETTINGS_ENABLE_CONNECT_PROTOCOL.
+            let settings = tokio::select! {
+                biased;
+                error = self.shared.rejected(None) => return Err(error),
+                settings = self.shared.peer_settings() => settings?,
+            };
+            if !settings.extended_connect {
+                return Err(Error::stream(
+                    Code::H3_MESSAGE_ERROR,
+                    "peer did not enable extended CONNECT",
+                ));
+            }
+        }
         let reserved = request
             .extensions()
             .get_ref::<RequestReservation>()

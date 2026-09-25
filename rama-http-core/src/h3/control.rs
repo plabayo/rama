@@ -123,6 +123,11 @@ impl Control {
     pub(crate) fn goaway(&self) -> Option<u64> {
         self.goaway
     }
+
+    /// The peer's SETTINGS, once received.
+    pub(crate) fn settings(&self) -> Option<&Settings> {
+        self.settings.as_ref()
+    }
 }
 
 #[cfg(test)]

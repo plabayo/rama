@@ -8,7 +8,10 @@ use rama_core::{
     bytes::{Bytes, BytesMut},
     extensions::ExtensionsRef,
 };
-use rama_http_types::proto::h3::{Code, PseudoHeader, PseudoHeaderOrder, PseudoHeaderSensitivity};
+use rama_http_types::proto::{
+    ext,
+    h3::{Code, PseudoHeader, PseudoHeaderOrder, PseudoHeaderSensitivity},
+};
 use rama_http_types::{
     HeaderMap, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Version, header,
 };
@@ -27,6 +30,7 @@ struct Fields {
     scheme: Option<Bytes>,
     authority: Option<Bytes>,
     path: Option<Bytes>,
+    protocol: Option<Bytes>,
     status: Option<Bytes>,
 }
 
@@ -53,7 +57,7 @@ fn parse(fields: Vec<FieldPair>, trailers: bool) -> Result<Fields, Error> {
                 PseudoHeader::Authority => &mut result.authority,
                 PseudoHeader::Path => &mut result.path,
                 PseudoHeader::Status => &mut result.status,
-                PseudoHeader::Protocol => return Err(malformed("extended CONNECT is not enabled")),
+                PseudoHeader::Protocol => &mut result.protocol,
             };
             if slot.replace(field.value).is_some() {
                 return Err(malformed("duplicate pseudo-header"));
@@ -123,7 +127,17 @@ fn text(bytes: &Bytes) -> Result<&str, Error> {
     std::str::from_utf8(bytes).map_err(|_error| malformed("invalid pseudo-header value"))
 }
 
+/// Decode a request head. `extended_connect` is whether this endpoint advertised
+/// `SETTINGS_ENABLE_CONNECT_PROTOCOL`; `:protocol` is malformed otherwise (RFC 8441 §3).
+#[cfg(test)]
 pub(crate) fn request(fields: Vec<FieldPair>) -> Result<Request<()>, Error> {
+    request_head(fields, false)
+}
+
+pub(crate) fn request_head(
+    fields: Vec<FieldPair>,
+    extended_connect: bool,
+) -> Result<Request<()>, Error> {
     let mut fields = parse(fields, false)?;
     content_length(&fields.headers)?;
     if fields.status.is_some() {
@@ -136,6 +150,20 @@ pub(crate) fn request(fields: Vec<FieldPair>) -> Result<Request<()>, Error> {
             .ok_or(malformed("missing method"))?,
     )
     .map_err(|_error| malformed("invalid method"))?;
+    let protocol = fields
+        .protocol
+        .take()
+        .map(|value| {
+            if !extended_connect {
+                return Err(malformed("extended CONNECT is not enabled"));
+            }
+            // RFC 8441 §4: Extended CONNECT carries :scheme, :path and an ordinary :authority.
+            if method != Method::CONNECT || fields.scheme.is_none() || fields.path.is_none() {
+                return Err(malformed("invalid extended CONNECT pseudo-headers"));
+            }
+            ext::Protocol::try_from_bytes(value).map_err(|_error| malformed("invalid :protocol"))
+        })
+        .transpose()?;
     let host_values = fields.headers.get_all(header::HOST);
     let mut hosts = host_values.iter();
     let host = hosts.next();
@@ -169,7 +197,7 @@ pub(crate) fn request(fields: Vec<FieldPair>) -> Result<Request<()>, Error> {
         AuthorityRef::try_from(authority).map_err(|_error| malformed("invalid authority"))?;
     }
     let mut asterisk_scheme = None;
-    let uri = if method == Method::CONNECT {
+    let uri = if method == Method::CONNECT && protocol.is_none() {
         if fields.scheme.is_some() || fields.path.is_some() || fields.authority.is_none() {
             return Err(malformed("invalid CONNECT pseudo-headers"));
         }
@@ -227,6 +255,9 @@ pub(crate) fn request(fields: Vec<FieldPair>) -> Result<Request<()>, Error> {
     if fields.sensitivity != PseudoHeaderSensitivity::default() {
         request.extensions().insert(fields.sensitivity);
     }
+    if let Some(protocol) = protocol {
+        request.extensions().insert(protocol);
+    }
     if let Some(scheme) = asterisk_scheme {
         request.extensions().insert(scheme);
         if !request.headers().contains_key(header::HOST)
@@ -266,6 +297,7 @@ pub(crate) fn response_for_method(
         || fields.scheme.is_some()
         || fields.authority.is_some()
         || fields.path.is_some()
+        || fields.protocol.is_some()
     {
         return Err(malformed("request pseudo-header in response"));
     }
@@ -311,7 +343,12 @@ pub(crate) fn encode_request<B>(
     request: &Request<B>,
 ) -> Result<Bytes, Error> {
     validate_regular(request.headers(), false)?;
-    let connect = request.method() == Method::CONNECT;
+    let protocol = request.extensions().get_ref::<ext::Protocol>();
+    if protocol.is_some() && request.method() != Method::CONNECT {
+        return Err(malformed(":protocol requires CONNECT"));
+    }
+    // Ordinary CONNECT uses authority-form; Extended CONNECT is an ordinary target.
+    let connect = request.method() == Method::CONNECT && protocol.is_none();
     if request.uri().fragment().is_some() || (connect && request.uri().port_u16().is_none()) {
         return Err(malformed("invalid request target"));
     }
@@ -375,11 +412,15 @@ pub(crate) fn encode_request<B>(
     if http_scheme && authority.is_empty() && !request.headers().contains_key(header::HOST) {
         return Err(malformed("HTTP URI requires authority"));
     }
+    if protocol.is_some() && (authority.is_empty() || path.is_empty()) {
+        return Err(malformed("extended CONNECT requires authority and path"));
+    }
     let mut pseudo = [
         Some((PseudoHeader::Method, request.method().as_str().as_bytes())),
         (!authority.is_empty()).then_some((PseudoHeader::Authority, authority)),
         scheme.map(|scheme| (PseudoHeader::Scheme, scheme.as_str().as_bytes())),
         (!connect).then_some((PseudoHeader::Path, path)),
+        protocol.map(|protocol| (PseudoHeader::Protocol, protocol.as_ref())),
     ];
     let mut order = request
         .extensions()
@@ -920,6 +961,107 @@ mod tests {
             (":authority", "example.com"),
         ]))
         .unwrap_err();
+    }
+
+    #[test]
+    fn extended_connect_pseudo_header_rules() {
+        let extended = [
+            (":method", "CONNECT"),
+            (":protocol", "connect-udp"),
+            (":scheme", "https"),
+            (":authority", "proxy.example:4443"),
+            (":path", "/.well-known/masque/udp/192.0.2.6/443/"),
+        ];
+        let req = request_head(fields(&extended), true).unwrap();
+        assert_eq!(
+            req.extensions().get_ref::<ext::Protocol>(),
+            Some(&ext::Protocol::from_static("connect-udp"))
+        );
+        assert_eq!(
+            req.uri().to_string(),
+            "https://proxy.example:4443/.well-known/masque/udp/192.0.2.6/443/"
+        );
+        // Not advertised: malformed (RFC 8441 §3), never an ordinary tunnel.
+        assert_eq!(
+            request_head(fields(&extended), false).unwrap_err().code(),
+            Code::H3_MESSAGE_ERROR
+        );
+        for missing in [":scheme", ":path"] {
+            let input: Vec<_> = extended
+                .iter()
+                .copied()
+                .filter(|(name, _)| *name != missing)
+                .collect();
+            request_head(fields(&input), true).unwrap_err();
+        }
+        for (name, value) in [
+            (":method", "GET"),
+            (":protocol", "bad token"),
+            (":protocol", ""),
+        ] {
+            let input: Vec<_> = extended
+                .iter()
+                .map(|field| {
+                    if field.0 == name {
+                        (name, value)
+                    } else {
+                        *field
+                    }
+                })
+                .collect();
+            request_head(fields(&input), true).unwrap_err();
+        }
+        let mut duplicate = extended.to_vec();
+        duplicate.insert(2, (":protocol", "websocket"));
+        request_head(fields(&duplicate), true).unwrap_err();
+    }
+
+    #[test]
+    fn extended_connect_encoding_keeps_target_and_orders_protocol() {
+        let mut request = Request::builder()
+            .method(Method::CONNECT)
+            .uri("https://example.com/chat?x=1")
+            .body(())
+            .unwrap();
+        request.extensions().insert(ext::Protocol::WEBSOCKET);
+        let output = decode(encode_request(&shared(), 0, &request).unwrap());
+        assert_eq!(
+            output,
+            fields(&[
+                (":method", "CONNECT"),
+                (":authority", "example.com"),
+                (":scheme", "https"),
+                (":path", "/chat?x=1"),
+                (":protocol", "websocket"),
+            ])
+        );
+        let decoded = request_head(output, true).unwrap();
+        assert_eq!(decoded.uri(), request.uri());
+        // A forwarded request keeps the received pseudo-header order.
+        let reordered = request_head(
+            fields(&[
+                (":protocol", "websocket"),
+                (":method", "CONNECT"),
+                (":scheme", "https"),
+                (":path", "/chat"),
+                (":authority", "example.com"),
+            ]),
+            true,
+        )
+        .unwrap();
+        let output = decode(encode_request(&shared(), 0, &reordered).unwrap());
+        let names: Vec<_> = output.iter().map(|field| field.name.clone()).collect();
+        assert_eq!(
+            names,
+            [":protocol", ":method", ":scheme", ":path", ":authority"]
+        );
+        *request.method_mut() = Method::GET;
+        encode_request(&shared(), 0, &request).unwrap_err();
+    }
+
+    #[test]
+    fn protocol_is_never_a_response_field() {
+        response(fields(&[(":status", "200"), (":protocol", "websocket")])).unwrap_err();
     }
 
     #[test]

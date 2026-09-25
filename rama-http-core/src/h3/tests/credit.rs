@@ -4,6 +4,7 @@ use super::{LIMIT, Pair};
 use crate::h3::{
     client,
     connection::{Config, initial_control},
+    control::Role,
     server,
 };
 use rama_core::{
@@ -42,7 +43,11 @@ async fn priority_update_checks_exact_advertised_stream_limit() {
             let mut payload = BytesMut::new();
             StreamId::new(Side::Client, Dir::Bi, index).encode(&mut payload);
             payload.extend_from_slice(b"u=1");
-            let mut bytes = BytesMut::from(initial_control(&Config::default()).unwrap().as_ref());
+            let mut bytes = BytesMut::from(
+                initial_control(&Config::default(), Role::Client)
+                    .unwrap()
+                    .as_ref(),
+            );
             FrameHeader::new(FrameType::PRIORITY_UPDATE_REQUEST, payload.len() as u64)
                 .encode(&mut bytes)
                 .unwrap();
@@ -84,7 +89,11 @@ async fn priority_updates_cover_transport_credit_beyond_application_admission() 
                 server::handshake(pair.server.clone(), Config::default()).unwrap();
             let driver = spawn(driver.run());
             let limit = pair.server.remote_stream_limit(Dir::Bi);
-            let mut bytes = BytesMut::from(initial_control(&Config::default()).unwrap().as_ref());
+            let mut bytes = BytesMut::from(
+                initial_control(&Config::default(), Role::Client)
+                    .unwrap()
+                    .as_ref(),
+            );
             for index in 0..limit {
                 let mut payload = BytesMut::new();
                 StreamId::new(Side::Client, Dir::Bi, index).encode(&mut payload);

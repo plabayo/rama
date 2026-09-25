@@ -131,7 +131,13 @@ impl RequestStream {
     pub async fn resolve(
         mut self,
     ) -> Result<(Request<crate::body::Incoming>, SendResponse), Error> {
-        let request = match self.reader.headers().await.and_then(headers::request) {
+        let extended_connect = self.reader.shared.config.extended_connect;
+        let request = match self
+            .reader
+            .headers()
+            .await
+            .and_then(|fields| headers::request_head(fields, extended_connect))
+        {
             Ok(request) => request,
             Err(error) => return Err(self.reader.reject(error)),
         };

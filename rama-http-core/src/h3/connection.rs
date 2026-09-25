@@ -52,6 +52,10 @@ pub struct Config {
     pub read_chunk_size: usize,
     /// Maximum unclassified peer unidirectional streams retained simultaneously.
     pub max_pending_uni_streams: usize,
+    /// Accept Extended CONNECT (RFC 9220) as a server, advertising
+    /// `SETTINGS_ENABLE_CONNECT_PROTOCOL`. The service decides which `:protocol`
+    /// tokens it serves; RFC 9220 §3 recommends `501` for others.
+    pub extended_connect: bool,
 }
 
 impl Default for Config {
@@ -64,6 +68,7 @@ impl Default for Config {
             max_frame_size: kib(64),
             read_chunk_size: kib(16),
             max_pending_uni_streams: 32,
+            extended_connect: false,
         }
     }
 }
@@ -86,6 +91,19 @@ impl Config {
         transport.set_stream_receive_window(VarInt::from_u32(kib(256) as u32));
         transport.set_receive_window(VarInt::from_u32(mib(8) as u32));
         Ok(())
+    }
+
+    /// The SETTINGS this endpoint sends; Extended CONNECT is a server setting (RFC 8441 §3).
+    pub(crate) fn local_settings(&self, role: Role) -> Result<Settings, Error> {
+        let mut settings = self.settings()?;
+        if role == Role::Server && self.extended_connect {
+            settings
+                .set(SettingId::ENABLE_CONNECT_PROTOCOL, 1)
+                .map_err(|_error| {
+                    Error::connection(Code::H3_INTERNAL_ERROR, "invalid local settings")
+                })?;
+        }
+        Ok(settings)
     }
 
     pub(crate) fn settings(&self) -> Result<Settings, Error> {
@@ -131,6 +149,12 @@ impl Config {
     }
 }
 
+/// Capabilities the peer advertised in its SETTINGS.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct PeerSettings {
+    pub(crate) extended_connect: bool,
+}
+
 // Enough for multiple decoder acknowledgements and GOAWAY; ordinary writes leave
 // this credit for critical streams. QUIC caps it for very small peer windows.
 pub(crate) const CRITICAL_SEND_RESERVE: u64 = 64;
@@ -162,6 +186,7 @@ pub(crate) struct Shared {
     request_rejected: Notify,
     failure: Notify,
     control_ready: Notify,
+    settings_ready: Notify,
     pub(crate) schedule: super::priority::Schedule,
 }
 
@@ -216,6 +241,7 @@ impl Shared {
             request_rejected: Notify::new(),
             failure: Notify::new(),
             control_ready: Notify::new(),
+            settings_ready: Notify::new(),
         }))
     }
 
@@ -273,6 +299,7 @@ impl Shared {
         self.push_ready.notify_waiters();
         self.failure.notify_waiters();
         self.request_rejected.notify_waiters();
+        self.settings_ready.notify_waiters();
         for output in &self.output {
             output.notify_one();
         }
@@ -429,6 +456,27 @@ impl Shared {
 
     pub(crate) fn goaway(&self) -> Option<u64> {
         self.state.lock().control.goaway()
+    }
+
+    /// Wait for the peer's SETTINGS, which arrive once at the start of its control stream.
+    pub(crate) async fn peer_settings(&self) -> Result<PeerSettings, Error> {
+        loop {
+            let ready = self.settings_ready.notified();
+            let mut ready = pin!(ready);
+            ready.as_mut().enable();
+            {
+                let state = self.state.lock();
+                if let Some(settings) = state.control.settings() {
+                    return Ok(PeerSettings {
+                        extended_connect: settings.enable_connect_protocol(),
+                    });
+                }
+                if let Some(error) = state.error {
+                    return Err(error);
+                }
+            }
+            ready.await;
+        }
     }
 
     pub(crate) fn cancel(&self, id: u64) {
@@ -773,8 +821,11 @@ pub(crate) async fn receive_uni(
                         .encoder
                         .apply_peer_settings(settings)
                         .map_err(compression_error)?;
+                    drop(state);
+                    shared.settings_ready.notify_waiters();
+                } else {
+                    drop(state);
                 }
-                drop(state);
                 if let FrameEvent::MaxPushId(id) = event {
                     shared.pushes.lock().max_id(id);
                     shared.push_ready.notify_waiters();
@@ -862,8 +913,8 @@ fn critical_receive_closed(connection: &QuicConnection) -> Error {
     )
 }
 
-pub(crate) fn initial_control(config: &Config) -> Result<Bytes, Error> {
-    let settings = config.settings()?;
+pub(crate) fn initial_control(config: &Config, role: Role) -> Result<Bytes, Error> {
+    let settings = config.local_settings(role)?;
     let mut payload = BytesMut::new();
     settings
         .encode_payload(&mut payload)
@@ -995,7 +1046,7 @@ impl Driver {
                 control.set_priority(i32::MAX).map_err(|_error| {
                     Error::connection(Code::H3_CLOSED_CRITICAL_STREAM, "control stream closed")
                 })?;
-                let mut bytes = [initial_control(&self.shared.config)?];
+                let mut bytes = [initial_control(&self.shared.config, self.role)?];
                 if self.role == Role::Client && self.shared.config.max_pushes != 0 {
                     self.shared.send_control_id(
                         FrameType::MAX_PUSH_ID,

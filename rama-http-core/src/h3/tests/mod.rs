@@ -2,6 +2,7 @@
 mod cancellation;
 mod close;
 mod credit;
+mod extended_connect;
 mod fairness;
 mod loss;
 mod robustness;

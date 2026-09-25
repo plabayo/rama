@@ -12,17 +12,13 @@ use crate::h3::{
 };
 use rama_core::{
     bytes::{Bytes, BytesMut},
-    extensions::ExtensionsRef,
     futures::{FutureExt as _, stream},
     rt::{Executor, spawn},
 };
 use rama_http_types::{
     Body, Method, Request, Response, StatusCode,
     body::{Frame, util::BodyExt},
-    proto::{
-        ext::Protocol,
-        h3::{Code, FrameHeader, FrameType},
-    },
+    proto::h3::{Code, FrameHeader, FrameType},
 };
 use rama_quic_proto::{TransportError, TransportErrorCode};
 use rama_utils::octets::kib;
@@ -36,35 +32,6 @@ fn headers_frame(fields: &[u8]) -> Bytes {
         .unwrap();
     wire.extend_from_slice(fields);
     wire.freeze()
-}
-
-#[tokio::test]
-async fn extended_connect_is_rejected_before_opening_a_stream() {
-    tokio::time::timeout(LIMIT, async {
-        let pair = Pair::in_memory(None, None).await;
-        let (mut client, driver) =
-            client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
-                .unwrap();
-        let request = Request::builder()
-            .method(Method::CONNECT)
-            .uri("https://localhost:443/chat")
-            .body(Body::empty())
-            .unwrap();
-        request.extensions().insert(Protocol::WEBSOCKET);
-        let error = client
-            .send_request(request)
-            .now_or_never()
-            .expect("unsupported requests fail locally without waiting for peer traffic")
-            .unwrap_err();
-        assert_eq!(error.code(), Code::H3_MESSAGE_ERROR);
-        // The rejected request must not consume even one stream ID.
-        let (send, recv) = pair.client.open_bi().await.unwrap();
-        assert_eq!(u64::from(send.id()), 0);
-        drop((send, recv, client, driver));
-        pair.close().await;
-    })
-    .await
-    .unwrap();
 }
 
 #[tokio::test]

@@ -35,7 +35,11 @@ async fn memory_clean_close_drains_accepted_control_frames_before_terminal_notif
             assert!(poll_fn(|cx| Poll::Ready(driver.as_mut().poll(cx).is_pending())).await);
 
             let mut control = pair.server.open_uni().await.unwrap();
-            let mut bytes = BytesMut::from(initial_control(&Config::default()).unwrap().as_ref());
+            let mut bytes = BytesMut::from(
+                initial_control(&Config::default(), Role::Client)
+                    .unwrap()
+                    .as_ref(),
+            );
             let first = VarInt::from_u64((MAX_STREAM_COUNT - 1) * 4).unwrap();
             FrameHeader::new(FrameType::GOAWAY, first.size() as u64)
                 .encode(&mut bytes)
@@ -224,7 +228,11 @@ async fn memory_response_close_waits_for_buffered_goaway_before_classifying_reje
             let (_send, mut recv) = pair.server.accept_bi().await.unwrap();
             recv.read_chunk(4096, true).await.unwrap();
             let mut control = pair.server.open_uni().await.unwrap();
-            let mut bytes = BytesMut::from(initial_control(&Config::default()).unwrap().as_ref());
+            let mut bytes = BytesMut::from(
+                initial_control(&Config::default(), Role::Client)
+                    .unwrap()
+                    .as_ref(),
+            );
             for _ in 0..128 {
                 FrameHeader::new(FrameType::new(0x21), 0)
                     .encode(&mut bytes)
