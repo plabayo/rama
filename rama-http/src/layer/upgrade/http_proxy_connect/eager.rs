@@ -65,7 +65,8 @@ impl<C, S> EagerHttpProxyConnector<C, S> {
 impl<C, S, Body> Service<Request<Body>> for EagerHttpProxyConnector<C, S>
 where
     C: ConnectorService<ConnectRequest, Connection: Io + Unpin>,
-    S: Service<BridgeIo<Upgraded, C::Connection>, Error: Into<BoxError>> + Clone,
+    S: Service<BridgeIo<Upgraded, super::ConnectEgress<C::Connection>>, Error: Into<BoxError>>
+        + Clone,
     Body: Send + 'static,
 {
     type Output = UpgradeOutput<Request<Body>, Response>;
@@ -103,6 +104,7 @@ where
         Ok(UpgradeResponse::new(req, StatusCode::OK.into_response())
             .with_extension(ConnectorTarget(authority))
             .with_handler(move |upgraded| async move {
+                let egress = super::ConnectEgress::new(egress, &upgraded);
                 relay_service
                     .serve(BridgeIo(upgraded, egress))
                     .await
@@ -320,7 +322,12 @@ mod tests {
         let relay = service_fn({
             let connected = connected.clone();
             let relayed = relayed.clone();
-            move |bridge: BridgeIo<Upgraded, ServiceInput<tokio_test::io::Mock>>| {
+            move |bridge: BridgeIo<
+                Upgraded,
+                crate::layer::upgrade::http_proxy_connect::ConnectEgress<
+                    ServiceInput<tokio_test::io::Mock>,
+                >,
+            >| {
                 assert!(
                     connected.load(Ordering::SeqCst),
                     "egress must be connected before the relay starts"

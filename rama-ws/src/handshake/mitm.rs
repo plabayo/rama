@@ -1401,7 +1401,7 @@ async fn relay_direction<H, Source>(
             std::mem::take(relay_extensions)
         };
         let handling = handler.serve(direction, event, extensions);
-        tokio::pin!(handling);
+        let mut handling = std::pin::pin!(handling);
         let handler_result = loop {
             tokio::select! {
                 biased;

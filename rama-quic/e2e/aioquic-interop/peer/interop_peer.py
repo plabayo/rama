@@ -14,8 +14,9 @@ import json
 import socket
 import sys
 import threading
+from contextlib import asynccontextmanager
 
-from aioquic.asyncio import connect, serve
+from aioquic.asyncio import serve
 from aioquic.asyncio.protocol import QuicConnectionProtocol
 from aioquic import tls as quic_tls
 from aioquic.quic.configuration import QuicConfiguration
@@ -330,13 +331,16 @@ async def run_client(arguments):
                 say(event="ended", **terminated(event, self.arrived))
             super().quic_event_received(event)
 
-    async with connect(
+    async with connect_peer(
         arguments.host,
         arguments.port,
         configuration=client_configuration(arguments),
         create_protocol=Watched,
     ) as client:
-        say(event="connected")
+        say(
+            event="connected",
+            socket_ipv6=client._transport.get_extra_info("socket").family == socket.AF_INET6,
+        )
 
         # A shared trust case asks for exactly one bidirectional probe and no upload, so it is
         # handled before the generic stream traffic rather than alongside it.
@@ -443,9 +447,13 @@ async def run_backpressure_client(arguments):
                 stop()
             super().quic_event_received(event)
 
-    async with connect(arguments.host, arguments.port,
-                       configuration=client_configuration(arguments),
-                       create_protocol=Watched, stream_handler=handle) as client:
+    async with connect_peer(
+        arguments.host,
+        arguments.port,
+        configuration=client_configuration(arguments),
+        create_protocol=Watched,
+        stream_handler=handle,
+    ) as client:
         take_orders(loop, client, stop, {"protocol": client})
         try:
             await quiet
@@ -485,7 +493,7 @@ async def run_resuming_client(arguments):
             super().quic_event_received(event)
 
     configuration = client_configuration(arguments)
-    async with connect(
+    async with connect_peer(
         arguments.host,
         arguments.port,
         configuration=configuration,
@@ -501,7 +509,7 @@ async def run_resuming_client(arguments):
 
     configuration.session_ticket = ticket
     offers_early_data = arguments.early_length is not None
-    async with connect(
+    async with connect_peer(
         arguments.host,
         arguments.second_port,
         configuration=configuration,
@@ -568,7 +576,7 @@ async def run_key_client(arguments):
                 say(event="ended", **terminated(event, self.arrived))
             super().quic_event_received(event)
 
-    async with connect(
+    async with connect_peer(
         arguments.host,
         arguments.port,
         configuration=client_configuration(arguments),
@@ -613,7 +621,7 @@ async def run_close_client(arguments):
                 say(event="ended", **terminated(event, self.arrived))
             super().quic_event_received(event)
 
-    async with connect(
+    async with connect_peer(
         arguments.host,
         arguments.port,
         configuration=client_configuration(arguments),
@@ -678,7 +686,7 @@ async def run_moving_client(arguments):
             self._client.take(data, addr)
 
     loop = asyncio.get_running_loop()
-    destination = mapped_destination(arguments.host, arguments.port)
+    destination = destination_for(arguments.host, arguments.port)
     first = concrete_socket(destination)
     transports = []
     try:
@@ -727,36 +735,76 @@ async def run_moving_client(arguments):
     say(event="done")
 
 
-def mapped_destination(host, port):
-    """The destination as a dual-stack socket addresses it: an IPv4 address v4-mapped, which
-    is what aioquic's own client does before it connects."""
-    resolved = socket.getaddrinfo(host, port, type=socket.SOCK_DGRAM)[0][4]
-    if len(resolved) == 2:
-        return ("::ffff:" + resolved[0], resolved[1], 0, 0)
-    return resolved
+@asynccontextmanager
+async def connect_peer(
+    host,
+    port,
+    *,
+    configuration,
+    create_protocol,
+    session_ticket_handler=None,
+    stream_handler=None,
+    wait_connected=True,
+):
+    """Use aioquic's protocol on a socket matching the destination's address family.
 
-
-def source_for(destination):
-    """The address this host sends to `destination` from, asked of the routing table.
-    Connecting a UDP socket puts nothing on the wire; it only settles the source."""
-    scratch = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+    Its convenience connector always binds a dual-stack wildcard. On macOS an
+    automatic IPv6 port can overlap an existing IPv4 bind, diverting replies to
+    another test. Share the concrete socket setup with the migration scenarios.
+    """
+    if configuration.server_name is None:
+        configuration.server_name = host
+    connection = QuicConnection(
+        configuration=configuration,
+        session_ticket_handler=session_ticket_handler,
+    )
+    destination = destination_for(host, port)
+    transport, client = await endpoint_on(
+        asyncio.get_running_loop(),
+        lambda: create_protocol(connection, stream_handler=stream_handler),
+        concrete_socket(destination),
+    )
     try:
-        scratch.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
-        scratch.connect(destination)
-        chosen = scratch.getsockname()
-        return chosen[0], chosen[3]
+        client.connect(destination, transmit=wait_connected)
+        if wait_connected:
+            await client.wait_connected()
+        yield client
     finally:
-        scratch.close()
+        client.close()
+        try:
+            await client.wait_closed()
+        finally:
+            transport.close()
+
+
+def destination_for(host, port):
+    """Resolve without mapping IPv4 into a different socket family."""
+    return socket.getaddrinfo(host, port, type=socket.SOCK_DGRAM)[0][4]
+
+
+def socket_for(destination):
+    """Keep ephemeral-port allocation and packet delivery in the same family."""
+    family = socket.AF_INET if len(destination) == 2 else socket.AF_INET6
+    sock = socket.socket(family, socket.SOCK_DGRAM)
+    try:
+        if family == socket.AF_INET6:
+            sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+    except BaseException:
+        sock.close()
+        raise
+    return sock
 
 
 def concrete_socket(destination):
-    """A dual-stack socket bound to the address it will send from, on a port of the kernel's
-    choosing."""
-    host, scope = source_for(destination)
-    sock = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+    """Bind the route's concrete source address, with a fresh port in its family."""
+    # UDP connect only consults routing; it sends no packet. Do not connect the
+    # actual transport socket: migration must still receive from another peer.
+    with socket_for(destination) as scratch:
+        scratch.connect(destination)
+        source = scratch.getsockname()
+    sock = socket_for(destination)
     try:
-        sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
-        sock.bind((host, 0, 0, scope))
+        sock.bind((source[0], 0, *source[2:]))
     except BaseException:
         sock.close()
         raise

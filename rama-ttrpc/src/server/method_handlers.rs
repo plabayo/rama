@@ -254,7 +254,7 @@ async fn handle_server_stream<Output: prost::Message + Default>(
     tx: &StreamSender,
     strm: impl Stream<Item = Result<Output>>,
 ) -> Result<()> {
-    tokio::pin!(strm);
+    let mut strm = std::pin::pin!(strm);
 
     while let Some(data) = strm.try_next().await? {
         tx.data(data).await.map_err(Status::send_error)?;

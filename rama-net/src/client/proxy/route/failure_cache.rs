@@ -9,17 +9,21 @@ use moka::{policy::EvictionPolicy, sync::Cache};
 use rama_core::{
     Layer, Service,
     error::{BoxError, BoxErrorExt as _},
-    extensions::ExtensionsRef,
     telemetry::tracing,
 };
 use rama_utils::{macros::define_inner_service_accessors, time::now_monotonic_nanos};
 
 use crate::client::{
-    ConnectionError, ConnectionErrorDomain, ConnectionErrorKind, ConnectorService,
-    EstablishedClientConnection,
+    ConnectionError, ConnectionErrorDomain, ConnectionErrorKind, ConnectionPolicyScope,
+    ConnectorService, ConnectorTarget, EstablishedClientConnection,
 };
 use crate::{
-    AuthorityInputExt, Protocol, ProtocolInputExt, address::HostWithPort, user::ProxyCredential,
+    AuthorityInputExt, ConnectorTargetInputExt, ConnectorTransportProtocolInputExt, Protocol,
+    ProtocolInputExt,
+    address::HostWithPort,
+    http::{TargetHttpVersion, Version},
+    transport::TransportProtocol,
+    user::ProxyCredential,
 };
 
 use super::ProxyRoute;
@@ -31,7 +35,8 @@ pub enum ProxyRouteFailureCacheScope {
     /// Keep failures isolated per proxy route and final destination.
     #[default]
     PerDestination,
-    /// Share failures for a proxy route across every final destination.
+    /// Share failures for a proxy route across ordinary final destinations.
+    /// Explicit connector targets remain isolated from these and each other.
     PerProxy,
 }
 
@@ -106,7 +111,16 @@ struct FailureCacheKey {
     basic_username: Option<String>,
     bearer_credential: bool,
     destination_protocol: Option<Protocol>,
-    destination: Option<HostWithPort>,
+    destination: FailureDestination,
+    transport: Option<TransportProtocol>,
+    http_version: Option<Version>,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum FailureDestination {
+    Proxy,
+    Origin(HostWithPort),
+    Override(HostWithPort),
 }
 
 type SharedFailureCacheKey = Arc<FailureCacheKey>;
@@ -193,14 +207,18 @@ enum CacheDecision {
 ///
 /// The cache is bounded and safe to clone across connector services. Healthy
 /// routes create only transient state while an attempt is in flight; a success
-/// or non-cacheable failure removes it, so retained entries represent negative
-/// backoff state. State transitions for one route key use atomics and do not
-/// contend with unrelated proxy routes or destinations. After a backoff expires,
+/// or non-cacheable remote failure removes it, so retained entries represent
+/// negative backoff state. Local failures leave existing backoff unchanged.
+/// State transitions use atomics without contending with unrelated proxy routes
+/// or destinations. After a backoff expires,
 /// at most one caller receives a half-open probe permit for that key.
 ///
 /// Keys contain the proxy protocol and address, an optional Basic routing
-/// username, and optionally the final destination protocol and address. Basic
-/// passwords and bearer tokens are never retained in a key.
+/// username, the requested transport and HTTP version when present, and the
+/// destination according to the configured scope. Explicit connector targets
+/// have their own namespace even when they equal the origin address, so failed
+/// discovery cannot suppress the original route. No transport is inferred from
+/// the proxy or HTTP version. Basic passwords and bearer tokens are never retained.
 #[derive(Clone)]
 pub struct ProxyRouteFailureCache {
     entries: Arc<Cache<SharedFailureCacheKey, Arc<FailureEntry>>>,
@@ -247,23 +265,27 @@ impl ProxyRouteFailureCache {
 
     fn begin<Input>(&self, input: &Input) -> Option<CacheDecision>
     where
-        Input: AuthorityInputExt + ExtensionsRef + ProtocolInputExt,
+        Input: AuthorityInputExt + ConnectorTransportProtocolInputExt + ProtocolInputExt,
     {
         let route = input.extensions().get_arc::<ProxyRoute>()?;
         let ProxyRoute::Proxy(proxy) = route.as_ref() else {
             return None;
         };
-        let (destination_protocol, destination) = match self.config.scope {
-            ProxyRouteFailureCacheScope::PerDestination => (
-                input.protocol(),
-                Some(
-                    input
-                        .authority()?
-                        .into_host_with_port(input.protocol_default_port())?,
-                ),
-            ),
-            ProxyRouteFailureCacheScope::PerProxy => (None, None),
-        };
+        let (destination_protocol, destination) =
+            if let Some(target) = input.extensions().get_ref::<ConnectorTarget>() {
+                (
+                    input.protocol(),
+                    FailureDestination::Override(target.0.clone()),
+                )
+            } else {
+                match self.config.scope {
+                    ProxyRouteFailureCacheScope::PerDestination => (
+                        input.protocol(),
+                        FailureDestination::Origin(input.connector_target()?),
+                    ),
+                    ProxyRouteFailureCacheScope::PerProxy => (None, FailureDestination::Proxy),
+                }
+            };
         let (basic_username, bearer_credential) = match proxy.credential.as_ref() {
             Some(ProxyCredential::Basic(basic)) => (Some(basic.username()), false),
             Some(ProxyCredential::Bearer(_)) => (None, true),
@@ -276,6 +298,11 @@ impl ProxyRouteFailureCache {
             bearer_credential,
             destination_protocol: destination_protocol.cloned(),
             destination,
+            transport: input.connector_transport_protocol(),
+            http_version: input
+                .extensions()
+                .get_ref::<TargetHttpVersion>()
+                .map(|version| version.0),
         });
         // Install transient state before starting the first attempt so a
         // concurrent success can publish its completion before an older
@@ -423,7 +450,8 @@ fn remaining_duration(deadline: u64, now: u64) -> Option<Duration> {
 }
 
 fn should_cache_failure(error: &ConnectionError) -> bool {
-    error.domain() == ConnectionErrorDomain::Transport
+    error.policy_scope() != ConnectionPolicyScope::Request
+        && error.domain() == ConnectionErrorDomain::Transport
         && matches!(
             error.kind(),
             ConnectionErrorKind::Unavailable
@@ -468,8 +496,11 @@ impl core::error::Error for ProxyRouteFailureCachedError {}
 ///
 /// Transport `Unavailable`, `Timeout`, `Rejected`, `Protocol`, and `Other`
 /// failures are cached.
-/// A success or any non-cacheable failure clears existing backoff state so the
-/// next request can try the route again. Direct and plural routes are ignored.
+/// A success or non-cacheable remote failure clears existing backoff state so
+/// the next request can try the route again. Local failures provide no evidence
+/// about the proxy and leave its backoff unchanged, as do failures marked with
+/// [`ConnectionPolicyScope::Request`]. Direct and plural routes
+/// are ignored.
 #[derive(Debug, Clone)]
 pub struct ProxyRouteFailureCacheConnector<S> {
     inner: S,
@@ -495,7 +526,8 @@ impl<S> ProxyRouteFailureCacheConnector<S> {
 impl<S, Input> Service<Input> for ProxyRouteFailureCacheConnector<S>
 where
     S: ConnectorService<Input>,
-    Input: AuthorityInputExt + ExtensionsRef + ProtocolInputExt + Send + 'static,
+    Input:
+        AuthorityInputExt + ConnectorTransportProtocolInputExt + ProtocolInputExt + Send + 'static,
 {
     type Output = EstablishedClientConnection<S::Connection, Input>;
     type Error = ConnectionError;
@@ -531,7 +563,11 @@ where
                 Err(error)
             }
             Err(error) => {
-                permit.mark_live();
+                if error.domain() != ConnectionErrorDomain::Local
+                    && error.policy_scope() != ConnectionPolicyScope::Request
+                {
+                    permit.mark_live();
+                }
                 Err(error)
             }
         }
@@ -576,10 +612,12 @@ mod tests {
     use core::sync::atomic::{AtomicUsize, Ordering};
     use std::{sync::Arc, time::Duration};
 
-    use rama_core::{ServiceInput, service::service_fn};
+    use rama_core::{ServiceInput, error::error_chain, service::service_fn};
     use tokio::sync::{Barrier, Notify};
 
-    use crate::client::{ConnectRequest, ProxyRoute, ProxyRoutes};
+    use crate::client::{
+        ConnectRequest, ConnectorTransportProtocol, ProxyRoute, ProxyRoutes, ProxyRoutesConnector,
+    };
 
     use super::*;
 
@@ -826,6 +864,266 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn alternative_failure_does_not_block_origin_at_same_proxy() {
+        for scope in [
+            ProxyRouteFailureCacheScope::PerDestination,
+            ProxyRouteFailureCacheScope::PerProxy,
+        ] {
+            // An explicit target can equal the origin, while selecting a
+            // different protocol or connector capability there.
+            for target in ["origin.example:443", "origin.example:8443"] {
+                for kind in [
+                    ConnectionErrorKind::Rejected,
+                    ConnectionErrorKind::Unavailable,
+                ] {
+                    let attempts = Arc::new(AtomicUsize::new(0));
+                    let inner = service_fn({
+                        let attempts = attempts.clone();
+                        move |input: ConnectRequest| {
+                            attempts.fetch_add(1, Ordering::SeqCst);
+                            async move {
+                                assert_eq!(
+                                    input.extensions.get_ref::<ProxyRoute>(),
+                                    Some(&proxy(None))
+                                );
+                                if input.extensions.contains::<ConnectorTarget>() {
+                                    Err(ConnectionError::transport(
+                                        BoxError::from_static_str("proxy cannot reach alternative"),
+                                        kind,
+                                    ))
+                                } else {
+                                    Ok(EstablishedClientConnection {
+                                        input,
+                                        conn: ServiceInput::new(()),
+                                    })
+                                }
+                            }
+                        }
+                    });
+                    let failure_cache =
+                        ProxyRouteFailureCache::try_new(ProxyRouteFailureCacheConfig {
+                            scope,
+                            ..Default::default()
+                        })
+                        .unwrap();
+                    let connector = ProxyRoutesConnector::new(
+                        ProxyRouteFailureCacheConnector::new(inner, failure_cache),
+                    );
+                    let alternative = || {
+                        let input = request("origin.example:443", proxy(None));
+                        input
+                            .extensions
+                            .insert(ConnectorTarget(target.parse().unwrap()));
+                        input
+                    };
+
+                    let _failure = connector.serve(alternative()).await.unwrap_err();
+                    for _ in 0..2 {
+                        connector
+                            .serve(request("origin.example:443", proxy(None)))
+                            .await
+                            .unwrap();
+                    }
+                    let cached = connector.serve(alternative()).await.unwrap_err();
+
+                    assert_eq!(
+                        attempts.load(Ordering::SeqCst),
+                        3,
+                        "{scope:?}, {target}, {kind}"
+                    );
+                    assert!(
+                        error_chain(&cached)
+                            .any(|error| error.is::<ProxyRouteFailureCachedError>())
+                    );
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn transport_failure_does_not_block_another_transport_at_same_target() {
+        for scope in [
+            ProxyRouteFailureCacheScope::PerDestination,
+            ProxyRouteFailureCacheScope::PerProxy,
+        ] {
+            let attempts = Arc::new(AtomicUsize::new(0));
+            let inner = service_fn({
+                let attempts = attempts.clone();
+                move |input: ConnectRequest| {
+                    attempts.fetch_add(1, Ordering::SeqCst);
+                    async move {
+                        if input.connector_transport_protocol() == Some(TransportProtocol::Udp) {
+                            Err(unavailable())
+                        } else {
+                            Ok(EstablishedClientConnection {
+                                input,
+                                conn: ServiceInput::new(()),
+                            })
+                        }
+                    }
+                }
+            });
+            let failure_cache = ProxyRouteFailureCache::try_new(ProxyRouteFailureCacheConfig {
+                scope,
+                ..Default::default()
+            })
+            .unwrap();
+            let connector = ProxyRoutesConnector::new(ProxyRouteFailureCacheConnector::new(
+                inner,
+                failure_cache,
+            ));
+            let routed = |transport| {
+                let input = request("origin.example:443", proxy(None))
+                    .with_transport_protocol(TransportProtocol::Tcp);
+                input
+                    .extensions
+                    .insert(ConnectorTarget("origin.example:443".parse().unwrap()));
+                input
+                    .extensions
+                    .insert(ConnectorTransportProtocol(transport));
+                input
+            };
+            let _failure = connector
+                .serve(routed(TransportProtocol::Udp))
+                .await
+                .unwrap_err();
+            connector
+                .serve(routed(TransportProtocol::Tcp))
+                .await
+                .unwrap();
+            let cached = connector
+                .serve(routed(TransportProtocol::Udp))
+                .await
+                .unwrap_err();
+            assert_eq!(attempts.load(Ordering::SeqCst), 2, "{scope:?}");
+            assert!(error_chain(&cached).any(|error| error.is::<ProxyRouteFailureCachedError>()));
+        }
+    }
+
+    #[tokio::test]
+    async fn version_failure_does_not_block_another_version_at_same_target() {
+        for scope in [
+            ProxyRouteFailureCacheScope::PerDestination,
+            ProxyRouteFailureCacheScope::PerProxy,
+        ] {
+            // Custom transports may not report a physical transport, or carry
+            // several application protocols over the same proxy transport.
+            for transport in [None, Some(TransportProtocol::Tcp)] {
+                let attempts = Arc::new(AtomicUsize::new(0));
+                let inner = service_fn({
+                    let attempts = attempts.clone();
+                    move |input: ConnectRequest| {
+                        attempts.fetch_add(1, Ordering::SeqCst);
+                        async move {
+                            if input.extensions.get_ref::<TargetHttpVersion>().unwrap().0
+                                == Version::HTTP_3
+                            {
+                                Err(unavailable())
+                            } else {
+                                Ok(EstablishedClientConnection {
+                                    input,
+                                    conn: ServiceInput::new(()),
+                                })
+                            }
+                        }
+                    }
+                });
+                let failure_cache = ProxyRouteFailureCache::try_new(ProxyRouteFailureCacheConfig {
+                    scope,
+                    ..Default::default()
+                })
+                .unwrap();
+                let connector = ProxyRoutesConnector::new(ProxyRouteFailureCacheConnector::new(
+                    inner,
+                    failure_cache,
+                ));
+                let routed = |version| {
+                    let input = request("origin.example:443", proxy(None))
+                        .maybe_with_transport_protocol(transport);
+                    input
+                        .extensions
+                        .insert(ConnectorTarget("origin.example:443".parse().unwrap()));
+                    input.extensions.insert(TargetHttpVersion(version));
+                    input
+                };
+                let _failure = connector.serve(routed(Version::HTTP_3)).await.unwrap_err();
+                connector.serve(routed(Version::HTTP_2)).await.unwrap();
+                let cached = connector.serve(routed(Version::HTTP_3)).await.unwrap_err();
+                assert_eq!(
+                    attempts.load(Ordering::SeqCst),
+                    2,
+                    "{scope:?}, {transport:?}"
+                );
+                assert!(
+                    error_chain(&cached).any(|error| error.is::<ProxyRouteFailureCachedError>())
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn local_refusal_preserves_backoff_and_releases_probe() {
+        let failure_cache = cache(ProxyRouteFailureCacheScope::PerDestination);
+        let input = request("one.example:443", proxy(None));
+        let mut permit = begin_attempt(&failure_cache, &input);
+        let entry = permit.entry.clone();
+        failure_cache.mark_failure(&mut permit, ConnectionErrorKind::Unavailable);
+        drop(permit);
+        // Expire the backoff without depending on a scheduler or wall clock.
+        entry.blocked_until.store(0, Ordering::Release);
+        let connector = ProxyRouteFailureCacheConnector::new(
+            service_fn(|_input: ConnectRequest| async {
+                Err::<EstablishedClientConnection<ServiceInput<()>, ConnectRequest>, _>(
+                    ConnectionError::local(
+                        BoxError::from_static_str("transport does not support this route"),
+                        ConnectionErrorKind::Unavailable,
+                    ),
+                )
+            }),
+            failure_cache.clone(),
+        );
+
+        let _refusal = connector.serve(input.clone()).await.unwrap_err();
+
+        assert_eq!(entry.failure_count.load(Ordering::Acquire), 1);
+        assert!(!entry.succeeded.load(Ordering::Acquire));
+        assert_eq!(entry.probe_until.load(Ordering::Acquire), 0);
+        let mut permit = begin_attempt(&failure_cache, &input);
+        assert!(Arc::ptr_eq(&entry, &permit.entry));
+        failure_cache.mark_failure(&mut permit, ConnectionErrorKind::Unavailable);
+        assert_eq!(entry.failure_count.load(Ordering::Acquire), 2);
+    }
+
+    #[tokio::test]
+    async fn request_policy_failure_preserves_backoff_and_releases_probe() {
+        let failure_cache = cache(ProxyRouteFailureCacheScope::PerDestination);
+        let input = request("one.example:443", proxy(None));
+        let mut permit = begin_attempt(&failure_cache, &input);
+        let entry = permit.entry.clone();
+        failure_cache.mark_failure(&mut permit, ConnectionErrorKind::Unavailable);
+        drop(permit);
+        entry.blocked_until.store(0, Ordering::Release);
+        let connector = ProxyRouteFailureCacheConnector::new(
+            service_fn(|_input: ConnectRequest| async {
+                Err::<EstablishedClientConnection<ServiceInput<()>, ConnectRequest>, _>(
+                    unavailable().with_policy_scope(ConnectionPolicyScope::Request),
+                )
+            }),
+            failure_cache.clone(),
+        );
+
+        let error = connector.serve(input.clone()).await.unwrap_err();
+        assert_eq!(error.policy_scope(), ConnectionPolicyScope::Request);
+        assert_eq!(entry.failure_count.load(Ordering::Acquire), 1);
+        assert!(!entry.succeeded.load(Ordering::Acquire));
+        assert_eq!(entry.probe_until.load(Ordering::Acquire), 0);
+        let mut permit = begin_attempt(&failure_cache, &input);
+        assert!(Arc::ptr_eq(&entry, &permit.entry));
+        failure_cache.mark_failure(&mut permit, ConnectionErrorKind::Unavailable);
+        assert_eq!(entry.failure_count.load(Ordering::Acquire), 2);
     }
 
     #[tokio::test]

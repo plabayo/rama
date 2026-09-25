@@ -14,8 +14,10 @@ use std::{
 use parking_lot::Mutex;
 use pin_project_lite::pin_project;
 use rama_core::bytes::Bytes;
+use rama_core::extensions::{Extensions, ExtensionsRef};
 use rama_core::telemetry::tracing::{Instrument, Span, debug, debug_span};
 use rama_udp::SendFailure;
+use rama_utils::reactive::{Changed, Reactive};
 use rustc_hash::FxHashMap;
 use tokio::sync::{Notify, futures::Notified, oneshot};
 
@@ -791,7 +793,7 @@ impl Future for ConnectionDriver {
         if rama_core::telemetry::dial9::Dial9Handle::current().is_enabled() {
             DRIVER_POLLED_WITH_DIAL9.store(true, Ordering::Relaxed);
         }
-        let (outcome, endpoint_work, wanted_local) = {
+        let (outcome, endpoint_work, wanted_local, budget_changed) = {
             let conn = &mut *self.conn.state.lock();
             let _guard = self.span.enter();
             let outcome = conn.drive(&self.conn.shared, cx);
@@ -799,8 +801,10 @@ impl Future for ConnectionDriver {
                 outcome,
                 !conn.pending_endpoint_events.is_empty() || !conn.released_senders.is_empty(),
                 conn.wanted_local.take(),
+                std::mem::take(&mut conn.stream_budget_changed),
             )
         };
+        self.conn.shared.notify_stream_budget(budget_changed);
         if endpoint_work {
             // Our lock is released, so the endpoint may lock this connection back (lock order).
             self.conn.deliver_endpoint_events();
@@ -858,10 +862,18 @@ impl Drop for ConnectionDriver {
 /// connection without losing application data.
 ///
 /// May be cloned to obtain another handle to the same connection.
+/// Connection-scoped extensions are shared by all handles and can be accessed
+/// through [`ExtensionsRef::extensions`], independently of the transport state lock.
 ///
 /// [`Connection::close()`]: Connection::close
 #[derive(Debug, Clone)]
 pub struct Connection(ConnectionRef);
+
+impl ExtensionsRef for Connection {
+    fn extensions(&self) -> &Extensions {
+        &self.0.extensions
+    }
+}
 
 impl Connection {
     /// Initiate a new outgoing unidirectional stream.
@@ -891,6 +903,46 @@ impl Connection {
             conn: &self.0,
             notify: self.0.shared.stream_budget_available[Dir::Bi as usize].notified(),
         }
+    }
+
+    /// Reserve bidirectional stream credit without assigning a stream ID.
+    ///
+    /// Returns `None` before the handshake completes or while credit is exhausted.
+    /// Dropping an unused reservation returns its credit without emitting a reset.
+    /// Ordinary stream opens cannot consume reserved credit.
+    pub fn try_reserve_bi(&self) -> Result<Option<BiStreamReservation>, ConnectionError> {
+        let mut state = self.0.state.lock();
+        if let Some(error) = &state.error {
+            return Err(error.clone());
+        }
+        if !state.connected {
+            return Ok(None);
+        }
+        let available = state.inner.streams().available_local_streams(Dir::Bi);
+        if available <= state.reserved_streams[Dir::Bi as usize] {
+            if available == 0 {
+                // Pool admission may be the only caller asking for a stream.
+                // Report real exhaustion so the peer promptly returns credit.
+                _ = state.inner.streams().open(Dir::Bi);
+                state.wake();
+            }
+            return Ok(None);
+        }
+        state.reserved_streams[Dir::Bi as usize] += 1;
+        _ = state.refresh_stream_budget();
+        drop(state);
+        Ok(Some(BiStreamReservation {
+            connection: Some(self.0.clone()),
+        }))
+    }
+
+    /// Subscribe before trying admission to observe newly available stream credit.
+    ///
+    /// Values are change revisions, not capacities. A signal means credit was
+    /// returned or increased, or the handshake finished; retry reservation or
+    /// inspect [`Self::available_streams`]. Acquisitions do not wake subscribers.
+    pub fn stream_budget_watch(&self, dir: Dir) -> Changed<usize> {
+        self.0.shared.stream_budget_changes[dir as usize].watch()
     }
 
     /// Accept the next incoming uni-directional stream
@@ -989,6 +1041,18 @@ impl Connection {
             Bytes::copy_from_slice(reason),
             &self.0.shared,
         );
+    }
+
+    /// Send a transport CONNECTION_CLOSE for protocol interoperability tests.
+    ///
+    /// Application shutdown normally uses [`Self::close`]. This hook exercises
+    /// peers which finish with transport `NO_ERROR`, rather than an application code.
+    #[cfg(feature = "test-utils")]
+    pub fn close_transport(&self, error: rama_quic_proto::TransportError) {
+        let conn = &mut *self.0.state.lock();
+        conn.inner.close_transport(now(), error);
+        conn.terminate(ConnectionError::LocallyClosed, &self.0.shared);
+        conn.wake();
     }
 
     /// Wait for the handshake to be confirmed.
@@ -1629,6 +1693,28 @@ impl Connection {
         self.0.state.lock().inner.max_concurrent_streams(dir)
     }
 
+    /// Unreserved streams that can be opened immediately under peer credit.
+    #[must_use]
+    pub fn available_streams(&self, dir: Dir) -> u64 {
+        let mut state = self.0.state.lock();
+        state
+            .inner
+            .streams()
+            .available_local_streams(dir)
+            .saturating_sub(state.reserved_streams[dir as usize])
+    }
+
+    /// Exclusive cumulative stream-index limit advertised to the peer for `dir`.
+    ///
+    /// This is the initial transport limit or the latest transmitted MAX_STREAMS
+    /// value. A remote stream is within the advertised limit when its index
+    /// (`stream_id / 4`) is smaller than this value. Unlike the concurrency
+    /// target, it includes streams that have already closed.
+    #[must_use]
+    pub fn remote_stream_limit(&self, dir: Dir) -> u64 {
+        self.0.state.lock().inner.streams().remote_stream_limit(dir)
+    }
+
     /// How many remotely initiated streams of `dir` are open, including those this side has
     /// not accepted yet. They count against
     /// [`max_concurrent_streams`](Self::max_concurrent_streams).
@@ -1724,6 +1810,62 @@ impl Future for OpenUni<'_> {
     }
 }
 
+/// Owned credit for one bidirectional stream, returned by [`Connection::try_reserve_bi`].
+///
+/// Stream IDs are assigned only by [`open`](Self::open), so abandoning a
+/// reservation does not consume the peer's cumulative MAX_STREAMS limit.
+#[derive(Debug)]
+pub struct BiStreamReservation {
+    connection: Option<ConnectionRef>,
+}
+
+impl BiStreamReservation {
+    /// Consume this reservation and open its stream without waiting for credit.
+    #[expect(
+        clippy::expect_used,
+        reason = "owned reservation consumes its guaranteed stream credit exactly once"
+    )]
+    pub fn open(mut self) -> Result<(SendStream, RecvStream), ConnectionError> {
+        let connection = self.connection.take().expect("unconsumed reservation");
+        let mut state = connection.state.lock();
+        state.reserved_streams[Dir::Bi as usize] -= 1;
+        let result = if let Some(error) = &state.error {
+            Err(error.clone())
+        } else {
+            // Reservations are issued only after TLS completes. MAX_STREAMS can
+            // no longer shrink through 0-RTT rejection, and other opens respect
+            // reserved credit while holding this same state lock.
+            let id = state
+                .inner
+                .streams()
+                .open(Dir::Bi)
+                .expect("reserved stream credit");
+            Ok(id)
+        };
+        let changed = state.refresh_stream_budget();
+        drop(state);
+        connection.shared.notify_stream_budget(changed);
+        let id = result?;
+        Ok((
+            SendStream::new(connection.clone(), id, false),
+            RecvStream::new(connection, id, false),
+        ))
+    }
+}
+
+impl Drop for BiStreamReservation {
+    fn drop(&mut self) {
+        if let Some(connection) = self.connection.take() {
+            let mut state = connection.state.lock();
+            state.reserved_streams[Dir::Bi as usize] -= 1;
+            let changed = state.refresh_stream_budget();
+            drop(state);
+            connection.shared.notify_stream_budget(changed);
+            connection.shared.stream_budget_available[Dir::Bi as usize].notify_waiters();
+        }
+    }
+}
+
 pin_project! {
     /// Future produced by [`Connection::open_bi`]
     pub struct OpenBi<'a> {
@@ -1755,13 +1897,21 @@ fn poll_open<'a>(
     let mut state = conn.state.lock();
     if let Some(ref e) = state.error {
         return Poll::Ready(Err(e.clone()));
-    } else if let Some(id) = state.inner.streams().open(dir) {
+    }
+    let available = state.inner.streams().available_local_streams(dir);
+    if available > state.reserved_streams[dir as usize]
+        && let Some(id) = state.inner.streams().open(dir)
+    {
         let is_0rtt = state.inner.side().is_client() && state.inner.is_handshaking();
+        _ = state.refresh_stream_budget();
         drop(state); // Release the lock so clone can take it
         return Poll::Ready(Ok((conn.clone(), id, is_0rtt)));
     }
-    // A failed open schedules STREAMS_BLOCKED even when the application has no other data.
-    state.wake();
+    // Advertise actual peer-credit exhaustion, not a locally reserved slot.
+    if available == 0 {
+        _ = state.inner.streams().open(dir);
+        state.wake();
+    }
     loop {
         match notify.as_mut().poll(ctx) {
             // `state` lock ensures we didn't race with readiness
@@ -1947,6 +2097,7 @@ impl ConnectionRef {
         receive_queue: PacketBudget,
     ) -> Self {
         Self(Arc::new(ConnectionInner {
+            extensions: Extensions::new(),
             state: Mutex::new(State {
                 inner: conn,
                 driver: None,
@@ -1954,6 +2105,9 @@ impl ConnectionRef {
                 on_handshake_data: Some(on_handshake_data),
                 on_connected: Some(on_connected),
                 connected: false,
+                available_streams: [0; 2],
+                stream_budget_changed: [false; 2],
+                reserved_streams: [0; 2],
                 handshake_confirmed: false,
                 timer: DeadlineTimer::default(),
                 packets,
@@ -2042,6 +2196,7 @@ impl std::ops::Deref for ConnectionRef {
 
 #[derive(Debug)]
 pub(crate) struct ConnectionInner {
+    extensions: Extensions,
     pub(crate) state: Mutex<State>,
     pub(crate) shared: Shared,
 }
@@ -2253,6 +2408,7 @@ pub(crate) struct Shared {
     /// Notified when new streams may be locally initiated due to an increase in stream ID flow
     /// control budget
     stream_budget_available: [Notify; 2],
+    stream_budget_changes: [Reactive<usize>; 2],
     /// Notified when the peer has initiated a new stream
     stream_incoming: [Notify; 2],
     datagram_received: Notify,
@@ -2262,6 +2418,17 @@ pub(crate) struct Shared {
     ref_count: AtomicUsize,
 }
 
+impl Shared {
+    /// Admission wakers may re-enter the connection; call outside its state lock.
+    fn notify_stream_budget(&self, changed: [bool; 2]) {
+        for (revision, changed) in self.stream_budget_changes.iter().zip(changed) {
+            if changed {
+                revision.set(revision.get().wrapping_add(1));
+            }
+        }
+    }
+}
+
 pub(crate) struct State {
     pub(crate) inner: crate::proto::Connection,
     driver: Option<Waker>,
@@ -2269,6 +2436,9 @@ pub(crate) struct State {
     on_handshake_data: Option<oneshot::Sender<()>>,
     on_connected: Option<oneshot::Sender<Result<bool, ConnectionError>>>,
     connected: bool,
+    available_streams: [u64; 2],
+    stream_budget_changed: [bool; 2],
+    reserved_streams: [u64; 2],
     handshake_confirmed: bool,
     timer: DeadlineTimer,
     packets: BoundedReceiver<QueuedPacket>,
@@ -2277,7 +2447,7 @@ pub(crate) struct State {
     pending_endpoint_events: Vec<EndpointEvent>,
     pub(crate) blocked_writers: FxHashMap<StreamId, Waker>,
     pub(crate) blocked_readers: FxHashMap<StreamId, Waker>,
-    pub(crate) stopped: FxHashMap<StreamId, Arc<Notify>>,
+    pub(crate) stopped: FxHashMap<StreamId, super::send_stream::StoppedNotify>,
     /// Always set to Some before the connection becomes drained
     pub(crate) error: Option<ConnectionError>,
     socket: Option<Sender>,
@@ -3065,6 +3235,9 @@ impl State {
                 }
                 Event::Connected => {
                     self.connected = true;
+                    // Reservations are disabled before this event, even when
+                    // provisional transport parameters already exposed credit.
+                    self.stream_budget_changed = [true; 2];
                     if let Some(x) = self.on_connected.take() {
                         // Nobody waiting for it is not an error: the receiver may be gone.
                         drop(x.send(Ok(
@@ -3109,14 +3282,35 @@ impl State {
                     shared.stream_budget_available[dir as usize].notify_waiters();
                 }
                 Event::Stream(StreamEvent::Finished { id }) => {
-                    wake_stream_notify(id, &mut self.stopped)
+                    wake_stream_notify(id, &self.stopped)
                 }
                 Event::Stream(StreamEvent::Stopped { id, .. }) => {
-                    wake_stream_notify(id, &mut self.stopped);
+                    wake_stream_notify(id, &self.stopped);
                     wake_stream(id, &mut self.blocked_writers);
                 }
             }
         }
+        let changed = self.refresh_stream_budget();
+        for (pending, changed) in self.stream_budget_changed.iter_mut().zip(changed) {
+            *pending |= changed;
+        }
+    }
+
+    /// Wake admission only when unreserved stream credit increases.
+    /// Acquiring or consuming a reservation cannot help another waiter.
+    fn refresh_stream_budget(&mut self) -> [bool; 2] {
+        let mut changed = [false; 2];
+        for dir in Dir::iter() {
+            let index = dir as usize;
+            let available = self
+                .inner
+                .streams()
+                .available_local_streams(dir)
+                .saturating_sub(self.reserved_streams[index]);
+            changed[index] = available > self.available_streams[index];
+            self.available_streams[index] = available;
+        }
+        changed
     }
 
     fn drive_timer(&mut self, cx: &mut Context<'_>) -> bool {
@@ -3265,16 +3459,19 @@ fn wake_all(wakers: &mut FxHashMap<StreamId, Waker>) {
     wakers.drain().for_each(|(_, waker)| waker.wake())
 }
 
-fn wake_stream_notify(stream_id: StreamId, wakers: &mut FxHashMap<StreamId, Arc<Notify>>) {
-    if let Some(notify) = wakers.remove(&stream_id) {
-        notify.notify_waiters()
+fn wake_stream_notify(
+    stream_id: StreamId,
+    wakers: &FxHashMap<StreamId, super::send_stream::StoppedNotify>,
+) {
+    if let Some(notify) = wakers.get(&stream_id) {
+        notify.events.notify.notify_waiters()
     }
 }
 
-fn wake_all_notify(wakers: &mut FxHashMap<StreamId, Arc<Notify>>) {
+fn wake_all_notify(wakers: &mut FxHashMap<StreamId, super::send_stream::StoppedNotify>) {
     wakers
         .drain()
-        .for_each(|(_, notify)| notify.notify_waiters())
+        .for_each(|(_, notify)| notify.events.notify.notify_waiters())
 }
 
 /// Errors that can arise when sending a datagram

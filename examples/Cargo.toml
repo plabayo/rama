@@ -17,6 +17,11 @@ allowed = []
 ignored = ["rama-grpc-build", "rama-ttrpc-build"]
 
 [[bin]]
+name = "http3_client_server"
+path = "src/http3_client_server.rs"
+required-features = ["http-full"]
+
+[[bin]]
 name = "acme_http_challenge"
 path = "src/acme_http_challenge.rs"
 required-features = ["http-full", "boring", "acme"]

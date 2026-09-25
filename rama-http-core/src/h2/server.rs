@@ -131,10 +131,11 @@ use rama_core::telemetry::tracing::{
 };
 use rama_http::proto::HeaderByteLength;
 use rama_http::proto::h2::frame::EarlyFrameStreamContext;
+use rama_http_types::proto::h2::alt_svc::AltSvcSendError;
 use rama_http_types::proto::h2::frame::{
     self, Pseudo, PushPromiseHeaderError, Reason, Settings, StreamId,
 };
-use rama_http_types::proto::h2::{PseudoHeaderOrder, ext};
+use rama_http_types::proto::h2::{PseudoHeaderOrder, PseudoHeaderSensitivity, ext};
 use rama_http_types::{HeaderMap, Method, Request, Response, Version};
 use rama_net::extensions::StreamTransformed;
 use rama_net::uri;
@@ -252,6 +253,9 @@ pub struct Connection<T, B: Buf> {
 pub struct Builder {
     /// Time to keep locally reset streams around before reaping.
     reset_stream_duration: Duration,
+
+    /// Whether application handlers can emit ALTSVC frames.
+    send_alt_svc: bool,
 
     /// Maximum number of locally reset streams to keep at a time.
     reset_stream_max: usize,
@@ -393,6 +397,17 @@ where
     T: AsyncRead + AsyncWrite + Unpin + ExtensionsRef,
     B: Buf,
 {
+    /// Queue a bounded, connection-local alternative-service advertisement.
+    ///
+    /// Enable this with [`Builder::with_alt_svc`] before the handshake.
+    /// Stream zero requires an explicit origin; request-stream frames must
+    /// omit it and identify the request whose origin is being advertised.
+    /// The caller supplies that association; this low-level API does not infer it.
+    /// The connection must continue being polled to transmit the frame.
+    pub fn send_alt_svc(&self, frame: frame::AltSvc) -> Result<(), AltSvcSendError> {
+        self.connection.send_alt_svc(frame)
+    }
+
     fn handshake2(io: T, builder: Builder) -> Handshake<T, B> {
         let span = tracing::trace_span!("server_handshake");
         let entered = span.enter();
@@ -403,6 +418,8 @@ where
 
         // Create the codec.
         let mut codec = Codec::new(io);
+        // ALTSVC is a server-to-client extension, never input to a server.
+        codec.set_recv_alt_svc(false);
 
         if let Some(max) = builder.settings.config.max_frame_size {
             codec.set_max_recv_frame_size(max as usize);
@@ -690,6 +707,7 @@ impl Builder {
     pub fn new() -> Self {
         Self {
             reset_stream_duration: Duration::from_secs(proto::DEFAULT_RESET_STREAM_SECS),
+            send_alt_svc: false,
             reset_stream_max: proto::DEFAULT_RESET_STREAM_MAX,
             pending_accept_reset_stream_max: proto::DEFAULT_REMOTE_RESET_STREAM_MAX,
             settings: Settings::default(),
@@ -697,6 +715,17 @@ impl Builder {
             max_send_buffer_size: proto::DEFAULT_MAX_SEND_BUFFER_SIZE,
 
             local_max_error_reset_streams: Some(proto::DEFAULT_LOCAL_RESET_COUNT_MAX),
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Enable bounded server-side ALTSVC frame emission.
+        ///
+        /// Disabled by default, so ordinary connections allocate no advertisement
+        /// queue. When enabled, request extensions expose an `AltSvcSender`.
+        pub fn alt_svc(mut self, enabled: bool) -> Self {
+            self.send_alt_svc = enabled;
+            self
         }
     }
 
@@ -1602,6 +1631,7 @@ where
                                 .builder
                                 .local_max_error_reset_streams,
                             settings: self.builder.settings.clone(),
+                            send_alt_svc: self.builder.send_alt_svc,
                             headers_pseudo_order: None,
                             early_frame_ctx: EarlyFrameStreamContext::new_recorder(),
                         },
@@ -1662,6 +1692,10 @@ impl Peer {
         {
             pseudo.order = order;
         }
+        pseudo.sensitivity = extensions
+            .get_ref::<PseudoHeaderSensitivity>()
+            .copied()
+            .unwrap_or_default();
 
         // Create the HEADERS frame
         let mut frame = frame::Headers::new(id, pseudo, headers, None);
@@ -1716,6 +1750,10 @@ impl Peer {
         {
             pseudo.order = order;
         }
+        pseudo.sensitivity = extensions
+            .get_ref::<PseudoHeaderSensitivity>()
+            .copied()
+            .unwrap_or_default();
 
         Ok(frame::PushPromise::new(
             stream_id,
@@ -1910,6 +1948,9 @@ impl proto::Peer for Peer {
         if !pseudo.order.is_empty() {
             request.extensions().insert(pseudo.order);
         }
+        if pseudo.sensitivity != PseudoHeaderSensitivity::default() {
+            request.extensions().insert(pseudo.sensitivity);
+        }
 
         request.extensions().insert(HeaderByteLength(header_size));
 
@@ -1952,6 +1993,38 @@ mod path_form_tests {
             StreamId::from(1),
             Extensions::new(),
         )
+    }
+
+    #[test]
+    fn incoming_pseudo_sensitivity_is_retained_as_shared_metadata() {
+        let mut pseudo =
+            Pseudo::request(Method::GET, &"https://example.com/".parse().unwrap(), None);
+        pseudo
+            .sensitivity
+            .set_sensitive(rama_http_types::proto::h2::PseudoHeader::Path, true);
+        let request = decode(pseudo).unwrap();
+        assert!(
+            request
+                .extensions()
+                .get_ref::<PseudoHeaderSensitivity>()
+                .unwrap()
+                .is_sensitive(rama_http_types::proto::h2::PseudoHeader::Path)
+        );
+    }
+
+    #[test]
+    fn promised_request_retains_pseudo_sensitivity() {
+        let request = Request::builder()
+            .uri("https://example.com/")
+            .body(())
+            .unwrap();
+        let mut sensitivity = PseudoHeaderSensitivity::default();
+        sensitivity.set_sensitive(rama_http_types::proto::h2::PseudoHeader::Path, true);
+        request.extensions().insert(sensitivity);
+        let promise =
+            Peer::convert_push_message(StreamId::from(1), StreamId::from(2), request).unwrap();
+        let (pseudo, _) = promise.into_parts();
+        assert_eq!(pseudo.sensitivity, sensitivity);
     }
 
     // RFC 9113 §8.3.1: an absolute-form `:path` (carrying scheme/authority) must

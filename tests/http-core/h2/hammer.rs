@@ -75,7 +75,9 @@ where
     F: Fn() -> Bytes,
     F: Send + Sync + 'static,
 {
-    let socket = ServiceInput::new(socket?);
+    let socket = socket?;
+    socket.set_nodelay(true)?;
+    let socket = ServiceInput::new(socket);
     let mut conn = server::handshake(socket).await?;
     while let Some(result) = conn.next().await {
         let (_, mut respond) = result?;
@@ -104,6 +106,8 @@ fn hammer_client_concurrency() {
         let tcp = tcp
             .then(|res| {
                 let tcp = res.unwrap();
+                // Nagle + Linux delayed ACK stalls each exchange ~40ms.
+                tcp.set_nodelay(true).unwrap();
                 let tcp = ServiceInput::new(tcp);
                 client::handshake(tcp)
             })

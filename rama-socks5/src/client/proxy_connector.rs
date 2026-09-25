@@ -14,6 +14,7 @@ use rama_net::{
     client::{
         ConnectionError, ConnectionErrorKind, ConnectorService, ConnectorTarget,
         ConnectorTransportProtocol, EstablishedClientConnection, EstablishedProxyRoute, ProxyRoute,
+        pool::ConnectionReuse,
     },
     transport::TransportProtocol,
     user::ProxyCredential,
@@ -380,6 +381,15 @@ where
             .extensions()
             .insert(ProxyRoute::Proxy(normalized_proxy_info.clone()));
 
+        // Capture the selected service before replacing the dial target with
+        // the proxy. The logical authority stays available for origin TLS.
+        let connect_authority = input.connector_target().ok_or_else(|| {
+            ConnectionError::local(
+                BoxError::from_static_str("socks5 proxy connector: destination missing from input"),
+                ConnectionErrorKind::InvalidInput,
+            )
+        })?;
+
         // insert target so that inner connector can use it instead of input's version
         input
             .extensions()
@@ -443,16 +453,6 @@ where
             }
         }
 
-        let Some(connect_authority) = authority
-            .clone()
-            .into_host_with_port(input.protocol_default_port())
-        else {
-            return Err(ConnectionError::local(
-                BoxError::from_static_str("failed to get port from transport context"),
-                ConnectionErrorKind::InvalidInput,
-            ));
-        };
-
         match client
             .handshake_connect(&mut conn, &connect_authority)
             .await
@@ -472,6 +472,15 @@ where
             }
         }
 
+        // The established byte stream now addresses the destination rather
+        // than the proxy whose transport supplied the inherited policy.
+        let reuse = conn
+            .extensions()
+            .get_ref::<ConnectionReuse>()
+            .map(|policy| policy.clone().into_restriction());
+        if let Some(reuse) = reuse {
+            conn.extensions().insert(reuse);
+        }
         conn.extensions().insert(selected_route);
         Ok(EstablishedClientConnection { input, conn })
     }
@@ -479,16 +488,25 @@ where
 
 #[cfg(test)]
 mod tests {
-    use rama_core::{ServiceInput, service::service_fn};
+    use rama_core::{ServiceInput, extensions::Extensions, service::service_fn};
     use rama_net::{
-        ConnectorTransportProtocolInputExt, Protocol,
+        AuthorityInputExt, ConnectorTransportProtocolInputExt, Protocol, ProtocolInputExt,
         address::HostWithPort,
-        client::{ConnectRequest, ProxyRoute},
+        client::{ConnectRequest, ProxyRoute, pool::ConnectionReusePolicy},
     };
     use std::{convert::Infallible, sync::Arc, time::Duration};
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
     use super::*;
+
+    #[derive(Debug)]
+    struct FixedProxyPolicy;
+
+    impl ConnectionReusePolicy for FixedProxyPolicy {
+        fn matches(&self, _: &Extensions) -> bool {
+            true
+        }
+    }
 
     #[tokio::test]
     async fn optional_direct_connection_preserves_absent_or_explicit_route() {
@@ -562,10 +580,10 @@ mod tests {
                         .host,
                     "127.0.0.1".parse::<Host>().unwrap(),
                 );
-                Ok::<_, Infallible>(EstablishedClientConnection {
-                    input,
-                    conn: ServiceInput::new(io),
-                })
+                let conn = ServiceInput::new(io);
+                conn.extensions()
+                    .insert(ConnectionReuse::new(FixedProxyPolicy));
+                Ok::<_, Infallible>(EstablishedClientConnection { input, conn })
             }
         });
         let connector = Socks5ProxyConnector::optional(inner);
@@ -588,10 +606,73 @@ mod tests {
                 .get_ref::<EstablishedProxyRoute>(),
             Some(&EstablishedProxyRoute::Tunnel(selected)),
         );
+        let reuse = established
+            .conn
+            .extensions()
+            .get_ref::<ConnectionReuse>()
+            .unwrap();
+        assert!(reuse.is_reusable());
+        assert!(
+            !reuse.is_complete(),
+            "proxy policy cannot classify the origin"
+        );
         tokio::time::timeout(Duration::from_secs(2), peer_task)
             .await
             .expect("SOCKS peer timed out")
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn selected_service_is_socks_destination_without_changing_origin() {
+        let (io, mut peer) = tokio::io::duplex(4096);
+        let peer_task = tokio::spawn(async move {
+            assert_eq!(peer.read_u8().await.unwrap(), 5);
+            let methods_len = peer.read_u8().await.unwrap();
+            let mut methods = vec![0; usize::from(methods_len)];
+            peer.read_exact(&mut methods).await.unwrap();
+            peer.write_all(&[5, 0]).await.unwrap();
+            let mut head = [0; 4];
+            peer.read_exact(&mut head).await.unwrap();
+            assert_eq!(head, [5, 1, 0, 3]);
+            let host_len = peer.read_u8().await.unwrap();
+            let mut host = vec![0; usize::from(host_len)];
+            peer.read_exact(&mut host).await.unwrap();
+            assert_eq!(host, b"alternative.example");
+            assert_eq!(peer.read_u16().await.unwrap(), 8443);
+            peer.write_all(&[5, 0, 0, 1, 127, 0, 0, 1, 0, 80])
+                .await
+                .unwrap();
+        });
+        let io = Arc::new(parking_lot::Mutex::new(Some(io)));
+        let inner = service_fn(move |input: ConnectRequest| {
+            let io = io.lock().take().unwrap();
+            async move {
+                assert_eq!(input.connector_target().unwrap().port, 1080);
+                Ok::<_, Infallible>(EstablishedClientConnection {
+                    input,
+                    conn: ServiceInput::new(io),
+                })
+            }
+        });
+        let connector = Socks5ProxyConnector::optional(inner);
+        let input = ConnectRequest::new(HostWithPort::example_domain_http())
+            .with_application_protocol(Protocol::HTTP);
+        input.extensions.insert(ProxyRoute::Proxy(
+            "socks5://127.0.0.1:1080".parse().unwrap(),
+        ));
+        input
+            .extensions
+            .insert(ConnectorTarget("alternative.example:8443".parse().unwrap()));
+        let established = tokio::time::timeout(Duration::from_secs(2), connector.connect(input))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(established.input.protocol(), Some(&Protocol::HTTP));
+        assert_eq!(
+            established.input.authority().unwrap(),
+            HostWithPort::example_domain_http().into()
+        );
+        peer_task.await.unwrap();
     }
 
     #[tokio::test]

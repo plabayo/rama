@@ -245,7 +245,8 @@ pub fn rama_server_config(identity: &Identity) -> ServerConfig {
         .with_alpn(smallvec![shared_alpn()])
         .with_server_auth(identity.auth.clone())
         .verify_backend();
-    ServerConfig::try_from_rama_tls(&tls, interop_common::backend::options())
+    interop_common::backend::server_tls_provider()
+        .server_config(&tls, interop_common::backend::options())
         .expect("the server config is built")
 }
 
@@ -258,11 +259,12 @@ pub fn rama_client_config_with_early_data(identity: &Identity) -> ClientConfig {
         .try_with_server_trust_anchors([anchor])
         .expect("the trust anchor is accepted")
         .verify_backend();
-    ClientConfig::try_from_rama_tls(
-        &tls,
-        interop_common::backend::options().with_early_data(true),
-    )
-    .expect("the client config is built")
+    interop_common::backend::tls_provider()
+        .client_config(
+            &tls,
+            interop_common::backend::options().with_early_data(true),
+        )
+        .expect("the client config is built")
 }
 
 pub fn rama_client_config(identity: &Identity) -> ClientConfig {
@@ -272,7 +274,8 @@ pub fn rama_client_config(identity: &Identity) -> ClientConfig {
         .try_with_server_trust_anchors([anchor])
         .expect("the trust anchor is accepted")
         .verify_backend();
-    ClientConfig::try_from_rama_tls(&tls, interop_common::backend::options())
+    interop_common::backend::tls_provider()
+        .client_config(&tls, interop_common::backend::options())
         .expect("the client config is built")
 }
 
@@ -466,6 +469,11 @@ impl Event {
 
     pub fn port(&self) -> u16 {
         u16::try_from(self.0["port"].as_u64().expect("a port")).expect("a port that fits")
+    }
+
+    /// The actual socket family, before any IPv4-mapped address normalization.
+    pub fn socket_is_ipv6(&self) -> bool {
+        self.0["socket_ipv6"].as_bool().expect("a socket family")
     }
 
     pub fn len(&self) -> usize {

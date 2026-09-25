@@ -123,7 +123,8 @@ pub fn rama_server_config(identity: &Identity) -> ServerConfig {
         .with_alpn(smallvec![alpn()])
         .with_server_auth(identity.clone())
         .verify_backend();
-    let mut config = ServerConfig::try_from_rama_tls(&tls, crate::backend::options())
+    let mut config = crate::backend::server_tls_provider()
+        .server_config(&tls, crate::backend::options())
         .expect("the server config is built");
     config.set_transport_config(interop_transport());
     config
@@ -136,7 +137,8 @@ pub fn rama_client_config(anchor: CertificateDer<'static>) -> ClientConfig {
         .try_with_server_trust_anchors([anchor])
         .expect("the trust anchor is accepted")
         .verify_backend();
-    let mut config = ClientConfig::try_from_rama_tls(&tls, crate::backend::options())
+    let mut config = crate::backend::tls_provider()
+        .client_config(&tls, crate::backend::options())
         .expect("the client config is built");
     config.set_transport_config(interop_transport());
     config

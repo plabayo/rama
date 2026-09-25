@@ -10,7 +10,7 @@ use rama::{
     graceful::{Shutdown, default_signal},
     net::{tls::ApplicationProtocol, uri::Uri},
     quic::{
-        ClientConfig, Connection, Endpoint,
+        Connection, Endpoint,
         proto::version::{ClientVersionPolicy, Version},
     },
     rt::Executor,
@@ -119,7 +119,8 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
         .with_alpn(smallvec![ApplicationProtocol::from(ALPN)])
         .with_keylog(KeyLogIntent::Environment)
         .with_server_verify(ServerVerifyMode::Disable);
-    let mut config = ClientConfig::try_from_rama_tls(&tls, crate::tls_options())?
+    let mut config = crate::tls_provider()
+        .client_config(&tls, crate::tls_options())?
         .with_transport_config(transport(executor, "client").await?);
     if testcase == TestCase::V2 {
         // A v1 first flight that prefers v2, for the server to move (RFC 9368 §2.3).

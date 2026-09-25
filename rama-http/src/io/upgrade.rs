@@ -79,6 +79,28 @@ impl fmt::Debug for OpaqueGuard {
     }
 }
 
+/// Notify a CONNECT transport that its upstream I/O failed.
+/// H3 uses this to reset the tunnel with H3_CONNECT_ERROR (RFC 9114 §4.4).
+/// Custom relays should call it before dropping or gracefully closing the tunnel.
+#[derive(Clone, Extension)]
+#[extension(tags(http))]
+pub struct OnUpstreamError(Arc<dyn Fn() + Send + Sync>);
+impl OnUpstreamError {
+    /// Install transport-specific failure handling.
+    pub fn new(callback: impl Fn() + Send + Sync + 'static) -> Self {
+        Self(Arc::new(callback))
+    }
+    /// Notify the transport. Repeated calls are harmless for built-in transports.
+    pub fn call(&self) {
+        (self.0)();
+    }
+}
+impl fmt::Debug for OnUpstreamError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OnUpstreamError").finish_non_exhaustive()
+    }
+}
+
 /// A future for a possible HTTP upgrade.
 ///
 /// If no upgrade was available, or it doesn't succeed, yields an `Error`.

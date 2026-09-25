@@ -21,3 +21,11 @@ mod pool;
 pub use pool::{HttpConnId, HttpConnIdentifier, HttpPooledConnector, HttpPooledConnectorConfig};
 
 pub mod proxy;
+
+mod h3;
+#[doc(inline)]
+pub use h3::{Http3Connector, Http3ConnectorBuilder};
+
+mod transport;
+#[doc(inline)]
+pub use transport::{Http3Transport, HttpTransport, HttpTransportConnector, IntoHttpTransport};

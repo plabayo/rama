@@ -23,6 +23,7 @@ use crate::driver::{Duration, Instant};
 use crate::proto::RandomConnectionIdGenerator;
 use crate::test_helpers;
 use rama_core::bytes::Bytes;
+use rama_core::extensions::{Extension, ExtensionsRef};
 use rama_core::telemetry::tracing::Instrument as _;
 use rama_core::telemetry::tracing::{error_span, info};
 use rand::{Rng, SeedableRng, rngs::StdRng};
@@ -180,6 +181,62 @@ fn read_after_close() {
         let msg = stream.read_to_end(usize::MAX).await.expect("read_to_end");
         assert_eq!(msg, MSG);
     });
+}
+
+#[derive(Debug, Extension)]
+struct ConnectionMetadata(u32);
+
+#[tokio::test]
+async fn connection_extensions_are_shared_by_handles_and_isolated_between_connections() {
+    let endpoint = endpoint();
+    let connecting = endpoint
+        .connect(endpoint.local_addr().unwrap(), "localhost")
+        .unwrap();
+    let (outgoing, incoming) = timeout(Duration::from_secs(5), async {
+        join!(connecting, async { endpoint.accept().await.unwrap().await })
+    })
+    .await
+    .unwrap();
+    let outgoing = outgoing.unwrap();
+    let incoming = incoming.unwrap();
+    let shared = outgoing.clone();
+
+    outgoing.extensions().insert(ConnectionMetadata(1));
+    assert_eq!(
+        shared
+            .extensions()
+            .get_ref::<ConnectionMetadata>()
+            .unwrap()
+            .0,
+        1
+    );
+    assert!(!incoming.extensions().contains::<ConnectionMetadata>());
+
+    shared.extensions().insert(ConnectionMetadata(2));
+    assert_eq!(
+        outgoing
+            .extensions()
+            .get_ref::<ConnectionMetadata>()
+            .unwrap()
+            .0,
+        2
+    );
+    drop(outgoing);
+    assert_eq!(
+        shared
+            .extensions()
+            .get_ref::<ConnectionMetadata>()
+            .unwrap()
+            .0,
+        2
+    );
+
+    drop(shared);
+    drop(incoming);
+    endpoint.close(0u32, b"done");
+    timeout(Duration::from_secs(5), endpoint.shutdown())
+        .await
+        .unwrap();
 }
 
 #[test]
@@ -701,6 +758,7 @@ impl std::io::Write for TestWriter {
         );
         Ok(buf.len())
     }
+
     fn flush(&mut self) -> io::Result<()> {
         io::stdout().flush()
     }
@@ -975,9 +1033,10 @@ async fn stream_stopped_2() {
     )
     .unwrap();
     let send_stream = conn.open_uni().await.unwrap();
-    let stopped = timeout(Duration::from_millis(100), send_stream.stopped())
-        .instrument(error_span!("stopped"));
-    tokio::pin!(stopped);
+    let mut stopped = std::pin::pin!(
+        timeout(Duration::from_millis(100), send_stream.stopped())
+            .instrument(error_span!("stopped"))
+    );
     // poll the future once so that the waker is registered.
     tokio::select! {
         biased;
@@ -1014,8 +1073,7 @@ async fn stream_drop_removes_blocked_reader() {
             // do a blocking read which will add the stream in conn.blocked_readers
             {
                 let mut buf = [0u8; 64];
-                let read_fut = stream.read(&mut buf);
-                tokio::pin!(read_fut);
+                let mut read_fut = std::pin::pin!(stream.read(&mut buf));
                 assert!(matches!(read_fut.as_mut().poll(&mut cx), Poll::Pending));
             }
 
@@ -1109,6 +1167,7 @@ impl Wake for WakeCounter {
     fn wake(self: Arc<Self>) {
         self.wakes.fetch_add(1, Ordering::SeqCst);
     }
+
     fn wake_by_ref(self: &Arc<Self>) {
         self.wakes.fetch_add(1, Ordering::SeqCst);
     }
@@ -1160,10 +1219,10 @@ async fn rejected_early_handles_leave_replacement_streams_untouched() {
             "the early stream's numeric ID was reused"
         );
         send.set_priority(7).unwrap();
-        assert!(old_send.set_priority(19).is_err());
+        old_send.set_priority(19).unwrap_err();
         old_send.priority().unwrap_err();
         assert_eq!(send.priority().unwrap(), 7);
-        assert!(old_send.finish().is_err());
+        old_send.finish().unwrap_err();
         send.write_all(b"request").await.unwrap();
 
         let (reader_waker, reader_wakes) = new_count_waker();

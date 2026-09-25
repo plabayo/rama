@@ -1,6 +1,9 @@
 //! Connection-scoped QPACK encoding, bounded reference tracking and decoder-stream feedback.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::{
+    borrow::Cow,
+    collections::{BTreeMap, VecDeque},
+};
 
 use rama_core::bytes::{Bytes, BytesMut};
 use rama_http_types::proto::h3::qpack::prefix::{StringEncoder, encode_int, int_encoded_len};
@@ -13,6 +16,10 @@ use rama_utils::octets::{kib, kib_u64};
 use super::dynamic_table::{DynamicTable, ENTRY_OVERHEAD, entry_size};
 use super::{FieldPair, QpackError};
 
+// RFC 9000 §2.1: the low bits identify the stream's initiator and direction.
+const STREAM_CLASS_MASK: u64 = 0b11;
+const STREAM_CLASS_COUNT: usize = (STREAM_CLASS_MASK + 1) as usize;
+
 /// Encoder input preserving the never-index requirement across intermediary hops.
 #[derive(Clone, Debug)]
 pub struct EncodeField<N, V> {
@@ -24,15 +31,20 @@ pub struct EncodeField<N, V> {
     pub never_index: bool,
 }
 
-impl<'a> EncodeField<&'a [u8], &'a [u8]> {
-    /// Borrow a Rama header while preserving [`rama_http_types::HeaderValue::is_sensitive`].
+impl<'a> EncodeField<Cow<'a, [u8]>, &'a [u8]> {
+    /// Encode a lowercase name and preserve [`rama_http_types::HeaderValue::is_sensitive`].
+    /// Values and already-lowercase names remain borrowed. Mixed-case custom names
+    /// are normalized only for the wire, without changing the original header map.
     #[must_use]
     pub fn from_header(
         name: &'a rama_http_types::HeaderName,
         value: &'a rama_http_types::HeaderValue,
     ) -> Self {
         Self {
-            name: name.as_str().as_bytes(),
+            name: match name.as_lower_str() {
+                Cow::Borrowed(name) => Cow::Borrowed(name.as_bytes()),
+                Cow::Owned(name) => Cow::Owned(name.into_bytes()),
+            },
             value: value.as_bytes(),
             never_index: value.is_sensitive(),
         }
@@ -100,6 +112,12 @@ struct Section {
     required_insert_count: u64,
 }
 
+#[derive(Default)]
+struct StreamSections {
+    queue: VecDeque<Section>,
+    blocking: usize,
+}
+
 /// Stateful encoder for one connection. Dynamic insertion and references fall back to literals
 /// when budgets are exhausted; invalid/oversized input fails before any state changes.
 pub struct Encoder {
@@ -108,12 +126,22 @@ pub struct Encoder {
     encoder_output: BytesMut,
     known_received_count: u64,
     capacity_initialized: bool,
-    sections: BTreeMap<u64, VecDeque<Section>>,
+    sections: BTreeMap<u64, StreamSections>,
+    // Counts sections by (Required Insert Count, stream). Advancing the Known
+    // Received Count visits only newly unblocked sections, never unrelated ones.
+    blocking_sections: BTreeMap<(u64, u64), usize>,
     section_count: usize,
     reference_count: usize,
     blocking_streams: u64,
+    // One high-water mark for each QUIC initiator/direction class. Cancellation
+    // abandons the entire stream (RFC 9204 §2.2.2.2), even if it precedes the
+    // first encode or races later trailers. Retaining individual cancelled IDs
+    // would let peer feedback grow state without bound; instead,
+    // older streams conservatively use static/literal representations too.
+    cancelled_through: [Option<u64>; STREAM_CLASS_COUNT],
     decoder_partial: [u8; 11],
     decoder_partial_len: usize,
+    pending_target_capacity: Option<u64>,
 }
 
 impl Encoder {
@@ -129,12 +157,58 @@ impl Encoder {
             known_received_count: 0,
             capacity_initialized: false,
             sections: BTreeMap::new(),
+            blocking_sections: BTreeMap::new(),
             section_count: 0,
             reference_count: 0,
             blocking_streams: 0,
+            cancelled_through: [None; STREAM_CLASS_COUNT],
             decoder_partial: [0; 11],
             decoder_partial_len: 0,
+            pending_target_capacity: None,
         }
+    }
+
+    /// Create a connection encoder before receiving peer SETTINGS.
+    ///
+    /// Only static and literal representations are used until [`Self::apply_peer_settings`].
+    /// The configured target capacity and local budgets are retained for negotiation.
+    #[must_use]
+    pub fn before_peer_settings(mut config: EncoderConfig) -> Self {
+        let target = config.target_capacity;
+        config.max_table_capacity = 0;
+        config.max_blocked_streams = 0;
+        let mut encoder = Self::new(config);
+        encoder.pending_target_capacity = Some(target);
+        encoder
+    }
+
+    /// Apply the first peer SETTINGS without replacing decoder-stream parser state.
+    ///
+    /// This is valid exactly once on an encoder created with [`Self::before_peer_settings`].
+    /// The connection driver must reject subsequent SETTINGS as H3_FRAME_UNEXPECTED.
+    pub fn apply_peer_settings(
+        &mut self,
+        settings: &rama_http_types::proto::h3::Settings,
+    ) -> Result<(), QpackError> {
+        let target = self
+            .pending_target_capacity
+            .take()
+            .ok_or(QpackError::ResourceLimit(
+                "peer settings already configured",
+            ))?;
+        self.config.max_table_capacity = settings.qpack_max_table_capacity();
+        self.config.max_blocked_streams = settings.qpack_blocked_streams();
+        self.config.target_capacity = target.min(self.config.max_table_capacity);
+        if let Some(limit) = settings.max_field_section_size() {
+            self.config.max_field_section_size = self
+                .config
+                .max_field_section_size
+                .min(usize::try_from(limit).unwrap_or(usize::MAX));
+        }
+        // Before SETTINGS no insertion or dynamic reference was permitted.
+        debug_assert_eq!(self.table.insert_count(), 0);
+        self.table = DynamicTable::new(self.config.max_table_capacity);
+        Ok(())
     }
 
     /// Number of insertions acknowledged by the peer.
@@ -168,22 +242,62 @@ impl Encoder {
     }
 
     fn is_stream_blocking(&self, stream_id: u64) -> bool {
-        self.sections.get(&stream_id).is_some_and(|queue| {
-            queue
-                .iter()
-                .any(|s| s.required_insert_count > self.known_received_count)
-        })
+        self.sections
+            .get(&stream_id)
+            .is_some_and(|sections| sections.blocking > 0)
     }
 
-    fn refresh_blocking_count(&mut self) {
-        self.blocking_streams = self
-            .sections
-            .values()
-            .filter(|q| {
-                q.iter()
-                    .any(|s| s.required_insert_count > self.known_received_count)
-            })
-            .count() as u64;
+    fn advance_known_received_count(&mut self, count: u64) {
+        self.known_received_count = self.known_received_count.max(count);
+        while self
+            .blocking_sections
+            .first_key_value()
+            .is_some_and(|((required, _), _)| *required <= self.known_received_count)
+        {
+            let Some(((_, stream_id), count)) = self.blocking_sections.pop_first() else {
+                break;
+            };
+            if let Some(sections) = self.sections.get_mut(&stream_id) {
+                sections.blocking -= count;
+                if sections.blocking == 0 {
+                    self.blocking_streams -= 1;
+                }
+            }
+        }
+    }
+
+    fn remove_blocking_section(&mut self, stream_id: u64, required: u64) {
+        if required <= self.known_received_count {
+            return;
+        }
+        let key = (required, stream_id);
+        if let Some(count) = self.blocking_sections.get_mut(&key) {
+            *count -= 1;
+            if *count == 0 {
+                self.blocking_sections.remove(&key);
+            }
+        }
+    }
+
+    /// Bound newly generated instructions by credit atomically reserved by the transport.
+    /// Existing synchronous users retain their configured output budget.
+    pub(crate) fn encode_with_credit<I, F, N, V>(
+        &mut self,
+        stream_id: u64,
+        fields: I,
+        credit: usize,
+    ) -> Result<Bytes, QpackError>
+    where
+        I: IntoIterator<Item = F>,
+        F: Into<EncodeField<N, V>>,
+        N: AsRef<[u8]>,
+        V: AsRef<[u8]>,
+    {
+        let configured = self.config.max_encoder_stream_bytes;
+        self.config.max_encoder_stream_bytes = configured.min(credit);
+        let result = self.encode(stream_id, fields);
+        self.config.max_encoder_stream_bytes = configured;
+        result
     }
 
     fn output_fits(&self, additional: usize) -> bool {
@@ -216,6 +330,10 @@ impl Encoder {
     ///
     /// Input size and stream ID are validated before any connection state changes. A tracking or
     /// encoder-output budget prevents optional dynamic compression rather than failing the section.
+    ///
+    /// After stream cancellation, this stream and older IDs in the same QUIC stream class use
+    /// static/literal representations. Later IDs can still use dynamic compression. This bounded
+    /// bookkeeping leaves previously outstanding references on other streams intact.
     pub fn encode<I, F, N, V>(&mut self, stream_id: u64, fields: I) -> Result<Bytes, QpackError>
     where
         I: IntoIterator<Item = F>,
@@ -239,14 +357,18 @@ impl Encoder {
                 .and_then(|n| n.checked_add(field.value.as_ref().len()))
                 .and_then(|n| n.checked_add(ENTRY_OVERHEAD as usize))
                 .filter(|n| *n <= self.config.max_field_section_size)
-                .ok_or(QpackError::ResourceLimit("field section too large"))?;
+                .ok_or(QpackError::EncodeFieldSectionLimit(
+                    "field section too large",
+                ))?;
             input.push(field);
         }
         self.ensure_capacity();
         let base = self.table.insert_count();
         let was_blocking = self.is_stream_blocking(stream_id);
         let may_block = was_blocking || self.blocking_streams < self.config.max_blocked_streams;
-        let may_track = self.section_count < self.config.max_outstanding_sections;
+        let cancelled_through = self.cancelled_through[(stream_id & STREAM_CLASS_MASK) as usize];
+        let may_track = self.section_count < self.config.max_outstanding_sections
+            && cancelled_through.is_none_or(|cancelled| stream_id > cancelled);
         let mut refs = Vec::new();
         let mut ric = 0;
         // Two u64 prefixed integers need at most 22 bytes. Backfill the prefix into this headroom
@@ -323,16 +445,18 @@ impl Encoder {
         let prefix_len = PREFIX_HEADROOM - cursor.len();
         out[PREFIX_HEADROOM - prefix_len..PREFIX_HEADROOM].copy_from_slice(&prefix[..prefix_len]);
         if ric > 0 {
-            self.sections
-                .entry(stream_id)
-                .or_default()
-                .push_back(Section {
-                    refs,
-                    required_insert_count: ric,
-                });
+            let sections = self.sections.entry(stream_id).or_default();
+            sections.queue.push_back(Section {
+                refs,
+                required_insert_count: ric,
+            });
             self.section_count += 1;
-            if !was_blocking && ric > self.known_received_count {
-                self.blocking_streams += 1;
+            if ric > self.known_received_count {
+                *self.blocking_sections.entry((ric, stream_id)).or_default() += 1;
+                sections.blocking += 1;
+                if !was_blocking {
+                    self.blocking_streams += 1;
+                }
             }
         }
         Ok(out.freeze().slice(PREFIX_HEADROOM - prefix_len..))
@@ -406,23 +530,33 @@ impl Encoder {
                     .ok_or(QpackError::DecoderStreamError(
                         "insert count increment exceeds inserts",
                     ))?;
-                self.known_received_count = new;
+                self.advance_known_received_count(new);
             }
             DecoderInstruction::SectionAcknowledgment { stream_id } => {
-                let queue =
+                let sections =
                     self.sections
                         .get_mut(&stream_id)
                         .ok_or(QpackError::DecoderStreamError(
                             "acknowledgment for unknown section",
                         ))?;
-                let section = queue.pop_front().ok_or(QpackError::DecoderStreamError(
-                    "acknowledgment for unknown section",
-                ))?;
-                if queue.is_empty() {
+                let section = sections
+                    .queue
+                    .pop_front()
+                    .ok_or(QpackError::DecoderStreamError(
+                        "acknowledgment for unknown section",
+                    ))?;
+                let required = section.required_insert_count;
+                if required > self.known_received_count {
+                    sections.blocking -= 1;
+                    if sections.blocking == 0 {
+                        self.blocking_streams -= 1;
+                    }
+                }
+                if sections.queue.is_empty() {
                     self.sections.remove(&stream_id);
                 }
-                self.known_received_count =
-                    self.known_received_count.max(section.required_insert_count);
+                self.remove_blocking_section(stream_id, required);
+                self.advance_known_received_count(required);
                 self.release_section(section);
             }
             DecoderInstruction::StreamCancellation { stream_id } => {
@@ -431,14 +565,20 @@ impl Encoder {
                         "stream ID exceeds QUIC integer range",
                     ));
                 }
-                if let Some(queue) = self.sections.remove(&stream_id) {
-                    for section in queue {
+                let cancelled =
+                    &mut self.cancelled_through[(stream_id & STREAM_CLASS_MASK) as usize];
+                *cancelled = Some(cancelled.map_or(stream_id, |previous| previous.max(stream_id)));
+                if let Some(sections) = self.sections.remove(&stream_id) {
+                    if sections.blocking > 0 {
+                        self.blocking_streams -= 1;
+                    }
+                    for section in sections.queue {
+                        self.remove_blocking_section(stream_id, section.required_insert_count);
                         self.release_section(section);
                     }
                 }
             }
         }
-        self.refresh_blocking_count();
         Ok(())
     }
 

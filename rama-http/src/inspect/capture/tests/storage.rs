@@ -116,7 +116,7 @@ async fn total_budget_charges_committed_records_and_releases_evicted_entries() {
         .unwrap()
         .unwrap();
     assert_ne!(second, first);
-    assert!(store.exchange(first).is_err());
+    store.exchange(first).err().expect("exchange was evicted");
     let second_entry = store.exchange(second).unwrap();
     let second_file_len = second_entry.stored_bytes.load(Ordering::Acquire);
     assert_eq!(store.0.budget.used.load(Ordering::Acquire), second_file_len);
@@ -162,7 +162,7 @@ async fn selected_exchange_remains_readable_after_retention_evicts_it() {
         .unwrap();
 
     assert_ne!(first, second);
-    assert!(store.exchange(first).is_err());
+    store.exchange(first).err().expect("exchange was evicted");
     let details = selected.next_details().await.unwrap().unwrap();
     assert_eq!(details.summary.id, first);
     assert!(selected.next_details().await.unwrap().is_none());
@@ -405,7 +405,7 @@ async fn cancelled_append_is_not_published_in_capture_indexes() {
     // A second append must wait for that writer, then make progress when the
     // cancelled operation releases it. Its reservation must survive the wait.
     let next_append = store.record_replay_result(exchange_id, Ok(StatusCode::NO_CONTENT));
-    tokio::pin!(next_append);
+    let mut next_append = std::pin::pin!(next_append);
     assert!(next_append.as_mut().now_or_never().is_none());
     append_task.abort();
     assert!(append_task.await.unwrap_err().is_cancelled());

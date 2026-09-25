@@ -90,11 +90,14 @@ This transport-first model is also part of why Rama's [gRPC support](./http/grpc
     <https://ramaproxy.org/docs/rama/quic/struct.EndpointBuilder.html>, so a graceful shutdown
     the application holds a guard for stops the endpoint too
 
-QUIC needs the `quic` feature and a TLS provider: either `boring`, or `rustls` together with
-`ring` or `aws-lc`. Select an implementation with `TlsOptions::with_backend`; automatic
-selection prefers Rustls when both are available. It is built on [rama-udp][rama-udp], so
-the socket options and packet features of that layer apply to it. Boring builds do not require
-Rustls, ring, or AWS-LC.
+QUIC needs the `quic` feature and a TLS provider. Built-in providers use either `boring`,
+or `rustls` together with `ring` or `aws-lc`. Inject `BoringTlsProvider` or
+`RustlsTlsProvider` through the QUIC configuration factory; automatic selection prefers
+Rustls when both are available. Custom implementations use the same
+`QuicClientConfigProvider` and `QuicServerConfigProvider` interfaces, without enabling a
+built-in TLS provider. The lower-level TLS session interfaces remain available too.
+QUIC is built on [rama-udp][rama-udp], so its socket options and packet features apply.
+Boring builds do not require Rustls, ring, or AWS-LC.
 
 You can also bring your own TLS. The traits in `rama::quic::tls::provider` describe what
 QUIC needs from a TLS 1.3 implementation and its packet protection; implement them for the

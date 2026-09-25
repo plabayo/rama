@@ -30,6 +30,11 @@ impl FrameType {
     /// `MAX_PUSH_ID` (RFC 9114 §7.2.7).
     pub const MAX_PUSH_ID: Self = Self(0x0d);
 
+    /// Request PRIORITY_UPDATE (RFC 9218 §7.2).
+    pub const PRIORITY_UPDATE_REQUEST: Self = Self(0xf0700);
+    /// Push PRIORITY_UPDATE (RFC 9218 §7.2).
+    pub const PRIORITY_UPDATE_PUSH: Self = Self(0xf0701);
+
     /// Construct a frame type from its raw value.
     #[must_use]
     pub const fn new(value: u64) -> Self {
@@ -68,6 +73,8 @@ impl FrameType {
             Self::PUSH_PROMISE => "PUSH_PROMISE",
             Self::GOAWAY => "GOAWAY",
             Self::MAX_PUSH_ID => "MAX_PUSH_ID",
+            Self::PRIORITY_UPDATE_REQUEST => "PRIORITY_UPDATE_REQUEST",
+            Self::PRIORITY_UPDATE_PUSH => "PRIORITY_UPDATE_PUSH",
             _ => return None,
         })
     }

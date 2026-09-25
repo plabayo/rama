@@ -1,5 +1,10 @@
 //! HTTP/0.9 file transfer endpoints for the QUIC interop runner, using `hq-interop`.
 
+#[cfg(feature = "boring")]
+use rama::quic::tls::BoringTlsProvider;
+use rama::quic::tls::{QuicClientConfigProvider, QuicServerConfigProvider, TlsOptions};
+#[cfg(not(feature = "boring"))]
+use rama::quic::tls::{default_server_tls_provider, default_tls_provider};
 #[cfg(any(
     all(feature = "rustls-ring", feature = "rustls-aws-lc"),
     all(
@@ -29,12 +34,30 @@ use rama::{
 };
 use std::{path::Path, process::ExitCode, sync::Arc};
 
-fn tls_options() -> rama::quic::tls::TlsOptions {
-    rama::quic::tls::TlsOptions::default().with_backend(if cfg!(feature = "boring") {
-        rama::tls::TlsBackend::Boring
-    } else {
-        rama::tls::TlsBackend::Rustls
-    })
+pub fn tls_options() -> TlsOptions {
+    TlsOptions::default()
+}
+
+pub fn tls_provider() -> Arc<dyn QuicClientConfigProvider> {
+    #[cfg(feature = "boring")]
+    {
+        Arc::new(BoringTlsProvider)
+    }
+    #[cfg(not(feature = "boring"))]
+    {
+        default_tls_provider().unwrap()
+    }
+}
+
+pub fn server_tls_provider() -> Arc<dyn QuicServerConfigProvider> {
+    #[cfg(feature = "boring")]
+    {
+        Arc::new(BoringTlsProvider)
+    }
+    #[cfg(not(feature = "boring"))]
+    {
+        default_server_tls_provider().unwrap()
+    }
 }
 
 const ALPN: &[u8] = b"hq-interop";

@@ -149,6 +149,16 @@ impl<'a> Streams<'a> {
         self.state.send_streams
     }
 
+    /// Unassigned stream IDs permitted by the peer.
+    pub(crate) fn available_local_streams(&self, dir: Dir) -> u64 {
+        self.state.max[dir as usize].saturating_sub(self.state.next[dir as usize])
+    }
+
+    /// Exclusive cumulative remote stream-index limit already advertised to the peer.
+    pub(crate) fn remote_stream_limit(&self, dir: Dir) -> u64 {
+        self.state.sent_max_remote[dir as usize]
+    }
+
     /// The number of remotely initiated open streams of a certain directionality.
     ///
     /// Includes remotely initiated streams, which have not been accepted via [`accept`](Self::accept).
@@ -297,7 +307,9 @@ impl<'a> SendStream<'a> {
     ///
     /// Returns the number of bytes successfully written.
     pub(crate) fn write(&mut self, data: &[u8]) -> Result<usize, WriteError> {
-        Ok(self.write_source(&mut ByteSlice::from_slice(data))?.bytes)
+        Ok(self
+            .write_source(&mut ByteSlice::from_slice(data), 0)?
+            .bytes)
     }
 
     /// Send data on the given stream
@@ -307,16 +319,74 @@ impl<'a> SendStream<'a> {
     /// [`Written::chunks`] will not count this chunk as fully written. However
     /// the chunk will be advanced and contain only non-written data after the call.
     pub(crate) fn write_chunks(&mut self, data: &mut [Bytes]) -> Result<Written, WriteError> {
-        self.write_source(&mut BytesArray::from_chunks(data))
+        self.write_source(&mut BytesArray::from_chunks(data), 0)
     }
 
-    fn write_source<B: BytesSource>(&mut self, source: &mut B) -> Result<Written, WriteError> {
+    pub(crate) fn write_chunks_with_reserve(
+        &mut self,
+        data: &mut [Bytes],
+        reserve: u64,
+    ) -> Result<Written, WriteError> {
+        self.write_source(&mut BytesArray::from_chunks(data), reserve)
+    }
+
+    /// Build an optional chunk using the exact currently available credit.
+    /// The caller holds the connection lock through generation and admission.
+    pub(crate) fn write_generated<R>(
+        &mut self,
+        reserve: u64,
+        generate: impl FnOnce(usize) -> (Bytes, R),
+    ) -> Result<R, WriteError> {
+        if self.conn_state.is_closed() {
+            return Err(WriteError::Blocked);
+        }
+        let limit = self.state.write_limit().saturating_sub(
+            reserve
+                .min(self.state.initial_send_credit / 2)
+                .min(self.state.send_window / 2),
+        );
+        let max_send_data = self.state.max_send_data(self.id);
+        let stream = self
+            .state
+            .send
+            .get_mut(&self.id)
+            .map(get_or_insert_send(max_send_data))
+            .ok_or(WriteError::ClosedStream)?;
+        if !stream.is_writable() {
+            return Err(WriteError::ClosedStream);
+        }
+        if let Some(code) = stream.stop_reason {
+            return Err(WriteError::Stopped(code));
+        }
+        let capacity = limit
+            .min(stream.max_data - stream.offset())
+            .min(usize::MAX as u64) as usize;
+        let (bytes, result) = generate(capacity);
+        assert!(
+            bytes.len() <= capacity,
+            "generated chunk exceeds supplied write capacity"
+        );
+        if !bytes.is_empty() {
+            self.write_chunks(&mut [bytes])?;
+        }
+        Ok(result)
+    }
+
+    fn write_source<B: BytesSource>(
+        &mut self,
+        source: &mut B,
+        reserve: u64,
+    ) -> Result<Written, WriteError> {
         if self.conn_state.is_closed() {
             trace!(%self.id, "write blocked; connection draining");
             return Err(WriteError::Blocked);
         }
 
-        let limit = self.state.write_limit();
+        let requested_reserve = reserve;
+        let reserve = reserve
+            .min(self.state.initial_send_credit / 2)
+            .min(self.state.send_window / 2);
+        let limit = self.state.write_limit().saturating_sub(reserve);
 
         let max_send_data = self.state.max_send_data(self.id);
 
@@ -327,6 +397,10 @@ impl<'a> SendStream<'a> {
             .map(get_or_insert_send(max_send_data))
             .ok_or(WriteError::ClosedStream)?;
 
+        if stream.connection_reserve != requested_reserve {
+            self.state.blocked_scan = None;
+        }
+        stream.connection_reserve = requested_reserve;
         if limit == 0 {
             trace!(
                 stream = %self.id, max_data = self.state.max_data, data_sent = self.state.data_sent,

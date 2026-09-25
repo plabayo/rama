@@ -1,7 +1,10 @@
 use rama::{
     Service,
     error::{BoxError, BoxErrorExt, ErrorContext as _, ErrorExt},
+    graceful::{self, Shutdown},
     http::layer::har::recorder::{FileRecorder, Recorder as _},
+    rt::Executor,
+    telemetry::tracing,
     utils::collections::NonEmptySmallVec,
 };
 
@@ -18,6 +21,8 @@ mod feed;
 mod request;
 mod trace;
 mod ws;
+
+const CLIENT_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub async fn run(cfg: SendCommand, is_ws: bool) -> Result<(), BoxError> {
     trace::init_logger(cfg.trace.clone(), is_ws)?;
@@ -38,8 +43,18 @@ pub async fn run_inner(cfg: &SendCommand, is_ws: bool) -> Result<(), BoxError> {
         .as_ref()
         .map(|path| FileRecorder::try_new_at(path.clone()))
         .transpose()?;
+    let (finished, completed) = tokio::sync::oneshot::channel::<()>();
+    let shutdown = Shutdown::new(async move {
+        tokio::select! {
+            _ = completed => {},
+            _ = graceful::default_signal() => {},
+        }
+    });
+    let guard = shutdown.guard();
+    let executor = Executor::graceful(shutdown.guard());
     let exchange = async {
-        let https_client = client::new(cfg, feed_tui, har_recorder.clone()).await?;
+        let https_client =
+            client::new(cfg, feed_tui, har_recorder.clone(), executor.clone()).await?;
         let request = request::build(cfg, is_ws).await?;
 
         if is_ws {
@@ -80,6 +95,14 @@ pub async fn run_inner(cfg: &SendCommand, is_ws: bool) -> Result<(), BoxError> {
         Ok::<_, BoxError>(())
     };
 
+    // Keep the command-sized exchange off worker stacks and out of timeout wrappers.
+    let exchange = Box::pin(exchange);
+    let exchange = async {
+        tokio::select! {
+            result = exchange => result,
+            _ = guard.cancelled() => Err(BoxError::from_static_str("request cancelled")),
+        }
+    };
     let result = if let Some(max_time) = cfg.max_time
         && max_time > 0.
     {
@@ -91,6 +114,10 @@ pub async fn run_inner(cfg: &SendCommand, is_ws: bool) -> Result<(), BoxError> {
         exchange.await
     };
 
+    drop(executor);
+    drop(guard);
+    finished.send(()).unwrap_or_default();
+    drain_client(shutdown).await;
     if let Some(recorder) = &har_recorder {
         recorder.stop_record().await;
     }
@@ -108,4 +135,47 @@ pub async fn run_inner(cfg: &SendCommand, is_ws: bool) -> Result<(), BoxError> {
     }
 
     result
+}
+
+async fn drain_client(shutdown: Shutdown) {
+    // A successful exchange has already consumed or written its response.
+    // Waiting for pooled connections to close is best-effort cleanup; it must
+    // not change that exchange's outcome. HAR finalization is handled separately.
+    if let Err(error) = shutdown.shutdown_with_limit(CLIENT_DRAIN_TIMEOUT).await {
+        tracing::warn!(%error, "timed out draining HTTP client tasks");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CLIENT_DRAIN_TIMEOUT, drain_client};
+    use rama::graceful::Shutdown;
+    use tokio::time::Instant;
+
+    #[tokio::test(start_paused = true)]
+    async fn client_drain_timeout_is_bounded_best_effort_cleanup() {
+        let shutdown = Shutdown::new(async {});
+        let guard = shutdown.guard();
+        let start = Instant::now();
+
+        drain_client(shutdown).await;
+
+        assert_eq!(start.elapsed(), CLIENT_DRAIN_TIMEOUT);
+        guard.cancelled().await;
+        drop(guard);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn client_drain_completes_without_waiting_for_timeout() {
+        let shutdown = Shutdown::new(async {});
+        let guard = shutdown.guard();
+        let start = Instant::now();
+
+        tokio::spawn(async move {
+            guard.cancelled().await;
+        });
+        drain_client(shutdown).await;
+
+        assert!(start.elapsed() < CLIENT_DRAIN_TIMEOUT);
+    }
 }

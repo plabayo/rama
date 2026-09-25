@@ -19,10 +19,6 @@ use std::{
 };
 
 use crate::proto::BloomTokenLog;
-#[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
-use crate::proto::crypto::rustls::QuicServerConfig;
-#[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
-use crate::proto::crypto::rustls::configured_provider;
 use crate::proto::{
     DEFAULT_SUPPORTED_VERSIONS, Duration, RandomConnectionIdGenerator, SystemTime, TokenLog,
     TokenMemoryCache, TokenStore,
@@ -31,14 +27,17 @@ use crate::proto::{
     },
     crypto::{self, HandshakeTokenKey},
 };
-#[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
-use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer};
 use rama_quic_proto::{
     ConnectionId, VarInt, VarIntBoundsExceeded, Version,
     version::{ClientVersionPolicy, ServerVersionPolicy, VersionPolicyError},
 };
+
 #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
-use rama_tls_rustls::dep::rustls::{self, client::WebPkiServerVerifier};
+use {
+    crate::proto::crypto::rustls::{QuicServerConfig, configured_provider},
+    rama_crypto::pki_types::{CertificateDer, PrivateKeyDer},
+    rama_tls_rustls::dep::rustls::{self, client::WebPkiServerVerifier},
+};
 
 mod keys;
 #[cfg(any(feature = "aws-lc", feature = "ring", feature = "boring"))]
@@ -553,10 +552,6 @@ impl ServerConfig {
     }
 }
 
-#[cfg(any(
-    feature = "boring",
-    all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
-))]
 impl ServerConfig {
     /// Build a server configuration from the common Rama TLS server configuration: the identity
     /// to present, the protocols to accept and everything else TLS decides, with the provider
@@ -565,21 +560,7 @@ impl ServerConfig {
         config: &rama_tls::server::TlsServerConfig,
         options: crypto::config::TlsOptions,
     ) -> Result<Self, crypto::config::TlsConfigError> {
-        match options.resolve_backend()? {
-            #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
-            rama_tls::TlsBackend::Rustls => Ok(Self::with_crypto(Arc::new(
-                crypto::rustls::QuicServerConfig::from_rama(
-                    config,
-                    configured_provider(),
-                    options,
-                )?,
-            ))),
-            #[cfg(feature = "boring")]
-            rama_tls::TlsBackend::Boring => Ok(Self::with_crypto(Arc::new(
-                crypto::boring::QuicServerConfig::from_rama(config, options)?,
-            ))),
-            backend => Err(crypto::config::TlsConfigError::BackendUnavailable(backend)),
-        }
+        crate::tls::default_server_tls_provider()?.server_config(config, options)
     }
 
     #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
@@ -593,25 +574,6 @@ impl ServerConfig {
         Ok(Self::with_crypto(Arc::new(QuicServerConfig::new(
             cert_chain, key,
         )?)))
-    }
-}
-
-#[cfg(not(any(
-    feature = "boring",
-    all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
-)))]
-impl ServerConfig {
-    /// Build a server configuration from the common Rama TLS server configuration.
-    ///
-    /// No built-in TLS backend is compiled in, so this reports the backend asked for as
-    /// unavailable; a [`crypto::ServerConfig`] of your own goes through [`Self::new`].
-    pub fn try_from_rama_tls(
-        _config: &rama_tls::server::TlsServerConfig,
-        options: crypto::config::TlsOptions,
-    ) -> Result<Self, crypto::config::TlsConfigError> {
-        Err(crypto::config::TlsConfigError::BackendUnavailable(
-            options.backend,
-        ))
     }
 }
 
@@ -931,10 +893,6 @@ impl ClientConfig {
     }
 }
 
-#[cfg(any(
-    feature = "boring",
-    all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
-))]
 impl ClientConfig {
     /// Build a client configuration from the common Rama TLS client configuration: the peer
     /// identity to trust, the protocols to offer and everything else TLS decides, with the
@@ -947,21 +905,7 @@ impl ClientConfig {
         config: &rama_tls::client::TlsClientConfig,
         options: crypto::config::TlsOptions,
     ) -> Result<Self, crypto::config::TlsConfigError> {
-        match options.resolve_backend()? {
-            #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
-            rama_tls::TlsBackend::Rustls => Ok(Self::new(Arc::new(
-                crypto::rustls::QuicClientConfig::from_rama(
-                    config,
-                    configured_provider(),
-                    options,
-                )?,
-            ))),
-            #[cfg(feature = "boring")]
-            rama_tls::TlsBackend::Boring => Ok(Self::new(Arc::new(
-                crypto::boring::QuicClientConfig::from_rama(config, options)?,
-            ))),
-            backend => Err(crypto::config::TlsConfigError::BackendUnavailable(backend)),
-        }
+        crate::tls::default_tls_provider()?.client_config(config, options)
     }
 
     #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
@@ -972,25 +916,6 @@ impl ClientConfig {
         Ok(Self::new(Arc::new(crypto::rustls::QuicClientConfig::new(
             WebPkiServerVerifier::builder_with_provider(roots, configured_provider()).build()?,
         ))))
-    }
-}
-
-#[cfg(not(any(
-    feature = "boring",
-    all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
-)))]
-impl ClientConfig {
-    /// Build a client configuration from the common Rama TLS client configuration.
-    ///
-    /// No built-in TLS backend is compiled in, so this reports the backend asked for as
-    /// unavailable; a [`crypto::ClientConfig`] of your own goes through [`Self::new`].
-    pub fn try_from_rama_tls(
-        _config: &rama_tls::client::TlsClientConfig,
-        options: crypto::config::TlsOptions,
-    ) -> Result<Self, crypto::config::TlsConfigError> {
-        Err(crypto::config::TlsConfigError::BackendUnavailable(
-            options.backend,
-        ))
     }
 }
 
@@ -1087,25 +1012,21 @@ mod backendless_tests {
     use super::*;
     use crate::proto::crypto::config::{TlsConfigError, TlsOptions};
 
-    /// Without a built-in backend the shared-configuration constructors exist and say which
-    /// backend was asked for, so a build gets a runtime report rather than a missing method.
+    /// Without a built-in provider, convenience constructors report unavailability;
+    /// callers can still inject their own provider through the explicit constructors.
     #[test]
     fn rama_tls_configs_report_the_missing_backend() {
-        let options = TlsOptions::default().with_backend(rama_tls::TlsBackend::Boring);
+        let options = TlsOptions::default();
         assert!(matches!(
             ClientConfig::try_from_rama_tls(&rama_tls::client::TlsClientConfig::new(), options),
-            Err(TlsConfigError::BackendUnavailable(
-                rama_tls::TlsBackend::Boring
-            ))
+            Err(TlsConfigError::BackendUnavailable)
         ));
         assert!(matches!(
             ServerConfig::try_from_rama_tls(
                 &rama_tls::server::TlsServerConfig::new(),
                 TlsOptions::default()
             ),
-            Err(TlsConfigError::BackendUnavailable(
-                rama_tls::TlsBackend::Auto
-            ))
+            Err(TlsConfigError::BackendUnavailable)
         ));
     }
 }

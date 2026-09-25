@@ -1,4 +1,5 @@
 [profile.ci]
+fail-fast = false
 failure-output = "immediate-final"
 success-output = "never"
 

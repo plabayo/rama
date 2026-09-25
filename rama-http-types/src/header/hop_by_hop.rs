@@ -44,15 +44,24 @@ use rama_utils::{
 
 use crate::{HeaderMap, HeaderName, HeaderValue, Request, Response, StatusCode, Version, header};
 
-const HOP_BY_HOP_HEADERS: [&HeaderName; 7] = [
+/// Connection-specific fields prohibited in both HTTP/2 and HTTP/3.
+///
+/// See RFC 9113 Section 8.2.2 and RFC 9114 Section 4.2. `TE` is checked
+/// separately because requests may contain `TE: trailers`. `Trailer` is not
+/// prohibited; it can announce trailing fields in these protocols.
+pub const CONNECTION_SPECIFIC_HEADERS: [&HeaderName; 5] = [
     &header::CONNECTION,
     &header::PROXY_CONNECTION,
     &header::KEEP_ALIVE,
-    &header::TE,
-    &header::TRAILER,
     &header::TRANSFER_ENCODING,
     &header::UPGRADE,
 ];
+
+fn known_hop_by_hop_headers() -> impl Iterator<Item = &'static HeaderName> {
+    CONNECTION_SPECIFIC_HEADERS
+        .into_iter()
+        .chain([&header::TE, &header::TRAILER])
+}
 
 const HTTP_TOKEN_BYTES: [bool; 256] =
     set_each(set_ascii_alphanum([false; 256]), b"!#$%&'*+-.^_`|~");
@@ -135,8 +144,7 @@ pub fn connection_header_names(headers: &HeaderMap) -> impl Iterator<Item = Head
 /// Known names are included even when absent from the map. The iterator owns
 /// its nominations so callers may mutate the map while consuming it.
 pub fn hop_by_hop_header_names(headers: &HeaderMap) -> impl Iterator<Item = HeaderName> + use<> {
-    HOP_BY_HOP_HEADERS
-        .into_iter()
+    known_hop_by_hop_headers()
         .cloned()
         .chain(connection_header_names(headers))
 }
@@ -150,7 +158,7 @@ fn remove_field(headers: &mut HeaderMap, name: &HeaderName) {
 fn remove_hop_by_hop_headers_with_nominations(
     headers: &mut HeaderMap,
     nominated: impl IntoIterator<Item = HeaderName>,
-    known: &[&HeaderName],
+    known: impl IntoIterator<Item = &'static HeaderName>,
 ) {
     for name in nominated {
         remove_field(headers, &name);
@@ -394,7 +402,7 @@ impl HopByHopHeaderContext {
         remove_hop_by_hop_headers_with_nominations(
             headers,
             context.nominated_headers.iter().cloned(),
-            &HOP_BY_HOP_HEADERS,
+            known_hop_by_hop_headers(),
         );
         context
     }

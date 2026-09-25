@@ -4,6 +4,7 @@ import copy
 import itertools
 import re
 import subprocess
+import tomllib
 import unittest
 
 import yaml
@@ -253,6 +254,33 @@ class WorkflowPolicyTests(unittest.TestCase):
             for key in ("steps", "env", "runs-on", "concurrency", "timeout-minutes"):
                 with self.subTest(job=name, key=key):
                     self.assertEqual(regular.get(key), daily.get(key))
+
+    def test_test_failures_do_not_hide_later_suites_or_bypass_builds(self):
+        profile = tomllib.loads((ROOT / ".config/nextest.toml").read_text())
+        self.assertIs(profile["profile"]["ci"]["fail-fast"], False)
+        all_ready = "${{ !cancelled() && steps.build_tests_all.outcome == 'success' }}"
+        both_ready = "${{ !cancelled() && steps.build_tests_all.outcome == 'success' && steps.build_tests_minimal.outcome == 'success' }}"
+        for workflow in (self.workflow, self.daily):
+            steps = {step.get("name"): step for step in workflow["jobs"]["test-rust-base"]["steps"]}
+            self.assertEqual(steps["Build run tests (cargo test)"]["id"], "build_tests_all")
+            self.assertEqual(steps["Run tests (cargo test)"]["if"], all_ready)
+            self.assertEqual(steps["Build run tests (--no-default--features)"]["if"], all_ready)
+            self.assertEqual(steps["Build run tests (--no-default--features)"]["id"], "build_tests_minimal")
+            for name in ("Run tests (--no-default--features)", "Run crypto backend tests",
+                         "Run doc tests (cargo test)", "Run example tests (cargo test)",
+                         "Run example binary tests"):
+                self.assertEqual(steps[name]["if"], both_ready)
+            for name in ("Run ignored tests", "Run the relay interrupt test"):
+                self.assertTrue(steps[name]["if"].startswith(both_ready[:-3] + " && ("))
+
+        unstable = yaml.safe_load(self.path.with_name("CI-unstable.yml").read_text())
+        for workflow in (self.workflow, self.daily, unstable):
+            for job in workflow["jobs"].values():
+                for step in job.get("steps", []):
+                    self.assertNotRegex(step.get("run", ""), r"cargo nextest run(?! --profile ci)")
+                    self.assertNotRegex(step.get("run", ""), r"cargo nextest run[^\n]*--profile ci[^\n]*--profile ci")
+                    if step.get("name") in ("Run tests (${{ matrix.profile }})", "Run ignored tests (${{ matrix.profile }})"):
+                        self.assertEqual(step["if"], "${{ !cancelled() && steps.build_tests.outcome == 'success' }}")
 
     def test_cross_builds_and_artifact_smoke_move_together(self):
         names = {"test-rust-linux-gnu-cross-macos", "test-rust-linux-gnu-cross-windows",

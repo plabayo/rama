@@ -41,3 +41,5 @@ mod emulate_ua;
 #[doc(inline)]
 #[cfg_attr(docsrs, doc(cfg(feature = "ua")))]
 pub use emulate_ua::{EmulateTlsProfileLayer, EmulateTlsProfileService};
+
+pub use config::BoringTlsClientConfigProvider;

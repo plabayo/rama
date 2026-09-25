@@ -421,7 +421,11 @@ std = [
 ]
 test-utils = ["rama-net?/test-utils", "rama-udp?/test-utils", "rama-quic?/test-utils"]
 # Optional fuzzing support without enabling additional protocol crates.
-fuzz-utils = ["rama-quic?/fuzz-utils", "rama-quic-proto?/fuzz-utils"]
+fuzz-utils = [
+    "rama-quic?/fuzz-utils",
+    "rama-quic-proto?/fuzz-utils",
+    "rama-http-core?/fuzz-utils",
+]
 # Forward experimental HTTP APIs when the HTTP backend is enabled.
 unstable = ["rama-http-core?/unstable"]
 compression = [
@@ -507,7 +511,7 @@ http = [
 # committing to client, proxy or server specifics: those feature-gate
 # their own extra requirements (e.g. `EasyHttpWebClient` also needs
 # `tcp` + `dns`) on top of this.
-http-backend = ["http", "dep:rama-http-backend", "dep:rama-http-core", "dep:tokio"]
+http-backend = ["http", "quic", "dep:rama-http-backend", "dep:rama-http-core", "dep:tokio"]
 http-full = [
     "http-backend",
     # `EasyHttpWebClient` (see `http::client`) needs these on top of
@@ -670,6 +674,17 @@ incremental = false
 [profile.bench]
 codegen-units = 1
 incremental = false
+
+[[bench]]
+name = "alt_svc"
+harness = false
+required-features = ["http-full"]
+
+[[bench]]
+name = "http3"
+path = "benches/http3.rs"
+harness = false
+required-features = ["http-full"]
 
 [[bench]]
 name = "ua_parse"

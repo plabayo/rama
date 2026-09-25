@@ -6,7 +6,10 @@
 
 #[cfg(feature = "opentelemetry")]
 use super::metrics;
-use super::{ActiveSlot, ConnID, ConnectionResult, Pool, PoolSlot};
+use super::{
+    ActiveSlot, ConnID, ConnectionAdmission, ConnectionAdmissionLease, ConnectionResult,
+    ConnectionReuse, Pool, PoolSlot,
+};
 use crate::address::SocketAddress;
 use crate::conn::{ConnectionHealth, ConnectionHealthWatcher};
 use crate::stream::Socket;
@@ -14,7 +17,7 @@ use parking_lot::Mutex;
 use rama_core::Service;
 use rama_core::error::BoxErrorExt as _;
 use rama_core::error::{BoxError, ErrorContext, ErrorExt};
-use rama_core::extensions::{Extension, Extensions, ExtensionsRef};
+use rama_core::extensions::{Extension, Extensions, ExtensionsMut, ExtensionsRef};
 use rama_core::telemetry::tracing::trace;
 use rama_utils::{guard::DropGuard, macros::generate_set_and_with};
 use std::collections::VecDeque;
@@ -35,6 +38,7 @@ use tokio::sync::Semaphore;
 /// [`LeasedConnection`]s are considered active pool connections until dropped or
 /// ownership is taken of the internal connection.
 pub struct LeasedConnection<C: ExtensionsRef, ID> {
+    admission: Option<ConnectionAdmissionLease>,
     pooled_conn: ManuallyDrop<PooledConnection<C, ID>>,
     pooled_conn_taken: bool,
     active_slot: ActiveSlot,
@@ -70,6 +74,8 @@ struct PooledConnection<C, ID> {
     id: ID,
     pool_slot: PoolSlot,
     last_used: Instant,
+    reusable: bool,
+    reuse_policy: Option<Arc<ConnectionReuse>>,
 }
 
 impl<C: ExtensionsRef, ID> ExtensionsRef for PooledConnection<C, ID> {
@@ -116,7 +122,7 @@ impl<C, ID> Clone for ConnReturner<C, ID> {
 
 impl<C, ID> ConnReturner<C, ID> {
     fn return_conn(&self, mut conn: PooledConnection<C, ID>) {
-        if self.retired.load(Ordering::Acquire) {
+        if !conn.reusable || self.retired.load(Ordering::Acquire) {
             return;
         }
         if let Some(storage) = self.weak_storage.upgrade() {
@@ -237,6 +243,96 @@ impl<C, ID> LruDropPool<C, ID> {
     }
 }
 
+impl<C: ExtensionsRef, ID: ConnID> LruDropPool<C, ID> {
+    /// Inspect one candidate at a time so the common first hit needs no snapshot
+    /// allocation or scan of the remaining idle connections. The cursor advances
+    /// on rejection. Bound inspection by the initial idle count: concurrent
+    /// changes may skip a candidate, but cannot admit an unchecked policy or
+    /// keep this synchronous search running indefinitely.
+    fn take_compatible(
+        &self,
+        id: &ID,
+        input: &Extensions,
+        doomed: &mut Vec<C>,
+    ) -> Option<(usize, PooledConnection<C, ID>)> {
+        if !id.is_reusable() {
+            return None;
+        }
+        let mut cursor = 0;
+        let mut inspections_left = None;
+        loop {
+            let mut storage = self.storage.lock();
+            let left = inspections_left.get_or_insert(storage.len());
+            if *left == 0 {
+                return None;
+            }
+            *left -= 1;
+            if self.retired.load(Ordering::Acquire) {
+                return None;
+            }
+            let index = match self.reuse_strategy {
+                ReuseStrategy::FiFo => storage
+                    .iter()
+                    .enumerate()
+                    .skip(cursor)
+                    .find(|(_, conn)| &conn.id == id)
+                    .map(|(index, _)| index)?,
+                ReuseStrategy::RoundRobin => storage
+                    .iter()
+                    .enumerate()
+                    .rev()
+                    .skip(cursor)
+                    .find(|(_, conn)| &conn.id == id)
+                    .map(|(index, _)| index)?,
+            };
+            cursor = match self.reuse_strategy {
+                ReuseStrategy::FiFo => index + 1,
+                ReuseStrategy::RoundRobin => storage.len() - index,
+            };
+            let policy = storage[index].reuse_policy.clone();
+            let (index, conn) = if let Some(policy) = policy {
+                drop(storage);
+                if !policy.matches(input) {
+                    continue;
+                }
+                let mut storage = self.storage.lock();
+                if self.retired.load(Ordering::Acquire) {
+                    return None;
+                }
+                // A concurrent checkout may have removed the candidate while
+                // its policy was evaluated. Recheck the same shared policy.
+                let matches = |conn: &PooledConnection<C, ID>| {
+                    &conn.id == id
+                        && conn
+                            .reuse_policy
+                            .as_ref()
+                            .is_some_and(|stored| Arc::ptr_eq(stored, &policy))
+                };
+                let index = match self.reuse_strategy {
+                    ReuseStrategy::FiFo => storage.iter().position(matches),
+                    ReuseStrategy::RoundRobin => storage.iter().rposition(matches),
+                };
+                let Some(index) = index else {
+                    continue;
+                };
+                (index, storage.remove(index)?)
+            } else {
+                (index, storage.remove(index)?)
+            };
+            if conn
+                .extensions()
+                .get_ref::<ConnectionHealthWatcher>()
+                .is_some_and(|watcher| watcher.health() == ConnectionHealth::Broken)
+            {
+                park(conn, doomed);
+                cursor = 0;
+                continue;
+            }
+            return Some((index, conn));
+        }
+    }
+}
+
 impl<C, ID> Pool<C, ID> for LruDropPool<C, ID>
 where
     C: Send + ExtensionsRef + 'static,
@@ -248,6 +344,7 @@ where
     async fn get_conn(
         &self,
         id: &ID,
+        input: &Extensions,
     ) -> Result<ConnectionResult<Self::Connection, Self::CreatePermit>, BoxError> {
         if self.retired.load(Ordering::Acquire) {
             return Err(BoxError::from_static_str(
@@ -283,14 +380,8 @@ where
         // lock is released.
         let mut doomed: Vec<C> = Vec::new();
 
-        let mut storage = self.storage.lock();
-        if self.retired.load(Ordering::Acquire) {
-            return Err(BoxError::from_static_str(
-                "connection pool has been retired",
-            ));
-        }
-
         if let Some(timeout) = self.idle_timeout {
+            let mut storage = self.storage.lock();
             // Since new connections are always returned to the front of the
             // queue, they are ordered from most to least recently used. To
             // provide a stable predicate, we load `now` once and use it for all
@@ -312,28 +403,31 @@ where
             }
         }
 
-        let mut get_conn = || loop {
-            let idx = match self.reuse_strategy {
-                ReuseStrategy::FiFo => storage.iter().position(|stored| &stored.id == id)?,
-                ReuseStrategy::RoundRobin => storage.iter().rposition(|stored| &stored.id == id)?,
+        // A completed logical exchange can leave native transport work alive.
+        // Reserve before handing the connection out again. Exclusive pools
+        // replace exhausted candidates rather than queueing behind that work.
+        let reused = loop {
+            let Some((idx, conn)) = self.take_compatible(id, input, &mut doomed) else {
+                break None;
             };
-
-            let pooled_conn = storage.remove(idx)?;
-
-            // This will make sure we skip and drop broken connections
-            if let Some(watcher) = pooled_conn
-                .extensions()
-                .get_ref::<ConnectionHealthWatcher>()
-                && watcher.health() == ConnectionHealth::Broken
-            {
-                park(pooled_conn, &mut doomed);
-                continue;
-            }
-
-            return Some((idx, pooled_conn));
+            let admission = match conn.extensions().get_ref::<ConnectionAdmission>() {
+                Some(provider) => match provider.try_acquire(input) {
+                    Ok(Some(lease)) => Some(lease),
+                    Ok(None) => {
+                        park(conn, &mut doomed);
+                        continue;
+                    }
+                    Err(error) => {
+                        trace!(%error, "LRU connection pool: resource provider retired connection");
+                        park(conn, &mut doomed);
+                        continue;
+                    }
+                },
+                None => None,
+            };
+            break Some((idx, conn, admission));
         };
-
-        let result = if let Some((idx, pooled_conn)) = get_conn() {
+        let result = if let Some((idx, pooled_conn, admission)) = reused {
             trace!("LRU connection pool: connection #{idx} found for given id {id:?}");
 
             #[cfg(feature = "opentelemetry")]
@@ -343,6 +437,7 @@ where
             }
 
             Ok(ConnectionResult::Connection(LeasedConnection {
+                admission,
                 active_slot,
                 pooled_conn: ManuallyDrop::new(pooled_conn),
                 pooled_conn_taken: false,
@@ -352,6 +447,12 @@ where
                 drop_connection_if_no_response: self.drop_connection_if_no_response,
             }))
         } else {
+            let mut storage = self.storage.lock();
+            if self.retired.load(Ordering::Acquire) {
+                return Err(BoxError::from_static_str(
+                    "connection pool has been retired",
+                ));
+            }
             let pool_slot = match self.total_slots.clone().try_acquire_owned() {
                 Ok(permit) => Ok(PoolSlot(permit)),
                 Err(err) => {
@@ -386,12 +487,21 @@ where
             })
         };
 
-        drop(storage);
         drop(doomed);
         result
     }
 
-    async fn create(&self, id: ID, conn: C, permit: Self::CreatePermit) -> Self::Connection {
+    async fn create(
+        &self,
+        id: ID,
+        conn: C,
+        permit: Self::CreatePermit,
+        input: &Extensions,
+    ) -> Result<Self::Connection, BoxError> {
+        let admission = match conn.extensions().get_ref::<ConnectionAdmission>() {
+            Some(provider) => Some(provider.acquire(input).await?),
+            None => None,
+        };
         trace!("adding new connection (w/ id {id:?}) to pool");
         let (active_slot, pool_slot) = permit;
 
@@ -402,10 +512,19 @@ where
             metrics.created_connections.add(1, &metric_attrs);
         }
 
-        LeasedConnection {
+        let reuse_policy = conn.extensions().get_arc::<ConnectionReuse>();
+        let reusable = id.is_reusable()
+            && reuse_policy
+                .as_ref()
+                .is_none_or(|policy| policy.is_reusable());
+
+        Ok(LeasedConnection {
+            admission,
             active_slot,
             returner: self.returner.clone(),
             pooled_conn: ManuallyDrop::new(PooledConnection {
+                reusable,
+                reuse_policy,
                 id,
                 conn,
                 pool_slot,
@@ -415,9 +534,10 @@ where
             got_response: AtomicBool::new(false),
             failed_or_cancelled: AtomicBool::new(false),
             drop_connection_if_no_response: self.drop_connection_if_no_response,
-        }
+        })
     }
 }
+
 /// Free a discarded connection's pool slot now and park the connection itself
 /// for dropping outside the storage lock.
 fn park<C, ID>(pooled_conn: PooledConnection<C, ID>, doomed: &mut Vec<C>) {
@@ -479,6 +599,7 @@ impl<C: ExtensionsRef, ID> AsMut<C> for LeasedConnection<C, ID> {
 
 impl<C: ExtensionsRef, ID> Drop for LeasedConnection<C, ID> {
     fn drop(&mut self) {
+        self.admission.take();
         if !self.pooled_conn_taken {
             if self.drop_connection_if_no_response
                 && (!self.got_response.load(Ordering::Relaxed)
@@ -593,12 +714,16 @@ impl<Input, C, ID> Service<Input> for LeasedConnection<C, ID>
 where
     ID: Send + Sync + Debug + 'static,
     C: Service<Input> + ExtensionsRef,
-    Input: Send + 'static,
+    Input: ExtensionsMut + Send + 'static,
 {
     type Output = C::Output;
     type Error = C::Error;
 
-    async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
+    async fn serve(&self, mut input: Input) -> Result<Self::Output, Self::Error> {
+        if let Some(admission) = &self.admission {
+            admission.bind(input.extensions_mut());
+        }
+
         // Failure is sticky for the whole lease. A later successful call must
         // not make a connection reusable after another concurrent or earlier
         // call failed or was cancelled.
@@ -665,6 +790,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::client::pool::ConnectionReusePolicy;
     use crate::client::pool::{PooledConnector, ReqToConnID};
     use crate::client::{ConnectorService, EstablishedClientConnection};
     use rama_core::ServiceInput;
@@ -710,14 +836,15 @@ mod tests {
         }
     }
 
-    impl Service<(bool, Duration)> for Conn {
+    impl Service<ServiceInput<(bool, Duration)>> for Conn {
         type Output = ();
         type Error = BoxError;
 
         async fn serve(
             &self,
-            (should_error, delay): (bool, Duration),
+            input: ServiceInput<(bool, Duration)>,
         ) -> Result<Self::Output, Self::Error> {
+            let (should_error, delay) = input.input;
             tokio::time::sleep(delay).await;
             if should_error {
                 Err(BoxError::from_static_str("request failed"))
@@ -773,6 +900,104 @@ mod tests {
 
     impl ConnID for usize {}
     impl ConnID for () {}
+
+    #[tokio::test]
+    async fn non_reusable_policy_drops_a_successful_connection() {
+        #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+        struct Fresh;
+        impl ConnID for Fresh {
+            fn is_reusable(&self) -> bool {
+                false
+            }
+        }
+        let pool: LruDropPool<InnerService, Fresh> = LruDropPool::try_new(1, 1).unwrap();
+        let ConnectionResult::CreatePermit(permit) =
+            pool.get_conn(&Fresh, &Extensions::new()).await.unwrap()
+        else {
+            panic!("non-reusable policy must acquire a fresh connection");
+        };
+        let connection = pool
+            .create(Fresh, InnerService::default(), permit, &Extensions::new())
+            .await
+            .unwrap();
+        connection.serve(ServiceInput::new(false)).await.unwrap();
+        drop(connection);
+        assert!(pool.storage.lock().is_empty());
+        assert_eq!(pool.total_slots.available_permits(), 1);
+    }
+
+    #[tokio::test]
+    async fn reuse_policy_runs_outside_exclusive_storage_lock() {
+        #[derive(Debug)]
+        struct LockProbe(Weak<Mutex<VecDeque<PooledConnection<Conn, usize>>>>);
+
+        impl ConnectionReusePolicy for LockProbe {
+            fn matches(&self, _: &Extensions) -> bool {
+                let storage = self.0.upgrade().unwrap();
+                assert!(
+                    storage.try_lock().is_some(),
+                    "connector policy must not run under the pool lock"
+                );
+                true
+            }
+        }
+
+        let pool = LruDropPool::try_new(1, 1)
+            .unwrap()
+            .with_drop_connection_if_no_response(false);
+        let input = Extensions::new();
+        let ConnectionResult::CreatePermit(permit) = pool.get_conn(&0, &input).await.unwrap()
+        else {
+            panic!("empty pool must allow creation");
+        };
+        let conn = Conn::new();
+        conn.extensions
+            .insert(ConnectionReuse::new(LockProbe(Arc::downgrade(
+                &pool.storage,
+            ))));
+        drop(
+            pool.create(0, conn, permit, &Extensions::new())
+                .await
+                .unwrap(),
+        );
+        assert!(matches!(
+            pool.get_conn(&0, &input).await.unwrap(),
+            ConnectionResult::Connection(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn retirement_during_policy_check_cannot_return_connection_or_permit() {
+        #[derive(Debug)]
+        struct RetireOnMatch(LruDropPool<Conn, usize>);
+
+        impl ConnectionReusePolicy for RetireOnMatch {
+            fn matches(&self, _: &Extensions) -> bool {
+                self.0.retire();
+                true
+            }
+        }
+
+        let pool = LruDropPool::try_new(1, 1)
+            .unwrap()
+            .with_drop_connection_if_no_response(false);
+        let input = Extensions::new();
+        let ConnectionResult::CreatePermit(permit) = pool.get_conn(&0, &input).await.unwrap()
+        else {
+            panic!("empty pool must allow creation");
+        };
+        let conn = Conn::new();
+        conn.extensions
+            .insert(ConnectionReuse::new(RetireOnMatch(pool.clone())));
+        drop(
+            pool.create(0, conn, permit, &Extensions::new())
+                .await
+                .unwrap(),
+        );
+        pool.get_conn(&0, &input).await.unwrap_err();
+        assert_eq!(pool.total_slots.available_permits(), 1);
+        assert_eq!(pool.active_slots.available_permits(), 1);
+    }
 
     #[tokio::test]
     async fn test_should_reuse_connections() {
@@ -943,11 +1168,12 @@ mod tests {
         }
     }
 
-    impl Service<bool> for InnerService {
+    impl Service<ServiceInput<bool>> for InnerService {
         type Output = ();
         type Error = BoxError;
 
-        async fn serve(&self, should_error: bool) -> Result<Self::Output, Self::Error> {
+        async fn serve(&self, input: ServiceInput<bool>) -> Result<Self::Output, Self::Error> {
+            let should_error = input.input;
             // Once this service is broken it will stay in this state, similar to a closed tcp connection
             if should_error {
                 self.extensions
@@ -965,12 +1191,12 @@ mod tests {
         }
     }
 
-    impl Service<Duration> for InnerService {
+    impl Service<ServiceInput<Duration>> for InnerService {
         type Output = ();
         type Error = BoxError;
 
-        async fn serve(&self, delay: Duration) -> Result<Self::Output, Self::Error> {
-            tokio::time::sleep(delay).await;
+        async fn serve(&self, input: ServiceInput<Duration>) -> Result<Self::Output, Self::Error> {
+            tokio::time::sleep(input.input).await;
             Ok(())
         }
     }
@@ -984,7 +1210,7 @@ mod tests {
             .connect(ServiceInput::new(String::from("")))
             .await
             .unwrap();
-        assert_ok!(conn.conn.serve(false).await);
+        assert_ok!(conn.conn.serve(ServiceInput::new(false)).await);
         drop(conn);
         assert_eq!(svc.inner.created_connection.load(Ordering::Relaxed), 1);
 
@@ -997,7 +1223,7 @@ mod tests {
 
         let timeout_result = tokio::time::timeout(
             Duration::from_millis(10),
-            conn.conn.serve(Duration::from_secs(60)),
+            conn.conn.serve(ServiceInput::new(Duration::from_secs(60))),
         )
         .await;
 
@@ -1010,7 +1236,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(svc.inner.created_connection.load(Ordering::Relaxed), 2);
-        assert_ok!(conn.conn.serve(false).await);
+        assert_ok!(conn.conn.serve(ServiceInput::new(false)).await);
     }
 
     #[tokio::test]
@@ -1028,7 +1254,7 @@ mod tests {
 
         let timeout_result = tokio::time::timeout(
             Duration::from_millis(10),
-            conn.conn.serve(Duration::from_secs(60)),
+            conn.conn.serve(ServiceInput::new(Duration::from_secs(60))),
         )
         .await;
         assert!(timeout_result.is_err(), "should have timed out");
@@ -1040,7 +1266,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(svc.inner.created_connection.load(Ordering::Relaxed), 1);
-        assert_ok!(conn.conn.serve(false).await);
+        assert_ok!(conn.conn.serve(ServiceInput::new(false)).await);
     }
 
     #[tokio::test(start_paused = true)]
@@ -1053,10 +1279,12 @@ mod tests {
         // The failure resolves first and the success resolves last. The old
         // last-writer-wins flag therefore returned this lease to the pool.
         let (failed, succeeded) = tokio::join!(
-            conn.conn.serve((true, Duration::from_millis(10))),
-            conn.conn.serve((false, Duration::from_millis(20))),
+            conn.conn
+                .serve(ServiceInput::new((true, Duration::from_millis(10)))),
+            conn.conn
+                .serve(ServiceInput::new((false, Duration::from_millis(20)))),
         );
-        assert!(failed.is_err());
+        failed.unwrap_err();
         assert_ok!(succeeded);
         drop(conn);
 
@@ -1078,9 +1306,9 @@ mod tests {
             .await
             .unwrap();
 
-        let result = conn.conn.serve(false).await;
+        let result = conn.conn.serve(ServiceInput::new(false)).await;
         assert_ok!(result);
-        let result = conn.conn.serve(true).await;
+        let result = conn.conn.serve(ServiceInput::new(true)).await;
         let _error = result.unwrap_err();
 
         // this dropped connection should not return to the pool, otherwise it will be permanently broken
@@ -1091,7 +1319,7 @@ mod tests {
             .await
             .unwrap();
 
-        let result = conn.conn.serve(false).await;
+        let result = conn.conn.serve(ServiceInput::new(false)).await;
         assert_ok!(result);
 
         // this connection is not broken so it should return to the pool
@@ -1102,7 +1330,7 @@ mod tests {
             .await
             .unwrap();
 
-        let result = conn.conn.serve(false).await;
+        let result = conn.conn.serve(ServiceInput::new(false)).await;
         assert_ok!(result);
 
         assert_eq!(svc.inner.created_connection.load(Ordering::Relaxed), 2);
@@ -1118,7 +1346,7 @@ mod tests {
             .await
             .unwrap();
 
-        let result = conn.conn.serve(false).await;
+        let result = conn.conn.serve(ServiceInput::new(false)).await;
         assert_ok!(result);
 
         // This dropped connection should return to the pool, since it's not broken yet
@@ -1139,7 +1367,7 @@ mod tests {
             .await
             .unwrap();
 
-        let result = conn.conn.serve(false).await;
+        let result = conn.conn.serve(ServiceInput::new(false)).await;
         assert_ok!(result);
 
         // This connection is not broken so it should return to the pool
@@ -1151,7 +1379,7 @@ mod tests {
             .await
             .unwrap();
 
-        let result = conn.conn.serve(false).await;
+        let result = conn.conn.serve(ServiceInput::new(false)).await;
         assert_ok!(result);
 
         assert_eq!(svc.inner.created_connection.load(Ordering::Relaxed), 2);

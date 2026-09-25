@@ -1,6 +1,6 @@
 use std::fmt;
 
-use rama_core::extensions::{Extension, Extensions, ExtensionsRef};
+use rama_core::extensions::{Extension, Extensions, ExtensionsMut, ExtensionsRef};
 use rama_net::ClientIp;
 use rama_utils::macros::generate_set_and_with;
 
@@ -225,6 +225,12 @@ fn deserialize_request_uri(method: &Method, value: &str) -> Result<Uri> {
 impl ExtensionsRef for Parts {
     fn extensions(&self) -> &Extensions {
         &self.extensions
+    }
+}
+
+impl ExtensionsMut for Parts {
+    fn extensions_mut(&mut self) -> &mut Extensions {
+        &mut self.extensions
     }
 }
 
@@ -831,6 +837,12 @@ impl<T: fmt::Debug> fmt::Debug for Request<T> {
 impl<B> ExtensionsRef for Request<B> {
     fn extensions(&self) -> &Extensions {
         &self.head.extensions
+    }
+}
+
+impl<B> ExtensionsMut for Request<B> {
+    fn extensions_mut(&mut self) -> &mut Extensions {
+        &mut self.head.extensions
     }
 }
 

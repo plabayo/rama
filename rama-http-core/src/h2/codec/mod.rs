@@ -61,6 +61,13 @@ where
 }
 
 impl<T, B> Codec<T, B> {
+    /// Enable decoding ALTSVC advertisements. Servers must disable this:
+    /// RFC 7838 §4 requires them to ignore client advertisements entirely.
+    /// Header-block continuity and the receive frame-size limit still apply.
+    pub fn set_recv_alt_svc(&mut self, enabled: bool) {
+        self.inner.set_recv_alt_svc(enabled);
+    }
+
     /// Updates the max received frame size.
     ///
     /// The change takes effect the next time a frame is decoded. In other
@@ -218,5 +225,191 @@ where
 {
     fn from(src: T) -> Self {
         Self::new(src)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rama_core::bytes::{Bytes, BytesMut};
+    use rama_core::futures::{FutureExt, StreamExt};
+    use rama_http_types::proto::h2::frame::{AltSvc, Head, Kind, Ping, Reason, StreamId};
+    use tokio::io::AsyncWriteExt;
+
+    fn advertisement() -> AltSvc {
+        AltSvc::new(
+            StreamId::zero(),
+            Bytes::from_static(b"https://example.com"),
+            Bytes::from_static(b"h2=\":443\"; ma=60"),
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn buffered_altsvc_bursts_yield_without_losing_clear() {
+        tokio::spawn(async {
+            let mut wire = BytesMut::new();
+            for _ in 0..1024 {
+                advertisement().encode(&mut wire);
+            }
+            let clear = AltSvc::new(
+                StreamId::zero(),
+                Bytes::from_static(b"https://example.com"),
+                Bytes::from_static(b"clear"),
+            )
+            .unwrap();
+            clear.encode(&mut wire);
+            let mut codec = Codec::<_, Bytes>::new(io::Cursor::new(wire.to_vec()));
+            let mut received = 0;
+            while let Some(frame) = codec.next().now_or_never() {
+                assert_eq!(frame.unwrap().unwrap(), Frame::AltSvc(advertisement()));
+                received += 1;
+            }
+            assert!(received > 0 && received < 1024);
+            while received < 1024 {
+                assert_eq!(
+                    codec.next().await.unwrap().unwrap(),
+                    Frame::AltSvc(advertisement())
+                );
+                received += 1;
+            }
+            assert_eq!(codec.next().await.unwrap().unwrap(), Frame::AltSvc(clear));
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn ignored_altsvc_bursts_yield_before_following_control_frame() {
+        tokio::spawn(async {
+            let mut wire = BytesMut::new();
+            for _ in 0..1024 {
+                advertisement().encode(&mut wire);
+            }
+            let ping = Ping::new(*b"abcdefgh");
+            ping.encode(&mut wire);
+            let mut codec = Codec::<_, Bytes>::new(io::Cursor::new(wire.to_vec()));
+            codec.set_recv_alt_svc(false);
+            assert!(codec.next().now_or_never().is_none());
+            assert_eq!(codec.next().await.unwrap().unwrap(), Frame::Ping(ping));
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn altsvc_decodes_at_every_fragment_boundary() {
+        let expected = advertisement();
+        let mut wire = BytesMut::new();
+        expected.encode(&mut wire);
+        for split in 0..wire.len() {
+            let (io, mut peer) = tokio::io::duplex(wire.len());
+            let mut codec = Codec::<_, Bytes>::new(io);
+            peer.write_all(&wire[..split]).await.unwrap();
+            assert!(codec.next().now_or_never().is_none(), "split {split}");
+            peer.write_all(&wire[split..]).await.unwrap();
+            assert_eq!(
+                codec.next().await.unwrap().unwrap(),
+                Frame::AltSvc(expected.clone())
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn invalid_altsvc_is_ignored_without_losing_the_following_frame() {
+        for (id, payload) in [(0, b"\x00\x00clear".as_slice()), (1, b"\x00\x01xclear")] {
+            let mut wire = BytesMut::new();
+            Head::new(Kind::AltSvc, 0, StreamId::from(id)).encode(payload.len(), &mut wire);
+            wire.extend_from_slice(payload);
+            let ping = Ping::new(*b"abcdefgh");
+            ping.encode(&mut wire);
+            let (io, mut peer) = tokio::io::duplex(wire.len());
+            let mut codec = Codec::<_, Bytes>::new(io);
+            peer.write_all(&wire).await.unwrap();
+            assert_eq!(codec.next().await.unwrap().unwrap(), Frame::Ping(ping));
+        }
+    }
+
+    #[tokio::test]
+    async fn truncated_altsvc_is_a_frame_size_error_but_servers_ignore_it() {
+        for payload in [b"".as_slice(), b"\x00", b"\x00\x01", b"\xff\xffx"] {
+            for enabled in [true, false] {
+                let mut wire = BytesMut::new();
+                Head::new(Kind::AltSvc, 0, StreamId::zero()).encode(payload.len(), &mut wire);
+                wire.extend_from_slice(payload);
+                let ping = Ping::new(*b"abcdefgh");
+                ping.encode(&mut wire);
+                let (io, mut peer) = tokio::io::duplex(wire.len());
+                let mut codec = Codec::<_, Bytes>::new(io);
+                codec.set_recv_alt_svc(enabled);
+                peer.write_all(&wire).await.unwrap();
+                let result = codec.next().await.unwrap();
+                if enabled {
+                    assert!(matches!(
+                        result,
+                        Err(Error::GoAway(_, Reason::FRAME_SIZE_ERROR, _))
+                    ));
+                } else {
+                    assert_eq!(result.unwrap(), Frame::Ping(ping));
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn altsvc_cannot_interrupt_a_header_block_even_when_invalid() {
+        for payload in [b"".as_slice(), b"\x00\x00clear"] {
+            for enabled in [true, false] {
+                let mut wire = BytesMut::new();
+                Head::new(Kind::Headers, 0, StreamId::from(1)).encode(0, &mut wire);
+                Head::new(Kind::AltSvc, 0, StreamId::from(1)).encode(payload.len(), &mut wire);
+                wire.extend_from_slice(payload);
+                let (io, mut peer) = tokio::io::duplex(wire.len());
+                let mut codec = Codec::<_, Bytes>::new(io);
+                codec.set_recv_alt_svc(enabled);
+                peer.write_all(&wire).await.unwrap();
+                assert!(matches!(
+                    codec.next().await.unwrap(),
+                    Err(Error::GoAway(_, Reason::PROTOCOL_ERROR, _))
+                ));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn altsvc_encoding_roundtrips_through_the_codec() {
+        let (writer, reader) = tokio::io::duplex(128);
+        let mut sender = Codec::<_, Bytes>::new(writer);
+        let mut receiver = Codec::<_, Bytes>::new(reader);
+        let expected = advertisement();
+        sender.buffer(expected.clone().into()).unwrap();
+        std::future::poll_fn(|cx| sender.flush(cx)).await.unwrap();
+        assert_eq!(
+            receiver.next().await.unwrap().unwrap(),
+            Frame::AltSvc(expected)
+        );
+    }
+
+    #[tokio::test]
+    async fn altsvc_respects_negotiated_frame_size_in_both_directions() {
+        let frame = AltSvc::new(
+            StreamId::from(1),
+            Bytes::new(),
+            Bytes::from(vec![b'a'; frame::DEFAULT_MAX_FRAME_SIZE as usize]),
+        )
+        .unwrap();
+        let mut wire = BytesMut::new();
+        frame.encode(&mut wire);
+        let (io, mut peer) = tokio::io::duplex(wire.len());
+        let mut codec = Codec::<_, Bytes>::new(io);
+        assert!(matches!(
+            codec.buffer(frame.into()),
+            Err(UserError::PayloadTooBig)
+        ));
+        peer.write_all(&wire).await.unwrap();
+        assert!(matches!(
+            codec.next().await.unwrap(),
+            Err(Error::GoAway(_, Reason::FRAME_SIZE_ERROR, _))
+        ));
     }
 }

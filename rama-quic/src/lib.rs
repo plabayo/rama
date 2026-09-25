@@ -62,9 +62,15 @@ pub use proto::{KEY_MATERIAL_SIZE, StatelessResetKey};
 /// TLS for QUIC: how a connection's identity and application protocol are configured.
 ///
 /// The configuration itself is the common Rama TLS client and server configuration; this module
-/// carries only what QUIC adds to it. The provider behind it follows this crate's features, and
-/// no Rustls type appears in any signature here.
+/// carries only what QUIC adds to it. Inject a configuration provider explicitly,
+/// or use the convenience constructors to select the feature-default provider.
 pub mod tls {
+    mod cache;
+    pub use cache::ClientConfigCache;
+
+    mod factory;
+    pub use factory::*;
+
     /// Interfaces for supplying a QUIC TLS 1.3 implementation.
     ///
     /// Implement [`provider::ClientConfig`] and [`provider::ServerConfig`] and pass them to
@@ -84,7 +90,7 @@ pub mod tls {
     }
 
     pub use crate::proto::crypto::config::{
-        AlpnPolicy, NoInitialCipherSuite, TlsBackend, TlsConfigError, TlsOptions,
+        AlpnPolicy, NoInitialCipherSuite, TlsConfigError, TlsOptions,
     };
 }
 
@@ -93,11 +99,12 @@ mod driver;
 // The runtime: endpoints, connections, streams and the errors they report. Rama owns these
 // types; the engine that drives them and the TLS provider behind them stay private.
 pub use driver::{
-    Accept, AcceptBi, AcceptUni, Connecting, Connection, DEFAULT_SHUTDOWN_BUDGET,
-    DEFAULT_SOCKET_BUFFER_SIZE, DriverStats, Endpoint, EndpointBuilder, EndpointStats, Incoming,
-    IncomingFuture, OpenBi, OpenUni, PacketQueueStats, ReadDatagram, ReadError, ReadExactError,
-    ReadToEndError, RecvStream, ResetError, RetryError, SendDatagram, SendDatagramError,
-    SendStream, ShutdownOutcome, StoppedError, WriteError, ZeroRttAccepted,
+    Accept, AcceptBi, AcceptUni, BiStreamReservation, Connecting, Connection,
+    DEFAULT_SHUTDOWN_BUDGET, DEFAULT_SOCKET_BUFFER_SIZE, DriverStats, Endpoint, EndpointBuilder,
+    EndpointStats, Incoming, IncomingFuture, OpenBi, OpenUni, PacketQueueStats, ReadDatagram,
+    ReadError, ReadExactError, ReadToEndError, RecvStream, ResetError, RetryError, SendDatagram,
+    SendDatagramError, SendStream, ShutdownOutcome, StoppedError, StreamAbortHandle, WriteError,
+    ZeroRttAccepted,
 };
 
 #[cfg(fuzzing)]

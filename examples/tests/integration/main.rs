@@ -240,3 +240,12 @@ mod tls_rustls_termination;
 mod xpc_ca_exchange;
 #[cfg(all(feature = "net-apple-xpc", target_vendor = "apple"))]
 mod xpc_echo;
+
+#[cfg(all(
+    feature = "http-full",
+    any(
+        feature = "boring",
+        all(feature = "rustls", any(feature = "ring", feature = "aws-lc"))
+    )
+))]
+mod http3_client_server;

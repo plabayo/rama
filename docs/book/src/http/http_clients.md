@@ -22,10 +22,68 @@ See for a full and tested "high level" example of _a_ http client at <https://gi
 
 More client examples:
 
+- [/examples/src/http3_client_server.rs](https://github.com/plabayo/rama/tree/main/examples/src/http3_client_server.rs):
+  an authenticated HTTP/3 client and server using common request, response and body types,
+  with pooled requests, streaming uploads, trailers and graceful shutdown;
 - [/examples/src/http_blocking_https_client.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_blocking_https_client.rs):
   a blocking HTTPS client that creates and owns its runtime thread;
 - [/examples/src/http_pooled_client.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_pooled_client.rs):
   an example demonstrating how to create a pooled HTTP client that can be used to make concurrent requests to the same host;
+
+## Alternative services and custom connectors
+
+The easy client enables Alt-Svc discovery by default. With a QUIC TLS provider,
+this can open UDP connections for HTTP/3. Use `without_alt_svc()` to disable
+advertised-endpoint selection; explicit HTTP/3 requests remain supported.
+Clear shared discovery with `AltSvcCache::clear_all()`, and report network changes
+with `network_changed()`. Apply destination restrictions in your connector so
+they cover origins, advertisements and DNS results alike.
+
+Alternative services change where and how Rama connects, while preserving the
+request's origin and certificate identity. The easy client selects a service
+before choosing a proxy route and consulting the connection pool.
+
+`HttpServiceConnector` returns the underlying connection unchanged. Compose
+`AltSvcLayer::new(cache)` separately with `MapEstablishedConnection`; the easy
+client does this automatically. The layer resolves each request’s origin, learns response
+headers and sets `Alt-Used` from the established endpoint. An optional H2 observer
+feeds ALTSVC frames into the same cache. Advertisements are not automatically
+forwarded. To send H2 advertisements, enable `set_alt_svc(true)` before the server
+handshake and use `AltSvcSender`; ordinary connections allocate no sender queue.
+
+Selection tries alternatives sequentially, with a configurable 300 ms
+`attempt_timeout` including DNS and TLS. Increase it for slower networks. There
+is no overall deadline unless `timeout` is set. Failed alternatives back off;
+selection can fall back to the origin with the same TLS policy. Explicit version
+requirements remain binding. A completed response resets backoff; reconnecting
+or re-advertising does not. Request-specific TLS trust cannot change shared discovery.
+
+Custom connectors use these contracts:
+
+| Type | Responsibility |
+| --- | --- |
+| `HttpServiceSelection` | Request-local advertisement snapshot, index and lookup route plan; never store it on a pooled connection. |
+| `EstablishedHttpService` | Verified connection endpoint and logical origin; selection alone proves neither. |
+| `TlsTunnel::from_extensions` | Resolve routing-supplied tunnel settings before caller settings; preserve their distinct reuse scopes. |
+| `TargetHttpVersion` | Honor the requested version; report the established version. |
+| `ConnectorTarget` / `ConnectorTargetStream` | Dial the selected endpoint using matching DNS results, preserving the origin. |
+| `TlsServerAuthentication` / `NegotiatedTlsParameters` | Report verified origin identity and actual ALPN; missing proof prevents alternative use. |
+| `ConnectionReuse` | Publish endpoint reuse rules after connecting; pools check them against each request. |
+| `AltSvcObserverExtension` | Install before H2 handshake; authorize origins and process frames promptly. |
+| `ConnectionAttempt` / `ConnectionPolicyScope` | Check peer requirements and restrict request-specific DNS/TLS policy; preserve failure scope across timeouts and pool hits. |
+
+TLS configuration stays in its connector. Built-in connectors publish reuse rules
+automatically. Custom components publish owned `TlsPoolComponent::Identity`
+values: equal identities permit reuse. `with_shared_instance` instead retains an
+existing `Arc` and compares allocation identity without boxing a snapshot.
+Policy changes need a new identity. Custom secure connectors without reuse rules
+receive fresh connections. Apply request-policy
+middleware outside the pool so lookup and establishment see the same input.
+Unclassified policy failures never suppress shared alternatives.
+Connectors report unsupported protocols or routes as local capability failures;
+clients need no separate protocol-support list. These refusals preserve cache health.
+In the CLI, `--alt-svc` enables command-local discovery; `--http3` requires H3
+directly. Disk persistence and DNS HTTPS/SVCB discovery are not implemented yet.
 
 ## Server certificate pinning
 

@@ -291,7 +291,7 @@ async fn hold_and_sink_e2e_pressure_flow(
     retained.retain(first.payload);
     let mut retained = Some(retained);
     let hold = tokio::time::sleep(Duration::from_secs(2));
-    tokio::pin!(hold);
+    let mut hold = std::pin::pin!(hold);
     loop {
         tokio::select! {
             biased;

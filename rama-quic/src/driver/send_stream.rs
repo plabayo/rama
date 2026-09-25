@@ -2,6 +2,10 @@ use std::{
     future::{Future, poll_fn},
     io,
     pin::{Pin, pin},
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicU64, Ordering},
+    },
     task::{Context, Poll},
 };
 
@@ -10,6 +14,7 @@ use crate::proto::{
 };
 use rama_core::bytes::Bytes;
 use rama_quic_proto::{StreamId, VarInt};
+use tokio::sync::Notify;
 
 use crate::driver::connection::{ConnectionRef, State};
 
@@ -34,6 +39,51 @@ pub struct SendStream {
     conn: ConnectionRef,
     stream: StreamId,
     is_0rtt: bool,
+    // Allocate shared reset state only when an independent observer or abort
+    // handle exists. It dies with those handles, never with connection history.
+    // Zero means not reset; QUIC's 62-bit code plus one fits losslessly.
+    local_reset: u64,
+    events: OnceLock<Arc<SendStreamEvents>>,
+}
+
+/// Cloneable cancellation handle independent of the stream's I/O owner.
+/// It resets sending and, for bidirectional streams, stops receiving. Dropping
+/// the handle has no effect on the stream.
+#[derive(Debug, Clone)]
+pub struct StreamAbortHandle {
+    conn: ConnectionRef,
+    stream: StreamId,
+    is_0rtt: bool,
+    events: Arc<SendStreamEvents>,
+}
+
+impl StreamAbortHandle {
+    /// Abort both available directions. Already closed directions are harmless.
+    pub fn abort(&self, error_code: impl Into<VarInt>) {
+        let code = error_code.into();
+        let mut conn = self.conn.state.lock();
+        if self.is_0rtt && conn.check_0rtt().is_err() {
+            return;
+        }
+        if conn.inner.send_stream(self.stream).reset(code).is_ok() {
+            self.events
+                .local_reset
+                .store(code.into_inner() + 1, Ordering::Relaxed);
+            if let Some(stopped) = conn.stopped.get(&self.stream) {
+                stopped.events.notify.notify_waiters();
+            }
+        }
+        if self.stream.dir() == rama_quic_proto::Dir::Bi {
+            _ = conn.inner.recv_stream(self.stream).stop(code);
+        }
+        if let Some(waker) = conn.blocked_writers.remove(&self.stream) {
+            waker.wake();
+        }
+        if let Some(waker) = conn.blocked_readers.remove(&self.stream) {
+            waker.wake();
+        }
+        conn.wake();
+    }
 }
 
 impl SendStream {
@@ -42,7 +92,29 @@ impl SendStream {
             conn,
             stream,
             is_0rtt,
+            local_reset: 0,
+            events: OnceLock::new(),
         }
+    }
+
+    /// Obtain a handle for cancelling this stream from another owner or task.
+    pub fn abort_handle(&self) -> StreamAbortHandle {
+        StreamAbortHandle {
+            conn: self.conn.clone(),
+            stream: self.stream,
+            is_0rtt: self.is_0rtt,
+            events: self.events().clone(),
+        }
+    }
+
+    fn events(&self) -> &Arc<SendStreamEvents> {
+        self.events.get_or_init(|| {
+            Arc::new(SendStreamEvents {
+                local_reset: AtomicU64::new(self.local_reset),
+                peer_stop: AtomicU64::new(0),
+                notify: Notify::new(),
+            })
+        })
     }
 
     /// Write a buffer into this stream, returning how many bytes were written
@@ -96,7 +168,20 @@ impl SendStream {
     ///
     /// This method is cancellation safe. If this does not resolve, no bytes were written.
     pub async fn write_chunks(&mut self, bufs: &mut [Bytes]) -> Result<Written, WriteError> {
-        poll_fn(|cx| self.execute_poll(cx, |s| s.write_chunks(bufs))).await
+        poll_fn(|cx| self.poll_write_chunks(cx, bufs)).await
+    }
+
+    /// Polling equivalent of [`Self::write_chunks`].
+    ///
+    /// On `Pending`, no bytes are consumed and the current waker is registered.
+    /// On success, `bufs` retains only unwritten suffixes, which the caller must
+    /// preserve until the next poll. No payload copy is required.
+    pub fn poll_write_chunks(
+        &mut self,
+        cx: &mut Context<'_>,
+        bufs: &mut [Bytes],
+    ) -> Poll<Result<Written, WriteError>> {
+        self.execute_poll(cx, |s| s.write_chunks(bufs))
     }
 
     /// Write a single [`Bytes`] into this stream in its entirety
@@ -112,6 +197,58 @@ impl SendStream {
     pub async fn write_chunk(&mut self, buf: Bytes) -> Result<(), WriteError> {
         self.write_all_chunks(&mut [buf]).await?;
         Ok(())
+    }
+
+    /// Write chunks while leaving connection credit available for critical streams.
+    /// The reserve is capped at half the peer's initial connection window and local send window,
+    /// so even very small peer windows can make application progress.
+    /// Bytes accepted by this call are removed from `chunks`, including partial chunks.
+    pub fn poll_write_chunks_with_reserve(
+        &mut self,
+        cx: &mut Context<'_>,
+        chunks: &mut [Bytes],
+        reserve: u64,
+    ) -> Poll<Result<Written, WriteError>> {
+        self.execute_poll(cx, |stream| {
+            stream.write_chunks_with_reserve(chunks, reserve)
+        })
+    }
+
+    /// Generate and atomically admit one bounded chunk without waiting for credit.
+    ///
+    /// `generate` receives the available stream and connection credit and returns
+    /// a chunk plus an application result. `reserve` leaves connection credit for
+    /// other streams, capped at half the initial connection and local send windows. Returning an empty chunk is permitted,
+    /// including when capacity is zero. This supports optional compression whose
+    /// instructions must fit in their entirety before being committed.
+    ///
+    /// The callback runs under the connection lock: keep it bounded and do not
+    /// call back into this connection. Panics if its chunk exceeds the supplied capacity.
+    pub fn try_write_generated<R>(
+        &mut self,
+        reserve: u64,
+        generate: impl FnOnce(usize) -> (Bytes, R),
+    ) -> Result<R, WriteError> {
+        let mut conn = self.conn.state.lock();
+        if self.is_0rtt {
+            conn.check_0rtt()
+                .map_err(|()| WriteError::ZeroRttRejected)?;
+        }
+        if let Some(error) = &conn.error {
+            return Err(WriteError::ConnectionLost(error.clone()));
+        }
+        let result = conn
+            .inner
+            .send_stream(self.stream)
+            .write_generated(reserve, generate)
+            .map_err(|error| match error {
+                ProtoWriteError::Stopped(code) => WriteError::Stopped(code),
+                ProtoWriteError::ClosedStream | ProtoWriteError::Blocked => {
+                    WriteError::ClosedStream
+                }
+            })?;
+        conn.wake();
+        Ok(result)
     }
 
     /// Write a slice of [`Bytes`] into this stream in its entirety
@@ -212,6 +349,13 @@ impl SendStream {
             return Ok(());
         }
         conn.inner.send_stream(self.stream).reset(error_code)?;
+        self.local_reset = error_code.into_inner() + 1;
+        if let Some(reset) = self.events.get() {
+            reset.local_reset.store(self.local_reset, Ordering::Relaxed);
+        }
+        if let Some(stopped) = conn.stopped.get(&self.stream) {
+            stopped.events.notify.notify_waiters();
+        }
         conn.wake();
         Ok(())
     }
@@ -241,41 +385,63 @@ impl SendStream {
         conn.inner.send_stream(self.stream).priority()
     }
 
-    /// Completes when the peer stops the stream or reads the stream to completion
+    /// Completes when the stream is reset or the peer acknowledges all sent data
     ///
     /// Yields `Some` with the stop error code if the peer stops the stream. Yields `None` if the
     /// local side [`finish()`](Self::finish)es the stream and then the peer acknowledges receipt
     /// of all stream data (although not necessarily the processing of it), after which the peer
-    /// closing the stream is no longer meaningful.
+    /// closing the stream is no longer meaningful. A local reset returns
+    /// [`StoppedError::LocallyReset`], even after its RESET_STREAM is acknowledged.
     ///
     /// For a variety of reasons, the peer may not send acknowledgements immediately upon receiving
     /// data. As such, relying on `stopped` to know when the peer has read a stream to completion
     /// may introduce more latency than using an application-level response of some sort.
+    ///
+    /// # Cancellation
+    ///
+    /// Dropping this future releases its notification registration without
+    /// cancelling other waiters or changing the stream's state.
     pub fn stopped(
         &self,
     ) -> impl Future<Output = Result<Option<VarInt>, StoppedError>> + Send + Sync + 'static {
         let conn = self.conn.clone();
         let stream = self.stream;
         let is_0rtt = self.is_0rtt;
+        let events = self.events().clone();
         async move {
+            {
+                let mut state = conn.state.lock();
+                if let Some(output) = send_stream_stopped(&mut state, stream, is_0rtt, &events) {
+                    return output;
+                }
+                let registered = state
+                    .stopped
+                    .entry(stream)
+                    .or_insert_with(|| StoppedNotify {
+                        events: events.clone(),
+                        waiters: 0,
+                    });
+                registered.waiters += 1;
+            }
+            let registration = StoppedRegistration {
+                conn,
+                stream,
+                events,
+            };
             loop {
-                // The `Notify::notified` future needs to be created while the lock is being held,
-                // otherwise a wakeup could be missed if triggered inbetween releasing the lock
-                // and creating the future.
-                // The lock may only be held in a block without `await`s, otherwise the future
-                // becomes `!Send`. `Notify::notified` is lifetime-bound to `Notify`, therefore
-                // we need to declare `notify` outside of the block, and initialize it inside.
-                let notify;
+                // Register before checking state, so an event between that check
+                // and awaiting the notification cannot be lost.
+                let mut notified = pin!(registration.events.notify.notified());
+                notified.as_mut().enable();
                 {
-                    let mut conn = conn.state.lock();
-                    if let Some(output) = send_stream_stopped(&mut conn, stream, is_0rtt) {
+                    let mut state = registration.conn.state.lock();
+                    if let Some(output) =
+                        send_stream_stopped(&mut state, stream, is_0rtt, &registration.events)
+                    {
                         return output;
                     }
-
-                    notify = conn.stopped.entry(stream).or_default().clone();
-                    notify.notified()
                 }
-                .await
+                notified.await;
             }
         }
     }
@@ -301,17 +467,71 @@ impl SendStream {
     }
 }
 
+/// Registered observers of one send stream. The connection-state lock protects
+/// the waiter count, including cancellation on other threads.
+pub(crate) struct StoppedNotify {
+    pub(crate) events: Arc<SendStreamEvents>,
+    waiters: usize,
+}
+
+/// Notification and terminal outcome share one lazily allocated owner. A reset
+/// result must survive protocol-state reclamation until the last observer drops.
+#[derive(Debug)]
+pub(crate) struct SendStreamEvents {
+    local_reset: AtomicU64,
+    peer_stop: AtomicU64,
+    pub(crate) notify: Notify,
+}
+
+/// One independently cancellable waiter. Removing the last waiter releases its
+/// registry entry even if a locally reset stream never produces a peer event.
+struct StoppedRegistration {
+    conn: ConnectionRef,
+    stream: StreamId,
+    events: Arc<SendStreamEvents>,
+}
+
+impl Drop for StoppedRegistration {
+    fn drop(&mut self) {
+        let mut state = self.conn.state.lock();
+        if let std::collections::hash_map::Entry::Occupied(mut entry) =
+            state.stopped.entry(self.stream)
+            && Arc::ptr_eq(&entry.get().events, &self.events)
+        {
+            entry.get_mut().waiters -= 1;
+            if entry.get().waiters == 0 {
+                entry.remove();
+            }
+        }
+    }
+}
+
 /// Check if a send stream is stopped.
 ///
 /// Returns `Some` if the stream is stopped or the connection is closed.
 /// Returns `None` if the stream is not stopped.
+#[expect(
+    clippy::expect_used,
+    reason = "terminal outcomes store a validated VarInt plus one; subtraction restores its bounds"
+)]
 fn send_stream_stopped(
     conn: &mut State,
     stream: StreamId,
     is_0rtt: bool,
+    events: &SendStreamEvents,
 ) -> Option<Result<Option<VarInt>, StoppedError>> {
     if is_0rtt && conn.check_0rtt().is_err() {
         return Some(Err(StoppedError::ZeroRttRejected));
+    }
+    if let Some(code) = events.local_reset.load(Ordering::Relaxed).checked_sub(1) {
+        return Some(Err(StoppedError::LocallyReset(
+            VarInt::from_u64(code).expect("stored local reset code is a QUIC varint"),
+        )));
+    }
+    if let Some(code) = events.peer_stop.load(Ordering::Relaxed).checked_sub(1) {
+        return Some(Ok(Some(
+            VarInt::from_u64(code).expect("stored peer stop code is a QUIC varint"),
+        )));
     }
     match conn.inner.send_stream(stream).stopped() {
         Err(ClosedStream { .. }) => Some(Ok(None)),
@@ -354,6 +574,12 @@ impl Drop for SendStream {
         match conn.inner.send_stream(self.stream).finish() {
             Ok(()) => conn.wake(),
             Err(FinishError::Stopped(reason)) => {
+                if let Some(events) = self.events.get() {
+                    events
+                        .peer_stop
+                        .store(reason.into_inner() + 1, Ordering::Relaxed);
+                    events.notify.notify_waiters();
+                }
                 if conn.inner.send_stream(self.stream).reset(reason).is_ok() {
                     conn.wake();
                 }
@@ -422,6 +648,7 @@ impl From<StoppedError> for WriteError {
         match x {
             StoppedError::ConnectionLost(e) => Self::ConnectionLost(e),
             StoppedError::ZeroRttRejected => Self::ZeroRttRejected,
+            StoppedError::LocallyReset(_) => Self::ClosedStream,
         }
     }
 }
@@ -436,9 +663,11 @@ impl From<WriteError> for io::Error {
     }
 }
 
-/// Errors that arise while monitoring for a send stream stop from the peer
+/// Errors that arise while waiting for a send stream to complete.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StoppedError {
+    /// The local application reset the stream before delivery was acknowledged.
+    LocallyReset(VarInt),
     /// The connection was lost
     ConnectionLost(ConnectionError),
     /// This was a 0-RTT stream and the server rejected it
@@ -454,6 +683,7 @@ impl core::fmt::Display for StoppedError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::ConnectionLost(_) => f.write_str("connection lost"),
+            Self::LocallyReset(code) => write!(f, "stream locally reset: {code}"),
             Self::ZeroRttRejected => f.write_str("0-RTT rejected"),
         }
     }
@@ -463,7 +693,7 @@ impl std::error::Error for StoppedError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::ConnectionLost(inner) => Some(inner),
-            Self::ZeroRttRejected => None,
+            Self::ZeroRttRejected | Self::LocallyReset(_) => None,
         }
     }
 }
@@ -474,10 +704,241 @@ impl From<ConnectionError> for StoppedError {
     }
 }
 
+#[cfg(all(
+    test,
+    any(
+        feature = "boring",
+        all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+    )
+))]
+mod tests {
+    use super::*;
+    use crate::driver::Duration;
+
+    #[tokio::test]
+    async fn cancelled_stop_waiters_release_registration_after_local_resets() {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let endpoint = crate::driver::tests::endpoint();
+            let (client, server) = tokio::join!(
+                endpoint
+                    .connect(endpoint.local_addr().unwrap(), "localhost")
+                    .unwrap(),
+                async { endpoint.accept().await.unwrap().await },
+            );
+            let (client, _server) = (client.unwrap(), server.unwrap());
+            for iteration in 0..64 {
+                let mut send = client.open_uni().await.unwrap();
+                let mut first = Box::pin(send.stopped());
+                let mut second = Box::pin(send.stopped());
+                let mut cx = Context::from_waker(std::task::Waker::noop());
+                assert!(first.as_mut().poll(&mut cx).is_pending());
+                assert!(second.as_mut().poll(&mut cx).is_pending());
+                assert_eq!(send.conn.state.lock().stopped.len(), 1);
+                if iteration % 2 == 0 {
+                    drop(first);
+                    assert_eq!(send.conn.state.lock().stopped.len(), 1);
+                    drop(second);
+                } else {
+                    let barrier = std::sync::Barrier::new(2);
+                    std::thread::scope(|scope| {
+                        scope.spawn(|| {
+                            barrier.wait();
+                            drop(first);
+                        });
+                        scope.spawn(|| {
+                            barrier.wait();
+                            drop(second);
+                        });
+                    });
+                }
+                assert!(send.conn.state.lock().stopped.is_empty());
+
+                // Cancelling every waiter leaves the live stream unchanged; a
+                // subsequent caller can register again independently.
+                let mut stopped = Box::pin(send.stopped());
+                assert!(stopped.as_mut().poll(&mut cx).is_pending());
+                assert_eq!(send.conn.state.lock().stopped.len(), 1);
+
+                // Model both an application body failing and cancellation by an
+                // independent owner. Neither path produces StreamEvent::Finished.
+                if iteration % 2 == 0 {
+                    send.reset(0u32).unwrap();
+                } else {
+                    send.abort_handle().abort(0u32);
+                }
+                drop(stopped);
+                assert!(send.conn.state.lock().stopped.is_empty());
+            }
+            client.close(0u32, b"done");
+            endpoint.shutdown().await;
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn local_resets_wake_all_observers_and_never_report_delivery() {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let endpoint = crate::driver::tests::endpoint();
+            let (client, server) = tokio::join!(
+                endpoint
+                    .connect(endpoint.local_addr().unwrap(), "localhost")
+                    .unwrap(),
+                async { endpoint.accept().await.unwrap().await },
+            );
+            let (client, _server) = (client.unwrap(), server.unwrap());
+            for use_handle in [false, true] {
+                let mut send = client.open_uni().await.unwrap();
+                let reset = send.abort_handle();
+                let first = tokio::spawn(send.stopped());
+                let second = tokio::spawn(send.stopped());
+                // Ensure both tasks have registered before cancelling.
+                while send
+                    .conn
+                    .state
+                    .lock()
+                    .stopped
+                    .get(&send.stream)
+                    .is_none_or(|entry| entry.waiters != 2)
+                {
+                    tokio::task::yield_now().await;
+                }
+                let code = VarInt::MAX;
+                if use_handle {
+                    reset.abort(code);
+                } else {
+                    send.reset(code).unwrap();
+                }
+                for waiter in [first, second] {
+                    assert_eq!(waiter.await.unwrap(), Err(StoppedError::LocallyReset(code)));
+                }
+                assert!(send.conn.state.lock().stopped.is_empty());
+                // Late observers and surviving abort handles retain only this
+                // stream's result, including after the send owner goes away.
+                let late = send.stopped();
+                drop(send);
+                assert_eq!(late.await, Err(StoppedError::LocallyReset(code)));
+                drop(reset);
+            }
+            client.close(0u32, b"done");
+            endpoint.shutdown().await;
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn dropping_peer_stopped_sender_preserves_reason_for_late_observer() {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let endpoint = crate::driver::tests::endpoint();
+            let (client, server) = tokio::join!(
+                endpoint
+                    .connect(endpoint.local_addr().unwrap(), "localhost")
+                    .unwrap(),
+                async { endpoint.accept().await.unwrap().await },
+            );
+            let (client, server) = (client.unwrap(), server.unwrap());
+            let mut send = client.open_uni().await.unwrap();
+            let late = send.stopped();
+            send.write_all(b"payload").await.unwrap();
+            let mut recv = server.accept_uni().await.unwrap();
+            let code = VarInt::from_u32(42);
+            recv.stop(code).unwrap();
+            assert_eq!(send.stopped().await.unwrap(), Some(code));
+            let conn = send.conn.clone();
+            let stream = send.stream;
+            drop(send);
+            // Once RESET_STREAM is acknowledged the protocol forgets this
+            // stream. The independently owned observer must retain its reason.
+            while conn
+                .state
+                .lock()
+                .inner
+                .send_stream(stream)
+                .stopped()
+                .is_ok()
+            {
+                tokio::task::yield_now().await;
+            }
+            assert_eq!(late.await.unwrap(), Some(code));
+            client.close(0u32, b"done");
+            endpoint.shutdown().await;
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn reset_before_observation_never_reports_delivery() {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let endpoint = crate::driver::tests::endpoint();
+            let (client, server) = tokio::join!(
+                endpoint
+                    .connect(endpoint.local_addr().unwrap(), "localhost")
+                    .unwrap(),
+                async { endpoint.accept().await.unwrap().await },
+            );
+            let (client, _server) = (client.unwrap(), server.unwrap());
+            let mut send = client.open_uni().await.unwrap();
+            send.reset(0u32).unwrap();
+            assert!(
+                send.events.get().is_none(),
+                "an unobserved reset needs no allocation"
+            );
+            assert_eq!(
+                send.stopped().await,
+                Err(StoppedError::LocallyReset(VarInt::from_u32(0)))
+            );
+            client.close(0u32, b"done");
+            endpoint.shutdown().await;
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancelling_one_stop_waiter_preserves_other_waiters_wakeup() {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let endpoint = crate::driver::tests::endpoint();
+            let (client, server) = tokio::join!(
+                endpoint
+                    .connect(endpoint.local_addr().unwrap(), "localhost")
+                    .unwrap(),
+                async { endpoint.accept().await.unwrap().await },
+            );
+            let (client, server) = (client.unwrap(), server.unwrap());
+            let mut send = client.open_uni().await.unwrap();
+            let mut cancelled = Box::pin(send.stopped());
+            let mut first = Box::pin(send.stopped());
+            let mut second = Box::pin(send.stopped());
+            let mut cx = Context::from_waker(std::task::Waker::noop());
+            assert!(cancelled.as_mut().poll(&mut cx).is_pending());
+            assert!(first.as_mut().poll(&mut cx).is_pending());
+            assert!(second.as_mut().poll(&mut cx).is_pending());
+            drop(cancelled);
+            assert_eq!(send.conn.state.lock().stopped.len(), 1);
+
+            send.write_all(b"payload").await.unwrap();
+            let mut recv = server.accept_uni().await.unwrap();
+            recv.stop(42u32).unwrap();
+            let (first, second) = tokio::join!(first, second);
+            assert_eq!(first.unwrap(), Some(42u32.into()));
+            assert_eq!(second.unwrap(), Some(42u32.into()));
+            assert!(send.conn.state.lock().stopped.is_empty());
+            client.close(0u32, b"done");
+            endpoint.shutdown().await;
+        })
+        .await
+        .unwrap();
+    }
+}
+
 impl From<StoppedError> for io::Error {
     fn from(x: StoppedError) -> Self {
         let kind = match x {
-            StoppedError::ZeroRttRejected => io::ErrorKind::ConnectionReset,
+            StoppedError::ZeroRttRejected | StoppedError::LocallyReset(_) => {
+                io::ErrorKind::ConnectionReset
+            }
             StoppedError::ConnectionLost(_) => io::ErrorKind::NotConnected,
         };
         Self::new(kind, x)

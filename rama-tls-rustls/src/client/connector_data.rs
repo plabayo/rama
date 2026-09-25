@@ -21,6 +21,7 @@ use rama_crypto::pki_types::PrivatePkcs8KeyDer;
 /// The resolved native rustls config consumed by [`super::TlsConnector`].
 pub(crate) struct TlsConnectorData {
     pub client_config: Arc<ClientConfig>,
+    pub verification_enabled: bool,
     pub server_name: Option<Host>,
     pub store_server_certificate_chain: bool,
 }
@@ -30,6 +31,7 @@ impl TryFrom<RustlsTlsConnectorConfig<'_>> for TlsConnectorData {
 
     fn try_from(value: RustlsTlsConnectorConfig<'_>) -> Result<Self, Self::Error> {
         Ok(Self {
+            verification_enabled: value.authenticates_server(),
             server_name: value.server_name.map(|name| name.0.clone()),
             store_server_certificate_chain: value.store_chain.is_some_and(|flag| flag.0),
             client_config: Arc::new(value.try_into()?),
@@ -151,7 +153,7 @@ pub(super) fn build_client_config(
                 .set_certificate_verifier(Arc::new(NoServerCertVerifier::default()));
         }
         (ServerVerifyMode::Auto, Some(pins)) => {
-            let child = match value.verifier {
+            let child = match &value.verifier {
                 Some(verifier) => verifier.0.clone(),
                 None => {
                     WebPkiServerVerifier::builder_with_provider(root_certs, provider).build()?
@@ -162,7 +164,7 @@ pub(super) fn build_client_config(
             ));
         }
         (ServerVerifyMode::Auto, None) => {
-            if let Some(verifier) = value.verifier {
+            if let Some(verifier) = &value.verifier {
                 client_config
                     .dangerous()
                     .set_certificate_verifier(verifier.0.clone());
@@ -184,7 +186,7 @@ pub(super) fn build_client_config(
         client_config.key_log = Arc::new(RamaKeyLog::new(sink));
     }
 
-    if let Some(modify) = value.modify {
+    if let Some(modify) = &value.modify {
         client_config = modify.apply(client_config)?;
     }
 

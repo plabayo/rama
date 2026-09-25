@@ -425,14 +425,14 @@ async fn carry(
     };
     // The upstream is closed first, so a stream still waiting on it is released and the joins
     // below cannot wait on a peer that will never answer.
-    // Endpoint shutdown closes downstream first. Its wakeup can reach this task
-    // before the outbound endpoint closes. Preserve the endpoint's stopping
-    // reason here too: even dropping the last upstream handle would close it
-    // with the normal completion code before endpoint shutdown catches up.
-    if matches!(
-        downstream.close_reason(),
-        Some(ConnectionError::LocallyClosed)
-    ) {
+    // Closing the downstream endpoint wakes this task before the upstream
+    // endpoint necessarily closes. Preserve the shutdown reason in that race.
+    if stopping.cancelled().now_or_never().is_some()
+        || matches!(
+            downstream.close_reason(),
+            Some(ConnectionError::LocallyClosed)
+        )
+    {
         upstream.close(RELAY_STOPPING, b"relay stopping");
     } else {
         upstream.close(0u32, b"done");

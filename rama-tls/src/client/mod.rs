@@ -20,6 +20,7 @@ pub use parser::{
 };
 
 mod config;
+mod pool;
 #[doc(inline)]
 pub use config::{
     ClientAuth, ClientAuthData, ServerTrustRoots, ServerVerifyMode, TlsClientAuth, TlsClientConfig,
@@ -27,12 +28,16 @@ pub use config::{
     TlsServerIdentity, TlsServerName, TlsServerTrust, TlsServerTrustAnchors, TlsServerVerify,
     TlsStoreServerCertChain,
 };
+pub use pool::{
+    TlsComponentIdentity, TlsConnectionReuse, TlsPoolComponent, TlsPoolId, TlsPoolIdBuilder,
+};
 use rama_crypto::pki_types::CertificateDer;
 
 use super::ProtocolVersion;
-use rama_core::extensions::Extension;
-use rama_net::address::Domain;
+use rama_core::extensions::{Extension, Extensions};
+use rama_net::address::{Domain, Host};
 use rama_net::tls::ApplicationProtocol;
+use std::{fmt, sync::Arc};
 
 #[derive(Debug, Clone, PartialEq, Eq, Extension)]
 #[extension(tags(tls))]
@@ -60,6 +65,15 @@ pub struct NegotiatedTlsParameters {
     pub resumed: Option<bool>,
 }
 
+/// Server identity authenticated by the effective TLS verification policy.
+///
+/// Published only after a successful client handshake. `None` explicitly
+/// shadows older connection metadata when verification was disabled; negotiated
+/// ALPN or a received certificate alone does not prove server authentication.
+#[derive(Debug, Clone, PartialEq, Eq, Extension)]
+#[extension(tags(tls))]
+pub struct TlsServerAuthentication(pub Option<rama_net::address::Host>);
+
 /// Merge extension lists A and B, with
 /// B overwriting any conflict with A, and otherwise push it to the back.
 pub fn merge_client_hello_lists(
@@ -83,6 +97,51 @@ pub fn merge_client_hello_lists(
     }
 
     output
+}
+
+/// Classify the request overrides understood by a fixed TLS configuration provider.
+///
+/// TLS connectors own this provider and publish their reuse rules after a
+/// handshake. Connector defaults remain fixed for the lifetime of its pool;
+/// custom providers participate through the same interface as built-in providers.
+pub trait TlsClientConfigProvider: fmt::Debug + Send + Sync {
+    /// Identity of request overrides, before connector defaults are applied.
+    ///
+    /// `None` means the request does not change the provider's fixed TLS policy,
+    /// including server identity and authentication. Callers may then classify
+    /// the fixed defaults directly. Use the builder to retain shared components;
+    /// return a non-reusable ID only for policies whose identity cannot be tracked.
+    fn pool_id(&self, extensions: &Extensions) -> Option<TlsPoolId>;
+
+    /// Whether the effective configuration establishes the server identity.
+    fn authenticates_server(&self, extensions: &Extensions) -> bool;
+
+    /// Whether this effective policy authenticates the requested HTTP origin.
+    ///
+    /// Connectors call this with their effective configuration when checking
+    /// an attempt's peer requirement. Providers with additional identity semantics
+    /// can refine it; successful handshake authentication is still reported
+    /// separately on the established connection.
+    fn authenticates_origin(&self, extensions: &Extensions, origin: &Host) -> bool {
+        extensions
+            .get_ref::<TlsServerName>()
+            .is_none_or(|name| &name.0 == origin)
+            && self.authenticates_server(extensions)
+    }
+}
+
+impl<P: TlsClientConfigProvider + ?Sized> TlsClientConfigProvider for Arc<P> {
+    fn pool_id(&self, extensions: &Extensions) -> Option<TlsPoolId> {
+        (**self).pool_id(extensions)
+    }
+
+    fn authenticates_server(&self, extensions: &Extensions) -> bool {
+        (**self).authenticates_server(extensions)
+    }
+
+    fn authenticates_origin(&self, extensions: &Extensions, origin: &Host) -> bool {
+        (**self).authenticates_origin(extensions, origin)
+    }
 }
 
 #[cfg(test)]

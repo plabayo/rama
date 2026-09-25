@@ -282,8 +282,7 @@ impl Decoder {
                 Representation::LiteralNeverIndexed => {
                     tracing::trace!("LiteralNeverIndexed: rem = {}", src.remaining());
                     can_resize = false;
-                    let mut entry = self.decode_literal(src, false)?;
-                    entry.set_sensitive(true);
+                    let entry = self.decode_literal(src, false)?.with_sensitive(true);
                     consume(src);
 
                     if f(entry).is_break() {

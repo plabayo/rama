@@ -9,7 +9,7 @@ use crate::{
     Layer, Service,
     error::BoxError,
     extensions::ExtensionsRef,
-    http::{Request, Response, StreamingBody},
+    http::{Body as ResponseBody, Request, Response, StreamingBody},
     net::client::EstablishedClientConnection,
     rt::Executor,
     service::BoxService,
@@ -28,9 +28,18 @@ use rama_core::{
     layer::MapErr,
 };
 use rama_http::{
-    layer::forward_proxy::{HttpForwardProxyLayer, HttpForwardProxyService},
+    layer::{
+        forward_proxy::{HttpForwardProxyLayer, HttpForwardProxyService},
+        map_response_body::MapResponseBody,
+    },
     proxy::PlaintextHttpProxyMode,
 };
+
+#[cfg(any(feature = "boring", feature = "rustls"))]
+use crate::tls::client::TlsClientConfig;
+
+#[cfg(feature = "boring")]
+use {crate::quic::tls::BoringTlsProvider, std::sync::Arc};
 
 pub mod builder;
 #[doc(inline)]
@@ -115,11 +124,20 @@ impl EasyHttpWebClient<(), (), ()> {
 
 /// Rama's default asynchronous HTTP(S) client, including its default
 /// multiplexing connection pool.
+///
+/// With BoringSSL or Rustls plus `ring`/`aws-lc`, HTTP/3 is available through
+/// alternative-service discovery or an explicit HTTP/3 request. Its shared UDP
+/// endpoint is bound lazily, so constructing the client requires no runtime.
 pub type DefaultHttpWebClient<Body = crate::http::Body> = EasyHttpWebClient<
     Body,
     EstablishedClientConnection<
-        BindBodyToConn<
-            crate::net::client::pool::MultiplexedConnection<HttpClientService<Body>, HttpConnId>,
+        rama_http::layer::alt_svc::AltSvc<
+            BindBodyToConn<
+                crate::net::client::pool::MultiplexedConnection<
+                    HttpClientService<Body>,
+                    HttpConnId,
+                >,
+            >,
         >,
         Request<Body>,
     >,
@@ -146,7 +164,16 @@ where
     core::cfg_select! {
         feature = "boring" => {
             pub fn default_with_executor(exec: Executor) -> Self {
-                let tls_config = crate::tls::client::TlsClientConfig::default_http();
+                let tls_config = TlsClientConfig::default_http();
+                #[expect(
+                    clippy::expect_used,
+                    reason = "fixed default H3 limits and the explicit BoringSSL provider are valid"
+                )]
+                let h3 = Http3Connector::builder(exec.clone())
+                    .with_tls_config(tls_config.clone())
+                    .with_tls_provider(Arc::new(BoringTlsProvider))
+                    .build_lazy()
+                    .expect("default BoringSSL HTTP/3 configuration is valid");
 
                 EasyHttpConnectorBuilder::new()
                     .with_default_transport_connector()
@@ -155,21 +182,35 @@ where
                     .with_proxy_support()
                     .with_tls_support_using_boringssl(tls_config)
                     .with_default_http_connector(exec)
+                    .with_http3_support(h3)
                     .with_default_connection_pool()
                     .build_client()
             }
         }
         feature = "rustls" => {
             pub fn default_with_executor(exec: Executor) -> Self {
-                let tls_config = crate::tls::client::TlsClientConfig::default_http();
+                let tls_config = TlsClientConfig::default_http();
+                #[cfg(any(feature = "ring", feature = "aws-lc"))]
+                #[expect(
+                    clippy::expect_used,
+                    reason = "fixed default H3 limits and a compiled-in Rustls crypto provider are valid"
+                )]
+                let h3 = Http3Connector::builder(exec.clone())
+                    .with_tls_config(tls_config.clone())
+                    .build_lazy()
+                    .expect("default Rustls HTTP/3 configuration is valid");
 
-                EasyHttpConnectorBuilder::new()
+                let builder = EasyHttpConnectorBuilder::new()
                     .with_default_transport_connector()
                     .with_default_dns_connector()
                     .with_tls_proxy_support_using_rustls()
                     .with_proxy_support()
                     .with_tls_support_using_rustls(tls_config)
-                    .with_default_http_connector(exec)
+                    .with_default_http_connector(exec);
+                #[cfg(any(feature = "ring", feature = "aws-lc"))]
+                let builder = builder.with_http3_support(h3);
+
+                builder
                     .with_default_connection_pool()
                     .build_client()
             }
@@ -332,18 +373,20 @@ impl<BodyIn, ConnResponse, L> EasyHttpWebClient<BodyIn, ConnResponse, L> {
     }
 }
 
-impl<Body, ConnectionBody, Connection, L> Service<Request<Body>>
+impl<Body, ConnectionBody, Connection, IncomingBody, L> Service<Request<Body>>
     for EasyHttpWebClient<Body, EstablishedClientConnection<Connection, Request<ConnectionBody>>, L>
 where
     Body: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
-    Connection:
-        Service<Request<ConnectionBody>, Output = Response, Error = BoxError> + ExtensionsRef,
+    Connection: Service<Request<ConnectionBody>, Output = Response<IncomingBody>, Error = BoxError>
+        + ExtensionsRef,
+    IncomingBody: Send + Sync + 'static,
+    ResponseBody: From<IncomingBody>,
     // Body type this connection will be able to send, this is not necessarily the same one that
     // was used in the request that created this connection
     ConnectionBody:
         StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
     L: Layer<
-            HttpForwardProxyService<Connection>,
+            HttpForwardProxyService<MapResponseBody<Connection, fn(IncomingBody) -> ResponseBody>>,
             Service: Service<Request<ConnectionBody>, Output = Response, Error = BoxError>,
         > + Send
         + Sync
@@ -370,6 +413,7 @@ where
         req.extensions()
             .insert(Egress(http_connection.extensions().clone()));
 
+        let http_connection = MapResponseBody::into_boxed_streaming_body(http_connection);
         let http_connection = self.forward_proxy_layer.layer(http_connection);
         let http_connection = self.jit_layers.layer(http_connection);
 
@@ -416,6 +460,7 @@ mod tests {
         },
         test_utils::client::{MockConnectorService, MockSocket},
     };
+    use rama_utils::octets::kib;
     use serde::{Deserialize, Serialize};
     use tokio::time::sleep;
 
@@ -425,6 +470,31 @@ mod tests {
     struct Output {
         conn: usize,
         resp: usize,
+    }
+
+    #[tokio::test]
+    async fn default_client_request_future_stays_within_stack_budget() {
+        let client = DefaultHttpWebClient::<Body>::default();
+        let request = Request::builder()
+            .uri("https://example.com/")
+            .body(Body::empty())
+            .unwrap();
+        let request = client.serve(request);
+        let inner_size = std::mem::size_of_val(&request);
+        let request = tokio::time::timeout(Duration::from_secs(1), request);
+        let size = std::mem::size_of_val(&request);
+        eprintln!("default client request: {inner_size} bytes; with timeout: {size} bytes");
+        assert!(
+            size <= kib(16),
+            "default client request future is {size} bytes"
+        );
+    }
+
+    #[test]
+    fn default_client_can_be_constructed_and_cloned_without_a_runtime() {
+        let client = DefaultHttpWebClient::<Body>::default();
+        drop(client.clone());
+        drop(client);
     }
 
     #[derive(Debug, Clone, Default)]

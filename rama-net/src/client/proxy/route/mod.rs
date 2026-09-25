@@ -1,3 +1,7 @@
+mod context;
+#[doc(inline)]
+pub use context::ProxyRouteContext;
+
 mod failure_cache;
 #[doc(inline)]
 pub use failure_cache::{

@@ -12,6 +12,20 @@ rust-version = { workspace = true }
 cargo-fuzz = true
 
 [[bin]]
+name = "http_structured_fields"
+path = "fuzz_targets/http_structured_fields.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "h3_state"
+path = "fuzz_targets/h3_state.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "ua_parse"
 path = "fuzz_targets/ua_parse.rs"
 test = false

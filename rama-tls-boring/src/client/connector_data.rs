@@ -225,7 +225,7 @@ impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorContextBuilder {
             .map(|p| p.0)
             .unwrap_or_default();
         let record_size_limit = value.record_size_limit.map(|p| p.0);
-        let server_verify_cert_store = value.verify_cert_store.map(|p| p.0.clone());
+        let server_verify_cert_store = value.verify_cert_store.as_ref().map(|p| p.0.clone());
         if server_verify_mode == ServerVerifyMode::Disable {
             if value.server_trust.is_some() {
                 debug!(

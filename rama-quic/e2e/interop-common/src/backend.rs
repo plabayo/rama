@@ -1,5 +1,16 @@
 //! Verify Rama's native provider even when an independent peer enables another Rustls backend.
 
+use rama::quic::tls::{QuicClientConfigProvider, QuicServerConfigProvider, TlsOptions};
+use std::sync::Arc;
+
+#[cfg(feature = "boring")]
+use rama::{quic::tls::BoringTlsProvider, tls::boring::core::ssl::quic::QuicError};
+#[cfg(not(feature = "boring"))]
+use rama::{
+    quic::tls::{default_server_tls_provider, default_tls_provider},
+    tls::rustls::{client::RustlsClientConfigExt, server::RustlsServerConfigExt},
+};
+
 #[cfg(not(feature = "boring"))]
 mod rustls_backend {
     use rama::{error::BoxError, tls::rustls::dep::rustls};
@@ -90,6 +101,7 @@ mod rustls_backend {
         }
     }
 }
+
 #[cfg(not(feature = "boring"))]
 pub use rustls_backend::{verify_client, verify_server};
 
@@ -102,7 +114,6 @@ impl VerifyBackend for rama::tls::client::TlsClientConfig {
     fn verify_backend(self) -> Self {
         #[cfg(not(feature = "boring"))]
         {
-            use rama::tls::rustls::client::RustlsClientConfigExt;
             self.with_modify_rustls_config(verify_client)
         }
         #[cfg(feature = "boring")]
@@ -116,7 +127,6 @@ impl VerifyBackend for rama::tls::server::TlsServerConfig {
     fn verify_backend(self) -> Self {
         #[cfg(not(feature = "boring"))]
         {
-            use rama::tls::rustls::server::RustlsServerConfigExt;
             self.with_modify_rustls_config(verify_server)
         }
         #[cfg(feature = "boring")]
@@ -131,17 +141,34 @@ pub const UNKNOWN_CA: u8 = 48;
 pub const BAD_CERTIFICATE: u8 = 42;
 
 /// Select the Rama backend explicitly; peer dependencies may enable other implementations.
-pub fn options() -> rama::quic::tls::TlsOptions {
+pub fn options() -> TlsOptions {
+    TlsOptions::default()
+}
+
+pub fn tls_provider() -> Arc<dyn QuicClientConfigProvider> {
     #[cfg(feature = "boring")]
-    let backend = rama::tls::TlsBackend::Boring;
+    {
+        Arc::new(BoringTlsProvider)
+    }
     #[cfg(not(feature = "boring"))]
-    let backend = rama::tls::TlsBackend::Rustls;
-    rama::quic::tls::TlsOptions::default().with_backend(backend)
+    {
+        default_tls_provider().unwrap()
+    }
+}
+
+pub fn server_tls_provider() -> Arc<dyn QuicServerConfigProvider> {
+    #[cfg(feature = "boring")]
+    {
+        Arc::new(BoringTlsProvider)
+    }
+    #[cfg(not(feature = "boring"))]
+    {
+        default_server_tls_provider().unwrap()
+    }
 }
 
 #[cfg(feature = "boring")]
 pub fn assert_certificate_failure(error: &rama::quic::proto::TransportError) {
-    use rama::tls::boring::core::ssl::quic::QuicError;
     let Some(QuicError::Tls(native)) = error
         .cause()
         .and_then(|cause| cause.downcast_ref::<QuicError>())

@@ -30,7 +30,7 @@ fn exporter_errors_support_standard_propagation_and_rama_context() {
     assert!(error.is::<ExportKeyingMaterialError>());
     assert_eq!(error.to_string(), "failed to export keying material");
     let contextual = ExportKeyingMaterialError::new().context("derive application key");
-    assert!(error_chain(contextual.as_ref(), 8).any(|e| e.is::<ExportKeyingMaterialError>()));
+    assert!(error_chain(contextual.as_ref()).any(|e| e.is::<ExportKeyingMaterialError>()));
 }
 
 #[test]

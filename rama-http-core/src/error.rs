@@ -281,7 +281,7 @@ impl Error {
 
     pub(crate) fn find_source<E: StdError + 'static>(&self) -> Option<&E> {
         // Public predicates also inspect user-provided causes, which may cycle.
-        rama_core::error::error_chain(self.source()?, 64).find_map(|error| error.downcast_ref())
+        rama_core::error::error_chain(self.source()?).find_map(|error| error.downcast_ref())
     }
 
     pub(super) fn h2_reason(&self) -> h2::Reason {

@@ -3,7 +3,9 @@ use crate::proto::h2::ext::Protocol;
 use crate::proto::h2::frame::{Error, Frame, Head, Kind};
 use crate::proto::h2::hpack::{self, BytesStr};
 
-use crate::proto::h2::{PseudoHeader, PseudoHeaderOrder, PseudoHeaderOrderIter};
+use crate::proto::h2::{
+    PseudoHeader, PseudoHeaderOrder, PseudoHeaderOrderIter, PseudoHeaderSensitivity,
+};
 use crate::{
     HeaderMap, HeaderName, HeaderValue, IntoOrderedIter, Method, Request, StatusCode, Uri, header,
 };
@@ -81,6 +83,9 @@ pub struct Pseudo {
 
     // Order
     pub order: PseudoHeaderOrder,
+
+    /// Never-index requirements retained across HTTP/2 and HTTP/3 forwarding.
+    pub sensitivity: PseudoHeaderSensitivity,
 }
 
 impl PartialEq for Pseudo {
@@ -93,6 +98,7 @@ impl PartialEq for Pseudo {
             protocol,
             status,
             order: _,
+            sensitivity,
         } = self;
         let Self {
             method: other_method,
@@ -102,16 +108,25 @@ impl PartialEq for Pseudo {
             protocol: other_protocol,
             status: other_status,
             order: _,
+            sensitivity: other_sensitivity,
         } = other;
-        (method, scheme, authority, path, protocol, status)
-            == (
-                other_method,
-                other_scheme,
-                other_authority,
-                other_path,
-                other_protocol,
-                other_status,
-            )
+        (
+            method,
+            scheme,
+            authority,
+            path,
+            protocol,
+            status,
+            sensitivity,
+        ) == (
+            other_method,
+            other_scheme,
+            other_authority,
+            other_path,
+            other_protocol,
+            other_status,
+            other_sensitivity,
+        )
     }
 }
 
@@ -641,6 +656,18 @@ impl Continuation {
 // ===== impl Pseudo =====
 
 impl Pseudo {
+    fn take_header(&mut self, name: PseudoHeader) -> Option<hpack::Header<Option<HeaderName>>> {
+        let header = match name {
+            PseudoHeader::Method => self.method.take().map(hpack::Header::Method),
+            PseudoHeader::Scheme => self.scheme.take().map(hpack::Header::Scheme),
+            PseudoHeader::Authority => self.authority.take().map(hpack::Header::Authority),
+            PseudoHeader::Path => self.path.take().map(hpack::Header::Path),
+            PseudoHeader::Protocol => self.protocol.take().map(hpack::Header::Protocol),
+            PseudoHeader::Status => self.status.take().map(hpack::Header::Status),
+        }?;
+        Some(header.with_sensitive(self.sensitivity.is_sensitive(name)))
+    }
+
     pub fn request(method: Method, uri: &Uri, protocol: Option<Protocol>) -> Self {
         // Helper: serialize a `BytesMut` writer closure into a `BytesStr`.
         // Native `Uri` wire writers stream into a `BytesMut`; the pseudo
@@ -689,6 +716,7 @@ impl Pseudo {
             protocol,
             status: None,
             order: PseudoHeaderOrder::default(),
+            sensitivity: PseudoHeaderSensitivity::default(),
         };
 
         // If the URI includes an authority component, add it to the pseudo
@@ -725,6 +753,7 @@ impl Pseudo {
             protocol: None,
             status: Some(status),
             order: PseudoHeaderOrder::default(),
+            sensitivity: PseudoHeaderSensitivity::default(),
         }
     }
 
@@ -826,63 +855,24 @@ impl Iterator for Iter {
 
     fn next(&mut self) -> Option<Self::Item> {
         if let Some(ref mut pseudo) = self.pseudo {
-            if let Some(order) = self.pseudo_order.next() {
-                match order {
-                    PseudoHeader::Method => {
-                        if let Some(method) = pseudo.method.take() {
-                            return Some(hpack::Header::Method(method));
-                        }
-                    }
-                    PseudoHeader::Scheme => {
-                        if let Some(scheme) = pseudo.scheme.take() {
-                            return Some(hpack::Header::Scheme(scheme));
-                        }
-                    }
-                    PseudoHeader::Authority => {
-                        if let Some(authority) = pseudo.authority.take() {
-                            return Some(hpack::Header::Authority(authority));
-                        }
-                    }
-                    PseudoHeader::Path => {
-                        if let Some(path) = pseudo.path.take() {
-                            return Some(hpack::Header::Path(path));
-                        }
-                    }
-                    PseudoHeader::Protocol => {
-                        if let Some(protocol) = pseudo.protocol.take() {
-                            return Some(hpack::Header::Protocol(protocol));
-                        }
-                    }
-                    PseudoHeader::Status => {
-                        if let Some(status) = pseudo.status.take() {
-                            return Some(hpack::Header::Status(status));
-                        }
-                    }
+            for name in self.pseudo_order.by_ref() {
+                if let Some(header) = pseudo.take_header(name) {
+                    return Some(header);
                 }
             }
 
-            if let Some(method) = pseudo.method.take() {
-                return Some(hpack::Header::Method(method));
-            }
-
-            if let Some(scheme) = pseudo.scheme.take() {
-                return Some(hpack::Header::Scheme(scheme));
-            }
-
-            if let Some(authority) = pseudo.authority.take() {
-                return Some(hpack::Header::Authority(authority));
-            }
-
-            if let Some(path) = pseudo.path.take() {
-                return Some(hpack::Header::Path(path));
-            }
-
-            if let Some(protocol) = pseudo.protocol.take() {
-                return Some(hpack::Header::Protocol(protocol));
-            }
-
-            if let Some(status) = pseudo.status.take() {
-                return Some(hpack::Header::Status(status));
+            // Fields added by middleware may not occur in the recorded order.
+            for name in [
+                PseudoHeader::Method,
+                PseudoHeader::Scheme,
+                PseudoHeader::Authority,
+                PseudoHeader::Path,
+                PseudoHeader::Protocol,
+                PseudoHeader::Status,
+            ] {
+                if let Some(header) = pseudo.take_header(name) {
+                    return Some(header);
+                }
             }
         }
 
@@ -1064,17 +1054,15 @@ impl HeaderBlock {
         // the hpack state is connection level. In order to maintain correct
         // state for other streams, the hpack decoding process must complete.
         let res = decoder.decode(&mut cursor, |header| {
+            if let hpack::Header::NeverIndexed(ref value) = header {
+                self.pseudo.sensitivity.set_sensitive(value.name(), true);
+            }
             match header {
                 hpack::Header::Field { name, value } => {
                     // Connection level header fields are not supported and must
                     // result in a protocol error.
 
-                    if name == header::CONNECTION
-                        || name == header::TRANSFER_ENCODING
-                        || name == header::UPGRADE
-                        || name == "keep-alive"
-                        || name == "proxy-connection"
-                    {
+                    if header::hop_by_hop::CONNECTION_SPECIFIC_HEADERS.contains(&&name) {
                         tracing::trace!("load_hpack; connection level header");
                         malformed = true;
                     } else if name == header::TE && value != "trailers" {
@@ -1102,27 +1090,33 @@ impl HeaderBlock {
                         }
                     }
                 }
-                hpack::Header::Authority(v) => {
+                hpack::Header::Authority(v)
+                | hpack::Header::NeverIndexed(hpack::NeverIndexedPseudo::Authority(v)) => {
                     self.pseudo.order.push(PseudoHeader::Authority);
                     set_pseudo!(authority, v)
                 }
-                hpack::Header::Method(v) => {
+                hpack::Header::Method(v)
+                | hpack::Header::NeverIndexed(hpack::NeverIndexedPseudo::Method(v)) => {
                     self.pseudo.order.push(PseudoHeader::Method);
                     set_pseudo!(method, v)
                 }
-                hpack::Header::Scheme(v) => {
+                hpack::Header::Scheme(v)
+                | hpack::Header::NeverIndexed(hpack::NeverIndexedPseudo::Scheme(v)) => {
                     self.pseudo.order.push(PseudoHeader::Scheme);
                     set_pseudo!(scheme, v)
                 }
-                hpack::Header::Path(v) => {
+                hpack::Header::Path(v)
+                | hpack::Header::NeverIndexed(hpack::NeverIndexedPseudo::Path(v)) => {
                     self.pseudo.order.push(PseudoHeader::Path);
                     set_pseudo!(path, v)
                 }
-                hpack::Header::Protocol(v) => {
+                hpack::Header::Protocol(v)
+                | hpack::Header::NeverIndexed(hpack::NeverIndexedPseudo::Protocol(v)) => {
                     self.pseudo.order.push(PseudoHeader::Protocol);
                     set_pseudo!(protocol, v)
                 }
-                hpack::Header::Status(v) => {
+                hpack::Header::Status(v)
+                | hpack::Header::NeverIndexed(hpack::NeverIndexedPseudo::Status(v)) => {
                     self.pseudo.order.push(PseudoHeader::Status);
                     set_pseudo!(status, v)
                 }
@@ -1205,6 +1199,33 @@ fn decoded_header_size(name: usize, value: usize) -> usize {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn removed_pseudo_fields_do_not_discard_remaining_order_or_sensitivity() {
+        let mut pseudo =
+            Pseudo::request(Method::GET, &"https://example.com/".parse().unwrap(), None);
+        pseudo.order.extend([
+            PseudoHeader::Protocol,
+            PseudoHeader::Path,
+            PseudoHeader::Method,
+        ]);
+        pseudo.sensitivity.set_sensitive(PseudoHeader::Path, true);
+        let iter = Iter {
+            pseudo_order: pseudo.order.iter(),
+            pseudo: Some(pseudo),
+            fields: HeaderMap::new().into_ordered_iter(),
+        };
+        let headers: Vec<_> = iter.map(|header| header.reify().unwrap()).collect();
+        assert_eq!(
+            headers
+                .iter()
+                .map(|header| header.name().as_slice().to_vec())
+                .collect::<Vec<_>>(),
+            [b":path".as_slice(), b":method", b":scheme", b":authority"]
+        );
+        assert!(headers[0].is_sensitive());
+        assert!(headers[1..].iter().all(|header| !header.is_sensitive()));
+    }
 
     #[test]
     fn test_connect_request_pseudo_headers_omits_path_and_scheme() {

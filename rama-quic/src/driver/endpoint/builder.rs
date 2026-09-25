@@ -11,7 +11,7 @@ use std::{io, time::Duration};
 
 use rama_core::rt::Executor;
 use rama_net::address::SocketAddress;
-use rama_udp::{DatagramError, UdpPacketSocket, UdpSocketConfig, UdpSocketFactory};
+use rama_udp::{DatagramError, DatagramSocket, UdpPacketSocket, UdpSocketConfig, UdpSocketFactory};
 
 use crate::driver::{
     EndpointConfig,
@@ -131,6 +131,25 @@ impl EndpointBuilder {
     ///
     /// This does not bind preferred-address sockets or change the supplied socket options.
     pub fn with_packet_socket(self, socket: UdpPacketSocket) -> Result<Endpoint, DatagramError> {
+        self.with_datagram_socket(socket)
+    }
+
+    /// Build on an application's packet-oriented datagram transport.
+    ///
+    /// The supplied socket owns receive readiness and creates independently
+    /// wakeable send handles, as required by [`DatagramSocket`]. It must preserve
+    /// datagram boundaries, provide accurate packet metadata and advertise only
+    /// the capabilities it supports. The endpoint and connection drivers run on
+    /// this builder's executor; an operating-system socket is not required.
+    ///
+    /// Like [`Self::with_packet_socket`], this does not configure the transport
+    /// or bind preferred-address sockets. The supplied socket's local address
+    /// identifies the endpoint, and it must accept the destinations the
+    /// application intends to connect to or serve.
+    pub fn with_datagram_socket(
+        self,
+        socket: impl DatagramSocket,
+    ) -> Result<Endpoint, DatagramError> {
         self.on_socket(Socket::new(socket).map_err(DatagramError::from)?)
     }
 

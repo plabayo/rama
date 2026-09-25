@@ -87,10 +87,19 @@ impl<'a, R: crate::client::resolver::DnsAddressResolver> HappyEyeballAddressReso
     /// [RFC 4291, Section 2.5.5.2]: https://datatracker.ietf.org/doc/html/rfc4291#section-2.5.5.2
     /// [RFC 6761, Section 6.3]: https://datatracker.ietf.org/doc/html/rfc6761#section-6.3
     pub fn lookup_ip(self) -> impl Stream<Item = Result<IpAddr, OpaqueError>> + Send + 'a {
+        HappyEyeballIpStream::from(self.lookup_ip_source())
+    }
+
+    fn lookup_ip_source(
+        self,
+    ) -> HappyEyeballIpSource<
+        impl Stream<Item = Result<IpAddr, OpaqueError>> + Send + 'a,
+        impl Stream<Item = Result<IpAddr, OpaqueError>> + Send + 'a,
+    > {
         let ip_mode = self
             .extensions
             .as_ref()
-            .and_then(|ext| ext.get_ref().copied())
+            .and_then(|ext| ext.get_ref::<ConnectIpMode>().copied())
             .unwrap_or_default();
         let dns_mode = self
             .extensions
@@ -103,25 +112,14 @@ impl<'a, R: crate::client::resolver::DnsAddressResolver> HappyEyeballAddressReso
         // both via pct-decode + IDN. Non-promotable hosts (sub-delim
         // reg-name, IPvFuture) error — DNS can't resolve them.
         if let Ok(ip) = self.host.try_as_ip() {
-            // fold v4-mapped down to IPv4 (RFC 4291, Section 2.5.5.2)
-            // before the family checks below
-            let ip = ip.into_canonical_ip_addr();
-            return HappyEyeballIpStream::Once {
-                stream: rama_core::stream::once(match (ip, ip_mode) {
-                    (IpAddr::V4(_), ConnectIpMode::Ipv6) => {
-                        Err(BoxError::from_static_str("IPv4 address is not allowed")
-                            .into_opaque_error())
-                    }
-                    (IpAddr::V6(_), ConnectIpMode::Ipv4) => {
-                        Err(BoxError::from_static_str("IPv6 address is not allowed")
-                            .into_opaque_error())
-                    }
-                    _ => Ok(ip),
-                }),
+            return HappyEyeballIpSource::Once {
+                stream: rama_core::stream::once(
+                    ip_mode.validate_ip(ip).map_err(ErrorExt::into_opaque_error),
+                ),
             };
         }
         let Ok(domain) = self.host.try_into_domain() else {
-            return HappyEyeballIpStream::Once {
+            return HappyEyeballIpSource::Once {
                 stream: rama_core::stream::once(Err(BoxError::from_static_str(
                     "host is not resolvable as a domain",
                 )
@@ -155,7 +153,7 @@ impl<'a, R: crate::client::resolver::DnsAddressResolver> HappyEyeballAddressReso
                     smallvec::smallvec![Ok(IpAddr::V6(std::net::Ipv6Addr::LOCALHOST))]
                 }
             };
-            return HappyEyeballIpStream::Static {
+            return HappyEyeballIpSource::Static {
                 stream: stream::iter(candidates),
             };
         }
@@ -194,7 +192,7 @@ impl<'a, R: crate::client::resolver::DnsAddressResolver> HappyEyeballAddressReso
                 let ipv6_stream = make_ipv6_stream();
                 let ipv4_stream = make_ipv4_stream();
 
-                HappyEyeballIpStream::Dual {
+                HappyEyeballIpSource::Dual {
                     stream: ipv6_stream
                         .merge(DelayStream::new(Duration::from_micros(42), ipv4_stream)),
                 }
@@ -203,15 +201,15 @@ impl<'a, R: crate::client::resolver::DnsAddressResolver> HappyEyeballAddressReso
                 let ipv4_stream = make_ipv4_stream();
                 let ipv6_stream = make_ipv6_stream();
 
-                HappyEyeballIpStream::DualPreferIpV4 {
+                HappyEyeballIpSource::DualPreferIpV4 {
                     stream: ipv4_stream
                         .merge(DelayStream::new(Duration::from_micros(42), ipv6_stream)),
                 }
             }
-            DnsResolveIpMode::SingleIpV4 => HappyEyeballIpStream::SingleIpV4 {
+            DnsResolveIpMode::SingleIpV4 => HappyEyeballIpSource::SingleIpV4 {
                 stream: make_ipv4_stream(),
             },
-            DnsResolveIpMode::SingleIpV6 => HappyEyeballIpStream::SingleIpV6 {
+            DnsResolveIpMode::SingleIpV6 => HappyEyeballIpSource::SingleIpV6 {
                 stream: make_ipv6_stream(),
             },
         }
@@ -219,8 +217,51 @@ impl<'a, R: crate::client::resolver::DnsAddressResolver> HappyEyeballAddressReso
 }
 
 pin_project! {
-    #[project = HappyEyeballIpStreamProj]
-    enum HappyEyeballIpStream<V4, V6> {
+    // Overwrites chain ahead of the resolver; never race the same address twice.
+    struct HappyEyeballIpStream<V4, V6> {
+        #[pin]
+        source: HappyEyeballIpSource<V4, V6>,
+        seen: SmallVec<[IpAddr; 4]>,
+    }
+}
+
+impl<V4, V6> From<HappyEyeballIpSource<V4, V6>> for HappyEyeballIpStream<V4, V6> {
+    fn from(source: HappyEyeballIpSource<V4, V6>) -> Self {
+        Self {
+            source,
+            seen: SmallVec::new(),
+        }
+    }
+}
+
+impl<V4: Stream<Item = Result<IpAddr, OpaqueError>>, V6: Stream<Item = Result<IpAddr, OpaqueError>>>
+    Stream for HappyEyeballIpStream<V4, V6>
+{
+    type Item = Result<IpAddr, OpaqueError>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
+        loop {
+            match std::task::ready!(this.source.as_mut().poll_next(cx)) {
+                Some(Ok(ip)) if this.seen.contains(&ip) => {}
+                Some(Ok(ip)) => {
+                    this.seen.push(ip);
+                    return Poll::Ready(Some(Ok(ip)));
+                }
+                other => return Poll::Ready(other),
+            }
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let (lower, upper) = self.source.size_hint();
+        (lower.min(usize::from(self.seen.is_empty())), upper)
+    }
+}
+
+pin_project! {
+    #[project = HappyEyeballIpSourceProj]
+    enum HappyEyeballIpSource<V4, V6> {
         Dual {
             #[pin]
             stream: Merge<V6, DelayStream<V4>>,
@@ -249,18 +290,18 @@ pin_project! {
 }
 
 impl<V4: Stream<Item = Result<IpAddr, OpaqueError>>, V6: Stream<Item = Result<IpAddr, OpaqueError>>>
-    Stream for HappyEyeballIpStream<V4, V6>
+    Stream for HappyEyeballIpSource<V4, V6>
 {
     type Item = Result<IpAddr, OpaqueError>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> Poll<Option<Self::Item>> {
         match self.project() {
-            HappyEyeballIpStreamProj::Dual { stream } => stream.poll_next(cx),
-            HappyEyeballIpStreamProj::DualPreferIpV4 { stream } => stream.poll_next(cx),
-            HappyEyeballIpStreamProj::Once { stream } => stream.poll_next(cx),
-            HappyEyeballIpStreamProj::Static { stream } => stream.poll_next(cx),
-            HappyEyeballIpStreamProj::SingleIpV4 { stream } => stream.poll_next(cx),
-            HappyEyeballIpStreamProj::SingleIpV6 { stream } => stream.poll_next(cx),
+            HappyEyeballIpSourceProj::Dual { stream } => stream.poll_next(cx),
+            HappyEyeballIpSourceProj::DualPreferIpV4 { stream } => stream.poll_next(cx),
+            HappyEyeballIpSourceProj::Once { stream } => stream.poll_next(cx),
+            HappyEyeballIpSourceProj::Static { stream } => stream.poll_next(cx),
+            HappyEyeballIpSourceProj::SingleIpV4 { stream } => stream.poll_next(cx),
+            HappyEyeballIpSourceProj::SingleIpV6 { stream } => stream.poll_next(cx),
         }
     }
 
@@ -500,6 +541,30 @@ mod tests {
         ext.insert(DnsAddresssResolverOverwrite::new(overwrite));
         let host = Host::Name(rama_net::address::Domain::from_static("svc.localhost"));
         let stream = EmptyDnsResolver
+            .happy_eyeballs_resolver(host)
+            .with_extensions(&ext)
+            .lookup_ip();
+        let ips: Vec<_> = rama_core::futures::StreamExt::collect::<Vec<_>>(stream)
+            .await
+            .into_iter()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(vec!["192.0.2.7".parse::<std::net::IpAddr>().unwrap()], ips);
+    }
+
+    #[tokio::test]
+    async fn overwrite_and_resolver_answers_are_deduplicated() {
+        use crate::client::resolver::address::DnsAddresssResolverOverwrite;
+        use rama_core::extensions::Extensions;
+
+        // the overwrite chains ahead of the resolver; a shared (canonical)
+        // answer must be dialed once, even across address families
+        let overwrite: std::net::Ipv4Addr = "192.0.2.7".parse().unwrap();
+        let ext = Extensions::new();
+        ext.insert(DnsAddresssResolverOverwrite::new(overwrite));
+        let mapped: std::net::Ipv6Addr = "::ffff:192.0.2.7".parse().unwrap();
+        let host = Host::Name(rama_net::address::Domain::from_static("example.com"));
+        let stream = mapped
             .happy_eyeballs_resolver(host)
             .with_extensions(&ext)
             .lookup_ip();

@@ -568,7 +568,7 @@ async fn a_socket_advertised_after_the_driver_parked_is_polled() {
     let (client_config, mut server_config) = configs();
     // The advertised socket is bound first, so its address can be advertised from the start while
     // the endpoint takes it only later, once its driver has parked.
-    let advertised = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let advertised = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
     let advertised_addr = advertised.local_addr().unwrap();
     let SocketAddr::V4(advertised_v4) = advertised_addr else {
         panic!("bound on IPv4 loopback");
@@ -771,8 +771,10 @@ async fn a_part_sent_descriptor_stays_with_its_handle_when_the_path_moves() {
             .try_with_initial_congestion_window(u64::from(u32::MAX) + 1)
             .unwrap(),
     ));
-    let (listener, listener_log, segments) =
-        segmenting_socket_from(std::net::UdpSocket::bind("0.0.0.0:0").unwrap(), 1);
+    let (listener, listener_log, segments) = segmenting_socket_from(
+        std::net::UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).unwrap(),
+        1,
+    );
     let (advertised, advertised_log) = recording_socket();
     let advertised_addr = advertised.local_addr();
     let SocketAddr::V4(advertised_v4) = advertised_addr else {
@@ -1490,7 +1492,7 @@ async fn a_part_sent_descriptor_is_accounted_once_when_its_socket_then_fails() {
     let server = endpoint_with(
         EndpointConfig::try_with_rand_key().unwrap(),
         Some(server_config),
-        Socket::from_std(std::net::UdpSocket::bind("127.0.0.1:0").unwrap()).unwrap(),
+        Socket::from_std(std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap()).unwrap(),
     );
     let (socket_a, log_a, segments, fault_a) = breakable_segmenting_socket(1);
     let client = endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), None, socket_a);

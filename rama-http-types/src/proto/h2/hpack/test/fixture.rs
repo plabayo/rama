@@ -134,6 +134,7 @@ fn key_str(e: &Header) -> &str {
         Header::Path(..) => ":path",
         Header::Protocol(..) => ":protocol",
         Header::Status(..) => ":status",
+        Header::NeverIndexed(ref value) => value.name().as_str(),
     }
 }
 
@@ -144,6 +145,7 @@ fn value_str(e: &Header) -> &str {
         Header::Method(ref m) => m.as_str(),
         Header::Protocol(ref v) => v.as_str(),
         Header::Status(ref v) => v.as_str(),
+        Header::NeverIndexed(_) => std::str::from_utf8(e.value_slice()).unwrap(),
     }
 }
 

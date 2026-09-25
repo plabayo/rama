@@ -10,4 +10,4 @@ mod test;
 pub use self::decoder::{Decoder, DecoderError, NeedMore};
 pub use self::encoder::Encoder;
 pub use self::header::BytesStr;
-pub use self::header::Header;
+pub use self::header::{Header, NeverIndexedPseudo};

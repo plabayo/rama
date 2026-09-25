@@ -10,7 +10,7 @@ use rama_core::{
     service::{BoxService, StaticOutput},
 };
 
-use crate::{Body, Request, Response, matcher::HttpMatcher};
+use crate::{Body, Request, Response, Version, matcher::HttpMatcher};
 
 pub mod extract;
 pub mod response;
@@ -23,7 +23,11 @@ pub(crate) struct Endpoint {
     pub(crate) service: BoxService<Request, Response, Infallible>,
 }
 
-/// utility trait to accept multiple types as an endpoint service for [`super::WebService`]
+/// Accept multiple types as an endpoint service for [`super::WebService`].
+///
+/// Function handlers enter a generic HTTP application context: HTTP/2 and HTTP/3
+/// Cookie fields are joined before extraction. Existing [`Service<Request>`]
+/// implementations retain their input unchanged, allowing transparent relays.
 pub trait IntoEndpointService<T>: private::Sealed<T, ()> {
     type Service: Service<Request>;
 
@@ -31,6 +35,8 @@ pub trait IntoEndpointService<T>: private::Sealed<T, ()> {
     fn into_endpoint_service(self) -> Self::Service;
 }
 
+/// Convert endpoints with state, using the same application boundary as
+/// [`IntoEndpointService`].
 pub trait IntoEndpointServiceWithState<T, State>: private::Sealed<T, State> {
     type Service: Service<Request>;
 
@@ -109,7 +115,12 @@ mod service;
 #[doc(inline)]
 pub use service::EndpointServiceFn;
 
-/// Wrapper svc used for creating a endpoint service from a function.
+/// Create an endpoint service from a function with request extractors.
+///
+/// Before extraction, split HTTP/2 and HTTP/3 Cookie fields are joined with `; `,
+/// as required when entering a generic HTTP application context by RFC 9113
+/// §8.2.3 and RFC 9114 §4.2.1. Transport-aware services passed directly to a
+/// router do not use this wrapper and retain their individual field lines.
 pub struct EndpointServiceFnWrapper<F, T, State> {
     inner: F,
     _marker: std::marker::PhantomData<fn(T)>,
@@ -154,7 +165,10 @@ where
     type Output = F::Output;
     type Error = F::Error;
 
-    async fn serve(&self, req: Request) -> Result<Self::Output, Self::Error> {
+    async fn serve(&self, mut req: Request) -> Result<Self::Output, Self::Error> {
+        if matches!(req.version(), Version::HTTP_2 | Version::HTTP_3) {
+            crate::layer::remove_header::coalesce_cookie_headers(req.headers_mut());
+        }
         self.inner.call(req, &self.state).await
     }
 }
@@ -217,6 +231,103 @@ mod tests {
     where
         I: IntoEndpointService<T>,
     {
+    }
+
+    fn split_cookie_request(version: Version) -> Request {
+        let mut request = Request::builder()
+            .uri("https://example.com/")
+            .version(version)
+            .body(Body::empty())
+            .unwrap();
+        let headers = request.headers_mut();
+        headers.append(crate::header::COOKIE, crate::HeaderValue::from_static(""));
+        headers.append("x-between", crate::HeaderValue::from_static("untouched"));
+        let mut sensitive = crate::HeaderValue::from_static("session=secret");
+        sensitive.set_sensitive(true);
+        headers.append(crate::header::COOKIE, sensitive);
+        headers.append(crate::header::COOKIE, crate::HeaderValue::from_static(""));
+        request
+    }
+
+    fn assert_application_cookies(headers: &HeaderMap) {
+        let cookies = headers.get_all(crate::header::COOKIE);
+        let mut cookies = cookies.iter();
+        let value = cookies.next().unwrap();
+        assert_eq!(value, "; session=secret; ");
+        assert!(value.is_sensitive());
+        assert!(cookies.next().is_none());
+        assert_eq!(headers["x-between"], "untouched");
+    }
+
+    #[tokio::test]
+    async fn function_handlers_join_cookies_before_request_and_header_extraction() {
+        let request_handler = (async |request: Request| {
+            assert_application_cookies(request.headers());
+            StatusCode::OK
+        })
+        .into_endpoint_service();
+        let headers_handler = (async |headers: HeaderMap, _body: extract::Body| {
+            assert_application_cookies(&headers);
+            StatusCode::OK
+        })
+        .into_endpoint_service();
+
+        for version in [Version::HTTP_2, Version::HTTP_3] {
+            request_handler
+                .serve(split_cookie_request(version))
+                .await
+                .unwrap();
+            headers_handler
+                .serve(split_cookie_request(version))
+                .await
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn routed_functions_join_cookies_but_transport_services_preserve_lines() {
+        let application =
+            crate::service::web::WebService::new().with_get("/", async |request: Request| {
+                assert_application_cookies(request.headers());
+                StatusCode::OK
+            });
+        let relay = rama_core::service::service_fn(async |request: Request| {
+            let lines: Vec<_> = request
+                .headers()
+                .ordered_iter()
+                .map(|(name, value)| (name.as_str(), value.as_bytes(), value.is_sensitive()))
+                .collect();
+            assert_eq!(
+                lines,
+                [
+                    ("cookie", b"".as_slice(), false),
+                    ("x-between", b"untouched".as_slice(), false),
+                    ("cookie", b"session=secret".as_slice(), true),
+                    ("cookie", b"".as_slice(), false),
+                ]
+            );
+            Ok::<_, Infallible>(StatusCode::OK)
+        });
+        let relay = crate::service::web::WebService::new().with_get("/", relay);
+
+        for version in [Version::HTTP_2, Version::HTTP_3] {
+            assert_eq!(
+                application
+                    .serve(split_cookie_request(version))
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::OK
+            );
+            assert_eq!(
+                relay
+                    .serve(split_cookie_request(version))
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::OK
+            );
+        }
     }
 
     #[test]

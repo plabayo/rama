@@ -1,5 +1,5 @@
 use super::{DecoderError, NeedMore};
-use crate::proto::h2::ext::Protocol;
+use crate::proto::h2::{PseudoHeader, ext::Protocol};
 use crate::{HeaderName, HeaderValue, Method, StatusCode};
 
 use rama_core::bytes::Bytes;
@@ -8,7 +8,10 @@ use std::fmt;
 /// HTTP/2 Header
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum Header<T = HeaderName> {
-    Field { name: T, value: HeaderValue },
+    Field {
+        name: T,
+        value: HeaderValue,
+    },
     // Authority/Scheme/Path stay as raw `BytesStr`: HPACK needs the exact wire
     // bytes for dynamic-table sizing, re-encoding and equality. Typed parsing
     // (into `rama_net` URI components) happens at the h2 request-decode layer.
@@ -18,6 +21,86 @@ pub enum Header<T = HeaderName> {
     Path(BytesStr),
     Protocol(Protocol),
     Status(StatusCode),
+    /// A pseudo-header carrying the HPACK never-indexed requirement.
+    NeverIndexed(NeverIndexedPseudo),
+}
+
+/// Typed pseudo-header value that must be encoded as a never-indexed literal.
+///
+/// Values remain inline: marking an existing field does not allocate or copy it.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum NeverIndexedPseudo {
+    Authority(BytesStr),
+    Method(Method),
+    Scheme(BytesStr),
+    Path(BytesStr),
+    Protocol(Protocol),
+    Status(StatusCode),
+}
+
+impl NeverIndexedPseudo {
+    pub fn name(&self) -> PseudoHeader {
+        match self {
+            Self::Authority(..) => PseudoHeader::Authority,
+            Self::Method(..) => PseudoHeader::Method,
+            Self::Scheme(..) => PseudoHeader::Scheme,
+            Self::Path(..) => PseudoHeader::Path,
+            Self::Protocol(..) => PseudoHeader::Protocol,
+            Self::Status(..) => PseudoHeader::Status,
+        }
+    }
+
+    fn value_slice(&self) -> &[u8] {
+        match self {
+            Self::Authority(value) | Self::Scheme(value) | Self::Path(value) => value.as_ref(),
+            Self::Method(value) => value.as_str().as_bytes(),
+            Self::Protocol(value) => value.as_ref(),
+            Self::Status(value) => value.as_str().as_bytes(),
+        }
+    }
+
+    pub fn into_header<T>(self) -> Header<T> {
+        match self {
+            Self::Authority(value) => Header::Authority(value),
+            Self::Method(value) => Header::Method(value),
+            Self::Scheme(value) => Header::Scheme(value),
+            Self::Path(value) => Header::Path(value),
+            Self::Protocol(value) => Header::Protocol(value),
+            Self::Status(value) => Header::Status(value),
+        }
+    }
+}
+
+impl<T> Header<T> {
+    /// Set the HPACK never-indexed requirement without copying the field value.
+    #[must_use]
+    pub fn with_sensitive(self, sensitive: bool) -> Self {
+        if !sensitive {
+            return match self {
+                Self::NeverIndexed(value) => value.into_header(),
+                Self::Field { name, mut value } => {
+                    value.set_sensitive(false);
+                    Self::Field { name, value }
+                }
+                header => header,
+            };
+        }
+
+        let value = match self {
+            Self::Field { name, mut value } => {
+                value.set_sensitive(true);
+                return Self::Field { name, value };
+            }
+            Self::NeverIndexed(value) => return Self::NeverIndexed(value),
+            Self::Authority(value) => NeverIndexedPseudo::Authority(value),
+            Self::Method(value) => NeverIndexedPseudo::Method(value),
+            Self::Scheme(value) => NeverIndexedPseudo::Scheme(value),
+            Self::Path(value) => NeverIndexedPseudo::Path(value),
+            Self::Protocol(value) => NeverIndexedPseudo::Protocol(value),
+            Self::Status(value) => NeverIndexedPseudo::Status(value),
+        };
+        Self::NeverIndexed(value)
+    }
 }
 
 /// The header field name
@@ -55,6 +138,7 @@ impl Header<Option<HeaderName>> {
             Self::Path(v) => Header::Path(v),
             Self::Protocol(v) => Header::Protocol(v),
             Self::Status(v) => Header::Status(v),
+            Self::NeverIndexed(v) => Header::NeverIndexed(v),
         })
     }
 }
@@ -65,32 +149,33 @@ impl Header {
             return Err(DecoderError::NeedMore(NeedMore::UnexpectedEndOfStream));
         }
         if name[0] == b':' {
-            match &name[1..] {
-                b"authority" => {
+            match PseudoHeader::from_bytes(name)
+                .map_err(|_error| DecoderError::InvalidPseudoheader)?
+            {
+                PseudoHeader::Authority => {
                     let value = BytesStr::try_from(value)?;
                     Ok(Self::Authority(value))
                 }
-                b"method" => {
+                PseudoHeader::Method => {
                     let method = Method::from_bytes(&value)?;
                     Ok(Self::Method(method))
                 }
-                b"scheme" => {
+                PseudoHeader::Scheme => {
                     let value = BytesStr::try_from(value)?;
                     Ok(Self::Scheme(value))
                 }
-                b"path" => {
+                PseudoHeader::Path => {
                     let value = BytesStr::try_from(value)?;
                     Ok(Self::Path(value))
                 }
-                b"protocol" => {
+                PseudoHeader::Protocol => {
                     let value = Protocol::try_from(value)?;
                     Ok(Self::Protocol(value))
                 }
-                b"status" => {
+                PseudoHeader::Status => {
                     let status = StatusCode::from_bytes(&value)?;
                     Ok(Self::Status(status))
                 }
-                _ => Err(DecoderError::InvalidPseudoheader),
             }
         } else {
             // HTTP/2 requires lower case header names
@@ -121,6 +206,9 @@ impl Header {
             Self::Path(ref v) => 32 + 5 + v.len(),
             Self::Protocol(ref v) => 32 + 9 + v.as_str().len(),
             Self::Status(_) => 32 + 7 + 3,
+            Self::NeverIndexed(ref value) => {
+                32 + value.name().as_bytes().len() + value.value_slice().len()
+            }
         }
     }
 
@@ -134,6 +222,14 @@ impl Header {
             Self::Path(..) => Name::Path,
             Self::Protocol(..) => Name::Protocol,
             Self::Status(..) => Name::Status,
+            Self::NeverIndexed(ref value) => match value.name() {
+                PseudoHeader::Authority => Name::Authority,
+                PseudoHeader::Method => Name::Method,
+                PseudoHeader::Scheme => Name::Scheme,
+                PseudoHeader::Path => Name::Path,
+                PseudoHeader::Protocol => Name::Protocol,
+                PseudoHeader::Status => Name::Status,
+            },
         }
     }
 
@@ -144,10 +240,14 @@ impl Header {
             Self::Method(ref v) => v.as_ref().as_ref(),
             Self::Protocol(ref v) => v.as_ref(),
             Self::Status(ref v) => v.as_str().as_ref(),
+            Self::NeverIndexed(ref value) => value.value_slice(),
         }
     }
 
     pub fn value_eq(&self, other: &Self) -> bool {
+        if matches!(other, Self::NeverIndexed(_)) {
+            return self.name() == other.name() && self.value_slice() == other.value_slice();
+        }
         match *self {
             Self::Field { ref value, .. } => {
                 let a = value;
@@ -180,20 +280,17 @@ impl Header {
                 Self::Status(ref b) => a == b,
                 _ => false,
             },
+            Self::NeverIndexed(_) => {
+                self.name() == other.name() && self.value_slice() == other.value_slice()
+            }
         }
     }
 
     pub fn is_sensitive(&self) -> bool {
         match *self {
             Self::Field { ref value, .. } => value.is_sensitive(),
-            // TODO: Technically these other header values can be sensitive too.
+            Self::NeverIndexed(_) => true,
             _ => false,
-        }
-    }
-
-    pub(super) fn set_sensitive(&mut self, sensitive: bool) {
-        if let Self::Field { value, .. } = self {
-            value.set_sensitive(sensitive);
         }
     }
 
@@ -235,6 +332,7 @@ impl From<Header> for Header<Option<HeaderName>> {
             Header::Path(v) => Self::Path(v),
             Header::Protocol(v) => Self::Protocol(v),
             Header::Status(v) => Self::Status(v),
+            Header::NeverIndexed(v) => Self::NeverIndexed(v),
         }
     }
 }

@@ -10,25 +10,32 @@ use rama_net::client::pool::{
     ReqToConnID,
 };
 use rama_net::client::{ConnectRequest, ConnectorService, ProxyRoute};
-use rama_net::{
-    HttpVersionInputExt, ProtocolInputExt, TargetHttpVersionInputExt, transport::TransportProtocol,
-};
+use rama_net::{HttpVersionInputExt, ProtocolInputExt, TargetHttpVersionInputExt};
+use rama_tls::client::TlsPoolId;
 
 use super::{BindBodyToConnLayer, BindBodyToConnector};
 
 /// Default HTTP pooled connector assembled by
 /// [`HttpPooledConnectorConfig::try_build_connector`].
-pub type HttpPooledConnector<S> = BindBodyToConnector<
+pub type HttpPooledConnector<S, R = HttpConnIdentifier> = BindBodyToConnector<
     PooledConnector<
         S,
         MultiplexPool<<S as ConnectorService<ConnectRequest>>::Connection, HttpConnId>,
-        HttpConnIdentifier,
+        R,
     >,
 >;
 
 /// HTTP connection-pool identifier derived from the network route, any version
 /// requirement that constrains the physical connection, and whether plaintext
 /// HTTP uses forward-proxy or CONNECT-tunnel semantics.
+///
+/// A pool belongs to a fixed connector policy. TLS connectors publish their
+/// compatibility rules on established connections; pool checkout checks these
+/// rules against request extensions. An explicit [`TlsPoolId`] may additionally
+/// partition custom connection identities. Injecting
+/// the same pool into multiple connectors requires compatible fixed policies
+/// or a custom connection-ID namespace. Retire the pool before changing those
+/// defaults or the behavior of mutable native hooks.
 #[derive(Clone, Debug, Default)]
 #[non_exhaustive]
 pub struct HttpConnIdentifier;
@@ -49,6 +56,8 @@ impl HttpConnIdentifier {
 /// HTTP request semantics.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct HttpConnId {
+    reusable: bool,
+    tls: Option<TlsPoolId>,
     network: BasicConnId,
     required_version: Option<Version>,
     http_proxy_mode: Option<HttpProxyModeRequirement>,
@@ -61,6 +70,10 @@ enum HttpProxyModeRequirement {
 }
 
 impl ConnID for HttpConnId {
+    fn is_reusable(&self) -> bool {
+        self.reusable
+    }
+
     #[cfg(feature = "opentelemetry")]
     fn attributes(&self) -> impl Iterator<Item = rama_core::telemetry::opentelemetry::KeyValue> {
         self.network.attributes()
@@ -71,25 +84,11 @@ impl ReqToConnID<ConnectRequest> for HttpConnIdentifier {
     type ID = HttpConnId;
 
     fn id(&self, input: &ConnectRequest) -> Result<Self::ID, BoxError> {
-        let mut network = BasicConnIdentifier::new().id(input)?;
-        if input
-            .extensions()
-            .get_ref::<ProxyRoute>()
-            .and_then(ProxyRoute::proxy_address)
-            .is_some_and(|proxy| {
-                proxy
-                    .protocol
-                    .as_ref()
-                    .is_none_or(|protocol| protocol.is_http() || protocol.is_socks5())
-            })
-        {
-            // Rama's supported HTTP(S) and SOCKS proxy connectors establish a
-            // TCP connection to the proxy, irrespective of the origin's
-            // logical transport.
-            network.connector_transport_protocol = Some(TransportProtocol::Tcp);
-        }
-
+        let tls = input.extensions().get_ref::<TlsPoolId>().cloned();
+        let network = BasicConnIdentifier::new().id(input)?;
         Ok(HttpConnId {
+            reusable: tls.as_ref().is_none_or(TlsPoolId::is_reusable),
+            tls,
             network,
             required_version: connection_version_requirement(input),
             http_proxy_mode: http_proxy_mode_requirement(input),
@@ -113,12 +112,15 @@ fn http_proxy_mode_requirement(input: &ConnectRequest) -> Option<HttpProxyModeRe
     }
 
     Some(
-        if input
+        if !input
             .extensions()
-            .get_ref::<PlaintextHttpProxyMode>()
-            .copied()
-            .unwrap_or_default()
-            .should_forward(input.protocol())
+            .contains::<rama_net::client::ConnectorTarget>()
+            && input
+                .extensions()
+                .get_ref::<PlaintextHttpProxyMode>()
+                .copied()
+                .unwrap_or_default()
+                .should_forward(input.protocol())
         {
             HttpProxyModeRequirement::Forward
         } else {
@@ -127,16 +129,32 @@ fn http_proxy_mode_requirement(input: &ConnectRequest) -> Option<HttpProxyModeRe
     )
 }
 
-fn connection_version_requirement(input: &ConnectRequest) -> Option<Version> {
+pub(crate) fn connection_version_requirement(input: &ConnectRequest) -> Option<Version> {
+    let fallback = input
+        .extensions()
+        .get_ref::<FallbackHttpVersion>()
+        .map(|fallback| fallback.0);
+    let target = input.target_http_version_with_fallback(fallback);
+    let version = target.or_else(|| input.http_version());
+
+    // An H3 request selects the H3 connector even through a custom proxy route.
+    // Keep that HTTP requirement separate from the route's physical transport.
+    if version == Some(Version::HTTP_3) {
+        return Some(Version::HTTP_3);
+    }
+
     let plaintext_http = input
         .protocol()
         .is_some_and(|protocol| protocol.is_http_based() && !protocol.is_secure());
-    let secure_forward_proxy = input
+    let secure_forward_proxy = !input
         .extensions()
-        .get_ref::<PlaintextHttpProxyMode>()
-        .copied()
-        .unwrap_or_default()
-        .should_forward(input.protocol())
+        .contains::<rama_net::client::ConnectorTarget>()
+        && input
+            .extensions()
+            .get_ref::<PlaintextHttpProxyMode>()
+            .copied()
+            .unwrap_or_default()
+            .should_forward(input.protocol())
         && input
             .extensions()
             .get_ref::<ProxyRoute>()
@@ -150,18 +168,7 @@ fn connection_version_requirement(input: &ConnectRequest) -> Option<Version> {
         return None;
     }
 
-    let fallback = input
-        .extensions()
-        .get_ref::<FallbackHttpVersion>()
-        .map(|fallback| fallback.0);
-    input
-        .target_http_version_with_fallback(fallback)
-        .or_else(|| {
-            let requested = input.http_version();
-            (plaintext_http || requested == Some(Version::HTTP_3))
-                .then_some(requested)
-                .flatten()
-        })
+    if plaintext_http { version } else { target }
 }
 
 #[derive(Debug, Clone)]
@@ -212,16 +219,30 @@ impl HttpPooledConnectorConfig {
     /// Unlike [`Self::try_build_connector`], this constructor is infallible because
     /// its connection and concurrency limits are non-zero constants owned by
     /// Rama.
+    /// The pool belongs to one fixed connector policy and checks connection-owned
+    /// reuse rules published by transport connectors before every checkout.
     pub fn build_default_connector<S>(inner: S) -> HttpPooledConnector<S>
     where
         S: ConnectorService<ConnectRequest>,
+    {
+        Self::build_default_connector_with_identifier(inner, HttpConnIdentifier::new())
+    }
+
+    /// Build the default pool with a custom connection identifier.
+    pub fn build_default_connector_with_identifier<S, R>(
+        inner: S,
+        identifier: R,
+    ) -> HttpPooledConnector<S, R>
+    where
+        S: ConnectorService<ConnectRequest>,
+        R: ReqToConnID<ConnectRequest, ID = HttpConnId>,
     {
         let config = Self::default();
         let pool = MultiplexPool::new(DEFAULT_MAX_CONCURRENT_STREAMS, DEFAULT_MAX_TOTAL)
             .with_selection(config.selection)
             .maybe_with_idle_timeout(config.idle_timeout);
 
-        let connector = PooledConnector::new(inner, pool, HttpConnIdentifier::new())
+        let connector = PooledConnector::new(inner, pool, identifier)
             .maybe_with_wait_for_pool_timeout(config.wait_for_pool_timeout);
 
         BindBodyToConnLayer::new().into_layer(connector)
@@ -232,6 +253,15 @@ impl HttpPooledConnectorConfig {
     /// The connector only adds body binding and pool lookup. HTTP request
     /// adaptation and proxy-route selection remain independently composable
     /// services and can be layered around the returned connector when needed.
+    /// The pool belongs to one fixed connector policy, including TLS defaults
+    /// and native hooks. Retire it before changing that policy or mutable hook
+    /// behavior. Transport connectors publish their request compatibility rules
+    /// as connection metadata. Custom identifiers may further partition routes
+    /// through [`Self::try_build_connector_with_identifier`].
+    ///
+    /// A pool injected through request extensions must obey the same fixed-policy
+    /// contract. Share it only between compatible connectors, or supply a custom
+    /// connection ID that separates their policies.
     ///
     /// The returned connector wraps each pooled connection in
     /// [`BindBodyToConn`](super::BindBodyToConn), so the pool only frees/reuses a
@@ -245,11 +275,24 @@ impl HttpPooledConnectorConfig {
     where
         S: ConnectorService<ConnectRequest>,
     {
+        self.try_build_connector_with_identifier(inner, HttpConnIdentifier::new())
+    }
+
+    /// Build a pool with a custom identifier for the fixed policy of `inner`.
+    pub fn try_build_connector_with_identifier<S, R>(
+        self,
+        inner: S,
+        identifier: R,
+    ) -> Result<HttpPooledConnector<S, R>, BoxError>
+    where
+        S: ConnectorService<ConnectRequest>,
+        R: ReqToConnID<ConnectRequest, ID = HttpConnId>,
+    {
         let pool = MultiplexPool::try_new(self.max_concurrent_streams, self.max_total)?
             .with_selection(self.selection)
             .maybe_with_idle_timeout(self.idle_timeout);
 
-        let connector = PooledConnector::new(inner, pool, HttpConnIdentifier::new())
+        let connector = PooledConnector::new(inner, pool, identifier)
             .maybe_with_wait_for_pool_timeout(self.wait_for_pool_timeout);
 
         Ok(BindBodyToConnLayer::new().into_layer(connector))
@@ -265,7 +308,7 @@ mod tests {
 
     use rama_core::bytes::Bytes;
     use rama_core::error::{BoxError, BoxErrorExt as _};
-    use rama_core::extensions::ExtensionsRef;
+    use rama_core::extensions::{Extensions, ExtensionsRef};
     use rama_core::futures::stream;
     use rama_core::rt::Executor;
     use rama_core::service::service_fn;
@@ -275,22 +318,29 @@ mod tests {
     use rama_http_types::{Body, HeaderValue, Method, Request, Response, StatusCode, Version};
     use rama_net::address::{HostWithPort, ProxyAddress};
     use rama_net::client::pool::{
-        BasicConnIdentifier, MultiplexPool, PooledConnector, ReqToConnID,
+        BasicConnIdentifier, ConnID as _, MultiplexPool, PooledConnector, ReqToConnID,
     };
     use rama_net::client::{
         ConnectRequest, ConnectionError, ConnectionErrorKind, ConnectorService,
-        EstablishedClientConnection, EstablishedProxyRoute, ProxyRoute, ProxyRoutes,
-        ProxyRoutesConnector,
+        ConnectorTransportProtocol, EstablishedClientConnection, EstablishedProxyRoute, ProxyRoute,
+        ProxyRoutes, ProxyRoutesConnector,
     };
     use rama_net::conn::{ConnectionHealth, ConnectionHealthWatcher};
     use rama_net::http::{HttpRequestVersion, TargetHttpVersion};
     use rama_net::test_utils::client::MockConnectorService;
     use rama_net::{HttpVersionInputExt, Protocol, transport::TransportProtocol};
+    use rama_tls::{
+        TlsTunnel,
+        client::{
+            ServerVerifyMode, TlsClientConfigProvider, TlsConnectionReuse, TlsPoolId,
+            TlsServerVerify,
+        },
+    };
     use rama_utils::octets::kib;
     use tokio::time::sleep;
 
     use super::{
-        HttpConnIdentifier, HttpPooledConnector, HttpPooledConnectorConfig,
+        FallbackHttpVersion, HttpConnIdentifier, HttpPooledConnector, HttpPooledConnectorConfig,
         HttpProxyModeRequirement, connection_version_requirement, http_proxy_mode_requirement,
     };
     use crate::client::proxy::layer::HttpProxyConnectorLayer;
@@ -299,7 +349,7 @@ mod tests {
 
     fn create_test_request(version: Version) -> Request {
         Request::builder()
-            .uri("https://www.example.com")
+            .uri("http://www.example.com")
             .version(version)
             .body(Body::from("a random request body"))
             .unwrap()
@@ -313,6 +363,105 @@ mod tests {
         S: ConnectorService<ConnectRequest>,
     {
         HttpConnectRequestAdapter::new(config.try_build_connector(inner).unwrap())
+    }
+
+    #[test]
+    fn fixed_custom_connector_policy_and_explicit_identity() {
+        let input = ConnectRequest::new(HostWithPort::example_domain_https())
+            .with_application_protocol(Protocol::HTTPS);
+        let identifier = HttpConnIdentifier::new();
+        let baseline = identifier.id(&input).unwrap();
+        assert!(baseline.is_reusable());
+        input.extensions.insert(
+            TlsPoolId::builder()
+                .with_verify(&TlsServerVerify(ServerVerifyMode::Disable))
+                .build()
+                .unwrap(),
+        );
+        let customized = identifier.id(&input).unwrap();
+        assert!(customized.is_reusable());
+        assert_ne!(baseline, customized);
+        assert_eq!(customized, identifier.id(&input).unwrap());
+        input.extensions.insert(TlsPoolId::non_reusable());
+        assert!(!identifier.id(&input).unwrap().is_reusable());
+    }
+
+    #[derive(Debug)]
+    struct FixedTunnelProvider;
+
+    impl TlsClientConfigProvider for FixedTunnelProvider {
+        fn pool_id(&self, _: &Extensions) -> Option<TlsPoolId> {
+            None
+        }
+
+        fn authenticates_server(&self, _: &Extensions) -> bool {
+            true
+        }
+    }
+
+    #[tokio::test]
+    async fn request_tls_tunnel_reuses_only_matching_policy() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let inner = service_fn({
+            let attempts = Arc::clone(&attempts);
+            move |input: ConnectRequest| {
+                attempts.fetch_add(1, Ordering::Relaxed);
+                async move {
+                    let conn = ServiceInput::new(());
+                    TlsConnectionReuse::tunnel(FixedTunnelProvider, input.extensions())
+                        .publish(conn.extensions());
+                    Ok::<_, ConnectionError>(EstablishedClientConnection { input, conn })
+                }
+            }
+        });
+        let pool = MultiplexPool::try_new(10, 10).unwrap();
+        // No origin TLS provider is installed.
+        let connector = PooledConnector::new(inner, pool, HttpConnIdentifier::new());
+        let proxy: ProxyAddress = "http://proxy.example:8080".parse().unwrap();
+        for (tunnel, expected_attempts) in [(true, 1), (false, 2), (true, 2), (true, 2), (false, 2)]
+        {
+            let input = ConnectRequest::new(HostWithPort::example_domain_http())
+                .with_application_protocol(Protocol::HTTP);
+            input.extensions.insert(ProxyRoute::Proxy(proxy.clone()));
+            if tunnel {
+                input.extensions.insert(TlsTunnel {
+                    server_identity: Some("proxy.example".parse().unwrap()),
+                    application_protocol: Some(Protocol::HTTP),
+                    alpn: None,
+                });
+            }
+            drop(connector.serve(input).await.unwrap().conn);
+            assert_eq!(attempts.load(Ordering::Relaxed), expected_attempts);
+        }
+    }
+
+    #[test]
+    fn explicit_connector_target_never_reuses_forward_proxy() {
+        use rama_core::Fork as _;
+        let plaintext = ConnectRequest::new(HostWithPort::example_domain_http())
+            .with_application_protocol(rama_net::Protocol::HTTP);
+        let secure = plaintext.fork();
+        secure
+            .extensions()
+            .insert(rama_net::client::ConnectorTarget(
+                "alt.example:443".parse().unwrap(),
+            ));
+        let ids = HttpConnIdentifier::new();
+        assert_ne!(ids.id(&plaintext).unwrap(), ids.id(&secure).unwrap());
+        let proxy: ProxyAddress = "http://proxy.example:8080".parse().unwrap();
+        plaintext
+            .extensions()
+            .insert(ProxyRoute::Proxy(proxy.clone()));
+        secure.extensions().insert(ProxyRoute::Proxy(proxy));
+        assert_eq!(
+            http_proxy_mode_requirement(&plaintext),
+            Some(HttpProxyModeRequirement::Forward)
+        );
+        assert_eq!(
+            http_proxy_mode_requirement(&secure),
+            Some(HttpProxyModeRequirement::Tunnel)
+        );
+        assert_ne!(ids.id(&plaintext).unwrap(), ids.id(&secure).unwrap());
     }
 
     #[test]
@@ -368,6 +517,94 @@ mod tests {
     }
 
     #[test]
+    fn http_connection_id_preserves_the_selected_physical_transport() {
+        for proxy in [
+            None,
+            Some("http://proxy.example:8080"),
+            Some("https://proxy.example:8443"),
+            Some("socks5://proxy.example:1080"),
+        ] {
+            for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
+                for logical in [
+                    None,
+                    Some(TransportProtocol::Tcp),
+                    Some(TransportProtocol::Udp),
+                ] {
+                    for physical in [
+                        None,
+                        Some(TransportProtocol::Tcp),
+                        Some(TransportProtocol::Udp),
+                    ] {
+                        let input = ConnectRequest::new(HostWithPort::example_domain_http())
+                            .with_application_protocol(Protocol::HTTP)
+                            .maybe_with_transport_protocol(logical);
+                        input.extensions.insert(HttpRequestVersion(version));
+                        if let Some(proxy) = proxy {
+                            input
+                                .extensions
+                                .insert(ProxyRoute::Proxy(proxy.parse().unwrap()));
+                        }
+                        if let Some(physical) = physical {
+                            input
+                                .extensions
+                                .insert(ConnectorTransportProtocol(physical));
+                        }
+
+                        let id = HttpConnIdentifier::new().id(&input).unwrap();
+                        assert_eq!(
+                            id.network.connector_transport_protocol,
+                            physical.or(logical)
+                        );
+                        assert_eq!(id.network, BasicConnIdentifier::new().id(&input).unwrap());
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn h3_proxy_identity_is_separate_even_with_the_same_physical_transport() {
+        let request = || {
+            let input = ConnectRequest::new(HostWithPort::example_domain_http())
+                .with_application_protocol(Protocol::HTTP)
+                .with_transport_protocol(TransportProtocol::Tcp);
+            input.extensions.insert(ProxyRoute::Proxy(
+                "https://proxy.example:8443".parse().unwrap(),
+            ));
+            input
+        };
+        let ordinary = request();
+        ordinary
+            .extensions
+            .insert(HttpRequestVersion(Version::HTTP_2));
+        let baseline = HttpConnIdentifier::new().id(&ordinary).unwrap();
+
+        for (target, fallback, requested) in [
+            (Some(Version::HTTP_3), None, Version::HTTP_11),
+            (None, Some(Version::HTTP_3), Version::HTTP_11),
+            (None, None, Version::HTTP_3),
+        ] {
+            let input = request();
+            input.extensions.insert(HttpRequestVersion(requested));
+            if let Some(target) = target {
+                input.extensions.insert(TargetHttpVersion(target));
+            }
+            if let Some(fallback) = fallback {
+                input.extensions.insert(FallbackHttpVersion(fallback));
+            }
+
+            let id = HttpConnIdentifier::new().id(&input).unwrap();
+            assert_eq!(id.network, baseline.network);
+            assert_eq!(id.required_version, Some(Version::HTTP_3));
+            assert_ne!(id, baseline);
+
+            // An explicit target takes precedence over request and fallback versions.
+            input.extensions.insert(TargetHttpVersion(Version::HTTP_2));
+            assert_eq!(HttpConnIdentifier::new().id(&input).unwrap(), baseline);
+        }
+    }
+
+    #[test]
     fn http_connection_id_uses_only_physical_version_requirements() {
         let secure_proxy: ProxyAddress = "https://proxy.example:8443".parse().unwrap();
         let secure_forward_ids = [
@@ -386,7 +623,8 @@ mod tests {
             HttpConnIdentifier::new().id(&input).unwrap()
         });
         assert_eq!(secure_forward_ids[0], secure_forward_ids[1]);
-        assert_eq!(secure_forward_ids[1], secure_forward_ids[2]);
+        // H3 retains its HTTP requirement independently of the physical transport.
+        assert_ne!(secure_forward_ids[1], secure_forward_ids[2]);
 
         let explicit_ids = [Version::HTTP_11, Version::HTTP_2].map(|version| {
             let input = ConnectRequest::new(HostWithPort::example_domain_https())
@@ -1068,6 +1306,7 @@ mod tests {
         let req = || {
             let req = create_test_request(Version::HTTP_11);
             req.extensions().insert(proxy.clone());
+            req.extensions().insert(PlaintextHttpProxyMode::Tunnel);
             req
         };
 

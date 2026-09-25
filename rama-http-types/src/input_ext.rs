@@ -42,9 +42,20 @@ fn try_get_sni_from_secure_transport(_: &SecureTransport) -> Option<Domain> {
 
 /// Resolve the routing authority of `parts`, walking the
 /// uri → TLS SNI → `Forwarded` → `Host`-header fallback chain.
+/// Asterisk targets prefer a valid explicit `Host` header over TLS SNI and `Forwarded`.
 /// `None` when none of them yields a host.
 pub(crate) fn authority_from_http_parts(parts: &impl HttpRequestParts) -> Option<HostWithOptPort> {
     let uri = parts.uri();
+    // An asterisk target has no URI authority. Preserve its explicit HTTP
+    // authority when forwarding instead of substituting ingress SNI/Forwarded.
+    if uri.is_asterisk()
+        && let Some(authority) = parts
+            .headers()
+            .get(crate::header::HOST)
+            .and_then(|value| HostWithOptPort::try_from(value.as_bytes()).ok())
+    {
+        return Some(authority);
+    }
 
     let protocol = protocol_from_uri_or_extensions(parts.extensions(), uri);
     let default_port = uri
@@ -259,6 +270,100 @@ mod tests {
         client::ConnectorTarget,
         forwarded::{Forwarded, ForwardedElement, ForwardedVersion, NodeId},
     };
+
+    #[test]
+    fn asterisk_authority_preserves_host_and_optional_port_over_forwarded() {
+        for host in ["target.test", "target.test:8443", "[::1]", "[::1]:9443"] {
+            let request = Request::builder()
+                .method(crate::Method::OPTIONS)
+                .uri("*")
+                .header(crate::header::HOST, host)
+                .extension(Protocol::HTTPS)
+                .extension(Forwarded::try_from(r#"host="ingress.test:8080";proto=http"#).unwrap())
+                .body(())
+                .unwrap();
+            let expected = Some(HostWithOptPort::try_from(host).unwrap());
+            assert_eq!(request.authority(), expected, "Host: {host}");
+            let (parts, ()) = request.into_parts();
+            assert_eq!(parts.authority(), expected, "Host: {host}");
+        }
+    }
+
+    #[test]
+    fn asterisk_authority_falls_back_when_host_is_missing_or_invalid() {
+        for host in [None, Some("invalid host")] {
+            for forwarded in [None, Some(r#"host="ingress.test:8080""#)] {
+                let mut builder = Request::builder().uri("*");
+                if let Some(host) = host {
+                    builder = builder.header(crate::header::HOST, host);
+                }
+                if let Some(forwarded) = forwarded {
+                    builder = builder.extension(Forwarded::try_from(forwarded).unwrap());
+                }
+                let request = builder.body(()).unwrap();
+                let expected =
+                    forwarded.map(|_| HostWithOptPort::try_from("ingress.test:8080").unwrap());
+                assert_eq!(request.authority(), expected);
+                let (parts, ()) = request.into_parts();
+                assert_eq!(parts.authority(), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn ordinary_authority_keeps_uri_then_forwarded_then_host_precedence() {
+        for (uri, expected) in [
+            ("https://uri.test/path", "uri.test:443"),
+            ("/path", "ingress.test:8080"),
+        ] {
+            let request = Request::builder()
+                .uri(uri)
+                .header(crate::header::HOST, "target.test:9443")
+                .extension(Forwarded::try_from(r#"host="ingress.test:8080""#).unwrap())
+                .body(())
+                .unwrap();
+            let expected = Some(HostWithOptPort::try_from(expected).unwrap());
+            assert_eq!(request.authority(), expected);
+            let (parts, ()) = request.into_parts();
+            assert_eq!(parts.authority(), expected);
+        }
+    }
+
+    #[cfg(feature = "tls")]
+    #[test]
+    fn asterisk_host_precedes_sni_but_other_targets_keep_sni_precedence() {
+        use rama_tls::{
+            ProtocolVersion,
+            client::{ClientHello, ClientHelloExtension},
+        };
+
+        for (uri, host, expected) in [
+            ("*", "target.test", "target.test"),
+            ("*", "target.test:9443", "target.test:9443"),
+            ("*", "invalid host", "sni.test:443"),
+            ("/path", "target.test", "sni.test:443"),
+            ("https://uri.test/path", "target.test", "uri.test:443"),
+        ] {
+            let request = Request::builder()
+                .uri(uri)
+                .header(crate::header::HOST, host)
+                .extension(SecureTransport::with_client_hello(ClientHello::new(
+                    ProtocolVersion::TLSv1_3,
+                    Vec::new(),
+                    Vec::new(),
+                    vec![ClientHelloExtension::ServerName(Some(Domain::from_static(
+                        "sni.test",
+                    )))],
+                )))
+                .extension(Forwarded::try_from(r#"host="ingress.test:8080""#).unwrap())
+                .body(())
+                .unwrap();
+            let expected = Some(HostWithOptPort::try_from(expected).unwrap());
+            assert_eq!(request.authority(), expected, "URI: {uri}, Host: {host}");
+            let (parts, ()) = request.into_parts();
+            assert_eq!(parts.authority(), expected, "URI: {uri}, Host: {host}");
+        }
+    }
 
     #[test]
     fn logical_authority_defaults_and_connector_overrides_work_on_parts() {

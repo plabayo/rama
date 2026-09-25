@@ -411,6 +411,9 @@ standard_headers! {
     /// Advertises the availability of alternate services to clients.
     (AltSvc, ALT_SVC, b"alt-svc");
 
+    /// Identifies the alternative service used for a request.
+    (AltUsed, ALT_USED, b"alt-used");
+
     /// Communicates information after a client's authentication credentials
     /// have been accepted.
     ///
@@ -826,6 +829,9 @@ standard_headers! {
     /// used for backwards compatibility with HTTP/1.0 caches where the
     /// Cache-Control HTTP/1.1 header is not yet present.
     (Pragma, PRAGMA, b"pragma");
+
+    /// Communicates HTTP urgency and incremental-delivery preference.
+    (Priority, PRIORITY, b"priority");
 
     /// Defines the authentication method that should be used to gain access to
     /// a proxy.
@@ -1299,7 +1305,7 @@ const HEADER_CHARS_H2: [u8; 256] = [
         0,     0,     0,     0,     0,     0,     0,     0,     0,     0, //   x
         0,     0,     0,     0,     0,     0,     0,     0,     0,     0, //  1x
         0,     0,     0,     0,     0,     0,     0,     0,     0,     0, //  2x
-        0,     0,     0,  b'!',  b'"',  b'#',  b'$',  b'%',  b'&', b'\'', //  3x
+        0,     0,     0,  b'!',     0,  b'#',  b'$',  b'%',  b'&', b'\'', //  3x
         0,     0,  b'*',  b'+',     0,  b'-',  b'.',     0,  b'0',  b'1', //  4x
      b'2',  b'3',  b'4',  b'5',  b'6',  b'7',  b'8',  b'9',     0,     0, //  5x
         0,     0,     0,     0,     0,     0,     0,     0,     0,     0, //  6x
@@ -1428,7 +1434,7 @@ impl HeaderName {
     /// assert_eq!(CONTENT_LENGTH, hdr);
     ///
     /// // Parsing a header that contains uppercase characters
-    /// assert!(HeaderName::from_lowercase(b"Content-Length").is_err());
+    /// HeaderName::from_lowercase(b"Content-Length").unwrap_err();
     /// ```
     pub fn from_lowercase(src: &[u8]) -> Result<HeaderName, InvalidHeaderName> {
         let mut buf = uninit_u8_array();
@@ -1455,6 +1461,26 @@ impl HeaderName {
                 // version) is valid UTF-8.
                 let val = unsafe { ByteStr::from_utf8_unchecked(buf) };
                 Ok(Custom(val).into())
+            }
+        }
+    }
+
+    /// Decode a lowercase HTTP/2 or HTTP/3 name, retaining its shared storage.
+    ///
+    /// Standard names use their static representation. Custom names take ownership
+    /// of `src` without copying; invalid or uppercase bytes are rejected.
+    pub fn from_lowercase_bytes(src: Bytes) -> Result<Self, InvalidHeaderName> {
+        let mut scratch = uninit_u8_array();
+        match parse_hdr(&src, &mut scratch, &HEADER_CHARS_H2)?.inner {
+            Repr::Standard(standard) => Ok(standard.into()),
+            Repr::Custom(MaybeLower { buf, lower }) => {
+                if !lower && buf.iter().any(|byte| HEADER_CHARS_H2[*byte as usize] == 0) {
+                    return Err(InvalidHeaderName::new());
+                }
+                // SAFETY: parse_hdr or the check above validated every byte as
+                // an ASCII lowercase token character, hence valid UTF-8.
+                let name = unsafe { ByteStr::from_utf8_unchecked(src) };
+                Ok(Custom(name).into())
             }
         }
     }
@@ -1659,7 +1685,7 @@ impl FromStr for HeaderName {
     type Err = InvalidHeaderName;
 
     fn from_str(s: &str) -> Result<HeaderName, InvalidHeaderName> {
-        HeaderName::from_bytes(s.as_bytes()).map_err(|_| InvalidHeaderName { _priv: () })
+        HeaderName::from_bytes(s.as_bytes()).map_err(|_error| InvalidHeaderName { _priv: () })
     }
 }
 
@@ -2526,6 +2552,42 @@ mod tests {
     #[test]
     fn test_all_tokens() {
         HeaderName::from_static("!#$%&'*+-.^_`|~0123456789abcdefghijklmnopqrstuvwxyz");
+    }
+
+    #[test]
+    fn header_name_tables_match_rfc9110_tokens() {
+        for byte in 0..=u8::MAX {
+            let token = byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte);
+            for len in [1, SCRATCH_BUF_SIZE + 1] {
+                let mut name = vec![b'x'; len];
+                name[len - 1] = byte;
+                assert_eq!(HeaderName::from_bytes(&name).is_ok(), token, "byte {byte}");
+                assert_eq!(
+                    HeaderName::from_lowercase(&name).is_ok(),
+                    token && !byte.is_ascii_uppercase(),
+                    "byte {byte}"
+                );
+                assert_eq!(
+                    HeaderName::from_lowercase_bytes(Bytes::from(name)).is_ok(),
+                    token && !byte.is_ascii_uppercase(),
+                    "byte {byte}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn lowercase_shared_custom_name_keeps_its_storage() {
+        let bytes = Bytes::from(String::from("x-shared-custom-header"));
+        let pointer = bytes.as_ptr();
+        let name = HeaderName::from_lowercase_bytes(bytes).unwrap();
+        assert_eq!(name.as_str(), "x-shared-custom-header");
+        assert_eq!(name.as_str().as_ptr(), pointer);
+        assert_eq!(
+            HeaderName::from_lowercase_bytes(Bytes::from_static(b"content-length")).unwrap(),
+            CONTENT_LENGTH
+        );
+        HeaderName::from_lowercase_bytes(Bytes::new()).unwrap_err();
     }
 
     #[test]

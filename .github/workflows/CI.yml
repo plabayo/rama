@@ -301,24 +301,33 @@ jobs:
           # write bounces) and its failed entries evict useful macOS/Linux ones.
           sccache: ${{ startsWith(matrix.os, 'windows') && 'false' || 'true' }}
       - name: Build run tests (cargo test)
-        run: cargo nextest run --all-features --workspace --no-run
+        id: build_tests_all
+        run: cargo nextest run --profile ci --all-features --workspace --no-run
       - name: Run tests (cargo test)
-        run: cargo nextest run --all-features --workspace
+        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' }}
+        run: cargo nextest run --profile ci --all-features --workspace
       - name: Build run tests (--no-default--features)
-        run: cargo nextest run --no-default-features --workspace --no-run
+        id: build_tests_minimal
+        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' }}
+        run: cargo nextest run --profile ci --no-default-features --workspace --no-run
       - name: Run tests (--no-default--features)
-        run: cargo nextest run --no-default-features --workspace
+        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && steps.build_tests_minimal.outcome == 'success' }}
+        run: cargo nextest run --profile ci --no-default-features --workspace
       - name: Run crypto backend tests
+        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && steps.build_tests_minimal.outcome == 'success' }}
         shell: bash
         run: bash scripts/test-crypto.sh all --profile ci
       - name: Run doc tests (cargo test)
-        run: cargo test --doc --all-features --workspace
+        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && steps.build_tests_minimal.outcome == 'success' }}
+        run: cargo test --doc --all-features --workspace --no-fail-fast
       - name: Run example tests (cargo test)
-        run: |
-          cargo nextest run --all-features --examples --workspace --no-tests=pass
-          cargo nextest run --all-features --bins --package rama-examples --no-tests=pass
+        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && steps.build_tests_minimal.outcome == 'success' }}
+        run: cargo nextest run --profile ci --all-features --examples --workspace --no-tests=pass
+      - name: Run example binary tests
+        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && steps.build_tests_minimal.outcome == 'success' }}
+        run: cargo nextest run --profile ci --all-features --bins --package rama-examples --no-tests=pass
       - name: Run ignored tests
-        if: matrix.os == 'ubuntu-latest' || matrix.os == 'macos-15'
+        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && steps.build_tests_minimal.outcome == 'success' && (matrix.os == 'ubuntu-latest' || matrix.os == 'macos-15') }}
         timeout-minutes: ${{ matrix.os == 'macos-15' && 90 || 60 }}
         shell: bash
         run: |
@@ -338,7 +347,7 @@ jobs:
           time cargo nextest run --profile ci --all-features --workspace --run-ignored=only
       # The only ignored test whose interrupt path is Windows-specific.
       - name: Run the relay interrupt test
-        if: startsWith(matrix.os, 'windows')
+        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && steps.build_tests_minimal.outcome == 'success' && (startsWith(matrix.os, 'windows')) }}
         timeout-minutes: 60
         run: cargo nextest run --profile ci --all-features --package rama-examples --test integration --run-ignored=only -E 'test(an_interrupted_relay_stops_its_peers_and_exits)'
       # MITM revocation gate. Linux: hermetic staple matrix (curl --cert-status,
@@ -349,12 +358,12 @@ jobs:
       # where schannel enforces revocation (the customer scenario libcurl +
       # schannel can't resolve via a staple).
       - name: MITM revocation gate (curl + openssl + cargo)
-        if: matrix.os == 'ubuntu-latest'
+        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && steps.build_tests_minimal.outcome == 'success' && (matrix.os == 'ubuntu-latest') }}
         env:
           OCSP_GATE_REQUIRE: "1"
         run: bash scripts/ocsp-relay-gate.sh
       - name: MITM revocation gate (cargo / schannel)
-        if: matrix.os == 'windows-latest'
+        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && steps.build_tests_minimal.outcome == 'success' && (matrix.os == 'windows-latest') }}
         shell: pwsh
         run: ./scripts/ocsp-relay-gate.ps1
       - name: sccache stats
@@ -694,6 +703,14 @@ jobs:
       - name: QUIC examples (boring)
         if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'boring') }}
         run: cargo test -p rama-examples --no-default-features --features quic,boring --test integration quic_ --locked -- --include-ignored
+      - name: HTTP/3 streaming and pool integration (boring)
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'boring') }}
+        run: >-
+          cargo test -p rama-examples --no-default-features --features http-full,boring --test integration http3_client_server:: --locked -- --include-ignored
+      - name: HTTP client protocol and TLS reuse behavior (boring)
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'boring') }}
+        run: >-
+          cargo test -p rama --no-default-features --features http-full,boring --test http-core http_service:: --locked
       - name: Concurrent QUIC transfers (boring)
         if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'boring') }}
         run: cargo test -p rama-quic --no-default-features --features boring --test many_connections --locked -- --include-ignored
@@ -737,6 +754,14 @@ jobs:
       - name: QUIC examples (rustls-ring)
         if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-ring') }}
         run: cargo test -p rama-examples --no-default-features --features quic,rustls,ring --test integration quic_ --locked -- --include-ignored
+      - name: HTTP/3 streaming and pool integration (rustls-ring)
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-ring') }}
+        run: >-
+          cargo test -p rama-examples --no-default-features --features http-full,rustls,ring --test integration http3_client_server:: --locked -- --include-ignored
+      - name: HTTP client protocol and TLS reuse behavior (rustls-ring)
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-ring') }}
+        run: >-
+          cargo test -p rama --no-default-features --features http-full,rustls,ring --test http-core http_service:: --locked
       - name: Concurrent QUIC transfers (rustls-ring)
         if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-ring') }}
         run: cargo test -p rama-quic --no-default-features --features rustls,ring --test many_connections --locked -- --include-ignored
@@ -780,6 +805,14 @@ jobs:
       - name: QUIC examples (rustls-aws-lc)
         if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-aws-lc') }}
         run: cargo test -p rama-examples --no-default-features --features quic,rustls,aws-lc --test integration quic_ --locked -- --include-ignored
+      - name: HTTP/3 streaming and pool integration (rustls-aws-lc)
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-aws-lc') }}
+        run: >-
+          cargo test -p rama-examples --no-default-features --features http-full,rustls,aws-lc --test integration http3_client_server:: --locked -- --include-ignored
+      - name: HTTP client protocol and TLS reuse behavior (rustls-aws-lc)
+        if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-aws-lc') }}
+        run: >-
+          cargo test -p rama --no-default-features --features http-full,rustls,aws-lc --test http-core http_service:: --locked
       - name: Concurrent QUIC transfers (rustls-aws-lc)
         if: ${{ !cancelled() && (matrix.backends == 'all' || matrix.backends == 'rustls-aws-lc') }}
         run: cargo test -p rama-quic --no-default-features --features rustls,aws-lc --test many_connections --locked -- --include-ignored
@@ -876,9 +909,19 @@ jobs:
           persist-credentials: false
       - name: Install packet analysis tools
         run: |
-          sudo add-apt-repository --yes ppa:wireshark-dev/stable
-          sudo apt-get update
-          sudo env DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends tshark python3-venv
+          # Launchpad metadata requests can time out before apt runs. Retry only
+          # package setup; test failures below must still fail the job.
+          for attempt in 1 2 3; do
+            if sudo timeout 180s add-apt-repository --yes --no-update ppa:wireshark-dev/stable; then
+              break
+            fi
+            if [[ "$attempt" == 3 ]]; then
+              exit 1
+            fi
+            sleep 5
+          done
+          sudo apt-get -o Acquire::Retries=3 update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=3 install --yes --no-install-recommends tshark python3-venv
           sudo modprobe ip6table_filter
           tshark --version
           docker compose version
@@ -977,6 +1020,11 @@ jobs:
         with:
           tool: cargo-zigbuild
       - name: Build Workspace
+        env:
+          # Use the same target-aware native tools as the GNU cross-builds.
+          # CMake's failed Zig ABI probe can select 32-bit ARM assembly.
+          AR: zig ar
+          AWS_LC_SYS_CMAKE_BUILDER: "0"
         run: |
           cargo zigbuild -p rama -p rama-cli --target ${{ matrix.target }} --all-features
       - name: Setup Docker buildx
@@ -1198,7 +1246,7 @@ jobs:
       - name: Run Loom tests (rama-utils)
         run: |
           RUSTFLAGS="--cfg loom -Dwarnings" \
-            cargo nextest run --all-features -p rama-utils
+            cargo nextest run --profile ci --all-features -p rama-utils
 
   cargo-hack:
     permissions:
@@ -1283,7 +1331,7 @@ jobs:
           resource_monitor=$!
           trap 'kill "$resource_monitor" 2>/dev/null || true; wait "$resource_monitor" 2>/dev/null || true' EXIT
           # Concurrent release compilations can exhaust this runner's RAM and swap.
-          /usr/bin/time -v cargo nextest run --build-jobs 2 --profile ci --all-features --release --workspace --run-ignored=only
+          /usr/bin/time -v cargo nextest run --profile ci --build-jobs 2 --all-features --release --workspace --run-ignored=only
 
   test-ws-autobahn-server:
     permissions:

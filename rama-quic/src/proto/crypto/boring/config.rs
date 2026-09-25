@@ -15,7 +15,10 @@ use rama_tls_boring::{
     client::{BoringTlsConnectorConfig, TlsConnectorContext, TlsConnectorContextBuilder},
     server::{BoringTlsAcceptorConfig, BoringTlsAuth, TlsAcceptorData},
 };
-use std::{collections::VecDeque, sync::Arc};
+use std::{
+    collections::VecDeque,
+    sync::{Arc, LazyLock},
+};
 
 use super::{
     packet,
@@ -46,6 +49,11 @@ struct TicketState {
     version: Arc<Mutex<Version>>,
     params: Arc<Mutex<Option<TransportParameters>>>,
 }
+
+// BoringSSL ex-data indices live for the process lifetime. Register one slot
+// for this type; ticket contents and their caches remain connection/config local.
+static TICKET_INDEX: LazyLock<Result<Index<Ssl, TicketState>, ErrorStack>> =
+    LazyLock::new(Ssl::new_ex_index::<TicketState>);
 
 pub(crate) struct QuicClientConfig {
     context: TlsConnectorContext,
@@ -105,8 +113,9 @@ impl QuicClientConfig {
             .map_err(|error| TlsConfigError::InvalidConfiguration(error.into()))?;
         let tickets: Arc<Mutex<VecDeque<Ticket>>> = Arc::default();
         let callback_tickets = tickets.clone();
-        let ticket_index = Ssl::new_ex_index::<TicketState>()
-            .map_err(|error| TlsConfigError::InvalidConfiguration(error.into()))?;
+        let ticket_index = *TICKET_INDEX
+            .as_ref()
+            .map_err(|error| TlsConfigError::InvalidConfiguration(error.clone().into()))?;
         builder
             .config
             .set_session_cache_mode(SslSessionCacheMode::CLIENT);
@@ -331,5 +340,23 @@ impl QuicServerConfig {
             None,
             Arc::new(Mutex::new(None)),
         )?))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rama_net::tls::ApplicationProtocol;
+
+    #[test]
+    fn repeated_client_configs_reuse_the_process_ticket_slot() {
+        let config =
+            TlsClientConfig::new().with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
+        let first = QuicClientConfig::from_rama(&config, TlsOptions::default()).unwrap();
+        for _ in 0..32 {
+            let next = QuicClientConfig::from_rama(&config, TlsOptions::default()).unwrap();
+            assert_eq!(next.ticket_index.as_raw(), first.ticket_index.as_raw());
+            assert!(!Arc::ptr_eq(&next.tickets, &first.tickets));
+        }
     }
 }

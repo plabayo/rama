@@ -1,12 +1,27 @@
-//! HTTP/3 connection-scoped codecs (RFC 9114, RFC 9204).
+//! HTTP/3 client/server engine and connection-scoped codecs (RFC 9114, RFC 9204).
 //!
 //! This module holds the stateful pieces that sit above the pure wire vocabulary in
 //! [`rama_http_types::proto::h3`]: the bounded incremental frame reader and the stateful QPACK
 //! encoder/decoder with their dynamic tables and blocked-section accounting.
 //!
-//! Connection, stream and async transport driving are not here — they arrive with the H3 engine in
-//! a later change. These codecs are synchronous: bytes in, typed units (or a "need more" signal)
-//! out.
+//! [`client`] and [`server`] expose Rama requests, responses and the common
+//! [`crate::body::Incoming`] body. Run their accompanying [`connection::Driver`]
+//! concurrently to drive control and QPACK streams independently of application bodies.
+//! The underlying frame and compression codecs also remain usable synchronously.
+//!
+//! Received field lines retain their order, duplicates, values and sensitivity in
+//! the common header map; encoders use its ordered iterator. Names must be lowercase
+//! on the H3 wire. The shared [`rama_http_types::proto::h3::PseudoHeaderOrder`] and
+//! [`rama_http_types::proto::h3::PseudoHeaderSensitivity`] extensions retain pseudo-field
+//! ordering and never-index requirements across forwarding and message edits.
+//! Split Cookie lines stay separate in this H3 API, as in H2. Before passing them to
+//! a non-H2/H3 context (including a generic server application), coalesce them using
+//! `rama_http::layer::remove_header::coalesce_cookie_headers`; the HTTP/1 version
+//! adapter does this automatically.
+//!
+//! This is HTTP message forwarding, not a wire capture/replay API: URI serialization
+//! can normalize pseudo-field values, and connection settings, unknown frames, frame
+//! boundaries and QPACK representations are not reproduced on another connection.
 //!
 //! The frame decoder accepts owned [`rama_core::bytes::Bytes`] through
 //! [`frame::FrameDecoder::feed_bytes`]. Drain `poll` until it needs more input before feeding the
@@ -27,3 +42,35 @@
 
 pub mod frame;
 pub mod qpack;
+
+mod control;
+mod cooperative;
+mod error;
+pub use error::Error;
+
+mod quic;
+
+mod headers;
+
+pub mod connection;
+
+pub(crate) mod body;
+mod stream;
+
+pub mod client;
+
+pub mod server;
+
+#[cfg(test)]
+mod tests;
+
+mod priority;
+pub use priority::PriorityHandle;
+
+mod upgrade;
+
+pub mod push;
+
+#[cfg(feature = "fuzz-utils")]
+#[doc(hidden)]
+pub mod fuzz;

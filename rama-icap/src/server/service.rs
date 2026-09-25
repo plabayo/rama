@@ -1435,7 +1435,7 @@ mod tests {
                 // keeps the rest backpressured until this future is dropped.
                 {
                     let continuation = request.body_mut().continue_preview();
-                    tokio::pin!(continuation);
+                    let mut continuation = std::pin::pin!(continuation);
                     tokio::select! {
                         biased;
                         result = &mut continuation => {

@@ -151,7 +151,7 @@ enum_builder! {
 
 impl From<&BoxError> for ReplyKind {
     fn from(err: &BoxError) -> Self {
-        for err in error_chain(err.as_ref(), 64) {
+        for err in error_chain(err.as_ref()) {
             if let Some(err) = err.downcast_ref::<ConnectionError>()
                 && err.kind() == ConnectionErrorKind::Timeout
             {

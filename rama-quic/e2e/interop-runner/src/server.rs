@@ -11,7 +11,7 @@ use rama::{
     graceful::{Shutdown, default_signal},
     net::{socket::SocketOptions, tls::ApplicationProtocol},
     quic::{
-        Connection, Endpoint, RecvStream, SendStream, ServerConfig,
+        Connection, Endpoint, RecvStream, SendStream,
         proto::version::{ServerVersionPolicy, Version, VersionPreference},
     },
     rt::Executor,
@@ -79,7 +79,8 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
         .with_alpn(smallvec![ApplicationProtocol::from(ALPN)])
         .with_keylog(KeyLogIntent::Environment)
         .with_server_auth(auth);
-    let mut config = ServerConfig::try_from_rama_tls(&tls, crate::tls_options())?
+    let mut config = crate::server_tls_provider()
+        .server_config(&tls, crate::tls_options())?
         .with_transport_config(transport(executor.clone(), "server").await?);
     if testcase == TestCase::V2 {
         // Move a client that offers v2 to it (RFC 9368 §2.3).
@@ -103,8 +104,7 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
         .context("bind interop server")?;
     tracing::info!(address = %endpoint.local_addr()?, "interop server listening");
     let mut connections = JoinSet::new();
-    let stopping = default_signal();
-    tokio::pin!(stopping);
+    let mut stopping = std::pin::pin!(default_signal());
     let outcome = loop {
         tokio::select! {
             _ = &mut stopping => break Ok(()),

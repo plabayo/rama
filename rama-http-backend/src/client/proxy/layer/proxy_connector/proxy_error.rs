@@ -97,7 +97,7 @@ fn classify_handshake_error(error: &(dyn std::error::Error + 'static)) -> Connec
     // Unknown handshake failures must not permit implicit DIRECT fallback.
     // Inspect causes before accepting a closed/canceled outer HTTP operation:
     // an H2 protocol error may be wrapped in just such an operation.
-    for error in error_chain_with(error, 32, handshake_source) {
+    for error in error_chain_with(error, handshake_source) {
         if let Some(http) = error.downcast_ref::<rama_http_core::Error>() {
             if http.is_parse() || http.is_user() {
                 return ConnectionErrorKind::Protocol;
@@ -310,8 +310,9 @@ mod tests {
     #[test]
     fn handshake_classification_bounds_hidden_causes() {
         for (depth, expected) in [
-            (32, ConnectionErrorKind::Protocol),
-            (33, ConnectionErrorKind::Unavailable),
+            (33, ConnectionErrorKind::Protocol),
+            (64, ConnectionErrorKind::Protocol),
+            (65, ConnectionErrorKind::Unavailable),
         ] {
             let mut error = std::io::Error::from(std::io::ErrorKind::InvalidData);
             for _ in 1..depth {

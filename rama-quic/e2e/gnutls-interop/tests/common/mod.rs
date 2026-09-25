@@ -21,7 +21,7 @@ pub async fn within<T>(future: impl IntoFuture<Output = T>) -> T {
 }
 
 pub fn localhost() -> SocketAddr {
-    "127.0.0.1:0".parse().unwrap()
+    SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 0))
 }
 
 pub fn payload(seed: u8, size: usize) -> Vec<u8> {

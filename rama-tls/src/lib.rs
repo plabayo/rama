@@ -21,21 +21,12 @@
 
 use std::borrow::Cow;
 
-use rama_core::extensions::Extension;
+use rama_core::extensions::{Extension, Extensions};
 use rama_net::Protocol;
 
 pub mod alpn;
 mod enums;
 
-/// Select a TLS implementation independently of the enabled implementations.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum TlsBackend {
-    /// Use the caller's documented default among the available implementations.
-    #[default]
-    Auto,
-    Rustls,
-    Boring,
-}
 pub use enums::{
     CertificateCompressionAlgorithm, CipherSuite, CompressionAlgorithm, ECPointFormat, ExtensionId,
     ProtocolVersion, SignatureScheme, SupportedGroup,
@@ -57,11 +48,11 @@ pub struct TlsKeyLog(pub KeyLogIntent);
 
 /// Supported protocol versions, as a list (backends derive min/max as needed,
 /// preserving any GREASE entries in the wire list).
-#[derive(Debug, Clone, Extension)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Extension)]
 #[extension(tags(tls))]
 pub struct TlsSupportedVersions(pub Vec<ProtocolVersion>);
 
-#[derive(Debug, Clone, Extension)]
+#[derive(Debug, Clone, PartialEq, Eq, Extension)]
 #[extension(tags(tls))]
 /// Requests TLS from a tunnel connector with proxy-scoped identity and ALPN.
 ///
@@ -84,6 +75,30 @@ pub struct TlsTunnel {
     /// `Some(TlsAlpn::empty())` explicitly omits ALPN.
     pub alpn: Option<rama_net::tls::TlsAlpn>,
 }
+
+impl TlsTunnel {
+    /// Effective tunnel settings, with routing policy taking precedence over
+    /// request settings. Keep the request value intact so pools can compare
+    /// subsequent requests before routing runs again.
+    pub fn from_extensions(extensions: &Extensions) -> Option<&Self> {
+        extensions
+            .get_ref::<TlsTunnelRoute>()
+            .map(|route| &route.0)
+            .or_else(|| extensions.get_ref::<Self>())
+    }
+}
+
+/// TLS tunnel settings selected by a routing connector for an intermediary.
+///
+/// Route-derived settings take precedence over request [`TlsTunnel`] settings.
+/// Keep them separate: connection pools see request settings before routing,
+/// while the route key and fixed connector policy identify these settings.
+/// Custom tunnel connectors should use [`TlsTunnel::from_extensions`] to honor
+/// both sources. This extension belongs to the connection attempt, not to the
+/// logical origin's TLS policy.
+#[derive(Debug, Clone, PartialEq, Eq, Extension)]
+#[extension(tags(tls))]
+pub struct TlsTunnelRoute(pub TlsTunnel);
 
 /// Whether a tunnel connector should use plaintext or TLS.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,9 +127,29 @@ pub fn resolve_tls_tunnel<'a>(
 
 #[cfg(test)]
 mod tunnel_tests {
-    use rama_net::address::Host;
+    use rama_net::{address::Host, tls::TlsAlpn};
 
     use super::*;
+
+    #[test]
+    fn route_tunnel_policy_preserves_request_settings() {
+        let extensions = Extensions::new();
+        let request = TlsTunnel {
+            server_identity: Some(Host::from_static("request.example")),
+            application_protocol: Some(Protocol::HTTPS),
+            alpn: None,
+        };
+        extensions.insert(request.clone());
+        assert_eq!(TlsTunnel::from_extensions(&extensions), Some(&request));
+        let route = TlsTunnel {
+            server_identity: Some(Host::from_static("proxy.example")),
+            application_protocol: Some(Protocol::HTTPS),
+            alpn: Some(TlsAlpn::http_2()),
+        };
+        extensions.insert(TlsTunnelRoute(route.clone()));
+        assert_eq!(TlsTunnel::from_extensions(&extensions), Some(&route));
+        assert_eq!(extensions.get_ref::<TlsTunnel>(), Some(&request));
+    }
 
     #[test]
     fn hardcoded_identity_enables_tls_without_context() {

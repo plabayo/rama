@@ -249,6 +249,17 @@ impl Builder {
     }
 
     rama_utils::macros::generate_set_and_with! {
+        /// Enable bounded ALTSVC frame emission through request extensions.
+        ///
+        /// Disabled by default. Ordinary response Alt-Svc headers do not need
+        /// this option, and client-side frame observation is configured separately.
+        pub fn alt_svc(mut self, enabled: bool) -> Self {
+            self.h2_builder.send_alt_svc = enabled;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
         /// Enables the [extended CONNECT protocol].
         ///
         /// [extended CONNECT protocol]: https://datatracker.ietf.org/doc/html/rfc8441#section-4

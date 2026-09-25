@@ -135,6 +135,7 @@ jobs:
           env-vars: RUST_TOOLCHAIN
           key: ${{ matrix.os }}-${{ matrix.toolchain }}-test-${{ matrix.profile }}
       - name: Build tests (${{ matrix.profile }})
+        id: build_tests
         # A cold macOS release build already took 108m on a successful run.
         timeout-minutes: ${{ matrix.os == 'macos-latest' && matrix.profile == 'release' && 150 || 90 }}
         shell: bash
@@ -173,15 +174,17 @@ jobs:
           esac
           resource_monitor=$!
           trap 'kill "$resource_monitor" 2>/dev/null || true; wait "$resource_monitor" 2>/dev/null || true' EXIT
-          time cargo nextest run --no-run --all-features --workspace \
+          time cargo nextest run --profile ci --no-run --all-features --workspace \
             ${{ matrix.cargo_profile_args }} ${{ matrix.cargo_build_args }}
       - name: Run tests (${{ matrix.profile }})
+        if: ${{ !cancelled() && steps.build_tests.outcome == 'success' }}
         # Compilation has its own budget; ordinary tests typically take <10m.
         timeout-minutes: 20
         run: >-
-          cargo nextest run --all-features ${{ matrix.cargo_profile_args }}
+          cargo nextest run --profile ci --all-features ${{ matrix.cargo_profile_args }}
           ${{ matrix.cargo_build_args }} --workspace
       - name: Run ignored tests (${{ matrix.profile }})
+        if: ${{ !cancelled() && steps.build_tests.outcome == 'success' }}
         timeout-minutes: ${{ matrix.os == 'windows-latest' && 100 || 80 }}
         run: >-
           cargo nextest run --profile ci --all-features
@@ -408,6 +411,8 @@ jobs:
         run: just fuzz/quic 30
       - name: fuzz — h3 and stateful qpack
         run: just fuzz/h3 60
+      - name: fuzz — HTTP structured fields
+        run: just fuzz/http-structured-fields 60
       - name: Upload H3 and QPACK fuzz corpus and failures
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -417,8 +422,10 @@ jobs:
           path: |
             fuzz/corpus/h3_*
             fuzz/corpus/qpack_*
+            fuzz/corpus/http_structured_fields
             fuzz/artifacts/h3_*
             fuzz/artifacts/qpack_*
+            fuzz/artifacts/http_structured_fields
 
   docsrs-emulation:
     permissions:

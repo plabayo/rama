@@ -17,10 +17,12 @@ use rama_http::{
 use rama_http_headers::ProxyAuthorization;
 use rama_http_types::{Version, proxy::PlaintextHttpProxyMode};
 use rama_net::{
-    AuthorityInputExt, HttpVersionInputExt, Protocol, ProtocolInputExt, TargetHttpVersionInputExt,
+    AuthorityInputExt, ConnectorTargetInputExt, HttpVersionInputExt, Protocol, ProtocolInputExt,
+    TargetHttpVersionInputExt,
     client::{
-        ConnectionError, ConnectionErrorKind, ConnectorService, ConnectorTarget,
-        ConnectorTransportProtocol, EstablishedClientConnection, EstablishedProxyRoute, ProxyRoute,
+        ConnectionError, ConnectionErrorKind, ConnectionPolicyScope, ConnectorService,
+        ConnectorTarget, ConnectorTransportProtocol, EstablishedClientConnection,
+        EstablishedProxyRoute, ProxyRoute, pool::ConnectionReuse,
     },
     http::TargetHttpVersion,
     transport::TransportProtocol,
@@ -37,7 +39,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 #[cfg(feature = "tls")]
 use rama_net::tls::TlsAlpn;
 #[cfg(feature = "tls")]
-use rama_tls::{TlsTunnel, client::NegotiatedTlsParameters};
+use rama_tls::{TlsTunnel, TlsTunnelRoute, client::NegotiatedTlsParameters};
 
 /// A connector which can be used to establish a connection over an HTTP Proxy.
 ///
@@ -214,21 +216,45 @@ where
                 ConnectionErrorKind::InvalidInput,
             )
         })?;
+
+        // Preserve the selected endpoint before the proxy becomes the dial target.
+        // HTTP authority and TLS authentication still use the logical origin.
+        let destination = input.connector_target().ok_or_else(|| {
+            ConnectionError::local(
+                BoxError::from_static_str("http proxy connector: destination missing from input"),
+                ConnectionErrorKind::InvalidInput,
+            )
+        })?;
         let app_protocol = input.protocol().cloned();
         let app_is_http = app_protocol.as_ref().is_some_and(Protocol::is_http_based);
         let app_is_plaintext_http = app_protocol
             .as_ref()
             .is_some_and(|protocol| protocol.is_http_based() && !protocol.is_secure());
-        let use_forward_proxy = input
-            .extensions()
-            .get_ref::<PlaintextHttpProxyMode>()
-            .copied()
-            .unwrap_or_default()
-            .should_forward(app_protocol.as_ref());
+        let use_forward_proxy = !input.extensions().contains::<ConnectorTarget>()
+            && input
+                .extensions()
+                .get_ref::<PlaintextHttpProxyMode>()
+                .copied()
+                .unwrap_or_default()
+                .should_forward(app_protocol.as_ref());
         let proxy_is_secure = proxy_info
             .protocol
             .as_ref()
             .is_some_and(Protocol::is_secure);
+        // HTTPS routes supply their own tunnel policy below. An explicit
+        // tunnel on a plaintext route belongs only to this request; failure
+        // under that policy says nothing about the shared proxy's health.
+        #[cfg(feature = "tls")]
+        let request_tunnel = !proxy_is_secure && input.extensions().contains::<TlsTunnel>();
+        #[cfg(not(feature = "tls"))]
+        let request_tunnel = false;
+        let scope_tunnel_error = |error: ConnectionError| {
+            if request_tunnel {
+                error.with_policy_scope(ConnectionPolicyScope::Request)
+            } else {
+                error
+            }
+        };
         let requested_http_version = crate::client::conn::resolve_input_target_http_version(&input);
 
         if app_is_http && !use_forward_proxy && requested_http_version == Some(Version::HTTP_3) {
@@ -271,23 +297,27 @@ where
                 server.port = proxy_info.address.port,
                 "http proxy connector: preparing proxy connection for tls tunnel",
             );
-            input.extensions().insert(TlsTunnel {
+            input.extensions().insert(TlsTunnelRoute(TlsTunnel {
                 server_identity: Some(proxy_info.address.host.clone()),
                 application_protocol: Some(Protocol::HTTPS),
                 alpn: self
                     .version_policy
                     .connect_version()
                     .and_then(connect_version_alpn),
-            });
+            }));
         }
 
-        let EstablishedClientConnection { input, conn } =
-            self.inner.connect(input).await.map_err(|error| {
+        let EstablishedClientConnection { input, conn } = self
+            .inner
+            .connect(input)
+            .await
+            .map_err(|error| {
                 error
                     .context("establish connection to proxy")
                     .context_field("address", proxy_info.address.clone())
                     .context_debug_field("protocol", proxy_info.protocol.clone())
-            })?;
+            })
+            .map_err(scope_tunnel_error)?;
 
         tracing::trace!(
             server.address = %authority.host,
@@ -326,7 +356,7 @@ where
         // CONNECT is a separate proxy exchange: deliberately omit request
         // extensions, including telemetry, so origin Protocol/TargetHttpVersion
         // metadata cannot change the proxy handshake.
-        let mut connector = InnerHttpProxyConnector::new(authority.clone(), Extensions::new())
+        let mut connector = InnerHttpProxyConnector::new(destination.into(), Extensions::new())
             .map_err(|error| {
                 ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
                     .context("http proxy connector: build CONNECT request")
@@ -362,9 +392,18 @@ where
             .handshake(conn)
             .await
             .map_err(ConnectionError::from)
-            .map_err(|error| error.context("http proxy handshake"))?;
+            .map_err(|error| scope_tunnel_error(error.context("http proxy handshake")))?;
 
         let conn = MaybeHttpProxiedConnection::upgraded_proxy(conn, proxy_info);
+        // The inner connector classified the proxy endpoint. CONNECT changes
+        // the endpoint, so origin TLS must publish its own complete policy.
+        let reuse = conn
+            .extensions()
+            .get_ref::<ConnectionReuse>()
+            .map(|policy| policy.clone().into_restriction());
+        if let Some(reuse) = reuse {
+            conn.extensions().insert(reuse);
+        }
 
         // A CONNECT upgrade inherits proxy-leg connection metadata. Shadow the
         // proxy's wire version before the outer origin HTTP connector runs.
@@ -701,7 +740,10 @@ impl<Conn: AsyncRead> AsyncRead for MaybeHttpProxiedConnection<Conn> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{client::proxy::layer::HttpProxyConnectorLayer, server::HttpServer};
+    use crate::{
+        client::{conn::http_connect, proxy::layer::HttpProxyConnectorLayer},
+        server::HttpServer,
+    };
     use rama_core::{
         Layer,
         futures::{Stream, stream},
@@ -709,13 +751,21 @@ mod tests {
         rt::Executor,
         service::service_fn,
     };
-    use rama_http_types::{Body, Request, Response, StatusCode, conn::FallbackHttpVersion};
+    use rama_http_types::{
+        Body, Method, Request, Response, StatusCode, conn::FallbackHttpVersion, header,
+    };
+    #[cfg(feature = "tls")]
+    use rama_net::client::{
+        ProxyRouteFailureCache, ProxyRouteFailureCacheConfig, ProxyRouteFailureCacheConnector,
+        ProxyRouteFailureCacheScope,
+    };
     use rama_net::{
         Protocol,
         address::{Domain, HostWithPort, ProxyAddress},
         client::{
             AddressCandidates, ConnectRequest, ConnectionErrorDomain, ConnectionErrorKind,
             ConnectorService, ConnectorTargetStream, ProxyRoute, ProxyRoutes, ProxyRoutesConnector,
+            pool::ConnectionReusePolicy,
         },
         http::HttpRequestVersion,
         test_utils::client::{MockConnectorService, MockSocket},
@@ -733,6 +783,15 @@ mod tests {
     #[extension(tags(http))]
     struct ConnMarker(u32);
 
+    #[derive(Debug)]
+    struct FixedProxyPolicy;
+
+    impl ConnectionReusePolicy for FixedProxyPolicy {
+        fn matches(&self, _: &Extensions) -> bool {
+            true
+        }
+    }
+
     struct OneCandidate {
         domain: Domain,
         ip_addr: IpAddr,
@@ -748,6 +807,63 @@ mod tests {
             _: &'a Extensions,
         ) -> core::pin::Pin<Box<dyn Stream<Item = Result<IpAddr, BoxError>> + Send + 'a>> {
             Box::pin(stream::iter([Ok(self.ip_addr)]))
+        }
+    }
+
+    #[cfg(feature = "tls")]
+    #[tokio::test]
+    async fn request_tunnel_failure_does_not_poison_plaintext_proxy_route() {
+        for scope in [
+            ProxyRouteFailureCacheScope::PerDestination,
+            ProxyRouteFailureCacheScope::PerProxy,
+        ] {
+            let attempts = Arc::new(AtomicUsize::new(0));
+            let transport = service_fn({
+                let attempts = attempts.clone();
+                move |input: ConnectRequest| {
+                    attempts.fetch_add(1, Ordering::Relaxed);
+                    async move {
+                        if input.extensions().contains::<TlsTunnel>() {
+                            return Err(ConnectionError::transport(
+                                BoxError::from_static_str("plaintext proxy rejected TLS handshake"),
+                                ConnectionErrorKind::Protocol,
+                            ));
+                        }
+                        let (stream, _peer) = tokio::io::duplex(64);
+                        Ok(EstablishedClientConnection {
+                            input,
+                            conn: MockSocket::new(stream),
+                        })
+                    }
+                }
+            });
+            let mut config = ProxyRouteFailureCacheConfig::default();
+            config.scope = scope;
+            let cache = ProxyRouteFailureCache::try_new(config).unwrap();
+            let connector = ProxyRouteFailureCacheConnector::new(
+                HttpProxyConnector::required(transport),
+                cache,
+            );
+            let request = || {
+                let input = ConnectRequest::new(HostWithPort::example_domain_http())
+                    .with_application_protocol(Protocol::HTTP);
+                input.extensions().insert(ProxyRoute::Proxy(
+                    "http://proxy.example:8080".parse().unwrap(),
+                ));
+                input
+            };
+            let customized = request();
+            customized.extensions().insert(TlsTunnel {
+                server_identity: Some("proxy.example".parse().unwrap()),
+                application_protocol: Some(Protocol::HTTP),
+                alpn: None,
+            });
+            let error = connector.serve(customized).await.unwrap_err();
+            assert_eq!(error.domain(), ConnectionErrorDomain::Transport);
+            assert_eq!(error.kind(), ConnectionErrorKind::Protocol);
+            assert_eq!(error.policy_scope(), ConnectionPolicyScope::Request);
+            connector.serve(request()).await.unwrap();
+            assert_eq!(attempts.load(Ordering::Relaxed), 2);
         }
     }
 
@@ -803,7 +919,7 @@ mod tests {
             ] {
                 let http_server = HttpServer::auto(Executor::default()).service(service_fn(
                     async |req: Request| {
-                        assert_eq!(req.method(), rama_http_types::Method::CONNECT);
+                        assert_eq!(req.method(), Method::CONNECT);
                         Ok::<_, Infallible>(Response::new(Body::empty()))
                     },
                 ));
@@ -836,6 +952,48 @@ mod tests {
                     Some(&ProxyRoute::Proxy(proxy.clone())),
                 );
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn selected_service_is_tunneled_without_changing_the_origin() {
+        for protocol in [Protocol::HTTP, Protocol::HTTPS] {
+            let origin = if protocol.is_secure() {
+                HostWithPort::example_domain_https()
+            } else {
+                HostWithPort::example_domain_http()
+            };
+            let destination = "alternative.example:8443";
+            let proxy: ProxyAddress = "http://proxy.example:8080".parse().unwrap();
+            let http_server = HttpServer::auto(Executor::default()).service(service_fn(
+                move |req: Request| async move {
+                    assert_eq!(req.method(), Method::CONNECT);
+                    assert_eq!(req.uri().to_string(), destination);
+                    assert_eq!(req.headers()[header::HOST], destination);
+                    Ok::<_, Infallible>(Response::new(Body::empty()))
+                },
+            ));
+            let connector = HttpProxyConnector::required(MockConnectorService::new(move || {
+                http_server.clone()
+            }));
+            let input =
+                ConnectRequest::new(origin.clone()).with_application_protocol(protocol.clone());
+            input.extensions.insert(ProxyRoute::Proxy(proxy.clone()));
+            input.extensions.insert(PlaintextHttpProxyMode::Forward);
+            input
+                .extensions
+                .insert(ConnectorTarget(destination.parse().unwrap()));
+
+            let established = connector.serve(input).await.unwrap();
+            assert_eq!(established.input.protocol(), Some(&protocol));
+            assert_eq!(established.input.authority().unwrap(), origin.into());
+            assert_eq!(
+                established
+                    .conn
+                    .extensions()
+                    .get_ref::<EstablishedProxyRoute>(),
+                Some(&EstablishedProxyRoute::Tunnel(proxy)),
+            );
         }
     }
 
@@ -954,41 +1112,32 @@ mod tests {
     async fn connect_custom_headers_cannot_override_managed_fields() {
         let http_server =
             HttpServer::auto(Executor::default()).service(service_fn(async move |req: Request| {
-                assert_eq!(req.method(), rama_http_types::Method::CONNECT);
+                assert_eq!(req.method(), Method::CONNECT);
+                assert_eq!(req.headers()[header::HOST], "example.com:443");
                 assert_eq!(
-                    req.headers()[rama_http_types::header::HOST],
-                    "example.com:443"
-                );
-                assert_eq!(
-                    req.headers()[rama_http_types::header::PROXY_AUTHORIZATION],
+                    req.headers()[header::PROXY_AUTHORIZATION],
                     "Basic dXBzdHJlYW06c2VjcmV0"
                 );
-                assert!(
-                    !req.headers()
-                        .contains_key(rama_http_types::header::CONTENT_LENGTH)
-                );
-                assert!(
-                    !req.headers()
-                        .contains_key(rama_http_types::header::TRANSFER_ENCODING)
-                );
+                assert!(!req.headers().contains_key(header::CONTENT_LENGTH));
+                assert!(!req.headers().contains_key(header::TRANSFER_ENCODING));
                 assert_eq!(req.headers()["x-kept"], "yes");
                 Ok::<_, Infallible>(Response::new(Body::empty()))
             }));
         let connector = HttpProxyConnectorLayer::required()
             .with_custom_header(
-                rama_http_types::header::HOST,
+                header::HOST,
                 rama_http_types::HeaderValue::from_static("evil.example"),
             )
             .with_custom_header(
-                rama_http_types::header::PROXY_AUTHORIZATION,
+                header::PROXY_AUTHORIZATION,
                 rama_http_types::HeaderValue::from_static("Basic ZXZpbA=="),
             )
             .with_custom_header(
-                rama_http_types::header::CONTENT_LENGTH,
+                header::CONTENT_LENGTH,
                 rama_http_types::HeaderValue::from_static("999"),
             )
             .with_custom_header(
-                rama_http_types::header::TRANSFER_ENCODING,
+                header::TRANSFER_ENCODING,
                 rama_http_types::HeaderValue::from_static("chunked"),
             )
             .with_custom_header("x-kept", rama_http_types::HeaderValue::from_static("yes"))
@@ -1112,7 +1261,7 @@ mod tests {
                             let mut conn =
                                 rama_http_core::h2::server::handshake(socket).await.unwrap();
                             let (req, mut respond) = conn.accept().await.unwrap().unwrap();
-                            assert_eq!(req.method(), rama_http_types::Method::CONNECT);
+                            assert_eq!(req.method(), Method::CONNECT);
                             respond.send_reset(rama_http_core::h2::Reason::PROTOCOL_ERROR);
                             _ = std::future::poll_fn(|cx| conn.poll_closed(cx)).await;
                         } else {
@@ -1164,7 +1313,7 @@ mod tests {
                             let mut conn =
                                 rama_http_core::h2::server::handshake(socket).await.unwrap();
                             let (req, _) = conn.accept().await.unwrap().unwrap();
-                            assert_eq!(req.method(), rama_http_types::Method::CONNECT);
+                            assert_eq!(req.method(), Method::CONNECT);
                         } else {
                             let mut request = Vec::new();
                             while !request.ends_with(b"\r\n\r\n") {
@@ -1207,7 +1356,7 @@ mod tests {
         for protocol in [Protocol::ICAP, Protocol::from_static("custom")] {
             let http_server = HttpServer::auto(Executor::default()).service(service_fn(
                 async move |req: Request| {
-                    assert_eq!(req.method(), rama_http_types::Method::CONNECT);
+                    assert_eq!(req.method(), Method::CONNECT);
                     assert!(
                         !req.extensions()
                             .contains::<rama_http_types::proto::h2::ext::Protocol>()
@@ -1250,7 +1399,7 @@ mod tests {
     async fn plaintext_http_tunnel_restores_origin_version_after_connect() {
         let http_server =
             HttpServer::auto(Executor::default()).service(service_fn(async move |req: Request| {
-                assert_eq!(req.method(), rama_http_types::Method::CONNECT);
+                assert_eq!(req.method(), Method::CONNECT);
                 assert_eq!(req.version(), Version::HTTP_11);
                 Ok::<_, Infallible>(Response::new(Body::empty()))
             }));
@@ -1292,7 +1441,7 @@ mod tests {
     async fn plaintext_http_tunnel_defaults_missing_origin_version() {
         let http_server =
             HttpServer::auto(Executor::default()).service(service_fn(async move |req: Request| {
-                assert_eq!(req.method(), rama_http_types::Method::CONNECT);
+                assert_eq!(req.method(), Method::CONNECT);
                 Ok::<_, Infallible>(Response::new(Body::empty()))
             }));
         let transport = MockConnectorService::new(move || http_server.clone());
@@ -1332,7 +1481,7 @@ mod tests {
     async fn non_http_tunnel_does_not_inherit_incidental_http_version() {
         let http_server =
             HttpServer::auto(Executor::default()).service(service_fn(async move |req: Request| {
-                assert_eq!(req.method(), rama_http_types::Method::CONNECT);
+                assert_eq!(req.method(), Method::CONNECT);
                 Ok::<_, Infallible>(Response::new(Body::empty()))
             }));
         let connector = HttpProxyConnectorLayer::required()
@@ -1361,16 +1510,21 @@ mod tests {
     async fn https_proxy_tunnel_declares_http_as_its_tls_protocol() {
         let http_server =
             HttpServer::auto(Executor::default()).service(service_fn(async |req: Request| {
-                assert_eq!(req.method(), rama_http_types::Method::CONNECT);
+                assert_eq!(req.method(), Method::CONNECT);
                 Ok::<_, Infallible>(Response::new(Body::empty()))
             }));
         let transport = MockConnectorService::new(move || http_server.clone());
         let transport = service_fn(move |input: ConnectRequest| {
             let transport = transport.clone();
             async move {
-                let tunnel = input.extensions.get_ref::<TlsTunnel>().unwrap();
+                let tunnel = TlsTunnel::from_extensions(&input.extensions).unwrap();
                 assert_eq!(tunnel.application_protocol.as_ref(), Some(&Protocol::HTTPS),);
                 assert_eq!(tunnel.alpn.as_ref(), Some(&TlsAlpn::http_1()));
+                assert_eq!(
+                    input.extensions.get_ref::<TlsTunnel>().unwrap().alpn,
+                    Some(TlsAlpn::http_2()),
+                    "route policy must not overwrite the caller's reusable settings",
+                );
                 let established = transport.serve(input).await?;
                 established
                     .conn
@@ -1388,6 +1542,11 @@ mod tests {
         let connector = HttpProxyConnectorLayer::required().into_layer(transport);
         let input = ConnectRequest::new(HostWithPort::example_domain_https())
             .with_application_protocol(Protocol::ICAPS);
+        input.extensions.insert(TlsTunnel {
+            server_identity: None,
+            application_protocol: Some(Protocol::ICAPS),
+            alpn: Some(TlsAlpn::http_2()),
+        });
         input.extensions.insert(ProxyRoute::Proxy(ProxyAddress {
             address: HostWithPort::example_domain_https(),
             credential: None,
@@ -1673,7 +1832,7 @@ mod tests {
     async fn automatic_connect_version_follows_proxy_tls_negotiation() {
         let http_server =
             HttpServer::auto(Executor::default()).service(service_fn(async |req: Request| {
-                assert_eq!(req.method(), rama_http_types::Method::CONNECT);
+                assert_eq!(req.method(), Method::CONNECT);
                 assert_eq!(req.version(), Version::HTTP_2);
                 Ok::<_, Infallible>(Response::new(Body::empty()))
             }));
@@ -1681,7 +1840,7 @@ mod tests {
         let transport = service_fn(move |input: ConnectRequest| {
             let transport = transport.clone();
             async move {
-                let tunnel = input.extensions.get_ref::<TlsTunnel>().unwrap();
+                let tunnel = TlsTunnel::from_extensions(&input.extensions).unwrap();
                 assert!(tunnel.alpn.is_none());
                 let established = transport.serve(input).await?;
                 established
@@ -1776,7 +1935,7 @@ mod tests {
     async fn plaintext_proxy_ignores_unrelated_tls_negotiation_metadata() {
         let http_server =
             HttpServer::auto(Executor::default()).service(service_fn(async |req: Request| {
-                assert_eq!(req.method(), rama_http_types::Method::CONNECT);
+                assert_eq!(req.method(), Method::CONNECT);
                 assert_eq!(req.version(), Version::HTTP_11);
                 Ok::<_, Infallible>(Response::new(Body::empty()))
             }));
@@ -1821,6 +1980,9 @@ mod tests {
             HttpProxyConnectorLayer::required(),
             MapOutputLayer::new(|out: EstablishedClientConnection<MockSocket, Request>| {
                 out.conn.extensions().insert(ConnMarker(42));
+                out.conn
+                    .extensions()
+                    .insert(ConnectionReuse::new(FixedProxyPolicy));
                 out
             }),
         )
@@ -1837,7 +1999,7 @@ mod tests {
             protocol: Some(Protocol::HTTP),
         }));
 
-        let EstablishedClientConnection { conn, .. } = proxy_connector
+        let EstablishedClientConnection { conn, input } = proxy_connector
             .serve(req)
             .await
             .expect("proxy CONNECT handshake succeeds");
@@ -1847,6 +2009,25 @@ mod tests {
             .get_ref::<ConnMarker>()
             .expect("ConnMarker set on the pre-CONNECT connection must survive the upgrade");
         assert_eq!(marker.0, 42);
+        let reuse = conn.extensions().get_ref::<ConnectionReuse>().unwrap();
+        assert!(reuse.is_reusable());
+        assert!(
+            !reuse.is_complete(),
+            "proxy policy cannot classify the origin"
+        );
+
+        let established = http_connect::<_, _, Body>(conn, input, Executor::new())
+            .await
+            .expect("HTTP connector accepts the custom transport");
+        assert!(
+            !established
+                .conn
+                .extensions()
+                .get_ref::<ConnectionReuse>()
+                .unwrap()
+                .is_reusable(),
+            "an unclassified secure origin must not borrow the proxy's complete policy"
+        );
     }
 
     #[test]

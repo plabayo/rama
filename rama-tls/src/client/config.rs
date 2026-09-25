@@ -5,7 +5,12 @@ use rama_core::{
 };
 use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer};
 use rama_utils::{collections::smallvec::SmallVec, macros::generate_set_and_with};
-use std::{borrow::Cow, net::IpAddr, sync::Arc};
+use std::{
+    borrow::Cow,
+    hash::{Hash, Hasher},
+    net::IpAddr,
+    sync::Arc,
+};
 
 use crate::{KeyLogIntent, ProtocolVersion, TlsKeyLog, TlsSupportedVersions};
 use rama_net::{
@@ -213,6 +218,15 @@ impl TlsClientConfig {
         }
     }
 
+    generate_set_and_with! {
+        /// Layer request-specific TLS extensions over this configuration.
+        /// Parent scopes are preserved and subsequent setters remain local to the result.
+        pub fn overrides(mut self, overrides: &Extensions) -> Self {
+            self.0 = overrides.fork().with_base(&self.0);
+            self
+        }
+    }
+
     pub fn as_extensions(&self) -> &Extensions {
         &self.0
     }
@@ -229,7 +243,15 @@ impl TlsClientConfig {
 impl Clone for TlsClientConfig {
     fn clone(&self) -> Self {
         let clone = Self::new();
-        clone.as_extensions().extend(self.as_extensions());
+        let mut scopes = Vec::new();
+        let mut current = Some(self.as_extensions());
+        while let Some(scope) = current {
+            scopes.push(scope);
+            current = scope.parent();
+        }
+        for scope in scopes.into_iter().rev() {
+            clone.as_extensions().extend(scope);
+        }
         clone
     }
 }
@@ -277,7 +299,24 @@ pub struct TlsServerVerify(pub ServerVerifyMode);
 /// from certificate contents.
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(tls))]
-pub struct TlsServerCertPins(Arc<Vec<TlsServerCertPinSet>>);
+pub struct TlsServerCertPins {
+    sets: Arc<Vec<TlsServerCertPinSet>>,
+    digest: super::pool::PolicyDigest,
+}
+
+impl PartialEq for TlsServerCertPins {
+    fn eq(&self, other: &Self) -> bool {
+        self.sets == other.sets
+    }
+}
+
+impl Eq for TlsServerCertPins {}
+
+impl Hash for TlsServerCertPins {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.digest.hash(state);
+    }
+}
 
 /// A single accepted server leaf pin.
 ///
@@ -287,7 +326,7 @@ pub struct TlsServerCertPins(Arc<Vec<TlsServerCertPinSet>>);
 ///
 /// [`FromStr`]: std::str::FromStr
 /// [`Display`]: std::fmt::Display
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TlsServerCertPin {
     /// SHA-256 of the leaf's `SubjectPublicKeyInfo`: the industry standard.
     ///
@@ -302,7 +341,7 @@ pub enum TlsServerCertPin {
 }
 
 /// One alternative group of server leaf pins, optionally scoped to server names.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TlsServerCertPinSet {
     pins: Vec<TlsServerCertPin>,
     server_names: Vec<Host>,
@@ -447,13 +486,16 @@ impl TlsServerCertPins {
     ///
     /// A single pin or certificate converts into a global single-pin set.
     pub fn new(set: impl Into<TlsServerCertPinSet>) -> Self {
-        Self(Arc::new(vec![set.into()]))
+        let sets = Arc::new(vec![set.into()]);
+        let digest = super::pool::policy_digest(b"rama.tls.pins.v1", sets.as_ref());
+        Self { sets, digest }
     }
 
     generate_set_and_with! {
         /// Add an alternative pin set.
         pub fn pin_set(mut self, set: impl Into<TlsServerCertPinSet>) -> Self {
-            Arc::make_mut(&mut self.0).push(set.into());
+            Arc::make_mut(&mut self.sets).push(set.into());
+            self.digest = super::pool::policy_digest(b"rama.tls.pins.v1", self.sets.as_ref());
             self
         }
     }
@@ -469,7 +511,7 @@ impl TlsServerCertPins {
         // an unparsable leaf simply never matches a key pin
         let mut leaf_spki: Option<Option<[u8; 32]>> = None;
         let mut applicable = false;
-        for pin_set in self.0.iter() {
+        for pin_set in self.sets.iter() {
             if !pin_set.applies_to(server_name) {
                 continue;
             }
@@ -496,7 +538,9 @@ impl TlsServerCertPins {
     /// Return whether at least one pin set applies to `server_name`.
     #[doc(hidden)]
     pub fn applies_to(&self, server_name: Option<&Host>) -> bool {
-        self.0.iter().any(|pin_set| pin_set.applies_to(server_name))
+        self.sets
+            .iter()
+            .any(|pin_set| pin_set.applies_to(server_name))
     }
 }
 
@@ -506,8 +550,25 @@ impl TlsServerCertPins {
 /// terminate a verified chain at a configured root, intermediate, or end-entity
 /// certificate. Use certificate pinning when exact certificate or SPKI matching
 /// is required instead of trust-anchor semantics.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct TlsServerTrustAnchors(Arc<[CertificateDer<'static>]>);
+#[derive(Debug, Clone)]
+pub struct TlsServerTrustAnchors {
+    certificates: Arc<[CertificateDer<'static>]>,
+    digest: super::pool::PolicyDigest,
+}
+
+impl PartialEq for TlsServerTrustAnchors {
+    fn eq(&self, other: &Self) -> bool {
+        self.certificates == other.certificates
+    }
+}
+
+impl Eq for TlsServerTrustAnchors {}
+
+impl Hash for TlsServerTrustAnchors {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.digest.hash(state);
+    }
+}
 
 impl TlsServerTrustAnchors {
     /// Create a non-empty set of server trust anchors.
@@ -520,12 +581,16 @@ impl TlsServerTrustAnchors {
                 "server trust anchor set cannot be empty",
             ));
         }
-        Ok(Self(certificates))
+        let digest = super::pool::policy_digest(b"rama.tls.trust-anchors.v1", &certificates);
+        Ok(Self {
+            certificates,
+            digest,
+        })
     }
 
     /// Return the configured trust-anchor certificates.
     pub fn certificates(&self) -> &[CertificateDer<'static>] {
-        &self.0
+        &self.certificates
     }
 }
 
@@ -677,6 +742,40 @@ mod tests {
     use super::*;
     use rama_core::extensions::Extensions;
     use rama_utils::collections::smallvec::smallvec;
+
+    #[test]
+    fn request_override_parents_survive_tls_configuration_clone() {
+        let parent = Extensions::new();
+        parent.insert(TlsServerVerify(ServerVerifyMode::Disable));
+        let request = parent.fork();
+        let config = TlsClientConfig::new().with_overrides(&request);
+        assert_eq!(
+            config
+                .as_extensions()
+                .get_ref::<TlsServerVerify>()
+                .unwrap()
+                .0,
+            ServerVerifyMode::Disable
+        );
+        let clone = config.clone();
+        assert_eq!(
+            clone
+                .as_extensions()
+                .get_ref::<TlsServerVerify>()
+                .unwrap()
+                .0,
+            ServerVerifyMode::Disable
+        );
+        clone.insert(TlsServerVerify(ServerVerifyMode::Auto));
+        assert_eq!(
+            config
+                .as_extensions()
+                .get_ref::<TlsServerVerify>()
+                .unwrap()
+                .0,
+            ServerVerifyMode::Disable
+        );
+    }
 
     #[test]
     fn server_identity_classifies_dns_and_ip_hosts() {

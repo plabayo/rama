@@ -90,7 +90,7 @@ pub struct StreamsState {
     /// connection so far, per direction
     pub(super) max_remote: [u64; 2],
     /// Value of `max_remote` most recently transmitted to the peer in a `MAX_STREAMS` frame
-    sent_max_remote: [u64; 2],
+    pub(super) sent_max_remote: [u64; 2],
     /// Number of streams that we've given the peer permission to open and which aren't fully closed
     pub(super) allocated_remote_count: [u64; 2],
     /// Size of the desired stream flow control window. May be smaller than `allocated_remote_count`
@@ -118,8 +118,10 @@ pub struct StreamsState {
     ///
     /// Streams are only added to this list when a write fails.
     pub(super) connection_blocked: Vec<StreamId>,
+    pub(super) blocked_scan: Option<(u64, u64, usize)>,
     /// Connection-level flow control budget dictated by the peer
     pub(super) max_data: u64,
+    pub(super) initial_send_credit: u64,
     /// The initial receive window
     receive_window: u64,
     /// Limit on incoming data, which is transmitted through `MAX_DATA` frames
@@ -213,7 +215,9 @@ impl StreamsState {
             pending: PendingStreamsQueue::new(),
             events: VecDeque::new(),
             connection_blocked: Vec::new(),
+            blocked_scan: None,
             max_data: 0,
+            initial_send_credit: 0,
             receive_window: receive_window.into(),
             local_max_data: receive_window.into(),
             sent_max_data: receive_window,
@@ -259,6 +263,7 @@ impl StreamsState {
                 self.events.push_back(StreamEvent::Available { dir });
             }
         }
+        self.initial_send_credit = params.initial_max_data.into();
         self.received_max_data(params.initial_max_data);
         for i in 0..self.max_remote[Dir::Bi as usize] {
             let id = StreamId::new(!self.side, Dir::Bi, i);
@@ -842,6 +847,9 @@ impl StreamsState {
 
     /// Handle increase to connection-level flow control limit
     pub(crate) fn received_max_data(&mut self, n: VarInt) {
+        if self.initial_send_credit == 0 {
+            self.initial_send_credit = n.into();
+        }
         self.max_data = self.max_data.max(n.into());
     }
 
@@ -864,6 +872,7 @@ impl StreamsState {
         }
 
         let write_limit = self.write_limit();
+        let reserve_cap = (self.initial_send_credit / 2).min(self.send_window / 2);
         let max_send_data = self.max_send_data(id);
         if let Some(ss) = self
             .send
@@ -871,7 +880,7 @@ impl StreamsState {
             .map(get_or_insert_send(max_send_data))
         {
             if ss.increase_max_data(offset) {
-                if write_limit > 0 {
+                if write_limit > ss.connection_reserve.min(reserve_cap) {
                     self.events.push_back(StreamEvent::Writable { id });
                 } else if !ss.connection_blocked {
                     // The stream is still blocked on the connection flow control
@@ -906,23 +915,34 @@ impl StreamsState {
             return Some(StreamEvent::Opened { dir });
         }
 
-        if self.write_limit() > 0 {
-            while let Some(id) = self.connection_blocked.pop() {
-                let Some(stream) = self.send.get_mut(&id).and_then(|s| s.as_mut()) else {
-                    continue;
-                };
-
-                debug_assert!(stream.connection_blocked);
-                stream.connection_blocked = false;
-
-                // If it's no longer sensible to write to a stream (even to detect an error) then don't
-                // report it.
-                if stream.is_writable() && stream.max_data > stream.offset() {
-                    return Some(StreamEvent::Writable { id });
-                }
+        let limit = self.write_limit();
+        if limit == 0 {
+            return self.events.pop_front();
+        }
+        let reserve_cap = (self.initial_send_credit / 2).min(self.send_window / 2);
+        let scan = (limit, reserve_cap, self.connection_blocked.len());
+        if self.blocked_scan == Some(scan) {
+            return self.events.pop_front();
+        }
+        self.blocked_scan = None;
+        while let Some(index) = self.connection_blocked.iter().rposition(|id| {
+            self.send
+                .get(id)
+                .and_then(|stream| stream.as_ref())
+                .is_none_or(|stream| limit > stream.connection_reserve.min(reserve_cap))
+        }) {
+            let id = self.connection_blocked.swap_remove(index);
+            let Some(stream) = self.send.get_mut(&id).and_then(|stream| stream.as_mut()) else {
+                continue;
+            };
+            debug_assert!(stream.connection_blocked);
+            stream.connection_blocked = false;
+            if stream.is_writable() && stream.max_data > stream.offset() {
+                return Some(StreamEvent::Writable { id });
             }
         }
 
+        self.blocked_scan = Some((limit, reserve_cap, self.connection_blocked.len()));
         self.events.pop_front()
     }
 
@@ -933,14 +953,29 @@ impl StreamsState {
         let mut queued = false;
         for dir in Dir::iter() {
             let diff = self.max_remote[dir as usize] - self.sent_max_remote[dir as usize];
-            // To reduce traffic, only announce updates if at least 1/8 of the flow control window
-            // has been consumed.
-            if diff > self.max_concurrent_remote_count[dir as usize] / 8 {
+            // Batch ordinary credit updates, but never withhold the last free
+            // slot once the peer has used its advertised grant. Long-lived
+            // streams can otherwise prevent the batching threshold ever being
+            // reached, leaving a reusable slot inaccessible until idle timeout.
+            let exhausted = self.next_remote[dir as usize] >= self.sent_max_remote[dir as usize];
+            if diff > 0 && (exhausted || diff > self.max_concurrent_remote_count[dir as usize] / 8)
+            {
                 pending.max_stream_id[dir as usize] = true;
                 queued = true;
             }
         }
         queued
+    }
+
+    /// Return available credit when the peer cannot open another stream.
+    ///
+    /// A peer can allocate streams without sending on them, so observed stream
+    /// IDs alone do not always reveal an exhausted grant. This only advertises
+    /// credit already earned by closed streams or configured by the application.
+    pub(crate) fn received_streams_blocked(&self, dir: Dir, limit: u64, pending: &mut Retransmits) {
+        if self.max_remote[dir as usize] > limit {
+            pending.max_stream_id[dir as usize] = true;
+        }
     }
 
     /// Check for errors entailed by the peer's use of `id` as a send stream
@@ -1163,6 +1198,284 @@ mod tests {
             octets::mib_u32(1).into(),
             octets::mib_u32(1).into(),
         )
+    }
+
+    #[test]
+    fn exhausted_stream_window_returns_a_single_freed_slot_immediately() {
+        for dir in Dir::iter() {
+            for exhaust_before_free in [false, true] {
+                let mut state = make(Side::Server);
+                let limit = state.sent_max_remote[dir as usize];
+                let index = if exhaust_before_free { limit - 1 } else { 0 };
+                let id = StreamId::new(Side::Client, dir, index);
+                // Opening the highest permitted stream implicitly opens all lower
+                // IDs. Retain those streams while freeing only this one.
+                let transmit = state
+                    .received(
+                        frame::Stream {
+                            id,
+                            offset: 0,
+                            fin: true,
+                            data: Bytes::new(),
+                        },
+                        0,
+                    )
+                    .unwrap();
+                assert!(!transmit.should_transmit());
+                // Accept all implicitly opened streams before accessing their
+                // application halves, as the normal driver does.
+                let mut streams = Streams {
+                    state: &mut state,
+                    conn_state: &ConnState::Established,
+                };
+                for accepted_index in 0..=index {
+                    assert_eq!(
+                        streams.accept(dir),
+                        Some(StreamId::new(Side::Client, dir, accepted_index))
+                    );
+                }
+                let mut pending = Retransmits::default();
+                // Exhaustion alone cannot create credit while all slots are held.
+                assert!(!state.queue_max_stream_id(&mut pending));
+                let mut recv = RecvStream {
+                    id,
+                    state: &mut state,
+                    pending: &mut pending,
+                };
+                let mut chunks = recv.read(true).unwrap();
+                assert!(chunks.next(1).unwrap().is_none());
+                let _transmit = chunks.finalize();
+                if dir == Dir::Bi {
+                    // Both halves must finish before a bidirectional slot returns.
+                    assert_eq!(state.max_remote[dir as usize], limit);
+                    SendStream {
+                        id,
+                        state: &mut state,
+                        pending: &mut pending,
+                        conn_state: &ConnState::Established,
+                    }
+                    .finish()
+                    .unwrap();
+                    let frames = state.write_stream_frames(&mut Vec::new(), 128, true);
+                    assert_eq!(frames.len(), 1);
+                    for frame in frames {
+                        assert_eq!(frame.id, id);
+                        assert!(frame.fin);
+                        state.received_ack_of(frame);
+                    }
+                }
+                assert_eq!(state.max_remote[dir as usize], limit + 1);
+                // Preserve batching while the peer still has unused credit.
+                assert_eq!(state.queue_max_stream_id(&mut pending), exhaust_before_free);
+                assert_eq!(pending.max_stream_id[dir as usize], exhaust_before_free);
+                if !exhaust_before_free {
+                    // Exhaustion can occur after a slot was freed. Packet
+                    // processing rechecks credit even when no stream completes.
+                    let transmit = state
+                        .received(
+                            frame::Stream {
+                                id: StreamId::new(Side::Client, dir, limit - 1),
+                                offset: 0,
+                                fin: false,
+                                data: Bytes::new(),
+                            },
+                            0,
+                        )
+                        .unwrap();
+                    assert!(!transmit.should_transmit());
+                    assert!(state.queue_max_stream_id(&mut pending));
+                    assert!(pending.max_stream_id[dir as usize]);
+                }
+                state.write_control_frames(
+                    &mut Vec::new(),
+                    &mut pending,
+                    &mut ThinRetransmits::default(),
+                    &mut FrameStats::default(),
+                    128,
+                );
+                assert_eq!(state.sent_max_remote[dir as usize], limit + 1);
+                assert!(!state.queue_max_stream_id(&mut pending));
+            }
+        }
+    }
+
+    #[test]
+    fn streams_blocked_only_advertises_credit_already_available() {
+        for dir in Dir::iter() {
+            let mut state = make(Side::Server);
+            let original = state.sent_max_remote[dir as usize];
+            for new_slots in [0, 1] {
+                state.max_concurrent_remote_count[dir as usize] = original + new_slots;
+                state.ensure_remote_streams(dir);
+                for reported in [original - 1, original, original + 1] {
+                    let mut pending = Retransmits::default();
+                    state.received_streams_blocked(dir, reported, &mut pending);
+                    assert_eq!(
+                        pending.max_stream_id[dir as usize],
+                        reported < original + new_slots,
+                    );
+                    assert_eq!(state.max_remote[dir as usize], original + new_slots);
+                    assert_eq!(state.sent_max_remote[dir as usize], original);
+                    assert_eq!(state.next_remote[dir as usize], 0);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn remote_stream_limit_reports_transmitted_credit_only() {
+        let mut state = make(Side::Server);
+        let connection = ConnState::Established;
+        let original = state.sent_max_remote[Dir::Bi as usize];
+        state.max_concurrent_remote_count[Dir::Bi as usize] += 1;
+        state.ensure_remote_streams(Dir::Bi);
+        assert_eq!(state.max_remote[Dir::Bi as usize], original + 1);
+        assert_eq!(
+            Streams {
+                state: &mut state,
+                conn_state: &connection
+            }
+            .remote_stream_limit(Dir::Bi),
+            original
+        );
+        let mut pending = Retransmits::default();
+        pending.max_stream_id[Dir::Bi as usize] = true;
+        state.write_control_frames(
+            &mut Vec::new(),
+            &mut pending,
+            &mut ThinRetransmits::default(),
+            &mut FrameStats::default(),
+            128,
+        );
+        assert_eq!(
+            Streams {
+                state: &mut state,
+                conn_state: &connection
+            }
+            .remote_stream_limit(Dir::Bi),
+            original + 1
+        );
+    }
+
+    #[test]
+    fn reserve_wakes_only_above_credit_threshold() {
+        let mut state = make(Side::Client);
+        state.set_params(&TransportParameters {
+            initial_max_data: 100u32.into(),
+            initial_max_stream_data_uni: 200u32.into(),
+            initial_max_streams_uni: 2u32.into(),
+            ..TransportParameters::default()
+        });
+        let conn_state = ConnState::Established;
+        let mut pending = Retransmits::default();
+        let id = (Streams {
+            state: &mut state,
+            conn_state: &conn_state,
+        })
+        .open(Dir::Uni)
+        .unwrap();
+        let mut chunks = [Bytes::from(vec![0; 100])];
+        let write = |state: &mut StreamsState, pending: &mut Retransmits, chunks: &mut [Bytes]| {
+            SendStream {
+                id,
+                state,
+                pending,
+                conn_state: &conn_state,
+            }
+            .write_chunks_with_reserve(chunks, 20)
+        };
+        assert_eq!(
+            write(&mut state, &mut pending, &mut chunks).unwrap().bytes,
+            80
+        );
+        assert_eq!(
+            write(&mut state, &mut pending, &mut chunks),
+            Err(WriteError::Blocked)
+        );
+        assert!(state.poll().is_none());
+        assert!(state.poll().is_none());
+        state.received_max_data(101u32.into());
+        assert!(matches!(state.poll(), Some(StreamEvent::Writable { id: actual }) if actual == id));
+        assert_eq!(
+            write(&mut state, &mut pending, &mut chunks).unwrap().bytes,
+            1
+        );
+        assert_eq!(
+            write(&mut state, &mut pending, &mut chunks),
+            Err(WriteError::Blocked)
+        );
+        // A reduced local send window lowers the reserve threshold after ACKs.
+        state.set_send_window(16);
+        state.buffered_data = 0;
+        assert!(matches!(state.poll(), Some(StreamEvent::Writable { id: actual }) if actual == id));
+        // A critical stream can still consume the reserved credit.
+        let critical = (Streams {
+            state: &mut state,
+            conn_state: &conn_state,
+        })
+        .open(Dir::Uni)
+        .unwrap();
+        assert_eq!(
+            SendStream {
+                id: critical,
+                state: &mut state,
+                pending: &mut pending,
+                conn_state: &conn_state
+            }
+            .write(b"ack")
+            .unwrap(),
+            3
+        );
+    }
+
+    #[test]
+    fn generated_chunk_admission_is_atomic_and_can_decline() {
+        let mut state = make(Side::Client);
+        state.set_params(&TransportParameters {
+            initial_max_data: 10u32.into(),
+            initial_max_stream_data_uni: 7u32.into(),
+            initial_max_streams_uni: 1u32.into(),
+            ..TransportParameters::default()
+        });
+        let conn_state = ConnState::Established;
+        let mut pending = Retransmits::default();
+        let id = (Streams {
+            state: &mut state,
+            conn_state: &conn_state,
+        })
+        .open(Dir::Uni)
+        .unwrap();
+        let mut stream = SendStream {
+            id,
+            state: &mut state,
+            pending: &mut pending,
+            conn_state: &conn_state,
+        };
+        assert_eq!(
+            stream
+                .write_generated(2, |capacity| {
+                    assert_eq!(capacity, 7);
+                    (Bytes::new(), "literal")
+                })
+                .unwrap(),
+            "literal"
+        );
+        assert_eq!(
+            stream
+                .write_generated(2, |capacity| {
+                    assert_eq!(capacity, 7);
+                    (Bytes::from_static(b"insert!"), 7)
+                })
+                .unwrap(),
+            7
+        );
+        stream
+            .write_generated(2, |capacity| {
+                assert_eq!(capacity, 0);
+                (Bytes::new(), ())
+            })
+            .unwrap();
+        assert_eq!(state.data_sent, 7);
     }
 
     #[test]

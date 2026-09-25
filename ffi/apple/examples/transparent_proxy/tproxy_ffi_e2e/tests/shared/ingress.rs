@@ -470,7 +470,10 @@ async fn serve_one_ingress_connection(
         }
     };
 
-    tokio::pin!(server_writer, egress_writer, egress_reader, client_reader);
+    let mut server_writer = std::pin::pin!(server_writer);
+    let mut egress_writer = std::pin::pin!(egress_writer);
+    let mut egress_reader = std::pin::pin!(egress_reader);
+    let mut client_reader = std::pin::pin!(client_reader);
     let mut server_writer_done = false;
     let mut egress_writer_done = false;
     let mut egress_reader_done = false;

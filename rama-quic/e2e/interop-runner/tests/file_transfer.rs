@@ -230,7 +230,9 @@ async fn interrupted_client_drains_qlog_and_reports_failure() {
         let directory = TempDir::with_prefix("rama-runner-cancel-").unwrap();
         let root = directory.path();
         // Keep a UDP receiver alive without replying: the client's handshake remains pending.
-        let peer = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let peer = tokio::net::UdpSocket::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
         let mut client = Command::from(endpoint_command(env!(
             "CARGO_BIN_EXE_rama-quic-interop-client"
         )))

@@ -1,49 +1,25 @@
 use rama_core::error::BoxError;
+use rama_utils::macros::generate_set_and_with;
 use std::fmt;
 
-pub use rama_tls::TlsBackend;
 pub use rama_tls::alpn::AlpnPolicy;
 
 /// QUIC requirements applied to the common Rama TLS configuration.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct TlsOptions {
-    pub(crate) backend: rama_tls::TlsBackend,
     pub(crate) alpn: AlpnPolicy,
     pub(crate) early_data: bool,
 }
 
 impl TlsOptions {
-    #[cfg(any(
-        feature = "boring",
-        all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
-    ))]
-    pub(crate) fn resolve_backend(self) -> Result<TlsBackend, TlsConfigError> {
-        let rustls = cfg!(all(
-            feature = "rustls",
-            any(feature = "aws-lc", feature = "ring")
-        ));
-        let boring = cfg!(feature = "boring");
-        match self.backend {
-            TlsBackend::Auto | TlsBackend::Rustls if rustls => Ok(TlsBackend::Rustls),
-            TlsBackend::Auto | TlsBackend::Boring if boring => Ok(TlsBackend::Boring),
-            backend => Err(TlsConfigError::BackendUnavailable(backend)),
-        }
-    }
-    rama_utils::macros::generate_set_and_with! {
-        /// TLS implementation. Auto prefers Rustls when its crypto provider is enabled.
-        pub fn backend(mut self, backend: rama_tls::TlsBackend) -> Self {
-            self.backend = backend;
-            self
-        }
-    }
-    rama_utils::macros::generate_set_and_with! {
+    generate_set_and_with! {
         /// How peers agree on their application protocol.
         pub fn alpn(mut self, policy: AlpnPolicy) -> Self {
             self.alpn = policy;
             self
         }
     }
-    rama_utils::macros::generate_set_and_with! {
+    generate_set_and_with! {
         /// Allow early application data, which a peer may replay. Disabled by default.
         pub fn early_data(mut self, allowed: bool) -> Self {
             self.early_data = allowed;
@@ -54,7 +30,7 @@ impl TlsOptions {
 
 #[derive(Debug)]
 pub enum TlsConfigError {
-    BackendUnavailable(rama_tls::TlsBackend),
+    BackendUnavailable,
     UnsupportedOutOfBandAgreement,
     Tls13Required,
     AlpnRequired,
@@ -68,7 +44,7 @@ pub enum TlsConfigError {
 impl fmt::Display for TlsConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::BackendUnavailable(backend) => write!(f, "QUIC TLS backend {backend:?} is unavailable"),
+            Self::BackendUnavailable => f.write_str("no built-in QUIC TLS configuration provider is available"),
             Self::UnsupportedOutOfBandAgreement => f.write_str("this QUIC TLS backend requires ALPN even with out-of-band protocol agreement"),
             Self::Tls13Required => f.write_str("QUIC requires TLS 1.3"),
             Self::AlpnRequired => f.write_str("QUIC requires ALPN unless another protocol agreement is explicit"),

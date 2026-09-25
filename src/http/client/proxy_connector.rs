@@ -17,6 +17,8 @@ use crate::{
     proxy::socks5::{Socks5ProxyConnector, Socks5ProxyConnectorLayer},
     telemetry::tracing,
 };
+#[cfg(feature = "tls")]
+use crate::{net::client::ConnectionPolicyScope, tls::TlsTunnel};
 use pin_project_lite::pin_project;
 use std::{
     fmt::Debug,
@@ -129,8 +131,20 @@ where
                         "using socks proxy connector",
                     );
 
-                    let EstablishedClientConnection { input, conn } =
-                        self.socks.connect(input).await?;
+                    // SOCKS does not supply a tunnel TLS policy of its own.
+                    // An explicit request policy must not poison shared routes.
+                    #[cfg(feature = "tls")]
+                    let request_tunnel = input.extensions().contains::<TlsTunnel>();
+                    let established = self.socks.connect(input).await;
+                    #[cfg(feature = "tls")]
+                    let established = established.map_err(|error| {
+                        if request_tunnel {
+                            error.with_policy_scope(ConnectionPolicyScope::Request)
+                        } else {
+                            error
+                        }
+                    });
+                    let EstablishedClientConnection { input, conn } = established?;
 
                     let conn = MaybeProxiedConnection::socks(conn);
                     Ok(EstablishedClientConnection { input, conn })
@@ -367,7 +381,92 @@ mod tests {
         tcp::client::service::TcpConnector,
     };
 
+    #[cfg(feature = "tls")]
+    use {
+        crate::{
+            net::{
+                address::HostWithPort,
+                client::{
+                    ConnectRequest, ProxyRouteFailureCache, ProxyRouteFailureCacheConfig,
+                    ProxyRouteFailureCacheConnector, ProxyRouteFailureCacheScope,
+                },
+            },
+            service::service_fn,
+        },
+        std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+    };
+
     fn assert_socks5_connector<S, C: Socks5Connector<S>>(_: &C) {}
+
+    #[cfg(feature = "tls")]
+    #[tokio::test]
+    async fn request_tunnel_failure_does_not_poison_socks_proxy_route() {
+        for scope in [
+            ProxyRouteFailureCacheScope::PerDestination,
+            ProxyRouteFailureCacheScope::PerProxy,
+        ] {
+            let attempts = Arc::new(AtomicUsize::new(0));
+            let transport = service_fn({
+                let attempts = attempts.clone();
+                move |input: ConnectRequest| {
+                    attempts.fetch_add(1, Ordering::Relaxed);
+                    async move {
+                        Err::<EstablishedClientConnection<MockSocket, ConnectRequest>, _>(
+                            ConnectionError::transport(
+                                BoxError::from_static_str("scripted proxy failure"),
+                                if input.extensions().contains::<TlsTunnel>() {
+                                    ConnectionErrorKind::Protocol
+                                } else {
+                                    ConnectionErrorKind::Unavailable
+                                },
+                            ),
+                        )
+                    }
+                }
+            });
+            let mut config = ProxyRouteFailureCacheConfig::default();
+            config.scope = scope;
+            let connector = ProxyRouteFailureCacheConnector::new(
+                ProxyConnector::required(
+                    transport,
+                    Socks5ProxyConnectorLayer::required(),
+                    HttpProxyConnectorLayer::required(),
+                ),
+                ProxyRouteFailureCache::try_new(config).unwrap(),
+            );
+            let request = || {
+                let input = ConnectRequest::new(HostWithPort::example_domain_http())
+                    .with_application_protocol(Protocol::HTTP);
+                input.extensions().insert(ProxyRoute::Proxy(
+                    "socks5://127.0.0.1:1080".parse().unwrap(),
+                ));
+                input
+            };
+            let customized = request();
+            customized.extensions().insert(TlsTunnel {
+                server_identity: Some("proxy.example".parse().unwrap()),
+                application_protocol: None,
+                alpn: None,
+            });
+            let error = connector.serve(customized).await.unwrap_err();
+            assert_eq!(error.kind(), ConnectionErrorKind::Protocol);
+            assert_eq!(error.policy_scope(), ConnectionPolicyScope::Request);
+
+            let error = connector.serve(request()).await.unwrap_err();
+            assert_eq!(error.kind(), ConnectionErrorKind::Unavailable);
+            assert_eq!(error.policy_scope(), ConnectionPolicyScope::Unknown);
+            assert_eq!(attempts.load(Ordering::Relaxed), 2);
+            _ = connector.serve(request()).await.unwrap_err();
+            assert_eq!(
+                attempts.load(Ordering::Relaxed),
+                2,
+                "ordinary failures remain cached"
+            );
+        }
+    }
 
     #[test]
     fn eager_socks5_accepts_combined_proxy_connection() {

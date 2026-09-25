@@ -1454,7 +1454,7 @@ async fn run_udp_ingress_coordinator<F>(
 ) where
     F: Future<Output = ()>,
 {
-    tokio::pin!(shutdown);
+    let mut shutdown = std::pin::pin!(shutdown);
     let mut deadline = None;
     'coordinator: loop {
         if let Some(at) = deadline {

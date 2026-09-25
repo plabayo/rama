@@ -4,7 +4,10 @@ use crate::{
     transport::TransportProtocol,
 };
 
-use rama_core::{Fork, extensions::Extensions, extensions::ExtensionsRef};
+use rama_core::{
+    Fork,
+    extensions::{Extensions, ExtensionsMut, ExtensionsRef},
+};
 
 use crate::{
     HttpVersionInputExt, TargetHttpVersionInputExt,
@@ -81,6 +84,12 @@ impl Fork for ConnectRequest {
 impl ExtensionsRef for ConnectRequest {
     fn extensions(&self) -> &Extensions {
         &self.extensions
+    }
+}
+
+impl ExtensionsMut for ConnectRequest {
+    fn extensions_mut(&mut self) -> &mut Extensions {
+        &mut self.extensions
     }
 }
 

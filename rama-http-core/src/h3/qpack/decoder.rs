@@ -17,7 +17,7 @@ use rama_http_types::proto::h3::qpack::{
 
 use rama_utils::octets::{kib, kib_u64};
 
-use super::dynamic_table::{DynamicTable, InsertError};
+use super::dynamic_table::{DynamicTable, ENTRY_OVERHEAD, InsertError};
 use super::error::QpackError;
 
 /// A decoded field line (raw bytes; HTTP validation happens elsewhere).
@@ -81,6 +81,7 @@ pub struct Decoder {
     encoder_stream: BytesMut,
     /// Queued decoder-stream instructions to send to the peer's encoder.
     decoder_output: BytesMut,
+    output_in_flight: usize,
     /// Field sections waiting for the Required Insert Count to be reached, in arrival order per
     /// stream so a stream's sections are still delivered in order.
     blocked: BTreeMap<u64, VecDeque<BlockedSection>>,
@@ -97,6 +98,7 @@ impl Decoder {
             config,
             encoder_stream: BytesMut::new(),
             decoder_output: BytesMut::new(),
+            output_in_flight: 0,
             blocked: BTreeMap::new(),
             blocked_bytes: 0,
         }
@@ -126,15 +128,33 @@ impl Decoder {
         self.decoder_output.split().freeze()
     }
 
+    pub(crate) fn take_output_for_write(&mut self) -> Bytes {
+        let output = self.take_decoder_stream();
+        self.output_in_flight += output.len();
+        output
+    }
+
+    pub(crate) fn output_written(&mut self, bytes: usize) {
+        self.output_in_flight -= bytes;
+    }
+
     /// The maximum size a full encoder-stream instruction may occupy before it is rejected as a
-    /// resource-exhaustion attempt. Strings within an instruction are bounded by the field-section
-    /// limit. Huffman codes occupy up to 30 bits per decoded byte, so two strings need
+    /// resource-exhaustion attempt. Strings are bounded by both the field-section limit and
+    /// the current dynamic-table capacity. Huffman codes occupy up to 30 bits per byte, so two strings need
     /// at most eight times that limit plus integer headers.
     fn max_instruction_bytes(&self) -> usize {
-        self.config
-            .max_field_section_size
+        self.max_insert_string_len()
             .saturating_mul(8)
             .saturating_add(64)
+    }
+
+    /// No inserted string can exceed the current table capacity minus entry overhead.
+    /// Reject impossible inserts before retaining or decoding their literal payloads.
+    fn max_insert_string_len(&self) -> usize {
+        self.config.max_field_section_size.min(
+            usize::try_from(self.table.capacity().saturating_sub(ENTRY_OVERHEAD))
+                .unwrap_or(usize::MAX),
+        )
     }
 
     /// Feed bytes received on the peer's encoder stream, applying every complete instruction.
@@ -156,14 +176,12 @@ impl Decoder {
         let mut inserted = 0u64;
         loop {
             if self.encoder_stream.is_empty() {
-                match EncoderInstruction::encoded_len(input, self.config.max_field_section_size) {
+                match EncoderInstruction::encoded_len(input, self.max_insert_string_len()) {
                     Ok(len) => {
                         let mut cursor = &input[..len];
-                        let inst = EncoderInstruction::decode(
-                            &mut cursor,
-                            self.config.max_field_section_size,
-                        )
-                        .map_err(encoder_parse_error)?;
+                        let inst =
+                            EncoderInstruction::decode(&mut cursor, self.max_insert_string_len())
+                                .map_err(encoder_parse_error)?;
                         if self.apply_encoder_instruction(inst)? {
                             inserted += 1;
                         }
@@ -186,17 +204,15 @@ impl Decoder {
             loop {
                 match EncoderInstruction::encoded_len(
                     &self.encoder_stream,
-                    self.config.max_field_section_size,
+                    self.max_insert_string_len(),
                 ) {
                     Ok(len) => {
                         // Table entries must own compact literals rather than pinning the whole
                         // staging buffer through a tiny Bytes slice.
                         let mut cursor = &self.encoder_stream[..len];
-                        let inst = EncoderInstruction::decode(
-                            &mut cursor,
-                            self.config.max_field_section_size,
-                        )
-                        .map_err(encoder_parse_error)?;
+                        let inst =
+                            EncoderInstruction::decode(&mut cursor, self.max_insert_string_len())
+                                .map_err(encoder_parse_error)?;
                         if self.apply_encoder_instruction(inst)? {
                             inserted += 1;
                         }
@@ -230,6 +246,7 @@ impl Decoder {
                 .config
                 .max_decoder_stream_bytes
                 .saturating_sub(self.decoder_output.len())
+                .saturating_sub(self.output_in_flight)
         {
             return Err(QpackError::OutputBlocked);
         }
@@ -331,7 +348,8 @@ impl Decoder {
     /// Immediately decoded literals share the supplied allocation. Queued sections are compacted
     /// to avoid retaining an arbitrarily large backing allocation through a small slice. Retain a
     /// cheap `Bytes` clone until success: `OutputBlocked` leaves state unchanged, so drain and retry.
-    /// On `FieldSectionLimit`, queued sections for this stream are released. The caller must reset
+    /// On `FieldSectionLimit` or `StreamResourceLimit`, queued sections for this stream are released.
+    /// The caller must reset
     /// the stream and call [`Decoder::cancel_stream`] (draining and retrying if necessary) to notify
     /// the peer and release its references.
     #[expect(
@@ -382,7 +400,8 @@ impl Decoder {
         }
         let size = encoded.len().saturating_add(size_of::<BlockedSection>());
         if self.blocked_bytes.saturating_add(size) > self.config.max_blocked_bytes {
-            return Err(QpackError::ResourceLimit(
+            self.drop_blocked_stream(stream_id);
+            return Err(QpackError::StreamResourceLimit(
                 "blocked field-section storage exceeded",
             ));
         }
@@ -395,12 +414,39 @@ impl Decoder {
         Ok(None)
     }
 
+    /// Discard feedback after the connection driver has stopped its writers.
+    /// Buffered encoder instructions can still unblock complete received fields;
+    /// transport output reservations must no longer prevent their decoding.
+    pub(crate) fn discard_output_after_close(&mut self) {
+        self.decoder_output.clear();
+        self.output_in_flight = 0;
+    }
+
+    /// Decode buffered fields after connection close, when feedback can no longer be sent.
+    /// Missing inserts remain terminal: do not retain a section that can never resume.
+    pub(crate) fn decode_field_section_after_close(
+        &mut self,
+        stream_id: u64,
+        encoded: Bytes,
+    ) -> Result<Option<Vec<FieldPair>>, QpackError> {
+        self.decoder_output.clear();
+        let output_in_flight = std::mem::take(&mut self.output_in_flight);
+        self.drop_blocked_stream(stream_id);
+        let result = self.decode_field_section(stream_id, encoded);
+        // A writer may complete an earlier write after this synchronous decode.
+        // Preserve its reservation so that completion cannot underflow accounting.
+        self.output_in_flight = output_in_flight;
+        self.drop_blocked_stream(stream_id);
+        self.decoder_output.clear();
+        result
+    }
+
     /// Decode and remove blocked sections whose Required Insert Count is now satisfied.
     ///
     /// Each stream's sections are resumed front-first and only while the front is ready, so a
     /// stream's sections are never delivered out of order. A decode failure is reported per stream.
     /// `OutputBlocked` leaves the section queued; drain output before resuming again. A
-    /// `FieldSectionLimit` releases all queued sections for that stream; reset it and call
+    /// `FieldSectionLimit` and `StreamResourceLimit` release all queued sections for that stream; reset it and call
     /// [`Decoder::cancel_stream`] to release the peer's references.
     pub fn resume_blocked(&mut self) -> Vec<(u64, Result<Vec<FieldPair>, QpackError>)> {
         let insert_count = self.table.insert_count();
@@ -425,13 +471,45 @@ impl Decoder {
                 };
                 self.blocked_bytes -= section.size;
                 let result = self.decode_body(stream_id, &section.prefix, &section.body);
-                if matches!(result, Err(QpackError::FieldSectionLimit(_))) {
+                if matches!(
+                    result,
+                    Err(QpackError::FieldSectionLimit(_) | QpackError::StreamResourceLimit(_))
+                ) {
                     self.drop_blocked_stream(stream_id);
                 }
                 out.push((stream_id, result));
             }
         }
         out
+    }
+
+    /// Resume at most one ready section without allocating a temporary result list.
+    ///
+    /// Call within the connection's work budget. `OutputBlocked` retains the section;
+    /// drain decoder output before retrying. Ordering within each stream is preserved.
+    pub fn resume_next(&mut self) -> Option<(u64, Result<Vec<FieldPair>, QpackError>)> {
+        let insert_count = self.table.insert_count();
+        let (&stream_id, queue) = self.blocked.iter().find(|(_, queue)| {
+            queue
+                .front()
+                .is_some_and(|s| s.prefix.required_insert_count <= insert_count)
+        })?;
+        if queue.front()?.prefix.required_insert_count > 0
+            && let Err(error) =
+                self.reserve_instruction(DecoderInstruction::SectionAcknowledgment { stream_id })
+        {
+            return Some((stream_id, Err(error)));
+        }
+        let section = self.pop_ready_front(stream_id, insert_count)?;
+        self.blocked_bytes -= section.size;
+        let result = self.decode_body(stream_id, &section.prefix, &section.body);
+        if matches!(
+            result,
+            Err(QpackError::FieldSectionLimit(_) | QpackError::StreamResourceLimit(_))
+        ) {
+            self.drop_blocked_stream(stream_id);
+        }
+        Some((stream_id, result))
     }
 
     /// Remove and return the front blocked section of `stream_id` when its Required Insert Count is
@@ -480,7 +558,7 @@ impl Decoder {
         Ok(())
     }
 
-    fn drop_blocked_stream(&mut self, stream_id: u64) {
+    pub(crate) fn drop_blocked_stream(&mut self, stream_id: u64) {
         if let Some(queue) = self.blocked.remove(&stream_id) {
             for section in queue {
                 self.blocked_bytes -= section.size;
@@ -502,7 +580,7 @@ impl Decoder {
             section_size =
                 section_size.saturating_add(pair.name.len() as u64 + pair.value.len() as u64 + 32);
             if section_size > self.config.max_field_section_size as u64 {
-                return Err(QpackError::ResourceLimit("field section too large"));
+                return Err(QpackError::StreamResourceLimit("field section too large"));
             }
             fields.push(pair);
         }
@@ -645,6 +723,8 @@ fn validate_stream_id(stream_id: u64) -> Result<(), QpackError> {
 #[cfg(test)]
 mod regression_tests {
     use super::*;
+    use crate::h3::qpack::ErrorScope;
+    use rama_http_types::proto::h3::Code;
 
     fn section(ric: u64, base: u64, line: &FieldLine) -> Bytes {
         let mut bytes = BytesMut::new();
@@ -670,6 +750,143 @@ mod regression_tests {
         bytes.freeze()
     }
 
+    #[test]
+    fn clean_close_decode_preserves_outstanding_write_accounting() {
+        let mut decoder = Decoder::new(DecoderConfig::default());
+        decoder.feed_encoder_stream(&insertion()).unwrap();
+        let output = decoder.take_output_for_write();
+        let bytes = section(1, 0, &FieldLine::IndexedPostBase { index: 0 });
+        assert!(
+            decoder
+                .decode_field_section_after_close(0, bytes)
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(decoder.output_in_flight, output.len());
+        assert!(decoder.decoder_output.is_empty());
+        decoder.output_written(output.len());
+        assert_eq!(decoder.output_in_flight, 0);
+    }
+
+    #[test]
+    fn local_storage_limit_releases_only_affected_stream() {
+        let bytes = section(1, 0, &FieldLine::IndexedPostBase { index: 0 });
+        let mut decoder = Decoder::new(DecoderConfig {
+            max_blocked_bytes: 2 * (bytes.len() + size_of::<BlockedSection>()),
+            ..DecoderConfig::default()
+        });
+        decoder.decode_field_section(0, bytes.clone()).unwrap();
+        decoder.decode_field_section(4, bytes.clone()).unwrap();
+        let error = decoder.decode_field_section(0, bytes.clone()).unwrap_err();
+        assert_eq!(error.code(), Some(Code::H3_EXCESSIVE_LOAD));
+        assert_eq!(error.scope(), Some(ErrorScope::Stream));
+        assert_eq!(decoder.blocked_stream_count(), 1);
+        decoder.cancel_stream(0).unwrap();
+        decoder.decode_field_section(8, bytes).unwrap();
+        decoder.feed_encoder_stream(&insertion()).unwrap();
+        let decoded = decoder.resume_blocked();
+        assert_eq!(
+            decoded.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            [4, 8]
+        );
+        assert!(decoded.into_iter().all(|(_, fields)| fields.is_ok()));
+        assert_eq!(decoder.blocked_bytes, 0);
+    }
+
+    #[test]
+    fn aggregate_field_size_limit_has_http_stream_scope() {
+        let mut decoder = Decoder::new(DecoderConfig {
+            max_field_section_size: 32,
+            ..DecoderConfig::default()
+        });
+        let bytes = section(
+            0,
+            0,
+            &FieldLine::Indexed {
+                is_static: true,
+                index: 17,
+            },
+        );
+        let error = decoder.decode_field_section(0, bytes).unwrap_err();
+        assert_eq!(error.code(), Some(Code::H3_EXCESSIVE_LOAD));
+        assert_eq!(error.scope(), Some(ErrorScope::Stream));
+        assert_eq!(
+            decoder
+                .decode_field_section(4, Bytes::from_static(&[0, 0]))
+                .unwrap(),
+            Some(vec![])
+        );
+    }
+
+    #[test]
+    fn encoder_literal_budget_tracks_current_table_capacity() {
+        let mut decoder = Decoder::new(DecoderConfig::default());
+        let mut capacity = BytesMut::new();
+        EncoderInstruction::SetDynamicTableCapacity { capacity: 64 }.encode(&mut capacity);
+        decoder.feed_encoder_stream(&capacity).unwrap();
+        assert_eq!(decoder.max_insert_string_len(), 32);
+        let mut instruction = BytesMut::new();
+        EncoderInstruction::InsertWithLiteralName {
+            name: Bytes::from_static(b"x"),
+            value: Bytes::from(vec![b'a'; kib(64)]),
+            name_huffman: false,
+            value_huffman: false,
+        }
+        .encode(&mut instruction);
+        // The length prefix is sufficient to reject this impossible insertion;
+        // no full literal or half-megabyte staging allocation is needed.
+        assert!(matches!(
+            decoder.feed_encoder_stream(&instruction[..8]),
+            Err(QpackError::EncoderStreamError(_))
+        ));
+        assert!(decoder.encoder_stream.capacity() < kib(1));
+    }
+
+    #[test]
+    fn large_huffman_insert_fragmented_bytewise_decodes_only_when_complete() {
+        let mut decoder = Decoder::new(DecoderConfig::default());
+        let mut bytes = BytesMut::new();
+        EncoderInstruction::SetDynamicTableCapacity {
+            capacity: kib_u64(4),
+        }
+        .encode(&mut bytes);
+        decoder.feed_encoder_stream(&bytes).unwrap();
+        bytes.clear();
+        EncoderInstruction::InsertWithLiteralName {
+            name: Bytes::from(vec![b'a'; kib(1)]),
+            value: Bytes::from(vec![0xff; kib(2)]),
+            name_huffman: true,
+            value_huffman: true,
+        }
+        .encode(&mut bytes);
+        let last = bytes.len() - 1;
+        for (index, byte) in bytes.iter().enumerate() {
+            decoder.feed_encoder_stream(&[*byte]).unwrap();
+            assert_eq!(decoder.insert_count(), u64::from(index == last));
+            assert!(decoder.encoder_stream.len() <= decoder.max_instruction_bytes());
+        }
+        assert!(decoder.encoder_stream.is_empty());
+        assert_eq!(decoder.table.get(0).unwrap().1.as_ref(), vec![0xff; kib(2)]);
+    }
+
+    #[test]
+    fn detached_output_remains_charged_until_written() {
+        let mut decoder = Decoder::new(DecoderConfig {
+            max_decoder_stream_bytes: 10,
+            ..DecoderConfig::default()
+        });
+        decoder.decoder_output.extend_from_slice(&[0; 10]);
+        let output = decoder.take_output_for_write();
+        assert_eq!(output.len(), 10);
+        assert_eq!(decoder.reserve_output(1), Err(QpackError::OutputBlocked));
+        decoder.output_written(4);
+        decoder.reserve_output(4).unwrap();
+        assert_eq!(decoder.reserve_output(5), Err(QpackError::OutputBlocked));
+        decoder.decoder_output.extend_from_slice(&[0; 4]);
+        assert_eq!(decoder.reserve_output(1), Err(QpackError::OutputBlocked));
+        decoder.output_written(6);
+        decoder.reserve_output(6).unwrap();
+    }
     #[test]
     fn every_dynamic_reference_must_be_below_ric() {
         let mut decoder = Decoder::new(DecoderConfig::default());
@@ -980,8 +1197,6 @@ mod regression_tests {
 
     #[test]
     fn individual_limits_have_rfc_7_4_scope_and_recover_stream_storage() {
-        use crate::h3::qpack::error::ErrorScope;
-        use rama_http_types::proto::h3::Code;
         let config = DecoderConfig {
             max_field_section_size: 1,
             ..DecoderConfig::default()

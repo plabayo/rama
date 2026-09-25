@@ -1,13 +1,12 @@
-use rama_core::error::BoxErrorExt as _;
 use std::net::SocketAddr;
 
 use rama_core::{
-    error::{BoxError, ErrorContext as _, ErrorExt as _},
+    error::{BoxError, ErrorContext as _},
     extensions::Extensions,
     telemetry::tracing,
 };
 use rama_net::{
-    address::{HostWithPort, SocketAddress, ip::IntoCanonicalIpAddr as _},
+    address::{HostWithPort, SocketAddress},
     mode::ConnectIpMode,
 };
 
@@ -43,26 +42,15 @@ pub async fn bind_udp_socket_with_connect(
     let HostWithPort { host, port } = address.into();
     let ip = host
         .try_as_ip()
-        .context("udp connector target host is not an IP address")?
-        .into_canonical_ip_addr();
+        .context("udp connector target host is not an IP address")?;
 
     let mode = extensions
         .and_then(|ext| ext.get_ref().copied())
         .unwrap_or(ConnectIpMode::Dual);
-    match (ip, mode) {
-        (std::net::IpAddr::V4(_), ConnectIpMode::Ipv6) => {
-            return Err(BoxError::from_static_str("IPv4 address is not allowed")
-                .context_field("host", host)
-                .context_field("port", port));
-        }
-        (std::net::IpAddr::V6(_), ConnectIpMode::Ipv4) => {
-            return Err(BoxError::from_static_str("IPv6 address is not allowed")
-                .context_field("host", host)
-                .context_field("port", port));
-        }
-        (std::net::IpAddr::V4(_), ConnectIpMode::Ipv4 | ConnectIpMode::Dual)
-        | (std::net::IpAddr::V6(_), ConnectIpMode::Ipv6 | ConnectIpMode::Dual) => {}
-    }
+    let ip = mode
+        .validate_ip(ip)
+        .context_field("host", host)
+        .context_field("port", port)?;
 
     let address: SocketAddr = (ip, port).into();
     let bind_address = if address.is_ipv4() {

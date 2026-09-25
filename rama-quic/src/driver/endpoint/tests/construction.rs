@@ -415,3 +415,51 @@ async fn an_ipv6_only_wildcard_receiver_does_not_cover_ipv4() {
     assert!(!registry.covers_local(registry.active_id(), ipv4));
     assert_eq!(registry.only_cover_for(ipv4), None);
 }
+
+/// One wildcard client keeps a usable local port in both families even when IPv4-only sockets
+/// occupy part of the ephemeral namespace. Both handshakes and application data use that port.
+#[cfg(target_vendor = "apple")]
+#[tokio::test]
+async fn a_dual_stack_client_carries_both_families_with_occupied_ipv4_ports() {
+    let held: Vec<_> = (0..64)
+        .map(|_| std::net::UdpSocket::bind(SocketAddr::from(SocketAddress::local_ipv4(0))).unwrap())
+        .collect();
+    let (client_config, server_config) = configs();
+    let server_v4 = Endpoint::bind_server(
+        rama_core::rt::Executor::new(),
+        server_config.clone(),
+        SocketAddress::local_ipv4(0),
+    )
+    .await
+    .unwrap();
+    let server_v6 = Endpoint::bind_server(
+        rama_core::rt::Executor::new(),
+        server_config,
+        SocketAddress::local_ipv6(0),
+    )
+    .await
+    .unwrap();
+    for _ in 0..4 {
+        let client = Endpoint::bind_client(
+            rama_core::rt::Executor::new(),
+            SocketAddress::default_ipv6(0),
+        )
+        .await
+        .unwrap();
+        let port = client.local_addr().unwrap().port();
+        assert!(
+            held.iter()
+                .all(|socket| socket.local_addr().unwrap().port() != port)
+        );
+        tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::join!(
+                exchange_both_ways(&client, &server_v4, client_config.clone()),
+                exchange_both_ways(&client, &server_v6, client_config.clone()),
+            );
+        })
+        .await
+        .expect("the same client completes IPv4 and IPv6 handshakes and data transfer");
+        client.shutdown().await;
+    }
+    tokio::join!(server_v4.shutdown(), server_v6.shutdown());
+}

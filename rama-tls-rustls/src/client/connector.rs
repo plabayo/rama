@@ -1,5 +1,5 @@
 use super::{AutoTlsStream, RustlsTlsStream, TlsConnectorData, TlsStream};
-use crate::client::config::RustlsTlsConnectorConfig;
+use crate::client::config::{RustlsTlsClientConfigProvider, RustlsTlsConnectorConfig};
 use crate::dep::tokio_rustls::TlsConnector as RustlsConnector;
 use crate::types::TlsTunnel;
 use rama_core::conversion::{RamaInto, RamaTryFrom};
@@ -10,17 +10,19 @@ use rama_core::telemetry::tracing;
 use rama_core::{Layer, Service};
 use rama_net::address::Host;
 use rama_net::client::{
-    ConnectionError, ConnectionErrorKind, ConnectorService, EstablishedClientConnection,
+    ConnectionAttempt, ConnectionError, ConnectionErrorKind, ConnectionPolicyScope,
+    ConnectorService, EstablishedClientConnection,
 };
 use rama_net::extensions::StreamTransformed;
 use rama_net::{
     AuthorityInputExt, Protocol, ProtocolInputExt,
     tls::{ApplicationProtocol, TlsAlpn, default_tls_alpn},
 };
-use rama_tls::client::{NegotiatedTlsParameters, TlsClientConfig};
+use rama_tls::client::{NegotiatedTlsParameters, TlsClientConfig, TlsConnectionReuse};
 use rama_tls::{TlsTunnelMode, resolve_tls_tunnel};
 #[cfg(feature = "http")]
 use rama_utils::collections::smallvec::smallvec;
+use rama_utils::macros::generate_set_and_with;
 
 #[cfg(feature = "http")]
 use ::{
@@ -38,7 +40,7 @@ pub struct TlsConnectorLayer<K = ConnectorKindAuto> {
 }
 
 impl<K> TlsConnectorLayer<K> {
-    rama_utils::macros::generate_set_and_with! {
+    generate_set_and_with! {
         /// Define the base [`TlsClientConfig`] for this [`TlsConnectorLayer`].
         ///
         /// Auto and secure connectors layer per-request TLS pieces on top of this
@@ -53,8 +55,9 @@ impl<K> TlsConnectorLayer<K> {
 
 impl TlsConnectorLayer<ConnectorKindAuto> {
     /// Creates a new [`TlsConnectorLayer`] which will establish
-    /// a secure connection if the request demands it,
-    /// otherwise it will forward the pre-established inner connection.
+    /// a secure connection when the input protocol is secure. Otherwise it
+    /// forwards the inner connection. The logical authority remains the default
+    /// server identity.
     #[must_use]
     pub fn auto() -> Self {
         Self {
@@ -138,7 +141,7 @@ impl<S, K> TlsConnector<S, K> {
         }
     }
 
-    rama_utils::macros::generate_set_and_with! {
+    generate_set_and_with! {
         /// Define the base [`TlsClientConfig`] for this [`TlsConnector`].
         ///
         /// Auto and secure connectors layer per-request TLS pieces on top of this
@@ -153,8 +156,9 @@ impl<S, K> TlsConnector<S, K> {
 
 impl<S> TlsConnector<S, ConnectorKindAuto> {
     /// Creates a new [`TlsConnector`] which will establish
-    /// a secure connection if the request demands it,
-    /// otherwise it will forward the pre-established inner connection.
+    /// a secure connection when the input protocol is secure. Otherwise it
+    /// forwards the inner connection. The logical authority remains the default
+    /// server identity.
     pub fn auto(inner: S) -> Self {
         Self::new(inner, ConnectorKindAuto)
     }
@@ -187,6 +191,7 @@ where
     type Error = ConnectionError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
+        self.check_attempt_policy(&input, input.protocol().is_some_and(Protocol::is_secure))?;
         let EstablishedClientConnection { input, conn } = self.inner.connect(input).await?;
 
         let authority = input.authority().ok_or_else(|| {
@@ -197,11 +202,8 @@ where
         })?;
         let app_protocol = input.protocol();
 
-        if !app_protocol
-            .as_ref()
-            .map(|p| p.is_secure())
-            .unwrap_or_default()
-        {
+        if !app_protocol.is_some_and(Protocol::is_secure) {
+            self.check_attempt_policy(&input, false)?;
             tracing::trace!(
                 server.address = %authority.host,
                 server.port = authority.port_u16(),
@@ -229,6 +231,9 @@ where
                 ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
                     .context("TlsConnector(auto): build connector configuration")
             })?;
+
+        let scope = Self::check_connector_data(&input, &connector_data, &authority.host)?;
+        let reuse = TlsConnectionReuse::new(RustlsTlsClientConfigProvider, input.extensions());
 
         let (stream, negotiated_params) = self
             .handshake(connector_data, Some(server_host), conn)
@@ -258,6 +263,8 @@ where
                 .context("TlsConnector(auto): validate negotiated HTTP version")
         })?;
 
+        reuse.publish(conn.extensions());
+        conn.extensions().insert(scope);
         conn.extensions().insert(negotiated_params);
         conn.extensions().insert(StreamTransformed {
             by: "rama-tls-rustls::TlsConnector",
@@ -275,6 +282,7 @@ where
     type Error = ConnectionError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
+        self.check_attempt_policy(&input, true)?;
         let EstablishedClientConnection { input, conn } = self.inner.connect(input).await?;
 
         let authority = input.authority().ok_or_else(|| {
@@ -300,6 +308,9 @@ where
                     .context("TlsConnector(secure): build connector configuration")
             })?;
 
+        let scope = Self::check_connector_data(&input, &connector_data, &authority.host)?;
+        let reuse = TlsConnectionReuse::new(RustlsTlsClientConfigProvider, input.extensions());
+
         let (conn, negotiated_params) = self
             .handshake(connector_data, Some(server_host), conn)
             .await
@@ -321,6 +332,8 @@ where
                 .context("TlsConnector(secure): validate negotiated HTTP version")
         })?;
 
+        reuse.publish(conn.extensions());
+        conn.extensions().insert(scope);
         conn.extensions().insert(negotiated_params);
         conn.extensions().insert(StreamTransformed {
             by: "rama-tls-rustls::TlsConnector",
@@ -340,7 +353,8 @@ where
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let EstablishedClientConnection { input, conn } = self.inner.connect(input).await?;
 
-        let tunnel = input.extensions().get_ref::<TlsTunnel>().cloned();
+        let tunnel = TlsTunnel::from_extensions(input.extensions()).cloned();
+        let reuse = TlsConnectionReuse::tunnel(RustlsTlsClientConfigProvider, input.extensions());
 
         let TlsTunnelMode::Tls(maybe_server_host) =
             resolve_tls_tunnel(tunnel.as_ref(), self.kind.host.as_ref())
@@ -349,6 +363,7 @@ where
                 "TlsConnector(tunnel): return inner connection: no Tls tunnel is requested"
             );
 
+            reuse.publish(conn.extensions());
             return Ok(EstablishedClientConnection {
                 input,
                 conn: AutoTlsStream::plain(conn),
@@ -374,6 +389,7 @@ where
             })?;
         let conn = AutoTlsStream::secure(conn);
 
+        reuse.publish(conn.extensions());
         conn.extensions().insert(negotiated_params);
         conn.extensions().insert(StreamTransformed {
             by: "rama-tls-rustls::TlsConnector",
@@ -410,6 +426,74 @@ impl<S, K> TlsConnector<S, K> {
 
         apply_default_alpn(&effective, application_protocol);
         effective
+    }
+
+    /// Reject an incompatible discovery policy before dialing. Ordinary connections
+    /// retain their existing inner-connector override behavior.
+    fn check_attempt_policy(
+        &self,
+        input: &(impl AuthorityInputExt + ExtensionsRef),
+        secure: bool,
+    ) -> Result<(), ConnectionError> {
+        let Some(attempt) = input.extensions().get_ref::<ConnectionAttempt>() else {
+            return Ok(());
+        };
+        let request = RustlsTlsConnectorConfig::from_extensions(input.extensions());
+        let scope = if request.has_overrides() {
+            ConnectionPolicyScope::Request
+        } else {
+            ConnectionPolicyScope::Connector
+        };
+        if !secure {
+            return attempt.check_policy(scope, None);
+        }
+
+        let merged;
+        let extensions = match (&self.base_config, request.has_overrides()) {
+            (Some(base), true) => {
+                merged = input.extensions().fork().with_base(base.as_extensions());
+                &merged
+            }
+            (Some(base), false) => base.as_extensions(),
+            (None, _) => input.extensions(),
+        };
+        let effective = RustlsTlsConnectorConfig::from_extensions(extensions);
+        if !effective.authenticates_server() {
+            return attempt.check_policy(scope, None);
+        }
+        let authority = effective
+            .server_name
+            .is_none()
+            .then(|| input.authority())
+            .flatten();
+        let peer = effective
+            .server_name
+            .map(|name| &name.0)
+            .or_else(|| authority.as_ref().map(|authority| &authority.host));
+        attempt.check_policy(scope, peer)
+    }
+
+    /// Classify the request after inner connectors have added their extensions,
+    /// and check the actual native configuration used by this handshake.
+    fn check_connector_data(
+        input: &impl ExtensionsRef,
+        data: &TlsConnectorData,
+        server_host: &Host,
+    ) -> Result<ConnectionPolicyScope, ConnectionError> {
+        let scope = if RustlsTlsConnectorConfig::from_extensions(input.extensions()).has_overrides()
+        {
+            ConnectionPolicyScope::Request
+        } else {
+            ConnectionPolicyScope::Connector
+        };
+        if let Some(attempt) = input.extensions().get_ref::<ConnectionAttempt>() {
+            let peer = data
+                .verification_enabled
+                .then_some(data.server_name.as_ref().unwrap_or(server_host));
+            attempt.check_policy(scope, peer)?;
+            return Ok(attempt.policy_scope());
+        }
+        Ok(scope)
     }
 
     fn connector_data(
@@ -451,6 +535,15 @@ impl<S, K> TlsConnector<S, K> {
             .or_else(|| maybe_server_host.cloned())
             .context("server identity missing")?;
 
+        let authenticated_identity = connector_data
+            .verification_enabled
+            .then(|| {
+                connector_data
+                    .server_name
+                    .clone()
+                    .or_else(|| maybe_server_host.cloned())
+            })
+            .flatten();
         let server_name = rama_crypto::pki_types::ServerName::rama_try_from(
             connector_data
                 .server_name
@@ -472,6 +565,13 @@ impl<S, K> TlsConnector<S, K> {
             }
         };
 
+        stream
+            .get_ref()
+            .0
+            .extensions()
+            .insert(rama_tls::client::TlsServerAuthentication(
+                authenticated_identity,
+            ));
         let (_, conn_data_ref) = stream.get_ref();
 
         let server_certificate_chain = if connector_data.store_server_certificate_chain {
@@ -616,6 +716,242 @@ pub struct ConnectorKindTunnel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rama_net::client::pool::ConnectionReuse;
+
+    use rama_core::{ServiceInput, service::service_fn};
+    use rama_net::{
+        address::HostWithPort,
+        client::{ConnectRequest, ConnectionErrorDomain},
+    };
+    use rama_tls::client::{ServerVerifyMode, TlsServerName, TlsServerVerify};
+
+    use rama_crypto::cert::generate_server_auth;
+    use rama_net::stream::service::EchoService;
+    use rama_tls::server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig};
+    use std::{sync::Arc, time::Duration};
+
+    fn origin_attempt() -> ConnectRequest {
+        let input =
+            ConnectRequest::new(HostWithPort::new(Host::from_static("origin.example"), 443))
+                .with_application_protocol(Protocol::HTTPS);
+        input.extensions().insert(
+            ConnectionAttempt::new().with_authenticated_peer(Host::from_static("origin.example")),
+        );
+        input
+    }
+
+    #[tokio::test]
+    async fn plaintext_tunnel_bypass_rejects_later_tls_activation() {
+        let transport = service_fn(async |input: ServiceInput<()>| {
+            let (stream, _peer) = tokio::io::duplex(64);
+            Ok::<_, ConnectionError>(EstablishedClientConnection {
+                input,
+                conn: ServiceInput::new(stream),
+            })
+        });
+        let connector = TlsConnector::tunnel(transport, None);
+        let established = connector.serve(ServiceInput::new(())).await.unwrap();
+        let reuse = established
+            .conn
+            .extensions()
+            .get_ref::<ConnectionReuse>()
+            .unwrap();
+        let next = Extensions::new();
+        assert!(reuse.matches(&next));
+        next.insert(TlsTunnel {
+            server_identity: Some(Host::from_static("proxy.example")),
+            application_protocol: Some(Protocol::HTTPS),
+            alpn: None,
+        });
+        assert!(!reuse.matches(&next));
+    }
+
+    #[tokio::test]
+    async fn discovery_rejects_incompatible_defaults_before_dial() {
+        for base in [
+            TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable),
+            TlsClientConfig::new().with_server_name(Host::from_static("other.example")),
+        ] {
+            let transport = service_fn(
+                async |_input: ConnectRequest| -> Result<
+                    EstablishedClientConnection<
+                        ServiceInput<tokio::io::DuplexStream>,
+                        ConnectRequest,
+                    >,
+                    ConnectionError,
+                > {
+                    panic!("incompatible authentication must be rejected before dialing");
+                },
+            );
+            let connector = TlsConnector::auto(transport).with_base_config(base);
+            let input = origin_attempt();
+            let attempt = input.extensions().get_arc::<ConnectionAttempt>().unwrap();
+            let error = connector.serve(input).await.expect_err("policy rejection");
+            assert_eq!(error.domain(), ConnectionErrorDomain::Local);
+            assert_eq!(error.kind(), ConnectionErrorKind::Unavailable);
+            assert_eq!(attempt.policy_scope(), ConnectionPolicyScope::Connector);
+        }
+    }
+
+    #[tokio::test]
+    async fn discovery_rejects_inner_connector_plaintext_downgrade() {
+        let transport = service_fn(async |mut input: ConnectRequest| {
+            input.application_protocol = Some(Protocol::HTTP);
+            Ok::<_, ConnectionError>(EstablishedClientConnection {
+                input,
+                conn: ServiceInput::new(tokio::io::duplex(64).0),
+            })
+        });
+        let connector = TlsConnector::auto(transport);
+        let error = connector
+            .serve(origin_attempt())
+            .await
+            .expect_err("plaintext rejection");
+        assert_eq!(error.domain(), ConnectionErrorDomain::Local);
+        assert_eq!(error.kind(), ConnectionErrorKind::Unavailable);
+    }
+
+    #[test]
+    fn discovery_request_policy_overrides_connector_defaults() {
+        let connector = TlsConnector::secure(()).with_base_config(
+            TlsClientConfig::new()
+                .with_server_verify(ServerVerifyMode::Disable)
+                .with_server_name(Host::from_static("other.example")),
+        );
+        let input = origin_attempt();
+        input
+            .extensions()
+            .insert(TlsServerVerify(ServerVerifyMode::Auto));
+        input
+            .extensions()
+            .insert(TlsServerName(Host::from_static("origin.example")));
+        connector
+            .check_attempt_policy(&input, true)
+            .expect("request restores authentication");
+        assert_eq!(
+            input
+                .extensions()
+                .get_ref::<ConnectionAttempt>()
+                .unwrap()
+                .policy_scope(),
+            ConnectionPolicyScope::Request
+        );
+    }
+
+    #[tokio::test]
+    async fn discovery_rechecks_inner_connector_tls_overrides() {
+        for disable_verification in [false, true] {
+            let transport = service_fn(move |input: ConnectRequest| async move {
+                if disable_verification {
+                    input
+                        .extensions()
+                        .insert(TlsServerVerify(ServerVerifyMode::Disable));
+                } else {
+                    input
+                        .extensions()
+                        .insert(TlsServerName(Host::from_static("other.example")));
+                }
+                let (io, peer) = tokio::io::duplex(64);
+                drop(peer);
+                Ok::<_, ConnectionError>(EstablishedClientConnection {
+                    input,
+                    conn: ServiceInput::new(io),
+                })
+            });
+            let connector = TlsConnector::secure(transport);
+            let input = origin_attempt();
+            let attempt = input.extensions().get_arc::<ConnectionAttempt>().unwrap();
+            let error = connector
+                .serve(input)
+                .await
+                .expect_err("policy rejection before handshake");
+            assert_eq!(error.domain(), ConnectionErrorDomain::Local);
+            assert_eq!(error.kind(), ConnectionErrorKind::Unavailable);
+            assert_eq!(attempt.policy_scope(), ConnectionPolicyScope::Request);
+        }
+    }
+
+    #[tokio::test]
+    async fn successful_origin_handshake_reports_effective_policy_scope() {
+        let (cert_chain, private_key) =
+            generate_server_auth(GeneratedServerAuthConfig::default()).expect("server auth");
+        let trust_anchor = cert_chain.last().expect("trust anchor").clone();
+        let server = Arc::new(
+            crate::server::TlsAcceptorLayer::new(TlsServerConfig::new().with_single_cert(
+                ServerAuthData {
+                    cert_chain,
+                    private_key,
+                    ocsp: None,
+                },
+            ))
+            .into_layer(EchoService::new()),
+        );
+        let base = TlsClientConfig::new()
+            .with_server_name(Host::from_static("localhost"))
+            .try_with_server_trust_anchors([trust_anchor])
+            .expect("trust anchor");
+
+        for request_override in [false, true] {
+            let (client_io, server_io) = tokio::io::duplex(64);
+            let server = server.clone();
+            let server_task =
+                tokio::spawn(async move { server.serve(ServiceInput::new(server_io)).await });
+            let client_io = Arc::new(tokio::sync::Mutex::new(Some(client_io)));
+            let transport = service_fn(move |input: ConnectRequest| {
+                let client_io = client_io.clone();
+                async move {
+                    let conn = ServiceInput::new(client_io.lock().await.take().expect("one dial"));
+                    Ok::<_, ConnectionError>(EstablishedClientConnection { input, conn })
+                }
+            });
+            let connector = TlsConnector::secure(transport).with_base_config(base.clone());
+            let input = ConnectRequest::new(HostWithPort::new(Host::from_static("localhost"), 443));
+            if request_override {
+                input
+                    .extensions()
+                    .insert(TlsServerVerify(ServerVerifyMode::Auto));
+                input.extensions().insert(
+                    ConnectionAttempt::new()
+                        .with_authenticated_peer(Host::from_static("localhost")),
+                );
+            }
+            let established = tokio::time::timeout(Duration::from_secs(5), connector.serve(input))
+                .await
+                .expect("handshake timeout")
+                .expect("origin handshake");
+            assert_eq!(
+                established
+                    .conn
+                    .extensions()
+                    .get_ref::<ConnectionPolicyScope>()
+                    .copied(),
+                Some(if request_override {
+                    ConnectionPolicyScope::Request
+                } else {
+                    ConnectionPolicyScope::Connector
+                }),
+            );
+            let reuse = established
+                .conn
+                .extensions()
+                .get_ref::<ConnectionReuse>()
+                .expect("native TLS connector publishes reuse policy");
+            let same = Extensions::new();
+            if request_override {
+                same.insert(TlsServerVerify(ServerVerifyMode::Auto));
+            }
+            assert!(reuse.is_reusable());
+            assert!(reuse.matches(&same));
+            let changed = same.fork();
+            changed.insert(TlsServerVerify(ServerVerifyMode::Disable));
+            assert!(!reuse.matches(&changed));
+            drop(established);
+            let _server_result = tokio::time::timeout(Duration::from_secs(5), server_task)
+                .await
+                .expect("server shutdown")
+                .expect("server task");
+        }
+    }
 
     #[test]
     fn tunnel_config_uses_only_base_and_explicit_tunnel_policy() {
@@ -833,6 +1169,9 @@ mod tests {
         let connector = TlsConnector::tunnel(transport, None).with_base_config(proxy_base);
 
         let input = ServiceInput::new(());
+        input.extensions().insert(
+            ConnectionAttempt::new().with_authenticated_peer(Host::from_static("origin.example")),
+        );
         TlsClientConfig::new()
             .with_alpn_http_1()
             .with_server_name(Host::from_static("origin.example"))
@@ -850,6 +1189,46 @@ mod tests {
         });
 
         let established = connector.serve(input).await.expect("proxy TLS handshake");
+        let reuse = established
+            .conn
+            .extensions()
+            .get_ref::<ConnectionReuse>()
+            .expect("proxy TLS connector publishes reuse policy");
+        let next_origin = Extensions::new();
+        next_origin.insert(TlsServerName(Host::from_static("another-origin.example")));
+        next_origin.insert(TlsServerVerify(ServerVerifyMode::Disable));
+        assert!(reuse.is_reusable());
+        assert!(!reuse.matches(&next_origin));
+        next_origin.insert(
+            established
+                .input
+                .extensions()
+                .get_ref::<TlsTunnel>()
+                .unwrap()
+                .clone(),
+        );
+        assert!(reuse.matches(&next_origin));
+        next_origin.insert(TlsTunnel {
+            server_identity: None,
+            application_protocol: None,
+            alpn: None,
+        });
+        assert!(!reuse.matches(&next_origin));
+        assert_eq!(
+            established
+                .input
+                .extensions()
+                .get_ref::<ConnectionAttempt>()
+                .unwrap()
+                .policy_scope(),
+            ConnectionPolicyScope::Unknown,
+        );
+        assert!(
+            !established
+                .conn
+                .extensions()
+                .contains::<ConnectionPolicyScope>()
+        );
         let negotiated = established
             .conn
             .extensions()

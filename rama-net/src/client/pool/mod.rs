@@ -1,11 +1,11 @@
 use core::{fmt::Debug, hash::Hash};
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use super::conn::{ConnectorService, EstablishedClientConnection};
 use super::{ConnectionError, ConnectionErrorKind};
 
 use rama_core::error::BoxError;
-use rama_core::extensions::{Extension, ExtensionsRef};
+use rama_core::extensions::{Extension, Extensions, ExtensionsRef};
 use rama_core::telemetry::tracing::trace;
 use rama_core::{Layer, Service};
 use rama_utils::macros::generate_set_and_with;
@@ -16,6 +16,10 @@ use tokio::time::timeout;
 #[cfg(feature = "opentelemetry")]
 #[cfg_attr(docsrs, doc(cfg(feature = "opentelemetry")))]
 pub mod metrics;
+
+mod admission;
+#[doc(inline)]
+pub use admission::{ConnectionAdmission, ConnectionAdmissionLease, ConnectionAdmissionPolicy};
 
 mod exclusive;
 #[doc(inline)]
@@ -29,6 +33,100 @@ pub mod multiplex;
 #[doc(inline)]
 pub use multiplex::{MultiplexPool, MultiplexedConnection, MuxSelection};
 
+/// Connection-owned requirements for reusing an established transport.
+///
+/// Publish this through [`ConnectionReuse`] after establishment. Matching must be
+/// deterministic, nonblocking and side-effect free for a fixed connector policy.
+/// Pools invoke it outside their storage locks. Retire a pool before changing the
+/// connector's fixed defaults; these requirements describe its established connections.
+pub trait ConnectionReusePolicy: Debug + Send + Sync + 'static {
+    /// Whether this connection may be retained after its establishing request.
+    fn is_reusable(&self) -> bool {
+        true
+    }
+
+    /// Whether the request's extensions are compatible with this connection.
+    fn matches(&self, input: &Extensions) -> bool;
+}
+
+/// Reuse requirements published by a connector on its established connection.
+///
+/// Without this extension, the pool's connection identifier determines reuse.
+/// Connectors whose policy varies by request must publish their requirements.
+/// Layered transports can combine requirements once with [`Self::and`].
+#[derive(Clone, Debug, Extension)]
+pub struct ConnectionReuse {
+    policy: Arc<dyn ConnectionReusePolicy>,
+    complete: bool,
+}
+
+impl ConnectionReuse {
+    /// Publish the complete reuse policy for the requested endpoint.
+    ///
+    /// This describes policy compatibility, not peer authentication. Transport
+    /// layers which cover only an intermediary must use [`Self::restriction`].
+    pub fn new(policy: impl ConnectionReusePolicy) -> Self {
+        Self {
+            policy: Arc::new(policy),
+            complete: true,
+        }
+    }
+
+    /// Publish an additional transport restriction without certifying the
+    /// requested endpoint's complete policy, such as TLS to an intermediary.
+    pub fn restriction(policy: impl ConnectionReusePolicy) -> Self {
+        Self::new(policy).into_restriction()
+    }
+
+    /// Whether a connector has published the requested endpoint's complete policy.
+    pub fn is_complete(&self) -> bool {
+        self.complete
+    }
+
+    /// Preserve the requirements while limiting them to an inner transport.
+    ///
+    /// A tunnel layer must apply this to its combined inner requirements before
+    /// passing the connection to the requested endpoint's connector.
+    #[must_use]
+    pub fn into_restriction(mut self) -> Self {
+        self.complete = false;
+        self
+    }
+
+    /// Whether the established connection may be retained for later requests.
+    pub fn is_reusable(&self) -> bool {
+        self.policy.is_reusable()
+    }
+
+    /// Check the request against the established connection's requirements.
+    pub fn matches(&self, input: &Extensions) -> bool {
+        self.is_reusable() && self.policy.matches(input)
+    }
+
+    /// Require both transport layers to accept reuse of the connection.
+    #[must_use]
+    pub fn and(self, other: Self) -> Self {
+        let complete = self.complete || other.complete;
+        Self {
+            policy: Arc::new(CombinedReuse(self, other)),
+            complete,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct CombinedReuse(ConnectionReuse, ConnectionReuse);
+
+impl ConnectionReusePolicy for CombinedReuse {
+    fn is_reusable(&self) -> bool {
+        self.0.is_reusable() && self.1.is_reusable()
+    }
+
+    fn matches(&self, input: &Extensions) -> bool {
+        self.0.matches(input) && self.1.matches(input)
+    }
+}
+
 /// [`Pool`] implements the storage part of a connection pool. This storage
 /// also decides which connection it returns for a given ID or when the caller asks to
 /// remove one, this results in the storage deciding which mode we use for connection
@@ -37,7 +135,13 @@ pub trait Pool<C, ID>: Send + Sync + 'static {
     type Connection: Send + ExtensionsRef;
     type CreatePermit: Send;
 
-    /// Get a connection from the pool, if no connection is found a [`Pool::CreatePermit`] is returned
+    /// Get a compatible connection, or a permit to establish a new connection.
+    ///
+    /// Implementations must check [`ConnectionReuse`] against `input` before
+    /// admitting a stored connection, and honor its retention policy in `create`.
+    /// Pools which retain connections must honor [`ConnectionAdmission`] before
+    /// handout and hold its lease until consumed or dropped. Evaluate providers
+    /// and compatibility policies outside storage and admission locks.
     ///
     /// A [`Pool::CreatePermit`] is needed to add a new connection to the pool. Depending on how
     /// the [`Pool::CreatePermit`] is used a pool can implement policies for max connection and max
@@ -45,20 +149,23 @@ pub trait Pool<C, ID>: Send + Sync + 'static {
     fn get_conn(
         &self,
         id: &ID,
+        input: &Extensions,
     ) -> impl Future<
         Output = Result<ConnectionResult<Self::Connection, Self::CreatePermit>, BoxError>,
     > + Send;
 
-    /// Create/add a new connection to the pool
+    /// Admit the establishing request before publishing its new connection.
     ///
-    /// To be able to a connection to the pool you need a [`Pool::CreatePermit`], depending on
-    /// how the pool implements this you might need to call [`Pool::get_conn`] to get this first.
+    /// Retaining pools reserve any [`ConnectionAdmission`] resources against
+    /// `input` before exposing the connection to concurrent checkouts. Obtain
+    /// the creation permit from [`Self::get_conn`].
     fn create(
         &self,
         id: ID,
         conn: C,
         create_permit: Self::CreatePermit,
-    ) -> impl Future<Output = Self::Connection> + Send;
+        input: &Extensions,
+    ) -> impl Future<Output = Result<Self::Connection, BoxError>> + Send;
 }
 
 /// Result returned by a successful call to [`Pool::get_conn`]
@@ -85,7 +192,8 @@ impl<C: Debug, P: Debug> Debug for ConnectionResult<C, P> {
 ///
 /// Basically this pool operates like there would be no connection pooling.
 /// Can be used in places where were we work with a [`PooledConnector`], but
-/// don't want connection pooling to happen.
+/// don't want connection pooling to happen. Since every request establishes
+/// its own connection, resource admission remains with the transport itself.
 pub struct NoPool;
 
 impl<C, ID> Pool<C, ID> for NoPool
@@ -99,14 +207,22 @@ where
     async fn get_conn(
         &self,
         _id: &ID,
+        _input: &Extensions,
     ) -> Result<ConnectionResult<Self::Connection, Self::CreatePermit>, BoxError> {
         Ok(ConnectionResult::CreatePermit(()))
     }
 
-    async fn create(&self, _id: ID, conn: C, _permit: Self::CreatePermit) -> Self::Connection {
-        conn
+    async fn create(
+        &self,
+        _id: ID,
+        conn: C,
+        _permit: Self::CreatePermit,
+        _input: &Extensions,
+    ) -> Result<Self::Connection, BoxError> {
+        Ok(conn)
     }
 }
+
 #[expect(dead_code)]
 #[derive(Debug)]
 /// Active slot is able to actively use a connection to make requests.
@@ -135,6 +251,14 @@ pub trait ReqToConnID<Input: ExtensionsRef>: Sized + Clone + Send + Sync + 'stat
 /// to filter which connections can be used for a specific input in a way that
 /// is independent of what an input is.
 pub trait ConnID: Send + Sync + Eq + Hash + Clone + Debug + 'static {
+    /// Whether a connection with this policy may be shared with later requests.
+    ///
+    /// A false result requires a fresh connection that is discarded after use.
+    /// Pool capacity limits still apply.
+    fn is_reusable(&self) -> bool {
+        true
+    }
+
     #[cfg(feature = "opentelemetry")]
     /// Returns a list of attributes to add to metrics generated by the
     /// connection pool.
@@ -174,10 +298,9 @@ impl<S, P, R> PooledConnector<S, P, R> {
     }
 
     generate_set_and_with!(
-        /// Set timeout after which requesting a connection from the pool will timeout
+        /// Bound each wait for a pool slot or newly established transport credit.
         ///
-        /// If no timeout is specified there will be no limit, this could be dangerous
-        /// depending on how many users are waiting for a connection
+        /// The transport handshake is separate. `None` leaves these waits unbounded.
         pub fn wait_for_pool_timeout(mut self, timeout: Option<Duration>) -> Self {
             self.wait_for_pool_timeout = timeout;
             self
@@ -216,7 +339,7 @@ where
         };
 
         let pool_result = if let Some(duration) = self.wait_for_pool_timeout {
-            timeout(duration, pool.get_conn(&conn_id))
+            timeout(duration, pool.get_conn(&conn_id, input.extensions()))
                     .await
                     .inspect_err(|err|{
                         trace!(%err, "pooled connector: timeout triggered while waiting for a connection (/w conn id: {conn_id:?}) from pool");
@@ -226,7 +349,7 @@ where
                             .context("pooled connector: wait for connection")
                     })?
         } else {
-            pool.get_conn(&conn_id).await
+            pool.get_conn(&conn_id, input.extensions()).await
         };
 
         match pool_result.map_err(|error| {
@@ -249,7 +372,18 @@ where
                 trace!(
                     "pooled connector: returning new pooled connection (w/ conn id: {conn_id:?}"
                 );
-                let conn = pool.create(conn_id, conn, permit).await;
+                let admission = pool.create(conn_id, conn, permit, input.extensions());
+                let conn = if let Some(duration) = self.wait_for_pool_timeout {
+                    timeout(duration, admission).await.map_err(|error| {
+                        ConnectionError::local(error, ConnectionErrorKind::Timeout)
+                            .context("pooled connector: wait for new connection admission")
+                    })?
+                } else {
+                    admission.await
+                }
+                .map_err(|error| {
+                    ConnectionError::from(error).context("pooled connector: admit new connection")
+                })?;
                 Ok(EstablishedClientConnection { input, conn })
             }
         }
@@ -296,3 +430,6 @@ impl<S, P: Clone, R: Clone> Layer<S> for PooledConnectorLayer<P, R> {
             .maybe_with_wait_for_pool_timeout(self.wait_for_pool_timeout)
     }
 }
+
+#[cfg(test)]
+mod reuse_tests;

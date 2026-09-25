@@ -88,12 +88,10 @@ impl Send {
     }
 
     fn check_headers(fields: &rama_http_types::HeaderMap) -> Result<(), UserError> {
-        // 8.1.2.2. Connection-Specific Header Fields
-        if fields.contains_key(rama_http_types::header::CONNECTION)
-            || fields.contains_key(rama_http_types::header::TRANSFER_ENCODING)
-            || fields.contains_key(rama_http_types::header::UPGRADE)
-            || fields.contains_key("keep-alive")
-            || fields.contains_key("proxy-connection")
+        // RFC 9113 Section 8.2.2: Connection-Specific Header Fields.
+        if rama_http_types::header::hop_by_hop::CONNECTION_SPECIFIC_HEADERS
+            .into_iter()
+            .any(|name| fields.contains_key(name))
         {
             tracing::debug!("illegal connection-specific headers found");
             return Err(UserError::MalformedHeaders);

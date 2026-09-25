@@ -568,6 +568,9 @@ impl core::hash::Hash for DomainRef<'_> {
                 state.write_u8(b.to_ascii_lowercase());
             }
         }
+        // Labels are nonempty: zero terminates this domain unambiguously when
+        // another value follows it in a composite key.
+        state.write_usize(0);
     }
 }
 
@@ -587,6 +590,8 @@ impl core::hash::Hash for Domain {
         for label in self.labels() {
             label.hash(state);
         }
+        // Match DomainRef's terminator; no valid label has zero length.
+        state.write_usize(0);
     }
 }
 
@@ -1256,6 +1261,7 @@ pub(super) mod seal {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::hash::{Hash, Hasher};
 
     #[test]
     fn canonicalize_lowercases_the_presentation() {
@@ -1719,6 +1725,44 @@ mod tests {
             let borrowed = DomainRef::from(&owned);
 
             assert_eq!(hash(&owned), hash(&borrowed), "hash mismatch for {name:?}");
+        }
+    }
+
+    #[test]
+    fn domain_hash_preserves_boundaries_in_composite_keys() {
+        #[derive(Default)]
+        struct HashInput(Vec<u8>);
+
+        impl Hasher for HashInput {
+            fn finish(&self) -> u64 {
+                0
+            }
+
+            fn write(&mut self, bytes: &[u8]) {
+                self.0.extend_from_slice(bytes);
+            }
+        }
+
+        fn input(value: &impl Hash) -> Vec<u8> {
+            let mut state = HashInput::default();
+            value.hash(&mut state);
+            state.0
+        }
+
+        let first = (Domain::from_static("a"), Domain::from_static("b.c"));
+        let second = (Domain::from_static("a.b"), Domain::from_static("c"));
+        let first_ref = (DomainRef::from(&first.0), DomainRef::from(&first.1));
+        let second_ref = (DomainRef::from(&second.0), DomainRef::from(&second.1));
+
+        assert_ne!(input(&first), input(&second));
+        assert_eq!(input(&first), input(&first_ref));
+        assert_eq!(input(&second), input(&second_ref));
+        assert!(!input(&second.0).starts_with(&input(&first.0)));
+
+        for name in ["a.b", "A.B", ".a.b", "a.b.", ".A.b."] {
+            let owned = Domain::from_static(name);
+            assert_eq!(input(&owned), input(&second.0));
+            assert_eq!(input(&DomainRef::from(&owned)), input(&second.0));
         }
     }
 

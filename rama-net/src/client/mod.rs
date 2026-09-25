@@ -1,8 +1,16 @@
 //! generic client net logic
 
+mod attempt;
+#[doc(inline)]
+pub use attempt::{ConnectionAttempt, ConnectionPolicyScope};
+
 mod conn;
 #[doc(inline)]
 pub use conn::{BoxedConnectorService, ConnectorService, EstablishedClientConnection};
+
+mod map_established_connection;
+#[doc(inline)]
+pub use map_established_connection::{MapEstablishedConnection, MapEstablishedConnectionLayer};
 
 mod error;
 #[doc(inline)]
@@ -39,12 +47,12 @@ pub use proxy::{
     BypassRules, DEFAULT_SYSTEM_PROXY_CONFIG_TTL, EstablishedProxyRoute, LazyProxyAddressLayer,
     LazyProxyAddressService, NoProxyEnvLayer, NoProxyEnvService, ProxyAddressLayer,
     ProxyAddressService, ProxyBypassLayer, ProxyBypassService, ProxyEnvLayer, ProxyEnvService,
-    ProxyRoute, ProxyRouteConnectError, ProxyRouteFailureCache, ProxyRouteFailureCacheConfig,
-    ProxyRouteFailureCacheConnector, ProxyRouteFailureCacheLayer, ProxyRouteFailureCacheScope,
-    ProxyRouteFailureCachedError, ProxyRouteIndex, ProxyRoutes, ProxyRoutesConnector,
-    ProxyRoutesConnectorLayer, ProxyRoutesLayer, ProxyRoutesService, SystemProxyConfig,
-    SystemProxyConnectLayer, SystemProxyConnectService, SystemProxyInvalidBypassRulePolicy,
-    SystemProxyLayer, SystemProxyPacDisabled, SystemProxyPacDisabledResolver,
-    SystemProxyPacRequest, SystemProxyPacResolver, SystemProxyPacService, SystemProxyService,
-    proxy_request_uri,
+    ProxyRoute, ProxyRouteConnectError, ProxyRouteContext, ProxyRouteFailureCache,
+    ProxyRouteFailureCacheConfig, ProxyRouteFailureCacheConnector, ProxyRouteFailureCacheLayer,
+    ProxyRouteFailureCacheScope, ProxyRouteFailureCachedError, ProxyRouteIndex, ProxyRoutes,
+    ProxyRoutesConnector, ProxyRoutesConnectorLayer, ProxyRoutesLayer, ProxyRoutesService,
+    SystemProxyConfig, SystemProxyConnectLayer, SystemProxyConnectService,
+    SystemProxyInvalidBypassRulePolicy, SystemProxyLayer, SystemProxyPacDisabled,
+    SystemProxyPacDisabledResolver, SystemProxyPacRequest, SystemProxyPacResolver,
+    SystemProxyPacService, SystemProxyService, proxy_request_uri,
 };

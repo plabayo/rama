@@ -6,10 +6,10 @@ use std::{fmt, str::FromStr};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
-/// Defined in function of being able to communicate the used or desired
-/// order in which the pseudo headers are in the h2 request.
+/// Pseudo-header names shared by HTTP/2 and HTTP/3.
 ///
-/// Used mainly in [`PseudoHeaderOrder`].
+/// Used by wire decoders and by [`PseudoHeaderOrder`] to communicate the desired
+/// HTTP/2 or HTTP/3 ordering. Protocol-specific message rules determine which names apply.
 pub enum PseudoHeader {
     Method = 0b1000_0000,
     Scheme = 0b0100_0000,
@@ -20,6 +20,26 @@ pub enum PseudoHeader {
 }
 
 impl PseudoHeader {
+    /// Parse an exact lowercase HTTP/2 or HTTP/3 wire name, including its colon.
+    /// Unlike `FromStr`, this rejects whitespace, casing changes, and bare names.
+    pub fn from_bytes(name: &[u8]) -> Result<Self, InvalidPseudoHeaderStr> {
+        match name {
+            b":method" => Ok(Self::Method),
+            b":scheme" => Ok(Self::Scheme),
+            b":authority" => Ok(Self::Authority),
+            b":path" => Ok(Self::Path),
+            b":protocol" => Ok(Self::Protocol),
+            b":status" => Ok(Self::Status),
+            _ => Err(InvalidPseudoHeaderStr),
+        }
+    }
+
+    /// The exact HTTP/2 and HTTP/3 wire name.
+    #[must_use]
+    pub fn as_bytes(&self) -> &'static [u8] {
+        self.as_str().as_bytes()
+    }
+
     #[must_use]
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -206,5 +226,64 @@ impl<'de> Deserialize<'de> for PseudoHeaderOrder {
     {
         let v = <Vec<PseudoHeader>>::deserialize(deserializer)?;
         Ok(v.into_iter().collect())
+    }
+}
+
+/// Pseudo-header fields that must retain HPACK/QPACK's never-index requirement when forwarded.
+///
+/// Regular fields carry this information in `HeaderValue::is_sensitive`. Pseudo
+/// fields live in the request/response parts instead, so their sensitivity travels
+/// in this extension. It remains applicable when a middleware changes a value.
+/// RFC 7541 §7.1.3 and RFC 9204 §7.1.3 require intermediaries to retain this
+/// requirement, including when translating between HTTP/2 and HTTP/3.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Extension)]
+#[extension(tags(http))]
+pub struct PseudoHeaderSensitivity(u8);
+
+impl PseudoHeaderSensitivity {
+    /// Whether the pseudo-header must be encoded with the never-index flag.
+    #[must_use]
+    pub fn is_sensitive(self, header: PseudoHeader) -> bool {
+        self.0 & header as u8 != 0
+    }
+
+    /// Set or clear the never-index requirement for a pseudo-header.
+    pub fn set_sensitive(&mut self, header: PseudoHeader, sensitive: bool) {
+        if sensitive {
+            self.0 |= header as u8;
+        } else {
+            self.0 &= !(header as u8);
+        }
+    }
+}
+
+#[cfg(test)]
+mod wire_tests {
+    use super::*;
+
+    #[test]
+    fn wire_names_are_exact_while_configuration_remains_lenient() {
+        for header in [
+            PseudoHeader::Method,
+            PseudoHeader::Scheme,
+            PseudoHeader::Authority,
+            PseudoHeader::Path,
+            PseudoHeader::Protocol,
+            PseudoHeader::Status,
+        ] {
+            assert_eq!(PseudoHeader::from_bytes(header.as_bytes()), Ok(header));
+        }
+        for name in [
+            b"method".as_slice(),
+            b":Method",
+            b" :method",
+            b":method ",
+            b":unknown",
+            b":",
+            b"",
+        ] {
+            PseudoHeader::from_bytes(name).unwrap_err();
+        }
+        assert_eq!(" Method ".parse(), Ok(PseudoHeader::Method));
     }
 }

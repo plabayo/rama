@@ -70,6 +70,16 @@ fn close_udp_sessions(sessions: Vec<UdpFfiSession>) {
     }
 }
 
+// Like setup_env, construct the synchronous FFI engine outside the test
+// runtime: its factory drives async initialization on the engine's own runtime.
+async fn probe_test_engine() -> Arc<EngineHandle> {
+    tokio::task::spawn_blocking(|| {
+        engine_with_udp_ingress_probe_lease_ms(Some(ACK_TEST_PROBE_LEASE.as_millis() as u64))
+    })
+    .await
+    .expect("join probe test engine setup")
+}
+
 #[tokio::test]
 #[serial]
 async fn ffi_contract_udp_basic_echo() {
@@ -121,8 +131,7 @@ async fn ffi_contract_udp_global_budget_probe_ack_and_cleanup() {
     // The default lease is 10 ms; this test uses the example's public JSON
     // override so correctness does not depend on scheduler timing on a loaded
     // CI host.
-    let engine =
-        engine_with_udp_ingress_probe_lease_ms(Some(ACK_TEST_PROBE_LEASE.as_millis() as u64));
+    let engine = probe_test_engine().await;
     let remote = localhost(env.ports.udp);
 
     let (channel_capacity, per_flow_bytes, global_bytes) = unsafe {
@@ -201,8 +210,7 @@ async fn ffi_contract_udp_global_budget_probe_ack_and_cleanup() {
 #[serial]
 async fn ffi_contract_udp_global_budget_exact_ack_ownership() {
     let env = setup_env().await;
-    let engine =
-        engine_with_udp_ingress_probe_lease_ms(Some(ACK_TEST_PROBE_LEASE.as_millis() as u64));
+    let engine = probe_test_engine().await;
     let remote = localhost(env.ports.udp);
 
     // Start with a fresh engine: client close suppresses callbacks immediately,
@@ -327,8 +335,7 @@ async fn ffi_contract_udp_global_budget_exact_ack_ownership() {
 #[serial]
 async fn ffi_contract_udp_rejects_owner_payload_before_exact_ack() {
     let env = setup_env().await;
-    let engine =
-        engine_with_udp_ingress_probe_lease_ms(Some(ACK_TEST_PROBE_LEASE.as_millis() as u64));
+    let engine = probe_test_engine().await;
     let remote = localhost(env.ports.udp);
     let mut fillers = fill_default_global_budget(&engine, remote);
     let blocked_payload = vec![b'p'; MAX_UDP_DATAGRAM];
