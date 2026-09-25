@@ -30,7 +30,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
-    task::Waker,
+    task::{Context, Poll, Waker},
 };
 use tokio::{
     sync::{Notify, oneshot},
@@ -546,11 +546,7 @@ impl Shared {
         found
     }
 
-    pub(crate) fn poll_datagram(
-        &self,
-        stream: u64,
-        cx: &std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Bytes>> {
+    pub(crate) fn poll_datagram(&self, stream: u64, cx: &Context<'_>) -> Poll<Option<Bytes>> {
         self.datagrams.lock().poll_recv(stream, cx)
     }
 

@@ -772,8 +772,20 @@ impl Builder {
 
 #[cfg(test)]
 mod tests {
-    use rama_core::{extensions::ExtensionsRef, rt::Executor};
-    use rama_http_types::body::util::Empty;
+    use crate::{h2::Error as H2Error, server, service::RamaHttpService};
+    use rama_core::{ServiceInput, extensions::ExtensionsRef, rt::Executor, service::service_fn};
+    use rama_http_types::{
+        Body, Method, Request, Response, body::util::Empty, proto::ext::Protocol,
+    };
+    use std::{
+        convert::Infallible,
+        error::Error,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        time::Duration,
+    };
     use tokio::io::{AsyncRead, AsyncWrite};
 
     #[tokio::test]
@@ -798,17 +810,6 @@ mod tests {
     /// request is issued before the server's SETTINGS arrive.
     #[tokio::test]
     async fn extended_connect_waits_for_and_requires_server_setting() {
-        use crate::{server, service::RamaHttpService};
-        use rama_core::{ServiceInput, service::service_fn};
-        use rama_http_types::{Body, Method, Request, Response, proto::ext::Protocol};
-        use std::{
-            convert::Infallible,
-            sync::{
-                Arc,
-                atomic::{AtomicUsize, Ordering},
-            },
-        };
-
         for enabled in [false, true] {
             let (client_io, server_io) = tokio::io::duplex(65536);
             let served = Arc::new(AtomicUsize::new(0));
@@ -843,7 +844,7 @@ mod tests {
                 builder
                     .serve_connection(ServiceInput::new(server_io), RamaHttpService::new(service)),
             );
-            let result = tokio::time::timeout(std::time::Duration::from_secs(10), response)
+            let result = tokio::time::timeout(Duration::from_secs(10), response)
                 .await
                 .unwrap()
                 .unwrap();
@@ -852,8 +853,8 @@ mod tests {
                 // Refused locally: a server-side reset would also leave the service unserved.
                 Err(error) => {
                     assert!(!enabled, "{error:?}");
-                    let h2 = std::error::Error::source(&error)
-                        .and_then(|source| source.downcast_ref::<crate::h2::Error>())
+                    let h2 = Error::source(&error)
+                        .and_then(|source| source.downcast_ref::<H2Error>())
                         .expect("h2 error");
                     assert_eq!(
                         h2.to_string(),

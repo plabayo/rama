@@ -2,7 +2,7 @@
 
 use super::{LIMIT, Pair};
 use crate::h3::{
-    DatagramLimits, client,
+    DatagramLimits, Error as H3Error, client,
     connection::Config,
     server::{self, Connection as ServerConnection},
 };
@@ -14,7 +14,8 @@ use rama_core::{
 };
 use rama_http::{
     datagram::{
-        DatagramTransport, HttpDatagramSession, NativeSendError, SessionError, SessionEvent,
+        DatagramTransport, HttpDatagramSession, NativeDatagrams, NativeSendError, SessionError,
+        SessionEvent,
     },
     io::upgrade::{Upgraded, handle_upgrade},
 };
@@ -26,8 +27,11 @@ use rama_http_types::{
     },
 };
 use rama_quic_proto::coding::Codec as _;
-use std::time::Duration;
-use tokio::io::AsyncReadExt as _;
+use std::{
+    task::{Context, Poll, Waker},
+    time::Duration,
+};
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 const TOKEN: Protocol = Protocol::from_static("x-datagram-test");
 
@@ -355,7 +359,7 @@ async fn datagrams_on_requests_without_datagram_semantics_abort_them() {
         assert!(
             client_io
                 .extensions()
-                .get_ref::<rama_http::datagram::NativeDatagrams>()
+                .get_ref::<NativeDatagrams>()
                 .is_none()
         );
         pair.client.send_datagram(raw_datagram(4, b"y")).unwrap();
@@ -418,10 +422,10 @@ async fn datagrams_after_the_stream_closed_are_dropped() {
         while server_native.channel().dropped() == 0 {
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
-        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        let mut cx = Context::from_waker(Waker::noop());
         assert_eq!(
             server_native.channel().poll_recv(&mut cx),
-            std::task::Poll::Ready(None),
+            Poll::Ready(None),
             "datagrams after the receive side closed are dropped"
         );
         pair.close().await;
@@ -493,7 +497,6 @@ async fn truncated_capsules_reset_http3_streams_as_malformed() {
         let (mut client, mut server) = start(&pair, server_config(None)).await;
         let (mut client_io, server_io) = tunnel(&mut client, &mut server, TOKEN).await;
         let mut session = HttpDatagramSession::new(server_io);
-        use tokio::io::AsyncWriteExt as _;
         client_io.write_all(b"\x00\x05ab").await.unwrap();
         client_io.shutdown().await.unwrap();
         let error = session.recv().await.unwrap_err();
@@ -502,7 +505,7 @@ async fn truncated_capsules_reset_http3_streams_as_malformed() {
         let error = client_io.read_to_end(&mut rest).await.unwrap_err();
         let error = error
             .get_ref()
-            .and_then(|error| error.downcast_ref::<crate::h3::Error>())
+            .and_then(|error| error.downcast_ref::<H3Error>())
             .copied()
             .expect("h3 error");
         assert_eq!(error.code(), Code::H3_MESSAGE_ERROR);

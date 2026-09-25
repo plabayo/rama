@@ -13,14 +13,24 @@ use rama_core::{
     futures::FutureExt as _,
     rt::{Executor, spawn},
 };
-use rama_http::io::upgrade::handle_upgrade;
+use rama_http::{
+    datagram::handshake::{
+        CapsuleHandshakeError, prepare_capsule_request, validate_capsule_response,
+    },
+    io::upgrade::{OnMalformedMessage, handle_upgrade},
+};
 use rama_http_types::{
-    Body, Method, Request, Response, StatusCode,
+    Body, Method, Request, Response, StatusCode, Version,
     body::util::BodyExt as _,
+    header,
     proto::{
         ext::Protocol,
         h3::{Code, FrameHeader, FrameType, PseudoHeader, PseudoHeaderOrder},
     },
+};
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
 };
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
@@ -119,12 +129,12 @@ async fn refused_without_server_setting_and_opens_no_stream() {
         spawn(server_driver.run());
         // Any request that does reach the server is answered, so a missing local gate fails
         // on the assertions below instead of waiting for the watchdog.
-        let accepted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let accepted = Arc::new(AtomicUsize::new(0));
         spawn({
             let accepted = accepted.clone();
             async move {
                 while let Ok(stream) = server.accept().await {
-                    accepted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    accepted.fetch_add(1, Ordering::SeqCst);
                     if let Ok((_request, response)) = stream.resolve().await {
                         let mut refused = Response::new(Body::empty());
                         *refused.status_mut() = StatusCode::BAD_REQUEST;
@@ -147,7 +157,7 @@ async fn refused_without_server_setting_and_opens_no_stream() {
         // Refused requests must not consume even one stream ID.
         let (send, recv) = pair.client.open_bi().await.unwrap();
         assert_eq!(u64::from(send.id()), 0);
-        assert_eq!(accepted.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(accepted.load(Ordering::SeqCst), 0);
         drop((send, recv, client));
         pair.close().await;
     })
@@ -320,13 +330,6 @@ async fn server_treats_unadvertised_protocol_as_malformed() {
 /// the received field visible (ignored for framing, RFC 9110 §9.3.6) so validation rejects it.
 #[tokio::test]
 async fn capsule_validation_sees_content_length_on_successful_connect() {
-    use rama_http::{
-        datagram::handshake::{
-            CapsuleHandshakeError, prepare_capsule_request, validate_capsule_response,
-        },
-        io::upgrade::OnMalformedMessage,
-    };
-    use rama_http_types::{Version, header};
     tokio::time::timeout(LIMIT, async {
         let pair = Pair::in_memory(None, None).await;
         let (mut client, client_driver) =
