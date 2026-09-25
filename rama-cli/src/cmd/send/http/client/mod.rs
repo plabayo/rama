@@ -318,8 +318,11 @@ async fn new_inner_client(
         .with_default_http_connector(executor.clone());
 
     let uri = parse_user_uri(&cfg.uri)?;
-    // Local URI handlers and WebSocket connections do not need a QUIC socket.
-    let network_http = uri.scheme().is_some_and(|scheme| scheme.is_http());
+    // Local URI handlers do not need a QUIC socket; WebSockets use one only for
+    // explicit `--http3` (RFC 9220), never through Alt-Svc discovery.
+    let network_http = uri
+        .scheme()
+        .is_some_and(|scheme| scheme.is_http() || (cfg.http_3 && scheme.is_ws()));
     // Honor an older TLS ceiling without making an ordinary HTTP request fail
     // merely because the client also supports HTTP/3.
     let allows_h3 = !cfg.http_09

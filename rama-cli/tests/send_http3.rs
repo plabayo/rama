@@ -640,12 +640,6 @@ async fn explicit_h3_rejects_wrong_alpn_and_incompatible_tls() -> TestResult {
         .await?;
     failed(&output);
     assert!(server.requests.lock().is_empty());
-    let output = fixture.send("wss://localhost:1/", &["--http3"]).await?;
-    failed(&output);
-    assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .contains("WebSocket over HTTP/3 requires Extended CONNECT")
-    );
     server.close().await
 }
 
