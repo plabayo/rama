@@ -5,14 +5,14 @@ use crate::{
 
 #[tokio::test]
 async fn upgrade_metadata_shares_capture_guard_until_relay_releases_it() {
-    for version in [Version::HTTP_11, Version::HTTP_2] {
+    for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
         let store = test_store();
         let service = CaptureHttpLayer::new(Some(store.clone())).into_layer(
             rama_core::service::service_fn(move |request: Request| async move {
                 request.into_body().collect().await.unwrap();
                 Response::builder()
                     .version(version)
-                    .status(if version == Version::HTTP_2 {
+                    .status(if version >= Version::HTTP_2 {
                         StatusCode::CREATED
                     } else {
                         StatusCode::SWITCHING_PROTOCOLS
@@ -85,7 +85,7 @@ async fn upgrade_metadata_shares_capture_guard_until_relay_releases_it() {
 
 #[tokio::test]
 async fn rejected_upgrade_does_not_stage_a_capture_lifetime_guard() {
-    for version in [Version::HTTP_11, Version::HTTP_2] {
+    for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
         let store = test_store();
         let service = CaptureHttpLayer::new(Some(store.clone())).into_layer(
             rama_core::service::service_fn(move |request: Request| async move {
@@ -121,14 +121,14 @@ fn upgrade_request(version: Version) -> Request {
     let mut request = Request::builder()
         .uri("http://example.test/socket")
         .version(version)
-        .method(if version == Version::HTTP_2 {
+        .method(if version >= Version::HTTP_2 {
             Method::CONNECT
         } else {
             Method::GET
         })
         .body(Body::empty())
         .unwrap();
-    if version == Version::HTTP_2 {
+    if version >= Version::HTTP_2 {
         request
             .extensions()
             .insert(crate::proto::ext::Protocol::from_static("websocket"));

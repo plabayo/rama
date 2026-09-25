@@ -222,7 +222,8 @@ fn successful_upgrade_response(entry: &CapturedExchange, status: u16) -> bool {
         return false;
     }
     match entry.summary_template.http_version {
-        Version::HTTP_2 => (200..300).contains(&status),
+        // Extended CONNECT (RFC 8441, RFC 9220) succeeds with any 2xx.
+        Version::HTTP_2 | Version::HTTP_3 => (200..300).contains(&status),
         _ => status == 101,
     }
 }
@@ -724,7 +725,7 @@ async fn read_record_at(
 fn is_upgrade_request(parts: &crate::request::Parts) -> bool {
     match parts.version {
         Version::HTTP_10 | Version::HTTP_11 => parts.headers.contains_key(crate::header::UPGRADE),
-        Version::HTTP_2 => {
+        Version::HTTP_2 | Version::HTTP_3 => {
             parts.method == Method::CONNECT
                 && parts.extensions.contains::<crate::proto::ext::Protocol>()
         }
