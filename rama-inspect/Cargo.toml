@@ -8,6 +8,11 @@ repository = { workspace = true }
 authors = { workspace = true }
 rust-version = { workspace = true }
 
+[features]
+default = []
+# Storage conformance checks for backends and layers in other crates.
+test-utils = ["tokio/rt"]
+
 [dependencies]
 jiff = { workspace = true }
 parking_lot = { workspace = true }

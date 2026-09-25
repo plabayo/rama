@@ -419,7 +419,12 @@ std = [
     "rama-net?/std",
     "rama-utils/std",
 ]
-test-utils = ["rama-net?/test-utils", "rama-udp?/test-utils", "rama-quic?/test-utils"]
+test-utils = [
+    "rama-inspect?/test-utils",
+    "rama-net?/test-utils",
+    "rama-udp?/test-utils",
+    "rama-quic?/test-utils",
+]
 # Optional fuzzing support without enabling additional protocol crates.
 fuzz-utils = [
     "rama-quic?/fuzz-utils",
