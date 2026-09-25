@@ -90,6 +90,26 @@ pub fn parse_dictionary<'a>(
     Ok(())
 }
 
+/// Parse a complete Item field (RFC 9651 §4.2.3), validating and ignoring its parameters.
+///
+/// Combine multiple HTTP field lines with commas first: that produces a List, which is not an
+/// Item and is rejected, as RFC 9297 §3.4 expects for a repeated `Capsule-Protocol`.
+pub fn parse_item(input: &[u8]) -> Result<BareItem<'_>, ParseError> {
+    let input = std::str::from_utf8(input).map_err(|_error| ParseError)?;
+    if !input.is_ascii() {
+        return Err(ParseError);
+    }
+    let mut parser = Parser { input, pos: 0 };
+    parser.spaces();
+    let item = parser.bare_item()?;
+    parser.parameters()?;
+    parser.spaces();
+    if parser.peek().is_some() {
+        return Err(ParseError);
+    }
+    Ok(item)
+}
+
 struct Parser<'a> {
     input: &'a str,
     pos: usize,
@@ -450,6 +470,24 @@ mod tests {
                 parse_dictionary(value.as_bytes(), |_, _| {}).is_err(),
                 "{value:?}"
             );
+        }
+    }
+
+    #[test]
+    fn items_ignore_parameters_and_reject_lists_or_trailing_input() {
+        for (value, expected) in [
+            ("?1", BareItem::Boolean(true)),
+            ("  ?0 ", BareItem::Boolean(false)),
+            ("?1;a=1;b", BareItem::Boolean(true)),
+            ("token", BareItem::Token("token")),
+            ("42", BareItem::Integer(42)),
+        ] {
+            assert_eq!(parse_item(value.as_bytes()), Ok(expected), "{value:?}");
+        }
+        for value in [
+            "", " ", "?1, ?1", "?1 ?0", "?1;", "?2", "(?1)", "\t?1", "?1\t",
+        ] {
+            assert!(parse_item(value.as_bytes()).is_err(), "{value:?}");
         }
     }
 }

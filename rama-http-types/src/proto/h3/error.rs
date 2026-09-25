@@ -55,6 +55,7 @@ impl Code {
             Self::H3_MESSAGE_ERROR => "H3_MESSAGE_ERROR",
             Self::H3_CONNECT_ERROR => "H3_CONNECT_ERROR",
             Self::H3_VERSION_FALLBACK => "H3_VERSION_FALLBACK",
+            Self::H3_DATAGRAM_ERROR => "H3_DATAGRAM_ERROR",
             Self::QPACK_DECOMPRESSION_FAILED => "QPACK_DECOMPRESSION_FAILED",
             Self::QPACK_ENCODER_STREAM_ERROR => "QPACK_ENCODER_STREAM_ERROR",
             Self::QPACK_DECODER_STREAM_ERROR => "QPACK_DECODER_STREAM_ERROR",
@@ -109,6 +110,9 @@ codes! {
     H3_CONNECT_ERROR = 0x010f;
     /// The requested operation cannot be served over HTTP/3; peer should retry over HTTP/1.1.
     H3_VERSION_FALLBACK = 0x0110;
+
+    /// Datagram or Capsule Protocol parse error (RFC 9297 §5.2).
+    H3_DATAGRAM_ERROR = 0x33;
 
     /// The decoder failed to interpret an encoded field section (RFC 9204 §6).
     QPACK_DECOMPRESSION_FAILED = 0x0200;

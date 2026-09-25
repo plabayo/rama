@@ -219,6 +219,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "http_capsule"
+path = "fuzz_targets/http_capsule.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "h3_frame"
 path = "fuzz_targets/h3_frame.rs"
 test = false

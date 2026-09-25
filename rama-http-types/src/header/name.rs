@@ -443,6 +443,11 @@ standard_headers! {
     /// See [RFC 9211](https://www.rfc-editor.org/rfc/rfc9211.html).
     (CacheStatus, CACHE_STATUS, b"cache-status");
 
+    /// Signals that the Capsule Protocol is in use on the request's data stream.
+    ///
+    /// See [RFC 9297 §3.4](https://www.rfc-editor.org/rfc/rfc9297.html#section-3.4).
+    (CapsuleProtocol, CAPSULE_PROTOCOL, b"capsule-protocol");
+
     /// Specifies directives that allow origin servers to control the behavior of CDN caches
     /// interposed between them and clients separately from other caches that might handle the
     /// response.

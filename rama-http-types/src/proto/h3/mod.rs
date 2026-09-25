@@ -7,8 +7,9 @@
 //! integer and stream-identifier vocabulary is reused from [`rama_quic_proto`] rather than
 //! re-modelled here.
 //!
-//! References: [RFC 9114](https://www.rfc-editor.org/rfc/rfc9114) (HTTP/3) and
-//! [RFC 9204](https://www.rfc-editor.org/rfc/rfc9204) (QPACK).
+//! References: [RFC 9114](https://www.rfc-editor.org/rfc/rfc9114) (HTTP/3),
+//! [RFC 9204](https://www.rfc-editor.org/rfc/rfc9204) (QPACK) and
+//! [RFC 9297](https://www.rfc-editor.org/rfc/rfc9297) (HTTP/3 datagrams).
 
 pub use rama_quic_proto::{VarInt, VarIntDecoder};
 
@@ -25,6 +26,9 @@ pub use stream::StreamType;
 
 mod frame;
 pub use frame::{FrameHeader, FrameType};
+
+mod datagram;
+pub use datagram::{InvalidQuarterStreamId, QuarterStreamId};
 
 mod settings;
 pub use settings::{DEFAULT_MAX_SETTINGS_ENTRIES, Setting, SettingId, Settings, SettingsError};
