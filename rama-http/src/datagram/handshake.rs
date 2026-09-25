@@ -1,14 +1,13 @@
 //! Upgrade-token handshakes for protocols that use the Capsule Protocol (RFC 9297 §3.2).
 //!
-//! HTTP/1.x upgrades with `GET` + `Upgrade` and succeeds with `101`; HTTP/2 and HTTP/3 use
-//! Extended CONNECT (RFC 8441, RFC 9220) and succeed with any `2xx`. These helpers keep that
-//! version mapping in one place so a protocol implementation does not repeat it.
+//! HTTP/1.1 upgrades with `Upgrade` + `Connection: upgrade` and succeeds with `101`; HTTP/2 and
+//! HTTP/3 use Extended CONNECT (RFC 8441, RFC 9220) and succeed with any `2xx`. HTTP/1.0 cannot
+//! upgrade (RFC 9110 §7.8). These helpers keep that version mapping in one place.
 
-use crate::utils::request_connect_protocol;
 use rama_core::extensions::ExtensionsRef as _;
 use rama_http_headers::{CapsuleProtocol, Connection, HeaderMapExt as _};
 use rama_http_types::{
-    HeaderName, HeaderValue, Method, Request, Response, StatusCode, Version, header,
+    HeaderMap, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Version, header,
     proto::ext::Protocol,
 };
 use std::fmt;
@@ -23,31 +22,56 @@ const FORBIDDEN_FIELDS: [HeaderName; 3] = [
 /// A handshake that cannot start or accept the Capsule Protocol.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CapsuleHandshakeError {
-    /// The request is neither an HTTP/1.x upgrade nor Extended CONNECT.
+    /// The HTTP version cannot carry an upgrade token (HTTP/1.0 and earlier).
+    UnsupportedVersion(Version),
+    /// The request is neither an HTTP/1.1 upgrade nor Extended CONNECT.
     NotAnUpgrade,
+    /// An HTTP/2 or HTTP/3 message carries a connection-specific upgrade field.
+    ConnectionSpecificField(HeaderName),
     /// The response refused the upgrade; its content is an ordinary HTTP message.
     Unsuccessful(StatusCode),
     /// A field the Capsule Protocol forbids: the message is malformed.
     ForbiddenField(HeaderName),
     /// A status the Capsule Protocol forbids (204, 205, 206): the message is malformed.
     ForbiddenStatus(StatusCode),
-    /// The HTTP/1.x `101` response names another protocol.
+    /// The HTTP/1.1 `101` response does not switch to the requested protocol.
     UpgradeMismatch,
 }
 
 impl fmt::Display for CapsuleHandshakeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::UnsupportedVersion(version) => {
+                write!(f, "{version:?} cannot upgrade to the capsule protocol")
+            }
             Self::NotAnUpgrade => f.write_str("request is not an upgrade or extended CONNECT"),
+            Self::ConnectionSpecificField(name) => {
+                write!(f, "connection-specific field {name} in extended CONNECT")
+            }
             Self::Unsuccessful(status) => write!(f, "upgrade refused with status {status}"),
             Self::ForbiddenField(name) => write!(f, "capsule protocol forbids field {name}"),
             Self::ForbiddenStatus(status) => write!(f, "capsule protocol forbids status {status}"),
-            Self::UpgradeMismatch => f.write_str("101 response upgraded to another protocol"),
+            Self::UpgradeMismatch => f.write_str("101 response did not switch to the protocol"),
         }
     }
 }
 
 impl std::error::Error for CapsuleHandshakeError {}
+
+/// How an HTTP version carries an upgrade token.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Carrier {
+    Upgrade,
+    ExtendedConnect,
+}
+
+fn carrier(version: Version) -> Result<Carrier, CapsuleHandshakeError> {
+    match version {
+        Version::HTTP_11 => Ok(Carrier::Upgrade),
+        Version::HTTP_2 | Version::HTTP_3 => Ok(Carrier::ExtendedConnect),
+        version => Err(CapsuleHandshakeError::UnsupportedVersion(version)),
+    }
+}
 
 /// Turn `request` into a Capsule Protocol handshake for `protocol` on its HTTP version,
 /// advertising `Capsule-Protocol: ?1`. The request must not carry content.
@@ -55,20 +79,24 @@ pub fn prepare_capsule_request<B>(
     request: &mut Request<B>,
     protocol: Protocol,
 ) -> Result<(), CapsuleHandshakeError> {
+    let carrier = carrier(request.version())?;
     reject_forbidden_fields(request.headers())?;
-    if request.version() <= Version::HTTP_11 {
-        *request.method_mut() = Method::GET;
-        let upgrade = HeaderValue::from_str(protocol.as_str())
-            .map_err(|_error| CapsuleHandshakeError::NotAnUpgrade)?;
-        let headers = request.headers_mut();
-        headers.insert(header::UPGRADE, upgrade);
-        headers.typed_insert(Connection::upgrade());
-    } else {
-        let headers = request.headers_mut();
-        headers.remove(header::UPGRADE);
-        headers.remove(header::CONNECTION);
-        *request.method_mut() = Method::CONNECT;
-        request.extensions().insert(protocol);
+    match carrier {
+        Carrier::Upgrade => {
+            let upgrade = HeaderValue::from_str(protocol.as_str())
+                .map_err(|_error| CapsuleHandshakeError::NotAnUpgrade)?;
+            *request.method_mut() = Method::GET;
+            let headers = request.headers_mut();
+            headers.insert(header::UPGRADE, upgrade);
+            headers.typed_insert(Connection::upgrade());
+        }
+        Carrier::ExtendedConnect => {
+            let headers = request.headers_mut();
+            headers.remove(header::UPGRADE);
+            headers.remove(header::CONNECTION);
+            *request.method_mut() = Method::CONNECT;
+            request.extensions().insert(protocol);
+        }
     }
     request.headers_mut().typed_insert(CapsuleProtocol::ENABLED);
     Ok(())
@@ -78,29 +106,55 @@ pub fn prepare_capsule_request<B>(
 pub fn validate_capsule_request<B>(
     request: &Request<B>,
 ) -> Result<Protocol, CapsuleHandshakeError> {
-    let protocol = request_connect_protocol(request).ok_or(CapsuleHandshakeError::NotAnUpgrade)?;
+    let protocol = match carrier(request.version())? {
+        Carrier::Upgrade => {
+            let upgrading = request
+                .headers()
+                .typed_get::<Connection>()
+                .is_some_and(|connection| connection.contains_upgrade());
+            if !upgrading {
+                return Err(CapsuleHandshakeError::NotAnUpgrade);
+            }
+            single_token(request.headers()).ok_or(CapsuleHandshakeError::NotAnUpgrade)?
+        }
+        Carrier::ExtendedConnect => {
+            for name in [header::UPGRADE, header::CONNECTION] {
+                if request.headers().contains_key(&name) {
+                    return Err(CapsuleHandshakeError::ConnectionSpecificField(name));
+                }
+            }
+            if request.method() != Method::CONNECT {
+                return Err(CapsuleHandshakeError::NotAnUpgrade);
+            }
+            request
+                .extensions()
+                .get_ref::<Protocol>()
+                .cloned()
+                .ok_or(CapsuleHandshakeError::NotAnUpgrade)?
+        }
+    };
     reject_forbidden_fields(request.headers())?;
     Ok(protocol)
 }
 
 /// The status accepting a Capsule Protocol handshake on `version`.
-#[must_use]
-pub fn capsule_response_status(version: Version) -> StatusCode {
-    if version <= Version::HTTP_11 {
-        StatusCode::SWITCHING_PROTOCOLS
-    } else {
-        StatusCode::OK
-    }
+pub fn capsule_response_status(version: Version) -> Result<StatusCode, CapsuleHandshakeError> {
+    Ok(match carrier(version)? {
+        Carrier::Upgrade => StatusCode::SWITCHING_PROTOCOLS,
+        Carrier::ExtendedConnect => StatusCode::OK,
+    })
 }
 
-/// Build the response accepting a Capsule Protocol handshake for `protocol`.
-#[must_use]
-pub fn capsule_response<B: Default>(version: Version, protocol: &Protocol) -> Response<B> {
+/// Build the response accepting a Capsule Protocol handshake for `protocol` on `version`.
+pub fn capsule_response<B: Default>(
+    version: Version,
+    protocol: &Protocol,
+) -> Result<Response<B>, CapsuleHandshakeError> {
     let mut response = Response::new(B::default());
-    *response.status_mut() = capsule_response_status(version);
-    if version <= Version::HTTP_11
-        && let Ok(upgrade) = HeaderValue::from_str(protocol.as_str())
-    {
+    *response.status_mut() = capsule_response_status(version)?;
+    if carrier(version)? == Carrier::Upgrade {
+        let upgrade = HeaderValue::from_str(protocol.as_str())
+            .map_err(|_error| CapsuleHandshakeError::NotAnUpgrade)?;
         let headers = response.headers_mut();
         headers.insert(header::UPGRADE, upgrade);
         headers.typed_insert(Connection::upgrade());
@@ -108,16 +162,18 @@ pub fn capsule_response<B: Default>(version: Version, protocol: &Protocol) -> Re
     response
         .headers_mut()
         .typed_insert(CapsuleProtocol::ENABLED);
-    response
+    Ok(response)
 }
 
-/// Validate the response to a Capsule Protocol handshake request.
+/// Validate the response to a Capsule Protocol handshake for `protocol` sent on `version`.
 ///
 /// A refused handshake is [`CapsuleHandshakeError::Unsuccessful`]; its body can still be read.
-pub fn validate_capsule_response<B, R>(
-    request: &Request<R>,
+pub fn validate_capsule_response<B>(
+    version: Version,
+    protocol: &Protocol,
     response: &Response<B>,
 ) -> Result<(), CapsuleHandshakeError> {
+    let carrier = carrier(version)?;
     let status = response.status();
     if matches!(
         status,
@@ -125,29 +181,41 @@ pub fn validate_capsule_response<B, R>(
     ) {
         return Err(CapsuleHandshakeError::ForbiddenStatus(status));
     }
-    if status != capsule_response_status(request.version())
-        && !(request.version() > Version::HTTP_11 && status.is_success())
-    {
+    let accepted = match carrier {
+        Carrier::Upgrade => status == StatusCode::SWITCHING_PROTOCOLS,
+        Carrier::ExtendedConnect => status.is_success(),
+    };
+    if !accepted {
         return Err(CapsuleHandshakeError::Unsuccessful(status));
     }
     reject_forbidden_fields(response.headers())?;
-    if request.version() <= Version::HTTP_11 {
-        let expected =
-            request_connect_protocol(request).ok_or(CapsuleHandshakeError::NotAnUpgrade)?;
-        let upgraded = response
-            .headers()
-            .get(header::UPGRADE)
-            .is_some_and(|value| value.as_bytes().eq_ignore_ascii_case(expected.as_ref()));
-        if !upgraded {
+    if carrier == Carrier::Upgrade {
+        // RFC 9110 §7.8: the switched-to protocol in `Upgrade`, listed in `Connection`.
+        let switched = single_token(response.headers())
+            .is_some_and(|token| token.as_str().eq_ignore_ascii_case(protocol.as_str()))
+            && response
+                .headers()
+                .typed_get::<Connection>()
+                .is_some_and(|connection| connection.contains_upgrade());
+        if !switched {
             return Err(CapsuleHandshakeError::UpgradeMismatch);
         }
     }
     Ok(())
 }
 
-fn reject_forbidden_fields(
-    headers: &rama_http_types::HeaderMap,
-) -> Result<(), CapsuleHandshakeError> {
+/// The single upgrade token of an `Upgrade` field (case-insensitive, RFC 9110 §16.7).
+fn single_token(headers: &HeaderMap) -> Option<Protocol> {
+    let mut values = headers.get_all(header::UPGRADE).iter();
+    let value = values.next()?;
+    if values.next().is_some() {
+        return None;
+    }
+    let token = std::str::from_utf8(value.as_bytes()).ok()?.trim();
+    Protocol::try_from(token).ok()
+}
+
+fn reject_forbidden_fields(headers: &HeaderMap) -> Result<(), CapsuleHandshakeError> {
     FORBIDDEN_FIELDS
         .iter()
         .find(|name| headers.contains_key(*name))
@@ -161,12 +229,7 @@ mod tests {
     use super::*;
 
     const TOKEN: Protocol = Protocol::from_static("connect-udp");
-    const VERSIONS: [Version; 4] = [
-        Version::HTTP_10,
-        Version::HTTP_11,
-        Version::HTTP_2,
-        Version::HTTP_3,
-    ];
+    const VERSIONS: [Version; 3] = [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3];
 
     fn request(version: Version) -> Request<()> {
         let mut request = Request::builder()
@@ -178,6 +241,10 @@ mod tests {
         request
     }
 
+    fn response(version: Version) -> Response<()> {
+        capsule_response(version, &TOKEN).unwrap()
+    }
+
     #[test]
     fn requests_map_to_upgrade_or_extended_connect() {
         for version in VERSIONS {
@@ -187,7 +254,7 @@ mod tests {
                 request.headers().typed_get::<CapsuleProtocol>(),
                 Some(CapsuleProtocol::ENABLED)
             );
-            if version <= Version::HTTP_11 {
+            if version == Version::HTTP_11 {
                 assert_eq!(request.method(), Method::GET);
                 assert_eq!(request.headers()[header::UPGRADE], "connect-udp");
                 assert!(!request.extensions().contains::<Protocol>());
@@ -200,42 +267,141 @@ mod tests {
     }
 
     #[test]
+    fn http_1_0_cannot_upgrade() {
+        // RFC 9110 §7.8: an HTTP/1.0 recipient ignores Upgrade.
+        let mut request = Request::builder()
+            .version(Version::HTTP_10)
+            .body(())
+            .unwrap();
+        assert_eq!(
+            prepare_capsule_request(&mut request, TOKEN),
+            Err(CapsuleHandshakeError::UnsupportedVersion(Version::HTTP_10))
+        );
+        let mut received = Request::builder()
+            .version(Version::HTTP_10)
+            .header(header::CONNECTION, "upgrade")
+            .header(header::UPGRADE, "connect-udp")
+            .body(())
+            .unwrap();
+        assert_eq!(
+            validate_capsule_request(&received),
+            Err(CapsuleHandshakeError::UnsupportedVersion(Version::HTTP_10))
+        );
+        *received.version_mut() = Version::HTTP_09;
+        validate_capsule_request(&received).unwrap_err();
+        assert_eq!(
+            capsule_response::<()>(Version::HTTP_10, &TOKEN).unwrap_err(),
+            CapsuleHandshakeError::UnsupportedVersion(Version::HTTP_10)
+        );
+        let mut switching = response(Version::HTTP_11);
+        *switching.version_mut() = Version::HTTP_10;
+        validate_capsule_response(Version::HTTP_10, &TOKEN, &switching).unwrap_err();
+    }
+
+    #[test]
+    fn extended_connect_requests_need_connect_and_protocol_only() {
+        for version in [Version::HTTP_2, Version::HTTP_3] {
+            let mut get = request(version);
+            *get.method_mut() = Method::GET;
+            assert_eq!(
+                validate_capsule_request(&get),
+                Err(CapsuleHandshakeError::NotAnUpgrade)
+            );
+            let upgrade_style = Request::builder()
+                .version(version)
+                .header(header::CONNECTION, "upgrade")
+                .header(header::UPGRADE, "connect-udp")
+                .body(())
+                .unwrap();
+            assert!(matches!(
+                validate_capsule_request(&upgrade_style),
+                Err(CapsuleHandshakeError::ConnectionSpecificField(_))
+            ));
+            let bare = Request::builder()
+                .method(Method::CONNECT)
+                .version(version)
+                .body(())
+                .unwrap();
+            assert_eq!(
+                validate_capsule_request(&bare),
+                Err(CapsuleHandshakeError::NotAnUpgrade)
+            );
+        }
+        // HTTP/1.1 needs a genuine upgrade, not a Protocol extension.
+        let mut connect = request(Version::HTTP_2);
+        *connect.version_mut() = Version::HTTP_11;
+        assert_eq!(
+            validate_capsule_request(&connect),
+            Err(CapsuleHandshakeError::NotAnUpgrade)
+        );
+    }
+
+    #[test]
     fn responses_follow_each_version_success_rule() {
         for version in VERSIONS {
-            let request = request(version);
-            let accepted: Response<()> = capsule_response(version, &TOKEN);
-            validate_capsule_response(&request, &accepted).unwrap();
-            if version > Version::HTTP_11 {
-                let mut created = accepted;
+            validate_capsule_response(version, &TOKEN, &response(version)).unwrap();
+            if version != Version::HTTP_11 {
+                let mut created = response(version);
                 *created.status_mut() = StatusCode::CREATED;
-                validate_capsule_response(&request, &created).unwrap();
+                validate_capsule_response(version, &TOKEN, &created).unwrap();
             }
-            for status in [StatusCode::BAD_REQUEST, StatusCode::NOT_IMPLEMENTED] {
+            for status in [
+                StatusCode::OK,
+                StatusCode::BAD_REQUEST,
+                StatusCode::NOT_IMPLEMENTED,
+            ] {
+                if version != Version::HTTP_11 && status == StatusCode::OK {
+                    continue;
+                }
                 let mut refused = Response::new(());
                 *refused.status_mut() = status;
                 assert_eq!(
-                    validate_capsule_response(&request, &refused),
-                    Err(CapsuleHandshakeError::Unsuccessful(status))
+                    validate_capsule_response(version, &TOKEN, &refused),
+                    Err(CapsuleHandshakeError::Unsuccessful(status)),
+                    "{version:?} {status}"
                 );
             }
             for status in [204, 205, 206] {
                 let mut forbidden = Response::new(());
                 *forbidden.status_mut() = StatusCode::from_u16(status).unwrap();
                 assert!(matches!(
-                    validate_capsule_response(&request, &forbidden),
+                    validate_capsule_response(version, &TOKEN, &forbidden),
                     Err(CapsuleHandshakeError::ForbiddenStatus(_))
                 ));
             }
         }
-        let request = request(Version::HTTP_11);
-        let mut other: Response<()> = capsule_response(Version::HTTP_11, &TOKEN);
+    }
+
+    #[test]
+    fn http_1_1_switching_requires_upgrade_and_connection() {
+        let mut other = response(Version::HTTP_11);
         other
             .headers_mut()
             .insert(header::UPGRADE, HeaderValue::from_static("websocket"));
         assert_eq!(
-            validate_capsule_response(&request, &other),
+            validate_capsule_response(Version::HTTP_11, &TOKEN, &other),
             Err(CapsuleHandshakeError::UpgradeMismatch)
         );
+        let mut no_connection = response(Version::HTTP_11);
+        no_connection.headers_mut().remove(header::CONNECTION);
+        assert_eq!(
+            validate_capsule_response(Version::HTTP_11, &TOKEN, &no_connection),
+            Err(CapsuleHandshakeError::UpgradeMismatch)
+        );
+        let mut repeated = response(Version::HTTP_11);
+        repeated
+            .headers_mut()
+            .append(header::UPGRADE, HeaderValue::from_static("connect-udp"));
+        assert_eq!(
+            validate_capsule_response(Version::HTTP_11, &TOKEN, &repeated),
+            Err(CapsuleHandshakeError::UpgradeMismatch)
+        );
+        // Upgrade tokens compare case-insensitively (RFC 9110 §16.7).
+        let mut shouted = response(Version::HTTP_11);
+        shouted
+            .headers_mut()
+            .insert(header::UPGRADE, HeaderValue::from_static("CONNECT-UDP"));
+        validate_capsule_response(Version::HTTP_11, &TOKEN, &shouted).unwrap();
     }
 
     #[test]
@@ -250,13 +416,12 @@ mod tests {
                     validate_capsule_request(&request),
                     Err(CapsuleHandshakeError::ForbiddenField(name.clone()))
                 );
-                let clean = self::request(version);
-                let mut response: Response<()> = capsule_response(version, &TOKEN);
+                let mut response = response(version);
                 response
                     .headers_mut()
                     .insert(name.clone(), HeaderValue::from_static("0"));
                 assert_eq!(
-                    validate_capsule_response(&clean, &response),
+                    validate_capsule_response(version, &TOKEN, &response),
                     Err(CapsuleHandshakeError::ForbiddenField(name.clone()))
                 );
                 let mut unprepared = Request::builder().version(version).body(()).unwrap();

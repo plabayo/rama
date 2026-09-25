@@ -69,7 +69,7 @@ fn capsule_service()
         assert_eq!(protocol, TOKEN);
         let upgrade = handle_upgrade(&request);
         tokio::spawn(async move { echo(upgrade.await.unwrap()).await });
-        Ok::<_, Infallible>(capsule_response::<Body>(request.version(), &protocol))
+        Ok::<_, Infallible>(capsule_response::<Body>(request.version(), &protocol).unwrap())
     }))
 }
 
@@ -87,7 +87,6 @@ fn capsule_request(version: Version) -> Request {
 async fn client_session(version: Version) -> HttpDatagramSession {
     let (client_io, server_io) = tokio::io::duplex(64 * 1024);
     let (client_io, server_io) = (ServiceInput::new(client_io), ServiceInput::new(server_io));
-    let request = capsule_request(version);
     let response = if version == Version::HTTP_2 {
         tokio::spawn(
             server::conn::http2::Builder::new(Executor::new())
@@ -110,7 +109,7 @@ async fn client_session(version: Version) -> HttpDatagramSession {
         tokio::spawn(connection.with_upgrades());
         sender.send_request(capsule_request(version)).await.unwrap()
     };
-    validate_capsule_response(&request, &response).unwrap();
+    validate_capsule_response(version, &TOKEN, &response).unwrap();
     HttpDatagramSession::with_config(handle_upgrade(&response).await.unwrap(), config())
 }
 

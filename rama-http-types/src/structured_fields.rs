@@ -481,6 +481,8 @@ mod tests {
             ("?1;a=1;b", BareItem::Boolean(true)),
             ("token", BareItem::Token("token")),
             ("42", BareItem::Integer(42)),
+            // RFC 9651 erratum 8869: a Display String is also an Item.
+            ("%\"caf%c3%a9\"", BareItem::DisplayString("caf%c3%a9")),
         ] {
             assert_eq!(parse_item(value.as_bytes()), Ok(expected), "{value:?}");
         }
