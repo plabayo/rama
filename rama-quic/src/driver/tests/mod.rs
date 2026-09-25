@@ -910,6 +910,76 @@ async fn try_send_datagram_reports_a_full_buffer_without_discarding() {
 }
 
 #[tokio::test]
+async fn stream_datagrams_follow_the_transport_send_state() {
+    let _guard = subscribe();
+    let endpoint = endpoint();
+    let (client, server) = tokio::join!(
+        endpoint
+            .connect(endpoint.local_addr().unwrap(), "localhost")
+            .unwrap(),
+        async { endpoint.accept().await.unwrap().await }
+    );
+    let client = client.unwrap();
+    let server = server.unwrap();
+
+    // Peer STOP_SENDING: the writer is never polled again, the handle and its clone see it.
+    let (mut send, _recv) = client.open_bi().await.unwrap();
+    send.write_all(b"x").await.unwrap();
+    let handle = send.abort_handle();
+    let clone = handle.clone();
+    handle.send_datagram(Bytes::from_static(b"open")).unwrap();
+    clone
+        .try_send_datagram(Bytes::from_static(b"open"))
+        .unwrap();
+    let (_server_send, mut server_recv) = server.accept_bi().await.unwrap();
+    server_recv.stop(7u32).unwrap();
+    assert_eq!(send.stopped().await.unwrap(), Some(7u32.into()));
+    for handle in [&handle, &clone] {
+        assert!(matches!(
+            handle.send_datagram(Bytes::from_static(b"stopped")),
+            Err(SendDatagramError::StreamClosed)
+        ));
+        assert!(matches!(
+            handle.try_send_datagram(Bytes::from_static(b"stopped")),
+            Err(SendDatagramError::StreamClosed)
+        ));
+    }
+
+    // A local FIN closes it at once, before the peer acknowledges it.
+    let (mut send, _recv) = client.open_bi().await.unwrap();
+    let handle = send.abort_handle();
+    handle.send_datagram(Bytes::from_static(b"open")).unwrap();
+    send.finish().unwrap();
+    assert!(matches!(
+        handle.send_datagram(Bytes::from_static(b"finished")),
+        Err(SendDatagramError::StreamClosed)
+    ));
+
+    // A local reset through any handle.
+    let (send, _recv) = client.open_bi().await.unwrap();
+    let handle = send.abort_handle();
+    handle.clone().abort(9u32);
+    assert!(matches!(
+        handle.send_datagram(Bytes::from_static(b"reset")),
+        Err(SendDatagramError::StreamClosed)
+    ));
+
+    // Connection-wide datagrams and the connection itself are unaffected by closed streams.
+    let (send, _recv) = client.open_bi().await.unwrap();
+    let handle = send.abort_handle();
+    client.send_datagram(Bytes::from_static(b"conn")).unwrap();
+    handle
+        .send_datagram(Bytes::from_static(b"still open"))
+        .unwrap();
+
+    client.close(0u32, b"done");
+    assert!(matches!(
+        handle.send_datagram(Bytes::from_static(b"lost")),
+        Err(SendDatagramError::ConnectionLost(_))
+    ));
+}
+
+#[tokio::test]
 async fn two_datagram_readers() {
     let _guard = subscribe();
     let endpoint = endpoint();

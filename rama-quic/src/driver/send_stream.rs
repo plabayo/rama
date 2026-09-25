@@ -16,7 +16,7 @@ use rama_core::bytes::Bytes;
 use rama_quic_proto::{StreamId, VarInt};
 use tokio::sync::Notify;
 
-use crate::driver::connection::{ConnectionRef, State};
+use crate::driver::connection::{ConnectionRef, SendDatagramError, State};
 
 /// A stream that can only be used to send data
 ///
@@ -58,6 +58,39 @@ pub struct StreamAbortHandle {
 }
 
 impl StreamAbortHandle {
+    /// Queue a connection datagram bound to this stream, dropping the oldest queued ones for
+    /// space (see [`Connection::send_datagram`](crate::Connection::send_datagram)).
+    ///
+    /// The stream's send side is checked under the lock that queues the datagram: once it is
+    /// finished (even before the FIN is acknowledged), reset, stopped by the peer or lost, this
+    /// returns [`SendDatagramError::StreamClosed`] (RFC 9297 §2.1). It never polls the stream.
+    pub fn send_datagram(&self, data: Bytes) -> Result<(), SendDatagramError> {
+        self.send_stream_datagram(data, true)
+    }
+
+    /// As [`send_datagram`](Self::send_datagram), but a full send buffer returns
+    /// [`SendDatagramError::Blocked`] instead of dropping queued datagrams.
+    pub fn try_send_datagram(&self, data: Bytes) -> Result<(), SendDatagramError> {
+        self.send_stream_datagram(data, false)
+    }
+
+    fn send_stream_datagram(
+        &self,
+        data: Bytes,
+        drop_oldest: bool,
+    ) -> Result<(), SendDatagramError> {
+        let mut conn = self.conn.state.lock();
+        if let Some(ref error) = conn.error {
+            return Err(SendDatagramError::ConnectionLost(error.clone()));
+        }
+        if (self.is_0rtt && conn.check_0rtt().is_err())
+            || !conn.inner.send_stream(self.stream).is_open()
+        {
+            return Err(SendDatagramError::StreamClosed);
+        }
+        conn.send_datagram(data, drop_oldest)
+    }
+
     /// Abort both available directions. Already closed directions are harmless.
     pub fn abort(&self, error_code: impl Into<VarInt>) {
         let code = error_code.into();
