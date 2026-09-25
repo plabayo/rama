@@ -1489,6 +1489,31 @@ impl Connection {
         }
     }
 
+    /// Transmit `data` as an unreliable, unordered application datagram without waiting or
+    /// discarding queued datagrams: a full send buffer returns [`SendDatagramError::Blocked`].
+    ///
+    /// See [`send_datagram()`] for details.
+    ///
+    /// [`send_datagram()`]: Connection::send_datagram
+    pub fn try_send_datagram(&self, data: Bytes) -> Result<(), SendDatagramError> {
+        let conn = &mut *self.0.state.lock();
+        if let Some(ref x) = conn.error {
+            return Err(SendDatagramError::ConnectionLost(x.clone()));
+        }
+        match conn.inner.datagrams().send(data, false) {
+            Ok(()) => {
+                conn.wake();
+                Ok(())
+            }
+            Err(e) => Err(match e {
+                ProtoSendDatagramError::Blocked(..) => SendDatagramError::Blocked,
+                ProtoSendDatagramError::UnsupportedByPeer => SendDatagramError::UnsupportedByPeer,
+                ProtoSendDatagramError::Disabled => SendDatagramError::Disabled,
+                ProtoSendDatagramError::TooLarge => SendDatagramError::TooLarge,
+            }),
+        }
+    }
+
     /// Transmit `data` as an unreliable, unordered application datagram
     ///
     /// Unlike [`send_datagram()`], this method will wait for buffer space during congestion
@@ -3486,6 +3511,8 @@ pub enum SendDatagramError {
     /// Exceeds the path MTU minus overhead, the peer's advertised limit, or the configured send
     /// buffer budget including queue-entry overhead.
     TooLarge,
+    /// The send buffer is full; only returned by [`Connection::try_send_datagram`]
+    Blocked,
     /// The connection was lost
     ConnectionLost(ConnectionError),
 }
@@ -3496,6 +3523,7 @@ impl core::fmt::Display for SendDatagramError {
             Self::UnsupportedByPeer => f.write_str("datagrams not supported by peer"),
             Self::Disabled => f.write_str("datagram support disabled"),
             Self::TooLarge => f.write_str("datagram too large"),
+            Self::Blocked => f.write_str("datagram send buffer full"),
             Self::ConnectionLost(_) => f.write_str("connection lost"),
         }
     }

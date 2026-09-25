@@ -34,7 +34,7 @@ use tokio::{
 };
 use tracing_subscriber::EnvFilter;
 
-use super::{Endpoint, EndpointConfig, RecvStream, SendStream, TransportConfig};
+use super::{Endpoint, EndpointConfig, RecvStream, SendDatagramError, SendStream, TransportConfig};
 
 mod closing;
 mod owned;
@@ -877,6 +877,36 @@ async fn stream_id_flow_control() {
             server.accept_uni().await.unwrap();
         }
     );
+}
+
+#[tokio::test]
+async fn try_send_datagram_reports_a_full_buffer_without_discarding() {
+    let _guard = subscribe();
+    let mut transport = TransportConfig::default();
+    transport.set_datagram_send_buffer_size(64);
+    let endpoint = endpoint_with_config(transport);
+    let (client, server) = tokio::join!(
+        endpoint
+            .connect(endpoint.local_addr().unwrap(), "localhost")
+            .unwrap(),
+        async { endpoint.accept().await.unwrap().await }
+    );
+    let client = client.unwrap();
+    let server = server.unwrap();
+    let mut queued = 0;
+    // Fill synchronously: the driver cannot drain the buffer between these calls.
+    loop {
+        match client.try_send_datagram(vec![queued; 16].into()) {
+            Ok(()) => queued += 1,
+            Err(SendDatagramError::Blocked) => break,
+            Err(error) => panic!("unexpected {error:?}"),
+        }
+    }
+    assert!(queued > 0);
+    for expected in 0..queued {
+        let datagram = server.read_datagram().await.unwrap();
+        assert_eq!(datagram[0], expected, "no queued datagram may be discarded");
+    }
 }
 
 #[tokio::test]
