@@ -34,6 +34,8 @@ pub struct AsyncWebSocket<S = upgrade::Upgraded> {
     inner: WebSocket<AllowStd<S>>,
     closing: bool,
     ended: bool,
+    /// The WebSocket closed; its transport is being shut down.
+    shutting_down: bool,
     /// Tungstenite is probably ready to receive more data.
     ///
     /// `false` once start_send hits `WouldBlock` errors.
@@ -76,6 +78,7 @@ impl<S> AsyncWebSocket<S> {
             inner: ws,
             closing: false,
             ended: false,
+            shutting_down: false,
             ready: true,
         }
     }
@@ -171,6 +174,11 @@ where
         if self.ended {
             return Poll::Ready(None);
         }
+        if self.shutting_down {
+            ready!(self.poll_shutdown_transport(cx));
+            self.ended = true;
+            return Poll::Ready(None);
+        }
 
         match ready!(self.with_context(Some((ContextWaker::Read, cx)), |s| {
             trace!("Stream.with_context poll_next -> read()");
@@ -178,14 +186,33 @@ where
         })) {
             Ok(v) => Poll::Ready(Some(Ok(v))),
             Err(e) => {
-                self.ended = true;
                 if e.is_connection_error() {
+                    self.shutting_down = true;
+                    ready!(self.poll_shutdown_transport(cx));
+                    self.ended = true;
                     Poll::Ready(None)
                 } else {
+                    self.ended = true;
                     Poll::Ready(Some(Err(e)))
                 }
             }
         }
+    }
+}
+
+impl<S: Io + Unpin> AsyncWebSocket<S> {
+    /// End the transport cleanly once the WebSocket closed: a FIN on TCP and HTTP/3,
+    /// END_STREAM on HTTP/2 (RFC 6455 §7.1.1, RFC 9220 §3). Failures are irrelevant then.
+    fn poll_shutdown_transport(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        if !self.shutting_down {
+            return Poll::Ready(());
+        }
+        let result = ready!(Pin::new(self.get_mut()).poll_shutdown(cx));
+        if let Err(error) = result {
+            trace!("websocket transport shutdown after close: {error}");
+        }
+        self.shutting_down = false;
+        Poll::Ready(())
     }
 }
 
@@ -271,6 +298,8 @@ where
             }
             Err(err) => {
                 if err.is_connection_error() {
+                    self.shutting_down = true;
+                    ready!(self.poll_shutdown_transport(cx));
                     Poll::Ready(Ok(()))
                 } else {
                     debug!("websocket close error: {}", err);
@@ -283,12 +312,47 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::runtime::{AsyncWebSocket, compat::AllowStd};
-    use std::io::{Read, Write};
+    use crate::{
+        protocol::{Message, Role},
+        runtime::{AsyncWebSocket, compat::AllowStd},
+    };
+    use rama_core::{
+        ServiceInput,
+        futures::{SinkExt as _, StreamExt as _},
+    };
+    use std::{
+        io::{Read, Write},
+        time::Duration,
+    };
 
     fn is_read<T: Read>() {}
     fn is_write<T: Write>() {}
     fn is_unpin<T: Unpin>() {}
+
+    /// A completed close handshake ends the transport cleanly, even while the socket
+    /// itself is kept around: the peer observes an orderly end of stream.
+    #[tokio::test]
+    async fn close_handshake_shuts_down_the_transport() {
+        let (server_io, client_io) = tokio::io::duplex(1024);
+        let mut server =
+            AsyncWebSocket::from_raw_socket(ServiceInput::new(server_io), Role::Server, None).await;
+        let mut client =
+            AsyncWebSocket::from_raw_socket(ServiceInput::new(client_io), Role::Client, None).await;
+        client.send(Message::Close(None)).await.unwrap();
+        assert!(matches!(server.next().await, Some(Ok(Message::Close(_)))));
+        assert!(server.next().await.is_none());
+        let end = tokio::time::timeout(Duration::from_secs(5), async {
+            while let Some(message) = client.next().await {
+                assert!(matches!(message, Ok(Message::Close(_))), "{message:?}");
+            }
+        })
+        .await;
+        assert!(
+            end.is_ok(),
+            "the client never saw the server end the transport"
+        );
+        drop(server);
+    }
 
     #[test]
     fn web_socket_stream_has_traits() {
