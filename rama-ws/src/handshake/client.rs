@@ -99,7 +99,7 @@ pub struct WithService<'a, S, Body, Mode = websocket_builder_mode::Async> {
     service: &'a S,
     builder: RequestBuilder<'a, S, Response<Body>>,
     config: Option<WebSocketConfig>,
-    is_h2: bool,
+    version: Version,
     mode: Mode,
 }
 
@@ -108,7 +108,7 @@ impl<S: fmt::Debug, Body, Mode: fmt::Debug> fmt::Debug for WithService<'_, S, Bo
         f.debug_struct("WithService")
             .field("builder", &self.builder)
             .field("config", &self.config)
-            .field("is_h2", &self.is_h2)
+            .field("version", &self.version)
             .field("mode", &self.mode)
             .finish()
     }
@@ -139,6 +139,11 @@ pub mod websocket_builder_mode {
 pub type BlockingWebSocketRequestBuilder<'a, S, Body> =
     WebSocketRequestBuilder<WithService<'a, S, Body, websocket_builder_mode::Blocking<S>>>;
 
+/// HTTP/2 and HTTP/3 bootstrap WebSockets with Extended CONNECT instead of an upgrade.
+fn is_extended_connect(version: Version) -> bool {
+    matches!(version, Version::HTTP_2 | Version::HTTP_3)
+}
+
 fn new_ws_request_builder_from_uri<T>(uri: T, version: Version) -> request::Builder
 where
     T: TryInto<rama_net::uri::Uri, Error: Into<rama_http::HttpError>>,
@@ -154,7 +159,10 @@ where
             .version(version)
             .typed_header(headers::Upgrade::websocket())
             .typed_header(headers::Connection::upgrade()),
-        Version::HTTP_2 => builder.method(Method::CONNECT).version(Version::HTTP_2),
+        // RFC 8441 (HTTP/2) and RFC 9220 (HTTP/3) Extended CONNECT.
+        version @ (Version::HTTP_2 | Version::HTTP_3) => {
+            builder.method(Method::CONNECT).version(version)
+        }
         _ => unreachable!("bug"),
     }
 }
@@ -174,7 +182,7 @@ where
             .version(version)
             .typed_header(headers::Upgrade::websocket())
             .typed_header(headers::Connection::upgrade()),
-        Version::HTTP_2 => service.connect(uri).version(Version::HTTP_2),
+        version @ (Version::HTTP_2 | Version::HTTP_3) => service.connect(uri).version(version),
         _ => unreachable!("bug"),
     };
 
@@ -211,7 +219,7 @@ where
                     .typed_insert(headers::Connection::upgrade());
             }
         }
-        // - for h2: nothing to do
+        // - for h2 and h3: nothing to do
         // - else: this will error downstream due to invalid version
         _ => (),
     }
@@ -373,7 +381,8 @@ pub fn validate_http_server_response<Body>(
                 }
             }
         }
-        Version::HTTP_2 => {
+        // Extended CONNECT succeeds with any 2xx (RFC 8441 §5, RFC 9220 §3).
+        Version::HTTP_2 | Version::HTTP_3 => {
             let response_status = response.status();
             if !response.status().is_success() {
                 return Err(ResponseValidateError::UnexpectedStatusCode(response_status));
@@ -524,6 +533,14 @@ impl WebSocketRequestBuilder<request::Builder> {
         Self::new_with_version(uri, Version::HTTP_2)
     }
 
+    /// Create a new `h3` WebSocket [`Request`] builder (RFC 9220).
+    pub fn new_h3<T>(uri: T) -> Self
+    where
+        T: TryInto<rama_net::uri::Uri, Error: Into<rama_http::HttpError>>,
+    {
+        Self::new_with_version(uri, Version::HTTP_3)
+    }
+
     fn new_with_version<T>(uri: T, version: Version) -> Self
     where
         T: TryInto<rama_net::uri::Uri, Error: Into<rama_http::HttpError>>,
@@ -583,7 +600,7 @@ impl WebSocketRequestBuilder<request::Builder> {
             .context("request failed to build (invalid custom header?)")?;
 
         let mut key = None;
-        if request.version() != Version::HTTP_2 {
+        if !is_extended_connect(request.version()) {
             let k = self.key.unwrap_or_else(headers::SecWebSocketKey::random);
             request.headers_mut().typed_insert(&k);
             key = Some(k);
@@ -633,6 +650,19 @@ where
         )
     }
 
+    /// Create a new `h3` WebSocket [`Request`] builder (RFC 9220).
+    pub fn new_h3_with_service<T>(service: &'a S, uri: T) -> Self
+    where
+        T: IntoUrl,
+    {
+        Self::new_with_service_and_version_and_mode(
+            service,
+            Version::HTTP_3,
+            uri,
+            websocket_builder_mode::Async,
+        )
+    }
+
     /// Create a new WebSocket [`Request`] builder for the given [`Request`]
     pub fn new_with_service_and_request<RequestBody>(
         service: &'a S,
@@ -663,7 +693,7 @@ where
                 service,
                 builder: new_ws_request_builder_from_uri_with_service(service, uri, version),
                 config: Default::default(),
-                is_h2: version == Version::HTTP_2,
+                version,
                 mode,
             },
             protocols: Default::default(),
@@ -681,7 +711,7 @@ where
         RequestBody: Into<rama_http::Body>,
     {
         let key = request.headers().typed_get();
-        let is_h2 = request.version() == Version::HTTP_2;
+        let version = request.version();
         let protocols = request.headers().typed_get();
         let extensions = request.headers().typed_get();
 
@@ -690,7 +720,7 @@ where
                 service,
                 builder: new_ws_request_builder_from_request(service, request),
                 config: Default::default(),
-                is_h2,
+                version,
                 mode,
             },
             protocols,
@@ -876,16 +906,16 @@ where
         };
 
         let mut key = None;
-        let builder = if !self.inner.is_h2 {
+        let builder = if is_extended_connect(self.inner.version) {
+            extensions.insert(TargetHttpVersion(self.inner.version));
+
+            builder
+        } else {
             extensions.insert(TargetHttpVersion(Version::HTTP_11));
 
             let k = self.key.unwrap_or_else(headers::SecWebSocketKey::random);
             let builder = builder.overwrite_typed_header(&k);
             key = Some(k);
-            builder
-        } else {
-            extensions.insert(TargetHttpVersion(Version::HTTP_2));
-
             builder
         };
 
@@ -977,9 +1007,27 @@ where
     where
         T: IntoUrl,
     {
+        Self::new_blocking_with_service_and_version(client, Version::HTTP_2, uri)
+    }
+
+    fn new_blocking_h3_with_service<T>(client: &'a BlockingHttpClient<S>, uri: T) -> Self
+    where
+        T: IntoUrl,
+    {
+        Self::new_blocking_with_service_and_version(client, Version::HTTP_3, uri)
+    }
+
+    fn new_blocking_with_service_and_version<T>(
+        client: &'a BlockingHttpClient<S>,
+        version: Version,
+        uri: T,
+    ) -> Self
+    where
+        T: IntoUrl,
+    {
         Self::new_with_service_and_version_and_mode(
             client.get_ref(),
-            Version::HTTP_2,
+            version,
             uri,
             websocket_builder_mode::Blocking {
                 runtime: client.runtime().clone(),
@@ -1414,6 +1462,12 @@ pub trait HttpClientWebSocketExt<Body>:
         url: impl IntoUrl,
     ) -> WebSocketRequestBuilder<WithService<'_, Self, Body>>;
 
+    /// Create a new [`WebSocketRequestBuilder`] to be used to establish a WebSocket connection over h3.
+    fn websocket_h3(
+        &self,
+        url: impl IntoUrl,
+    ) -> WebSocketRequestBuilder<WithService<'_, Self, Body>>;
+
     /// Create a new [`WebSocketRequestBuilder`] starting from the given request.
     ///
     /// This is useful in cases where you already have a request that you wish to use,
@@ -1437,6 +1491,13 @@ where
         url: impl IntoUrl,
     ) -> WebSocketRequestBuilder<WithService<'_, Self, Body>> {
         WebSocketRequestBuilder::new_h2_with_service(self, url)
+    }
+
+    fn websocket_h3(
+        &self,
+        url: impl IntoUrl,
+    ) -> WebSocketRequestBuilder<WithService<'_, Self, Body>> {
+        WebSocketRequestBuilder::new_h3_with_service(self, url)
     }
 
     fn websocket_with_request<RequestBody: Into<rama_http::Body>>(
@@ -1497,6 +1558,12 @@ pub trait BlockingHttpClientWebSocketExt<Body>:
         url: impl IntoUrl,
     ) -> BlockingWebSocketRequestBuilder<'_, Self::AsyncService, Body>;
 
+    /// Create a WebSocket request builder for HTTP/3 Extended CONNECT.
+    fn websocket_h3(
+        &self,
+        url: impl IntoUrl,
+    ) -> BlockingWebSocketRequestBuilder<'_, Self::AsyncService, Body>;
+
     /// Create a WebSocket request builder from an existing request.
     fn websocket_with_request<RequestBody: Into<rama_http::Body>>(
         &self,
@@ -1523,6 +1590,13 @@ where
         url: impl IntoUrl,
     ) -> BlockingWebSocketRequestBuilder<'_, Self::AsyncService, Body> {
         BlockingWebSocketRequestBuilder::new_blocking_h2_with_service(self, url)
+    }
+
+    fn websocket_h3(
+        &self,
+        url: impl IntoUrl,
+    ) -> BlockingWebSocketRequestBuilder<'_, Self::AsyncService, Body> {
+        BlockingWebSocketRequestBuilder::new_blocking_h3_with_service(self, url)
     }
 
     fn websocket_with_request<RequestBody: Into<rama_http::Body>>(
@@ -1804,21 +1878,38 @@ mod tests {
     }
 
     #[test]
-    fn h2_handshake_accepts_any_successful_connect_status() {
-        let mut response = Response::new(());
-        *response.version_mut() = Version::HTTP_2;
-        *response.status_mut() = StatusCode::CREATED;
+    fn extended_connect_handshakes_accept_any_successful_connect_status() {
+        for version in [Version::HTTP_2, Version::HTTP_3] {
+            let mut response = Response::new(());
+            *response.version_mut() = version;
+            *response.status_mut() = StatusCode::CREATED;
 
-        validate_http_server_response(&response, None, None, None)
-            .expect("successful CONNECT response");
+            validate_http_server_response(&response, None, None, None)
+                .expect("successful CONNECT response");
 
-        *response.status_mut() = StatusCode::BAD_REQUEST;
-        assert!(matches!(
-            validate_http_server_response(&response, None, None, None),
-            Err(ResponseValidateError::UnexpectedStatusCode(
-                StatusCode::BAD_REQUEST
-            ))
-        ));
+            *response.status_mut() = StatusCode::BAD_REQUEST;
+            assert!(matches!(
+                validate_http_server_response(&response, None, None, None),
+                Err(ResponseValidateError::UnexpectedStatusCode(
+                    StatusCode::BAD_REQUEST
+                ))
+            ));
+        }
+    }
+
+    #[test]
+    fn h3_requests_use_extended_connect_without_a_key() {
+        let handshake = WebSocketRequestBuilder::new_h3("wss://example.test/chat")
+            .build_handshake()
+            .unwrap();
+        assert_eq!(handshake.request.method(), Method::CONNECT);
+        assert_eq!(handshake.request.version(), Version::HTTP_3);
+        assert!(handshake.key.is_none());
+        assert!(!handshake.request.headers().contains_key(header::UPGRADE));
+        assert_eq!(
+            handshake.request.extensions().get_ref::<Protocol>(),
+            Some(&Protocol::WEBSOCKET)
+        );
     }
 
     /// Validate an (h2) server handshake response carrying `server_raw` against

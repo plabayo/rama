@@ -275,7 +275,7 @@ where
 
         match (http_version, http_status) {
             (Version::HTTP_10 | Version::HTTP_11, StatusCode::SWITCHING_PROTOCOLS) => (),
-            (Version::HTTP_2, status) if status.is_success() => (),
+            (Version::HTTP_2 | Version::HTTP_3, status) if status.is_success() => (),
             _ => {
                 tracing::debug!(?http_version, ?http_status, "WS response failed to match");
                 return Ok(svc_match);
@@ -334,7 +334,7 @@ where
 
         match (http_version, http_status) {
             (Version::HTTP_10 | Version::HTTP_11, StatusCode::SWITCHING_PROTOCOLS) => (),
-            (Version::HTTP_2, status) if status.is_success() => (),
+            (Version::HTTP_2 | Version::HTTP_3, status) if status.is_success() => (),
             _ => {
                 tracing::debug!(?http_version, ?http_status, "WS response failed to match");
                 return Ok(svc_match);
@@ -398,7 +398,7 @@ mod tests {
     fn websocket_request(version: Version) -> Request {
         let mut request = Request::new(Body::empty());
         *request.version_mut() = version;
-        if version == Version::HTTP_2 {
+        if version >= Version::HTTP_2 {
             *request.method_mut() = Method::CONNECT;
             request
                 .extensions()
@@ -418,7 +418,7 @@ mod tests {
     fn websocket_response(version: Version) -> Response {
         let mut response = Response::new(Body::empty());
         *response.version_mut() = version;
-        *response.status_mut() = if version == Version::HTTP_2 {
+        *response.status_mut() = if version >= Version::HTTP_2 {
             StatusCode::OK
         } else {
             StatusCode::SWITCHING_PROTOCOLS
@@ -432,7 +432,7 @@ mod tests {
     #[tokio::test]
     async fn stored_heads_are_detached_snapshots_and_release_http_state() {
         for owned in [false, true] {
-            for version in [Version::HTTP_11, Version::HTTP_2] {
+            for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
                 let request_lifetime = Arc::new(());
                 let request_weak = Arc::downgrade(&request_lifetime);
                 let response_lifetime = Arc::new(());
@@ -552,7 +552,7 @@ mod tests {
     #[tokio::test]
     async fn storage_flags_and_rejected_handshakes_do_not_select_metadata() {
         for owned in [false, true] {
-            for version in [Version::HTTP_11, Version::HTTP_2] {
+            for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
                 for store in [false, true] {
                     for accepted in [false, true] {
                         let matcher = HttpWebSocketRelayServiceRequestMatcher::new(())
@@ -625,7 +625,7 @@ mod tests {
     #[tokio::test]
     async fn negotiation_is_selected_even_when_header_storage_is_disabled() {
         for owned in [false, true] {
-            for version in [Version::HTTP_11, Version::HTTP_2] {
+            for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
                 let matcher = HttpWebSocketRelayServiceRequestMatcher::new(())
                     .with_websocket_config(WebSocketConfig {
                         max_message_size: Some(1234),
@@ -679,7 +679,7 @@ mod tests {
 
     #[tokio::test]
     async fn borrowed_and_owned_service_matchers_accept_websocket_handshakes() {
-        for version in [Version::HTTP_11, Version::HTTP_2] {
+        for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
             let request_matcher = HttpWebSocketRelayServiceRequestMatcher::new(());
             let borrowed_response_matcher = request_matcher
                 .match_service(websocket_request(version))
