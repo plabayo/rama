@@ -19,6 +19,13 @@
 //! `rama_http::layer::remove_header::coalesce_cookie_headers`; the HTTP/1 version
 //! adapter does this automatically.
 //!
+//! Ordinary CONNECT and Extended CONNECT (RFC 9220, when [`connection::Config::extended_connect`]
+//! is set on a server) expose their tunnels through Rama's upgrade API after a 2xx response.
+//! Extended CONNECT tunnels whose protocol may own HTTP Datagrams publish a
+//! [`rama_http::datagram::NativeDatagrams`] carrier once `SETTINGS_H3_DATAGRAM` was exchanged
+//! (RFC 9297 §2.1); the driver alone reads QUIC DATAGRAM frames and files them per request
+//! within [`DatagramLimits`]. Use [`rama_http::datagram::HttpDatagramSession`] on the tunnel.
+//!
 //! This is HTTP message forwarding, not a wire capture/replay API: URI serialization
 //! can normalize pseudo-field values, and connection settings, unknown frames, frame
 //! boundaries and QPACK representations are not reproduced on another connection.
@@ -68,6 +75,9 @@ mod priority;
 pub use priority::PriorityHandle;
 
 mod upgrade;
+
+mod datagram;
+pub use datagram::DatagramLimits;
 
 pub mod push;
 

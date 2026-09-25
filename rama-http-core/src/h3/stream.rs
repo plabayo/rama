@@ -39,6 +39,8 @@ pub(crate) struct Reader<R: RecvStream> {
     frames: FrameDecoder,
     pub(crate) push_id: Option<u64>,
     pub(crate) origin: Option<Uri>,
+    /// Whether this request owns datagrams; `None` until a server decoded the request.
+    pub(crate) datagram_semantics: Option<bool>,
     push_cancelled: Option<std::pin::Pin<Box<dyn Future<Output = Error> + Send + Sync>>>,
     promise: Option<std::pin::Pin<Box<dyn Future<Output = Result<(), Error>> + Send + Sync>>>,
 }
@@ -50,6 +52,8 @@ impl<R: RecvStream> Reader<R> {
             shared.config.read_chunk_size,
         )
         .with_header_events();
+        // Clients know their requests; servers decide once the request head is decoded.
+        let datagram_semantics = (shared.role == super::control::Role::Client).then_some(false);
         Self {
             stream,
             shared,
@@ -60,6 +64,7 @@ impl<R: RecvStream> Reader<R> {
             client_lifetime: None,
             frames,
             origin: None,
+            datagram_semantics,
             push_id: None,
             promise: None,
             push_cancelled: None,
@@ -123,6 +128,16 @@ impl<R: RecvStream> Reader<R> {
             return Poll::Ready(Ok(None));
         }
         for _ in 0..super::cooperative::OPERATIONS_PER_QUANTUM {
+            // RFC 9297 §2: a datagram on a request without datagram semantics terminates it.
+            if self.datagram_semantics == Some(false)
+                && self.shared.take_unclaimed_datagrams(self.id)
+            {
+                return Poll::Ready(Err(Error::stream(
+                    Code::H3_DATAGRAM_ERROR,
+                    "datagram for a request without datagram semantics",
+                )
+                .remote()));
+            }
             if let Some(promise) = &mut self.promise {
                 ready!(promise.as_mut().poll(cx))?;
                 self.promise = None;
@@ -216,6 +231,9 @@ impl<R: RecvStream> Reader<R> {
                             .remote()));
                         }
                         self.phase = Phase::Finished;
+                        if self.datagram_semantics == Some(true) {
+                            self.shared.close_datagram_receive(self.id);
+                        }
                         return Poll::Ready(Ok(None));
                     }
                 }

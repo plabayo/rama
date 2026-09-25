@@ -2,6 +2,7 @@
 
 use super::{
     Error,
+    datagram::{Association, H3DatagramChannel},
     frame::FrameEvent,
     quic::{RecvStream, SendStream, Writer},
     stream::{Phase, Reader},
@@ -10,8 +11,11 @@ use rama_core::{
     bytes::Bytes,
     extensions::{Extensions, ExtensionsRef},
 };
-use rama_http::io::upgrade::Upgraded;
-use rama_http_types::proto::h3::{Code, FrameType};
+use rama_http::{
+    datagram::NativeDatagrams,
+    io::upgrade::{OnMalformedMessage, OnUpstreamError, Upgraded},
+};
+use rama_http_types::proto::h3::{Code, FrameType, VarInt};
 use std::{
     io,
     pin::Pin,
@@ -20,20 +24,35 @@ use std::{
 };
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
+/// A request's claimed datagram association and the connection carrying its datagrams.
+pub(crate) type Datagrams = (Arc<Association>, rama_quic::Connection);
+
 pub(crate) fn new(
     mut reader: Reader<rama_quic::RecvStream>,
     writer: Writer<rama_quic::SendStream>,
     permit: Arc<dyn Send + Sync>,
     priority: Option<super::priority::Lease>,
+    datagrams: Option<Datagrams>,
 ) -> Upgraded {
     reader.phase = Phase::Tunnel;
     let extensions = reader.shared.transport_extensions.fork();
-    let abort = writer.abort_handle();
-    extensions.insert(rama_http::io::upgrade::OnUpstreamError::new(move || {
-        abort.abort(rama_quic_proto::VarInt::from_u32(
-            Code::H3_CONNECT_ERROR.value() as u32,
-        ));
-    }));
+    for (code, malformed) in [
+        (Code::H3_CONNECT_ERROR, false),
+        (Code::H3_MESSAGE_ERROR, true),
+    ] {
+        let abort = writer.abort_handle();
+        let abort = move || abort.abort(VarInt::from_u32(code.value() as u32));
+        if malformed {
+            extensions.insert(OnMalformedMessage::new(abort));
+        } else {
+            extensions.insert(OnUpstreamError::new(abort));
+        }
+    }
+    let association = datagrams.and_then(|(association, connection)| {
+        let channel = H3DatagramChannel::new(association.clone(), connection)?;
+        extensions.insert(NativeDatagrams::new(channel));
+        Some(association)
+    });
     Upgraded::new(
         Tunnel {
             reader,
@@ -44,6 +63,7 @@ pub(crate) fn new(
             permit: Some(permit),
             shutdown: None,
             acknowledged: None,
+            association,
         },
         Bytes::new(),
     )
@@ -60,6 +80,15 @@ struct Tunnel<R: RecvStream, S: SendStream> {
     shutdown: Option<Result<(), Error>>,
     acknowledged: Option<Acknowledged>,
     priority_lease: Option<super::priority::Lease>,
+    association: Option<Arc<Association>>,
+}
+
+impl<R: RecvStream, S: SendStream> Drop for Tunnel<R, S> {
+    fn drop(&mut self) {
+        if let Some(association) = &self.association {
+            association.close();
+        }
+    }
 }
 
 impl<R: RecvStream, S: SendStream> Tunnel<R, S> {
@@ -155,6 +184,10 @@ impl<R: RecvStream + Unpin, S: SendStream + Unpin> AsyncWrite for Tunnel<R, S> {
         }
         ready!(self.flush(cx)).map_err(io::Error::other)?;
         ready!(self.writer.poll_finish(cx)).map_err(io::Error::other)?;
+        // RFC 9297 §2.1: no datagrams once the send side is closed.
+        if let Some(association) = &self.association {
+            association.close_send();
+        }
         let Self {
             writer,
             acknowledged,
@@ -262,6 +295,7 @@ mod tests {
             shutdown: None,
             acknowledged: None,
             priority_lease: None,
+            association: None,
         }
     }
 

@@ -44,7 +44,7 @@ async fn priority_update_checks_exact_advertised_stream_limit() {
             StreamId::new(Side::Client, Dir::Bi, index).encode(&mut payload);
             payload.extend_from_slice(b"u=1");
             let mut bytes = BytesMut::from(
-                initial_control(&Config::default(), Role::Client)
+                initial_control(&Config::default(), Role::Client, false)
                     .unwrap()
                     .as_ref(),
             );
@@ -90,7 +90,7 @@ async fn priority_updates_cover_transport_credit_beyond_application_admission() 
             let driver = spawn(driver.run());
             let limit = pair.server.remote_stream_limit(Dir::Bi);
             let mut bytes = BytesMut::from(
-                initial_control(&Config::default(), Role::Client)
+                initial_control(&Config::default(), Role::Client, false)
                     .unwrap()
                     .as_ref(),
             );

@@ -36,7 +36,7 @@ async fn memory_clean_close_drains_accepted_control_frames_before_terminal_notif
 
             let mut control = pair.server.open_uni().await.unwrap();
             let mut bytes = BytesMut::from(
-                initial_control(&Config::default(), Role::Client)
+                initial_control(&Config::default(), Role::Client, false)
                     .unwrap()
                     .as_ref(),
             );
@@ -229,7 +229,7 @@ async fn memory_response_close_waits_for_buffered_goaway_before_classifying_reje
             recv.read_chunk(4096, true).await.unwrap();
             let mut control = pair.server.open_uni().await.unwrap();
             let mut bytes = BytesMut::from(
-                initial_control(&Config::default(), Role::Client)
+                initial_control(&Config::default(), Role::Client, false)
                     .unwrap()
                     .as_ref(),
             );

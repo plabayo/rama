@@ -4,6 +4,7 @@ use super::{
     Error, body,
     connection::{Config, Driver, Shared},
     control::Role,
+    datagram::Association,
     headers,
     quic::Writer,
     stream::{Phase, Reader},
@@ -16,7 +17,10 @@ use rama_http::{
 use rama_http_types::{
     Method, Request, Response, StatusCode,
     body::StreamingBody,
-    proto::h3::{Code, FrameType, StreamType},
+    proto::{
+        ext::Protocol,
+        h3::{Code, FrameType, StreamType},
+    },
 };
 use rama_net::uri::Uri;
 use rama_quic_proto::{VarInt, coding::Codec as _};
@@ -60,6 +64,11 @@ pub fn handshake(
 }
 
 impl Connection {
+    #[cfg(test)]
+    pub(crate) fn shared(&self) -> &Arc<Shared> {
+        &self.shared
+    }
+
     /// Stop admitting requests and notify the peer while accepted streams finish.
     pub fn shutdown(&mut self) -> Result<(), Error> {
         self.shared.send_goaway(self.next_id)?;
@@ -143,6 +152,31 @@ impl RequestStream {
         };
         let remaining = headers::content_length(request.headers())?;
         let method = request.method().clone();
+        let claims_datagrams = method == Method::CONNECT
+            && self.reader.shared.config.datagrams.is_some()
+            && request
+                .extensions()
+                .get_ref::<Protocol>()
+                .is_some_and(super::datagram::claims_datagrams);
+        self.reader.datagram_semantics = Some(claims_datagrams);
+        let association = if claims_datagrams {
+            Some(Association::register(
+                self.reader.shared.clone(),
+                self.reader.id,
+            ))
+        } else {
+            // RFC 9297 §2: datagrams that arrived before the head now terminate the request.
+            if self.reader.shared.take_unclaimed_datagrams(self.reader.id) {
+                return Err(self.reader.reject(
+                    Error::stream(
+                        Code::H3_DATAGRAM_ERROR,
+                        "datagram for a request without datagram semantics",
+                    )
+                    .remote(),
+                ));
+            }
+            None
+        };
         let priority = request
             .headers()
             .typed_get::<Priority>()
@@ -169,7 +203,7 @@ impl RequestStream {
         if response.method == Method::CONNECT {
             let (pending, upgrade) = upgrade::pending();
             request.extensions().insert(upgrade);
-            response.connect = Some((self.reader, pending));
+            response.connect = Some((self.reader, pending, association));
             return Ok((request.map(|()| crate::body::Incoming::empty()), response));
         }
         // RFC 9114 section 4.1: discarding an otherwise valid request body
@@ -188,7 +222,11 @@ pub struct SendResponse {
     connection: rama_quic::Connection,
     origin: Uri,
     outgoing_push: Option<super::push::Lease>,
-    connect: Option<(Reader<rama_quic::RecvStream>, Pending)>,
+    connect: Option<(
+        Reader<rama_quic::RecvStream>,
+        Pending,
+        Option<Arc<Association>>,
+    )>,
     shared: Arc<Shared>,
     id: u64,
     writer: Writer<rama_quic::SendStream>,
@@ -360,7 +398,7 @@ impl SendResponse {
         }
         self.flush(false).await?;
         if response.status().is_success()
-            && let Some((reader, pending)) = self.connect.take()
+            && let Some((reader, pending, association)) = self.connect.take()
         {
             response
                 .headers_mut()
@@ -368,15 +406,17 @@ impl SendResponse {
             let bytes = headers::encode_response(&self.shared, self.id, &response)?;
             self.writer.queue(FrameType::HEADERS, bytes)?;
             self.flush(false).await?;
+            let datagrams = association.map(|association| (association, self.connection.clone()));
             pending.fulfill(super::upgrade::new(
                 reader,
                 self.writer,
                 self.priority_lease.permit.clone(),
                 Some(self.priority_lease),
+                datagrams,
             ));
             return Ok(());
         }
-        if let Some((mut reader, _pending)) = self.connect.take() {
+        if let Some((mut reader, _pending, _association)) = self.connect.take() {
             reader.cancel_code = Code::H3_NO_ERROR;
         }
         let bodyless = self.method == Method::HEAD

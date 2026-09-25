@@ -72,7 +72,7 @@ async fn memory_goaway_prevents_new_headers_when_stream_credit_arrives_concurren
         }
         let mut control = pair.server.open_uni().await.unwrap();
         control
-            .write_all(&initial_control(&Config::default(), Role::Client).unwrap())
+            .write_all(&initial_control(&Config::default(), Role::Client, false).unwrap())
             .await
             .unwrap();
         let limit = VarInt::from_u64(u64::from(StreamId::new(
@@ -1380,7 +1380,7 @@ async fn memory_goaway_before_clean_close_preserves_retryable_rejection() {
             recv.read_chunk(4096, true).await.unwrap();
             let mut control = pair.server.open_uni().await.unwrap();
             let mut bytes = BytesMut::from(
-                initial_control(&Config::default(), Role::Client)
+                initial_control(&Config::default(), Role::Client, false)
                     .unwrap()
                     .as_ref(),
             );
@@ -1438,7 +1438,7 @@ async fn memory_blocked_field_storage_limit_resets_only_affected_request() {
         client.ready().await.unwrap();
         let mut control = pair.server.open_uni().await.unwrap();
         control
-            .write_all(&initial_control(&Config::default(), Role::Client).unwrap())
+            .write_all(&initial_control(&Config::default(), Role::Client, false).unwrap())
             .await
             .unwrap();
         let peer = pair.server.clone();
@@ -1572,7 +1572,7 @@ async fn memory_priority_update_cannot_exceed_advertised_stream_credit() {
         let limit = pair.server.remote_stream_limit(Dir::Bi);
         let mut control = pair.client.open_uni().await.unwrap();
         control
-            .write_all(&initial_control(&Config::default(), Role::Client).unwrap())
+            .write_all(&initial_control(&Config::default(), Role::Client, false).unwrap())
             .await
             .unwrap();
         for (id, value) in [(0, "u=1"), ((limit - 1) * 4, "u=1"), (limit * 4, "invalid")] {
@@ -1621,7 +1621,7 @@ async fn memory_goaway_rejects_connect_waiting_for_request_send_credit() {
         assert!(poll_fn(|cx| Poll::Ready(response.as_mut().poll(cx).is_pending())).await);
         let mut control = pair.server.open_uni().await.unwrap();
         let mut bytes = BytesMut::from(
-            initial_control(&Config::default(), Role::Client)
+            initial_control(&Config::default(), Role::Client, false)
                 .unwrap()
                 .as_ref(),
         );
@@ -1656,7 +1656,7 @@ async fn memory_peer_exceeding_blocked_stream_setting_closes_connection() {
         client.ready().await.unwrap();
         let mut control = pair.server.open_uni().await.unwrap();
         control
-            .write_all(&initial_control(&Config::default(), Role::Client).unwrap())
+            .write_all(&initial_control(&Config::default(), Role::Client, false).unwrap())
             .await
             .unwrap();
         let request = spawn(async move {

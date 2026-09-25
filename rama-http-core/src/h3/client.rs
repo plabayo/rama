@@ -409,6 +409,15 @@ where
         }
         reader.origin = Some(request.uri().clone());
         let method = request.method().clone();
+        // Claim datagrams before HEADERS leave, so early replies wait for the session.
+        let association = (method == Method::CONNECT
+            && self.shared.config.datagrams.is_some()
+            && request
+                .extensions()
+                .get_ref::<Protocol>()
+                .is_some_and(super::datagram::claims_datagrams))
+        .then(|| super::datagram::Association::register(self.shared.clone(), id));
+        reader.datagram_semantics = Some(association.is_some());
         let informational = request.extensions().get_ref::<OnInformational>().cloned();
         if method == Method::CONNECT && !request.body().is_end_stream() {
             return Err(Error::stream(
@@ -447,10 +456,14 @@ where
                 }
                 if response.status().is_success() {
                     let (pending, upgrade) = http_upgrade::pending();
-                    pending.fulfill(super::upgrade::new(reader, writer, permit, None));
+                    let datagrams =
+                        association.map(|association| (association, self.connection.clone()));
+                    pending.fulfill(super::upgrade::new(reader, writer, permit, None, datagrams));
                     response.extensions().insert(upgrade);
                     return Ok(response.map(|()| crate::body::Incoming::empty()));
                 }
+                drop(association);
+                reader.datagram_semantics = Some(false);
                 std::future::poll_fn(|cx| writer.poll_finish(cx)).await?;
                 match writer.acknowledged().await {
                     Ok(()) => writer.mark_acknowledged(),
