@@ -2,13 +2,18 @@
 
 #![cfg(test)]
 
+use parking_lot::Mutex;
 use rama::{
-    Layer,
+    Layer, Service,
     crypto::pem::PemEncode as _,
     graceful::Shutdown,
     http::{
-        Version, layer::error_handling::ErrorHandlerLayer, server::HttpServer,
-        service::web::Router, ws::handshake::server::WebSocketAcceptor,
+        Request, Response, Version,
+        io::upgrade::{Upgraded, handle_upgrade},
+        layer::error_handling::ErrorHandlerLayer,
+        server::HttpServer,
+        service::web::Router,
+        ws::handshake::server::WebSocketAcceptor,
     },
     layer::{ArcLayer, ConsumeErrLayer},
     net::{address::SocketAddress, tls::ApplicationProtocol},
@@ -22,9 +27,23 @@ use rama::{
     utils::fs::{TempDir, tempdir},
 };
 use std::{
-    error::Error, net::SocketAddr, path::PathBuf, process::Output, sync::Arc, time::Duration,
+    collections::VecDeque,
+    convert::Infallible,
+    error::Error,
+    net::SocketAddr,
+    path::PathBuf,
+    process::{Output, Stdio},
+    sync::Arc,
+    time::Duration,
 };
-use tokio::{fs, io::AsyncWriteExt as _, process::Command, sync::oneshot, time::timeout};
+use tokio::{
+    fs,
+    io::{AsyncReadExt as _, AsyncWriteExt as _},
+    process::{Child, ChildStdin, Command},
+    sync::oneshot,
+    task::JoinHandle,
+    time::timeout,
+};
 
 type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
 const DEADLINE: Duration = Duration::from_secs(20);
@@ -54,6 +73,43 @@ impl Fixture {
 
     /// Run `rama send` with `input` on stdin, as a script or pipe would.
     async fn send(&self, url: &str, args: &[&str], input: &[u8]) -> TestResult<Output> {
+        let mut child = self.spawn(url, args)?;
+        let mut stdin = child.stdin.take().expect("piped stdin");
+        stdin.write_all(input).await?;
+        drop(stdin);
+        Ok(timeout(DEADLINE, child.wait_with_output()).await??)
+    }
+
+    /// Run `rama send` fed with `input` by a writer that never closes stdin.
+    async fn send_keeping_stdin_open(
+        &self,
+        url: &str,
+        args: &[&str],
+        input: Vec<u8>,
+    ) -> TestResult<Output> {
+        let (child, writer) = self.spawn_feeding(url, args, input)?;
+        let output = timeout(DEADLINE, child.wait_with_output()).await??;
+        // The process exited while its stdin was still open.
+        drop(writer.await??);
+        Ok(output)
+    }
+
+    fn spawn_feeding(
+        &self,
+        url: &str,
+        args: &[&str],
+        input: Vec<u8>,
+    ) -> TestResult<(Child, JoinHandle<std::io::Result<ChildStdin>>)> {
+        let mut child = self.spawn(url, args)?;
+        let mut stdin = child.stdin.take().expect("piped stdin");
+        let writer = tokio::spawn(async move {
+            stdin.write_all(&input).await?;
+            Ok(stdin)
+        });
+        Ok((child, writer))
+    }
+
+    fn spawn(&self, url: &str, args: &[&str]) -> TestResult<Child> {
         let mut command = Command::new(env!("CARGO_BIN_EXE_rama"));
         let no_proxy = if args.contains(&"--proxy") { "" } else { "*" };
         command
@@ -69,9 +125,9 @@ impl Fixture {
             .env("no_proxy", no_proxy)
             .env("RUST_LOG", "off")
             .env("NO_COLOR", "1")
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
         for variable in [
             "HTTP_PROXY",
             "HTTPS_PROXY",
@@ -82,35 +138,43 @@ impl Fixture {
         ] {
             command.env_remove(variable);
         }
-        let mut child = command.spawn()?;
-        let mut stdin = child.stdin.take().expect("piped stdin");
-        stdin.write_all(input).await?;
-        drop(stdin);
-        Ok(timeout(DEADLINE, child.wait_with_output()).await??)
+        Ok(command.spawn()?)
     }
 }
 
-struct EchoServer {
+struct WsServer {
     address: SocketAddr,
     endpoint: Option<Endpoint>,
     stop: oneshot::Sender<()>,
     shutdown: Shutdown,
 }
 
-impl EchoServer {
+impl WsServer {
     /// A `wss://…/echo` WebSocket echo server on `version`.
-    async fn start(
+    async fn echo(
         auth: ServerAuthData,
         version: Version,
         extended_connect: bool,
     ) -> TestResult<Self> {
+        let echo = ConsumeErrLayer::trace_as_debug()
+            .into_layer(WebSocketAcceptor::new().into_echo_service());
+        Self::start(auth, version, extended_connect, echo).await
+    }
+
+    /// A `wss://…/echo` WebSocket server on `version`, handled by `ws`.
+    async fn start<S>(
+        auth: ServerAuthData,
+        version: Version,
+        extended_connect: bool,
+        ws: S,
+    ) -> TestResult<Self>
+    where
+        S: Service<Request, Output = Response, Error = Infallible> + Clone,
+    {
         let (stop, stopped) = oneshot::channel::<()>();
         let shutdown = Shutdown::new(stopped);
         let executor = Executor::graceful(shutdown.guard());
-        let echo = || {
-            ConsumeErrLayer::trace_as_debug()
-                .into_layer(WebSocketAcceptor::new().into_echo_service())
-        };
+        let echo = || ws.clone();
         let tls = TlsServerConfig::new().with_server_auth(auth);
         if version == Version::HTTP_3 {
             let tls = tls.with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
@@ -193,6 +257,234 @@ impl EchoServer {
     }
 }
 
+/// A message larger than every flow-control window on the way.
+const LARGE: usize = 8 * 1024 * 1024;
+const CLOSE_NORMAL: [u8; 2] = 1000u16.to_be_bytes();
+
+fn check(condition: bool, violation: &'static str) -> TestResult {
+    if condition {
+        Ok(())
+    } else {
+        Err(violation.into())
+    }
+}
+
+/// What the raw peer does on the wire with the next WebSocket it accepts.
+enum Scenario {
+    /// Close first, then expect a masked close reply and an orderly end (not a reset).
+    CloseFirst,
+    /// Echo `hello`, answer the client's close and expect an orderly end.
+    CloseSecond,
+    /// Send a large message while the client's own large message is stuck mid-frame.
+    Duplex,
+    /// Close while the client's large message is stuck mid-frame.
+    CloseDuringSend,
+    /// Stop reading mid-frame, tell the test, and expect the killed client to abort.
+    Stall(oneshot::Sender<()>),
+}
+
+struct FrameHeader {
+    first: u8,
+    len: usize,
+    mask: Option<[u8; 4]>,
+}
+
+async fn read_header(io: &mut Upgraded) -> std::io::Result<FrameHeader> {
+    let first = io.read_u8().await?;
+    let second = io.read_u8().await?;
+    let len = match second & 0x7f {
+        126 => usize::from(io.read_u16().await?),
+        127 => usize::try_from(io.read_u64().await?).map_err(std::io::Error::other)?,
+        len => usize::from(len),
+    };
+    let mask = if second & 0x80 == 0 {
+        None
+    } else {
+        let mut mask = [0; 4];
+        io.read_exact(&mut mask).await?;
+        Some(mask)
+    };
+    Ok(FrameHeader { first, len, mask })
+}
+
+async fn read_payload(io: &mut Upgraded, header: &FrameHeader) -> std::io::Result<Vec<u8>> {
+    let mut payload = vec![0; header.len];
+    io.read_exact(&mut payload).await?;
+    if let Some(mask) = header.mask {
+        for (byte, mask) in payload.iter_mut().zip(mask.iter().cycle()) {
+            *byte ^= mask;
+        }
+    }
+    Ok(payload)
+}
+
+/// An unmasked server frame (RFC 6455 §5.1).
+fn server_frame(first: u8, payload: &[u8]) -> Vec<u8> {
+    let mut frame = vec![first];
+    match payload.len() {
+        len @ ..126 => frame.push(u8::try_from(len).expect("short length")),
+        len @ ..=0xffff => {
+            frame.push(126);
+            frame.extend_from_slice(&u16::try_from(len).expect("medium length").to_be_bytes());
+        }
+        len => {
+            frame.push(127);
+            frame.extend_from_slice(&u64::try_from(len).expect("long length").to_be_bytes());
+        }
+    }
+    frame.extend_from_slice(payload);
+    frame
+}
+
+/// Read one client frame, which must be masked (RFC 6455 §5.3).
+async fn read_client_frame(io: &mut Upgraded) -> TestResult<(u8, Vec<u8>)> {
+    let header = read_header(io).await?;
+    check(header.mask.is_some(), "an unmasked client frame")?;
+    let payload = read_payload(io, &header).await?;
+    Ok((header.first, payload))
+}
+
+async fn expect_close_reply(io: &mut Upgraded) -> TestResult {
+    let (first, payload) = read_client_frame(io).await?;
+    check(first == 0x88, "no close reply")?;
+    check(
+        payload == CLOSE_NORMAL,
+        "the close reply changed the status",
+    )
+}
+
+/// End our side first (RFC 6455 §7.1.1), then the client must end its side cleanly: FIN or
+/// END_STREAM, never a reset.
+async fn expect_orderly_end(io: &mut Upgraded) -> TestResult {
+    io.shutdown().await?;
+    let mut rest = Vec::new();
+    io.read_to_end(&mut rest).await?;
+    check(rest.is_empty(), "bytes after the close handshake")
+}
+
+/// Read `first`, then the header of the large text message that follows it.
+async fn read_until_large_message(io: &mut Upgraded) -> TestResult<FrameHeader> {
+    let (first, payload) = read_client_frame(io).await?;
+    check(first == 0x81 && payload == b"first", "the first message")?;
+    let header = read_header(io).await?;
+    check(
+        header.first == 0x81 && header.len == LARGE && header.mask.is_some(),
+        "the large message",
+    )?;
+    Ok(header)
+}
+
+impl Scenario {
+    async fn run(self, mut io: Upgraded) -> TestResult {
+        let io = &mut io;
+        match self {
+            Self::CloseFirst => {
+                io.write_all(&server_frame(0x88, &CLOSE_NORMAL)).await?;
+                io.flush().await?;
+                expect_close_reply(io).await?;
+                expect_orderly_end(io).await
+            }
+            Self::CloseSecond => {
+                let (first, payload) = read_client_frame(io).await?;
+                check(first == 0x81 && payload == b"hello", "the message")?;
+                io.write_all(&server_frame(0x81, b"hello")).await?;
+                io.flush().await?;
+                let (first, _) = read_client_frame(io).await?;
+                check(first == 0x88, "no client close")?;
+                io.write_all(&server_frame(0x88, &[])).await?;
+                io.flush().await?;
+                expect_orderly_end(io).await
+            }
+            Self::Duplex => {
+                let header = read_until_large_message(io).await?;
+                // The client's message cannot progress until we read it, so this write only
+                // completes if the client keeps receiving while its send is blocked.
+                io.write_all(&server_frame(0x82, &vec![b'b'; LARGE]))
+                    .await?;
+                io.flush().await?;
+                let payload = read_payload(io, &header).await?;
+                check(
+                    payload.iter().all(|byte| *byte == b'a'),
+                    "the large message",
+                )?;
+                io.write_all(&server_frame(0x88, &CLOSE_NORMAL)).await?;
+                io.flush().await?;
+                expect_close_reply(io).await?;
+                expect_orderly_end(io).await
+            }
+            Self::CloseDuringSend => {
+                let header = read_until_large_message(io).await?;
+                io.write_all(&server_frame(0x88, &CLOSE_NORMAL)).await?;
+                io.flush().await?;
+                // The client finishes the frame it is in, then replies.
+                read_payload(io, &header).await?;
+                expect_close_reply(io).await?;
+                expect_orderly_end(io).await
+            }
+            Self::Stall(stalled) => {
+                let header = read_until_large_message(io).await?;
+                _ = stalled.send(());
+                let rest = read_payload(io, &header).await;
+                check(rest.is_err(), "a killed client completed its message")
+            }
+        }
+    }
+}
+
+/// Accepts WebSockets and runs the next expected [`Scenario`] on the raw stream.
+#[derive(Clone, Default)]
+struct RawPeer(Arc<Mutex<VecDeque<(Scenario, oneshot::Sender<TestResult>)>>>);
+
+impl RawPeer {
+    fn expect(&self, scenario: Scenario) -> oneshot::Receiver<TestResult> {
+        let (report, outcome) = oneshot::channel();
+        self.0.lock().push_back((scenario, report));
+        outcome
+    }
+}
+
+impl Service<Request> for RawPeer {
+    type Output = Response;
+    type Error = Infallible;
+
+    async fn serve(&self, request: Request) -> Result<Self::Output, Self::Error> {
+        let accepted = match WebSocketAcceptor::new().serve(request).await {
+            Ok(accepted) => accepted,
+            Err(response) => return Ok(response),
+        };
+        let (scenario, report) = self.0.lock().pop_front().expect("an expected WebSocket");
+        let request = accepted.request;
+        tokio::spawn(async move {
+            let outcome = match handle_upgrade(&request).await {
+                Ok(io) => scenario.run(io).await,
+                Err(error) => Err(error),
+            };
+            _ = report.send(outcome);
+        });
+        Ok(accepted.response)
+    }
+}
+
+async fn outcome(version: Version, outcome: oneshot::Receiver<TestResult>) -> TestResult {
+    timeout(DEADLINE, outcome)
+        .await??
+        .map_err(|error| format!("{version:?} peer: {error}").into())
+}
+
+const VERSIONS: [(Version, &str); 3] = [
+    (Version::HTTP_11, "--http1.1"),
+    (Version::HTTP_2, "--http2"),
+    (Version::HTTP_3, "--http3"),
+];
+
+/// `first`, then a single line of [`LARGE`] bytes.
+fn large_input() -> Vec<u8> {
+    let mut input = b"first\n".to_vec();
+    input.resize(input.len() + LARGE, b'a');
+    input.push(b'\n');
+    input
+}
+
 fn report(output: &Output) -> String {
     format!(
         "status: {}\nstdout: {}\nstderr: {}",
@@ -210,7 +502,7 @@ async fn websockets_echo_through_the_executable_on_every_http_version() -> TestR
         (Version::HTTP_2, "--http2"),
         (Version::HTTP_3, "--http3"),
     ] {
-        let server = EchoServer::start(fixture.auth.clone(), version, true).await?;
+        let server = WsServer::echo(fixture.auth.clone(), version, true).await?;
         let output = fixture
             .send(&server.url(), &[flag], b"first message\nsecond message\n")
             .await?;
@@ -230,7 +522,7 @@ async fn websockets_echo_through_the_executable_on_every_http_version() -> TestR
 async fn h3_websockets_require_the_server_setting_and_a_secure_uri() -> TestResult {
     let fixture = Fixture::new().await?;
     // Without SETTINGS_ENABLE_CONNECT_PROTOCOL the client refuses before opening a stream.
-    let server = EchoServer::start(fixture.auth.clone(), Version::HTTP_3, false).await?;
+    let server = WsServer::echo(fixture.auth.clone(), Version::HTTP_3, false).await?;
     let output = fixture
         .send(&server.url(), &["--http3"], b"never sent\n")
         .await?;
@@ -253,7 +545,7 @@ async fn h3_websockets_require_the_server_setting_and_a_secure_uri() -> TestResu
 #[tokio::test]
 async fn h3_websockets_never_bypass_an_explicit_proxy() -> TestResult {
     let fixture = Fixture::new().await?;
-    let origin = EchoServer::start(fixture.auth.clone(), Version::HTTP_3, true).await?;
+    let origin = WsServer::echo(fixture.auth.clone(), Version::HTTP_3, true).await?;
     let proxy =
         tokio::net::TcpListener::bind(SocketAddr::from(SocketAddress::local_ipv4(0))).await?;
     let proxy_url = format!("http://{}", proxy.local_addr()?);
@@ -276,4 +568,98 @@ async fn h3_websockets_never_bypass_an_explicit_proxy() -> TestResult {
         .await
         .unwrap_err();
     origin.close().await
+}
+
+#[tokio::test]
+async fn the_executable_answers_a_peer_close_while_stdin_stays_open() -> TestResult {
+    let fixture = Fixture::new().await?;
+    for (version, flag) in VERSIONS {
+        let peer = RawPeer::default();
+        let server = WsServer::start(fixture.auth.clone(), version, true, peer.clone()).await?;
+        let closed = peer.expect(Scenario::CloseFirst);
+        let output = fixture
+            .send_keeping_stdin_open(&server.url(), &[flag], Vec::new())
+            .await?;
+        assert!(output.status.success(), "{version:?}\n{}", report(&output));
+        outcome(version, closed).await?;
+        server.close().await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_executable_closes_cleanly_at_the_end_of_its_input() -> TestResult {
+    let fixture = Fixture::new().await?;
+    for (version, flag) in VERSIONS {
+        let peer = RawPeer::default();
+        let server = WsServer::start(fixture.auth.clone(), version, true, peer.clone()).await?;
+        let closed = peer.expect(Scenario::CloseSecond);
+        let output = fixture.send(&server.url(), &[flag], b"hello\n").await?;
+        assert!(output.status.success(), "{version:?}\n{}", report(&output));
+        assert_eq!(
+            output.stdout,
+            b"hello\n",
+            "{version:?}\n{}",
+            report(&output)
+        );
+        outcome(version, closed).await?;
+        server.close().await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_executable_keeps_receiving_while_a_send_is_blocked() -> TestResult {
+    let fixture = Fixture::new().await?;
+    for (version, flag) in VERSIONS {
+        let peer = RawPeer::default();
+        let server = WsServer::start(fixture.auth.clone(), version, true, peer.clone()).await?;
+        let url = server.url();
+
+        let duplex = peer.expect(Scenario::Duplex);
+        let output = fixture
+            .send_keeping_stdin_open(&url, &[flag], large_input())
+            .await?;
+        assert!(output.status.success(), "{version:?}\n{}", report(&output));
+        assert!(
+            output.stdout.len() == LARGE && output.stdout.iter().all(|byte| *byte == b'b'),
+            "{version:?}: {} bytes received",
+            output.stdout.len()
+        );
+        outcome(version, duplex).await?;
+
+        let closed = peer.expect(Scenario::CloseDuringSend);
+        let output = fixture
+            .send_keeping_stdin_open(&url, &[flag], large_input())
+            .await?;
+        assert!(output.status.success(), "{version:?}\n{}", report(&output));
+        assert!(output.stdout.is_empty(), "{version:?}\n{}", report(&output));
+        outcome(version, closed).await?;
+
+        // Killed while its send is blocked.
+        let (stall, stalled) = oneshot::channel();
+        let aborted = peer.expect(Scenario::Stall(stall));
+        let (mut child, writer) = fixture.spawn_feeding(&url, &[flag], large_input())?;
+        timeout(DEADLINE, stalled).await??;
+        child.kill().await?;
+        writer.abort();
+        // A killed process sends no QUIC CONNECTION_CLOSE: only the idle timeout would tell.
+        if version != Version::HTTP_3 {
+            outcome(version, aborted).await?;
+        }
+
+        // The server serves the next client as before.
+        let recovered = peer.expect(Scenario::CloseSecond);
+        let output = fixture.send(&url, &[flag], b"hello\n").await?;
+        assert!(output.status.success(), "{version:?}\n{}", report(&output));
+        assert_eq!(
+            output.stdout,
+            b"hello\n",
+            "{version:?}\n{}",
+            report(&output)
+        );
+        outcome(version, recovered).await?;
+        server.close().await?;
+    }
+    Ok(())
 }
