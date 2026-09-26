@@ -792,7 +792,7 @@ async fn per_message_deflate_over_h3_carries_fragments_controls_and_close() {
         );
         let mut server_context = Decompress::new(false);
 
-        // RFC 7692 §7.2.3.2: "Hello" compressed and fragmented, with a ping in between.
+        // RFC 7692 §7.2.3.1: "Hello" compressed and fragmented, with a ping in between.
         io.write_all(&masked(0x41, &[0xf2, 0x48, 0xcd]))
             .await
             .unwrap();
