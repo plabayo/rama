@@ -38,7 +38,9 @@ fn varint(input: &mut &[u8]) -> Option<u64> {
     Some(
         bytes[1..]
             .iter()
-            .fold(u64::from(first & 0x3f), |value, byte| (value << 8) | u64::from(*byte)),
+            .fold(u64::from(first & 0x3f), |value, byte| {
+                (value << 8) | u64::from(*byte)
+            }),
     )
 }
 
@@ -54,7 +56,10 @@ fn reference(config: &CapsuleConfig, mut input: &[u8]) -> (Vec<(u64, Vec<u8>)>, 
         if registered && length > config.max_capsule_size as u64 {
             return (events, None);
         }
-        let Some(value) = usize::try_from(length).ok().and_then(|len| input.get(..len)) else {
+        let Some(value) = usize::try_from(length)
+            .ok()
+            .and_then(|len| input.get(..len))
+        else {
             // Forwarded unknown capsules stream out whatever arrived before the end.
             if !registered && ty != 0 && config.unknown == UnknownCapsules::Forward {
                 events.push((ty, input.to_vec()));
