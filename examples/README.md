@@ -19,6 +19,7 @@ You can find these integration tests at [./tests/integration](./tests/integratio
 
 ### Basic HTTP Services
 - [`http3_client_server.rs`](./src/http3_client_server.rs) - Authenticated HTTP/3 client/server with common streaming bodies, trailers and pooled reuse (executable end-to-end coverage in the integration suite)
+- [`http_datagram_echo.rs`](./src/http_datagram_echo.rs) - HTTP Datagrams (RFC 9297) over HTTP/3 Extended CONNECT, native QUIC datagrams or DATAGRAM capsules
 - [`http_service_hello.rs`](./src/http_service_hello.rs) - A simple HTTP service that returns "Hello, World!"
 - [`http_listener_hello.rs`](./src/http_listener_hello.rs) - Basic HTTP listener example
 - [`http_service_fs.rs`](./src/http_service_fs.rs) - File system service for serving static files
@@ -97,6 +98,7 @@ side looks like.
 - [`ws_chat_server.rs`](./src/ws_chat_server.rs) - WebSocket chat server
 - [`ws_tls_server.rs`](./src/ws_tls_server.rs) - Secure WebSocket server example (WSS)
 - [`ws_over_h2.rs`](./src/ws_over_h2.rs) - Secure WebSocket server example using h2.
+- [`ws_over_h3.rs`](./src/ws_over_h3.rs) - WebSocket echo client and server over HTTP/3 (RFC 9220)
 - [`autobahn_client.rs`](./src/autobahn_client.rs) - Run autobahn WebSocket test suite.
 
 ### ACME

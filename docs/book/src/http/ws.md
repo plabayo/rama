@@ -174,6 +174,8 @@ You can find working WebSocket examples in the Rama repository:
    Secure WebSocket server example (WSS).
 - [`ws_over_h2.rs`](https://github.com/plabayo/rama/blob/main/examples/src/ws_over_h2.rs)
    Secure WebSocket server using h2.
+- [`ws_over_h3.rs`](https://github.com/plabayo/rama/blob/main/examples/src/ws_over_h3.rs)
+   WebSocket echo client and server over HTTP/3 (RFC 9220).
 - [`autobahn_client.rs`](https://github.com/plabayo/rama/blob/main/examples/src/autobahn_client.rs)
    Run autobahn WebSocket test suite.
 
