@@ -36,6 +36,8 @@ pub struct AsyncWebSocket<S = upgrade::Upgraded> {
     ended: bool,
     /// The WebSocket closed; its transport is being shut down.
     shutting_down: bool,
+    /// The transport was shut down after the close.
+    transport_ended: bool,
     /// Tungstenite is probably ready to receive more data.
     ///
     /// `false` once start_send hits `WouldBlock` errors.
@@ -79,6 +81,7 @@ impl<S> AsyncWebSocket<S> {
             closing: false,
             ended: false,
             shutting_down: false,
+            transport_ended: false,
             ready: true,
         }
     }
@@ -190,7 +193,7 @@ where
             Ok(v) => Poll::Ready(Some(Ok(v))),
             Err(e) => {
                 if e.is_connection_error() {
-                    self.shutting_down = true;
+                    self.begin_shutdown();
                     ready!(self.poll_shutdown_transport(ContextWaker::Read, cx));
                     self.ended = true;
                     Poll::Ready(None)
@@ -219,7 +222,12 @@ impl<S: Io + Unpin> AsyncWebSocket<S> {
             trace!("websocket transport shutdown after close: {error}");
         }
         self.shutting_down = false;
+        self.transport_ended = true;
         Poll::Ready(())
+    }
+
+    fn begin_shutdown(&mut self) {
+        self.shutting_down = !self.transport_ended;
     }
 }
 
@@ -285,7 +293,7 @@ where
             // The flush completed the close handshake: end the transport, so the queued close
             // reaches the peer followed by an orderly end of stream.
             Err(err) if err.is_connection_error() => {
-                self.shutting_down = true;
+                self.begin_shutdown();
                 ready!(self.poll_shutdown_transport(ContextWaker::Write, cx));
                 Poll::Ready(Ok(()))
             }
@@ -307,6 +315,12 @@ where
         };
 
         match res {
+            // The peer's Close arrived and ours is flushed: end the transport as well.
+            Ok(()) if !self.inner.can_read() => {
+                self.begin_shutdown();
+                ready!(self.poll_shutdown_transport(ContextWaker::Write, cx));
+                Poll::Ready(Ok(()))
+            }
             Ok(()) => Poll::Ready(Ok(())),
             Err(ProtocolError::Io(err)) if err.kind() == std::io::ErrorKind::WouldBlock => {
                 trace!("WouldBlock");
@@ -315,7 +329,7 @@ where
             }
             Err(err) => {
                 if err.is_connection_error() {
-                    self.shutting_down = true;
+                    self.begin_shutdown();
                     ready!(self.poll_shutdown_transport(ContextWaker::Write, cx));
                     Poll::Ready(Ok(()))
                 } else {

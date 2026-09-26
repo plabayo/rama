@@ -7,7 +7,7 @@ use rama_core::{
     bytes::Bytes,
     error::BoxError,
     extensions::{Extensions, ExtensionsRef as _},
-    futures::{SinkExt as _, poll},
+    futures::{SinkExt, poll},
     rt::{Executor, spawn},
     service::service_fn,
 };
@@ -679,6 +679,56 @@ async fn dropping_a_blocked_send_resets_only_its_stream() {
         );
         round_trip(&client, "second").await;
         round_trip(&client, "third").await;
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn closing_a_client_after_the_close_exchange_finishes_its_stream() {
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::new().await;
+        let (ended, mut end) = mpsc::unbounded_channel();
+        // Answers the close but never ends its own side first.
+        let service = service_fn(move |request: Request<Incoming>| {
+            let ended = ended.clone();
+            async move {
+                let accepted = match WebSocketAcceptor::new().serve(request).await {
+                    Ok(accepted) => accepted,
+                    Err(response) => return Ok::<_, BoxError>(response),
+                };
+                let request = accepted.request;
+                spawn(async move {
+                    let mut io = handle_upgrade(&request).await.unwrap();
+                    // A masked, empty client close: 0x88 0x80 and the mask.
+                    let mut close = [0; 6];
+                    io.read_exact(&mut close).await.unwrap();
+                    assert_eq!(close[..2], [0x88, 0x80]);
+                    io.write_all(&[0x88, 0]).await.unwrap();
+                    io.flush().await.unwrap();
+                    let mut rest = Vec::new();
+                    _ = ended.send(io.read_to_end(&mut rest).await.map(|_| rest));
+                });
+                Ok(accepted.response)
+            }
+        });
+        let client = start(&pair, true, service).await;
+        let mut socket = client
+            .websocket_h3(URI)
+            .handshake(Extensions::new())
+            .await
+            .expect("handshake");
+        socket.close(None).await.unwrap();
+        assert!(matches!(
+            socket.recv_message().await.unwrap(),
+            Message::Close(_)
+        ));
+        socket.flush().await.unwrap();
+        // The exchange is complete: closing the sink ends the transport, before the server's.
+        SinkExt::close(&mut socket).await.unwrap();
+        let rest = end.recv().await.unwrap().expect("FIN, not a reset");
+        assert!(rest.is_empty());
         pair.close().await;
     })
     .await
