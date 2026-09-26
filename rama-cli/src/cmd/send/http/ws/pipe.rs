@@ -3,7 +3,11 @@
 use rama::{
     error::BoxError,
     futures::{SinkExt as _, StreamExt as _},
-    http::ws::{Message, ProtocolError, WebSocketIo, handshake::client::ClientWebSocket},
+    http::ws::{
+        Message, ProtocolError, WebSocketIo,
+        handshake::client::ClientWebSocket,
+        protocol::{CloseFrame, frame::coding::CloseCode},
+    },
 };
 use std::io::BufRead as _;
 use tokio::{io::AsyncWriteExt as _, sync::mpsc};
@@ -15,7 +19,8 @@ const PENDING_LINES: usize = 16;
 ///
 /// Both directions run concurrently, so a send waiting on flow control never stops
 /// receiving. End of input starts the close handshake; the command ends once the peer's
-/// close completed and the stream ended, whatever state stdin is in.
+/// close completed and the stream ended, whatever state stdin is in. Unreadable input
+/// closes with an error status and fails the command.
 pub(super) async fn run<S: WebSocketIo>(socket: ClientWebSocket<S>) -> Result<(), BoxError> {
     let (mut sink, mut stream) = socket.split();
 
@@ -24,8 +29,8 @@ pub(super) async fn run<S: WebSocketIo>(socket: ClientWebSocket<S>) -> Result<()
     let (lines_tx, mut lines) = mpsc::channel(PENDING_LINES);
     std::thread::spawn(move || {
         for line in std::io::stdin().lock().lines() {
-            let Ok(line) = line else { break };
-            if lines_tx.blocking_send(line).is_err() {
+            let failed = line.is_err();
+            if lines_tx.blocking_send(line).is_err() || failed {
                 break;
             }
         }
@@ -33,9 +38,19 @@ pub(super) async fn run<S: WebSocketIo>(socket: ClientWebSocket<S>) -> Result<()
 
     let send = async {
         while let Some(line) = lines.recv().await {
-            sink.send(Message::text(line)).await?;
+            match line {
+                Ok(line) => sink.send(Message::text(line)).await?,
+                Err(error) => {
+                    let close = CloseFrame {
+                        code: CloseCode::Error,
+                        reason: "unreadable input".into(),
+                    };
+                    sink.send(Message::Close(Some(close))).await?;
+                    return Ok(Some(error));
+                }
+            }
         }
-        sink.send(Message::Close(None)).await
+        sink.send(Message::Close(None)).await.map(|()| None)
     };
     let receive = async {
         let mut stdout = tokio::io::stdout();
@@ -59,18 +74,23 @@ pub(super) async fn run<S: WebSocketIo>(socket: ClientWebSocket<S>) -> Result<()
 
     tokio::pin!(send, receive);
     let mut sending = true;
+    let mut input_error = None;
     loop {
         tokio::select! {
             result = &mut send, if sending => {
                 sending = false;
                 match result {
+                    Ok(error) => input_error = error,
                     // The peer started closing first: nothing more may be sent.
-                    Ok(()) | Err(ProtocolError::SendAfterClosing) => (),
+                    Err(ProtocolError::SendAfterClosing) => (),
                     Err(error) if error.is_connection_error() => (),
                     Err(error) => return Err(error.into()),
                 }
             }
-            result = &mut receive => return result,
+            result = &mut receive => {
+                result?;
+                return input_error.map_or(Ok(()), |error| Err(error.into()));
+            }
         }
     }
 }

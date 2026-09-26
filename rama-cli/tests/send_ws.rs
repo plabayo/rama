@@ -279,8 +279,11 @@ enum Scenario {
     Duplex,
     /// Close while the client's large message is stuck mid-frame.
     CloseDuringSend,
-    /// Stop reading mid-frame, tell the test, and expect the killed client to abort.
-    Stall(oneshot::Sender<()>),
+    /// Stop reading mid-frame, tell the test, and once released expect the (killed)
+    /// client's message to be aborted.
+    Stall(oneshot::Sender<()>, oneshot::Receiver<()>),
+    /// Expect these text messages, then a client close with this status (none: empty).
+    Lines(&'static [&'static str], Option<u16>),
 }
 
 struct FrameHeader {
@@ -421,9 +424,28 @@ impl Scenario {
                 expect_close_reply(io).await?;
                 expect_orderly_end(io).await
             }
-            Self::Stall(stalled) => {
+            Self::Lines(lines, status) => {
+                for line in lines {
+                    let (first, payload) = read_client_frame(io).await?;
+                    check(first == 0x81 && payload == line.as_bytes(), "a message")?;
+                }
+                let (first, payload) = read_client_frame(io).await?;
+                check(first == 0x88, "no client close")?;
+                let expected = status.map(u16::to_be_bytes);
+                check(
+                    payload.get(..2) == expected.as_ref().map(<[u8; 2]>::as_slice)
+                        && (status.is_some() || payload.is_empty()),
+                    "the close status",
+                )?;
+                io.write_all(&server_frame(0x88, &payload[..payload.len().min(2)]))
+                    .await?;
+                io.flush().await?;
+                expect_orderly_end(io).await
+            }
+            Self::Stall(stalled, release) => {
                 let header = read_until_large_message(io).await?;
                 _ = stalled.send(());
+                _ = release.await;
                 let rest = read_payload(io, &header).await;
                 check(rest.is_err(), "a killed client completed its message")
             }
@@ -638,11 +660,18 @@ async fn the_executable_keeps_receiving_while_a_send_is_blocked() -> TestResult 
 
         // Killed while its send is blocked.
         let (stall, stalled) = oneshot::channel();
-        let aborted = peer.expect(Scenario::Stall(stall));
+        let (release, released) = oneshot::channel();
+        let aborted = peer.expect(Scenario::Stall(stall, released));
         let (mut child, writer) = fixture.spawn_feeding(&url, &[flag], large_input())?;
         timeout(DEADLINE, stalled).await??;
+        // The peer reads nothing more until released: the send is still stuck mid-frame.
+        assert!(
+            child.try_wait()?.is_none(),
+            "{version:?}: exited while blocked"
+        );
         child.kill().await?;
         writer.abort();
+        _ = release.send(());
         // A killed process sends no QUIC CONNECTION_CLOSE: only the idle timeout would tell.
         if version != Version::HTTP_3 {
             outcome(version, aborted).await?;
@@ -659,6 +688,41 @@ async fn the_executable_keeps_receiving_while_a_send_is_blocked() -> TestResult 
             report(&output)
         );
         outcome(version, recovered).await?;
+        server.close().await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn unreadable_input_fails_the_executable_after_a_clean_close() -> TestResult {
+    let fixture = Fixture::new().await?;
+    for (version, flag) in VERSIONS {
+        let peer = RawPeer::default();
+        let server = WsServer::start(fixture.auth.clone(), version, true, peer.clone()).await?;
+        let url = server.url();
+
+        let control = peer.expect(Scenario::Lines(&["before", "after"], None));
+        let output = fixture.send(&url, &[flag], b"before\nafter\n").await?;
+        assert!(output.status.success(), "{version:?}\n{}", report(&output));
+        outcome(version, control).await?;
+
+        // Invalid UTF-8: the line and everything after it are refused, not treated as EOF.
+        let refused = peer.expect(Scenario::Lines(&["before"], Some(1011)));
+        let output = fixture
+            .send(&url, &[flag], b"before\n\xff\nafter\n")
+            .await?;
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "{version:?}\n{}",
+            report(&output)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("UTF-8"),
+            "{version:?}\n{}",
+            report(&output)
+        );
+        outcome(version, refused).await?;
         server.close().await?;
     }
     Ok(())
