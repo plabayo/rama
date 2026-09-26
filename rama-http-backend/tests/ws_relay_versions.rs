@@ -1,9 +1,9 @@
 //! The WebSocket MITM relay between real HTTP/1.1, HTTP/2 and HTTP/3 engines, including
 //! Extended CONNECT over QUIC (RFC 9220).
 //!
-//! HTTP/1.1 and HTTP/2 run over in-memory byte streams, HTTP/3 over in-memory QUIC. The
-//! origin records the handshake fields it received, so the relay's header order,
-//! duplicates and sensitivity are checked end to end.
+//! HTTP/1.1 and HTTP/2 run over in-memory byte streams, HTTP/3 over in-memory QUIC. A raw
+//! RFC 6455 origin records the relayed handshake and checks how the relay ends its stream;
+//! the client checks the relayed response and the relay's end of its own stream.
 
 #![expect(
     clippy::expect_used,
@@ -12,18 +12,24 @@
 
 use rama_core::{
     Layer, Service, ServiceInput,
+    error::{BoxError, BoxErrorExt as _},
     extensions::{Extensions, ExtensionsRef as _},
+    futures::SinkExt as _,
     layer::{ArcLayer, ConsumeErrLayer},
     rt::{Executor, spawn},
     service::service_fn,
 };
 use rama_http::{
-    Body, HeaderName, HeaderValue, Method, Request, Response, Version,
+    Body, HeaderMap, HeaderName, HeaderValue, Method, Request, Response, Version,
+    io::upgrade::{Upgraded, handle_upgrade},
     layer::{
         upgrade::mitm::HttpUpgradeMitmRelayLayer,
         version_adapter::{ResponseVersionAdapter, adapt_request_version},
     },
-    proto::ext::Protocol,
+    proto::{
+        ext::Protocol,
+        h2::{PseudoHeader, PseudoHeaderOrder},
+    },
 };
 use rama_http_backend::{
     client::{Http3Transport, HttpClientService, http_connect},
@@ -50,35 +56,65 @@ use rama_ws::{
     },
 };
 use std::{convert::Infallible, num::NonZeroUsize, sync::Arc, time::Duration};
-use tokio::{sync::mpsc, time::timeout};
+use tokio::{
+    io::{AsyncReadExt as _, AsyncWriteExt as _},
+    sync::mpsc,
+    time::timeout,
+};
 
 const LIMIT: Duration = Duration::from_secs(20);
 const URI: &str = "wss://localhost/socket";
 
-/// The handshake fields the client adds, in order: an adjacent duplicate and a sensitive
-/// value among them.
-fn client_fields() -> Vec<(HeaderName, HeaderValue)> {
+/// `prefix`-named fields in order: a duplicate both adjacent and interleaved, and a
+/// sensitive value among them.
+fn fields(prefix: &str) -> Vec<(HeaderName, HeaderValue)> {
+    let name = |suffix: &str| HeaderName::try_from(format!("{prefix}-{suffix}")).expect("name");
     let mut secret = HeaderValue::from_static("hunter2");
     secret.set_sensitive(true);
     vec![
-        (
-            HeaderName::from_static("x-first"),
-            HeaderValue::from_static("1"),
-        ),
-        (
-            HeaderName::from_static("x-dup"),
-            HeaderValue::from_static("a"),
-        ),
-        (
-            HeaderName::from_static("x-dup"),
-            HeaderValue::from_static("b"),
-        ),
-        (HeaderName::from_static("x-secret"), secret),
-        (
-            HeaderName::from_static("x-last"),
-            HeaderValue::from_static("z"),
-        ),
+        (name("first"), HeaderValue::from_static("1")),
+        (name("dup"), HeaderValue::from_static("a")),
+        (name("dup"), HeaderValue::from_static("b")),
+        (name("secret"), secret),
+        (name("dup"), HeaderValue::from_static("c")),
+        (name("last"), HeaderValue::from_static("z")),
     ]
+}
+
+/// The `prefix`-named fields of `headers`, in wire order.
+fn observe(headers: &HeaderMap, prefix: &str) -> Vec<(HeaderName, HeaderValue)> {
+    headers
+        .ordered_iter()
+        .filter(|(name, _)| name.as_str().starts_with(prefix))
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect()
+}
+
+fn render(fields: &[(HeaderName, HeaderValue)]) -> Vec<String> {
+    fields
+        .iter()
+        .map(|(name, value)| format!("{name}: {}", value.to_str().expect("ascii")))
+        .collect()
+}
+
+fn secret_is_sensitive(fields: &[(HeaderName, HeaderValue)]) -> Option<bool> {
+    fields
+        .iter()
+        .find(|(name, _)| name.as_str().ends_with("-secret"))
+        .map(|(_, value)| value.is_sensitive())
+}
+
+/// A pseudo-header order no encoder uses by default.
+fn client_pseudo_order() -> PseudoHeaderOrder {
+    [
+        PseudoHeader::Protocol,
+        PseudoHeader::Authority,
+        PseudoHeader::Scheme,
+        PseudoHeader::Path,
+        PseudoHeader::Method,
+    ]
+    .into_iter()
+    .collect()
 }
 
 /// A connected in-memory QUIC pair.
@@ -276,33 +312,118 @@ async fn tag_relay_message(input: WebSocketRelayInput) -> Result<WebSocketRelayO
     })
 }
 
-/// An echoing origin that reports the `x-` fields of each handshake it accepts.
+/// Which peer starts the close handshake.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Closer {
+    Client,
+    Origin,
+}
+
+/// What the origin saw of a relayed handshake request.
+struct Handshake {
+    fields: Vec<(HeaderName, HeaderValue)>,
+    method: Method,
+    uri: String,
+    protocol: Option<Protocol>,
+    pseudo: Option<Vec<PseudoHeader>>,
+}
+
+/// Read one masked client frame with a short payload.
+async fn read_client_frame(io: &mut Upgraded) -> Result<(u8, Vec<u8>), BoxError> {
+    let first = io.read_u8().await?;
+    let second = io.read_u8().await?;
+    if second & 0x80 == 0 || second & 0x7f >= 126 {
+        return Err(BoxError::from_static_str(
+            "expected a short masked client frame",
+        ));
+    }
+    let mut mask = [0; 4];
+    io.read_exact(&mut mask).await?;
+    let mut payload = vec![0; usize::from(second & 0x7f)];
+    io.read_exact(&mut payload).await?;
+    for (byte, mask) in payload.iter_mut().zip(mask.iter().cycle()) {
+        *byte ^= mask;
+    }
+    Ok((first, payload))
+}
+
+/// Echo `HELLO`, complete the close handshake started by `closer`, end the stream and
+/// require the relay to end its side cleanly too (FIN or END_STREAM, not a reset).
+async fn raw_origin_session(mut io: Upgraded, closer: Closer) -> Result<(), BoxError> {
+    let (first, payload) = read_client_frame(&mut io).await?;
+    if first != 0x81 || payload != b"HELLO" {
+        return Err(BoxError::from_static_str("expected the relayed text"));
+    }
+    io.write_all(&[0x81, 5]).await?;
+    io.write_all(&payload).await?;
+    if closer == Closer::Origin {
+        io.write_all(&[0x88, 2, 0x03, 0xe8]).await?;
+    }
+    io.flush().await?;
+    let (first, payload) = read_client_frame(&mut io).await?;
+    if first != 0x88 {
+        return Err(BoxError::from_static_str("expected a close frame"));
+    }
+    if closer == Closer::Client {
+        io.write_all(&[0x88, u8::try_from(payload.len())?]).await?;
+        io.write_all(&payload).await?;
+    }
+    io.shutdown().await?;
+    let mut rest = Vec::new();
+    io.read_to_end(&mut rest).await?;
+    if rest.is_empty() {
+        Ok(())
+    } else {
+        Err(BoxError::from_static_str("bytes after the close handshake"))
+    }
+}
+
+/// A raw RFC 6455 origin: it reports each handshake it accepts, answers with its own
+/// fields, and reports how the relayed WebSocket ended.
 fn origin(
-    seen: mpsc::UnboundedSender<Vec<(HeaderName, HeaderValue)>>,
+    seen: mpsc::UnboundedSender<Handshake>,
+    ended: mpsc::UnboundedSender<Result<(), String>>,
+    closer: Closer,
 ) -> impl Service<Request, Output = Response, Error = Infallible> + Clone {
-    let echo =
-        ConsumeErrLayer::trace_as_debug().into_layer(WebSocketAcceptor::new().into_echo_service());
-    let echo = Arc::new(echo);
     service_fn(move |request: Request| {
         let seen = seen.clone();
-        let echo = echo.clone();
+        let ended = ended.clone();
         async move {
-            let fields = request
-                .headers()
-                .iter()
-                .filter(|(name, _)| name.as_str().starts_with("x-"))
-                .map(|(name, value)| (name.clone(), value.clone()))
-                .collect();
-            _ = seen.send(fields);
-            echo.serve(request).await
+            _ = seen.send(Handshake {
+                fields: observe(request.headers(), "x-"),
+                method: request.method().clone(),
+                uri: request.uri().to_string(),
+                protocol: request.extensions().get_ref::<Protocol>().cloned(),
+                pseudo: request
+                    .extensions()
+                    .get_ref::<PseudoHeaderOrder>()
+                    .map(|order| order.iter().collect()),
+            });
+            let mut accepted = match WebSocketAcceptor::new().serve(request).await {
+                Ok(accepted) => accepted,
+                Err(response) => return Ok(response),
+            };
+            for (name, value) in fields("x-resp") {
+                accepted.response.headers_mut().append(name, value);
+            }
+            let request = accepted.request;
+            spawn(async move {
+                let outcome = match handle_upgrade(&request).await {
+                    Ok(io) => raw_origin_session(io, closer).await,
+                    Err(error) => Err(error),
+                };
+                _ = ended.send(outcome.map_err(|error| error.to_string()));
+            });
+            Ok(accepted.response)
         }
     })
 }
 
-async fn assert_relay(ingress: Version, egress: Version) {
-    let cell = format!("{ingress:?} -> {egress:?}");
+async fn assert_relay(ingress: Version, egress: Version, closer: Closer) {
+    let cell = format!("{ingress:?} -> {egress:?}, {closer:?} closes");
     let (seen, mut handshakes) = mpsc::unbounded_channel();
-    let upstream = Hop::start(egress, origin(seen)).await;
+    let (ended, mut origin_end) = mpsc::unbounded_channel();
+    let upstream = Hop::start(egress, origin(seen, ended, closer)).await;
 
     // The egress client adapts the relayed request to its version, as the connector's
     // `RequestVersionAdapter` does.
@@ -329,32 +450,57 @@ async fn assert_relay(ingress: Version, egress: Version) {
         Version::HTTP_2 => downstream.client.websocket_h2(URI),
         _ => downstream.client.websocket(URI),
     };
-    let builder = client_fields()
+    let builder = fields("x-req")
         .into_iter()
         .fold(builder, |builder, (name, value)| {
             builder.with_header(name, value)
         });
-    let mut socket = timeout(LIMIT, builder.handshake(Extensions::new()))
+    let extensions = Extensions::new();
+    extensions.insert(client_pseudo_order());
+    let mut socket = timeout(LIMIT, builder.handshake(extensions))
         .await
         .expect("handshake in time")
         .map_err(|error| format!("{cell}: {error}"))
         .expect("handshake");
 
-    let received = handshakes.recv().await.expect("origin handshake");
-    let names = |fields: &[(HeaderName, HeaderValue)]| {
-        fields
-            .iter()
-            .map(|(name, value)| format!("{name}: {}", value.to_str().expect("ascii")))
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(names(&received), names(&client_fields()), "{cell}");
-    // Only HTTP/2 and HTTP/3 carry sensitivity (never-indexed fields) on the wire.
-    let carried = ingress >= Version::HTTP_2 && egress >= Version::HTTP_2;
-    let secret = received
-        .iter()
-        .find(|(name, _)| name == "x-secret")
-        .map(|(_, value)| value.is_sensitive());
-    assert_eq!(secret, Some(carried), "{cell}: x-secret sensitivity");
+    // Only HTTP/2 and HTTP/3 carry sensitivity (never-indexed fields) and pseudo-headers.
+    let framed = ingress >= Version::HTTP_2 && egress >= Version::HTTP_2;
+    let handshake = handshakes.recv().await.expect("origin handshake");
+    assert_eq!(
+        render(&handshake.fields),
+        render(&fields("x-req")),
+        "{cell}"
+    );
+    assert_eq!(
+        secret_is_sensitive(&handshake.fields),
+        Some(framed),
+        "{cell}"
+    );
+    let response = observe(&socket.response().headers, "x-resp");
+    assert_eq!(render(&response), render(&fields("x-resp")), "{cell}");
+    assert_eq!(secret_is_sensitive(&response), Some(framed), "{cell}");
+    if egress >= Version::HTTP_2 {
+        assert_eq!(handshake.method, Method::CONNECT, "{cell}");
+        assert_eq!(handshake.protocol, Some(Protocol::WEBSOCKET), "{cell}");
+        // An HTTP/1.1 ingress arrives over a plain byte stream here: nothing makes it secure.
+        let scheme = if ingress >= Version::HTTP_2 {
+            "https"
+        } else {
+            "http"
+        };
+        assert_eq!(
+            handshake.uri,
+            format!("{scheme}://localhost/socket"),
+            "{cell}"
+        );
+    } else {
+        assert_eq!(handshake.method, Method::GET, "{cell}");
+        assert_eq!(handshake.uri, "/socket", "{cell}");
+    }
+    if framed {
+        let order: Vec<_> = client_pseudo_order().iter().collect();
+        assert_eq!(handshake.pseudo, Some(order), "{cell}: pseudo-header order");
+    }
 
     socket
         .send_message(Message::text("hello"))
@@ -368,16 +514,30 @@ async fn assert_relay(ingress: Version, egress: Version) {
         .expect("receive");
     assert_eq!(echo, Message::text("relayed-HELLO"), "{cell}");
 
-    // The close handshake completes through the relay.
-    socket.close(None).await.expect("close");
-    let reply = timeout(LIMIT, socket.recv_message())
+    if closer == Closer::Client {
+        socket.close(None).await.expect("close");
+    }
+    let close = timeout(LIMIT, socket.recv_message())
         .await
-        .expect("close reply in time");
-    assert!(
-        matches!(reply, Ok(Message::Close(_))),
-        "{cell}: close reply {reply:?}"
-    );
-    drop(socket);
+        .expect("close in time");
+    assert!(matches!(close, Ok(Message::Close(_))), "{cell}: {close:?}");
+    // Sends our reply when the origin closed first.
+    socket.flush().await.expect("flush");
+    let origin_end = timeout(LIMIT, origin_end.recv())
+        .await
+        .expect("origin end in time")
+        .expect("origin report");
+    assert_eq!(origin_end, Ok(()), "{cell}: the relay's upstream end");
+    // The relay ends the downstream stream cleanly as well.
+    let mut io = socket.into_inner().into_inner();
+    let mut rest = Vec::new();
+    timeout(LIMIT, io.read_to_end(&mut rest))
+        .await
+        .expect("downstream end in time")
+        .map_err(|error| format!("{cell}: {error}"))
+        .expect("the relay's downstream end");
+    assert!(rest.is_empty(), "{cell}");
+    drop(io);
     downstream.close().await;
     upstream.close().await;
 }
@@ -393,6 +553,8 @@ async fn relays_bridge_http3_with_every_http_version_over_real_engines() {
         (Version::HTTP_2, Version::HTTP_2),
         (Version::HTTP_11, Version::HTTP_11),
     ] {
-        assert_relay(ingress, egress).await;
+        for closer in [Closer::Client, Closer::Origin] {
+            assert_relay(ingress, egress, closer).await;
+        }
     }
 }

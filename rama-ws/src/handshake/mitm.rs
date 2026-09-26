@@ -619,9 +619,11 @@ impl WebSocketRelayInjector {
             Err(tokio_mpsc::error::TrySendError::Closed(_)) => {
                 return Err(relay_injector_closed());
             }
-            Err(tokio_mpsc::error::TrySendError::Full(WriterCommand::Flush { .. })) => {
+            Err(tokio_mpsc::error::TrySendError::Full(
+                WriterCommand::Flush { .. } | WriterCommand::Close { .. },
+            )) => {
                 return Err(ProtocolError::Io(std::io::Error::other(
-                    "WebSocket injector queued an invalid flush command",
+                    "WebSocket injector queued an invalid writer command",
                 )));
             }
         };
@@ -1011,6 +1013,10 @@ enum WriterCommand {
     Flush {
         response: oneshot::Sender<Result<(), ProtocolError>>,
     },
+    /// Flush, and end the transport once the close exchange is complete.
+    Close {
+        response: oneshot::Sender<Result<(), ProtocolError>>,
+    },
 }
 
 async fn writer_loop<Socket>(
@@ -1039,6 +1045,7 @@ async fn writer_loop<Socket>(
         let (result, response) = match command {
             WriterCommand::Send { message, response } => (socket.send(message).await, response),
             WriterCommand::Flush { response } => (socket.flush().await, response),
+            WriterCommand::Close { response } => (socket.close().await, response),
         };
         if response.send(result).is_err() {
             tracing::trace!("{socket_name} WS writer response receiver was dropped");
@@ -1063,6 +1070,16 @@ fn queue_flush(
     let (response, receiver) = oneshot::channel();
     writer
         .try_send(WriterCommand::Flush { response })
+        .ok()
+        .map(|()| receiver)
+}
+
+fn queue_close(
+    writer: &tokio_mpsc::Sender<WriterCommand>,
+) -> Option<oneshot::Receiver<Result<(), ProtocolError>>> {
+    let (response, receiver) = oneshot::channel();
+    writer
+        .try_send(WriterCommand::Close { response })
         .ok()
         .map(|()| receiver)
 }
@@ -1293,7 +1310,8 @@ async fn relay_direction<H, Source>(
             crate::Message::Close(frame) => {
                 let event = WebSocketRelayEvent::Close(frame.clone());
                 close_controls.start_closing();
-                let flush = queue_flush(&source_writer);
+                // The reply ends this leg's exchange: close it, transport included.
+                let flush = queue_close(&source_writer);
                 if queue_message(&destination_writer, crate::Message::Close(frame)).is_none() {
                     tracing::debug!("failed to queue close for {destination_name} WS socket");
                 }
@@ -1577,7 +1595,7 @@ async fn drain_close<Source>(
     loop {
         match source.next().await {
             Some(Ok(crate::Message::Close(_))) => {
-                finish_close_side(direction, source_name, queue_flush(source_writer), signals)
+                finish_close_side(direction, source_name, queue_close(source_writer), signals)
                     .await;
                 return;
             }
@@ -1609,15 +1627,15 @@ async fn finish_close_side(
             Ok(Ok(())) => {}
             Ok(Err(error)) => {
                 tracing::debug!(
-                    "failed to flush automatic close response to {source_name} WS socket: {error}"
+                    "failed to close {source_name} WS socket after the close exchange: {error}"
                 );
             }
             Err(_) => {
-                tracing::debug!("{source_name} WS writer ended while flushing close response");
+                tracing::debug!("{source_name} WS writer ended while closing");
             }
         },
         None => {
-            tracing::debug!("failed to queue close response flush for {source_name} WS socket");
+            tracing::debug!("failed to queue close for {source_name} WS socket");
         }
     }
     signal(signals, RelaySignal::SideFinished(direction));
