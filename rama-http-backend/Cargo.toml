@@ -59,6 +59,8 @@ rama-unix = { workspace = true }
 
 [dev-dependencies]
 rama-net = { workspace = true, features = ["test-utils"] }
+rama-quic = { workspace = true, features = ["rustls", "ring", "test-utils"] }
+rama-udp = { workspace = true, features = ["test-utils"] }
 rama-ws = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }

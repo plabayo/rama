@@ -4431,6 +4431,7 @@ dependencies = [
  "rama-quic-proto",
  "rama-tcp",
  "rama-tls",
+ "rama-udp",
  "rama-unix",
  "rama-utils",
  "rama-ws",

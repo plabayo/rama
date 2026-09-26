@@ -1,5 +1,9 @@
 //! The WebSocket MITM relay across HTTP versions, including HTTP/3 Extended CONNECT (RFC 9220).
 //!
+//! Envelope translation only: upgrades are fulfilled over in-memory streams and the upstream
+//! answers directly. `rama-http-backend/tests/ws_relay_versions.rs` runs the same matrix
+//! through real protocol engines.
+//!
 //! The upstream adapts the relayed request to its own version, as a Rama client would, and the
 //! [`ResponseVersionAdapter`] translates its answer back for the ingress version.
 
