@@ -20,6 +20,8 @@ pub use parser::{
 };
 
 mod config;
+#[cfg(feature = "http")]
+mod http;
 mod pool;
 #[doc(inline)]
 pub use config::{
@@ -28,6 +30,8 @@ pub use config::{
     TlsServerIdentity, TlsServerName, TlsServerTrust, TlsServerTrustAnchors, TlsServerVerify,
     TlsStoreServerCertChain,
 };
+#[cfg(feature = "http")]
+pub use http::{http_alpn_override, negotiated_http_version};
 pub use pool::{
     TlsComponentIdentity, TlsConnectionReuse, TlsPoolComponent, TlsPoolId, TlsPoolIdBuilder,
 };
