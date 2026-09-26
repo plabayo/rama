@@ -58,5 +58,6 @@ both policy stages, certificate issuance and any browser certificate-picker wait
 The upstream handshake timeout also applies while egress is paused. A stalled
 policy can delay noticing a disconnected peer until it resolves or the deadline
 expires. Use `with_handshake_timeout` to tune this or
-`without_handshake_timeout` when the caller owns cancellation. Dropping the handshake drops its policy futures and
-owned streams; work independently spawned by a policy must manage its own lifetime.
+`without_handshake_timeout` when the caller owns cancellation. Dropping the
+handshake drops its policy futures and owned streams; work independently spawned
+by a policy must manage its own lifetime.

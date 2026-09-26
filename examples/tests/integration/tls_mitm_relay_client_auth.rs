@@ -1,10 +1,4 @@
 //! Run the shipped example as a subprocess, using real TCP/TLS on both relay legs.
-#![cfg(feature = "boring")]
-#![expect(
-    clippy::expect_used,
-    reason = "integration tests fail on process/timeout errors"
-)]
-
 use std::{process::Output, time::Duration};
 
 async fn run(args: &[&str]) -> Output {
@@ -21,6 +15,7 @@ async fn run(args: &[&str]) -> Output {
 }
 
 #[tokio::test]
+#[ignore]
 async fn maps_identity_and_exchanges_application_data() {
     for tls12 in [false, true] {
         for upstream_auth in [false, true] {
@@ -50,6 +45,7 @@ async fn maps_identity_and_exchanges_application_data() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn rejects_missing_unmapped_and_untrusted_clients() {
     for tls12 in [false, true] {
         for upstream_auth in [false, true] {

@@ -3,7 +3,7 @@
 use rama::{
     crypto::{
         cert::{
-            LeafCertRequest, SelfSignedCaConfig,
+            CertificateSubject, LeafCertConfig, LeafCertRequest, LeafCertUsage, SelfSignedCaConfig,
             boring::{generate_certificate_authority_x509, issue_leaf_certificate},
         },
         pki_types::CertificateDer,
@@ -15,16 +15,10 @@ use rama::{
         boring::{
             client::{ConnectorConfigClientAuth, TlsConnectorData},
             core::{
-                asn1::Asn1Time,
-                bn::{BigNum, MsbOption},
-                ec::{EcGroup, EcKey},
-                hash::MessageDigest,
-                nid::Nid,
                 pkey::{PKey, Private},
                 ssl::{SslAcceptor, SslCredential, SslMethod, SslVerifyMode, SslVersion},
                 x509::{
-                    X509, X509Name,
-                    extension::{BasicConstraints, ExtendedKeyUsage, KeyUsage},
+                    X509,
                     store::{X509Store, X509StoreBuilder},
                 },
             },
@@ -88,35 +82,19 @@ impl Identity {
     }
 
     fn client(name: &str, ca: &Self) -> Result<Self, BoxError> {
-        // Rama's leaf issuer generates server-auth certificates; clients need clientAuth EKU.
-        let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1)?;
-        let key = PKey::from_ec_key(EcKey::generate(&group)?)?;
-        let mut name_builder = X509Name::builder()?;
-        name_builder.append_entry_by_text("CN", name)?;
-        let mut cert = X509::builder()?;
-        cert.set_version(2)?;
-        let mut serial = BigNum::new()?;
-        serial.rand(128, MsbOption::MAYBE_ZERO, false)?;
-        cert.set_serial_number(serial.to_asn1_integer()?.as_ref())?;
-        cert.set_subject_name(&name_builder.build())?;
-        cert.set_issuer_name(ca.cert.subject_name())?;
-        cert.set_pubkey(&key)?;
-        cert.set_not_before(Asn1Time::days_from_now(0)?.as_ref())?;
-        cert.set_not_after(Asn1Time::days_from_now(1)?.as_ref())?;
-        cert.append_extension(BasicConstraints::new().critical().build()?.as_ref())?;
-        cert.append_extension(
-            KeyUsage::new()
-                .critical()
-                .digital_signature()
-                .build()?
-                .as_ref(),
-        )?;
-        cert.append_extension(ExtendedKeyUsage::new().client_auth().build()?.as_ref())?;
-        cert.sign(&ca.key, MessageDigest::sha256())?;
-        Ok(Self {
-            cert: cert.build(),
-            key,
-        })
+        let request = LeafCertRequest {
+            config: LeafCertConfig {
+                usage: LeafCertUsage::ClientAuth,
+                subject: CertificateSubject {
+                    common_name: Some(name.to_owned()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            identities: vec![],
+        };
+        let (cert, key) = issue_leaf_certificate(&request, &ca.cert, &ca.key)?;
+        Ok(Self { cert, key })
     }
 
     pub(super) fn credential(&self) -> Result<SslCredential, BoxError> {

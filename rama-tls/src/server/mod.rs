@@ -5,8 +5,8 @@ mod config;
 pub use config::{
     CertificateAuthorityData, CertificateIdentity, CertificateIssuanceContext, CertificateKeyKind,
     CertificateSubject, CertificateValidity, ClientVerifyMode, DynamicCertIssuer,
-    GeneratedServerAuthConfig, LeafCertConfig, LeafCertRequest, SelfSignedCaConfig, ServerAuthData,
-    TlsClientVerify, TlsServerAuth, TlsServerConfig, TlsStoreClientCertChain,
+    GeneratedServerAuthConfig, LeafCertConfig, LeafCertRequest, LeafCertUsage, SelfSignedCaConfig,
+    ServerAuthData, TlsClientVerify, TlsServerAuth, TlsServerConfig, TlsStoreClientCertChain,
 };
 
 mod peek;

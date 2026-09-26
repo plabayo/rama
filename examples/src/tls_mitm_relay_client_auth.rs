@@ -5,7 +5,7 @@
 //! exchanges a request/response through the relay, and exits. No external PKI is needed.
 //! Use `--tls12` for TLS 1.2, `--no-upstream-auth` for independent ingress admission,
 //! or `--client missing|unmapped|untrusted` to observe rejection (a nonzero exit).
-//! Test: `cargo test -p rama-examples --features boring --test tls_mitm_relay_client_auth`
+//! Test: `cargo test -p rama-examples --features boring --test integration tls_mitm_relay_client_auth -- --ignored`
 
 #![expect(clippy::print_stdout, reason = "example reports its verified exchange")]
 
