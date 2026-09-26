@@ -16,8 +16,11 @@ use rama_utils::octets::kib;
 use std::{
     fmt, io,
     pin::Pin,
-    sync::Arc,
-    task::{Context, Poll, ready},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    task::{Context, Poll, Waker, ready},
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -189,7 +192,7 @@ where
     pub fn with_config(io: T, config: SessionConfig) -> Self {
         let native = io.extensions().get_ref::<NativeDatagrams>().cloned();
         let malformed = io.extensions().get_ref::<OnMalformedMessage>().cloned();
-        let io = SharedIo(Arc::new(Mutex::new(Some(Box::pin(io)))));
+        let io = SharedIo::new(io, malformed);
         Self {
             sender: SessionSender {
                 io: io.clone(),
@@ -200,7 +203,6 @@ where
                 remainder: 0,
                 on_wire: false,
                 state: SendState::Open,
-                malformed: malformed.clone(),
             },
             receiver: SessionReceiver {
                 io,
@@ -208,7 +210,6 @@ where
                 decoder: CapsuleDecoder::new(config.capsules),
                 buf: BytesMut::new(),
                 read_chunk_size: config.read_chunk_size.max(1),
-                malformed,
                 native_first: true,
                 native_open: true,
                 end: None,
@@ -277,9 +278,29 @@ enum SendState {
     NativeClosed,
 }
 
-/// The carrier I/O shared by both halves. Either half can abort it for both: dropping the
-/// I/O closes (HTTP/1.1) or resets (HTTP/2, HTTP/3) the carrier.
-struct SharedIo<T>(Arc<Mutex<Option<Pin<Box<T>>>>>);
+/// The carrier I/O shared by both halves. Either half can abort it for both: the carrier's
+/// [`OnMalformedMessage`] hook runs (once per session) and dropping the I/O closes
+/// (HTTP/1.1) or resets (HTTP/2, HTTP/3) the carrier. Both halves observe the abort before
+/// returning buffered events, and a half already waiting on the I/O is woken.
+struct SharedIo<T>(Arc<IoShared<T>>);
+
+struct IoShared<T> {
+    state: Mutex<IoState<T>>,
+    aborted: AtomicBool,
+}
+
+struct IoState<T> {
+    io: Option<Pin<Box<T>>>,
+    // The last task waiting on each direction, registered under the poll's lock.
+    wakers: [Option<Waker>; 2],
+    malformed: Option<OnMalformedMessage>,
+}
+
+#[derive(Clone, Copy)]
+enum Half {
+    Read = 0,
+    Write = 1,
+}
 
 impl<T> Clone for SharedIo<T> {
     fn clone(&self) -> Self {
@@ -288,29 +309,67 @@ impl<T> Clone for SharedIo<T> {
 }
 
 impl<T> SharedIo<T> {
+    fn new(io: T, malformed: Option<OnMalformedMessage>) -> Self {
+        Self(Arc::new(IoShared {
+            state: Mutex::new(IoState {
+                io: Some(Box::pin(io)),
+                wakers: [None, None],
+                malformed,
+            }),
+            aborted: AtomicBool::new(false),
+        }))
+    }
+
+    fn is_aborted(&self) -> bool {
+        self.0.aborted.load(Ordering::Acquire)
+    }
+
+    /// Abort the carrier for both halves; later calls do nothing.
     fn abort(&self) {
-        let io = self.0.lock().take();
+        let (io, wakers, malformed) = {
+            let mut state = self.0.state.lock();
+            self.0.aborted.store(true, Ordering::Release);
+            (
+                state.io.take(),
+                std::mem::take(&mut state.wakers),
+                state.malformed.take(),
+            )
+        };
+        // The hook picks the abort code before dropping the I/O would end the stream.
+        if let Some(malformed) = malformed {
+            malformed.call();
+        }
         drop(io);
+        wakers.into_iter().flatten().for_each(Waker::wake);
     }
 
     fn with<R>(
         &self,
-        poll: impl FnOnce(Pin<&mut T>) -> Poll<io::Result<R>>,
+        half: Half,
+        cx: &mut Context<'_>,
+        poll: impl FnOnce(Pin<&mut T>, &mut Context<'_>) -> Poll<io::Result<R>>,
     ) -> Poll<io::Result<R>> {
-        match self.0.lock().as_mut() {
-            Some(io) => poll(io.as_mut()),
-            None => Poll::Ready(Err(io::ErrorKind::ConnectionAborted.into())),
+        let mut state = self.0.state.lock();
+        let IoState { io, wakers, .. } = &mut *state;
+        let Some(io) = io.as_mut() else {
+            return Poll::Ready(Err(aborted()));
+        };
+        let result = poll(io.as_mut(), cx);
+        if result.is_pending() {
+            let slot = &mut wakers[half as usize];
+            if !slot
+                .as_ref()
+                .is_some_and(|waker| waker.will_wake(cx.waker()))
+            {
+                *slot = Some(cx.waker().clone());
+            }
         }
+        result
     }
 }
 
-/// Abort a carrier whose message this session left malformed: through its hook when it
-/// publishes one, and by closing its I/O in any case.
-fn abort_carrier<T>(io: &SharedIo<T>, malformed: &mut Option<OnMalformedMessage>) {
-    if let Some(malformed) = malformed.take() {
-        malformed.call();
-    }
-    io.abort();
+fn aborted() -> io::Error {
+    io::ErrorKind::ConnectionAborted.into()
 }
 
 /// The sending half of an [`HttpDatagramSession`].
@@ -327,7 +386,6 @@ pub struct SessionSender<T> {
     // Part of an unfinished capsule reached the carrier.
     on_wire: bool,
     state: SendState,
-    malformed: Option<OnMalformedMessage>,
 }
 
 impl<T> fmt::Debug for SessionSender<T> {
@@ -344,7 +402,7 @@ impl<T> Drop for SessionSender<T> {
     fn drop(&mut self) {
         // The peer must not see a clean end of stream in the middle of a capsule value.
         if self.on_wire {
-            abort_carrier(&self.io, &mut self.malformed);
+            self.io.abort();
         }
     }
 }
@@ -469,13 +527,16 @@ impl<T: AsyncWrite> SessionSender<T> {
                     return Poll::Ready(self.check_open());
                 }
             }
-            let result = ready!(self.io.with(|io| io.poll_shutdown(cx)));
+            let result = ready!(self.io.with(Half::Write, cx, |io, cx| io.poll_shutdown(cx)));
             Poll::Ready(result.map_err(|error| self.failed(error)))
         })
         .await
     }
 
     fn check_open(&self) -> Result<(), SessionError> {
+        if self.io.is_aborted() && matches!(self.state, SendState::Open | SendState::Closing) {
+            return Err(SessionError::Io(aborted()));
+        }
         match self.state {
             SendState::Open => Ok(()),
             SendState::Closing => Err(SessionError::SendClosed),
@@ -501,7 +562,7 @@ impl<T: AsyncWrite> SessionSender<T> {
 
     fn poll_write_and_flush(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), SessionError>> {
         ready!(self.poll_write_pending(cx))?;
-        let result = ready!(self.io.with(|io| io.poll_flush(cx)));
+        let result = ready!(self.io.with(Half::Write, cx, |io, cx| io.poll_flush(cx)));
         Poll::Ready(result.map_err(|error| self.failed(error)))
     }
 
@@ -510,8 +571,13 @@ impl<T: AsyncWrite> SessionSender<T> {
         for i in 0..self.pending.len() {
             while !self.pending[i].is_empty() {
                 let chunk = &self.pending[i];
-                let written = match ready!(self.io.with(|io| io.poll_write(cx, chunk))) {
-                    Ok(0) => return Poll::Ready(Err(self.failed(io::ErrorKind::WriteZero.into()))),
+                let written = match ready!(
+                    self.io
+                        .with(Half::Write, cx, |io, cx| io.poll_write(cx, chunk))
+                ) {
+                    Ok(0) => {
+                        return Poll::Ready(Err(self.failed(io::ErrorKind::WriteZero.into())));
+                    }
                     Ok(written) => written,
                     Err(error) => return Poll::Ready(Err(self.failed(error))),
                 };
@@ -550,7 +616,6 @@ pub struct SessionReceiver<T> {
     decoder: CapsuleDecoder,
     buf: BytesMut,
     read_chunk_size: usize,
-    malformed: Option<OnMalformedMessage>,
     native_first: bool,
     native_open: bool,
     end: Option<RecvEnd>,
@@ -608,6 +673,11 @@ impl<T: AsyncRead> SessionReceiver<T> {
                 RecvEnd::Native(error) => Err(SessionError::NativeRecv(error)),
             });
         }
+        // An abort by either half discards events already decoded or queued.
+        if self.io.is_aborted() {
+            self.end = Some(RecvEnd::Failed(io::ErrorKind::ConnectionAborted));
+            return Poll::Ready(Err(SessionError::Io(aborted())));
+        }
         // Alternate sources per event so neither can starve the other.
         self.native_first = !self.native_first;
         if self.native_first
@@ -639,7 +709,10 @@ impl<T: AsyncRead> SessionReceiver<T> {
             }
             self.buf.reserve(self.read_chunk_size);
             let buf = &mut self.buf;
-            match ready!(self.io.with(|io| poll_read_buf(io, cx, buf))) {
+            match ready!(
+                self.io
+                    .with(Half::Read, cx, |io, cx| poll_read_buf(io, cx, buf))
+            ) {
                 Ok(0) => {
                     return Poll::Ready(match self.decoder.finish() {
                         Ok(()) => {
@@ -686,7 +759,7 @@ impl<T: AsyncRead> SessionReceiver<T> {
     fn fail(&mut self, error: CapsuleError) -> SessionError {
         self.end = Some(RecvEnd::Malformed(error));
         // RFC 9297 §3.3: treat the message as malformed; the carrier chooses the abort code.
-        abort_carrier(&self.io, &mut self.malformed);
+        self.io.abort();
         SessionError::Malformed(error)
     }
 }

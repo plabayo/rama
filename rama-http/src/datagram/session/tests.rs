@@ -1207,3 +1207,95 @@ async fn close_cancelled_after_its_commit_resumes_shutdown() {
     );
     assert_eq!(peer.recv().await.unwrap(), None);
 }
+
+/// Counts wakes to observe that an abort reaches a task already waiting.
+#[derive(Default)]
+struct CountWakes(AtomicUsize);
+
+impl std::task::Wake for CountWakes {
+    fn wake(self: Arc<Self>) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+#[tokio::test]
+async fn aborts_wake_a_receiver_already_waiting() {
+    let (local, _peer) = pair();
+    let (mut sender, mut receiver) = local.split();
+    sender.start_capsule(header(0x4242, 4)).await.unwrap();
+    let wakes = Arc::new(CountWakes::default());
+    let waker = Waker::from(wakes.clone());
+    let mut cx = Context::from_waker(&waker);
+    assert!(receiver.poll_recv(&mut cx).is_pending());
+    let before = wakes.0.load(Ordering::SeqCst);
+    drop(sender);
+    assert!(wakes.0.load(Ordering::SeqCst) > before);
+    assert!(matches!(
+        receiver.poll_recv(&mut cx),
+        Poll::Ready(Err(SessionError::Io(_)))
+    ));
+}
+
+#[tokio::test]
+async fn aborts_wake_a_sender_already_waiting() {
+    let (a, mut raw) = tokio::io::duplex(4);
+    let (mut sender, mut receiver) =
+        HttpDatagramSession::with_config(ServiceInput::new(a), config()).split();
+    let wakes = Arc::new(CountWakes::default());
+    let waker = Waker::from(wakes.clone());
+    let mut cx = Context::from_waker(&waker);
+    let send = sender.send_capsule(CONTROL, Bytes::from_static(b"longer than buffer"));
+    let mut send = std::pin::pin!(send);
+    assert!(send.as_mut().poll(&mut cx).is_pending());
+    // A registered control capsule above its limit: malformed input aborts both halves.
+    raw.write_all(b"\x2a\x21").await.unwrap();
+    assert!(matches!(
+        receiver.recv().await,
+        Err(SessionError::Malformed(_))
+    ));
+    assert!(wakes.0.load(Ordering::SeqCst) > 0);
+    assert!(matches!(
+        send.as_mut().poll(&mut cx),
+        Poll::Ready(Err(SessionError::Io(_)))
+    ));
+}
+
+#[tokio::test]
+async fn aborts_discard_already_decoded_events() {
+    let (local, mut peer) = pair();
+    let (mut sender, mut receiver) = local.split();
+    peer.send_datagram(Bytes::from_static(b"first"))
+        .await
+        .unwrap();
+    peer.send_datagram(Bytes::from_static(b"buffered"))
+        .await
+        .unwrap();
+    assert_eq!(
+        receiver.recv().await.unwrap(),
+        Some(datagram(b"first", DatagramTransport::Capsule))
+    );
+    sender.start_capsule(header(0x4242, 4)).await.unwrap();
+    drop(sender);
+    assert!(matches!(receiver.recv().await, Err(SessionError::Io(_))));
+}
+
+#[tokio::test]
+async fn the_malformed_hook_runs_once_per_session() {
+    let (a, mut raw) = tokio::io::duplex(256);
+    let (io, aborted) = hooked(a);
+    let (mut sender, mut receiver) = HttpDatagramSession::with_config(io, config()).split();
+    sender.start_capsule(header(0x4242, 4)).await.unwrap();
+    raw.write_all(b"\x2a\x21").await.unwrap();
+    assert!(matches!(
+        receiver.recv().await,
+        Err(SessionError::Malformed(_))
+    ));
+    assert_eq!(aborted.load(Ordering::Relaxed), 1);
+    // The partial sender is dropped after the carrier already aborted.
+    drop(sender);
+    assert_eq!(aborted.load(Ordering::Relaxed), 1);
+}
