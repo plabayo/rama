@@ -24,6 +24,7 @@ use rama_http_types::{
     Body, Method, Request, Response, StatusCode,
     body::util::BodyExt as _,
     proto::{
+        capsule::CapsuleType,
         ext::{HttpDatagrams, Protocol},
         h3::{Code, FrameHeader, FrameType, QuarterStreamId, VarInt},
     },
@@ -1079,9 +1080,13 @@ async fn local_abort_hooks_end_both_directions_at_once() {
                 "upstream={upstream}"
             );
             // Newly arriving datagrams are dropped, not delivered.
+            let before = server.datagram_drops().receive_closed;
             pair.client.send_datagram(raw_datagram(0, b"late")).unwrap();
-            wait_drops(&server, |drops| drops.receive_closed >= 1).await;
-            assert!(native.channel().poll_recv(&mut cx).is_ready());
+            wait_drops(&server, |drops| drops.receive_closed > before).await;
+            assert_eq!(
+                native.channel().poll_recv(&mut cx),
+                Poll::Ready(Err(NativeRecvError::Aborted(code.value())))
+            );
             assert_eq!(server.shared().datagram_demux().buffered(), 0);
             // Buffered reliable bytes are not served after the abort.
             assert_eq!(stream_error(&mut server_io).await, code);
@@ -1091,4 +1096,102 @@ async fn local_abort_hooks_end_both_directions_at_once() {
         .await
         .unwrap();
     }
+}
+
+#[tokio::test]
+async fn connection_loss_is_never_reported_as_a_peer_reset() {
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::in_memory(None, None).await;
+        let (mut client, mut server) =
+            start(&pair, server_config(Some(DatagramConfig::default()))).await;
+        let (_client_io, mut server_io) = tunnel(&mut client, &mut server, TOKEN).await;
+        let native = server_io
+            .extensions()
+            .get_ref::<NativeDatagrams>()
+            .cloned()
+            .unwrap();
+        // Only CONNECTION_CLOSE, without a request FIN or RESET_STREAM.
+        pair.client
+            .close(VarInt::from_u32(Code::H3_NO_ERROR.value() as u32), b"done");
+        _ = pair.server.closed().await;
+        _ = server.shared().failed().await;
+        let mut cx = Context::from_waker(Waker::noop());
+        assert_eq!(
+            native.channel().poll_recv(&mut cx),
+            Poll::Ready(Err(NativeRecvError::Lost))
+        );
+        assert_eq!(
+            stream_error(&mut server_io).await,
+            Code::H3_REQUEST_INCOMPLETE
+        );
+        for _ in 0..2 {
+            assert_eq!(
+                native.channel().poll_recv(&mut cx),
+                Poll::Ready(Err(NativeRecvError::Lost))
+            );
+        }
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn peer_resets_keep_the_local_send_direction_open() {
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::in_memory(None, None).await;
+        let (mut client, _server) =
+            start(&pair, server_config(Some(DatagramConfig::default()))).await;
+        let (response, (mut peer_send, mut peer_recv)) =
+            tokio::join!(client.send_request(connect(TOKEN, true)), raw_accept(&pair));
+        let mut session =
+            HttpDatagramSession::new(handle_upgrade(&response.unwrap()).await.unwrap());
+        native_ready(&session).await;
+        let native = session.native().cloned().unwrap();
+        native
+            .channel()
+            .send(Bytes::from_static(b"before"), Default::default())
+            .unwrap();
+        // The peer ends only its own direction.
+        peer_send
+            .reset(VarInt::from_u32(Code::H3_REQUEST_CANCELLED.value() as u32))
+            .unwrap();
+        session.recv().await.unwrap_err();
+        let mut cx = Context::from_waker(Waker::noop());
+        assert_eq!(
+            native.channel().poll_recv(&mut cx),
+            Poll::Ready(Err(NativeRecvError::Reset(
+                Code::H3_REQUEST_CANCELLED.value()
+            )))
+        );
+        native
+            .channel()
+            .send(Bytes::from_static(b"after"), Default::default())
+            .unwrap();
+        session
+            .send_capsule(
+                CapsuleType::new(0x2a).unwrap(),
+                Bytes::from_static(b"reverse"),
+            )
+            .await
+            .unwrap();
+        // The peer still receives reliable data, possibly split over DATA frames.
+        let mut reverse = Vec::new();
+        while reverse.len() < 9 {
+            assert_eq!(peer_recv.read_u8().await.unwrap(), 0);
+            let len = usize::from(peer_recv.read_u8().await.unwrap());
+            let start = reverse.len();
+            reverse.resize(start + len, 0);
+            peer_recv.read_exact(&mut reverse[start..]).await.unwrap();
+        }
+        assert_eq!(&reverse, b"\x2a\x07reverse");
+        for _ in 0..2 {
+            let (response, _raw) =
+                tokio::join!(client.send_request(connect(TOKEN, true)), raw_accept(&pair));
+            assert_eq!(response.unwrap().status(), StatusCode::OK);
+        }
+        pair.close().await;
+    })
+    .await
+    .unwrap();
 }

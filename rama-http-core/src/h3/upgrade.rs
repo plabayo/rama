@@ -205,6 +205,7 @@ impl<R: RecvStream + Unpin, S: SendStream + Unpin> AsyncWrite for Tunnel<R, S> {
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self.check_aborted()?;
         self.flush(cx).map_err(io::Error::other)
     }
 

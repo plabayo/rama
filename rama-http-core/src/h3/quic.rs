@@ -108,9 +108,7 @@ fn write_error(error: &WriteError) -> Error {
 
 fn read_error(error: &ReadError) -> Error {
     match error {
-        ReadError::Reset(code) => {
-            Error::stream(Code::new(code.into_inner()), "peer reset stream").remote()
-        }
+        ReadError::Reset(code) => Error::peer_reset(Code::new(code.into_inner())),
         ReadError::ConnectionLost(error) => Error::from_transport(error),
         _ => Error::stream(Code::H3_REQUEST_CANCELLED, "QUIC receive failed"),
     }

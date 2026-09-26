@@ -109,15 +109,22 @@ impl<R: RecvStream> Reader<R> {
     ) -> Poll<Result<Option<FrameEvent>, Error>> {
         match self.poll_event_inner(cx) {
             Poll::Ready(Err(error)) => {
-                if let Some(datagrams) = &self.datagrams
+                let code = error.code().value();
+                if error.is_peer_reset() {
+                    if let Some(datagrams) = &self.datagrams {
+                        datagrams.receive_ended(super::datagram::ReceiveEnd::Reset(code));
+                    }
+                    // Only the peer's direction ended: a tunnel keeps sending (RFC 9000 §3.5).
+                    if self.phase == Phase::Tunnel {
+                        return Poll::Ready(Err(error));
+                    }
+                } else if !error.is_connection_loss()
                     && error.scope() == super::qpack::ErrorScope::Stream
+                    && let Some(datagrams) = &self.datagrams
                 {
-                    let code = error.code().value();
-                    datagrams.receive_ended(if error.is_remote() {
-                        super::datagram::ReceiveEnd::Reset(code)
-                    } else {
-                        super::datagram::ReceiveEnd::Aborted(code)
-                    });
+                    // Rejected below: this endpoint aborts the stream. A lost connection
+                    // is reported as such by the demux instead.
+                    datagrams.receive_ended(super::datagram::ReceiveEnd::Aborted(code));
                 }
                 Poll::Ready(Err(self.reject(error)))
             }

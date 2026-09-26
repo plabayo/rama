@@ -21,6 +21,10 @@ enum Source {
     Local,
     Remote,
     PeerStop,
+    /// The peer reset its send direction of the stream (RESET_STREAM).
+    PeerReset,
+    /// The connection closed or failed underneath the stream.
+    ConnectionLost,
 }
 
 impl Error {
@@ -59,6 +63,25 @@ impl Error {
         matches!(self.source, Source::PeerStop)
     }
 
+    pub(crate) fn peer_reset(code: Code) -> Self {
+        Self {
+            code,
+            scope: ErrorScope::Stream,
+            reason: "peer reset stream",
+            source: Source::PeerReset,
+        }
+    }
+
+    /// The peer reset its send direction; our own send direction is unaffected.
+    pub(crate) const fn is_peer_reset(self) -> bool {
+        matches!(self.source, Source::PeerReset)
+    }
+
+    /// Connection closure or failure, also after conversion into a stream error.
+    pub(crate) const fn is_connection_loss(self) -> bool {
+        matches!(self.source, Source::ConnectionLost)
+    }
+
     pub(crate) fn is_clean_close(self) -> bool {
         self.scope == ErrorScope::Connection && self.code() == Code::H3_NO_ERROR
     }
@@ -93,17 +116,19 @@ impl Error {
         ) {
             mapped
         } else {
-            mapped.remote()
+            Self {
+                source: Source::ConnectionLost,
+                ..mapped
+            }
         }
     }
 
-    /// Whether the peer's data or reset caused this error.
-    pub(crate) const fn is_remote(self) -> bool {
-        matches!(self.source, Source::Remote)
-    }
-
+    /// Attribute a locally detected error to received peer data, keeping a more
+    /// specific transport origin.
     pub(crate) const fn remote(mut self) -> Self {
-        self.source = Source::Remote;
+        if matches!(self.source, Source::Local) {
+            self.source = Source::Remote;
+        }
         self
     }
 
