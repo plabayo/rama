@@ -4884,6 +4884,7 @@ dependencies = [
  "tokio",
  "tracing-test",
  "x509-ocsp",
+ "zeroize",
  "zstd 0.14.0",
 ]
 

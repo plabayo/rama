@@ -16,13 +16,22 @@ mod e2e;
 
 /// A CA root plus a client identity it issued.
 pub(crate) fn client_identity() -> (CertificateDer<'static>, ClientAuthData) {
-    let (ca, ca_key) = rama_crypto::cert::boring::generate_certificate_authority_x509(
-        &SelfSignedCaConfig::default(),
-    )
-    .unwrap();
+    client_identity_with_cn("Rama test client")
+}
+
+/// A CA root plus a client identity it issued, distinguished by `cn`.
+///
+/// Distinct names matter when several roots share one verify store:
+/// identical subjects make BoringSSL build chains against the wrong
+/// candidate and fail with `BAD_SIGNATURE`.
+pub(crate) fn client_identity_with_cn(cn: &str) -> (CertificateDer<'static>, ClientAuthData) {
+    let mut ca_config = SelfSignedCaConfig::default();
+    ca_config.subject.common_name = Some(format!("{cn} CA"));
+    let (ca, ca_key) =
+        rama_crypto::cert::boring::generate_certificate_authority_x509(&ca_config).unwrap();
     let key = PKey::from_rsa(Rsa::generate(2048).unwrap()).unwrap();
     let mut name = X509NameBuilder::new().unwrap();
-    name.append_entry_by_text("CN", "Rama test client").unwrap();
+    name.append_entry_by_text("CN", cn).unwrap();
     let mut cert = X509::builder().unwrap();
     cert.set_version(2).unwrap();
     cert.set_serial_number(&BigNum::from_u32(1).unwrap().to_asn1_integer().unwrap())

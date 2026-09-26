@@ -1,10 +1,11 @@
 use moka::future::Cache;
+use parking_lot::Mutex;
 use rama_boring::{
     pkey::{PKey, Private},
-    ssl::ErrorCode,
-    x509::X509,
+    ssl::{ErrorCode, SslAlert, SslVerifyError, SslVerifyMode},
+    x509::{X509, store::X509StoreBuilder, verify::X509VerifyFlags},
 };
-use rama_boring_tokio::SslErrorStack;
+use rama_boring_tokio::{SslErrorStack, SslStreamBuilder};
 use rama_core::error::BoxErrorExt as _;
 use rama_core::{
     Layer,
@@ -23,7 +24,9 @@ use rama_net::{
 };
 use rama_tls::{
     KeyLogIntent, ProtocolVersion,
-    client::{NegotiatedTlsParameters, TlsServerIdentity},
+    client::{
+        ClientAuth, ClientAuthData, NegotiatedTlsParameters, ServerVerifyMode, TlsServerIdentity,
+    },
     server::SelfSignedCaConfig,
 };
 use rama_utils::str::any_submatch_ignore_ascii_case;
@@ -34,6 +37,7 @@ use std::{
     sync::Arc,
     time::Duration,
 };
+use tokio::sync::Notify;
 
 use crate::core::ssl::{AlpnError, SslAcceptor, SslMethod, SslRef, SslVersion};
 use crate::{TlsStream, client};
@@ -51,6 +55,9 @@ pub mod revocation;
 
 mod egress;
 pub use self::egress::{TlsMitmEgressClientAuth, TlsMitmEgressServerAuth};
+
+mod ingress;
+pub use self::ingress::TlsMitmIngressClientAuth;
 
 mod service;
 pub use self::service::TlsMitmRelayService;
@@ -103,12 +110,19 @@ struct AcceptorKey {
 /// remains authoritative. Upstream negotiation may also decline the preferred
 /// protocol. Without an applicable preference, normal ClientHello mirroring
 /// and upstream negotiation decide the concrete HTTP version.
+///
+/// With [`ingress_client_auth`](Self::with_ingress_client_auth) storage
+/// configured, the relay runs a joined handshake on the single egress stream:
+/// it parks the upstream handshake once the server flight is processed (to
+/// learn the upstream certificate for minting), accepts the guest, then
+/// resumes the same upstream leg presenting the matched key.
 pub struct TlsMitmRelay<Issuer> {
     issuer: Issuer,
     grease_enabled: bool,
     keylog_intent: KeyLogIntent,
     egress_server_auth: Option<TlsMitmEgressServerAuth>,
     egress_client_auth: Option<TlsMitmEgressClientAuth>,
+    ingress_client_auth: Option<TlsMitmIngressClientAuth>,
     acceptors: Option<Cache<AcceptorKey, SslAcceptor>>,
 }
 
@@ -120,6 +134,7 @@ impl<Issuer: fmt::Debug> fmt::Debug for TlsMitmRelay<Issuer> {
             .field("keylog_intent", &self.keylog_intent)
             .field("egress_server_auth", &self.egress_server_auth)
             .field("egress_client_auth", &self.egress_client_auth)
+            .field("ingress_client_auth", &self.ingress_client_auth)
             .field(
                 "acceptors",
                 &self.acceptors.as_ref().map(|cache| cache.policy()),
@@ -138,10 +153,13 @@ impl<Issuer> TlsMitmRelay<Issuer> {
             keylog_intent: KeyLogIntent::Environment,
             egress_server_auth: None,
             egress_client_auth: None,
+            ingress_client_auth: None,
             acceptors: Some(build_acceptor_cache(MitmAcceptorCacheConfig::default())),
         }
     }
+}
 
+impl<Issuer> TlsMitmRelay<Issuer> {
     rama_utils::macros::generate_set_and_with! {
         /// Bound the cache of ready-to-use ingress acceptors, or disable it
         /// with `None` so every intercepted connection builds its own.
@@ -238,6 +256,40 @@ impl<Issuer> TlsMitmRelay<Issuer> {
     #[must_use]
     pub fn egress_client_auth_ref(&self) -> Option<&TlsMitmEgressClientAuth> {
         self.egress_client_auth.as_ref()
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Guest-certificate to upstream-key registry for the ingress leg.
+        ///
+        /// With storage set, minted acceptors demand a guest certificate and
+        /// verify it against the storage trust. The relay matches the
+        /// presented leaf against the registry and resumes the parked
+        /// upstream leg with that key on the single egress stream.
+        ///
+        /// Upstream identity precedence: a flow [`TlsMitmEgressClientAuth`]
+        /// extension wins over a storage match (explicit caller intent, no
+        /// install), which wins over the relay default. If the upstream never
+        /// requested a certificate the installed key goes unused and the
+        /// handshake completes normally. Unknown guests (trusted but
+        /// unregistered) and absent guests are rejected with an
+        /// ingress-direction error and nothing bridges. Upstream rejection of
+        /// the key fails the guest with nothing bridged (fail closed).
+        ///
+        /// Absent storage preserves previous behavior byte for byte: the
+        /// relay never asks for a client certificate and runs one upstream
+        /// leg with zero handshake stepping. Set at construction: minted
+        /// ingress acceptors are cached per relay, so a relay with storage
+        /// never shares acceptors with one without.
+        pub fn ingress_client_auth(mut self, storage: Option<TlsMitmIngressClientAuth>) -> Self {
+            self.ingress_client_auth = storage;
+            self
+        }
+    }
+
+    /// Borrow the configured guest-certificate registry, if any.
+    #[must_use]
+    pub fn ingress_client_auth_ref(&self) -> Option<&TlsMitmIngressClientAuth> {
+        self.ingress_client_auth.as_ref()
     }
 }
 
@@ -639,6 +691,74 @@ fn server_name_as_sni(server_name: &Host) -> Option<Domain> {
     }
 }
 
+/// Map an egress-leg [`tls_connect`](crate::client::tls_connect) failure to a relay error.
+///
+/// Shared by the direct and the storage-joined [`TlsMitmRelay::handshake`]
+/// paths so the upstream verdict classifies identically on both legs.
+pub(super) fn map_egress_connect_error<S>(error: client::TlsConnectError<S>) -> TlsMitmRelayError {
+    match error {
+        client::TlsConnectError::Builder(error) => TlsMitmRelayError::handshake(
+            TlsMitmRelayErrorDirection::Egress,
+            error.context("tls connect builder error"),
+            None,
+        ),
+        client::TlsConnectError::Handshake { server_name, error } => {
+            let maybe_ssl_code = error.code();
+            if let Some(io_err) = error.as_io_error() {
+                TlsMitmRelayError::handshake_io(
+                    TlsMitmRelayErrorDirection::Egress,
+                    BoxError::from(format!(
+                        "tls mitm relay: egress tls accept failed with io error: {io_err}"
+                    ))
+                    .context_debug_field("code", maybe_ssl_code)
+                    .context_debug_field("server_identity", server_name),
+                )
+            } else if let Some(err) = error.as_ssl_error_stack() {
+                let mut relay_err =
+                    TlsMitmRelayError::handshake_ssl(TlsMitmRelayErrorDirection::Egress, err);
+                relay_err.sni = server_name.as_ref().and_then(server_name_as_sni);
+                relay_err
+            } else {
+                TlsMitmRelayError::handshake(
+                    TlsMitmRelayErrorDirection::Egress,
+                    BoxError::from_static_str("tls mitm relay: egress tls accept failed")
+                        .context_debug_field("code", maybe_ssl_code)
+                        .context_debug_field("server_identity", server_name),
+                    maybe_ssl_code,
+                )
+            }
+        }
+    }
+}
+
+/// Map an ingress-leg accept failure to a relay error.
+///
+/// Shared by the direct and the storage-joined [`TlsMitmRelay::handshake`]
+/// paths so guest refusals classify identically on both legs.
+pub(super) fn map_ingress_accept_error<S>(
+    err: &rama_boring_tokio::HandshakeError<S>,
+) -> TlsMitmRelayError {
+    let maybe_ssl_code = err.code();
+    if let Some(io_err) = err.as_io_error() {
+        TlsMitmRelayError::handshake_io(
+            TlsMitmRelayErrorDirection::Ingress,
+            BoxError::from(format!(
+                "tls mitm relay: ingress tls accept failed with io error: {io_err}"
+            ))
+            .context_debug_field("code", maybe_ssl_code),
+        )
+    } else if let Some(err) = err.as_ssl_error_stack() {
+        TlsMitmRelayError::handshake_ssl(TlsMitmRelayErrorDirection::Ingress, err)
+    } else {
+        TlsMitmRelayError::handshake(
+            TlsMitmRelayErrorDirection::Ingress,
+            BoxError::from_static_str("tls mitm relay: ingress tls accept failed")
+                .context_debug_field("code", maybe_ssl_code),
+            maybe_ssl_code,
+        )
+    }
+}
+
 impl<Issuer> TlsMitmRelay<Issuer>
 where
     Issuer: self::issuer::BoringMitmCertIssuer<Error: Into<BoxError>>,
@@ -667,13 +787,13 @@ where
             .context("tls mitm relay: create boring ssl acceptor")
             .map_err(TlsMitmRelayError::config)?;
         acceptor_builder.set_grease_enabled(self.grease_enabled);
-        // Deliberately NOT calling `set_default_verify_paths()`: this
-        // acceptor never enables client-certificate verification
-        // (`SSL_VERIFY_PEER`), so the OS trust store it would parse is never
-        // consulted. Loading it parsed the whole bundle into this
-        // `SSL_CTX` and kept it resident for as long as it lives — pure
-        // waste. The egress connector installs only the store it needs
-        // (see `connector_data`).
+        // Deliberately NOT calling `set_default_verify_paths()`: without
+        // `ingress_client_auth` this acceptor never enables
+        // client-certificate verification (`SSL_VERIFY_PEER`), so the OS
+        // trust store it would parse is never consulted. Loading it parsed
+        // the whole bundle into this `SSL_CTX` and kept it resident for as
+        // long as it lives — pure waste. The egress connector installs only
+        // the store it needs (see `connector_data`).
         for (i, crt) in mirrored_leaf_cert_chain.into_iter().enumerate() {
             if i == 0 {
                 acceptor_builder
@@ -770,6 +890,32 @@ where
             });
         }
 
+        if let Some(storage) = self.ingress_client_auth.as_ref() {
+            let certs = storage
+                .trust_anchors()
+                .iter()
+                .map(|cert| {
+                    X509::from_der(cert.as_ref())
+                        .context("boring/TlsAcceptorData: parse x509 client cert from DER content")
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(TlsMitmRelayError::config)?;
+            let mut store = X509StoreBuilder::new().map_err(TlsMitmRelayError::config)?;
+            store
+                .try_set_flags(X509VerifyFlags::PARTIAL_CHAIN)
+                .map_err(TlsMitmRelayError::config)?;
+            for cert in &certs {
+                acceptor_builder
+                    .add_client_ca(cert)
+                    .map_err(TlsMitmRelayError::config)?;
+                store
+                    .add_cert(cert.clone())
+                    .map_err(TlsMitmRelayError::config)?;
+            }
+            acceptor_builder.set_cert_store(store.build());
+            acceptor_builder.set_verify(SslVerifyMode::PEER | SslVerifyMode::FAIL_IF_NO_PEER_CERT);
+        }
+
         Ok(acceptor_builder.build())
     }
 
@@ -825,72 +971,35 @@ where
                     )
                 })?
         };
+        if self.ingress_client_auth.is_some() {
+            return self.handshake_joined(input, connector_data).await;
+        }
         let BridgeIo(mut ingress_stream, egress_stream) = input;
         let store_server_certificate_chain = connector_data.store_server_certificate_chain;
 
-        let egress_tls_stream = match crate::client::tls_connect(
-            egress_stream,
-            Some(connector_data),
-        )
-        .await
-        {
-            Ok(stream) => stream,
-            Err(err) => {
-                let relay_err = match err {
-                    client::TlsConnectError::Builder(error) => TlsMitmRelayError::handshake(
-                        TlsMitmRelayErrorDirection::Egress,
-                        error.context("tls connect builder error"),
-                        None,
-                    ),
-                    client::TlsConnectError::Handshake { server_name, error } => {
-                        let maybe_ssl_code = error.code();
-                        if let Some(io_err) = error.as_io_error() {
-                            TlsMitmRelayError::handshake_io(
-                                TlsMitmRelayErrorDirection::Egress,
-                                BoxError::from(format!(
-                                    "tls mitm relay: egress tls accept failed with io error: {io_err}"
-                                ))
-                                .context_debug_field("code", maybe_ssl_code)
-                                .context_debug_field("server_identity", server_name),
-                            )
-                        } else if let Some(err) = error.as_ssl_error_stack() {
-                            let mut relay_err = TlsMitmRelayError::handshake_ssl(
-                                TlsMitmRelayErrorDirection::Egress,
-                                err,
-                            );
-                            relay_err.sni = server_name.as_ref().and_then(server_name_as_sni);
-                            relay_err
-                        } else {
-                            TlsMitmRelayError::handshake(
-                                TlsMitmRelayErrorDirection::Egress,
-                                BoxError::from_static_str(
-                                    "tls mitm relay: egress tls accept failed",
-                                )
-                                .context_debug_field("code", maybe_ssl_code)
-                                .context_debug_field("server_identity", server_name),
-                                maybe_ssl_code,
-                            )
-                        }
-                    }
-                };
-                // The plaintext TLS Alert injection that used to live
-                // here was reverted — empirical regression report
-                // (Firefox `SSL_ERROR_NO_CYPHER_OVERLAP` + Safari
-                // weird-redirect behavior on a tproxy that worked
-                // fine on `main`). Hypothesis: even though the
-                // alert path only fires on egress-handshake failure,
-                // emitting a fatal handshake-failure record changes
-                // how Firefox NSS classifies the connection close
-                // versus the previous transport-reset baseline, and
-                // somehow drops the client into a worse retry path.
-                // The right next step is a packet capture of one
-                // failing handshake; until then, restore the
-                // main-branch behavior of letting the transport
-                // close speak for itself.
-                let _ = &mut ingress_stream;
-                return Err(relay_err);
-            }
-        };
+        let egress_tls_stream =
+            match crate::client::tls_connect(egress_stream, Some(connector_data)).await {
+                Ok(stream) => stream,
+                Err(err) => {
+                    let relay_err = map_egress_connect_error(err);
+                    // The plaintext TLS Alert injection that used to live
+                    // here was reverted — empirical regression report
+                    // (Firefox `SSL_ERROR_NO_CYPHER_OVERLAP` + Safari
+                    // weird-redirect behavior on a tproxy that worked
+                    // fine on `main`). Hypothesis: even though the
+                    // alert path only fires on egress-handshake failure,
+                    // emitting a fatal handshake-failure record changes
+                    // how Firefox NSS classifies the connection close
+                    // versus the previous transport-reset baseline, and
+                    // somehow drops the client into a worse retry path.
+                    // The right next step is a packet capture of one
+                    // failing handshake; until then, restore the
+                    // main-branch behavior of letting the transport
+                    // close speak for itself.
+                    let _ = &mut ingress_stream;
+                    return Err(relay_err);
+                }
+            };
         egress_tls_stream.extensions().insert(StreamTransformed {
             by: "rama-tls-boring::TlsMitmRelay",
         });
@@ -1036,27 +1145,7 @@ where
         };
         let ingress_boring_ssl_stream = rama_boring_tokio::accept(&acceptor, ingress_stream)
             .await
-            .map_err(|err| {
-                let maybe_ssl_code = err.code();
-                if let Some(io_err) = err.as_io_error() {
-                    TlsMitmRelayError::handshake_io(
-                        TlsMitmRelayErrorDirection::Ingress,
-                        BoxError::from(format!(
-                            "tls mitm relay: ingress tls accept failed with io error: {io_err}"
-                        ))
-                        .context_debug_field("code", maybe_ssl_code),
-                    )
-                } else if let Some(err) = err.as_ssl_error_stack() {
-                    TlsMitmRelayError::handshake_ssl(TlsMitmRelayErrorDirection::Ingress, err)
-                } else {
-                    TlsMitmRelayError::handshake(
-                        TlsMitmRelayErrorDirection::Ingress,
-                        BoxError::from_static_str("tls mitm relay: ingress tls accept failed")
-                            .context_debug_field("code", maybe_ssl_code),
-                        maybe_ssl_code,
-                    )
-                }
-            })?;
+            .map_err(|err| map_ingress_accept_error(&err))?;
 
         let ingress_negotiated_params = {
             let ssl = ingress_boring_ssl_stream.ssl();
@@ -1115,8 +1204,475 @@ where
         });
         Ok(BridgeIo(ingress_tls_stream, egress_tls_stream))
     }
+
+    /// Joined handshake for storage-configured relays on the single egress stream.
+    ///
+    /// Parks the upstream handshake inside a custom verify callback once the
+    /// server flight is processed (the guest key is known only after the
+    /// ingress accept, so the relay must learn the upstream certificate for
+    /// minting first), accepts the guest against the storage trust, then
+    /// resumes the same upstream leg presenting the matched key. A flow
+    /// [`TlsMitmEgressClientAuth`] extension wins over a storage match
+    /// (explicit caller intent, no install); a match wins over the relay
+    /// default by overwriting it on the parked `Ssl`. If the upstream never
+    /// requested a certificate the installed key goes unused.
+    ///
+    /// Fail-closed: unknown/absent guests, unusable registry keys, and
+    /// upstream rejection all end with nothing bridged. Verified egress
+    /// ([`ServerVerifyMode::Auto`] or pins) combined with storage is rejected
+    /// as a config error: the park callback replaces server verification, so
+    /// accepting the combination would silently downgrade upstream trust.
+    /// ponytail: storage park supports verification-disabled egress only;
+    /// teach the park callback to delegate to the default verifier if
+    /// verified-egress plus storage is ever needed.
+    async fn handshake_joined<Ingress, Egress>(
+        &self,
+        input: BridgeIo<Ingress, Egress>,
+        connector_data: client::TlsConnectorData,
+    ) -> Result<BridgeIo<TlsStream<Ingress>, TlsStream<Egress>>, TlsMitmRelayError>
+    where
+        Ingress: Io + Unpin + extensions::ExtensionsRef,
+        Egress: Io + Unpin + extensions::ExtensionsRef,
+    {
+        enum GuestFailure {
+            Genuine(TlsMitmRelayError),
+            Aborted,
+        }
+
+        // Cross-leg handoff uses `Notify` permits, never a bare task wake: the
+        // verify callback notifies `cert_ready` after capturing the upstream
+        // certificate; the guest leg notifies `guest_ready` after storing its
+        // outcome so the parked egress loop re-polls the handshake (the
+        // verify-callback retry then observes the stored outcome); the egress
+        // leg notifies `egress_finished` on completion so a guest waiter can
+        // abort. Permits make every signal lossless regardless of poll order.
+        let guest_ready = Arc::new(Notify::new());
+        let egress_finished = Arc::new(Notify::new());
+        let cert_ready = Arc::new(Notify::new());
+        let wake_task = || {
+            let guest_ready = Arc::clone(&guest_ready);
+            async move {
+                guest_ready.notify_one();
+                std::future::poll_fn(|cx: &mut std::task::Context<'_>| {
+                    cx.waker().wake_by_ref();
+                    std::task::Poll::Ready(())
+                })
+                .await
+            }
+        };
+
+        let Some(storage) = self.ingress_client_auth.as_ref() else {
+            return Err(TlsMitmRelayError::config(BoxError::from_static_str(
+                "tls mitm relay: storage joined handshake without storage",
+            )));
+        };
+        if connector_data.server_verify_mode != ServerVerifyMode::Disable
+            || connector_data.server_cert_pins.is_some()
+        {
+            return Err(TlsMitmRelayError::config(BoxError::from_static_str(
+                "tls mitm relay: ingress storage requires verification-disabled egress without pins",
+            )));
+        }
+        let flow_wins = input
+            .extensions()
+            .get_ref::<TlsMitmEgressClientAuth>()
+            .is_some();
+        let store_server_certificate_chain = connector_data.store_server_certificate_chain;
+        let server_name = connector_data.server_name.clone();
+        let mut ssl = connector_data.into_ssl().map_err(|error| {
+            TlsMitmRelayError::config(error.context("tls mitm relay: build parked egress ssl"))
+        })?;
+
+        let park = Arc::new(Mutex::new(Park::default()));
+        {
+            let park = Arc::clone(&park);
+            let cert_ready = Arc::clone(&cert_ready);
+            ssl.set_custom_verify_callback(SslVerifyMode::NONE, move |ssl: &mut SslRef| {
+                let mut park = park.lock();
+                if park.cert_der.is_none() {
+                    let Some(cert) = ssl.peer_certificate() else {
+                        return Err(SslVerifyError::Retry);
+                    };
+                    let version = ssl.version();
+                    let alpn = ssl.selected_alpn_protocol().map(ApplicationProtocol::from);
+                    match cert.to_der() {
+                        Ok(der) => {
+                            park.version = version;
+                            park.alpn = alpn;
+                            park.cert_der = Some(der);
+                            cert_ready.notify_one();
+                        }
+                        Err(_) => {
+                            return Err(SslVerifyError::Invalid(SslAlert::INTERNAL_ERROR));
+                        }
+                    }
+                }
+                match &park.guest {
+                    None => Err(SslVerifyError::Retry),
+                    Some(GuestForA::Hit { matched }) => {
+                        if !flow_wins {
+                            let Some(leaf_der) = matched.cert_chain.first() else {
+                                return Err(SslVerifyError::Invalid(SslAlert::INTERNAL_ERROR));
+                            };
+                            let leaf = X509::from_der(leaf_der.as_ref()).map_err(|_err| {
+                                SslVerifyError::Invalid(SslAlert::INTERNAL_ERROR)
+                            })?;
+                            let key = PKey::private_key_from_der(matched.private_key.secret_der())
+                                .map_err(|_err| {
+                                    SslVerifyError::Invalid(SslAlert::INTERNAL_ERROR)
+                                })?;
+                            ssl.set_certificate(leaf.as_ref()).map_err(|_err| {
+                                SslVerifyError::Invalid(SslAlert::INTERNAL_ERROR)
+                            })?;
+                            ssl.set_private_key(key.as_ref()).map_err(|_err| {
+                                SslVerifyError::Invalid(SslAlert::INTERNAL_ERROR)
+                            })?;
+                            for extra_der in &matched.cert_chain[1..] {
+                                let extra = X509::from_der(extra_der.as_ref()).map_err(|_err| {
+                                    SslVerifyError::Invalid(SslAlert::INTERNAL_ERROR)
+                                })?;
+                                ssl.add_chain_cert(extra.as_ref()).map_err(|_err| {
+                                    SslVerifyError::Invalid(SslAlert::INTERNAL_ERROR)
+                                })?;
+                            }
+                        }
+                        Ok(())
+                    }
+                    // The guest leg failed; abort the parked egress leg.
+                    // This error is discarded in favor of the guest error.
+                    Some(GuestForA::Abort) => {
+                        Err(SslVerifyError::Invalid(SslAlert::INTERNAL_ERROR))
+                    }
+                }
+            });
+        }
+
+        let BridgeIo(ingress_stream, egress_stream) = input;
+
+        let park_egress = Arc::clone(&park);
+        let server_name_egress = server_name.clone();
+        let egress_finished_here = Arc::clone(&egress_finished);
+        let guest_ready_here = Arc::clone(&guest_ready);
+        let egress_fut = async move {
+            let mut handshake = Box::pin(SslStreamBuilder::new(ssl, egress_stream).connect());
+            let res = loop {
+                tokio::select! {
+                    res = &mut handshake => break res,
+                    _ = guest_ready_here.notified() => {}
+                }
+            };
+            let mapped = res.map_err(|error| {
+                map_egress_connect_error(client::TlsConnectError::Handshake {
+                    server_name: server_name_egress,
+                    error,
+                })
+            });
+            park_egress.lock().egress_done = true;
+            egress_finished_here.notify_one();
+            mapped
+        };
+
+        let park_guest = Arc::clone(&park);
+        let guest_fut = async move {
+            let fail_guest = |park_guest: &Arc<Mutex<Park>>, err: TlsMitmRelayError| {
+                park_guest.lock().guest = Some(GuestForA::Abort);
+                err
+            };
+            let egress_finished_here = Arc::clone(&egress_finished);
+            let cert_ready_here = Arc::clone(&cert_ready);
+            let have_cert = loop {
+                {
+                    let park = park_guest.lock();
+                    if park.cert_der.is_some() {
+                        break true;
+                    }
+                    if park.egress_done {
+                        break false;
+                    }
+                }
+                tokio::select! {
+                    _ = cert_ready_here.notified() => {}
+                    _ = egress_finished_here.notified() => {}
+                }
+            };
+            if !have_cert {
+                return Err(GuestFailure::Aborted);
+            }
+            let (cert_der, version, alpn) = {
+                let park = park_guest.lock();
+                (park.cert_der.clone(), park.version, park.alpn.clone())
+            };
+            let Some(cert_der) = cert_der else {
+                // Unreachable: `cert_der` only transitions `None` to `Some`
+                // and `have_cert` observed `Some`. Fail closed regardless.
+                let err = TlsMitmRelayError::config(BoxError::from_static_str(
+                    "tls mitm relay: parked upstream cert vanished",
+                ));
+                let err = fail_guest(&park_guest, err);
+                wake_task().await;
+                return Err(GuestFailure::Genuine(err));
+            };
+            let source_cert = match X509::from_der(&cert_der) {
+                Ok(cert) => cert,
+                Err(error) => {
+                    let err = TlsMitmRelayError::config(
+                        BoxError::from(error).context("tls mitm relay: parse parked upstream cert"),
+                    );
+                    let err = fail_guest(&park_guest, err);
+                    wake_task().await;
+                    return Err(GuestFailure::Genuine(err));
+                }
+            };
+            let protocol_version: Option<ProtocolVersion> = match version {
+                Some(version) => match version.rama_try_into() {
+                    Ok(version) => Some(version),
+                    Err(version) => {
+                        let err = TlsMitmRelayError::config(
+                            BoxError::from_static_str(
+                                "boring ssl connector: cast min proto version",
+                            )
+                            .context_field("protocol_version", version),
+                        );
+                        let err = fail_guest(&park_guest, err);
+                        wake_task().await;
+                        return Err(GuestFailure::Genuine(err));
+                    }
+                },
+                None => None,
+            };
+            let mint = self.mint_acceptor(source_cert.clone(), version, alpn.clone());
+            let acceptor = match &self.acceptors {
+                Some(acceptors) => {
+                    let key = AcceptorKey {
+                        upstream_signature: Arc::from(source_cert.signature().as_slice()),
+                        protocol_version,
+                        alpn: alpn.clone(),
+                    };
+                    match acceptors
+                        .try_get_with(key, async {
+                            mint.await
+                                .map_err(|err| ArcError::from_box_error(err.into()))
+                        })
+                        .await
+                    {
+                        Ok(acceptor) => acceptor,
+                        Err(err) => {
+                            let err = TlsMitmRelayError::config(ArcError::clone(&err));
+                            let err = fail_guest(&park_guest, err);
+                            wake_task().await;
+                            return Err(GuestFailure::Genuine(err));
+                        }
+                    }
+                }
+                None => match mint.await {
+                    Ok(acceptor) => acceptor,
+                    Err(err) => {
+                        let err = fail_guest(&park_guest, err);
+                        wake_task().await;
+                        return Err(GuestFailure::Genuine(err));
+                    }
+                },
+            };
+            let accepted = match rama_boring_tokio::accept(&acceptor, ingress_stream).await {
+                Ok(accepted) => accepted,
+                Err(err) => {
+                    let err = fail_guest(&park_guest, map_ingress_accept_error(&err));
+                    wake_task().await;
+                    return Err(GuestFailure::Genuine(err));
+                }
+            };
+            let presented_der = accepted
+                .ssl()
+                .peer_certificate()
+                .and_then(|cert| cert.to_der().ok());
+            let Some(presented_der) = presented_der else {
+                // Unreachable with FAIL_IF_NO_PEER_CERT acceptors, but fail
+                // closed as unknown rather than bridging an unmatched guest.
+                let err = TlsMitmRelayError::handshake(
+                    TlsMitmRelayErrorDirection::Ingress,
+                    BoxError::from_static_str(
+                        "tls mitm relay: ingress accept presented no certificate",
+                    ),
+                    None,
+                );
+                let err = fail_guest(&park_guest, err);
+                wake_task().await;
+                drop(accepted);
+                return Err(GuestFailure::Genuine(err));
+            };
+            let Some(matched) = storage.match_leaf(&presented_der) else {
+                // Unknown guest: trusted but unregistered. Deliberately NOT
+                // CertTrust: the guest TLS handshake succeeded and trust
+                // validation passed; this is a relay registry decision. A
+                // CertTrust classification would tell callers to cache an SNI
+                // bypass for a guest that simply is not registered.
+                let err = TlsMitmRelayError::handshake(
+                    TlsMitmRelayErrorDirection::Ingress,
+                    BoxError::from_static_str("tls mitm relay: unknown guest certificate"),
+                    None,
+                );
+                let err = fail_guest(&park_guest, err);
+                wake_task().await;
+                drop(accepted);
+                return Err(GuestFailure::Genuine(err));
+            };
+            if let Err(error) =
+                TlsMitmEgressClientAuth::try_from(ClientAuth::Single(matched.clone()))
+            {
+                let err = TlsMitmRelayError::config(
+                    error.context("tls mitm relay: storage matched identity unusable"),
+                );
+                let err = fail_guest(&park_guest, err);
+                wake_task().await;
+                drop(accepted);
+                return Err(GuestFailure::Genuine(err));
+            }
+            park_guest.lock().guest = Some(GuestForA::Hit {
+                matched: matched.clone(),
+            });
+            wake_task().await;
+            Ok((accepted, matched.clone()))
+        };
+
+        let egress_handle = tokio::spawn(egress_fut);
+        let guest_res = guest_fut.await;
+        let egress_res = match egress_handle.await {
+            Ok(res) => res,
+            Err(error) => {
+                return Err(TlsMitmRelayError::config(BoxError::from(format!(
+                    "tls mitm relay: egress leg panicked: {error}"
+                ))));
+            }
+        };
+        let (egress_stream, ingress_boring_ssl_stream) = match (egress_res, guest_res) {
+            (Ok(egress_stream), Ok((ingress_stream, _))) => (egress_stream, ingress_stream),
+            (_, Err(GuestFailure::Genuine(err))) | (Err(err), _) => return Err(err),
+            (Ok(_), Err(GuestFailure::Aborted)) => {
+                return Err(TlsMitmRelayError::config(BoxError::from_static_str(
+                    "tls mitm relay: storage handshake aborted without guest outcome",
+                )));
+            }
+        };
+        let egress_tls_stream = TlsStream::new(egress_stream);
+        egress_tls_stream.extensions().insert(StreamTransformed {
+            by: "rama-tls-boring::TlsMitmRelay",
+        });
+        let maybe_negotiated_params = {
+            let egress_ssl_ref = egress_tls_stream.ssl_ref();
+            let alpn_proto = egress_ssl_ref
+                .selected_alpn_protocol()
+                .map(ApplicationProtocol::from);
+            let peer_cert_chain = if store_server_certificate_chain {
+                match egress_ssl_ref.peer_cert_chain() {
+                    Some(chain) => Some(chain.rama_try_into().map_err(TlsMitmRelayError::config)?),
+                    None => None,
+                }
+            } else {
+                None
+            };
+            let session = egress_ssl_ref.session().ok_or_else(|| {
+                TlsMitmRelayError::config(BoxError::from_static_str(
+                    "tls mitm relay: egress tls stream has no session",
+                ))
+            })?;
+            let protocol_version: ProtocolVersion = session
+                .protocol_version()
+                .rama_try_into()
+                .map_err(|version: SslVersion| {
+                    TlsMitmRelayError::config(
+                        BoxError::from_static_str("boring ssl connector: cast min proto version")
+                            .context_field("protocol_version", version),
+                    )
+                })?;
+            Some(NegotiatedTlsParameters {
+                protocol_version,
+                application_layer_protocol: alpn_proto,
+                peer_certificate_chain: peer_cert_chain,
+                server_name: None,
+                resumed: Some(egress_ssl_ref.session_reused()),
+            })
+        };
+        let ingress_negotiated_params = {
+            let ssl = ingress_boring_ssl_stream.ssl();
+            let session = ssl.session().ok_or_else(|| {
+                TlsMitmRelayError::config(BoxError::from_static_str(
+                    "tls mitm relay: ingress tls stream has no session",
+                ))
+            })?;
+            let protocol_version =
+                session
+                    .protocol_version()
+                    .rama_try_into()
+                    .map_err(|version| {
+                        TlsMitmRelayError::config(
+                            BoxError::from_static_str(
+                                "tls mitm relay: cast ingress protocol version",
+                            )
+                            .context_field("protocol_version", version),
+                        )
+                    })?;
+            NegotiatedTlsParameters {
+                protocol_version,
+                application_layer_protocol: ssl
+                    .selected_alpn_protocol()
+                    .map(ApplicationProtocol::from),
+                // The guest chain is available, but the relay reports no
+                // downstream client chain (matching the direct path) so a
+                // server chain can never be mislabeled as a client chain.
+                peer_certificate_chain: None,
+                server_name: ssl
+                    .servername(rama_boring::ssl::NameType::HOST_NAME)
+                    .map(rama_net::address::Domain::try_from)
+                    .transpose()
+                    .map_err(TlsMitmRelayError::config)?,
+                resumed: Some(ssl.session_reused()),
+            }
+        };
+        if let Some(negotiated_params) = maybe_negotiated_params {
+            #[cfg(feature = "http")]
+            if let Some(proto) = negotiated_params.application_layer_protocol.as_ref()
+                && let Ok(neg_version) = rama_net::http::Version::try_from(proto)
+            {
+                egress_tls_stream
+                    .extensions()
+                    .insert(rama_net::http::TargetHttpVersion(neg_version));
+            }
+
+            egress_tls_stream.extensions().insert(negotiated_params);
+        }
+
+        let ingress_tls_stream = TlsStream::new(ingress_boring_ssl_stream);
+        ingress_tls_stream
+            .extensions()
+            .insert(ingress_negotiated_params);
+        ingress_tls_stream.extensions().insert(StreamTransformed {
+            by: "rama-tls-boring::TlsMitmRelay",
+        });
+        Ok(BridgeIo(ingress_tls_stream, egress_tls_stream))
+    }
 }
 
+/// Parked upstream state for the storage-joined handshake.
+///
+/// The verify callback fills `cert_der`/`version`/`alpn` once the server
+/// flight is processed; the guest leg fills `guest` once the ingress accept
+/// and registry match conclude. `egress_done` unblocks a guest waiter when
+/// the egress leg finishes before presenting a certificate.
+#[derive(Default)]
+struct Park {
+    cert_der: Option<Vec<u8>>,
+    version: Option<SslVersion>,
+    alpn: Option<ApplicationProtocol>,
+    guest: Option<GuestForA>,
+    egress_done: bool,
+}
+
+/// Guest outcome for the parked egress leg: resume with the matched key, or
+/// abort the parked handshake (the guest error itself is returned).
+enum GuestForA {
+    Hit { matched: ClientAuthData },
+    Abort,
+}
 impl<S, Issuer: Clone> Layer<S> for TlsMitmRelay<Issuer> {
     type Service = TlsMitmRelayService<Issuer, S>;
 
@@ -1132,10 +1688,23 @@ impl<S, Issuer: Clone> Layer<S> for TlsMitmRelay<Issuer> {
 #[cfg(test)]
 mod tests {
     use super::{
-        HandshakeRelayClassification, TlsMitmRelayError, TlsMitmRelayErrorDirection,
-        TlsMitmRelayErrorKind, classify_handshake_reasons, reason_is_cert_trust_signal,
+        HandshakeRelayClassification, TlsMitmIngressClientAuth, TlsMitmRelay, TlsMitmRelayError,
+        TlsMitmRelayErrorDirection, TlsMitmRelayErrorKind, classify_handshake_reasons,
+        reason_is_cert_trust_signal,
     };
+    use crate::core::x509::X509;
+    use crate::tests::client_identity;
     use rama_boring::ssl::ErrorCode;
+    use rama_core::ServiceInput;
+    use rama_crypto::{
+        cert::{boring::generate_certificate_authority_x509, generate_server_auth},
+        pki_types::CertificateDer,
+    };
+    use rama_net::address::Host;
+    use rama_tls::{
+        client::{ClientAuth, ClientAuthData, ServerVerifyMode, TlsClientConfig},
+        server::{GeneratedServerAuthConfig, SelfSignedCaConfig},
+    };
 
     // The plaintext TLS Alert helpers (`encode_plain_alert`,
     // `write_plain_alert`) and their wire-format pins live in
@@ -1417,5 +1986,84 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn ingress_client_auth_builder_defaults_to_absent_and_carries_storage() {
+        let relay = TlsMitmRelay::try_new_with_self_signed_issuer(&SelfSignedCaConfig::default())
+            .expect("build MITM relay");
+        assert!(relay.ingress_client_auth_ref().is_none());
+
+        let root = CertificateDer::from(vec![1, 2, 3]);
+        let relay = relay.with_ingress_client_auth(
+            TlsMitmIngressClientAuth::new().with_trust_anchors([root.clone()]),
+        );
+        assert_eq!(
+            relay
+                .ingress_client_auth_ref()
+                .expect("storage carried")
+                .trust_anchors(),
+            [root]
+        );
+    }
+
+    async fn minted_ingress_handshake(
+        storage: Option<TlsMitmIngressClientAuth>,
+        client_identity: Option<ClientAuthData>,
+    ) -> (bool, bool) {
+        let (relay_ca, relay_key) =
+            generate_certificate_authority_x509(&SelfSignedCaConfig::default()).unwrap();
+        let relay_ca_der = CertificateDer::from(relay_ca.to_der().unwrap());
+        let relay = TlsMitmRelay::new_in_memory(relay_ca, relay_key)
+            .maybe_with_ingress_client_auth(storage);
+
+        let (upstream_chain, _) =
+            generate_server_auth(GeneratedServerAuthConfig::default()).unwrap();
+        let source_cert = X509::from_der(upstream_chain[0].as_ref()).unwrap();
+        let acceptor = relay
+            .mint_acceptor(source_cert, None, None)
+            .await
+            .expect("mint ingress acceptor");
+
+        let mut client_config = TlsClientConfig::new()
+            .with_server_name(Host::from_static("localhost"))
+            .with_server_verify(ServerVerifyMode::Auto)
+            .try_with_server_trust_anchors([relay_ca_der])
+            .unwrap();
+        if let Some(identity) = client_identity {
+            client_config = client_config.with_client_auth(ClientAuth::Single(identity));
+        }
+        let connector_data = crate::client::TlsConnectorData::try_from(&client_config).unwrap();
+
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        let (server_result, client_result) =
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                tokio::join!(
+                    rama_boring_tokio::accept(&acceptor, server_io),
+                    crate::client::tls_connect(ServiceInput::new(client_io), Some(connector_data)),
+                )
+            })
+            .await
+            .expect("ingress handshake timeout");
+        (server_result.is_ok(), client_result.is_ok())
+    }
+
+    #[tokio::test]
+    async fn minted_acceptor_verifies_from_storage_trust() {
+        let (trusted_root, trusted) = client_identity();
+        let (_, untrusted) = client_identity();
+        let storage = || TlsMitmIngressClientAuth::new().with_trust_anchors([trusted_root.clone()]);
+
+        let (server_ok, _) = minted_ingress_handshake(Some(storage()), Some(trusted.clone())).await;
+        assert!(server_ok, "trusted client cert completes");
+
+        let (server_ok, _) = minted_ingress_handshake(Some(storage()), None).await;
+        assert!(!server_ok, "missing client cert fails");
+
+        let (server_ok, _) = minted_ingress_handshake(Some(storage()), Some(untrusted)).await;
+        assert!(!server_ok, "untrusted client cert fails");
+
+        let (server_ok, _) = minted_ingress_handshake(None, None).await;
+        assert!(server_ok, "absent storage preserves previous behavior");
     }
 }
