@@ -158,6 +158,8 @@ impl std::fmt::Debug for MemoryDatagramControl {
 pub struct MemoryDatagramFaultStats {
     /// Datagrams discarded while reporting a successful send.
     pub dropped: usize,
+    /// Datagrams delivered twice.
+    pub duplicated: usize,
     /// Pairs delivered in reverse send order.
     pub reordered_pairs: usize,
 }
@@ -172,6 +174,13 @@ impl MemoryDatagramControl {
         let waiters = take_waiters(&mut endpoint.send_waiters);
         drop(state);
         wake_all(waiters);
+    }
+
+    /// Deliver each of the next `count` surviving outbound datagrams twice, including
+    /// individual GSO segments. Replaces any remaining duplication count. Each copy takes a
+    /// queue slot. Drops happen first; a duplicate is delivered before a held reordered one.
+    pub fn duplicate_next(&self, count: usize) {
+        self.shared.state.lock().endpoints[self.side].duplicate_next = count;
     }
 
     /// Hold one outgoing datagram until the following datagram can pass it.
@@ -377,7 +386,8 @@ impl DatagramSender for MemoryDatagramSender {
         }
         let retained = state.endpoints[peer].queue.len()
             + usize::from(state.endpoints[self.side].held.is_some());
-        let incoming = segment_count.saturating_sub(state.endpoints[self.side].drop_next);
+        let surviving = segment_count.saturating_sub(state.endpoints[self.side].drop_next);
+        let incoming = surviving + surviving.min(state.endpoints[self.side].duplicate_next);
         if retained + incoming > self.shared.capacity {
             register_waiter(
                 &mut state.endpoints[self.side].send_waiters,
@@ -420,6 +430,16 @@ impl DatagramSender for MemoryDatagramSender {
                     truncated: false,
                 },
             };
+            if endpoint.duplicate_next > 0 {
+                endpoint.duplicate_next -= 1;
+                endpoint.fault_stats.duplicated += 1;
+                let copy = OwnedDatagram {
+                    payload: packet.payload.clone(),
+                    metadata: packet.metadata,
+                };
+                state.deliver(peer, copy);
+            }
+            let endpoint = &mut state.endpoints[self.side];
             if endpoint.reorder_next {
                 if let Some(held) = endpoint.held.take() {
                     endpoint.reorder_next = false;
@@ -475,6 +495,7 @@ struct EndpointState {
     recv_waker: Option<Waker>,
     send_waiters: Vec<Weak<SendWaiter>>,
     drop_next: usize,
+    duplicate_next: usize,
     reorder_next: bool,
     held: Option<OwnedDatagram>,
     fault_stats: MemoryDatagramFaultStats,
@@ -494,6 +515,7 @@ impl EndpointState {
             recv_waker: None,
             send_waiters: Vec::new(),
             drop_next: 0,
+            duplicate_next: 0,
             reorder_next: false,
             held: None,
             fault_stats: MemoryDatagramFaultStats::default(),
@@ -617,6 +639,32 @@ mod tests {
         assert_eq!(control.stats().dropped, 2);
         assert_eq!(control.stats().reordered_pairs, 0);
         assert_eq!(socket.fault_control().stats(), control.stats());
+    }
+
+    #[tokio::test]
+    async fn duplication_delivers_each_surviving_segment_twice() {
+        let (mut receiver, socket) = memory_pair(NonZeroUsize::new(4).unwrap());
+        let control = socket.fault_control();
+        control.drop_next(1);
+        control.duplicate_next(1);
+        let mut sender = socket.create_sender();
+        sender
+            .send(
+                SendDatagram::new(receiver.local_addr().unwrap(), b"aabbcc")
+                    .with_segment_size(NonZeroUsize::new(2).unwrap()),
+            )
+            .await
+            .unwrap();
+
+        let mut received = Vec::new();
+        for _ in 0..3 {
+            let mut buffer = [0; 2];
+            assert_eq!(receiver.recv(&mut buffer).await.unwrap().len, 2);
+            received.push(buffer);
+        }
+        assert_eq!(received, [*b"bb", *b"bb", *b"cc"]);
+        assert_eq!(control.stats().dropped, 1);
+        assert_eq!(control.stats().duplicated, 1);
     }
 
     #[tokio::test]
