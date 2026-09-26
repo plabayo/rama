@@ -92,6 +92,21 @@ fn payloads_that_exactly_fit_the_budget_are_kept() {
     assert!(matches!(poll(&mut demux, 8), Poll::Ready(Ok(Some(payload))) if payload.len() == 5));
     assert!(poll(&mut demux, 8).is_pending());
     assert_eq!(demux.drops().over_budget, 1);
+    // The request's own count, reported through its native channel.
+    assert_eq!(demux.slot_dropped(8), 1);
+}
+
+#[test]
+fn a_request_without_queue_room_counts_its_drops() {
+    let config = config(0, 4, 64);
+    let now = Instant::now();
+    let mut demux = Demux::default();
+    register(&mut demux, &config, 0, now);
+    deliver(&mut demux, &config, 0, 3, now);
+    deliver(&mut demux, &config, 0, 3, now);
+    assert!(poll(&mut demux, 0).is_pending());
+    assert_eq!(demux.drops().queue_full, 2);
+    assert_eq!(demux.slot_dropped(0), 2);
 }
 
 #[test]

@@ -1107,14 +1107,21 @@ async fn a_dropped_tunnel_stops_receiving_for_remaining_carrier_holders() {
     tokio::time::timeout(LIMIT, async {
         let pair = Pair::in_memory(None, None).await;
         let (mut client, mut server) = start(&pair, server_config(Some(Default::default()))).await;
-        let (client_session, server_session) = sessions(&mut client, &mut server).await;
+        // A bare tunnel: no session receiver whose release would end receiving first.
+        let (client_io, server_io) = tunnel(&mut client, &mut server, TOKEN).await;
+        // The client side stays open, so only the server's tunnel ends.
+        let client_session = HttpDatagramSession::new(client_io);
         native_ready(&client_session).await;
         // Keeps the request's registration alive past its tunnel.
-        let holder = server_session.native().cloned().unwrap();
-        drop(server_session);
+        let holder = server_io
+            .extensions()
+            .get_ref::<NativeDatagrams>()
+            .cloned()
+            .unwrap();
+        drop(server_io);
         pair.client.send_datagram(raw_datagram(0, b"late")).unwrap();
         assert_eq!(discarded_or_buffered(&server).await, (1, 0));
-        drop(holder);
+        drop((holder, client_session));
         pair.close().await;
     })
     .await
