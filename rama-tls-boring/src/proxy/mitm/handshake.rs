@@ -9,20 +9,22 @@ use super::{
 use crate::{TlsStream, client};
 use rama_boring::{
     ssl::{
-        AsyncSelectCertError, BoxCertificateFinish, Ssl, SslAcceptor, SslOptions, SslRef,
-        SslVersion,
+        AsyncSelectCertError, BoxCertificateFinish, CertificateSelection, NameType,
+        SelectCertError, Ssl, SslAcceptor, SslCredential, SslRef, SslVersion,
     },
     x509::X509,
 };
 use rama_core::{
     Service,
     conversion::RamaTryInto as _,
-    error::{ArcError, BoxError, BoxErrorExt as _},
+    error::{ArcError, BoxError, BoxErrorExt as _, ErrorContext as _, ErrorExt as _},
     extensions::{self, Extensions, ExtensionsRef as _},
     io::{BridgeIo, Io},
     telemetry::tracing,
 };
 use rama_crypto::pki_types::CertificateDer;
+#[cfg(feature = "http")]
+use rama_net::http::{TargetHttpVersion, Version};
 use rama_net::{
     address::Domain, client::ConnectorTarget, extensions::StreamTransformed,
     tls::ApplicationProtocol,
@@ -51,9 +53,12 @@ impl Snapshot {
             .map(|version| {
                 Ok::<_, TlsMitmRelayError>(NegotiatedTlsParameters {
                     protocol_version: version.rama_try_into().map_err(|version| {
-                        TlsMitmRelayError::config(BoxError::from(format!(
-                            "invalid TLS version: {version:?}"
-                        )))
+                        TlsMitmRelayError::config(
+                            BoxError::from_static_str(
+                                "tls mitm relay: invalid upstream TLS version",
+                            )
+                            .context_field("protocol_version", version),
+                        )
                     })?,
                     application_layer_protocol: alpn.clone(),
                     peer_certificate_chain: if store_chain {
@@ -87,7 +92,7 @@ where
     /// With no policy, upstream client-certificate requests are rejected.
     /// Configured server verification and pins are preserved.
     ///
-    /// Authentication policies disable ingress resumption. Preselected egress
+    /// Ingress authentication disables ingress resumption. Preselected egress
     /// sessions are rejected, so authentication cannot be skipped or shared across flows.
     /// TLS 1.3 completion does not establish upstream acceptance of our certificate;
     /// later TLS alerts still propagate through the returned stream.
@@ -120,13 +125,13 @@ where
     async fn acceptor_for(
         &self,
         snapshot: &Snapshot,
-        client_auth: bool,
+        ingress_auth: bool,
     ) -> Result<SslAcceptor, TlsMitmRelayError> {
         let mint = self.mint_acceptor(
             snapshot.cert.clone(),
             snapshot.version,
             snapshot.alpn.clone(),
-            client_auth,
+            ingress_auth,
         );
         match &self.acceptors {
             Some(cache) => {
@@ -134,7 +139,7 @@ where
                     upstream_signature: Arc::from(snapshot.cert.signature().as_slice()),
                     protocol_version: snapshot.params.as_ref().map(|p| p.protocol_version),
                     alpn: snapshot.alpn.clone(),
-                    client_auth,
+                    ingress_auth,
                 };
                 cache
                     .try_get_with(key, async {
@@ -175,7 +180,9 @@ where
                 self.keylog_intent.clone(),
                 auth,
             );
-            client::TlsConnectorData::try_from(&config).map_err(TlsMitmRelayError::config)?
+            client::TlsConnectorData::try_from(&config)
+                .context("tls mitm relay: build direct egress connector data")
+                .map_err(TlsMitmRelayError::config)?
         };
         if data.config.session().is_some() {
             return Err(TlsMitmRelayError::config(BoxError::from_static_str(
@@ -186,13 +193,12 @@ where
         let store_chain = data.store_server_certificate_chain;
         let request_rx = if policy.is_some() {
             let (request_tx, request_rx) = oneshot::channel();
-            data.config.set_options(SslOptions::NO_TICKET);
             let exchange = parking_lot::Mutex::new(Some(request_tx));
             data.config
                 .set_async_certificate_callback(move |selection| {
                     let request = exchange.lock().take().ok_or(AsyncSelectCertError)?;
                     let (reply, credential) =
-                        oneshot::channel::<Option<rama_boring::ssl::SslCredential>>();
+                        oneshot::channel::<Option<SslCredential>>();
                     let snapshot = Snapshot::new(selection.ssl(), store_chain).map_err(|error| {
                         tracing::debug!(%error, "cannot snapshot upstream certificate request");
                         AsyncSelectCertError
@@ -204,7 +210,7 @@ where
                     Ok(Box::pin(async move {
                         let credential = credential.await.map_err(|_error| AsyncSelectCertError)?;
                         Ok(Box::new(
-                            move |mut selection: rama_boring::ssl::CertificateSelection<'_>| {
+                            move |mut selection: CertificateSelection<'_>| {
                                 let ssl = selection.ssl_mut();
                                 ssl.clear_certificates();
                                 if let Some(credential) = credential {
@@ -222,7 +228,7 @@ where
             Some(request_rx)
         } else {
             data.config
-                .set_certificate_callback(|_| Err(rama_boring::ssl::SelectCertError::ERROR));
+                .set_certificate_callback(|_| Err(SelectCertError::ERROR));
             None
         };
         let BridgeIo(ingress, egress) = input;
@@ -275,7 +281,8 @@ where
         } else {
             None
         };
-        let acceptor = self.acceptor_for(&snapshot, policy.is_some()).await?;
+        let authenticates_ingress = plan.as_ref().is_some_and(|plan| plan.configure.is_some());
+        let acceptor = self.acceptor_for(&snapshot, authenticates_ingress).await?;
         let mut ssl = Ssl::new(acceptor.context()).map_err(TlsMitmRelayError::config)?;
         let ingress_handshake = async move {
             let mut plan = plan;
@@ -304,7 +311,7 @@ where
                     }
                 })?;
             if let Some(plan) = plan {
-                if stream.ssl().session_reused() {
+                if authenticates_ingress && stream.ssl().session_reused() {
                     return Err(TlsMitmRelayError::config(BoxError::from_static_str(
                         "tls mitm client auth: resumed ingress session",
                     )));
@@ -346,9 +353,10 @@ where
                 })?
                 .rama_try_into()
                 .map_err(|version| {
-                    TlsMitmRelayError::config(BoxError::from(format!(
-                        "invalid TLS version: {version:?}"
-                    )))
+                    TlsMitmRelayError::config(
+                        BoxError::from_static_str("tls mitm relay: invalid ingress TLS version")
+                            .context_field("protocol_version", version),
+                    )
                 })?,
             application_layer_protocol: ssl.selected_alpn_protocol().map(ApplicationProtocol::from),
             peer_certificate_chain: if identity.leaf().is_some() {
@@ -364,7 +372,7 @@ where
                 None
             },
             server_name: ssl
-                .servername(rama_boring::ssl::NameType::HOST_NAME)
+                .servername(NameType::HOST_NAME)
                 .map(Domain::try_from)
                 .transpose()
                 .map_err(TlsMitmRelayError::config)?,
@@ -373,11 +381,9 @@ where
         if let Some(params) = snapshot.params {
             #[cfg(feature = "http")]
             if let Some(proto) = params.application_layer_protocol.as_ref()
-                && let Ok(version) = rama_net::http::Version::try_from(proto)
+                && let Ok(version) = Version::try_from(proto)
             {
-                egress
-                    .extensions()
-                    .insert(rama_net::http::TargetHttpVersion(version));
+                egress.extensions().insert(TargetHttpVersion(version));
             }
             egress.extensions().insert(params);
         }
@@ -397,14 +403,17 @@ fn ingress_error<T>(error: &rama_boring_tokio::HandshakeError<T>) -> TlsMitmRela
     if let Some(io) = error.as_io_error() {
         TlsMitmRelayError::handshake_io(
             TlsMitmRelayErrorDirection::Ingress,
-            BoxError::from(io.to_string()),
+            BoxError::from_static_str("tls mitm relay: ingress TLS I/O failed")
+                .context_field("io_error", io.to_string())
+                .context_debug_field("code", code),
         )
     } else if let Some(stack) = error.as_ssl_error_stack() {
         TlsMitmRelayError::handshake_ssl(TlsMitmRelayErrorDirection::Ingress, stack)
     } else {
         TlsMitmRelayError::handshake(
             TlsMitmRelayErrorDirection::Ingress,
-            BoxError::from_static_str("tls mitm relay: ingress handshake failed"),
+            BoxError::from_static_str("tls mitm relay: ingress handshake failed")
+                .context_debug_field("code", code),
             code,
         )
     }
@@ -412,22 +421,29 @@ fn ingress_error<T>(error: &rama_boring_tokio::HandshakeError<T>) -> TlsMitmRela
 
 fn egress_error<T>(error: client::TlsConnectError<T>) -> TlsMitmRelayError {
     match error {
-        client::TlsConnectError::Builder(error) => {
-            TlsMitmRelayError::handshake(TlsMitmRelayErrorDirection::Egress, error, None)
-        }
+        client::TlsConnectError::Builder(error) => TlsMitmRelayError::handshake(
+            TlsMitmRelayErrorDirection::Egress,
+            error.context("tls connect builder error"),
+            None,
+        ),
         client::TlsConnectError::Handshake { error, server_name } => {
             let code = error.code();
             let error = if let Some(io) = error.as_io_error() {
                 TlsMitmRelayError::handshake_io(
                     TlsMitmRelayErrorDirection::Egress,
-                    BoxError::from(io.to_string()),
+                    BoxError::from_static_str("tls mitm relay: egress TLS I/O failed")
+                        .context_field("io_error", io.to_string())
+                        .context_debug_field("code", code)
+                        .context_debug_field("server_identity", server_name.clone()),
                 )
             } else if let Some(stack) = error.as_ssl_error_stack() {
                 TlsMitmRelayError::handshake_ssl(TlsMitmRelayErrorDirection::Egress, stack)
             } else {
                 TlsMitmRelayError::handshake(
                     TlsMitmRelayErrorDirection::Egress,
-                    BoxError::from_static_str("tls mitm relay: egress handshake failed"),
+                    BoxError::from_static_str("tls mitm relay: egress handshake failed")
+                        .context_debug_field("code", code)
+                        .context_debug_field("server_identity", server_name.clone()),
                     code,
                 )
             };

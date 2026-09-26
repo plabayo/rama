@@ -58,9 +58,10 @@ configuration calls compose in order. The resolver receives identity only after
 BoringSSL completes ingress certificate verification **and** the handshake
 signature/Finished checks. An empty chain means no ingress identity was provided.
 
-A resolver error rejects the connection. Ingress trust failures with a policy
-are classified as `ClientAuth`, so callers must not cache them as interception
-bypass hints. `Some(credential)` supplies egress auth;
+A resolver error rejects the connection. With any policy, ingress trust failures,
+including a client rejecting the relay certificate, are classified as `ClientAuth`.
+Callers must not cache them as interception bypass hints, so pinned clients are
+no longer bypassed automatically. `Some(credential)` supplies egress auth;
 `None` explicitly omits it (optional upstream auth, stripping, or no upstream
 request). Upstream does not indicate whether its request is optional; it may
 reject an empty response. Returning a credential when upstream requested none is
@@ -70,15 +71,20 @@ may arrive after local handshake completion, on the returned stream.
 The callback preserves configured upstream verification and pins. The relay's
 existing default remains verification disabled; configure `TlsMitmEgressServerAuth`
 with `ServerVerifyMode::Auto` and suitable roots/pins when upstream authenticity
-is required. CertificateRequest names are selection hints, not trust anchors.
+is required. A fixed identity is available to every upstream requesting it; scope
+a custom policy by `input.server_name` if only selected destinations should receive
+it. CertificateRequest names are selection hints, not trust anchors.
 Prefer TLS 1.3 or TLS 1.2 with ephemeral key exchange when authenticating upstream
 before releasing credentials.
 
-Policies disable ingress session tickets/caching. Explicitly preselected egress
+Plans that configure ingress disable ingress session tickets/caching. Plans with
+no ingress configuration (such as fixed egress identities) allow anonymous ingress
+sessions to resume; both policy stages still run. Explicitly preselected egress
 sessions are rejected, including without a policy, to prevent authentication from
 being skipped. Acceptor caching still works; authentication settings remain local
 to each SSL connection. The default 30-second relay handshake deadline includes
-both policy stages and certificate issuance. A stalled policy can delay noticing
+both policy stages, certificate issuance and any browser certificate-picker wait.
+The upstream handshake timeout also applies while egress is paused. A stalled policy can delay noticing
 a disconnected peer until it resolves or the deadline expires. Use
 `with_handshake_timeout` to tune this or `without_handshake_timeout` when the
 caller owns cancellation. Dropping the handshake drops its policy futures and

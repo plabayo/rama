@@ -26,7 +26,9 @@ use std::{
     time::Duration,
 };
 
-use crate::core::ssl::{AlpnError, SslAcceptor, SslMethod, SslRef, SslVersion};
+use crate::core::ssl::{
+    AlpnError, SslAcceptor, SslMethod, SslOptions, SslRef, SslSessionCacheMode, SslVersion,
+};
 use rama_tls::keylog::{KeyLogSink, open_intent_sink};
 
 // Plaintext alert injection remains disabled: transport close preserves
@@ -50,8 +52,8 @@ pub use self::service::TlsMitmRelayService;
 /// Bounds for the relay's cache of ready-to-use ingress acceptors.
 ///
 /// One entry is a built `SSL_CTX` keyed by the upstream cert, negotiated
-/// version/ALPN and whether a client-auth policy is enabled. A repeat connection to a known
-/// host skips certificate installation and the private key check entirely.
+/// version/ALPN and whether ingress authentication is configured. Repeat
+/// connections to a known host skip certificate installation and the private key check entirely.
 /// `max_size` caps memory regardless of how many distinct hosts are seen;
 /// `ttl` bounds how long a stale keylog sink or rotated CA can linger.
 #[derive(Debug, Clone, Copy)]
@@ -80,7 +82,7 @@ struct AcceptorKey {
     upstream_signature: Arc<[u8]>,
     protocol_version: Option<ProtocolVersion>,
     alpn: Option<ApplicationProtocol>,
-    client_auth: bool,
+    ingress_auth: bool,
 }
 
 #[derive(Clone)]
@@ -499,7 +501,7 @@ impl std::error::Error for TlsMitmRelayError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TlsMitmRelayErrorKind {
     /// A client-authentication policy rejected the flow, failed to configure it,
-    /// or encountered an ingress trust failure. Never an automatic bypass hint.
+    /// or either ingress peer rejected the other's certificate. Never a bypass hint.
     ClientAuth,
     /// The deadline for the complete relay handshake or authentication policy elapsed.
     Timeout,
@@ -663,7 +665,7 @@ where
         source_cert: X509,
         protocol_version: Option<SslVersion>,
         alpn: Option<ApplicationProtocol>,
-        client_auth: bool,
+        ingress_auth: bool,
     ) -> Result<SslAcceptor, TlsMitmRelayError> {
         let self::issuer::MitmIssuedCert {
             crt_chain: mirrored_leaf_cert_chain,
@@ -681,9 +683,9 @@ where
             .map_err(TlsMitmRelayError::config)?;
         acceptor_builder.set_grease_enabled(self.grease_enabled);
         // Authentication policy is applied per SSL, never to cached contexts.
-        if client_auth {
-            acceptor_builder.set_session_cache_mode(rama_boring::ssl::SslSessionCacheMode::OFF);
-            acceptor_builder.set_options(rama_boring::ssl::SslOptions::NO_TICKET);
+        if ingress_auth {
+            acceptor_builder.set_session_cache_mode(SslSessionCacheMode::OFF);
+            acceptor_builder.set_options(SslOptions::NO_TICKET);
         }
         for (i, crt) in mirrored_leaf_cert_chain.into_iter().enumerate() {
             if i == 0 {

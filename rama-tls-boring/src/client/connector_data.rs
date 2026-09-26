@@ -7,7 +7,10 @@ use rama_boring::{
     hash::MessageDigest,
     pkey::{PKey, Private},
     rsa::Rsa,
-    ssl::{ConnectConfiguration, SslCurve, SslSignatureAlgorithm, SslVerifyMode, SslVersion},
+    ssl::{
+        ConnectConfiguration, SslCredential, SslCurve, SslSignatureAlgorithm, SslVerifyMode,
+        SslVersion,
+    },
     x509::{
         X509,
         extension::{BasicConstraints, KeyUsage, SubjectKeyIdentifier},
@@ -665,7 +668,7 @@ pub struct ConnectorConfigClientAuth {
     pub private_key: PKey<Private>,
 }
 
-impl TryFrom<ConnectorConfigClientAuth> for rama_boring::ssl::SslCredential {
+impl TryFrom<ConnectorConfigClientAuth> for SslCredential {
     type Error = BoxError;
 
     fn try_from(auth: ConnectorConfigClientAuth) -> Result<Self, Self::Error> {

@@ -7,9 +7,10 @@
 
 #![doc = include_str!("client_auth/README.md")]
 
+use crate::client::ConnectorConfigClientAuth;
 use rama_boring::{
-    ssl::{CertificateSelection, SslCredential, SslRef, SslSignatureAlgorithm},
-    x509::X509,
+    ssl::{CertificateSelection, SslCredential, SslRef, SslSignatureAlgorithm, SslVerifyMode},
+    x509::{X509, store::X509Store},
 };
 use rama_core::{
     Service,
@@ -19,12 +20,15 @@ use rama_core::{
     service::{BoxService, service_fn},
 };
 use rama_net::address::Host;
+use rama_tls::client::ClientAuth;
 use std::{convert::Infallible, fmt};
 
 /// Owned upstream CertificateRequest hints, not trust anchors or proof of identity.
 #[derive(Debug, Clone)]
 pub struct TlsMitmCertificateRequest {
+    /// Signature schemes advertised for client authentication, in wire order.
     pub signature_algorithms: Vec<SslSignatureAlgorithm>,
+    /// TLS 1.2 certificate-type bytes; empty for TLS 1.3.
     pub certificate_types: Vec<u8>,
     /// DER-encoded distinguished names, in wire order.
     pub certificate_authorities: Vec<Vec<u8>>,
@@ -63,6 +67,7 @@ impl TlsMitmClientIdentity {
         &self.chain
     }
 
+    /// The authenticated leaf, or `None` when no client certificate was provided.
     pub fn leaf(&self) -> Option<&X509> {
         self.chain.first()
     }
@@ -122,12 +127,12 @@ impl TlsMitmClientAuthPlan {
     rama_utils::macros::generate_set_and_with! {
         /// Require a client certificate trusted by this prebuilt store. The store is
         /// reference-counted by BoringSSL, so callers can cheaply clone and reuse it.
-        pub fn ingress_trust(mut self, store: rama_boring::x509::store::X509Store) -> Self {
+        pub fn ingress_trust(mut self, store: X509Store) -> Self {
             self.set_ingress(move |ssl| {
                 ssl.set_verify_cert_store(store)?;
                 ssl.set_verify(
-                    rama_boring::ssl::SslVerifyMode::PEER
-                        | rama_boring::ssl::SslVerifyMode::FAIL_IF_NO_PEER_CERT,
+                    SslVerifyMode::PEER
+                        | SslVerifyMode::FAIL_IF_NO_PEER_CERT,
                 );
                 Ok(())
             });
@@ -166,6 +171,7 @@ pub struct TlsMitmClientAuthPolicy(
 );
 
 impl TlsMitmClientAuthPolicy {
+    /// Select a per-connection plan using an ordinary Rama service and its layers.
     pub fn new<S>(service: S) -> Self
     where
         S: Service<TlsMitmClientAuthInput, Output = TlsMitmClientAuthPlan, Error: Into<BoxError>>,
@@ -182,11 +188,11 @@ impl TlsMitmClientAuthPolicy {
     }
 }
 
-impl TryFrom<rama_tls::client::ClientAuth> for TlsMitmClientAuthPolicy {
+impl TryFrom<ClientAuth> for TlsMitmClientAuthPolicy {
     type Error = BoxError;
 
-    fn try_from(auth: rama_tls::client::ClientAuth) -> Result<Self, Self::Error> {
-        let credential = crate::client::ConnectorConfigClientAuth::try_from(auth)?.try_into()?;
+    fn try_from(auth: ClientAuth) -> Result<Self, Self::Error> {
+        let credential = ConnectorConfigClientAuth::try_from(auth)?.try_into()?;
         Ok(Self::fixed(credential))
     }
 }

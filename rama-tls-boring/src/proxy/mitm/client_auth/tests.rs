@@ -13,7 +13,10 @@ use rama_boring::{
     hash::MessageDigest,
     nid::Nid,
     pkey::{PKey, Private},
-    ssl::{SslAcceptor, SslMethod, SslVerifyMode, SslVersion},
+    ssl::{
+        ExtensionType, SelectCertError, SslAcceptor, SslMethod, SslSession, SslVerifyMode,
+        SslVersion,
+    },
     x509::{
         X509Name,
         extension::{BasicConstraints, SubjectAlternativeName},
@@ -184,6 +187,8 @@ struct RunOptions {
     guest_data: Option<TlsConnectorData>,
     external_timeout: Option<Duration>,
     disconnect_upstream: Option<Arc<tokio::sync::Notify>>,
+    expect_ingress_resumed: Option<bool>,
+    direct_connector: bool,
 }
 
 fn upstream_acceptor(version: SslVersion, upstream_mode: SslVerifyMode) -> SslAcceptor {
@@ -216,6 +221,13 @@ async fn run_with_options(
     if let Some(policy) = flow_policy {
         ingress.extensions().insert(policy);
     }
+    if options.direct_connector {
+        ingress
+            .extensions()
+            .insert(rama_net::client::ConnectorTarget(
+                rama_net::address::HostWithPort::new(Host::from_static("localhost"), 443),
+            ));
+    }
     let input = BridgeIo(ingress, ServiceInput::new(egress));
     let mut guest_data = options.guest_data.unwrap_or_else(|| connector(version));
     if let Some(guest) = guest {
@@ -241,7 +253,13 @@ async fn run_with_options(
         Ok(cert)
     };
     let bridge = async {
-        let handshake = relay.handshake(input, Some(data.unwrap_or_else(|| connector(version))));
+        let data = if options.direct_connector {
+            assert!(data.is_none());
+            None
+        } else {
+            Some(data.unwrap_or_else(|| connector(version)))
+        };
+        let handshake = relay.handshake(input, data);
         let handshake = async { handshake.await.map_err(|e| e.kind()) };
         let BridgeIo(mut ingress, mut egress) = if let Some(deadline) = options.external_timeout {
             // Exercise caller-owned cancellation with the relay deadline disabled.
@@ -270,6 +288,9 @@ async fn run_with_options(
         let mut stream = tls_connect(ServiceInput::new(client), Some(guest_data))
             .await
             .map_err(|e| e.to_string())?;
+        if let Some(expected) = options.expect_ingress_resumed {
+            assert_eq!(stream.ssl_ref().session_reused(), expected);
+        }
         stream.write_all(b"x").await.map_err(|e| e.to_string())?;
         let mut byte = [0];
         stream
@@ -634,7 +655,7 @@ impl Drop for DropProbe {
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn deadline_cancels_policy_futures_and_closes_both_transports() {
     for (resolve_stage, external) in [(false, false), (true, false), (false, true), (true, true)] {
         let started = Arc::new(AtomicUsize::new(0));
@@ -973,28 +994,93 @@ async fn explicit_egress_sessions_are_rejected_and_ingress_issues_no_auth_sessio
             result.client.unwrap_err();
             result.upstream.unwrap_err();
         }
-        let relay = relay().with_client_auth(TlsMitmClientAuthPolicy::fixed(
-            material().mapped.credential(),
-        ));
-        for _ in 0..2 {
-            let result = run_with_options(
-                &relay,
-                version,
-                required(),
-                None,
-                None,
-                None,
-                RunOptions {
-                    guest_data: Some(context.configure().unwrap()),
-                    ..Default::default()
-                },
-            )
-            .await;
-            assert!(result.client.is_ok(), "{:?}", result.client);
-            assert!(
-                saved.lock().is_none(),
-                "auth-enabled ingress must not issue resumable sessions"
-            );
+        let authenticated =
+            TlsMitmClientAuthPolicy::new(service_fn(|_: TlsMitmClientAuthInput| async {
+                Ok::<_, Infallible>(
+                    TlsMitmClientAuthPlan::fixed(Some(material().mapped.credential()))
+                        .with_ingress_trust(store(&material().ca.cert))
+                        .with_ingress(|ssl| {
+                            ssl.set_verify(SslVerifyMode::PEER);
+                            Ok(())
+                        }),
+                )
+            }));
+        let cached_relay = relay();
+        for (policy, issues_session) in [
+            (authenticated, false),
+            (
+                TlsMitmClientAuthPolicy::fixed(material().mapped.credential()),
+                true,
+            ),
+        ] {
+            let relay = cached_relay.clone().with_client_auth(policy);
+            let mut previous: Option<SslSession> = None;
+            for round in 0..2 {
+                let mut guest_data = context.configure().unwrap();
+                if let Some(session) = &previous {
+                    // Same client SSL_CTX and relay server as the original session.
+                    unsafe {
+                        guest_data.config.set_session(session).unwrap();
+                    }
+                }
+                let result = run_with_options(
+                    &relay,
+                    version,
+                    required(),
+                    None,
+                    None,
+                    None,
+                    RunOptions {
+                        guest_data: Some(guest_data),
+                        expect_ingress_resumed: Some(issues_session && round > 0),
+                        ..Default::default()
+                    },
+                )
+                .await;
+                result.client.unwrap();
+                assert_eq!(
+                    result.upstream.unwrap(),
+                    Some(material().mapped.cert.to_der().unwrap())
+                );
+                let issued = saved.lock().take();
+                if round == 0 || !issues_session {
+                    assert_eq!(
+                        issued.is_some(),
+                        issues_session,
+                        "only ingress authentication disables resumable sessions"
+                    );
+                }
+                previous = issued.or(previous);
+            }
+            if let Some(session) = previous {
+                let mut guest_data = context.configure().unwrap();
+                // The client context is unchanged; switch the server's flow policy.
+                unsafe {
+                    guest_data.config.set_session(&session).unwrap();
+                }
+                let resolved = Arc::new(AtomicUsize::new(0));
+                let result = run_with_options(
+                    &relay,
+                    version,
+                    required(),
+                    None,
+                    Some(mapped_policy(resolved.clone(), false)),
+                    None,
+                    RunOptions {
+                        guest_data: Some(guest_data),
+                        expect_ingress_resumed: Some(false),
+                        ..Default::default()
+                    },
+                )
+                .await;
+                result.client.unwrap_err();
+                result.relay.unwrap_err();
+                assert_eq!(
+                    resolved.load(SeqCst),
+                    0,
+                    "an anonymous session cannot bypass a new ingress admission policy"
+                );
+            }
         }
     }
 }
@@ -1151,5 +1237,168 @@ async fn upstream_disconnect_during_selection_closes_the_ingress() {
                 .unwrap_err()
                 .contains("disconnected during selection")
         );
+    }
+}
+
+async fn egress_hello_offers_session_ticket(policy: Option<TlsMitmClientAuthPolicy>) -> bool {
+    let seen = Arc::new(parking_lot::Mutex::new(None));
+    let mut server = SslAcceptor::mozilla_intermediate_v5(SslMethod::tls_server()).unwrap();
+    server.set_certificate(&material().server.cert).unwrap();
+    server.set_private_key(&material().server.key).unwrap();
+    let record = seen.clone();
+    server.set_select_certificate_callback(move |hello| {
+        *record.lock() = Some(hello.get_extension(ExtensionType::SESSION_TICKET).is_some());
+        // Observation is complete; abort rather than waiting for an ingress peer.
+        Err(SelectCertError::ERROR)
+    });
+    let server = server.build();
+    let (_client, ingress) = tokio::io::duplex(4096);
+    let (egress, upstream) = tokio::io::duplex(4096);
+    // Browser-like version range: TLS 1.2 tickets are advertised.
+    let data = TlsConnectorData::try_from(
+        &TlsClientConfig::new()
+            .with_server_name(Host::from_static("localhost"))
+            .with_server_verify(ServerVerifyMode::Disable)
+            .with_keylog(KeyLogIntent::Disabled),
+    )
+    .unwrap();
+    let relay = relay().maybe_with_client_auth(policy);
+    drop(
+        tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(
+                relay.handshake(
+                    BridgeIo(ServiceInput::new(ingress), ServiceInput::new(egress)),
+                    Some(data),
+                ),
+                rama_boring_tokio::accept(&server, upstream),
+            )
+        })
+        .await
+        .expect("ClientHello observation must finish"),
+    );
+    (*seen.lock()).expect("upstream must observe a ClientHello")
+}
+
+#[tokio::test]
+async fn policies_preserve_egress_session_ticket_extension() {
+    let without = egress_hello_offers_session_ticket(None).await;
+    let with = egress_hello_offers_session_ticket(Some(TlsMitmClientAuthPolicy::fixed(
+        material().mapped.credential(),
+    )))
+    .await;
+    assert!(without, "positive control must offer TLS 1.2 tickets");
+    assert_eq!(with, without);
+}
+
+#[tokio::test]
+async fn client_distrust_under_policy_is_never_a_bypass_hint() {
+    let untrusting = || {
+        let mut data = TlsConnectorData::try_from(
+            &TlsClientConfig::new()
+                .with_server_name(Host::from_static("localhost"))
+                .with_server_verify(ServerVerifyMode::Auto)
+                .try_with_server_trust_anchors([rama_crypto::pki_types::CertificateDer::from(
+                    material().other_ca.cert.to_der().unwrap(),
+                )])
+                .unwrap()
+                .with_keylog(KeyLogIntent::Disabled),
+        )
+        .unwrap();
+        let version = Some(SslVersion::TLS1_3);
+        data.config.set_min_proto_version(version).unwrap();
+        data.config.set_max_proto_version(version).unwrap();
+        data
+    };
+    for (policy, expected) in [
+        (
+            None,
+            TlsMitmRelayErrorKind::Handshake {
+                direction: crate::proxy::TlsMitmRelayErrorDirection::Ingress,
+                classification: crate::proxy::HandshakeRelayClassification::CertTrust,
+            },
+        ),
+        (
+            Some(TlsMitmClientAuthPolicy::fixed(
+                material().mapped.credential(),
+            )),
+            TlsMitmRelayErrorKind::ClientAuth,
+        ),
+    ] {
+        let result = run_with_options(
+            &relay().maybe_with_client_auth(policy),
+            SslVersion::TLS1_3,
+            SslVerifyMode::NONE,
+            None,
+            None,
+            None,
+            RunOptions {
+                guest_data: Some(untrusting()),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_eq!(result.relay.unwrap_err(), expected);
+        result.client.unwrap_err();
+    }
+}
+
+#[tokio::test]
+async fn direct_connector_path_preserves_authentication_policy_and_upstream_trust() {
+    for version in VERSIONS {
+        for mode in [SslVerifyMode::NONE, required()] {
+            for trusted in [false, true] {
+                let calls = Arc::new(AtomicUsize::new(0));
+                let count = calls.clone();
+                let policy = TlsMitmClientAuthPolicy::new(service_fn(
+                    move |input: TlsMitmClientAuthInput| {
+                        count.fetch_add(1, SeqCst);
+                        assert_eq!(input.server_name, Some(Host::from_static("localhost")));
+                        let credential = input
+                            .request
+                            .is_some()
+                            .then(|| material().mapped.credential());
+                        async { Ok::<_, Infallible>(TlsMitmClientAuthPlan::fixed(credential)) }
+                    },
+                ));
+                let trust = if trusted {
+                    &material().ca.cert
+                } else {
+                    &material().other_ca.cert
+                };
+                let relay = relay().with_client_auth(policy).with_egress_server_auth(
+                    TlsMitmEgressServerAuth::new()
+                        .with_server_verify(ServerVerifyMode::Auto)
+                        .try_with_server_trust_anchors([
+                            rama_crypto::pki_types::CertificateDer::from(trust.to_der().unwrap()),
+                        ])
+                        .unwrap(),
+                );
+                let result = run_with_options(
+                    &relay,
+                    version,
+                    mode,
+                    None,
+                    None,
+                    None,
+                    RunOptions {
+                        direct_connector: true,
+                        ..Default::default()
+                    },
+                )
+                .await;
+                assert_eq!(result.client.is_ok(), trusted, "{:?}", result.client);
+                assert_eq!(calls.load(SeqCst), usize::from(trusted));
+                if trusted {
+                    assert_eq!(
+                        result.upstream.unwrap(),
+                        (mode != SslVerifyMode::NONE).then(|| material()
+                            .mapped
+                            .cert
+                            .to_der()
+                            .unwrap())
+                    );
+                }
+            }
+        }
     }
 }
