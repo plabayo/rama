@@ -687,6 +687,12 @@ harness = false
 required-features = ["http-full"]
 
 [[bench]]
+name = "http_datagram"
+path = "benches/http_datagram.rs"
+harness = false
+required-features = ["http-full"]
+
+[[bench]]
 name = "ua_parse"
 required-features = ["ua"]
 harness = false
