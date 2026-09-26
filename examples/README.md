@@ -112,6 +112,7 @@ The following examples show how you can integrate ACME into you webservices (ACM
 - [`http_connect_proxy.rs`](./src/http_connect_proxy.rs) - HTTP CONNECT proxy implementation
 - [`http_icap_proxy.rs`](./src/http_icap_proxy.rs) - HTTP(S) MITM proxy with embedded or external ICAP response adaptation
 - [`http_mitm_proxy_boring.rs`](./src/http_mitm_proxy_boring.rs) - recommended BoringSSL Relay/Peek MITM starting point with WebSocket and decoded-body inspection
+- [`tls_mitm_relay_client_auth.rs`](./src/tls_mitm_relay_client_auth.rs) - Self-contained mTLS relay with named policy/resolver services, identity mapping, and process-level end-to-end tests
 - [`http_mitm_relay_proxy_boring.rs`](./src/http_mitm_relay_proxy_boring.rs) - Relay/Peek example focused on user-agent request emulation and final egress-header inspection
 - [`mitm_ocsp_relay_gate.rs`](./src/mitm_ocsp_relay_gate.rs) - harness for the MITM OCSP-stapling gate (curl/openssl validate stapled leaves through the relay)
 - [`http_mitm_proxy_rustls.rs`](./src/http_mitm_proxy_rustls.rs) - Rustls compatibility example using manual ingress termination and deferred egress because a paired Rustls TLS relay is not yet available; its CONNECT success does not prove egress reachability
