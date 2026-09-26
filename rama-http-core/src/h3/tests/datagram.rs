@@ -1012,6 +1012,58 @@ async fn sessions_survive_loss_duplication_and_reordering_on_both_carriers() {
     }
 }
 
+/// Wait until neither side's demux keeps a slot.
+async fn slots_released(client: &client::SendRequest<Body>, server: &ServerConnection) {
+    while client.shared().datagram_demux().slot_count() != 0
+        || server.shared().datagram_demux().slot_count() != 0
+    {
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+}
+
+#[tokio::test]
+async fn cancelled_extended_connects_release_their_datagram_slots() {
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::in_memory(None, None).await;
+        let (mut client, mut server) = start(&pair, server_config(Some(Default::default()))).await;
+
+        // Cancelled while waiting for the response HEADERS.
+        let pending = spawn({
+            let mut client = client.clone();
+            async move { client.send_request(connect(TOKEN, true)).await }
+        });
+        let (_request, held) = server.accept().await.unwrap().resolve().await.unwrap();
+        pending.abort();
+        assert!(pending.await.unwrap_err().is_cancelled());
+        drop(held);
+        slots_released(&client, &server).await;
+
+        // Abandoned mid-capsule after the tunnel opened.
+        let (mut client_io, server_io) = tunnel(&mut client, &mut server, TOKEN).await;
+        let mut server_session = HttpDatagramSession::new(server_io);
+        // A DATAGRAM capsule header announcing more bytes than ever follow.
+        client_io.write_all(&[0x00, 0x10, b'p']).await.unwrap();
+        client_io.flush().await.unwrap();
+        drop(client_io);
+        let ended = server_session.recv().await;
+        assert!(!matches!(ended, Ok(Some(_))), "{ended:?}");
+        drop(server_session);
+        slots_released(&client, &server).await;
+
+        // The connection serves a full session afterwards.
+        let (mut client_session, mut server_session) = sessions(&mut client, &mut server).await;
+        native_ready(&client_session).await;
+        client_session
+            .send_datagram(Bytes::from_static(b"after"))
+            .await
+            .unwrap();
+        assert_eq!(server_session.recv().await.unwrap(), native(b"after"));
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
 #[tokio::test]
 async fn truncated_capsules_reset_http3_streams_as_malformed() {
     tokio::time::timeout(LIMIT, async {

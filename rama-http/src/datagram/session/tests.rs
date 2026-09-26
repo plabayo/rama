@@ -243,6 +243,19 @@ async fn native_carrier_is_preferred_without_oversize_fallback() {
         ),
         "{error:?}"
     );
+    // The limit is read at every send: a shrunk one applies at once.
+    native.0.lock().max = Some(4);
+    let error = local
+        .send_datagram(Bytes::from_static(b"native"))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            SessionError::Native(NativeSendError::TooLarge { max: 4 })
+        ),
+        "{error:?}"
+    );
     // Reliable control keeps using the data stream.
     local
         .send_capsule(CONTROL, Bytes::from_static(b"ctl"))
