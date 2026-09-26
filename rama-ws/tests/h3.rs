@@ -7,7 +7,7 @@ use rama_core::{
     bytes::Bytes,
     error::BoxError,
     extensions::{Extensions, ExtensionsRef as _},
-    futures::SinkExt as _,
+    futures::{SinkExt as _, poll},
     rt::{Executor, spawn},
     service::service_fn,
 };
@@ -38,7 +38,7 @@ use rama_ws::{
 use std::{convert::Infallible, num::NonZeroUsize, sync::Arc, time::Duration};
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
-    sync::mpsc,
+    sync::{Notify, mpsc},
 };
 
 const LIMIT: Duration = Duration::from_secs(20);
@@ -207,6 +207,92 @@ fn recording_server(
             Ok::<_, Infallible>(())
         }
     }))
+}
+
+/// A message larger than the stream receive window.
+const LARGE: usize = 1024 * 1024;
+
+/// Stops reading `/stall` sockets inside a large client frame; other paths echo.
+#[derive(Clone)]
+struct Staller {
+    /// Signalled once a frame header was read: the sender is then out of credit.
+    stalled: mpsc::UnboundedSender<()>,
+    /// Lets the stalled reader take the payload.
+    release: Arc<Notify>,
+    /// The payload length read, or why reading it failed.
+    received: mpsc::UnboundedSender<Result<usize, String>>,
+}
+
+impl Service<Request<Incoming>> for Staller {
+    type Output = Response;
+    type Error = BoxError;
+
+    async fn serve(&self, request: Request<Incoming>) -> Result<Self::Output, Self::Error> {
+        if request.uri().path_or_root().as_ref() != "/stall" {
+            return echo_server().serve(request).await.map_err(Into::into);
+        }
+        let accepted = match WebSocketAcceptor::new().serve(request).await {
+            Ok(accepted) => accepted,
+            Err(response) => return Ok(response),
+        };
+        let request = accepted.request;
+        let this = self.clone();
+        spawn(async move {
+            let mut io = handle_upgrade(&request).await.unwrap();
+            // A masked binary frame with a 64-bit length: 2 + 8 + 4 mask bytes.
+            let mut header = [0; 14];
+            io.read_exact(&mut header).await.unwrap();
+            assert_eq!(header[..2], [0x82, 0xff]);
+            let len =
+                usize::try_from(u64::from_be_bytes(header[2..10].try_into().unwrap())).unwrap();
+            _ = this.stalled.send(());
+            this.release.notified().await;
+            let mut payload = vec![0; len];
+            let outcome = match io.read_exact(&mut payload).await {
+                Ok(_) => {
+                    io.write_all(&[0x81, 2, b'o', b'k']).await.unwrap();
+                    io.shutdown().await.unwrap();
+                    Ok(len)
+                }
+                Err(error) => Err(format!("{error:?}")),
+            };
+            _ = this.received.send(outcome);
+        });
+        Ok(accepted.response)
+    }
+}
+
+impl Staller {
+    fn new() -> (
+        Self,
+        mpsc::UnboundedReceiver<()>,
+        mpsc::UnboundedReceiver<Result<usize, String>>,
+    ) {
+        let (stalled, stalled_rx) = mpsc::unbounded_channel();
+        let (received, received_rx) = mpsc::unbounded_channel();
+        let this = Self {
+            stalled,
+            release: Arc::default(),
+            received,
+        };
+        (this, stalled_rx, received_rx)
+    }
+}
+
+/// A full round trip on a fresh socket of the same connection.
+async fn round_trip(client: &H3Client, text: &'static str) {
+    let mut socket = client
+        .websocket_h3(URI)
+        .handshake(Extensions::new())
+        .await
+        .unwrap();
+    socket.send_message(Message::text(text)).await.unwrap();
+    assert_eq!(socket.recv_message().await.unwrap(), Message::text(text));
+    socket.close(None).await.unwrap();
+    assert!(matches!(
+        socket.recv_message().await.unwrap(),
+        Message::Close(_)
+    ));
 }
 
 #[tokio::test]
@@ -442,7 +528,7 @@ async fn orderly_close_ends_cleanly_and_abandoning_resets() {
         socket.close(None).await.unwrap();
         assert_eq!(ended.recv().await.unwrap(), Ok(()));
 
-        // Dropping a socket mid-message aborts: the server sees a reset, not a close.
+        // Dropping a socket without a close aborts: the server sees a reset, not a close.
         let mut socket = client
             .websocket_h3(URI)
             .handshake(Extensions::new())
@@ -520,6 +606,79 @@ async fn a_reported_clean_close_is_a_reply_and_fin_on_the_wire() {
             .await
             .expect("the fixture's clean close must be a FIN");
         assert_eq!(bytes, [0x88, 2, 0x03, 0xe8]);
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn a_cancelled_blocked_send_resumes_and_stalls_no_other_stream() {
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::new().await;
+        let (staller, mut stalled, mut received) = Staller::new();
+        let release = staller.release.clone();
+        let client = start(&pair, true, staller).await;
+        let mut stuck = client
+            .websocket_h3("wss://localhost/stall")
+            .handshake(Extensions::new())
+            .await
+            .expect("handshake");
+        {
+            let send = stuck.send_message(Message::binary(vec![0x5a; LARGE]));
+            tokio::pin!(send);
+            tokio::select! {
+                _ = &mut send => panic!("sent beyond the stalled reader's window"),
+                _ = stalled.recv() => (),
+            }
+            // The reader stopped inside the frame, so the send is out of credit.
+            assert!(poll!(&mut send).is_pending());
+            // Other streams on the connection keep flowing meanwhile.
+            round_trip(&client, "second").await;
+            assert!(poll!(&mut send).is_pending());
+        }
+        // The cancelled send keeps its queued frame: a flush completes it once released.
+        release.notify_one();
+        stuck.flush().await.unwrap();
+        assert_eq!(received.recv().await.unwrap(), Ok(LARGE));
+        assert_eq!(stuck.recv_message().await.unwrap(), Message::text("ok"));
+        round_trip(&client, "third").await;
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn dropping_a_blocked_send_resets_only_its_stream() {
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::new().await;
+        let (staller, mut stalled, mut received) = Staller::new();
+        let release = staller.release.clone();
+        let client = start(&pair, true, staller).await;
+        let mut stuck = client
+            .websocket_h3("wss://localhost/stall")
+            .handshake(Extensions::new())
+            .await
+            .expect("handshake");
+        {
+            let send = stuck.send_message(Message::binary(vec![0x5a; LARGE]));
+            tokio::pin!(send);
+            tokio::select! {
+                _ = &mut send => panic!("sent beyond the stalled reader's window"),
+                _ = stalled.recv() => (),
+            }
+            assert!(poll!(&mut send).is_pending());
+        }
+        drop(stuck);
+        release.notify_one();
+        let outcome = received.recv().await.unwrap();
+        assert!(
+            outcome.is_err(),
+            "an abandoned message arrived: {outcome:?}"
+        );
+        round_trip(&client, "second").await;
+        round_trip(&client, "third").await;
         pair.close().await;
     })
     .await
