@@ -2,7 +2,7 @@ use rama_boring::sha;
 use rama_crypto::pki_types::CertificateDer;
 use rama_tls::client::ClientAuthData;
 use rama_utils::macros::generate_set_and_with;
-use std::{collections::HashMap, fmt};
+use std::{collections::BTreeMap, fmt};
 use zeroize::Zeroize;
 
 /// Guest-certificate to upstream-key registry for a [`TlsMitmRelay`](super::TlsMitmRelay).
@@ -33,10 +33,10 @@ use zeroize::Zeroize;
 /// rejected (ingress-direction error, nothing bridges). Trust itself is always
 /// enforced while storage is configured: missing or untrusted guest
 /// certificates fail the ingress accept.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct TlsMitmIngressClientAuth {
     trust: Vec<CertificateDer<'static>>,
-    identities: HashMap<[u8; 32], ClientAuthData>,
+    identities: BTreeMap<[u8; 32], ClientAuthData>,
 }
 
 impl fmt::Debug for TlsMitmIngressClientAuth {
@@ -54,15 +54,6 @@ impl Drop for TlsMitmIngressClientAuth {
     fn drop(&mut self) {
         for identity in self.identities.values_mut() {
             identity.private_key.zeroize();
-        }
-    }
-}
-
-impl Default for TlsMitmIngressClientAuth {
-    fn default() -> Self {
-        Self {
-            trust: Vec::new(),
-            identities: HashMap::new(),
         }
     }
 }
@@ -231,10 +222,10 @@ mod tests {
         assert!(debug.contains("identities"));
         assert!(!debug.contains("private_key"));
         // Raw key material must not leak even if it renders as text.
-        if let Ok(key_text) = std::str::from_utf8(&key_bytes) {
-            if key_text.len() > 8 {
-                assert!(!debug.contains(key_text));
-            }
+        if let Ok(key_text) = std::str::from_utf8(&key_bytes)
+            && key_text.len() > 8
+        {
+            assert!(!debug.contains(key_text));
         }
     }
 

@@ -736,7 +736,7 @@ pub(super) fn map_egress_connect_error<S>(error: client::TlsConnectError<S>) -> 
 /// Shared by the direct and the storage-joined [`TlsMitmRelay::handshake`]
 /// paths so guest refusals classify identically on both legs.
 pub(super) fn map_ingress_accept_error<S>(
-    err: rama_boring_tokio::HandshakeError<S>,
+    err: &rama_boring_tokio::HandshakeError<S>,
 ) -> TlsMitmRelayError {
     let maybe_ssl_code = err.code();
     if let Some(io_err) = err.as_io_error() {
@@ -1145,7 +1145,7 @@ where
         };
         let ingress_boring_ssl_stream = rama_boring_tokio::accept(&acceptor, ingress_stream)
             .await
-            .map_err(map_ingress_accept_error)?;
+            .map_err(|err| map_ingress_accept_error(&err))?;
 
         let ingress_negotiated_params = {
             let ssl = ingress_boring_ssl_stream.ssl();
@@ -1314,19 +1314,24 @@ where
                             let Some(leaf_der) = matched.cert_chain.first() else {
                                 return Err(SslVerifyError::Invalid(SslAlert::INTERNAL_ERROR));
                             };
-                            let leaf = X509::from_der(leaf_der.as_ref())
-                                .map_err(|_| SslVerifyError::Invalid(SslAlert::INTERNAL_ERROR))?;
+                            let leaf = X509::from_der(leaf_der.as_ref()).map_err(|_err| {
+                                SslVerifyError::Invalid(SslAlert::INTERNAL_ERROR)
+                            })?;
                             let key = PKey::private_key_from_der(matched.private_key.secret_der())
-                                .map_err(|_| SslVerifyError::Invalid(SslAlert::INTERNAL_ERROR))?;
-                            ssl.set_certificate(leaf.as_ref())
-                                .map_err(|_| SslVerifyError::Invalid(SslAlert::INTERNAL_ERROR))?;
-                            ssl.set_private_key(key.as_ref())
-                                .map_err(|_| SslVerifyError::Invalid(SslAlert::INTERNAL_ERROR))?;
-                            for extra_der in &matched.cert_chain[1..] {
-                                let extra = X509::from_der(extra_der.as_ref()).map_err(|_| {
+                                .map_err(|_err| {
                                     SslVerifyError::Invalid(SslAlert::INTERNAL_ERROR)
                                 })?;
-                                ssl.add_chain_cert(extra.as_ref()).map_err(|_| {
+                            ssl.set_certificate(leaf.as_ref()).map_err(|_err| {
+                                SslVerifyError::Invalid(SslAlert::INTERNAL_ERROR)
+                            })?;
+                            ssl.set_private_key(key.as_ref()).map_err(|_err| {
+                                SslVerifyError::Invalid(SslAlert::INTERNAL_ERROR)
+                            })?;
+                            for extra_der in &matched.cert_chain[1..] {
+                                let extra = X509::from_der(extra_der.as_ref()).map_err(|_err| {
+                                    SslVerifyError::Invalid(SslAlert::INTERNAL_ERROR)
+                                })?;
+                                ssl.add_chain_cert(extra.as_ref()).map_err(|_err| {
                                     SslVerifyError::Invalid(SslAlert::INTERNAL_ERROR)
                                 })?;
                             }
@@ -1395,11 +1400,17 @@ where
             }
             let (cert_der, version, alpn) = {
                 let park = park_guest.lock();
-                (
-                    park.cert_der.clone().expect("parked peer cert"),
-                    park.version,
-                    park.alpn.clone(),
-                )
+                (park.cert_der.clone(), park.version, park.alpn.clone())
+            };
+            let Some(cert_der) = cert_der else {
+                // Unreachable: `cert_der` only transitions `None` to `Some`
+                // and `have_cert` observed `Some`. Fail closed regardless.
+                let err = TlsMitmRelayError::config(BoxError::from_static_str(
+                    "tls mitm relay: parked upstream cert vanished",
+                ));
+                let err = fail_guest(&park_guest, err);
+                wake_task().await;
+                return Err(GuestFailure::Genuine(err));
             };
             let source_cert = match X509::from_der(&cert_der) {
                 Ok(cert) => cert,
@@ -1462,11 +1473,10 @@ where
                     }
                 },
             };
-            let map_accept_error = map_ingress_accept_error;
             let accepted = match rama_boring_tokio::accept(&acceptor, ingress_stream).await {
                 Ok(accepted) => accepted,
                 Err(err) => {
-                    let err = fail_guest(&park_guest, map_accept_error(err));
+                    let err = fail_guest(&park_guest, map_ingress_accept_error(&err));
                     wake_task().await;
                     return Err(GuestFailure::Genuine(err));
                 }
@@ -1536,8 +1546,7 @@ where
         };
         let (egress_stream, ingress_boring_ssl_stream) = match (egress_res, guest_res) {
             (Ok(egress_stream), Ok((ingress_stream, _))) => (egress_stream, ingress_stream),
-            (_, Err(GuestFailure::Genuine(err))) => return Err(err),
-            (Err(err), _) => return Err(err),
+            (_, Err(GuestFailure::Genuine(err))) | (Err(err), _) => return Err(err),
             (Ok(_), Err(GuestFailure::Aborted)) => {
                 return Err(TlsMitmRelayError::config(BoxError::from_static_str(
                     "tls mitm relay: storage handshake aborted without guest outcome",
