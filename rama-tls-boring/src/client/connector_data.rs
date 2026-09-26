@@ -665,6 +665,17 @@ pub struct ConnectorConfigClientAuth {
     pub private_key: PKey<Private>,
 }
 
+impl TryFrom<ConnectorConfigClientAuth> for rama_boring::ssl::SslCredential {
+    type Error = BoxError;
+
+    fn try_from(auth: ConnectorConfigClientAuth) -> Result<Self, Self::Error> {
+        let mut credential = Self::builder()?;
+        credential.set_certificate_chain(&auth.cert_chain)?;
+        credential.set_private_key(&auth.private_key)?;
+        Ok(credential.build())
+    }
+}
+
 /// Process-wide trust store, built once and shared by every connector that
 /// needs server verification.
 ///
