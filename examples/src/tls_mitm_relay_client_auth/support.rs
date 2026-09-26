@@ -3,8 +3,11 @@
 use rama::{
     crypto::{
         cert::{
-            CertificateSubject, LeafCertConfig, LeafCertRequest, LeafCertUsage, SelfSignedCaConfig,
-            boring::{generate_certificate_authority_x509, issue_leaf_certificate},
+            CertificateSubject, LeafCertConfig, LeafCertRequest, SelfSignedCaConfig,
+            boring::{
+                generate_certificate_authority_x509, issue_client_leaf_certificate,
+                issue_leaf_certificate,
+            },
         },
         pki_types::CertificateDer,
     },
@@ -84,7 +87,6 @@ impl Identity {
     fn client(name: &str, ca: &Self) -> Result<Self, BoxError> {
         let request = LeafCertRequest {
             config: LeafCertConfig {
-                usage: LeafCertUsage::ClientAuth,
                 subject: CertificateSubject {
                     common_name: Some(name.to_owned()),
                     ..Default::default()
@@ -93,7 +95,7 @@ impl Identity {
             },
             identities: vec![],
         };
-        let (cert, key) = issue_leaf_certificate(&request, &ca.cert, &ca.key)?;
+        let (cert, key) = issue_client_leaf_certificate(&request, &ca.cert, &ca.key)?;
         Ok(Self { cert, key })
     }
 

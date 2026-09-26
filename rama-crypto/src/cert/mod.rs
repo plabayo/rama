@@ -165,10 +165,9 @@ impl Default for SelfSignedCaConfig {
     }
 }
 
-/// TLS extended key usage for an end-entity certificate.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum LeafCertUsage {
-    #[default]
+#[cfg(any(feature = "boring", feature = "aws-lc", feature = "ring"))]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LeafCertUsage {
     ServerAuth,
     ClientAuth,
 }
@@ -176,15 +175,12 @@ pub enum LeafCertUsage {
 /// Reusable policy for an end-entity certificate.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LeafCertConfig {
-    /// Defaults to server authentication, including when omitted in serialized config.
-    #[serde(default)]
-    pub usage: LeafCertUsage,
     pub subject: CertificateSubject,
     pub validity: CertificateValidity,
     pub key_kind: CertificateKeyKind,
 }
 
-/// One concrete leaf-certificate request.
+/// One concrete leaf-certificate request; the issuance method selects its TLS role.
 /// Server certificates require a DNS/IP identity. Client certificates may instead
 /// use an explicit nonempty subject, with no SAN extension.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -213,11 +209,11 @@ impl LeafCertRequest {
 }
 
 #[cfg(any(feature = "boring", feature = "aws-lc", feature = "ring"))]
-fn validate_leaf_request(request: &LeafCertRequest) -> Result<(), BoxError> {
+fn validate_leaf_request(request: &LeafCertRequest, usage: LeafCertUsage) -> Result<(), BoxError> {
     if !request.identities.is_empty() {
         return Ok(());
     }
-    if request.config.usage == LeafCertUsage::ServerAuth {
+    if usage == LeafCertUsage::ServerAuth {
         return Err(BoxError::from_static_str(
             "server leaf certificate requires at least one DNS or IP identity",
         ));
@@ -229,20 +225,6 @@ fn validate_leaf_request(request: &LeafCertRequest) -> Result<(), BoxError> {
     {
         return Err(BoxError::from_static_str(
             "client leaf certificate requires a nonempty subject or DNS/IP identity",
-        ));
-    }
-    Ok(())
-}
-
-#[cfg(any(feature = "boring", feature = "aws-lc", feature = "ring"))]
-fn validate_server_auth_config(config: &GeneratedServerAuthConfig) -> Result<(), BoxError> {
-    let request = match config {
-        GeneratedServerAuthConfig::SelfSignedLeaf(request)
-        | GeneratedServerAuthConfig::GeneratedCa { leaf: request, .. } => request,
-    };
-    if request.config.usage != LeafCertUsage::ServerAuth {
-        return Err(BoxError::from_static_str(
-            "server authentication requires server-auth leaf usage",
         ));
     }
     Ok(())
@@ -353,11 +335,40 @@ impl CertificateAuthorityData {
         (self.certificate_chain, self.private_key)
     }
 
+    /// Issue a server-authentication leaf.
     pub fn issue_leaf(
         &self,
         request: LeafCertRequest,
     ) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), BoxError> {
         issue_certificate_authority_leaf(self, request)
+    }
+
+    /// Issue a client-authentication leaf using the same CA and key policy.
+    /// The request may use a nonempty subject instead of a DNS/IP identity.
+    pub fn issue_client_leaf(
+        &self,
+        request: LeafCertRequest,
+    ) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), BoxError> {
+        #[cfg(feature = "boring")]
+        {
+            boring::issue_certificate_authority_leaf_with_usage(
+                self,
+                request,
+                LeafCertUsage::ClientAuth,
+            )
+        }
+        #[cfg(all(not(feature = "boring"), any(feature = "aws-lc", feature = "ring")))]
+        {
+            rcgen::issue_certificate_authority_leaf_with_usage(
+                self,
+                request,
+                LeafCertUsage::ClientAuth,
+            )
+        }
+        #[cfg(not(any(feature = "boring", feature = "aws-lc", feature = "ring")))]
+        {
+            issue_certificate_authority_leaf(self, request)
+        }
     }
 }
 
@@ -519,22 +530,6 @@ mod spki_tests {
     const EXAMPLE_COM_CRT_B64: &str = "MIIE3DCCAsSgAwIBAgIJAN4TBpLFs4VhMA0GCSqGSIb3DQEBCwUAMBYxFDASBgNVBAMMC2V4YW1wbGUuY29tMB4XDTI0MTIwOTIwMDUxN1oXDTM0MTIwNzIwMDUxN1owFjEUMBIGA1UEAwwLZXhhbXBsZS5jb20wggIiMA0GCSqGSIb3DQEBAQUAA4ICDwAwggIKAoICAQC14A6yHqrF+5+VPljtBd9vgjTQxBCqQ7Af/7cNlFtZjOKmXz0bOCfZRjaxNNjjveztFH+VhRpH/JyM7Qd7R0FX84IyH4Z9a58jgKW/l/YM1Q4Y50WGpM9Sk5p9Q8xTWIoZPrjvh6zV4PKef87LxxqoO9QXv34d5g7dsQLbSwJ93SeggH0E5e1VvP1DW0kvu1BF6rsmF5eTyK/VNg/el9mGyMbcyhBKTpTyVT2FQYRFuZtHXHRnAocCdv887c/TsYVDffTwv7peVoOotO0twKn0SMdtybiNJyDEdcgw2bFbQu7oV/95cBurpxePzED31E64QI8emTvZ62L/c5QvP0OY3x2CSb5ctd6z7wWTJ8wkl7N8+y7Xgn1aAAfki4rWk5qfWAO3BNZo/TGyiWeoNttJ+NddfwI3+h6phK7X56vRhYSqwSnxWyQYlTJAnFQb7TMEP/k9ov2S9MzLTURLLeNiiXjvkOxi+12HzhlTNgk3X49y9f8PLxkNw37TghunAl4OvA+LdslSayFMmZbx9fm+6ZGkjcsDYnf1Mff+aoCkkUcAFg5DQFDkmvu08mJL2D+9I9OK/Yvn/qXWjhVdWLJ/k5hrQmLIs1KbQtlGvvYeC7kHY3yBK+3wt/Cnx9qwhOPJcufuEChiMcVcseGAZJhUT7gQM22v9jb9QZfhihGMpQIDAQABoy0wKzApBgNVHREEIjAgggtleGFtcGxlLmNvbYILZXhhbXBsZS5jb22HBAoAAAEwDQYJKoZIhvcNAQELBQADggIBAJBG9KcH0FG7xn2u4SA4nlwaP/v2ZWZlOwjVjHEQJF7AGaEZFVofzLoRncVnQs14Xr3SGstIBG/P30LC4zHO4Lhz0M+g/lbXhrDjTJLNX7ZNv2ZJj+6XBysJK2IuZX14YCtxhwFCuPBK1cxPDkP4nZm4u5tozLHPtZEHc4kGVQflurkTVmfhJMi5ndAOevXVgfAHRbHfh6x1kNZWDpybiPeeBvZOjRoxecsD7LA54knsSFCQe6zQRlfBUUD+RDI/ggDi3XnKdDHEkLZCH3/db4CcneyzzVkaNcvpOS6ZT6akDLmR8qAglTrADdsnNVzyWzNbBhXQEFoygY3F2rVQndTLoEFGMx7U2d3Fz8sVN/F2SzBYxtrwgj5rQC8tOhHZPVgQLXu6NRRZHEQgypDtGP0H4SUNcGb1Lw27E43KSIT9CpY8Z3SG34G4bYGfpdMN3wtoXG7BtrdmInNWiT+ygh+iJCSaSsAWtaPRnx/9uGLwUNVjzVxJhxGKBbf1hJ5g1x3zMeL73wrsiY6RBa6tWx9SHbRoq8htbkQAnP0tMOavGiTApFquBYDe2gYbuq5jh4yTbNyuxR4WW6m6Bvj7YhUREXQnTDonUwHzw2P29T95z52aPb5PaZYHgg4S26zRV+/Dc8E3oLkjgCyaDuQO4uUpmtT8ssTolIFNr2QUzD12";
 
     #[test]
-    fn leaf_usage_defaults_for_existing_serialized_configs() {
-        let original = LeafCertConfig::default();
-        let mut value = serde_json::to_value(&original).unwrap();
-        value.as_object_mut().unwrap().remove("usage");
-        let decoded: LeafCertConfig = serde_json::from_value(value).unwrap();
-        assert_eq!(decoded, original);
-        let client = LeafCertConfig {
-            usage: LeafCertUsage::ClientAuth,
-            ..original
-        };
-        let decoded: LeafCertConfig =
-            serde_json::from_str(&serde_json::to_string(&client).unwrap()).unwrap();
-        assert_eq!(decoded, client);
-    }
-
-    #[test]
     fn spki_sha256_matches_openssl_pin() {
         let der = BASE64_STANDARD.decode(EXAMPLE_COM_CRT_B64).unwrap();
         let digest = spki_sha256(&CertificateDer::from(der)).unwrap();
@@ -589,16 +584,18 @@ mod tests {
         ];
         for key_kind in kinds {
             for usage in [LeafCertUsage::ServerAuth, LeafCertUsage::ClientAuth] {
-                let (chain, _) = ca
-                    .issue_leaf(LeafCertRequest {
-                        config: LeafCertConfig {
-                            usage,
-                            key_kind,
-                            ..Default::default()
-                        },
+                let request = LeafCertRequest {
+                    config: LeafCertConfig {
+                        key_kind,
                         ..Default::default()
-                    })
-                    .unwrap();
+                    },
+                    ..Default::default()
+                };
+                let (chain, _) = match usage {
+                    LeafCertUsage::ServerAuth => ca.issue_leaf(request),
+                    LeafCertUsage::ClientAuth => ca.issue_client_leaf(request),
+                }
+                .unwrap();
                 let leaf = parse_certificate(&chain[0]);
                 let eku = leaf.extended_key_usage().unwrap().unwrap().value;
                 assert_eq!(eku.server_auth, usage == LeafCertUsage::ServerAuth);
@@ -623,7 +620,6 @@ mod tests {
         let ca = CertificateAuthorityData::generate(SelfSignedCaConfig::default()).unwrap();
         let mut request = LeafCertRequest {
             config: LeafCertConfig {
-                usage: LeafCertUsage::ClientAuth,
                 subject: CertificateSubject {
                     common_name: Some("device-42".to_owned()),
                     ..Default::default()
@@ -632,7 +628,7 @@ mod tests {
             },
             identities: vec![],
         };
-        let (chain, _) = ca.issue_leaf(request.clone()).unwrap();
+        let (chain, _) = ca.issue_client_leaf(request.clone()).unwrap();
         let leaf = parse_certificate(&chain[0]);
         assert!(leaf.subject_alternative_name().unwrap().is_none());
         assert_eq!(
@@ -651,18 +647,16 @@ mod tests {
                 .value
                 .client_auth
         );
-        request.config.usage = LeafCertUsage::ServerAuth;
         assert!(
             ca.issue_leaf(request.clone())
                 .unwrap_err()
                 .to_string()
                 .contains("at least one DNS or IP identity")
         );
-        request.config.usage = LeafCertUsage::ClientAuth;
         for name in [None, Some(String::new())] {
             request.config.subject.common_name = name;
             assert!(
-                ca.issue_leaf(request.clone())
+                ca.issue_client_leaf(request.clone())
                     .unwrap_err()
                     .to_string()
                     .contains("nonempty subject")
@@ -671,14 +665,8 @@ mod tests {
     }
 
     #[test]
-    fn server_auth_generation_rejects_client_only_usage() {
-        let request = LeafCertRequest {
-            config: LeafCertConfig {
-                usage: LeafCertUsage::ClientAuth,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
+    fn server_auth_entry_points_always_issue_server_eku() {
+        let request = LeafCertRequest::default();
         for config in [
             GeneratedServerAuthConfig::SelfSignedLeaf(request.clone()),
             GeneratedServerAuthConfig::GeneratedCa {
@@ -686,12 +674,11 @@ mod tests {
                 leaf: request,
             },
         ] {
-            assert!(
-                generate_server_auth(config)
-                    .unwrap_err()
-                    .to_string()
-                    .contains("requires server-auth leaf usage")
-            );
+            let (chain, _) = generate_server_auth(config).unwrap();
+            let leaf = parse_certificate(&chain[0]);
+            let eku = leaf.extended_key_usage().unwrap().unwrap().value;
+            assert!(eku.server_auth);
+            assert!(!eku.client_auth);
         }
     }
 
@@ -965,7 +952,6 @@ mod tests {
                     },
                     validity: CertificateValidity::new(lifetime, Duration::from_mins(2)),
                     key_kind: CertificateKeyKind::EcP384,
-                    ..Default::default()
                 },
                 identities: vec![CertificateIdentity::Ip(
                     std::net::Ipv4Addr::LOCALHOST.into(),

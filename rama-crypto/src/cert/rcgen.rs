@@ -4,7 +4,6 @@ use super::{
     CertificateAuthorityData, CertificateIdentity, CertificateKeyKind, CertificateSubject,
     CertificateValidity, GeneratedServerAuthConfig, LeafCertRequest, LeafCertUsage,
     SelfSignedCaConfig, validate_certificate_lifetime, validate_leaf_request,
-    validate_server_auth_config,
 };
 use crate::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext};
@@ -127,8 +126,11 @@ fn apply_subject(params: &mut rcgen::CertificateParams, subject: &CertificateSub
     }
 }
 
-fn leaf_params(request: &LeafCertRequest) -> Result<rcgen::CertificateParams, BoxError> {
-    validate_leaf_request(request)?;
+fn leaf_params(
+    request: &LeafCertRequest,
+    usage: LeafCertUsage,
+) -> Result<rcgen::CertificateParams, BoxError> {
+    validate_leaf_request(request, usage)?;
 
     let mut params = rcgen::CertificateParams::new(Vec::new())
         .context("certificate leaf: create certificate parameters")?;
@@ -150,7 +152,7 @@ fn leaf_params(request: &LeafCertRequest) -> Result<rcgen::CertificateParams, Bo
     apply_subject(&mut params, &request.config.subject);
     params.is_ca = rcgen::IsCa::ExplicitNoCa;
     params.key_usages = vec![rcgen::KeyUsagePurpose::DigitalSignature];
-    if request.config.usage == LeafCertUsage::ServerAuth
+    if usage == LeafCertUsage::ServerAuth
         && matches!(
             request.config.key_kind,
             CertificateKeyKind::Rsa2048 | CertificateKeyKind::Rsa4096
@@ -160,7 +162,7 @@ fn leaf_params(request: &LeafCertRequest) -> Result<rcgen::CertificateParams, Bo
             .key_usages
             .push(rcgen::KeyUsagePurpose::KeyEncipherment);
     }
-    params.extended_key_usages = vec![match request.config.usage {
+    params.extended_key_usages = vec![match usage {
         LeafCertUsage::ServerAuth => rcgen::ExtendedKeyUsagePurpose::ServerAuth,
         LeafCertUsage::ClientAuth => rcgen::ExtendedKeyUsagePurpose::ClientAuth,
     }];
@@ -227,7 +229,6 @@ fn constrain_validity_to_ca(
 pub fn generate_server_auth(
     config: GeneratedServerAuthConfig,
 ) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), BoxError> {
-    validate_server_auth_config(&config)?;
     match config {
         GeneratedServerAuthConfig::SelfSignedLeaf(mut request) => {
             if request.config.subject.organisation_name.is_none()
@@ -237,7 +238,7 @@ pub fn generate_server_auth(
             }
             let key = generate_key(request.config.key_kind)
                 .context("self-signed leaf: generate key pair")?;
-            let cert = leaf_params(&request)?
+            let cert = leaf_params(&request, LeafCertUsage::ServerAuth)?
                 .self_signed(&key)
                 .context("self-signed leaf: generate certificate")?;
             Ok((
@@ -268,9 +269,17 @@ pub fn generate_certificate_authority(
 
 pub fn issue_certificate_authority_leaf(
     ca: &CertificateAuthorityData,
-    mut request: LeafCertRequest,
+    request: LeafCertRequest,
 ) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), BoxError> {
-    validate_leaf_request(&request)?;
+    issue_certificate_authority_leaf_with_usage(ca, request, LeafCertUsage::ServerAuth)
+}
+
+pub(super) fn issue_certificate_authority_leaf_with_usage(
+    ca: &CertificateAuthorityData,
+    mut request: LeafCertRequest,
+    usage: LeafCertUsage,
+) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), BoxError> {
+    validate_leaf_request(&request, usage)?;
     let issuer_cert = ca
         .certificate_chain
         .first()
@@ -284,7 +293,7 @@ pub fn issue_certificate_authority_leaf(
         .context("certificate authority: parse issuer certificate")?;
     let leaf_key =
         generate_key(request.config.key_kind).context("certificate leaf: generate key pair")?;
-    let mut params = leaf_params(&request)?;
+    let mut params = leaf_params(&request, usage)?;
     constrain_validity_to_ca(issuer_cert, &mut params)?;
     params.use_authority_key_identifier_extension = true;
     let leaf = params

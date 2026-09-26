@@ -6,7 +6,7 @@ use rama_core::{
 use rama_crypto::cert::generate_server_auth;
 pub use rama_crypto::cert::{
     CertificateAuthorityData, CertificateIdentity, CertificateKeyKind, CertificateSubject,
-    CertificateValidity, GeneratedServerAuthConfig, LeafCertConfig, LeafCertRequest, LeafCertUsage,
+    CertificateValidity, GeneratedServerAuthConfig, LeafCertConfig, LeafCertRequest,
     SelfSignedCaConfig,
 };
 use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer};
