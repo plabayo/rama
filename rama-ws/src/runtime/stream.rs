@@ -226,6 +226,12 @@ impl<S: Io + Unpin> AsyncWebSocket<S> {
             trace!("websocket transport shutdown after close: {error}");
         }
         self.lifecycle = Lifecycle::Ended;
+        // A split half parked elsewhere is ready now, even without a transport event.
+        let other = match kind {
+            ContextWaker::Read => ContextWaker::Write,
+            ContextWaker::Write => ContextWaker::Read,
+        };
+        self.inner.get_ref().wake(other);
         Poll::Ready(())
     }
 

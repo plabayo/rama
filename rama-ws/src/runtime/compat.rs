@@ -90,6 +90,23 @@ impl<S> AllowStd<S> {
     }
 }
 
+impl<S> AllowStd<S> {
+    /// Wake the task waiting in the `kind` slot, for a state change the transport cannot
+    /// signal itself.
+    pub(crate) fn wake(&self, kind: ContextWaker) {
+        match kind {
+            ContextWaker::Read => {
+                self.write_waker_proxy.read_waker.wake();
+                self.read_waker_proxy.read_waker.wake();
+            }
+            ContextWaker::Write => {
+                self.write_waker_proxy.write_waker.wake();
+                self.read_waker_proxy.write_waker.wake();
+            }
+        }
+    }
+}
+
 // Proxy Waker that we pass to the internal AsyncRead/Write of the
 // stream underlying the websocket. We have two slots here for the
 // actual wakers to allow external read operations to trigger both
