@@ -52,6 +52,9 @@ parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
 rama-http-core = { workspace = true }
 rama-net = { workspace = true, features = ["test-utils"] }
+rama-quic = { workspace = true, features = ["rustls", "ring", "test-utils"] }
+rama-tls = { workspace = true }
+rama-udp = { workspace = true, features = ["test-utils"] }
 serde_json = { workspace = true }
 tracing-test = { workspace = true }
 
