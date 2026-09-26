@@ -20,6 +20,7 @@ pub use parser::{
 };
 
 mod config;
+pub mod connector;
 mod pool;
 #[doc(inline)]
 pub use config::{

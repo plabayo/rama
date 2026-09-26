@@ -19,7 +19,7 @@ use rama_crypto::pki_types::PrivatePkcs8KeyDer;
 
 #[derive(Debug, Clone)]
 /// The resolved native rustls config consumed by [`super::TlsConnector`].
-pub(crate) struct TlsConnectorData {
+pub struct TlsConnectorData {
     pub client_config: Arc<ClientConfig>,
     pub verification_enabled: bool,
     pub server_name: Option<Host>,

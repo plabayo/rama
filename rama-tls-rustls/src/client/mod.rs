@@ -3,7 +3,8 @@
 mod connector;
 #[doc(inline)]
 pub use connector::{
-    ConnectorKindAuto, ConnectorKindSecure, ConnectorKindTunnel, TlsConnector, TlsConnectorLayer,
+    ConnectorKindAuto, ConnectorKindSecure, ConnectorKindTunnel, RustlsTlsConnectorBackend,
+    TlsConnector, TlsConnectorLayer,
 };
 
 mod config;
@@ -14,10 +15,8 @@ pub use config::{
 };
 
 mod connector_data;
-pub(super) use connector_data::TlsConnectorData;
-
 #[doc(inline)]
-pub use connector_data::{client_root_certs, self_signed_client_auth};
+pub use connector_data::{TlsConnectorData, client_root_certs, self_signed_client_auth};
 
 mod tls_stream;
 #[doc(inline)]

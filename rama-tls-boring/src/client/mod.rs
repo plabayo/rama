@@ -11,12 +11,12 @@ pub use rama_boring_tokio::SslStream as BoringTlsStream;
 mod connector;
 #[doc(inline)]
 pub use connector::{
-    ConnectorKindAuto, ConnectorKindSecure, ConnectorKindTunnel, TlsConnectError, TlsConnector,
-    TlsConnectorLayer, tls_connect,
+    BoringTlsConnectorBackend, ConnectorKindAuto, ConnectorKindSecure, ConnectorKindTunnel,
+    TlsConnectError, TlsConnector, TlsConnectorLayer, tls_connect,
 };
 
 mod config;
-pub(crate) use config::set_alpn_list_with_coupled_alps;
+use config::set_alpn_list_with_coupled_alps;
 #[cfg(feature = "http")]
 pub(crate) use config::{AlpsCoupling, set_alpn_with_coupled_alps};
 #[doc(inline)]
