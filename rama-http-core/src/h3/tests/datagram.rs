@@ -30,6 +30,7 @@ use rama_http_types::{
     },
 };
 use rama_quic_proto::coding::Codec as _;
+use rama_udp::test_utils::{MemoryDatagramControl, MemoryDatagramFaultStats};
 use std::{
     task::{Context, Poll, Waker},
     time::Duration,
@@ -853,6 +854,162 @@ async fn lost_datagrams_do_not_stall_the_session() {
     })
     .await
     .unwrap();
+}
+
+const FAULT_SESSIONS: usize = 4;
+const FAULT_ROUNDS: u8 = 24;
+/// A round tag no faulted datagram uses: its echo proves the session is past the faults.
+const MARKER: u8 = u8::MAX;
+
+/// Arm one kind of fault in both directions, cycling with the round.
+fn arm_faults(faults: &[MemoryDatagramControl; 2], round: u8) {
+    for direction in faults {
+        match round % 3 {
+            0 => direction.drop_next(1),
+            1 => direction.duplicate_next(1),
+            _ => direction.reorder_next_pair().unwrap(),
+        }
+    }
+}
+
+/// Wait until both directions applied the faults armed in `round`.
+async fn faults_applied(
+    faults: &[MemoryDatagramControl; 2],
+    before: [MemoryDatagramFaultStats; 2],
+    round: u8,
+) {
+    for (direction, before) in faults.iter().zip(before) {
+        loop {
+            let now = direction.stats();
+            let applied = match round % 3 {
+                0 => now.dropped > before.dropped,
+                1 => now.duplicated > before.duplicated,
+                _ => now.reordered_pairs > before.reordered_pairs,
+            };
+            if applied {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn sessions_survive_loss_duplication_and_reordering_on_both_carriers() {
+    for native_carrier in [true, false] {
+        tokio::time::timeout(LIMIT, async {
+            let pair = Pair::impaired().await;
+            let datagrams = native_carrier.then(DatagramConfig::default);
+            let (mut client, mut server) = start(&pair, server_config(datagrams)).await;
+            let mut clients = Vec::new();
+            let mut echoes = Vec::new();
+            for _ in 0..FAULT_SESSIONS {
+                let (client_session, mut server_session) = sessions(&mut client, &mut server).await;
+                if native_carrier {
+                    native_ready(&client_session).await;
+                }
+                echoes.push(spawn(async move {
+                    let mut seen = Vec::new();
+                    while let Some(event) = server_session.recv().await.unwrap() {
+                        if let SessionEvent::Datagram { payload, .. } = event {
+                            if payload[1] != MARKER {
+                                seen.push(payload.clone());
+                            }
+                            server_session.send_datagram(payload).await.unwrap();
+                        }
+                    }
+                    server_session.close().await.unwrap();
+                    seen
+                }));
+                clients.push(client_session);
+            }
+
+            let faults = pair.datagram_faults.as_ref().unwrap();
+            for round in 0..FAULT_ROUNDS {
+                let before = [faults[0].stats(), faults[1].stats()];
+                arm_faults(faults, round);
+                for (index, session) in clients.iter_mut().enumerate() {
+                    let tag = Bytes::from(vec![u8::try_from(index).unwrap(), round]);
+                    session.send_datagram(tag).await.unwrap();
+                }
+                faults_applied(faults, before, round).await;
+            }
+            for direction in faults {
+                direction.drop_next(0);
+                direction.duplicate_next(0);
+            }
+
+            let sent: Vec<Vec<Bytes>> = (0..FAULT_SESSIONS)
+                .map(|index| {
+                    (0..FAULT_ROUNDS)
+                        .map(|round| Bytes::from(vec![u8::try_from(index).unwrap(), round]))
+                        .collect()
+                })
+                .collect();
+            for (index, mut session) in clients.into_iter().enumerate() {
+                let mut received = Vec::new();
+                // The faults are disarmed: resend the unreliable marker until its echo is back,
+                // so the session only closes once the faulted exchange is behind it.
+                let marker = Bytes::from(vec![u8::try_from(index).unwrap(), MARKER]);
+                'marked: loop {
+                    session.send_datagram(marker.clone()).await.unwrap();
+                    let wait = tokio::time::timeout(Duration::from_millis(50), async {
+                        loop {
+                            let Some(SessionEvent::Datagram { payload, .. }) =
+                                session.recv().await.unwrap()
+                            else {
+                                continue;
+                            };
+                            if payload == marker {
+                                return;
+                            }
+                            received.push(payload);
+                        }
+                    });
+                    if wait.await.is_ok() {
+                        break 'marked;
+                    }
+                }
+                session.close().await.unwrap();
+                while let Some(event) = session.recv().await.unwrap() {
+                    if let SessionEvent::Datagram { payload, .. } = event
+                        && payload != marker
+                    {
+                        received.push(payload);
+                    }
+                }
+                let seen = echoes.remove(0).await.unwrap();
+                for delivered in [&seen, &received] {
+                    if native_carrier {
+                        // Unreliable: a subset, each at most once and only of this session.
+                        assert!(!delivered.is_empty(), "session {index}: nothing arrived");
+                        assert!(delivered.iter().all(|tag| sent[index].contains(tag)));
+                        let mut unique = delivered.clone();
+                        unique.sort();
+                        unique.dedup();
+                        assert_eq!(unique.len(), delivered.len(), "session {index}: duplicate");
+                    } else {
+                        // Capsules ride the stream: all of them, once, in order.
+                        assert_eq!(delivered, &sent[index], "session {index}");
+                    }
+                }
+            }
+            // The connection still serves ordinary requests.
+            let serve = spawn(async move {
+                let (_request, response) = server.accept().await.unwrap().resolve().await.unwrap();
+                response
+                    .send_response(Response::new(Body::from("ok")))
+                    .await
+                    .unwrap();
+            });
+            let response = client.send_request(get()).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            serve.await.unwrap();
+            pair.close().await;
+        })
+        .await
+        .unwrap();
+    }
 }
 
 #[tokio::test]
