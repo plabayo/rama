@@ -3,6 +3,7 @@
 
 #![expect(clippy::unwrap_used, clippy::panic, reason = "test fixtures")]
 
+use parking_lot::Mutex;
 use rama_core::{
     ServiceInput, bytes::Bytes, extensions::ExtensionsRef as _, rt::Executor, service::service_fn,
 };
@@ -24,8 +25,11 @@ use rama_http::{
     },
 };
 use rama_http_core::{client::conn, server, service::RamaHttpService};
-use std::{convert::Infallible, time::Duration};
-use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+use std::{convert::Infallible, sync::Arc, time::Duration};
+use tokio::{
+    io::{AsyncReadExt as _, AsyncWriteExt as _},
+    sync::oneshot,
+};
 
 const LIMIT: Duration = Duration::from_secs(10);
 const TOKEN: Protocol = Protocol::from_static("x-capsule-test");
@@ -117,13 +121,20 @@ async fn client_session(version: Version) -> HttpDatagramSession {
 }
 
 async fn client_upgraded(version: Version) -> Upgraded {
+    client_upgraded_with(version, capsule_service()).await
+}
+
+async fn client_upgraded_with<S>(version: Version, service: RamaHttpService<S>) -> Upgraded
+where
+    S: rama_core::Service<Request, Output = Response, Error = Infallible> + Clone,
+{
     let (client_io, server_io) = tokio::io::duplex(64 * 1024);
     let (client_io, server_io) = (ServiceInput::new(client_io), ServiceInput::new(server_io));
     let response = if version == Version::HTTP_2 {
         tokio::spawn(
             server::conn::http2::Builder::new(Executor::new())
                 .with_enable_connect_protocol()
-                .serve_connection(server_io, capsule_service()),
+                .serve_connection(server_io, service),
         );
         let (mut sender, connection) = conn::http2::Builder::new(Executor::new())
             .handshake(client_io)
@@ -134,7 +145,7 @@ async fn client_upgraded(version: Version) -> Upgraded {
     } else {
         tokio::spawn(
             server::conn::http1::Builder::new()
-                .serve_connection(server_io, capsule_service())
+                .serve_connection(server_io, service)
                 .with_upgrades(),
         );
         let (mut sender, connection) = conn::http1::handshake(client_io).await.unwrap();
@@ -143,6 +154,31 @@ async fn client_upgraded(version: Version) -> Upgraded {
     };
     validate_capsule_response(version, &TOKEN, &response, ViolationPolicy::Ignore).unwrap();
     handle_upgrade(&response).await.unwrap()
+}
+
+type Report = Arc<Mutex<Option<oneshot::Sender<Result<Option<SessionEvent>, SessionError>>>>>;
+
+/// Reports the first thing the server's session receives.
+fn reporting_service(
+    report: Report,
+) -> RamaHttpService<impl rama_core::Service<Request, Output = Response, Error = Infallible> + Clone>
+{
+    RamaHttpService::new(service_fn(move |request: Request| {
+        let report = report.clone();
+        async move {
+            let protocol = validate_capsule_request(&request, ViolationPolicy::Ignore).unwrap();
+            let upgrade = handle_upgrade(&request);
+            tokio::spawn(async move {
+                let mut session =
+                    HttpDatagramSession::with_config(upgrade.await.unwrap(), config());
+                let first = session.recv().await;
+                if let Some(report) = report.lock().take() {
+                    _ = report.send(first);
+                }
+            });
+            Ok::<_, Infallible>(capsule_response::<Body>(request.version(), &protocol).unwrap())
+        }
+    }))
 }
 
 #[tokio::test]
@@ -389,6 +425,33 @@ async fn dropping_a_partial_sender_aborts_every_carrier() {
         })
         .await
         .unwrap_or_else(|_| panic!("{version:?} kept the abandoned capsule open"));
+    }
+}
+
+#[tokio::test]
+async fn peers_observe_the_abort_of_a_partial_sender() {
+    for version in [Version::HTTP_11, Version::HTTP_2] {
+        tokio::time::timeout(LIMIT, async {
+            let (tx, rx) = oneshot::channel();
+            let report: Report = Arc::new(Mutex::new(Some(tx)));
+            let upgraded = client_upgraded_with(version, reporting_service(report)).await;
+            let (mut sender, _receiver) =
+                HttpDatagramSession::with_config(upgraded, config()).split();
+            sender
+                .start_capsule(CapsuleHeader::new(CONTROL, 4).unwrap())
+                .await
+                .unwrap();
+            sender
+                .send_capsule_data(Bytes::from_static(b"x"))
+                .await
+                .unwrap();
+            drop(sender);
+            // H1 closes the connection (truncation), H2 resets the stream: never a clean end.
+            let seen = rx.await.unwrap();
+            assert!(seen.is_err(), "{version:?}: {seen:?}");
+        })
+        .await
+        .unwrap_or_else(|_| panic!("{version:?} peer never saw the abort"));
     }
 }
 
