@@ -1299,3 +1299,84 @@ async fn the_malformed_hook_runs_once_per_session() {
     drop(sender);
     assert_eq!(aborted.load(Ordering::Relaxed), 1);
 }
+
+#[tokio::test]
+async fn aborts_wake_the_latest_receiver_task() {
+    let (local, _peer) = pair();
+    let (mut sender, mut receiver) = local.split();
+    sender.start_capsule(header(0x4242, 4)).await.unwrap();
+    let first = Arc::new(CountWakes::default());
+    let latest = Arc::new(CountWakes::default());
+    let first_waker = Waker::from(first);
+    let latest_waker = Waker::from(latest.clone());
+    assert!(
+        receiver
+            .poll_recv(&mut Context::from_waker(&first_waker))
+            .is_pending()
+    );
+    assert!(
+        receiver
+            .poll_recv(&mut Context::from_waker(&latest_waker))
+            .is_pending()
+    );
+    drop(sender);
+    assert!(latest.0.load(Ordering::SeqCst) > 0);
+    assert!(matches!(
+        receiver.poll_recv(&mut Context::from_waker(&latest_waker)),
+        Poll::Ready(Err(SessionError::Io(_)))
+    ));
+}
+
+#[tokio::test]
+async fn aborts_wake_a_pending_close() {
+    let (a, mut raw) = tokio::io::duplex(256);
+    let io = PendingShutdown {
+        inner: a,
+        extensions: Extensions::new(),
+        polled: Arc::new(AtomicUsize::new(0)),
+        allowed: Arc::new(AtomicBool::new(false)),
+    };
+    let (mut sender, mut receiver) = HttpDatagramSession::with_config(io, config()).split();
+    let wakes = Arc::new(CountWakes::default());
+    let waker = Waker::from(wakes.clone());
+    let mut cx = Context::from_waker(&waker);
+    let close = sender.close();
+    let mut close = std::pin::pin!(close);
+    assert!(close.as_mut().poll(&mut cx).is_pending());
+    raw.write_all(b"\x2a\x21").await.unwrap();
+    assert!(matches!(
+        receiver.recv().await,
+        Err(SessionError::Malformed(_))
+    ));
+    assert!(wakes.0.load(Ordering::SeqCst) > 0);
+    assert!(matches!(
+        close.as_mut().poll(&mut cx),
+        Poll::Ready(Err(SessionError::Io(_)))
+    ));
+}
+
+#[tokio::test]
+async fn aborts_block_queued_native_events_and_native_sends() {
+    let native = FakeNative::default();
+    native.0.lock().max = Some(128);
+    let (local, _peer) = native_pair(&native);
+    let (mut sender, mut receiver) = local.split();
+    sender.start_capsule(header(0x4242, 4)).await.unwrap();
+    native.push(b"queued");
+    drop(sender);
+    assert!(matches!(receiver.recv().await, Err(SessionError::Io(_))));
+    let (a, mut raw) = tokio::io::duplex(256);
+    let io = ServiceInput::new(a);
+    io.extensions().insert(NativeDatagrams::new(native.clone()));
+    let (mut sender, mut receiver) = HttpDatagramSession::with_config(io, config()).split();
+    raw.write_all(b"\x2a\x21").await.unwrap();
+    assert!(matches!(
+        receiver.recv().await,
+        Err(SessionError::Malformed(_))
+    ));
+    assert!(matches!(
+        sender.send_datagram(Bytes::from_static(b"after")).await,
+        Err(SessionError::Io(_))
+    ));
+    assert!(native.0.lock().sent.is_empty());
+}

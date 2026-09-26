@@ -50,7 +50,8 @@ impl std::error::Error for NativeSendError {}
 /// The receive side of a native association ended abnormally.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeRecvError {
-    /// The peer reset the request stream with this application error code.
+    /// The peer reset the request stream with this application error code, as received
+    /// (unknown codes are not normalized).
     Reset(u64),
     /// This endpoint aborted the request stream with this application error code.
     Aborted(u64),

@@ -41,6 +41,8 @@ pub(crate) struct Reader<R: RecvStream> {
     pub(crate) origin: Option<Uri>,
     /// The request's datagram demux entry while this connection receives datagrams.
     pub(crate) datagrams: Option<Arc<super::datagram::Registration>>,
+    // A tunnel's peer reset, returned again instead of reading past it.
+    peer_reset: Option<Error>,
     push_cancelled: Option<std::pin::Pin<Box<dyn Future<Output = Error> + Send + Sync>>>,
     promise: Option<std::pin::Pin<Box<dyn Future<Output = Result<(), Error>> + Send + Sync>>>,
 }
@@ -63,6 +65,7 @@ impl<R: RecvStream> Reader<R> {
             frames,
             origin: None,
             datagrams: None,
+            peer_reset: None,
             push_id: None,
             promise: None,
             push_cancelled: None,
@@ -107,15 +110,22 @@ impl<R: RecvStream> Reader<R> {
         &mut self,
         cx: &mut Context<'_>,
     ) -> Poll<Result<Option<FrameEvent>, Error>> {
+        if let Some(error) = self.peer_reset {
+            return Poll::Ready(Err(error));
+        }
         match self.poll_event_inner(cx) {
             Poll::Ready(Err(error)) => {
                 let code = error.code().value();
                 if error.is_peer_reset() {
                     if let Some(datagrams) = &self.datagrams {
-                        datagrams.receive_ended(super::datagram::ReceiveEnd::Reset(code));
+                        // Unknown codes keep their wire value for diagnostics.
+                        let raw = error.raw_code().value();
+                        datagrams.receive_ended(super::datagram::ReceiveEnd::Reset(raw));
                     }
                     // Only the peer's direction ended: a tunnel keeps sending (RFC 9000 §3.5).
+                    // The reset is terminal for receiving: never read past it into EOF.
                     if self.phase == Phase::Tunnel {
+                        self.peer_reset = Some(error);
                         return Poll::Ready(Err(error));
                     }
                 } else if !error.is_connection_loss()

@@ -25,6 +25,8 @@ enum Source {
     PeerReset,
     /// The connection closed or failed underneath the stream.
     ConnectionLost,
+    /// This endpoint closed the connection underneath the stream.
+    LocalConnectionLost,
 }
 
 impl Error {
@@ -77,9 +79,13 @@ impl Error {
         matches!(self.source, Source::PeerReset)
     }
 
-    /// Connection closure or failure, also after conversion into a stream error.
+    /// Connection closure or failure, by either endpoint, also after conversion into a
+    /// stream error.
     pub(crate) const fn is_connection_loss(self) -> bool {
-        matches!(self.source, Source::ConnectionLost)
+        matches!(
+            self.source,
+            Source::ConnectionLost | Source::LocalConnectionLost
+        )
     }
 
     pub(crate) fn is_clean_close(self) -> bool {
@@ -114,7 +120,10 @@ impl Error {
             error,
             QuicConnectionError::LocallyClosed | QuicConnectionError::CidsExhausted
         ) {
-            mapped
+            Self {
+                source: Source::LocalConnectionLost,
+                ..mapped
+            }
         } else {
             Self {
                 source: Source::ConnectionLost,
@@ -150,7 +159,7 @@ impl Error {
     /// This classification does not grant permission to retry a request.
     #[must_use]
     pub fn is_remote_failure(self) -> bool {
-        !(matches!(self.source, Source::Local)
+        !(matches!(self.source, Source::Local | Source::LocalConnectionLost)
             || self.is_clean_close()
             || (self.scope == ErrorScope::Stream
                 && matches!(self.code(), Code::H3_REQUEST_REJECTED | Code::H3_NO_ERROR)))
