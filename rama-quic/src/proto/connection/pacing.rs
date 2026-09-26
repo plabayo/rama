@@ -110,7 +110,7 @@ impl Pacer {
 
         // divisions come before multiplications to prevent overflow
         // this is the time at which the pacing window becomes empty
-        // A zero pause re-arms a due timer that spins while no time passes (RFC 9002 §6.1.2).
+        // A zero pause re-arms a due timer that spins while no time passes; the floor is ours.
         Some(now + ((unscaled_delay / 5) * 4).max(TIMER_GRANULARITY))
     }
 }
