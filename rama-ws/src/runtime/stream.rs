@@ -32,17 +32,27 @@ use crate::{
 #[derive(Debug)]
 pub struct AsyncWebSocket<S = upgrade::Upgraded> {
     inner: WebSocket<AllowStd<S>>,
-    closing: bool,
-    ended: bool,
-    /// The WebSocket closed; its transport is being shut down.
-    shutting_down: bool,
-    /// The transport was shut down after the close.
-    transport_ended: bool,
+    lifecycle: Lifecycle,
     /// Tungstenite is probably ready to receive more data.
     ///
     /// `false` once start_send hits `WouldBlock` errors.
     /// `true` initially and after `flush`ing.
     ready: bool,
+}
+
+/// Where an [`AsyncWebSocket`] is between opening and ending its transport.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Lifecycle {
+    /// Messages flow in both directions.
+    Open,
+    /// A close is queued but not yet flushed.
+    Closing,
+    /// The WebSocket closed; its transport is being shut down.
+    ShuttingDown,
+    /// The transport was shut down: nothing is left to read.
+    Ended,
+    /// A protocol error ended the stream; the transport is left as it is.
+    Failed,
 }
 
 impl<S> AsyncWebSocket<S> {
@@ -78,10 +88,7 @@ impl<S> AsyncWebSocket<S> {
     pub(crate) fn new(ws: WebSocket<AllowStd<S>>) -> Self {
         Self {
             inner: ws,
-            closing: false,
-            ended: false,
-            shutting_down: false,
-            transport_ended: false,
+            lifecycle: Lifecycle::Open,
             ready: true,
         }
     }
@@ -174,16 +181,14 @@ where
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         trace!("Stream.poll_next");
 
-        // The connection has been closed or a critical error has occurred.
-        // We have already returned the error to the user, the `Stream` is unusable,
-        // so we assume that the stream has been "fused".
-        if self.ended {
-            return Poll::Ready(None);
-        }
-        if self.shutting_down {
-            ready!(self.poll_shutdown_transport(ContextWaker::Read, cx));
-            self.ended = true;
-            return Poll::Ready(None);
+        match self.lifecycle {
+            // Fused: the end or the error was already returned.
+            Lifecycle::Ended | Lifecycle::Failed => return Poll::Ready(None),
+            Lifecycle::ShuttingDown => {
+                ready!(self.poll_shutdown_transport(ContextWaker::Read, cx));
+                return Poll::Ready(None);
+            }
+            Lifecycle::Open | Lifecycle::Closing => (),
         }
 
         match ready!(self.with_context(Some((ContextWaker::Read, cx)), |s| {
@@ -195,10 +200,9 @@ where
                 if e.is_connection_error() {
                     self.begin_shutdown();
                     ready!(self.poll_shutdown_transport(ContextWaker::Read, cx));
-                    self.ended = true;
                     Poll::Ready(None)
                 } else {
-                    self.ended = true;
+                    self.lifecycle = Lifecycle::Failed;
                     Poll::Ready(Some(Err(e)))
                 }
             }
@@ -213,7 +217,7 @@ impl<S: Io + Unpin> AsyncWebSocket<S> {
     /// Polled through the waker proxy with the caller's slot, so split read and sink halves
     /// both get woken.
     fn poll_shutdown_transport(&mut self, kind: ContextWaker, cx: &mut Context<'_>) -> Poll<()> {
-        if !self.shutting_down {
+        if self.lifecycle != Lifecycle::ShuttingDown {
             return Poll::Ready(());
         }
         let result =
@@ -221,13 +225,15 @@ impl<S: Io + Unpin> AsyncWebSocket<S> {
         if let Err(error) = result {
             trace!("websocket transport shutdown after close: {error}");
         }
-        self.shutting_down = false;
-        self.transport_ended = true;
+        self.lifecycle = Lifecycle::Ended;
         Poll::Ready(())
     }
 
+    /// Start the transport shutdown, unless the socket already ended or failed.
     fn begin_shutdown(&mut self) {
-        self.shutting_down = !self.transport_ended;
+        if matches!(self.lifecycle, Lifecycle::Open | Lifecycle::Closing) {
+            self.lifecycle = Lifecycle::ShuttingDown;
+        }
     }
 }
 
@@ -236,7 +242,7 @@ where
     T: Io + Unpin,
 {
     fn is_terminated(&self) -> bool {
-        self.ended
+        matches!(self.lifecycle, Lifecycle::Ended | Lifecycle::Failed)
     }
 }
 
@@ -281,7 +287,7 @@ where
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        if self.shutting_down {
+        if self.lifecycle == Lifecycle::ShuttingDown {
             ready!(self.poll_shutdown_transport(ContextWaker::Write, cx));
             return Poll::Ready(Ok(()));
         }
@@ -302,12 +308,16 @@ where
     }
 
     fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        if self.shutting_down {
-            ready!(self.poll_shutdown_transport(ContextWaker::Write, cx));
-            return Poll::Ready(Ok(()));
+        match self.lifecycle {
+            Lifecycle::ShuttingDown => {
+                ready!(self.poll_shutdown_transport(ContextWaker::Write, cx));
+                return Poll::Ready(Ok(()));
+            }
+            Lifecycle::Ended => return Poll::Ready(Ok(())),
+            Lifecycle::Open | Lifecycle::Closing | Lifecycle::Failed => (),
         }
         self.ready = true;
-        let res = if self.closing {
+        let res = if self.lifecycle == Lifecycle::Closing {
             // After queueing it, we call `flush` to drive the close handshake to completion.
             (*self).with_context(Some((ContextWaker::Write, cx)), |s| s.flush())
         } else {
@@ -324,7 +334,9 @@ where
             Ok(()) => Poll::Ready(Ok(())),
             Err(ProtocolError::Io(err)) if err.kind() == std::io::ErrorKind::WouldBlock => {
                 trace!("WouldBlock");
-                self.closing = true;
+                if self.lifecycle == Lifecycle::Open {
+                    self.lifecycle = Lifecycle::Closing;
+                }
                 Poll::Pending
             }
             Err(err) => {
