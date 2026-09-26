@@ -128,6 +128,14 @@ where
         &mut self.inner
     }
 
+    /// Shut the transport down through the waker proxy, like every other transport poll.
+    pub(crate) fn poll_shutdown(&mut self, kind: ContextWaker) -> Poll<std::io::Result<()>>
+    where
+        S: AsyncWrite,
+    {
+        self.with_context(kind, |ctx, stream| stream.poll_shutdown(ctx))
+    }
+
     pub(crate) fn get_ref(&self) -> &S {
         &self.inner
     }

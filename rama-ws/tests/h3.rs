@@ -7,6 +7,7 @@ use rama_core::{
     bytes::Bytes,
     error::BoxError,
     extensions::{Extensions, ExtensionsRef as _},
+    futures::SinkExt as _,
     rt::{Executor, spawn},
     service::service_fn,
 };
@@ -189,7 +190,10 @@ fn recording_server(
         async move {
             let end = loop {
                 match socket.recv_message().await {
-                    Ok(Message::Close(_)) => break Ok(()),
+                    // Flushing drives the queued close reply and the orderly end of stream.
+                    Ok(Message::Close(_)) => {
+                        break socket.flush().await.map_err(|error| format!("{error:?}"));
+                    }
                     Ok(message) if message.is_text() || message.is_binary() => {
                         if socket.send_message(message).await.is_err() {
                             break Err("send failed".to_owned());
@@ -461,6 +465,61 @@ async fn orderly_close_ends_cleanly_and_abandoning_resets() {
             .expect("handshake after abort");
         socket.send_message(Message::text("after")).await.unwrap();
         assert_eq!(socket.recv_message().await.unwrap(), Message::text("after"));
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn flushing_after_a_received_close_replies_and_finishes() {
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::new().await;
+        let service = WebSocketAcceptor::new().into_service(service_fn(
+            |mut socket: ServerWebSocket| async move {
+                assert!(matches!(
+                    socket.recv_message().await.unwrap(),
+                    Message::Close(_)
+                ));
+                socket.flush().await.unwrap();
+                // The socket is dropped right away: the flush already ended the stream.
+                Ok::<_, Infallible>(())
+            },
+        ));
+        let client = start(&pair, true, service).await;
+        let mut io = raw_tunnel(&client).await;
+        io.write_all(&masked(0x88, &1000u16.to_be_bytes()))
+            .await
+            .unwrap();
+        io.flush().await.unwrap();
+        let mut bytes = Vec::new();
+        io.read_to_end(&mut bytes)
+            .await
+            .expect("the close reply ends with FIN, not a reset");
+        assert_eq!(bytes, [0x88, 2, 0x03, 0xe8]);
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn a_reported_clean_close_is_a_reply_and_fin_on_the_wire() {
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::new().await;
+        let (ends, mut ended) = mpsc::unbounded_channel();
+        let client = start(&pair, true, recording_server(ends)).await;
+        let mut io = raw_tunnel(&client).await;
+        io.write_all(&masked(0x88, &1000u16.to_be_bytes()))
+            .await
+            .unwrap();
+        io.flush().await.unwrap();
+        assert_eq!(ended.recv().await.unwrap(), Ok(()));
+        let mut bytes = Vec::new();
+        io.read_to_end(&mut bytes)
+            .await
+            .expect("the fixture's clean close must be a FIN");
+        assert_eq!(bytes, [0x88, 2, 0x03, 0xe8]);
         pair.close().await;
     })
     .await

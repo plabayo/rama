@@ -175,7 +175,7 @@ where
             return Poll::Ready(None);
         }
         if self.shutting_down {
-            ready!(self.poll_shutdown_transport(cx));
+            ready!(self.poll_shutdown_transport(ContextWaker::Read, cx));
             self.ended = true;
             return Poll::Ready(None);
         }
@@ -188,7 +188,7 @@ where
             Err(e) => {
                 if e.is_connection_error() {
                     self.shutting_down = true;
-                    ready!(self.poll_shutdown_transport(cx));
+                    ready!(self.poll_shutdown_transport(ContextWaker::Read, cx));
                     self.ended = true;
                     Poll::Ready(None)
                 } else {
@@ -203,11 +203,15 @@ where
 impl<S: Io + Unpin> AsyncWebSocket<S> {
     /// End the transport cleanly once the WebSocket closed: a FIN on TCP and HTTP/3,
     /// END_STREAM on HTTP/2 (RFC 6455 §7.1.1, RFC 9220 §3). Failures are irrelevant then.
-    fn poll_shutdown_transport(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+    ///
+    /// Polled through the waker proxy with the caller's slot, so split read and sink halves
+    /// both get woken.
+    fn poll_shutdown_transport(&mut self, kind: ContextWaker, cx: &mut Context<'_>) -> Poll<()> {
         if !self.shutting_down {
             return Poll::Ready(());
         }
-        let result = ready!(Pin::new(self.get_mut()).poll_shutdown(cx));
+        let result =
+            ready!(self.with_context(Some((kind, cx)), |s| s.get_mut().poll_shutdown(kind)));
         if let Err(error) = result {
             trace!("websocket transport shutdown after close: {error}");
         }
@@ -266,21 +270,31 @@ where
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        (*self)
-            .with_context(Some((ContextWaker::Write, cx)), |s| compat::cvt(s.flush()))
-            .map(|r| {
-                self.ready = true;
-                match r {
-                    Err(err) if err.is_connection_error() => {
-                        // WebSocket connection has just been closed. Flushing completed, not an error.
-                        Ok(())
-                    }
-                    other => other,
-                }
-            })
+        if self.shutting_down {
+            ready!(self.poll_shutdown_transport(ContextWaker::Write, cx));
+            return Poll::Ready(Ok(()));
+        }
+        let result = ready!(
+            (*self).with_context(Some((ContextWaker::Write, cx)), |s| compat::cvt(s.flush()))
+        );
+        self.ready = true;
+        match result {
+            // The flush completed the close handshake: end the transport, so the queued close
+            // reaches the peer followed by an orderly end of stream.
+            Err(err) if err.is_connection_error() => {
+                self.shutting_down = true;
+                ready!(self.poll_shutdown_transport(ContextWaker::Write, cx));
+                Poll::Ready(Ok(()))
+            }
+            other => Poll::Ready(other),
+        }
     }
 
     fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        if self.shutting_down {
+            ready!(self.poll_shutdown_transport(ContextWaker::Write, cx));
+            return Poll::Ready(Ok(()));
+        }
         self.ready = true;
         let res = if self.closing {
             // After queueing it, we call `flush` to drive the close handshake to completion.
@@ -299,7 +313,7 @@ where
             Err(err) => {
                 if err.is_connection_error() {
                     self.shutting_down = true;
-                    ready!(self.poll_shutdown_transport(cx));
+                    ready!(self.poll_shutdown_transport(ContextWaker::Write, cx));
                     Poll::Ready(Ok(()))
                 } else {
                     debug!("websocket close error: {}", err);
