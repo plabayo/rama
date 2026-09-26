@@ -41,8 +41,8 @@ pub(crate) struct Reader<R: RecvStream> {
     pub(crate) origin: Option<Uri>,
     /// The request's datagram demux entry while this connection receives datagrams.
     pub(crate) datagrams: Option<Arc<super::datagram::Registration>>,
-    // A tunnel's peer reset, returned again instead of reading past it.
-    peer_reset: Option<Error>,
+    // A tunnel's peer reset or a lost connection, returned again instead of reading past it.
+    terminal: Option<Error>,
     push_cancelled: Option<std::pin::Pin<Box<dyn Future<Output = Error> + Send + Sync>>>,
     promise: Option<std::pin::Pin<Box<dyn Future<Output = Result<(), Error>> + Send + Sync>>>,
 }
@@ -65,7 +65,7 @@ impl<R: RecvStream> Reader<R> {
             frames,
             origin: None,
             datagrams: None,
-            peer_reset: None,
+            terminal: None,
             push_id: None,
             promise: None,
             push_cancelled: None,
@@ -110,7 +110,7 @@ impl<R: RecvStream> Reader<R> {
         &mut self,
         cx: &mut Context<'_>,
     ) -> Poll<Result<Option<FrameEvent>, Error>> {
-        if let Some(error) = self.peer_reset {
+        if let Some(error) = self.terminal {
             return Poll::Ready(Err(error));
         }
         match self.poll_event_inner(cx) {
@@ -125,15 +125,21 @@ impl<R: RecvStream> Reader<R> {
                     // Only the peer's direction ended: a tunnel keeps sending (RFC 9000 §3.5).
                     // The reset is terminal for receiving: never read past it into EOF.
                     if self.phase == Phase::Tunnel {
-                        self.peer_reset = Some(error);
+                        self.terminal = Some(error);
                         return Poll::Ready(Err(error));
                     }
-                } else if !error.is_connection_loss()
-                    && error.scope() == super::qpack::ErrorScope::Stream
+                } else if error.is_connection_loss() {
+                    // Nothing to abort on a lost connection: aborting would turn later reads
+                    // into fresh stream errors instead of the loss the demux reports.
+                    self.terminal = Some(error);
+                    if error.scope() == super::qpack::ErrorScope::Connection {
+                        self.shared.fail(error);
+                    }
+                    return Poll::Ready(Err(error));
+                } else if error.scope() == super::qpack::ErrorScope::Stream
                     && let Some(datagrams) = &self.datagrams
                 {
-                    // Rejected below: this endpoint aborts the stream. A lost connection
-                    // is reported as such by the demux instead.
+                    // Rejected below: this endpoint aborts the stream.
                     datagrams.receive_ended(super::datagram::ReceiveEnd::Aborted(code));
                 }
                 Poll::Ready(Err(self.reject(error)))

@@ -1313,3 +1313,60 @@ async fn peer_resets_mid_frame_stay_terminal_for_tunnel_reads() {
         .unwrap();
     }
 }
+
+#[tokio::test]
+async fn connection_loss_stays_lost_across_repeated_reads() {
+    // Either tunnel end, either endpoint closing, clean or unknown code, either read order.
+    for server_side in [true, false] {
+        for local_close in [true, false] {
+            for code in [Code::H3_NO_ERROR.value(), 0x1f0a] {
+                for native_first in [true, false] {
+                    tokio::time::timeout(LIMIT, async {
+                        let pair = Pair::in_memory(None, None).await;
+                        let (mut client, mut server) =
+                            start(&pair, server_config(Some(DatagramConfig::default()))).await;
+                        let (client_io, server_io) =
+                            tunnel(&mut client, &mut server, TOKEN).await;
+                        let (mut io, _other) = if server_side {
+                            (server_io, client_io)
+                        } else {
+                            (client_io, server_io)
+                        };
+                        let native = io.extensions().get_ref::<NativeDatagrams>().cloned().unwrap();
+                        let (this, peer) = if server_side {
+                            (&pair.server, &pair.client)
+                        } else {
+                            (&pair.client, &pair.server)
+                        };
+                        let closer = if local_close { this } else { peer };
+                        closer.close(VarInt::from_u64(code).unwrap(), b"done");
+                        _ = this.closed().await;
+                        if server_side {
+                            _ = server.shared().failed().await;
+                        } else {
+                            _ = client.shared().failed().await;
+                        }
+                        let mut cx = Context::from_waker(Waker::noop());
+                        let lost = Poll::Ready(Err(NativeRecvError::Lost));
+                        if native_first {
+                            assert_eq!(native.channel().poll_recv(&mut cx), lost);
+                        }
+                        let first = stream_error(&mut io).await;
+                        for turn in 0..3 {
+                            assert_eq!(
+                                native.channel().poll_recv(&mut cx),
+                                lost,
+                                "server={server_side} local={local_close} code={code:#x} turn={turn}"
+                            );
+                            // Every reliable read repeats the same loss, never a stream abort.
+                            assert_eq!(stream_error(&mut io).await, first);
+                        }
+                        pair.close().await;
+                    })
+                    .await
+                    .unwrap();
+                }
+            }
+        }
+    }
+}
