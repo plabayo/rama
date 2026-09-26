@@ -116,7 +116,18 @@ pub(crate) enum ReceiveEnd {
     Released,
 }
 
-struct Slot {
+/// Aborts a request that violated its datagram semantics.
+pub(crate) trait AbortRequest: Clone {
+    fn abort_request(&self);
+}
+
+impl AbortRequest for StreamAbortHandle {
+    fn abort_request(&self) {
+        self.abort(VarInt::from_u32(Code::H3_DATAGRAM_ERROR.value() as u32));
+    }
+}
+
+struct Slot<A> {
     semantics: Semantics,
     queue: VecDeque<Bytes>,
     waker: Option<Waker>,
@@ -124,7 +135,7 @@ struct Slot {
     receive: Option<ReceiveEnd>,
     // Set by every datagram routed here before the semantics are final, even one discarded.
     observed: bool,
-    abort: StreamAbortHandle,
+    abort: A,
     violated: Arc<AtomicBool>,
 }
 
@@ -135,17 +146,25 @@ struct Pending {
 }
 
 /// Work to do once the demux lock is released.
-#[derive(Default)]
 #[must_use]
-pub(crate) struct Action {
+pub(crate) struct Action<A = StreamAbortHandle> {
     wake: Option<Waker>,
-    abort: Option<StreamAbortHandle>,
+    abort: Option<A>,
 }
 
-impl Action {
+impl<A> Default for Action<A> {
+    fn default() -> Self {
+        Self {
+            wake: None,
+            abort: None,
+        }
+    }
+}
+
+impl<A: AbortRequest> Action<A> {
     pub(crate) fn run(self) {
         if let Some(abort) = self.abort {
-            abort.abort(VarInt::from_u32(Code::H3_DATAGRAM_ERROR.value() as u32));
+            abort.abort_request();
         }
         if let Some(waker) = self.wake {
             waker.wake();
@@ -154,9 +173,8 @@ impl Action {
 }
 
 /// Connection-wide datagram routing state, guarded by one short-held lock.
-#[derive(Default)]
-pub(crate) struct Demux {
-    slots: HashMap<u64, Slot>,
+pub(crate) struct Demux<A = StreamAbortHandle> {
+    slots: HashMap<u64, Slot<A>>,
     pending: VecDeque<Pending>,
     buffered: usize,
     // The lowest request stream id never registered: below it an unknown id was released.
@@ -165,7 +183,20 @@ pub(crate) struct Demux {
     closed: bool,
 }
 
-impl Demux {
+impl<A> Default for Demux<A> {
+    fn default() -> Self {
+        Self {
+            slots: HashMap::default(),
+            pending: VecDeque::new(),
+            buffered: 0,
+            watermark: 0,
+            drops: DatagramDrops::default(),
+            closed: false,
+        }
+    }
+}
+
+impl<A: AbortRequest> Demux<A> {
     /// File a received payload.
     pub(crate) fn deliver(
         &mut self,
@@ -174,7 +205,7 @@ impl Demux {
         payload: Bytes,
         now: Instant,
         lifetime: Duration,
-    ) -> Action {
+    ) -> Action<A> {
         self.expire(now);
         if self.closed {
             self.drops.receive_closed += 1;
@@ -226,10 +257,10 @@ impl Demux {
         config: &DatagramConfig,
         stream: u64,
         semantics: Semantics,
-        abort: StreamAbortHandle,
+        abort: A,
         violated: Arc<AtomicBool>,
         now: Instant,
-    ) -> Action {
+    ) -> Action<A> {
         self.expire(now);
         self.watermark = self.watermark.max(stream.saturating_add(4));
         let mut slot = Slot {
@@ -271,7 +302,12 @@ impl Demux {
     }
 
     /// Make a request's datagram semantics final.
-    pub(crate) fn decide(&mut self, config: &DatagramConfig, stream: u64, claimed: bool) -> Action {
+    pub(crate) fn decide(
+        &mut self,
+        config: &DatagramConfig,
+        stream: u64,
+        claimed: bool,
+    ) -> Action<A> {
         let Some(slot) = self.slots.get_mut(&stream) else {
             return Action::default();
         };
@@ -369,7 +405,7 @@ impl Demux {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "fuzz-utils"))]
     pub(crate) fn pending_len(&self) -> usize {
         self.pending.len()
     }
@@ -382,6 +418,33 @@ impl Demux {
     #[cfg(test)]
     pub(crate) fn slot_count(&self) -> usize {
         self.slots.len()
+    }
+
+    #[cfg(feature = "fuzz-utils")]
+    pub(crate) fn queued(&self, stream: u64) -> usize {
+        self.slots.get(&stream).map_or(0, |slot| slot.queue.len())
+    }
+
+    /// The byte accounting matches what is held, within the configured bounds.
+    #[cfg(feature = "fuzz-utils")]
+    pub(crate) fn assert_consistent(&self, limits: &DatagramLimits) {
+        let queued: usize = self
+            .slots
+            .values()
+            .flat_map(|slot| slot.queue.iter())
+            .map(Bytes::len)
+            .sum();
+        let pending: usize = self
+            .pending
+            .iter()
+            .map(|pending| pending.payload.len())
+            .sum();
+        assert_eq!(self.buffered, queued + pending);
+        assert!(self.buffered <= limits.max_buffered_bytes);
+        assert!(self.pending.len() <= limits.pending_len);
+        for slot in self.slots.values() {
+            assert!(slot.queue.len() <= limits.queue_len);
+        }
     }
 
     /// Connection closed: wake every consumer; queued datagrams stay readable.
@@ -433,20 +496,20 @@ impl Demux {
     }
 }
 
-impl Action {
+impl<A> Action<A> {
     fn merge(&mut self, other: Self) {
         self.wake = self.wake.take().or(other.wake);
         self.abort = self.abort.take().or(other.abort);
     }
 }
 
-fn enqueue(
-    slot: &mut Slot,
+fn enqueue<A>(
+    slot: &mut Slot<A>,
     limits: &DatagramLimits,
     payload: Bytes,
     buffered: &mut usize,
     drops: &mut DatagramDrops,
-) -> Action {
+) -> Action<A> {
     if limits.queue_len == 0 {
         slot.dropped += 1;
         drops.queue_full += 1;
@@ -473,13 +536,17 @@ fn enqueue(
 }
 
 /// A datagram for a request without datagram semantics (RFC 9297 §2).
-fn violation(slot: &mut Slot, policy: ViolationPolicy, drops: &mut DatagramDrops) -> Action {
+fn violation<A: Clone>(
+    slot: &mut Slot<A>,
+    policy: ViolationPolicy,
+    drops: &mut DatagramDrops,
+) -> Action<A> {
     drops.no_semantics += 1;
     reject(slot, policy)
 }
 
 /// Under [`ViolationPolicy::Reject`], abort the request once (sticky).
-fn reject(slot: &mut Slot, policy: ViolationPolicy) -> Action {
+fn reject<A: Clone>(slot: &mut Slot<A>, policy: ViolationPolicy) -> Action<A> {
     if policy == ViolationPolicy::Reject && !slot.violated.swap(true, Ordering::AcqRel) {
         return Action {
             wake: slot.waker.take(),

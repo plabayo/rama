@@ -87,6 +87,8 @@ h3-settings SECONDS="0": (_run "h3_settings" SECONDS "-max_len=4096 -timeout=10"
 
 h3-state SECONDS="0": (_run "h3_state" SECONDS "-max_len=65536 -timeout=10")
 
+h3-datagram-demux SECONDS="0": (_run "h3_datagram_demux" SECONDS "-max_len=4096 -timeout=10")
+
 qpack-field-section SECONDS="0": (_run "qpack_field_section" SECONDS "-max_len=65536 -timeout=10")
 
 qpack-encoder-stream SECONDS="0": (_run "qpack_encoder_stream" SECONDS "-max_len=65536 -timeout=10")
@@ -95,7 +97,7 @@ qpack-instruction SECONDS="0": (_run "qpack_instruction" SECONDS "-max_len=4096 
 
 qpack-stateful SECONDS="0": (_run "qpack_stateful" SECONDS "-max_len=257 -timeout=10")
 
-h3 SECONDS="0": (http-capsule SECONDS) (h3-frame SECONDS) (h3-settings SECONDS) (h3-state SECONDS) (qpack-field-section SECONDS) (qpack-encoder-stream SECONDS) (qpack-instruction SECONDS) (qpack-stateful SECONDS)
+h3 SECONDS="0": (http-capsule SECONDS) (h3-frame SECONDS) (h3-settings SECONDS) (h3-state SECONDS) (h3-datagram-demux SECONDS) (qpack-field-section SECONDS) (qpack-encoder-stream SECONDS) (qpack-instruction SECONDS) (qpack-stateful SECONDS)
 
 # The pre-release smoke pass: a minute per target.
 all-60s: (ua "60") (h2 "60") (http-headers-x-robots-tag "60") (http-header-map "60") (http-structured-fields "60") (icap "60") (quic "60") (h3 "60")

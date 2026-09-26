@@ -226,6 +226,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "h3_datagram_demux"
+path = "fuzz_targets/h3_datagram_demux.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "h3_frame"
 path = "fuzz_targets/h3_frame.rs"
 test = false

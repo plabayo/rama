@@ -4,13 +4,23 @@ use super::{
     Error,
     connection::{Config, Shared},
     control::{Control, Role},
+    datagram::{AbortRequest, DatagramConfig, DatagramLimits, Demux, ReceiveEnd, Semantics},
     frame::{FrameDecoder, FrameEvent},
     quic::RecvStream,
     stream::{Phase, Reader},
 };
+use ahash::{HashMap, HashSet};
 use rama_core::bytes::Bytes;
+use rama_http::datagram::ViolationPolicy;
 use rama_http_types::proto::h3::{Code, StreamType};
-use std::task::{Context, Poll, Waker};
+use std::{
+    cell::RefCell,
+    rc::Rc,
+    sync::{Arc, atomic::AtomicBool},
+    task::{Context, Poll, Waker},
+    time::Duration,
+};
+use tokio::time::Instant;
 
 struct Fragmented {
     bytes: Bytes,
@@ -224,4 +234,170 @@ fn compression_schedule(input: &[u8]) {
     }
     assert_eq!(encoder.tracked_section_count(), 0);
     assert_eq!(encoder.tracked_reference_count(), 0);
+}
+
+/// Records the requests the demux aborted, for the harness to end their receive side.
+#[derive(Clone)]
+struct RecordAbort(u64, Rc<RefCell<Vec<u64>>>);
+
+impl AbortRequest for RecordAbort {
+    fn abort_request(&self) {
+        self.1.borrow_mut().push(self.0);
+    }
+}
+
+/// What the harness knows of each delivered datagram, keyed by its sequence number.
+struct Sent {
+    stream: u64,
+    // Delivered after the stream's receive side ended: it must never be yielded.
+    after_end: bool,
+}
+
+/// Drive the datagram demultiplexer with arbitrary driver and consumer events.
+///
+/// Every delivered datagram must end exactly once: yielded, counted as a drop, released with
+/// its stream, or still held. Yields keep per-stream delivery order and never include a
+/// datagram delivered after its stream's receive side ended; the byte accounting matches
+/// what is held, within the limits.
+#[expect(
+    clippy::unwrap_used,
+    reason = "fuzz oracle: a violated invariant must crash the target"
+)]
+pub fn datagram_demux(input: &[u8]) {
+    let mut input = input.iter().copied();
+    let mut next = move || input.next();
+    let (Some(queue_len), Some(pending_len), Some(budget), Some(flags)) =
+        (next(), next(), next(), next())
+    else {
+        return;
+    };
+    let config = DatagramConfig {
+        limits: DatagramLimits {
+            queue_len: usize::from(queue_len % 6),
+            pending_len: usize::from(pending_len % 6),
+            max_buffered_bytes: usize::from(budget) * 4,
+        },
+        violations: if flags & 1 == 0 {
+            ViolationPolicy::Ignore
+        } else {
+            ViolationPolicy::Reject
+        },
+    };
+    let lifetime = Duration::from_millis(100);
+    let start = Instant::now();
+    let mut elapsed = Duration::ZERO;
+    let aborted = Rc::new(RefCell::new(Vec::new()));
+    let mut demux: Demux<RecordAbort> = Demux::default();
+    let mut sent: HashMap<u32, Sent> = HashMap::default();
+    let mut ended: HashSet<u64> = HashSet::default();
+    let mut last_yield: HashMap<u64, u32> = HashMap::default();
+    let (mut delivered, mut yielded, mut released) = (0u64, 0u64, 0u64);
+    let mut registered: HashSet<u64> = HashSet::default();
+    let mut next_stream = 0u64;
+    let waker = Waker::noop();
+    let cx = Context::from_waker(waker);
+
+    while let (Some(op), Some(arg)) = (next(), next()) {
+        let stream = u64::from(arg % 8) * 4;
+        let now = start + elapsed;
+        let action = match op % 8 {
+            0 => {
+                let seq = u32::try_from(delivered).unwrap();
+                let mut payload = seq.to_be_bytes().to_vec();
+                payload.resize(4 + usize::from(op >> 3), 0);
+                sent.insert(
+                    seq,
+                    Sent {
+                        stream,
+                        after_end: ended.contains(&stream),
+                    },
+                );
+                delivered += 1;
+                demux.deliver(&config, stream, Bytes::from(payload), now, lifetime)
+            }
+            // Streams register once, in order, as the driver sees them.
+            1 if stream >= next_stream => {
+                next_stream = stream + 4;
+                registered.insert(stream);
+                let semantics = match op >> 3 & 3 {
+                    0 => Semantics::Provisional,
+                    1 => Semantics::Claimed,
+                    _ => Semantics::None,
+                };
+                let abort = RecordAbort(stream, aborted.clone());
+                demux.register(
+                    &config,
+                    stream,
+                    semantics,
+                    abort,
+                    Arc::new(AtomicBool::new(false)),
+                    now,
+                )
+            }
+            2 => demux.decide(&config, stream, op & 8 != 0),
+            3 => {
+                released += demux.queued(stream) as u64;
+                registered.remove(&stream);
+                _ = demux.unregister(stream);
+                Default::default()
+            }
+            4 if registered.contains(&stream) => {
+                let end = match op >> 3 & 3 {
+                    0 => ReceiveEnd::Finished,
+                    1 => ReceiveEnd::Reset(0),
+                    2 => ReceiveEnd::Aborted(0),
+                    _ => ReceiveEnd::Released,
+                };
+                ended.insert(stream);
+                _ = demux.receive_ended(stream, end);
+                Default::default()
+            }
+            5 => {
+                if let Poll::Ready(Ok(Some(payload))) = demux.poll_recv(stream, &cx) {
+                    let seq = u32::from_be_bytes(payload[..4].try_into().unwrap());
+                    let origin = &sent[&seq];
+                    assert_eq!(origin.stream, stream, "yielded for another stream");
+                    assert!(!origin.after_end, "yielded after the receive side ended");
+                    let last = last_yield.insert(stream, seq);
+                    assert!(last.is_none_or(|last| last < seq), "out of delivery order");
+                    yielded += 1;
+                }
+                Default::default()
+            }
+            6 => {
+                ended.extend(registered.iter().copied());
+                _ = demux.close();
+                Default::default()
+            }
+            7 => {
+                elapsed += Duration::from_millis(u64::from(arg) * 4);
+                Default::default()
+            }
+            _ => Default::default(),
+        };
+        action.run();
+        // An aborted request's receive side ends, as the stream abort makes it.
+        for stream in aborted.borrow_mut().drain(..) {
+            ended.insert(stream);
+            _ = demux.receive_ended(stream, ReceiveEnd::Aborted(0));
+        }
+
+        demux.assert_consistent(&config.limits);
+        let drops = demux.drops();
+        let dropped = drops.no_semantics
+            + drops.invalid_id
+            + drops.beyond_limit
+            + drops.unknown_stream
+            + drops.receive_closed
+            + drops.queue_full
+            + drops.over_budget
+            + drops.expired;
+        let held: usize = registered.iter().map(|stream| demux.queued(*stream)).sum();
+        let held = (held + demux.pending_len()) as u64;
+        assert_eq!(
+            delivered,
+            yielded + dropped + released + held,
+            "a datagram was lost or counted twice"
+        );
+    }
 }
