@@ -41,6 +41,9 @@ use tokio::{
     sync::{Notify, mpsc},
 };
 
+#[cfg(feature = "compression")]
+use flate2::{Decompress, FlushDecompress};
+
 const LIMIT: Duration = Duration::from_secs(20);
 const URI: &str = "wss://localhost/ws";
 
@@ -354,6 +357,26 @@ async fn raw_tunnel(client: &H3Client) -> Upgraded {
     // RFC 8441 §5 via RFC 9220: no key/accept exchange on Extended CONNECT.
     assert!(!response.headers().contains_key("sec-websocket-accept"));
     handle_upgrade(&response).await.unwrap()
+}
+
+/// A raw tunnel offering `extensions`; returns the accepted extensions too.
+async fn raw_tunnel_offering(client: &H3Client, extensions: &str) -> (Option<String>, Upgraded) {
+    let request = Request::builder()
+        .method(Method::CONNECT)
+        .version(Version::HTTP_3)
+        .uri("https://localhost/ws")
+        .header("sec-websocket-version", "13")
+        .header("sec-websocket-extensions", extensions)
+        .body(Body::empty())
+        .unwrap();
+    request.extensions().insert(Protocol::WEBSOCKET);
+    let response = client.serve(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let accepted = response
+        .headers()
+        .get("sec-websocket-extensions")
+        .map(|value| value.to_str().unwrap().to_owned());
+    (accepted, handle_upgrade(&response).await.unwrap())
 }
 
 /// A client frame (masked, RFC 6455 §5.3) with a short payload.
@@ -729,6 +752,119 @@ async fn closing_a_client_after_the_close_exchange_finishes_its_stream() {
         SinkExt::close(&mut socket).await.unwrap();
         let rest = end.recv().await.unwrap().expect("FIN, not a reset");
         assert!(rest.is_empty());
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+/// Inflate one permessage-deflate message (RFC 7692 §7.2.2), keeping the peer's context.
+#[cfg(feature = "compression")]
+fn inflate(context: &mut Decompress, payload: &[u8]) -> Vec<u8> {
+    let mut input = payload.to_vec();
+    input.extend_from_slice(&[0x00, 0x00, 0xff, 0xff]);
+    let mut output = Vec::with_capacity(1024);
+    context
+        .decompress_vec(&input, &mut output, FlushDecompress::Sync)
+        .unwrap();
+    output
+}
+
+#[cfg(feature = "compression")]
+#[tokio::test]
+async fn per_message_deflate_over_h3_carries_fragments_controls_and_close() {
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::new().await;
+        let deflating = service_fn(|request: Request<Incoming>| async move {
+            WebSocketAcceptor::new()
+                .with_per_message_deflate()
+                .into_echo_service()
+                .serve(request)
+                .await
+        });
+        let client = start(&pair, true, deflating).await;
+        let (accepted, mut io) = raw_tunnel_offering(&client, "permessage-deflate").await;
+        assert!(
+            accepted
+                .as_deref()
+                .is_some_and(|value| value.starts_with("permessage-deflate")),
+            "{accepted:?}"
+        );
+        let mut server_context = Decompress::new(false);
+
+        // RFC 7692 §7.2.3.2: "Hello" compressed and fragmented, with a ping in between.
+        io.write_all(&masked(0x41, &[0xf2, 0x48, 0xcd]))
+            .await
+            .unwrap();
+        io.write_all(&masked(0x89, b"ping")).await.unwrap();
+        io.write_all(&masked(0x80, &[0xc9, 0xc9, 0x07, 0x00]))
+            .await
+            .unwrap();
+        io.flush().await.unwrap();
+        let mut pong = false;
+        let mut echo = None;
+        while !pong || echo.is_none() {
+            let (first, _, payload) = read_frame(&mut io).await;
+            match first {
+                // Control frames are never compressed (RFC 7692 §6.1).
+                0x8a => {
+                    assert_eq!(payload, b"ping");
+                    pong = true;
+                }
+                // FIN, RSV1 and text: the echo is compressed.
+                0xc1 => echo = Some(inflate(&mut server_context, &payload)),
+                other => panic!("unexpected frame {other:#x}"),
+            }
+        }
+        assert_eq!(echo.unwrap(), b"Hello");
+
+        // An uncompressed message is valid too; the echo may come back compressed.
+        io.write_all(&masked(0x81, b"plain")).await.unwrap();
+        io.flush().await.unwrap();
+        let (first, _, payload) = read_frame(&mut io).await;
+        let echoed = match first {
+            0xc1 => inflate(&mut server_context, &payload),
+            0x81 => payload,
+            other => panic!("unexpected frame {other:#x}"),
+        };
+        assert_eq!(echoed, b"plain");
+
+        // The close is uncompressed and ends with FIN.
+        io.write_all(&masked(0x88, &1000u16.to_be_bytes()))
+            .await
+            .unwrap();
+        io.flush().await.unwrap();
+        let mut bytes = Vec::new();
+        io.read_to_end(&mut bytes).await.expect("FIN, not a reset");
+        assert_eq!(bytes, [0x88, 2, 0x03, 0xe8]);
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn an_unaccepted_per_message_deflate_offer_falls_back_to_plain_frames() {
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::new().await;
+        let client = start(&pair, true, echo_server()).await;
+        let (accepted, mut io) = raw_tunnel_offering(&client, "permessage-deflate").await;
+        assert_eq!(accepted, None);
+        io.write_all(&masked(0x81, b"plain")).await.unwrap();
+        io.flush().await.unwrap();
+        let (first, _, payload) = read_frame(&mut io).await;
+        assert_eq!((first, payload.as_slice()), (0x81, b"plain".as_slice()));
+        // Without the extension RSV1 is a protocol error: the server stops the connection.
+        io.write_all(&masked(0xc1, &[0xf2, 0x48, 0xcd, 0xc9, 0xc9, 0x07, 0x00]))
+            .await
+            .unwrap();
+        io.flush().await.unwrap();
+        let mut rest = Vec::new();
+        _ = io.read_to_end(&mut rest).await;
+        assert!(
+            rest.is_empty() || rest[0] == 0x88,
+            "only a close may follow: {rest:?}"
+        );
         pair.close().await;
     })
     .await
