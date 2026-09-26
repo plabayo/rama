@@ -401,3 +401,29 @@ pub fn datagram_demux(input: &[u8]) {
         );
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::datagram_demux;
+
+    /// The fuzz oracle over deterministic inputs, so its conservation checks run with every
+    /// test pass and not only under a fuzzer.
+    #[test]
+    fn datagram_demux_sequences_keep_their_invariants() {
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for _ in 0..4000 {
+            let len = usize::try_from(next() % 512).unwrap();
+            let input: Vec<u8> = (0..len.div_ceil(8))
+                .flat_map(|_| next().to_le_bytes())
+                .take(len)
+                .collect();
+            datagram_demux(&input);
+        }
+    }
+}

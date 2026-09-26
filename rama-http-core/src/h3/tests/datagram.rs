@@ -1064,6 +1064,86 @@ async fn cancelled_extended_connects_release_their_datagram_slots() {
     .unwrap();
 }
 
+/// Wait until a datagram for the server was either discarded or buffered; report which.
+async fn discarded_or_buffered(server: &ServerConnection) -> (u64, usize) {
+    loop {
+        let discarded = server.datagram_drops().receive_closed;
+        let buffered = server.shared().datagram_demux().buffered();
+        if discarded > 0 || buffered > 0 {
+            return (discarded, buffered);
+        }
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+}
+
+#[tokio::test]
+async fn native_payloads_up_to_the_maximum_are_sent() {
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::in_memory(None, None).await;
+        let (mut client, mut server) = start(&pair, server_config(Some(Default::default()))).await;
+        let (mut client_session, mut server_session) = sessions(&mut client, &mut server).await;
+        let max = native_ready(&client_session).await;
+        assert_eq!(
+            client_session
+                .send_datagram(Bytes::from(vec![7; max]))
+                .await
+                .unwrap(),
+            DatagramTransport::Native
+        );
+        let Some(SessionEvent::Datagram { payload, transport }) =
+            server_session.recv().await.unwrap()
+        else {
+            panic!("no datagram");
+        };
+        assert_eq!((payload.len(), transport), (max, DatagramTransport::Native));
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn a_dropped_tunnel_stops_receiving_for_remaining_carrier_holders() {
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::in_memory(None, None).await;
+        let (mut client, mut server) = start(&pair, server_config(Some(Default::default()))).await;
+        let (client_session, server_session) = sessions(&mut client, &mut server).await;
+        native_ready(&client_session).await;
+        // Keeps the request's registration alive past its tunnel.
+        let holder = server_session.native().cloned().unwrap();
+        drop(server_session);
+        pair.client.send_datagram(raw_datagram(0, b"late")).unwrap();
+        assert_eq!(discarded_or_buffered(&server).await, (1, 0));
+        drop(holder);
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn a_released_receiver_discards_later_datagrams() {
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::in_memory(None, None).await;
+        let (mut client, mut server) = start(&pair, server_config(Some(Default::default()))).await;
+        let (mut client_session, server_session) = sessions(&mut client, &mut server).await;
+        native_ready(&client_session).await;
+        let (_sender, receiver) = server_session.split();
+        drop(receiver);
+        assert_eq!(
+            client_session
+                .send_datagram(Bytes::from_static(b"unread"))
+                .await
+                .unwrap(),
+            DatagramTransport::Native
+        );
+        assert_eq!(discarded_or_buffered(&server).await, (1, 0));
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
 #[tokio::test]
 async fn truncated_capsules_reset_http3_streams_as_malformed() {
     tokio::time::timeout(LIMIT, async {

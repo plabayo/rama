@@ -156,9 +156,12 @@ fn oversized_datagrams_are_discarded_without_buffering() {
         })
         .unwrap();
     let mut decoder = CapsuleDecoder::new(config(UnknownCapsules::Skip));
+    assert_eq!(decoder.dropped_datagrams(), 0);
     decoder
         .feed(Bytes::from(std::mem::take(&mut wire)))
         .unwrap();
+    // Fed but not yet polled.
+    assert!(!decoder.is_drained());
     assert_eq!(decoder.poll().unwrap(), None);
     assert_eq!(decoder.dropped_datagrams(), 1);
     // A huge skipped body retains no memory while it streams past.
@@ -174,11 +177,32 @@ fn oversized_datagrams_are_discarded_without_buffering() {
         &[&[
             capsule(CapsuleType::DATAGRAM, &[1; 33]),
             capsule(CapsuleType::DATAGRAM, b"next"),
+            capsule(CapsuleType::DATAGRAM, &[2; 40]),
         ]
         .concat()],
     );
     assert_eq!(events, [Normalized::Datagram(b"next".to_vec())]);
-    assert_eq!(decoder.dropped_datagrams(), 1);
+    assert_eq!(decoder.dropped_datagrams(), 2);
+}
+
+#[test]
+fn values_at_their_limits_are_delivered() {
+    let (events, decoder) = decode_chunks(
+        config(UnknownCapsules::Skip),
+        &[&[
+            capsule(CONTROL, &[3; 16]),
+            capsule(CapsuleType::DATAGRAM, &[4; 32]),
+        ]
+        .concat()],
+    );
+    assert_eq!(
+        events,
+        [
+            Normalized::Capsule(CONTROL, vec![3; 16]),
+            Normalized::Datagram(vec![4; 32])
+        ]
+    );
+    assert_eq!(decoder.dropped_datagrams(), 0);
 }
 
 #[test]

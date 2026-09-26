@@ -146,6 +146,7 @@ struct FakeNativeState {
     waker: Option<Waker>,
     next_error: Option<NativeSendError>,
     released: usize,
+    dropped: u64,
 }
 
 /// A third-party carrier built only from the public contract.
@@ -179,7 +180,7 @@ impl NativeDatagramChannel for FakeNative {
     }
 
     fn dropped(&self) -> u64 {
-        0
+        self.0.lock().dropped
     }
 
     fn release_recv(&self) {
@@ -485,6 +486,47 @@ async fn oversized_capsule_datagrams_are_counted_not_delivered() {
         Some(datagram(b"fits", DatagramTransport::Capsule))
     );
     assert_eq!(server.split().1.dropped_datagrams(), 1);
+}
+
+#[tokio::test]
+async fn dropped_datagrams_add_the_native_carriers_drops() {
+    let native = FakeNative::default();
+    // Only the local session has the native carrier; the peer sends capsules.
+    let (local, mut peer) = native_pair(&native);
+    native.0.lock().dropped = 3;
+    peer.send_datagram(Bytes::from(vec![1; 65])).await.unwrap();
+    peer.close().await.unwrap();
+    let (_, mut receiver) = local.split();
+    assert_eq!(receiver.recv().await.unwrap(), None);
+    assert_eq!(receiver.dropped_datagrams(), 3 + 1);
+}
+
+#[test]
+fn only_sessions_over_a_carrier_expose_it() {
+    let native = FakeNative::default();
+    let (with, _) = native_pair(&native);
+    assert!(with.native().is_some());
+    let (without, _) = pair();
+    assert!(without.native().is_none());
+}
+
+#[test]
+fn session_errors_chain_their_cause() {
+    let io = SessionError::Io(std::io::Error::other("wire"));
+    let sources: [(SessionError, bool); 5] = [
+        (SessionError::Malformed(CapsuleError::Truncated), true),
+        (SessionError::Native(NativeSendError::Full), true),
+        (SessionError::NativeRecv(NativeRecvError::Lost), true),
+        (io, true),
+        (SessionError::SendClosed, false),
+    ];
+    for (error, chained) in sources {
+        assert_eq!(
+            std::error::Error::source(&error).is_some(),
+            chained,
+            "{error:?}"
+        );
+    }
 }
 
 fn hooked(io: DuplexStream) -> (ServiceInput<DuplexStream>, Arc<AtomicUsize>) {
