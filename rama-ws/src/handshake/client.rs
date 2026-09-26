@@ -1369,7 +1369,10 @@ impl<S> ClientWebSocket<S> {
         })?
     }
 
-    /// Close the WebSocket.
+    /// Start the close handshake by sending a Close frame.
+    ///
+    /// The handshake completes once the peer's Close is read: keep receiving until the
+    /// stream ends. Dropping the socket before that aborts the connection.
     pub async fn close(&mut self, message: Option<CloseFrame>) -> Result<(), ProtocolError>
     where
         S: Sink<Message, Error = ProtocolError> + Send + Unpin,

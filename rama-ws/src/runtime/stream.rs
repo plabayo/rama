@@ -122,7 +122,10 @@ impl<S> AsyncWebSocket<S> {
         self.inner.get_config()
     }
 
-    /// Close the underlying web socket
+    /// Start the close handshake by sending a Close frame.
+    ///
+    /// The handshake completes once the peer's Close is read: keep receiving until the
+    /// stream ends. Dropping the socket before that aborts the connection.
     pub async fn close(&mut self, msg: Option<CloseFrame>) -> Result<(), ProtocolError>
     where
         S: Io + Unpin,

@@ -3,6 +3,7 @@ use super::utils;
 use rama::{
     crypto::pem::PemEncode as _,
     extensions::Extensions,
+    futures::StreamExt as _,
     http::{
         client::{EasyHttpConnectorBuilder, Http3Connector},
         ws::{Message, handshake::client::HttpClientWebSocketExt as _},
@@ -12,7 +13,12 @@ use rama::{
     utils::fs::tempdir,
 };
 use std::{net::SocketAddr, time::Duration};
-use tokio::{fs, process::Command, time::timeout};
+use tokio::{
+    fs,
+    io::{AsyncReadExt as _, AsyncWriteExt as _},
+    process::Command,
+    time::timeout,
+};
 
 const LIMIT: Duration = Duration::from_secs(30);
 
@@ -71,6 +77,10 @@ async fn test_ws_over_h3() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(output.status.success(), "{said}");
+    assert!(
+        said.contains("WebSocket over HTTP/3 close handshake completed"),
+        "{said}"
+    );
     for message in ["one", "two"] {
         assert!(
             said.contains(&format!("WebSocket echo over HTTP/3: {message}")),
@@ -137,9 +147,24 @@ async fn test_ws_over_h3() {
         .unwrap();
     let echo = timeout(LIMIT, first.recv_message()).await.unwrap().unwrap();
     assert_eq!(echo.into_data().len(), 256 * 1024);
-    first.close(None).await.unwrap();
-    second.close(None).await.unwrap();
-    drop((first, second, client));
+    // Both close handshakes complete: the server replies, then ends its stream with FIN.
+    for socket in [&mut first, &mut second] {
+        socket.close(None).await.unwrap();
+        let reply = timeout(LIMIT, socket.next()).await.unwrap();
+        assert!(matches!(reply, Some(Ok(Message::Close(_)))), "{reply:?}");
+    }
+    // On the wire: nothing but a FIN after the reply; a reset would fail this read.
+    let mut io = first.into_inner().into_inner();
+    let mut rest = Vec::new();
+    timeout(LIMIT, io.read_to_end(&mut rest))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(rest.is_empty());
+    // Best effort: the finished server may already have stopped reading (STOP_SENDING).
+    _ = io.shutdown().await;
+    assert!(timeout(LIMIT, second.next()).await.unwrap().is_none());
+    drop((io, second, client));
 
     let status = server.interrupt_within(Duration::from_secs(20)).await;
     assert!(status.success(), "{}", server.said());

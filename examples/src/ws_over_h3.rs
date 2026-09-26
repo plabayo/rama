@@ -11,14 +11,14 @@
 //! cargo run -p rama-examples --bin ws_over_h3 --features http-full,rustls,ring -- client --ca cert.pem --url wss://localhost:4433/echo --message hello
 //! ```
 //!
-//! The client sends each message, prints the echo and closes the socket cleanly.
+//! The client sends each message, prints the echo and completes the close handshake.
 //! It can also be reached with `rama send --http3 wss://localhost:4433/echo`.
 
 use clap::{Parser, Subcommand};
 use rama::{
     Layer, Service,
     crypto::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject as _},
-    error::BoxError,
+    error::{BoxError, BoxErrorExt as _},
     extensions::Extensions,
     futures::{StreamExt as _, stream::FuturesUnordered},
     graceful::Shutdown,
@@ -134,6 +134,17 @@ async fn main() -> Result<(), BoxError> {
                 tracing::info!("WebSocket echo over HTTP/3: {}", echo.into_text()?);
             }
             socket.close(None).await?;
+            // The close completes with the server's reply, after which the stream ends.
+            let mut replied = false;
+            while let Some(message) = socket.next().await {
+                replied |= matches!(message?, Message::Close(_));
+            }
+            if !replied {
+                return Err(BoxError::from_static_str(
+                    "the server did not answer the close",
+                ));
+            }
+            tracing::info!("WebSocket over HTTP/3 close handshake completed");
             drop(client);
         }
     }
