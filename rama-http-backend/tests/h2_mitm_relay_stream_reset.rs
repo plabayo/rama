@@ -8,10 +8,10 @@
 //! behavior escalated a stream-scoped reset into `close_ingress.cancel()`,
 //! which sends a connection-level `GOAWAY` and tears down all siblings.
 //!
-//! The fix lives in `serve_relay_request`'s error arm
-//! (`egress_error_is_stream_scoped` → return a `502` instead of cancelling
-//! the ingress). That arm is only reached when the egress client error
-//! actually propagates as an `Err` — which is exactly the production wiring
+//! The fix lives in `serve_http2_request`'s error arm (return a `502`
+//! instead of cancelling the ingress). That arm is only reached when the
+//! egress client error actually propagates as an `Err`, which is exactly
+//! the production wiring
 //! (`http_relay_middleware` has `Error = BoxError` and no top-level
 //! `ConsumeErrLayer` over the egress client). This test reproduces that by
 //! using an error-propagating middleware (NOT the `DefaultMiddleware`'s
@@ -113,7 +113,7 @@ async fn http2_mitm_relay_stream_reset_does_not_tear_down_ingress() {
 
     // ── Relay: MITM relay with an ERROR-PROPAGATING middleware. ──
     // Deliberately omit `ConsumeErrLayer` so a reset reaches
-    // `serve_relay_request`'s `Err` arm — the fix's code path. `ArcLayer`
+    // `serve_http2_request`'s `Err` arm, the fix's code path. `ArcLayer`
     // boxes the egress client to `Error = BoxError` (still `Into<BoxError>`)
     // without consuming errors, mirroring the production relay middleware.
     graceful.spawn_task_fn(async move |guard| {

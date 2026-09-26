@@ -84,140 +84,119 @@ mod private {
     use tokio::select;
 
     pub trait Sealed {
-        fn http_core_serve_connection<IO, S, Response>(
+        fn http_core_serve_connection<IO, S, Response, G>(
             &self,
             io: IO,
             service: S,
             guard: Option<ShutdownGuard>,
+            graceful: G,
         ) -> impl Future<Output = HttpServeResult> + Send + '_
         where
             IO: Io + ExtensionsRef,
             S: Service<Request, Output = Response, Error = Infallible> + Clone,
-            Response: IntoResponse + Send + 'static;
+            Response: IntoResponse + Send + 'static,
+            G: Future<Output = ()> + Send + 'static;
+    }
+
+    /// Resolves on executor shutdown or on the connection's own signal.
+    async fn shutdown_signal<G>(guard: Option<&ShutdownGuard>, graceful: G)
+    where
+        G: Future<Output = ()>,
+    {
+        let guard = async {
+            match guard {
+                Some(guard) => guard.cancelled().await,
+                None => std::future::pending().await,
+            }
+        };
+        select! {
+            () = guard => (),
+            () = graceful => (),
+        }
+    }
+
+    macro_rules! serve_until_graceful_shutdown {
+        ($conn:ident, $guard:ident, $graceful:ident, $map:ident) => {{
+            let mut shutdown = pin!(shutdown_signal($guard.as_ref(), $graceful).fuse());
+            select! {
+                () = shutdown.as_mut() => {
+                    tracing::trace!("signal received: initiate graceful shutdown");
+                    $conn.as_mut().graceful_shutdown();
+                }
+                result = $conn.as_mut() => {
+                    tracing::trace!("connection finished");
+                    return $map(result);
+                }
+            }
+            let result = $conn.as_mut().await;
+            tracing::trace!("connection finished after graceful shutdown");
+            $map(result)
+        }};
     }
 
     impl Sealed for super::Http1Builder {
         #[inline]
-        async fn http_core_serve_connection<IO, S, Response>(
+        async fn http_core_serve_connection<IO, S, Response, G>(
             &self,
             io: IO,
             service: S,
             guard: Option<ShutdownGuard>,
+            graceful: G,
         ) -> HttpServeResult
         where
             IO: Io + ExtensionsRef,
             S: Service<Request, Output = Response, Error = Infallible> + Clone,
             Response: IntoResponse + Send + 'static,
+            G: Future<Output = ()> + Send + 'static,
         {
             let service = RamaHttpService::new(service);
-
             let stream = Box::pin(io);
-
             let mut conn = pin!(self.serve_connection(stream, service).with_upgrades());
-
-            if let Some(guard) = guard {
-                let mut cancelled_fut = pin!(guard.cancelled().fuse());
-
-                select! {
-                    _ = cancelled_fut.as_mut() => {
-                        tracing::trace!("signal received: initiate graceful shutdown");
-                        conn.as_mut().graceful_shutdown();
-                    }
-                    result = conn.as_mut() => {
-                        tracing::trace!("connection finished");
-                        return map_http_core_result(result);
-                    }
-                }
-
-                let result = conn.as_mut().await;
-                tracing::trace!("connection finished after graceful shutdown");
-                map_http_core_result(result)
-            } else {
-                map_http_core_result(conn.await)
-            }
+            serve_until_graceful_shutdown!(conn, guard, graceful, map_http_core_result)
         }
     }
 
     impl Sealed for super::Http2Builder {
         #[inline]
-        async fn http_core_serve_connection<IO, S, Response>(
+        async fn http_core_serve_connection<IO, S, Response, G>(
             &self,
             io: IO,
             service: S,
             guard: Option<ShutdownGuard>,
+            graceful: G,
         ) -> HttpServeResult
         where
             IO: Io + ExtensionsRef,
             S: Service<Request, Output = Response, Error = Infallible> + Clone,
             Response: IntoResponse + Send + 'static,
+            G: Future<Output = ()> + Send + 'static,
         {
             let service = RamaHttpService::new(service);
-
             let stream = Box::pin(io);
-
             let mut conn = pin!(self.serve_connection(stream, service));
-
-            if let Some(guard) = guard {
-                let mut cancelled_fut = pin!(guard.cancelled().fuse());
-
-                select! {
-                    _ = cancelled_fut.as_mut() => {
-                        tracing::trace!("signal received: initiate graceful shutdown");
-                        conn.as_mut().graceful_shutdown();
-                    }
-                    result = conn.as_mut() => {
-                        tracing::trace!("connection finished");
-                        return map_http_core_result(result);
-                    }
-                }
-
-                let result = conn.as_mut().await;
-                tracing::trace!("connection finished after graceful shutdown");
-                map_http_core_result(result)
-            } else {
-                map_http_core_result(conn.await)
-            }
+            serve_until_graceful_shutdown!(conn, guard, graceful, map_http_core_result)
         }
     }
 
     impl Sealed for super::AutoBuilder {
         #[inline]
-        async fn http_core_serve_connection<IO, S, Response>(
+        async fn http_core_serve_connection<IO, S, Response, G>(
             &self,
             io: IO,
             service: S,
             guard: Option<ShutdownGuard>,
+            graceful: G,
         ) -> HttpServeResult
         where
             IO: Io + ExtensionsRef,
             S: Service<Request, Output = Response, Error = Infallible> + Clone,
             Response: IntoResponse + Send + 'static,
+            G: Future<Output = ()> + Send + 'static,
         {
             let service = RamaHttpService::new(service);
             let stream = Box::pin(io);
-
             let mut conn = pin!(self.serve_connection_with_upgrades(stream, service));
-
-            if let Some(guard) = guard {
-                let mut cancelled_fut = pin!(guard.cancelled().fuse());
-
-                select! {
-                    _ = cancelled_fut.as_mut() => {
-                        tracing::trace!("signal received: nop: graceful shutdown not supported for auto builder");
-                        conn.as_mut().graceful_shutdown();
-                    }
-                    result = conn.as_mut() => {
-                        tracing::trace!("connection finished");
-                        return map_boxed_http_core_result(result);
-                    }
-                }
-
-                let result = conn.as_mut().await;
-                tracing::trace!("connection finished after graceful shutdown");
-                map_boxed_http_core_result(result)
-            } else {
-                map_boxed_http_core_result(conn.await)
-            }
+            serve_until_graceful_shutdown!(conn, guard, graceful, map_boxed_http_core_result)
         }
     }
 }
