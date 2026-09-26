@@ -119,37 +119,40 @@ impl TlsMitmClientAuthPlan {
         }))
     }
 
-    /// Require a client certificate trusted by this prebuilt store. The store is
-    /// reference-counted by BoringSSL, so callers can cheaply clone and reuse it.
-    #[must_use]
-    pub fn with_ingress_trust(self, store: rama_boring::x509::store::X509Store) -> Self {
-        self.with_ingress(move |ssl| {
-            ssl.set_verify_cert_store(store)?;
-            ssl.set_verify(
-                rama_boring::ssl::SslVerifyMode::PEER
-                    | rama_boring::ssl::SslVerifyMode::FAIL_IF_NO_PEER_CERT,
-            );
-            Ok(())
-        })
+    rama_utils::macros::generate_set_and_with! {
+        /// Require a client certificate trusted by this prebuilt store. The store is
+        /// reference-counted by BoringSSL, so callers can cheaply clone and reuse it.
+        pub fn ingress_trust(mut self, store: rama_boring::x509::store::X509Store) -> Self {
+            self.set_ingress(move |ssl| {
+                ssl.set_verify_cert_store(store)?;
+                ssl.set_verify(
+                    rama_boring::ssl::SslVerifyMode::PEER
+                        | rama_boring::ssl::SslVerifyMode::FAIL_IF_NO_PEER_CERT,
+                );
+                Ok(())
+            });
+            self
+        }
     }
 
-    /// Configure native ingress authentication on this connection, after routing
-    /// and before its handshake. Set verification mode, trust, CA hints and any
-    /// custom verifier here. Calls compose in order. Never mutate a shared cached
-    /// acceptor for flow policy.
-    #[must_use]
-    pub fn with_ingress<F>(mut self, configure: F) -> Self
-    where
-        F: FnOnce(&mut SslRef) -> Result<(), BoxError> + Send + 'static,
-    {
-        let previous = self.configure;
-        self.configure = Some(Box::new(move |ssl| {
-            if let Some(previous) = previous {
-                previous(ssl)?;
-            }
-            configure(ssl)
-        }));
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Configure native ingress authentication on this connection, after routing
+        /// and before its handshake. Set verification mode, trust, CA hints and any
+        /// custom verifier here. Calls compose in order. Never mutate a shared cached
+        /// acceptor for flow policy.
+        pub fn ingress(
+            mut self,
+            configure: impl FnOnce(&mut SslRef) -> Result<(), BoxError> + Send + 'static,
+        ) -> Self {
+            let previous = self.configure.take();
+            self.configure = Some(Box::new(move |ssl| {
+                if let Some(previous) = previous {
+                    previous(ssl)?;
+                }
+                configure(ssl)
+            }));
+            self
+        }
     }
 }
 

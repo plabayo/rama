@@ -756,22 +756,21 @@ async fn optional_ingress_can_mirror_or_fall_back_without_a_certificate() {
         for present in [false, true] {
             let policy =
                 TlsMitmClientAuthPolicy::new(service_fn(|_: TlsMitmClientAuthInput| async {
-                    Ok::<_, Infallible>(
-                        TlsMitmClientAuthPlan::new(service_fn(
-                            |identity: TlsMitmClientIdentity| async move {
-                                Ok::<_, Infallible>(Some(if identity.leaf().is_some() {
-                                    material().guest.credential()
-                                } else {
-                                    material().mapped.credential()
-                                }))
-                            },
-                        ))
-                        .with_ingress_trust(store(&material().ca.cert))
-                        .with_ingress(|ssl| {
+                    let mut plan = TlsMitmClientAuthPlan::new(service_fn(
+                        |identity: TlsMitmClientIdentity| async move {
+                            Ok::<_, Infallible>(Some(if identity.leaf().is_some() {
+                                material().guest.credential()
+                            } else {
+                                material().mapped.credential()
+                            }))
+                        },
+                    ));
+                    plan.set_ingress_trust(store(&material().ca.cert))
+                        .set_ingress(|ssl| {
                             ssl.set_verify(SslVerifyMode::PEER);
                             Ok(())
-                        }),
-                    )
+                        });
+                    Ok::<_, Infallible>(plan)
                 }));
             let result = run(
                 &relay().with_client_auth(policy),
