@@ -9,20 +9,30 @@ use rama::{
     graceful::Shutdown,
     http::{
         Request, Response, Version,
+        header::{HOST, SEC_WEBSOCKET_EXTENSIONS},
         io::upgrade::{Upgraded, handle_upgrade},
         layer::error_handling::ErrorHandlerLayer,
+        layer::validate_request::ValidateRequestHeaderLayer,
         server::HttpServer,
         service::web::Router,
         ws::handshake::server::WebSocketAcceptor,
     },
     layer::{ArcLayer, ConsumeErrLayer},
-    net::{address::SocketAddress, tls::ApplicationProtocol},
+    net::{
+        address::{Domain, SocketAddress},
+        tls::ApplicationProtocol,
+        user::credentials::basic,
+    },
     quic::{Endpoint, ServerConfig, TransportConfig, tls::TlsOptions},
     rt::Executor,
+    service::service_fn,
     tcp::server::TcpListener,
     tls::{
         boring::server::TlsAcceptorLayer,
-        server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
+        server::{
+            CertificateIdentity, GeneratedServerAuthConfig, LeafCertRequest, SelfSignedCaConfig,
+            ServerAuthData, TlsServerConfig,
+        },
     },
     utils::fs::{TempDir, tempdir},
 };
@@ -56,8 +66,24 @@ struct Fixture {
 
 impl Fixture {
     async fn new() -> TestResult<Self> {
+        Self::with_config(GeneratedServerAuthConfig::default()).await
+    }
+
+    /// A server certificate valid for `name` only.
+    async fn for_name(name: &'static str) -> TestResult<Self> {
+        Self::with_config(GeneratedServerAuthConfig::GeneratedCa {
+            ca: SelfSignedCaConfig::default(),
+            leaf: LeafCertRequest {
+                identities: vec![CertificateIdentity::Dns(Domain::from_static(name))],
+                ..LeafCertRequest::default()
+            },
+        })
+        .await
+    }
+
+    async fn with_config(config: GeneratedServerAuthConfig) -> TestResult<Self> {
         let directory = tempdir()?;
-        let auth = ServerAuthData::new_generated(GeneratedServerAuthConfig::default())?;
+        let auth = ServerAuthData::new_generated(config)?;
         let ca = directory.path().join("ca.pem");
         let mut pem = Vec::new();
         for cert in &auth.cert_chain {
@@ -723,6 +749,141 @@ async fn unreadable_input_fails_the_executable_after_a_clean_close() -> TestResu
             report(&output)
         );
         outcome(version, refused).await?;
+        server.close().await?;
+    }
+    Ok(())
+}
+
+/// Records each request's target and `Host`, with what `inspect` reports of its response.
+fn recording<S>(
+    inner: S,
+    seen: Arc<Mutex<Vec<String>>>,
+    inspect: fn(&Response) -> String,
+) -> impl Service<Request, Output = Response, Error = Infallible> + Clone
+where
+    S: Service<Request, Output = Response, Error = Infallible> + Clone,
+{
+    let inner = Arc::new(inner);
+    service_fn(move |request: Request| {
+        let inner = inner.clone();
+        let seen = seen.clone();
+        async move {
+            let summary = format!("{} {:?}", request.uri(), request.headers().get(HOST));
+            let response = inner.serve(request).await?;
+            seen.lock()
+                .push(format!("{summary} {}", inspect(&response)));
+            Ok(response)
+        }
+    })
+}
+
+#[tokio::test]
+async fn websockets_authenticate_on_every_http_version() -> TestResult {
+    let fixture = Fixture::new().await?;
+    for (version, flag) in VERSIONS {
+        let echo = ConsumeErrLayer::trace_as_debug()
+            .into_layer(WebSocketAcceptor::new().into_echo_service());
+        let guarded = ValidateRequestHeaderLayer::auth(basic!("john", "secret")).into_layer(echo);
+        let server = WsServer::start(fixture.auth.clone(), version, true, guarded).await?;
+        let url = server.url();
+        for args in [vec![flag], vec![flag, "-u", "john:wrong"]] {
+            let output = fixture.send(&url, &args, b"denied\n").await?;
+            assert_eq!(
+                output.status.code(),
+                Some(1),
+                "{args:?}\n{}",
+                report(&output)
+            );
+            assert!(output.stdout.is_empty(), "{args:?}\n{}", report(&output));
+        }
+        // The same server accepts the right credentials afterwards.
+        let output = fixture
+            .send(&url, &[flag, "-u", "john:secret"], b"allowed\n")
+            .await?;
+        assert!(output.status.success(), "{version:?}\n{}", report(&output));
+        assert_eq!(
+            output.stdout,
+            b"allowed\n",
+            "{version:?}\n{}",
+            report(&output)
+        );
+        server.close().await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn websockets_keep_the_logical_name_behind_a_resolve_override() -> TestResult {
+    const NAME: &str = "ws.example.test";
+    let fixture = Fixture::for_name(NAME).await?;
+    for (version, flag) in VERSIONS {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let echo = ConsumeErrLayer::trace_as_debug()
+            .into_layer(WebSocketAcceptor::new().into_echo_service());
+        let service = recording(echo, seen.clone(), |response| response.status().to_string());
+        let server = WsServer::start(fixture.auth.clone(), version, true, service).await?;
+        let port = server.address.port();
+        let url = format!("wss://{NAME}:{port}/echo");
+
+        // A `.test` name never resolves on its own (checked once: a lookup takes seconds).
+        if version == Version::HTTP_11 {
+            let output = fixture.send(&url, &[flag], b"unresolved\n").await?;
+            assert_eq!(output.status.code(), Some(1), "{}", report(&output));
+            assert!(seen.lock().is_empty());
+        }
+
+        let resolve = format!("{NAME}:{port}:127.0.0.1");
+        let output = fixture
+            .send(&url, &[flag, "--resolve", &resolve], b"resolved\n")
+            .await?;
+        assert!(output.status.success(), "{version:?}\n{}", report(&output));
+        assert_eq!(
+            output.stdout,
+            b"resolved\n",
+            "{version:?}\n{}",
+            report(&output)
+        );
+        // The certificate only names NAME, and the request still addresses it.
+        let seen = seen.lock().clone();
+        assert_eq!(seen.len(), 1, "{version:?}: {seen:?}");
+        assert!(
+            seen[0].contains(&format!("{NAME}:{port}")),
+            "{version:?}: {seen:?}"
+        );
+        server.close().await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn websockets_negotiate_per_message_deflate_on_every_http_version() -> TestResult {
+    let fixture = Fixture::new().await?;
+    let long = "compressible ".repeat(20_000);
+    let input = format!("short\n{long}\n");
+    for (version, flag) in VERSIONS {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let echo = ConsumeErrLayer::trace_as_debug().into_layer(
+            WebSocketAcceptor::new()
+                .with_per_message_deflate()
+                .into_echo_service(),
+        );
+        let service = recording(echo, seen.clone(), |response| {
+            format!("{:?}", response.headers().get(SEC_WEBSOCKET_EXTENSIONS))
+        });
+        let server = WsServer::start(fixture.auth.clone(), version, true, service).await?;
+        let output = fixture
+            .send(&server.url(), &[flag], input.as_bytes())
+            .await?;
+        assert!(output.status.success(), "{version:?}\n{}", report(&output));
+        assert!(
+            output.stdout == input.as_bytes(),
+            "{version:?}: echo differs"
+        );
+        let seen = seen.lock().clone();
+        assert!(
+            seen.len() == 1 && seen[0].contains("permessage-deflate"),
+            "{version:?}: {seen:?}"
+        );
         server.close().await?;
     }
     Ok(())
