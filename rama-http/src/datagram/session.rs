@@ -212,6 +212,7 @@ where
                 read_chunk_size: config.read_chunk_size.max(1),
                 native_first: true,
                 native_open: true,
+                native_released: false,
                 end: None,
             },
         }
@@ -432,7 +433,7 @@ impl<T: AsyncWrite> SessionSender<T> {
                 // Negotiation raced away: reliable delivery is still correct.
                 Err(NativeSendError::Unavailable) => (),
                 Err(NativeSendError::Closed) => {
-                    self.state = SendState::NativeClosed;
+                    self.stop(SendState::NativeClosed);
                     return Err(SessionError::Native(NativeSendError::Closed));
                 }
                 Err(error) => return Err(SessionError::Native(error)),
@@ -567,7 +568,13 @@ impl<T: AsyncWrite> SessionSender<T> {
     }
 
     fn poll_write_pending(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), SessionError>> {
-        self.check_open()?;
+        if let Err(error) = self.check_open() {
+            // Nothing accepted can be written after an abort by either half.
+            if self.io.is_aborted() {
+                self.pending = [Bytes::new(), Bytes::new()];
+            }
+            return Poll::Ready(Err(error));
+        }
         for i in 0..self.pending.len() {
             while !self.pending[i].is_empty() {
                 let chunk = &self.pending[i];
@@ -584,6 +591,8 @@ impl<T: AsyncWrite> SessionSender<T> {
                 self.on_wire = true;
                 self.pending[i].advance(written);
             }
+            // Written: the handle must not keep the caller's storage alive.
+            self.pending[i] = Bytes::new();
         }
         if self.remainder == 0 {
             self.on_wire = false;
@@ -592,8 +601,14 @@ impl<T: AsyncWrite> SessionSender<T> {
     }
 
     fn failed(&mut self, error: io::Error) -> SessionError {
-        self.state = SendState::Failed(error.kind());
+        self.stop(SendState::Failed(error.kind()));
         SessionError::Io(error)
+    }
+
+    /// End sending for good: accepted bytes that were not written never will be.
+    fn stop(&mut self, state: SendState) {
+        self.state = state;
+        self.pending = [Bytes::new(), Bytes::new()];
     }
 }
 
@@ -618,6 +633,8 @@ pub struct SessionReceiver<T> {
     read_chunk_size: usize,
     native_first: bool,
     native_open: bool,
+    // The native consumer was released, at a clean end or on drop.
+    native_released: bool,
     end: Option<RecvEnd>,
 }
 
@@ -633,7 +650,16 @@ impl<T> fmt::Debug for SessionReceiver<T> {
 impl<T> Drop for SessionReceiver<T> {
     fn drop(&mut self) {
         // Nobody consumes native datagrams any more; the transport stops queueing them.
-        if let Some(native) = &self.native {
+        self.release_native();
+    }
+}
+
+impl<T> SessionReceiver<T> {
+    fn release_native(&mut self) {
+        if let Some(native) = &self.native
+            && !self.native_released
+        {
+            self.native_released = true;
             native.channel().release_recv();
         }
     }
@@ -761,6 +787,11 @@ impl<T: AsyncRead> SessionReceiver<T> {
         self.end = Some(end);
         self.buf = BytesMut::new();
         self.decoder.release_storage();
+        // A clean end is final for this receiver: free its native queue now, not at drop.
+        // Other ends keep the carrier's own status (such as a reset) for its other holders.
+        if matches!(end, RecvEnd::Clean) {
+            self.release_native();
+        }
     }
 
     fn fail(&mut self, error: CapsuleError) -> SessionError {

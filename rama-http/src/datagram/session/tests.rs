@@ -1496,3 +1496,95 @@ async fn ended_receivers_keep_no_share_of_delivered_payloads() {
         assert!(payload.is_unique(), "tail {tail:?}");
     }
 }
+
+/// Counts drops of a payload's storage.
+struct Owned(Vec<u8>, Arc<AtomicUsize>);
+
+impl AsRef<[u8]> for Owned {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl Drop for Owned {
+    fn drop(&mut self) {
+        self.1.fetch_add(1, Ordering::AcqRel);
+    }
+}
+
+fn owned(len: usize, dropped: &Arc<AtomicUsize>) -> Bytes {
+    Bytes::from_owner(Owned(vec![7; len], dropped.clone()))
+}
+
+#[tokio::test]
+async fn sent_payloads_are_released_once_written() {
+    for mode in ["capsule", "streamed", "datagram"] {
+        let (mut session, mut peer) = pair();
+        let dropped = Arc::new(AtomicUsize::new(0));
+        match mode {
+            "capsule" => session.send_capsule(CONTROL, owned(32, &dropped)).await,
+            "streamed" => {
+                session
+                    .start_capsule(CapsuleHeader::new(CONTROL, 32).unwrap())
+                    .await
+                    .unwrap();
+                session.send_capsule_data(owned(32, &dropped)).await
+            }
+            _ => session.send_datagram(owned(32, &dropped)).await.map(drop),
+        }
+        .unwrap();
+        assert_eq!(
+            dropped.load(Ordering::Acquire),
+            1,
+            "{mode}: kept after writing"
+        );
+        session.close().await.unwrap();
+        assert_eq!(dropped.load(Ordering::Acquire), 1, "{mode}");
+        assert!(peer.recv().await.unwrap().is_some(), "{mode}");
+        assert_eq!(peer.recv().await.unwrap(), None, "{mode}");
+    }
+}
+
+#[tokio::test]
+async fn failed_sends_release_accepted_payloads() {
+    let io = FailsOnce {
+        read_failed: false,
+        write_failed: false,
+        extensions: Extensions::new(),
+    };
+    let mut session = HttpDatagramSession::with_config(io, config());
+    let dropped = Arc::new(AtomicUsize::new(0));
+    let error = session
+        .send_capsule(CONTROL, owned(32, &dropped))
+        .await
+        .unwrap_err();
+    assert!(matches!(&error, SessionError::Io(error) if error.kind() == io::ErrorKind::BrokenPipe));
+    // Sending is over for good: the accepted payload is gone while the session lives on.
+    assert_eq!(dropped.load(Ordering::Acquire), 1);
+}
+
+#[tokio::test]
+async fn cancelled_sends_keep_their_accepted_payload_until_written() {
+    // Room for less than one capsule until the peer reads.
+    let (a, mut b) = tokio::io::duplex(8);
+    let mut session = HttpDatagramSession::with_config(ServiceInput::new(a), config());
+    let dropped = Arc::new(AtomicUsize::new(0));
+    {
+        let send = session.send_capsule(CONTROL, owned(32, &dropped));
+        tokio::pin!(send);
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(send.as_mut().poll(&mut cx).is_pending());
+    }
+    // Accepted but unwritten: it is still owned, to be written by the next operation.
+    assert_eq!(dropped.load(Ordering::Acquire), 0);
+    let reader = tokio::spawn(async move {
+        let mut wire = Vec::new();
+        b.read_to_end(&mut wire).await.unwrap();
+        wire
+    });
+    session.close().await.unwrap();
+    drop(session);
+    let wire = reader.await.unwrap();
+    assert_eq!(wire, encode_capsule(CONTROL, &[7; 32]).unwrap());
+    assert_eq!(dropped.load(Ordering::Acquire), 1);
+}
