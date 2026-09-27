@@ -6,13 +6,21 @@ use super::{
     control::{Control, Role},
     datagram::{AbortRequest, DatagramConfig, DatagramLimits, Demux, ReceiveEnd, Semantics},
     frame::{FrameDecoder, FrameEvent},
+    headers::{encode_request, request_head as decode_request_head},
+    qpack::{Decoder, DecoderConfig, FieldPair},
     quic::RecvStream,
     stream::{Phase, Reader},
 };
 use ahash::{HashMap, HashSet};
-use rama_core::bytes::Bytes;
+use rama_core::{bytes::Bytes, extensions::ExtensionsRef as _};
 use rama_http::datagram::ViolationPolicy;
-use rama_http_types::proto::h3::{Code, StreamType};
+use rama_http_types::{
+    Method,
+    proto::{
+        ext::Protocol,
+        h3::{Code, StreamType},
+    },
+};
 use std::{
     cell::RefCell,
     rc::Rc,
@@ -486,7 +494,8 @@ pub fn datagram_demux(input: &[u8]) {
             + drops.receive_closed
             + drops.queue_full
             + drops.over_budget
-            + drops.expired;
+            + drops.expired
+            + drops.unadvertised;
         let held: usize = registered.iter().map(|stream| demux.queued(*stream)).sum();
         let held = (held + demux.pending_len()) as u64;
         assert_eq!(
@@ -497,9 +506,118 @@ pub fn datagram_demux(input: &[u8]) {
     }
 }
 
+/// Field names the request-head input selects from; other selectors become raw names.
+const REQUEST_FIELD_NAMES: [&[u8]; 12] = [
+    b":method",
+    b":scheme",
+    b":authority",
+    b":path",
+    b":protocol",
+    b":status",
+    b"host",
+    b"content-length",
+    b"capsule-protocol",
+    b"connection",
+    b"te",
+    b"x-field",
+];
+
+/// Decode arbitrary request field lines with and without Extended CONNECT (RFC 9220 §3).
+/// A head that is accepted must re-encode, and decode back to the same request, so a relay
+/// can forward everything it accepts. Each field is a selector byte, a length and a value.
+/// Returns how many of the two variants accepted the head.
+#[expect(
+    clippy::expect_used,
+    reason = "an accepted head that cannot be forwarded is the defect this oracle reports"
+)]
+pub fn request_head(input: &[u8]) -> usize {
+    let mut fields = Vec::new();
+    let mut rest = input;
+    while let [selector, len, tail @ ..] = rest
+        && fields.len() < 32
+    {
+        let (value, next) = tail.split_at(usize::from(len % 64).min(tail.len()));
+        let name = REQUEST_FIELD_NAMES
+            .get(usize::from(selector & 0x7f))
+            .map_or_else(
+                || Bytes::copy_from_slice(&[*selector]),
+                |name| Bytes::from_static(name),
+            );
+        fields.push(FieldPair {
+            name,
+            value: Bytes::copy_from_slice(value),
+            never_index: selector & 0x80 != 0,
+        });
+        rest = next;
+    }
+    let mut accepted = 0;
+    for extended_connect in [false, true] {
+        let Ok(request) = decode_request_head(fields.clone(), extended_connect) else {
+            continue;
+        };
+        accepted += 1;
+        let protocol = request.extensions().get_ref::<Protocol>().cloned();
+        assert!(
+            protocol.is_none() || (extended_connect && request.method() == Method::CONNECT),
+            ":protocol accepted outside an enabled Extended CONNECT"
+        );
+        let Ok(shared) = Shared::new(Config::default(), Role::Client, Default::default()) else {
+            return accepted;
+        };
+        let encoded = encode_request(&shared, 0, &request).expect("an accepted head re-encodes");
+        let decoded = Decoder::new(DecoderConfig::default())
+            .decode_field_section(0, encoded)
+            .expect("the encoder output decodes")
+            .expect("static-only sections never block");
+        let again = decode_request_head(decoded, extended_connect).expect("re-encoded head");
+        assert_eq!(again.method(), request.method());
+        assert_eq!(again.uri(), request.uri());
+        assert_eq!(again.headers(), request.headers());
+        assert_eq!(again.extensions().get_ref::<Protocol>().cloned(), protocol);
+    }
+    accepted
+}
+
 #[cfg(test)]
 mod tests {
-    use super::datagram_demux;
+    use super::{REQUEST_FIELD_NAMES, datagram_demux, request_head};
+
+    /// Well-formed Extended CONNECT heads, then their byte-level mutations.
+    #[test]
+    fn request_heads_round_trip_when_accepted() {
+        let field = |name: &[u8], value: &[u8]| {
+            let selector = REQUEST_FIELD_NAMES.iter().position(|known| *known == name);
+            let mut bytes = vec![u8::try_from(selector.unwrap()).unwrap(), value.len() as u8];
+            bytes.extend_from_slice(value);
+            bytes
+        };
+        let head: Vec<u8> = [
+            field(b":method", b"CONNECT"),
+            field(b":protocol", b"websocket"),
+            field(b":scheme", b"https"),
+            field(b":authority", b"example.com"),
+            field(b":path", b"/chat"),
+            field(b"capsule-protocol", b"?1"),
+        ]
+        .concat();
+        assert_eq!(
+            request_head(&head),
+            1,
+            "accepted only with Extended CONNECT"
+        );
+        let mut accepted = 0;
+        for index in 0..head.len() {
+            for flip in [0x01, 0x20, 0x80] {
+                let mut mutated = head.clone();
+                mutated[index] ^= flip;
+                accepted += request_head(&mutated);
+            }
+        }
+        assert!(
+            accepted > 0,
+            "some mutations stay acceptable and round-trip"
+        );
+    }
 
     /// The fuzz oracle over deterministic inputs, so its conservation checks run with every
     /// test pass and not only under a fuzzer.

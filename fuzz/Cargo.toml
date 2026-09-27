@@ -233,6 +233,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "h3_request_head"
+path = "fuzz_targets/h3_request_head.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "h3_frame"
 path = "fuzz_targets/h3_frame.rs"
 test = false
