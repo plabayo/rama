@@ -313,8 +313,8 @@ fn encode_request_target_preserving_form(
 ///
 /// Direct requests use origin-form, `CONNECT` uses authority-form, `OPTIONS
 /// *` uses asterisk-form, and insecure requests on an established HTTP forward
-/// proxy connection use absolute-form. Userinfo and fragments are never
-/// emitted. Route intent is deliberately ignored: the established connection
+/// proxy connection use absolute-form. Fragments are never emitted, nor is
+/// userinfo for HTTP-family schemes (see [`Uri::write_http_absolute_form`]). Route intent is deliberately ignored: the established connection
 /// route is the only authoritative signal after fallback and pool selection.
 /// When an [`Egress`](rama_core::extensions::Egress) connection snapshot is
 /// present, its route (including absence) takes precedence over request-local
@@ -438,6 +438,7 @@ impl std::error::Error for HeadError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rama_net::address::ProxyAddress;
 
     #[test]
     fn parses_request_without_copying_header_values() {
@@ -605,8 +606,30 @@ mod tests {
     }
 
     #[test]
+    fn forward_proxy_targets_keep_userinfo_outside_the_http_family() {
+        let proxy: ProxyAddress = "http://proxy.example:8080".parse().unwrap();
+        for (uri, target) in [
+            (
+                "http://user@origin.example/p",
+                "GET http://origin.example/p HTTP/1.1\r\n",
+            ),
+            (
+                "ftp://user:pw@origin.example/f",
+                "GET ftp://user:pw@origin.example/f HTTP/1.1\r\n",
+            ),
+        ] {
+            let request = Request::builder().uri(uri).body(()).unwrap();
+            request
+                .extensions()
+                .insert(EstablishedProxyRoute::Forward(proxy.clone()));
+            let encoded = encode_request(&request).unwrap();
+            assert!(encoded.starts_with(target.as_bytes()), "{uri}: {encoded:?}");
+        }
+    }
+
+    #[test]
     fn established_proxy_route_overrides_route_intent() {
-        use rama_net::{address::ProxyAddress, client::ProxyRoute};
+        use rama_net::client::ProxyRoute;
 
         let proxy: ProxyAddress = "http://proxy.example:8080".parse().unwrap();
         for (route, target) in [

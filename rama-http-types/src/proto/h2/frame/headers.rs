@@ -665,7 +665,9 @@ impl Pseudo {
             PseudoHeader::Protocol => self.protocol.take().map(hpack::Header::Protocol),
             PseudoHeader::Status => self.status.take().map(hpack::Header::Status),
         }?;
-        Some(header.with_sensitive(self.sensitivity.is_sensitive(name)))
+        // Userinfo, kept only outside the HTTP family, is never indexed.
+        let credentials = matches!(&header, hpack::Header::Authority(value) if value.contains('@'));
+        Some(header.with_sensitive(self.sensitivity.is_sensitive(name) || credentials))
     }
 
     pub fn request(method: Method, uri: &Uri, protocol: Option<Protocol>) -> Self {
@@ -1202,6 +1204,31 @@ fn decoded_header_size(name: usize, value: usize) -> usize {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn authority_userinfo_is_kept_outside_the_http_family_and_never_indexed() {
+        for (uri, authority, sensitive) in [
+            ("https://user@example.com/", "example.com", false),
+            ("ftp://user:pw@example.com/f", "user:pw@example.com", true),
+        ] {
+            let mut pseudo = Pseudo::request(Method::GET, &uri.parse().unwrap(), None);
+            let (value, never_indexed) = match pseudo.take_header(PseudoHeader::Authority) {
+                Some(hpack::Header::Authority(value)) => (value, false),
+                Some(hpack::Header::NeverIndexed(value)) => {
+                    match value.into_header::<Option<HeaderName>>() {
+                        hpack::Header::Authority(value) => (value, true),
+                        other => panic!("{other:?}"),
+                    }
+                }
+                other => panic!("{other:?}"),
+            };
+            assert_eq!(
+                (value.as_str(), never_indexed),
+                (authority, sensitive),
+                "{uri}"
+            );
+        }
+    }
 
     #[test]
     fn removed_pseudo_fields_do_not_discard_remaining_order_or_sensitivity() {

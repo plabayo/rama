@@ -477,7 +477,9 @@ pub(crate) fn encode_request<B>(
             .map(|(name, value)| EncodeField {
                 name: std::borrow::Cow::Borrowed(name.as_bytes()),
                 value,
-                never_index: sensitivity.is_sensitive(name),
+                // Userinfo, kept only outside the HTTP family, is never indexed.
+                never_index: sensitivity.is_sensitive(name)
+                    || (name == PseudoHeader::Authority && value.contains(&b'@')),
             })
     });
     shared.encode(
@@ -1032,6 +1034,25 @@ mod tests {
             (":authority", "example.com"),
         ]))
         .unwrap_err();
+    }
+
+    #[test]
+    fn authority_userinfo_is_kept_outside_the_http_family_and_never_indexed() {
+        for (uri, authority, never_index) in [
+            ("https://user@example.com/", "example.com", false),
+            ("ftp://user:pw@example.com/f", "user:pw@example.com", true),
+        ] {
+            let request = Request::builder().uri(uri).body(()).unwrap();
+            let fields = decode(encode_request(&shared(), 0, &request).unwrap());
+            let field = fields
+                .iter()
+                .find(|field| field.name == ":authority")
+                .unwrap();
+            assert_eq!(
+                (&field.value[..], field.never_index),
+                (authority.as_bytes(), never_index)
+            );
+        }
     }
 
     /// Found by the `h3_request_head` round-trip oracle: heads the encoder could not forward.
