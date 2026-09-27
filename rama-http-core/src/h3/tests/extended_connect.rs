@@ -313,6 +313,62 @@ async fn unsuccessful_response_keeps_its_body_and_offers_no_tunnel() {
     .unwrap();
 }
 
+/// RFC 9114 §4.1.2: a server that completed its side stops reading with H3_NO_ERROR.
+#[tokio::test]
+async fn servers_stop_reading_finished_tunnels_without_error() {
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::in_memory(None, None).await;
+        let (mut server, server_driver) =
+            server::handshake(pair.server.clone(), extended_connect_server()).unwrap();
+        spawn(server_driver.run());
+        for (finish, expected) in [
+            (true, Code::H3_NO_ERROR),
+            (false, Code::H3_REQUEST_CANCELLED),
+        ] {
+            // A raw client that never ends its own direction.
+            let (mut send, _recv) = pair.client.open_bi().await.unwrap();
+            let fields = Encoder::before_peer_settings(EncoderConfig::default())
+                .encode(
+                    u64::from(send.id()),
+                    [
+                        (":method", "CONNECT"),
+                        (":protocol", "websocket"),
+                        (":scheme", "https"),
+                        (":authority", "localhost"),
+                        (":path", "/chat"),
+                    ],
+                )
+                .unwrap();
+            let mut frame = BytesMut::new();
+            FrameHeader::new(FrameType::HEADERS, fields.len() as u64)
+                .encode(&mut frame)
+                .unwrap();
+            frame.extend_from_slice(&fields);
+            send.write_chunk(frame.freeze()).await.unwrap();
+            let (request, response) = server.accept().await.unwrap().resolve().await.unwrap();
+            let upgrade = handle_upgrade(&request);
+            response
+                .send_response(Response::new(Body::empty()))
+                .await
+                .unwrap();
+            let mut tunnel = upgrade.await.unwrap();
+            if finish {
+                tunnel.write_all(b"done").await.unwrap();
+                tunnel.shutdown().await.unwrap();
+            }
+            drop(tunnel);
+            assert_eq!(
+                send.stopped().await.unwrap().map(u64::from),
+                Some(expected.value()),
+                "finish {finish}"
+            );
+        }
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
 #[tokio::test]
 async fn server_treats_unadvertised_protocol_as_malformed() {
     tokio::time::timeout(LIMIT, async {

@@ -2,6 +2,7 @@
 
 use super::{
     Error,
+    control::Role,
     datagram::{Association, H3DatagramChannel, ReceiveEnd},
     frame::FrameEvent,
     quic::{RecvStream, SendStream, Writer},
@@ -230,7 +231,14 @@ impl<R: RecvStream + Unpin, S: SendStream + Unpin> AsyncWrite for Tunnel<R, S> {
         self.acknowledged = None;
         self.shutdown = Some(result);
         match result {
-            Ok(()) => self.writer.mark_acknowledged(),
+            Ok(()) => {
+                self.writer.mark_acknowledged();
+                // RFC 9114 §4.1.2: once a server's response is complete, not reading the
+                // rest of the request is H3_NO_ERROR, not a cancellation.
+                if self.reader.shared.role == Role::Server {
+                    self.reader.cancel_code = Code::H3_NO_ERROR;
+                }
+            }
             Err(error) => self.writer.reset(error.code()),
         }
         self.release_finished();
