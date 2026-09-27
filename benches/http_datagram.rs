@@ -331,6 +331,51 @@ fn beside_a_flooded_neighbour(bencher: divan::Bencher, stalled: bool) {
             round_trip(&mut active, &payload).await;
         })
     });
+    // The stalled neighbour really was full: its queue displaced datagrams while timing.
+    let displaced = connection.server.datagram_drops().queue_full;
+    assert_eq!(stalled, displaced > 0, "queue_full = {displaced}");
     drop((active, neighbour));
+    connection.close();
+}
+
+/// A consumer resuming after a stall: its full queue is drained up to a fresh datagram.
+#[divan::bench(sample_count = 20)]
+fn stalled_consumer_recovery(bencher: divan::Bencher) {
+    // Twice the default per-request queue: the oldest half is displaced.
+    const FLOOD: usize = 64;
+    let mut connection = Connection::new();
+    let (mut sender, mut consumer) = connection.session();
+    let payload = Bytes::from(vec![42; PAYLOAD]);
+    let marker = Bytes::from(vec![43; PAYLOAD]);
+    let mut displaced = 0;
+    bencher
+        .with_inputs(|| {
+            connection.rt.block_on(async {
+                for _ in 0..FLOOD - 1 {
+                    sender.send_datagram(payload.clone()).await.unwrap();
+                }
+                sender.send_datagram(marker.clone()).await.unwrap();
+                // Everything arrived: kept or displaced, while nobody read.
+                displaced += FLOOD as u64 / 2;
+                while connection.server.datagram_drops().queue_full < displaced {
+                    tokio::task::yield_now().await;
+                }
+            });
+        })
+        .bench_local_values(|()| {
+            connection.rt.block_on(async {
+                let mut drained = 0;
+                loop {
+                    let event = consumer.recv().await.unwrap().expect("session ended");
+                    drained += 1;
+                    if matches!(event, SessionEvent::Datagram { payload, .. } if payload == marker)
+                    {
+                        break;
+                    }
+                }
+                assert_eq!(drained, FLOOD / 2);
+            })
+        });
+    drop((sender, consumer));
     connection.close();
 }
