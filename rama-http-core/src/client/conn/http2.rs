@@ -212,19 +212,21 @@ where
     }
 }
 
-async fn response<B>(
+/// Await the dispatched request's response. A request that was not sent is dropped here,
+/// so the future only holds the response promise.
+fn response<B>(
     sent: Result<dispatch::Promise<Response<IncomingBody>>, Request<B>>,
-) -> crate::Result<Response<IncomingBody>> {
-    match sent {
-        Ok(rx) => match rx.await {
+) -> impl Future<Output = crate::Result<Response<IncomingBody>>> {
+    let sent = sent.map_err(|_req| {
+        debug!("connection was not ready");
+        crate::Error::new_canceled().with("connection was not ready")
+    });
+    async move {
+        match sent?.await {
             Ok(Ok(resp)) => Ok(resp),
             Ok(Err(err)) => Err(err),
             // this is definite bug if it happens, but it shouldn't happen!
             Err(_canceled) => panic!("dispatch dropped without returning error"),
-        },
-        Err(_req) => {
-            debug!("connection was not ready");
-            Err(crate::Error::new_canceled().with("connection was not ready"))
         }
     }
 }
@@ -804,6 +806,22 @@ mod tests {
                 conn.await.unwrap();
             });
         }
+    }
+
+    /// Ordinary requests keep a small future: the Extended CONNECT wait is boxed, and a
+    /// request that was not sent is not kept in it.
+    #[tokio::test]
+    async fn ordinary_request_futures_stay_small() {
+        let (client_io, _server_io) = tokio::io::duplex(1024);
+        let (mut sender, _connection) = crate::client::conn::http2::handshake::<_, Body>(
+            Executor::default(),
+            ServiceInput::new(client_io),
+        )
+        .await
+        .unwrap();
+        let send = size_of_val(&sender.send_request(Request::new(Body::empty())));
+        // Measured 56 bytes; the base's future held the whole request (224).
+        assert!(send <= 64, "{send}");
     }
 
     /// RFC 8441 §3: `:protocol` is only sent after the server enabled it, even when the
