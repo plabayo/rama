@@ -1,13 +1,15 @@
 //! Map a verified ingress client to a different upstream mTLS identity.
 //!
 //! Run: `cargo run -p rama-examples --bin tls_mitm_relay_client_auth --features boring`
-//! The self-contained demo creates ephemeral certificates and TCP listeners,
-//! exchanges a request/response through the relay, and exits. No external PKI is needed.
-//! Copy this file into a project with `rama` (boring), `clap` (derive), and `tokio` (full).
+//!
+//! The demo starts its own client, relay and upstream server using ephemeral
+//! certificates and local TCP listeners, exchanges a request/response, and exits.
+//! No external client or PKI is needed.
+//!
+//! Pass options after `--`: `--tls12` selects TLS 1.2, `--no-upstream-auth`
+//! demonstrates independent ingress admission, and `--client missing|unmapped|untrusted`
+//! demonstrates rejection (a nonzero exit).
 //! Logs go to stderr; use `RUST_LOG=debug` for TLS and transport details.
-//! Use `--tls12` for TLS 1.2, `--no-upstream-auth` for independent ingress admission,
-//! or `--client missing|unmapped|untrusted` to observe rejection (a nonzero exit).
-//! Test: `cargo test -p rama-examples --features boring --test integration tls_mitm_relay_client_auth -- --ignored`
 
 use clap::{Parser, ValueEnum};
 use rama::{
