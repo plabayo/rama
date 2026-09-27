@@ -204,6 +204,7 @@ Other locations that demonstrate how to make and run a Transparent Proxy:
 - [`tls_sni_proxy_mitm.rs`](./src/tls_sni_proxy_mitm.rs) - (TLS) SNI Proxy with MITM capabilities using BoringSSL
 
 ### Mutual TLS
+- [`tls_mitm_relay_client_auth.rs`](./src/tls_mitm_relay_client_auth.rs) - Authenticate ingress clients and map them to upstream mTLS identities with a self-contained BoringSSL relay
 - [`mtls_tunnel_and_service.rs`](./src/mtls_tunnel_and_service.rs) - Mutual TLS tunnel and service implementation
 
 ## Apple XPC
