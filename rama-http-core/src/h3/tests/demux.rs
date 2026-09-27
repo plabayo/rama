@@ -183,3 +183,48 @@ fn the_first_remote_end_stays_and_local_ends_override_it() {
         assert_eq!(poll(&mut demux, 0), Poll::Ready(expected), "{ends:?}");
     }
 }
+
+#[test]
+fn bursts_and_churn_leave_bounded_storage() {
+    // Budget for the whole burst, so every queue and the pending area fill.
+    let config = config(32, 16, 4 * 1024 * 1024);
+    let now = Instant::now();
+    let mut demux = Demux::default();
+    // Fill 64 request queues and the pending area for streams not yet opened.
+    for stream in (0..64).map(|index| index * 4) {
+        register(&mut demux, &config, stream, now);
+        for _ in 0..32 {
+            deliver(&mut demux, &config, stream, 1024, now);
+        }
+    }
+    for stream in (64..80).map(|index| index * 4) {
+        deliver(&mut demux, &config, stream, 1024, now);
+    }
+    let burst = demux.capacities();
+    for stream in (0..80).map(|index| index * 4) {
+        if stream >= 256 {
+            register(&mut demux, &config, stream, now);
+        }
+        while let Poll::Ready(Ok(Some(_))) = poll(&mut demux, stream) {}
+        _ = demux.unregister(stream);
+    }
+    let drained = demux.capacities();
+    // One request at a time, many times over.
+    for stream in (80..10_080).map(|index| index * 4) {
+        register(&mut demux, &config, stream, now);
+        deliver(&mut demux, &config, stream, 1024, now);
+        assert!(matches!(poll(&mut demux, stream), Poll::Ready(Ok(Some(_)))));
+        _ = demux.unregister(stream);
+    }
+    let churned = demux.capacities();
+    eprintln!(
+        "(slots, pending, queues) capacity: burst {burst:?}, drained {drained:?}, after 10000 churns {churned:?}"
+    );
+    assert_eq!(demux.buffered(), 0);
+    // Released requests free their queues; the map and pending queue never grow past the
+    // burst's peak, whatever the churn.
+    assert!(burst.1 >= 16 && burst.2 >= 64 * 32, "{burst:?}");
+    assert_eq!(drained.2, 0);
+    assert!(churned.0 <= burst.0 && churned.1 <= burst.1, "{churned:?} {burst:?}");
+    assert_eq!(churned.2, 0);
+}

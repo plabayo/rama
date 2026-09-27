@@ -420,6 +420,13 @@ impl<A: AbortRequest> Demux<A> {
         self.slots.len()
     }
 
+    /// Backing capacities: the slot map, the pending queue and all per-request queues.
+    #[cfg(test)]
+    pub(crate) fn capacities(&self) -> (usize, usize, usize) {
+        let queues = self.slots.values().map(|slot| slot.queue.capacity()).sum();
+        (self.slots.capacity(), self.pending.capacity(), queues)
+    }
+
     #[cfg(feature = "fuzz-utils")]
     pub(crate) fn queued(&self, stream: u64) -> usize {
         self.slots.get(&stream).map_or(0, |slot| slot.queue.len())
