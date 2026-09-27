@@ -517,6 +517,8 @@ impl<T: AsyncWrite> SessionSender<T> {
         std::future::poll_fn(|cx| {
             match self.state {
                 SendState::Open => {
+                    // An abort outranks the unfinished capsule, and releases its bytes.
+                    self.check_open()?;
                     if self.remainder > 0 {
                         return Poll::Ready(Err(SessionError::CapsuleInProgress));
                     }
@@ -534,8 +536,11 @@ impl<T: AsyncWrite> SessionSender<T> {
         .await
     }
 
-    fn check_open(&self) -> Result<(), SessionError> {
+    /// Whether sending may continue. An abort by either half is observed here by every
+    /// operation, which then discards accepted bytes that can never be written.
+    fn check_open(&mut self) -> Result<(), SessionError> {
         if self.io.is_aborted() && matches!(self.state, SendState::Open | SendState::Closing) {
+            self.pending = [Bytes::new(), Bytes::new()];
             return Err(SessionError::Io(aborted()));
         }
         match self.state {
@@ -547,7 +552,7 @@ impl<T: AsyncWrite> SessionSender<T> {
     }
 
     /// Open and not inside a streamed capsule.
-    fn check_idle(&self) -> Result<(), SessionError> {
+    fn check_idle(&mut self) -> Result<(), SessionError> {
         self.check_open()?;
         if self.remainder > 0 {
             return Err(SessionError::CapsuleInProgress);
@@ -568,13 +573,7 @@ impl<T: AsyncWrite> SessionSender<T> {
     }
 
     fn poll_write_pending(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), SessionError>> {
-        if let Err(error) = self.check_open() {
-            // Nothing accepted can be written after an abort by either half.
-            if self.io.is_aborted() {
-                self.pending = [Bytes::new(), Bytes::new()];
-            }
-            return Poll::Ready(Err(error));
-        }
+        self.check_open()?;
         for i in 0..self.pending.len() {
             while !self.pending[i].is_empty() {
                 let chunk = &self.pending[i];

@@ -1588,3 +1588,74 @@ async fn cancelled_sends_keep_their_accepted_payload_until_written() {
     assert_eq!(wire, encode_capsule(CONTROL, &[7; 32]).unwrap());
     assert_eq!(dropped.load(Ordering::Acquire), 1);
 }
+
+#[tokio::test]
+async fn aborted_sessions_release_accepted_payloads_on_any_next_send() {
+    let operations = [
+        "send_capsule",
+        "send_datagram",
+        "start_capsule",
+        "send_capsule_data",
+        "close",
+    ];
+    for accepted in ["capsule", "streamed"] {
+        for operation in operations {
+            // Room for less than one capsule, so the accepted send stays pending.
+            let (a, mut peer) = tokio::io::duplex(8);
+            let session = HttpDatagramSession::with_config(ServiceInput::new(a), config());
+            let (mut sender, mut receiver) = session.split();
+            let dropped = Arc::new(AtomicUsize::new(0));
+            if accepted == "streamed" {
+                // The declared value is longer than the chunk that follows.
+                sender
+                    .start_capsule(CapsuleHeader::new(CONTROL, 64).unwrap())
+                    .await
+                    .unwrap();
+            }
+            {
+                let mut cx = Context::from_waker(Waker::noop());
+                if accepted == "capsule" {
+                    let send = sender.send_capsule(CONTROL, owned(32, &dropped));
+                    tokio::pin!(send);
+                    assert!(send.as_mut().poll(&mut cx).is_pending());
+                } else {
+                    let send = sender.send_capsule_data(owned(32, &dropped));
+                    tokio::pin!(send);
+                    assert!(send.as_mut().poll(&mut cx).is_pending());
+                }
+            }
+            // A capsule over the receive limit aborts the shared I/O for both halves.
+            let mut oversized = BytesMut::new();
+            CapsuleHeader::new(CONTROL, 1024)
+                .unwrap()
+                .encode(&mut oversized);
+            peer.write_all(&oversized).await.unwrap();
+            assert!(matches!(
+                receiver.recv().await,
+                Err(SessionError::Malformed(_))
+            ));
+            assert_eq!(dropped.load(Ordering::Acquire), 0, "{accepted}/{operation}");
+            let result = match operation {
+                "send_capsule" => sender.send_capsule(CONTROL, Bytes::from_static(b"x")).await,
+                "send_datagram" => sender
+                    .send_datagram(Bytes::from_static(b"x"))
+                    .await
+                    .map(drop),
+                "start_capsule" => {
+                    sender
+                        .start_capsule(CapsuleHeader::new(CONTROL, 1).unwrap())
+                        .await
+                }
+                "send_capsule_data" => sender.send_capsule_data(Bytes::from_static(b"x")).await,
+                _ => sender.close().await,
+            };
+            assert!(
+                matches!(&result, Err(SessionError::Io(error)) if error.kind() == io::ErrorKind::ConnectionAborted),
+                "{accepted}/{operation}: {result:?}"
+            );
+            // The sender lives on, but nothing it accepted can be written any more.
+            assert_eq!(dropped.load(Ordering::Acquire), 1, "{accepted}/{operation}");
+            drop(sender);
+        }
+    }
+}
