@@ -16,7 +16,7 @@ use rama_core::{
 use rama_http::{
     datagram::{
         DatagramTransport, HttpDatagramSession, NativeDatagrams, NativeRecvError, NativeSendError,
-        SessionError, SessionEvent, ViolationPolicy,
+        NativeSendPolicy, SessionError, SessionEvent, ViolationPolicy,
     },
     io::upgrade::{OnMalformedMessage, OnUpstreamError, Upgraded, handle_upgrade},
 };
@@ -29,13 +29,15 @@ use rama_http_types::{
         h3::{Code, FrameHeader, FrameType, QuarterStreamId, VarInt},
     },
 };
+use rama_quic::TransportConfig;
 use rama_quic_proto::coding::Codec as _;
 use rama_udp::test_utils::{MemoryDatagramControl, MemoryDatagramFaultStats};
 use std::{
+    pin::Pin,
     task::{Context, Poll, Waker},
     time::Duration,
 };
-use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+use tokio::io::{AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
 
 const TOKEN: Protocol = Protocol::from_static("x-datagram-test");
 const POLICIES: [ViolationPolicy; 2] = [ViolationPolicy::Ignore, ViolationPolicy::Reject];
@@ -1149,6 +1151,66 @@ async fn a_released_receiver_discards_later_datagrams() {
     })
     .await
     .unwrap();
+}
+
+/// Stream credit far below what the tunnels write, so their FIN cannot be sent yet.
+fn tight_stream_window() -> TransportConfig {
+    let mut transport = TransportConfig::default();
+    Config::default()
+        .configure_transport(&mut transport)
+        .unwrap();
+    transport.set_stream_receive_window(1024u32);
+    transport
+}
+
+/// Queue more than the peer's credit and start shutting down: native sending must stop at
+/// once, before the FIN is committed (RFC 9297 §2.1), for every holder of the channel.
+async fn native_closes_while_shutdown_is_pending(mut io: Upgraded) {
+    let native = io
+        .extensions()
+        .get_ref::<NativeDatagrams>()
+        .cloned()
+        .unwrap();
+    while native.channel().max_payload_size().is_none() {
+        tokio::task::yield_now().await;
+    }
+    let accepted = io.write(&vec![1; 65536]).await.unwrap();
+    assert!(accepted > 1024);
+    let mut cx = Context::from_waker(Waker::noop());
+    assert!(Pin::new(&mut io).poll_shutdown(&mut cx).is_pending());
+    assert_eq!(
+        native
+            .channel()
+            .send(Bytes::from_static(b"after"), NativeSendPolicy::DropOldest),
+        Err(NativeSendError::Closed)
+    );
+}
+
+#[tokio::test]
+async fn a_pending_shutdown_closes_native_sending_before_its_fin() {
+    for client_side in [true, false] {
+        tokio::time::timeout(LIMIT, async {
+            // The peer of the side under test grants only a small stream window.
+            let pair = if client_side {
+                Pair::in_memory(None, Some(tight_stream_window())).await
+            } else {
+                Pair::in_memory(Some(tight_stream_window()), None).await
+            };
+            let (mut client, mut server) =
+                start(&pair, server_config(Some(Default::default()))).await;
+            let (client_io, server_io) = tunnel(&mut client, &mut server, TOKEN).await;
+            let (tested, peer) = if client_side {
+                (client_io, server_io)
+            } else {
+                (server_io, client_io)
+            };
+            native_closes_while_shutdown_is_pending(tested).await;
+            drop(peer);
+            pair.close().await;
+        })
+        .await
+        .unwrap();
+    }
 }
 
 #[tokio::test]
