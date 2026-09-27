@@ -6,6 +6,7 @@ async fn run(args: &[&str]) -> Output {
         Duration::from_secs(30),
         tokio::process::Command::new(env!("CARGO_BIN_EXE_tls_mitm_relay_client_auth"))
             .args(args)
+            .env("RUST_LOG", "info")
             .kill_on_drop(true)
             .output(),
     )
@@ -34,12 +35,22 @@ async fn maps_identity_and_exchanges_application_data() {
             );
             let version = if tls12 { "TLS1.2" } else { "TLS1.3" };
             let upstream = if upstream_auth { "mapped" } else { "none" };
-            assert_eq!(
-                String::from_utf8_lossy(&output.stdout),
-                format!(
-                    "{version}: ingress=trusted-client upstream={upstream} request=ping response=pong\n"
-                )
-            );
+            assert!(output.stdout.is_empty(), "the example logs to stderr");
+            let logs = String::from_utf8_lossy(&output.stderr);
+            let completed: Vec<_> = logs
+                .lines()
+                .filter(|line| line.contains("exchange complete"))
+                .collect();
+            assert_eq!(completed.len(), 1, "{logs}");
+            for field in [
+                format!("tls_version=\"{version}\""),
+                "ingress=\"trusted-client\"".to_owned(),
+                format!("upstream=\"{upstream}\""),
+                "request=\"ping\"".to_owned(),
+                "response=\"pong\"".to_owned(),
+            ] {
+                assert!(completed[0].contains(&field), "missing {field}: {logs}");
+            }
         }
     }
 }
@@ -63,6 +74,11 @@ async fn rejects_missing_unmapped_and_untrusted_clients() {
                 assert!(
                     output.stdout.is_empty(),
                     "rejected client must not complete the exchange"
+                );
+                assert!(error.contains("exchange failed"), "{error}");
+                assert!(
+                    !error.contains("exchange complete"),
+                    "rejected client completed: {error}"
                 );
                 if client == "missing" {
                     assert!(

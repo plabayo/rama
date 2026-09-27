@@ -3,30 +3,46 @@
 //! Run: `cargo run -p rama-examples --bin tls_mitm_relay_client_auth --features boring`
 //! The self-contained demo creates ephemeral certificates and TCP listeners,
 //! exchanges a request/response through the relay, and exits. No external PKI is needed.
+//! Copy this file into a project with `rama` (boring), `clap` (derive), and `tokio` (full).
+//! Logs go to stderr; use `RUST_LOG=debug` for TLS and transport details.
 //! Use `--tls12` for TLS 1.2, `--no-upstream-auth` for independent ingress admission,
 //! or `--client missing|unmapped|untrusted` to observe rejection (a nonzero exit).
 //! Test: `cargo test -p rama-examples --features boring --test integration tls_mitm_relay_client_auth -- --ignored`
 
-#![expect(clippy::print_stdout, reason = "example reports its verified exchange")]
-
-#[path = "tls_mitm_relay_client_auth/support.rs"]
-mod support;
-
-use clap::Parser as _;
+use clap::{Parser, ValueEnum};
 use rama::{
     Service, ServiceInput,
+    crypto::{
+        cert::{
+            CertificateSubject, LeafCertConfig, LeafCertRequest, SelfSignedCaConfig,
+            boring::{
+                generate_certificate_authority_x509, issue_client_leaf_certificate,
+                issue_leaf_certificate,
+            },
+        },
+        pki_types::CertificateDer,
+    },
     error::{BoxError, BoxErrorExt as _, ErrorContext as _},
     extensions::ExtensionsRef as _,
     io::BridgeIo,
     net::address::Host,
+    telemetry::tracing::{
+        self,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt as _, util::SubscriberInitExt as _},
+    },
     tls::{
         KeyLogIntent,
         boring::{
-            client::tls_connect,
+            client::{ConnectorConfigClientAuth, TlsConnectorData, tls_connect},
             core::{
                 self,
-                ssl::{SslCredential, SslVersion},
-                x509::store::X509Store,
+                pkey::{PKey, Private},
+                ssl::{SslAcceptor, SslCredential, SslMethod, SslVerifyMode, SslVersion},
+                x509::{
+                    X509,
+                    store::{X509Store, X509StoreBuilder},
+                },
             },
             proxy::{
                 TlsMitmRelay,
@@ -37,12 +53,11 @@ use rama::{
                 },
             },
         },
-        client::NegotiatedTlsParameters,
+        client::{NegotiatedTlsParameters, ServerVerifyMode, TlsClientConfig},
     },
     utils::collections::NonEmptyVec,
 };
-use std::{sync::Arc, time::Duration};
-use support::{DemoCertificates, Options};
+use std::{process::ExitCode, sync::Arc, time::Duration};
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
     net::{TcpListener, TcpStream},
@@ -65,6 +80,11 @@ impl Service<TlsMitmClientAuthInput> for MappingPolicy {
                 "destination outside mapping policy",
             ));
         }
+        tracing::info!(
+            server_name = ?input.server_name,
+            upstream_requested = input.request.is_some(),
+            "requiring ingress client authentication",
+        );
         let resolver = ResolveClient {
             mapping: self.mapping.clone(),
             upstream_requested: input.request.is_some(),
@@ -97,8 +117,13 @@ impl Service<TlsMitmClientIdentity> for ResolveClient {
             .leaf()
             .ok_or_else(|| BoxError::from_static_str("missing ingress identity"))?;
         if leaf.to_der()?.as_slice() != self.mapping.ingress_leaf.as_ref() {
+            tracing::warn!("rejecting an authenticated but unmapped ingress identity");
             return Err(BoxError::from_static_str("unmapped ingress identity"));
         }
+        tracing::info!(
+            upstream_requested = self.upstream_requested,
+            "matched authenticated ingress identity",
+        );
         // Mapping requires our own credential/key; the client's certificate alone
         // cannot authenticate us upstream. None here means admission without egress mTLS.
         Ok(self.upstream_requested.then(|| self.mapping.egress.clone()))
@@ -106,15 +131,37 @@ impl Service<TlsMitmClientIdentity> for ResolveClient {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), BoxError> {
+async fn main() -> ExitCode {
     let options = Options::parse();
-    tokio::time::timeout(Duration::from_secs(15), run(options))
+    tracing::subscriber::registry()
+        .with(fmt::layer().with_writer(std::io::stderr).with_ansi(false))
+        .with(
+            EnvFilter::builder()
+                .with_default_directive(LevelFilter::INFO.into())
+                .from_env_lossy(),
+        )
+        .init();
+
+    let result = tokio::time::timeout(Duration::from_secs(15), run(options))
         .await
-        .context("example exchange timed out")??;
-    Ok(())
+        .context("example exchange timed out")
+        .and_then(|result| result);
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            tracing::error!(?error, "exchange failed");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 async fn run(options: Options) -> Result<(), BoxError> {
+    tracing::info!(
+        client = ?options.client,
+        tls_version = ?options.version(),
+        upstream_auth = options.upstream_auth(),
+        "creating ephemeral demo certificates",
+    );
     let certs = DemoCertificates::new()?;
     let policy = MappingPolicy {
         ingress_trust: certs.ingress_ca.trust_store()?,
@@ -140,6 +187,7 @@ async fn run(options: Options) -> Result<(), BoxError> {
     let relay_listener = TcpListener::bind("127.0.0.1:0").await?;
     let origin_addr = origin_listener.local_addr()?;
     let relay_addr = relay_listener.local_addr()?;
+    tracing::info!(%relay_addr, %origin_addr, "demo listeners ready");
 
     let origin = async {
         let (socket, _) = origin_listener.accept().await?;
@@ -165,6 +213,11 @@ async fn run(options: Options) -> Result<(), BoxError> {
                 "upstream received the wrong identity",
             ));
         }
+        tracing::debug!(
+            tls_version = stream.ssl().version_str(),
+            client_authenticated = peer.is_some(),
+            "upstream accepted the selected identity",
+        );
         let mut request = [0; 4];
         stream.read_exact(&mut request).await?;
         if request != *b"ping" {
@@ -194,7 +247,9 @@ async fn run(options: Options) -> Result<(), BoxError> {
                 "relay reported the wrong ingress identity",
             ));
         }
-        tokio::io::copy_bidirectional(&mut ingress, &mut egress).await?;
+        let (ingress_bytes, egress_bytes) =
+            tokio::io::copy_bidirectional(&mut ingress, &mut egress).await?;
+        tracing::debug!(ingress_bytes, egress_bytes, "relay streams closed");
         Ok::<_, BoxError>(())
     };
     let client = async {
@@ -231,6 +286,162 @@ async fn run(options: Options) -> Result<(), BoxError> {
     } else {
         "none"
     };
-    println!("{version}: ingress=trusted-client upstream={upstream} request=ping response=pong");
+    tracing::info!(
+        tls_version = version,
+        ingress = "trusted-client",
+        upstream,
+        request = "ping",
+        response = "pong",
+        "exchange complete",
+    );
     Ok(())
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum Client {
+    Trusted,
+    Missing,
+    Unmapped,
+    Untrusted,
+}
+
+#[derive(Parser)]
+#[command(about = "Map ingress mTLS to an upstream identity in a local TLS exchange")]
+struct Options {
+    /// Use TLS 1.2 instead of TLS 1.3 on both legs.
+    #[arg(long)]
+    tls12: bool,
+    /// Still require ingress authentication when upstream requests none.
+    #[arg(long)]
+    no_upstream_auth: bool,
+    /// Select the client identity; only trusted completes the exchange.
+    #[arg(long, value_enum, default_value = "trusted")]
+    client: Client,
+}
+
+impl Options {
+    fn version(&self) -> SslVersion {
+        if self.tls12 {
+            SslVersion::TLS1_2
+        } else {
+            SslVersion::TLS1_3
+        }
+    }
+
+    fn upstream_auth(&self) -> bool {
+        !self.no_upstream_auth
+    }
+}
+
+struct Identity {
+    cert: X509,
+    key: PKey<Private>,
+}
+
+impl Identity {
+    fn ca() -> Result<Self, BoxError> {
+        let (cert, key) = generate_certificate_authority_x509(&SelfSignedCaConfig::default())?;
+        Ok(Self { cert, key })
+    }
+
+    fn server(ca: &Self) -> Result<Self, BoxError> {
+        let (cert, key) = issue_leaf_certificate(&LeafCertRequest::default(), &ca.cert, &ca.key)?;
+        Ok(Self { cert, key })
+    }
+
+    fn client(name: &str, ca: &Self) -> Result<Self, BoxError> {
+        let request = LeafCertRequest {
+            config: LeafCertConfig {
+                subject: CertificateSubject {
+                    common_name: Some(name.to_owned()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            identities: vec![],
+        };
+        let (cert, key) = issue_client_leaf_certificate(&request, &ca.cert, &ca.key)?;
+        Ok(Self { cert, key })
+    }
+
+    fn credential(&self) -> Result<SslCredential, BoxError> {
+        ConnectorConfigClientAuth {
+            cert_chain: vec![self.cert.clone()],
+            private_key: self.key.clone(),
+        }
+        .try_into()
+    }
+
+    fn trust_store(&self) -> Result<X509Store, BoxError> {
+        let mut store = X509StoreBuilder::new()?;
+        store.add_cert(self.cert.clone())?;
+        Ok(store.build())
+    }
+}
+
+struct DemoCertificates {
+    ingress_ca: Identity,
+    server_ca: Identity,
+    egress_ca: Identity,
+    origin: Identity,
+    relay: Identity,
+    client: Identity,
+    mapped: Identity,
+}
+
+impl DemoCertificates {
+    fn new() -> Result<Self, BoxError> {
+        let ingress_ca = Identity::ca()?;
+        let server_ca = Identity::ca()?;
+        let egress_ca = Identity::ca()?;
+        Ok(Self {
+            origin: Identity::server(&server_ca)?,
+            relay: Identity::server(&server_ca)?,
+            client: Identity::client("trusted-client", &ingress_ca)?,
+            mapped: Identity::client("mapped-client", &egress_ca)?,
+            ingress_ca,
+            server_ca,
+            egress_ca,
+        })
+    }
+
+    fn client_credential(&self, client: Client) -> Result<Option<SslCredential>, BoxError> {
+        match client {
+            Client::Trusted => self.client.credential().map(Some),
+            Client::Missing => Ok(None),
+            Client::Unmapped => Identity::client("unmapped-client", &self.ingress_ca)?
+                .credential()
+                .map(Some),
+            Client::Untrusted => Identity::client("untrusted-client", &Identity::ca()?)?
+                .credential()
+                .map(Some),
+        }
+    }
+
+    fn connector(&self, version: SslVersion) -> Result<TlsConnectorData, BoxError> {
+        let config = TlsClientConfig::new()
+            .with_server_name(Host::from_static("localhost"))
+            .with_server_verify(ServerVerifyMode::Auto)
+            .try_with_server_trust_anchors([CertificateDer::from(self.server_ca.cert.to_der()?)])?
+            .with_keylog(KeyLogIntent::Disabled);
+        let mut data = TlsConnectorData::try_from(&config)?;
+        data.config.set_min_proto_version(Some(version))?;
+        data.config.set_max_proto_version(Some(version))?;
+        Ok(data)
+    }
+
+    fn origin_acceptor(&self, options: &Options) -> Result<SslAcceptor, BoxError> {
+        let mut acceptor = SslAcceptor::mozilla_intermediate_v5(SslMethod::tls_server())?;
+        acceptor.set_min_proto_version(Some(options.version()))?;
+        acceptor.set_max_proto_version(Some(options.version()))?;
+        acceptor.set_certificate(&self.origin.cert)?;
+        acceptor.set_private_key(&self.origin.key)?;
+        acceptor.set_cert_store(self.egress_ca.trust_store()?);
+        acceptor.set_verify(if options.upstream_auth() {
+            SslVerifyMode::PEER | SslVerifyMode::FAIL_IF_NO_PEER_CERT
+        } else {
+            SslVerifyMode::NONE
+        });
+        Ok(acceptor.build())
+    }
 }
