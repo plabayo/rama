@@ -225,6 +225,9 @@ fn bursts_and_churn_leave_bounded_storage() {
     // burst's peak, whatever the churn.
     assert!(burst.1 >= 16 && burst.2 >= 64 * 32, "{burst:?}");
     assert_eq!(drained.2, 0);
-    assert!(churned.0 <= burst.0 && churned.1 <= burst.1, "{churned:?} {burst:?}");
+    assert!(
+        churned.0 <= burst.0 && churned.1 <= burst.1,
+        "{churned:?} {burst:?}"
+    );
     assert_eq!(churned.2, 0);
 }
