@@ -687,6 +687,12 @@ harness = false
 required-features = ["http-full"]
 
 [[bench]]
+name = "h3_datagram_demux"
+path = "benches/h3_datagram_demux.rs"
+harness = false
+required-features = ["http-full", "fuzz-utils"]
+
+[[bench]]
 name = "http_datagram"
 path = "benches/http_datagram.rs"
 harness = false

@@ -1,4 +1,4 @@
-//! Bounded synchronous fuzz entry points for transport-independent H3 state.
+//! Bounded synchronous fuzz entry points and timing hooks for transport-independent H3 state.
 
 use super::{
     Error,
@@ -234,6 +234,101 @@ fn compression_schedule(input: &[u8]) {
     }
     assert_eq!(encoder.tracked_section_count(), 0);
     assert_eq!(encoder.tracked_reference_count(), 0);
+}
+
+/// Aborts nothing: the timing driver never violates datagram semantics.
+#[derive(Clone)]
+struct NoAbort;
+
+impl AbortRequest for NoAbort {
+    fn abort_request(&self) {}
+}
+
+/// Synchronous access to the demux critical sections, which run under the connection's
+/// datagram lock, so they can be timed without a connection.
+pub struct DemuxDriver {
+    demux: Demux<NoAbort>,
+    config: DatagramConfig,
+    now: Instant,
+    registered: u64,
+    next_stream: u64,
+}
+
+impl DemuxDriver {
+    /// A demux with `registered` requests that claim datagram semantics.
+    #[must_use]
+    pub fn new(registered: usize) -> Self {
+        let mut driver = Self {
+            demux: Demux::default(),
+            config: DatagramConfig::default(),
+            now: Instant::now(),
+            registered: registered as u64,
+            next_stream: 0,
+        };
+        for _ in 0..registered {
+            driver.register_next();
+        }
+        driver
+    }
+
+    fn register_next(&mut self) -> u64 {
+        let stream = self.next_stream;
+        self.next_stream += 4;
+        self.demux
+            .register(
+                &self.config,
+                stream,
+                Semantics::Claimed,
+                NoAbort,
+                Arc::new(AtomicBool::new(false)),
+                self.now,
+            )
+            .run();
+        stream
+    }
+
+    /// Deliver a datagram to request `index` and take it back out.
+    pub fn deliver_and_take(&mut self, index: usize, payload: Bytes) -> Option<Bytes> {
+        let stream = (index as u64 % self.registered.max(1)) * 4;
+        self.demux
+            .deliver(
+                &self.config,
+                stream,
+                payload,
+                self.now,
+                Duration::from_millis(100),
+            )
+            .run();
+        self.take(stream)
+    }
+
+    /// Hold a datagram for the next, not yet registered request, register it and take it out.
+    pub fn adopt_and_take(&mut self, payload: Bytes) -> Option<Bytes> {
+        let stream = self.next_stream;
+        self.demux
+            .deliver(
+                &self.config,
+                stream,
+                payload,
+                self.now,
+                Duration::from_millis(100),
+            )
+            .run();
+        self.register_next();
+        let taken = self.take(stream);
+        _ = self.demux.unregister(stream);
+        taken
+    }
+
+    fn take(&mut self, stream: u64) -> Option<Bytes> {
+        match self
+            .demux
+            .poll_recv(stream, &Context::from_waker(Waker::noop()))
+        {
+            Poll::Ready(Ok(payload)) => payload,
+            _ => None,
+        }
+    }
 }
 
 /// Records the requests the demux aborted, for the harness to end their receive side.
