@@ -1856,6 +1856,10 @@ async fn extended_connect_request() {
 
     let h2 = async move {
         let (mut client, mut h2) = client::handshake(io).await.unwrap();
+        // RFC 8441 §4: `:protocol` is sent only once the server enabled it.
+        h2.drive(client.await_peer_initial_settings())
+            .await
+            .expect("server SETTINGS");
 
         let request = Request::connect("http://bread/baguette")
             .extension(Protocol::from_static("the-bread-protocol"))

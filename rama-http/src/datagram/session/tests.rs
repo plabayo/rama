@@ -1500,8 +1500,14 @@ fn session_futures_stay_small() {
 
 #[tokio::test]
 async fn ended_receivers_keep_no_share_of_delivered_payloads() {
-    // A clean end, and a malformed one: the stream stops inside a capsule.
-    for tail in [&[][..], &[0x00, 0x10][..]] {
+    // A clean end; a malformed one where the stream stops inside a capsule; and one where an
+    // oversized control capsule fails while the rest of the same read is still undecoded.
+    let mut oversized = BytesMut::new();
+    CapsuleHeader::new(CONTROL, 1000)
+        .unwrap()
+        .encode(&mut oversized);
+    oversized.extend_from_slice(b"undecoded");
+    for tail in [&[][..], &[0x00, 0x10][..], &oversized[..]] {
         let (mut raw, io) = tokio::io::duplex(256);
         let mut session = HttpDatagramSession::with_config(ServiceInput::new(io), config());
         raw.write_all(&encode_capsule(CapsuleType::DATAGRAM, b"keep").unwrap())
