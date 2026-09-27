@@ -1214,6 +1214,61 @@ async fn a_pending_shutdown_closes_native_sending_before_its_fin() {
 }
 
 #[tokio::test]
+async fn a_cleanly_ended_session_frees_its_pre_fin_native_queue() {
+    for through_session in [false, true] {
+        tokio::time::timeout(LIMIT, async {
+            let pair = Pair::in_memory(None, None).await;
+            let (mut client, mut server) =
+                start(&pair, server_config(Some(Default::default()))).await;
+            let (client_io, mut server_io) = tunnel(&mut client, &mut server, TOKEN).await;
+            let mut client_session = HttpDatagramSession::new(client_io);
+            native_ready(&client_session).await;
+            // Queued at the server before the client finishes its data stream.
+            client_session
+                .send_datagram(Bytes::from_static(b"pre-fin"))
+                .await
+                .unwrap();
+            while server.shared().datagram_demux().buffered() == 0 {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+            client_session.close().await.unwrap();
+            let mut rest = Vec::new();
+            server_io.read_to_end(&mut rest).await.unwrap();
+            assert!(rest.is_empty());
+            if !through_session {
+                // A raw consumer can still drain what arrived before the FIN.
+                let native = server_io
+                    .extensions()
+                    .get_ref::<NativeDatagrams>()
+                    .cloned()
+                    .unwrap();
+                let received = std::future::poll_fn(|cx| native.channel().poll_recv(cx)).await;
+                assert_eq!(received, Ok(Some(Bytes::from_static(b"pre-fin"))));
+                pair.close().await;
+                return;
+            }
+            let mut server_session = HttpDatagramSession::new(server_io);
+            assert_eq!(server_session.recv().await.unwrap(), None);
+            assert_eq!(server_session.recv().await.unwrap(), None);
+            // The ended receiver is still alive, yet its unreachable queue is released.
+            assert_eq!(server.shared().datagram_demux().buffered(), 0);
+            // The healthy reverse direction keeps working.
+            assert_eq!(
+                server_session
+                    .send_datagram(Bytes::from_static(b"back"))
+                    .await
+                    .unwrap(),
+                DatagramTransport::Native
+            );
+            assert_eq!(client_session.recv().await.unwrap(), native(b"back"));
+            pair.close().await;
+        })
+        .await
+        .unwrap();
+    }
+}
+
+#[tokio::test]
 async fn truncated_capsules_reset_http3_streams_as_malformed() {
     tokio::time::timeout(LIMIT, async {
         let pair = Pair::in_memory(None, None).await;
