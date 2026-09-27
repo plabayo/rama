@@ -325,6 +325,18 @@ fn h2_authority_strips_userinfo() {
 }
 
 #[test]
+fn h2_authority_keeps_userinfo_outside_the_http_family() {
+    for (uri, expected) in [
+        ("wss://user@example.com/", "example.com"),
+        ("custom://user:pw@example.com/", "user:pw@example.com"),
+        ("custom://@example.com/", "@example.com"),
+    ] {
+        let uri: Uri = parse_graceful(uri).unwrap();
+        assert_eq!(write_h2_authority(&uri).unwrap(), expected, "{uri}");
+    }
+}
+
+#[test]
 fn h2_authority_brackets_ipv6() {
     let uri: Uri = parse_graceful("https://[::1]:8443/").unwrap();
     assert_eq!(write_h2_authority(&uri).unwrap(), "[::1]:8443");

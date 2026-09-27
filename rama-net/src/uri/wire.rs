@@ -148,7 +148,8 @@ impl Uri {
 
     /// HTTP/2 / HTTP/3 `:authority` pseudo-header content: `host[:port]`.
     ///
-    /// Userinfo is omitted per RFC 9113 §8.3.1.
+    /// Userinfo is omitted for HTTP-family schemes and scheme-less CONNECT targets
+    /// (RFC 9113 §8.3.1, RFC 9114 §4.3.1); other schemes keep it, as those rules allow.
     ///
     /// **Wire fidelity**: see [`write_http_authority_form`](Self::write_http_authority_form)
     /// for the `OptPort::Empty` round-trip behavior.
@@ -156,8 +157,12 @@ impl Uri {
         if matches!(self.inner, UriInner::Asterisk) {
             return Err(WireError::AsteriskMismatch);
         }
-        if self.authority().is_none() {
-            return Err(WireError::NoAuthority);
+        let authority = self.authority().ok_or(WireError::NoAuthority)?;
+        if let Some(userinfo) = authority.userinfo()
+            && self.scheme().is_some_and(|scheme| !scheme.is_http_based())
+        {
+            buf.extend_from_slice(userinfo.as_str().as_bytes());
+            buf.extend_from_slice(b"@");
         }
         write_host_port(self, buf)?;
         Ok(())
