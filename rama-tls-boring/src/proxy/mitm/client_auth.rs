@@ -31,7 +31,7 @@ pub struct TlsMitmCertificateRequest {
     /// TLS 1.2 certificate-type bytes; empty for TLS 1.3.
     pub certificate_types: Vec<u8>,
     /// DER-encoded distinguished names, in wire order.
-    pub certificate_authorities: Vec<Vec<u8>>,
+    pub certificate_authorities: TlsMitmCertificateAuthorities,
 }
 
 impl TlsMitmCertificateRequest {
@@ -39,8 +39,55 @@ impl TlsMitmCertificateRequest {
         Self {
             signature_algorithms: selection.peer_verify_algorithms().to_vec(),
             certificate_types: selection.certificate_types().to_vec(),
-            certificate_authorities: selection.requested_ca_names().map(<[u8]>::to_vec).collect(),
+            certificate_authorities: TlsMitmCertificateAuthorities::from_selection(selection),
         }
+    }
+}
+
+/// Requested CA distinguished names (DER), stored contiguously in wire order.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TlsMitmCertificateAuthorities {
+    der: Box<[u8]>,
+    ends: Box<[usize]>,
+}
+
+impl TlsMitmCertificateAuthorities {
+    fn from_selection(selection: &CertificateSelection<'_>) -> Self {
+        // Size both buffers exactly: two allocations regardless of the name count.
+        let (count, len) = selection
+            .requested_ca_names()
+            .fold((0, 0), |(count, len), name| (count + 1, len + name.len()));
+        let mut der = Vec::with_capacity(len);
+        let mut ends = Vec::with_capacity(count);
+        for name in selection.requested_ca_names() {
+            der.extend_from_slice(name);
+            ends.push(der.len());
+        }
+        // Exact capacities: boxing reuses the allocations.
+        Self {
+            der: der.into_boxed_slice(),
+            ends: ends.into_boxed_slice(),
+        }
+    }
+
+    /// Each DER-encoded distinguished name, in wire order.
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = &[u8]> + '_ {
+        let mut start = 0;
+        self.ends.iter().map(move |&end| {
+            let name = &self.der[start..end];
+            start = end;
+            name
+        })
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.ends.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.ends.is_empty()
     }
 }
 

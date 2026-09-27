@@ -162,15 +162,18 @@ where
         Ingress: Io + Unpin + extensions::ExtensionsRef,
         Egress: Io + Unpin + extensions::ExtensionsRef,
     {
-        let extensions: Extensions = input.extensions().clone();
-        let policy = extensions
+        // Flow extensions are only cloned when a policy will receive them.
+        let policy: Option<(TlsMitmClientAuthPolicy, Extensions)> = input
+            .extensions()
             .get_ref::<TlsMitmClientAuthPolicy>()
             .cloned()
-            .or_else(|| self.client_auth.clone());
+            .or_else(|| self.client_auth.clone())
+            .map(|policy| (policy, input.extensions().clone()));
         let mut data = if let Some(data) = connector_data {
             data
         } else {
-            let target = extensions
+            let target = input
+                .extensions()
                 .get_ref::<ConnectorTarget>()
                 .map(|target| &target.0);
             let auth = self.egress_server_auth_ref();
@@ -265,7 +268,7 @@ where
             Some((request, reply)) => (Some(request), Some(reply)),
             None => (None, None),
         };
-        let plan = if let Some(policy) = &policy {
+        let plan = if let Some((policy, extensions)) = policy {
             Some(
                 policy
                     .0
@@ -310,6 +313,8 @@ where
                         error
                     }
                 })?;
+            // Without a plan, ingress never requests a client certificate.
+            let mut peer_chain = None;
             if let Some(plan) = plan {
                 if authenticates_ingress && stream.ssl().session_reused() {
                     return Err(TlsMitmRelayError::config(BoxError::from_static_str(
@@ -317,6 +322,16 @@ where
                     )));
                 }
                 let identity = TlsMitmClientIdentity::from_completed_handshake(stream.ssl());
+                if !identity.certificate_chain().is_empty() {
+                    peer_chain = Some(
+                        identity
+                            .certificate_chain()
+                            .iter()
+                            .map(|cert| cert.to_der().map(CertificateDer::from))
+                            .collect::<Result<Vec<_>, _>>()
+                            .map_err(TlsMitmRelayError::config)?,
+                    );
+                }
                 let credential = plan
                     .resolve
                     .serve(identity)
@@ -334,14 +349,13 @@ where
                     )));
                 }
             }
-            Ok(stream)
+            Ok((stream, peer_chain))
         };
-        let (ingress, egress) = if let Some(egress) = completed_egress {
+        let ((ingress, peer_chain), egress) = if let Some(egress) = completed_egress {
             (ingress_handshake.await?, egress)
         } else {
             tokio::try_join!(ingress_handshake, &mut connect)?
         };
-        let identity = TlsMitmClientIdentity::from_completed_handshake(ingress.ssl());
         let ssl = ingress.ssl();
         let ingress_params = NegotiatedTlsParameters {
             protocol_version: ssl
@@ -359,18 +373,7 @@ where
                     )
                 })?,
             application_layer_protocol: ssl.selected_alpn_protocol().map(ApplicationProtocol::from),
-            peer_certificate_chain: if identity.leaf().is_some() {
-                Some(
-                    identity
-                        .certificate_chain()
-                        .iter()
-                        .map(|cert| cert.to_der().map(CertificateDer::from))
-                        .collect::<Result<_, _>>()
-                        .map_err(TlsMitmRelayError::config)?,
-                )
-            } else {
-                None
-            },
+            peer_certificate_chain: peer_chain,
             server_name: ssl
                 .servername(NameType::HOST_NAME)
                 .map(Domain::try_from)

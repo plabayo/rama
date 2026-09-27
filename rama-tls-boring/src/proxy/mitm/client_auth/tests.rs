@@ -821,7 +821,11 @@ async fn stage_one_errors_never_configure_ingress_or_run_the_resolver() {
         let policy =
             TlsMitmClientAuthPolicy::new(service_fn(move |input: TlsMitmClientAuthInput| {
                 count.fetch_add(1, SeqCst);
-                assert!(input.request.is_some());
+                let request = input.request.as_ref().unwrap();
+                let names: Vec<_> = request.certificate_authorities.iter().collect();
+                let expected = material().ca.cert.subject_name().to_der().unwrap();
+                assert_eq!(names, [expected.as_slice()]);
+                assert_eq!(request.certificate_authorities.len(), 1);
                 assert_eq!(input.server_name, Some(Host::from_static("localhost")));
                 assert_eq!(
                     input.server_certificate.to_der().unwrap(),
