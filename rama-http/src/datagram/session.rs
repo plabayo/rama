@@ -714,6 +714,8 @@ impl<T: AsyncRead> SessionReceiver<T> {
                     .with(Half::Read, cx, |io, cx| poll_read_buf(io, cx, buf))
             ) {
                 Ok(0) => {
+                    // Nothing more can be read: release the read chunk.
+                    self.buf = BytesMut::new();
                     return Poll::Ready(match self.decoder.finish() {
                         Ok(()) => {
                             self.end = Some(RecvEnd::Clean);

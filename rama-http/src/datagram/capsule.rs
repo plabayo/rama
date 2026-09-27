@@ -201,6 +201,10 @@ impl CapsuleDecoder {
                     if take == 0 {
                         return Ok(None);
                     }
+                    // Sized once to the bounded value: the delivered value takes all of it.
+                    if self.value.is_empty() {
+                        self.value.reserve(length);
+                    }
                     self.value.put(self.inbox.split_to(take));
                     if self.value.len() == length {
                         let value = self.value.split().freeze();

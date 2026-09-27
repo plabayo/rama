@@ -282,3 +282,33 @@ fn encoding_matches_the_wire_format() {
     );
     assert_eq!(&encode_capsule(CONTROL, b"").unwrap()[..], b"\x52\x34\x00");
 }
+
+#[test]
+fn large_fragmented_capsules_leave_no_retained_buffer() {
+    let big = CapsuleConfig {
+        max_capsule_size: 64 * 1024,
+        ..config(UnknownCapsules::Skip)
+    };
+    let wire = capsule(CONTROL, &vec![5; 64 * 1024]);
+    let mut decoder = CapsuleDecoder::new(big);
+    let mut retained = Vec::new();
+    for _ in 0..8 {
+        let mut delivered = 0;
+        for chunk in wire.chunks(1400) {
+            decoder.feed(Bytes::copy_from_slice(chunk)).unwrap();
+            while let Some(event) = decoder.poll().unwrap() {
+                if let CapsuleEvent::Capsule { value, .. } = event {
+                    delivered += value.len();
+                }
+            }
+        }
+        assert_eq!(delivered, 64 * 1024);
+        retained.push(decoder.value.capacity());
+    }
+    eprintln!("decoder value capacity after each 64 KiB capsule: {retained:?}");
+    // Delivered values take their storage with them: nothing is kept for the next one.
+    assert!(
+        retained.iter().all(|capacity| *capacity == 0),
+        "{retained:?}"
+    );
+}

@@ -1435,3 +1435,32 @@ async fn aborts_block_queued_native_events_and_native_sends() {
     ));
     assert!(native.0.lock().sent.is_empty());
 }
+
+#[tokio::test]
+async fn buffers_stay_bounded_after_a_burst() {
+    let (client, server) = pair();
+    let (mut sender, _client_receiver) = client.split();
+    let (_server_sender, mut receiver) = server.split();
+    let burst = tokio::spawn(async move {
+        for _ in 0..256 {
+            sender
+                .send_datagram(Bytes::from(vec![9; 64]))
+                .await
+                .unwrap();
+        }
+        sender.close().await.unwrap();
+        sender.scratch.capacity()
+    });
+    let mut received = 0;
+    while let Some(event) = receiver.recv().await.unwrap() {
+        assert!(matches!(event, SessionEvent::Datagram { .. }));
+        received += 1;
+    }
+    assert_eq!(received, 256);
+    let scratch = burst.await.unwrap();
+    let read = receiver.buf.capacity();
+    eprintln!("after 256 capsules: sender scratch {scratch} B, receiver read buffer {read} B");
+    assert!(scratch <= CapsuleHeader::MAX_SIZE, "{scratch}");
+    // The stream ended: its read chunk is released.
+    assert_eq!(read, 0);
+}
