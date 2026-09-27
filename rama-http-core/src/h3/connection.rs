@@ -568,6 +568,16 @@ impl Shared {
         self.datagrams.lock().poll_recv(stream, cx)
     }
 
+    /// The local encoder's dynamic insertions and sections awaiting the peer's decoder.
+    #[cfg(test)]
+    pub(crate) fn qpack_sections(&self) -> (u64, usize) {
+        let state = self.state.lock();
+        (
+            state.encoder.insert_count(),
+            state.encoder.tracked_section_count(),
+        )
+    }
+
     #[cfg(test)]
     pub(crate) fn datagram_demux(&self) -> parking_lot::MutexGuard<'_, super::datagram::Demux> {
         self.datagrams.lock()
@@ -587,13 +597,16 @@ impl Shared {
         datagram: Bytes,
         connection: &QuicConnection,
     ) -> Result<(), Error> {
-        let Some(config) = &self.config.datagrams else {
+        let Some(config) = self
+            .config
+            .datagrams
+            .as_ref()
+            .filter(|_| self.local_datagrams.load(Ordering::Acquire))
+        else {
+            // RFC 9297 §2.1.1: the peer may not send until we advertise support.
+            self.datagrams.lock().count_unadvertised();
             return Ok(());
         };
-        if !self.local_datagrams.load(Ordering::Acquire) {
-            // The peer sent before we advertised support; drop it.
-            return Ok(());
-        }
         let split = super::datagram::split(
             datagram,
             self.role == Role::Server,

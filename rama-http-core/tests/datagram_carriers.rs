@@ -9,6 +9,7 @@ use rama_core::{
 };
 use rama_http::{
     Body, Request, Response, StatusCode, Version,
+    body::util::BodyExt as _,
     datagram::{
         DatagramTransport, HttpDatagramSession, SessionConfig, SessionError, SessionEvent,
         ViolationPolicy,
@@ -24,8 +25,15 @@ use rama_http::{
         ext::Protocol,
     },
 };
-use rama_http_core::{client::conn, server, service::RamaHttpService};
-use std::{convert::Infallible, sync::Arc, time::Duration};
+use rama_http_core::{body::Incoming, client::conn, server, service::RamaHttpService};
+use std::{
+    convert::Infallible,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
     sync::oneshot,
@@ -404,6 +412,109 @@ async fn http1_upgrades_with_request_content_are_refused() {
         .await
         .unwrap();
     }
+}
+
+/// Refuses the first request with a body, then serves capsule sessions.
+fn refuse_once_service()
+-> RamaHttpService<impl rama_core::Service<Request, Output = Response, Error = Infallible> + Clone>
+{
+    let served = Arc::new(AtomicUsize::new(0));
+    RamaHttpService::new(service_fn(move |request: Request| {
+        let served = served.clone();
+        async move {
+            let protocol = validate_capsule_request(&request, ViolationPolicy::Ignore).unwrap();
+            if served.fetch_add(1, Ordering::Relaxed) == 0 {
+                return Ok::<_, Infallible>(
+                    Response::builder()
+                        .status(StatusCode::FORBIDDEN)
+                        .body(Body::from("denied"))
+                        .unwrap(),
+                );
+            }
+            let upgrade = handle_upgrade(&request);
+            tokio::spawn(async move { echo(upgrade.await.unwrap()).await });
+            Ok(capsule_response::<Body>(request.version(), &protocol).unwrap())
+        }
+    }))
+}
+
+async fn echoes(upgraded: Upgraded) {
+    let mut session = HttpDatagramSession::with_config(upgraded, config());
+    session
+        .send_datagram(Bytes::from_static(b"after"))
+        .await
+        .unwrap();
+    assert!(matches!(
+        session.recv().await.unwrap(),
+        Some(SessionEvent::Datagram { payload, .. }) if payload == "after"
+    ));
+}
+
+/// A refused Extended CONNECT or Upgrade is an ordinary response with its body.
+async fn refused_then_served(response: Response<Incoming>, version: Version) {
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    validate_capsule_response(version, &TOKEN, &response, ViolationPolicy::Ignore).unwrap_err();
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(body, "denied", "the refusal keeps its body");
+}
+
+#[tokio::test]
+async fn refused_capsule_requests_leave_the_connection_reusable() {
+    tokio::time::timeout(LIMIT, async {
+        // HTTP/2: the refused stream ends; the next Extended CONNECT uses the same connection.
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        tokio::spawn(
+            server::conn::http2::Builder::new(Executor::new())
+                .with_enable_connect_protocol()
+                .serve_connection(ServiceInput::new(server_io), refuse_once_service()),
+        );
+        let (mut sender, connection) = conn::http2::Builder::new(Executor::new())
+            .handshake(ServiceInput::new(client_io))
+            .await
+            .unwrap();
+        tokio::spawn(connection);
+        let refused = sender
+            .send_request(capsule_request(Version::HTTP_2))
+            .await
+            .unwrap();
+        refused_then_served(refused, Version::HTTP_2).await;
+        for _ in 0..2 {
+            let response = sender
+                .send_request(capsule_request(Version::HTTP_2))
+                .await
+                .unwrap();
+            validate_capsule_response(Version::HTTP_2, &TOKEN, &response, ViolationPolicy::Ignore)
+                .unwrap();
+            echoes(handle_upgrade(&response).await.unwrap()).await;
+        }
+
+        // HTTP/1.1: a refusal is an ordinary response; the connection stays open for the next.
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        tokio::spawn(
+            server::conn::http1::Builder::new()
+                .serve_connection(ServiceInput::new(server_io), refuse_once_service())
+                .with_upgrades(),
+        );
+        let (mut sender, connection) = conn::http1::handshake(ServiceInput::new(client_io))
+            .await
+            .unwrap();
+        tokio::spawn(connection.with_upgrades());
+        let refused = sender
+            .send_request(capsule_request(Version::HTTP_11))
+            .await
+            .unwrap();
+        refused_then_served(refused, Version::HTTP_11).await;
+        sender.ready().await.unwrap();
+        let response = sender
+            .send_request(capsule_request(Version::HTTP_11))
+            .await
+            .unwrap();
+        validate_capsule_response(Version::HTTP_11, &TOKEN, &response, ViolationPolicy::Ignore)
+            .unwrap();
+        echoes(handle_upgrade(&response).await.unwrap()).await;
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]

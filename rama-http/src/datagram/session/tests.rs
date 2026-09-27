@@ -394,6 +394,28 @@ impl AsyncWrite for Trickle {
 }
 
 #[tokio::test]
+async fn cancelled_receives_keep_a_partially_read_value() {
+    let wire = encode_capsule(CONTROL, &[9; 32]).unwrap();
+    for split in 1..wire.len() {
+        let (mut raw, io) = tokio::io::duplex(256);
+        let mut session = HttpDatagramSession::with_config(ServiceInput::new(io), config());
+        raw.write_all(&wire[..split]).await.unwrap();
+        {
+            let mut recv = std::pin::pin!(session.recv());
+            let mut cx = Context::from_waker(Waker::noop());
+            assert!(recv.as_mut().poll(&mut cx).is_pending(), "split {split}");
+        }
+        raw.write_all(&wire[split..]).await.unwrap();
+        raw.shutdown().await.unwrap();
+        let Some(SessionEvent::Capsule { value, .. }) = session.recv().await.unwrap() else {
+            panic!("split {split}: the value was lost");
+        };
+        assert_eq!(&value[..], &[9; 32], "split {split}");
+        assert_eq!(session.recv().await.unwrap(), None);
+    }
+}
+
+#[tokio::test]
 async fn cancelled_sends_never_truncate_a_capsule() {
     let (a, b) = tokio::io::duplex(256);
     let mut sender = HttpDatagramSession::with_config(

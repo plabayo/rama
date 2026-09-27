@@ -3,12 +3,12 @@
 use super::{LIMIT, Pair};
 use crate::h3::{
     DatagramConfig, DatagramLimits, Error as H3Error, client,
-    connection::Config,
+    connection::{Config, Shared},
     qpack::{Encoder, EncoderConfig},
     server::{self, Connection as ServerConnection},
 };
 use rama_core::{
-    bytes::{Bytes, BytesMut},
+    bytes::{Buf as _, Bytes, BytesMut},
     extensions::ExtensionsRef as _,
     futures::FutureExt as _,
     rt::{Executor, spawn},
@@ -16,7 +16,7 @@ use rama_core::{
 use rama_http::{
     datagram::{
         DatagramTransport, HttpDatagramSession, NativeDatagrams, NativeRecvError, NativeSendError,
-        NativeSendPolicy, SessionError, SessionEvent, ViolationPolicy,
+        NativeSendPolicy, SessionConfig, SessionError, SessionEvent, ViolationPolicy,
     },
     io::upgrade::{OnMalformedMessage, OnUpstreamError, Upgraded, handle_upgrade},
 };
@@ -24,7 +24,7 @@ use rama_http_types::{
     Body, Method, Request, Response, StatusCode,
     body::util::BodyExt as _,
     proto::{
-        capsule::CapsuleType,
+        capsule::{CapsuleHeader, CapsuleType},
         ext::{HttpDatagrams, Protocol},
         h3::{Code, FrameHeader, FrameType, QuarterStreamId, VarInt},
     },
@@ -32,6 +32,7 @@ use rama_http_types::{
 use rama_quic::TransportConfig;
 use rama_quic_proto::coding::Codec as _;
 use rama_udp::test_utils::{MemoryDatagramControl, MemoryDatagramFaultStats};
+use rama_utils::octets::mib;
 use std::{
     pin::Pin,
     task::{Context, Poll, Waker},
@@ -402,6 +403,134 @@ async fn datagrams_arriving_before_the_request_head_are_adopted() {
         assert_eq!(server.shared().datagram_demux().pending_len(), 0);
         let mut session = HttpDatagramSession::new(server_io);
         assert_eq!(session.recv().await.unwrap(), native(b"early"));
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+/// One HTTP/3 frame of `frame_type` around `payload`.
+fn raw_frame(frame_type: FrameType, payload: &[u8]) -> Bytes {
+    let mut frame = BytesMut::new();
+    FrameHeader::new(frame_type, payload.len() as u64)
+        .encode(&mut frame)
+        .unwrap();
+    frame.extend_from_slice(payload);
+    frame.freeze()
+}
+
+/// Read a raw request stream until `expected` appears in its DATA frame payloads.
+async fn read_data_until(recv: &mut rama_quic::RecvStream, expected: &[u8]) {
+    let mut wire = BytesMut::new();
+    let mut data = Vec::new();
+    while !data
+        .windows(expected.len())
+        .any(|window| window == expected)
+    {
+        let chunk = recv.read_chunk(usize::MAX, true).await.unwrap().unwrap();
+        wire.extend_from_slice(&chunk.bytes);
+        loop {
+            let mut frame = &wire[..];
+            let (Ok(frame_type), Ok(len)) =
+                (VarInt::decode(&mut frame), VarInt::decode(&mut frame))
+            else {
+                break;
+            };
+            let len = len.into_inner() as usize;
+            if frame.len() < len {
+                break;
+            }
+            if frame_type.into_inner() == FrameType::DATA.value() {
+                data.extend_from_slice(&frame[..len]);
+            }
+            let consumed = wire.len() - frame.len() + len;
+            wire.advance(consumed);
+        }
+    }
+}
+
+#[tokio::test]
+async fn datagrams_before_the_peers_settings_are_received_and_sending_waits_for_them() {
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::in_memory(None, None).await;
+        let (mut server, driver) =
+            server::handshake(pair.server.clone(), server_config(Some(Default::default())))
+                .unwrap();
+        spawn(driver.run());
+        // A raw client without a control stream: its datagram precedes any SETTINGS.
+        pair.client
+            .send_datagram(raw_datagram(0, b"early"))
+            .unwrap();
+        wait_pending(&server, 1).await;
+        let (mut send, mut recv) = pair.client.open_bi().await.unwrap();
+        let id = u64::from(send.id());
+        let head = Encoder::before_peer_settings(EncoderConfig::default())
+            .encode(
+                id,
+                vec![
+                    (":method", "CONNECT"),
+                    (":protocol", TOKEN.as_str()),
+                    (":scheme", "https"),
+                    (":authority", "localhost"),
+                    (":path", "/datagrams"),
+                ],
+            )
+            .unwrap();
+        send.write_chunk(raw_frame(FrameType::HEADERS, &head))
+            .await
+            .unwrap();
+        let (request, response) = server.accept().await.unwrap().resolve().await.unwrap();
+        let upgrade = handle_upgrade(&request);
+        response.send_response(accepted(true)).await.unwrap();
+        let mut session = HttpDatagramSession::new(upgrade.await.unwrap());
+        assert_eq!(session.recv().await.unwrap(), native(b"early"));
+
+        // Until the peer's SETTINGS allow native datagrams, sending uses a DATAGRAM capsule.
+        assert_eq!(session.native().unwrap().channel().max_payload_size(), None);
+        assert_eq!(
+            session
+                .send_datagram(Bytes::from_static(b"later"))
+                .await
+                .unwrap(),
+            DatagramTransport::Capsule
+        );
+        read_data_until(&mut recv, b"\x00\x05later").await;
+
+        let mut settings = BytesMut::new();
+        VarInt::from_u32(0x33).encode(&mut settings);
+        VarInt::from_u32(1).encode(&mut settings);
+        let mut control = BytesMut::new();
+        VarInt::from_u32(0x00).encode(&mut control);
+        control.extend_from_slice(&raw_frame(FrameType::SETTINGS, &settings));
+        let mut control_stream = pair.client.open_uni().await.unwrap();
+        control_stream.write_all(&control).await.unwrap();
+        native_ready(&session).await;
+        assert_eq!(
+            session
+                .send_datagram(Bytes::from_static(b"native"))
+                .await
+                .unwrap(),
+            DatagramTransport::Native
+        );
+        assert_eq!(
+            pair.client.read_datagram().await.unwrap(),
+            raw_datagram(0, b"native")
+        );
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn datagrams_this_endpoint_never_advertised_are_counted_and_dropped() {
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::in_memory(None, None).await;
+        // QUIC DATAGRAM is negotiated, but the server never sends SETTINGS_H3_DATAGRAM.
+        let (_client, server) = start(&pair, server_config(None)).await;
+        pair.client.send_datagram(raw_datagram(0, b"x")).unwrap();
+        wait_drops(&server, |drops| drops.unadvertised == 1).await;
+        assert_eq!(server.shared().datagram_demux().pending_len(), 0);
         pair.close().await;
     })
     .await
@@ -830,6 +959,41 @@ async fn sessions_continue_through_graceful_shutdown_and_end_with_the_connection
     .unwrap();
 }
 
+#[tokio::test]
+async fn goaway_refuses_new_extended_connects_as_retryable_and_drains_open_ones() {
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::in_memory(None, None).await;
+        let (mut client, mut server) = start(&pair, server_config(Some(Default::default()))).await;
+        let (mut client_session, mut server_session) = sessions(&mut client, &mut server).await;
+        native_ready(&client_session).await;
+        server.shutdown().unwrap();
+        while !client.is_draining() {
+            tokio::task::yield_now().await;
+        }
+        // RFC 9114 §5.2: a request beyond the GOAWAY identifier is never processed.
+        let refused = client.send_request(connect(TOKEN, true)).await.unwrap_err();
+        assert_eq!(refused.code(), Code::H3_REQUEST_REJECTED);
+
+        // The open session keeps flowing in both directions and still ends cleanly.
+        client_session
+            .send_datagram(Bytes::from_static(b"up"))
+            .await
+            .unwrap();
+        assert_eq!(server_session.recv().await.unwrap(), native(b"up"));
+        server_session
+            .send_datagram(Bytes::from_static(b"down"))
+            .await
+            .unwrap();
+        assert_eq!(client_session.recv().await.unwrap(), native(b"down"));
+        client_session.close().await.unwrap();
+        assert_eq!(server_session.recv().await.unwrap(), None);
+        server_session.close().await.unwrap();
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
 #[tokio::test(start_paused = true)]
 async fn lost_datagrams_do_not_stall_the_session() {
     tokio::time::timeout(LIMIT, async {
@@ -1024,6 +1188,44 @@ async fn slots_released(client: &client::SendRequest<Body>, server: &ServerConne
 }
 
 #[tokio::test]
+async fn tunnels_keep_their_hooks_out_of_the_connection_extensions() {
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::in_memory(None, None).await;
+        let (mut client, mut server) = start(&pair, server_config(Some(Default::default()))).await;
+        let stored = |shared: &Shared| shared.transport_extensions.self_iter_all().count();
+        let (client_before, server_before) = (stored(client.shared()), stored(server.shared()));
+        for _ in 0..3 {
+            let (mut client_session, mut server_session) = sessions(&mut client, &mut server).await;
+            assert!(client_session.native().is_some() && server_session.native().is_some());
+            client_session.close().await.unwrap();
+            assert_eq!(server_session.recv().await.unwrap(), None);
+        }
+        // Per-tunnel carriers and abort hooks live in each tunnel's fork only.
+        for shared in [client.shared(), server.shared()] {
+            assert!(!shared.transport_extensions.contains::<NativeDatagrams>());
+            assert!(!shared.transport_extensions.contains::<OnMalformedMessage>());
+            assert!(!shared.transport_extensions.contains::<OnUpstreamError>());
+        }
+        assert_eq!(
+            (stored(client.shared()), stored(server.shared())),
+            (client_before, server_before)
+        );
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+/// Every dynamically encoded section was acknowledged or cancelled by the peer's decoder.
+async fn qpack_settled(client: &client::SendRequest<Body>, server: &ServerConnection) {
+    let (inserted, _) = client.shared().qpack_sections();
+    assert!(inserted > 0, "the requests used the dynamic table");
+    while client.shared().qpack_sections().1 != 0 || server.shared().qpack_sections().1 != 0 {
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+}
+
+#[tokio::test]
 async fn cancelled_extended_connects_release_their_datagram_slots() {
     tokio::time::timeout(LIMIT, async {
         let pair = Pair::in_memory(None, None).await;
@@ -1039,6 +1241,7 @@ async fn cancelled_extended_connects_release_their_datagram_slots() {
         assert!(pending.await.unwrap_err().is_cancelled());
         drop(held);
         slots_released(&client, &server).await;
+        qpack_settled(&client, &server).await;
 
         // Abandoned mid-capsule after the tunnel opened.
         let (mut client_io, server_io) = tunnel(&mut client, &mut server, TOKEN).await;
@@ -1051,6 +1254,7 @@ async fn cancelled_extended_connects_release_their_datagram_slots() {
         assert!(!matches!(ended, Ok(Some(_))), "{ended:?}");
         drop(server_session);
         slots_released(&client, &server).await;
+        qpack_settled(&client, &server).await;
 
         // The connection serves a full session afterwards.
         let (mut client_session, mut server_session) = sessions(&mut client, &mut server).await;
@@ -1076,6 +1280,65 @@ async fn discarded_or_buffered(server: &ServerConnection) -> (u64, usize) {
         }
         tokio::time::sleep(Duration::from_millis(1)).await;
     }
+}
+
+#[tokio::test]
+async fn full_native_queues_reject_or_displace_by_send_policy() {
+    tokio::time::timeout(LIMIT, async {
+        let mut transport = TransportConfig::default();
+        Config::default()
+            .configure_transport(&mut transport)
+            .unwrap();
+        transport.set_datagram_send_buffer_size(256);
+        let pair = Pair::in_memory(Some(transport), None).await;
+        let (mut client, mut server) = start(&pair, server_config(Some(Default::default()))).await;
+        let (client_session, mut server_session) = sessions(&mut client, &mut server).await;
+        native_ready(&client_session).await;
+        let channel = client_session.native().unwrap().channel();
+        let reject = NativeSendPolicy::RejectWhenFull;
+        // Without yielding, the driver cannot drain the queue: it fills and then rejects.
+        let mut accepted = 0u8;
+        while channel
+            .send(Bytes::from(vec![accepted; 64]), reject)
+            .is_ok()
+        {
+            accepted += 1;
+            assert!(accepted < 16, "the 256 byte send queue never filled");
+        }
+        assert!(accepted > 0);
+        assert_eq!(
+            channel.send(Bytes::from(vec![0xff; 64]), reject),
+            Err(NativeSendError::Full)
+        );
+        // Every accepted datagram is kept and delivered, in order, on this lossless link.
+        for expected in 0..accepted {
+            let Some(SessionEvent::Datagram { payload, transport }) =
+                server_session.recv().await.unwrap()
+            else {
+                panic!("no datagram");
+            };
+            assert_eq!(transport, DatagramTransport::Native);
+            assert_eq!(
+                &payload[..],
+                [expected; 64],
+                "a rejected send displaced nothing"
+            );
+        }
+        // The drained queue accepts again. The default policy never reports Full: without
+        // a yield in between, its sends displace the still-queued older datagram.
+        while channel.send(Bytes::from_static(b"again"), reject).is_err() {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        for _ in 0..16 {
+            channel
+                .send(Bytes::from_static(b"displace"), Default::default())
+                .unwrap();
+        }
+        assert_eq!(server_session.recv().await.unwrap(), native(b"displace"));
+        pair.close().await;
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
@@ -1293,6 +1556,76 @@ async fn truncated_capsules_reset_http3_streams_as_malformed() {
     .unwrap();
 }
 
+fn capsule_header(ty: CapsuleType, length: u64) -> BytesMut {
+    let mut header = BytesMut::new();
+    CapsuleHeader::new(ty, length).unwrap().encode(&mut header);
+    header
+}
+
+#[tokio::test]
+async fn http3_capsule_limits_apply_before_values_arrive() {
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::in_memory(None, None).await;
+        let (mut client, mut server) = start(&pair, server_config(None)).await;
+        let (mut client_io, server_io) = tunnel(&mut client, &mut server, TOKEN).await;
+        let control = CapsuleType::new(0x2a).unwrap();
+        let mut config = SessionConfig::default();
+        config.capsules.max_datagram_size = 8;
+        config.capsules.max_capsule_size = 8;
+        config.capsules.capsule_types = [control].into();
+        let (_sender, mut receiver) = HttpDatagramSession::with_config(server_io, config).split();
+
+        // Zero length is legal; a DATAGRAM value over the limit is skipped as it streams in.
+        client_io
+            .write_all(&capsule_header(CapsuleType::DATAGRAM, 0))
+            .await
+            .unwrap();
+        let oversized = mib(1);
+        client_io
+            .write_all(&capsule_header(CapsuleType::DATAGRAM, oversized as u64))
+            .await
+            .unwrap();
+        let skip = spawn(async move {
+            client_io.write_all(&vec![0; oversized]).await.unwrap();
+            let mut small = capsule_header(CapsuleType::DATAGRAM, 2);
+            small.extend_from_slice(b"ok");
+            client_io.write_all(&small).await.unwrap();
+            client_io.flush().await.unwrap();
+            client_io
+        });
+        let capsule = |payload: &'static [u8]| {
+            Some(SessionEvent::Datagram {
+                payload: Bytes::from_static(payload),
+                transport: DatagramTransport::Capsule,
+            })
+        };
+        assert_eq!(receiver.recv().await.unwrap(), capsule(b""));
+        assert_eq!(receiver.recv().await.unwrap(), capsule(b"ok"));
+        assert_eq!(receiver.dropped_datagrams(), 1);
+        let mut client_io = skip.await.unwrap();
+
+        // A registered control capsule over its limit fails on its header alone.
+        client_io
+            .write_all(&capsule_header(control, oversized as u64))
+            .await
+            .unwrap();
+        client_io.flush().await.unwrap();
+        let error = receiver.recv().await.unwrap_err();
+        assert!(matches!(error, SessionError::Malformed(_)), "{error:?}");
+        let mut rest = Vec::new();
+        let error = client_io.read_to_end(&mut rest).await.unwrap_err();
+        let error = error
+            .get_ref()
+            .and_then(|error| error.downcast_ref::<H3Error>())
+            .copied()
+            .expect("h3 error");
+        assert_eq!(error.code(), Code::H3_MESSAGE_ERROR);
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
 #[tokio::test]
 async fn datagram_floods_do_not_starve_request_streams() {
     tokio::time::timeout(LIMIT, async {
@@ -1386,6 +1719,7 @@ async fn rejected_violations_abort_unpolled_requests_in_both_roles() {
         client_io.read(&mut [0; 1]).await.unwrap_err();
         assert_eq!(server.datagram_drops().no_semantics, 1);
         assert_eq!(client.datagram_drops().no_semantics, 1);
+        qpack_settled(&client, &server).await;
         // Later requests, control and QPACK keep working.
         for _ in 0..2 {
             let (mut a, mut b) = tunnel(&mut client, &mut server, TOKEN).await;

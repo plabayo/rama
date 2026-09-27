@@ -234,6 +234,37 @@ async fn client_waits_for_late_settings_before_opening_a_stream() {
 }
 
 #[tokio::test]
+async fn a_connection_lost_before_settings_fails_the_waiting_request() {
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::new(None, None).await;
+        let (mut client, client_driver) =
+            client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
+                .unwrap();
+        spawn(client_driver.run());
+        let mut request = spawn(async move {
+            client
+                .send_request(extended_connect(
+                    "https://localhost/never",
+                    Protocol::WEBSOCKET,
+                ))
+                .await
+        });
+        tokio::task::yield_now().await;
+        assert!((&mut request).now_or_never().is_none());
+        // The server never sends SETTINGS; its connection closes instead.
+        pair.server.close(0x100u32, b"no settings");
+        request.await.unwrap().unwrap_err();
+        pair.server
+            .accept_bi()
+            .await
+            .expect_err("no stream was opened");
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
 async fn unsuccessful_response_keeps_its_body_and_offers_no_tunnel() {
     tokio::time::timeout(LIMIT, async {
         let pair = Pair::new(None, None).await;

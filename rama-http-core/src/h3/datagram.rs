@@ -85,6 +85,8 @@ pub struct DatagramDrops {
     pub over_budget: u64,
     /// Held for a future stream that did not appear in time.
     pub expired: u64,
+    /// Received while this endpoint did not advertise `SETTINGS_H3_DATAGRAM`.
+    pub unadvertised: u64,
 }
 
 /// Pending datagrams wait "on the order of a round trip" (RFC 9297 §2.1); this floor keeps
@@ -395,6 +397,10 @@ impl<A: AbortRequest> Demux<A> {
 
     pub(crate) fn drops(&self) -> DatagramDrops {
         self.drops
+    }
+
+    pub(crate) fn count_unadvertised(&mut self) {
+        self.drops.unadvertised += 1;
     }
 
     pub(crate) fn count_invalid(&mut self, beyond_limit: bool) {
