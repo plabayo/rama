@@ -112,6 +112,17 @@ async fn test_ws_over_h3() {
         )
         .with_default_connection_pool()
         .build_client();
+    // A refused handshake (no route) is not a connection failure: the sockets below reuse it.
+    let missing = format!("wss://localhost:{}/missing", address.port());
+    let refused = timeout(
+        LIMIT,
+        client
+            .websocket_h3(missing.as_str())
+            .handshake(Extensions::new()),
+    )
+    .await
+    .unwrap();
+    assert!(refused.is_err(), "no route must refuse the handshake");
     let mut first = timeout(
         LIMIT,
         client
@@ -171,7 +182,7 @@ async fn test_ws_over_h3() {
     assert_eq!(
         server.said().matches("accepted HTTP/3 connection").count(),
         2,
-        "the executable and the pooled library client each use one connection: {}",
+        "the executable and the pooled library client (after its refusal) each use one connection: {}",
         server.said()
     );
 }

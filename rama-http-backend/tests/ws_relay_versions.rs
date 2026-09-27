@@ -543,16 +543,12 @@ async fn assert_relay(ingress: Version, egress: Version, closer: Closer) {
 }
 
 #[tokio::test]
-async fn relays_bridge_http3_with_every_http_version_over_real_engines() {
-    for (ingress, egress) in [
-        (Version::HTTP_3, Version::HTTP_3),
-        (Version::HTTP_3, Version::HTTP_2),
-        (Version::HTTP_3, Version::HTTP_11),
-        (Version::HTTP_2, Version::HTTP_3),
-        (Version::HTTP_11, Version::HTTP_3),
-        (Version::HTTP_2, Version::HTTP_2),
-        (Version::HTTP_11, Version::HTTP_11),
-    ] {
+async fn relays_bridge_every_http_version_pair_over_real_engines() {
+    let versions = [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3];
+    for (ingress, egress) in versions
+        .into_iter()
+        .flat_map(|ingress| versions.map(|egress| (ingress, egress)))
+    {
         for closer in [Closer::Client, Closer::Origin] {
             assert_relay(ingress, egress, closer).await;
         }
