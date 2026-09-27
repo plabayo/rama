@@ -170,6 +170,15 @@ pub(crate) fn request_head(
     if hosts.next().is_some() {
         return Err(malformed("duplicate Host"));
     }
+    // RFC 9110 §7.2: Host is `uri-host [":" port]` for every scheme, as encoding requires.
+    if let Some(host) = host
+        && AuthorityRef::try_from(host.as_bytes())
+            .map_err(|_error| malformed("invalid Host authority"))?
+            .userinfo()
+            .is_some()
+    {
+        return Err(malformed("Host must not contain userinfo"));
+    }
     // Normalizing Host into the URI must retain its compression restriction
     // when a subsequent HTTP/2 or HTTP/3 encoder emits it as :authority.
     if fields.authority.is_none() && host.is_some_and(HeaderValue::is_sensitive) {
@@ -370,11 +379,19 @@ pub(crate) fn encode_request<B>(
         if parsed_host.userinfo().is_some() {
             return Err(malformed("Host must not contain userinfo"));
         }
-        if host.is_empty()
-            || hosts.next().is_some()
-            || (!target.is_empty() && !target.eq_ignore_ascii_case(host.as_bytes()))
-        {
+        // Compared as parsed host and port: a decoded `Host: h:02` became port 2.
+        let mismatch = request.uri().authority().is_some_and(|authority| {
+            authority.userinfo().is_some()
+                || authority.host() != parsed_host.host()
+                || authority.port() != parsed_host.port()
+        });
+        if host.is_empty() || hosts.next().is_some() || mismatch {
             return Err(malformed("invalid Host or authority mismatch"));
+        }
+        // RFC 9114 §4.3.1: both fields then carry the same value, byte for byte.
+        if !target.is_empty() {
+            target.clear();
+            target.extend_from_slice(host.as_bytes());
         }
     } else if target.is_empty()
         && (connect || request.uri().scheme().is_some_and(Protocol::is_http))
@@ -1015,6 +1032,24 @@ mod tests {
             (":authority", "example.com"),
         ]))
         .unwrap_err();
+    }
+
+    /// Found by the `h3_request_head` round-trip oracle: heads the encoder could not forward.
+    #[test]
+    fn decoded_hosts_reencode_and_never_carry_userinfo() {
+        for scheme in ["custom", "https"] {
+            let head = |host: &'static str| {
+                let mut head = fields(&[(":method", "GET"), (":scheme", scheme), (":path", "/")]);
+                head.extend(fields(&[("host", host)]));
+                head
+            };
+            request(head("user@example.com")).unwrap_err();
+            for host in ["example.com", "Example.COM:02"] {
+                let accepted = request(head(host)).unwrap();
+                let forwarded = request(decode(encode_request(&shared(), 0, &accepted).unwrap()));
+                assert_eq!(forwarded.unwrap().uri(), accepted.uri(), "{host}");
+            }
+        }
     }
 
     #[test]
