@@ -1464,3 +1464,14 @@ async fn buffers_stay_bounded_after_a_burst() {
     // The stream ended: its read chunk is released.
     assert_eq!(read, 0);
 }
+
+#[test]
+fn session_futures_stay_small() {
+    let (mut session, _peer) = pair();
+    let send = size_of_val(&session.send_datagram(Bytes::new()));
+    let recv = size_of_val(&session.recv());
+    let close = size_of_val(&session.close());
+    eprintln!("future sizes: send_datagram {send} B, recv {recv} B, close {close} B");
+    // Measured 288, 40 and 40 bytes: guards against accidental growth.
+    assert!(send <= 384 && recv <= 64 && close <= 64);
+}
