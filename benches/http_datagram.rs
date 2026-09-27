@@ -339,7 +339,8 @@ fn beside_a_flooded_neighbour(bencher: divan::Bencher, stalled: bool) {
 }
 
 /// A consumer resuming after a stall: its full queue is drained up to a fresh datagram.
-#[divan::bench(sample_count = 20)]
+/// One iteration per sample, so each flood meets an empty queue.
+#[divan::bench(sample_count = 20, sample_size = 1)]
 fn stalled_consumer_recovery(bencher: divan::Bencher) {
     // Twice the default per-request queue: the oldest half is displaced.
     const FLOOD: usize = 64;
