@@ -191,10 +191,14 @@ mod roundtrip {
         Layer, Service,
         bytes::Bytes,
         http::{
-            Body, Request, Version, body::util::BodyExt as _, client::EasyHttpWebClient,
-            server::HttpServer, service::web::response::IntoResponse as _,
+            Body, Request, Version,
+            body::util::BodyExt as _,
+            client::{EasyHttpWebClient, Http3Connector},
+            server::HttpServer,
+            service::web::response::IntoResponse as _,
         },
         net::{address::SocketAddress, tls::ApplicationProtocol},
+        quic::{Endpoint, ServerConfig, TransportConfig, tls::TlsOptions},
         rt::Executor,
         service::service_fn,
         tcp::server::TcpListener,
@@ -204,7 +208,7 @@ mod roundtrip {
             server::{GeneratedServerAuthConfig, TlsServerConfig},
         },
     };
-    use std::{convert::Infallible, hint::black_box};
+    use std::{convert::Infallible, hint::black_box, sync::Arc};
 
     const WARMUP_REQUESTS: usize = 200;
 
@@ -293,9 +297,105 @@ mod roundtrip {
         });
     }
 
+    /// Complete pooled HTTP/3 requests through the same client stack with HTTP/3 support.
+    fn measure_h3(bencher: divan::Bencher) {
+        let server_runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let address = server_runtime.block_on(async {
+            let tls = TlsServerConfig::new()
+                .try_with_generated_server_auth(GeneratedServerAuthConfig::default())
+                .unwrap()
+                .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
+            let server = HttpServer::new_http3(Executor::new());
+            let mut transport = TransportConfig::default();
+            server.http3().configure_transport(&mut transport).unwrap();
+            let mut config = ServerConfig::try_from_rama_tls(&tls, TlsOptions::default()).unwrap();
+            config.set_transport_config(Arc::new(transport));
+            let endpoint = Endpoint::build(Executor::new())
+                .with_server_config(config)
+                .bind_address(SocketAddress::local_ipv4(0))
+                .await
+                .unwrap();
+            let address = endpoint.local_addr().unwrap();
+            let service = server.service(service_fn(|_request: Request| async {
+                Ok::<_, Infallible>(Bytes::from_static(b"ok").into_response())
+            }));
+            tokio::spawn(async move {
+                while let Some(incoming) = endpoint.accept().await {
+                    let service = service.clone();
+                    tokio::spawn(async move {
+                        if let Ok(connection) = incoming.await {
+                            _ = service.serve(connection).await;
+                        }
+                    });
+                }
+            });
+            address
+        });
+        let client_runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let _guard = client_runtime.enter();
+        let tls = TlsClientConfig::new()
+            .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect())
+            .with_server_verify(ServerVerifyMode::Disable);
+        let connector = client_runtime
+            .block_on(
+                Http3Connector::builder(Executor::new())
+                    .with_tls_config(tls.clone())
+                    .build(),
+            )
+            .unwrap();
+        let client = EasyHttpWebClient::connector_builder()
+            .with_default_transport_connector()
+            .without_dns_connector()
+            .without_tls_proxy_support()
+            .without_proxy_support()
+            .with_tls_support_using_rustls(tls)
+            .with_default_http_connector::<Body>(Executor::new())
+            .with_http3_support(connector)
+            .with_default_connection_pool()
+            .build_client()
+            .boxed();
+        let uri = format!("https://{address}/");
+        let request = || {
+            Request::builder()
+                .uri(uri.as_str())
+                .version(Version::HTTP_3)
+                .body(Body::empty())
+                .unwrap()
+        };
+        client_runtime.block_on(async {
+            for _ in 0..WARMUP_REQUESTS {
+                let response = client.serve(request()).await.unwrap();
+                assert_eq!(response.version(), Version::HTTP_3);
+                assert_eq!(
+                    response.into_body().collect().await.unwrap().to_bytes(),
+                    "ok"
+                );
+            }
+        });
+        bencher.with_inputs(request).bench_local_values(|request| {
+            let bytes = client_runtime.block_on(async {
+                let response = client.serve(request).await.unwrap();
+                response.into_body().collect().await.unwrap().to_bytes()
+            });
+            drop(black_box(bytes));
+        });
+    }
+
     #[divan::bench(args = [Version::HTTP_11, Version::HTTP_2], sample_count = 100)]
     fn pooled_tls_requests(bencher: divan::Bencher, version: Version) {
         measure(bencher, version, true);
+    }
+
+    #[divan::bench(sample_count = 100)]
+    fn pooled_h3_requests(bencher: divan::Bencher) {
+        measure_h3(bencher);
     }
 
     #[divan::bench(args = [Version::HTTP_11, Version::HTTP_2], sample_count = 100)]
