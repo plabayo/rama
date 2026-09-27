@@ -1,4 +1,8 @@
 use super::*;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
 const CONTROL: CapsuleType = match CapsuleType::new(0x1234) {
     Ok(ty) => ty,
@@ -283,32 +287,73 @@ fn encoding_matches_the_wire_format() {
     assert_eq!(&encode_capsule(CONTROL, b"").unwrap()[..], b"\x52\x34\x00");
 }
 
+/// Deliver one capsule fed in `chunk`-sized pieces and return its value.
+fn deliver(decoder: &mut CapsuleDecoder, wire: &[u8], chunk: usize) -> Bytes {
+    let mut delivered = None;
+    for piece in wire.chunks(chunk) {
+        decoder.feed(Bytes::copy_from_slice(piece)).unwrap();
+        while let Some(event) = decoder.poll().unwrap() {
+            if let CapsuleEvent::Capsule { value, .. } | CapsuleEvent::Datagram(value) = event {
+                delivered = Some(value);
+            }
+        }
+    }
+    delivered.unwrap()
+}
+
 #[test]
-fn large_fragmented_capsules_leave_no_retained_buffer() {
+fn delivered_values_own_their_storage() {
     let big = CapsuleConfig {
         max_capsule_size: 64 * 1024,
         ..config(UnknownCapsules::Skip)
     };
-    let wire = capsule(CONTROL, &vec![5; 64 * 1024]);
+    let large = capsule(CONTROL, &vec![5; 64 * 1024]);
+    let small = capsule(CONTROL, &[6; 16]);
     let mut decoder = CapsuleDecoder::new(big);
-    let mut retained = Vec::new();
-    for _ in 0..8 {
-        let mut delivered = 0;
-        for chunk in wire.chunks(1400) {
-            decoder.feed(Bytes::copy_from_slice(chunk)).unwrap();
-            while let Some(event) = decoder.poll().unwrap() {
-                if let CapsuleEvent::Capsule { value, .. } = event {
-                    delivered += value.len();
-                }
-            }
-        }
-        assert_eq!(delivered, 64 * 1024);
-        retained.push(decoder.value.capacity());
+    // Repeated equal sizes, fragmented: each value is the only owner of its storage, so
+    // dropping it frees everything the decoder allocated for it.
+    for _ in 0..4 {
+        let value = deliver(&mut decoder, &large, 1400);
+        assert!(value.is_unique());
     }
-    eprintln!("decoder value capacity after each 64 KiB capsule: {retained:?}");
-    // Delivered values take their storage with them: nothing is kept for the next one.
-    assert!(
-        retained.iter().all(|capacity| *capacity == 0),
-        "{retained:?}"
-    );
+    // A small value after a large one keeps no large buffer alive either.
+    let value = deliver(&mut decoder, &large, 1400);
+    drop(value);
+    let value = deliver(&mut decoder, &small, 4);
+    assert!(value.is_unique());
+    // Contiguous input: the value is a slice of the fed chunk, which the decoder releases.
+    let value = deliver(&mut decoder, &large, large.len());
+    assert!(value.is_unique());
+}
+
+/// Counts drops of the storage behind fed input.
+struct Owned(Vec<u8>, Arc<AtomicUsize>);
+
+impl AsRef<[u8]> for Owned {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl Drop for Owned {
+    fn drop(&mut self) {
+        self.1.fetch_add(1, Ordering::AcqRel);
+    }
+}
+
+#[test]
+fn skipped_input_is_released_once_consumed() {
+    let unknown = capsule(CapsuleType::new(0x2d).unwrap(), &[1; 40]);
+    let oversized = capsule(CapsuleType::DATAGRAM, &[2; 40]);
+    for wire in [unknown, oversized] {
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let mut decoder = CapsuleDecoder::new(config(UnknownCapsules::Skip));
+        decoder
+            .feed(Bytes::from_owner(Owned(wire, dropped.clone())))
+            .unwrap();
+        assert_eq!(decoder.poll().unwrap(), None);
+        decoder.finish().unwrap();
+        // Skipped to the end: the decoder no longer holds the input.
+        assert_eq!(dropped.load(Ordering::Acquire), 1);
+    }
 }

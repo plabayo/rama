@@ -1475,3 +1475,24 @@ fn session_futures_stay_small() {
     // Measured 288, 40 and 40 bytes: guards against accidental growth.
     assert!(send <= 384 && recv <= 64 && close <= 64);
 }
+
+#[tokio::test]
+async fn ended_receivers_keep_no_share_of_delivered_payloads() {
+    // A clean end, and a malformed one: the stream stops inside a capsule.
+    for tail in [&[][..], &[0x00, 0x10][..]] {
+        let (mut raw, io) = tokio::io::duplex(256);
+        let mut session = HttpDatagramSession::with_config(ServiceInput::new(io), config());
+        raw.write_all(&encode_capsule(CapsuleType::DATAGRAM, b"keep").unwrap())
+            .await
+            .unwrap();
+        raw.write_all(tail).await.unwrap();
+        raw.shutdown().await.unwrap();
+        let Some(SessionEvent::Datagram { payload, .. }) = session.recv().await.unwrap() else {
+            panic!("no datagram");
+        };
+        let end = session.recv().await;
+        assert!(!matches!(end, Ok(Some(_))), "{end:?}");
+        // Nothing more is read: neither the read buffer nor the decoder shares the payload.
+        assert!(payload.is_unique(), "tail {tail:?}");
+    }
+}

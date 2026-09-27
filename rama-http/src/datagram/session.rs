@@ -675,7 +675,7 @@ impl<T: AsyncRead> SessionReceiver<T> {
         }
         // An abort by either half discards events already decoded or queued.
         if self.io.is_aborted() {
-            self.end = Some(RecvEnd::Failed(io::ErrorKind::ConnectionAborted));
+            self.terminate(RecvEnd::Failed(io::ErrorKind::ConnectionAborted));
             return Poll::Ready(Err(SessionError::Io(aborted())));
         }
         // Alternate sources per event so neither can starve the other.
@@ -714,11 +714,9 @@ impl<T: AsyncRead> SessionReceiver<T> {
                     .with(Half::Read, cx, |io, cx| poll_read_buf(io, cx, buf))
             ) {
                 Ok(0) => {
-                    // Nothing more can be read: release the read chunk.
-                    self.buf = BytesMut::new();
                     return Poll::Ready(match self.decoder.finish() {
                         Ok(()) => {
-                            self.end = Some(RecvEnd::Clean);
+                            self.terminate(RecvEnd::Clean);
                             Ok(None)
                         }
                         Err(error) => Err(self.fail(error)),
@@ -731,7 +729,7 @@ impl<T: AsyncRead> SessionReceiver<T> {
                     }
                 }
                 Err(error) => {
-                    self.end = Some(RecvEnd::Failed(error.kind()));
+                    self.terminate(RecvEnd::Failed(error.kind()));
                     return Poll::Ready(Err(SessionError::Io(error)));
                 }
             }
@@ -752,14 +750,21 @@ impl<T: AsyncRead> SessionReceiver<T> {
                 Poll::Ready(None)
             }
             Err(error) => {
-                self.end = Some(RecvEnd::Native(error));
+                self.terminate(RecvEnd::Native(error));
                 Poll::Ready(Some(Err(SessionError::NativeRecv(error))))
             }
         }
     }
 
+    /// Latch the receive side's end and release its buffers: nothing more will be read.
+    fn terminate(&mut self, end: RecvEnd) {
+        self.end = Some(end);
+        self.buf = BytesMut::new();
+        self.decoder.release_storage();
+    }
+
     fn fail(&mut self, error: CapsuleError) -> SessionError {
-        self.end = Some(RecvEnd::Malformed(error));
+        self.terminate(RecvEnd::Malformed(error));
         // RFC 9297 §3.3: treat the message as malformed; the carrier chooses the abort code.
         self.io.abort();
         SessionError::Malformed(error)

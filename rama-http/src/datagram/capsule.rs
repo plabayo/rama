@@ -12,7 +12,7 @@ use rama_http_types::proto::{
     h3::{VarInt, VarIntDecoder},
 };
 use rama_utils::octets::kib;
-use std::fmt;
+use std::{fmt, mem};
 
 /// Limits and policy for [`CapsuleDecoder`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -174,6 +174,21 @@ impl CapsuleDecoder {
 
     /// Decode the next event, or `None` once more input is needed.
     pub fn poll(&mut self) -> Result<Option<CapsuleEvent>, CapsuleError> {
+        let polled = self.decode();
+        // Consumed input must not keep its storage alive, e.g. after a skipped capsule.
+        if self.inbox.is_empty() {
+            self.inbox = Bytes::new();
+        }
+        polled
+    }
+
+    /// Drop all input and any partially buffered value; the stream is over.
+    pub(crate) fn release_storage(&mut self) {
+        self.inbox = Bytes::new();
+        self.value = BytesMut::new();
+    }
+
+    fn decode(&mut self) -> Result<Option<CapsuleEvent>, CapsuleError> {
         loop {
             match self.state {
                 State::Type => {
@@ -201,13 +216,13 @@ impl CapsuleDecoder {
                     if take == 0 {
                         return Ok(None);
                     }
-                    // Sized once to the bounded value: the delivered value takes all of it.
+                    // Sized once to the bounded value, which then takes the whole buffer.
                     if self.value.is_empty() {
                         self.value.reserve(length);
                     }
                     self.value.put(self.inbox.split_to(take));
                     if self.value.len() == length {
-                        let value = self.value.split().freeze();
+                        let value = mem::take(&mut self.value).freeze();
                         self.state = State::Type;
                         return Ok(Some(Self::complete(ty, value)));
                     }
