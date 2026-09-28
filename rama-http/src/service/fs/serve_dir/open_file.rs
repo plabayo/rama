@@ -407,12 +407,10 @@ impl Preconditions {
                 .headers()
                 .get(header::IF_MODIFIED_SINCE)
                 .and_then(IfModifiedSince::from_header_value),
-            if_range: if req.headers().contains_key(header::IF_RANGE) {
-                req.headers()
-                    .typed_get::<IfRange>()
-                    .map_or(IfRangeCondition::Invalid, IfRangeCondition::Valid)
-            } else {
-                IfRangeCondition::Absent
+            if_range: match req.headers().typed_try_get::<IfRange>() {
+                Ok(None) => IfRangeCondition::Absent,
+                Ok(Some(if_range)) => IfRangeCondition::Valid(if_range),
+                Err(_) => IfRangeCondition::Invalid,
             },
         }
     }
