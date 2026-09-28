@@ -476,6 +476,8 @@ fn parse_directive(s: &str) -> Option<PermissionsPolicyDirective> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, Instant};
+
     use super::*;
     use crate::common::{test_decode, test_encode};
 
@@ -704,10 +706,13 @@ mod tests {
 
     #[test]
     fn decode_many_distinct_directives_is_linear() {
-        let value: Vec<String> = (0..50_000).map(|i| format!("x{i}=()")).collect();
+        let value: Vec<String> = (0..200_000).map(|i| format!("x{i}=()")).collect();
         let value = value.join(",");
+        // linear decode takes milliseconds; a per-directive rescan takes over a minute
+        let start = Instant::now();
         let policy = test_decode::<PermissionsPolicy>(&[value.as_str()]).unwrap();
-        assert_eq!(policy.directives().count(), 50_000);
+        assert!(start.elapsed() < Duration::from_secs(5));
+        assert_eq!(policy.directives().count(), 200_000);
 
         let policy =
             test_decode::<PermissionsPolicy>(&["x1=(), x2=(), x1=(self), x2=(*)"]).unwrap();

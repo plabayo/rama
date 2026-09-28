@@ -7,7 +7,9 @@
 //! the way browsers do.
 
 use std::borrow::Cow;
-use std::fmt;
+use std::fmt::{self, Write as _};
+
+use rama_core::telemetry::tracing;
 
 pub(super) struct SingleTokenWithReportTo<'a> {
     pub(super) token: &'a str,
@@ -17,11 +19,10 @@ pub(super) struct SingleTokenWithReportTo<'a> {
 /// Parse `token [; report-to=<sf-string>] [; ignored=...]*` syntax.
 ///
 /// Returns `None` on a structurally invalid input (empty token, dangling
-/// equals, missing parameter name). Unknown parameter names are
-/// silently dropped — same behaviour browsers exhibit when an unknown
-/// param appears on a recognised header.
+/// equals, missing parameter name, malformed sf-string). Unknown parameter
+/// names are silently dropped, as browsers do.
 pub(super) fn parse_single_token_with_report_to(raw: &str) -> Option<SingleTokenWithReportTo<'_>> {
-    let mut parts = raw.split(';');
+    let mut parts = split_parameters(raw);
     let token = parts.next().map(str::trim).filter(|t| !t.is_empty())?;
     let mut report_to: Option<Cow<'static, str>> = None;
     for raw_param in parts {
@@ -29,30 +30,63 @@ pub(super) fn parse_single_token_with_report_to(raw: &str) -> Option<SingleToken
         if param.is_empty() {
             continue;
         }
-        let mut eq = param.splitn(2, '=');
-        let name = eq.next()?.trim();
-        let raw_value = eq.next()?.trim();
-        if name.eq_ignore_ascii_case("report-to") {
-            // RFC 8941 sf-string is double-quoted; tolerate the
-            // unquoted token form too since browsers do.
-            let value = if let Some(stripped) = raw_value
-                .strip_prefix('"')
-                .and_then(|s| s.strip_suffix('"'))
-            {
-                stripped.to_owned()
+        let (name, raw_value) = param.split_once('=')?;
+        if name.trim().eq_ignore_ascii_case("report-to") {
+            let raw_value = raw_value.trim();
+            // tolerate the unquoted token form too, as browsers do
+            let value = if raw_value.starts_with('"') {
+                parse_sf_string(raw_value)?
             } else {
                 raw_value.to_owned()
             };
-            // Treat an empty endpoint as a malformed parameter rather
-            // than a meaningful value.
             if value.is_empty() {
                 return None;
             }
             report_to = Some(Cow::Owned(value));
         }
-        // Unknown params: silently drop.
     }
     Some(SingleTokenWithReportTo { token, report_to })
+}
+
+/// Split on `;` outside sf-strings.
+fn split_parameters(raw: &str) -> impl Iterator<Item = &str> {
+    let mut in_string = false;
+    let mut escaped = false;
+    raw.split(move |c| {
+        if escaped {
+            escaped = false;
+            return false;
+        }
+        match c {
+            '\\' if in_string => {
+                escaped = true;
+                false
+            }
+            '"' => {
+                in_string = !in_string;
+                false
+            }
+            ';' => !in_string,
+            _ => false,
+        }
+    })
+}
+
+/// Decode one complete RFC 8941 §4.2.5 sf-string, quotes included.
+fn parse_sf_string(raw: &str) -> Option<String> {
+    let mut chars = raw.strip_prefix('"')?.chars();
+    let mut value = String::new();
+    loop {
+        match chars.next()? {
+            '\\' => match chars.next()? {
+                escaped @ ('"' | '\\') => value.push(escaped),
+                _ => return None,
+            },
+            '"' => return chars.as_str().is_empty().then_some(value),
+            c @ ' '..='~' => value.push(c),
+            _ => return None,
+        }
+    }
 }
 
 /// Emit `<token>` or `<token>; report-to="<endpoint>"` (always
@@ -63,8 +97,20 @@ pub(super) fn format_single_token_with_report_to(
     report_to: Option<&str>,
 ) -> fmt::Result {
     f.write_str(token)?;
-    if let Some(endpoint) = report_to {
-        write!(f, "; report-to=\"{endpoint}\"")?;
+    let Some(endpoint) = report_to else {
+        return Ok(());
+    };
+    // an sf-string only holds printable ASCII; drop reporting, not the policy
+    if !endpoint.bytes().all(|b| matches!(b, b' '..=b'~')) {
+        tracing::debug!("drop report-to endpoint that is not a valid sf-string");
+        return Ok(());
     }
-    Ok(())
+    f.write_str("; report-to=\"")?;
+    for c in endpoint.chars() {
+        if matches!(c, '"' | '\\') {
+            f.write_char('\\')?;
+        }
+        f.write_char(c)?;
+    }
+    f.write_char('"')
 }

@@ -325,9 +325,49 @@ mod tests {
     }
 
     #[test]
+    fn report_to_round_trips_as_sf_string() {
+        let decoded =
+            test_decode::<CrossOriginEmbedderPolicy>(&[r#"require-corp; report-to="a\"; x=\"y""#])
+                .unwrap();
+        assert_eq!(decoded.report_to.as_deref(), Some(r#"a"; x="y"#));
+        let map = test_encode(decoded.clone());
+        assert_eq!(
+            map[CrossOriginEmbedderPolicy::name()],
+            r#"require-corp; report-to="a\"; x=\"y""#
+        );
+        assert_eq!(
+            test_decode::<CrossOriginEmbedderPolicy>(&[map[CrossOriginEmbedderPolicy::name()]
+                .to_str()
+                .unwrap()]),
+            Some(decoded)
+        );
+
+        let decoded =
+            test_decode::<CrossOriginEmbedderPolicy>(&[r#"require-corp; report-to=a"b"#]).unwrap();
+        let map = test_encode(decoded);
+        assert_eq!(
+            map[CrossOriginEmbedderPolicy::name()],
+            r#"require-corp; report-to="a\"b""#
+        );
+
+        for raw in [
+            r#"require-corp; report-to="a"#,
+            r#"require-corp; report-to="a\x""#,
+            r#"require-corp; report-to="a"b"#,
+            r#"require-corp; report-to="""#,
+        ] {
+            assert!(
+                test_decode::<CrossOriginEmbedderPolicy>(&[raw]).is_none(),
+                "{raw}"
+            );
+        }
+    }
+
+    #[test]
     fn encode_skips_values_that_are_not_valid_header_values() {
+        // an unrepresentable endpoint drops reporting, never the policy itself
         let map = test_encode(CrossOriginEmbedderPolicy::require_corp().with_report_to("a\r\nb"));
-        assert!(map.get(CrossOriginEmbedderPolicy::name()).is_none());
+        assert_eq!(map[CrossOriginEmbedderPolicy::name()], "require-corp");
 
         let map = test_encode(CrossOriginEmbedderPolicyReportOnly {
             value: "\u{7f}".parse().unwrap(),

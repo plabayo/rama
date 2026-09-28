@@ -146,6 +146,9 @@ macro_rules! make_parse_value_fn {
                 }
             )+
 
+            if value.is_empty() {
+                return Err(BoxError::from_static_str("empty robots tag directive"));
+            }
             tag.custom_rules.push(CustomRule::new_boolean_directive(value.parse().context("create custom boolean directive")?));
             Ok(())
         }
@@ -645,11 +648,12 @@ fn find_delimiter(buffer: &[u8], from: usize) -> Option<(usize, Delimiter)> {
         })
 }
 
+/// Trim OWS (SP and HTAB).
 fn trim_space(mut buffer: &[u8]) -> &[u8] {
-    while let [b' ', rest @ ..] = buffer {
+    while let [b' ' | b'\t', rest @ ..] = buffer {
         buffer = rest;
     }
-    while let [rest @ .., b' '] = buffer {
+    while let [rest @ .., b' ' | b'\t'] = buffer {
         buffer = rest;
     }
     buffer
@@ -903,5 +907,31 @@ mod tests {
         .unwrap();
         assert!(tag.unavailable_after().is_some());
         assert!(tag.no_index());
+    }
+
+    #[test]
+    fn test_parse_blank_directive_is_rejected() {
+        for input in [" ", "  ", "\t"] {
+            let results = robots_tag_parse_iter(input.as_bytes()).collect::<Vec<_>>();
+            assert!(results.iter().all(Result::is_err), "{input:?}: {results:?}");
+        }
+    }
+
+    #[test]
+    fn test_parse_date_value_comma_bound() {
+        let date = |commas: usize| {
+            let comment = vec!["a"; commas.saturating_add(1)].join(",");
+            format!("unavailable_after: Wed, 3 Dec 2025 13:09:53 +0000 ({comment}), noindex")
+        };
+        let accepted = date(15);
+        let tag = robots_tag_parse_iter(accepted.as_bytes())
+            .next()
+            .unwrap()
+            .unwrap();
+        assert!(tag.unavailable_after().is_some());
+
+        let rejected = date(17);
+        let results = robots_tag_parse_iter(rejected.as_bytes()).collect::<Vec<_>>();
+        assert!(matches!(results.as_slice(), [Err(_)]), "{results:?}");
     }
 }

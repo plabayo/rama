@@ -92,7 +92,8 @@ impl HeaderEncode for XRobotsTag {
             tracing::debug!("failed to format x-robots-tag: {err}");
             return;
         }
-        match HeaderValue::try_from(s) {
+        // decoded values may carry obs-text, which only `from_bytes` accepts
+        match HeaderValue::from_bytes(s.as_bytes()) {
             Ok(v) => values.extend(::std::iter::once(v)),
             Err(err) => {
                 tracing::debug!("failed to encode x-robots-tag as header value: {err}");
@@ -137,6 +138,14 @@ mod tests {
             let s = value.to_str().unwrap();
             assert_eq!(expected, s);
         }
+    }
+
+    #[test]
+    fn test_obs_text_round_trips() {
+        let value = HeaderValue::from_bytes("max-image-preview: é, noindex".as_bytes()).unwrap();
+        let header = XRobotsTag::decode(&mut [value].iter()).unwrap();
+        let encoded = header.encode_to_value().unwrap();
+        assert_eq!(XRobotsTag::decode(&mut [encoded].iter()).unwrap(), header);
     }
 
     #[test]

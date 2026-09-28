@@ -361,8 +361,9 @@ mod tests {
 
     #[test]
     fn encode_skips_values_that_are_not_valid_header_values() {
+        // an unrepresentable endpoint drops reporting, never the policy itself
         let map = test_encode(CrossOriginOpenerPolicy::same_origin().with_report_to("a\r\nb"));
-        assert!(map.get(CrossOriginOpenerPolicy::name()).is_none());
+        assert_eq!(map[CrossOriginOpenerPolicy::name()], "same-origin");
 
         let map = test_encode(CrossOriginOpenerPolicyReportOnly {
             value: "\u{7f}".parse().unwrap(),
