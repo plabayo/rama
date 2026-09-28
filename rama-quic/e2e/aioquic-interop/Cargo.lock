@@ -1834,12 +1834,14 @@ name = "rama-tcp"
 version = "0.5.0"
 dependencies = [
  "libc",
+ "parking_lot",
  "pin-project-lite",
  "rama-core",
  "rama-net",
  "rama-utils",
  "rand",
  "tokio",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

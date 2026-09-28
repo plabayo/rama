@@ -28,6 +28,7 @@ targets = [
 default = []
 
 [dependencies]
+parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
 rama-core = { workspace = true, features = ["std"] }
 rama-net = { workspace = true, features = ["std"] }
@@ -38,8 +39,12 @@ tokio = { workspace = true, features = ["macros", "net", "time"] }
 [target.'cfg(target_family = "unix")'.dependencies]
 libc = { workspace = true }
 
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Networking_WinSock", "Win32_System_IO", "Win32_System_Threading"] }
+
 [dev-dependencies]
 ahash = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
 
 [lints]
 workspace = true
