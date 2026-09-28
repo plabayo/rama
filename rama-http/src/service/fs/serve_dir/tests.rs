@@ -987,7 +987,7 @@ async fn read_partial_empty_embedded() {
 
 async fn test_read_partial_empty(svc: ServeDir) {
     // no int-range is satisfiable for a zero-length representation
-    for range in ["bytes=0-", "bytes=0-0", "bytes=-0", "bytes=0-0,-5"] {
+    for range in ["bytes=0-", "bytes=0-0", "bytes=-0"] {
         let req = Request::builder()
             .uri("/empty.txt")
             .header("Range", range)
@@ -1224,6 +1224,19 @@ async fn test_read_partial_errs_on_bad_range(svc: ServeDir) {
         res.headers()["content-range"],
         &format!("bytes */{}", file_contents.len())
     )
+}
+
+#[tokio::test]
+async fn multipart_range_on_empty_file_can_be_ignored() {
+    let svc = ServeDir::new("../test-files").with_ignore_multi_range_requests(true);
+    let req = Request::builder()
+        .uri("/empty.txt")
+        .header(header::RANGE, "bytes=0-0,-5")
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.serve(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert!(res.headers().get(header::CONTENT_RANGE).is_none());
 }
 
 #[tokio::test]

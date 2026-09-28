@@ -5,11 +5,15 @@ use super::{
 use crate::headers::{ETag, HeaderMapExt as _, IfMatch, IfNoneMatch, IfRange};
 use crate::headers::{encoding::Encoding, specifier::QualityValue};
 use crate::{HeaderValue, Method, Request, header};
+use http_range_header::StartPosition;
 use rama_core::combinators::Either;
 use rama_core::telemetry::tracing;
 use rama_http_types::mime::Mime;
 use rama_net::uri::Uri;
-use rama_utils::include_dir::{Dir, Metadata as EmbeddedMetadata};
+use rama_utils::{
+    include_dir::{Dir, Metadata as EmbeddedMetadata},
+    time::now_system_time,
+};
 use std::io::Cursor;
 use std::{
     ffi::OsStr,
@@ -425,8 +429,13 @@ impl Preconditions {
         match &self.if_range {
             IfRangeCondition::Absent => range,
             IfRangeCondition::Valid(if_range)
-                if !if_range
-                    .is_modified(etag, last_modified.map(LastModified::to_typed).as_ref()) =>
+                if !if_range.is_modified(
+                    etag,
+                    last_modified
+                        .filter(|lm| lm.is_strong(now_system_time()))
+                        .map(LastModified::to_typed)
+                        .as_ref(),
+                ) =>
             {
                 range
             }
@@ -798,15 +807,6 @@ fn try_parse_range(
         return Some(Err(RangeError::Unsatisfiable));
     };
 
-    if file_size == 0 {
-        // RFC 9110 §14.1.1: an int-range needs a first-pos below the length; a suffix
-        // of an empty representation is the (empty) whole, served without a range
-        let only_suffixes = parsed.ranges.iter().all(
-            |range| matches!(range.start, http_range_header::StartPosition::FromLast(n) if n > 0),
-        );
-        return (!only_suffixes).then_some(Err(RangeError::Unsatisfiable));
-    }
-
     if parsed.ranges.len() > 1 {
         // ServeDir and ServeFile do not support multipart responses. Optionally
         // ignore the Range header before semantic and overlap validation.
@@ -815,6 +815,15 @@ fn try_parse_range(
         } else {
             Some(Err(RangeError::MultipleRangesNotSupported))
         };
+    }
+
+    if file_size == 0 {
+        // RFC 9110 §14.1.1: only a non-empty suffix fits, and it is the whole (empty) file
+        let satisfiable = parsed
+            .ranges
+            .iter()
+            .any(|range| matches!(range.start, StartPosition::FromLast(n) if n > 0));
+        return (!satisfiable).then_some(Err(RangeError::Unsatisfiable));
     }
 
     Some(
