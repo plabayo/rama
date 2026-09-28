@@ -22,12 +22,15 @@ use tokio::{
 };
 
 type Origin = h2_server::Connection<ServiceInput<DuplexStream>, Bytes>;
+type ClientConn = JoinHandle<rama_http_core::Result<()>>;
 
-async fn connect() -> (http2::SendRequest<Body>, Origin) {
+async fn connect() -> (http2::SendRequest<Body>, Origin, ClientConn) {
     connect_with(h2_server::Builder::new()).await
 }
 
-async fn connect_with(origin: h2_server::Builder) -> (http2::SendRequest<Body>, Origin) {
+async fn connect_with(
+    origin: h2_server::Builder,
+) -> (http2::SendRequest<Body>, Origin, ClientConn) {
     let (client_io, server_io) = tokio::io::duplex(64 * 1024);
     let (origin_tx, origin_rx) = oneshot::channel();
     tokio::spawn(async move {
@@ -40,8 +43,8 @@ async fn connect_with(origin: h2_server::Builder) -> (http2::SendRequest<Body>, 
     let (client, conn) = http2::handshake(Executor::new(), ServiceInput::new(client_io))
         .await
         .unwrap();
-    tokio::spawn(conn);
-    (client, origin_rx.await.unwrap())
+    let conn = tokio::spawn(conn);
+    (client, origin_rx.await.unwrap(), conn)
 }
 
 fn send(
@@ -96,7 +99,7 @@ async fn streams_above_goaway_last_stream_id_are_refused() {
         Reason::ENHANCE_YOUR_CALM,
         Reason::INTERNAL_ERROR,
     ] {
-        let (client, mut origin) = connect().await;
+        let (client, mut origin, _conn) = connect().await;
 
         let processed = send(&client, "GET", "");
         let (_req, _respond) = next_stream(&mut origin).await;
@@ -129,7 +132,7 @@ async fn streams_above_goaway_last_stream_id_are_refused() {
 /// connection.
 #[tokio::test(start_paused = true)]
 async fn pending_open_stream_above_goaway_is_refused() {
-    let (client, mut origin) =
+    let (client, mut origin, _conn) =
         connect_with(h2_server::Builder::new().with_max_concurrent_streams(1)).await;
 
     let processed = send(&client, "GET", "");
@@ -149,7 +152,7 @@ async fn pending_open_stream_above_goaway_is_refused() {
 /// Only a `REFUSED_STREAM` reset says the stream was not processed.
 #[tokio::test(start_paused = true)]
 async fn only_refused_stream_reset_is_refused() {
-    let (client, mut origin) = connect().await;
+    let (client, mut origin, _conn) = connect().await;
 
     for (reason, refused) in [
         (Reason::REFUSED_STREAM, true),
@@ -168,4 +171,24 @@ async fn only_refused_stream_reset_is_refused() {
         let err = resp.unwrap().expect_err("stream was reset");
         assert_eq!(err.is_refused(), refused, "{reason:?}: {err:?}");
     }
+}
+
+/// The connection's error carries no request's stream id: even after a
+/// `GOAWAY` that did cover the in-flight POST, it must never read as a
+/// refusal a retry policy could act on.
+#[tokio::test(start_paused = true)]
+async fn connection_error_is_never_refused() {
+    let (client, mut origin, conn) = connect().await;
+
+    let processed = send(&client, "POST", "a=1");
+    let (_req, _respond) = next_stream(&mut origin).await;
+    go_away(origin, Reason::INTERNAL_ERROR).await;
+
+    assert_refused(processed, false, "processed").await;
+    let err = timeout(Duration::from_secs(1), conn)
+        .await
+        .unwrap()
+        .unwrap()
+        .expect_err("origin went away with an error");
+    assert!(!err.is_refused(), "connection error: {err:?}");
 }

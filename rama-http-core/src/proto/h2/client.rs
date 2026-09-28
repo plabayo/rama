@@ -820,7 +820,7 @@ where
                 ping.ensure_not_timed_out().map_err(|e| (e, None))?;
 
                 debug!("client response error: {err:?}");
-                Poll::Ready(Err((crate::Error::new_h2(err), None::<Request<B>>)))
+                Poll::Ready(Err((crate::Error::new_h2_request(err), None::<Request<B>>)))
             }
         }
     }
@@ -895,7 +895,7 @@ where
                         Err(err) => {
                             debug!("client send request error: {}", err);
                             cb.send(Err(TrySendError {
-                                error: crate::Error::new_h2(err),
+                                error: crate::Error::new_h2_request(err),
                                 message: None,
                             }));
                             continue;
