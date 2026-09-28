@@ -2,7 +2,7 @@ use super::{
     DirSource, DirectoryServeMode, ServeDirSymlinkPolicy, ServeVariant,
     headers::{IfModifiedSince, IfUnmodifiedSince, LastModified, etag_from_metadata},
 };
-use crate::headers::{ETag, HeaderMapExt as _, IfMatch, IfNoneMatch};
+use crate::headers::{ETag, HeaderMapExt as _, IfMatch, IfNoneMatch, IfRange};
 use crate::headers::{encoding::Encoding, specifier::QualityValue};
 use crate::{HeaderValue, Method, Request, header};
 use rama_core::combinators::Either;
@@ -195,6 +195,11 @@ pub(super) async fn open_file(
                     return Ok(output);
                 }
 
+                let range_header = preconditions.applicable_range(
+                    range_header,
+                    etag.as_ref(),
+                    last_modified.as_ref(),
+                );
                 let maybe_range =
                     try_parse_range(range_header, meta.len(), ignore_multi_range_requests);
 
@@ -232,6 +237,11 @@ pub(super) async fn open_file(
                     return Ok(output);
                 }
 
+                let range_header = preconditions.applicable_range(
+                    range_header,
+                    etag.as_ref(),
+                    last_modified.as_ref(),
+                );
                 let maybe_range =
                     try_parse_range(range_header, content_length, ignore_multi_range_requests);
 
@@ -277,6 +287,11 @@ pub(super) async fn open_file(
                     return Ok(output);
                 }
 
+                let range_header = preconditions.applicable_range(
+                    range_header,
+                    etag.as_ref(),
+                    last_modified.as_ref(),
+                );
                 let maybe_range =
                     try_parse_range(range_header, meta.len(), ignore_multi_range_requests);
                 if let Some(Ok(range)) = maybe_range.as_ref() {
@@ -318,6 +333,11 @@ pub(super) async fn open_file(
                     return Ok(output);
                 }
 
+                let range_header = preconditions.applicable_range(
+                    range_header,
+                    etag.as_ref(),
+                    last_modified.as_ref(),
+                );
                 let maybe_range =
                     try_parse_range(range_header, content_length, ignore_multi_range_requests);
 
@@ -364,6 +384,14 @@ struct Preconditions {
     if_unmodified_since: Option<IfUnmodifiedSince>,
     if_none_match: Option<IfNoneMatch>,
     if_modified_since: Option<IfModifiedSince>,
+    if_range: IfRangeCondition,
+}
+
+/// The `If-Range` header, kept even when it does not decode.
+enum IfRangeCondition {
+    Absent,
+    Valid(IfRange),
+    Invalid,
 }
 
 impl Preconditions {
@@ -379,6 +407,32 @@ impl Preconditions {
                 .headers()
                 .get(header::IF_MODIFIED_SINCE)
                 .and_then(IfModifiedSince::from_header_value),
+            if_range: if req.headers().contains_key(header::IF_RANGE) {
+                req.headers()
+                    .typed_get::<IfRange>()
+                    .map_or(IfRangeCondition::Invalid, IfRangeCondition::Valid)
+            } else {
+                IfRangeCondition::Absent
+            },
+        }
+    }
+
+    /// RFC 9110 §13.1.5: `Range` only applies while `If-Range` matches the representation.
+    fn applicable_range<'a>(
+        &self,
+        range: Option<&'a str>,
+        etag: Option<&ETag>,
+        last_modified: Option<&LastModified>,
+    ) -> Option<&'a str> {
+        match &self.if_range {
+            IfRangeCondition::Absent => range,
+            IfRangeCondition::Valid(if_range)
+                if !if_range
+                    .is_modified(etag, last_modified.map(LastModified::to_typed).as_ref()) =>
+            {
+                range
+            }
+            IfRangeCondition::Valid(_) | IfRangeCondition::Invalid => None,
         }
     }
 
@@ -390,20 +444,20 @@ impl Preconditions {
     /// 3. `If-None-Match` (weak comparison) → 304 on failure (for GET/HEAD)
     /// 4. `If-Modified-Since` (only if `If-None-Match` absent) → 304 on failure
     fn check(
-        self,
+        &self,
         etag: Option<&ETag>,
         last_modified: Option<&LastModified>,
     ) -> Option<OpenFileOutput> {
         // Step 1: If-Match. RFC 9110 §13.1.1: with no current representation (no ETag), the
         // condition is false, including for `*`.
-        if let Some(if_match) = self.if_match {
+        if let Some(if_match) = &self.if_match {
             let passes = etag
                 .map(|etag| if_match.precondition_passes(etag))
                 .unwrap_or(false);
             if !passes {
                 return Some(OpenFileOutput::PreconditionFailed);
             }
-        } else if let Some(since) = self.if_unmodified_since {
+        } else if let Some(since) = &self.if_unmodified_since {
             // Step 2: If-Unmodified-Since (only when If-Match is absent). RFC 9110 §13.1.4:
             // ignored when no modification date is available.
             let passes = last_modified
@@ -416,7 +470,7 @@ impl Preconditions {
 
         // Step 3: If-None-Match (weak comparison). No ETag means the condition is vacuously
         // satisfied, so serve normally.
-        if let Some(if_none_match) = self.if_none_match {
+        if let Some(if_none_match) = &self.if_none_match {
             let passes = etag
                 .map(|etag| if_none_match.precondition_passes(etag))
                 .unwrap_or(true);
@@ -426,7 +480,7 @@ impl Preconditions {
                     last_modified: last_modified.cloned(),
                 });
             }
-        } else if let Some(since) = self.if_modified_since {
+        } else if let Some(since) = &self.if_modified_since {
             // Step 4: If-Modified-Since (only when If-None-Match is absent). No last-modified
             // date means it is treated as modified (serve normally).
             let unmodified = last_modified
@@ -745,6 +799,15 @@ fn try_parse_range(
     let Ok(parsed) = http_range_header::parse_range_header(header_value) else {
         return Some(Err(RangeError::Unsatisfiable));
     };
+
+    if file_size == 0 {
+        // RFC 9110 §14.1.1: an int-range needs a first-pos below the length; a suffix
+        // of an empty representation is the (empty) whole, served without a range
+        let only_suffixes = parsed.ranges.iter().all(
+            |range| matches!(range.start, http_range_header::StartPosition::FromLast(n) if n > 0),
+        );
+        return (!only_suffixes).then_some(Err(RangeError::Unsatisfiable));
+    }
 
     if parsed.ranges.len() > 1 {
         // ServeDir and ServeFile do not support multipart responses. Optionally

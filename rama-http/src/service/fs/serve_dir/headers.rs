@@ -1,5 +1,5 @@
 use crate::header::HeaderValue;
-use crate::headers::ETag;
+use crate::headers::{self, ETag};
 use httpdate::HttpDate;
 use std::time::SystemTime;
 
@@ -24,14 +24,14 @@ pub(super) fn etag_from_metadata(size: u64, modified: SystemTime) -> Option<ETag
 #[derive(Clone)]
 pub(super) struct LastModified(pub(super) HttpDate);
 
-/// `9999-12-31T23:59:59Z`, the last instant an HTTP-date can represent.
-const MAX_HTTP_DATE_SECS: u64 = 253_402_300_799;
-
 impl LastModified {
     /// `None` for modification times an HTTP-date cannot represent (pre-epoch or past year 9999).
     pub(super) fn try_from_system_time(time: SystemTime) -> Option<Self> {
-        let since_epoch = time.duration_since(SystemTime::UNIX_EPOCH).ok()?;
-        (since_epoch.as_secs() <= MAX_HTTP_DATE_SECS).then(|| Self(time.into()))
+        headers::util::HttpDate::try_from_system_time(time).map(|_| Self(time.into()))
+    }
+
+    pub(super) fn to_typed(&self) -> headers::LastModified {
+        headers::LastModified::from(SystemTime::from(self.0))
     }
 }
 
@@ -77,7 +77,7 @@ mod tests {
         let epoch = SystemTime::UNIX_EPOCH;
         assert!(LastModified::try_from_system_time(epoch).is_some());
         let last = epoch
-            .checked_add(Duration::from_secs(MAX_HTTP_DATE_SECS))
+            .checked_add(Duration::from_secs(253_402_300_799))
             .unwrap();
         assert!(LastModified::try_from_system_time(last).is_some());
 

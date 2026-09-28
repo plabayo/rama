@@ -4,7 +4,7 @@ use crate::header::ALLOW;
 use crate::service::fs::ServeDirSymlinkPolicy;
 use crate::service::fs::serve_dir::DirSource;
 use crate::service::fs::{DirectoryServeMode, ServeDir, ServeFile};
-use crate::{Body, Request, StatusCode, StreamingBody};
+use crate::{Body, HeaderValue, Request, StatusCode, StreamingBody};
 use crate::{Method, Response, header};
 use brotli::BrotliDecompress;
 use flate2::bufread::{DeflateDecoder, GzDecoder};
@@ -986,17 +986,27 @@ async fn read_partial_empty_embedded() {
 }
 
 async fn test_read_partial_empty(svc: ServeDir) {
+    // no int-range is satisfiable for a zero-length representation
+    for range in ["bytes=0-", "bytes=0-0", "bytes=-0", "bytes=0-0,-5"] {
+        let req = Request::builder()
+            .uri("/empty.txt")
+            .header("Range", range)
+            .body(Body::empty())
+            .unwrap();
+        let res = svc.serve(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::RANGE_NOT_SATISFIABLE, "{range}");
+        assert_eq!(res.headers()["content-range"], "bytes */0", "{range}");
+    }
+
+    // a suffix of an empty representation is the whole (empty) representation
     let req = Request::builder()
         .uri("/empty.txt")
-        .header("Range", "bytes=0-")
+        .header("Range", "bytes=-5")
         .body(Body::empty())
         .unwrap();
-
     let res = svc.serve(req).await.unwrap();
-    assert_eq!(res.status(), StatusCode::PARTIAL_CONTENT);
-    assert_eq!(res.headers()["content-length"], "0");
-    assert_eq!(res.headers()["content-range"], "bytes 0-0/0");
-
+    assert_eq!(res.status(), StatusCode::OK);
+    assert!(res.headers().get(header::CONTENT_RANGE).is_none());
     let body = res.into_body().collect().await.unwrap().to_bytes();
     assert!(body.is_empty());
 }
@@ -1090,6 +1100,66 @@ async fn test_read_partial_accepts_out_of_bounds_range(svc: ServeDir) {
             file_contents.len()
         )
     )
+}
+
+#[tokio::test]
+async fn if_range_gates_partial_content() {
+    let svc = ServeDir::new("../rama-http");
+    test_if_range_gates_partial_content(svc).await;
+}
+
+#[tokio::test]
+async fn if_range_gates_partial_content_embedded() {
+    const EMBEDDED_FILES: Dir = include_dir!("$CARGO_MANIFEST_DIR");
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES);
+    test_if_range_gates_partial_content(svc).await;
+}
+
+async fn test_if_range_gates_partial_content(svc: ServeDir) {
+    let req = Request::builder()
+        .uri("/README.md")
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.serve(req).await.unwrap();
+    let etag = res.headers()[header::ETAG].clone();
+    let last_modified = res.headers()[header::LAST_MODIFIED].clone();
+    let weak_etag = HeaderValue::try_from(format!("W/{}", etag.to_str().unwrap())).unwrap();
+    let full_len = res.into_body().collect().await.unwrap().to_bytes().len();
+
+    for (if_range, expected) in [
+        (etag, StatusCode::PARTIAL_CONTENT),
+        (last_modified, StatusCode::PARTIAL_CONTENT),
+        (HeaderValue::from_static("\"other\""), StatusCode::OK),
+        // a weak entity-tag never matches: If-Range uses strong comparison
+        (weak_etag, StatusCode::OK),
+        (
+            HeaderValue::from_static("Fri, 09 Aug 1996 14:21:40 GMT"),
+            StatusCode::OK,
+        ),
+        // a date must match Last-Modified exactly, not merely be newer
+        (
+            HeaderValue::from_static("Fri, 31 Dec 9999 23:59:59 GMT"),
+            StatusCode::OK,
+        ),
+        (HeaderValue::from_static("garbage"), StatusCode::OK),
+    ] {
+        let req = Request::builder()
+            .uri("/README.md")
+            .header(header::RANGE, "bytes=0-1")
+            .header(header::IF_RANGE, if_range.clone())
+            .body(Body::empty())
+            .unwrap();
+        let res = svc.serve(req).await.unwrap();
+        assert_eq!(res.status(), expected, "{if_range:?}");
+        let has_content_range = res.headers().contains_key(header::CONTENT_RANGE);
+        let body_len = res.into_body().collect().await.unwrap().to_bytes().len();
+        if expected == StatusCode::OK {
+            assert!(!has_content_range, "{if_range:?}");
+            assert_eq!(body_len, full_len, "{if_range:?}");
+        } else {
+            assert_eq!(body_len, 2, "{if_range:?}");
+        }
+    }
 }
 
 #[tokio::test]
