@@ -687,6 +687,11 @@ harness = false
 required-features = ["http-full"]
 
 [[bench]]
+name = "http_typed_headers"
+harness = false
+required-features = ["http", "net"]
+
+[[bench]]
 name = "http3"
 path = "benches/http3.rs"
 harness = false
