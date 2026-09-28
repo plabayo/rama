@@ -448,26 +448,20 @@ fn decode_trailers_frame(mut buf: Bytes) -> Result<Option<HeaderMap>, Status> {
     }
 
     for trailer in trailers {
-        let mut s = trailer.split(|b| b == &b':');
-        let key = s
-            .next()
+        // only the first `:` separates name from value; the value may hold more
+        let (key, value) = trailer
+            .iter()
+            .position(|b| *b == b':')
+            .and_then(|colon| trailer.split_at_checked(colon))
+            .and_then(|(key, rest)| Some((key, rest.split_first()?.1)))
             .ok_or_else(|| Status::internal("trailers couldn't parse key"))?;
-        let value = s
-            .next()
-            .ok_or_else(|| Status::internal("trailers couldn't parse value"))?;
-
-        let value = value
-            .split(|b| b == &b'\r')
-            .next()
-            .ok_or_else(|| Status::internal("trailers was not escaped"))?
-            .strip_prefix(b" ")
-            .unwrap_or(value);
+        let value = value.trim_ascii();
 
         let header_key = HeaderName::try_from(key)
             .map_err(|e| Status::internal(format!("Unable to parse HeaderName: {e}")))?;
         let header_value = HeaderValue::try_from(value)
             .map_err(|e| Status::internal(format!("Unable to parse HeaderValue: {e}")))?;
-        map.insert(header_key, header_value);
+        map.append(header_key, header_value);
     }
 
     Ok(Some(map))
@@ -573,6 +567,20 @@ mod tests {
         let map = decode_trailers_frame(trailers).unwrap().unwrap();
 
         assert_eq!(headers, map);
+    }
+
+    #[test]
+    fn decode_trailers_keeps_colons_whitespace_and_repeats() {
+        let body = b"grpc-message: a: b \r\ngrpc-status:0\r\nx-rep: 1\r\nx-rep: 2\r\n";
+        let mut frame = vec![GRPC_WEB_TRAILERS_BIT];
+        frame.extend(u32::try_from(body.len()).unwrap().to_be_bytes());
+        frame.extend(body);
+
+        let map = decode_trailers_frame(Bytes::from(frame)).unwrap().unwrap();
+        assert_eq!(map[Status::GRPC_MESSAGE], "a: b");
+        assert_eq!(map[Status::GRPC_STATUS], "0");
+        let repeated: Vec<_> = map.get_all("x-rep").iter().collect();
+        assert_eq!(repeated, ["1", "2"]);
     }
 
     #[test]
