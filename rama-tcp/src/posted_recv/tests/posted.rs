@@ -14,6 +14,7 @@ use rama_core::{Layer as _, Service as _, extensions::ExtensionsRef as _, io::Br
 use rama_net::{
     address::SocketAddress,
     client::{ConnectRequest, EstablishedClientConnection},
+    conn::ConnectionAbort,
     proxy::{IoForwardService, LingeringClose},
     stream::{Socket as _, SocketInfo},
 };
@@ -509,6 +510,71 @@ async fn forward_with_lingering_keeps_reply_while_client_sends() {
     .await;
     assert_eq!(tally.complete, 100, "{tally}");
     assert_eq!(tally.ends, [(None, None)], "{tally}");
+}
+
+/// A reset from the origin reaches the client as a reset when the bridge
+/// passes resets through, while a plain bridge turns it into a clean end
+/// that hides the truncation.
+#[tokio::test(flavor = "multi_thread")]
+async fn pass_resets_forwards_origin_reset_to_client() {
+    let len = SIZES[2];
+    let origin = spawn_origin(len, Close::Reset, RESET_GAP).await;
+    for pass_resets in [true, false] {
+        let origin_addr = origin.addr;
+        let proxy = spawn_origin_fn(move |client| async move {
+            let client = PostedRecv::new(TcpStream::new(client)).unwrap();
+            let egress = TcpStream::new(TokioTcpStream::connect(origin_addr).await.unwrap());
+            let egress = PostedRecv::new(egress).unwrap();
+            let svc = IoForwardService::default();
+            if pass_resets {
+                _ = svc.pass_resets().serve(BridgeIo(client, egress)).await;
+            } else {
+                _ = svc.serve(BridgeIo(client, egress)).await;
+            }
+        })
+        .await;
+        let proxy_addr = proxy.addr;
+        let tally = tally(100, 16, len, move || async move {
+            let mut client = connect(proxy_addr).await;
+            exchange(&mut client, FORCED_DELAY).await
+        })
+        .await;
+        assert_eq!(tally.complete, 100, "pass_resets={pass_resets}: {tally}");
+        let expected_end = if pass_resets {
+            (Some(reset_code()), Some(io::ErrorKind::ConnectionReset))
+        } else {
+            (None, None)
+        };
+        assert_eq!(
+            tally.ends,
+            [expected_end],
+            "pass_resets={pass_resets}: {tally}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn connection_abort_resets_the_peer_and_is_inert_after_drop() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    for abort in [true, false] {
+        let (client, accepted) = tokio::join!(connect(addr), listener.accept());
+        let peer = tokio::spawn(peer_saw(accepted.unwrap().0));
+        let handle = client.connection_abort();
+        assert!(
+            client
+                .extensions()
+                .self_get_ref::<ConnectionAbort>()
+                .is_some()
+        );
+        if abort {
+            handle.abort().unwrap();
+        }
+        drop(client);
+        let expected = if abort { PeerSaw::Reset } else { PeerSaw::Fin };
+        assert_eq!(peer.await.unwrap(), expected);
+        handle.abort().unwrap();
+    }
 }
 
 /// The same bridge with a plain egress stream, for the baseline loss rate.

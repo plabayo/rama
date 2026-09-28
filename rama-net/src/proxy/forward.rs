@@ -5,6 +5,9 @@ use crate::std::sync::Arc;
 
 use super::IdleGuard;
 
+use crate::conn::ConnectionAbort;
+
+use rama_core::extensions::ExtensionsRef;
 use rama_core::graceful::ShutdownGuard;
 use rama_core::rt::Executor;
 use rama_core::telemetry::tracing;
@@ -239,24 +242,27 @@ impl IoForwardService {
         }
     }
 
+    /// Pass resets through: see [`PassResetsForwardService`].
+    #[must_use]
+    pub fn pass_resets(self) -> PassResetsForwardService {
+        PassResetsForwardService(self)
+    }
+
     /// The shutdown guard wired through the [`Executor`], if any.
     fn shutdown_guard(&self) -> Option<ShutdownGuard> {
         self.executor.guard().cloned()
     }
-}
 
-impl<S, T> Service<BridgeIo<S, T>> for IoForwardService
-where
-    S: Io + Unpin,
-    T: Io + Unpin,
-{
-    type Output = IoForwardOutcome;
-    type Error = IoForwardError;
-
-    async fn serve(
+    async fn forward<S, T>(
         &self,
-        BridgeIo(left, right): BridgeIo<S, T>,
-    ) -> Result<Self::Output, Self::Error> {
+        left: S,
+        right: T,
+        aborts: Aborts,
+    ) -> Result<IoForwardOutcome, IoForwardError>
+    where
+        S: Io + Unpin,
+        T: Io + Unpin,
+    {
         #[cfg(feature = "dial9")]
         super::dial9::record_bridge_opened(
             self.idle_timeout
@@ -275,6 +281,7 @@ where
             self.shutdown_grace,
             self.buf_size,
             self.lingering_close,
+            aborts,
         )
         .await;
 
@@ -305,6 +312,68 @@ where
             Ok(outcome)
         }
     }
+}
+
+impl<S, T> Service<BridgeIo<S, T>> for IoForwardService
+where
+    S: Io + Unpin,
+    T: Io + Unpin,
+{
+    type Output = IoForwardOutcome;
+    type Error = IoForwardError;
+
+    fn serve(
+        &self,
+        BridgeIo(left, right): BridgeIo<S, T>,
+    ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
+        self.forward(left, right, Aborts::default())
+    }
+}
+
+/// An [`IoForwardService`] that passes resets through.
+///
+/// When a read on one side fails with a reset or an abort, the other side is
+/// aborted as well, using the [`ConnectionAbort`] found in its extensions,
+/// instead of being closed with a clean end that would make a truncated
+/// stream look complete. A side without a [`ConnectionAbort`] is closed as
+/// usual. An aborted side does not linger.
+///
+/// Aborting discards whatever the bridge still had queued for that side.
+///
+/// Created with [`IoForwardService::pass_resets`].
+#[derive(Debug, Clone)]
+pub struct PassResetsForwardService(IoForwardService);
+
+impl<S, T> Service<BridgeIo<S, T>> for PassResetsForwardService
+where
+    S: Io + Unpin + ExtensionsRef,
+    T: Io + Unpin + ExtensionsRef,
+{
+    type Output = IoForwardOutcome;
+    type Error = IoForwardError;
+
+    fn serve(
+        &self,
+        BridgeIo(left, right): BridgeIo<S, T>,
+    ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
+        // Flat lookups only: the walking ones may find the capability of a
+        // related connection, such as the ingress of an egress.
+        let aborts = Aborts {
+            left: left.extensions().self_get_ref::<ConnectionAbort>().cloned(),
+            right: right
+                .extensions()
+                .self_get_ref::<ConnectionAbort>()
+                .cloned(),
+        };
+        self.0.forward(left, right, aborts)
+    }
+}
+
+/// The capabilities to abort each side, if any.
+#[derive(Debug, Default)]
+struct Aborts {
+    left: Option<ConnectionAbort>,
+    right: Option<ConnectionAbort>,
 }
 
 /// The result of an [`IoForwardService`] bridge, describing why and how the
@@ -438,6 +507,7 @@ async fn run_bridge<S, T>(
     shutdown_grace: Duration,
     buf_size: usize,
     lingering_close: Option<LingeringClose>,
+    aborts: Aborts,
 ) -> IoForwardOutcome
 where
     S: Io + Unpin,
@@ -471,6 +541,10 @@ where
     let left_r_ended = Arc::new(AtomicBool::new(false));
     let right_r_ended = Arc::new(AtomicBool::new(false));
 
+    // Whether a side was aborted to pass on a reset of the other side.
+    let left_aborted = Arc::new(AtomicBool::new(false));
+    let right_aborted = Arc::new(AtomicBool::new(false));
+
     let (reason, fatal_error) = {
         let l_to_r = std::pin::pin!(copy_one_way(
             &mut left_r,
@@ -481,6 +555,7 @@ where
             shutdown_grace,
             right_w_shut.clone(),
             left_r_ended.clone(),
+            aborts.right.map(|abort| (abort, right_aborted.clone())),
             Some(client_first_byte_seen.clone()),
             Some(client_spoke.clone()),
             None,
@@ -494,6 +569,7 @@ where
             shutdown_grace,
             left_w_shut.clone(),
             right_r_ended.clone(),
+            aborts.left.map(|abort| (abort, left_aborted.clone())),
             Some(first_byte_seen.clone()),
             None,
             Some(upstream_eof_seen.clone()),
@@ -541,8 +617,10 @@ where
     if let Some(linger) = lingering_close
         && reason != BridgeCloseReason::Shutdown
     {
-        let linger_left = !left_r_ended.load(Ordering::Acquire);
-        let linger_right = !right_r_ended.load(Ordering::Acquire);
+        let linger_left =
+            !left_r_ended.load(Ordering::Acquire) && !left_aborted.load(Ordering::Acquire);
+        let linger_right =
+            !right_r_ended.load(Ordering::Acquire) && !right_aborted.load(Ordering::Acquire);
         tokio::join!(
             async {
                 if linger_left {
@@ -737,6 +815,7 @@ async fn copy_one_way<R, W>(
     shutdown_grace: Duration,
     write_side_shut: Arc<AtomicBool>,
     read_ended: Arc<AtomicBool>,
+    abort_writer: Option<(ConnectionAbort, Arc<AtomicBool>)>,
     first_byte_seen: Option<Arc<AtomicBool>>,
     first_byte_notify: Option<Arc<Notify>>,
     eof_seen: Option<Arc<AtomicBool>>,
@@ -747,6 +826,7 @@ where
 {
     let mut buf = vec![0u8; buf_size];
     let mut copy_err: Option<std::io::Error> = None;
+    let mut read_failed = false;
     loop {
         // Only tokio's own IO resources charge the coop budget; an in-memory or
         // TLS-buffered reader can stay ready indefinitely. Charge it here so a
@@ -779,11 +859,29 @@ where
             }
             Err(err) => {
                 read_ended.store(true, Ordering::Release);
+                read_failed = true;
                 copy_err = Some(err);
                 break;
             }
         }
     }
+
+    // A reset read from our peer is passed on as a reset. A shutdown first
+    // would let the writer's peer see a clean end before the reset.
+    let passed_on_reset = match (&copy_err, abort_writer) {
+        (Some(err), Some((abort, aborted)))
+            if read_failed
+                && matches!(
+                    err.kind(),
+                    std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
+                ) =>
+        {
+            let passed_on = abort.abort().is_ok();
+            aborted.store(passed_on, Ordering::Release);
+            passed_on
+        }
+        _ => false,
+    };
 
     // Single shutdown path for clean EOF, read errors, and write
     // errors alike: one bounded shutdown attempt, mark the side shut
@@ -792,7 +890,9 @@ where
     // prior write error — that's expected). Bounded by
     // `shutdown_grace` so a TLS writer waiting on the peer's
     // close_notify can't wedge this future indefinitely.
-    _ = tokio::time::timeout(shutdown_grace, writer.shutdown()).await;
+    if !passed_on_reset {
+        _ = tokio::time::timeout(shutdown_grace, writer.shutdown()).await;
+    }
     write_side_shut.store(true, Ordering::Release);
 
     match copy_err {
@@ -1406,6 +1506,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .await;
         assert!(res.is_err(), "expected write error to propagate");
@@ -1762,6 +1863,133 @@ mod tests {
             .unwrap();
         assert!(started.elapsed() < Duration::from_millis(500));
         drop((client, origin, shutdown));
+    }
+
+    /// Never yields data or EOF; accepts writes and counts shutdowns.
+    struct RecordingIo {
+        shutdowns: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl tokio::io::AsyncRead for RecordingIo {
+        fn poll_read(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            _: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Pending
+        }
+    }
+
+    impl tokio::io::AsyncWrite for RecordingIo {
+        fn poll_write(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            buf: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            std::task::Poll::Ready(Ok(buf.len()))
+        }
+
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            self.shutdowns.fetch_add(1, Ordering::Relaxed);
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    /// A right side that records shutdowns and aborts.
+    fn recording_right() -> (
+        rama_core::ServiceInput<RecordingIo>,
+        Arc<std::sync::atomic::AtomicUsize>,
+        Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        let shutdowns = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let aborts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let right = rama_core::ServiceInput::new(RecordingIo {
+            shutdowns: shutdowns.clone(),
+        });
+        let counter = aborts.clone();
+        right.extensions.insert(ConnectionAbort::new(move || {
+            counter.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }));
+        (right, shutdowns, aborts)
+    }
+
+    #[tokio::test]
+    async fn pass_resets_aborts_the_other_side_on_reset() {
+        for kind in [
+            std::io::ErrorKind::ConnectionReset,
+            std::io::ErrorKind::ConnectionAborted,
+        ] {
+            let left = rama_core::ServiceInput::new(ScriptedIo::erroring(kind));
+            let (right, shutdowns, aborts) = recording_right();
+            let outcome = IoForwardService::default()
+                .pass_resets()
+                .serve(BridgeIo(left, right))
+                .await
+                .unwrap();
+            assert_eq!(outcome.reason(), BridgeCloseReason::ReadErrorLeft);
+            assert_eq!(aborts.load(Ordering::Relaxed), 1, "{kind:?}");
+            assert_eq!(
+                shutdowns.load(Ordering::Relaxed),
+                0,
+                "{kind:?}: a shutdown would show a clean end before the reset",
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn without_pass_resets_a_reset_becomes_a_clean_close() {
+        let left =
+            rama_core::ServiceInput::new(ScriptedIo::erroring(std::io::ErrorKind::ConnectionReset));
+        let (right, shutdowns, aborts) = recording_right();
+        IoForwardService::default()
+            .serve(BridgeIo(left, right))
+            .await
+            .unwrap();
+        assert_eq!(aborts.load(Ordering::Relaxed), 0);
+        assert_eq!(shutdowns.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn pass_resets_leaves_other_errors_alone() {
+        let left =
+            rama_core::ServiceInput::new(ScriptedIo::erroring(std::io::ErrorKind::InvalidData));
+        let (right, shutdowns, aborts) = recording_right();
+        let err = IoForwardService::default()
+            .pass_resets()
+            .serve(BridgeIo(left, right))
+            .await
+            .unwrap_err();
+        assert!(err.fatal_error().is_some());
+        assert_eq!(aborts.load(Ordering::Relaxed), 0);
+        assert_eq!(shutdowns.load(Ordering::Relaxed), 1);
+    }
+
+    /// An aborted side must not linger: its peer is meant to see the reset
+    /// right away, even though it never ends its own stream here.
+    #[tokio::test]
+    async fn pass_resets_does_not_linger_on_the_aborted_side() {
+        let left =
+            rama_core::ServiceInput::new(ScriptedIo::erroring(std::io::ErrorKind::ConnectionReset));
+        let (right, _, aborts) = recording_right();
+        let svc = IoForwardService::default()
+            .with_lingering_close(LingeringClose::new(Duration::from_secs(30), u64::MAX))
+            .pass_resets();
+        tokio::time::timeout(Duration::from_secs(2), svc.serve(BridgeIo(left, right)))
+            .await
+            .expect("the aborted side lingered")
+            .unwrap();
+        assert_eq!(aborts.load(Ordering::Relaxed), 1);
     }
 
     #[tokio::test]

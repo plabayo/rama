@@ -54,11 +54,16 @@ use std::{
 };
 
 use rama_core::extensions::{Extensions, ExtensionsRef};
+#[cfg(any(target_os = "windows", target_family = "unix"))]
+use rama_net::conn::ConnectionAbort;
 use rama_net::{address::SocketAddress, stream::Socket};
 use rama_utils::{macros::generate_set_and_with, octets::kib};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use crate::{TcpStream, TokioTcpStream};
+
+#[cfg(any(target_os = "windows", target_family = "unix"))]
+mod abort;
 
 #[cfg(target_os = "windows")]
 mod iocp;
@@ -154,12 +159,17 @@ mod sealed {
         #[cfg(target_os = "windows")]
         fn raw_socket(&self) -> std::os::windows::io::RawSocket;
 
+        #[cfg(target_family = "unix")]
+        fn raw_fd(&self) -> std::os::fd::RawFd;
+
         /// Take the socket back from tokio, so its registration is gone
         /// before the socket is closed.
         #[cfg(target_os = "windows")]
         fn into_std(self) -> std::io::Result<std::net::TcpStream>
         where
             Self: Sized;
+
+        fn extensions_of(&self) -> Option<&rama_core::extensions::Extensions>;
     }
 }
 
@@ -179,9 +189,18 @@ impl sealed::Sealed for TokioTcpStream {
         std::os::windows::io::AsRawSocket::as_raw_socket(self)
     }
 
+    #[cfg(target_family = "unix")]
+    fn raw_fd(&self) -> std::os::fd::RawFd {
+        std::os::fd::AsRawFd::as_raw_fd(self)
+    }
+
     #[cfg(target_os = "windows")]
     fn into_std(self) -> io::Result<std::net::TcpStream> {
         Self::into_std(self)
+    }
+
+    fn extensions_of(&self) -> Option<&Extensions> {
+        None
     }
 }
 
@@ -193,9 +212,18 @@ impl sealed::Sealed for TcpStream {
         std::os::windows::io::AsRawSocket::as_raw_socket(&self.stream)
     }
 
+    #[cfg(target_family = "unix")]
+    fn raw_fd(&self) -> std::os::fd::RawFd {
+        std::os::fd::AsRawFd::as_raw_fd(&self.stream)
+    }
+
     #[cfg(target_os = "windows")]
     fn into_std(self) -> io::Result<std::net::TcpStream> {
         self.stream.into_std()
+    }
+
+    fn extensions_of(&self) -> Option<&Extensions> {
+        Some(&self.extensions)
     }
 }
 
@@ -214,7 +242,16 @@ impl RawTcpStream for TcpStream {}
 ///
 /// A socket stays attached to the internal completion port for its whole
 /// life, so a [`PostedRecv`] cannot be unwrapped again.
+///
+/// It also hands out a [`ConnectionAbort`] for its socket, see
+/// [`PostedRecv::connection_abort`], and puts it in the extensions of a
+/// [`TcpStream`], where a bridge such as
+/// [`PassResetsForwardService`](rama_net::proxy::PassResetsForwardService)
+/// finds it.
 pub struct PostedRecv<S: RawTcpStream> {
+    // Declared before `inner`, so that it is dropped before the socket is.
+    #[cfg(any(target_os = "windows", target_family = "unix"))]
+    abort: abort::AbortGuard,
     #[cfg(target_os = "windows")]
     inner: std::mem::ManuallyDrop<S>,
     #[cfg(target_os = "windows")]
@@ -257,6 +294,7 @@ impl<S: RawTcpStream> PostedRecv<S> {
     pub fn with_config(stream: S, config: &PostedRecvConfig) -> io::Result<Self> {
         let reader = iocp::Reader::new(stream.raw_socket(), config)?;
         Ok(Self {
+            abort: abort::AbortGuard::new(stream.raw_socket(), stream.extensions_of()),
             inner: std::mem::ManuallyDrop::new(stream),
             reader,
         })
@@ -270,7 +308,23 @@ impl<S: RawTcpStream> PostedRecv<S> {
     #[cfg(not(target_os = "windows"))]
     pub fn with_config(stream: S, config: &PostedRecvConfig) -> io::Result<Self> {
         _ = config;
-        Ok(Self { inner: stream })
+        Ok(Self {
+            #[cfg(target_family = "unix")]
+            abort: abort::AbortGuard::new(stream.raw_fd(), stream.extensions_of()),
+            inner: stream,
+        })
+    }
+
+    /// A capability to abort this connection: once it is closed, it goes
+    /// out as a reset instead of a clean end, discarding what is still
+    /// queued to be sent.
+    ///
+    /// It can be used from anywhere and outlive the stream; after the stream
+    /// is dropped it does nothing.
+    #[cfg(any(target_os = "windows", target_family = "unix"))]
+    #[must_use]
+    pub fn connection_abort(&self) -> ConnectionAbort {
+        self.abort.handle()
     }
 
     /// Borrow the inner stream.
@@ -294,6 +348,8 @@ impl<S: RawTcpStream> PostedRecv<S> {
 #[cfg(target_os = "windows")]
 impl<S: RawTcpStream> Drop for PostedRecv<S> {
     fn drop(&mut self) {
+        // The socket may be closed before the fields are dropped.
+        self.abort.release();
         self.reader.stop();
         // SAFETY: `inner` is never used again after this.
         let stream = unsafe { std::mem::ManuallyDrop::take(&mut self.inner) };

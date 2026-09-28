@@ -8,7 +8,7 @@ mod forward;
 #[doc(inline)]
 pub use forward::{
     BridgeCloseReason, FirstByteTimeoutStart, IoForwardError, IoForwardOutcome, IoForwardService,
-    LingeringClose,
+    LingeringClose, PassResetsForwardService,
 };
 
 mod idle;
