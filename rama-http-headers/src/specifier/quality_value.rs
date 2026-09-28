@@ -214,6 +214,10 @@ impl<T: str::FromStr> str::FromStr for QualityValue<T> {
                 raw_item = second;
             }
         }
+        // a weight qualifies an item, so it cannot stand alone
+        if raw_item.is_empty() {
+            return Err(Error::invalid());
+        }
         match raw_item.parse::<T>() {
             // we already checked above that the quality is within range
             Ok(item) => Ok(Self::new(item, quality)),
@@ -379,6 +383,13 @@ mod tests {
     #[test]
     fn test_quality() {
         assert_eq!(q(0.5), Quality(500));
+    }
+
+    #[test]
+    fn test_weight_without_item_is_rejected() {
+        for input in [";q=1", " ;q=0.5", ";"] {
+            assert!(input.parse::<QualityValue<String>>().is_err(), "{input:?}");
+        }
     }
 
     #[test]

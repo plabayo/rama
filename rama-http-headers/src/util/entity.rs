@@ -9,8 +9,7 @@ use super::IterExt;
 use crate::{
     Error,
     util::{
-        FlatCsvSeparator, try_decode_flat_csv_header_values_as_non_empty_vec,
-        try_encode_non_empty_vec_of_bytes_as_flat_csv_header_value,
+        FlatCsvSeparator, trim_ows, try_encode_non_empty_vec_of_bytes_as_flat_csv_header_value,
     },
 };
 
@@ -253,17 +252,38 @@ impl super::TryFromValues for EntityTagRange {
             return Ok(Self::Any);
         }
 
-        match try_decode_flat_csv_header_values_as_non_empty_vec::<EntityTag>(
-            iter::once(first).chain(second).chain(values),
-            FlatCsvSeparator::Comma,
-        ) {
-            Ok(tags) => Ok(Self::Tags(tags)),
-            Err(err) => {
-                tracing::trace!("invalid entity tags: {err}");
-                Err(crate::Error::invalid())
+        let mut tags: Option<NonEmptyVec<EntityTag>> = None;
+        for value in iter::once(first).chain(second).chain(values) {
+            for member in split_entity_tags(value.as_bytes()) {
+                let Some(tag) = HeaderValue::from_bytes(member)
+                    .ok()
+                    .and_then(EntityTag::from_owned)
+                else {
+                    tracing::trace!("invalid entity tag in list");
+                    return Err(Error::invalid());
+                };
+                match &mut tags {
+                    Some(tags) => tags.push(tag),
+                    None => tags = Some(NonEmptyVec::new(tag)),
+                }
             }
         }
+        tags.map(Self::Tags).ok_or_else(Error::invalid)
     }
+}
+
+/// Split an entity-tag list on bytes, as `etagc` admits obs-text and a literal `\`.
+fn split_entity_tags(value: &[u8]) -> impl Iterator<Item = &[u8]> {
+    let mut in_quotes = false;
+    value
+        .split(move |byte| {
+            if *byte == b'"' {
+                in_quotes = !in_quotes;
+            }
+            !in_quotes && *byte == b','
+        })
+        .map(trim_ows)
+        .filter(|member| !member.is_empty())
 }
 
 impl TryFrom<&EntityTagRange> for HeaderValue {

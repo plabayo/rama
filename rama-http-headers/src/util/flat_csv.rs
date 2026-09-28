@@ -5,6 +5,8 @@ use rama_core::error::{BoxError, ErrorContext as _};
 use rama_http_types::HeaderValue;
 use rama_utils::collections::{NonEmptySmallVec, NonEmptyVec};
 
+use crate::util::{ListMembers, trim_ows};
+
 /// Header value which is either any `*` or
 /// the given values separated by the defined separator.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,17 +31,9 @@ impl FlatCsvSeparator {
             Self::SemiColon => b';',
         }
     }
-
-    fn as_char(self) -> char {
-        match self {
-            Self::Comma => ',',
-            Self::SemiColon => ';',
-        }
-    }
 }
 
-/// Visit trimmed CSV members of all values, skipping empty ones (RFC 9110 §5.6.1.2)
-/// unless the values hold no other member, which parses as a single empty member.
+/// Visit trimmed list members of all values, skipping empty ones (RFC 9110 §5.6.1.2).
 fn for_each_flat_csv_member<'a, T>(
     values: impl IntoIterator<Item = &'a HeaderValue>,
     sep: FlatCsvSeparator,
@@ -48,34 +42,40 @@ fn for_each_flat_csv_member<'a, T>(
 where
     T: FromStr<Err: Into<BoxError>>,
 {
-    let sep_char = sep.as_char();
-    let mut seen_value = false;
-    let mut seen_member = false;
     for value in values {
-        seen_value = true;
         let s = value
             .to_str()
             .context("header value is not a valid utf-8 str")?;
-        let mut in_quotes = false;
-        let members = s.split(|c| {
-            if c == '"' {
-                in_quotes = !in_quotes;
-                false
-            } else {
-                !in_quotes && c == sep_char
+        match sep {
+            // quoted-strings may hold separators and quoted-pairs (RFC 9110 §5.6.4)
+            FlatCsvSeparator::Comma => {
+                for member in ListMembers::new(s.as_bytes()) {
+                    visit_flat_csv_member(member?, &mut f)?;
+                }
             }
-        });
-        for member in members.map(str::trim).filter(|member| !member.is_empty()) {
-            seen_member = true;
-            f(member
-                .parse::<T>()
-                .context("parse header value CSV colum from str")?);
+            // a cookie-string splits on every `;`, quotes included (RFC 6265 §4.2.1)
+            FlatCsvSeparator::SemiColon => {
+                for member in s.split(';') {
+                    visit_flat_csv_member(member.as_bytes(), &mut f)?;
+                }
+            }
         }
     }
-    if seen_value && !seen_member {
-        f("".parse::<T>()
-            .context("parse empty header value CSV colum from str")?);
+    Ok(())
+}
+
+fn visit_flat_csv_member<T>(member: &[u8], f: &mut impl FnMut(T)) -> Result<(), BoxError>
+where
+    T: FromStr<Err: Into<BoxError>>,
+{
+    let member = trim_ows(member);
+    if member.is_empty() {
+        return Ok(());
     }
+    let member = std::str::from_utf8(member).context("header value CSV colum is not utf-8")?;
+    f(member
+        .parse::<T>()
+        .context("parse header value CSV colum from str")?);
     Ok(())
 }
 
@@ -211,11 +211,51 @@ mod tests {
                 .unwrap();
         assert_eq!(result, non_empty_vec![String::from("a"), String::from("b")]);
 
-        let values = [HeaderValue::from_static(" , ")];
+        for values in [&[""][..], &[" , "], &["", ","]] {
+            let values: Vec<_> = values.iter().map(|v| HeaderValue::from_static(v)).collect();
+            try_decode_flat_csv_header_values_as_non_empty_vec::<String>(
+                &values,
+                FlatCsvSeparator::Comma,
+            )
+            .unwrap_err();
+        }
+    }
+
+    #[test]
+    fn decode_flat_csv_comma_honours_quoted_pairs() {
+        let values = [HeaderValue::from_static(r#"a;p="x\",y", b"#)];
         let result: NonEmptyVec<String> =
             try_decode_flat_csv_header_values_as_non_empty_vec(&values, FlatCsvSeparator::Comma)
                 .unwrap();
-        assert_eq!(result, non_empty_vec![String::new()]);
+        assert_eq!(
+            result,
+            non_empty_vec![String::from(r#"a;p="x\",y""#), String::from("b")]
+        );
+
+        let values = [HeaderValue::from_static(r#"a;p="x, b"#)];
+        try_decode_flat_csv_header_values_as_non_empty_vec::<String>(
+            &values,
+            FlatCsvSeparator::Comma,
+        )
+        .unwrap_err();
+    }
+
+    #[test]
+    fn decode_flat_csv_semicolon_ignores_quotes() {
+        let values = [HeaderValue::from_static(r#"a="x; b=y"; c=1"#)];
+        let result: NonEmptyVec<String> = try_decode_flat_csv_header_values_as_non_empty_vec(
+            &values,
+            FlatCsvSeparator::SemiColon,
+        )
+        .unwrap();
+        assert_eq!(
+            result,
+            non_empty_vec![
+                String::from(r#"a="x"#),
+                String::from(r#"b=y""#),
+                String::from("c=1")
+            ]
+        );
     }
 
     #[test]

@@ -218,10 +218,15 @@ mod tests {
 
     #[test]
     fn decode_with_empty_header_value() {
-        let ContentEncoding(directives) = test_decode(&[""]).unwrap();
-
+        for values in [&[""][..], &[","], &["", " "]] {
+            assert!(
+                test_decode::<ContentEncoding>(values).is_none(),
+                "{values:?}"
+            );
+        }
+        let ContentEncoding(directives) = test_decode(&["gzip, ,"]).unwrap();
         assert_eq!(directives.len(), 1);
-        assert_eq!(directives[0], ContentEncodingDirective::Unknown("".into()));
+        assert_eq!(directives[0], ContentEncodingDirective::Gzip);
     }
 
     #[test]

@@ -198,6 +198,8 @@ pub struct PerMessageDeflateConfig {
     ///
     /// Servers must not include this parameter in their response
     /// if the client's initial offer didn't contain it.
+    ///
+    /// `Some(0)` is the valueless form, which only a client offer may use.
     pub client_max_window_bits: Option<u8>,
 }
 
@@ -237,11 +239,10 @@ impl FromStr for Extension {
                         ));
                     }
                 } else if part.eq_ignore_ascii_case("server_max_window_bits") {
-                    if config.server_max_window_bits.replace(0).is_some() {
-                        return Err(BoxError::from_static_str(
-                            "duplicate extension param: server_max_window_bits",
-                        ));
-                    }
+                    // RFC 7692 §7.1.2.1: this parameter always carries a value
+                    return Err(BoxError::from_static_str(
+                        "server_max_window_bits requires a value",
+                    ));
                 } else if part.eq_ignore_ascii_case("client_max_window_bits") {
                     if config.client_max_window_bits.replace(0).is_some() {
                         return Err(BoxError::from_static_str(
@@ -561,17 +562,14 @@ mod tests {
                 ],
                 None,
             ),
-            // weird edge cases: handled gracefully
+            // an empty `1#` list is invalid
+            ("empty header", vec![""], None),
             (
-                "empty header",
-                vec![""],
-                Some(SecWebSocketExtensions::new(Extension::Empty)),
+                "valueless server_max_window_bits",
+                vec!["permessage-deflate; server_max_window_bits"],
+                None,
             ),
-            (
-                "whitespace only header",
-                vec!["   "],
-                Some(SecWebSocketExtensions::new(Extension::Empty)),
-            ),
+            ("whitespace only header", vec!["   "], None),
             (
                 "unknown extension",
                 vec!["super-zip"],

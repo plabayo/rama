@@ -102,6 +102,7 @@ test_if_none_match {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::HeaderDecode as _;
     use crate::common::test_decode;
 
     #[test]
@@ -159,6 +160,22 @@ mod tests {
 
         let list: IfNoneMatch = test_decode(&["\"b\", W/\"a\""]).unwrap();
         assert!(!list.precondition_passes(&etag));
+        assert!(list.precondition_passes(&ETag::from_static("\"c\"")));
+    }
+
+    #[test]
+    fn decode_obs_text_and_backslash_entity_tags() {
+        let values = [
+            HeaderValue::from_static("\"a\""),
+            HeaderValue::from_bytes(b"\"\x80\xff\", \"b\\\"").unwrap(),
+        ];
+        let list = IfNoneMatch::decode(&mut values.iter()).unwrap();
+        for tag in ["\"a\"", "\"b\\\""] {
+            assert!(!list.precondition_passes(&tag.parse().unwrap()), "{tag}");
+        }
+        let obs_text =
+            ETag::decode(&mut [HeaderValue::from_bytes(b"\"\x80\xff\"").unwrap()].iter()).unwrap();
+        assert!(!list.precondition_passes(&obs_text));
         assert!(list.precondition_passes(&ETag::from_static("\"c\"")));
     }
 

@@ -98,6 +98,17 @@ mod tests {
     }
 
     #[test]
+    fn test_quotes_do_not_hide_separators() {
+        let cookie = test_decode::<Cookie>(&[r#"a="x; session=evil"; sid=1"#]).unwrap();
+        assert_eq!(cookie.get("session"), Some(r#"evil""#));
+        assert_eq!(cookie.get("sid"), Some("1"));
+
+        let cookie = test_decode::<Cookie>(&[r#"a=b"c; sid=1; x=2"#]).unwrap();
+        assert_eq!(cookie.get("sid"), Some("1"));
+        assert_eq!(cookie.get("x"), Some("2"));
+    }
+
+    #[test]
     fn test_multipe_lines() {
         let cookie = test_decode::<Cookie>(&["foo=bar", "lol = cat"]).unwrap();
 

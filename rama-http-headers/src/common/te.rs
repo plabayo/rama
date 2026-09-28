@@ -99,6 +99,13 @@ mod tests {
     }
 
     #[test]
+    fn decode_quoted_pair_in_parameter() {
+        let Te(directives) = test_decode(&[r#"trailers, foo;p="a\",b""#]).unwrap();
+        assert_eq!(directives.len(), 2);
+        assert_eq!(directives[0].value.as_str(), "trailers");
+    }
+
+    #[test]
     fn encode() {
         let te = Te::trailers();
         let headers = test_encode(te);
