@@ -1860,11 +1860,6 @@ mod tests {
         }
     }
 
-    // Regression: a valueless `client_max_window_bits` offer is parsed as the
-    // sentinel `Some(0)` ("server may pick any value <= 15"). A server response
-    // of `client_max_window_bits=15` must be accepted, not rejected as an
-    // extension mismatch. Previously the `srv > offered` check evaluated
-    // `15 > 0` and falsely failed the handshake (intermittent WS-over-h2 502s).
     #[test]
     fn eight_bit_client_window_fails_the_handshake() {
         let result = validate_pmd(
@@ -1902,6 +1897,11 @@ mod tests {
         }
     }
 
+    // Regression: a valueless `client_max_window_bits` offer is parsed as the
+    // sentinel `Some(0)` ("server may pick any value <= 15"). A server response
+    // of `client_max_window_bits=15` must be accepted, not rejected as an
+    // extension mismatch. Previously the `srv > offered` check evaluated
+    // `15 > 0` and falsely failed the handshake (intermittent WS-over-h2 502s).
     #[test]
     fn valueless_client_max_window_bits_accepts_server_choice() {
         assert_eq!(

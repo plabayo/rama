@@ -19,7 +19,7 @@ use rama_core::{
 #[cfg(feature = "compression")]
 use rama_http::headers::sec_websocket_extensions;
 use rama_http::{
-    Method, Request, Response, StatusCode, Version,
+    HeaderMap, Method, Request, Response, StatusCode, Version, header,
     headers::{
         self, HeaderMapExt,
         sec_websocket_extensions::{Extension, PerMessageDeflateConfig},
@@ -32,7 +32,7 @@ use rama_http::{
 };
 use rama_net::extensions::StreamTransformed;
 use rama_utils::{
-    collections::non_empty_smallvec,
+    collections::{NonEmptySmallVec, non_empty_smallvec},
     str::{NonEmptyStr, non_empty_str},
 };
 
@@ -197,13 +197,27 @@ pub fn validate_http_client_request<Body>(
     // Also optionally, a |Sec-WebSocket-Extensions| header field, with a list
     // of values indicating which extensions the client would like to
     // utilise, ordered by preference.
-    let extensions_header = request.headers().typed_get();
+    let extensions_header = extension_offers(request.headers());
 
     Ok(ClientRequestData {
         accept_header,
         protocol: protocols_header,
         extensions: extensions_header,
     })
+}
+
+/// Parse each offer on its own, so an invalid one is declined alone (RFC 7692 §5).
+fn extension_offers(headers: &HeaderMap) -> Option<headers::SecWebSocketExtensions> {
+    // extension parameter values are tokens, so a comma always separates offers
+    let offers = headers
+        .get_all(header::SEC_WEBSOCKET_EXTENSIONS)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .map(str::trim)
+        .filter(|offer| !offer.is_empty())
+        .filter_map(|offer| offer.parse::<Extension>().ok());
+    NonEmptySmallVec::collect(offers).map(headers::SecWebSocketExtensions)
 }
 
 #[derive(Debug, Clone, Default)]
@@ -515,7 +529,8 @@ where
                                             if cap == 0 {
                                                 offer
                                             } else {
-                                                offer.min(cap.clamp(8, 15))
+                                                // zlib compresses with at least a 9-bit window
+                                                offer.min(cap.clamp(9, 15))
                                             }
                                         });
 
@@ -1240,6 +1255,53 @@ mod tests {
             &acceptor,
         )
         .await;
+    }
+
+    async fn negotiated_extensions(acceptor: &WebSocketAcceptor, offer: &str) -> Option<String> {
+        let request = Request::builder()
+            .uri("/")
+            .version(Version::HTTP_11)
+            .method(Method::GET)
+            .header("Connection", "upgrade")
+            .header("Upgrade", "websocket")
+            .header("Sec-WebSocket-Version", "13")
+            .header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+            .header("Sec-WebSocket-Extensions", offer)
+            .body(Body::empty())
+            .unwrap();
+        let UpgradeResponse { response, .. } = acceptor.serve(request).await.unwrap();
+        response
+            .headers()
+            .get("sec-websocket-extensions")
+            .map(|value| value.to_str().unwrap().to_owned())
+    }
+
+    #[tokio::test]
+    async fn per_message_deflate_declines_only_the_invalid_offer() {
+        let acceptor = WebSocketAcceptor::new().with_per_message_deflate();
+        let accepted = negotiated_extensions(
+            &acceptor,
+            "permessage-deflate; server_max_window_bits=010, permessage-deflate",
+        )
+        .await;
+        assert_eq!(accepted.as_deref(), Some("permessage-deflate"));
+    }
+
+    #[tokio::test]
+    async fn per_message_deflate_caps_configured_8_bit_windows_to_9() {
+        let acceptor = WebSocketAcceptor::new().with_per_message_deflate_with_config(
+            PerMessageDeflateConfig {
+                server_max_window_bits: Some(8),
+                client_max_window_bits: Some(8),
+                ..Default::default()
+            },
+        );
+        let accepted =
+            negotiated_extensions(&acceptor, "permessage-deflate; client_max_window_bits").await;
+        assert_eq!(
+            accepted.as_deref(),
+            Some("permessage-deflate; server_max_window_bits=9; client_max_window_bits=9")
+        );
     }
 
     #[tokio::test]
