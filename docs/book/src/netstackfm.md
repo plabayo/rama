@@ -1,6 +1,6 @@
 # Netstack.FM® – A podcast about networking, Rust, and everything in between.
 
-🎧 [Listen to Episode 1](https://netstack.fm/#episode-1)
+🎧 [Listen to Episode 1](https://netstack.fm/episodes/welcome-to-netstack-fm)
 
 In this first episode, we discuss:
 - Why Rama was built

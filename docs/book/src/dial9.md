@@ -60,6 +60,6 @@ the rama tree:
 
 [dial9]: https://github.com/dial9-rs/dial9
 [`dial9`]: https://github.com/dial9-rs/dial9
-[Netstack.FM episode 37]: https://netstack.fm/#episode-37
+[Netstack.FM episode 37]: https://netstack.fm/episodes/dial9-from-black-box-to-insight-in-tokio
 [Tokio blog post]: https://tokio.rs/blog/2026-03-18-dial9
 [dial9 README]: https://github.com/dial9-rs/dial9

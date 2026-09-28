@@ -322,17 +322,7 @@ pub async fn settle_the_keys(
     connection: &Connection,
     carrying: Chunk,
 ) {
-    let before = connection.stats().key_updates;
-    // An update cannot start before the handshake is confirmed (RFC 9001 §6), which is what
-    // this waits for; `force_key_update` answers `false` until then. What the warm-up needs
-    // is that an update happened at all — that is what leaves the phase size at the keys'
-    // confidentiality limit — so the count is only required to have moved. An automatic
-    // update inside the wait is one of the updates that establishes it, not a failure.
-    ask_when_ready(what, deadline, connection).await;
-    assert!(
-        connection.stats().key_updates > before,
-        "{what}: the phase moved on before the case measured anything"
-    );
+    ensure_updated_keys(what, deadline, connection).await;
     // Carried to the peer, so its own keys are in the new phase before the case reads
     // anything: an update it has not seen yet is not a settled phase.
     exchange(what, deadline, connection, carrying).await;
@@ -345,13 +335,21 @@ pub async fn settle_the_keys_answering(
     connection: &Connection,
     carrying: Chunk,
 ) {
-    let before = connection.stats().key_updates;
-    ask_when_ready(what, deadline, connection).await;
-    assert!(
-        connection.stats().key_updates > before,
-        "{what}: the phase moved on before the case measured anything"
-    );
+    ensure_updated_keys(what, deadline, connection).await;
     answer(what, deadline, connection, carrying).await;
+}
+
+// An earlier automatic or peer update already retired the initial short phase.
+// Waiting for another update can deadlock until the carrying exchange sends
+// an ACK-eliciting packet under the current keys.
+async fn ensure_updated_keys(what: &str, deadline: Deadline, connection: &Connection) {
+    deadline
+        .wait(what, async {
+            while connection.stats().key_updates == 0 && !connection.force_key_update() {
+                tokio::time::sleep(READY_STEP).await;
+            }
+        })
+        .await;
 }
 
 /// Wait until this side can start another update, which it cannot while the last one is still
@@ -425,5 +423,90 @@ async fn answer_until_the_last(
             got == scenario.settling.bytes() || got == scenario.before.bytes(),
             "{what}: every exchange carries one of this case's payloads"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::identity::server_identity;
+    use rama::{bytes::Bytes, rt::Executor};
+
+    async fn warmup_after_peer_update(answering: bool) {
+        let what = "warmup after peer key update";
+        let deadline = Deadline::new();
+        let identity = server_identity();
+        let server =
+            Endpoint::bind_server(Executor::new(), rama_server_config(&identity), localhost())
+                .await
+                .unwrap();
+        let client = Endpoint::bind_client(Executor::new(), localhost())
+            .await
+            .unwrap();
+        let connecting = client
+            .connect_with(
+                rama_client_config(anchor_of(&identity)),
+                server.local_addr().unwrap(),
+                SERVER_NAME,
+            )
+            .unwrap();
+        let (connection, peer) = deadline
+            .wait(what, async {
+                tokio::join!(connecting, async { server.accept().await.unwrap().await })
+            })
+            .await;
+        let (connection, peer) = (connection.unwrap(), peer.unwrap());
+        deadline
+            .wait(what, peer.handshake_confirmed())
+            .await
+            .unwrap();
+        assert!(peer.stats().key_updates > 0 || peer.force_key_update());
+        let probe = Bytes::from_static(b"early key update");
+        peer.send_datagram(probe.clone()).unwrap();
+        assert_eq!(
+            deadline
+                .wait(what, connection.read_datagram())
+                .await
+                .unwrap(),
+            probe,
+        );
+        let before = connection.stats().key_updates;
+        assert!(before > 0, "the peer's update arrived before warmup");
+        let carrying = Chunk {
+            seed: 0xe1,
+            len: 512,
+        };
+        if answering {
+            tokio::join!(
+                settle_the_keys_answering(what, deadline, &connection, carrying),
+                exchange(what, deadline, &peer, carrying),
+            );
+        } else {
+            tokio::join!(
+                settle_the_keys(what, deadline, &connection, carrying),
+                answer(what, deadline, &peer, carrying),
+            );
+        }
+        assert_eq!(
+            connection.stats().key_updates,
+            before,
+            "warmup must use the existing update, not require a second one",
+        );
+        connection.close(0u32, b"done");
+        deadline
+            .wait(what, async {
+                tokio::join!(client.wait_idle(), server.wait_idle())
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn opening_warmup_accepts_an_early_peer_update() {
+        warmup_after_peer_update(false).await;
+    }
+
+    #[tokio::test]
+    async fn answering_warmup_accepts_an_early_peer_update() {
+        warmup_after_peer_update(true).await;
     }
 }

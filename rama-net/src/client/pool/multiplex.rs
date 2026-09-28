@@ -974,7 +974,7 @@ mod tests {
             if self
                 .0
                 .reserved
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |reserved| {
+                .try_update(Ordering::SeqCst, Ordering::SeqCst, |reserved| {
                     (reserved < self.0.limit.load(Ordering::SeqCst)).then_some(reserved + 1)
                 })
                 .is_err()

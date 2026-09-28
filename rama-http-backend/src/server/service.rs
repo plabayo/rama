@@ -144,8 +144,33 @@ where
         Response: IntoResponse + Send + 'static,
         IO: Io + ExtensionsRef,
     {
+        self.serve_with_graceful_shutdown(stream, service, std::future::pending())
+            .await
+    }
+
+    /// Serve a single IO Byte Stream (e.g. a TCP Stream) as HTTP, and
+    /// gracefully shut down this connection once `signal` resolves.
+    ///
+    /// This is in addition to the executor's graceful shutdown. Useful for
+    /// connections that should wind down on their own, e.g. a proxy whose
+    /// upstream went away: h2 sends a `GOAWAY`, h1 closes after the
+    /// in-flight response, in both cases without cutting that response.
+    // TODO: later in rama 0.5 we will replace this with integrated
+    // graceful/cancel support (https://github.com/plabayo/rama/issues/830)
+    pub async fn serve_with_graceful_shutdown<S, Response, IO, F>(
+        &self,
+        stream: IO,
+        service: S,
+        signal: F,
+    ) -> HttpServeResult
+    where
+        S: Service<Request, Output = Response, Error = Infallible> + Clone,
+        Response: IntoResponse + Send + 'static,
+        IO: Io + ExtensionsRef,
+        F: Future<Output = ()> + Send + 'static,
+    {
         self.builder
-            .http_core_serve_connection(stream, service, self.exec.guard().cloned())
+            .http_core_serve_connection(stream, service, self.exec.guard().cloned(), signal)
             .await
     }
 
@@ -236,8 +261,12 @@ where
         stream: IO,
     ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
         let service = self.service.clone();
-        self.builder
-            .http_core_serve_connection(stream, service, self.guard.clone())
+        self.builder.http_core_serve_connection(
+            stream,
+            service,
+            self.guard.clone(),
+            std::future::pending(),
+        )
     }
 }
 

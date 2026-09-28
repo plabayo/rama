@@ -1,7 +1,7 @@
 use rama_core::{
     Service,
     error::{BoxError, BoxErrorExt as _, ErrorExt, error_chain},
-    extensions::{Egress, Extensions, ExtensionsRef},
+    extensions::{Egress, Extension, Extensions, ExtensionsRef},
     rt::Executor,
     telemetry::tracing,
 };
@@ -25,7 +25,11 @@ use rama_net::{
 };
 use rama_quic::Connection as QuicConnection;
 use rama_utils::guard::DropGuard;
-use std::{fmt, io, pin::pin};
+use std::{
+    fmt, io,
+    pin::pin,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 use tokio::sync::Mutex;
 
 pub(super) enum SendRequest<Body> {
@@ -51,6 +55,36 @@ pub struct HttpClientService<Body> {
     pub(super) extensions: Extensions,
 }
 
+/// Counts the attempts to send one logical request (all hops a middleware
+/// makes for it, e.g. redirects or retries), and how many of those
+/// provably never left this client. Attempts are recognised by carrying
+/// (a fork of) the request's extensions, as rama's own layers do.
+#[derive(Debug, Default, Extension)]
+#[extension(tags(http))]
+pub(crate) struct SendAttempts {
+    started: AtomicUsize,
+    unsent: AtomicUsize,
+}
+
+impl SendAttempts {
+    /// At least one attempt was made and none of them was sent.
+    pub(crate) fn none_sent(&self) -> bool {
+        let started = self.started.load(Ordering::Acquire);
+        started > 0 && started == self.unsent.load(Ordering::Acquire)
+    }
+}
+
+/// Record `err` as unsent when it failed before the request was handed
+/// to the connection: its dispatcher was already closed, or dropped the
+/// request unsent.
+fn note_unsent(attempts: Option<&SendAttempts>, err: &HttpError) {
+    if let Some(attempts) = attempts
+        && (err.is_canceled() || err.is_closed())
+    {
+        attempts.unsent.fetch_add(1, Ordering::AcqRel);
+    }
+}
+
 impl<Body> Service<Request<Body>> for HttpClientService<Body>
 where
     Body: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
@@ -59,6 +93,12 @@ where
     type Error = BoxError;
 
     async fn serve(&self, mut req: Request<Body>) -> Result<Self::Output, Self::Error> {
+        // counted up front: a dropped attempt may have been sent
+        let attempts = req.extensions().get_arc::<SendAttempts>();
+        if let Some(attempts) = &attempts {
+            attempts.started.fetch_add(1, Ordering::AcqRel);
+        }
+
         // Request-target encoding must follow the connection that survived
         // route fallback and pool selection, never the requested ProxyRoute.
         // A fresh snapshot also shadows stale markers when the connection
@@ -112,6 +152,7 @@ where
                 if let Err(err) = sender.ready().await {
                     // an h1 sender only fails readiness when its connection is gone
                     mark_broken(&self.extensions);
+                    note_unsent(attempts.as_deref(), &err);
                     tracing::debug!(
                         sender_closed = sender.is_closed(),
                         "http1 upstream sender ready failed: {err}"
@@ -133,6 +174,7 @@ where
                         // h1 has no request-level recovery: any send/receive error
                         // leaves the connection mid-message or closed.
                         cancel_guard.fire();
+                        note_unsent(attempts.as_deref(), &err);
                         tracing::debug!(
                             sender_closed = sender.is_closed(),
                             "http1 upstream send_request failed: {err}"
@@ -145,6 +187,7 @@ where
                 let mut sender = sender.clone();
                 if let Err(err) = sender.ready().await {
                     mark_broken_if_closed(sender.is_closed(), &self.extensions);
+                    note_unsent(attempts.as_deref(), &err);
                     tracing::debug!(
                         sender_closed = sender.is_closed(),
                         "http2 upstream sender ready failed: {err}"
@@ -155,6 +198,7 @@ where
                     Ok(resp) => resp,
                     Err(err) => {
                         mark_broken_if_closed(sender.is_closed(), &self.extensions);
+                        note_unsent(attempts.as_deref(), &err);
                         tracing::debug!(
                             sender_closed = sender.is_closed(),
                             "http2 upstream send_request failed: {err}"

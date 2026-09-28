@@ -2,8 +2,8 @@
 
 use super::{
     CertificateAuthorityData, CertificateIdentity, CertificateKeyKind, CertificateSubject,
-    CertificateValidity, GeneratedServerAuthConfig, LeafCertRequest, SelfSignedCaConfig,
-    validate_certificate_lifetime,
+    CertificateValidity, GeneratedServerAuthConfig, LeafCertRequest, LeafCertUsage,
+    SelfSignedCaConfig, validate_certificate_lifetime, validate_leaf_request,
 };
 use crate::dep::boring::{
     asn1::{Asn1Object, Asn1ObjectRef, Asn1Time},
@@ -99,10 +99,18 @@ pub fn generate_certificate_authority(
     CertificateAuthorityData::try_new(vec![serialize_cert(&cert)?], serialize_key(&key)?)
 }
 
-#[expect(clippy::needless_pass_by_value)]
 pub fn issue_certificate_authority_leaf(
     ca: &CertificateAuthorityData,
     request: LeafCertRequest,
+) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), BoxError> {
+    issue_certificate_authority_leaf_with_usage(ca, request, LeafCertUsage::ServerAuth)
+}
+
+#[expect(clippy::needless_pass_by_value)]
+pub(super) fn issue_certificate_authority_leaf_with_usage(
+    ca: &CertificateAuthorityData,
+    request: LeafCertRequest,
+    usage: LeafCertUsage,
 ) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), BoxError> {
     let issuer = ca
         .certificate_chain
@@ -118,7 +126,7 @@ pub fn issue_certificate_authority_leaf(
         ));
     }
 
-    let (leaf, leaf_key) = issue_leaf_certificate(&request, &issuer, &issuer_key)?;
+    let (leaf, leaf_key) = build_leaf_certificate(&request, Some((&issuer, &issuer_key)), usage)?;
     let mut chain = Vec::with_capacity(ca.certificate_chain.len() + 1);
     chain.push(serialize_cert(&leaf)?);
     chain.extend(ca.certificate_chain.iter().cloned());
@@ -257,12 +265,31 @@ fn append_subject(
 }
 
 /// Issue a server leaf using the supplied certificate authority.
+/// Issue a server-authentication leaf using the supplied CA.
 pub fn issue_leaf_certificate(
     request: &LeafCertRequest,
     ca_cert: &X509,
     ca_privkey: &PKey<Private>,
 ) -> Result<(X509, PKey<Private>), BoxError> {
-    build_leaf_certificate(request, Some((ca_cert, ca_privkey)))
+    build_leaf_certificate(
+        request,
+        Some((ca_cert, ca_privkey)),
+        LeafCertUsage::ServerAuth,
+    )
+}
+
+/// Issue a client-authentication leaf using the supplied CA.
+/// Unlike server issuance, a nonempty subject may be used without DNS/IP SANs.
+pub fn issue_client_leaf_certificate(
+    request: &LeafCertRequest,
+    ca_cert: &X509,
+    ca_privkey: &PKey<Private>,
+) -> Result<(X509, PKey<Private>), BoxError> {
+    build_leaf_certificate(
+        request,
+        Some((ca_cert, ca_privkey)),
+        LeafCertUsage::ClientAuth,
+    )
 }
 
 fn generate_self_signed_leaf_x509(
@@ -274,18 +301,15 @@ fn generate_self_signed_leaf_x509(
     {
         request.config.subject.organisation_name = Some("Anonymous".to_owned());
     }
-    build_leaf_certificate(&request, None)
+    build_leaf_certificate(&request, None, LeafCertUsage::ServerAuth)
 }
 
 fn build_leaf_certificate(
     request: &LeafCertRequest,
     issuer: Option<(&X509, &PKey<Private>)>,
+    usage: LeafCertUsage,
 ) -> Result<(X509, PKey<Private>), BoxError> {
-    if request.identities.is_empty() {
-        return Err(BoxError::from_static_str(
-            "server leaf certificate requires at least one DNS or IP identity",
-        ));
-    }
+    validate_leaf_request(request, usage)?;
     let privkey = generate_certificate_key(request.config.key_kind)?;
 
     let inherited_organisation = issuer.and_then(|(ca_cert, _)| {
@@ -368,7 +392,7 @@ fn build_leaf_certificate(
         .context("x509 cert builder: add basic constraints as x509 extension")?;
     let mut key_usage = KeyUsage::new();
     key_usage.critical().digital_signature();
-    if privkey.id() == Id::RSA {
+    if usage == LeafCertUsage::ServerAuth && privkey.id() == Id::RSA {
         key_usage.key_encipherment();
     }
     cert_builder
@@ -380,40 +404,46 @@ fn build_leaf_certificate(
         )
         .context("x509 cert builder: add key usage x509 extension")?;
 
+    let mut extended_usage = ExtendedKeyUsage::new();
+    match usage {
+        LeafCertUsage::ServerAuth => extended_usage.server_auth(),
+        LeafCertUsage::ClientAuth => extended_usage.client_auth(),
+    };
     cert_builder
         .append_extension(
-            ExtendedKeyUsage::new()
-                .server_auth()
+            extended_usage
                 .build()
                 .context("x509 cert builder: create extended key usage")?
                 .as_ref(),
         )
         .context("x509 cert builder: add extended key usage")?;
 
-    let mut subject_alt_name = SubjectAlternativeName::new();
-    if empty_subject {
-        subject_alt_name.critical();
-    }
-    for (index, identity) in request.identities.iter().enumerate() {
-        if request.identities[..index].contains(identity) {
-            continue;
+    if !request.identities.is_empty() {
+        let mut subject_alt_name = SubjectAlternativeName::new();
+        if empty_subject {
+            subject_alt_name.critical();
         }
-        match identity {
-            CertificateIdentity::Dns(domain) => {
-                subject_alt_name.dns(domain.as_str());
+        for (index, identity) in request.identities.iter().enumerate() {
+            if request.identities[..index].contains(identity) {
+                continue;
             }
-            CertificateIdentity::Ip(ip) => {
-                subject_alt_name.ip(&ip.to_string());
+            match identity {
+                CertificateIdentity::Dns(domain) => {
+                    subject_alt_name.dns(domain.as_str());
+                }
+                CertificateIdentity::Ip(ip) => {
+                    subject_alt_name.ip(&ip.to_string());
+                }
             }
         }
-    }
-    let subject_alt_name = subject_alt_name
-        .build(&cert_builder.x509v3_context(issuer.map(|(cert, _)| cert.as_ref()), None))
-        .context("x509 cert builder: build subject alt name")?;
+        let subject_alt_name = subject_alt_name
+            .build(&cert_builder.x509v3_context(issuer.map(|(cert, _)| cert.as_ref()), None))
+            .context("x509 cert builder: build subject alt name")?;
 
-    cert_builder
-        .append_extension(subject_alt_name.as_ref())
-        .context("x509 cert builder: add subject alt name")?;
+        cert_builder
+            .append_extension(subject_alt_name.as_ref())
+            .context("x509 cert builder: add subject alt name")?;
+    }
 
     let subject_key_identifier = SubjectKeyIdentifier::new()
         .build(&cert_builder.x509v3_context(issuer.map(|(cert, _)| cert.as_ref()), None))

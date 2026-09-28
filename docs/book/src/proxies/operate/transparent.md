@@ -6,7 +6,7 @@ This approach is the most robust way to ensure that every byte of traffic—even
 
 > [!TIP]
 > In episode 31 of Netstack.FM (_Protocol Shorts: MITM Proxies and Transparent L4 Interception_)
-> found at <https://netstack.fm/#episode-31>:
+> found at <https://netstack.fm/episodes/protocol-shorts-mitm-proxies-and-transparent-l4-interception>:
 >
 > We look at man-in-the-middle (MITM) proxies from the transport layer up,
 > and the differences and challenges that come with transparent proxies

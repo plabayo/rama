@@ -67,6 +67,7 @@ x509-parser = { workspace = true }
 yasna = { workspace = true, features = ["time"] }
 
 [dev-dependencies]
+rama-inspect = { workspace = true, features = ["test-utils"] }
 tokio-test = { workspace = true }
 
 [lints]

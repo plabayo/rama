@@ -35,7 +35,11 @@ use super::{
 
 use crate::{TlsStream, types::TlsTunnel};
 #[cfg(feature = "http")]
-use rama_net::http::{TargetHttpVersion, Version};
+use rama_net::http::TargetHttpVersion;
+#[cfg(all(test, feature = "http"))]
+use rama_net::http::Version;
+#[cfg(feature = "http")]
+use rama_tls::client::{http_alpn_override, negotiated_http_version};
 
 /// A [`Layer`] which wraps the given service with a [`TlsConnector`].
 ///
@@ -407,23 +411,15 @@ fn set_target_http_version(
     conn_extensions: &Extensions,
     tls_params: &NegotiatedTlsParameters,
 ) -> Result<(), BoxError> {
-    if !application_protocol.is_some_and(Protocol::is_http_based) {
-        return Ok(());
-    }
-    if let Some(proto) = tls_params.application_layer_protocol.as_ref() {
-        let neg_version: Version = proto.try_into()?;
-        if let Some(target_version) = request_extensions.get_ref::<TargetHttpVersion>()
-            && target_version.0 != neg_version
-        {
-            return Err(BoxError::from_static_str(
-                "target http version not compatible with negotiated tls alpn version",
-            )
-            .context_debug_field("target_version", *target_version)
-            .context_debug_field("negotiated_version", neg_version));
-        }
-
+    if let Some(neg_version) = negotiated_http_version(
+        application_protocol,
+        request_extensions
+            .get_ref::<TargetHttpVersion>()
+            .map(|target| target.0),
+        tls_params.application_layer_protocol.as_ref(),
+    )? {
         tracing::trace!(
-            "setting request TargetHttpVersion to {:?} based on negotiated APLN",
+            "setting connection TargetHttpVersion to {:?} based on negotiated ALPN",
             neg_version,
         );
         conn_extensions.insert(TargetHttpVersion(neg_version));
@@ -589,14 +585,12 @@ fn resolve_http_alpn(
     ext: &Extensions,
     application_protocol: Option<&Protocol>,
 ) -> Result<(), BoxError> {
-    if application_protocol.is_some_and(|protocol| !protocol.is_http_based()) {
-        return Ok(());
-    }
-    let Some(target_version) = ext.get_ref::<TargetHttpVersion>() else {
+    let target_version = ext.get_ref::<TargetHttpVersion>();
+    let Some(target_alpn) =
+        http_alpn_override(application_protocol, target_version.map(|target| target.0))?
+    else {
         return Ok(());
     };
-
-    let target_alpn = ApplicationProtocol::try_from(target_version.0)?;
     tracing::trace!(
         ?target_version,
         ?target_alpn,
@@ -1130,13 +1124,15 @@ mod tests {
             generate_server_auth(GeneratedServerAuthConfig::default()).expect("server auth");
         let trust_anchor = cert_chain.last().expect("trust anchor").clone();
         let server = Arc::new(
-            crate::server::TlsAcceptorLayer::new(TlsServerConfig::new().with_single_cert(
-                ServerAuthData {
-                    cert_chain,
-                    private_key,
-                    ocsp: None,
-                },
-            ))
+            crate::server::TlsAcceptorLayer::new(
+                TlsServerConfig::new()
+                    .with_alpn_http_auto()
+                    .with_single_cert(ServerAuthData {
+                        cert_chain,
+                        private_key,
+                        ocsp: None,
+                    }),
+            )
             .into_layer(EchoService::new()),
         );
         let base = TlsClientConfig::new()
@@ -1158,7 +1154,20 @@ mod tests {
                 }
             });
             let connector = TlsConnector::secure(transport).with_base_config(base.clone());
-            let input = ConnectRequest::new(HostWithPort::new(Host::from_static("localhost"), 443));
+            let input = ConnectRequest::new(HostWithPort::new(Host::from_static("localhost"), 443))
+                .with_application_protocol(Protocol::HTTPS);
+            #[cfg(feature = "http")]
+            {
+                // A fallback does not constrain ALPN, but an explicit target does.
+                input
+                    .extensions()
+                    .insert(rama_net::http::FallbackHttpVersion(Version::HTTP_11));
+                if request_override {
+                    input
+                        .extensions()
+                        .insert(TargetHttpVersion(Version::HTTP_11));
+                }
+            }
             if request_override {
                 input
                     .extensions()
@@ -1184,6 +1193,38 @@ mod tests {
                     ConnectionPolicyScope::Connector
                 }),
             );
+            #[cfg(feature = "http")]
+            {
+                let expected = if request_override {
+                    Version::HTTP_11
+                } else {
+                    Version::HTTP_2
+                };
+                assert_eq!(
+                    established
+                        .conn
+                        .extensions()
+                        .get_ref::<TargetHttpVersion>()
+                        .map(|v| v.0),
+                    Some(expected),
+                );
+                assert_eq!(
+                    established
+                        .conn
+                        .extensions()
+                        .get_ref::<NegotiatedTlsParameters>()
+                        .and_then(|params| params.application_layer_protocol.as_ref()),
+                    Some(&ApplicationProtocol::try_from(expected).unwrap()),
+                );
+                assert_eq!(
+                    established
+                        .input
+                        .extensions()
+                        .get_ref::<TargetHttpVersion>()
+                        .map(|v| v.0),
+                    request_override.then_some(Version::HTTP_11),
+                );
+            }
             let reuse = established
                 .conn
                 .extensions()

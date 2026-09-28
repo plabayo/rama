@@ -12,7 +12,7 @@ Rama exposes gRPC in a way that fits its overall design:
 
 > [!TIP]
 > In episode 9 of Netstack.FM (_gRPC with Lucio Franco_)
-> found at <https://netstack.fm/#episode-9>:
+> found at <https://netstack.fm/episodes/grpc-with-lucio-franco>:
 >
 > We introduced gRPC and Tonic, a gRPC implementation in Rust (and from which rama-grpc forked).
 > We Also touched on the future of some of these ecosystems and where it all might be heading next,

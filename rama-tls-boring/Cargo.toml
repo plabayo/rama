@@ -51,6 +51,7 @@ tokio = { workspace = true, features = ["macros", "io-std"] }
 zstd = { workspace = true, optional = true }
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 tracing-test = { workspace = true }
 x509-ocsp = { workspace = true }
 x509-ocsp-der = { workspace = true }

@@ -373,5 +373,8 @@ fn check_record_limit(length: u64, limit: u64) -> Result<(), BoxError> {
     Ok(())
 }
 
+#[cfg(any(test, feature = "test-utils"))]
+pub mod test_utils;
+
 #[cfg(test)]
 mod tests;

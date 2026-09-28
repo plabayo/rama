@@ -10,7 +10,9 @@ use rama_core::{
     Layer, Service as _, ServiceInput, error::BoxError, extensions::ExtensionsRef,
     service::service_fn, telemetry::tracing,
 };
-use rama_crypto::{cert::generate_server_auth, pki_types::CertificateDer};
+use rama_crypto::{
+    cert::generate_server_auth, dep::x509_parser::parse_x509_certificate, pki_types::CertificateDer,
+};
 use rama_net::{
     address::{Domain, Host, HostWithPort},
     client::ConnectorTarget,
@@ -307,6 +309,20 @@ async fn self_signed_leaf_verifies_when_directly_trusted() {
             sni: Some(Domain::from_static("localhost"))
         }
     );
+}
+
+#[test]
+fn issued_server_auth_keeps_its_role_after_client_issuance() {
+    let ca = CertificateAuthorityData::generate(SelfSignedCaConfig::default()).unwrap();
+    let request = LeafCertRequest::default();
+    let (client_chain, _) = ca.issue_client_leaf(request.clone()).unwrap();
+    let server = ServerAuthData::new_issued_by(&ca, request).unwrap();
+    for (chain, client_auth) in [(&client_chain, true), (&server.cert_chain, false)] {
+        let (_, leaf) = parse_x509_certificate(chain[0].as_ref()).unwrap();
+        let eku = leaf.extended_key_usage().unwrap().unwrap().value;
+        assert_eq!(eku.client_auth, client_auth);
+        assert_eq!(eku.server_auth, !client_auth);
+    }
 }
 
 #[tokio::test]

@@ -186,8 +186,8 @@ quickcheck_macros = "1.2"
 quote = "1.0"
 radix_trie = "0.3"
 rama = { version = "0.5.0", path = ".", default-features = false }
-rama-boring = { version = "0.6.10", default-features = false }
-rama-boring-tokio = { version = "0.6.10", default-features = false }
+rama-boring = { version = "0.6.11", default-features = false }
+rama-boring-tokio = { version = "0.6.11", default-features = false }
 rama-core = { version = "0.5.0", path = "./rama-core", default-features = false }
 rama-crypto = { version = "0.5.0", path = "./rama-crypto", default-features = false }
 rama-dns = { version = "0.5.0", path = "./rama-dns", default-features = false }
@@ -419,7 +419,12 @@ std = [
     "rama-net?/std",
     "rama-utils/std",
 ]
-test-utils = ["rama-net?/test-utils", "rama-udp?/test-utils", "rama-quic?/test-utils"]
+test-utils = [
+    "rama-inspect?/test-utils",
+    "rama-net?/test-utils",
+    "rama-udp?/test-utils",
+    "rama-quic?/test-utils",
+]
 # Optional fuzzing support without enabling additional protocol crates.
 fuzz-utils = [
     "rama-quic?/fuzz-utils",

@@ -2,8 +2,8 @@
 
 use super::{
     CertificateAuthorityData, CertificateIdentity, CertificateKeyKind, CertificateSubject,
-    CertificateValidity, GeneratedServerAuthConfig, LeafCertRequest, SelfSignedCaConfig,
-    validate_certificate_lifetime,
+    CertificateValidity, GeneratedServerAuthConfig, LeafCertRequest, LeafCertUsage,
+    SelfSignedCaConfig, validate_certificate_lifetime, validate_leaf_request,
 };
 use crate::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext};
@@ -126,12 +126,11 @@ fn apply_subject(params: &mut rcgen::CertificateParams, subject: &CertificateSub
     }
 }
 
-fn leaf_params(request: &LeafCertRequest) -> Result<rcgen::CertificateParams, BoxError> {
-    if request.identities.is_empty() {
-        return Err(BoxError::from_static_str(
-            "server leaf certificate requires at least one DNS or IP identity",
-        ));
-    }
+fn leaf_params(
+    request: &LeafCertRequest,
+    usage: LeafCertUsage,
+) -> Result<rcgen::CertificateParams, BoxError> {
+    validate_leaf_request(request, usage)?;
 
     let mut params = rcgen::CertificateParams::new(Vec::new())
         .context("certificate leaf: create certificate parameters")?;
@@ -153,15 +152,20 @@ fn leaf_params(request: &LeafCertRequest) -> Result<rcgen::CertificateParams, Bo
     apply_subject(&mut params, &request.config.subject);
     params.is_ca = rcgen::IsCa::ExplicitNoCa;
     params.key_usages = vec![rcgen::KeyUsagePurpose::DigitalSignature];
-    if matches!(
-        request.config.key_kind,
-        CertificateKeyKind::Rsa2048 | CertificateKeyKind::Rsa4096
-    ) {
+    if usage == LeafCertUsage::ServerAuth
+        && matches!(
+            request.config.key_kind,
+            CertificateKeyKind::Rsa2048 | CertificateKeyKind::Rsa4096
+        )
+    {
         params
             .key_usages
             .push(rcgen::KeyUsagePurpose::KeyEncipherment);
     }
-    params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
+    params.extended_key_usages = vec![match usage {
+        LeafCertUsage::ServerAuth => rcgen::ExtendedKeyUsagePurpose::ServerAuth,
+        LeafCertUsage::ClientAuth => rcgen::ExtendedKeyUsagePurpose::ClientAuth,
+    }];
     let (not_before, not_after) = validity_bounds(request.config.validity)?;
     params.not_before = not_before;
     params.not_after = not_after;
@@ -234,7 +238,7 @@ pub fn generate_server_auth(
             }
             let key = generate_key(request.config.key_kind)
                 .context("self-signed leaf: generate key pair")?;
-            let cert = leaf_params(&request)?
+            let cert = leaf_params(&request, LeafCertUsage::ServerAuth)?
                 .self_signed(&key)
                 .context("self-signed leaf: generate certificate")?;
             Ok((
@@ -265,8 +269,17 @@ pub fn generate_certificate_authority(
 
 pub fn issue_certificate_authority_leaf(
     ca: &CertificateAuthorityData,
-    mut request: LeafCertRequest,
+    request: LeafCertRequest,
 ) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), BoxError> {
+    issue_certificate_authority_leaf_with_usage(ca, request, LeafCertUsage::ServerAuth)
+}
+
+pub(super) fn issue_certificate_authority_leaf_with_usage(
+    ca: &CertificateAuthorityData,
+    mut request: LeafCertRequest,
+    usage: LeafCertUsage,
+) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), BoxError> {
+    validate_leaf_request(&request, usage)?;
     let issuer_cert = ca
         .certificate_chain
         .first()
@@ -280,7 +293,7 @@ pub fn issue_certificate_authority_leaf(
         .context("certificate authority: parse issuer certificate")?;
     let leaf_key =
         generate_key(request.config.key_kind).context("certificate leaf: generate key pair")?;
-    let mut params = leaf_params(&request)?;
+    let mut params = leaf_params(&request, usage)?;
     constrain_validity_to_ca(issuer_cert, &mut params)?;
     params.use_authority_key_identifier_extension = true;
     let leaf = params

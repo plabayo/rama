@@ -37,6 +37,7 @@ And of course as a reminder, if you want to use Rama but are still learning Rust
 A series of blog articles to introduce you to Rama. In case you are new to network programming, you might learn a thing or two about its nifty protocols and how they "work together" as well.
 
 1. [Rama 101.1: HTTPS clients and layers of abstraction](https://plabayo.tech/blog/rama-101-1-https-clients-and-abstractions)
+2. [Rama 101.2: Core Concepts](https://plabayo.tech/blog/rama-101-2-core-concepts)
 
 ## Talk: Rethinking network services: Freedom and modularity with Rama (FOSDEM 2026)
 
