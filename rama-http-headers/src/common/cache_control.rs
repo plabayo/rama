@@ -453,17 +453,18 @@ impl FromIterator<KnownDirective> for FromIter {
                 Directive::ProxyRevalidate => {
                     cc.flags.insert(Flags::PROXY_REVALIDATE);
                 }
+                // the first of repeated directives wins (RFC 9111 §4.2.1)
                 Directive::MaxAge(secs) => {
-                    cc.max_age = Some(Seconds::new(secs));
+                    cc.max_age.get_or_insert(Seconds::new(secs));
                 }
                 Directive::MaxStale(secs) => {
-                    cc.max_stale = Some(Seconds::new(secs));
+                    cc.max_stale.get_or_insert(Seconds::new(secs));
                 }
                 Directive::MinFresh(secs) => {
-                    cc.min_fresh = Some(Seconds::new(secs));
+                    cc.min_fresh.get_or_insert(Seconds::new(secs));
                 }
                 Directive::SMaxAge(secs) => {
-                    cc.s_max_age = Some(Seconds::new(secs));
+                    cc.s_max_age.get_or_insert(Seconds::new(secs));
                 }
             }
         }
@@ -606,13 +607,14 @@ impl KnownDirective {
     fn from_name(name: &[u8], value: Option<&str>) -> Self {
         let seconds = || value.and_then(|value| parse_delta_seconds(value.bytes()));
         match (name, value) {
-            (b"no-cache", None) => Self::Known(Directive::NoCache),
+            // a field-qualified form is kept as its stricter unqualified form (RFC 9111 §5.2.2.4)
+            (b"no-cache", _) => Self::Known(Directive::NoCache),
             (b"no-store", None) => Self::Known(Directive::NoStore),
             (b"no-transform", None) => Self::Known(Directive::NoTransform),
             (b"only-if-cached", None) => Self::Known(Directive::OnlyIfCached),
             (b"must-revalidate", None) => Self::Known(Directive::MustRevalidate),
             (b"public", None) => Self::Known(Directive::Public),
-            (b"private", None) => Self::Known(Directive::Private),
+            (b"private", _) => Self::Known(Directive::Private),
             (b"immutable", None) => Self::Known(Directive::Immutable),
             (b"must-understand", None) => Self::Known(Directive::MustUnderstand),
             (b"proxy-revalidate", None) => Self::Known(Directive::ProxyRevalidate),
@@ -749,6 +751,29 @@ mod tests {
         assert_eq!(cc.max_stale(), None);
         assert_eq!(cc.min_fresh(), None);
         assert!(cc.has_no_cache());
+    }
+
+    #[test]
+    fn qualified_no_cache_and_private_keep_their_flag() {
+        let cc = test_decode::<CacheControl>(&[r#"private="set-cookie", max-age=60"#]).unwrap();
+        assert_eq!(cc.max_age(), Some(Duration::from_secs(60)));
+        assert!(cc.has_private());
+        let cc = test_decode::<CacheControl>(&[r#"no-cache="set-cookie, x-a""#]).unwrap();
+        assert!(cc.has_no_cache());
+    }
+
+    #[test]
+    fn repeated_freshness_uses_the_first() {
+        for (value, expected) in [
+            ("max-age=60, max-age=120", 60),
+            ("max-age=x, max-age=60", 0),
+            ("max-age=0, max-age=60", 0),
+        ] {
+            let cc = test_decode::<CacheControl>(&[value]).unwrap();
+            assert_eq!(cc.max_age(), Some(Duration::from_secs(expected)), "{value}");
+        }
+        let cc = test_decode::<CacheControl>(&["s-maxage=5", "s-maxage=500"]).unwrap();
+        assert_eq!(cc.s_max_age(), Some(Duration::from_secs(5)));
     }
 
     #[test]

@@ -1,5 +1,5 @@
 use std::fmt::Display;
-use std::str::FromStr;
+use std::str::{self, FromStr};
 
 use rama_core::error::{BoxError, ErrorContext as _};
 use rama_http_types::HeaderValue;
@@ -43,20 +43,26 @@ where
     T: FromStr<Err: Into<BoxError>>,
 {
     for value in values {
-        let s = value
-            .to_str()
-            .context("header value is not a valid utf-8 str")?;
         match sep {
             // quoted-strings may hold separators and quoted-pairs (RFC 9110 §5.6.4)
             FlatCsvSeparator::Comma => {
+                let s = value
+                    .to_str()
+                    .context("header value is not a valid utf-8 str")?;
                 for member in ListMembers::new(s.as_bytes()) {
                     visit_flat_csv_member(member?, &mut f)?;
                 }
             }
-            // a cookie-string splits on every `;`, quotes included (RFC 6265 §4.2.1)
+            // a cookie-string splits on every `;`, quotes included (RFC 6265 §4.2.1);
+            // one unreadable cookie-pair must not hide the others
             FlatCsvSeparator::SemiColon => {
-                for member in s.split(';') {
-                    visit_flat_csv_member(member.as_bytes(), &mut f)?;
+                for member in value.as_bytes().split(|byte| *byte == b';') {
+                    if member
+                        .iter()
+                        .all(|byte| matches!(byte, b' '..=b'~' | b'\t'))
+                    {
+                        visit_flat_csv_member(member, &mut f)?;
+                    }
                 }
             }
         }
@@ -72,7 +78,7 @@ where
     if member.is_empty() {
         return Ok(());
     }
-    let member = std::str::from_utf8(member).context("header value CSV colum is not utf-8")?;
+    let member = str::from_utf8(member).context("header value CSV colum is not utf-8")?;
     f(member
         .parse::<T>()
         .context("parse header value CSV colum from str")?);

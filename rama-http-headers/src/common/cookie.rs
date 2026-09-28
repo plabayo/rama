@@ -79,7 +79,10 @@ impl PartialEq for Cookie {
 
 #[cfg(test)]
 mod tests {
+    use rama_http_types::HeaderValue;
+
     use super::Cookie;
+    use crate::HeaderDecode as _;
     use crate::common::test_decode;
 
     #[test]
@@ -106,6 +109,20 @@ mod tests {
         let cookie = test_decode::<Cookie>(&[r#"a=b"c; sid=1; x=2"#]).unwrap();
         assert_eq!(cookie.get("sid"), Some("1"));
         assert_eq!(cookie.get("x"), Some("2"));
+    }
+
+    #[test]
+    fn test_unreadable_pair_keeps_the_others() {
+        let values = [
+            HeaderValue::from_static("sid=1"),
+            HeaderValue::from_bytes("pref=é; x=2".as_bytes()).unwrap(),
+            HeaderValue::from_static("lang=en"),
+        ];
+        let cookie = Cookie::decode(&mut values.iter()).unwrap();
+        assert_eq!(cookie.get("sid"), Some("1"));
+        assert_eq!(cookie.get("pref"), None);
+        assert_eq!(cookie.get("x"), Some("2"));
+        assert_eq!(cookie.get("lang"), Some("en"));
     }
 
     #[test]
