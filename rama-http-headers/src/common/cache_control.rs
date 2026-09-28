@@ -588,16 +588,25 @@ impl FromStr for KnownDirective {
         let mut name = [0; MAX_DIRECTIVE_NAME_LEN];
         let mut len = 0_usize;
         let mut value = None;
+        let mut spaced = false;
         for (idx, byte) in s.bytes().enumerate() {
             if byte == b'=' {
                 value = s.get(idx.saturating_add(1)..).map(unquote);
                 break;
+            }
+            if matches!(byte, b' ' | b'\t') {
+                spaced = true;
+                continue;
             }
             let Some(slot) = name.get_mut(len) else {
                 return Ok(Self::Unknown);
             };
             *slot = byte.to_ascii_lowercase();
             len = len.saturating_add(1);
+        }
+        // whitespace around `=` is invalid, which a freshness directive treats as stale
+        if spaced && value.is_some() {
+            value = Some("");
         }
         Ok(Self::from_name(name.get(..len).unwrap_or_default(), value))
     }
@@ -763,6 +772,19 @@ mod tests {
     }
 
     #[test]
+    fn whitespace_around_equals_is_invalid_freshness() {
+        // `cache-directive = token [ "=" ... ]` allows no whitespace around `=`
+        for value in ["max-age =60", "max-age\t=60", "max-age = 60", "max-age= 60"] {
+            let cc = test_decode::<CacheControl>(&[value]).unwrap();
+            assert_eq!(cc.max_age(), Some(Duration::ZERO), "{value}");
+        }
+        let cc = test_decode::<CacheControl>(&["max-age =60, max-age=120"]).unwrap();
+        assert_eq!(cc.max_age(), Some(Duration::ZERO));
+        let cc = test_decode::<CacheControl>(&[r#"private ="set-cookie""#]).unwrap();
+        assert!(cc.has_private());
+    }
+
+    #[test]
     fn repeated_freshness_uses_the_first() {
         for (value, expected) in [
             ("max-age=60, max-age=120", 60),
@@ -774,6 +796,11 @@ mod tests {
         }
         let cc = test_decode::<CacheControl>(&["s-maxage=5", "s-maxage=500"]).unwrap();
         assert_eq!(cc.s_max_age(), Some(Duration::from_secs(5)));
+        let cc =
+            test_decode::<CacheControl>(&["max-stale=5, min-fresh=6, max-stale=50, min-fresh=60"])
+                .unwrap();
+        assert_eq!(cc.max_stale(), Some(Duration::from_secs(5)));
+        assert_eq!(cc.min_fresh(), Some(Duration::from_secs(6)));
     }
 
     #[test]
@@ -810,8 +837,7 @@ mod tests {
         for value in ["=", "=5", "max-age=", "max-age", "\"=\"", "no-cache="] {
             assert!(test_decode::<CacheControl>(&[value]).is_some(), "{value}");
         }
-        // `cache-directive = token [ "=" ... ]` allows no whitespace around `=`
-        for value in ["max-agé=5", "é=5", "é=", "=é", "no-store=1", "max-age =5"] {
+        for value in ["max-agé=5", "é=5", "é=", "=é", "no-store=1"] {
             assert!(
                 matches!(value.parse(), Ok(KnownDirective::Unknown)),
                 "{value}"
