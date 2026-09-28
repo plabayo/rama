@@ -21,11 +21,18 @@
 //!
 //! # Limits
 //!
-//! Received bytes are protected while the reader is behind by at most
-//! [`PostedRecvConfig::max_buffered`] bytes. Beyond that no receive is posted,
-//! the kernel buffers the rest, and a reset can discard it again. Each posted
-//! receive keeps its buffer, [`PostedRecvConfig::slot_size`] bytes, locked by
-//! the kernel for as long as it is posted.
+//! Bytes are kept when a receive is posted as they arrive. A receive
+//! completes with whatever has arrived, and the completion thread posts it
+//! again right away, normally within microseconds. Only if that thread is
+//! held up until every posted receive completed and the reset arrived can
+//! bytes still be lost; more [`slots`](PostedRecvConfig::slots) make that
+//! less likely.
+//!
+//! No receive is posted while more than
+//! [`max_buffered`](PostedRecvConfig::max_buffered) bytes wait for the
+//! reader, so a reader that falls further behind is exposed again. Each
+//! posted receive keeps its buffer locked by the kernel for as long as it is
+//! posted.
 //!
 //! All receives of the process complete on one dedicated thread. That caps
 //! bulk receive throughput below what tokio reaches on its own, while
@@ -107,8 +114,8 @@ impl PostedRecvConfig {
     generate_set_and_with! {
         /// Number of receives kept posted on the socket (at least 1).
         ///
-        /// Two is enough for the next receive to already be waiting while a
-        /// completed one is handled.
+        /// More slots keep more receives waiting while completed ones are
+        /// posted again, see the [module docs](crate::posted_recv#limits).
         pub fn slots(mut self, slots: usize) -> Self {
             self.slots = slots.max(1);
             self

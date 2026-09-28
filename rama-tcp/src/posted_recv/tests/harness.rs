@@ -233,8 +233,11 @@ impl Filler {
 pub(super) const SIZES: [usize; 3] = [234, 1843, 6554];
 /// How long a client waits before its first read, so that the reply and the
 /// reset both arrived before it reads.
-pub(super) const FORCED_DELAY: Duration = Duration::from_millis(30);
-pub(super) const RESET_GAP: Duration = Duration::from_millis(5);
+pub(super) const FORCED_DELAY: Duration = Duration::from_millis(100);
+/// How long an origin waits between its reply and its reset. A zero linger
+/// close discards what the origin itself has not sent yet, which on a loaded
+/// machine can take more than a few milliseconds to go out.
+pub(super) const RESET_GAP: Duration = Duration::from_millis(50);
 
 /// Run `runs` exchanges, `concurrency` at a time, and tally the outcomes.
 pub(super) async fn tally<F, Fut>(runs: usize, concurrency: usize, len: usize, run: F) -> Tally

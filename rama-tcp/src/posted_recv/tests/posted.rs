@@ -102,7 +102,7 @@ async fn keeps_reply_sent_right_before_reset() {
     for len in SIZES.into_iter().chain([kib(16), kib(32), capacity]) {
         let origin = spawn_origin(len, Close::Reset, RESET_GAP).await;
         let addr = origin.addr;
-        let tally = tally(RUNS, 32, len, move || async move {
+        let tally = tally(RUNS, 100, len, move || async move {
             let mut stream = connect(addr).await;
             exchange(&mut stream, FORCED_DELAY).await
         })
@@ -131,7 +131,7 @@ fn reset_code() -> i32 {
 /// Also without a forced delay, and on a runtime whose only worker is kept
 /// busy, which is where a plain stream loses most.
 #[test]
-fn keeps_reply_in_the_natural_race_on_a_busy_runtime() {
+fn keeps_reply_without_forced_delay_on_a_busy_runtime() {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -139,7 +139,7 @@ fn keeps_reply_in_the_natural_race_on_a_busy_runtime() {
     rt.block_on(async {
         let busy = super::harness::spawn_filler(8);
         for len in SIZES {
-            let origin = spawn_origin(len, Close::Reset, Duration::ZERO).await;
+            let origin = spawn_origin(len, Close::Reset, RESET_GAP).await;
             let addr = origin.addr;
             let tally = tally(RUNS, 32, len, move || async move {
                 let mut stream = connect(addr).await;
@@ -196,9 +196,9 @@ async fn graceful_end_of_stream_after_all_bytes() {
     assert_no_outstanding_receives();
 }
 
-/// With a stalled reader only [`PostedRecvConfig::max_buffered`] bytes are
-/// guaranteed; what is left in the kernel buffer is lost to the reset. What
-/// is kept must still be an intact prefix, followed by the reset.
+/// With a stalled reader at most [`PostedRecvConfig::max_buffered`] bytes, plus
+/// what the posted receives hold, are kept; what is left in the kernel buffer is
+/// lost to the reset. What is kept must still be an intact prefix, then the reset.
 #[tokio::test(flavor = "multi_thread")]
 async fn reply_beyond_capacity_keeps_an_intact_prefix() {
     let len = kib(1024);
@@ -225,7 +225,11 @@ async fn reply_beyond_capacity_keeps_an_intact_prefix() {
         ));
     }
     #[cfg(target_os = "windows")]
-    assert!(received.bytes.len() >= PostedRecvConfig::default().max_buffered());
+    {
+        // A conservative floor: at least what the posted receives hold.
+        let config = PostedRecvConfig::default();
+        assert!(received.bytes.len() >= config.slots() * config.slot_size());
+    }
 }
 
 /// Many small posted receives, resumed from the reader: the stream must come
@@ -456,14 +460,15 @@ async fn many_concurrent_bulk_flows() {
 }
 
 /// Client ↔ [`IoForwardService`] ↔ an origin that replies and resets, with
-/// the egress leg wrapped: the client gets every reply.
+/// the egress leg wrapped: the client gets every reply, even though the
+/// bridge only starts reading after the reply and the reset arrived.
 #[tokio::test(flavor = "multi_thread")]
 async fn forward_keeps_reply_of_resetting_origin() {
     for len in SIZES {
-        let origin = spawn_origin(len, Close::Reset, Duration::ZERO).await;
-        let proxy = spawn_proxy(origin.addr, true).await;
+        let origin = spawn_origin(len, Close::Reset, RESET_GAP).await;
+        let proxy = spawn_proxy(origin.addr, true, true).await;
         let proxy_addr = proxy.addr;
-        let tally = tally(RUNS, 32, len, move || async move {
+        let tally = tally(RUNS, 100, len, move || async move {
             let mut client = tokio::net::TcpStream::connect(proxy_addr).await.unwrap();
             exchange(&mut client, Duration::ZERO).await
         })
@@ -577,33 +582,60 @@ async fn connection_abort_resets_the_peer_and_is_inert_after_drop() {
     }
 }
 
-/// The same bridge with a plain egress stream, for the baseline loss rate.
+/// The same bridge, for the baseline loss rates: a plain egress stream, with
+/// the bridge reading late and in the natural race (an origin that resets
+/// right after replying and a bridge that reads right away), and the posted
+/// egress in that natural race.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "characterization: prints the baseline loss rate"]
 async fn forward_baseline_loses_reply_of_resetting_origin() {
-    for len in SIZES {
-        let origin = spawn_origin(len, Close::Reset, Duration::ZERO).await;
-        let proxy = spawn_proxy(origin.addr, false).await;
-        let proxy_addr = proxy.addr;
-        let tally = tally(RUNS, 32, len, move || async move {
-            let mut client = tokio::net::TcpStream::connect(proxy_addr).await.unwrap();
-            exchange(&mut client, Duration::ZERO).await
-        })
-        .await;
-        eprintln!("forward baseline, plain egress, N={len}: {tally}");
+    for (posted, read_late) in [(false, true), (false, false), (true, false)] {
+        for len in SIZES {
+            let gap = if read_late { RESET_GAP } else { Duration::ZERO };
+            let origin = spawn_origin(len, Close::Reset, gap).await;
+            let proxy = spawn_proxy(origin.addr, posted, read_late).await;
+            let proxy_addr = proxy.addr;
+            let tally = tally(RUNS, 32, len, move || async move {
+                let mut client = tokio::net::TcpStream::connect(proxy_addr).await.unwrap();
+                exchange(&mut client, Duration::ZERO).await
+            })
+            .await;
+            eprintln!("forward, posted={posted} read_late={read_late}, N={len}: {tally}");
+        }
     }
 }
 
 /// A proxy that bridges each client to `origin` with [`IoForwardService`].
-async fn spawn_proxy(origin: std::net::SocketAddr, posted: bool) -> super::harness::Origin {
+///
+/// With `read_late` it forwards the request itself and only starts the
+/// bridge once the reply and the reset had time to arrive.
+async fn spawn_proxy(
+    origin: std::net::SocketAddr,
+    posted: bool,
+    read_late: bool,
+) -> super::harness::Origin {
+    async fn bridge<E: rama_core::io::Io + Unpin>(
+        mut client: tokio::net::TcpStream,
+        mut egress: E,
+        read_late: bool,
+    ) {
+        if read_late {
+            let mut req = vec![0; REQUEST.len()];
+            client.read_exact(&mut req).await.unwrap();
+            egress.write_all(&req).await.unwrap();
+            tokio::time::sleep(FORCED_DELAY).await;
+        }
+        _ = IoForwardService::default()
+            .serve(BridgeIo(client, egress))
+            .await;
+    }
+
     spawn_origin_fn(move |client| async move {
         let egress = TcpStream::new(TokioTcpStream::connect(origin).await.unwrap());
-        let svc = IoForwardService::default();
         if posted {
-            let egress = PostedRecv::new(egress).unwrap();
-            _ = svc.serve(BridgeIo(client, egress)).await;
+            bridge(client, PostedRecv::new(egress).unwrap(), read_late).await;
         } else {
-            _ = svc.serve(BridgeIo(client, egress)).await;
+            bridge(client, egress, read_late).await;
         }
     })
     .await

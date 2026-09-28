@@ -1684,8 +1684,9 @@ mod tests {
             let mut req = vec![0; REQUEST.len()];
             origin.read_exact(&mut req).await.unwrap();
             origin.write_all(&reply(REPLY_LEN)).await.unwrap();
-            // Long enough for the bridge to forward the reply first.
-            tokio::time::sleep(Duration::from_millis(20)).await;
+            // Long enough for the bridge to forward the reply, and for the reply
+            // to leave before the zero linger close would discard it.
+            tokio::time::sleep(Duration::from_millis(50)).await;
             origin.set_zero_linger().unwrap();
         });
         let (mut client_r, mut client_w) = client.into_split();

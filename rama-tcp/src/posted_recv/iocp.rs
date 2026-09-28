@@ -37,7 +37,7 @@ use windows_sys::Win32::{
             CancelIoEx, CreateIoCompletionPort, GetQueuedCompletionStatusEx, OVERLAPPED,
             OVERLAPPED_ENTRY,
         },
-        Threading::INFINITE,
+        Threading::{GetCurrentThread, INFINITE, SetThreadPriority, THREAD_PRIORITY_ABOVE_NORMAL},
     },
 };
 
@@ -94,6 +94,18 @@ fn start_port() -> io::Result<Port> {
 
 fn run_completions(port: Port) {
     const BATCH: usize = 64;
+    // Bytes beyond the posted buffers stay exposed to a reset until this
+    // thread posts the next receive, so it should not wait behind busy
+    // workers. Its work per completion is small and bounded.
+    // SAFETY: no preconditions; the pseudo handle refers to this thread.
+    let thread = unsafe { GetCurrentThread() };
+    // SAFETY: `thread` is valid for the life of this thread.
+    if unsafe { SetThreadPriority(thread, THREAD_PRIORITY_ABOVE_NORMAL) } == 0 {
+        tracing::debug!(
+            error = %io::Error::last_os_error(),
+            "posted recv: raising the completion thread priority failed",
+        );
+    }
     // SAFETY: OVERLAPPED_ENTRY is plain data.
     let mut entries: [OVERLAPPED_ENTRY; BATCH] = unsafe { mem::zeroed() };
     loop {

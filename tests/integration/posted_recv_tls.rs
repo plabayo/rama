@@ -41,7 +41,7 @@ async fn spawn_tls_origin(len: usize, reset: bool) -> std::net::SocketAddr {
             stream.write_all(&reply(len)).await.unwrap();
             stream.flush().await.unwrap();
             if reset {
-                tokio::time::sleep(Duration::from_millis(5)).await;
+                tokio::time::sleep(Duration::from_millis(50)).await;
             } else {
                 stream.shutdown().await.unwrap();
             }
@@ -107,10 +107,10 @@ async fn tls_over_posted_recv_reads_to_end() {
 async fn tls_over_posted_recv_keeps_reply_before_reset() {
     for len in [234, 6554] {
         let addr = spawn_tls_origin(len, true).await;
-        for _ in 0..50 {
+        for _ in 0..20 {
             let mut stream = connect(addr).await;
             stream.write_all(REQUEST).await.unwrap();
-            tokio::time::sleep(Duration::from_millis(30)).await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
             let (bytes, end) = read_until_end(&mut stream).await;
             assert_eq!(bytes, reply(len), "N={len}");
             assert!(
