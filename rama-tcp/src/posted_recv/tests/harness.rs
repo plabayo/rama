@@ -229,3 +229,50 @@ impl Filler {
         }
     }
 }
+
+pub(super) const SIZES: [usize; 3] = [234, 1843, 6554];
+/// How long a client waits before its first read, so that the reply and the
+/// reset both arrived before it reads.
+pub(super) const FORCED_DELAY: Duration = Duration::from_millis(30);
+pub(super) const RESET_GAP: Duration = Duration::from_millis(5);
+
+/// Run `runs` exchanges, `concurrency` at a time, and tally the outcomes.
+pub(super) async fn tally<F, Fut>(runs: usize, concurrency: usize, len: usize, run: F) -> Tally
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = Received> + Send + 'static,
+{
+    let mut tally = Tally::default();
+    let mut set = tokio::task::JoinSet::new();
+    for _ in 0..runs {
+        if set.len() >= concurrency
+            && let Some(received) = set.join_next().await
+        {
+            tally.add(&received.unwrap(), len);
+        }
+        set.spawn(run());
+    }
+    while let Some(received) = set.join_next().await {
+        tally.add(&received.unwrap(), len);
+    }
+    tally
+}
+
+/// Spawn an origin that hands every accepted connection to `serve`.
+pub(super) async fn spawn_origin_fn<F, Fut>(serve: F) -> Origin
+where
+    F: Fn(TcpStream) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let task = tokio::spawn(async move {
+        loop {
+            let Ok((stream, _)) = listener.accept().await else {
+                return;
+            };
+            tokio::spawn(serve(stream));
+        }
+    });
+    Origin { addr, task }
+}

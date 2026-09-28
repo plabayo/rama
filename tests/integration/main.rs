@@ -19,3 +19,6 @@ mod client;
 
 #[cfg(all(feature = "http-full", feature = "rustls", feature = "aws-lc"))]
 mod tls_close_notify;
+
+#[cfg(all(feature = "boring", feature = "tcp"))]
+mod posted_recv_tls;

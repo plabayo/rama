@@ -2,37 +2,14 @@
 //! right before a reset. These only print what the OS does, since asserting
 //! it would be brittle; run them with `--run-ignored=only`.
 
-use std::{future::Future, time::Duration};
+use std::time::Duration;
 
-use tokio::{io::AsyncWriteExt, net::TcpStream, task::JoinSet};
+use tokio::{io::AsyncWriteExt, net::TcpStream};
 
-use super::harness::{Close, Origin, Tally, exchange, read_until_end, spawn_origin};
-
-pub(super) const SIZES: [usize; 3] = [234, 1843, 6554];
-pub(super) const FORCED_DELAY: Duration = Duration::from_millis(30);
-pub(super) const RESET_GAP: Duration = Duration::from_millis(5);
-
-/// Run `runs` exchanges, `concurrency` at a time, and tally the outcomes.
-pub(super) async fn tally<F, Fut>(runs: usize, concurrency: usize, len: usize, run: F) -> Tally
-where
-    F: Fn() -> Fut,
-    Fut: Future<Output = super::harness::Received> + Send + 'static,
-{
-    let mut tally = Tally::default();
-    let mut set = JoinSet::new();
-    for _ in 0..runs {
-        if set.len() >= concurrency
-            && let Some(received) = set.join_next().await
-        {
-            tally.add(&received.unwrap(), len);
-        }
-        set.spawn(run());
-    }
-    while let Some(received) = set.join_next().await {
-        tally.add(&received.unwrap(), len);
-    }
-    tally
-}
+use super::harness::{
+    Close, FORCED_DELAY, Origin, RESET_GAP, SIZES, Tally, exchange, read_until_end, spawn_origin,
+    tally,
+};
 
 async fn plain_tally(origin: &Origin, len: usize, runs: usize, delay: Duration) -> Tally {
     let addr = origin.addr;
