@@ -384,8 +384,8 @@ impl HeaderDecode for PermissionsPolicy {
         // tripping we concatenate them preserving order; repeats
         // collapse to the last-seen allow-list.
         let mut out = Self::empty();
-        // Index by name so repeated collapsing stays linear.
-        let mut positions: HashMap<PermissionsPolicyDirectiveName, usize> = HashMap::default();
+        // Index by name once a policy outgrows a short scan, so collapsing stays linear.
+        let mut positions: Option<HashMap<PermissionsPolicyDirectiveName, usize>> = None;
         let mut any = false;
         for value in values {
             any = true;
@@ -402,14 +402,26 @@ impl HeaderDecode for PermissionsPolicy {
                     // surprising than logging it and moving on.
                     continue;
                 };
-                if let Some(slot) = positions
-                    .get(&directive.name)
-                    .and_then(|&idx| out.directives.get_mut(idx))
-                {
+                let existing = match &positions {
+                    Some(positions) => positions.get(&directive.name).copied(),
+                    None => out.directives.iter().position(|d| d.name == directive.name),
+                };
+                if let Some(slot) = existing.and_then(|idx| out.directives.get_mut(idx)) {
                     slot.allow_list = directive.allow_list;
-                } else {
+                    continue;
+                }
+                if let Some(positions) = &mut positions {
                     positions.insert(directive.name.clone(), out.directives.len());
-                    out.directives.push(directive);
+                }
+                out.directives.push(directive);
+                if positions.is_none() && out.directives.len() > MAX_SCANNED_DIRECTIVES {
+                    positions = Some(
+                        out.directives
+                            .iter()
+                            .enumerate()
+                            .map(|(idx, d)| (d.name.clone(), idx))
+                            .collect(),
+                    );
                 }
             }
         }
@@ -431,6 +443,9 @@ impl HeaderEncode for PermissionsPolicy {
         }
     }
 }
+
+/// Directive count up to which repeats are found by a linear scan.
+const MAX_SCANNED_DIRECTIVES: usize = 32;
 
 /// Split the header value on commas that are not inside `()`. The
 /// allow-list is parenthesised, so a comma inside an allow-list isn't

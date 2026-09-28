@@ -6,8 +6,6 @@ use std::time::Duration;
 use rama_core::error::{BoxError, ErrorContext as _};
 use rama_http_types::{HeaderName, HeaderValue};
 
-use rama_utils::macros::match_ignore_ascii_case_str;
-
 use crate::util::{self, Seconds, csv, parse_delta_seconds};
 use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 
@@ -581,33 +579,59 @@ impl FromStr for KnownDirective {
         if s.is_empty() {
             return Err(());
         }
-        let (name, value) = match s.split_once('=') {
-            Some((name, value)) => (name, Some(unquote(value))),
-            None => (s, None),
-        };
-        let seconds = || value.and_then(|value| parse_delta_seconds(value.bytes()));
-        Ok(match_ignore_ascii_case_str! {
-            match (name) {
-                "no-cache" if value.is_none() => Self::Known(Directive::NoCache),
-                "no-store" if value.is_none() => Self::Known(Directive::NoStore),
-                "no-transform" if value.is_none() => Self::Known(Directive::NoTransform),
-                "only-if-cached" if value.is_none() => Self::Known(Directive::OnlyIfCached),
-                "must-revalidate" if value.is_none() => Self::Known(Directive::MustRevalidate),
-                "public" if value.is_none() => Self::Known(Directive::Public),
-                "private" if value.is_none() => Self::Known(Directive::Private),
-                "immutable" if value.is_none() => Self::Known(Directive::Immutable),
-                "must-understand" if value.is_none() => Self::Known(Directive::MustUnderstand),
-                "proxy-revalidate" if value.is_none() => Self::Known(Directive::ProxyRevalidate),
-                // invalid freshness information makes a response stale (RFC 9111 §4.2.1)
-                "max-age" => Self::Known(Directive::MaxAge(seconds().unwrap_or(0))),
-                "s-maxage" => Self::Known(Directive::SMaxAge(seconds().unwrap_or(0))),
-                "max-stale" => seconds().map_or(Self::Unknown, |secs| Self::Known(Directive::MaxStale(secs))),
-                "min-fresh" => seconds().map_or(Self::Unknown, |secs| Self::Known(Directive::MinFresh(secs))),
-                _ => Self::Unknown,
+        // canonical valueless directives need no split nor case folding
+        if let known @ Self::Known(_) = Self::from_name(s.as_bytes(), None) {
+            return Ok(known);
+        }
+        // directive names are case-insensitive (RFC 9111 §5.2)
+        let mut name = [0; MAX_DIRECTIVE_NAME_LEN];
+        let mut len = 0_usize;
+        let mut value = None;
+        for (idx, byte) in s.bytes().enumerate() {
+            if byte == b'=' {
+                value = s.get(idx.saturating_add(1)..).map(unquote);
+                break;
             }
-        })
+            let Some(slot) = name.get_mut(len) else {
+                return Ok(Self::Unknown);
+            };
+            *slot = byte.to_ascii_lowercase();
+            len = len.saturating_add(1);
+        }
+        Ok(Self::from_name(name.get(..len).unwrap_or_default(), value))
     }
 }
+
+impl KnownDirective {
+    fn from_name(name: &[u8], value: Option<&str>) -> Self {
+        let seconds = || value.and_then(|value| parse_delta_seconds(value.bytes()));
+        match (name, value) {
+            (b"no-cache", None) => Self::Known(Directive::NoCache),
+            (b"no-store", None) => Self::Known(Directive::NoStore),
+            (b"no-transform", None) => Self::Known(Directive::NoTransform),
+            (b"only-if-cached", None) => Self::Known(Directive::OnlyIfCached),
+            (b"must-revalidate", None) => Self::Known(Directive::MustRevalidate),
+            (b"public", None) => Self::Known(Directive::Public),
+            (b"private", None) => Self::Known(Directive::Private),
+            (b"immutable", None) => Self::Known(Directive::Immutable),
+            (b"must-understand", None) => Self::Known(Directive::MustUnderstand),
+            (b"proxy-revalidate", None) => Self::Known(Directive::ProxyRevalidate),
+            // invalid freshness information makes a response stale (RFC 9111 §4.2.1)
+            (b"max-age", _) => Self::Known(Directive::MaxAge(seconds().unwrap_or(0))),
+            (b"s-maxage", _) => Self::Known(Directive::SMaxAge(seconds().unwrap_or(0))),
+            (b"max-stale", _) => {
+                seconds().map_or(Self::Unknown, |secs| Self::Known(Directive::MaxStale(secs)))
+            }
+            (b"min-fresh", _) => {
+                seconds().map_or(Self::Unknown, |secs| Self::Known(Directive::MinFresh(secs)))
+            }
+            _ => Self::Unknown,
+        }
+    }
+}
+
+/// Longest known directive name (`proxy-revalidate`).
+const MAX_DIRECTIVE_NAME_LEN: usize = 16;
 
 /// Strip one pair of surrounding quotes, as directive arguments may be quoted-strings.
 fn unquote(value: &str) -> &str {
@@ -761,7 +785,8 @@ mod tests {
         for value in ["=", "=5", "max-age=", "max-age", "\"=\"", "no-cache="] {
             assert!(test_decode::<CacheControl>(&[value]).is_some(), "{value}");
         }
-        for value in ["max-agé=5", "é=5", "é=", "=é", "no-store=1"] {
+        // `cache-directive = token [ "=" ... ]` allows no whitespace around `=`
+        for value in ["max-agé=5", "é=5", "é=", "=é", "no-store=1", "max-age =5"] {
             assert!(
                 matches!(value.parse(), Ok(KnownDirective::Unknown)),
                 "{value}"

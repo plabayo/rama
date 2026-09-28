@@ -1,7 +1,7 @@
 use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader, x_robots_tag::robots_tag_parse_iter};
 
 use super::RobotsTag;
-use rama_core::telemetry::tracing;
+use rama_core::{bytes::Bytes, telemetry::tracing};
 use rama_http_types::{HeaderName, HeaderValue};
 use rama_utils::{collections::NonEmptyVec, macros::generate_set_and_with};
 use std::fmt::Write as _;
@@ -92,8 +92,8 @@ impl HeaderEncode for XRobotsTag {
             tracing::debug!("failed to format x-robots-tag: {err}");
             return;
         }
-        // decoded values may carry obs-text, which only `from_bytes` accepts
-        match HeaderValue::from_bytes(s.as_bytes()) {
+        // decoded values may carry obs-text, which `try_from(String)` rejects
+        match HeaderValue::from_maybe_shared(Bytes::from(s)) {
             Ok(v) => values.extend(::std::iter::once(v)),
             Err(err) => {
                 tracing::debug!("failed to encode x-robots-tag as header value: {err}");

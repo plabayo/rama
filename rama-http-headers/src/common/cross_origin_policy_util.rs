@@ -50,23 +50,38 @@ pub(super) fn parse_single_token_with_report_to(raw: &str) -> Option<SingleToken
 
 /// Split on `;` outside sf-strings.
 fn split_parameters(raw: &str) -> impl Iterator<Item = &str> {
+    let mut rest = Some(raw);
+    std::iter::from_fn(move || {
+        let s = rest.take()?;
+        // `;` is ASCII, so byte offsets around it are char boundaries
+        match unquoted_semicolon(s.as_bytes()) {
+            Some(idx) => {
+                rest = s.get(idx.saturating_add(1)..);
+                s.get(..idx)
+            }
+            None => Some(s),
+        }
+    })
+}
+
+fn unquoted_semicolon(bytes: &[u8]) -> Option<usize> {
     let mut in_string = false;
     let mut escaped = false;
-    raw.split(move |c| {
+    bytes.iter().position(|&b| {
         if escaped {
             escaped = false;
             return false;
         }
-        match c {
-            '\\' if in_string => {
+        match b {
+            b'\\' if in_string => {
                 escaped = true;
                 false
             }
-            '"' => {
+            b'"' => {
                 in_string = !in_string;
                 false
             }
-            ';' => !in_string,
+            b';' => !in_string,
             _ => false,
         }
     })
@@ -74,8 +89,16 @@ fn split_parameters(raw: &str) -> impl Iterator<Item = &str> {
 
 /// Decode one complete RFC 8941 §4.2.5 sf-string, quotes included.
 fn parse_sf_string(raw: &str) -> Option<String> {
-    let mut chars = raw.strip_prefix('"')?.chars();
-    let mut value = String::new();
+    let body = raw.strip_prefix('"')?;
+    if let Some(plain) = body.strip_suffix('"')
+        && plain
+            .bytes()
+            .all(|b| matches!(b, b' '..=b'~') && b != b'"' && b != b'\\')
+    {
+        return Some(plain.to_owned());
+    }
+    let mut chars = body.chars();
+    let mut value = String::with_capacity(body.len());
     loop {
         match chars.next()? {
             '\\' => match chars.next()? {
@@ -106,11 +129,15 @@ pub(super) fn format_single_token_with_report_to(
         return Ok(());
     }
     f.write_str("; report-to=\"")?;
-    for c in endpoint.chars() {
-        if matches!(c, '"' | '\\') {
-            f.write_char('\\')?;
+    if endpoint.contains(['"', '\\']) {
+        for c in endpoint.chars() {
+            if matches!(c, '"' | '\\') {
+                f.write_char('\\')?;
+            }
+            f.write_char(c)?;
         }
-        f.write_char(c)?;
+    } else {
+        f.write_str(endpoint)?;
     }
     f.write_char('"')
 }
