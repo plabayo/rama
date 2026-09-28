@@ -67,10 +67,12 @@ impl Range {
     /// [`Range::suffix`] for the suffix (`bytes=-N`) form instead.
     pub fn bytes(bounds: impl RangeBounds<u64>) -> Result<Self, InvalidRange> {
         let v = match (bounds.start_bound(), bounds.end_bound()) {
-            (Bound::Included(start), Bound::Included(end)) => format!("bytes={start}-{end}"),
-            (Bound::Included(start), Bound::Excluded(&end)) => {
+            (Bound::Included(&start), Bound::Included(&end)) if start <= end => {
+                format!("bytes={start}-{end}")
+            }
+            (Bound::Included(&start), Bound::Excluded(&end)) => {
                 // `start..end` excludes `end`; an empty range (e.g. `0..0`) has no last byte.
-                let Some(last) = end.checked_sub(1) else {
+                let Some(last) = end.checked_sub(1).filter(|last| start <= *last) else {
                     return Err(InvalidRange);
                 };
                 format!("bytes={start}-{last}")
@@ -256,6 +258,15 @@ mod tests {
         ] {
             assert_eq!(specs(value), [], "value: {value:?}");
         }
+    }
+
+    #[test]
+    fn bytes_rejects_inverted_bounds() {
+        for bounds in [(5, 3), (u64::MAX, 0)] {
+            assert!(Range::bytes(bounds.0..=bounds.1).is_err(), "{bounds:?}");
+            assert!(Range::bytes(bounds.0..bounds.1).is_err(), "{bounds:?}");
+        }
+        assert_eq!(Range::bytes(5..6).unwrap(), Range::bytes(5..=5).unwrap());
     }
 
     #[test]

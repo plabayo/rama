@@ -126,5 +126,13 @@ mod tests {
         {
             assert!(!if_unmod.precondition_passes(after_year_9999));
         }
+
+        // clamping the last-modified time to 9999 would pass this precondition
+        let if_unmod =
+            test_decode::<IfUnmodifiedSince>(&["Fri, 31 Dec 9999 23:59:59 GMT"]).unwrap();
+        let year_10001 = UNIX_EPOCH
+            .checked_add(Duration::from_secs(253_433_923_200))
+            .unwrap();
+        assert!(!if_unmod.precondition_passes(year_10001));
     }
 }

@@ -6,7 +6,7 @@ use rama_http_types::HeaderValue;
 
 use super::{ETag, LastModified};
 use crate::Error;
-use crate::util::{EntityTag, HttpDate, TryFromValues};
+use crate::util::{EntityTag, HttpDate, IterExt, TryFromValues};
 
 /// `If-Range` header, defined in [RFC7233](https://datatracker.ietf.org/doc/html/rfc7233#section-3.2)
 ///
@@ -89,7 +89,8 @@ impl IfRange {
     /// can be served.
     pub fn is_modified(&self, etag: Option<&ETag>, last_modified: Option<&LastModified>) -> bool {
         match self.0 {
-            IfRange_::Date(since) => last_modified.map(|time| since < time.0).unwrap_or(true),
+            // RFC 9110 §13.1.5: a date validator must match `Last-Modified` exactly
+            IfRange_::Date(since) => last_modified.map(|time| since != time.0).unwrap_or(true),
             IfRange_::EntityTag(ref entity) => {
                 etag.map(|etag| !etag.0.strong_eq(entity)).unwrap_or(true)
             }
@@ -111,7 +112,7 @@ impl TryFromValues for IfRange_ {
         I: Iterator<Item = &'i HeaderValue>,
     {
         values
-            .next()
+            .just_one()
             .and_then(|val| {
                 if let Some(tag) = EntityTag::from_val(val) {
                     return Some(Self::EntityTag(tag));
@@ -164,6 +165,27 @@ mod tests {
 
         let etag = ETag::from_static("W/\"xyzzy\"");
         assert!(if_range.is_modified(Some(&etag), None));
+    }
+
+    #[test]
+    fn test_is_modified_date_requires_exact_match() {
+        let time = UNIX_EPOCH
+            .checked_add(Duration::from_secs(1_700_000_000))
+            .unwrap();
+        let if_range = IfRange::date(time);
+        let exact = LastModified::from(time);
+        let older = LastModified::from(time.checked_sub(Duration::from_secs(1)).unwrap());
+        let newer = LastModified::from(time.checked_add(Duration::from_secs(1)).unwrap());
+        assert!(!if_range.is_modified(None, Some(&exact)));
+        assert!(if_range.is_modified(None, Some(&older)));
+        assert!(if_range.is_modified(None, Some(&newer)));
+        assert!(if_range.is_modified(None, None));
+    }
+
+    #[test]
+    fn decode_rejects_multiple_values() {
+        assert!(test_decode::<IfRange>(&["\"a\"", "\"b\""]).is_none());
+        assert!(test_decode::<IfRange>(&["\"a\""]).is_some());
     }
 
     #[test]

@@ -120,5 +120,12 @@ mod tests {
         {
             assert!(if_mod.is_modified(after_year_9999));
         }
+
+        // clamping the last-modified time to 9999 would hide this modification
+        let if_mod = test_decode::<IfModifiedSince>(&["Fri, 31 Dec 9999 23:59:59 GMT"]).unwrap();
+        let year_10001 = UNIX_EPOCH
+            .checked_add(Duration::from_secs(253_433_923_200))
+            .unwrap();
+        assert!(if_mod.is_modified(year_10001));
     }
 }

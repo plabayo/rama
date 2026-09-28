@@ -93,6 +93,17 @@ impl fmt::Display for HttpDate {
 /// `9999-12-31T23:59:59Z`, the last instant an HTTP-date can represent.
 const MAX_HTTP_DATE_SECS: u64 = 253_402_300_799;
 
+impl HttpDate {
+    /// `None` for times an HTTP-date cannot represent (before 1970 or after 9999).
+    ///
+    /// Prefer this over the clamping [`From`] impl for validators such as `Last-Modified`.
+    #[must_use]
+    pub fn try_from_system_time(sys: SystemTime) -> Option<Self> {
+        let since_epoch = sys.duration_since(UNIX_EPOCH).ok()?;
+        (since_epoch.as_secs() <= MAX_HTTP_DATE_SECS).then(|| Self(sys.into()))
+    }
+}
+
 impl From<SystemTime> for HttpDate {
     /// Times outside `1970..=9999` are clamped to the nearest representable date.
     fn from(sys: SystemTime) -> Self {
@@ -159,6 +170,19 @@ mod tests {
     #[test]
     fn test_no_date() {
         "this-is-no-date".parse::<HttpDate>().unwrap_err();
+    }
+
+    #[test]
+    fn test_try_from_system_time_rejects_unrepresentable() {
+        let last = UNIX_EPOCH
+            .checked_add(Duration::from_secs(253_402_300_799))
+            .unwrap();
+        assert!(HttpDate::try_from_system_time(UNIX_EPOCH).is_some());
+        assert!(HttpDate::try_from_system_time(last).is_some());
+        let before_epoch = UNIX_EPOCH.checked_sub(Duration::from_secs(1)).unwrap();
+        let past_9999 = last.checked_add(Duration::from_secs(1)).unwrap();
+        assert!(HttpDate::try_from_system_time(before_epoch).is_none());
+        assert!(HttpDate::try_from_system_time(past_9999).is_none());
     }
 
     #[test]

@@ -1,8 +1,3 @@
-#![expect(
-    clippy::unreachable,
-    reason = "vendored from upstream `headers`: `State::Tmp` is a transient placeholder used inside `mem::replace`, never observed by the next iteration"
-)]
-
 use rama_http_types::{HeaderValue, header, header::AsHeaderName};
 
 use crate::{HeaderDecode, HeaderEncode};
@@ -11,7 +6,9 @@ use super::Error;
 
 /// An extension trait adding "typed" methods to `http::HeaderMap`.
 pub trait HeaderMapExt: self::sealed::Sealed {
-    /// Inserts the typed header into this `HeaderMap`.
+    /// Inserts the typed header into this `HeaderMap`, replacing any existing values.
+    ///
+    /// If the header encodes to no value, existing values are removed.
     fn typed_insert<H>(&mut self, header: H)
     where
         H: HeaderEncode;
@@ -54,11 +51,14 @@ impl HeaderMapExt for rama_http_types::HeaderMap {
     where
         H: HeaderEncode,
     {
-        let entry = self.entry(H::name());
         let mut values = ToValues {
-            state: State::First(entry),
+            state: Some(State::First(self.entry(H::name()))),
         };
         header.encode(&mut values);
+        // an encoder that emits nothing must not leave a stale value behind
+        if let Some(State::First(header::Entry::Occupied(entry))) = values.state {
+            drop(entry.remove_entry_mult());
+        }
     }
 
     fn typed_get<H>(&self) -> Option<H>
@@ -103,20 +103,22 @@ impl HeaderMapExt for rama_http_types::HeaderMap {
 }
 
 struct ToValues<'a> {
-    state: State<'a>,
+    state: Option<State<'a>>,
 }
 
 #[derive(Debug)]
 enum State<'a> {
     First(header::Entry<'a, HeaderValue>),
     Latter(header::OccupiedEntry<'a, HeaderValue>),
-    Tmp,
 }
 
 impl Extend<HeaderValue> for ToValues<'_> {
     fn extend<T: IntoIterator<Item = HeaderValue>>(&mut self, iter: T) {
         for value in iter {
-            let entry = match ::std::mem::replace(&mut self.state, State::Tmp) {
+            let Some(state) = self.state.take() else {
+                return;
+            };
+            let entry = match state {
                 State::First(header::Entry::Occupied(mut e)) => {
                     e.insert(value);
                     e
@@ -126,9 +128,8 @@ impl Extend<HeaderValue> for ToValues<'_> {
                     e.append(value);
                     e
                 }
-                State::Tmp => unreachable!("ToValues State::Tmp"),
             };
-            self.state = State::Latter(entry);
+            self.state = Some(State::Latter(entry));
         }
     }
 }
@@ -141,7 +142,39 @@ mod sealed {
 #[cfg(test)]
 mod test {
     use super::*;
-    use rama_http_types::HeaderMap;
+    use crate::TypedHeader;
+    use rama_http_types::{HeaderMap, HeaderName};
+
+    struct Encodes(&'static [&'static str]);
+
+    impl TypedHeader for Encodes {
+        fn name() -> &'static HeaderName {
+            &header::CONTENT_RANGE
+        }
+    }
+
+    impl HeaderEncode for Encodes {
+        fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
+            values.extend(self.0.iter().map(|v| HeaderValue::from_static(v)));
+        }
+    }
+
+    #[test]
+    fn test_typed_insert_replaces_existing_values() {
+        let mut map = HeaderMap::new();
+        map.append(header::CONTENT_RANGE, HeaderValue::from_static("old-1"));
+        map.append(header::CONTENT_RANGE, HeaderValue::from_static("old-2"));
+
+        map.typed_insert(Encodes(&["new-1", "new-2"]));
+        let values: Vec<_> = map.get_all(header::CONTENT_RANGE).iter().collect();
+        assert_eq!(values, ["new-1", "new-2"]);
+
+        map.typed_insert(Encodes(&[]));
+        assert!(!map.contains_key(header::CONTENT_RANGE));
+
+        map.typed_insert(Encodes(&[]));
+        assert!(map.is_empty());
+    }
 
     #[test]
     fn test_remove_all_drops_every_value() {
