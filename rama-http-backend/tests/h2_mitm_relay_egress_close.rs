@@ -11,8 +11,10 @@
 //!
 //! - egress gone (EOF or GOAWAY): graceful GOAWAY on ingress, in-flight
 //!   ingress streams still finish;
-//! - a request that raced the egress close and never reached the origin:
-//!   `RST_STREAM(REFUSED_STREAM)`, safe to retry (RFC 9113 section 8.7);
+//! - a request the origin provably never processed (it raced the egress
+//!   close, the origin's `GOAWAY` did not cover it, or the origin refused
+//!   its stream): `RST_STREAM(REFUSED_STREAM)`, safe to retry (RFC 9113
+//!   section 8.7);
 //! - a failure while egress is still healthy: fail only that stream.
 //!
 //! Wiring (all in-memory, paused clock):
@@ -250,6 +252,21 @@ impl Harness {
         resp
     }
 
+    async fn send_post(&self, path: &str, body: &'static [u8]) -> h2_client::ResponseFuture {
+        let req = Request::builder()
+            .method("POST")
+            .uri(format!("https://origin.example{path}"))
+            .version(Version::HTTP_2)
+            .body(())
+            .unwrap();
+        let mut client = self.client.clone().ready().await.expect("client ready");
+        let (resp, mut body_tx) = client.send_request(req, false).expect("send request");
+        body_tx
+            .send_data(Bytes::from_static(body), true)
+            .expect("send request body");
+        resp
+    }
+
     /// Ingress connection must end gracefully (GOAWAY), with no request
     /// ever failing in between.
     async fn assert_ingress_went_away(mut self) {
@@ -464,6 +481,95 @@ async fn request_racing_egress_eof_is_refused_with_default_middleware() {
 #[tokio::test(start_paused = true)]
 async fn request_racing_egress_goaway_is_refused_with_default_middleware() {
     request_racing_egress_close_is_refused(OriginClose::GoAway, Middleware::ConsumeErrors).await;
+}
+
+/// Idle close as origins do it (e.g. GitHub): the origin's `GOAWAY` names
+/// the last stream it processed, while the relay already sent more. Those
+/// were never processed and must be refused, even a POST; the processed
+/// one must not be.
+async fn requests_above_egress_goaway_last_stream_are_refused(middleware: Middleware) {
+    let mut h = harness_with(EgressMode::Eager, middleware).await;
+    let mut origin = h.origin().await;
+
+    let processed = h.send(get("/processed", &[])).await;
+    let (_req, _respond) = next_stream(&mut origin).await;
+
+    let unprocessed_get = h.send(get("/unprocessed", &[])).await;
+    let unprocessed_post = h.send_post("/submit", b"a=1").await;
+    // paused clock: elapses once the relay wrote both to the egress,
+    // where the origin leaves them unread
+    sleep(Duration::from_millis(10)).await;
+
+    origin.abrupt_shutdown(Reason::NO_ERROR);
+    drain_origin(&mut origin).await;
+    drop(origin);
+
+    for (method, resp) in [("GET", unprocessed_get), ("POST", unprocessed_post)] {
+        let err = timeout(Duration::from_secs(1), resp)
+            .await
+            .expect("request must complete")
+            .expect_err("request the origin did not process cannot succeed");
+        assert_eq!(
+            err.reason(),
+            Some(Reason::REFUSED_STREAM),
+            "unprocessed {method} must be refused (retry safe), got: {err:?}"
+        );
+    }
+
+    let resp = timeout(Duration::from_secs(1), processed)
+        .await
+        .expect("request must complete")
+        .expect("a processed request must get a response, not a retry safe reset");
+    assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+
+    h.assert_ingress_went_away().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn requests_above_egress_goaway_last_stream_are_refused_propagated() {
+    requests_above_egress_goaway_last_stream_are_refused(Middleware::Propagate).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn requests_above_egress_goaway_last_stream_are_refused_with_default_middleware() {
+    requests_above_egress_goaway_last_stream_are_refused(Middleware::ConsumeErrors).await;
+}
+
+/// An origin refusing one stream says nothing about its connection: the
+/// refusal is passed on (retry safe) and both connections stay usable.
+#[tokio::test(start_paused = true)]
+async fn egress_refused_stream_is_refused_on_ingress() {
+    let mut h = harness_with(EgressMode::Eager, Middleware::ConsumeErrors).await;
+    let mut origin = h.origin().await;
+
+    let refused = h.send_post("/submit", b"a=1").await;
+    let (_req, mut respond) = next_stream(&mut origin).await;
+    respond.send_reset(Reason::REFUSED_STREAM);
+    let (refused, ()) = tokio::join!(refused, async {
+        tokio::select! {
+            biased;
+            accepted = origin.accept() => panic!("unexpected stream: {accepted:?}"),
+            () = sleep(Duration::from_millis(50)) => (),
+        }
+    });
+    let err = refused.expect_err("origin refused the stream");
+    assert_eq!(err.reason(), Some(Reason::REFUSED_STREAM), "got: {err:?}");
+
+    let ok = h.send(get("/ok", &[])).await;
+    let (_req, respond) = next_stream(&mut origin).await;
+    respond_ok(respond, b"ok");
+    let (body, ()) = tokio::join!(read_body(ok), async {
+        tokio::select! {
+            biased;
+            accepted = origin.accept() => panic!("unexpected stream: {accepted:?}"),
+            () = sleep(Duration::from_millis(50)) => (),
+        }
+    });
+    assert_eq!(
+        body.expect("connections must survive a refused stream"),
+        b"ok"
+    );
+    assert!(!h.client_conn.is_finished());
 }
 
 /// A POST the origin processed must never be refused (a client would
