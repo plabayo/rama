@@ -23,6 +23,11 @@
   and usually the kind of approach more desired for MITM proxies,
   especially transparent proxies.
 
+- [/examples/src/tls_mitm_relay_client_auth.rs](https://github.com/plabayo/rama/tree/main/examples/src/tls_mitm_relay_client_auth.rs):
+  A self-contained mTLS relay that authenticates an ingress client and maps it to
+  a different upstream identity. Also demonstrates independent ingress admission
+  and rejection of missing, untrusted or unmapped client certificates.
+
 - [/examples/src/mitm_ocsp_relay_gate.rs](https://github.com/plabayo/rama/tree/main/examples/src/mitm_ocsp_relay_gate.rs):
   Test harness behind the MITM OCSP-stapling gate: a local upstream TLS server
   plus the boring relay proxy, exercising the mirror → issue → staple flow so an

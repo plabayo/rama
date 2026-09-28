@@ -7,7 +7,10 @@ use rama_boring::{
     hash::MessageDigest,
     pkey::{PKey, Private},
     rsa::Rsa,
-    ssl::{ConnectConfiguration, SslCurve, SslSignatureAlgorithm, SslVerifyMode, SslVersion},
+    ssl::{
+        ConnectConfiguration, SslCredential, SslCurve, SslSignatureAlgorithm, SslVerifyMode,
+        SslVersion,
+    },
     x509::{
         X509,
         extension::{BasicConstraints, KeyUsage, SubjectKeyIdentifier},
@@ -663,6 +666,17 @@ fn add_builtin_trust_anchors(
 pub struct ConnectorConfigClientAuth {
     pub cert_chain: Vec<X509>,
     pub private_key: PKey<Private>,
+}
+
+impl TryFrom<ConnectorConfigClientAuth> for SslCredential {
+    type Error = BoxError;
+
+    fn try_from(auth: ConnectorConfigClientAuth) -> Result<Self, Self::Error> {
+        let mut credential = Self::builder()?;
+        credential.set_certificate_chain(&auth.cert_chain)?;
+        credential.set_private_key(&auth.private_key)?;
+        Ok(credential.build())
+    }
 }
 
 /// Process-wide trust store, built once and shared by every connector that

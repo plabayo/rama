@@ -284,6 +284,11 @@ path = "src/mtls_tunnel_and_service.rs"
 required-features = ["http-full", "rustls", "aws-lc"]
 
 [[bin]]
+name = "tls_mitm_relay_client_auth"
+path = "src/tls_mitm_relay_client_auth.rs"
+required-features = ["boring"]
+
+[[bin]]
 name = "tls_sni_proxy_mitm"
 path = "src/tls_sni_proxy_mitm.rs"
 required-features = ["http-full", "boring"]
