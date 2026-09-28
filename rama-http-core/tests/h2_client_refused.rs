@@ -15,7 +15,7 @@ use rama_http_core::{
 use rama_http_types::Response;
 use std::{future::poll_fn, time::Duration};
 use tokio::{
-    io::DuplexStream,
+    io::{AsyncReadExt as _, AsyncWriteExt as _, DuplexStream},
     sync::oneshot,
     task::JoinHandle,
     time::{sleep, timeout},
@@ -191,4 +191,52 @@ async fn connection_error_is_never_refused() {
         .unwrap()
         .expect_err("origin went away with an error");
     assert!(!err.is_refused(), "connection error: {err:?}");
+}
+
+/// Frame header of an empty frame on stream 0.
+fn empty_frame(kind: u8) -> [u8; 9] {
+    [0, 0, 0, kind, 0, 0, 0, 0, 0]
+}
+
+/// The origin has the POST, then sends a frame the client must reject: the
+/// client's own `GOAWAY` says nothing about what the origin processed.
+#[tokio::test]
+async fn locally_detected_connection_error_is_never_refused() {
+    const DATA: u8 = 0x0;
+    const HEADERS: u8 = 0x1;
+    const SETTINGS: u8 = 0x4;
+
+    let (client_io, mut origin) = tokio::io::duplex(64 * 1024);
+    let (client, conn) = http2::handshake(Executor::new(), ServiceInput::new(client_io))
+        .await
+        .unwrap();
+    tokio::spawn(conn);
+    let processed = send(&client, "POST", "a=1");
+
+    let mut preface = [0; 24];
+    origin.read_exact(&mut preface).await.unwrap();
+    origin.write_all(&empty_frame(SETTINGS)).await.unwrap();
+    loop {
+        let mut head = [0; 9];
+        origin.read_exact(&mut head).await.unwrap();
+        let len = u32::from_be_bytes([0, head[0], head[1], head[2]]);
+        let mut payload = vec![0; usize::try_from(len).unwrap()];
+        origin.read_exact(&mut payload).await.unwrap();
+        if head[3] == HEADERS {
+            break;
+        }
+    }
+    // DATA on stream 0 is a connection error (RFC 9113 section 6.1)
+    origin.write_all(&empty_frame(DATA)).await.unwrap();
+
+    let err = timeout(Duration::from_secs(1), processed)
+        .await
+        .unwrap()
+        .unwrap()
+        .expect_err("client rejected the connection");
+    let cause = std::error::Error::source(&err)
+        .and_then(|cause| cause.downcast_ref::<rama_http_core::h2::Error>())
+        .expect("h2 cause");
+    assert!(cause.is_go_away() && cause.is_library(), "got: {err:?}");
+    assert!(!err.is_refused(), "processed: {err:?}");
 }
