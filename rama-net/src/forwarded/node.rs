@@ -4,7 +4,6 @@ use core::{
 };
 
 use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext};
-use rama_utils::str::smol_str::SmolStr;
 
 use super::{ObfNode, ObfPort};
 use crate::{
@@ -189,9 +188,8 @@ impl From<(Domain, u16)> for NodeId {
 impl From<(Domain, Option<u16>)> for NodeId {
     fn from((domain, port): (Domain, Option<u16>)) -> Self {
         Self {
-            // NOTE: this assumes all domains are valid obf nodes,
-            // which should be ok given the validation rules for domains are more strict!
-            name: NodeName::Obf(ObfNode::from_inner(SmolStr::from(domain.as_str()))),
+            // lossy: a wildcard domain's `*` is not a valid obfnode char
+            name: NodeName::Obf(ObfNode::from_str_lossy(domain.as_str())),
             port: port.map(NodePort::Num),
         }
     }
@@ -423,6 +421,7 @@ impl_serde_str!(display NodeId);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::forwarded::ForwardedElement;
 
     #[test]
     fn test_parse_node_id_valid() {
@@ -594,5 +593,21 @@ mod tests {
             let node_id = NodeId::from_bytes_lossy(s.as_bytes());
             assert_eq!(node_id, expected, "parse bytes: {s}");
         }
+    }
+
+    #[test]
+    fn wildcard_domain_node_id_is_lossy_obfnode() {
+        let node = NodeId::from((Domain::from_static("*.example.com"), 8080));
+        assert_eq!(node.to_string(), "_.example.com:8080");
+        assert_eq!(node.port(), Some(8080));
+        assert!(node.authority().is_some());
+
+        let host: HostWithOptPort = "*.example.com".parse().unwrap();
+        let node = NodeId::from(host);
+        assert_eq!(node.to_string(), "_.example.com");
+
+        let el = ForwardedElement::new_forwarded_for(node);
+        let parsed: ForwardedElement = el.to_string().parse().unwrap();
+        assert_eq!(parsed, el);
     }
 }

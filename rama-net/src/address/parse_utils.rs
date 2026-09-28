@@ -1,17 +1,15 @@
 use core::net::{IpAddr, Ipv6Addr};
 
 use rama_core::error::BoxErrorExt as _;
-use rama_core::error::{BoxError, ErrorContext, ErrorExt};
+use rama_core::error::{BoxError, ErrorContext};
 
 pub(crate) fn split_port_from_str(s: &str) -> Result<(&str, u16), BoxError> {
-    if let Some(colon) = s.as_bytes().iter().rposition(|c| *c == b':') {
-        match s[colon + 1..].parse() {
-            Ok(port) => Ok((&s[..colon], port)),
-            Err(err) => Err(err.context("parse port as u16")),
-        }
-    } else {
-        Err(BoxError::from_static_str("missing port"))
-    }
+    let (host, port) = s
+        .rsplit_once(':')
+        .ok_or_else(|| BoxError::from_static_str("missing port"))?;
+    let port = parse_port_bytes(port.as_bytes())
+        .ok_or_else(|| BoxError::from_static_str("parse port as u16"))?;
+    Ok((host, port))
 }
 
 pub(crate) fn try_to_parse_str_to_ip(value: &str) -> Option<IpAddr> {
