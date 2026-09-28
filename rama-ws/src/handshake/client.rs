@@ -1558,10 +1558,33 @@ mod tests {
     use super::*;
     use rama_core::{ServiceInput, bytes::Bytes, service::service_fn};
     use rama_http::HeaderMap;
+    use std::io::Cursor;
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     };
+
+    #[cfg(feature = "compression")]
+    #[test]
+    fn relay_config_from_upstream_window_bits_does_not_panic() {
+        for raw in [
+            "permessage-deflate; client_max_window_bits",
+            "permessage-deflate; server_max_window_bits",
+            "permessage-deflate; server_max_window_bits=8; client_max_window_bits=8",
+        ] {
+            let mut res = Response::new(());
+            res.headers_mut()
+                .insert(header::SEC_WEBSOCKET_EXTENSIONS, raw.parse().unwrap());
+            let cfg = apply_response_data_to_base_websocket_config(None, &mut res);
+            for role in [Role::Client, Role::Server] {
+                drop(WebSocket::from_raw_socket(
+                    Cursor::new(Vec::<u8>::new()),
+                    role,
+                    cfg,
+                ));
+            }
+        }
+    }
 
     struct ResponseLease(Arc<AtomicUsize>);
 
