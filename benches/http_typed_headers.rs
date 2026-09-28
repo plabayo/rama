@@ -1,6 +1,8 @@
 #![expect(clippy::unwrap_used, reason = "benchmark fixtures must be valid")]
 
 //! Decode, query and encode costs of commonly received typed headers.
+//!
+//! Compare runs with fixed sampling, e.g. `-- --sample-count 100 --sample-size 1000`.
 
 use rama::http::{
     HeaderMap, HeaderValue,
