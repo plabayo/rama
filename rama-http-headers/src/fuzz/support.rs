@@ -1,6 +1,6 @@
 //! Shared sinks and the decode/encode roundtrip every exercise builds on.
 
-use std::{fmt, hint::black_box};
+use std::{any::type_name, fmt, hint::black_box};
 
 use rama_http_types::{HeaderMap, HeaderValue};
 
@@ -34,6 +34,14 @@ where
 {
     let header = H::decode(&mut values.iter()).ok()?;
     roundtrip(&header);
+    let mut encoded = Vec::new();
+    header.encode(&mut encoded);
+    // whatever decoded must encode to values that decode again
+    assert!(
+        !encoded.is_empty() && H::decode(&mut encoded.iter()).is_ok(),
+        "{} decoded from {values:?} re-encodes to {encoded:?}",
+        type_name::<H>(),
+    );
     Some(header)
 }
 

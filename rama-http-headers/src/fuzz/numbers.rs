@@ -2,7 +2,7 @@
 
 use std::{
     ops::Bound,
-    time::{Duration, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use rama_http_types::mime::Mime;
@@ -19,7 +19,7 @@ use crate::{
         support::{low_u8, low_u16, low_u32, roundtrip, sink},
     },
     specifier::{Quality, QualityValue},
-    util::Seconds,
+    util::{HttpDate, Seconds},
     x_robots_tag::DirectiveDateTime,
 };
 
@@ -138,6 +138,9 @@ pub(super) const NUMBERS: &[NumbersExercise] = &[
             roundtrip(&IfUnmodifiedSince::from(time));
             roundtrip(&IfRange::date(time));
             roundtrip(&RetryAfter::date(time));
+            if let Some(date) = HttpDate::try_from_system_time(time) {
+                sink(SystemTime::from(date));
+            }
         }
     }),
     ("client_hints", |a, b| {

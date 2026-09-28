@@ -16,6 +16,17 @@ macro_rules! decode {
             if let Some($h) = $crate::fuzz::support::decoded::<$ty>($values) $body
         })
     };
+    ($ty:ty, $exercise:path) => {
+        decode!($ty, |h| {
+            $exercise(&h);
+        })
+    };
+}
+
+macro_rules! forward_conversion {
+    ($ty:ty) => {
+        (stringify!($ty), $crate::fuzz::parts::converted::<$ty>)
+    };
 }
 
 macro_rules! parse_str {

@@ -25,9 +25,7 @@ pub(super) const HEADERS: &[ValuesExercise] = &[
         }
         forward_header(&h);
     }),
-    decode!(Via, |h| {
-        forward_header(&h);
-    }),
+    decode!(Via, forward_header),
     decode!(XForwardedFor, |h| {
         for ip in h.iter() {
             display(ip);
@@ -47,19 +45,9 @@ pub(super) const HEADERS: &[ValuesExercise] = &[
         sink(protocol.as_scheme());
         forward_header(&h);
     }),
-    decode!(CFConnectingIp, |h| {
-        forward_header(&h);
-    }),
-    decode!(TrueClientIp, |h| {
-        forward_header(&h);
-    }),
-    decode!(XRealIp, |h| {
-        forward_header(&h);
-    }),
-    decode!(ClientIp, |h| {
-        forward_header(&h);
-    }),
-    decode!(XClientIp, |h| {
-        forward_header(&h);
-    }),
+    decode!(CFConnectingIp, forward_header),
+    decode!(TrueClientIp, forward_header),
+    decode!(XRealIp, forward_header),
+    decode!(ClientIp, forward_header),
+    decode!(XClientIp, forward_header),
 ];

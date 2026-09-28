@@ -301,17 +301,24 @@ where
     for element in &elements {
         forwarded_element(element);
     }
-    converted::<Forwarded>(&elements);
-    converted::<Via>(&elements);
-    converted::<XForwardedFor>(&elements);
-    converted::<XForwardedHost>(&elements);
-    converted::<XForwardedProto>(&elements);
-    converted::<CFConnectingIp>(&elements);
-    converted::<TrueClientIp>(&elements);
-    converted::<XRealIp>(&elements);
-    converted::<ClientIp>(&elements);
-    converted::<XClientIp>(&elements);
+    for (_, convert) in FORWARD_HEADERS {
+        convert(&elements);
+    }
 }
+
+/// Every [`ForwardHeader`], rebuilt from forwarded elements.
+pub(super) const FORWARD_HEADERS: &[(&str, fn(&[ForwardedElement]))] = &[
+    forward_conversion!(Forwarded),
+    forward_conversion!(Via),
+    forward_conversion!(XForwardedFor),
+    forward_conversion!(XForwardedHost),
+    forward_conversion!(XForwardedProto),
+    forward_conversion!(CFConnectingIp),
+    forward_conversion!(TrueClientIp),
+    forward_conversion!(XRealIp),
+    forward_conversion!(ClientIp),
+    forward_conversion!(XClientIp),
+];
 
 pub(super) fn converted<H>(elements: &[ForwardedElement])
 where
