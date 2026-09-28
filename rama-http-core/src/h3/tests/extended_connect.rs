@@ -313,31 +313,33 @@ async fn unsuccessful_response_keeps_its_body_and_offers_no_tunnel() {
     .unwrap();
 }
 
-/// RFC 9114 §4.1.2: a server that completed its side stops reading with H3_NO_ERROR.
+/// RFC 9114 §4.1: a server that completed its side stops reading with H3_NO_ERROR, for
+/// Extended CONNECT and ordinary CONNECT tunnels alike.
 #[tokio::test]
 async fn servers_stop_reading_finished_tunnels_without_error() {
+    let extended = [
+        (":method", "CONNECT"),
+        (":protocol", "websocket"),
+        (":scheme", "https"),
+        (":authority", "localhost"),
+        (":path", "/chat"),
+    ];
+    let ordinary = [(":method", "CONNECT"), (":authority", "localhost:443")];
     tokio::time::timeout(LIMIT, async {
         let pair = Pair::in_memory(None, None).await;
         let (mut server, server_driver) =
             server::handshake(pair.server.clone(), extended_connect_server()).unwrap();
         spawn(server_driver.run());
-        for (finish, expected) in [
-            (true, Code::H3_NO_ERROR),
-            (false, Code::H3_REQUEST_CANCELLED),
+        for (head, finish, expected) in [
+            (&extended[..], true, Code::H3_NO_ERROR),
+            (&extended[..], false, Code::H3_REQUEST_CANCELLED),
+            (&ordinary[..], true, Code::H3_NO_ERROR),
+            (&ordinary[..], false, Code::H3_REQUEST_CANCELLED),
         ] {
             // A raw client that never ends its own direction.
             let (mut send, _recv) = pair.client.open_bi().await.unwrap();
             let fields = Encoder::before_peer_settings(EncoderConfig::default())
-                .encode(
-                    u64::from(send.id()),
-                    [
-                        (":method", "CONNECT"),
-                        (":protocol", "websocket"),
-                        (":scheme", "https"),
-                        (":authority", "localhost"),
-                        (":path", "/chat"),
-                    ],
-                )
+                .encode(u64::from(send.id()), head.iter().copied())
                 .unwrap();
             let mut frame = BytesMut::new();
             FrameHeader::new(FrameType::HEADERS, fields.len() as u64)
@@ -360,7 +362,7 @@ async fn servers_stop_reading_finished_tunnels_without_error() {
             assert_eq!(
                 send.stopped().await.unwrap().map(u64::from),
                 Some(expected.value()),
-                "finish {finish}"
+                "{head:?} finish {finish}"
             );
         }
         pair.close().await;

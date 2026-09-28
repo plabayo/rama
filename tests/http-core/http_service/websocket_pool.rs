@@ -29,8 +29,9 @@ use std::sync::{
 };
 use tokio::{task::spawn, time::timeout};
 
-#[tokio::test]
-async fn pooled_http2_connections_carry_websockets_between_ordinary_requests() {
+/// One pooled H2 connection serves ordinary requests, a refused and two live WebSockets,
+/// whichever kind opens it.
+async fn check_one_pooled_connection(websocket_first: bool) {
     let (auth, tls) = credentials();
     let accepted = Arc::new(AtomicUsize::new(0));
     let mut http = HttpServer::new_h2(Executor::new());
@@ -109,11 +110,19 @@ async fn pooled_http2_connections_carry_websockets_between_ordinary_requests() {
         .unwrap()
     };
 
-    // The connection opened for an ordinary request carries every later Extended CONNECT.
-    ordinary().await;
-    assert!(handshake("/missing").await.is_err(), "no route refuses");
-    let mut first = handshake("/echo").await.unwrap();
-    let mut second = handshake("/echo").await.unwrap();
+    let (mut first, mut second) = if websocket_first {
+        let first = handshake("/echo").await.unwrap();
+        ordinary().await;
+        assert!(handshake("/missing").await.is_err(), "no route refuses");
+        (first, handshake("/echo").await.unwrap())
+    } else {
+        ordinary().await;
+        assert!(handshake("/missing").await.is_err(), "no route refuses");
+        (
+            handshake("/echo").await.unwrap(),
+            handshake("/echo").await.unwrap(),
+        )
+    };
     ordinary().await;
     for (socket, text) in [(&mut first, "first"), (&mut second, "second")] {
         socket.send_message(Message::text(text)).await.unwrap();
@@ -127,4 +136,14 @@ async fn pooled_http2_connections_carry_websockets_between_ordinary_requests() {
     ordinary().await;
     assert_eq!(accepted.load(Ordering::SeqCst), 1, "one pooled connection");
     server.abort();
+}
+
+#[tokio::test]
+async fn pooled_http2_connections_carry_websockets_between_ordinary_requests() {
+    check_one_pooled_connection(false).await;
+}
+
+#[tokio::test]
+async fn websockets_opening_the_pooled_http2_connection_share_it_with_ordinary_requests() {
+    check_one_pooled_connection(true).await;
 }

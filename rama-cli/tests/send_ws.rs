@@ -8,7 +8,7 @@ use rama::{
     crypto::pem::PemEncode as _,
     graceful::Shutdown,
     http::{
-        Request, Response, Version,
+        Method, Request, Response, Version,
         header::{HOST, SEC_WEBSOCKET_EXTENSIONS},
         io::upgrade::{Upgraded, handle_upgrade},
         layer::error_handling::ErrorHandlerLayer,
@@ -48,7 +48,8 @@ use std::{
 };
 use tokio::{
     fs,
-    io::{AsyncReadExt as _, AsyncWriteExt as _},
+    io::{AsyncReadExt as _, AsyncWriteExt as _, copy_bidirectional},
+    net::{TcpListener as TokioTcpListener, TcpStream},
     process::{Child, ChildStdin, Command},
     sync::oneshot,
     task::JoinHandle,
@@ -587,6 +588,101 @@ async fn h3_websockets_require_the_server_setting_and_a_secure_uri() -> TestResu
         "{}",
         report(&output)
     );
+    Ok(())
+}
+
+/// H1/H2 WebSockets go through an explicit HTTP CONNECT proxy to the logical origin, keeping
+/// its TLS name and the requested inner HTTP version.
+#[tokio::test]
+async fn h1_h2_websockets_use_the_explicit_http_connect_proxy() -> TestResult {
+    let fixture = Fixture::for_name("localhost").await?;
+    for (version, flag) in [
+        (Version::HTTP_11, "--http1.1"),
+        (Version::HTTP_2, "--http2"),
+    ] {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let echo = Arc::new(
+            ConsumeErrLayer::trace_as_debug()
+                .into_layer(WebSocketAcceptor::new().into_echo_service()),
+        );
+        let service = service_fn({
+            let seen = seen.clone();
+            move |request: Request| {
+                let seen = seen.clone();
+                let echo = echo.clone();
+                async move {
+                    seen.lock()
+                        .push((request.version(), request.method().clone()));
+                    echo.serve(request).await
+                }
+            }
+        });
+        let origin = WsServer::start(fixture.auth.clone(), version, true, service).await?;
+        let origin_address = origin.address;
+        let target = format!("localhost:{}", origin_address.port());
+        let proxy = TokioTcpListener::bind("127.0.0.1:0").await?;
+        let proxy_url = format!("http://{}", proxy.local_addr()?);
+        let expected_line = format!("CONNECT {target} HTTP/1.1");
+        let proxy_task = tokio::spawn(async move {
+            timeout(DEADLINE, async move {
+                let (mut downstream, _) = proxy.accept().await?;
+                // Read exactly the CONNECT head, so no TLS byte is consumed.
+                let mut head = Vec::new();
+                while !head.ends_with(b"\r\n\r\n") {
+                    check(head.len() < 16 * 1024, "proxy CONNECT head too large")?;
+                    head.push(downstream.read_u8().await?);
+                }
+                let line = std::str::from_utf8(&head)?
+                    .lines()
+                    .next()
+                    .unwrap_or_default()
+                    .to_owned();
+                check(
+                    line == expected_line,
+                    "the proxy must see the logical origin",
+                )?;
+                let mut upstream = TcpStream::connect(origin_address).await?;
+                downstream
+                    .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                    .await?;
+                downstream.flush().await?;
+                let (up, down) = copy_bidirectional(&mut downstream, &mut upstream).await?;
+                check(
+                    up > 0 && down > 0,
+                    "the proxy tunnel carried no traffic both ways",
+                )?;
+                TestResult::Ok(())
+            })
+            .await?
+        });
+        let output = fixture
+            .send(
+                &origin.url(),
+                &[flag, "--proxy", &proxy_url],
+                b"proxied hello\n",
+            )
+            .await;
+        // The exiting CLI releases its tunnel; a bypass never reaches this proxy.
+        let proxied = proxy_task.await;
+        let closed = origin.close().await;
+        let output = output?;
+        assert!(output.status.success(), "{version:?}\n{}", report(&output));
+        assert_eq!(
+            output.stdout,
+            b"proxied hello\n",
+            "{version:?}\n{}",
+            report(&output)
+        );
+        proxied??;
+        let seen = seen.lock().clone();
+        let method = if version == Version::HTTP_2 {
+            Method::CONNECT
+        } else {
+            Method::GET
+        };
+        assert_eq!(seen, [(version, method)], "the inner version is kept");
+        closed?;
+    }
     Ok(())
 }
 

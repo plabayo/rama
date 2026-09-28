@@ -5,7 +5,8 @@
 
 use parking_lot::Mutex;
 use rama_core::{
-    ServiceInput, bytes::Bytes, extensions::ExtensionsRef as _, rt::Executor, service::service_fn,
+    ServiceInput, bytes::Bytes, extensions::ExtensionsRef as _, graceful::Shutdown, rt::Executor,
+    service::service_fn,
 };
 use rama_http::{
     Body, Request, Response, StatusCode, Version,
@@ -28,10 +29,13 @@ use rama_http::{
 use rama_http_core::{body::Incoming, client::conn, server, service::RamaHttpService};
 use std::{
     convert::Infallible,
+    future::{Future as _, poll_fn},
+    pin::pin,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
+    task::Poll,
     time::Duration,
 };
 use tokio::{
@@ -582,4 +586,216 @@ async fn http2_malformed_hook_discards_buffered_tunnel_data() {
     })
     .await
     .unwrap();
+}
+
+/// Echoes one capsule session, then reports that the session task finished.
+fn drain_service(
+    done: Arc<Mutex<Option<oneshot::Sender<()>>>>,
+) -> RamaHttpService<impl rama_core::Service<Request, Output = Response, Error = Infallible> + Clone>
+{
+    RamaHttpService::new(service_fn(move |request: Request| {
+        let done = done.clone();
+        async move {
+            let protocol = validate_capsule_request(&request, ViolationPolicy::Ignore).unwrap();
+            let upgrade = handle_upgrade(&request);
+            tokio::spawn(async move {
+                echo(upgrade.await.unwrap()).await;
+                if let Some(done) = done.lock().take() {
+                    done.send(()).unwrap();
+                }
+            });
+            Ok::<_, Infallible>(capsule_response::<Body>(request.version(), &protocol).unwrap())
+        }
+    }))
+}
+
+/// One echoed DATAGRAM capsule and one echoed control capsule.
+async fn exchange(session: &mut HttpDatagramSession, value: &'static [u8]) {
+    assert_eq!(
+        session
+            .send_datagram(Bytes::from_static(value))
+            .await
+            .unwrap(),
+        DatagramTransport::Capsule,
+    );
+    assert_eq!(
+        session.recv().await.unwrap(),
+        Some(SessionEvent::Datagram {
+            payload: Bytes::from_static(value),
+            transport: DatagramTransport::Capsule,
+        }),
+    );
+    session
+        .send_capsule(CONTROL, Bytes::from_static(value))
+        .await
+        .unwrap();
+    assert_eq!(
+        session.recv().await.unwrap(),
+        Some(SessionEvent::Capsule {
+            ty: CONTROL,
+            value: Bytes::from_static(value),
+        }),
+    );
+}
+
+/// An HTTP/2 graceful shutdown keeps serving a live capsule session until it ends.
+#[tokio::test]
+async fn http2_graceful_shutdown_drains_live_capsule_sessions() {
+    tokio::time::timeout(LIMIT, async {
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        let (done_tx, done_rx) = oneshot::channel();
+        let service = drain_service(Arc::new(Mutex::new(Some(done_tx))));
+        let (drain_tx, drain_rx) = oneshot::channel();
+        let (started_tx, started_rx) = oneshot::channel();
+        let driver = tokio::spawn(async move {
+            let connection = server::conn::http2::Builder::new(Executor::new())
+                .with_enable_connect_protocol()
+                .serve_connection(ServiceInput::new(server_io), service);
+            let mut connection = pin!(connection);
+            tokio::select! {
+                result = connection.as_mut() => panic!("driver ended before the drain: {result:?}"),
+                signal = drain_rx => signal.unwrap(),
+            }
+            connection.as_mut().graceful_shutdown();
+            // The active stream keeps the draining connection open.
+            poll_fn(|cx| {
+                assert!(
+                    connection.as_mut().poll(cx).is_pending(),
+                    "the drain dropped the tunnel"
+                );
+                Poll::Ready(())
+            })
+            .await;
+            started_tx.send(()).unwrap();
+            connection.await.unwrap();
+        });
+        let (mut sender, client_driver) = conn::http2::Builder::new(Executor::new())
+            .handshake(ServiceInput::new(client_io))
+            .await
+            .unwrap();
+        let client_driver = tokio::spawn(client_driver);
+        let response = sender
+            .send_request(capsule_request(Version::HTTP_2))
+            .await
+            .unwrap();
+        validate_capsule_response(Version::HTTP_2, &TOKEN, &response, ViolationPolicy::Ignore)
+            .unwrap();
+        let mut session =
+            HttpDatagramSession::with_config(handle_upgrade(&response).await.unwrap(), config());
+        exchange(&mut session, b"before-drain").await;
+        drain_tx.send(()).unwrap();
+        started_rx.await.unwrap();
+        exchange(&mut session, b"during-drain").await;
+        session.close().await.unwrap();
+        assert_eq!(session.recv().await.unwrap(), None);
+        drop(session);
+        done_rx.await.unwrap();
+        driver.await.unwrap();
+        drop((response, sender));
+        client_driver.await.unwrap().unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+/// An HTTP/1.1 upgrade takes the connection out of the HTTP driver: its (no-op) graceful
+/// shutdown after completion leaves the upgraded capsule session running.
+#[tokio::test]
+async fn http1_upgraded_sessions_outlive_their_http_driver() {
+    tokio::time::timeout(LIMIT, async {
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        let (done_tx, done_rx) = oneshot::channel();
+        let service = drain_service(Arc::new(Mutex::new(Some(done_tx))));
+        let (drain_tx, drain_rx) = oneshot::channel();
+        let (started_tx, started_rx) = oneshot::channel();
+        let driver = tokio::spawn(async move {
+            let connection = server::conn::http1::Builder::new()
+                .serve_connection(ServiceInput::new(server_io), service)
+                .with_upgrades();
+            let mut connection = pin!(connection);
+            connection.as_mut().await.unwrap();
+            drain_rx.await.unwrap();
+            connection.as_mut().graceful_shutdown();
+            started_tx.send(()).unwrap();
+        });
+        let (mut sender, client_driver) = conn::http1::handshake(ServiceInput::new(client_io))
+            .await
+            .unwrap();
+        let client_driver = tokio::spawn(client_driver.with_upgrades());
+        let response = sender
+            .send_request(capsule_request(Version::HTTP_11))
+            .await
+            .unwrap();
+        validate_capsule_response(Version::HTTP_11, &TOKEN, &response, ViolationPolicy::Ignore)
+            .unwrap();
+        let mut session =
+            HttpDatagramSession::with_config(handle_upgrade(&response).await.unwrap(), config());
+        exchange(&mut session, b"before-shutdown").await;
+        drain_tx.send(()).unwrap();
+        started_rx.await.unwrap();
+        driver.await.unwrap();
+        client_driver.await.unwrap().unwrap();
+        exchange(&mut session, b"after-http-driver").await;
+        session.close().await.unwrap();
+        assert_eq!(session.recv().await.unwrap(), None);
+        drop(session);
+        done_rx.await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+/// A graceful executor keeps tracking H1 and H2 capsule session tasks until they end.
+#[tokio::test]
+async fn graceful_executors_wait_for_capsule_session_tasks() {
+    for version in [Version::HTTP_11, Version::HTTP_2] {
+        tokio::time::timeout(LIMIT, async {
+            let (stop, stopped) = oneshot::channel::<()>();
+            let shutdown = Shutdown::new(stopped);
+            let observer = shutdown.guard_weak();
+            let executor = Executor::graceful(shutdown.guard());
+            let (done, completed) = oneshot::channel();
+            let done = Arc::new(Mutex::new(Some(done)));
+            let service = RamaHttpService::new(service_fn(move |request: Request| {
+                let executor = executor.clone();
+                let done = done.clone();
+                async move {
+                    let protocol =
+                        validate_capsule_request(&request, ViolationPolicy::Ignore).unwrap();
+                    let upgrade = handle_upgrade(&request);
+                    executor.spawn_task(async move {
+                        echo(upgrade.await.unwrap()).await;
+                        done.lock().take().unwrap().send(()).unwrap();
+                    });
+                    Ok::<_, Infallible>(
+                        capsule_response::<Body>(request.version(), &protocol).unwrap(),
+                    )
+                }
+            }));
+            let mut session = HttpDatagramSession::with_config(
+                client_upgraded_with(version, service).await,
+                config(),
+            );
+            exchange(&mut session, b"before-shutdown").await;
+            let mut shutdown = pin!(shutdown.shutdown_with_limit(LIMIT));
+            stop.send(()).unwrap();
+            observer.cancelled().await;
+            poll_fn(|cx| {
+                assert!(
+                    shutdown.as_mut().poll(cx).is_pending(),
+                    "{version:?}: the live session task must stay tracked"
+                );
+                Poll::Ready(())
+            })
+            .await;
+            exchange(&mut session, b"while-draining").await;
+            session.close().await.unwrap();
+            assert_eq!(session.recv().await.unwrap(), None);
+            drop(session);
+            completed.await.unwrap();
+            shutdown.await.unwrap();
+        })
+        .await
+        .unwrap();
+    }
 }
