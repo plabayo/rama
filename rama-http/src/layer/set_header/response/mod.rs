@@ -225,6 +225,8 @@ impl SetResponseHeaderLayer<Option<HeaderValue>> {
     /// Create a new [`SetResponseHeaderLayer`] from a typed [`HeaderEncode`].
     ///
     /// See [`SetResponseHeaderLayer::overriding`] for more details.
+    ///
+    /// A `header` that encodes to no value leaves the response headers untouched.
     #[inline(always)]
     pub fn overriding_typed<H: HeaderEncode>(header: H) -> Self {
         Self::overriding(H::name().clone(), header.encode_to_value())
