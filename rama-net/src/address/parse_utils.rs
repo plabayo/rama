@@ -65,11 +65,16 @@ pub(crate) fn ipv6_bracket_has_zone(inside_brackets: &[u8]) -> bool {
 /// map `None` to their preferred error type.
 #[inline]
 pub(crate) fn parse_port_bytes(bytes: &[u8]) -> Option<u16> {
-    if bytes.is_empty() || !bytes.iter().all(u8::is_ascii_digit) {
+    if bytes.is_empty() {
         return None;
     }
-    let s = core::str::from_utf8(bytes).ok()?;
-    s.parse::<u16>().ok()
+    bytes.iter().try_fold(0_u16, |port, &byte| {
+        let digit = byte.wrapping_sub(b'0');
+        if digit > 9 {
+            return None;
+        }
+        port.checked_mul(10)?.checked_add(u16::from(digit))
+    })
 }
 
 /// Parse an IPv6 host that may be bracketed and may have a trailing port,

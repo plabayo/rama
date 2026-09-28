@@ -197,7 +197,8 @@ pub(crate) fn parse_port(s: &str) -> Option<u16> {
 
 /// Parse `1*DIGIT` as a `u64`; `u64::from_str` alone would also accept a leading `+`.
 pub(crate) fn parse_digits(s: &str) -> Option<u64> {
-    if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
+    // after a leading digit `u64::from_str` accepts digits only
+    if !s.as_bytes().first()?.is_ascii_digit() {
         return None;
     }
     s.parse().ok()
