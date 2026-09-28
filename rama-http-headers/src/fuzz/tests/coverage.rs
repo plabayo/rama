@@ -74,6 +74,9 @@ fn scanner_handles_wrapped_and_nested_shapes() {
 
         outer_probe!(DelegatedProbe);
         list_probe! { FirstListProbe => SERVER, SecondListProbe => SERVER }
+
+        impl crate::HeaderDecode for crate::probe::PathProbe {}
+        impl HeaderDecode for DNT {}
     "#;
     let found = implementations(&[source.to_owned()], "HeaderDecode");
     for expected in [
@@ -81,6 +84,8 @@ fn scanner_handles_wrapped_and_nested_shapes() {
         "DelegatedProbe",
         "FirstListProbe",
         "SecondListProbe",
+        "PathProbe",
+        "DNT",
     ] {
         assert!(found.contains(expected), "missed {expected}: {found:?}");
     }
@@ -146,8 +151,10 @@ fn implementations(sources: &[String], trait_name: &str) -> BTreeSet<String> {
     let mut types = BTreeSet::new();
     for source in &sources {
         for (start, found) in source.match_indices(&pattern) {
-            let name = ident(&source[start + found.len()..]);
-            if is_type_name(name) {
+            // `for crate::x::Foo` names the last path segment
+            let path = type_path(&source[start + found.len()..]);
+            let name = path.rsplit("::").next().unwrap_or(path);
+            if name.starts_with(|c: char| c.is_ascii_uppercase()) {
                 types.insert(name.to_owned());
             }
         }
@@ -264,6 +271,13 @@ fn delimited(s: &str) -> Option<&str> {
         }
     }
     None
+}
+
+fn type_path(s: &str) -> &str {
+    let end = s
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == ':'))
+        .unwrap_or(s.len());
+    &s[..end]
 }
 
 fn ident(s: &str) -> &str {
