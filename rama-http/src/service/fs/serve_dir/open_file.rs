@@ -183,7 +183,10 @@ pub(super) async fn open_file(
                 )
                 .await?;
 
-                let last_modified = meta.modified().ok().map(LastModified::from);
+                let last_modified = meta
+                    .modified()
+                    .ok()
+                    .and_then(LastModified::try_from_system_time);
                 let etag = meta
                     .modified()
                     .ok()
@@ -220,8 +223,8 @@ pub(super) async fn open_file(
                 };
 
                 let content_length = contents.len() as u64;
-                let last_modified =
-                    metadata.map(|metadata| LastModified::from(metadata.modified()));
+                let last_modified = metadata
+                    .and_then(|metadata| LastModified::try_from_system_time(metadata.modified()));
                 let etag = metadata
                     .and_then(|metadata| etag_from_metadata(content_length, metadata.modified()));
 
@@ -262,7 +265,10 @@ pub(super) async fn open_file(
                     Err(err) => return Err(err),
                 };
                 let meta = file.metadata().await?;
-                let last_modified = meta.modified().ok().map(LastModified::from);
+                let last_modified = meta
+                    .modified()
+                    .ok()
+                    .and_then(LastModified::try_from_system_time);
                 let etag = meta
                     .modified()
                     .ok()
@@ -304,7 +310,7 @@ pub(super) async fn open_file(
                 let content_length = contents.len() as u64;
                 let last_modified = metadata
                     .as_ref()
-                    .map(|meta| LastModified::from(meta.modified()));
+                    .and_then(|meta| LastModified::try_from_system_time(meta.modified()));
                 let etag =
                     metadata.and_then(|meta| etag_from_metadata(content_length, meta.modified()));
 

@@ -24,9 +24,14 @@ pub(super) fn etag_from_metadata(size: u64, modified: SystemTime) -> Option<ETag
 #[derive(Clone)]
 pub(super) struct LastModified(pub(super) HttpDate);
 
-impl From<SystemTime> for LastModified {
-    fn from(time: SystemTime) -> Self {
-        Self(time.into())
+/// `9999-12-31T23:59:59Z`, the last instant an HTTP-date can represent.
+const MAX_HTTP_DATE_SECS: u64 = 253_402_300_799;
+
+impl LastModified {
+    /// `None` for modification times an HTTP-date cannot represent (pre-epoch or past year 9999).
+    pub(super) fn try_from_system_time(time: SystemTime) -> Option<Self> {
+        let since_epoch = time.duration_since(SystemTime::UNIX_EPOCH).ok()?;
+        (since_epoch.as_secs() <= MAX_HTTP_DATE_SECS).then(|| Self(time.into()))
     }
 }
 
@@ -59,5 +64,26 @@ impl IfUnmodifiedSince {
         let value = value.to_str().ok()?;
         let date = value.parse().ok()?;
         Some(Self(date))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn last_modified_rejects_unrepresentable_times() {
+        let epoch = SystemTime::UNIX_EPOCH;
+        assert!(LastModified::try_from_system_time(epoch).is_some());
+        let last = epoch
+            .checked_add(Duration::from_secs(MAX_HTTP_DATE_SECS))
+            .unwrap();
+        assert!(LastModified::try_from_system_time(last).is_some());
+
+        let before_epoch = epoch.checked_sub(Duration::from_secs(1)).unwrap();
+        let past_9999 = last.checked_add(Duration::from_secs(1)).unwrap();
+        assert!(LastModified::try_from_system_time(before_epoch).is_none());
+        assert!(LastModified::try_from_system_time(past_9999).is_none());
     }
 }
