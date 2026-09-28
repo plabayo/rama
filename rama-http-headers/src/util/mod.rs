@@ -16,7 +16,8 @@ pub(crate) use self::flat_csv::{
 pub(crate) use self::fmt::fmt;
 pub use self::http_date::HttpDate;
 pub(crate) use self::http_syntax::{
-    ListMembers, QuotedString, parse_digits, scan_quoted_string, skip_ows, trim_ows,
+    ListMembers, QuotedString, parse_delta_seconds, parse_digits, parse_port, scan_quoted_string,
+    skip_ows, trim_ows,
 };
 pub(crate) use self::iter::IterExt;
 //pub use language_tags::LanguageTag;

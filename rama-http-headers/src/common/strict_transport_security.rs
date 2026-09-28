@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use rama_http_types::{HeaderName, HeaderValue};
 
-use crate::util::{self, IterExt, Seconds, parse_digits};
+use crate::util::{self, IterExt, Seconds, parse_delta_seconds};
 use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 
 /// `StrictTransportSecurity` header, defined in [RFC6797](https://tools.ietf.org/html/rfc6797)
@@ -188,12 +188,12 @@ enum Directive {
 }
 
 /// `delta-seconds`, optionally as a quoted-string (RFC 6797 §6.1).
-fn parse_delta_seconds(s: &str) -> Option<u64> {
+fn parse_max_age(s: &str) -> Option<u64> {
     let s = s
         .strip_prefix('"')
         .and_then(|s| s.strip_suffix('"'))
         .unwrap_or(s);
-    parse_digits(s)
+    parse_delta_seconds(s.bytes())
 }
 
 fn from_str(s: &str) -> Result<StrictTransportSecurity, Error> {
@@ -208,7 +208,7 @@ fn from_str(s: &str) -> Result<StrictTransportSecurity, Error> {
                 let mut sub = sub.splitn(2, '=');
                 match (sub.next(), sub.next()) {
                     (Some(left), Some(right)) if left.trim().eq_ignore_ascii_case("max-age") => {
-                        parse_delta_seconds(right.trim()).map(Directive::MaxAge)
+                        parse_max_age(right.trim()).map(Directive::MaxAge)
                     }
                     _ => Some(Directive::Unknown),
                 }
@@ -361,7 +361,6 @@ mod tests {
             "max-age=\"\"5\"\"",
             "max-age=\"\"",
             "max-age=",
-            "max-age=18446744073709551616",
         ] {
             assert_eq!(
                 test_decode::<StrictTransportSecurity>(&[raw]),
@@ -369,8 +368,10 @@ mod tests {
                 "{raw}"
             );
         }
-        let h = test_decode::<StrictTransportSecurity>(&["max-age=18446744073709551615"]).unwrap();
-        assert_eq!(h.max_age(), Duration::from_secs(u64::MAX));
+        for raw in ["max-age=2147483648", "max-age=18446744073709551616"] {
+            let h = test_decode::<StrictTransportSecurity>(&[raw]).unwrap();
+            assert_eq!(h.max_age(), Duration::from_secs(2_147_483_648), "{raw}");
+        }
     }
 
     #[test]

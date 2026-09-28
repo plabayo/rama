@@ -6,7 +6,7 @@ use rama_net::Protocol;
 use rama_net::address::Domain;
 use rama_utils::macros::generate_set_and_with;
 
-use crate::Error;
+use crate::{Error, util::parse_port};
 
 /// Port component of a CSP [`HostSource`].
 ///
@@ -75,7 +75,7 @@ impl HostSource {
         let (host_str, port) = match host_port.rsplit_once(':') {
             Some((host, "*")) => (host, Some(HostSourcePort::Any)),
             Some((host, port_str)) => {
-                let n: u16 = port_str.parse().map_err(|_err| Error::invalid())?;
+                let n = parse_port(port_str).ok_or_else(Error::invalid)?;
                 (host, Some(HostSourcePort::Number(n)))
             }
             None => (host_port, None),
@@ -190,6 +190,18 @@ impl fmt::Display for HostSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn port_requires_digits() {
+        for input in [
+            "example.com:+80",
+            "example.com:-1",
+            "example.com:65536",
+            "example.com:",
+        ] {
+            assert!(HostSource::try_parse(input).is_err(), "{input}");
+        }
+    }
 
     #[test]
     fn bare_domain_round_trips() {

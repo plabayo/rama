@@ -11,12 +11,12 @@ use rama_net::{
 use rama_utils::{collections::NonEmptyVec, macros::generate_set_and_with};
 
 use crate::util::{
-    ListMembers, QuotedString, Seconds, is_http_token_byte, scan_quoted_string, skip_ows, trim_ows,
+    ListMembers, QuotedString, Seconds, is_http_token_byte, parse_delta_seconds,
+    scan_quoted_string, skip_ows, trim_ows,
 };
 use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 
 const DEFAULT_MAX_AGE_SECONDS: u64 = 24 * 60 * 60;
-const DELTA_SECONDS_OVERFLOW: u64 = 2_147_483_648;
 const MAX_ALPN_PROTOCOL_LEN: usize = u8::MAX as usize;
 const FIRST_INVALID_ALPN_PROTOCOL_LEN: usize = MAX_ALPN_PROTOCOL_LEN.saturating_add(1);
 const MAX_ENCODED_PROTOCOL_LEN: usize = MAX_ALPN_PROTOCOL_LEN * 3;
@@ -338,7 +338,7 @@ fn parse_service(input: &[u8]) -> Result<AlternativeService, BoxError> {
                     "Alt-Svc contains duplicate ma parameters",
                 ));
             }
-            max_age = Seconds::new(parse_delta_seconds(value)?);
+            max_age = Seconds::new(parse_ma(value)?);
             saw_max_age = true;
         } else if name.eq_ignore_ascii_case(b"persist") && value.eq_decoded(b"1") {
             persist = true;
@@ -443,35 +443,9 @@ fn parse_authority(input: &[u8]) -> Result<(Option<Host>, u16), BoxError> {
     Ok((Some(authority.host().into_owned()), port))
 }
 
-fn parse_delta_seconds(input: ParameterValue<'_>) -> Result<u64, BoxError> {
-    let mut value = 0_u64;
-    let mut saw_digit = false;
-    let mut overflowed = false;
-    for byte in input.decoded_bytes() {
-        let Some(digit) = byte.checked_sub(b'0').filter(|digit| *digit < 10) else {
-            return Err(BoxError::from_static_str(
-                "Alt-Svc ma parameter is not delta-seconds",
-            ));
-        };
-        saw_digit = true;
-        if !overflowed {
-            match value
-                .checked_mul(10)
-                .and_then(|value| value.checked_add(u64::from(digit)))
-            {
-                Some(next) => value = next,
-                None => overflowed = true,
-            }
-        }
-    }
-    if !saw_digit {
-        return Err(BoxError::from_static_str("Alt-Svc ma parameter is empty"));
-    }
-    Ok(if overflowed {
-        DELTA_SECONDS_OVERFLOW
-    } else {
-        value
-    })
+fn parse_ma(input: ParameterValue<'_>) -> Result<u64, BoxError> {
+    parse_delta_seconds(input.decoded_bytes())
+        .ok_or_else(|| BoxError::from_static_str("Alt-Svc ma parameter is not delta-seconds"))
 }
 
 fn parse_u16(input: &[u8]) -> Result<u16, BoxError> {
@@ -803,7 +777,7 @@ mod tests {
             (r#"h3=":443"; ma=0"#, 0),
             (
                 r#"h3=":443"; MA="18446744073709551615"; PERSIST="1""#,
-                u64::MAX,
+                2_147_483_648,
             ),
             (r#"h3=":443"; ma=18446744073709551616"#, 2_147_483_648),
             (

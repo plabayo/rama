@@ -11,6 +11,8 @@ use rama_net::forwarded::{ForwardedElement, NodeId};
 use std::fmt;
 use std::net::{IpAddr, Ipv6Addr};
 
+use crate::util::parse_port;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ClientAddr {
     ip: IpAddr,
@@ -66,9 +68,9 @@ fn try_to_parse_str_to_ip(value: &str) -> Option<IpAddr> {
 
 fn try_to_split_num_port_from_str(s: &str) -> (&str, Option<u16>) {
     if let Some((host, port)) = s.rsplit_once(':') {
-        match port.parse() {
-            Ok(port) => (host, Some(port)),
-            Err(_) => (s, None),
+        match parse_port(port) {
+            Some(port) => (host, Some(port)),
+            None => (s, None),
         }
     } else {
         (s, None)
@@ -271,6 +273,14 @@ mod tests {
                 }
             }
         };
+    }
+
+    #[test]
+    fn test_port_requires_digits() {
+        for input in ["1.2.3.4:+80", "[::1]:+80", "1.2.3.4:-1", "1.2.3.4:65536"] {
+            let value = HeaderValue::from_static(input);
+            assert!(XRealIp::decode(&mut [value].iter()).is_err(), "{input}");
+        }
     }
 
     #[test]

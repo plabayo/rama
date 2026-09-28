@@ -860,6 +860,7 @@ mod tests {
         );
         assert_eq!(decode::<Rtt>(&["0"]), Some(Rtt::from_millis(0)));
         assert!(decode::<Rtt>(&["-25"]).is_none());
+        assert!(decode::<Rtt>(&["+25"]).is_none());
         assert!(decode::<Rtt>(&["1.5"]).is_none());
         assert!(decode::<Rtt>(&["fast"]).is_none());
     }

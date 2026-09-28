@@ -168,6 +168,33 @@ pub(crate) fn trim_ows(mut input: &[u8]) -> &[u8] {
     input
 }
 
+/// Largest `delta-seconds` kept (RFC 9111 §1.2.2); larger values clamp to it.
+pub(crate) const MAX_DELTA_SECONDS: u64 = 2_147_483_648;
+
+/// Parse `delta-seconds` (`1*DIGIT`), clamping to [`MAX_DELTA_SECONDS`].
+pub(crate) fn parse_delta_seconds(digits: impl IntoIterator<Item = u8>) -> Option<u64> {
+    let mut value = None;
+    for byte in digits {
+        if !byte.is_ascii_digit() {
+            return None;
+        }
+        let digit = u64::from(byte.wrapping_sub(b'0'));
+        value = Some(
+            value
+                .unwrap_or(0_u64)
+                .saturating_mul(10)
+                .saturating_add(digit)
+                .min(MAX_DELTA_SECONDS),
+        );
+    }
+    value
+}
+
+/// Parse a `1*DIGIT` port.
+pub(crate) fn parse_port(s: &str) -> Option<u16> {
+    parse_digits(s).and_then(|port| u16::try_from(port).ok())
+}
+
 /// Parse `1*DIGIT` as a `u64`; `u64::from_str` alone would also accept a leading `+`.
 pub(crate) fn parse_digits(s: &str) -> Option<u64> {
     if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {

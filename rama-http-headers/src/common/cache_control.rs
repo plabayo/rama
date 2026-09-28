@@ -6,10 +6,10 @@ use std::time::Duration;
 use rama_core::error::{BoxError, ErrorContext as _};
 use rama_http_types::{HeaderName, HeaderValue};
 
-use crate::util::{self, Seconds, csv};
-use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
+use rama_utils::macros::match_ignore_ascii_case_str;
 
-const DELTA_SECONDS_OVERFLOW: u64 = 2_147_483_648;
+use crate::util::{self, Seconds, csv, parse_delta_seconds};
+use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 
 /// `Cache-Control` header, defined in [RFC7234](https://tools.ietf.org/html/rfc7234#section-5.2)
 /// with extensions in [RFC8246](https://www.rfc-editor.org/rfc/rfc8246)
@@ -578,48 +578,43 @@ impl fmt::Display for Directive {
 impl FromStr for KnownDirective {
     type Err = ();
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(Self::Known(match s {
-            "no-cache" => Directive::NoCache,
-            "no-store" => Directive::NoStore,
-            "no-transform" => Directive::NoTransform,
-            "only-if-cached" => Directive::OnlyIfCached,
-            "must-revalidate" => Directive::MustRevalidate,
-            "public" => Directive::Public,
-            "private" => Directive::Private,
-            "immutable" => Directive::Immutable,
-            "must-understand" => Directive::MustUnderstand,
-            "proxy-revalidate" => Directive::ProxyRevalidate,
-            "" => return Err(()),
-            _ => match s.split_once('=') {
-                Some((name, value)) if !value.is_empty() => match (name, value.trim_matches('"')) {
-                    ("max-age", secs) => Directive::MaxAge(parse_delta_seconds(secs)?),
-                    ("max-stale", secs) => Directive::MaxStale(parse_delta_seconds(secs)?),
-                    ("min-fresh", secs) => Directive::MinFresh(parse_delta_seconds(secs)?),
-                    ("s-maxage", secs) => Directive::SMaxAge(parse_delta_seconds(secs)?),
-                    _unknown => return Ok(Self::Unknown),
-                },
-                Some(_) | None => return Ok(Self::Unknown),
-            },
-        }))
+        if s.is_empty() {
+            return Err(());
+        }
+        let (name, value) = match s.split_once('=') {
+            Some((name, value)) => (name, Some(unquote(value))),
+            None => (s, None),
+        };
+        let seconds = || value.and_then(|value| parse_delta_seconds(value.bytes()));
+        Ok(match_ignore_ascii_case_str! {
+            match (name) {
+                "no-cache" if value.is_none() => Self::Known(Directive::NoCache),
+                "no-store" if value.is_none() => Self::Known(Directive::NoStore),
+                "no-transform" if value.is_none() => Self::Known(Directive::NoTransform),
+                "only-if-cached" if value.is_none() => Self::Known(Directive::OnlyIfCached),
+                "must-revalidate" if value.is_none() => Self::Known(Directive::MustRevalidate),
+                "public" if value.is_none() => Self::Known(Directive::Public),
+                "private" if value.is_none() => Self::Known(Directive::Private),
+                "immutable" if value.is_none() => Self::Known(Directive::Immutable),
+                "must-understand" if value.is_none() => Self::Known(Directive::MustUnderstand),
+                "proxy-revalidate" if value.is_none() => Self::Known(Directive::ProxyRevalidate),
+                // invalid freshness information makes a response stale (RFC 9111 §4.2.1)
+                "max-age" => Self::Known(Directive::MaxAge(seconds().unwrap_or(0))),
+                "s-maxage" => Self::Known(Directive::SMaxAge(seconds().unwrap_or(0))),
+                "max-stale" => seconds().map_or(Self::Unknown, |secs| Self::Known(Directive::MaxStale(secs))),
+                "min-fresh" => seconds().map_or(Self::Unknown, |secs| Self::Known(Directive::MinFresh(secs))),
+                _ => Self::Unknown,
+            }
+        })
     }
 }
 
-/// RFC 9111 §1.2.2 delta-seconds, saturating to 2^31 on overflow.
-fn parse_delta_seconds(s: &str) -> Result<u64, ()> {
-    if s.is_empty() {
-        return Err(());
-    }
-    let mut value = Some(0_u64);
-    for byte in s.bytes() {
-        let digit = byte
-            .checked_sub(b'0')
-            .filter(|digit| *digit < 10)
-            .ok_or(())?;
-        value = value
-            .and_then(|value| value.checked_mul(10))
-            .and_then(|value| value.checked_add(u64::from(digit)));
-    }
-    Ok(value.unwrap_or(DELTA_SECONDS_OVERFLOW))
+/// Strip one pair of surrounding quotes, as directive arguments may be quoted-strings.
+fn unquote(value: &str) -> &str {
+    value
+        .strip_prefix('"')
+        .and_then(|value| value.strip_suffix('"'))
+        .unwrap_or(value)
 }
 
 #[cfg(test)]
@@ -703,12 +698,45 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_bad_syntax() {
-        assert_eq!(test_decode::<CacheControl>(&["max-age=lolz"]), None);
+    fn invalid_freshness_is_stale_and_keeps_other_directives() {
+        for value in [
+            "max-age=lolz",
+            "max-age=+5",
+            "max-age=-1",
+            "max-age=\"\"",
+            "max-age=\"5",
+            "max-age=1.5",
+            "max-age=",
+            "max-age",
+        ] {
+            let cc =
+                test_decode::<CacheControl>(&[&format!("no-store, private, {value}")]).unwrap();
+            assert_eq!(cc.max_age(), Some(Duration::ZERO), "{value}");
+            assert!(cc.clone().has_no_store(), "{value}");
+            assert!(cc.has_private(), "{value}");
+        }
+        let cc = test_decode::<CacheControl>(&["s-maxage=x"]).unwrap();
+        assert_eq!(cc.s_max_age(), Some(Duration::ZERO));
     }
 
     #[test]
-    fn delta_seconds_overflow_saturates() {
+    fn invalid_request_limits_are_ignored() {
+        let cc = test_decode::<CacheControl>(&["no-cache, max-stale=x, min-fresh=-1"]).unwrap();
+        assert_eq!(cc.max_stale(), None);
+        assert_eq!(cc.min_fresh(), None);
+        assert!(cc.has_no_cache());
+    }
+
+    #[test]
+    fn directive_names_are_case_insensitive() {
+        let cc = test_decode::<CacheControl>(&["No-Store, PRIVATE, Max-Age=5"]).unwrap();
+        assert_eq!(cc.max_age(), Some(Duration::from_secs(5)));
+        assert!(cc.clone().has_no_store());
+        assert!(cc.has_private());
+    }
+
+    #[test]
+    fn delta_seconds_overflow_clamps() {
         let cc = test_decode::<CacheControl>(&[
             "no-store, max-age=99999999999999999999, s-maxage=\"18446744073709551616\"",
         ])
@@ -719,31 +747,34 @@ mod tests {
 
         let cc =
             test_decode::<CacheControl>(&["max-stale=18446744073709551615, min-fresh=0"]).unwrap();
-        assert_eq!(cc.max_stale(), Some(Duration::from_secs(u64::MAX)));
+        assert_eq!(cc.max_stale(), Some(Duration::from_secs(2_147_483_648)));
         assert_eq!(cc.min_fresh(), Some(Duration::ZERO));
         let headers = test_encode(cc);
         assert_eq!(
             headers["cache-control"],
-            "max-stale=18446744073709551615, min-fresh=0"
+            "max-stale=2147483648, min-fresh=0"
         );
     }
 
     #[test]
     fn adversarial_directives_do_not_panic() {
-        for value in ["max-age=+5", "max-age=-1", "max-age=\"\"", "max-age=1.5"] {
-            assert_eq!(test_decode::<CacheControl>(&[value]), None, "{value}");
-        }
         for value in ["=", "=5", "max-age=", "max-age", "\"=\"", "no-cache="] {
             assert!(test_decode::<CacheControl>(&[value]).is_some(), "{value}");
         }
-        for value in ["max-agé=5", "é=5", "é=", "=é"] {
+        for value in ["max-agé=5", "é=5", "é=", "=é", "no-store=1"] {
             assert!(
                 matches!(value.parse(), Ok(KnownDirective::Unknown)),
                 "{value}"
             );
         }
         for value in ["max-age=é", "max-age=\"é\"", "max-age=5é"] {
-            assert!(value.parse::<KnownDirective>().is_err(), "{value}");
+            assert!(
+                matches!(
+                    value.parse(),
+                    Ok(KnownDirective::Known(Directive::MaxAge(0)))
+                ),
+                "{value}"
+            );
         }
     }
 
