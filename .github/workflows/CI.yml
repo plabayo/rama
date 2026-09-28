@@ -1295,8 +1295,8 @@ jobs:
         os:
           - ubuntu-latest
     runs-on: ${{ matrix.os }}
-    # Allow for a cold build with reduced parallelism plus ~40m of ignored tests.
-    timeout-minutes: 120
+    # Cold builds and ignored tests exceeded 110m; allow 150m plus 10m for setup and cleanup.
+    timeout-minutes: 160
     needs:
       - precheck-rust
       - precheck-docs
@@ -1322,7 +1322,7 @@ jobs:
           key: ${{ matrix.os }}-${{ matrix.toolchain }}-release
           env-vars: RUST_TOOLCHAIN
       - name: Run tests in release mode (--ignored)
-        timeout-minutes: 110
+        timeout-minutes: 150
         run: |
           # Preserve resource evidence if the runner shuts down during compilation.
           free -m
