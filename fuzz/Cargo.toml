@@ -40,6 +40,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "http_typed_headers"
+path = "fuzz_targets/http_typed_headers.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "http_header_map"
 path = "fuzz_targets/http_header_map.rs"
 test = false

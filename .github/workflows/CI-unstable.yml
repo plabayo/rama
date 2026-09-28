@@ -386,6 +386,8 @@ jobs:
         run: just fuzz/ua 30
       - name: fuzz — http_header_x_robots_tag
         run: just fuzz/http-headers-x-robots-tag 30
+      - name: fuzz — http_typed_headers
+        run: just fuzz/http-typed-headers 60
       - name: fuzz — uri
         run: |
           just fuzz/uri-parse 30

@@ -70,6 +70,10 @@ pub use self::resp_builder_ext::HttpResponseBuilderExt;
 pub mod encoding;
 pub mod forwarded;
 
+#[cfg(any(test, feature = "fuzz-utils"))]
+#[doc(hidden)]
+pub mod fuzz;
+
 pub mod client_hints;
 pub use client_hints::{
     AcceptCh, ClientHint, CriticalCh, Downlink, Ect, Rtt, SaveData,

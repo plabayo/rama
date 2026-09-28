@@ -430,6 +430,7 @@ fuzz-utils = [
     "rama-quic?/fuzz-utils",
     "rama-quic-proto?/fuzz-utils",
     "rama-http-core?/fuzz-utils",
+    "rama-http?/fuzz-utils",
 ]
 # Forward experimental HTTP APIs when the HTTP backend is enabled.
 unstable = ["rama-http-core?/unstable"]
