@@ -56,6 +56,7 @@ pub(crate) enum EntityTagRange {
 
 impl<T: AsRef<[u8]>> EntityTag<T> {
     /// Get the opaque tag, `None` if the value is not a well-formed entity-tag.
+    #[cfg(test)]
     pub(crate) fn tag(&self) -> Option<&[u8]> {
         split_entity_tag(self.0.as_ref()).map(|(_, tag)| tag)
     }
@@ -72,19 +73,23 @@ impl<T: AsRef<[u8]>> EntityTag<T> {
         R: AsRef<[u8]>,
     {
         matches!(
-            (split_entity_tag(self.0.as_ref()), split_entity_tag(other.0.as_ref())),
-            (Some((false, a)), Some((false, b))) if a == b
+            (split_opaque_tag(self.0.as_ref()), split_opaque_tag(other.0.as_ref())),
+            (Some((false, a)), Some((false, b))) if a == b && check_slice_validity(a)
         )
     }
 
     /// For weak comparison two entity-tags are equivalent if their
     /// opaque-tags match character-by-character, regardless of either or
     /// both being tagged as "weak".
+    #[cfg(test)]
     pub(crate) fn weak_eq<R>(&self, other: &EntityTag<R>) -> bool
     where
         R: AsRef<[u8]>,
     {
-        matches!((self.tag(), other.tag()), (Some(a), Some(b)) if a == b)
+        matches!(
+            (split_opaque_tag(self.0.as_ref()), split_opaque_tag(other.0.as_ref())),
+            (Some((_, a)), Some((_, b))) if a == b && check_slice_validity(a)
+        )
     }
 
     /// The inverse of `EntityTag.strong_eq()`.
@@ -107,12 +112,17 @@ impl<T: AsRef<[u8]>> EntityTag<T> {
 
 /// Split a valid `[W/]"<tag>"` into its weakness flag and opaque tag.
 fn split_entity_tag(bytes: &[u8]) -> Option<(bool, &[u8])> {
+    split_opaque_tag(bytes).filter(|(_, tag)| check_slice_validity(tag))
+}
+
+/// Split `[W/]"<tag>"` without validating the tag bytes.
+fn split_opaque_tag(bytes: &[u8]) -> Option<(bool, &[u8])> {
     let (weak, opaque) = match bytes.strip_prefix(b"W/") {
         Some(opaque) => (true, opaque),
         None => (false, bytes),
     };
     let tag = opaque.strip_prefix(b"\"")?.strip_suffix(b"\"")?;
-    check_slice_validity(tag).then_some((weak, tag))
+    Some((weak, tag))
 }
 
 impl EntityTag {
@@ -213,30 +223,39 @@ impl<'a> From<&'a EntityTag> for HeaderValue {
 /// 3. above `%x80`
 fn check_slice_validity(slice: &[u8]) -> bool {
     // HeaderValue also admits SP and HTAB, which are not `etagc`.
+    // branchless so it vectorizes
     slice
         .iter()
-        .all(|&c| matches!(c, 0x21 | 0x23..=0x7e | 0x80..=0xff))
+        .fold(true, |ok, &c| ok & (c > b' ') & (c != b'"') & (c != 0x7f))
 }
 
 // ===== impl EntityTagRange =====
 
 impl EntityTagRange {
     pub(crate) fn matches_strong(&self, entity: &EntityTag) -> bool {
-        self.matches_if(entity, |a, b| a.strong_eq(b))
+        self.matches_if(entity, true)
     }
 
     pub(crate) fn matches_weak(&self, entity: &EntityTag) -> bool {
-        self.matches_if(entity, |a, b| a.weak_eq(b))
+        self.matches_if(entity, false)
     }
 
-    fn matches_if<F>(&self, entity: &EntityTag, func: F) -> bool
-    where
-        F: Fn(&EntityTag, &EntityTag) -> bool,
-    {
-        match *self {
-            Self::Any => true,
-            Self::Tags(ref tags) => tags.iter().any(|tag| func(tag, entity)),
-        }
+    fn matches_if(&self, entity: &EntityTag, strong: bool) -> bool {
+        let Self::Tags(tags) = self else {
+            return true;
+        };
+        let Some((weak, tag)) = split_opaque_tag(entity.as_ref()) else {
+            return false;
+        };
+        // equal opaque tags share validity, so one check covers the matching member
+        !(strong && weak)
+            && tags.iter().any(|member| {
+                matches!(
+                    split_opaque_tag(member.as_ref()),
+                    Some((member_weak, member_tag)) if !(strong && member_weak) && member_tag == tag
+                )
+            })
+            && check_slice_validity(tag)
     }
 }
 
