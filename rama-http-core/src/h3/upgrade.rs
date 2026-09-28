@@ -233,7 +233,7 @@ impl<R: RecvStream + Unpin, S: SendStream + Unpin> AsyncWrite for Tunnel<R, S> {
         match result {
             Ok(()) => {
                 self.writer.mark_acknowledged();
-                // RFC 9114 §4.1.2: once a server's response is complete, not reading the
+                // RFC 9114 §4.1: once a server's response is complete, not reading the
                 // rest of the request is H3_NO_ERROR, not a cancellation.
                 if self.reader.shared.role == Role::Server {
                     self.reader.cancel_code = Code::H3_NO_ERROR;

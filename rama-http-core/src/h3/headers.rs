@@ -221,10 +221,18 @@ pub(crate) fn request_head(
             .map_err(|_error| malformed("invalid scheme"))?;
         let path = text(fields.path.as_ref().ok_or(malformed("missing path"))?)?;
         let http_scheme = scheme.is_http();
-        if http_scheme
-            && (authority.is_none() || authority.is_some_and(|value| value.contains('@')))
-        {
-            return Err(malformed("HTTP URI requires an authority without userinfo"));
+        // RFC 8441 §5: a WebSocket target is sent with its http/https scheme.
+        if protocol.is_some() && scheme.is_ws() {
+            return Err(malformed("extended CONNECT scheme must be http or https"));
+        }
+        if http_scheme && authority.is_none() {
+            return Err(malformed("HTTP URI requires an authority"));
+        }
+        // The HTTP family never carries userinfo on the wire (RFC 9114 §4.3.1), nor can an
+        // asterisk target, whose authority becomes Host. Other schemes keep theirs.
+        let userinfo = authority.is_some_and(|value| value.contains('@'));
+        if userinfo && (scheme.is_http_based() || path == "*") {
+            return Err(malformed("authority must not carry userinfo"));
         }
         if !(path.starts_with('/')
             || (method == Method::OPTIONS && path == "*")
@@ -379,12 +387,14 @@ pub(crate) fn encode_request<B>(
         if parsed_host.userinfo().is_some() {
             return Err(malformed("Host must not contain userinfo"));
         }
-        // Compared as parsed host and port: a decoded `Host: h:02` became port 2.
-        let mismatch = request.uri().authority().is_some_and(|authority| {
-            authority.userinfo().is_some()
-                || authority.host() != parsed_host.host()
-                || authority.port() != parsed_host.port()
-        });
+        // Compared with the wire projection (HTTP-family userinfo is already stripped), as
+        // parsed host and port: a decoded `Host: h:02` became port 2.
+        let mismatch = !target.is_empty()
+            && AuthorityRef::try_from(&target[..]).map_or(true, |projected| {
+                projected.userinfo().is_some()
+                    || projected.host() != parsed_host.host()
+                    || projected.port() != parsed_host.port()
+            });
         if host.is_empty() || hosts.next().is_some() || mismatch {
             return Err(malformed("invalid Host or authority mismatch"));
         }
@@ -437,7 +447,8 @@ pub(crate) fn encode_request<B>(
     if http_scheme && authority.is_empty() && !request.headers().contains_key(header::HOST) {
         return Err(malformed("HTTP URI requires authority"));
     }
-    if protocol.is_some() && (authority.is_empty() || path.is_empty()) {
+    // RFC 9114 §4.3.1: only http(s) targets need a non-empty authority and path.
+    if protocol.is_some() && http_scheme && (authority.is_empty() || path.is_empty()) {
         return Err(malformed("extended CONNECT requires authority and path"));
     }
     let mut pseudo = [
@@ -531,7 +542,8 @@ pub(crate) fn encode_response<B>(
 mod tests {
     use super::*;
     use crate::h3::qpack::ErrorScope;
-    use rama_core::bytes::BufMut;
+    use rama_core::{Service as _, bytes::BufMut, service::service_fn};
+    use rama_http::layer::required_header::AddRequiredRequestHeaders;
     use rama_http_types::proto::h2::{
         frame::{self, StreamId},
         hpack,
@@ -1053,6 +1065,78 @@ mod tests {
                 (authority.as_bytes(), never_index)
             );
         }
+    }
+
+    /// The `:authority` actually sent, or `None` when encoding refuses the request.
+    fn wire_authority(uri: &str, host: Option<&str>) -> Option<Bytes> {
+        let mut builder = Request::builder().uri(uri);
+        if let Some(host) = host {
+            builder = builder.header(header::HOST, host);
+        }
+        let encoded = encode_request(&shared(), 0, &builder.body(()).unwrap()).ok()?;
+        let fields = decode(encoded);
+        fields
+            .into_iter()
+            .find(|field| field.name == ":authority")
+            .map(|field| field.value)
+    }
+
+    /// PR9-M5-001: Host is compared with the projected wire authority, not the raw URI.
+    #[test]
+    fn host_is_compared_with_the_projected_authority() {
+        for (uri, host, expected) in [
+            // HTTP-family userinfo is stripped whether or not a Host is present.
+            ("https://user:pw@example.com/", None, Some("example.com")),
+            (
+                "https://user:pw@example.com/",
+                Some("example.com"),
+                Some("example.com"),
+            ),
+            (
+                "http://user@example.com/",
+                Some("EXAMPLE.com"),
+                Some("EXAMPLE.com"),
+            ),
+            // A matching Host is sent byte for byte, including a leading-zero port.
+            (
+                "https://example.com:02/",
+                Some("example.com:02"),
+                Some("example.com:02"),
+            ),
+            // Other schemes keep userinfo, which a Host can never express.
+            ("ftp://user@example.com/f", None, Some("user@example.com")),
+            ("ftp://user@example.com/f", Some("example.com"), None),
+            // Host itself never carries userinfo, and must name the same authority.
+            ("https://example.com/", Some("user@example.com"), None),
+            ("https://example.com/", Some("other.example"), None),
+        ] {
+            assert_eq!(
+                wire_authority(uri, host),
+                expected.map(|value: &str| Bytes::copy_from_slice(value.as_bytes())),
+                "{uri} with Host {host:?}"
+            );
+        }
+    }
+
+    /// The required-header layer adds `Host: example.com` to a credential URI; it must still encode.
+    #[tokio::test]
+    async fn required_host_headers_keep_the_http_userinfo_projection() {
+        let service =
+            AddRequiredRequestHeaders::new(service_fn(|request: Request<()>| async move {
+                assert_eq!(request.headers()[header::HOST], "example.com");
+                let fields = decode(encode_request(&shared(), 0, &request)?);
+                let authority = fields
+                    .iter()
+                    .find(|field| field.name == ":authority")
+                    .unwrap();
+                assert_eq!(&authority.value[..], b"example.com");
+                Ok::<_, Error>(Response::new(()))
+            }));
+        let request = Request::builder()
+            .uri("https://user:pw@example.com/")
+            .body(())
+            .unwrap();
+        service.serve(request).await.unwrap();
     }
 
     /// Found by the `h3_request_head` round-trip oracle: heads the encoder could not forward.

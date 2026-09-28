@@ -582,24 +582,145 @@ pub fn request_head(input: &[u8]) -> usize {
 mod tests {
     use super::{REQUEST_FIELD_NAMES, datagram_demux, request_head};
 
+    /// One oracle input: each field is a vocabulary index, a length and a value.
+    fn head(fields: &[(&[u8], &str)]) -> Vec<u8> {
+        fields
+            .iter()
+            .flat_map(|(name, value)| {
+                let selector = REQUEST_FIELD_NAMES.iter().position(|known| known == name);
+                let mut bytes = vec![u8::try_from(selector.unwrap()).unwrap(), value.len() as u8];
+                bytes.extend_from_slice(value.as_bytes());
+                bytes
+            })
+            .collect()
+    }
+
+    /// The forwarding contract on named targets: how many of the two variants (Extended
+    /// CONNECT off/on) accept each head; every accepted one must round-trip unchanged.
+    #[test]
+    fn named_request_targets_follow_the_forwarding_contract() {
+        let (method, scheme, authority, path, protocol) = (
+            &b":method"[..],
+            &b":scheme"[..],
+            &b":authority"[..],
+            &b":path"[..],
+            &b":protocol"[..],
+        );
+        for (fields, accepted) in [
+            (
+                &[
+                    (method, "GET"),
+                    (scheme, "https"),
+                    (authority, "example.com"),
+                    (path, "/"),
+                ][..],
+                2,
+            ),
+            (&[(method, "GET"), (scheme, "custom"), (path, "/")], 2),
+            (
+                &[
+                    (method, "GET"),
+                    (scheme, "ftp"),
+                    (authority, "user@example.com"),
+                    (path, "/"),
+                ],
+                2,
+            ),
+            (
+                &[
+                    (method, "CONNECT"),
+                    (scheme, "https"),
+                    (authority, "example.com"),
+                    (path, "/"),
+                    (protocol, "x"),
+                ],
+                1,
+            ),
+            // PR9-M5-002: RFC 9114 §4.3.1 requires authority and path only for http(s).
+            (
+                &[
+                    (method, "CONNECT"),
+                    (scheme, "custom"),
+                    (path, "/"),
+                    (protocol, "x"),
+                ],
+                1,
+            ),
+            (
+                &[
+                    (method, "CONNECT"),
+                    (scheme, "custom"),
+                    (authority, "example.com"),
+                    (path, ""),
+                    (protocol, "x"),
+                ],
+                1,
+            ),
+            // The HTTP family, ws/wss included, never carries userinfo on the wire.
+            (
+                &[
+                    (method, "GET"),
+                    (scheme, "https"),
+                    (authority, "user@example.com"),
+                    (path, "/"),
+                ],
+                0,
+            ),
+            (
+                &[
+                    (method, "GET"),
+                    (scheme, "ws"),
+                    (authority, "user@example.com"),
+                    (path, "/"),
+                ],
+                0,
+            ),
+            (
+                &[
+                    (method, "GET"),
+                    (scheme, "wss"),
+                    (authority, "user@example.com"),
+                    (path, "/"),
+                ],
+                0,
+            ),
+            // An asterisk target's authority becomes Host, which cannot carry userinfo.
+            (
+                &[
+                    (method, "OPTIONS"),
+                    (scheme, "ftp"),
+                    (authority, "user@example.com"),
+                    (path, "*"),
+                ],
+                0,
+            ),
+            // RFC 8441 §5: an Extended CONNECT target uses its http/https scheme.
+            (
+                &[
+                    (method, "CONNECT"),
+                    (scheme, "ws"),
+                    (authority, "example.com"),
+                    (path, "/"),
+                    (protocol, "x"),
+                ],
+                0,
+            ),
+        ] {
+            assert_eq!(request_head(&head(fields)), accepted, "{fields:?}");
+        }
+    }
+
     /// Well-formed Extended CONNECT heads, then their byte-level mutations.
     #[test]
     fn request_heads_round_trip_when_accepted() {
-        let field = |name: &[u8], value: &[u8]| {
-            let selector = REQUEST_FIELD_NAMES.iter().position(|known| *known == name);
-            let mut bytes = vec![u8::try_from(selector.unwrap()).unwrap(), value.len() as u8];
-            bytes.extend_from_slice(value);
-            bytes
-        };
-        let head: Vec<u8> = [
-            field(b":method", b"CONNECT"),
-            field(b":protocol", b"websocket"),
-            field(b":scheme", b"https"),
-            field(b":authority", b"example.com"),
-            field(b":path", b"/chat"),
-            field(b"capsule-protocol", b"?1"),
-        ]
-        .concat();
+        let head = head(&[
+            (b":method", "CONNECT"),
+            (b":protocol", "websocket"),
+            (b":scheme", "https"),
+            (b":authority", "example.com"),
+            (b":path", "/chat"),
+            (b"capsule-protocol", "?1"),
+        ]);
         assert_eq!(
             request_head(&head),
             1,
