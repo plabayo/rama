@@ -5,6 +5,8 @@ use rama_core::error::{BoxError, ErrorContext as _};
 use rama_http_types::HeaderValue;
 use rama_utils::collections::{NonEmptySmallVec, NonEmptyVec};
 
+use super::csv::split_quoted;
+
 /// Header value which is either any `*` or
 /// the given values separated by the defined separator.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,6 +40,23 @@ impl FlatCsvSeparator {
     }
 }
 
+/// Parse each flat CSV value, skipping header values which are not valid utf-8.
+fn parse_flat_csv<'a, T>(
+    values: impl IntoIterator<Item = &'a HeaderValue>,
+    sep: FlatCsvSeparator,
+) -> impl Iterator<Item = Result<T, BoxError>>
+where
+    T: FromStr<Err: Into<BoxError>>,
+{
+    let sep = sep.as_char();
+    values
+        .into_iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(move |s| split_quoted(s, sep))
+        .map(str::trim)
+        .map(|s| s.parse().context("parse header value CSV colum from str"))
+}
+
 pub(crate) fn try_decode_flat_csv_header_values_as_non_empty_vec<'a, T>(
     values: impl IntoIterator<Item = &'a HeaderValue>,
     sep: FlatCsvSeparator,
@@ -45,43 +64,10 @@ pub(crate) fn try_decode_flat_csv_header_values_as_non_empty_vec<'a, T>(
 where
     T: FromStr<Err: Into<BoxError>>,
 {
-    let mut in_quotes = false;
-    let sep_char = sep.as_char();
-    let mut iter = values
-        .into_iter()
-        .flat_map(|v| {
-            let s = v
-                .to_str()
-                .context("header value is not a valid utf-8 str")?;
-            Ok::<_, BoxError>(s.split(move |c| {
-                #[expect(clippy::collapsible_else_if)]
-                if in_quotes {
-                    if c == '"' {
-                        in_quotes = false;
-                    }
-                    false // don't split
-                } else {
-                    if c == sep_char {
-                        true // split
-                    } else {
-                        if c == '"' {
-                            in_quotes = true;
-                        }
-                        false // don't split
-                    }
-                }
-            }))
-        })
-        .flatten()
-        .map(|s| s.trim().parse::<T>());
-
-    let mut vec = NonEmptyVec::new(
-        iter.next()
-            .context("header value is an empty (CSV?)")?
-            .context("parse header value CSV colum from str")?,
-    );
-    for result in iter {
-        vec.push(result.context("parse header value CSV colum from str")?);
+    let mut iter = parse_flat_csv(values, sep);
+    let mut vec = NonEmptyVec::new(iter.next().context("header value is an empty (CSV?)")??);
+    for value in iter {
+        vec.push(value?);
     }
     Ok(vec)
 }
@@ -145,43 +131,10 @@ pub(crate) fn try_decode_flat_csv_header_values_as_non_empty_smallvec<'a, const 
 where
     T: FromStr<Err: Into<BoxError>>,
 {
-    let mut in_quotes = false;
-    let sep_char = sep.as_char();
-    let mut iter = values
-        .into_iter()
-        .flat_map(|v| {
-            let s = v
-                .to_str()
-                .context("header value is not a valid utf-8 str")?;
-            Ok::<_, BoxError>(s.split(move |c| {
-                #[expect(clippy::collapsible_else_if)]
-                if in_quotes {
-                    if c == '"' {
-                        in_quotes = false;
-                    }
-                    false // don't split
-                } else {
-                    if c == sep_char {
-                        true // split
-                    } else {
-                        if c == '"' {
-                            in_quotes = true;
-                        }
-                        false // don't split
-                    }
-                }
-            }))
-        })
-        .flatten()
-        .map(|s| s.trim().parse::<T>());
-
-    let mut vec = NonEmptySmallVec::new(
-        iter.next()
-            .context("header value is an empty (CSV?)")?
-            .context("parse header value CSV colum from str")?,
-    );
-    for result in iter {
-        vec.push(result.context("parse header value CSV colum from str")?);
+    let mut iter = parse_flat_csv(values, sep);
+    let mut vec = NonEmptySmallVec::new(iter.next().context("header value is an empty (CSV?)")??);
+    for value in iter {
+        vec.push(value?);
     }
     Ok(vec)
 }

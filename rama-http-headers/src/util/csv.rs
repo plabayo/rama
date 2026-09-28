@@ -24,30 +24,21 @@ where
 pub(crate) fn split_csv_str<T: std::str::FromStr>(
     string: &str,
 ) -> impl Iterator<Item = Result<T, Error>> + use<'_, T> {
+    split_quoted(string, ',').filter_map(|x| match x.trim() {
+        "" => None,
+        y => Some(y.parse().map_err(|_e| Error::invalid())),
+    })
+}
+
+/// Split `s` on `sep`, ignoring any `sep` within double quotes.
+pub(crate) fn split_quoted(s: &str, sep: char) -> impl Iterator<Item = &str> {
     let mut in_quotes = false;
-    string
-        .split(move |c| {
-            #[expect(clippy::collapsible_else_if)]
-            if in_quotes {
-                if c == '"' {
-                    in_quotes = false;
-                }
-                false // don't split
-            } else {
-                if c == ',' {
-                    true // split
-                } else {
-                    if c == '"' {
-                        in_quotes = true;
-                    }
-                    false // don't split
-                }
-            }
-        })
-        .filter_map(|x| match x.trim() {
-            "" => None,
-            y => Some(y.parse().map_err(|_e| Error::invalid())),
-        })
+    s.split(move |c| {
+        if c == '"' {
+            in_quotes = !in_quotes;
+        }
+        c == sep && !in_quotes
+    })
 }
 
 /// Format an array into a comma-delimited string.
@@ -63,4 +54,34 @@ pub fn fmt_comma_delimited<T: fmt::Display>(
         fmt::Display::fmt(&part, f)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn split_quoted_ignores_separators_within_quotes() {
+        for (input, sep, expected) in [
+            ("a, b,c", ',', vec!["a", " b", "c"]),
+            (
+                r#"foo="bar,baz", x=1"#,
+                ',',
+                vec![r#"foo="bar,baz""#, " x=1"],
+            ),
+            (
+                r#"a="x;y"; b; "c""#,
+                ';',
+                vec![r#"a="x;y""#, " b", r#" "c""#],
+            ),
+            (
+                r#""unterminated, still quoted"#,
+                ',',
+                vec![r#""unterminated, still quoted"#],
+            ),
+            ("", ',', vec![""]),
+        ] {
+            assert_eq!(split_quoted(input, sep).collect::<Vec<_>>(), expected);
+        }
+    }
 }
