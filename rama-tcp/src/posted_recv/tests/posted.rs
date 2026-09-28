@@ -14,7 +14,7 @@ use rama_core::{Layer as _, Service as _, extensions::ExtensionsRef as _, io::Br
 use rama_net::{
     address::SocketAddress,
     client::{ConnectRequest, EstablishedClientConnection},
-    proxy::IoForwardService,
+    proxy::{IoForwardService, LingeringClose},
     stream::{Socket as _, SocketInfo},
 };
 use rama_utils::octets::kib;
@@ -469,6 +469,46 @@ async fn forward_keeps_reply_of_resetting_origin() {
         .await;
         assert_eq!(tally.complete, RUNS, "N={len}: {tally}");
     }
+}
+
+/// Both fixes together: the origin resets right after replying while the
+/// client is still sending and only reads later. The posted receives keep the
+/// reply on the egress leg, and lingering keeps the client leg from being
+/// closed with unread input.
+#[tokio::test(flavor = "multi_thread")]
+async fn forward_with_lingering_keeps_reply_while_client_sends() {
+    let len = SIZES[2];
+    let origin = spawn_origin(len, Close::Reset, RESET_GAP).await;
+    let origin_addr = origin.addr;
+    let proxy = spawn_origin_fn(move |client| async move {
+        let egress = TcpStream::new(TokioTcpStream::connect(origin_addr).await.unwrap());
+        let egress = PostedRecv::new(egress).unwrap();
+        let svc = IoForwardService::default().with_lingering_close(LingeringClose::default());
+        _ = svc.serve(BridgeIo(client, egress)).await;
+    })
+    .await;
+    let proxy_addr = proxy.addr;
+    let tally = tally(100, 16, len, move || async move {
+        let client = tokio::net::TcpStream::connect(proxy_addr).await.unwrap();
+        let (mut client_r, mut client_w) = client.into_split();
+        client_w.write_all(REQUEST).await.unwrap();
+        let writer = tokio::spawn(async move {
+            for _ in 0..10 {
+                if client_w.write_all(&[1; 1024]).await.is_err() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            client_w
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let received = read_until_end(&mut client_r).await;
+        drop(writer.await.unwrap());
+        received
+    })
+    .await;
+    assert_eq!(tally.complete, 100, "{tally}");
+    assert_eq!(tally.ends, [(None, None)], "{tally}");
 }
 
 /// The same bridge with a plain egress stream, for the baseline loss rate.
