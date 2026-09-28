@@ -673,7 +673,8 @@ impl Iterator for Parser<'_> {
         let mut delimiter_offset = 0;
         let mut value_commas = 0;
 
-        for _ in 0..4096 {
+        // every iteration consumes or skips a delimiter, so the input length bounds the loop
+        for _ in 0..=self.buffer.len() {
             match find_delimiter(self.buffer, delimiter_offset) {
                 Some((index, Delimiter::Colon)) => {
                     if !pair_key.is_empty() {
@@ -907,6 +908,16 @@ mod tests {
         .unwrap();
         assert!(tag.unavailable_after().is_some());
         assert!(tag.no_index());
+    }
+
+    #[test]
+    fn test_parse_many_directives_in_one_tag() {
+        let input = vec!["a"; 5000].join(",");
+        let tags = robots_tag_parse_iter(input.as_bytes())
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(tags.len(), 1);
+        assert_eq!(tags[0].custom_rules().len(), 5000);
     }
 
     #[test]

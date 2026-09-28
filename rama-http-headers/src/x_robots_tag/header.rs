@@ -141,6 +141,14 @@ mod tests {
     }
 
     #[test]
+    fn test_multi_line_tags_round_trip() {
+        let line = HeaderValue::from_str(&vec!["a"; 2049].join(",")).unwrap();
+        let header = XRobotsTag::decode(&mut [line.clone(), line].iter()).unwrap();
+        let encoded = header.encode_to_value().unwrap();
+        XRobotsTag::decode(&mut [encoded].iter()).unwrap();
+    }
+
+    #[test]
     fn test_obs_text_round_trips() {
         let value = HeaderValue::from_bytes("max-image-preview: é, noindex".as_bytes()).unwrap();
         let header = XRobotsTag::decode(&mut [value].iter()).unwrap();

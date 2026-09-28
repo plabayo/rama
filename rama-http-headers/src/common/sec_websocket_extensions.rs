@@ -259,6 +259,14 @@ impl FromStr for Extension {
                         .and_then(|v| v.strip_suffix('"'))
                         .unwrap_or(v);
                     let v = v.trim();
+                    // RFC 7692 §7.1.2: a decimal integer without leading zeroes or sign
+                    if !v.starts_with(|c: char| c.is_ascii_digit() && c != '0') {
+                        return Err(BoxError::from_static_str(
+                            "invalid per-message-deflate parameter value",
+                        )
+                        .context_str_field("key", k)
+                        .context_str_field("value", v));
+                    }
 
                     if k.eq_ignore_ascii_case("server_max_window_bits") {
                         match v.trim().parse::<u8>() {
@@ -350,12 +358,9 @@ impl fmt::Display for Extension {
                 if config.server_no_context_takeover {
                     write!(f, "; server_no_context_takeover")?
                 }
-                if let Some(log) = config.server_max_window_bits {
-                    if log == 0 {
-                        write!(f, "; server_max_window_bits")?
-                    } else {
-                        write!(f, "; server_max_window_bits={log}")?
-                    }
+                // the valueless form is not valid for this parameter (RFC 7692 §7.1.2.1)
+                if let Some(log) = config.server_max_window_bits.filter(|log| *log != 0) {
+                    write!(f, "; server_max_window_bits={log}")?
                 }
                 if config.client_no_context_takeover {
                     write!(f, "; client_no_context_takeover")?
@@ -381,6 +386,21 @@ mod tests {
         Extension, PerMessageDeflateConfig, PerMessageDeflateIdentifier, SecWebSocketExtensions,
     };
     use crate::common::{test_decode, test_encode};
+
+    #[test]
+    fn encode_omits_valueless_server_max_window_bits() {
+        let header =
+            SecWebSocketExtensions::per_message_deflate_with_config(PerMessageDeflateConfig {
+                server_max_window_bits: Some(0),
+                client_max_window_bits: Some(0),
+                ..Default::default()
+            });
+        let headers = test_encode(header);
+        assert_eq!(
+            headers["sec-websocket-extensions"],
+            "permessage-deflate; client_max_window_bits"
+        );
+    }
 
     #[test]
     fn decode_sec_websocket_extensions() {
@@ -567,6 +587,16 @@ mod tests {
             (
                 "valueless server_max_window_bits",
                 vec!["permessage-deflate; server_max_window_bits"],
+                None,
+            ),
+            (
+                "leading zero window bits",
+                vec!["permessage-deflate; server_max_window_bits=010"],
+                None,
+            ),
+            (
+                "signed window bits",
+                vec!["permessage-deflate; client_max_window_bits=+10"],
                 None,
             ),
             ("whitespace only header", vec!["   "], None),

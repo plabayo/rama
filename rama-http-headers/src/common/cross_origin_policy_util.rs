@@ -36,6 +36,9 @@ pub(super) fn parse_single_token_with_report_to(raw: &str) -> Option<SingleToken
             // tolerate the unquoted token form too, as browsers do
             let value = if raw_value.starts_with('"') {
                 parse_sf_string(raw_value)?
+            } else if raw_value.contains('"') {
+                // a bare token cannot hold a quote
+                return None;
             } else {
                 raw_value.to_owned()
             };

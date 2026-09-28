@@ -342,15 +342,9 @@ mod tests {
             Some(decoded)
         );
 
-        let decoded =
-            test_decode::<CrossOriginEmbedderPolicy>(&[r#"require-corp; report-to=a"b"#]).unwrap();
-        let map = test_encode(decoded);
-        assert_eq!(
-            map[CrossOriginEmbedderPolicy::name()],
-            r#"require-corp; report-to="a\"b""#
-        );
-
         for raw in [
+            r#"require-corp; report-to=a"b"#,
+            r#"require-corp; report-to=a"b; x=1"#,
             r#"require-corp; report-to="a"#,
             r#"require-corp; report-to="a\x""#,
             r#"require-corp; report-to="a"b"#,
