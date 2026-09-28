@@ -455,7 +455,7 @@ fn decode_trailers_frame(mut buf: Bytes) -> Result<Option<HeaderMap>, Status> {
             .and_then(|colon| trailer.split_at_checked(colon))
             .and_then(|(key, rest)| Some((key, rest.split_first()?.1)))
             .ok_or_else(|| Status::internal("trailers couldn't parse key"))?;
-        let value = value.trim_ascii();
+        let value = trim_ows(value);
 
         let header_key = HeaderName::try_from(key)
             .map_err(|e| Status::internal(format!("Unable to parse HeaderName: {e}")))?;
@@ -465,6 +465,17 @@ fn decode_trailers_frame(mut buf: Bytes) -> Result<Option<HeaderMap>, Status> {
     }
 
     Ok(Some(map))
+}
+
+/// Trim OWS (SP and HTAB) only, so other control bytes still fail the value.
+fn trim_ows(mut value: &[u8]) -> &[u8] {
+    while let [b' ' | b'\t', rest @ ..] = value {
+        value = rest;
+    }
+    while let [rest @ .., b' ' | b'\t'] = value {
+        value = rest;
+    }
+    value
 }
 
 fn make_trailers_frame(trailers: HeaderMap) -> Bytes {
@@ -581,6 +592,12 @@ mod tests {
         assert_eq!(map[Status::GRPC_STATUS], "0");
         let repeated: Vec<_> = map.get_all("x-rep").iter().collect();
         assert_eq!(repeated, ["1", "2"]);
+
+        let body = b"grpc-message:\ta\x0c\r\n";
+        let mut frame = vec![GRPC_WEB_TRAILERS_BIT];
+        frame.extend(u32::try_from(body.len()).unwrap().to_be_bytes());
+        frame.extend(body);
+        decode_trailers_frame(Bytes::from(frame)).unwrap_err();
     }
 
     #[test]
