@@ -390,13 +390,12 @@ pub fn validate_http_server_response<Body>(
     // indicated an extension not requested by the client), the client
     // MUST _Fail the WebSocket Connection_. (RFC 6455)
     let mut accepted_extension = None;
-    match (
-        response
-            .headers()
-            .typed_get::<SecWebSocketExtensions>()
-            .map(|ext| ext.0.head),
-        extensions,
-    ) {
+    // RFC 7692 §7.1: an extension response that does not parse fails the connection
+    let Ok(response_extension) = response.headers().typed_try_get::<SecWebSocketExtensions>()
+    else {
+        return Err(ResponseValidateError::ExtensionMismatch(None));
+    };
+    match (response_extension.map(|ext| ext.0.head), extensions) {
         (None, Some(allowed_extensions)) => {
             tracing::trace!(
                 ws.extensions = ?allowed_extensions,
@@ -415,7 +414,8 @@ pub fn validate_http_server_response<Body>(
                             ) {
                                 (None, None | Some(_)) => None,
                                 (Some(srv), maybe_offered) => {
-                                    if !(8..=15).contains(&srv) || maybe_offered.map(|offered| offered != 0 && srv > offered).unwrap_or_default() {
+                                    // zlib cannot compress within an 8-bit window
+                                    if !(9..=15).contains(&srv) || maybe_offered.map(|offered| offered != 0 && srv > offered).unwrap_or_default() {
                                         tracing::debug!("server offered invalid client_max_window_bits (pmd)... ext mismatch!");
                                         return Some(Err(
                                             ResponseValidateError::ExtensionMismatch(Some(
@@ -1865,6 +1865,43 @@ mod tests {
     // of `client_max_window_bits=15` must be accepted, not rejected as an
     // extension mismatch. Previously the `srv > offered` check evaluated
     // `15 > 0` and falsely failed the handshake (intermittent WS-over-h2 502s).
+    #[test]
+    fn eight_bit_client_window_fails_the_handshake() {
+        let result = validate_pmd(
+            "permessage-deflate; client_max_window_bits=8",
+            "permessage-deflate; client_max_window_bits",
+        );
+        assert!(
+            matches!(
+                result,
+                Err(ResponseValidateError::ExtensionMismatch(Some(_)))
+            ),
+            "{result:?}"
+        );
+    }
+
+    #[test]
+    fn invalid_extension_response_fails_the_handshake() {
+        for server_raw in [
+            "permessage-deflate; server_max_window_bits",
+            "permessage-deflate; server_max_window_bits=20",
+            "permessage-deflate; server_max_window_bits=10; server_max_window_bits=10",
+            "",
+        ] {
+            let response = h2_response_with_pmd(server_raw);
+            let result = validate_http_server_response(
+                &response,
+                None,
+                None,
+                offered_pmd("permessage-deflate; client_max_window_bits"),
+            );
+            assert!(
+                matches!(result, Err(ResponseValidateError::ExtensionMismatch(None))),
+                "{server_raw:?}: {result:?}"
+            );
+        }
+    }
+
     #[test]
     fn valueless_client_max_window_bits_accepts_server_choice() {
         assert_eq!(

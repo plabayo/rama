@@ -472,10 +472,11 @@ where
                                     // server_max_window_bits
                                     // server may include this even if client did not offer it
                                     let srv_cap = allowed_pmd.server_max_window_bits.unwrap_or(15);
+                                    // zlib compresses with at least a 9-bit window
                                     let srv_cap = if srv_cap == 0 {
                                         15
                                     } else {
-                                        srv_cap.clamp(8, 15)
+                                        srv_cap.clamp(9, 15)
                                     };
                                     let cli_req_srv = request_pmd
                                         .server_max_window_bits
@@ -487,6 +488,10 @@ where
                                         (None, Some(cap)) => Some(cap),
                                         _ => None,
                                     };
+                                    // an offer demanding an 8-bit server window cannot be honoured
+                                    if chosen_srv_bits == Some(8) {
+                                        continue;
+                                    }
                                     // include only if it actually constrains or was explicitly discussed
                                     resp.server_max_window_bits = match chosen_srv_bits {
                                         Some(bits) if bits < 15 || cli_req_srv.is_some() => {
@@ -1235,6 +1240,36 @@ mod tests {
             &acceptor,
         )
         .await;
+    }
+
+    #[tokio::test]
+    async fn per_message_deflate_declines_an_8_bit_server_window() {
+        let acceptor = WebSocketAcceptor::new().with_per_message_deflate();
+        for (offer, accepted) in [
+            ("permessage-deflate; server_max_window_bits=8", None),
+            (
+                "permessage-deflate; server_max_window_bits=9",
+                Some("permessage-deflate; server_max_window_bits=9"),
+            ),
+        ] {
+            let request = Request::builder()
+                .uri("/")
+                .version(Version::HTTP_11)
+                .method(Method::GET)
+                .header("Connection", "upgrade")
+                .header("Upgrade", "websocket")
+                .header("Sec-WebSocket-Version", "13")
+                .header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+                .header("Sec-WebSocket-Extensions", offer)
+                .body(Body::empty())
+                .unwrap();
+            let UpgradeResponse { response, .. } = acceptor.serve(request).await.unwrap();
+            let extensions = response
+                .headers()
+                .get("sec-websocket-extensions")
+                .map(|value| value.to_str().unwrap().to_owned());
+            assert_eq!(extensions.as_deref(), accepted, "{offer}");
+        }
     }
 
     #[tokio::test]
