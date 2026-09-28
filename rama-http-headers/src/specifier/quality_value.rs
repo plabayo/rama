@@ -214,8 +214,9 @@ impl<T: str::FromStr> str::FromStr for QualityValue<T> {
                 raw_item = second;
             }
         }
-        // a weight qualifies an item, so it cannot stand alone
-        if raw_item.is_empty() {
+        // a weight qualifies a named item, so the name cannot be empty
+        let name = raw_item.split(';').next().unwrap_or_default();
+        if name.trim().is_empty() {
             return Err(Error::invalid());
         }
         match raw_item.parse::<T>() {
@@ -387,7 +388,9 @@ mod tests {
 
     #[test]
     fn test_weight_without_item_is_rejected() {
-        for input in [";q=1", " ;q=0.5", ";"] {
+        for input in [
+            ";q=1", " ;q=0.5", ";", ";;q=1", ";0;q=1", ";q=;;q=1", ";\t;q=1.", " ; a=b",
+        ] {
             assert!(input.parse::<QualityValue<String>>().is_err(), "{input:?}");
         }
     }
@@ -446,6 +449,6 @@ mod tests {
         "99999;".parse::<QualityValue<String>>().unwrap_err();
         "\x0d;;;=\u{d6aa}=="
             .parse::<QualityValue<String>>()
-            .unwrap();
+            .unwrap_err();
     }
 }

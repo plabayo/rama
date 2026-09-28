@@ -99,6 +99,13 @@ mod tests {
     }
 
     #[test]
+    fn decode_rejects_unnamed_codings() {
+        for values in [&[";;q=1"][..], &[";0;q=1"], &["A", ";;q=1"], &[";q=;;q=1"]] {
+            assert!(test_decode::<Te>(values).is_none(), "{values:?}");
+        }
+    }
+
+    #[test]
     fn decode_quoted_pair_in_parameter() {
         let Te(directives) = test_decode(&[r#"trailers, foo;p="a\",b""#]).unwrap();
         assert_eq!(directives.len(), 2);

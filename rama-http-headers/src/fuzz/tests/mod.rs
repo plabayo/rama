@@ -129,6 +129,13 @@ fn numeric_constructors_never_panic_on_edge_values() {
 fn exercise_bytes_accepts_arbitrary_data() {
     install_panic_capture();
     let mut failures = Failures::default();
+    // a fuzzer find spanning several header lines
+    let data = b"A\n;;q=1";
+    failures.check(
+        "exercise_bytes",
+        || format!("{data:?}"),
+        || exercise_bytes(data),
+    );
     let mut rng = XorShift(0xdead_beef_cafe_f00d);
     for _ in 0..200 {
         let data: Vec<u8> = (0..rng.below(4).saturating_add(1))
