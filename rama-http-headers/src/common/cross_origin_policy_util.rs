@@ -8,6 +8,7 @@
 
 use std::borrow::Cow;
 use std::fmt::{self, Write as _};
+use std::iter;
 
 use rama_core::telemetry::tracing;
 
@@ -54,7 +55,7 @@ pub(super) fn parse_single_token_with_report_to(raw: &str) -> Option<SingleToken
 /// Split on `;` outside sf-strings.
 fn split_parameters(raw: &str) -> impl Iterator<Item = &str> {
     let mut rest = Some(raw);
-    std::iter::from_fn(move || {
+    iter::from_fn(move || {
         let s = rest.take()?;
         // `;` is ASCII, so byte offsets around it are char boundaries
         match unquoted_semicolon(s.as_bytes()) {

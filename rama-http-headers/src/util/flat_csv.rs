@@ -53,8 +53,7 @@ where
                     visit_flat_csv_member(member?, &mut f)?;
                 }
             }
-            // a cookie-string splits on every `;`, quotes included (RFC 6265 §4.2.1);
-            // one unreadable cookie-pair must not hide the others
+            // split on every `;` (RFC 6265 §4.2.1), skipping only an unreadable cookie-pair
             FlatCsvSeparator::SemiColon => {
                 for member in value.as_bytes().split(|byte| *byte == b';') {
                     if member

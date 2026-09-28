@@ -82,8 +82,7 @@ mod tests {
     use rama_http_types::HeaderValue;
 
     use super::Cookie;
-    use crate::HeaderDecode as _;
-    use crate::common::test_decode;
+    use crate::{HeaderDecode as _, common::test_decode};
 
     #[test]
     fn test_parse() {
