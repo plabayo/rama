@@ -138,45 +138,32 @@ impl Iterator for ViaIterator {
 impl std::str::FromStr for ViaElement {
     type Err = BoxError;
 
-    #[expect(
-        clippy::unreachable,
-        reason = "the `position` predicate above only matches `b'/'` or `b' '`, so the wildcard arm is unreachable"
-    )]
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let mut bytes = s.as_bytes();
+        let bytes = trim_left(s.as_bytes());
 
-        bytes = trim_left(bytes);
-
-        let (protocol, version) = match bytes.iter().position(|b| *b == b'/' || *b == b' ') {
-            Some(index) => match bytes[index] {
-                b'/' => {
-                    let protocol: ForwardedProtocol = std::str::from_utf8(&bytes[..index])
-                        .context("parse via protocol as utf-8")?
-                        .try_into()
-                        .context("parse via utf-8 protocol as protocol")?;
-                    bytes = &bytes[index + 1..];
-                    let index = bytes.iter().position(|b| *b == b' ').ok_or_else(|| {
-                        BoxError::from_static_str("via str: missing space after protocol separator")
-                    })?;
-                    let version =
-                        ForwardedVersion::try_from(&bytes[..index]).context("parse via version")?;
-                    bytes = &bytes[index + 1..];
-                    (Some(protocol), version)
-                }
-                b' ' => {
-                    let version =
-                        ForwardedVersion::try_from(&bytes[..index]).context("parse via version")?;
-                    bytes = &bytes[index + 1..];
-                    (None, version)
-                }
-                _ => unreachable!(),
-            },
+        let (protocol, version, bytes) = match split_once(bytes, |b| b == b'/' || b == b' ') {
+            Some((head, b'/', tail)) => {
+                let protocol: ForwardedProtocol = std::str::from_utf8(head)
+                    .context("parse via protocol as utf-8")?
+                    .try_into()
+                    .context("parse via utf-8 protocol as protocol")?;
+                let (version, _, tail) = split_once(tail, |b| b == b' ').ok_or_else(|| {
+                    BoxError::from_static_str("via str: missing space after protocol separator")
+                })?;
+                let version = ForwardedVersion::try_from(version).context("parse via version")?;
+                (Some(protocol), version, tail)
+            }
+            // separator is a space
+            Some((head, _, tail)) => {
+                let version = ForwardedVersion::try_from(head).context("parse via version")?;
+                (None, version, tail)
+            }
             None => {
                 return Err(BoxError::from_static_str("via str: missing version"));
             }
         };
 
-        bytes = trim_right(trim_left(bytes));
+        let bytes = trim_right(trim_left(bytes));
         let node_id = NodeId::from_bytes_lossy(bytes);
 
         Ok(Self {
@@ -196,24 +183,26 @@ impl std::fmt::Display for ViaElement {
     }
 }
 
-fn trim_left(b: &[u8]) -> &[u8] {
-    let mut offset = 0;
-    while offset < b.len() && b[offset] == b' ' {
-        offset += 1;
-    }
-    &b[offset..]
+/// Split around the first byte matching `pred`, returning `(head, separator, tail)`.
+fn split_once(b: &[u8], pred: impl Fn(u8) -> bool) -> Option<(&[u8], u8, &[u8])> {
+    let index = b.iter().position(|c| pred(*c))?;
+    let (head, rest) = b.split_at_checked(index)?;
+    let (separator, tail) = rest.split_first()?;
+    Some((head, *separator, tail))
 }
 
-fn trim_right(b: &[u8]) -> &[u8] {
-    if b.is_empty() {
-        return b;
+fn trim_left(mut b: &[u8]) -> &[u8] {
+    while let [b' ', rest @ ..] = b {
+        b = rest;
     }
+    b
+}
 
-    let mut offset = b.len();
-    while offset > 0 && b[offset - 1] == b' ' {
-        offset -= 1;
+fn trim_right(mut b: &[u8]) -> &[u8] {
+    while let [rest @ .., b' '] = b {
+        b = rest;
     }
-    &b[..offset]
+    b
 }
 
 #[cfg(test)]
@@ -336,6 +325,45 @@ mod tests {
             .unwrap(),
         }]))
     );
+
+    test_header!(test_empty_node, vec!["1.1"], None);
+    test_header!(test_protocol_without_version, vec!["HTTP/"], None);
+    test_header!(test_protocol_without_space, vec!["HTTP/1.1"], None);
+    test_header!(test_only_separator, vec!["/"], None);
+    test_header!(test_empty_protocol, vec!["/1.1 foo"], None);
+
+    #[test]
+    fn test_via_adversarial_input_no_panic() {
+        for input in [
+            " ",
+            "/",
+            "//",
+            "/ ",
+            " /",
+            "1.1 ",
+            "1.1  ",
+            "HTTP/ ",
+            "HTTP/1.1 ",
+            "HTTP/1.1 /",
+            "HTTP//1.1 x",
+            "\t1.1 x",
+            "1.1\tx",
+            "1.1 [::1]:",
+            "1.1 :",
+            "1.1 x:99999999999",
+            "1.1 ü",
+            "HTTP/1.1 ü:ü",
+        ] {
+            let Ok(value) = HeaderValue::from_bytes(input.as_bytes()) else {
+                continue;
+            };
+            if let Ok(via) = Via::decode(&mut [value].iter()) {
+                let mut values = Vec::new();
+                via.encode(&mut values);
+                via.into_iter().for_each(|el| _ = el.to_string());
+            }
+        }
+    }
 
     #[test]
     fn test_via_symmetric_encoder() {

@@ -16,7 +16,7 @@ pub(crate) use self::flat_csv::{
 pub(crate) use self::fmt::fmt;
 pub use self::http_date::HttpDate;
 pub(crate) use self::http_syntax::{
-    ListMembers, QuotedString, scan_quoted_string, skip_ows, trim_ows,
+    ListMembers, QuotedString, parse_digits, scan_quoted_string, skip_ows, trim_ows,
 };
 pub(crate) use self::iter::IterExt;
 //pub use language_tags::LanguageTag;
@@ -285,6 +285,22 @@ macro_rules! derive_values_or_any_header {
             }
         }
     };
+}
+
+/// Call `f` with every byte string over `alphabet` of at most `max_len` bytes.
+#[cfg(test)]
+pub(crate) fn for_each_small_input(alphabet: &[u8], max_len: usize, mut f: impl FnMut(&[u8])) {
+    fn recurse(alphabet: &[u8], max_len: usize, buf: &mut Vec<u8>, f: &mut impl FnMut(&[u8])) {
+        f(buf);
+        if buf.len() < max_len {
+            for &byte in alphabet {
+                buf.push(byte);
+                recurse(alphabet, max_len, buf, f);
+                buf.pop();
+            }
+        }
+    }
+    recurse(alphabet, max_len, &mut Vec::with_capacity(max_len), &mut f);
 }
 
 /// A helper trait for use when deriving `Header`.

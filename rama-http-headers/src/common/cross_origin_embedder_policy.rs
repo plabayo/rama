@@ -7,10 +7,11 @@
 use std::borrow::Cow;
 use std::fmt;
 
+use rama_core::telemetry::tracing;
 use rama_http_types::{HeaderName, HeaderValue};
 use rama_utils::macros::enums::enum_builder;
 
-use crate::util::{self, IterExt};
+use crate::util::IterExt;
 use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 
 use super::cross_origin_policy_util::{
@@ -145,7 +146,14 @@ impl HeaderDecode for CrossOriginEmbedderPolicy {
 
 impl HeaderEncode for CrossOriginEmbedderPolicy {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
-        values.extend(::std::iter::once(util::fmt(self)));
+        match HeaderValue::try_from(self.to_string()) {
+            Ok(value) => values.extend(::std::iter::once(value)),
+            Err(err) => {
+                tracing::debug!(
+                    "failed to encode cross-origin-embedder-policy value as header: {err}"
+                );
+            }
+        }
     }
 }
 
@@ -209,7 +217,14 @@ impl HeaderDecode for CrossOriginEmbedderPolicyReportOnly {
 
 impl HeaderEncode for CrossOriginEmbedderPolicyReportOnly {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
-        values.extend(::std::iter::once(util::fmt(self)));
+        match HeaderValue::try_from(self.to_string()) {
+            Ok(value) => values.extend(::std::iter::once(value)),
+            Err(err) => {
+                tracing::debug!(
+                    "failed to encode cross-origin-embedder-policy value as header: {err}"
+                );
+            }
+        }
     }
 }
 
@@ -306,6 +321,21 @@ mod tests {
         assert_ne!(
             CrossOriginEmbedderPolicy::name(),
             CrossOriginEmbedderPolicyReportOnly::name(),
+        );
+    }
+
+    #[test]
+    fn encode_skips_values_that_are_not_valid_header_values() {
+        let map = test_encode(CrossOriginEmbedderPolicy::require_corp().with_report_to("a\r\nb"));
+        assert!(map.get(CrossOriginEmbedderPolicy::name()).is_none());
+
+        let map = test_encode(CrossOriginEmbedderPolicyReportOnly {
+            value: "\u{7f}".parse().unwrap(),
+            report_to: None,
+        });
+        assert!(
+            map.get(CrossOriginEmbedderPolicyReportOnly::name())
+                .is_none()
         );
     }
 }

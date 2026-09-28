@@ -53,7 +53,7 @@ impl<'a> Iterator for ListMembers<'a> {
                     return Some(Err(error));
                 }
             } else if byte == b',' {
-                let member = &self.input[start..self.cursor];
+                let member = self.input.get(start..self.cursor).unwrap_or_default();
                 self.cursor = self.cursor.saturating_add(1);
                 return Some(Ok(member));
             } else {
@@ -62,7 +62,7 @@ impl<'a> Iterator for ListMembers<'a> {
         }
 
         self.done = true;
-        Some(Ok(&self.input[start..]))
+        Some(Ok(self.input.get(start..).unwrap_or_default()))
     }
 }
 
@@ -114,7 +114,7 @@ pub(crate) fn scan_quoted_string<'a>(
 
     while let Some(&byte) = input.get(*cursor) {
         if byte == b'"' {
-            let body = &input[body_start..*cursor];
+            let body = input.get(body_start..*cursor).unwrap_or_default();
             *cursor = cursor.saturating_add(1);
             return Ok(QuotedString(body));
         }
@@ -153,11 +153,11 @@ pub(crate) fn skip_ows(input: &[u8], cursor: &mut usize) {
 }
 
 pub(crate) fn trim_ows(mut input: &[u8]) -> &[u8] {
-    while input
-        .first()
-        .is_some_and(|byte| matches!(byte, b' ' | b'\t'))
-    {
-        input = &input[1..];
+    while let Some((&first, rest)) = input.split_first() {
+        if !matches!(first, b' ' | b'\t') {
+            break;
+        }
+        input = rest;
     }
     while let Some((&last, rest)) = input.split_last() {
         if !matches!(last, b' ' | b'\t') {
@@ -168,12 +168,28 @@ pub(crate) fn trim_ows(mut input: &[u8]) -> &[u8] {
     input
 }
 
+/// Parse `1*DIGIT` as a `u64`; `u64::from_str` alone would also accept a leading `+`.
+pub(crate) fn parse_digits(s: &str) -> Option<u64> {
+    if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    s.parse().ok()
+}
+
 #[inline(always)]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "a u8 index into a 256-entry table is always in bounds"
+)]
 const fn is_qdtext(byte: u8) -> bool {
     QDTEXT_BYTES[byte as usize]
 }
 
 #[inline(always)]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "a u8 index into a 256-entry table is always in bounds"
+)]
 const fn is_quoted_pair_byte(byte: u8) -> bool {
     QUOTED_PAIR_BYTES[byte as usize]
 }
@@ -181,6 +197,7 @@ const fn is_quoted_pair_byte(byte: u8) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::util::for_each_small_input;
 
     #[test]
     fn list_members_preserve_quotes_and_empty_elements() {
@@ -234,6 +251,28 @@ mod tests {
         let mut cursor = 0;
         skip_ows(b" \tvalue", &mut cursor);
         assert_eq!(cursor, 2);
+    }
+
+    #[test]
+    fn small_inputs_never_panic() {
+        for_each_small_input(b"\"\\, \ta\x80\0", 6, |input| {
+            for member in ListMembers::new(input) {
+                let Ok(member) = member else {
+                    break;
+                };
+                _ = trim_ows(member);
+            }
+            for start in 0..=input.len().saturating_add(1) {
+                let mut cursor = start;
+                if let Ok(quoted) = scan_quoted_string(input, &mut cursor) {
+                    assert!(cursor <= input.len(), "input: {input:?}");
+                    _ = quoted.decode();
+                }
+                let mut cursor = start;
+                skip_ows(input, &mut cursor);
+            }
+        });
+        assert_eq!(trim_ows(b" \t \t"), b"");
     }
 
     #[test]

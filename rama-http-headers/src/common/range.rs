@@ -4,7 +4,10 @@ use std::ops::{Bound, RangeBounds};
 use rama_core::telemetry::tracing;
 use rama_http_types::{HeaderName, HeaderValue};
 
-use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader, util};
+use crate::{
+    Error, HeaderDecode, HeaderEncode, TypedHeader,
+    util::{self, parse_digits},
+};
 
 /// `Range` header, defined in [RFC7233](https://tools.ietf.org/html/rfc7233#section-3.1)
 ///
@@ -89,8 +92,12 @@ impl Range {
     /// Creates a suffix `Range` header (`bytes=-n`) requesting the final
     /// `n` bytes of the selected representation.
     #[must_use]
+    #[expect(
+        clippy::expect_used,
+        reason = "`bytes=-` followed by ASCII digits is always a valid header value"
+    )]
     pub fn suffix(n: u64) -> Self {
-        Self(util::fmt(format_args!("bytes=-{n}")))
+        Self(util::fmt(format_args!("bytes=-{n}")).expect("valid suffix range header value"))
     }
 
     /// Iterate over the [`ByteRangeSpec`]s in this header.
@@ -124,15 +131,11 @@ impl Range {
 
     /// The `byte-range-set`, i.e. everything after the `bytes=` unit prefix.
     fn range_set(&self) -> &str {
-        #[expect(
-            clippy::expect_used,
-            reason = "value is validated as a UTF-8 `bytes=…` string in HeaderDecode::decode"
-        )]
-        let s = self
-            .0
+        self.0
             .to_str()
-            .expect("valid string checked in HeaderDecode::decode()");
-        s.strip_prefix("bytes=").unwrap_or("")
+            .ok()
+            .and_then(|s| s.strip_prefix("bytes="))
+            .unwrap_or("")
     }
 }
 
@@ -161,11 +164,8 @@ impl ByteRangeSpec {
     /// [rfc]: https://tools.ietf.org/html/rfc7233#section-2.1
     #[must_use]
     pub fn to_satisfiable_range(&self, content_length: u64) -> Option<(u64, u64)> {
-        if content_length == 0 {
-            // An empty representation has no satisfiable range.
-            return None;
-        }
-        let last = content_length - 1;
+        // An empty representation has no satisfiable range.
+        let last = content_length.checked_sub(1)?;
         match *self {
             Self::FromTo(first, to) if first <= to && first < content_length => {
                 Some((first, to.min(last)))
@@ -192,11 +192,11 @@ fn parse_spec(spec: &str) -> Option<ByteRangeSpec> {
     match (first, last) {
         // A bare `-` carries no suffix length and is meaningless.
         ("", "") => None,
-        ("", suffix) => Some(ByteRangeSpec::Last(suffix.parse().ok()?)),
-        (first, "") => Some(ByteRangeSpec::AllFrom(first.parse().ok()?)),
+        ("", suffix) => Some(ByteRangeSpec::Last(parse_digits(suffix)?)),
+        (first, "") => Some(ByteRangeSpec::AllFrom(parse_digits(first)?)),
         (first, last) => {
-            let first = first.parse().ok()?;
-            let last = last.parse().ok()?;
+            let first = parse_digits(first)?;
+            let last = parse_digits(last)?;
             (first <= last).then_some(ByteRangeSpec::FromTo(first, last))
         }
     }
@@ -231,8 +231,11 @@ impl HeaderEncode for Range {
 
 #[cfg(test)]
 mod tests {
+    use std::iter;
+
     use super::*;
     use crate::common::{test_decode, test_encode};
+    use crate::util::for_each_small_input;
 
     fn range(s: &str) -> Range {
         test_decode(&[s]).unwrap()
@@ -240,6 +243,19 @@ mod tests {
 
     fn specs(s: &str) -> Vec<ByteRangeSpec> {
         range(s).iter().collect()
+    }
+
+    #[test]
+    fn iter_rejects_non_digit_positions() {
+        for value in [
+            "bytes=+1-2",
+            "bytes=1-+2",
+            "bytes=-+2",
+            "bytes=+1-",
+            "bytes= 1 - 2",
+        ] {
+            assert_eq!(specs(value), [], "value: {value:?}");
+        }
     }
 
     #[test]
@@ -378,6 +394,50 @@ mod tests {
             Range::suffix(500).first_satisfiable_range(2000),
             Some((1500, 1999))
         );
+    }
+
+    fn assert_satisfiable_ranges_in_bounds(range: &Range, input: &[u8]) {
+        for len in [0, 1, 2, 10, u64::MAX - 1, u64::MAX] {
+            for (first, last) in range.satisfiable_ranges(len) {
+                assert!(first <= last && last < len, "input: {input:?}, len: {len}");
+            }
+            _ = range.first_satisfiable_range(len);
+        }
+    }
+
+    #[test]
+    fn satisfiable_ranges_stay_in_bounds_for_extreme_values() {
+        for value in [
+            "bytes=18446744073709551615-18446744073709551615",
+            "bytes=18446744073709551615-",
+            "bytes=-18446744073709551615",
+            "bytes=0-18446744073709551615",
+            "bytes=18446744073709551616-",
+            "bytes=-18446744073709551616",
+            "bytes=0-0,-0,0-,-1",
+        ] {
+            assert_satisfiable_ranges_in_bounds(&range(value), value.as_bytes());
+        }
+        assert_eq!(
+            range("bytes=-18446744073709551615").first_satisfiable_range(u64::MAX),
+            Some((0, u64::MAX - 1))
+        );
+    }
+
+    #[test]
+    fn small_inputs_never_panic() {
+        for_each_small_input(b"-,019 \x80", 5, |input| {
+            let Ok(value) = HeaderValue::from_bytes(&[b"bytes=".as_slice(), input].concat()) else {
+                return;
+            };
+            let Ok(range) = Range::decode(&mut iter::once(&value)) else {
+                return;
+            };
+            for spec in range.iter() {
+                _ = spec.to_string();
+            }
+            assert_satisfiable_ranges_in_bounds(&range, input);
+        });
     }
 
     #[test]

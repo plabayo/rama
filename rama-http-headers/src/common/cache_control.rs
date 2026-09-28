@@ -9,6 +9,8 @@ use rama_http_types::{HeaderName, HeaderValue};
 use crate::util::{self, Seconds, csv};
 use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 
+const DELTA_SECONDS_OVERFLOW: u64 = 2_147_483_648;
+
 /// `Cache-Control` header, defined in [RFC7234](https://tools.ietf.org/html/rfc7234#section-5.2)
 /// with extensions in [RFC8246](https://www.rfc-editor.org/rfc/rfc8246)
 ///
@@ -401,7 +403,7 @@ impl HeaderDecode for CacheControl {
 
 impl HeaderEncode for CacheControl {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
-        values.extend(::std::iter::once(util::fmt(Fmt(self))));
+        values.extend(util::fmt(Fmt(self)));
     }
 }
 
@@ -588,28 +590,36 @@ impl FromStr for KnownDirective {
             "must-understand" => Directive::MustUnderstand,
             "proxy-revalidate" => Directive::ProxyRevalidate,
             "" => return Err(()),
-            _ => match s.find('=') {
-                Some(idx) if idx + 1 < s.len() => {
-                    match (&s[..idx], (s[idx + 1..]).trim_matches('"')) {
-                        ("max-age", secs) => {
-                            secs.parse().map(Directive::MaxAge).map_err(|_e| ())?
-                        }
-                        ("max-stale", secs) => {
-                            secs.parse().map(Directive::MaxStale).map_err(|_e| ())?
-                        }
-                        ("min-fresh", secs) => {
-                            secs.parse().map(Directive::MinFresh).map_err(|_e| ())?
-                        }
-                        ("s-maxage", secs) => {
-                            secs.parse().map(Directive::SMaxAge).map_err(|_e| ())?
-                        }
-                        _unknown => return Ok(Self::Unknown),
-                    }
-                }
+            _ => match s.split_once('=') {
+                Some((name, value)) if !value.is_empty() => match (name, value.trim_matches('"')) {
+                    ("max-age", secs) => Directive::MaxAge(parse_delta_seconds(secs)?),
+                    ("max-stale", secs) => Directive::MaxStale(parse_delta_seconds(secs)?),
+                    ("min-fresh", secs) => Directive::MinFresh(parse_delta_seconds(secs)?),
+                    ("s-maxage", secs) => Directive::SMaxAge(parse_delta_seconds(secs)?),
+                    _unknown => return Ok(Self::Unknown),
+                },
                 Some(_) | None => return Ok(Self::Unknown),
             },
         }))
     }
+}
+
+/// RFC 9111 §1.2.2 delta-seconds, saturating to 2^31 on overflow.
+fn parse_delta_seconds(s: &str) -> Result<u64, ()> {
+    if s.is_empty() {
+        return Err(());
+    }
+    let mut value = Some(0_u64);
+    for byte in s.bytes() {
+        let digit = byte
+            .checked_sub(b'0')
+            .filter(|digit| *digit < 10)
+            .ok_or(())?;
+        value = value
+            .and_then(|value| value.checked_mul(10))
+            .and_then(|value| value.checked_add(u64::from(digit)));
+    }
+    Ok(value.unwrap_or(DELTA_SECONDS_OVERFLOW))
 }
 
 #[cfg(test)]
@@ -695,6 +705,46 @@ mod tests {
     #[test]
     fn test_parse_bad_syntax() {
         assert_eq!(test_decode::<CacheControl>(&["max-age=lolz"]), None);
+    }
+
+    #[test]
+    fn delta_seconds_overflow_saturates() {
+        let cc = test_decode::<CacheControl>(&[
+            "no-store, max-age=99999999999999999999, s-maxage=\"18446744073709551616\"",
+        ])
+        .unwrap();
+        assert!(cc.clone().has_no_store());
+        assert_eq!(cc.max_age(), Some(Duration::from_secs(2_147_483_648)));
+        assert_eq!(cc.s_max_age(), Some(Duration::from_secs(2_147_483_648)));
+
+        let cc =
+            test_decode::<CacheControl>(&["max-stale=18446744073709551615, min-fresh=0"]).unwrap();
+        assert_eq!(cc.max_stale(), Some(Duration::from_secs(u64::MAX)));
+        assert_eq!(cc.min_fresh(), Some(Duration::ZERO));
+        let headers = test_encode(cc);
+        assert_eq!(
+            headers["cache-control"],
+            "max-stale=18446744073709551615, min-fresh=0"
+        );
+    }
+
+    #[test]
+    fn adversarial_directives_do_not_panic() {
+        for value in ["max-age=+5", "max-age=-1", "max-age=\"\"", "max-age=1.5"] {
+            assert_eq!(test_decode::<CacheControl>(&[value]), None, "{value}");
+        }
+        for value in ["=", "=5", "max-age=", "max-age", "\"=\"", "no-cache="] {
+            assert!(test_decode::<CacheControl>(&[value]).is_some(), "{value}");
+        }
+        for value in ["max-agé=5", "é=5", "é=", "=é"] {
+            assert!(
+                matches!(value.parse(), Ok(KnownDirective::Unknown)),
+                "{value}"
+            );
+        }
+        for value in ["max-age=é", "max-age=\"é\"", "max-age=5é"] {
+            assert!(value.parse::<KnownDirective>().is_err(), "{value}");
+        }
     }
 
     #[test]

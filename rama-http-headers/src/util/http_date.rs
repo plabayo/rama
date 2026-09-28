@@ -1,6 +1,6 @@
 use std::fmt;
 use std::str::FromStr;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rama_core::bytes::Bytes;
 use rama_core::error::{BoxError, ErrorContext as _};
@@ -90,9 +90,20 @@ impl fmt::Display for HttpDate {
     }
 }
 
+/// `9999-12-31T23:59:59Z`, the last instant an HTTP-date can represent.
+const MAX_HTTP_DATE_SECS: u64 = 253_402_300_799;
+
 impl From<SystemTime> for HttpDate {
+    /// Times outside `1970..=9999` are clamped to the nearest representable date.
     fn from(sys: SystemTime) -> Self {
-        Self(sys.into())
+        let clamped = match sys.duration_since(UNIX_EPOCH) {
+            Err(_) => UNIX_EPOCH,
+            Ok(since_epoch) if since_epoch.as_secs() > MAX_HTTP_DATE_SECS => UNIX_EPOCH
+                .checked_add(Duration::from_secs(MAX_HTTP_DATE_SECS))
+                .unwrap_or(UNIX_EPOCH),
+            Ok(_) => sys,
+        };
+        Self(clamped.into())
     }
 }
 
@@ -104,7 +115,7 @@ impl From<HttpDate> for SystemTime {
 
 #[cfg(test)]
 mod tests {
-    use super::HttpDate;
+    use super::{HeaderValue, HttpDate, SystemTime};
 
     use std::time::{Duration, UNIX_EPOCH};
 
@@ -148,5 +159,53 @@ mod tests {
     #[test]
     fn test_no_date() {
         "this-is-no-date".parse::<HttpDate>().unwrap_err();
+    }
+
+    #[test]
+    fn test_out_of_range_system_time_is_clamped() {
+        let before_epoch = UNIX_EPOCH.checked_sub(Duration::from_secs(1)).unwrap();
+        assert_eq!(
+            HttpDate::from(before_epoch).to_string(),
+            "Thu, 01 Jan 1970 00:00:00 GMT"
+        );
+
+        for secs in [253_402_300_800, 300_000_000_000] {
+            let far_future = UNIX_EPOCH.checked_add(Duration::from_secs(secs)).unwrap();
+            let date = HttpDate::from(far_future);
+            assert_eq!(date.to_string(), "Fri, 31 Dec 9999 23:59:59 GMT");
+            _ = HeaderValue::try_from(date).unwrap();
+            _ = SystemTime::from(date);
+        }
+
+        let last = UNIX_EPOCH
+            .checked_add(Duration::new(253_402_300_799, 999_999_999))
+            .unwrap();
+        assert_eq!(
+            HttpDate::from(last).to_string(),
+            "Fri, 31 Dec 9999 23:59:59 GMT"
+        );
+    }
+
+    #[test]
+    fn test_parse_extremes() {
+        for value in [
+            "Fri, 31 Dec 9999 23:59:59 GMT",
+            "Thu, 01 Jan 1970 00:00:00 GMT",
+        ] {
+            let date: HttpDate = value.parse().unwrap();
+            assert_eq!(date.to_string(), value);
+            _ = SystemTime::from(date);
+        }
+        for value in [
+            "Wed, 31 Dec 1969 23:59:59 GMT",
+            "Sat, 01 Jan 10000 00:00:00 GMT",
+            "Mon, 99 Nov 1994 08:48:37 GMT",
+            "Mon, 07 Nov 1994 99:48:37 GMT",
+            "Tue, 07 Nov 1994 08:48:37 GMT",
+            "Mon Nov  7 08:48:37 99999",
+            "Monday, 07-Nov-94 08:48:37 GMT\u{0}",
+        ] {
+            assert!(value.parse::<HttpDate>().is_err(), "value: {value:?}");
+        }
     }
 }

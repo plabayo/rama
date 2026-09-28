@@ -132,7 +132,7 @@ mod tests {
     use std::str::FromStr;
 
     use super::*;
-    use crate::{HeaderDecode, specifier::Quality};
+    use crate::{HeaderDecode, HeaderEncode, specifier::Quality, util::for_each_small_input};
     use rama_http_types::{
         HeaderValue,
         mime::{TEXT_HTML, TEXT_PLAIN, TEXT_PLAIN_UTF_8},
@@ -194,6 +194,19 @@ mod tests {
             Quality::from(500)
         ),]))
     );
+
+    #[test]
+    fn small_inputs_never_panic() {
+        for_each_small_input(b"a/*;=\", q0.", 5, |input| {
+            let Ok(value) = HeaderValue::from_bytes(input) else {
+                return;
+            };
+            if let Ok(mut accept) = Accept::decode(&mut [&value].into_iter()) {
+                accept.sort_quality_values();
+                _ = accept.encode_to_value();
+            }
+        });
+    }
 
     #[test]
     fn test_accept_sort() {

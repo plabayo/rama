@@ -132,7 +132,10 @@ macro_rules! make_parse_value_fn {
                 }
             )+
 
-            debug_assert!(pair_key.is_empty());
+            if !pair_key.is_empty() {
+                return Err(BoxError::from_static_str("unknown robots tag pair key")
+                    .context_str_field("key", pair_key));
+            }
 
             $(
                 parse_value_bool!{
@@ -606,7 +609,23 @@ impl<'a> Parser<'a> {
     fn new(buffer: &'a [u8]) -> Self {
         Self { buffer }
     }
+
+    /// Bytes before the delimiter found at `index`.
+    fn head(&self, index: usize) -> &'a [u8] {
+        self.buffer.get(..index).unwrap_or_default()
+    }
+
+    /// Consume up to and including the delimiter found at `index`.
+    fn advance_past(&mut self, index: usize) {
+        self.buffer = self
+            .buffer
+            .get(index.saturating_add(1)..)
+            .unwrap_or_default();
+    }
 }
+
+/// Retrying each comma re-parses the value so far, so bound it to keep parsing linear.
+const MAX_COMMAS_PER_VALUE: usize = 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum Delimiter {
@@ -614,27 +633,26 @@ enum Delimiter {
     Comma,
 }
 
-fn find_delimiter(buffer: &[u8]) -> Option<(usize, Delimiter)> {
-    for (index, &b) in buffer.iter().enumerate() {
-        match b {
-            b':' => return Some((index, Delimiter::Colon)),
-            b',' => return Some((index, Delimiter::Comma)),
-            _ => {}
-        }
-    }
-    None
+fn find_delimiter(buffer: &[u8], from: usize) -> Option<(usize, Delimiter)> {
+    buffer
+        .iter()
+        .enumerate()
+        .skip(from)
+        .find_map(|(index, b)| match b {
+            b':' => Some((index, Delimiter::Colon)),
+            b',' => Some((index, Delimiter::Comma)),
+            _ => None,
+        })
 }
 
-fn trim_space(buffer: &[u8]) -> &[u8] {
-    let mut start = 0;
-    let mut end = buffer.len();
-    while start < end && buffer[start] == b' ' {
-        start += 1;
+fn trim_space(mut buffer: &[u8]) -> &[u8] {
+    while let [b' ', rest @ ..] = buffer {
+        buffer = rest;
     }
-    while start < end && buffer[end - 1] == b' ' {
-        end -= 1;
+    while let [rest @ .., b' '] = buffer {
+        buffer = rest;
     }
-    &buffer[start..end]
+    buffer
 }
 
 impl Iterator for Parser<'_> {
@@ -645,33 +663,34 @@ impl Iterator for Parser<'_> {
             return None;
         }
 
-        let mut directive_count = 0;
+        let mut has_directive = false;
         let mut tag = RobotsTag::new_default_inner();
         let mut pair_key = "";
         let mut delimiter_offset = 0;
+        let mut value_commas = 0;
 
         for _ in 0..4096 {
-            match find_delimiter(&self.buffer[delimiter_offset..]) {
+            match find_delimiter(self.buffer, delimiter_offset) {
                 Some((index, Delimiter::Colon)) => {
                     if !pair_key.is_empty() {
                         tracing::trace!(
                             "unexpected colon in value for key {pair_key} (try to continue search)"
                         );
                         // colon could be part of value
-                        delimiter_offset += index + 1;
+                        delimiter_offset = index.saturating_add(1);
                         continue;
                     }
 
-                    let key_buffer = trim_space(&self.buffer[..delimiter_offset + index]);
+                    let key_buffer = trim_space(self.head(index));
                     if let Some(key) = find_pair_key_fn(key_buffer) {
                         pair_key = key
                     } else {
-                        if directive_count != 0 {
+                        if has_directive {
                             return Some(Ok(tag));
                         }
 
                         if tag.bot_name.is_some() {
-                            self.buffer = &self.buffer[self.buffer.len()..];
+                            self.buffer = &[];
                             return Some(Err(BoxError::from_static_str(
                                 "unexpected bot name: one is already defined without any directives",
                             )));
@@ -679,7 +698,7 @@ impl Iterator for Parser<'_> {
                             let s = match std::str::from_utf8(key_buffer) {
                                 Ok(value) => value,
                                 Err(err) => {
-                                    self.buffer = &self.buffer[self.buffer.len()..];
+                                    self.buffer = &[];
                                     return Some(Err(
                                         err.context("interpret key buffer bot name as utf-8")
                                     ));
@@ -688,7 +707,7 @@ impl Iterator for Parser<'_> {
                             tag.bot_name = Some(match s.parse() {
                                 Ok(value) => value,
                                 Err(err) => {
-                                    self.buffer = &self.buffer[self.buffer.len()..];
+                                    self.buffer = &[];
                                     return Some(Err(err.context(
                                         "interpret key buffer utf-8 string as bot-name",
                                     )));
@@ -696,53 +715,57 @@ impl Iterator for Parser<'_> {
                             });
                         }
                     }
-                    self.buffer = &self.buffer[delimiter_offset + index + 1..];
+                    self.advance_past(index);
                     delimiter_offset = 0;
+                    value_commas = 0;
                 }
                 Some((index, Delimiter::Comma)) => {
-                    let value = match std::str::from_utf8(trim_space(
-                        &self.buffer[..delimiter_offset + index],
-                    )) {
+                    let value = match std::str::from_utf8(trim_space(self.head(index))) {
                         Ok(value) => value,
                         Err(err) => {
-                            self.buffer = &self.buffer[self.buffer.len()..];
+                            self.buffer = &[];
                             return Some(Err(err.context("interpret value as utf-8")));
                         }
                     };
                     if let Err(e) = parse_value(value, pair_key, &mut tag) {
+                        if value_commas >= MAX_COMMAS_PER_VALUE {
+                            self.buffer = &[];
+                            return Some(Err(e.context("too many commas in robots tag value")));
+                        }
                         tracing::trace!("parse value error (try to continue search): {e}");
                         // comma could be part of value
-                        delimiter_offset += index + 1;
+                        value_commas = value_commas.saturating_add(1);
+                        delimiter_offset = index.saturating_add(1);
                         continue;
                     }
-                    directive_count += 1;
+                    has_directive = true;
                     pair_key = "";
-                    self.buffer = &self.buffer[delimiter_offset + index + 1..];
+                    self.advance_past(index);
                     delimiter_offset = 0;
+                    value_commas = 0;
                 }
                 None => {
                     let value = match std::str::from_utf8(trim_space(self.buffer)) {
                         Ok(value) => value,
                         Err(err) => {
-                            self.buffer = &self.buffer[self.buffer.len()..];
+                            self.buffer = &[];
                             return Some(Err(err.context("interpret remainder value as utf-8")));
                         }
                     };
                     if let Err(e) = parse_value(value, pair_key, &mut tag) {
-                        self.buffer = &self.buffer[self.buffer.len()..];
+                        self.buffer = &[];
                         return Some(Err(e));
                     }
-                    directive_count += 1;
+                    has_directive = true;
                     pair_key = "";
-                    self.buffer = &self.buffer[self.buffer.len()..];
+                    self.buffer = &[];
                     delimiter_offset = 0;
                 }
             }
 
             if self.buffer.is_empty() {
-                if directive_count == 0 {
+                if !has_directive {
                     if let Some(bot_name) = tag.bot_name {
-                        self.buffer = &self.buffer[self.buffer.len()..];
                         return Some(Err(BoxError::from_static_str(
                             "tag with only a bot name is not allowed",
                         )
@@ -755,7 +778,7 @@ impl Iterator for Parser<'_> {
             }
         }
 
-        self.buffer = &self.buffer[self.buffer.len()..];
+        self.buffer = &[];
         Some(Err(BoxError::from_static_str("delimiter search overflow")))
     }
 }
@@ -769,6 +792,58 @@ mod tests {
     fn test_parse_invalid_input() {
         for test_value in ["", "\n"] {
             _ = robots_tag_parse_iter(test_value.as_bytes()).collect::<Vec<_>>();
+        }
+    }
+
+    #[test]
+    fn test_parse_adversarial_input_no_panic() {
+        for test_value in [
+            ":",
+            ",",
+            ":,",
+            ",:",
+            "::::",
+            ",,,,",
+            " : , : ",
+            "ü",
+            "ü:ü",
+            "ü: ü, ü: noindex",
+            "é,é:é",
+            "bot: é: é, noindex",
+            "max-snippet: ü, é, noindex",
+            "unavailable_after: ü:ü, é:é",
+            "unavailable_after:",
+            "unavailable_after: ,",
+            "max-snippet:",
+            "max-snippet: 99999999999999999999",
+            "max-video-preview: -99999999999999999999",
+            "bot:",
+            "bot: bot:",
+            "a\n, b: noindex",
+            "a\n: noindex",
+            "noindex, a\u{7f}: nofollow",
+            "unavailable_after: 1 Jan 0000 00:00:00 +0100",
+            "unavailable_after: 0000-01-01T00:00:00+23:59",
+            "unavailable_after: -009999-01-01",
+        ] {
+            for tag in robots_tag_parse_iter(test_value.as_bytes()).flatten() {
+                _ = tag.to_string();
+                _ = tag.bot_name();
+                _ = tag.custom_rules();
+                _ = tag.unavailable_after().map(ToString::to_string);
+                _ = tag.max_image_preview().map(ToString::to_string);
+            }
+        }
+    }
+
+    #[test]
+    fn test_parse_many_delimiters_bounded() {
+        for unit in [",", ":", "a,", "a:", "ü,", ", noindex", ": noindex"] {
+            for prefix in ["", "max-snippet: ", "unavailable_after: ", "bot: "] {
+                let input = format!("{prefix}{}", unit.repeat(10_000));
+                let results = robots_tag_parse_iter(input.as_bytes()).collect::<Vec<_>>();
+                assert!(results.len() <= input.len());
+            }
         }
     }
 
@@ -807,5 +882,26 @@ mod tests {
             let output = tags.join(", ");
             assert_eq!(test_value, output);
         }
+    }
+
+    #[test]
+    fn test_parse_value_with_many_commas_errors() {
+        for prefix in ["max-snippet: ", "unavailable_after: ", "bot: max-snippet: "] {
+            let input = format!("{prefix}{}", "a,".repeat(4000));
+            let results = robots_tag_parse_iter(input.as_bytes()).collect::<Vec<_>>();
+            assert!(matches!(results.as_slice(), [Err(_)]), "{prefix}");
+        }
+    }
+
+    #[test]
+    fn test_parse_date_value_with_commas() {
+        let tag = robots_tag_parse_iter(
+            b"unavailable_after: Wed, 3 Dec 2025 13:09:53 +0000 (a, b, c), noindex",
+        )
+        .next()
+        .unwrap()
+        .unwrap();
+        assert!(tag.unavailable_after().is_some());
+        assert!(tag.no_index());
     }
 }

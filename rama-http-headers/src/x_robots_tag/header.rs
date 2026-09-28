@@ -4,6 +4,7 @@ use super::RobotsTag;
 use rama_core::telemetry::tracing;
 use rama_http_types::{HeaderName, HeaderValue};
 use rama_utils::{collections::NonEmptyVec, macros::generate_set_and_with};
+use std::fmt::Write as _;
 
 #[derive(Debug, Clone)]
 #[cfg_attr(test, derive(PartialEq, Eq))]
@@ -79,10 +80,18 @@ impl HeaderDecode for XRobotsTag {
 
 impl HeaderEncode for XRobotsTag {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
-        let s = rama_utils::fmt::display_fn(|f: &mut std::fmt::Formatter<'_>| {
-            crate::util::csv::fmt_comma_delimited(&mut *f, self.0.iter())
-        })
-        .to_string();
+        let mut s = String::new();
+        // `to_string` panics on a Display error, so write fallibly instead
+        if let Err(err) = write!(
+            s,
+            "{}",
+            rama_utils::fmt::display_fn(|f: &mut std::fmt::Formatter<'_>| {
+                crate::util::csv::fmt_comma_delimited(&mut *f, self.0.iter())
+            })
+        ) {
+            tracing::debug!("failed to format x-robots-tag: {err}");
+            return;
+        }
         match HeaderValue::try_from(s) {
             Ok(v) => values.extend(::std::iter::once(v)),
             Err(err) => {
@@ -128,6 +137,23 @@ mod tests {
             let s = value.to_str().unwrap();
             assert_eq!(expected, s);
         }
+    }
+
+    #[test]
+    fn test_encode_decoded_out_of_rfc2822_range_date_no_panic() {
+        let value = HeaderValue::from_static("unavailable_after: 1 Jan 0000 00:00:00 +0100");
+        let header = XRobotsTag::decode(&mut [value].iter()).unwrap();
+        assert!(header.first_tag().unavailable_after().is_some());
+        let encoded = header.encode_to_value().unwrap();
+        let reencoded = XRobotsTag::decode(&mut [encoded].iter()).unwrap();
+        assert_eq!(
+            header.first_tag().unavailable_after().unwrap().date_time(),
+            reencoded
+                .first_tag()
+                .unavailable_after()
+                .unwrap()
+                .date_time(),
+        );
     }
 
     macro_rules! test_header {

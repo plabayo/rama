@@ -308,14 +308,7 @@ fn decode_member(
 
 fn parse_service(input: &[u8]) -> Result<AlternativeService, BoxError> {
     let mut cursor = 0;
-    let protocol_start = cursor;
-    while input
-        .get(cursor)
-        .is_some_and(|byte| is_http_token_byte(*byte))
-    {
-        cursor = cursor.saturating_add(1);
-    }
-    let protocol = parse_protocol_id(&input[protocol_start..cursor])?;
+    let protocol = parse_protocol_id(scan_token(input, &mut cursor))?;
     require_byte(input, &mut cursor, b'=')?;
     let authority = scan_quoted_string(input, &mut cursor)?.decode();
     let (host, port) = parse_authority(&authority)?;
@@ -332,17 +325,10 @@ fn parse_service(input: &[u8]) -> Result<AlternativeService, BoxError> {
         require_byte(input, &mut cursor, b';')?;
         skip_ows(input, &mut cursor);
 
-        let name_start = cursor;
-        while input
-            .get(cursor)
-            .is_some_and(|byte| is_http_token_byte(*byte))
-        {
-            cursor = cursor.saturating_add(1);
-        }
-        if cursor == name_start {
+        let name = scan_token(input, &mut cursor);
+        if name.is_empty() {
             return Err(BoxError::from_static_str("Alt-Svc parameter name is empty"));
         }
-        let name = &input[name_start..cursor];
         require_byte(input, &mut cursor, b'=')?;
         let value = parse_parameter_value(input, &mut cursor)?;
 
@@ -391,9 +377,8 @@ fn parse_protocol_id(input: &[u8]) -> Result<ApplicationProtocol, BoxError> {
     }
 
     let mut decoded = Vec::with_capacity(input.len().min(MAX_ALPN_PROTOCOL_LEN));
-    let mut cursor = 0;
-    while cursor < input.len() {
-        let byte = input[cursor];
+    let mut rest = input;
+    while let Some((&byte, tail)) = rest.split_first() {
         if byte != b'%' {
             if !is_http_token_byte(byte) {
                 return Err(BoxError::from_static_str(
@@ -406,17 +391,16 @@ fn parse_protocol_id(input: &[u8]) -> Result<ApplicationProtocol, BoxError> {
                     "Alt-Svc ALPN protocol identifier exceeds 255 octets",
                 ));
             }
-            cursor = cursor.saturating_add(1);
+            rest = tail;
             continue;
         }
 
-        let high = *input.get(cursor + 1).ok_or_else(|| {
-            BoxError::from_static_str("Alt-Svc protocol identifier has a truncated escape")
-        })?;
-        let low = *input.get(cursor + 2).ok_or_else(|| {
-            BoxError::from_static_str("Alt-Svc protocol identifier has a truncated escape")
-        })?;
-        let byte = rama_utils::hex::decode_upper_pair(high, low).ok_or_else(|| {
+        let [high, low, tail @ ..] = tail else {
+            return Err(BoxError::from_static_str(
+                "Alt-Svc protocol identifier has a truncated escape",
+            ));
+        };
+        let byte = rama_utils::hex::decode_upper_pair(*high, *low).ok_or_else(|| {
             BoxError::from_static_str(
                 "Alt-Svc protocol identifier escape is not uppercase hexadecimal",
             )
@@ -432,7 +416,7 @@ fn parse_protocol_id(input: &[u8]) -> Result<ApplicationProtocol, BoxError> {
                 "Alt-Svc ALPN protocol identifier exceeds 255 octets",
             ));
         }
-        cursor = cursor.saturating_add(3);
+        rest = tail;
     }
 
     Ok(ApplicationProtocol::from(decoded))
@@ -464,16 +448,16 @@ fn parse_delta_seconds(input: ParameterValue<'_>) -> Result<u64, BoxError> {
     let mut saw_digit = false;
     let mut overflowed = false;
     for byte in input.decoded_bytes() {
-        if !byte.is_ascii_digit() {
+        let Some(digit) = byte.checked_sub(b'0').filter(|digit| *digit < 10) else {
             return Err(BoxError::from_static_str(
                 "Alt-Svc ma parameter is not delta-seconds",
             ));
-        }
+        };
         saw_digit = true;
         if !overflowed {
             match value
                 .checked_mul(10)
-                .and_then(|value| value.checked_add(u64::from(byte - b'0')))
+                .and_then(|value| value.checked_add(u64::from(digit)))
             {
                 Some(next) => value = next,
                 None => overflowed = true,
@@ -498,14 +482,14 @@ fn parse_u16(input: &[u8]) -> Result<u16, BoxError> {
     }
     let mut value = 0_u16;
     for &byte in input {
-        if !byte.is_ascii_digit() {
+        let Some(digit) = byte.checked_sub(b'0').filter(|digit| *digit < 10) else {
             return Err(BoxError::from_static_str(
                 "Alt-Svc authority port is not decimal",
             ));
-        }
+        };
         value = value
             .checked_mul(10)
-            .and_then(|value| value.checked_add(u16::from(byte - b'0')))
+            .and_then(|value| value.checked_add(u16::from(digit)))
             .ok_or_else(|| BoxError::from_static_str("Alt-Svc authority port exceeds u16"))?;
     }
     Ok(value)
@@ -566,19 +550,24 @@ fn parse_parameter_value<'a>(
         return scan_quoted_string(input, cursor).map(ParameterValue::Quoted);
     }
 
-    let value_start = *cursor;
-    while input
-        .get(*cursor)
-        .is_some_and(|byte| is_http_token_byte(*byte))
-    {
-        *cursor = cursor.saturating_add(1);
-    }
-    if *cursor == value_start {
+    let value = scan_token(input, cursor);
+    if value.is_empty() {
         return Err(BoxError::from_static_str(
             "Alt-Svc parameter value is empty",
         ));
     }
-    Ok(ParameterValue::Token(&input[value_start..*cursor]))
+    Ok(ParameterValue::Token(value))
+}
+
+/// Advance `cursor` past a run of token octets and return them.
+fn scan_token<'a>(input: &'a [u8], cursor: &mut usize) -> &'a [u8] {
+    let rest = input.get(*cursor..).unwrap_or_default();
+    let len = rest
+        .iter()
+        .take_while(|byte| is_http_token_byte(**byte))
+        .count();
+    *cursor = cursor.saturating_add(len);
+    rest.get(..len).unwrap_or_default()
 }
 
 fn require_byte(input: &[u8], cursor: &mut usize, expected: u8) -> Result<(), BoxError> {
@@ -1051,6 +1040,48 @@ mod tests {
 
         let mixed = format!("{}%00=\":443\"", "x".repeat(255));
         assert!(decode(&[&mixed]).is_none());
+    }
+
+    #[test]
+    fn adversarial_values_decode_without_panicking() {
+        for (value, accepted) in [
+            (r#"h3="[::1""#, false),
+            (r#"h3="[::1]:""#, false),
+            (r#"h3="[""#, false),
+            (r#"h3=":99999""#, false),
+            (r#"h3=":""#, false),
+            (r#"h3="""#, false),
+            (r#"h3="é.example:443""#, false),
+            (r#"é=":443""#, false),
+            (r#"=":443""#, false),
+            ("%", false),
+            (r#"h%=":443""#, false),
+            (r#"h%4=":443""#, false),
+            ("h%4", false),
+            ("h3", false),
+            ("h3=", false),
+            (r#"h3=""#, false),
+            (r#"h3=":443";"#, false),
+            (r#"h3=":443"; =1"#, false),
+            (r#"h3=":443"; é=1"#, false),
+            (r#"h3=":443"; ma=""#, false),
+            (r#"h3=":443"; ma="1\"#, false),
+            (r#"h3=":443"; ma=1é"#, false),
+            (r#"h3=":443"; ma=18446744073709551615; persist=1"#, true),
+            (r#"h3="[::1]:443"; ma="99999999999999999999""#, true),
+        ] {
+            let decoded = decode(&[value]);
+            assert_eq!(decoded.is_some(), accepted, "{value}");
+            let Some(decoded) = decoded else { continue };
+            let reencoded = encode(&decoded);
+            assert_eq!(
+                decode(&[reencoded.to_str().unwrap()]),
+                Some(decoded.clone())
+            );
+            for service in decoded.alternatives().into_iter().flatten() {
+                _ = (service.host(), service.port(), service.max_age());
+            }
+        }
     }
 
     #[test]

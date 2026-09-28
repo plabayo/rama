@@ -123,8 +123,7 @@ impl SecWebSocketProtocol {
     #[must_use]
     /// Return the first protocol in this [`SecWebSocketProtocol`] as the [`AcceptedWebSocketProtocol`].
     pub fn accept_first_protocol(&self) -> AcceptedWebSocketProtocol {
-        // assumption: we always have at least one item
-        AcceptedWebSocketProtocol(self.0[0].clone())
+        AcceptedWebSocketProtocol(self.0.first().clone())
     }
 
     /// returns true if the given protocol is found in this [`SecWebSocketProtocol`]

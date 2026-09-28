@@ -66,7 +66,11 @@ impl IfUnmodifiedSince {
     /// Check if the supplied time passes the precondtion.
     #[must_use]
     pub fn precondition_passes(&self, last_modified: SystemTime) -> bool {
-        self.0 >= last_modified.into()
+        // whole-second precision like an HTTP-date, total for any `SystemTime`
+        match last_modified.duration_since(SystemTime::from(self.0)) {
+            Ok(newer_by) => newer_by.as_secs() == 0,
+            Err(_) => true,
+        }
     }
 }
 
@@ -87,7 +91,8 @@ mod tests {
     use rama_utils::time::now_system_time;
 
     use super::*;
-    use std::time::Duration;
+    use crate::common::test_decode;
+    use std::time::{Duration, UNIX_EPOCH};
 
     #[test]
     fn precondition_passes() {
@@ -99,5 +104,27 @@ mod tests {
         assert!(!if_unmod.precondition_passes(newer));
         assert!(if_unmod.precondition_passes(exact));
         assert!(if_unmod.precondition_passes(older));
+    }
+
+    #[test]
+    fn precondition_ignores_sub_second_precision() {
+        let if_unmod =
+            test_decode::<IfUnmodifiedSince>(&["Sun, 06 Nov 1994 08:49:37 GMT"]).unwrap();
+        let exact = SystemTime::from(if_unmod);
+        assert!(if_unmod.precondition_passes(exact + Duration::from_millis(999)));
+        assert!(!if_unmod.precondition_passes(exact + Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn precondition_with_out_of_range_last_modified() {
+        let if_unmod =
+            test_decode::<IfUnmodifiedSince>(&["Thu, 01 Jan 1970 00:00:00 GMT"]).unwrap();
+        if let Some(before_epoch) = UNIX_EPOCH.checked_sub(Duration::from_millis(1)) {
+            assert!(if_unmod.precondition_passes(before_epoch));
+        }
+        if let Some(after_year_9999) = UNIX_EPOCH.checked_add(Duration::from_secs(253_402_300_800))
+        {
+            assert!(!if_unmod.precondition_passes(after_year_9999));
+        }
     }
 }

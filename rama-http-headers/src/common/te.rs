@@ -59,9 +59,13 @@ impl Te {
 
 #[cfg(test)]
 mod tests {
+    use rama_http_types::HeaderValue;
+
     use super::*;
     use crate::common::{test_decode, test_encode};
     use crate::specifier::Quality;
+    use crate::util::for_each_small_input;
+    use crate::{HeaderDecode, HeaderEncode};
 
     #[test]
     fn decode_header_compress() {
@@ -99,5 +103,17 @@ mod tests {
         let te = Te::trailers();
         let headers = test_encode(te);
         assert_eq!(headers["te"], "trailers");
+    }
+
+    #[test]
+    fn small_inputs_never_panic() {
+        for_each_small_input(b"a;q=1., \"", 5, |input| {
+            let Ok(value) = HeaderValue::from_bytes(input) else {
+                return;
+            };
+            if let Ok(te) = Te::decode(&mut [&value].into_iter()) {
+                _ = te.encode_to_value();
+            }
+        });
     }
 }

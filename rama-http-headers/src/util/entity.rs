@@ -1,6 +1,6 @@
-use std::{fmt, str::FromStr};
+use std::{fmt, iter, str::FromStr};
 
-use rama_core::error::BoxError;
+use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext as _};
 use rama_core::telemetry::tracing;
 use rama_http_types::HeaderValue;
 use rama_utils::collections::NonEmptyVec;
@@ -56,22 +56,14 @@ pub(crate) enum EntityTagRange {
 // ===== impl EntityTag =====
 
 impl<T: AsRef<[u8]>> EntityTag<T> {
-    /// Get the tag.
-    pub(crate) fn tag(&self) -> &[u8] {
-        let bytes = self.0.as_ref();
-        let end = bytes.len() - 1;
-        if bytes[0] == b'W' {
-            // W/"<tag>"
-            &bytes[3..end]
-        } else {
-            // "<tag>"
-            &bytes[1..end]
-        }
+    /// Get the opaque tag, `None` if the value is not a well-formed entity-tag.
+    pub(crate) fn tag(&self) -> Option<&[u8]> {
+        split_entity_tag(self.0.as_ref()).map(|(_, tag)| tag)
     }
 
     /// Return if this is a "weak" tag.
     pub(crate) fn is_weak(&self) -> bool {
-        self.0.as_ref()[0] == b'W'
+        matches!(split_entity_tag(self.0.as_ref()), Some((true, _)))
     }
 
     /// For strong comparison two entity-tags are equivalent if both are not weak and their
@@ -80,7 +72,10 @@ impl<T: AsRef<[u8]>> EntityTag<T> {
     where
         R: AsRef<[u8]>,
     {
-        !self.is_weak() && !other.is_weak() && self.tag() == other.tag()
+        matches!(
+            (split_entity_tag(self.0.as_ref()), split_entity_tag(other.0.as_ref())),
+            (Some((false, a)), Some((false, b))) if a == b
+        )
     }
 
     /// For weak comparison two entity-tags are equivalent if their
@@ -90,7 +85,7 @@ impl<T: AsRef<[u8]>> EntityTag<T> {
     where
         R: AsRef<[u8]>,
     {
-        self.tag() == other.tag()
+        matches!((self.tag(), other.tag()), (Some(a), Some(b)) if a == b)
     }
 
     /// The inverse of `EntityTag.strong_eq()`.
@@ -106,28 +101,19 @@ impl<T: AsRef<[u8]>> EntityTag<T> {
     }
 
     pub(crate) fn parse(src: T) -> Option<Self> {
-        let slice = src.as_ref();
-        let length = slice.len();
-
-        // Early exits if it doesn't terminate in a DQUOTE.
-        if length < 2 || slice[length - 1] != b'"' {
-            return None;
-        }
-
-        let start = match slice[0] {
-            // "<tag>"
-            b'"' => 1,
-            // W/"<tag>"
-            b'W' if length >= 4 && slice[1] == b'/' && slice[2] == b'"' => 3,
-            _ => return None,
-        };
-
-        if check_slice_validity(&slice[start..length - 1]) {
-            Some(Self(src))
-        } else {
-            None
-        }
+        split_entity_tag(src.as_ref())?;
+        Some(Self(src))
     }
+}
+
+/// Split a valid `[W/]"<tag>"` into its weakness flag and opaque tag.
+fn split_entity_tag(bytes: &[u8]) -> Option<(bool, &[u8])> {
+    let (weak, opaque) = match bytes.strip_prefix(b"W/") {
+        Some(opaque) => (true, opaque),
+        None => (false, bytes),
+    };
+    let tag = opaque.strip_prefix(b"\"")?.strip_suffix(b"\"")?;
+    check_slice_validity(tag).then_some((weak, tag))
 }
 
 impl EntityTag {
@@ -201,11 +187,12 @@ impl super::TryFromValues for EntityTag {
     }
 }
 
-impl<T: FromStr> FromStr for EntityTag<T> {
-    type Err = T::Err;
+impl FromStr for EntityTag {
+    type Err = BoxError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(Self(s.parse()?))
+        let val = HeaderValue::from_str(s).context("entity-tag is not a valid header value")?;
+        Self::from_owned(val).ok_or_else(|| BoxError::from_static_str("invalid entity-tag"))
     }
 }
 
@@ -226,18 +213,10 @@ impl<'a> From<&'a EntityTag> for HeaderValue {
 /// 2. in the range `%x23` to `%x7E`, or
 /// 3. above `%x80`
 fn check_slice_validity(slice: &[u8]) -> bool {
-    slice.iter().all(|&c| {
-        // HeaderValue already validates that this doesn't contain control
-        // characters, so we only need to look for DQUOTE (`"`).
-        //
-        // The debug_assert is just in case we use check_slice_validity in
-        // some new context that didn't come from a HeaderValue.
-        debug_assert!(
-            (b'\x21'..=b'\x7e').contains(&c) | (c >= b'\x80'),
-            "EntityTag expects HeaderValue to have check for control characters"
-        );
-        c != b'"'
-    })
+    // HeaderValue also admits SP and HTAB, which are not `etagc`.
+    slice
+        .iter()
+        .all(|&c| matches!(c, 0x21 | 0x23..=0x7e | 0x80..=0xff))
 }
 
 // ===== impl EntityTagRange =====
@@ -267,17 +246,18 @@ impl super::TryFromValues for EntityTagRange {
     where
         I: Iterator<Item = &'i HeaderValue>,
     {
+        let first = values.next().ok_or_else(Error::invalid)?;
+        let second = values.next();
+        // `*` is not an entity-tag: it is only valid as the sole member.
+        if second.is_none() && first.as_bytes().trim_ascii() == b"*" {
+            return Ok(Self::Any);
+        }
+
         match try_decode_flat_csv_header_values_as_non_empty_vec::<EntityTag>(
-            values,
+            iter::once(first).chain(second).chain(values),
             FlatCsvSeparator::Comma,
         ) {
-            Ok(values) => {
-                if values.len() == 1 && values.head.0.as_bytes().eq_ignore_ascii_case(b"*") {
-                    Ok(Self::Any)
-                } else {
-                    Ok(Self::Tags(values))
-                }
-            }
+            Ok(tags) => Ok(Self::Tags(tags)),
             Err(err) => {
                 tracing::trace!("invalid entity tags: {err}");
                 Err(crate::Error::invalid())
@@ -305,6 +285,7 @@ impl TryFrom<&EntityTagRange> for HeaderValue {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::util::{TryFromValues as _, for_each_small_input};
 
     fn parse(slice: &[u8]) -> Option<EntityTag> {
         let val = HeaderValue::from_bytes(slice).ok()?;
@@ -316,11 +297,14 @@ mod tests {
         // Expected success
         let tag = parse(b"\"foobar\"").unwrap();
         assert!(!tag.is_weak());
-        assert_eq!(tag.tag(), b"foobar");
+        assert_eq!(tag.tag(), Some(b"foobar".as_slice()));
 
         let weak = parse(b"W/\"weaktag\"").unwrap();
         assert!(weak.is_weak());
-        assert_eq!(weak.tag(), b"weaktag");
+        assert_eq!(weak.tag(), Some(b"weaktag".as_slice()));
+
+        let obs_text = parse(b"\"\x80\xff\"").unwrap();
+        assert_eq!(obs_text.tag(), Some(b"\x80\xff".as_slice()));
     }
 
     #[test]
@@ -384,5 +368,141 @@ mod tests {
         assert!(etag1.weak_eq(&etag2));
         assert!(!etag1.strong_ne(&etag2));
         assert!(!etag1.weak_ne(&etag2));
+    }
+
+    const MALFORMED: &[&str] = &[
+        "",
+        "x",
+        "W",
+        "W/",
+        "W/\"",
+        "\"",
+        "*",
+        "\"a b\"",
+        "\"a\tb\"",
+        "W/\"a b\"",
+        "w/\"a\"",
+        "\"a\"b\"",
+        "\"a\" ",
+    ];
+
+    #[test]
+    fn test_etag_parse_rejects_malformed_without_panic() {
+        for input in MALFORMED {
+            assert_eq!(parse(input.as_bytes()), None, "input: {input:?}");
+        }
+    }
+
+    #[test]
+    fn test_etag_from_str_validates() {
+        let valid = EntityTag::from_static("W/\"1\"");
+        for input in MALFORMED {
+            let result = input.parse::<EntityTag>();
+            if let Ok(tag) = &result {
+                _ = tag.tag();
+                _ = tag.is_weak();
+                _ = tag.strong_eq(&valid);
+                _ = tag.weak_eq(&valid);
+            }
+            assert!(result.is_err(), "input: {input:?}");
+        }
+
+        let tag = "W/\"a,b\"".parse::<EntityTag>().unwrap();
+        assert!(tag.is_weak());
+        assert_eq!(tag.tag(), Some(b"a,b".as_slice()));
+        let tag = "\"\"".parse::<EntityTag>().unwrap();
+        assert!(!tag.is_weak());
+        assert_eq!(tag.tag(), Some(b"".as_slice()));
+    }
+
+    #[test]
+    fn test_etag_accessors_are_total() {
+        let valid = EntityTag::from_static("\"\"");
+        for input in MALFORMED {
+            let tag = EntityTag(HeaderValue::from_str(input).unwrap());
+            assert_eq!(tag.tag(), None, "input: {input:?}");
+            assert!(!tag.is_weak(), "input: {input:?}");
+            assert!(!tag.weak_eq(&valid), "input: {input:?}");
+            assert!(!valid.weak_eq(&tag), "input: {input:?}");
+            assert!(!tag.weak_eq(&tag), "input: {input:?}");
+            assert!(!tag.strong_eq(&tag), "input: {input:?}");
+        }
+    }
+
+    fn decode_range(values: &[&str]) -> Result<EntityTagRange, Error> {
+        let values: Vec<_> = values
+            .iter()
+            .map(|v| HeaderValue::from_str(v).unwrap())
+            .collect();
+        EntityTagRange::try_from_values(&mut values.iter())
+    }
+
+    #[test]
+    fn test_etag_range_rejects_malformed_without_panic() {
+        let valid = EntityTag::from_static("\"a\"");
+        for values in [
+            &["x"][..],
+            &[""],
+            &["W"],
+            &["W/"],
+            &["W/\""],
+            &["\""],
+            &["*, \"a\""],
+            &["\"a\", *"],
+            &["*", "\"a\""],
+            &["*", "*"],
+            &["\"a b\""],
+            &["\"a\", x"],
+            &["\"a\", \"b"],
+        ] {
+            let result = decode_range(values);
+            if let Ok(range) = &result {
+                _ = range.matches_strong(&valid);
+                _ = range.matches_weak(&valid);
+            }
+            assert!(result.is_err(), "values: {values:?}");
+        }
+    }
+
+    #[test]
+    fn test_etag_small_inputs_never_panic() {
+        let valid = EntityTag::from_static("W/\"a\"");
+        for_each_small_input(b"\"W/, \t*a\x80", 6, |input| {
+            let Ok(val) = HeaderValue::from_bytes(input) else {
+                return;
+            };
+            if let Some(tag) = EntityTag::from_val(&val) {
+                assert!(tag.tag().is_some(), "input: {input:?}");
+                _ = tag.strong_eq(&valid);
+            }
+            if let Ok(tag) = val.to_str().unwrap_or_default().parse::<EntityTag>() {
+                assert!(tag.tag().is_some(), "input: {input:?}");
+            }
+            if let Ok(range) = EntityTagRange::try_from_values(&mut iter::once(&val)) {
+                if let EntityTagRange::Tags(tags) = &range {
+                    assert!(tags.iter().all(|tag| tag.tag().is_some()), "{input:?}");
+                }
+                _ = range.matches_strong(&valid);
+                _ = range.matches_weak(&valid);
+                _ = HeaderValue::try_from(&range);
+            }
+        });
+    }
+
+    #[test]
+    fn test_etag_range_decodes_any_and_lists() {
+        assert_eq!(decode_range(&["*"]).unwrap(), EntityTagRange::Any);
+        assert_eq!(decode_range(&[" * "]).unwrap(), EntityTagRange::Any);
+
+        let range = decode_range(&["\"a\", W/\"b,c\"", "\"d\""]).unwrap();
+        let EntityTagRange::Tags(tags) = &range else {
+            panic!("expected tags, got {range:?}");
+        };
+        assert_eq!(tags.len(), 3);
+        assert!(range.matches_strong(&EntityTag::from_static("\"a\"")));
+        assert!(!range.matches_strong(&EntityTag::from_static("\"b,c\"")));
+        assert!(range.matches_weak(&EntityTag::from_static("\"b,c\"")));
+        assert!(range.matches_weak(&EntityTag::from_static("W/\"d\"")));
+        assert!(!range.matches_weak(&EntityTag::from_static("\"e\"")));
     }
 }

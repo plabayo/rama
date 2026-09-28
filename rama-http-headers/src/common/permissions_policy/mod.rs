@@ -13,6 +13,7 @@ pub use self::directive::{
 
 use std::fmt;
 
+use ahash::HashMap;
 use rama_http_types::{HeaderName, HeaderValue};
 use rama_utils::macros::generate_set_and_with;
 
@@ -380,10 +381,11 @@ impl HeaderDecode for PermissionsPolicy {
     fn decode<'i, I: Iterator<Item = &'i HeaderValue>>(values: &mut I) -> Result<Self, Error> {
         // The spec allows the header to be set multiple times — the
         // user agent intersects all returned policies. For round-
-        // tripping we concatenate them preserving order, then route
-        // through `set_directive` so repeats collapse to the
-        // last-seen allow-list.
+        // tripping we concatenate them preserving order; repeats
+        // collapse to the last-seen allow-list.
         let mut out = Self::empty();
+        // Index by name so repeated collapsing stays linear.
+        let mut positions: HashMap<PermissionsPolicyDirectiveName, usize> = HashMap::default();
         let mut any = false;
         for value in values {
             any = true;
@@ -400,7 +402,15 @@ impl HeaderDecode for PermissionsPolicy {
                     // surprising than logging it and moving on.
                     continue;
                 };
-                out.set_directive(directive);
+                if let Some(slot) = positions
+                    .get(&directive.name)
+                    .and_then(|&idx| out.directives.get_mut(idx))
+                {
+                    slot.allow_list = directive.allow_list;
+                } else {
+                    positions.insert(directive.name.clone(), out.directives.len());
+                    out.directives.push(directive);
+                }
             }
         }
         if !any {
@@ -427,31 +437,25 @@ impl HeaderEncode for PermissionsPolicy {
 /// the directive separator. (Tokens themselves don't contain commas,
 /// and origin sf-strings don't either by spec.)
 fn split_top_level_commas(s: &str) -> impl Iterator<Item = &str> {
-    let bytes = s.as_bytes();
-    let mut start = 0usize;
-    let mut depth = 0i32;
-    let mut out: Vec<&str> = Vec::new();
-    for (i, b) in bytes.iter().enumerate() {
-        match b {
-            b'(' => depth += 1,
-            b')' => depth = depth.saturating_sub(1),
-            b',' if depth == 0 => {
-                out.push(&s[start..i]);
-                start = i + 1;
-            }
-            _ => {}
+    let mut depth = 0_usize;
+    s.split(move |c| match c {
+        '(' => {
+            depth = depth.saturating_add(1);
+            false
         }
-    }
-    if start <= s.len() {
-        out.push(&s[start..]);
-    }
-    out.into_iter()
+        ')' => {
+            depth = depth.saturating_sub(1);
+            false
+        }
+        ',' => depth == 0,
+        _ => false,
+    })
 }
 
 fn parse_directive(s: &str) -> Option<PermissionsPolicyDirective> {
-    let eq = s.find('=')?;
-    let name_raw = s[..eq].trim();
-    let value_raw = s[eq + 1..].trim();
+    let (name_raw, value_raw) = s.split_once('=')?;
+    let name_raw = name_raw.trim();
+    let value_raw = value_raw.trim();
     if name_raw.is_empty() {
         return None;
     }
@@ -651,6 +655,63 @@ mod tests {
     #[test]
     fn decode_empty_returns_error() {
         assert_eq!(test_decode::<PermissionsPolicy>(&[] as &[&str]), None);
+    }
+
+    #[test]
+    fn adversarial_values_do_not_panic() {
+        for value in [
+            "=()",
+            "a=",
+            "a=(",
+            "a=)",
+            "(((,",
+            "))),a=()",
+            "a=((b)",
+            "a=()))",
+            "a",
+            ",,,",
+            "=",
+            r#"a=("")"#,
+            r#"a=(")"#,
+            r#"a=(" ")"#,
+            "a=(b c)",
+            "a=(*) , b=(self src)",
+        ] {
+            if let Some(policy) = test_decode::<PermissionsPolicy>(&[value]) {
+                _ = policy.to_string();
+                _ = test_encode(policy);
+            }
+        }
+        for s in [
+            "é=()",
+            "a=(é)",
+            "é",
+            "(é,é)",
+            "a=(\"é\"),b=()",
+            "é=(\"é\" self)",
+        ] {
+            for member in split_top_level_commas(s) {
+                if let Some(directive) = parse_directive(member.trim()) {
+                    _ = directive.to_string();
+                }
+            }
+        }
+        assert_eq!(
+            split_top_level_commas("a=(x,y),b=()),c=()").collect::<Vec<_>>(),
+            ["a=(x,y)", "b=())", "c=()"]
+        );
+    }
+
+    #[test]
+    fn decode_many_distinct_directives_is_linear() {
+        let value: Vec<String> = (0..50_000).map(|i| format!("x{i}=()")).collect();
+        let value = value.join(",");
+        let policy = test_decode::<PermissionsPolicy>(&[value.as_str()]).unwrap();
+        assert_eq!(policy.directives().count(), 50_000);
+
+        let policy =
+            test_decode::<PermissionsPolicy>(&["x1=(), x2=(), x1=(self), x2=(*)"]).unwrap();
+        assert_eq!(policy.to_string(), "x1=(self), x2=(*)");
     }
 
     #[test]

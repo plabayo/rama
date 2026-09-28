@@ -195,7 +195,7 @@ impl HeaderEncode for ReferrerPolicy {
             }
         }
 
-        values.extend(::std::iter::once(util::fmt(Adapter(self))));
+        values.extend(util::fmt(Adapter(self)));
     }
 }
 

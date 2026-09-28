@@ -149,7 +149,11 @@ mod tests {
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, UNIX_EPOCH};
+
     use super::*;
+    use crate::TypedHeader as _;
+    use crate::common::{test_decode, test_encode};
 
     #[test]
     fn test_is_modified_etag() {
@@ -160,5 +164,43 @@ mod tests {
 
         let etag = ETag::from_static("W/\"xyzzy\"");
         assert!(if_range.is_modified(Some(&etag), None));
+    }
+
+    #[test]
+    fn decode_rejects_malformed_tags_without_panic() {
+        let etag = ETag::from_static("\"a\"");
+        for value in [
+            "", "x", "W", "W/", "W/\"", "\"", "*", "*, \"a\"", "\"a b\"", "\"a\tb\"",
+        ] {
+            let decoded = test_decode::<IfRange>(&[value]);
+            if let Some(if_range) = &decoded {
+                _ = if_range.is_modified(Some(&etag), None);
+            }
+            assert!(decoded.is_none(), "value: {value:?}");
+        }
+    }
+
+    #[test]
+    fn decode_etag_and_date() {
+        let etag = ETag::from_static("\"a\"");
+        let if_range: IfRange = test_decode(&["\"a\""]).unwrap();
+        assert!(!if_range.is_modified(Some(&etag), None));
+        assert!(if_range.is_modified(Some(&ETag::from_static("W/\"a\"")), None));
+
+        let if_range: IfRange = test_decode(&["Sat, 29 Oct 1994 19:43:31 GMT"]).unwrap();
+        assert!(if_range.is_modified(Some(&etag), None));
+    }
+
+    #[test]
+    fn date_out_of_http_date_range_does_not_panic() {
+        let far_future = UNIX_EPOCH
+            .checked_add(Duration::from_secs(300_000_000_000))
+            .unwrap();
+        let before_epoch = UNIX_EPOCH.checked_sub(Duration::from_secs(1)).unwrap();
+        for time in [far_future, before_epoch] {
+            let if_range = IfRange::date(time);
+            assert!(if_range.is_modified(None, None));
+            assert!(test_encode(if_range).contains_key(IfRange::name()));
+        }
     }
 }

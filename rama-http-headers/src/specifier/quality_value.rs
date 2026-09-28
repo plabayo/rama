@@ -83,7 +83,7 @@ impl str::FromStr for Quality {
         // Parse optional fractional digits. The value of each digit is multiplied by `factor`.
         // Since the q-value is represented as an integer between 0 and 1000, `factor` is `100` for
         // the first digit, `10` for the next, and `1` for the digit after that.
-        let mut factor = 100;
+        let mut factor: u16 = 100;
         loop {
             match c.next() {
                 Some(n @ '0'..='9') => {
@@ -93,7 +93,8 @@ impl str::FromStr for Quality {
                         return Err(Error::invalid());
                     }
                     // Add the digit's value multiplied by `factor` to `value`.
-                    value += factor * (n as u16 - '0' as u16);
+                    let digit = (n as u16).saturating_sub('0' as u16);
+                    value = value.saturating_add(factor.saturating_mul(digit));
                 }
                 None => {
                     // No more characters to parse. Check that the value representing the q-value is
@@ -130,11 +131,11 @@ pub struct QualityValue<T> {
 pub fn sort_quality_values_non_empty_smallvec<const N: usize, T>(
     values: &mut NonEmptySmallVec<N, QualityValue<T>>,
 ) {
-    values.sort_by_cached_key(|qv| u16::MAX - qv.quality.as_u16());
+    values.sort_by_cached_key(|qv| cmp::Reverse(qv.quality));
 }
 
 pub fn sort_quality_values_non_empty_vec<T>(values: &mut NonEmptyVec<QualityValue<T>>) {
-    values.sort_by_cached_key(|qv| u16::MAX - qv.quality.as_u16());
+    values.sort_by_cached_key(|qv| cmp::Reverse(qv.quality));
 }
 
 impl<T: Copy> Copy for QualityValue<T> {}
@@ -275,6 +276,8 @@ mod internal {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::util::for_each_small_input;
+    use rama_utils::collections::non_empty_vec;
 
     #[test]
     fn test_quality_item_fmt_q_1() {
@@ -376,6 +379,55 @@ mod tests {
     #[test]
     fn test_quality() {
         assert_eq!(q(0.5), Quality(500));
+    }
+
+    #[test]
+    fn test_quality_from_str_extremes() {
+        assert_eq!("q=0.999".parse::<Quality>().unwrap(), Quality(999));
+        assert_eq!("Q=1.000".parse::<Quality>().unwrap(), Quality(1000));
+        assert_eq!("q=0.".parse::<Quality>().unwrap(), Quality(0));
+        for value in [
+            "q=1.999",
+            "q=1.001",
+            "q=0.9999",
+            "q=9",
+            "q=",
+            "q",
+            "",
+            "q=0.a",
+            "q=\u{0660}",
+        ] {
+            assert!(value.parse::<Quality>().is_err(), "value: {value:?}");
+        }
+    }
+
+    #[test]
+    fn test_small_inputs_never_panic() {
+        for_each_small_input(b"qQ=019. ;a", 6, |input| {
+            let Ok(s) = str::from_utf8(input) else {
+                return;
+            };
+            if let Ok(quality) = s.parse::<Quality>() {
+                assert!(quality.as_u16() <= 1000, "input: {s:?}");
+            }
+            if let Ok(qv) = s.parse::<QualityValue<String>>() {
+                assert!(qv.quality.as_u16() <= 1000, "input: {s:?}");
+                _ = qv.to_string();
+            }
+        });
+    }
+
+    #[test]
+    fn test_sort_quality_values_is_stable_descending() {
+        let mut values = non_empty_vec![
+            QualityValue::new("a", Quality(0)),
+            QualityValue::new("b", Quality(1000)),
+            QualityValue::new("c", Quality(500)),
+            QualityValue::new("d", Quality(1000)),
+        ];
+        sort_quality_values_non_empty_vec(&mut values);
+        let order: Vec<_> = values.iter().map(|qv| qv.value).collect();
+        assert_eq!(order, ["b", "d", "c", "a"]);
     }
 
     #[test]

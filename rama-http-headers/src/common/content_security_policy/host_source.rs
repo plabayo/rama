@@ -61,27 +61,22 @@ impl HostSource {
     /// (`[scheme://]host[:port][/path]`). Hosts with a leading `*.`
     /// wildcard, port `*`, and arbitrary path tails are all accepted.
     pub fn try_parse(s: &str) -> Result<Self, Error> {
-        let (scheme, rest) = match s.find("://") {
-            Some(idx) => {
-                let proto = Protocol::try_from(&s[..idx]).map_err(|_err| Error::invalid())?;
-                (Some(proto), &s[idx + 3..])
+        let (scheme, rest) = match s.split_once("://") {
+            Some((scheme, rest)) => {
+                let proto = Protocol::try_from(scheme).map_err(|_err| Error::invalid())?;
+                (Some(proto), rest)
             }
             None => (None, s),
         };
-        let (host_port, path) = match rest.find('/') {
-            Some(idx) => (&rest[..idx], Some(Cow::Owned(rest[idx..].to_owned()))),
+        let (host_port, path) = match rest.find('/').and_then(|idx| rest.split_at_checked(idx)) {
+            Some((host_port, path)) => (host_port, Some(Cow::Owned(path.to_owned()))),
             None => (rest, None),
         };
-        let (host_str, port) = match host_port.rfind(':') {
-            Some(idx) => {
-                let port_str = &host_port[idx + 1..];
-                let parsed = if port_str == "*" {
-                    Some(HostSourcePort::Any)
-                } else {
-                    let n: u16 = port_str.parse().map_err(|_err| Error::invalid())?;
-                    Some(HostSourcePort::Number(n))
-                };
-                (&host_port[..idx], parsed)
+        let (host_str, port) = match host_port.rsplit_once(':') {
+            Some((host, "*")) => (host, Some(HostSourcePort::Any)),
+            Some((host, port_str)) => {
+                let n: u16 = port_str.parse().map_err(|_err| Error::invalid())?;
+                (host, Some(HostSourcePort::Number(n)))
             }
             None => (host_port, None),
         };
@@ -246,5 +241,41 @@ mod tests {
     fn rejects_malformed_port() {
         HostSource::try_parse("example.com:abc").unwrap_err();
         HostSource::try_parse("example.com:99999").unwrap_err();
+    }
+
+    #[test]
+    fn multi_byte_and_degenerate_inputs_do_not_panic() {
+        for s in [
+            "",
+            ":",
+            "/",
+            "://",
+            ":///",
+            "é",
+            "é://x",
+            "https://é",
+            "é:80",
+            "x:é",
+            "x/é",
+            "x:é/é",
+            "https://x:€",
+            "€://€:€/€",
+            "[::1]:443",
+            "https://:443",
+            "https://x:",
+            "*",
+            "*.",
+            "*.é.com",
+            "https://*.example.com:*/é",
+        ] {
+            if let Ok(h) = HostSource::try_parse(s) {
+                _ = (h.to_string(), h.scheme(), h.host(), h.port(), h.path());
+            }
+        }
+
+        let h = HostSource::try_parse("example.com/é?€").unwrap();
+        assert_eq!(h.path(), Some("/é?€"));
+        HostSource::try_parse("é:80").unwrap_err();
+        HostSource::try_parse("example.com:é").unwrap_err();
     }
 }

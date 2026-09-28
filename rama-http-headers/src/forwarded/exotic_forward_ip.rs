@@ -1,6 +1,7 @@
 use rama_core::error::BoxErrorExt as _;
 use rama_core::error::ErrorExt;
 use rama_core::error::{BoxError, ErrorContext};
+use rama_core::telemetry::tracing;
 use rama_http_types::header::{
     CF_CONNECTING_IP, CLIENT_IP, TRUE_CLIENT_IP, X_CLIENT_IP, X_REAL_IP,
 };
@@ -64,9 +65,9 @@ fn try_to_parse_str_to_ip(value: &str) -> Option<IpAddr> {
 }
 
 fn try_to_split_num_port_from_str(s: &str) -> (&str, Option<u16>) {
-    if let Some(colon) = s.as_bytes().iter().rposition(|c| *c == b':') {
-        match s[colon + 1..].parse() {
-            Ok(port) => (&s[..colon], Some(port)),
+    if let Some((host, port)) = s.rsplit_once(':') {
+        match port.parse() {
+            Ok(port) => (host, Some(port)),
             Err(_) => (s, None),
         }
     } else {
@@ -111,7 +112,13 @@ macro_rules! exotic_forward_ip_headers {
             impl $crate::HeaderEncode for $name {
                 fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
                     let s = self.0.to_string();
-                    values.extend(Some(HeaderValue::try_from(s).unwrap()))
+                    match HeaderValue::try_from(s) {
+                        Ok(value) => values.extend(::std::iter::once(value)),
+                        Err(err) => tracing::debug!(
+                            concat!("failed to encode ", stringify!($name), " as header value: {}"),
+                            err,
+                        ),
+                    }
                 }
             }
 
@@ -227,6 +234,53 @@ mod tests {
         vec!["[2001:db8:85a3:8d3:1319:8a2e:370:7348]:8080"],
         "[2001:db8:85a3:8d3:1319:8a2e:370:7348]:8080"
     );
+
+    macro_rules! adversarial_test_header {
+        ($name: ident) => {
+            for input in [
+                "",
+                ":",
+                "::",
+                ":80",
+                "[",
+                "]",
+                "[]",
+                "[]:80",
+                "[::1",
+                "::1]",
+                "[::1]:",
+                "[::1]:99999",
+                "[::1]:-1",
+                "::1:80",
+                "1.2.3.4:",
+                "1.2.3.4:65536",
+                "1.2.3.4::80",
+                "[1.2.3.4]:80",
+                "ü",
+                "1.2.3.4:ü",
+                "[::ü]:80",
+            ] {
+                let Ok(value) = HeaderValue::from_bytes(input.as_bytes()) else {
+                    continue;
+                };
+                if let Ok(header) = $name::decode(&mut [value].iter()) {
+                    let mut values = Vec::new();
+                    header.encode(&mut values);
+                    assert_eq!(1, values.len(), "{input}");
+                    header.into_iter().for_each(|el| _ = el.to_string());
+                }
+            }
+        };
+    }
+
+    #[test]
+    fn test_adversarial_input_no_panic() {
+        adversarial_test_header!(CFConnectingIp);
+        adversarial_test_header!(TrueClientIp);
+        adversarial_test_header!(XRealIp);
+        adversarial_test_header!(ClientIp);
+        adversarial_test_header!(XClientIp);
+    }
 
     macro_rules! symmetric_test_header {
         ($name: ident) => {

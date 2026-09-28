@@ -189,6 +189,53 @@ mod tests {
     );
 
     #[test]
+    fn test_x_forwarded_host_adversarial_input_no_panic() {
+        for input in [
+            "",
+            ":",
+            "::",
+            ":80",
+            "[",
+            "]",
+            "[]",
+            "[]:80",
+            "[::1",
+            "::1]",
+            "[::1]:",
+            "[::1]:99999",
+            "::1:80",
+            "example.com:",
+            "example.com:65536",
+            "example.com::80",
+            "[example.com]:80",
+            "%",
+            "%zz",
+            "%c3%bc",
+            "ü",
+            "ü.example.com",
+            "example.com:ü",
+            "[v1.x]:80",
+            "user@example.com",
+            "@",
+            ".",
+            "..",
+            "a..b",
+            "-.example.com",
+        ] {
+            let Ok(value) = HeaderValue::from_bytes(input.as_bytes()) else {
+                continue;
+            };
+            if let Ok(header) = XForwardedHost::decode(&mut [value].iter()) {
+                _ = header.host().to_string();
+                _ = header.port();
+                let mut values = Vec::new();
+                header.encode(&mut values);
+                header.into_iter().for_each(|el| _ = el.to_string());
+            }
+        }
+    }
+
+    #[test]
     fn test_x_forwarded_host_symmetry_encode() {
         for input in [
             XForwardedHost("id42.example-cdn.com".parse().unwrap()),
