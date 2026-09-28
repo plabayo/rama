@@ -10,10 +10,7 @@ use rama_core::combinators::Either;
 use rama_core::telemetry::tracing;
 use rama_http_types::mime::Mime;
 use rama_net::uri::Uri;
-use rama_utils::{
-    include_dir::{Dir, Metadata as EmbeddedMetadata},
-    time::now_system_time,
-};
+use rama_utils::include_dir::{Dir, Metadata as EmbeddedMetadata};
 use std::io::Cursor;
 use std::{
     ffi::OsStr,
@@ -21,6 +18,7 @@ use std::{
     io::{self, ErrorKind, SeekFrom},
     ops::RangeInclusive,
     path::{Path, PathBuf},
+    time::SystemTime,
 };
 use tokio::io::AsyncRead;
 use tokio::{fs::File, io::AsyncSeekExt};
@@ -203,6 +201,7 @@ pub(super) async fn open_file(
                     range_header,
                     etag.as_ref(),
                     last_modified.as_ref(),
+                    SystemTime::now(),
                 );
                 let maybe_range =
                     try_parse_range(range_header, meta.len(), ignore_multi_range_requests);
@@ -245,6 +244,7 @@ pub(super) async fn open_file(
                     range_header,
                     etag.as_ref(),
                     last_modified.as_ref(),
+                    SystemTime::now(),
                 );
                 let maybe_range =
                     try_parse_range(range_header, content_length, ignore_multi_range_requests);
@@ -295,6 +295,7 @@ pub(super) async fn open_file(
                     range_header,
                     etag.as_ref(),
                     last_modified.as_ref(),
+                    SystemTime::now(),
                 );
                 let maybe_range =
                     try_parse_range(range_header, meta.len(), ignore_multi_range_requests);
@@ -341,6 +342,7 @@ pub(super) async fn open_file(
                     range_header,
                     etag.as_ref(),
                     last_modified.as_ref(),
+                    SystemTime::now(),
                 );
                 let maybe_range =
                     try_parse_range(range_header, content_length, ignore_multi_range_requests);
@@ -425,6 +427,7 @@ impl Preconditions {
         range: Option<&'a str>,
         etag: Option<&ETag>,
         last_modified: Option<&LastModified>,
+        now: SystemTime,
     ) -> Option<&'a str> {
         match &self.if_range {
             IfRangeCondition::Absent => range,
@@ -432,7 +435,7 @@ impl Preconditions {
                 if !if_range.is_modified(
                     etag,
                     last_modified
-                        .filter(|lm| lm.is_strong(now_system_time()))
+                        .filter(|lm| lm.is_strong(now))
                         .map(LastModified::to_typed)
                         .as_ref(),
                 ) =>
@@ -821,8 +824,8 @@ fn try_parse_range(
         // RFC 9110 §14.1.1: only a non-empty suffix fits, and it is the whole (empty) file
         let satisfiable = parsed
             .ranges
-            .iter()
-            .any(|range| matches!(range.start, StartPosition::FromLast(n) if n > 0));
+            .first()
+            .is_some_and(|range| matches!(range.start, StartPosition::FromLast(n) if n > 0));
         return (!satisfiable).then_some(Err(RangeError::Unsatisfiable));
     }
 
@@ -871,4 +874,36 @@ fn append_slash_on_path(mut uri: Uri) -> Result<Uri, OpenFileOutput> {
     // Scheme, authority and query are preserved; only the path gains a `/`.
     uri.ensure_path_trailing_slash();
     Ok(uri)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+
+    #[test]
+    fn if_range_date_needs_a_strong_last_modified() {
+        let modified = SystemTime::UNIX_EPOCH
+            .checked_add(Duration::from_secs(1_700_000_000))
+            .unwrap();
+        let last_modified = LastModified::try_from_system_time(modified).unwrap();
+        let preconditions = Preconditions {
+            if_match: None,
+            if_unmodified_since: None,
+            if_none_match: None,
+            if_modified_since: None,
+            if_range: IfRangeCondition::Valid(IfRange::date(modified)),
+        };
+        let range = Some("bytes=0-1");
+        let strong_at = modified.checked_add(Duration::from_secs(1)).unwrap();
+        assert_eq!(
+            preconditions.applicable_range(range, None, Some(&last_modified), modified),
+            None
+        );
+        assert_eq!(
+            preconditions.applicable_range(range, None, Some(&last_modified), strong_at),
+            range
+        );
+    }
 }
