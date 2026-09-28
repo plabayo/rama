@@ -191,6 +191,20 @@ impl Error {
         matches!(self.inner.kind, Kind::ChannelClosed)
     }
 
+    /// Returns true if the HTTP/2 peer refused a request without processing it,
+    /// which makes it safe to retry, even when not idempotent (RFC 9113 section 8.7).
+    ///
+    /// The peer either reset its stream with `REFUSED_STREAM`, or went away
+    /// with a `GOAWAY` that does not cover its stream.
+    #[must_use]
+    pub fn is_refused(&self) -> bool {
+        matches!(self.inner.kind, Kind::Http2)
+            && self.find_source::<h2::Error>().is_some_and(|err| {
+                err.is_remote()
+                    && (err.is_go_away() || err.reason() == Some(h2::Reason::REFUSED_STREAM))
+            })
+    }
+
     /// Returns true if the connection closed before a message could complete.
     ///
     /// This means that the supplied IO connection reported EOF (closed) while
