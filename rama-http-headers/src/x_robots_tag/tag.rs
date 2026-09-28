@@ -146,8 +146,9 @@ macro_rules! make_parse_value_fn {
                 }
             )+
 
-            if value.is_empty() {
-                return Err(BoxError::from_static_str("empty robots tag directive"));
+            if value.is_empty() || value.contains(',') {
+                return Err(BoxError::from_static_str("invalid robots tag directive")
+                    .context_str_field("directive", value));
             }
             tag.custom_rules.push(CustomRule::new_boolean_directive(value.parse().context("create custom boolean directive")?));
             Ok(())
@@ -725,6 +726,12 @@ impl Iterator for Parser<'_> {
                     value_commas = 0;
                 }
                 Some((index, Delimiter::Comma)) => {
+                    // an empty list element is ignored (RFC 9110 §5.6.1)
+                    if pair_key.is_empty() && trim_space(self.head(index)).is_empty() {
+                        self.advance_past(index);
+                        delimiter_offset = 0;
+                        continue;
+                    }
                     let value = match std::str::from_utf8(trim_space(self.head(index))) {
                         Ok(value) => value,
                         Err(err) => {
@@ -757,6 +764,10 @@ impl Iterator for Parser<'_> {
                             return Some(Err(err.context("interpret remainder value as utf-8")));
                         }
                     };
+                    if value.is_empty() && pair_key.is_empty() && has_directive {
+                        self.buffer = &[];
+                        return Some(Ok(tag));
+                    }
                     if let Err(e) = parse_value(value, pair_key, &mut tag) {
                         self.buffer = &[];
                         return Some(Err(e));
@@ -918,6 +929,23 @@ mod tests {
             .unwrap();
         assert_eq!(tags.len(), 1);
         assert_eq!(tags[0].custom_rules().len(), 5000);
+    }
+
+    #[test]
+    fn test_parse_empty_list_elements_are_ignored() {
+        for input in [
+            "noindex,,nofollow",
+            "noindex, , nofollow",
+            ", noindex, nofollow,",
+        ] {
+            let tags = robots_tag_parse_iter(input.as_bytes())
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            assert_eq!(tags.len(), 1, "{input}");
+            assert!(tags[0].no_index(), "{input}");
+            assert!(tags[0].no_follow(), "{input}");
+            assert!(tags[0].custom_rules().is_empty(), "{input}");
+        }
     }
 
     #[test]

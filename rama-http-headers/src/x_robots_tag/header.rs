@@ -86,7 +86,10 @@ impl HeaderEncode for XRobotsTag {
             s,
             "{}",
             rama_utils::fmt::display_fn(|f: &mut std::fmt::Formatter<'_>| {
-                crate::util::csv::fmt_comma_delimited(&mut *f, self.0.iter())
+                // a bot key scopes every directive after it, so unscoped tags go first
+                let unscoped = self.0.iter().filter(|tag| tag.bot_name().is_none());
+                let scoped = self.0.iter().filter(|tag| tag.bot_name().is_some());
+                crate::util::csv::fmt_comma_delimited(&mut *f, unscoped.chain(scoped))
             })
         ) {
             tracing::debug!("failed to format x-robots-tag: {err}");
@@ -146,6 +149,22 @@ mod tests {
         let header = XRobotsTag::decode(&mut [line.clone(), line].iter()).unwrap();
         let encoded = header.encode_to_value().unwrap();
         XRobotsTag::decode(&mut [encoded].iter()).unwrap();
+    }
+
+    #[test]
+    fn test_encode_keeps_unscoped_directives_global() {
+        let values = [
+            HeaderValue::from_static("googlebot: noindex"),
+            HeaderValue::from_static("nofollow"),
+        ];
+        let header = XRobotsTag::decode(&mut values.iter()).unwrap();
+        let encoded = header.encode_to_value().unwrap();
+        let again = XRobotsTag::decode(&mut [encoded].iter()).unwrap();
+        let global = again.0.iter().find(|tag| tag.bot_name().is_none()).unwrap();
+        assert!(global.no_follow());
+        let googlebot = again.0.iter().find(|tag| tag.bot_name().is_some()).unwrap();
+        assert!(googlebot.no_index());
+        assert!(!googlebot.no_follow());
     }
 
     #[test]
