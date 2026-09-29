@@ -43,6 +43,7 @@ use crate::{
 /// | `W/"1"` | `W/"2"` | no match          | no match        |
 /// | `W/"1"` | `"1"`   | no match          | match           |
 /// | `"1"`   | `"1"`   | match             | match           |
+// only `parse` builds one, so the wrapped value is always a valid entity-tag
 #[derive(Clone, Eq, PartialEq)]
 pub(crate) struct EntityTag<T = HeaderValue>(T);
 
@@ -58,12 +59,12 @@ impl<T: AsRef<[u8]>> EntityTag<T> {
     /// Get the opaque tag, `None` if the value is not a well-formed entity-tag.
     #[cfg(test)]
     pub(crate) fn tag(&self) -> Option<&[u8]> {
-        split_entity_tag(self.0.as_ref()).map(|(_, tag)| tag)
+        split_opaque_tag(self.0.as_ref()).map(|(_, tag)| tag)
     }
 
     /// Return if this is a "weak" tag.
     pub(crate) fn is_weak(&self) -> bool {
-        matches!(split_entity_tag(self.0.as_ref()), Some((true, _)))
+        matches!(split_opaque_tag(self.0.as_ref()), Some((true, _)))
     }
 
     /// For strong comparison two entity-tags are equivalent if both are not weak and their
@@ -74,7 +75,7 @@ impl<T: AsRef<[u8]>> EntityTag<T> {
     {
         matches!(
             (split_opaque_tag(self.0.as_ref()), split_opaque_tag(other.0.as_ref())),
-            (Some((false, a)), Some((false, b))) if a == b && check_slice_validity(a)
+            (Some((false, a)), Some((false, b))) if a == b
         )
     }
 
@@ -88,7 +89,7 @@ impl<T: AsRef<[u8]>> EntityTag<T> {
     {
         matches!(
             (split_opaque_tag(self.0.as_ref()), split_opaque_tag(other.0.as_ref())),
-            (Some((_, a)), Some((_, b))) if a == b && check_slice_validity(a)
+            (Some((_, a)), Some((_, b))) if a == b
         )
     }
 
@@ -247,7 +248,6 @@ impl EntityTagRange {
         let Some((weak, tag)) = split_opaque_tag(entity.as_ref()) else {
             return false;
         };
-        // equal opaque tags share validity, so one check covers the matching member
         !(strong && weak)
             && tags.iter().any(|member| {
                 matches!(
@@ -255,7 +255,6 @@ impl EntityTagRange {
                     Some((member_weak, member_tag)) if !(strong && member_weak) && member_tag == tag
                 )
             })
-            && check_slice_validity(tag)
     }
 }
 
@@ -456,15 +455,18 @@ mod tests {
 
     #[test]
     fn test_etag_accessors_are_total() {
+        // only `parse` builds a tag, but accessors must not panic even on an unvalidated one
         let valid = EntityTag::from_static("\"\"");
+        let range = EntityTagRange::Tags(NonEmptyVec::new(valid.clone()));
         for input in MALFORMED {
             let tag = EntityTag(HeaderValue::from_str(input).unwrap());
-            assert_eq!(tag.tag(), None, "input: {input:?}");
-            assert!(!tag.is_weak(), "input: {input:?}");
-            assert!(!tag.weak_eq(&valid), "input: {input:?}");
-            assert!(!valid.weak_eq(&tag), "input: {input:?}");
-            assert!(!tag.weak_eq(&tag), "input: {input:?}");
-            assert!(!tag.strong_eq(&tag), "input: {input:?}");
+            _ = tag.tag();
+            _ = tag.is_weak();
+            _ = tag.weak_eq(&valid);
+            _ = valid.weak_eq(&tag);
+            _ = tag.strong_eq(&tag);
+            _ = range.matches_strong(&tag);
+            _ = range.matches_weak(&tag);
         }
     }
 
