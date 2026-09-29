@@ -168,6 +168,16 @@ mod tests {
     }
 
     #[test]
+    fn test_empty_line_keeps_other_lines() {
+        let values = [
+            HeaderValue::from_static("noindex"),
+            HeaderValue::from_static(","),
+        ];
+        let header = XRobotsTag::decode(&mut values.iter()).unwrap();
+        assert!(header.first_tag().no_index());
+    }
+
+    #[test]
     fn test_obs_text_round_trips() {
         let value = HeaderValue::from_bytes("max-image-preview: é, noindex".as_bytes()).unwrap();
         let header = XRobotsTag::decode(&mut [value].iter()).unwrap();

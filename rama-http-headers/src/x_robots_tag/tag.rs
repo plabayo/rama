@@ -146,9 +146,8 @@ macro_rules! make_parse_value_fn {
                 }
             )+
 
-            if value.is_empty() || value.contains(',') {
-                return Err(BoxError::from_static_str("invalid robots tag directive")
-                    .context_str_field("directive", value));
+            if value.is_empty() {
+                return Err(BoxError::from_static_str("empty robots tag directive"));
             }
             tag.custom_rules.push(CustomRule::new_boolean_directive(value.parse().context("create custom boolean directive")?));
             Ok(())
@@ -764,15 +763,14 @@ impl Iterator for Parser<'_> {
                             return Some(Err(err.context("interpret remainder value as utf-8")));
                         }
                     };
-                    if value.is_empty() && pair_key.is_empty() && has_directive {
-                        self.buffer = &[];
-                        return Some(Ok(tag));
+                    // an empty remainder ends the tag like the end of input does
+                    if !(value.is_empty() && pair_key.is_empty()) {
+                        if let Err(e) = parse_value(value, pair_key, &mut tag) {
+                            self.buffer = &[];
+                            return Some(Err(e));
+                        }
+                        has_directive = true;
                     }
-                    if let Err(e) = parse_value(value, pair_key, &mut tag) {
-                        self.buffer = &[];
-                        return Some(Err(e));
-                    }
-                    has_directive = true;
                     pair_key = "";
                     self.buffer = &[];
                     delimiter_offset = 0;
@@ -937,6 +935,7 @@ mod tests {
             "noindex,,nofollow",
             "noindex, , nofollow",
             ", noindex, nofollow,",
+            "noindex, nofollow, ",
         ] {
             let tags = robots_tag_parse_iter(input.as_bytes())
                 .collect::<Result<Vec<_>, _>>()
@@ -945,6 +944,16 @@ mod tests {
             assert!(tags[0].no_index(), "{input}");
             assert!(tags[0].no_follow(), "{input}");
             assert!(tags[0].custom_rules().is_empty(), "{input}");
+        }
+    }
+
+    #[test]
+    fn test_parse_only_empty_elements_yields_no_tag() {
+        for input in [",", ", ,", " , "] {
+            let tags = robots_tag_parse_iter(input.as_bytes())
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            assert!(tags.is_empty(), "{input:?}");
         }
     }
 
