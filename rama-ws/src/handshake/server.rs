@@ -19,7 +19,7 @@ use rama_core::{
 #[cfg(feature = "compression")]
 use rama_http::headers::sec_websocket_extensions;
 use rama_http::{
-    HeaderMap, Method, Request, Response, StatusCode, Version, header,
+    Method, Request, Response, StatusCode, Version, header,
     headers::{
         self, HeaderMapExt,
         sec_websocket_extensions::{Extension, PerMessageDeflateConfig},
@@ -32,7 +32,7 @@ use rama_http::{
 };
 use rama_net::extensions::StreamTransformed;
 use rama_utils::{
-    collections::{NonEmptySmallVec, non_empty_smallvec},
+    collections::non_empty_smallvec,
     str::{NonEmptyStr, non_empty_str},
 };
 
@@ -197,27 +197,15 @@ pub fn validate_http_client_request<Body>(
     // Also optionally, a |Sec-WebSocket-Extensions| header field, with a list
     // of values indicating which extensions the client would like to
     // utilise, ordered by preference.
-    let extensions_header = extension_offers(request.headers());
+    let extensions_header = headers::SecWebSocketExtensions::decode_offers(
+        request.headers().get_all(header::SEC_WEBSOCKET_EXTENSIONS),
+    );
 
     Ok(ClientRequestData {
         accept_header,
         protocol: protocols_header,
         extensions: extensions_header,
     })
-}
-
-/// Parse each offer on its own, so an invalid one is declined alone (RFC 7692 §5).
-fn extension_offers(headers: &HeaderMap) -> Option<headers::SecWebSocketExtensions> {
-    // extension parameter values are tokens, so a comma always separates offers
-    let offers = headers
-        .get_all(header::SEC_WEBSOCKET_EXTENSIONS)
-        .iter()
-        .filter_map(|value| value.to_str().ok())
-        .flat_map(|value| value.split(','))
-        .map(str::trim)
-        .filter(|offer| !offer.is_empty())
-        .filter_map(|offer| offer.parse::<Extension>().ok());
-    NonEmptySmallVec::collect(offers).map(headers::SecWebSocketExtensions)
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1285,6 +1273,14 @@ mod tests {
         )
         .await;
         assert_eq!(accepted.as_deref(), Some("permessage-deflate"));
+    }
+
+    #[tokio::test]
+    async fn per_message_deflate_offers_split_outside_quotes_only() {
+        let acceptor = WebSocketAcceptor::new().with_per_message_deflate();
+        let accepted =
+            negotiated_extensions(&acceptor, r#"x-foo; p="a, permessage-deflate, b""#).await;
+        assert_eq!(accepted, None);
     }
 
     #[tokio::test]

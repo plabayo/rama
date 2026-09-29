@@ -4,12 +4,18 @@
 //! <https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Sec-WebSocket-Extensions>
 
 use rama_core::error::BoxErrorExt as _;
-use std::{fmt, str::FromStr};
+use std::{
+    fmt,
+    str::{self, FromStr},
+};
 
 use rama_core::error::{BoxError, ErrorContext as _, ErrorExt};
 use rama_core::extensions::Extension as ExtensionTrait;
 use rama_core::telemetry::tracing;
-use rama_utils::str::arcstr::ArcStr;
+use rama_http_types::HeaderValue;
+use rama_utils::{collections::NonEmptySmallVec, str::arcstr::ArcStr};
+
+use crate::util::{ListMembers, trim_ows};
 
 derive_non_empty_flat_csv_header! {
     #[header(name = SEC_WEBSOCKET_EXTENSIONS, sep = Comma)]
@@ -35,6 +41,21 @@ impl SecWebSocketExtensions {
     #[must_use]
     pub fn per_message_deflate_with_config(config: PerMessageDeflateConfig) -> Self {
         Self::new(Extension::PerMessageDeflate(config))
+    }
+
+    /// Decode a client's offers, skipping each one that does not parse.
+    ///
+    /// A server declines such an offer on its own (RFC 7692 §5), where
+    /// [`HeaderDecode`](crate::HeaderDecode) rejects the whole header.
+    pub fn decode_offers<'i>(values: impl IntoIterator<Item = &'i HeaderValue>) -> Option<Self> {
+        let offers = values
+            .into_iter()
+            .filter_map(|value| value.to_str().ok())
+            .flat_map(|value| ListMembers::new(value.as_bytes()).map_while(Result::ok))
+            .filter_map(|offer| str::from_utf8(trim_ows(offer)).ok())
+            .filter(|offer| !offer.is_empty())
+            .filter_map(|offer| offer.parse::<Extension>().ok());
+        NonEmptySmallVec::collect(offers).map(Self)
     }
 }
 

@@ -5,7 +5,7 @@ use std::net::IpAddr;
 use rama_http_types::{HeaderMap, HeaderName, HeaderValue, header};
 
 use crate::{
-    AccessControlAllowOrigin, ClientHint, ETag, Origin, Priority,
+    AccessControlAllowOrigin, ClientHint, ETag, Origin, Priority, SecWebSocketExtensions,
     encoding::AcceptEncoding,
     fuzz::{
         ValuesExercise,
@@ -18,6 +18,14 @@ use crate::{
 };
 
 pub(super) const VALUES: &[ValuesExercise] = &[
+    (
+        "SecWebSocketExtensions::decode_offers",
+        |values: &[HeaderValue]| {
+            if let Some(offers) = SecWebSocketExtensions::decode_offers(values) {
+                roundtrip(&offers);
+            }
+        },
+    ),
     ("encoding", |values: &[HeaderValue]| {
         let mut map = HeaderMap::new();
         for value in values {
