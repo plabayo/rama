@@ -143,6 +143,18 @@ pub(crate) fn scan_quoted_string<'a>(
     ))
 }
 
+/// The offset past the quoted string opening at `quote`, if terminated (content unchecked).
+pub(crate) fn skip_quoted(input: &[u8], quote: usize) -> Option<usize> {
+    let mut cursor = quote.saturating_add(1);
+    loop {
+        match input.get(cursor)? {
+            b'"' => return Some(cursor.saturating_add(1)),
+            b'\\' => cursor = cursor.saturating_add(2),
+            _ => cursor = cursor.saturating_add(1),
+        }
+    }
+}
+
 pub(crate) fn skip_ows(input: &[u8], cursor: &mut usize) {
     while input
         .get(*cursor)

@@ -9,7 +9,7 @@ use std::str;
 use rama_utils::collections::NonEmptySmallVec;
 use rama_utils::collections::NonEmptyVec;
 
-use crate::Error;
+use crate::{Error, util::skip_quoted};
 
 use self::internal::IntoQuality;
 
@@ -311,18 +311,6 @@ fn item_parts(s: &str) -> impl Iterator<Item = Result<(usize, &str), Error>> {
             }
         }
     })
-}
-
-/// The offset past the quoted string opening at `quote`, if it is terminated.
-fn skip_quoted(bytes: &[u8], quote: usize) -> Option<usize> {
-    let mut cursor = quote.saturating_add(1);
-    loop {
-        match bytes.get(cursor)? {
-            b'"' => return Some(cursor.saturating_add(1)),
-            b'\\' => cursor = cursor.saturating_add(2),
-            _ => cursor = cursor.saturating_add(1),
-        }
-    }
 }
 
 #[inline]
