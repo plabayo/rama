@@ -214,9 +214,8 @@ impl<T: str::FromStr> str::FromStr for QualityValue<T> {
                 raw_item = second;
             }
         }
-        // a weight qualifies a named item, so the name cannot be empty
-        let name = raw_item.split(';').next().unwrap_or_default();
-        if name.trim().is_empty() {
+        // a weight qualifies a named item, whose name and parameters cannot be empty
+        if has_empty_part(raw_item) {
             return Err(Error::invalid());
         }
         match raw_item.parse::<T>() {
@@ -225,6 +224,20 @@ impl<T: str::FromStr> str::FromStr for QualityValue<T> {
             Err(_) => Err(Error::invalid()),
         }
     }
+}
+
+/// Whether any `;`-separated part of an item (its name or a parameter) is blank.
+fn has_empty_part(item: &str) -> bool {
+    let mut empty = true;
+    for byte in item.bytes() {
+        match byte {
+            b';' if empty => return true,
+            b';' => empty = true,
+            b' ' | b'\t' => {}
+            _ => empty = false,
+        }
+    }
+    empty
 }
 
 #[inline]
@@ -389,7 +402,18 @@ mod tests {
     #[test]
     fn test_weight_without_item_is_rejected() {
         for input in [
-            ";q=1", " ;q=0.5", ";", ";;q=1", ";0;q=1", ";q=;;q=1", ";\t;q=1.", " ; a=b",
+            ";q=1",
+            " ;q=0.5",
+            ";",
+            ";;q=1",
+            ";0;q=1",
+            ";q=;;q=1",
+            ";\t;q=1.",
+            " ; a=b",
+            "f;;q=1",
+            "f;",
+            "f; ;q=0.5",
+            "text/html;;level=1",
         ] {
             assert!(input.parse::<QualityValue<String>>().is_err(), "{input:?}");
         }

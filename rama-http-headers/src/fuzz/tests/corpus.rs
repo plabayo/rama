@@ -41,6 +41,7 @@ pub(super) const ADVERSARIAL: &[&[u8]] = &[
     b";0;q=1",
     b";q=;;q=1",
     b";\t;q=1.",
+    b"f;;q=1",
     b"q=2",
     b"q=-0",
     b"q=1.001",

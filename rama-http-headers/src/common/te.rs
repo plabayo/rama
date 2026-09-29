@@ -100,7 +100,14 @@ mod tests {
 
     #[test]
     fn decode_rejects_unnamed_codings() {
-        for values in [&[";;q=1"][..], &[";0;q=1"], &["A", ";;q=1"], &[";q=;;q=1"]] {
+        for values in [
+            &[";;q=1"][..],
+            &[";0;q=1"],
+            &["A", ";;q=1"],
+            &[";q=;;q=1"],
+            &["f;;q=1"],
+            &["f;"],
+        ] {
             assert!(test_decode::<Te>(values).is_none(), "{values:?}");
         }
     }
