@@ -252,10 +252,13 @@ impl<T: str::FromStr> str::FromStr for QualityValue<T> {
             }
             item.parse::<T>()
         } else {
-            s.get(..item_end)
-                .unwrap_or_default()
-                .trim_end_matches([';', ' ', '\t'])
-                .parse::<T>()
+            let item = s.get(..item_end).unwrap_or_default();
+            // `;`, SP and HTAB are ASCII, so cutting after the last other byte keeps a char boundary
+            let len = item
+                .bytes()
+                .rposition(|byte| !matches!(byte, b';' | b' ' | b'\t'))
+                .map_or(0, |last| last.saturating_add(1));
+            item.get(..len).unwrap_or_default().parse::<T>()
         };
         parsed
             .map(|item| Self::new(item, quality.unwrap_or_else(Quality::one)))
@@ -263,46 +266,63 @@ impl<T: str::FromStr> str::FromStr for QualityValue<T> {
     }
 }
 
+/// Trim SP and HTAB, which are ASCII, so the byte cuts keep char boundaries.
 fn trim_ows(s: &str) -> &str {
-    s.trim_matches([' ', '\t'])
+    let bytes = s.as_bytes();
+    let start = bytes
+        .iter()
+        .position(|byte| !matches!(byte, b' ' | b'\t'))
+        .unwrap_or(bytes.len());
+    let end = bytes
+        .iter()
+        .rposition(|byte| !matches!(byte, b' ' | b'\t'))
+        .map_or(start, |last| last.saturating_add(1));
+    s.get(start..end).unwrap_or_default()
 }
 
 /// The `;`-separated parts of a list item, each with the offset of the `;` before it.
 ///
 /// Quoted strings, including their quoted-pairs, never split; an unterminated one fails.
 fn item_parts(s: &str) -> impl Iterator<Item = Result<(usize, &str), Error>> {
+    let bytes = s.as_bytes();
     let mut start = Some(0_usize);
     iter::from_fn(move || {
         let from = start.take()?;
-        let rest = s.get(from..)?;
-        let mut in_quotes = false;
-        let mut escaped = false;
-        for (offset, byte) in rest.bytes().enumerate() {
-            if escaped {
-                escaped = false;
-            } else if in_quotes {
-                match byte {
-                    b'\\' => escaped = true,
-                    b'"' => in_quotes = false,
-                    _ => {}
+        let separator = from.saturating_sub(1);
+        let mut cursor = from;
+        loop {
+            // outside quotes only `;` and `"` matter
+            let found = bytes
+                .get(cursor..)
+                .unwrap_or_default()
+                .iter()
+                .position(|byte| matches!(byte, b';' | b'"'))
+                .map(|offset| cursor.saturating_add(offset));
+            match found {
+                None => return Some(Ok((separator, s.get(from..).unwrap_or_default()))),
+                Some(end) if bytes.get(end) == Some(&b';') => {
+                    start = Some(end.saturating_add(1));
+                    return Some(Ok((separator, s.get(from..end).unwrap_or_default())));
                 }
-            } else if byte == b'"' {
-                in_quotes = true;
-            } else if byte == b';' {
-                let end = from.saturating_add(offset);
-                start = Some(end.saturating_add(1));
-                return Some(Ok((
-                    from.saturating_sub(1),
-                    s.get(from..end).unwrap_or_default(),
-                )));
+                Some(quote) => match skip_quoted(bytes, quote) {
+                    Some(next) => cursor = next,
+                    None => return Some(Err(Error::invalid())),
+                },
             }
         }
-        Some(if in_quotes {
-            Err(Error::invalid())
-        } else {
-            Ok((from.saturating_sub(1), rest))
-        })
     })
+}
+
+/// The offset past the quoted string opening at `quote`, if it is terminated.
+fn skip_quoted(bytes: &[u8], quote: usize) -> Option<usize> {
+    let mut cursor = quote.saturating_add(1);
+    loop {
+        match bytes.get(cursor)? {
+            b'"' => return Some(cursor.saturating_add(1)),
+            b'\\' => cursor = cursor.saturating_add(2),
+            _ => cursor = cursor.saturating_add(1),
+        }
+    }
 }
 
 #[inline]
@@ -485,6 +505,7 @@ mod tests {
             "a;q=0.5;q=1",
             "a;p=\"x",
             "a;p=\"x;q=1",
+            "a;p=\"x\\\"",
         ] {
             assert!(input.parse::<QualityValue<String>>().is_err(), "{input:?}");
         }
@@ -500,6 +521,7 @@ mod tests {
             ("a;;b=1", "a;b=1", 1000),
             ("a;;b=1;q=0.2", "a;b=1", 200),
             ("text/html;p=\"a;;b\";q=0.5", "text/html;p=\"a;;b\"", 500),
+            ("a;p=\"x\\\";q=0.5\";q=0.2", "a;p=\"x\\\";q=0.5\"", 200),
             // any parameter named `q` is the weight (RFC 9110 §12.5.1)
             ("text/html;q=0.5;level=1", "text/html;level=1", 500),
             ("*/*;q=0.1;charset=utf-8", "*/*;charset=utf-8", 100),
