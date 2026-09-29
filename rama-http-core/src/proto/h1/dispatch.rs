@@ -13,6 +13,7 @@ use rama_core::{
 };
 use rama_http::StreamingBody;
 use rama_http_types::{Request, Response, StatusCode};
+use rama_net::conn::LingeringClose;
 use std::task::ready;
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -39,8 +40,6 @@ pub(crate) struct Dispatcher<D, Bs: StreamingBody, I, T> {
     // The transport was shut down; never twice, a TLS writer may not cope.
     shut_down: bool,
     linger: Linger,
-    // A bad request head was rejected: the client may still be sending it.
-    rejected_head: bool,
 }
 
 /// Lingering close of a server connection: after shutting down, keep
@@ -50,13 +49,21 @@ pub(crate) struct Dispatcher<D, Bs: StreamingBody, I, T> {
 enum Linger {
     NotStarted,
     Draining {
-        deadline: Pin<Box<tokio::time::Sleep>>,
+        bounds: LingeringClose,
+        // Due at the idle deadline or at `give_up`, whichever comes first,
+        // and only moved when it fires: cheaper than a reset on every read.
+        timer: Pin<Box<tokio::time::Sleep>>,
         started: tokio::time::Instant,
-        left: u64,
+        give_up: tokio::time::Instant,
+        last_data: tokio::time::Instant,
         discarded: u64,
     },
     Done,
 }
+
+/// How many reads a lingering connection does per poll before it yields, so
+/// that a client that always has data ready does not starve other tasks.
+const LINGER_READS_PER_POLL: usize = 16;
 
 pub(crate) trait Dispatch {
     type PollItem;
@@ -116,7 +123,6 @@ where
             pending_err: None,
             shut_down: false,
             linger: Linger::NotStarted,
-            rejected_head: false,
         }
     }
 
@@ -173,11 +179,10 @@ where
                     }
                     // Only a bad request head leaves a response (the automatic
                     // 400, 414 or 431) worth protecting while the client may
-                    // still be sending. After a service, body or IO error the
-                    // connection is broken and the error should surface now.
-                    if e.is_parse() {
-                        self.rejected_head = true;
-                    } else {
+                    // still be sending; the conn remembers that rejection.
+                    // After a service, body or IO error the connection is
+                    // broken and the error should surface now.
+                    if !e.is_parse() {
                         self.linger = Linger::Done;
                     }
                     // Try to hand the error to the user (client callback). The
@@ -252,51 +257,80 @@ where
     /// Drive the lingering close of a server connection that was shut down
     /// while the client may still be sending.
     fn poll_linger(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        use tokio::time::Instant;
+
         loop {
             match &mut self.linger {
                 Linger::Done => return Poll::Ready(()),
                 Linger::NotStarted => {
-                    let linger = self.conn.lingering_close().filter(|linger| {
+                    let bounds = self.conn.lingering_close().filter(|bounds| {
                         T::is_server()
+                            && bounds.is_enabled()
                             && !self.conn.is_peer_read_finished()
-                            && (self.rejected_head || self.conn.left_input_unread())
-                            && linger.max_bytes() > 0
-                            && !linger.timeout().is_zero()
+                            && self.conn.left_input_unread()
                     });
-                    self.linger = match linger {
-                        Some(linger) => Linger::Draining {
-                            deadline: Box::pin(tokio::time::sleep(linger.timeout())),
-                            started: tokio::time::Instant::now(),
-                            left: linger.max_bytes(),
-                            discarded: 0,
-                        },
+                    self.linger = match bounds {
+                        Some(bounds) => {
+                            let started = Instant::now();
+                            let give_up = started + bounds.timeout();
+                            let due = (started + bounds.idle_timeout()).min(give_up);
+                            Linger::Draining {
+                                bounds,
+                                timer: Box::pin(tokio::time::sleep_until(due)),
+                                started,
+                                give_up,
+                                last_data: started,
+                                discarded: 0,
+                            }
+                        }
                         None => Linger::Done,
                     };
                 }
                 Linger::Draining {
-                    deadline,
+                    bounds,
+                    timer,
                     started,
-                    left,
+                    give_up,
+                    last_data,
                     discarded,
                 } => {
-                    let finished = loop {
-                        match self.conn.poll_discard_read(cx) {
-                            Poll::Ready(Ok(0) | Err(_)) => break true,
-                            Poll::Ready(Ok(n)) => {
-                                *discarded += n as u64;
-                                *left = left.saturating_sub(n as u64);
-                                if *left == 0 {
-                                    break true;
-                                }
+                    let end = 'drain: {
+                        for _ in 0..LINGER_READS_PER_POLL {
+                            if bounds.max_bytes().is_some_and(|max| *discarded >= max) {
+                                break 'drain "max_bytes";
                             }
-                            Poll::Pending => break deadline.as_mut().poll(cx).is_ready(),
+                            match self.conn.poll_discard_read(cx) {
+                                Poll::Ready(Ok(0)) => break 'drain "eof",
+                                Poll::Ready(Err(_)) => break 'drain "error",
+                                Poll::Ready(Ok(n)) => {
+                                    *discarded += n as u64;
+                                    *last_data = Instant::now();
+                                    if *last_data >= *give_up {
+                                        break 'drain "timeout";
+                                    }
+                                }
+                                Poll::Pending => loop {
+                                    if timer.as_mut().poll(cx).is_pending() {
+                                        return Poll::Pending;
+                                    }
+                                    let due = (*last_data + bounds.idle_timeout()).min(*give_up);
+                                    if due <= Instant::now() {
+                                        break 'drain if due == *give_up {
+                                            "timeout"
+                                        } else {
+                                            "idle"
+                                        };
+                                    }
+                                    timer.as_mut().reset(due);
+                                },
+                            }
                         }
-                    };
-                    if !finished {
+                        cx.waker().wake_by_ref();
                         return Poll::Pending;
-                    }
+                    };
                     trace!(
                         discarded = *discarded,
+                        end,
                         linger_ms =
                             u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
                         "http1 server lingered before closing the connection",

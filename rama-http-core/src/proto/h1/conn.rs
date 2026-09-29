@@ -142,8 +142,9 @@ where
         self.io.is_read_finished()
     }
 
-    /// Whether input was left unread: an abandoned request body, or bytes
-    /// already buffered, such as a pipelined request.
+    /// Whether input was left unread: an abandoned request body, the rest of
+    /// a rejected request, or bytes already buffered, such as a pipelined
+    /// request.
     pub(crate) fn left_input_unread(&self) -> bool {
         self.state.read_abandoned || !self.io.read_buf().is_empty()
     }
@@ -840,6 +841,11 @@ where
     // - Client: there is nothing we can do
     // - Server: if Response hasn't been written yet, we can send a 4xx response
     fn on_parse_error(&mut self, err: crate::Error) -> crate::Result<()> {
+        // The client may still be sending the rest of what was rejected,
+        // even when the whole head was already read.
+        if err.is_parse() {
+            self.state.read_abandoned = true;
+        }
         if matches!(self.state.writing, Writing::Init) {
             if self.has_h2_prefix() {
                 return Err(crate::Error::new_version_h2());
@@ -948,7 +954,8 @@ struct State {
     /// How long to keep reading and discarding after shutting down, if at
     /// all. Only the server lingers.
     lingering_close: Option<LingeringClose>,
-    /// A request body was left unread when reading was closed.
+    /// Input was left unread when reading was closed: a request body, or
+    /// the rest of a rejected request.
     read_abandoned: bool,
     /// If an error occurs when there wasn't a direct way to return it
     /// back to the user, this is set.
