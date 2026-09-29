@@ -14,8 +14,9 @@ use serde::{Deserialize, de::DeserializeOwned};
 /// [`ReadSignals`] is a request extractor that reads Datastar signals from the request.
 ///
 /// `GET` and `DELETE` requests read the URL-encoded `datastar` query parameter.
-/// Other methods read JSON from the request body. A missing query parameter is
-/// treated as JSON `null`, allowing `ReadSignals<Option<T>>` to extract `None`.
+/// Other methods (e.g. `POST`, `PUT`, `PATCH` and `QUERY`) read JSON from the
+/// request body. A missing query parameter is treated as JSON `null`,
+/// allowing `ReadSignals<Option<T>>` to extract `None`.
 #[derive(Debug)]
 pub struct ReadSignals<T>(pub T);
 
@@ -164,7 +165,7 @@ mod tests {
 
     #[tokio::test]
     async fn required_extractor_reads_body_signals() {
-        for method in [Method::POST, Method::PUT, Method::PATCH] {
+        for method in [Method::POST, Method::PUT, Method::PATCH, Method::QUERY] {
             let request = build_request(method, "/", r#"{"count":42}"#);
 
             let ReadSignals(signals) = <ReadSignals<Signals> as FromRequest>::from_request(request)
