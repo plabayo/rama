@@ -5,7 +5,7 @@ use crate::std::sync::Arc;
 
 use super::IdleGuard;
 
-use crate::conn::ConnectionAbort;
+use crate::conn::{ConnectionAbort, LingeringClose};
 
 use rama_core::extensions::ExtensionsRef;
 use rama_core::graceful::ShutdownGuard;
@@ -16,7 +16,7 @@ use rama_core::{
     io::{BridgeIo, Io},
 };
 use rama_utils::macros::generate_set_and_with;
-use rama_utils::octets::{kib, mib_u64};
+use rama_utils::octets::kib;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Notify;
@@ -67,47 +67,6 @@ pub enum FirstByteTimeoutStart {
 const DEFAULT_BUF_SIZE: usize = kib(16);
 const DEFAULT_SHUTDOWN_GRACE: Duration = Duration::from_millis(50);
 const LINGER_BUF_SIZE: usize = kib(4);
-
-/// Bounds of a lingering close, see
-/// [`IoForwardService::with_lingering_close`].
-///
-/// A side lingers until its peer ends the stream, `timeout` passes, or
-/// `max_bytes` were read and discarded, whichever comes first.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LingeringClose {
-    timeout: Duration,
-    max_bytes: u64,
-}
-
-impl Default for LingeringClose {
-    /// Linger for up to 2 seconds and 1 MiB.
-    fn default() -> Self {
-        Self {
-            timeout: Duration::from_secs(2),
-            max_bytes: mib_u64(1),
-        }
-    }
-}
-
-impl LingeringClose {
-    /// Linger for at most `timeout`, discarding at most `max_bytes`.
-    #[must_use]
-    pub const fn new(timeout: Duration, max_bytes: u64) -> Self {
-        Self { timeout, max_bytes }
-    }
-
-    /// How long a side lingers at most.
-    #[must_use]
-    pub const fn timeout(&self) -> Duration {
-        self.timeout
-    }
-
-    /// How many bytes a side reads and discards at most while lingering.
-    #[must_use]
-    pub const fn max_bytes(&self) -> u64 {
-        self.max_bytes
-    }
-}
 
 /// A proxy [`Service`] which takes a [`BridgeIo`]
 /// and copies the bytes of both the source and target [`Io`]s
@@ -1046,7 +1005,7 @@ async fn linger_drain<R>(
     let mut discarded: u64 = 0;
     let drain = async {
         let mut buf = vec![0u8; LINGER_BUF_SIZE];
-        while discarded < linger.max_bytes {
+        while discarded < linger.max_bytes() {
             match reader.read(&mut buf).await {
                 Ok(0) | Err(_) => break,
                 Ok(n) => discarded += n as u64,
@@ -1061,7 +1020,7 @@ async fn linger_drain<R>(
     };
     tokio::select! {
         () = drain => {}
-        () = tokio::time::sleep(linger.timeout) => {}
+        () = tokio::time::sleep(linger.timeout()) => {}
         () = cancelled => {}
     }
     tracing::trace!(

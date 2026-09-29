@@ -187,3 +187,55 @@ impl MaxConcurrency {
         self.0.watch()
     }
 }
+
+/// Bounds of a lingering close: after shutting down its own side, a
+/// connection keeps reading and discarding what its peer still sends before
+/// it is closed.
+///
+/// Closing a socket that still has unread input sends a reset instead of a
+/// clean close, and on Windows a reset makes the peer discard what it has
+/// not read yet, such as the tail of a response that was just sent to it.
+/// The same happens when the peer sends after the socket was closed.
+/// Lingering keeps the socket open until the peer is done, as nginx does
+/// with `lingering_close`.
+///
+/// A connection lingers until its peer ends the stream, `timeout` passes, or
+/// `max_bytes` were read and discarded, whichever comes first. Used by
+/// [`IoForwardService`](crate::proxy::IoForwardService) and rama's HTTP/1
+/// server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LingeringClose {
+    timeout: std::time::Duration,
+    max_bytes: u64,
+}
+
+impl Default for LingeringClose {
+    /// Linger for up to 2 seconds and 1 MiB.
+    fn default() -> Self {
+        Self {
+            timeout: std::time::Duration::from_secs(2),
+            max_bytes: rama_utils::octets::mib_u64(1),
+        }
+    }
+}
+
+impl LingeringClose {
+    /// Linger for at most `timeout`, discarding at most `max_bytes`.
+    #[must_use]
+    pub const fn new(timeout: std::time::Duration, max_bytes: u64) -> Self {
+        Self { timeout, max_bytes }
+    }
+
+    /// How long a connection lingers at most.
+    #[must_use]
+    pub const fn timeout(&self) -> std::time::Duration {
+        self.timeout
+    }
+
+    /// How many bytes a connection reads and discards at most while
+    /// lingering.
+    #[must_use]
+    pub const fn max_bytes(&self) -> u64 {
+        self.max_bytes
+    }
+}

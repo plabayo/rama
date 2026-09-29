@@ -15,7 +15,7 @@ use rama_http_types::body::Frame;
 use rama_http_types::header::CONNECTION;
 use rama_http_types::proto::h1::ext::{ConnectionClose, informational::OnInformational};
 use rama_http_types::{HeaderMap, HeaderValue, Method, Version};
-use rama_net::conn::{ConnectionHealthWatcher, MaxConcurrency};
+use rama_net::conn::{ConnectionHealthWatcher, LingeringClose, MaxConcurrency};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::time::{Instant, Sleep};
 
@@ -55,6 +55,8 @@ where
             io: Buffered::new(io),
             state: State {
                 allow_half_close: false,
+                lingering_close: None,
+                read_abandoned: false,
                 error: None,
                 keep_alive: KA::Busy,
                 method: None,
@@ -124,6 +126,37 @@ where
 
     pub(crate) fn set_allow_half_close(&mut self) {
         self.state.allow_half_close = true;
+    }
+
+    pub(crate) fn set_lingering_close(&mut self, linger: Option<LingeringClose>) {
+        self.state.lingering_close = linger;
+    }
+
+    pub(crate) fn lingering_close(&self) -> Option<LingeringClose> {
+        self.state.lingering_close
+    }
+
+    /// Whether the peer ended its stream or reading from it failed, so it
+    /// sends nothing more.
+    pub(crate) fn is_peer_read_finished(&self) -> bool {
+        self.io.is_read_finished()
+    }
+
+    /// Whether input was left unread: an abandoned request body, or bytes
+    /// already buffered, such as a pipelined request.
+    pub(crate) fn left_input_unread(&self) -> bool {
+        self.state.read_abandoned || !self.io.read_buf().is_empty()
+    }
+
+    /// Read and drop input. Returns how many bytes were dropped, or 0 once
+    /// the peer ended its stream.
+    pub(crate) fn poll_discard_read(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<usize>> {
+        let buffered = self.io.discard_read_buf();
+        if buffered > 0 {
+            return Poll::Ready(Ok(buffered));
+        }
+        let read = ready!(self.io.poll_read_from_io(cx))?;
+        Poll::Ready(Ok(self.io.discard_read_buf().max(read)))
     }
 
     pub(crate) fn disable_date_header(&mut self) {
@@ -912,6 +945,11 @@ impl<I: Unpin, B, T> Unpin for Conn<I, B, T> {}
 
 struct State {
     allow_half_close: bool,
+    /// How long to keep reading and discarding after shutting down, if at
+    /// all. Only the server lingers.
+    lingering_close: Option<LingeringClose>,
+    /// A request body was left unread when reading was closed.
+    read_abandoned: bool,
     /// If an error occurs when there wasn't a direct way to return it
     /// back to the user, this is set.
     error: Option<crate::Error>,
@@ -1039,8 +1077,17 @@ impl KA {
 }
 
 impl State {
+    /// Remember that a request body was left unread, so the peer may still
+    /// be sending it.
+    fn abandon_reading(&mut self) {
+        if matches!(self.reading, Reading::Body(..) | Reading::Continue(..)) {
+            self.read_abandoned = true;
+        }
+    }
+
     fn close(&mut self) {
         trace!("State::close()");
+        self.abandon_reading();
         self.reading = Reading::Closed;
         self.writing = Writing::Closed;
         self.keep_alive.disable();
@@ -1048,6 +1095,7 @@ impl State {
 
     fn close_read(&mut self) {
         trace!("State::close_read()");
+        self.abandon_reading();
         self.reading = Reading::Closed;
         self.keep_alive.disable();
     }

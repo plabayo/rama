@@ -38,6 +38,10 @@ pub(crate) struct Buffered<T, B> {
     io: T,
     partial_len: Option<usize>,
     read_blocked: bool,
+    /// The peer ended its stream: a read with room returned nothing.
+    read_eof: bool,
+    /// A read failed, so the peer is gone or the transport is broken.
+    read_failed: bool,
     read_buf: BytesMut,
     read_buf_strategy: ReadStrategy,
     write_buf: WriteBuf<B>,
@@ -78,6 +82,8 @@ where
             io,
             partial_len: None,
             read_blocked: false,
+            read_eof: false,
+            read_failed: false,
             read_buf: BytesMut::with_capacity(0),
             read_buf_strategy: ReadStrategy::default(),
             write_buf,
@@ -121,6 +127,18 @@ where
 
     pub(crate) fn read_buf(&self) -> &[u8] {
         self.read_buf.as_ref()
+    }
+
+    /// Drop what was read but not parsed yet, returning how many bytes.
+    pub(crate) fn discard_read_buf(&mut self) -> usize {
+        let len = self.read_buf.len();
+        self.read_buf.clear();
+        len
+    }
+
+    /// Whether the peer ended its stream or reading from it failed.
+    pub(crate) fn is_read_finished(&self) -> bool {
+        self.read_eof || self.read_failed
     }
 
     /// Return the "allocated" available space, not the potential space
@@ -238,9 +256,11 @@ where
         // bytes onto `dst`.
         let dst = unsafe { self.read_buf.chunk_mut().as_uninit_slice_mut() };
         let mut buf = ReadBuf::uninit(dst);
+        let had_room = buf.remaining() > 0;
         match Pin::new(&mut self.io).poll_read(cx, &mut buf) {
             Poll::Ready(Ok(_)) => {
                 let n = buf.filled().len();
+                self.read_eof |= n == 0 && had_room;
                 trace!("received {n} bytes");
                 // Safety: we just read that many bytes into the
                 // uninitialized part of the buffer, so this is okay.
@@ -255,7 +275,10 @@ where
                 self.read_blocked = true;
                 Poll::Pending
             }
-            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
+            Poll::Ready(Err(e)) => {
+                self.read_failed = true;
+                Poll::Ready(Err(e))
+            }
         }
     }
 
