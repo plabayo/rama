@@ -3,9 +3,12 @@ use std::str::{self, FromStr};
 
 use rama_core::error::{BoxError, ErrorContext as _};
 use rama_http_types::HeaderValue;
-use rama_utils::collections::{NonEmptySmallVec, NonEmptyVec};
+use rama_utils::{
+    bytes::trim_ows,
+    collections::{NonEmptySmallVec, NonEmptyVec},
+};
 
-use crate::util::{ListMembers, trim_ows};
+use crate::util::ListMembers;
 
 /// Header value which is either any `*` or
 /// the given values separated by the defined separator.

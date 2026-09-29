@@ -3,7 +3,7 @@ use crate::x_robots_tag::{CustomRule, DirectiveDateTime, MaxImagePreviewSetting}
 use rama_core::error::BoxErrorExt as _;
 use rama_core::error::{BoxError, ErrorContext as _, ErrorExt as _};
 use rama_core::telemetry::tracing;
-use rama_utils::macros::generate_set_and_with;
+use rama_utils::{bytes::trim_ows, macros::generate_set_and_with};
 use std::fmt::{self, Display, Formatter};
 
 macro_rules! directive_type {
@@ -649,16 +649,6 @@ fn find_delimiter(buffer: &[u8], from: usize) -> Option<(usize, Delimiter)> {
 }
 
 /// Trim OWS (SP and HTAB).
-fn trim_space(mut buffer: &[u8]) -> &[u8] {
-    while let [b' ' | b'\t', rest @ ..] = buffer {
-        buffer = rest;
-    }
-    while let [rest @ .., b' ' | b'\t'] = buffer {
-        buffer = rest;
-    }
-    buffer
-}
-
 impl Iterator for Parser<'_> {
     type Item = Result<RobotsTag, BoxError>;
 
@@ -686,7 +676,7 @@ impl Iterator for Parser<'_> {
                         continue;
                     }
 
-                    let key_buffer = trim_space(self.head(index));
+                    let key_buffer = trim_ows(self.head(index));
                     if let Some(key) = find_pair_key_fn(key_buffer) {
                         pair_key = key
                     } else {
@@ -725,7 +715,7 @@ impl Iterator for Parser<'_> {
                     value_commas = 0;
                 }
                 Some((index, Delimiter::Comma)) => {
-                    let raw_value = trim_space(self.head(index));
+                    let raw_value = trim_ows(self.head(index));
                     // an empty list element is ignored (RFC 9110 §5.6.1)
                     if pair_key.is_empty() && raw_value.is_empty() {
                         self.advance_past(index);
@@ -757,7 +747,7 @@ impl Iterator for Parser<'_> {
                     value_commas = 0;
                 }
                 None => {
-                    let value = match std::str::from_utf8(trim_space(self.buffer)) {
+                    let value = match std::str::from_utf8(trim_ows(self.buffer)) {
                         Ok(value) => value,
                         Err(err) => {
                             self.buffer = &[];

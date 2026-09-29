@@ -1,4 +1,4 @@
-use std::borrow::Cow;
+use std::{borrow::Cow, iter, ops::Range};
 
 use rama_core::error::{BoxError, BoxErrorExt as _};
 use rama_utils::byte_set::{set_each, set_range};
@@ -143,6 +143,48 @@ pub(crate) fn scan_quoted_string<'a>(
     ))
 }
 
+/// Byte ranges of the `SEP`-separated members of `input`, never cut inside a quoted-string.
+///
+/// A quoted-pair never closes the string (RFC 9110 §5.6.4); an unterminated one yields
+/// `Err(start)` for the rest of the input, which ends the iteration.
+pub(crate) fn unquoted_members<const SEP: u8>(
+    input: &[u8],
+) -> impl Iterator<Item = Result<Range<usize>, usize>> + '_ {
+    let mut start = Some(0_usize);
+    iter::from_fn(move || {
+        let from = start.take()?;
+        let mut cursor = from;
+        loop {
+            let found = input
+                .get(cursor..)
+                .unwrap_or_default()
+                .iter()
+                .position(|byte| *byte == SEP || *byte == b'"')
+                .map(|offset| cursor.saturating_add(offset));
+            match found {
+                Some(end) if input.get(end) == Some(&SEP) => {
+                    start = Some(end.saturating_add(1));
+                    return Some(Ok(from..end));
+                }
+                Some(quote) => match skip_quoted(input, quote) {
+                    Some(next) => cursor = next,
+                    None => return Some(Err(from)),
+                },
+                None => return Some(Ok(from..input.len())),
+            }
+        }
+    })
+}
+
+/// [`unquoted_members`] of a `str` for an ASCII `SEP`; an unterminated quoted-string runs to the end.
+pub(crate) fn split_unquoted<const SEP: u8>(s: &str) -> impl Iterator<Item = &str> {
+    // `SEP` and `"` are ASCII, so every cut keeps a char boundary
+    unquoted_members::<SEP>(s.as_bytes()).map(move |member| {
+        let range = member.unwrap_or_else(|from| from..s.len());
+        s.get(range).unwrap_or_default()
+    })
+}
+
 /// The offset past the quoted string opening at `quote`, if terminated (content unchecked).
 pub(crate) fn skip_quoted(input: &[u8], quote: usize) -> Option<usize> {
     let mut cursor = quote.saturating_add(1);
@@ -162,22 +204,6 @@ pub(crate) fn skip_ows(input: &[u8], cursor: &mut usize) {
     {
         *cursor = cursor.saturating_add(1);
     }
-}
-
-pub(crate) fn trim_ows(mut input: &[u8]) -> &[u8] {
-    while let Some((&first, rest)) = input.split_first() {
-        if !matches!(first, b' ' | b'\t') {
-            break;
-        }
-        input = rest;
-    }
-    while let Some((&last, rest)) = input.split_last() {
-        if !matches!(last, b' ' | b'\t') {
-            break;
-        }
-        input = rest;
-    }
-    input
 }
 
 /// Largest `delta-seconds` kept (RFC 9111 §1.2.2); larger values clamp to it.
@@ -238,6 +264,7 @@ const fn is_quoted_pair_byte(byte: u8) -> bool {
 mod tests {
     use super::*;
     use crate::util::for_each_small_input;
+    use rama_utils::bytes::trim_ows;
 
     #[test]
     fn list_members_preserve_quotes_and_empty_elements() {
@@ -284,10 +311,7 @@ mod tests {
     }
 
     #[test]
-    fn trims_and_skips_only_optional_whitespace() {
-        assert_eq!(trim_ows(b" \t value\t "), b"value");
-        assert_eq!(trim_ows(b"\rvalue\n"), b"\rvalue\n");
-
+    fn skips_only_optional_whitespace() {
         let mut cursor = 0;
         skip_ows(b" \tvalue", &mut cursor);
         assert_eq!(cursor, 2);
@@ -312,7 +336,6 @@ mod tests {
                 skip_ows(input, &mut cursor);
             }
         });
-        assert_eq!(trim_ows(b" \t \t"), b"");
     }
 
     #[test]

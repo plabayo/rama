@@ -17,7 +17,7 @@ pub(crate) use self::fmt::fmt;
 pub use self::http_date::HttpDate;
 pub(crate) use self::http_syntax::{
     ListMembers, QuotedString, parse_delta_seconds, parse_digits, parse_port, scan_quoted_string,
-    skip_ows, skip_quoted, trim_ows,
+    skip_ows, split_unquoted, unquoted_members,
 };
 pub(crate) use self::iter::IterExt;
 //pub use language_tags::LanguageTag;

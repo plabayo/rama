@@ -3,14 +3,12 @@ use std::{fmt, iter, str::FromStr};
 use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext as _};
 use rama_core::telemetry::tracing;
 use rama_http_types::HeaderValue;
-use rama_utils::collections::NonEmptyVec;
+use rama_utils::{bytes::trim_ows, collections::NonEmptyVec};
 
 use super::IterExt;
 use crate::{
     Error,
-    util::{
-        FlatCsvSeparator, trim_ows, try_encode_non_empty_vec_of_bytes_as_flat_csv_header_value,
-    },
+    util::{FlatCsvSeparator, try_encode_non_empty_vec_of_bytes_as_flat_csv_header_value},
 };
 
 /// An entity tag, defined in [RFC7232](https://tools.ietf.org/html/rfc7232#section-2.3)

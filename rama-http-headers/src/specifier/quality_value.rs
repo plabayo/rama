@@ -3,13 +3,13 @@ use std::ascii::AsciiExt;
 use std::cmp;
 use std::default::Default;
 use std::fmt;
-use std::iter;
 use std::str;
 
 use rama_utils::collections::NonEmptySmallVec;
 use rama_utils::collections::NonEmptyVec;
+use rama_utils::str::trim_ows;
 
-use crate::{Error, util::skip_quoted};
+use crate::{Error, util::unquoted_members};
 
 use self::internal::IntoQuality;
 
@@ -266,50 +266,17 @@ impl<T: str::FromStr> str::FromStr for QualityValue<T> {
     }
 }
 
-/// Trim SP and HTAB, which are ASCII, so the byte cuts keep char boundaries.
-fn trim_ows(s: &str) -> &str {
-    let bytes = s.as_bytes();
-    let start = bytes
-        .iter()
-        .position(|byte| !matches!(byte, b' ' | b'\t'))
-        .unwrap_or(bytes.len());
-    let end = bytes
-        .iter()
-        .rposition(|byte| !matches!(byte, b' ' | b'\t'))
-        .map_or(start, |last| last.saturating_add(1));
-    s.get(start..end).unwrap_or_default()
-}
-
 /// The `;`-separated parts of a list item, each with the offset of the `;` before it.
 ///
 /// Quoted strings, including their quoted-pairs, never split; an unterminated one fails.
 fn item_parts(s: &str) -> impl Iterator<Item = Result<(usize, &str), Error>> {
-    let bytes = s.as_bytes();
-    let mut start = Some(0_usize);
-    iter::from_fn(move || {
-        let from = start.take()?;
-        let separator = from.saturating_sub(1);
-        let mut cursor = from;
-        loop {
-            // outside quotes only `;` and `"` matter
-            let found = bytes
-                .get(cursor..)
-                .unwrap_or_default()
-                .iter()
-                .position(|byte| matches!(byte, b';' | b'"'))
-                .map(|offset| cursor.saturating_add(offset));
-            match found {
-                None => return Some(Ok((separator, s.get(from..).unwrap_or_default()))),
-                Some(end) if bytes.get(end) == Some(&b';') => {
-                    start = Some(end.saturating_add(1));
-                    return Some(Ok((separator, s.get(from..end).unwrap_or_default())));
-                }
-                Some(quote) => match skip_quoted(bytes, quote) {
-                    Some(next) => cursor = next,
-                    None => return Some(Err(Error::invalid())),
-                },
-            }
-        }
+    // `;` and `"` are ASCII, so every cut keeps a char boundary
+    unquoted_members::<b';'>(s.as_bytes()).map(move |member| {
+        let range = member.map_err(|_start| Error::invalid())?;
+        Ok((
+            range.start.saturating_sub(1),
+            s.get(range).unwrap_or_default(),
+        ))
     })
 }
 

@@ -8,11 +8,11 @@ use rama_net::{
     address::{AuthorityRef, Host, HostRef, HostWithPort, OptPort},
     tls::ApplicationProtocol,
 };
-use rama_utils::{collections::NonEmptyVec, macros::generate_set_and_with};
+use rama_utils::{bytes::trim_ows, collections::NonEmptyVec, macros::generate_set_and_with};
 
 use crate::util::{
     ListMembers, QuotedString, Seconds, is_http_token_byte, parse_delta_seconds,
-    scan_quoted_string, skip_ows, trim_ows,
+    scan_quoted_string, skip_ows,
 };
 use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 

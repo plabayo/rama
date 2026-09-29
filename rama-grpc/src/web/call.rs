@@ -20,7 +20,7 @@ use rama_http_types::{
     body::{Frame, SizeHint, StreamingBody},
     header,
 };
-use rama_utils::octets::kib;
+use rama_utils::{bytes::trim_ows, octets::kib};
 
 use crate::Status;
 
@@ -465,17 +465,6 @@ fn decode_trailers_frame(mut buf: Bytes) -> Result<Option<HeaderMap>, Status> {
     }
 
     Ok(Some(map))
-}
-
-/// Trim OWS (SP and HTAB) only, so other control bytes still fail the value.
-fn trim_ows(mut value: &[u8]) -> &[u8] {
-    while let [b' ' | b'\t', rest @ ..] = value {
-        value = rest;
-    }
-    while let [rest @ .., b' ' | b'\t'] = value {
-        value = rest;
-    }
-    value
 }
 
 fn make_trailers_frame(trailers: HeaderMap) -> Bytes {

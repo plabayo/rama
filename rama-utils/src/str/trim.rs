@@ -1,3 +1,19 @@
+/// Trim HTTP optional whitespace (SP and HTAB, RFC 9110 §5.6.3), see [`crate::bytes::trim_ows`].
+#[must_use]
+pub fn trim_ows(value: &str) -> &str {
+    let bytes = value.as_bytes();
+    let start = bytes
+        .iter()
+        .position(|byte| !matches!(byte, b' ' | b'\t'))
+        .unwrap_or(bytes.len());
+    let end = bytes
+        .iter()
+        .rposition(|byte| !matches!(byte, b' ' | b'\t'))
+        .map_or(start, |last| last.saturating_add(1));
+    // SP and HTAB are ASCII, so both cuts are char boundaries
+    value.get(start..end).unwrap_or_default()
+}
+
 /// Trim surrounding whitespace and return `None` when nothing remains.
 #[must_use]
 pub fn trim_non_empty(value: &str) -> Option<&str> {
@@ -21,6 +37,19 @@ pub fn trim_ascii_quotes_non_empty(value: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trims_only_ows() {
+        for (input, expected) in [
+            ("", ""),
+            (" \t ", ""),
+            (" \ta b\t ", "a b"),
+            ("\u{a0}a\u{a0}", "\u{a0}a\u{a0}"),
+            ("\t\r\u{2003}é\n ", "\r\u{2003}é\n"),
+        ] {
+            assert_eq!(trim_ows(input), expected, "{input:?}");
+        }
+    }
 
     #[test]
     fn trims_without_allocating() {

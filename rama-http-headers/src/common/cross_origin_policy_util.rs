@@ -8,9 +8,10 @@
 
 use std::borrow::Cow;
 use std::fmt::{self, Write as _};
-use std::iter;
 
 use rama_core::telemetry::tracing;
+
+use crate::util::split_unquoted;
 
 pub(super) struct SingleTokenWithReportTo<'a> {
     pub(super) token: &'a str,
@@ -23,7 +24,8 @@ pub(super) struct SingleTokenWithReportTo<'a> {
 /// equals, missing parameter name, malformed sf-string). Unknown parameter
 /// names are silently dropped, as browsers do.
 pub(super) fn parse_single_token_with_report_to(raw: &str) -> Option<SingleTokenWithReportTo<'_>> {
-    let mut parts = split_parameters(raw);
+    // sf-string escapes (RFC 8941 §3.3.3) are quoted-pairs, so they never split either
+    let mut parts = split_unquoted::<b';'>(raw);
     let token = parts.next().map(str::trim).filter(|t| !t.is_empty())?;
     let mut report_to: Option<Cow<'static, str>> = None;
     for raw_param in parts {
@@ -50,54 +52,6 @@ pub(super) fn parse_single_token_with_report_to(raw: &str) -> Option<SingleToken
         }
     }
     Some(SingleTokenWithReportTo { token, report_to })
-}
-
-/// Split on `;` outside sf-strings.
-fn split_parameters(raw: &str) -> impl Iterator<Item = &str> {
-    let mut rest = Some(raw);
-    iter::from_fn(move || {
-        let s = rest.take()?;
-        // `;` is ASCII, so byte offsets around it are char boundaries
-        match unquoted_semicolon(s.as_bytes()) {
-            Some(idx) => {
-                rest = s.get(idx.saturating_add(1)..);
-                s.get(..idx)
-            }
-            None => Some(s),
-        }
-    })
-}
-
-fn unquoted_semicolon(bytes: &[u8]) -> Option<usize> {
-    // only text from the first quote on needs the sf-string state machine
-    let first = bytes.iter().position(|&b| b == b';' || b == b'"')?;
-    if bytes.get(first) == Some(&b';') {
-        return Some(first);
-    }
-    quoted_semicolon(bytes.get(first..)?).map(|idx| idx.saturating_add(first))
-}
-
-fn quoted_semicolon(bytes: &[u8]) -> Option<usize> {
-    let mut in_string = false;
-    let mut escaped = false;
-    bytes.iter().position(|&b| {
-        if escaped {
-            escaped = false;
-            return false;
-        }
-        match b {
-            b'\\' if in_string => {
-                escaped = true;
-                false
-            }
-            b'"' => {
-                in_string = !in_string;
-                false
-            }
-            b';' => !in_string,
-            _ => false,
-        }
-    })
 }
 
 /// Decode one complete RFC 8941 §4.2.5 sf-string, quotes included.

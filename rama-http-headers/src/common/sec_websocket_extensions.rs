@@ -13,9 +13,9 @@ use rama_core::error::{BoxError, ErrorContext as _, ErrorExt};
 use rama_core::extensions::Extension as ExtensionTrait;
 use rama_core::telemetry::tracing;
 use rama_http_types::HeaderValue;
-use rama_utils::{collections::NonEmptySmallVec, str::arcstr::ArcStr};
+use rama_utils::{bytes::trim_ows, collections::NonEmptySmallVec, str::arcstr::ArcStr};
 
-use crate::util::{ListMembers, trim_ows};
+use crate::util::ListMembers;
 
 derive_non_empty_flat_csv_header! {
     #[header(name = SEC_WEBSOCKET_EXTENSIONS, sep = Comma)]
