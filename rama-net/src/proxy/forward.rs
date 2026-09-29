@@ -841,7 +841,7 @@ mod tests {
         use rama_core::bytes::Bytes;
         use rama_core::io::{PrefixedIo, ReplayReader};
 
-        // A 2 byte peek splits a length-prefixed request in half,
+        // A 2 byte peek splits a length-prefixed request;
         // some servers reset on a first segment that short.
         let (mut client, proxy) = duplex(64);
         client.write_all(b"\x00\x05hello").await.unwrap();
@@ -853,12 +853,7 @@ mod tests {
 
         run_default(left, right).await;
 
-        let writes = writes.lock();
-        assert_eq!(
-            writes.first().map(Vec::as_slice),
-            Some(&b"\x00\x00\x00\x05hello"[..]),
-            "writes: {writes:?}",
-        );
+        assert_eq!(*writes.lock(), [b"\x00\x00\x00\x05hello".to_vec()]);
     }
 
     async fn shutdown_pair() -> (Shutdown, tokio::sync::oneshot::Sender<()>) {
