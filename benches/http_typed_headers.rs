@@ -94,6 +94,7 @@ mod decode {
     );
     decode_bench!(connection, Connection, "keep-alive, Upgrade");
     decode_bench!(te, Te, "trailers, deflate;q=0.5");
+    decode_bench!(te_weight_then_param, Te, "trailers, deflate;q=0.5;foo=bar");
     decode_bench!(vary, Vary, "Accept-Encoding, Origin, Accept-Language");
     decode_bench!(host, Host, "example.com:8443");
     decode_bench!(origin, Origin, "https://example.com:8443");
