@@ -1245,6 +1245,7 @@ mod tests {
         .await;
     }
 
+    #[cfg(feature = "compression")]
     async fn negotiated_extensions(acceptor: &WebSocketAcceptor, offer: &str) -> Option<String> {
         let request = Request::builder()
             .uri("/")
@@ -1264,6 +1265,7 @@ mod tests {
             .map(|value| value.to_str().unwrap().to_owned())
     }
 
+    #[cfg(feature = "compression")]
     #[tokio::test]
     async fn per_message_deflate_declines_only_the_invalid_offer() {
         let acceptor = WebSocketAcceptor::new().with_per_message_deflate();
@@ -1275,6 +1277,7 @@ mod tests {
         assert_eq!(accepted.as_deref(), Some("permessage-deflate"));
     }
 
+    #[cfg(feature = "compression")]
     #[tokio::test]
     async fn per_message_deflate_offers_split_outside_quotes_only() {
         let acceptor = WebSocketAcceptor::new().with_per_message_deflate();
@@ -1283,6 +1286,7 @@ mod tests {
         assert_eq!(accepted, None);
     }
 
+    #[cfg(feature = "compression")]
     #[tokio::test]
     async fn per_message_deflate_caps_configured_8_bit_windows_to_9() {
         let acceptor = WebSocketAcceptor::new().with_per_message_deflate_with_config(
@@ -1300,6 +1304,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "compression")]
     #[tokio::test]
     async fn per_message_deflate_declines_an_8_bit_server_window() {
         let acceptor = WebSocketAcceptor::new().with_per_message_deflate();

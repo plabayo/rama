@@ -1558,6 +1558,7 @@ mod tests {
     use super::*;
     use rama_core::{ServiceInput, bytes::Bytes, service::service_fn};
     use rama_http::HeaderMap;
+    #[cfg(feature = "compression")]
     use std::io::Cursor;
     use std::sync::{
         Arc,
