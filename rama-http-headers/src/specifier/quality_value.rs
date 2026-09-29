@@ -528,6 +528,8 @@ mod tests {
             ("a;q=0.5;;b=1", "a;b=1", 500),
             (" text/html;q=0.5", "text/html", 500),
             ("text/html;q=0.5\t", "text/html", 500),
+            ("a;\tq=0.5", "a", 500),
+            ("a\t;q=0.5", "a", 500),
             // an item name is never taken as the weight
             ("q=1;;a=b", "q=1;a=b", 1000),
             ("q=1;q=0.5;a=b", "q=1;a=b", 500),

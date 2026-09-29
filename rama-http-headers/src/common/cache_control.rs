@@ -716,10 +716,14 @@ mod tests {
             test_decode::<CacheControl>(&[r#"foo="a\",b", max-age=5"#]).unwrap(),
             CacheControl::new().with_max_age_seconds(5),
         );
-        // an unterminated quoted-string keeps the directives before it
+        // an unterminated quoted-string keeps the directives before it, and swallows those after
         assert_eq!(
             test_decode::<CacheControl>(&[r#"no-store, foo="open, max-age=5"#]).unwrap(),
             CacheControl::new().with_no_store(),
+        );
+        assert_eq!(
+            test_decode::<CacheControl>(&[r#"max-age=5, foo="open, no-store"#]).unwrap(),
+            CacheControl::new().with_max_age_seconds(5),
         );
     }
 
