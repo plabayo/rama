@@ -37,7 +37,7 @@ pub(super) fn parse_single_token_with_report_to(raw: &str) -> Option<SingleToken
             // tolerate the unquoted token form too, as browsers do
             let value = if raw_value.starts_with('"') {
                 parse_sf_string(raw_value)?
-            } else if raw_value.contains('"') {
+            } else if raw_value.bytes().any(|b| b == b'"') {
                 // a bare token cannot hold a quote
                 return None;
             } else {
@@ -69,6 +69,15 @@ fn split_parameters(raw: &str) -> impl Iterator<Item = &str> {
 }
 
 fn unquoted_semicolon(bytes: &[u8]) -> Option<usize> {
+    // only text from the first quote on needs the sf-string state machine
+    let first = bytes.iter().position(|&b| b == b';' || b == b'"')?;
+    if bytes.get(first) == Some(&b';') {
+        return Some(first);
+    }
+    quoted_semicolon(bytes.get(first..)?).map(|idx| idx.saturating_add(first))
+}
+
+fn quoted_semicolon(bytes: &[u8]) -> Option<usize> {
     let mut in_string = false;
     let mut escaped = false;
     bytes.iter().position(|&b| {

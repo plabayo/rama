@@ -11,7 +11,7 @@ pub use self::directive::{
     AllowlistSource, PermissionsPolicyDirective, PermissionsPolicyDirectiveName,
 };
 
-use std::fmt;
+use std::{fmt, iter};
 
 use ahash::HashMap;
 use rama_http_types::{HeaderName, HeaderValue};
@@ -445,25 +445,37 @@ impl HeaderEncode for PermissionsPolicy {
 }
 
 /// Directive count up to which repeats are found by a linear scan.
-const MAX_SCANNED_DIRECTIVES: usize = 32;
+const MAX_SCANNED_DIRECTIVES: usize = 64;
 
 /// Split the header value on commas that are not inside `()`. The
 /// allow-list is parenthesised, so a comma inside an allow-list isn't
 /// the directive separator. (Tokens themselves don't contain commas,
 /// and origin sf-strings don't either by spec.)
 fn split_top_level_commas(s: &str) -> impl Iterator<Item = &str> {
-    let mut depth = 0_usize;
-    s.split(move |c| match c {
-        '(' => {
-            depth = depth.saturating_add(1);
-            false
+    let mut rest = Some(s);
+    iter::from_fn(move || {
+        let s = rest.take()?;
+        let mut depth = 0_usize;
+        // `,` is ASCII, so byte offsets around it are char boundaries
+        let comma = s.bytes().position(|b| match b {
+            b'(' => {
+                depth = depth.saturating_add(1);
+                false
+            }
+            b')' => {
+                depth = depth.saturating_sub(1);
+                false
+            }
+            b',' => depth == 0,
+            _ => false,
+        });
+        match comma {
+            Some(idx) => {
+                rest = s.get(idx.saturating_add(1)..);
+                s.get(..idx)
+            }
+            None => Some(s),
         }
-        ')' => {
-            depth = depth.saturating_sub(1);
-            false
-        }
-        ',' => depth == 0,
-        _ => false,
     })
 }
 
