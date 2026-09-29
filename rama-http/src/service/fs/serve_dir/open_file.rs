@@ -201,7 +201,7 @@ pub(super) async fn open_file(
                     range_header,
                     etag.as_ref(),
                     last_modified.as_ref(),
-                    SystemTime::now(),
+                    SystemTime::now,
                 );
                 let maybe_range =
                     try_parse_range(range_header, meta.len(), ignore_multi_range_requests);
@@ -244,7 +244,7 @@ pub(super) async fn open_file(
                     range_header,
                     etag.as_ref(),
                     last_modified.as_ref(),
-                    SystemTime::now(),
+                    SystemTime::now,
                 );
                 let maybe_range =
                     try_parse_range(range_header, content_length, ignore_multi_range_requests);
@@ -295,7 +295,7 @@ pub(super) async fn open_file(
                     range_header,
                     etag.as_ref(),
                     last_modified.as_ref(),
-                    SystemTime::now(),
+                    SystemTime::now,
                 );
                 let maybe_range =
                     try_parse_range(range_header, meta.len(), ignore_multi_range_requests);
@@ -342,7 +342,7 @@ pub(super) async fn open_file(
                     range_header,
                     etag.as_ref(),
                     last_modified.as_ref(),
-                    SystemTime::now(),
+                    SystemTime::now,
                 );
                 let maybe_range =
                     try_parse_range(range_header, content_length, ignore_multi_range_requests);
@@ -427,7 +427,7 @@ impl Preconditions {
         range: Option<&'a str>,
         etag: Option<&ETag>,
         last_modified: Option<&LastModified>,
-        now: SystemTime,
+        now: impl FnOnce() -> SystemTime,
     ) -> Option<&'a str> {
         match &self.if_range {
             IfRangeCondition::Absent => range,
@@ -435,7 +435,7 @@ impl Preconditions {
                 if !if_range.is_modified(
                     etag,
                     last_modified
-                        .filter(|lm| lm.is_strong(now))
+                        .filter(|lm| lm.is_strong(now()))
                         .map(LastModified::to_typed)
                         .as_ref(),
                 ) =>
@@ -898,11 +898,11 @@ mod tests {
         let range = Some("bytes=0-1");
         let strong_at = modified.checked_add(Duration::from_secs(1)).unwrap();
         assert_eq!(
-            preconditions.applicable_range(range, None, Some(&last_modified), modified),
+            preconditions.applicable_range(range, None, Some(&last_modified), || modified),
             None
         );
         assert_eq!(
-            preconditions.applicable_range(range, None, Some(&last_modified), strong_at),
+            preconditions.applicable_range(range, None, Some(&last_modified), || strong_at),
             range
         );
     }
