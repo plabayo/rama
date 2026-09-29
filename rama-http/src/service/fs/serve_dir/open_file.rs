@@ -643,32 +643,20 @@ async fn reject_symlink(path: &Path) -> io::Result<()> {
     }
 }
 
-/// Whether `meta` describes a symlink-like entry that should be rejected.
-///
-/// On Windows, reject all reparse points, including those that
-/// [`std::fs::FileType::is_symlink`] does not classify as symlinks.
-#[cfg_attr(
-    not(windows),
-    allow(
-        clippy::needless_bool,
-        reason = "simplifying the non-Windows body would remove the Windows reparse-point check"
-    )
-)]
+/// Whether `meta` describes a symlink that should be rejected.
+#[cfg(not(windows))]
 fn is_symlink_like(meta: &Metadata) -> bool {
-    if meta.file_type().is_symlink() {
-        return true;
-    }
+    meta.file_type().is_symlink()
+}
 
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt as _;
-        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
-        if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-            return true;
-        }
-    }
+/// Reject all reparse points, including those that
+/// [`std::fs::FileType::is_symlink`] does not classify as symlinks.
+#[cfg(windows)]
+fn is_symlink_like(meta: &Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt as _;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
 
-    false
+    meta.file_type().is_symlink() || meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
 }
 
 /// Handle directory requests based on the configured directory serve mode.
