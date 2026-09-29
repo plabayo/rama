@@ -115,3 +115,30 @@ impl Wants {
         (self.0 & other.0) == other.0
     }
 }
+
+#[cfg(test)]
+pub(crate) mod test_util {
+    use super::{Http1Transaction, ParseContext, ServerTransaction};
+    use rama_core::{bytes::BytesMut, extensions::Extensions};
+    use rama_http_types::HeaderMap;
+    use rama_net::uri::Uri;
+
+    /// The target and headers an HTTP/1 server receives for `raw`.
+    pub(crate) fn receive(raw: &str) -> (Uri, HeaderMap) {
+        let head = ServerTransaction::parse(
+            &mut BytesMut::from(raw),
+            ParseContext {
+                req_method: &mut None,
+                h1_parser_config: Default::default(),
+                h1_max_headers: None,
+                h09_responses: false,
+                on_informational: &mut None,
+                prepared_extensions: &mut Some(Extensions::default()),
+            },
+        )
+        .unwrap()
+        .unwrap()
+        .head;
+        (head.subject.1, head.headers)
+    }
+}

@@ -13,6 +13,8 @@ pub(crate) use self::h1::dispatch;
 
 pub(crate) mod h2;
 
+pub(crate) mod target;
+
 /// An Incoming Message head. Includes request/status line, and headers.
 #[derive(Debug, Default)]
 pub(crate) struct MessageHead<S> {

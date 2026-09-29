@@ -4,6 +4,7 @@ use super::{
     Error,
     qpack::{EncodeField, FieldPair},
 };
+use crate::proto::target::{host_is_wire_authority, normalize_received, reconcile_host};
 use rama_core::{
     bytes::{Bytes, BytesMut},
     extensions::ExtensionsRef,
@@ -164,20 +165,11 @@ pub(crate) fn request_head(
             ext::Protocol::try_from_bytes(value).map_err(|_error| malformed("invalid :protocol"))
         })
         .transpose()?;
-    let host_values = fields.headers.get_all(header::HOST);
-    let mut hosts = host_values.iter();
-    let host = hosts.next();
-    if hosts.next().is_some() {
-        return Err(malformed("duplicate Host"));
-    }
-    // RFC 9110 §7.2: Host is `uri-host [":" port]` for every scheme, as encoding requires.
-    if let Some(host) = host
-        && AuthorityRef::try_from(host.as_bytes())
-            .map_err(|_error| malformed("invalid Host authority"))?
-            .userinfo()
-            .is_some()
-    {
-        return Err(malformed("Host must not contain userinfo"));
+    // Several Host lines collapse onto the routed authority once the request is built.
+    let host = fields.headers.get(header::HOST);
+    if let Some(host) = host {
+        AuthorityRef::try_from(host.as_bytes())
+            .map_err(|_error| malformed("invalid Host authority"))?;
     }
     // Normalizing Host into the URI must retain its compression restriction
     // when a subsequent HTTP/2 or HTTP/3 encoder emits it as :authority.
@@ -192,11 +184,6 @@ pub(crate) fn request_head(
         .or_else(|| host.map(HeaderValue::as_bytes));
     if authority.is_some_and(|value| value.is_empty()) {
         return Err(malformed("empty authority"));
-    }
-    if let (Some(authority), Some(host)) = (authority, host)
-        && !authority.eq_ignore_ascii_case(host.as_bytes())
-    {
-        return Err(malformed("authority and Host disagree"));
     }
     let authority = authority
         .map(std::str::from_utf8)
@@ -216,30 +203,15 @@ pub(crate) fn request_head(
         )
         .map_err(|_error| malformed("invalid CONNECT authority"))?
     } else {
-        let scheme = text(fields.scheme.as_ref().ok_or(malformed("missing scheme"))?)?
+        let mut scheme = text(fields.scheme.as_ref().ok_or(malformed("missing scheme"))?)?
             .parse::<Protocol>()
             .map_err(|_error| malformed("invalid scheme"))?;
+        // RFC 8441 §5: a ws/wss target is carried as http/https, whatever the peer sent.
+        if protocol.is_some() {
+            scheme = ext::extended_connect_pseudo_scheme(&scheme).clone();
+        }
         let path = text(fields.path.as_ref().ok_or(malformed("missing path"))?)?;
         let http_scheme = scheme.is_http();
-        // RFC 8441 §5: a WebSocket bootstrap uses http or https.
-        if protocol.as_ref().is_some_and(ext::Protocol::is_websocket) && !http_scheme {
-            return Err(malformed(
-                "websocket extended CONNECT requires http or https",
-            ));
-        }
-        // Encoders send ws/wss as http/https, so a raw ws/wss scheme cannot be forwarded as is.
-        if protocol.is_some() && scheme.is_ws() {
-            return Err(malformed("extended CONNECT sends ws/wss as http/https"));
-        }
-        if http_scheme && authority.is_none() {
-            return Err(malformed("HTTP URI requires an authority"));
-        }
-        // The HTTP family never carries userinfo on the wire (RFC 9114 §4.3.1), nor can an
-        // asterisk target, whose authority becomes Host. Other schemes keep theirs.
-        let userinfo = authority.is_some_and(|value| value.contains('@'));
-        if userinfo && (scheme.is_http_based() || path == "*") {
-            return Err(malformed("authority must not carry userinfo"));
-        }
         if !(path.starts_with('/')
             || (method == Method::OPTIONS && path == "*")
             || (!http_scheme && path.is_empty()))
@@ -281,14 +253,21 @@ pub(crate) fn request_head(
     if let Some(protocol) = protocol {
         request.extensions().insert(protocol);
     }
+    let authority_sensitive = fields.sensitivity.is_sensitive(PseudoHeader::Authority);
     if let Some(scheme) = asterisk_scheme {
         request.extensions().insert(scheme);
+        // An asterisk URI cannot hold the explicit :authority, which still wins over Host.
+        if let Some(authority) = fields.authority.as_deref()
+            && let Ok(authority) = AuthorityRef::try_from(authority)
+        {
+            reconcile_host(authority, request.headers_mut(), authority_sensitive);
+        }
         if !request.headers().contains_key(header::HOST)
             && let Some(authority) = fields.authority
         {
             let mut host = HeaderValue::from_maybe_shared(authority)
                 .map_err(|_error| malformed("invalid authority"))?;
-            host.set_sensitive(fields.sensitivity.is_sensitive(PseudoHeader::Authority));
+            host.set_sensitive(authority_sensitive);
             request
                 .headers_mut()
                 .try_insert(header::HOST, host)
@@ -297,6 +276,9 @@ pub(crate) fn request_head(
                 })?;
         }
     }
+    let mut uri = std::mem::take(request.uri_mut());
+    normalize_received(&mut uri, request.headers_mut(), authority_sensitive);
+    *request.uri_mut() = uri;
     // Preserve split Cookie lines in this H3 context, as the H2 decoder does.
     // RFC 9114 §4.2.1 requires coalescing at the boundary to a non-H2/H3 context;
     // the HTTP/1 version adapter already handles that conversion.
@@ -387,25 +369,17 @@ pub(crate) fn encode_request<B>(
     }
     let host_values = request.headers().get_all(header::HOST);
     let mut hosts = host_values.iter();
+    let mut authority_from_host = false;
     if let Some(host) = hosts.next() {
         let parsed_host = AuthorityRef::try_from(host.as_bytes())
             .map_err(|_error| malformed("invalid Host authority"))?;
-        if parsed_host.userinfo().is_some() {
-            return Err(malformed("Host must not contain userinfo"));
+        if parsed_host.userinfo().is_some() || host.is_empty() || hosts.next().is_some() {
+            return Err(malformed("invalid Host"));
         }
-        // Compared with the wire projection (HTTP-family userinfo is already stripped), as
-        // parsed host and port: a decoded `Host: h:02` became port 2.
-        let mismatch = !target.is_empty()
-            && AuthorityRef::try_from(&target[..]).map_or(true, |projected| {
-                projected.userinfo().is_some()
-                    || projected.host() != parsed_host.host()
-                    || projected.port() != parsed_host.port()
-            });
-        if host.is_empty() || hosts.next().is_some() || mismatch {
-            return Err(malformed("invalid Host or authority mismatch"));
-        }
-        // RFC 9114 §4.3.1: both fields then carry the same value, byte for byte.
-        if !target.is_empty() {
+        // Compared with the wire projection, as parsed host and port: `Host: h:02` is port 2.
+        authority_from_host = AuthorityRef::try_from(&target[..])
+            .is_ok_and(|projected| host_is_wire_authority(projected, parsed_host));
+        if authority_from_host {
             target.clear();
             target.extend_from_slice(host.as_bytes());
         }
@@ -413,6 +387,13 @@ pub(crate) fn encode_request<B>(
         && (connect || request.uri().scheme().is_some_and(Protocol::is_http))
     {
         return Err(malformed("missing request authority"));
+    }
+    // RFC 9114 §4.4: an ordinary CONNECT names a host and port, whichever field supplied them.
+    if connect
+        && !AuthorityRef::try_from(&target[..])
+            .is_ok_and(|authority| authority.port_u16().is_some())
+    {
+        return Err(malformed("invalid request target"));
     }
     let scheme = if connect {
         None
@@ -477,13 +458,13 @@ pub(crate) fn encode_request<B>(
         .get_ref::<PseudoHeaderSensitivity>()
         .copied()
         .unwrap_or_default();
-    if request.uri().is_asterisk()
+    if (authority_from_host || request.uri().is_asterisk())
         && request
             .headers()
             .get(header::HOST)
             .is_some_and(HeaderValue::is_sensitive)
     {
-        // An asterisk URI has no authority; the value above came from Host.
+        // The :authority value above came from Host.
         sensitivity.set_sensitive(PseudoHeader::Authority, true);
     }
     let pseudo = order.into_iter().filter_map(|name| {
@@ -632,13 +613,17 @@ mod tests {
     #[test]
     fn typed_schemes_preserve_http_validation_and_custom_scheme_paths() {
         for scheme in ["http", "HTTPS", "HtTp", "hTtPs"] {
-            for authority in [None, Some("user@example.com")] {
-                let mut input = fields(&[(":method", "GET"), (":scheme", scheme), (":path", "/")]);
-                if let Some(authority) = authority {
-                    input.extend(fields(&[(":authority", authority)]));
-                }
-                request(input).unwrap_err();
-            }
+            // Accepted as received; without an authority it cannot be sent on.
+            let head = fields(&[(":method", "GET"), (":scheme", scheme), (":path", "/")]);
+            let unroutable = request(head.clone()).unwrap();
+            assert!(unroutable.uri().authority().is_none());
+            encode_request(&shared(), 0, &unroutable).unwrap_err();
+            // HTTP-family userinfo is dropped on receipt.
+            let mut with_userinfo = head;
+            with_userinfo.extend(fields(&[(":authority", "user@example.com")]));
+            let normalized = request(with_userinfo).unwrap();
+            assert!(normalized.uri().userinfo().is_none());
+            assert_eq!(normalized.uri().host_str().as_deref(), Some("example.com"));
             let request = request(fields(&[
                 (":method", "GET"),
                 (":scheme", scheme),
@@ -1109,18 +1094,268 @@ mod tests {
                 Some("example.com:02"),
                 Some("example.com:02"),
             ),
-            // Other schemes keep userinfo, which a Host can never express.
+            // Other schemes keep userinfo, which a matching Host can never express.
             ("ftp://user@example.com/f", None, Some("user@example.com")),
-            ("ftp://user@example.com/f", Some("example.com"), None),
-            // Host itself never carries userinfo, and must name the same authority.
+            (
+                "ftp://user@example.com/f",
+                Some("example.com"),
+                Some("user@example.com"),
+            ),
+            // A Host naming another authority is the wire authority, as with curl.
+            (
+                "https://example.com/",
+                Some("other.example"),
+                Some("other.example"),
+            ),
+            (
+                "ftp://user@example.com/f",
+                Some("other.example:21"),
+                Some("other.example:21"),
+            ),
+            // Host itself never carries userinfo.
             ("https://example.com/", Some("user@example.com"), None),
-            ("https://example.com/", Some("other.example"), None),
         ] {
             assert_eq!(
                 wire_authority(uri, host),
                 expected.map(|value: &str| Bytes::copy_from_slice(value.as_bytes())),
                 "{uri} with Host {host:?}"
             );
+        }
+    }
+
+    /// Several Host lines collapse onto the routed authority: `:authority`, else the first Host.
+    #[test]
+    fn several_hosts_collapse_onto_the_routed_authority() {
+        for (authority, expected) in [(Some("example.com"), "example.com"), (None, "a.example")] {
+            let mut head = vec![(":method", "GET"), (":scheme", "https"), (":path", "/")];
+            head.extend(authority.map(|authority| (":authority", authority)));
+            head.extend([("host", "user@a.example"), ("host", "b.example")]);
+            let received = request(fields(&head)).unwrap();
+            let hosts: Vec<_> = received.headers().get_all(header::HOST).iter().collect();
+            assert_eq!(hosts, [expected], "{authority:?}");
+            assert_eq!(received.uri().to_string(), format!("https://{expected}/"));
+        }
+    }
+
+    /// PR9-M5-003: an ordinary CONNECT still names a port after a Host override, on H2 and H3.
+    #[test]
+    fn ordinary_connect_keeps_a_port_after_a_host_override() {
+        for (host, sent) in [
+            (None, Some("real.example:443")),
+            (Some("other.example:8443"), Some("other.example:8443")),
+            (Some("[::1]:8443"), Some("[::1]:8443")),
+            (Some("other.example"), None),
+            (Some("other.example:"), None),
+            (Some("[::1]"), None),
+            (Some("[::1]:"), None),
+        ] {
+            let connect = || {
+                let mut request = Request::new(());
+                *request.method_mut() = Method::CONNECT;
+                *request.uri_mut() =
+                    Uri::parse_http_request_target("real.example:443", true).unwrap();
+                if let Some(host) = host {
+                    request
+                        .headers_mut()
+                        .insert(header::HOST, HeaderValue::from_static(host));
+                }
+                request
+            };
+            let h3 = encode_request(&shared(), 0, &connect())
+                .ok()
+                .map(|encoded| {
+                    let fields = decode(encoded);
+                    assert!(
+                        !fields
+                            .iter()
+                            .any(|field| field.name == ":scheme" || field.name == ":path")
+                    );
+                    let authority = fields.into_iter().find(|field| field.name == ":authority");
+                    authority.unwrap().value
+                });
+            assert_eq!(h3.as_deref(), sent.map(str::as_bytes), "h3 {host:?}");
+            let h2 = crate::h2::client::Peer::convert_send_message(
+                StreamId::from(1),
+                connect(),
+                None,
+                true,
+                None,
+                None,
+            )
+            .ok()
+            .map(|(frame, _)| frame.pseudo().authority.as_deref().unwrap().to_owned());
+            assert_eq!(h2.as_deref(), sent, "h2 {host:?}");
+        }
+        // Extended CONNECT is an ordinary target: a port-less Host is its wire authority.
+        for host in ["other.example", "other.example:", "[::1]", "[::1]:"] {
+            let extended = || {
+                let mut request = Request::new(());
+                *request.method_mut() = Method::CONNECT;
+                *request.uri_mut() = Uri::parse("https://real.example/chat").unwrap();
+                request.extensions().insert(ext::Protocol::WEBSOCKET);
+                request
+                    .headers_mut()
+                    .insert(header::HOST, HeaderValue::from_static(host));
+                request
+            };
+            let h3 = decode(encode_request(&shared(), 0, &extended()).unwrap());
+            let field = |name: &str| {
+                h3.iter()
+                    .find(|field| field.name == name)
+                    .unwrap()
+                    .value
+                    .clone()
+            };
+            assert_eq!(field(":authority"), host.as_bytes(), "{host}");
+            assert_eq!(field(":path"), &b"/chat"[..], "{host}");
+            let (h2, _) = crate::h2::client::Peer::convert_send_message(
+                StreamId::from(1),
+                extended(),
+                Some(ext::Protocol::WEBSOCKET),
+                true,
+                None,
+                None,
+            )
+            .unwrap();
+            assert_eq!(h2.pseudo().authority.as_deref(), Some(host));
+            assert_eq!(h2.pseudo().path.as_deref(), Some("/chat"));
+        }
+    }
+
+    /// PR9-M5-004: an asterisk target's explicit `:authority` wins over Host, as on H2.
+    #[test]
+    fn asterisk_authority_wins_over_host() {
+        for scheme in ["https", "custom"] {
+            for (authority, hosts) in [
+                ("real.example", &[][..]),
+                ("real.example", &["real.example"][..]),
+                ("real.example", &["other.example"][..]),
+                ("real.example", &["other.example", "third.example"][..]),
+                ("user@real.example", &["other.example"][..]),
+            ] {
+                let mut head = vec![
+                    (":method", "OPTIONS"),
+                    (":scheme", scheme),
+                    (":authority", authority),
+                    (":path", "*"),
+                ];
+                head.extend(hosts.iter().map(|host| ("host", *host)));
+                let received = request_head(fields(&head), true).unwrap();
+                let received_hosts: Vec<_> =
+                    received.headers().get_all(header::HOST).iter().collect();
+                assert_eq!(
+                    received_hosts,
+                    ["real.example"],
+                    "{scheme} {authority} {hosts:?}"
+                );
+                let sent = decode(encode_request(&shared(), 0, &received).unwrap());
+                let sent_authority = sent
+                    .iter()
+                    .find(|field| field.name == ":authority")
+                    .unwrap();
+                assert_eq!(
+                    sent_authority.value,
+                    &b"real.example"[..],
+                    "{scheme} {hosts:?}"
+                );
+            }
+        }
+        // A sensitive :authority keeps its restriction in the Host that replaces a differing one.
+        let mut head = fields(&[
+            (":method", "OPTIONS"),
+            (":scheme", "https"),
+            (":authority", "real.example"),
+            (":path", "*"),
+            ("host", "other.example"),
+        ]);
+        head[2].never_index = true;
+        let received = request_head(head, true).unwrap();
+        assert!(received.headers()[header::HOST].is_sensitive());
+    }
+
+    /// PR9-M5-005: a Host derived from a sensitive :authority is never indexed on either version.
+    #[test]
+    fn hosts_derived_from_a_sensitive_authority_stay_sensitive() {
+        let h3 = {
+            let mut head = fields(&[
+                (":method", "GET"),
+                (":scheme", "https"),
+                (":authority", "private.example"),
+                (":path", "/"),
+                ("host", "public.example"),
+            ]);
+            head[2].never_index = true;
+            request_head(head, true).unwrap()
+        };
+        let h2 = {
+            let mut pseudo = frame::Pseudo::request(
+                Method::GET,
+                &Uri::parse("https://private.example/").unwrap(),
+                None,
+            );
+            pseudo
+                .sensitivity
+                .set_sensitive(PseudoHeader::Authority, true);
+            let mut headers = HeaderMap::new();
+            headers.insert(header::HOST, HeaderValue::from_static("public.example"));
+            crate::h2::server::test_util::receive(pseudo, headers).unwrap()
+        };
+        for (version, received) in [("h3", h3), ("h2", h2)] {
+            assert_eq!(
+                received.headers()[header::HOST],
+                "private.example",
+                "{version}"
+            );
+            assert!(received.headers()[header::HOST].is_sensitive(), "{version}");
+            let sent = decode(encode_request(&shared(), 0, &received).unwrap());
+            for name in ["host", ":authority"] {
+                let field = sent.iter().find(|field| field.name == name).unwrap();
+                assert!(field.never_index, "{version} sent on h3: {name}");
+            }
+            let (frame, _) = crate::h2::client::Peer::convert_send_message(
+                StreamId::from(1),
+                received,
+                None,
+                true,
+                None,
+                None,
+            )
+            .unwrap();
+            assert!(
+                frame.fields()[header::HOST].is_sensitive(),
+                "{version} sent on h2"
+            );
+            assert!(
+                frame
+                    .pseudo()
+                    .sensitivity
+                    .is_sensitive(PseudoHeader::Authority),
+                "{version} sent on h2"
+            );
+        }
+    }
+
+    /// An `:authority` taken from a sensitive `Host` is never indexed either.
+    #[test]
+    fn authorities_taken_from_host_keep_its_sensitivity() {
+        for (uri, host) in [
+            ("https://example.com/", "EXAMPLE.com"),
+            ("https://example.com/", "other.example"),
+        ] {
+            let mut value = HeaderValue::from_static(host);
+            value.set_sensitive(true);
+            let request = Request::builder()
+                .uri(uri)
+                .header(header::HOST, value)
+                .body(())
+                .unwrap();
+            let sent = decode(encode_request(&shared(), 0, &request).unwrap());
+            let authority = sent
+                .iter()
+                .find(|field| field.name == ":authority")
+                .unwrap();
+            assert_eq!(authority.value, host.as_bytes(), "{host}");
+            assert!(authority.never_index, "{host}");
         }
     }
 
@@ -1154,11 +1389,16 @@ mod tests {
                 head.extend(fields(&[("host", host)]));
                 head
             };
-            request(head("user@example.com")).unwrap_err();
-            for host in ["example.com", "Example.COM:02"] {
+            for host in ["user@example.com", "example.com", "Example.COM:02"] {
                 let accepted = request(head(host)).unwrap();
-                let forwarded = request(decode(encode_request(&shared(), 0, &accepted).unwrap()));
-                assert_eq!(forwarded.unwrap().uri(), accepted.uri(), "{host}");
+                assert!(
+                    !accepted.headers()[header::HOST].as_bytes().contains(&b'@'),
+                    "{host}"
+                );
+                let forwarded =
+                    request(decode(encode_request(&shared(), 0, &accepted).unwrap())).unwrap();
+                assert_eq!(forwarded.uri(), accepted.uri(), "{host}");
+                assert_eq!(forwarded.headers(), accepted.headers(), "{host}");
             }
         }
     }
@@ -1280,19 +1520,19 @@ mod tests {
         }
     }
 
-    // RFC 8441 §5 for websocket; other protocols keep their scheme, except ws/wss.
+    // Every Extended CONNECT scheme is accepted; ws/wss is carried as http/https (RFC 8441 §5).
     #[test]
-    fn extended_connect_schemes_follow_rfc8441() {
-        for (protocol, scheme, accepted) in [
-            ("websocket", "https", true),
-            ("websocket", "http", true),
-            ("WebSocket", "https", true),
-            ("websocket", "custom", false),
-            ("WebSocket", "ftp", false),
-            ("websocket", "wss", false),
-            ("x", "custom", true),
-            ("x", "ws", false),
-            ("x", "wss", false),
+    fn extended_connect_schemes_are_accepted_and_ws_is_carried_as_http() {
+        for (protocol, scheme, carried) in [
+            ("websocket", "https", "https"),
+            ("websocket", "http", "http"),
+            ("WebSocket", "https", "https"),
+            ("websocket", "custom", "custom"),
+            ("WebSocket", "ftp", "ftp"),
+            ("websocket", "wss", "https"),
+            ("x", "custom", "custom"),
+            ("x", "ws", "http"),
+            ("x", "wss", "https"),
         ] {
             let head = [
                 (":method", "CONNECT"),
@@ -1301,9 +1541,16 @@ mod tests {
                 (":authority", "example.com"),
                 (":path", "/chat"),
             ];
+            let received = request_head(fields(&head), true).unwrap();
             assert_eq!(
-                request_head(fields(&head), true).is_ok(),
-                accepted,
+                received.uri().scheme_str(),
+                Some(carried),
+                "{protocol} {scheme}"
+            );
+            let sent = decode(encode_request(&shared(), 0, &received).unwrap());
+            assert_eq!(
+                request_head(sent, true).unwrap().uri(),
+                received.uri(),
                 "{protocol} {scheme}"
             );
         }
@@ -1342,6 +1589,260 @@ mod tests {
                 "https://example.com/chat",
                 "{uri}"
             );
+        }
+    }
+
+    /// One received target as each version carries it: HTTP/1 request text (`None` when it has no
+    /// HTTP/1 form), then the HTTP/2 and HTTP/3 fields, and what every version must route on.
+    struct Target {
+        h1: Option<&'static str>,
+        method: &'static str,
+        protocol: Option<&'static str>,
+        scheme: &'static str,
+        authority: Option<&'static str>,
+        path: &'static str,
+        host: Option<&'static str>,
+        routed: Option<&'static str>,
+        carried_scheme: &'static str,
+    }
+
+    const TARGETS: [Target; 8] = [
+        // HTTP-family userinfo is dropped.
+        Target {
+            h1: Some("GET https://user:pw@example.com/p HTTP/1.1\r\nHost: example.com\r\n\r\n"),
+            method: "GET",
+            protocol: None,
+            scheme: "https",
+            authority: Some("user:pw@example.com"),
+            path: "/p",
+            host: None,
+            routed: Some("example.com"),
+            carried_scheme: "https",
+        },
+        Target {
+            h1: Some("GET wss://user@example.com/p HTTP/1.1\r\nHost: example.com\r\n\r\n"),
+            method: "GET",
+            protocol: None,
+            scheme: "wss",
+            authority: Some("user@example.com"),
+            path: "/p",
+            host: None,
+            routed: Some("example.com"),
+            carried_scheme: "wss",
+        },
+        Target {
+            h1: Some("OPTIONS * HTTP/1.1\r\nHost: user@example.com\r\n\r\n"),
+            method: "OPTIONS",
+            protocol: None,
+            scheme: "https",
+            authority: Some("user@example.com"),
+            path: "*",
+            host: None,
+            routed: Some("example.com"),
+            carried_scheme: "https",
+        },
+        // Host loses userinfo, and always names the routed authority.
+        Target {
+            h1: Some("GET /p HTTP/1.1\r\nHost: user@example.com:8080\r\n\r\n"),
+            method: "GET",
+            protocol: None,
+            scheme: "https",
+            authority: None,
+            path: "/p",
+            host: Some("user@example.com:8080"),
+            routed: Some("example.com:8080"),
+            carried_scheme: "https",
+        },
+        Target {
+            h1: Some("GET http://example.com/p HTTP/1.1\r\nHost: other.example\r\n\r\n"),
+            method: "GET",
+            protocol: None,
+            scheme: "http",
+            authority: Some("example.com"),
+            path: "/p",
+            host: Some("other.example"),
+            routed: Some("example.com"),
+            carried_scheme: "http",
+        },
+        // Extended CONNECT: ws/wss is carried as http/https; other schemes as received.
+        Target {
+            h1: None,
+            method: "CONNECT",
+            protocol: Some("x"),
+            scheme: "ws",
+            authority: Some("example.com"),
+            path: "/chat",
+            host: None,
+            routed: Some("example.com"),
+            carried_scheme: "http",
+        },
+        Target {
+            h1: None,
+            method: "CONNECT",
+            protocol: Some("websocket"),
+            scheme: "custom",
+            authority: Some("example.com"),
+            path: "/chat",
+            host: None,
+            routed: Some("example.com"),
+            carried_scheme: "custom",
+        },
+        // Received without any authority; nothing to route on.
+        Target {
+            h1: Some("GET /p HTTP/1.1\r\n\r\n"),
+            method: "GET",
+            protocol: None,
+            scheme: "https",
+            authority: None,
+            path: "/p",
+            host: None,
+            routed: None,
+            carried_scheme: "https",
+        },
+    ];
+
+    fn address(authority: AuthorityRef<'_>) -> String {
+        let mut address = String::new();
+        authority.write_address(&mut address).unwrap();
+        address
+    }
+
+    /// Every authority a message names (URI or `:authority`, and `Host`) is `routed`, without userinfo.
+    fn assert_routed(label: &str, authorities: &[Option<&[u8]>], routed: Option<&str>) {
+        let named: Vec<_> = authorities.iter().flatten().collect();
+        assert_eq!(named.is_empty(), routed.is_none(), "{label}: {named:?}");
+        for value in named {
+            let parsed = AuthorityRef::try_from(*value).unwrap();
+            assert!(parsed.userinfo().is_none(), "{label}: {value:?}");
+            assert_eq!(Some(address(parsed).as_str()), routed, "{label}");
+        }
+    }
+
+    fn received(target: &Target) -> Vec<(&'static str, Request<()>)> {
+        let mut received = Vec::new();
+        if let Some(raw) = target.h1 {
+            let (uri, headers) = crate::proto::h1::test_util::receive(raw);
+            let mut request = Request::new(());
+            *request.method_mut() = Method::from_bytes(target.method.as_bytes()).unwrap();
+            *request.uri_mut() = uri;
+            *request.headers_mut() = headers;
+            *request.version_mut() = Version::HTTP_11;
+            received.push(("h1", request));
+        }
+        let bytes_str = |value: &'static str| {
+            hpack::BytesStr::try_from(Bytes::from_static(value.as_bytes())).unwrap()
+        };
+        let mut headers = HeaderMap::new();
+        if let Some(host) = target.host {
+            headers.insert(header::HOST, HeaderValue::from_static(host));
+        }
+        let pseudo = frame::Pseudo {
+            method: Some(Method::from_bytes(target.method.as_bytes()).unwrap()),
+            scheme: Some(bytes_str(target.scheme)),
+            authority: target.authority.map(bytes_str),
+            path: Some(bytes_str(target.path)),
+            protocol: target.protocol.map(ext::Protocol::from_static),
+            ..Default::default()
+        };
+        received.push((
+            "h2",
+            crate::h2::server::test_util::receive(pseudo, headers).unwrap(),
+        ));
+        let mut h3 = vec![
+            (":method", target.method),
+            (":scheme", target.scheme),
+            (":path", target.path),
+        ];
+        h3.extend(target.protocol.map(|protocol| (":protocol", protocol)));
+        h3.extend(target.authority.map(|authority| (":authority", authority)));
+        h3.extend(target.host.map(|host| ("host", host)));
+        received.push(("h3", request_head(fields(&h3), true).unwrap()));
+        received
+    }
+
+    fn copy(request: &Request<()>) -> Request<()> {
+        let mut copy = Request::new(());
+        *copy.method_mut() = request.method().clone();
+        *copy.uri_mut() = request.uri().clone();
+        *copy.version_mut() = request.version();
+        *copy.headers_mut() = request.headers().clone();
+        if let Some(protocol) = request.extensions().get_ref::<ext::Protocol>() {
+            copy.extensions().insert(protocol.clone());
+        }
+        copy
+    }
+
+    /// Each target received on every version routes on one authority, and every version it is
+    /// sent on names only that authority.
+    #[test]
+    fn received_targets_route_and_forward_on_one_authority() {
+        for target in &TARGETS {
+            for (version, request) in received(target) {
+                let label = format!(
+                    "{:?} received on {version}",
+                    target.h1.unwrap_or(target.scheme)
+                );
+                let uri_authority = request
+                    .uri()
+                    .authority()
+                    .map(|authority| address(authority));
+                assert_routed(
+                    &label,
+                    &[
+                        uri_authority.as_deref().map(str::as_bytes),
+                        request
+                            .headers()
+                            .get(header::HOST)
+                            .map(HeaderValue::as_bytes),
+                    ],
+                    target.routed,
+                );
+                assert!(request.uri().userinfo().is_none(), "{label}");
+                if version != "h1" && request.uri().authority().is_some() {
+                    assert_eq!(
+                        request.uri().scheme_str(),
+                        Some(target.carried_scheme),
+                        "{label}"
+                    );
+                }
+
+                let protocol = request.extensions().get_ref::<ext::Protocol>().cloned();
+                let sent_h2 = crate::h2::client::Peer::convert_send_message(
+                    StreamId::from(1),
+                    copy(&request),
+                    protocol,
+                    true,
+                    None,
+                    None,
+                );
+                if let Ok((frame, _)) = &sent_h2 {
+                    assert_routed(
+                        &format!("{label}, sent on h2"),
+                        &[
+                            frame.pseudo().authority.as_deref().map(str::as_bytes),
+                            frame.fields().get(header::HOST).map(HeaderValue::as_bytes),
+                        ],
+                        target.routed,
+                    );
+                }
+                let sent_h3 = encode_request(&shared(), 0, &request).map(decode);
+                if let Ok(sent) = &sent_h3 {
+                    let field = |name: &str| {
+                        sent.iter()
+                            .find(|field| field.name == name.as_bytes())
+                            .map(|field| &field.value[..])
+                    };
+                    assert_routed(
+                        &format!("{label}, sent on h3"),
+                        &[field(":authority"), field("host")],
+                        target.routed,
+                    );
+                }
+                // Anything with an absolute URI can be sent on either version.
+                if request.uri().authority().is_some() {
+                    assert!(sent_h2.is_ok() && sent_h3.is_ok(), "{label}");
+                }
+            }
         }
     }
 

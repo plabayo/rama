@@ -22,7 +22,7 @@ use crate::headers;
 use crate::proto::h1::{
     Encode, Encoder, Http1Transaction, ParseContext, ParseResult, ParsedMessage,
 };
-use crate::proto::{BodyLength, MessageHead, RequestLine};
+use crate::proto::{BodyLength, MessageHead, RequestLine, target::normalize_received};
 
 use super::EncodeHead;
 
@@ -117,7 +117,7 @@ impl Http1Transaction for Server {
 
         let mut keep_alive;
         let is_http_11;
-        let subject;
+        let mut subject;
         let version;
         let len;
         let headers_len;
@@ -334,6 +334,8 @@ impl Http1Transaction for Server {
             debug!("request with transfer-encoding header, but not chunked, bad request");
             return Err(Parse::transfer_encoding_invalid());
         }
+
+        normalize_received(&mut subject.1, &mut headers, false);
 
         // RFC 9112 §6.1: TE + CL together is a request smuggling vector,
         // so do not reuse the connection for further requests.
@@ -1771,6 +1773,100 @@ mod tests {
             msg.head.extensions.get_ref::<RequestTargetForm>(),
             Some(&RequestTargetForm::Origin),
         );
+    }
+
+    #[test]
+    fn received_targets_name_the_routed_authority() {
+        for (raw, uri, host) in [
+            // RFC 9112 §3.2.2: an absolute-form target replaces a differing Host.
+            (
+                "GET http://user:pw@ramaproxy.org/echo HTTP/1.1\r\nHost: other.example\r\n\r\n",
+                "http://ramaproxy.org/echo",
+                Some("ramaproxy.org"),
+            ),
+            (
+                "GET http://ramaproxy.org/echo HTTP/1.1\r\nHost: RAMAPROXY.org\r\n\r\n",
+                "http://ramaproxy.org/echo",
+                Some("RAMAPROXY.org"),
+            ),
+            (
+                "CONNECT ramaproxy.org:443 HTTP/1.1\r\nHost: other.example\r\n\r\n",
+                "ramaproxy.org:443",
+                Some("ramaproxy.org:443"),
+            ),
+            // Origin-form keeps its Host, less userinfo.
+            (
+                "GET /echo HTTP/1.1\r\nHost: user@ramaproxy.org\r\n\r\n",
+                "/echo",
+                Some("ramaproxy.org"),
+            ),
+            ("GET /echo HTTP/1.1\r\n\r\n", "/echo", None),
+        ] {
+            let (received, headers) = crate::proto::h1::test_util::receive(raw);
+            assert_eq!(received.to_string(), uri, "{raw}");
+            assert_eq!(
+                headers
+                    .get(header::HOST)
+                    .map(|value| value.to_str().unwrap()),
+                host,
+                "{raw}"
+            );
+        }
+    }
+
+    /// PR9-M5-006: a replaced or collapsed Host keeps the first line's spelling and position.
+    #[test]
+    fn normalized_hosts_keep_their_name_and_position() {
+        for (target, host, extra, expected) in [
+            (
+                "http://ramaproxy.org/x",
+                "ramaproxy.org",
+                "",
+                "ramaproxy.org",
+            ),
+            (
+                "http://ramaproxy.org/x",
+                "other.example",
+                "",
+                "ramaproxy.org",
+            ),
+            ("/x", "user@ramaproxy.org", "", "ramaproxy.org"),
+            (
+                "/x",
+                "ramaproxy.org",
+                "HOST: other.example\r\n",
+                "ramaproxy.org",
+            ),
+            (
+                "http://ramaproxy.org/x",
+                "a.example",
+                "Host: b.example\r\n",
+                "ramaproxy.org",
+            ),
+        ] {
+            let raw = format!(
+                "GET {target} HTTP/1.1\r\nX-First: a\r\nhOsT: {host}\r\nX-Middle: b\r\n\
+                 X-Middle: c\r\n{extra}X-Last: d\r\n\r\n"
+            );
+            let (_, headers) = crate::proto::h1::test_util::receive(&raw);
+            let fields: Vec<_> = headers
+                .ordered_iter()
+                .map(|(name, value)| {
+                    format!("{}: {}", name.as_original_str(), value.to_str().unwrap())
+                })
+                .collect();
+            assert_eq!(
+                fields,
+                [
+                    "X-First: a".to_owned(),
+                    format!("hOsT: {expected}"),
+                    "X-Middle: b".to_owned(),
+                    "X-Middle: c".to_owned(),
+                    "X-Last: d".to_owned(),
+                ],
+                "{target} {host} {extra:?}"
+            );
+        }
     }
 
     #[test]

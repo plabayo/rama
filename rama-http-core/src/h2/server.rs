@@ -121,6 +121,7 @@
 use crate::h2::codec::{Codec, UserError};
 use crate::h2::proto::{self, Config, Error, Prioritized};
 use crate::h2::{FlowControl, PingPong, RecvStream, SendStream};
+use crate::proto::target::normalize_received;
 
 use rama_core::bytes::{Buf, Bytes};
 use rama_core::extensions::{Extensions, ExtensionsRef};
@@ -137,7 +138,7 @@ use rama_http_types::proto::h2::frame::{
 };
 use rama_http_types::proto::{
     ext,
-    h2::{PseudoHeaderOrder, PseudoHeaderSensitivity},
+    h2::{PseudoHeader, PseudoHeaderOrder, PseudoHeaderSensitivity},
 };
 use rama_http_types::{HeaderMap, Method, Request, Response, Version};
 use rama_net::extensions::StreamTransformed;
@@ -1808,10 +1809,7 @@ impl proto::Peer for Peer {
             malformed!("malformed headers: missing method");
         }
 
-        let websocket = pseudo
-            .protocol
-            .as_ref()
-            .is_some_and(ext::Protocol::is_websocket);
+        let authority_sensitive = pseudo.sensitivity.is_sensitive(PseudoHeader::Authority);
         let has_protocol = if let Some(protocol) = pseudo.protocol {
             if is_connect {
                 // Assert that we have the right type.
@@ -1852,14 +1850,10 @@ impl proto::Peer for Peer {
                 malformed!("malformed headers: :scheme in CONNECT");
             }
             match scheme.parse::<rama_net::Protocol>() {
-                // RFC 8441 §5: a WebSocket bootstrap uses http or https.
-                Ok(scheme) if websocket && !scheme.is_http() => {
-                    malformed!("malformed headers: websocket extended CONNECT requires http(s)")
-                }
-                // Encoders send ws/wss as http/https, so a raw ws/wss scheme cannot be forwarded as is.
-                Ok(scheme) if has_protocol && scheme.is_ws() => {
-                    malformed!("malformed headers: extended CONNECT sends ws/wss as http(s)")
-                }
+                // RFC 8441 §5: a ws/wss target is carried as http/https, whatever the peer sent.
+                Ok(scheme) if has_protocol => authority
+                    .is_some()
+                    .then(|| ext::extended_connect_pseudo_scheme(&scheme).clone()),
                 // It's not possible to build a URI from a scheme and no
                 // authority, so — after validating it — the scheme is dropped
                 // when there is no :authority (mirrors the original behavior).
@@ -1970,6 +1964,9 @@ impl proto::Peer for Peer {
         request.extensions().insert(HeaderByteLength(header_size));
 
         *request.headers_mut() = fields;
+        let mut uri = std::mem::take(request.uri_mut());
+        normalize_received(&mut uri, request.headers_mut(), authority_sensitive);
+        *request.uri_mut() = uri;
 
         Ok(request)
     }
@@ -1988,6 +1985,22 @@ where
             Self::ReadingPreface(_) => f.write_str("ReadingPreface(_)"),
             Self::Done => f.write_str("Done"),
         }
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod test_util {
+    use super::*;
+
+    /// The request an HTTP/2 server receives for these fields.
+    pub(crate) fn receive(pseudo: Pseudo, headers: HeaderMap) -> Result<Request<()>, Error> {
+        <Peer as proto::Peer>::convert_poll_message(
+            pseudo,
+            headers,
+            0,
+            StreamId::from(1),
+            Extensions::new(),
+        )
     }
 }
 
@@ -2105,19 +2118,19 @@ mod path_form_tests {
         assert_eq!(req.uri().host_str().as_deref(), Some("real.example"),);
     }
 
-    // RFC 8441 §5 for websocket, and ws/wss never on the wire, as the H3 decoder does.
+    // Every Extended CONNECT scheme is accepted; ws/wss is carried as http/https (RFC 8441 §5).
     #[test]
-    fn extended_connect_schemes_follow_rfc8441() {
-        for (protocol, scheme, accepted) in [
-            ("websocket", "https", true),
-            ("websocket", "http", true),
-            ("WebSocket", "https", true),
-            ("websocket", "custom", false),
-            ("WebSocket", "ftp", false),
-            ("websocket", "wss", false),
-            ("x", "custom", true),
-            ("x", "ws", false),
-            ("x", "wss", false),
+    fn extended_connect_schemes_are_accepted_and_ws_is_carried_as_http() {
+        for (protocol, scheme, carried) in [
+            ("websocket", "https", "https"),
+            ("websocket", "http", "http"),
+            ("WebSocket", "https", "https"),
+            ("websocket", "custom", "custom"),
+            ("WebSocket", "ftp", "ftp"),
+            ("websocket", "wss", "https"),
+            ("x", "custom", "custom"),
+            ("x", "ws", "http"),
+            ("x", "wss", "https"),
         ] {
             let pseudo = Pseudo {
                 method: Some(Method::CONNECT),
@@ -2127,7 +2140,41 @@ mod path_form_tests {
                 protocol: Some(ext::Protocol::from_static(protocol)),
                 ..Default::default()
             };
-            assert_eq!(decode(pseudo).is_ok(), accepted, "{protocol} {scheme}");
+            let request = decode(pseudo).unwrap();
+            assert_eq!(
+                request.uri().scheme_str(),
+                Some(carried),
+                "{protocol} {scheme}"
+            );
         }
+    }
+
+    #[test]
+    fn received_targets_are_normalized() {
+        let pseudo = Pseudo {
+            method: Some(Method::GET),
+            scheme: Some(bs("https")),
+            authority: Some(bs("user:pw@real.example")),
+            path: Some(bs("/x")),
+            ..Default::default()
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            rama_http_types::header::HOST,
+            rama_http_types::HeaderValue::from_static("other.example"),
+        );
+        let request = <Peer as proto::Peer>::convert_poll_message(
+            pseudo,
+            headers,
+            0,
+            StreamId::from(1),
+            Extensions::new(),
+        )
+        .unwrap();
+        assert_eq!(request.uri().to_string(), "https://real.example/x");
+        assert_eq!(
+            request.headers()[rama_http_types::header::HOST],
+            "real.example"
+        );
     }
 }

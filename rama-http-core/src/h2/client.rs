@@ -140,6 +140,7 @@
 use crate::h2::codec::{Codec, SendError, UserError};
 use crate::h2::proto::{self, Error};
 use crate::h2::{FlowControl, PingPong, RecvStream, SendStream};
+use crate::proto::target::host_is_wire_authority;
 use rama_core::bytes::{Buf, Bytes};
 use rama_core::error::{BoxError, BoxErrorExt};
 use rama_core::extensions::{Extensions, ExtensionsRef};
@@ -150,9 +151,11 @@ use rama_http_types::proto::ext::Protocol;
 use rama_http_types::proto::h2::frame::StreamDependency;
 use rama_http_types::proto::h2::frame::{Headers, Pseudo, Reason, Settings, StreamId};
 use rama_http_types::proto::h2::frame::{SettingOrder, SettingsConfig};
-use rama_http_types::proto::h2::{PseudoHeaderOrder, PseudoHeaderSensitivity};
+use rama_http_types::proto::h2::hpack::BytesStr;
+use rama_http_types::proto::h2::{PseudoHeader, PseudoHeaderOrder, PseudoHeaderSensitivity};
 use rama_http_types::request;
 use rama_http_types::{HeaderMap, Method, Request, Response, Version};
+use rama_net::address::AuthorityRef;
 use rama_net::extensions::StreamTransformed;
 use std::fmt;
 use std::pin::Pin;
@@ -1840,6 +1843,41 @@ impl PushedResponseFuture {
 
 // ===== impl Peer =====
 
+/// A single valid `Host` becomes `:authority` when [`host_is_wire_authority`] says so,
+/// keeping its sensitivity; the `Host` line itself is sent unchanged. An ordinary CONNECT
+/// still needs a port from it (RFC 9113 §8.5).
+fn host_as_authority(
+    pseudo: &mut Pseudo,
+    headers: &HeaderMap,
+    ordinary_connect: bool,
+) -> Result<(), UserError> {
+    let mut hosts = headers.get_all(rama_http_types::header::HOST).iter();
+    let (Some(host), None) = (hosts.next(), hosts.next()) else {
+        return Ok(());
+    };
+    let (Some(Ok(projected)), Ok(parsed)) = (
+        pseudo.authority.as_deref().map(AuthorityRef::try_from),
+        AuthorityRef::try_from(host.as_bytes()),
+    ) else {
+        return Ok(());
+    };
+    if parsed.userinfo().is_some() || !host_is_wire_authority(projected, parsed) {
+        return Ok(());
+    }
+    if ordinary_connect && parsed.port_u16().is_none() {
+        return Err(UserError::MalformedHeaders);
+    }
+    if let Ok(value) = BytesStr::try_from(Bytes::copy_from_slice(host.as_bytes())) {
+        pseudo.set_authority(value);
+        if host.is_sensitive() {
+            pseudo
+                .sensitivity
+                .set_sensitive(PseudoHeader::Authority, true);
+        }
+    }
+    Ok(())
+}
+
 impl Peer {
     pub(crate) fn convert_send_message(
         id: StreamId,
@@ -1864,6 +1902,7 @@ impl Peer {
         ) = request.into_parts();
 
         let is_connect = method == Method::CONNECT;
+        let ordinary_connect = is_connect && protocol.is_none();
 
         // Build the set pseudo header set. All requests will include `method`
         // and `path`.
@@ -1882,6 +1921,7 @@ impl Peer {
             .get_ref::<PseudoHeaderSensitivity>()
             .copied()
             .unwrap_or_default();
+        host_as_authority(&mut pseudo, &headers, ordinary_connect)?;
 
         if pseudo.scheme.is_none() {
             // If the scheme is not set, then there are a two options.
@@ -1977,6 +2017,41 @@ impl proto::Peer for Peer {
 mod pseudo_sensitivity_tests {
     use super::*;
     use rama_http_types::{StatusCode, proto::h2::PseudoHeader};
+
+    #[test]
+    fn a_host_naming_another_authority_is_the_http2_authority() {
+        for (uri, host, expected) in [
+            ("https://example.com/", "other.example", "other.example"),
+            ("https://example.com/", "EXAMPLE.com:443", "EXAMPLE.com:443"),
+            ("https://example.com/", "EXAMPLE.com", "EXAMPLE.com"),
+            // A Host cannot carry userinfo, so it never replaces the projection then.
+            ("ftp://user@example.com/", "example.com", "user@example.com"),
+            ("https://example.com/", "user@other.example", "example.com"),
+        ] {
+            let mut request = Request::builder().uri(uri).body(()).unwrap();
+            let mut value = rama_http_types::HeaderValue::from_static(host);
+            value.set_sensitive(true);
+            request
+                .headers_mut()
+                .insert(rama_http_types::header::HOST, value);
+            let (frame, _) =
+                Peer::convert_send_message(StreamId::from(1), request, None, true, None, None)
+                    .unwrap();
+            assert_eq!(
+                frame.pseudo().authority.as_deref(),
+                Some(expected),
+                "{uri} {host}"
+            );
+            assert_eq!(
+                frame
+                    .pseudo()
+                    .sensitivity
+                    .is_sensitive(PseudoHeader::Authority),
+                expected == host,
+                "{uri} {host}"
+            );
+        }
+    }
 
     #[test]
     fn host_only_request_keeps_sensitive_host_without_synthesizing_authority() {
