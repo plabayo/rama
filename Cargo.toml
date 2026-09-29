@@ -573,6 +573,7 @@ dial9 = [
     "rama-core/dial9",
     "rama-http?/dial9",
     "rama-net?/dial9",
+    "rama-tcp?/dial9",
     "rama-net-apple-networkextension?/dial9",
     "rama-dns?/dial9",
     "rama-tls-rustls?/dial9",

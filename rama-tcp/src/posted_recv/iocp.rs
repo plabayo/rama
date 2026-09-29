@@ -1,10 +1,13 @@
-//! Overlapped receives kept posted on the socket, completed by a single
-//! process-wide completion thread.
+//! Overlapped receives kept posted on the socket, completed by a
+//! process-wide pool of threads that scales with the load.
 //!
 //! mio attaches only its AFD helper handle to its own completion port, never
 //! the socket, so the socket is free to be attached to ours. Tokio keeps
 //! doing the writes; its read readiness goes stale, which is harmless since
 //! nothing reads through it, except while no receive can be posted at all.
+//!
+//! Several threads may complete receives of the same flow at once: the flow
+//! lock serializes them, and completions are put back in posting order.
 
 use std::{
     collections::VecDeque,
@@ -12,9 +15,12 @@ use std::{
     os::windows::io::RawSocket,
     panic::{AssertUnwindSafe, catch_unwind},
     ptr,
-    sync::{Arc, OnceLock},
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicU64, AtomicUsize, Ordering},
+    },
     task::{Context, Poll, Waker},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use parking_lot::{Mutex, MutexGuard};
@@ -22,9 +28,9 @@ use rama_core::telemetry::tracing;
 use tokio::io::ReadBuf;
 use windows_sys::Win32::{
     Foundation::{
-        CloseHandle, ERROR_NO_SYSTEM_RESOURCES, ERROR_NONPAGED_SYSTEM_RESOURCES,
-        ERROR_NOT_ENOUGH_QUOTA, ERROR_PAGED_SYSTEM_RESOURCES, ERROR_WORKING_SET_QUOTA, HANDLE,
-        INVALID_HANDLE_VALUE,
+        ERROR_NO_SYSTEM_RESOURCES, ERROR_NONPAGED_SYSTEM_RESOURCES, ERROR_NOT_ENOUGH_QUOTA,
+        ERROR_PAGED_SYSTEM_RESOURCES, ERROR_WORKING_SET_QUOTA, HANDLE, INVALID_HANDLE_VALUE,
+        WAIT_TIMEOUT,
     },
     Networking::WinSock::{
         SOCKET, SOCKET_ERROR, WSA_IO_PENDING, WSA_NOT_ENOUGH_MEMORY, WSA_OPERATION_ABORTED, WSABUF,
@@ -39,7 +45,7 @@ use windows_sys::Win32::{
     },
 };
 
-use super::PostedRecvConfig;
+use super::{PostedRecvConfig, ThreadStartReason, ThreadStopReason, completion_threads};
 
 /// Receives posted and not completed yet, across all flows.
 #[cfg(test)]
@@ -66,108 +72,288 @@ unsafe impl Send for Port {}
 // SAFETY: as above.
 unsafe impl Sync for Port {}
 
-/// The process-wide completion port, created with its thread on first use
-/// and never closed. A failed start is not remembered, the next wrap retries.
-fn port() -> io::Result<Port> {
-    static PORT: OnceLock<Port> = OnceLock::new();
-    static STARTING: Mutex<()> = parking_lot::const_mutex(());
-    if let Some(port) = PORT.get() {
-        return Ok(*port);
-    }
-    let _starting = STARTING.lock();
-    if let Some(port) = PORT.get() {
-        return Ok(*port);
-    }
-    let port = start_port()?;
-    Ok(*PORT.get_or_init(|| port))
+/// Completions a thread takes from the port at once. Getting a full batch
+/// back means more are waiting.
+const BATCH: usize = 64;
+/// At most one thread is added per this interval, so a burst does not start
+/// them all at once.
+const GROW_INTERVAL: Duration = Duration::from_millis(10);
+
+/// The process-wide completion port and the threads completing on it.
+///
+/// Created on first use and never torn down: the port lives as long as the
+/// process, and the threads scale with the load, see
+/// [`CompletionThreads`](super::CompletionThreads).
+struct Pool {
+    port: Port,
+    /// Threads running or about to start.
+    threads: AtomicUsize,
+    /// Threads waiting on the port right now.
+    waiting: AtomicUsize,
+    /// When a thread was last added, as milliseconds since `created`.
+    last_grown_ms: AtomicU64,
+    created: Instant,
 }
 
-fn start_port() -> io::Result<Port> {
+static POOL: OnceLock<Pool> = OnceLock::new();
+static STARTING: Mutex<()> = parking_lot::const_mutex(());
+
+/// The pool, with at least its minimum of threads running. A failure is not
+/// remembered: the next wrap retries.
+fn pool() -> io::Result<&'static Pool> {
+    let pool = if let Some(pool) = POOL.get() {
+        pool
+    } else {
+        create_pool()?
+    };
+    pool.ensure_minimum(ThreadStartReason::FirstUse)?;
+    Ok(pool)
+}
+
+fn create_pool() -> io::Result<&'static Pool> {
+    let _starting = STARTING.lock();
+    if let Some(pool) = POOL.get() {
+        return Ok(pool);
+    }
+    // Concurrency 0 lets as many threads run as there are CPUs; the pool
+    // itself decides how many exist.
     // SAFETY: creates a new port without borrowing any handle.
-    let handle = unsafe { CreateIoCompletionPort(INVALID_HANDLE_VALUE, ptr::null_mut(), 0, 1) };
+    let handle = unsafe { CreateIoCompletionPort(INVALID_HANDLE_VALUE, ptr::null_mut(), 0, 0) };
     if handle.is_null() {
         return Err(io::Error::last_os_error());
     }
-    let port = Port(handle);
-    // A dedicated thread rather than the thread pool: completions are
-    // handled in the order they were queued, and keep being handled while
-    // tokio workers are busy.
-    let spawned = std::thread::Builder::new()
-        .name("rama-posted-recv".to_owned())
-        .spawn(move || run_completions(port));
-    if let Err(err) = spawned {
-        // SAFETY: nothing else knows about the port yet.
-        unsafe { CloseHandle(handle) };
-        return Err(err);
-    }
-    Ok(port)
+    Ok(POOL.get_or_init(|| Pool {
+        port: Port(handle),
+        threads: AtomicUsize::new(0),
+        waiting: AtomicUsize::new(0),
+        last_grown_ms: AtomicU64::new(0),
+        created: Instant::now(),
+    }))
 }
 
-fn run_completions(port: Port) {
-    const BATCH: usize = 64;
-    // Bytes that arrive while no receive is posted stay exposed to a reset
-    // until this thread posts the next one, so it should not wait behind
-    // busy workers. Its work per completion is small and bounded.
-    // SAFETY: no preconditions; the pseudo handle refers to this thread.
-    let thread = unsafe { GetCurrentThread() };
-    // SAFETY: `thread` is valid for the life of this thread.
-    if unsafe { SetThreadPriority(thread, THREAD_PRIORITY_ABOVE_NORMAL) } == 0 {
+pub(super) fn running_threads() -> usize {
+    POOL.get()
+        .map_or(0, |pool| pool.threads.load(Ordering::Relaxed))
+}
+
+pub(super) fn completion_threads_changed() {
+    if let Some(pool) = POOL.get()
+        && let Err(err) = pool.ensure_minimum(ThreadStartReason::Minimum)
+    {
         tracing::debug!(
-            error = %io::Error::last_os_error(),
-            "posted recv: raising the completion thread priority failed",
+            error = %err,
+            "posted recv: starting completion threads for the new minimum failed",
         );
     }
-    // SAFETY: OVERLAPPED_ENTRY is plain data.
-    let mut entries: [OVERLAPPED_ENTRY; BATCH] = unsafe { mem::zeroed() };
-    let mut failures: u32 = 0;
-    loop {
-        let mut removed = 0;
-        // SAFETY: `entries` has room for BATCH entries and the port is never closed.
-        let ok = unsafe {
-            GetQueuedCompletionStatusEx(
-                port.0,
-                entries.as_mut_ptr(),
-                BATCH as u32,
-                &mut removed,
-                INFINITE,
-                0,
-            )
-        };
-        if ok == 0 {
-            // Only a timeout or a closed port fail this, and neither happens.
-            if failures == 0 {
-                tracing::error!(
-                    error = %io::Error::last_os_error(),
-                    "posted recv: waiting for completions failed",
-                );
-            }
-            failures = failures.saturating_add(1);
-            std::thread::sleep(Duration::from_millis(10 << failures.min(7)));
-            continue;
+}
+
+impl Pool {
+    fn ensure_minimum(&'static self, reason: ThreadStartReason) -> io::Result<()> {
+        let min = completion_threads().min_threads();
+        if self.threads.load(Ordering::Acquire) >= min {
+            return Ok(());
         }
-        failures = 0;
-        let mut requeued = false;
-        for entry in &entries[..removed as usize] {
-            if entry.lpOverlapped.is_null() {
+        let _starting = STARTING.lock();
+        let running = self.threads.load(Ordering::Acquire);
+        let reason = if running == 0 {
+            ThreadStartReason::FirstUse
+        } else {
+            reason
+        };
+        for _ in running..min {
+            self.threads.fetch_add(1, Ordering::AcqRel);
+            if let Err(err) = self.start_thread(reason) {
+                // One thread is enough to complete receives.
+                if self.threads.load(Ordering::Acquire) == 0 {
+                    return Err(err);
+                }
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    /// Start a thread whose place in `threads` is already taken.
+    fn start_thread(&'static self, reason: ThreadStartReason) -> io::Result<()> {
+        #[cfg(feature = "dial9")]
+        let telemetry = ::dial9::Dial9Handle::try_current_thread();
+        let spawned = std::thread::Builder::new()
+            .name("rama-posted-recv".to_owned())
+            .spawn(move || {
+                #[cfg(feature = "dial9")]
+                if let Some(telemetry) = telemetry {
+                    ::dial9::core::set_tl_handle(telemetry);
+                }
+                self.run();
+            });
+        match spawned {
+            Ok(_) => {
+                let threads = self.threads.load(Ordering::Relaxed);
+                tracing::debug!(
+                    threads,
+                    reason = ?reason,
+                    "posted recv: completion thread started",
+                );
+                #[cfg(feature = "dial9")]
+                super::dial9::record_thread_started(threads, reason);
+                Ok(())
+            }
+            Err(err) => {
+                self.threads.fetch_sub(1, Ordering::AcqRel);
+                tracing::debug!(
+                    error = %err,
+                    reason = ?reason,
+                    "posted recv: starting a completion thread failed",
+                );
+                Err(err)
+            }
+        }
+    }
+
+    /// Add a thread if every running one is busy and there is room left.
+    fn grow(&'static self) {
+        if self.waiting.load(Ordering::Acquire) > 0 {
+            // An idle thread takes the backlog as soon as the port offers it.
+            return;
+        }
+        let now = u64::try_from(self.created.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let last = self.last_grown_ms.load(Ordering::Relaxed);
+        if now.saturating_sub(last) < GROW_INTERVAL.as_millis() as u64
+            || self
+                .last_grown_ms
+                .compare_exchange(last, now, Ordering::AcqRel, Ordering::Relaxed)
+                .is_err()
+        {
+            return;
+        }
+        let max = completion_threads().max_threads();
+        let reserved = self
+            .threads
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |threads| {
+                (threads < max).then_some(threads + 1)
+            })
+            .is_ok();
+        if reserved {
+            // A failure is logged, and the running threads carry on.
+            _ = self.start_thread(ThreadStartReason::Backlog);
+        }
+    }
+
+    /// Give up this thread's place if more than `keep` threads run.
+    fn retire(&self, keep: usize, reason: ThreadStopReason) -> bool {
+        let retired = self
+            .threads
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |threads| {
+                (threads > keep).then(|| threads - 1)
+            });
+        let Ok(before) = retired else {
+            return false;
+        };
+        // A minimum raised meanwhile may not have counted this thread out
+        // yet: stay rather than leave too few. The setter stores the new
+        // minimum before topping up, so one of the two always sees it.
+        if before - 1 < completion_threads().min_threads() {
+            self.threads.fetch_add(1, Ordering::AcqRel);
+            return false;
+        }
+        tracing::debug!(
+            threads = before - 1,
+            reason = ?reason,
+            "posted recv: completion thread stopped",
+        );
+        #[cfg(feature = "dial9")]
+        super::dial9::record_thread_stopped(before - 1, reason);
+        true
+    }
+
+    fn run(&'static self) {
+        // Bytes that arrive while no receive is posted stay exposed to a
+        // reset until a completion thread posts the next one, so these
+        // should not wait behind busy workers. Their work per completion is
+        // small and bounded.
+        // SAFETY: no preconditions; the pseudo handle refers to this thread.
+        let thread = unsafe { GetCurrentThread() };
+        // SAFETY: `thread` is valid for the life of this thread.
+        if unsafe { SetThreadPriority(thread, THREAD_PRIORITY_ABOVE_NORMAL) } == 0 {
+            tracing::debug!(
+                error = %io::Error::last_os_error(),
+                "posted recv: raising the completion thread priority failed",
+            );
+        }
+        // SAFETY: OVERLAPPED_ENTRY is plain data.
+        let mut entries: [OVERLAPPED_ENTRY; BATCH] = unsafe { mem::zeroed() };
+        let mut failures: u32 = 0;
+        loop {
+            let config = completion_threads();
+            if self.retire(config.max_threads(), ThreadStopReason::OverMaximum) {
+                return;
+            }
+            let timeout = u32::try_from(config.idle_timeout().as_millis())
+                .unwrap_or(INFINITE - 1)
+                .min(INFINITE - 1);
+            let mut removed = 0;
+            self.waiting.fetch_add(1, Ordering::AcqRel);
+            // SAFETY: `entries` has room for BATCH entries and the port is
+            // never closed.
+            let ok = unsafe {
+                GetQueuedCompletionStatusEx(
+                    self.port.0,
+                    entries.as_mut_ptr(),
+                    BATCH as u32,
+                    &mut removed,
+                    timeout,
+                    0,
+                )
+            };
+            self.waiting.fetch_sub(1, Ordering::AcqRel);
+            if ok == 0 {
+                let err = io::Error::last_os_error();
+                if err.raw_os_error() == Some(WAIT_TIMEOUT as i32) {
+                    // The configuration may have changed during the wait.
+                    let min = completion_threads().min_threads();
+                    if self.retire(min, ThreadStopReason::Idle) {
+                        return;
+                    }
+                    continue;
+                }
+                // Only a closed port fails this otherwise, which never happens.
+                if failures == 0 {
+                    tracing::error!(
+                        error = %err,
+                        "posted recv: waiting for completions failed",
+                    );
+                }
+                failures = failures.saturating_add(1);
+                std::thread::sleep(Duration::from_millis(10 << failures.min(7)));
                 continue;
             }
-            // SAFETY: only slots post receives on sockets attached to this
-            // port, each passing the `Box::into_raw` pointer of the slot,
-            // whose first field is the OVERLAPPED.
-            let slot = unsafe { Box::from_raw(entry.lpOverlapped.cast::<Slot>()) };
-            let bytes = entry.dwNumberOfBytesTransferred;
-            // A panic, say in a waker, must not stop the completions of
-            // every other flow.
-            if let Ok(handled) =
-                catch_unwind(AssertUnwindSafe(|| Slot::complete(slot, bytes, port)))
-            {
-                requeued |= !handled;
-            } else {
-                tracing::error!("posted recv: handling a completion panicked");
+            failures = 0;
+            if removed as usize == BATCH {
+                self.grow();
             }
-        }
-        if requeued {
-            std::thread::yield_now();
+            let mut requeued = false;
+            for entry in &entries[..removed as usize] {
+                if entry.lpOverlapped.is_null() {
+                    continue;
+                }
+                // SAFETY: only slots post receives on sockets attached to
+                // this port, each passing the `Box::into_raw` pointer of the
+                // slot, whose first field is the OVERLAPPED.
+                let slot = unsafe { Box::from_raw(entry.lpOverlapped.cast::<Slot>()) };
+                let bytes = entry.dwNumberOfBytesTransferred;
+                // A panic, say in a waker, must not stop the completions of
+                // every other flow.
+                if let Ok(handled) =
+                    catch_unwind(AssertUnwindSafe(|| Slot::complete(slot, bytes, self.port)))
+                {
+                    requeued |= !handled;
+                } else {
+                    tracing::error!("posted recv: handling a completion panicked");
+                }
+            }
+            if requeued {
+                std::thread::yield_now();
+            }
         }
     }
 }
@@ -235,7 +421,11 @@ impl Slot {
         }
         let outcome = slot.outcome(flow.socket);
         let seq = slot.seq;
-        let news = flow.completed(&mut state, seq, slot, outcome) | flow.refill(&mut state);
+        let mut news = flow.completed(&mut state, seq, slot, outcome);
+        if let Some(code) = outcome.blocked {
+            Flow::mark_blocked(&mut state, code);
+        }
+        news |= flow.refill(&mut state);
         let waker = if news { state.waker.take() } else { None };
         drop(state);
         if let Some(waker) = waker {
@@ -261,7 +451,7 @@ impl Slot {
         Outcome {
             data,
             end: (data == 0).then_some(End::Eof),
-            blocked: false,
+            blocked: None,
         }
     }
 }
@@ -270,16 +460,17 @@ impl Slot {
 struct Outcome {
     data: usize,
     end: Option<End>,
-    /// The receive failed for lack of resources and is worth retrying.
-    blocked: bool,
+    /// The receive failed for lack of resources, with this error, and is
+    /// worth retrying.
+    blocked: Option<i32>,
 }
 
 impl Outcome {
     fn failed(code: i32) -> Self {
         let (end, blocked) = match code {
-            WSA_OPERATION_ABORTED => (Some(End::Cancelled), false),
-            code if is_resource_error(code) => (None, true),
-            code => (Some(End::Os(code)), false),
+            WSA_OPERATION_ABORTED => (Some(End::Cancelled), None),
+            code if is_resource_error(code) => (None, Some(code)),
+            code => (Some(End::Os(code)), None),
         };
         Self {
             data: 0,
@@ -331,8 +522,8 @@ impl End {
 
 enum Posted {
     Pending,
-    /// Failed for lack of resources; the slot is idle again.
-    Blocked,
+    /// Failed for lack of resources with this error; the slot is idle again.
+    Blocked(i32),
     /// The receive ended the stream.
     Ended,
 }
@@ -433,8 +624,8 @@ impl Flow {
             match self.post(state, slot) {
                 Posted::Pending => state.blocked = false,
                 Posted::Ended => news = true,
-                Posted::Blocked => {
-                    state.blocked = true;
+                Posted::Blocked(code) => {
+                    Self::mark_blocked(state, code);
                     // With nothing in flight no completion comes to retry,
                     // so the reader has to read on its own meanwhile.
                     news |= state.in_flight == 0;
@@ -443,6 +634,20 @@ impl Flow {
             }
         }
         news
+    }
+
+    /// Receives fail for lack of resources: reads pass through until one can
+    /// be posted again. Reported once per episode.
+    fn mark_blocked(state: &mut State, code: i32) {
+        if !state.blocked {
+            tracing::debug!(
+                error = %io::Error::from_raw_os_error(code),
+                "posted recv: out of buffers, reads pass through until receives can be posted",
+            );
+            #[cfg(feature = "dial9")]
+            super::dial9::record_blocked(code);
+        }
+        state.blocked = true;
     }
 
     fn post(&self, state: &mut State, mut slot: Box<Slot>) -> Posted {
@@ -500,12 +705,10 @@ impl Flow {
             err
         };
         let outcome = Outcome::failed(err);
-        let blocked = outcome.blocked;
         self.completed(state, seq, slot, outcome);
-        if blocked {
-            Posted::Blocked
-        } else {
-            Posted::Ended
+        match outcome.blocked {
+            Some(code) => Posted::Blocked(code),
+            None => Posted::Ended,
         }
     }
 
@@ -594,7 +797,7 @@ pub(super) struct Reader {
 
 impl Reader {
     pub(super) fn new(socket: RawSocket, config: &PostedRecvConfig) -> io::Result<Self> {
-        let port = port()?;
+        let port = pool()?.port;
         let socket = socket as SOCKET;
         // SAFETY: the socket is open and owned by the stream being wrapped.
         let attached = unsafe { CreateIoCompletionPort(socket as HANDLE, port.0, 0, 0) };

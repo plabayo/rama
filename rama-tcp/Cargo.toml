@@ -26,8 +26,14 @@ targets = [
 
 [features]
 default = []
+# Optional [dial9] runtime telemetry support.
+#
+# [dial9]: https://github.com/dial9-rs/dial9
+dial9 = ["dep:dial9", "dep:dial9-trace-format", "rama-core/dial9", "rama-net/dial9"]
 
 [dependencies]
+dial9 = { workspace = true, optional = true }
+dial9-trace-format = { workspace = true, optional = true }
 parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
 rama-core = { workspace = true, features = ["std"] }

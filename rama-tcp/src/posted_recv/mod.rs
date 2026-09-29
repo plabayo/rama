@@ -45,9 +45,10 @@
 //!   over a quarter slot can make those buffers take up to four times the
 //!   data, about 384 KiB.
 //!
-//! All receives of the process complete on the one thread, which caps bulk
-//! receive throughput below what tokio reaches on its own; round-trip
-//! latency stays the same.
+//! The receives of the process complete on a pool of threads that grows
+//! while completions queue up and shrinks when idle, see
+//! [`CompletionThreads`]. A single stream still receives slower than through
+//! tokio on its own; round-trip latency stays the same.
 //!
 //! # Example
 //!
@@ -92,6 +93,17 @@ mod iocp;
 mod layer;
 #[doc(inline)]
 pub use layer::{PostedRecvConnector, PostedRecvLayer};
+
+mod threads;
+#[doc(inline)]
+pub use threads::{
+    CompletionThreads, ThreadStartReason, ThreadStopReason, completion_threads,
+    running_completion_threads, set_completion_threads,
+};
+
+#[cfg(feature = "dial9")]
+#[cfg_attr(docsrs, doc(cfg(feature = "dial9")))]
+pub mod dial9;
 
 const DEFAULT_SLOTS: usize = 2;
 const DEFAULT_SLOT_SIZE: usize = kib(16);
@@ -317,6 +329,8 @@ impl<S: RawTcpStream> PostedRecv<S> {
                 error = %err,
                 "posted recv: cannot post receives, reads pass through",
             );
+            #[cfg(all(target_os = "windows", feature = "dial9"))]
+            dial9::record_pass_through(&err);
             Self::pass_through(stream)
         })
     }
