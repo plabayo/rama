@@ -105,8 +105,8 @@ mod tests {
             &[";0;q=1"],
             &["A", ";;q=1"],
             &[";q=;;q=1"],
-            &["f;;q=1"],
-            &["f;"],
+            &["a;q=2;q=1"],
+            &["a;b;q=1"],
         ] {
             assert!(test_decode::<Te>(values).is_none(), "{values:?}");
         }

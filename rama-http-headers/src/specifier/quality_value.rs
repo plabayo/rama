@@ -3,6 +3,7 @@ use std::ascii::AsciiExt;
 use std::cmp;
 use std::default::Default;
 use std::fmt;
+use std::iter;
 use std::str;
 
 use rama_utils::collections::NonEmptySmallVec;
@@ -200,44 +201,94 @@ impl<T: fmt::Display> fmt::Display for QualityValue<T> {
 impl<T: str::FromStr> str::FromStr for QualityValue<T> {
     type Err = Error;
     fn from_str(s: &str) -> Result<Self, Error> {
-        // Set defaults used if parsing fails.
-        let mut raw_item = s;
-        let mut quality = Quality::one();
-
-        let mut parts = s.rsplitn(2, ';').map(|x| x.trim());
-        if let (Some(first), Some(second), None) = (parts.next(), parts.next(), parts.next()) {
-            if first.len() < 2 {
-                return Err(Error::invalid());
-            }
-            if first.starts_with("q=") || first.starts_with("Q=") {
-                quality = Quality::from_str(first)?;
-                raw_item = second;
-            }
-        }
-        // a weight qualifies a named item, whose name and parameters cannot be empty
-        if has_empty_part(raw_item) {
+        // `item *( OWS ";" OWS [ name "=" value ] ) [ weight ]` (RFC 9110 §5.6.6, §12.4.2)
+        let mut parts = item_parts(s);
+        let name = parts.next().ok_or_else(Error::invalid)??.1;
+        if name.trim().is_empty() {
             return Err(Error::invalid());
         }
-        match raw_item.parse::<T>() {
-            // we already checked above that the quality is within range
-            Ok(item) => Ok(Self::new(item, quality)),
-            Err(_) => Err(Error::invalid()),
+        let mut quality = None;
+        let mut item_end = s.len();
+        let mut pending_empty = false;
+        let mut inner_empty = false;
+        for part in parts {
+            let (separator, part) = part?;
+            let part = part.trim();
+            if part.is_empty() {
+                pending_empty = true;
+                continue;
+            }
+            if quality.is_some() {
+                // the weight comes last
+                return Err(Error::invalid());
+            }
+            if part.starts_with("q=") || part.starts_with("Q=") {
+                quality = Some(Quality::from_str(part)?);
+                item_end = separator;
+                continue;
+            }
+            if !part.contains('=') {
+                return Err(Error::invalid());
+            }
+            inner_empty |= pending_empty;
+            pending_empty = false;
         }
+        let item = s
+            .get(..item_end)
+            .unwrap_or_default()
+            .trim_end_matches([';', ' ', '\t']);
+        let parsed = if inner_empty {
+            // drop empty parameters so the item re-encodes to what it decodes from
+            let parts: Vec<&str> = item_parts(item)
+                .filter_map(|part| part.ok().map(|(_, part)| part))
+                .filter(|part| !part.trim().is_empty())
+                .collect();
+            parts.join(";").parse::<T>()
+        } else {
+            item.parse::<T>()
+        };
+        parsed
+            .map(|item| Self::new(item, quality.unwrap_or_else(Quality::one)))
+            .map_err(|_err| Error::invalid())
     }
 }
 
-/// Whether any `;`-separated part of an item (its name or a parameter) is blank.
-fn has_empty_part(item: &str) -> bool {
-    let mut empty = true;
-    for byte in item.bytes() {
-        match byte {
-            b';' if empty => return true,
-            b';' => empty = true,
-            b' ' | b'\t' => {}
-            _ => empty = false,
+/// The `;`-separated parts of a list item, each with the offset of the `;` before it.
+///
+/// Quoted strings, including their quoted-pairs, never split; an unterminated one fails.
+fn item_parts(s: &str) -> impl Iterator<Item = Result<(usize, &str), Error>> {
+    let mut start = Some(0_usize);
+    iter::from_fn(move || {
+        let from = start.take()?;
+        let rest = s.get(from..)?;
+        let mut in_quotes = false;
+        let mut escaped = false;
+        for (offset, byte) in rest.bytes().enumerate() {
+            if escaped {
+                escaped = false;
+            } else if in_quotes {
+                match byte {
+                    b'\\' => escaped = true,
+                    b'"' => in_quotes = false,
+                    _ => {}
+                }
+            } else if byte == b'"' {
+                in_quotes = true;
+            } else if byte == b';' {
+                let end = from.saturating_add(offset);
+                start = Some(end.saturating_add(1));
+                return Some(Ok((
+                    from.saturating_sub(1),
+                    s.get(from..end).unwrap_or_default(),
+                )));
+            }
         }
-    }
-    empty
+        Some(if in_quotes {
+            Err(Error::invalid())
+        } else {
+            Ok((from.saturating_sub(1), rest))
+        })
+    })
 }
 
 #[inline]
@@ -402,20 +453,45 @@ mod tests {
     #[test]
     fn test_weight_without_item_is_rejected() {
         for input in [
-            ";q=1",
-            " ;q=0.5",
-            ";",
-            ";;q=1",
-            ";0;q=1",
-            ";q=;;q=1",
-            ";\t;q=1.",
-            " ; a=b",
-            "f;;q=1",
-            "f;",
-            "f; ;q=0.5",
-            "text/html;;level=1",
+            ";q=1", " ;q=0.5", ";", ";;q=1", ";0;q=1", ";q=;;q=1", ";\t;q=1.", " ; a=b",
         ] {
             assert!(input.parse::<QualityValue<String>>().is_err(), "{input:?}");
+        }
+    }
+
+    #[test]
+    fn test_parameters_follow_the_grammar() {
+        // a parameter is `name=value`, and the weight comes once and last
+        for input in [
+            "a;q=2;q=1",
+            "a;b;q=1",
+            "text/html;q=2;q=1",
+            "a;b",
+            "a;q=0.5;b=1",
+            "a;p=\"x",
+            "a;p=\"x;q=1",
+        ] {
+            assert!(input.parse::<QualityValue<String>>().is_err(), "{input:?}");
+        }
+    }
+
+    #[test]
+    fn test_empty_parameters_are_dropped() {
+        for (input, value, quality) in [
+            ("f;;q=1", "f", 1000),
+            ("f;", "f", 1000),
+            ("f; ;q=0.5", "f", 500),
+            ("text/html;;q=0.5", "text/html", 500),
+            ("a;;b=1", "a;b=1", 1000),
+            ("a;;b=1;q=0.2", "a;b=1", 200),
+            ("text/html;p=\"a;;b\";q=0.5", "text/html;p=\"a;;b\"", 500),
+        ] {
+            let qv = input.parse::<QualityValue<String>>().unwrap();
+            assert_eq!(qv.value, value, "{input:?}");
+            assert_eq!(qv.quality, Quality(quality), "{input:?}");
+            // re-encoding yields an equivalent item
+            let again = qv.to_string().parse::<QualityValue<String>>().unwrap();
+            assert_eq!(again.value, qv.value, "{input:?}");
         }
     }
 
@@ -470,7 +546,10 @@ mod tests {
 
     #[test]
     fn test_fuzzing_bugs() {
-        "99999;".parse::<QualityValue<String>>().unwrap_err();
+        assert_eq!(
+            "99999;".parse::<QualityValue<String>>().unwrap().value,
+            "99999"
+        );
         "\x0d;;;=\u{d6aa}=="
             .parse::<QualityValue<String>>()
             .unwrap_err();
