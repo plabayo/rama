@@ -6,6 +6,7 @@ use rama_core::{
 };
 use rama_http_types::{HeaderName, HeaderValue, header};
 use rama_net::forwarded::{ForwardedElement, ForwardedProtocol, ForwardedVersion, NodeId};
+use rama_utils::bytes::{trim_ows, trim_ows_start};
 
 /// The Via general header is added by proxies, both forward and reverse.
 ///
@@ -139,21 +140,21 @@ impl std::str::FromStr for ViaElement {
     type Err = BoxError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let bytes = trim_left(s.as_bytes());
+        let bytes = trim_ows_start(s.as_bytes());
 
-        let (protocol, version, bytes) = match split_once(bytes, |b| b == b'/' || b == b' ') {
+        // RWS separates the parts, and may be HTAB as well as SP (RFC 9110 §7.6.3)
+        let (protocol, version, bytes) = match split_once(bytes, |b| b == b'/' || is_rws(b)) {
             Some((head, b'/', tail)) => {
                 let protocol: ForwardedProtocol = std::str::from_utf8(head)
                     .context("parse via protocol as utf-8")?
                     .try_into()
                     .context("parse via utf-8 protocol as protocol")?;
-                let (version, _, tail) = split_once(tail, |b| b == b' ').ok_or_else(|| {
+                let (version, _, tail) = split_once(tail, is_rws).ok_or_else(|| {
                     BoxError::from_static_str("via str: missing space after protocol separator")
                 })?;
                 let version = ForwardedVersion::try_from(version).context("parse via version")?;
                 (Some(protocol), version, tail)
             }
-            // separator is a space
             Some((head, _, tail)) => {
                 let version = ForwardedVersion::try_from(head).context("parse via version")?;
                 (None, version, tail)
@@ -163,7 +164,7 @@ impl std::str::FromStr for ViaElement {
             }
         };
 
-        let bytes = trim_right(trim_left(bytes));
+        let bytes = trim_ows(bytes);
         let node_id = NodeId::from_bytes_lossy(bytes);
 
         Ok(Self {
@@ -191,18 +192,8 @@ fn split_once(b: &[u8], pred: impl Fn(u8) -> bool) -> Option<(&[u8], u8, &[u8])>
     Some((head, *separator, tail))
 }
 
-fn trim_left(mut b: &[u8]) -> &[u8] {
-    while let [b' ', rest @ ..] = b {
-        b = rest;
-    }
-    b
-}
-
-fn trim_right(mut b: &[u8]) -> &[u8] {
-    while let [rest @ .., b' '] = b {
-        b = rest;
-    }
-    b
+const fn is_rws(byte: u8) -> bool {
+    matches!(byte, b' ' | b'\t')
 }
 
 #[cfg(test)]
@@ -229,6 +220,23 @@ mod tests {
             }
         };
     }
+
+    test_header!(
+        tab_separated_parts,
+        vec!["\t1.1\tvegur\t, HTTP/1.0\t \tfred"],
+        Some(Via(vec![
+            ViaElement {
+                protocol: None,
+                version: ForwardedVersion::HTTP_11,
+                node_id: NodeId::try_from_str("vegur").unwrap(),
+            },
+            ViaElement {
+                protocol: Some(ForwardedProtocol::HTTP),
+                version: ForwardedVersion::HTTP_10,
+                node_id: NodeId::try_from_str("fred").unwrap(),
+            }
+        ]))
+    );
 
     // Tests from the Docs
     test_header!(
