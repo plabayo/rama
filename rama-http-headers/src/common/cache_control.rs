@@ -577,12 +577,24 @@ impl fmt::Display for Directive {
 impl FromStr for KnownDirective {
     type Err = ();
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if s.is_empty() {
-            return Err(());
-        }
         // canonical valueless directives need no split nor case folding
-        if let known @ Self::Known(_) = Self::from_name(s.as_bytes(), None) {
-            return Ok(known);
+        let canonical = match s {
+            "" => return Err(()),
+            "no-cache" => Some(Directive::NoCache),
+            "no-store" => Some(Directive::NoStore),
+            "no-transform" => Some(Directive::NoTransform),
+            "only-if-cached" => Some(Directive::OnlyIfCached),
+            "must-revalidate" => Some(Directive::MustRevalidate),
+            "public" => Some(Directive::Public),
+            "private" => Some(Directive::Private),
+            "immutable" => Some(Directive::Immutable),
+            "must-understand" => Some(Directive::MustUnderstand),
+            "proxy-revalidate" => Some(Directive::ProxyRevalidate),
+            // a `&str` match is cheaper than `from_name`'s (name, value) byte-tuple match
+            _ => None,
+        };
+        if let Some(directive) = canonical {
+            return Ok(Self::Known(directive));
         }
         // directive names are case-insensitive (RFC 9111 §5.2)
         let mut name = [0; MAX_DIRECTIVE_NAME_LEN];

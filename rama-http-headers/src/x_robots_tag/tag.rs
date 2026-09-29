@@ -725,13 +725,14 @@ impl Iterator for Parser<'_> {
                     value_commas = 0;
                 }
                 Some((index, Delimiter::Comma)) => {
+                    let raw_value = trim_space(self.head(index));
                     // an empty list element is ignored (RFC 9110 §5.6.1)
-                    if pair_key.is_empty() && trim_space(self.head(index)).is_empty() {
+                    if pair_key.is_empty() && raw_value.is_empty() {
                         self.advance_past(index);
                         delimiter_offset = 0;
                         continue;
                     }
-                    let value = match std::str::from_utf8(trim_space(self.head(index))) {
+                    let value = match std::str::from_utf8(raw_value) {
                         Ok(value) => value,
                         Err(err) => {
                             self.buffer = &[];
