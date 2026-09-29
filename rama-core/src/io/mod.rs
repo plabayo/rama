@@ -19,6 +19,9 @@ pub mod peek;
 pub mod rewind;
 pub mod timeout;
 
+#[cfg(test)]
+mod test_util;
+
 mod bridge;
 pub use bridge::BridgeIo;
 

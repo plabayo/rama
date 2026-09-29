@@ -478,6 +478,63 @@ mod tests {
         assert!(dropped.load(Ordering::Acquire));
     }
 
+    /// Reads EOF right away and sends on every write it gets.
+    struct WriteRecorder(tokio::sync::mpsc::UnboundedSender<Vec<u8>>);
+
+    impl AsyncRead for WriteRecorder {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            _: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    impl AsyncWrite for WriteRecorder {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            _ = self.0.send(buf.to_vec());
+            Poll::Ready(Ok(buf.len()))
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn relay_sends_upgrade_leftover_with_ready_data() {
+        use rama_core::{Service, io::BridgeIo};
+        use rama_net::proxy::IoForwardService;
+        use tokio::io::AsyncWriteExt;
+
+        // bytes read past the head, then more already in flight
+        let (mut client, proxy) = tokio::io::duplex(64);
+        client.write_all(b"rest").await.unwrap();
+        drop(client);
+        let upgraded = Upgraded::new(ServiceInput::new(proxy), Bytes::from_static(b"head "));
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        IoForwardService::default()
+            .serve(BridgeIo(upgraded, WriteRecorder(tx)))
+            .await
+            .unwrap();
+
+        let mut writes = Vec::new();
+        while let Ok(write) = rx.try_recv() {
+            writes.push(write);
+        }
+        assert_eq!(writes, [b"head rest".to_vec()]);
+    }
+
     #[derive(Debug, Clone, PartialEq, Eq, Extension)]
     struct MessageExtension(&'static str);
 
