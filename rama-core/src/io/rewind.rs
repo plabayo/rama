@@ -42,7 +42,10 @@ impl<T> Rewind<T> {
         self.pre = Some(bs);
     }
 
-    // drops a deferred read error, see `into_parts`
+    /// Split into the inner io and the unread buffer.
+    ///
+    /// A read error already hit on the inner io is dropped,
+    /// use [`Self::into_parts`] to keep it.
     pub fn into_inner(self) -> (T, Bytes) {
         (self.inner, self.pre.unwrap_or_default())
     }
@@ -351,15 +354,51 @@ mod tests {
         let (inner, rest, err) = stream.into_parts();
         assert!(rest.is_empty());
         assert_eq!(
-            err.map(|err| err.kind()),
+            err.as_ref().map(|err| err.kind()),
             Some(io::ErrorKind::ConnectionReset)
         );
 
-        // and from_parts puts it back
-        let mut stream = Rewind::from_parts(inner, rest, Some(io::ErrorKind::Other.into()));
+        let mut stream = Rewind::from_parts(inner, rest, err);
         let err = stream.read(&mut buf).await.unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::Other);
+        assert_eq!(err.kind(), io::ErrorKind::ConnectionReset);
         assert_eq!(stream.read(&mut buf).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn from_parts_partial_buffer_then_error() {
+        let mut stream = Rewind::from_parts(
+            ScriptReader::new([Step::Data(b"ef")]),
+            Bytes::from_static(b"abcd"),
+            Some(io::ErrorKind::ConnectionReset.into()),
+        );
+        let mut buf = [0u8; 3];
+        let n = stream.read(&mut buf).await.unwrap();
+        assert_eq!(&buf[..n], b"abc");
+        // no top-up while an error is due
+        let n = stream.read(&mut buf).await.unwrap();
+        assert_eq!(&buf[..n], b"d");
+        let err = stream.read(&mut buf).await.unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::ConnectionReset);
+        let n = stream.read(&mut buf).await.unwrap();
+        assert_eq!(&buf[..n], b"ef");
+    }
+
+    #[tokio::test]
+    async fn clones_of_from_parts_both_read_buffer_then_error() {
+        let stream = Rewind::from_parts(
+            std::io::Cursor::new(b"cd".to_vec()),
+            Bytes::from_static(b"ab"),
+            Some(io::Error::from_raw_os_error(10054)),
+        );
+        for mut copy in [stream.clone(), stream] {
+            let mut buf = [0u8; 16];
+            let n = copy.read(&mut buf).await.unwrap();
+            assert_eq!(&buf[..n], b"ab");
+            let err = copy.read(&mut buf).await.unwrap_err();
+            assert_eq!(err.raw_os_error(), Some(10054));
+            let n = copy.read(&mut buf).await.unwrap();
+            assert_eq!(&buf[..n], b"cd");
+        }
     }
 
     #[tokio::test]

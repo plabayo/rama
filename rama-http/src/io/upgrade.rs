@@ -252,7 +252,9 @@ impl Upgraded {
 
     /// Tries to downcast the internal trait object to the type passed.
     ///
-    /// On success, returns the downcasted parts.
+    /// On success, returns the downcasted parts. Use
+    /// [`Parts::read_buf`] first, then [`Parts::read_err`],
+    /// before reading [`Parts::io`] again.
     ///
     /// # Errors
     ///
@@ -569,6 +571,21 @@ mod tests {
         let err = upgraded.read(&mut buf).await.unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::ConnectionReset);
         assert_eq!(upgraded.read(&mut buf).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn failed_then_successful_downcast_carries_read_error() {
+        let parts = upgraded_with_deferred_reset()
+            .await
+            .downcast::<std::io::Cursor<Vec<u8>>>()
+            .unwrap_err()
+            .downcast::<ServiceInput<Mock>>()
+            .unwrap();
+        assert!(parts.read_buf.is_empty());
+        assert_eq!(
+            parts.read_err.map(|err| err.kind()),
+            Some(io::ErrorKind::ConnectionReset)
+        );
     }
 
     #[tokio::test]
