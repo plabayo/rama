@@ -341,6 +341,12 @@ mod tests {
     test_header!(test_empty_protocol, vec!["/1.1 foo"], None);
 
     #[test]
+    fn element_trims_trailing_ows() {
+        let element: ViaElement = "1.1 vegur \t".parse().unwrap();
+        assert_eq!(element.node_id, NodeId::try_from_str("vegur").unwrap());
+    }
+
+    #[test]
     fn test_via_adversarial_input_no_panic() {
         for input in [
             " ",
