@@ -436,6 +436,21 @@ mod tests {
         assert_eq!(&buf[..n], b"cd");
     }
 
+    #[test]
+    fn test_prefix_exact_fit_does_not_poll_inner() {
+        let mut stream = PrefixedIo::new(
+            Cursor::new(&b"ab"[..]),
+            ScriptReader::new([Step::Pending, Step::Data(b"cd")]),
+        );
+        let mut buf = [0u8; 2];
+        let Poll::Ready(Ok(n)) = poll_read_once(&mut stream, &mut buf) else {
+            panic!("expected the prefix");
+        };
+        assert_eq!(&buf[..n], b"ab");
+        // the inner Pending is still there, so it was not polled
+        assert!(poll_read_once(&mut stream, &mut buf).is_pending());
+    }
+
     #[tokio::test]
     async fn test_prefix_read_defers_inner_error() {
         let mut stream = PrefixedIo::new(

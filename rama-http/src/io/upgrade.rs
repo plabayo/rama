@@ -128,6 +128,12 @@ pub struct Parts<T> {
     /// You will want to check for any existing bytes if you plan to continue
     /// communicating on the IO object.
     pub read_buf: Bytes,
+    /// A read error the upgraded stream already hit on `io`.
+    ///
+    /// It follows `read_buf` and comes before any further
+    /// read of `io`, which may not report it again (some
+    /// sockets report a reset only once).
+    pub read_err: Option<std::io::Error>,
     /// Extensions associated with this upgrade
     pub extensions: Extensions,
     /// Opaque resources whose lifetime is bound to the upgraded transport.
@@ -257,16 +263,17 @@ impl Upgraded {
             extensions,
             _guards: guards,
         } = self;
-        let (io, buf) = io.into_inner();
+        let (io, read_buf, read_err) = io.into_parts();
         match io.__downcast() {
             Ok(t) => Ok(Parts {
                 io: *t,
-                read_buf: buf,
+                read_buf,
+                read_err,
                 extensions,
                 _guards: guards,
             }),
             Err(io) => Err(Self {
-                io: Rewind::new_buffered(io, buf),
+                io: Rewind::from_parts(io, read_buf, read_err),
                 extensions,
                 _guards: guards,
             }),
@@ -533,6 +540,48 @@ mod tests {
             writes.push(write);
         }
         assert_eq!(writes, [b"head rest".to_vec()]);
+    }
+
+    /// An upgraded stream whose replay bytes were read, with
+    /// the inner io's reset deferred past them.
+    async fn upgraded_with_deferred_reset() -> Upgraded {
+        use tokio::io::AsyncReadExt;
+
+        let mock = Builder::new()
+            .read_error(io::ErrorKind::ConnectionReset.into())
+            .build();
+        let mut upgraded = Upgraded::new(ServiceInput::new(mock), Bytes::from_static(b"ab"));
+        let mut buf = [0u8; 16];
+        let n = upgraded.read(&mut buf).await.unwrap();
+        assert_eq!(&buf[..n], b"ab");
+        upgraded
+    }
+
+    #[tokio::test]
+    async fn failed_downcast_keeps_deferred_read_error() {
+        use tokio::io::AsyncReadExt;
+
+        let mut upgraded = upgraded_with_deferred_reset()
+            .await
+            .downcast::<std::io::Cursor<Vec<u8>>>()
+            .unwrap_err();
+        let mut buf = [0u8; 16];
+        let err = upgraded.read(&mut buf).await.unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::ConnectionReset);
+        assert_eq!(upgraded.read(&mut buf).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn downcast_carries_deferred_read_error() {
+        let parts = upgraded_with_deferred_reset()
+            .await
+            .downcast::<ServiceInput<Mock>>()
+            .unwrap();
+        assert!(parts.read_buf.is_empty());
+        assert_eq!(
+            parts.read_err.map(|err| err.kind()),
+            Some(io::ErrorKind::ConnectionReset)
+        );
     }
 
     #[derive(Debug, Clone, PartialEq, Eq, Extension)]

@@ -42,9 +42,26 @@ impl<T> Rewind<T> {
         self.pre = Some(bs);
     }
 
-    // drops a deferred read error, if any
+    // drops a deferred read error, see `into_parts`
     pub fn into_inner(self) -> (T, Bytes) {
         (self.inner, self.pre.unwrap_or_default())
+    }
+
+    /// Split into the inner io, the unread buffer and a read
+    /// error already hit on the inner io, which is due after
+    /// the buffer and before any further inner read.
+    pub fn into_parts(self) -> (T, Bytes, Option<io::Error>) {
+        (self.inner, self.pre.unwrap_or_default(), self.deferred_err)
+    }
+
+    /// Inverse of [`Self::into_parts`]: reads return `buf`,
+    /// then `read_err` if any, then the inner io.
+    pub fn from_parts(io: T, buf: Bytes, read_err: Option<io::Error>) -> Self {
+        Self {
+            pre: Some(buf),
+            deferred_err: read_err,
+            inner: io,
+        }
     }
 
     pub fn get_mut(&mut self) -> &mut T {
@@ -90,9 +107,6 @@ where
         if buf.remaining() == 0 {
             return Poll::Ready(Ok(()));
         }
-        if let Some(err) = this.deferred_err.take() {
-            return Poll::Ready(Err(err));
-        }
 
         if let Some(mut prefix) = this.pre.take() {
             // If there are no remaining bytes, let the bytes get dropped.
@@ -103,7 +117,8 @@ where
                 if !prefix.is_empty() {
                     // Put back what's left
                     this.pre = Some(prefix);
-                } else if buf.remaining() > 0
+                } else if this.deferred_err.is_none()
+                    && buf.remaining() > 0
                     && let Poll::Ready(Err(err)) = Pin::new(&mut this.inner).poll_read(cx, buf)
                 {
                     // Returned next call: some sockets report a
@@ -113,6 +128,10 @@ where
 
                 return Poll::Ready(Ok(()));
             }
+        }
+        // due after the buffer, before the inner io
+        if let Some(err) = this.deferred_err.take() {
+            return Poll::Ready(Err(err));
         }
         Pin::new(&mut this.inner).poll_read(cx, buf)
     }
@@ -321,6 +340,87 @@ mod tests {
         assert_eq!(&buf[..n], b"abc");
         let (_, rest) = stream.into_inner();
         assert_eq!(rest, &b"d"[..]);
+    }
+
+    #[tokio::test]
+    async fn into_parts_keeps_deferred_error() {
+        let mut stream = buffered(b"ab", [Step::Err(io::ErrorKind::ConnectionReset)]);
+        let mut buf = [0u8; 16];
+        let n = stream.read(&mut buf).await.unwrap();
+        assert_eq!(&buf[..n], b"ab");
+        let (inner, rest, err) = stream.into_parts();
+        assert!(rest.is_empty());
+        assert_eq!(
+            err.map(|err| err.kind()),
+            Some(io::ErrorKind::ConnectionReset)
+        );
+
+        // and from_parts puts it back
+        let mut stream = Rewind::from_parts(inner, rest, Some(io::ErrorKind::Other.into()));
+        let err = stream.read(&mut buf).await.unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::Other);
+        assert_eq!(stream.read(&mut buf).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn from_parts_reads_buffer_then_error_then_inner() {
+        let mut stream = Rewind::from_parts(
+            ScriptReader::new([Step::Data(b"cd")]),
+            Bytes::from_static(b"ab"),
+            Some(io::ErrorKind::ConnectionReset.into()),
+        );
+        let mut buf = [0u8; 16];
+        // no top-up while an error is due
+        let n = stream.read(&mut buf).await.unwrap();
+        assert_eq!(&buf[..n], b"ab");
+        let err = stream.read(&mut buf).await.unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::ConnectionReset);
+        let n = stream.read(&mut buf).await.unwrap();
+        assert_eq!(&buf[..n], b"cd");
+    }
+
+    #[test]
+    fn exact_fit_does_not_poll_inner() {
+        let mut stream = buffered(b"ab", [Step::Pending, Step::Data(b"cd")]);
+        let mut buf = [0u8; 2];
+        let Poll::Ready(Ok(n)) = poll_read_once(&mut stream, &mut buf) else {
+            panic!("expected the buffer");
+        };
+        assert_eq!(&buf[..n], b"ab");
+        // the inner Pending is still there, so it was not polled
+        assert!(poll_read_once(&mut stream, &mut buf).is_pending());
+    }
+
+    #[test]
+    fn zero_capacity_read_without_buffer_skips_inner() {
+        let mut stream = Rewind::new(ScriptReader::new([Step::Pending]));
+        assert!(matches!(
+            poll_read_once(&mut stream, &mut []),
+            Poll::Ready(Ok(0))
+        ));
+    }
+
+    #[tokio::test]
+    async fn read_wakes_for_inner_after_buffer() {
+        let (mut client, server) = tokio::io::duplex(64);
+        let mut stream = Rewind::new_buffered(server, Bytes::from_static(b"ab"));
+        let mut buf = [0u8; 16];
+        let n = stream.read(&mut buf).await.unwrap();
+        assert_eq!(&buf[..n], b"ab");
+
+        let writer = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            tokio::io::AsyncWriteExt::write_all(&mut client, b"cd")
+                .await
+                .unwrap();
+            client
+        });
+        let n = tokio::time::timeout(std::time::Duration::from_secs(2), stream.read(&mut buf))
+            .await
+            .expect("read was never woken")
+            .unwrap();
+        assert_eq!(&buf[..n], b"cd");
+        drop(writer.await.unwrap());
     }
 
     #[test]
