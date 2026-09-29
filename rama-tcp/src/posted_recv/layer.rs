@@ -1,7 +1,5 @@
-use rama_core::{Layer, Service, extensions::ExtensionsRef};
-use rama_net::client::{
-    ConnectionError, ConnectionErrorKind, ConnectorService, EstablishedClientConnection,
-};
+use rama_core::{Layer, Service};
+use rama_net::client::{ConnectionError, ConnectorService, EstablishedClientConnection};
 use rama_utils::macros::define_inner_service_accessors;
 
 use super::{PostedRecv, PostedRecvConfig, RawTcpStream};
@@ -73,7 +71,7 @@ impl<S> PostedRecvConnector<S> {
 impl<S, Input, Stream> Service<Input> for PostedRecvConnector<S>
 where
     S: ConnectorService<Input, Connection = Stream>,
-    Stream: RawTcpStream + ExtensionsRef,
+    Stream: RawTcpStream,
     Input: Send + 'static,
 {
     type Output = EstablishedClientConnection<PostedRecv<Stream>, Input>;
@@ -81,10 +79,9 @@ where
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let EstablishedClientConnection { input, conn } = self.inner.connect(input).await?;
-        let conn = PostedRecv::with_config(conn, &self.config).map_err(|err| {
-            ConnectionError::local(err, ConnectionErrorKind::Internal)
-                .context("posted recv: wrap established tcp connection")
-        })?;
+        // Fails open: a connection whose receives cannot be posted is still
+        // a working connection.
+        let conn = PostedRecv::with_config(conn, &self.config);
         Ok(EstablishedClientConnection { input, conn })
     }
 }

@@ -5,11 +5,22 @@ use std::{io, net::SocketAddr, time::Duration};
 
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
-    net::{TcpListener, TcpStream},
+    net::{TcpListener, TcpSocket, TcpStream},
     task::JoinHandle,
 };
 
 pub(super) const REQUEST: &[u8] = b"PING\r\n";
+
+/// How long a single flow may take before a test gives up on it.
+const FLOW_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// A loopback listener with a backlog deep enough for a thousand clients
+/// connecting at once, which a default backlog would silently drop.
+pub(super) fn listen() -> TcpListener {
+    let socket = TcpSocket::new_v4().unwrap();
+    socket.bind(([127, 0, 0, 1], 0).into()).unwrap();
+    socket.listen(4096).unwrap()
+}
 
 /// How the origin ends a connection after writing its reply.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,32 +52,19 @@ impl Drop for Origin {
 }
 
 /// Spawn an origin that answers every connection with `reply(len)` and then
-/// closes as `close` says. `gap` is slept between the reply and the close so
-/// the reply leaves the send buffer before a zero-linger close discards it.
-pub(super) async fn spawn_origin(len: usize, close: Close, gap: Duration) -> Origin {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
-    let addr = listener.local_addr().unwrap();
+/// closes as `close` says, right after the reply was acknowledged.
+pub(super) async fn spawn_origin(len: usize, close: Close) -> Origin {
     let body = reply(len);
-    let task = tokio::spawn(async move {
-        loop {
-            let Ok((stream, _)) = listener.accept().await else {
-                return;
-            };
-            let body = body.clone();
-            tokio::spawn(async move {
-                _ = serve_one(stream, &body, close, gap).await;
-            });
+    spawn_origin_fn(move |stream| {
+        let body = body.clone();
+        async move {
+            _ = serve_one(stream, &body, close).await;
         }
-    });
-    Origin { addr, task }
+    })
+    .await
 }
 
-async fn serve_one(
-    mut stream: TcpStream,
-    body: &[u8],
-    close: Close,
-    gap: Duration,
-) -> io::Result<()> {
+async fn serve_one(mut stream: TcpStream, body: &[u8], close: Close) -> io::Result<()> {
     if close == Close::UnreadInput {
         stream.readable().await?;
     } else {
@@ -74,14 +72,103 @@ async fn serve_one(
         stream.read_exact(&mut req).await?;
     }
     stream.write_all(body).await?;
-    if !gap.is_zero() {
-        tokio::time::sleep(gap).await;
-    }
     if close == Close::Reset {
         stream.set_zero_linger()?;
     }
+    if close != Close::Fin {
+        // An abortive close discards what this side has not sent yet.
+        wait_until_acked(&stream, body.len()).await?;
+    }
     drop(stream);
     Ok(())
+}
+
+/// Wait until the `sent` bytes written to `stream` went out and were
+/// acknowledged, so that a reset right after cannot discard any of them.
+pub(super) async fn wait_until_acked(stream: &TcpStream, sent: usize) -> io::Result<()> {
+    let deadline = tokio::time::Instant::now() + FLOW_TIMEOUT;
+    while !acked(stream, sent)? {
+        if tokio::time::Instant::now() > deadline {
+            return Err(io::ErrorKind::TimedOut.into());
+        }
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn acked(stream: &TcpStream, sent: usize) -> io::Result<bool> {
+    use std::os::windows::io::AsRawSocket;
+    use windows_sys::Win32::Networking::WinSock::{
+        SIO_TCP_INFO, SOCKET, SOCKET_ERROR, TCP_INFO_v0, WSAIoctl,
+    };
+
+    let version: u32 = 0;
+    let mut info = TCP_INFO_v0::default();
+    let mut returned = 0;
+    // SAFETY: the socket is open, and the buffers match the v0 layout.
+    let rc = unsafe {
+        WSAIoctl(
+            stream.as_raw_socket() as SOCKET,
+            SIO_TCP_INFO,
+            (&raw const version).cast(),
+            size_of::<u32>() as u32,
+            (&raw mut info).cast(),
+            size_of::<TCP_INFO_v0>() as u32,
+            &mut returned,
+            std::ptr::null_mut(),
+            None,
+        )
+    };
+    if rc == SOCKET_ERROR {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(info.BytesOut >= sent as u64 && info.BytesInFlight == 0)
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn acked(stream: &TcpStream, _sent: usize) -> io::Result<bool> {
+    use std::os::fd::AsRawFd;
+
+    let mut queued: libc::c_int = 0;
+    // SAFETY: the socket is open and TIOCOUTQ writes one int.
+    let rc = unsafe { libc::ioctl(stream.as_raw_fd(), libc::TIOCOUTQ as _, &mut queued) };
+    if rc < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(queued == 0)
+}
+
+#[cfg(target_vendor = "apple")]
+fn acked(stream: &TcpStream, _sent: usize) -> io::Result<bool> {
+    use std::os::fd::AsRawFd;
+
+    let mut queued: libc::c_int = 0;
+    let mut len = size_of::<libc::c_int>() as libc::socklen_t;
+    // SAFETY: the socket is open and SO_NWRITE writes one int.
+    let rc = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_NWRITE,
+            (&raw mut queued).cast(),
+            &mut len,
+        )
+    };
+    if rc < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(queued == 0)
+}
+
+#[cfg(not(any(
+    target_os = "windows",
+    target_os = "linux",
+    target_os = "android",
+    target_vendor = "apple"
+)))]
+fn acked(_: &TcpStream, _: usize) -> io::Result<bool> {
+    Ok(true)
 }
 
 /// Everything a reader saw up to the end of the stream.
@@ -233,11 +320,7 @@ impl Filler {
 pub(super) const SIZES: [usize; 3] = [234, 1843, 6554];
 /// How long a client waits before its first read, so that the reply and the
 /// reset both arrived before it reads.
-pub(super) const FORCED_DELAY: Duration = Duration::from_millis(100);
-/// How long an origin waits between its reply and its reset. A zero linger
-/// close discards what the origin itself has not sent yet, which on a loaded
-/// machine can take more than a few milliseconds to go out.
-pub(super) const RESET_GAP: Duration = Duration::from_millis(50);
+pub(super) const FORCED_DELAY: Duration = Duration::from_millis(50);
 
 /// Run `runs` exchanges, `concurrency` at a time, and tally the outcomes.
 pub(super) async fn tally<F, Fut>(runs: usize, concurrency: usize, len: usize, run: F) -> Tally
@@ -247,6 +330,14 @@ where
 {
     let mut tally = Tally::default();
     let mut set = tokio::task::JoinSet::new();
+    let run = || {
+        let flow = run();
+        async move {
+            tokio::time::timeout(FLOW_TIMEOUT, flow)
+                .await
+                .expect("a flow hung")
+        }
+    };
     for _ in 0..runs {
         if set.len() >= concurrency
             && let Some(received) = set.join_next().await
@@ -267,7 +358,7 @@ where
     F: Fn(TcpStream) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = ()> + Send + 'static,
 {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let listener = listen();
     let addr = listener.local_addr().unwrap();
     let task = tokio::spawn(async move {
         loop {
@@ -278,4 +369,15 @@ where
         }
     });
     Origin { addr, task }
+}
+
+/// Characterization and benchmark tests only run when asked to, through
+/// `just characterize-posted-recv`, rather than with every ignored test.
+#[cfg(target_os = "windows")]
+pub(super) fn characterizing() -> bool {
+    let enabled = std::env::var_os("RAMA_POSTED_RECV_CHARACTERIZE").is_some();
+    if !enabled {
+        eprintln!("skipped: run `just characterize-posted-recv`");
+    }
+    enabled
 }

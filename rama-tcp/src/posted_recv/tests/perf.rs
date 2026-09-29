@@ -40,7 +40,7 @@ impl Reader {
                     .with_slots(slots)
                     .with_slot_size(size)
                     .with_max_buffered(kib(64).max(slots * size));
-                Box::new(PostedRecv::with_config(TcpStream::new(stream), &config).unwrap())
+                Box::new(PostedRecv::with_config(TcpStream::new(stream), &config))
             }
         }
     }
@@ -52,6 +52,12 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> Stream for T {}
 /// `flows` concurrent flows each receive `per_flow` bytes; returns MiB/s.
 async fn throughput(reader: Reader, flows: usize, per_flow: usize) -> f64 {
     let origin = spawn_origin_fn(move |mut stream| async move {
+        // The client speaks first, so a dropped handshake cannot leave it
+        // waiting forever.
+        let mut hello = [0; 1];
+        if stream.read_exact(&mut hello).await.is_err() {
+            return;
+        }
         let chunk = vec![0x5a; kib(64)];
         let mut left = per_flow;
         while left > 0 {
@@ -68,15 +74,21 @@ async fn throughput(reader: Reader, flows: usize, per_flow: usize) -> f64 {
     let mut set = JoinSet::new();
     for _ in 0..flows {
         set.spawn(async move {
-            let mut stream = reader.connect(addr).await;
-            let mut buf = vec![0; kib(64)];
-            let mut total = 0;
-            loop {
-                match stream.read(&mut buf).await.unwrap() {
-                    0 => break,
-                    n => total += n,
+            let flow = async {
+                let mut stream = reader.connect(addr).await;
+                stream.write_all(b"!").await.unwrap();
+                let mut buf = vec![0; kib(64)];
+                let mut total = 0;
+                loop {
+                    match stream.read(&mut buf).await.unwrap() {
+                        0 => break total,
+                        n => total += n,
+                    }
                 }
-            }
+            };
+            let total = tokio::time::timeout(Duration::from_secs(120), flow)
+                .await
+                .expect("a flow hung");
             assert_eq!(total, per_flow);
         });
     }
@@ -113,6 +125,9 @@ async fn latency(reader: Reader, rounds: usize) -> (Duration, Duration) {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "benchmark: prints throughput and latency"]
 async fn overhead() {
+    if !super::harness::characterizing() {
+        return;
+    }
     for (flows, per_flow) in [(1, mib(1024)), (64, mib(32)), (1000, mib(2))] {
         for reader in Reader::ALL {
             let mibs = throughput(reader, flows, per_flow).await;

@@ -21,22 +21,33 @@
 //!
 //! # Limits
 //!
-//! Bytes are kept when a receive is posted as they arrive. A receive
-//! completes with whatever has arrived, and the completion thread posts it
-//! again right away, normally within microseconds. Only if that thread is
-//! held up until every posted receive completed and the reset arrived can
-//! bytes still be lost; more [`slots`](PostedRecvConfig::slots) make that
-//! less likely.
+//! A reply that fits in the posted receives, [`slots`](PostedRecvConfig::slots)
+//! × [`slot_size`](PostedRecvConfig::slot_size) (32 KiB by default), is kept
+//! whatever follows it. Bytes beyond that wait in the kernel, already
+//! acknowledged, until the completion thread posts the next receive, which
+//! takes microseconds; a peer that resets right after its reply is
+//! acknowledged can beat that, and those bytes are lost. Size the slots for
+//! the largest reply that must survive a reset. How busy the tokio runtime
+//! is does not matter.
 //!
 //! No receive is posted while more than
 //! [`max_buffered`](PostedRecvConfig::max_buffered) bytes wait for the
-//! reader, so a reader that falls further behind is exposed again. Each
-//! posted receive keeps its buffer locked by the kernel for as long as it is
-//! posted.
+//! reader, so a reader that falls further behind is exposed again. If the
+//! system runs out of buffers for a receive, reads pass through tokio until
+//! receives can be posted again, with the same exposure.
 //!
-//! All receives of the process complete on one dedicated thread. That caps
-//! bulk receive throughput below what tokio reaches on its own, while
-//! round-trip latency stays the same.
+//! Memory, per flow and with the default configuration:
+//!
+//! - idle: the posted buffers, `slots × slot_size` = 32 KiB, locked by the
+//!   kernel while posted;
+//! - reader lagging: up to `max_buffered` plus the posted buffers of data,
+//!   about 96 KiB, in buffers of `slot_size`. A peer sending segments of just
+//!   over a quarter slot can make those buffers take up to four times the
+//!   data, about 384 KiB.
+//!
+//! All receives of the process complete on the one thread, which caps bulk
+//! receive throughput below what tokio reaches on its own; round-trip
+//! latency stays the same.
 //!
 //! # Example
 //!
@@ -46,7 +57,7 @@
 //!
 //! # async fn example() -> std::io::Result<()> {
 //! let stream = tokio::net::TcpStream::connect("127.0.0.1:88").await?;
-//! let mut stream = PostedRecv::new(TcpStream::new(stream))?;
+//! let mut stream = PostedRecv::new(TcpStream::new(stream));
 //! stream.write_all(b"request").await?;
 //! let mut reply = Vec::new();
 //! stream.read_to_end(&mut reply).await?;
@@ -60,7 +71,10 @@ use std::{
     task::{Context, Poll},
 };
 
-use rama_core::extensions::{Extensions, ExtensionsRef};
+use rama_core::{
+    extensions::{Extensions, ExtensionsRef},
+    telemetry::tracing,
+};
 #[cfg(any(target_os = "windows", target_family = "unix"))]
 use rama_net::conn::ConnectionAbort;
 use rama_net::{address::SocketAddress, stream::Socket};
@@ -114,8 +128,8 @@ impl PostedRecvConfig {
     generate_set_and_with! {
         /// Number of receives kept posted on the socket (at least 1).
         ///
-        /// More slots keep more receives waiting while completed ones are
-        /// posted again, see the [module docs](crate::posted_recv#limits).
+        /// Together with [`slot_size`](Self::slot_size) this sets the largest
+        /// reply kept before a reset, see the [module docs](crate::posted_recv#limits).
         pub fn slots(mut self, slots: usize) -> Self {
             self.slots = slots.max(1);
             self
@@ -254,15 +268,17 @@ impl RawTcpStream for TcpStream {}
 /// [`PostedRecv::connection_abort`], and puts it in the extensions of a
 /// [`TcpStream`], where a bridge such as
 /// [`PassResetsForwardService`](rama_net::proxy::PassResetsForwardService)
-/// finds it.
+/// finds it. That holds on every platform, so off Windows it is not free
+/// either: two small allocations and an extension per stream.
 pub struct PostedRecv<S: RawTcpStream> {
     // Declared before `inner`, so that it is dropped before the socket is.
     #[cfg(any(target_os = "windows", target_family = "unix"))]
     abort: abort::AbortGuard,
     #[cfg(target_os = "windows")]
     inner: std::mem::ManuallyDrop<S>,
+    /// `None` when the socket could not be attached: reads pass through.
     #[cfg(target_os = "windows")]
-    reader: iocp::Reader,
+    reader: Option<iocp::Reader>,
     #[cfg(not(target_os = "windows"))]
     inner: S,
 }
@@ -274,6 +290,7 @@ where
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PostedRecv")
             .field("inner", self.get_ref())
+            .field("posted", &self.is_posted())
             .finish_non_exhaustive()
     }
 }
@@ -284,42 +301,81 @@ impl<S: RawTcpStream> PostedRecv<S> {
     /// Wrap the stream right after it connected or was accepted: bytes read
     /// through `stream` before are not seen by the wrapper.
     ///
-    /// # Errors
-    ///
-    /// Fails on Windows if the socket cannot be attached to the completion
-    /// port, for instance because it already is attached to another one.
-    pub fn new(stream: S) -> io::Result<Self> {
+    /// Never fails: if receives cannot be posted, reads pass through as if
+    /// the stream was not wrapped. See [`PostedRecv::try_with_config`] to
+    /// get the error instead.
+    pub fn new(stream: S) -> Self {
         Self::with_config(stream, &PostedRecvConfig::default())
     }
 
     /// Take over reading from `stream` with the given configuration.
     ///
-    /// # Errors
-    ///
-    /// See [`PostedRecv::new`].
-    #[cfg(target_os = "windows")]
-    pub fn with_config(stream: S, config: &PostedRecvConfig) -> io::Result<Self> {
-        let reader = iocp::Reader::new(stream.raw_socket(), config)?;
-        Ok(Self {
-            abort: abort::AbortGuard::new(stream.raw_socket(), stream.extensions_of()),
-            inner: std::mem::ManuallyDrop::new(stream),
-            reader,
+    /// Never fails, see [`PostedRecv::new`].
+    pub fn with_config(stream: S, config: &PostedRecvConfig) -> Self {
+        Self::try_with_config(stream, config).unwrap_or_else(|(err, stream)| {
+            tracing::debug!(
+                error = %err,
+                "posted recv: cannot post receives, reads pass through",
+            );
+            Self::pass_through(stream)
         })
     }
 
-    /// Take over reading from `stream` with the given configuration.
+    /// Take over reading from `stream` with the given configuration, or hand
+    /// it back with the error.
     ///
     /// # Errors
     ///
-    /// See [`PostedRecv::new`].
-    #[cfg(not(target_os = "windows"))]
-    pub fn with_config(stream: S, config: &PostedRecvConfig) -> io::Result<Self> {
-        _ = config;
-        Ok(Self {
+    /// Fails on Windows if the completion thread cannot be started, or if
+    /// the socket cannot be attached to its port, for instance because it
+    /// already is attached to another one. A failed start is retried by the
+    /// next call.
+    pub fn try_with_config(stream: S, config: &PostedRecvConfig) -> Result<Self, (io::Error, S)> {
+        #[cfg(target_os = "windows")]
+        {
+            let reader = match iocp::Reader::new(stream.raw_socket(), config) {
+                Ok(reader) => reader,
+                Err(err) => return Err((err, stream)),
+            };
+            Ok(Self {
+                abort: abort::AbortGuard::new(stream.raw_socket(), stream.extensions_of()),
+                inner: std::mem::ManuallyDrop::new(stream),
+                reader: Some(reader),
+            })
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            _ = config;
+            Ok(Self::pass_through(stream))
+        }
+    }
+
+    fn pass_through(stream: S) -> Self {
+        Self {
+            #[cfg(target_os = "windows")]
+            abort: abort::AbortGuard::new(stream.raw_socket(), stream.extensions_of()),
             #[cfg(target_family = "unix")]
             abort: abort::AbortGuard::new(stream.raw_fd(), stream.extensions_of()),
+            #[cfg(target_os = "windows")]
+            inner: std::mem::ManuallyDrop::new(stream),
+            #[cfg(target_os = "windows")]
+            reader: None,
+            #[cfg(not(target_os = "windows"))]
             inner: stream,
-        })
+        }
+    }
+
+    /// Whether receives are posted for this stream. False off Windows, and
+    /// when wrapping fell back to passing reads through.
+    pub fn is_posted(&self) -> bool {
+        #[cfg(target_os = "windows")]
+        {
+            self.reader.is_some()
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            false
+        }
     }
 
     /// A capability to abort this connection: once it is closed, it goes
@@ -347,8 +403,8 @@ impl<S: RawTcpStream> PostedRecv<S> {
     }
 
     #[cfg(all(test, target_os = "windows"))]
-    fn reader(&self) -> &iocp::Reader {
-        &self.reader
+    fn reader(&self) -> Option<&iocp::Reader> {
+        self.reader.as_ref()
     }
 }
 
@@ -357,10 +413,16 @@ impl<S: RawTcpStream> Drop for PostedRecv<S> {
     fn drop(&mut self) {
         // The socket may be closed before the fields are dropped.
         self.abort.release();
-        self.reader.stop();
-        // SAFETY: `inner` is never used again after this.
-        let stream = unsafe { std::mem::ManuallyDrop::take(&mut self.inner) };
-        self.reader.close(stream.into_std());
+        match &self.reader {
+            Some(reader) => {
+                reader.stop();
+                // SAFETY: `inner` is never used again after this.
+                let stream = unsafe { std::mem::ManuallyDrop::take(&mut self.inner) };
+                reader.close(stream.into_std());
+            }
+            // SAFETY: `inner` is never used again after this.
+            None => unsafe { std::mem::ManuallyDrop::drop(&mut self.inner) },
+        }
     }
 }
 
@@ -371,7 +433,20 @@ impl<S: RawTcpStream> AsyncRead for PostedRecv<S> {
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        self.reader.poll_read(cx, buf)
+        let this = self.get_mut();
+        let Some(reader) = &this.reader else {
+            return Pin::new(&mut *this.inner).poll_read(cx, buf);
+        };
+        match reader.poll_read(cx, buf) {
+            iocp::ReadStep::Ready(result) => Poll::Ready(result),
+            iocp::ReadStep::Pending => Poll::Pending,
+            iocp::ReadStep::Direct => {
+                let before = buf.filled().len();
+                let result = Pin::new(&mut *this.inner).poll_read(cx, buf);
+                reader.direct_read(&result, buf.filled().len() - before);
+                result
+            }
+        }
     }
 
     #[cfg(not(target_os = "windows"))]

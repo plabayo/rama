@@ -295,6 +295,12 @@ test-ignored-release:
     @just _ensure-installed cargo-nextest cargo-nextest
     cargo nextest run --all-features --release --workspace --run-ignored=only
 
+# Windows only: print how a plain tokio stream and `PostedRecv` fare around a
+# TCP reset, and what `PostedRecv` costs in throughput and latency.
+characterize-posted-recv $RAMA_POSTED_RECV_CHARACTERIZE="1":
+    @just _ensure-installed cargo-nextest cargo-nextest
+    cargo nextest run -p rama-tcp --all-features --release --run-ignored=only --no-capture --no-tests=warn -E "test(/^posted_recv::/)"
+
 test-loom:
     @just _ensure-installed cargo-nextest cargo-nextest
     @just _test-loom-{{os_family()}}

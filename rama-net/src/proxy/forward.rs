@@ -338,7 +338,14 @@ where
 /// stream look complete. A side without a [`ConnectionAbort`] is closed as
 /// usual. An aborted side does not linger.
 ///
-/// Aborting discards whatever the bridge still had queued for that side.
+/// A reset that first shows up as a failed write gets there too: the other
+/// direction keeps delivering what the gone peer had sent, for up to the
+/// lingering timeout (or the shutdown grace), and then passes the reset on.
+///
+/// Aborting discards whatever the bridge still had queued for that side, and
+/// a Windows peer that receives the reset drops what it has not read yet,
+/// possibly the tail of what was just forwarded to it. Use this where
+/// signalling the truncation matters more than delivering that tail.
 ///
 /// Created with [`IoForwardService::pass_resets`].
 #[derive(Debug, Clone)]
@@ -544,8 +551,15 @@ where
     // Whether a side was aborted to pass on a reset of the other side.
     let left_aborted = Arc::new(AtomicBool::new(false));
     let right_aborted = Arc::new(AtomicBool::new(false));
+    let (left_abort, right_abort) = (aborts.left.clone(), aborts.right.clone());
 
-    let (reason, fatal_error) = {
+    // How long the other direction may keep delivering what a gone peer sent
+    // before it went away.
+    let drain_window = lingering_close.map_or(shutdown_grace, |linger| {
+        linger.timeout().max(shutdown_grace)
+    });
+
+    let (reason, fatal_error, peer_gone) = {
         let l_to_r = std::pin::pin!(copy_one_way(
             &mut left_r,
             &mut right_w,
@@ -586,10 +600,41 @@ where
             &first_byte_seen,
             &upstream_eof_seen,
             &client_spoke,
+            ReadEnded {
+                left: &left_r_ended,
+                right: &right_r_ended,
+            },
+            drain_window,
         )
         .await
         // l_to_r and r_to_l drop here, releasing borrows on the halves.
     };
+
+    // A peer that reset us showed up as a write error, and the other
+    // direction did not get to pass the reset on before the drain window
+    // ended: do it here instead of closing that side cleanly.
+    if let Some(direction) = peer_gone
+        && fatal_error.as_ref().is_some_and(|err| {
+            matches!(
+                err.kind(),
+                std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::ConnectionAborted
+                    | std::io::ErrorKind::BrokenPipe
+            )
+        })
+    {
+        let (abort, aborted, shut) = match direction {
+            CopyDirection::LeftToRight => (&left_abort, &left_aborted, &left_w_shut),
+            CopyDirection::RightToLeft => (&right_abort, &right_aborted, &right_w_shut),
+        };
+        if !shut.load(Ordering::Acquire)
+            && let Some(abort) = abort
+            && abort.abort().is_ok()
+        {
+            aborted.store(true, Ordering::Release);
+            shut.store(true, Ordering::Release);
+        }
+    }
 
     // Close both write halves concurrently rather than sequentially — TLS
     // close_notify can take the full grace window per side, and serializing
@@ -614,22 +659,27 @@ where
         (false, false) => {}
     }
 
+    // Lingering is not part of the bridge's life.
+    let age = opened_at.elapsed();
+
     if let Some(linger) = lingering_close
         && reason != BridgeCloseReason::Shutdown
     {
         let linger_left =
             !left_r_ended.load(Ordering::Acquire) && !left_aborted.load(Ordering::Acquire);
-        let linger_right =
-            !right_r_ended.load(Ordering::Acquire) && !right_aborted.load(Ordering::Acquire);
+        // A silent origin has nothing in flight to wait for.
+        let linger_right = !right_r_ended.load(Ordering::Acquire)
+            && !right_aborted.load(Ordering::Acquire)
+            && reason != BridgeCloseReason::FirstByteTimeout;
         tokio::join!(
             async {
                 if linger_left {
-                    linger_then_close(&mut left_r, linger, guard.as_ref(), "left").await;
+                    linger_drain(&mut left_r, linger, guard.as_ref(), "left").await;
                 }
             },
             async {
                 if linger_right {
-                    linger_then_close(&mut right_r, linger, guard.as_ref(), "right").await;
+                    linger_drain(&mut right_r, linger, guard.as_ref(), "right").await;
                 }
             },
         );
@@ -639,7 +689,7 @@ where
         reason,
         bytes_l_to_r: bytes_l_to_r.load(Ordering::Relaxed),
         bytes_r_to_l: bytes_r_to_l.load(Ordering::Relaxed),
-        age: opened_at.elapsed(),
+        age,
         fatal_error,
     }
 }
@@ -651,6 +701,49 @@ enum FirstByteWindow {
     PendingClient(Duration),
     /// Actively counting down to the deadline
     Armed(std::pin::Pin<Box<tokio::time::Sleep>>),
+}
+
+/// How the select loop ended: the reason, the fatal error if any, and the
+/// direction whose write found its peer gone while the other direction was
+/// still draining, if that is how it ended.
+type LoopEnd = (
+    BridgeCloseReason,
+    Option<std::io::Error>,
+    Option<CopyDirection>,
+);
+
+/// A direction whose write found its peer gone. What that peer sent before
+/// may still be on its way through the other direction, so the bridge keeps
+/// that one running for a while.
+struct Draining {
+    reason: BridgeCloseReason,
+    error: std::io::Error,
+    direction: CopyDirection,
+    deadline: std::pin::Pin<Box<tokio::time::Sleep>>,
+}
+
+impl Draining {
+    fn finish(self) -> LoopEnd {
+        (self.reason, Some(self.error), Some(self.direction))
+    }
+}
+
+/// A write error saying the peer is gone, rather than that we failed.
+fn is_peer_gone(err: &std::io::Error) -> bool {
+    use std::io::ErrorKind;
+    matches!(
+        err.kind(),
+        ErrorKind::ConnectionReset
+            | ErrorKind::ConnectionAborted
+            | ErrorKind::BrokenPipe
+            | ErrorKind::NotConnected
+    )
+}
+
+/// Per direction: whether its reader reached its end.
+struct ReadEnded<'a> {
+    left: &'a AtomicBool,
+    right: &'a AtomicBool,
 }
 
 #[expect(clippy::too_many_arguments)]
@@ -665,7 +758,9 @@ async fn run_select_loop<F1, F2>(
     first_byte_seen: &AtomicBool,
     upstream_eof_seen: &AtomicBool,
     client_spoke: &Notify,
-) -> (BridgeCloseReason, Option<std::io::Error>)
+    read_ended: ReadEnded<'_>,
+    drain_window: Duration,
+) -> LoopEnd
 where
     F1: Future<Output = Result<(), std::io::Error>>,
     F2: Future<Output = Result<(), std::io::Error>>,
@@ -688,10 +783,18 @@ where
     // side draining its buffer would be reported as `PeerEofRight`
     // (last to finish), which is misleading on the analysis side.
     let mut first_eof: Option<BridgeCloseReason> = None;
+    let mut draining: Option<Draining> = None;
 
     loop {
         if l_to_r_done && r_to_l_done {
-            return (first_eof.unwrap_or(BridgeCloseReason::PeerEofLeft), None);
+            return draining.map_or(
+                (
+                    first_eof.unwrap_or(BridgeCloseReason::PeerEofLeft),
+                    None,
+                    None,
+                ),
+                Draining::finish,
+            );
         }
 
         // Settle the first-byte window for good once the upstream direction is
@@ -720,7 +823,19 @@ where
 
         tokio::select! {
             biased;
-            () = cancelled => return (BridgeCloseReason::Shutdown, None),
+            () = cancelled => {
+                return (BridgeCloseReason::Shutdown, draining.map(|d| d.error), None);
+            }
+            () = async {
+                match draining.as_mut() {
+                    Some(d) => d.deadline.as_mut().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                if let Some(d) = draining.take() {
+                    return d.finish();
+                }
+            }
             _ = async {
                 match idle.as_mut() {
                     Some(g) => g.tick().await,
@@ -735,7 +850,7 @@ where
                     }
                     continue;
                 }
-                return (BridgeCloseReason::IdleTimeout, None);
+                return draining.map_or((BridgeCloseReason::IdleTimeout, None, None), Draining::finish);
             }
             _ = async {
                 match &mut first_byte {
@@ -750,7 +865,7 @@ where
                     first_byte = FirstByteWindow::Inert;
                     continue;
                 }
-                return (BridgeCloseReason::FirstByteTimeout, None);
+                return draining.map_or((BridgeCloseReason::FirstByteTimeout, None, None), Draining::finish);
             }
             _ = async {
                 match pending_client_window {
@@ -769,17 +884,26 @@ where
                     if first_eof.is_none() {
                         first_eof = Some(BridgeCloseReason::PeerEofLeft);
                     }
-                    if !r_to_l_done {
-                        continue;
-                    }
-                    return (
-                        first_eof.unwrap_or(BridgeCloseReason::PeerEofLeft),
-                        None,
-                    );
                 }
                 Err(e) => {
                     let reason = classify_copy_error(&e, CopyDirection::LeftToRight);
-                    return (reason, Some(e));
+                    // The right peer is gone, but what it sent before may
+                    // still be on its way to the left.
+                    if draining.is_none()
+                        && !r_to_l_done
+                        && !read_ended.left.load(Ordering::Acquire)
+                        && is_peer_gone(&e)
+                    {
+                        l_to_r_done = true;
+                        draining = Some(Draining {
+                            reason,
+                            error: e,
+                            direction: CopyDirection::LeftToRight,
+                            deadline: Box::pin(tokio::time::sleep(drain_window)),
+                        });
+                        continue;
+                    }
+                    return draining.map_or((reason, Some(e), None), Draining::finish);
                 }
             },
             res = r_to_l.as_mut(), if !r_to_l_done => match res {
@@ -788,17 +912,24 @@ where
                     if first_eof.is_none() {
                         first_eof = Some(BridgeCloseReason::PeerEofRight);
                     }
-                    if !l_to_r_done {
-                        continue;
-                    }
-                    return (
-                        first_eof.unwrap_or(BridgeCloseReason::PeerEofRight),
-                        None,
-                    );
                 }
                 Err(e) => {
                     let reason = classify_copy_error(&e, CopyDirection::RightToLeft);
-                    return (reason, Some(e));
+                    if draining.is_none()
+                        && !l_to_r_done
+                        && !read_ended.right.load(Ordering::Acquire)
+                        && is_peer_gone(&e)
+                    {
+                        r_to_l_done = true;
+                        draining = Some(Draining {
+                            reason,
+                            error: e,
+                            direction: CopyDirection::RightToLeft,
+                            deadline: Box::pin(tokio::time::sleep(drain_window)),
+                        });
+                        continue;
+                    }
+                    return draining.map_or((reason, Some(e), None), Draining::finish);
                 }
             },
         }
@@ -903,7 +1034,7 @@ where
 
 /// Read and discard until the peer ends its stream or a bound of `linger` is
 /// hit, so that the side is not closed with unread input.
-async fn linger_then_close<R>(
+async fn linger_drain<R>(
     reader: &mut R,
     linger: LingeringClose,
     guard: Option<&ShutdownGuard>,
@@ -1680,13 +1811,14 @@ mod tests {
             mut origin,
             bridge,
         } = chain(IoForwardService::default().maybe_with_lingering_close(linger)).await;
+        let (reset, reset_now) = tokio::sync::oneshot::channel::<()>();
         let origin = tokio::spawn(async move {
             let mut req = vec![0; REQUEST.len()];
             origin.read_exact(&mut req).await.unwrap();
             origin.write_all(&reply(REPLY_LEN)).await.unwrap();
-            // Long enough for the bridge to forward the reply, and for the reply
-            // to leave before the zero linger close would discard it.
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            // Reset only once the client holds the whole reply, so that it is
+            // up to the bridge whether the client gets to read it.
+            _ = reset_now.await;
             origin.set_zero_linger().unwrap();
         });
         let (mut client_r, mut client_w) = client.into_split();
@@ -1700,7 +1832,13 @@ mod tests {
             }
             client_w
         });
-        tokio::time::sleep(Duration::from_millis(150)).await;
+        let mut peeked = vec![0; REPLY_LEN];
+        while client_r.peek(&mut peeked).await.unwrap() < REPLY_LEN {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        reset.send(()).unwrap();
+        // Give the bridge time to close the client leg before reading.
+        tokio::time::sleep(Duration::from_millis(100)).await;
         let received = read_until_end(&mut client_r).await;
         drop((client_r, writer.await.unwrap()));
         origin.await.unwrap();
@@ -1812,7 +1950,143 @@ mod tests {
             "lingered only {elapsed:?}"
         );
         assert!(elapsed < Duration::from_secs(2), "lingered {elapsed:?}");
+        assert!(
+            elapsed.saturating_sub(outcome.age()) >= Duration::from_millis(190),
+            "the bridge age {:?} includes the lingering",
+            outcome.age(),
+        );
         drop((client, origin));
+    }
+
+    /// After a first-byte timeout the silent origin has nothing in flight, so
+    /// only the client side lingers.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn lingering_close_skips_a_silent_origin() {
+        let svc = IoForwardService::default()
+            .with_first_byte_timeout(Duration::from_millis(50))
+            .with_lingering_close(LingeringClose::new(Duration::from_secs(30), u64::MAX));
+        let Chain {
+            mut client,
+            origin,
+            bridge,
+        } = chain(svc).await;
+        client.write_all(REQUEST).await.unwrap();
+        let (_, end) = read_until_end(&mut client).await;
+        end.unwrap();
+        drop(client);
+        let outcome = tokio::time::timeout(Duration::from_secs(5), bridge)
+            .await
+            .expect("the silent origin side lingered")
+            .unwrap();
+        assert_eq!(outcome.reason(), BridgeCloseReason::FirstByteTimeout);
+        drop(origin);
+    }
+
+    /// An origin that replies and resets while the client uploads: the reset
+    /// first shows up as a failed write to the origin, while the reply is
+    /// still on its way to a slow client. Scripted: the origin yields `reply`
+    /// then a reset, and fails every write with a reset.
+    struct ResettingOrigin {
+        reply: Vec<u8>,
+        sent: usize,
+    }
+
+    impl tokio::io::AsyncRead for ResettingOrigin {
+        fn poll_read(
+            mut self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            if self.sent == self.reply.len() {
+                return std::task::Poll::Ready(Err(std::io::ErrorKind::ConnectionReset.into()));
+            }
+            let n = buf.remaining().min(self.reply.len() - self.sent);
+            let sent = self.sent;
+            buf.put_slice(&self.reply[sent..sent + n]);
+            self.sent += n;
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    impl tokio::io::AsyncWrite for ResettingOrigin {
+        fn poll_write(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            _: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            std::task::Poll::Ready(Err(std::io::ErrorKind::ConnectionReset.into()))
+        }
+
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    /// Returns what the client read, and how often the client side was
+    /// aborted.
+    async fn reset_seen_as_write_error(pass_resets: bool, client_reads: bool) -> (Vec<u8>, usize) {
+        let (mut client, ingress) = duplex(64);
+        let ingress = rama_core::ServiceInput::new(ingress);
+        let aborts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = aborts.clone();
+        ingress.extensions.insert(ConnectionAbort::new(move || {
+            counter.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }));
+        let origin = rama_core::ServiceInput::new(ResettingOrigin {
+            reply: reply(REPLY_LEN),
+            sent: 0,
+        });
+        let svc = IoForwardService::default().with_shutdown_grace(Duration::from_millis(500));
+        let bridge = tokio::spawn(async move {
+            let bridge = BridgeIo(ingress, origin);
+            if pass_resets {
+                _ = svc.pass_resets().serve(bridge).await;
+            } else {
+                _ = svc.serve(bridge).await;
+            }
+        });
+        client.write_all(b"upload").await.unwrap();
+        let received = if client_reads {
+            read_until_end(&mut client).await.0
+        } else {
+            Vec::new()
+        };
+        tokio::time::timeout(Duration::from_secs(5), bridge)
+            .await
+            .expect("bridge did not unwind")
+            .unwrap();
+        (received, aborts.load(Ordering::Relaxed))
+    }
+
+    #[tokio::test]
+    async fn reset_seen_as_write_error_still_delivers_the_reply() {
+        for pass_resets in [false, true] {
+            let (received, aborts) = reset_seen_as_write_error(pass_resets, true).await;
+            assert_eq!(received, reply(REPLY_LEN), "pass_resets={pass_resets}");
+            assert_eq!(
+                aborts,
+                usize::from(pass_resets),
+                "pass_resets={pass_resets}"
+            );
+        }
+    }
+
+    /// A client that never reads is aborted once the drain window ends.
+    #[tokio::test]
+    async fn reset_seen_as_write_error_is_passed_on_after_the_drain_window() {
+        let (_, aborts) = reset_seen_as_write_error(true, false).await;
+        assert_eq!(aborts, 1);
     }
 
     #[tokio::test(flavor = "multi_thread")]

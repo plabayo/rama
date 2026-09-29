@@ -25,7 +25,8 @@ pub fn is_connection_error(e: &io::Error) -> bool {
 /// instead of a clean end.
 ///
 /// A transport that can do this safely inserts it into its own extensions,
-/// for instance rama-tcp's `PostedRecv`. A bridge that sees one side reset
+/// for instance rama-tcp's `PostedRecv`, or its `TcpStream` once
+/// `with_connection_abort` was called. A bridge that sees one side reset
 /// can then reset the other side too, instead of turning the reset into a
 /// clean close that hides a truncated stream.
 ///

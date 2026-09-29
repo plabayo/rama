@@ -21,13 +21,12 @@ use rama_net::{
 use rama_utils::octets::kib;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpListener,
     task::JoinSet,
 };
 
 use super::harness::{
-    Close, FORCED_DELAY, REQUEST, RESET_GAP, Received, SIZES, exchange, read_until_end, reply,
-    spawn_origin, spawn_origin_fn, tally,
+    Close, FORCED_DELAY, REQUEST, Received, SIZES, exchange, read_until_end, reply, spawn_origin,
+    spawn_origin_fn, tally,
 };
 use crate::{
     TcpStream, TokioTcpStream,
@@ -46,7 +45,7 @@ async fn connect_with(
     config: &PostedRecvConfig,
 ) -> PostedRecv<TcpStream> {
     let stream = TokioTcpStream::connect(addr).await.unwrap();
-    PostedRecv::with_config(TcpStream::new(stream), config).unwrap()
+    PostedRecv::with_config(TcpStream::new(stream), config)
 }
 
 /// Waits until every watched flow is gone, which means its socket is closed
@@ -60,7 +59,7 @@ struct Watches {
 #[cfg(target_os = "windows")]
 impl Watches {
     fn add<S: crate::posted_recv::RawTcpStream>(&self, stream: &PostedRecv<S>) {
-        self.flows.lock().push(stream.reader().watch());
+        self.flows.lock().push(stream.reader().unwrap().watch());
     }
 
     async fn all_closed(&self) {
@@ -86,25 +85,45 @@ impl Watches {
     async fn all_closed(&self) {}
 }
 
-/// The process-wide counters are only meaningful when this test is the only
+/// The process-wide counters return to zero once every dropped flow's
+/// cancelled receives completed. Only meaningful when this test is the only
 /// one in the process, as under nextest.
-fn assert_no_outstanding_receives() {
+async fn assert_no_outstanding_receives() {
     #[cfg(target_os = "windows")]
     if std::env::var_os("NEXTEST").is_some() {
-        assert_eq!(crate::posted_recv::iocp::outstanding_receives(), 0);
-        assert_eq!(crate::posted_recv::iocp::live_flows(), 0);
+        use crate::posted_recv::iocp::{live_flows, outstanding_receives};
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while outstanding_receives() + live_flows() > 0 {
+            assert!(
+                Instant::now() < deadline,
+                "receives outstanding={} live flows={}",
+                outstanding_receives(),
+                live_flows()
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
     }
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn keeps_reply_sent_right_before_reset() {
-    let capacity = PostedRecvConfig::default().max_buffered();
-    for len in SIZES.into_iter().chain([kib(16), kib(32), capacity]) {
-        let origin = spawn_origin(len, Close::Reset, RESET_GAP).await;
+    // Replies up to what the posted receives hold, with the default slots
+    // and with more of them.
+    let default_slots = SIZES
+        .into_iter()
+        .chain([kib(16), kib(32)])
+        .map(|len| (len, 2));
+    for (len, slots) in default_slots.chain([(kib(64), 4)]) {
+        let config = PostedRecvConfig::new().with_slots(slots);
+        assert!(len <= config.slots() * config.slot_size());
+        let origin = spawn_origin(len, Close::Reset).await;
         let addr = origin.addr;
-        let tally = tally(RUNS, 100, len, move || async move {
-            let mut stream = connect(addr).await;
-            exchange(&mut stream, FORCED_DELAY).await
+        let tally = tally(RUNS, 100, len, move || {
+            let config = config.clone();
+            async move {
+                let mut stream = connect_with(addr, &config).await;
+                exchange(&mut stream, FORCED_DELAY).await
+            }
         })
         .await;
         assert_eq!(tally.complete, RUNS, "N={len}: {tally}");
@@ -114,7 +133,7 @@ async fn keeps_reply_sent_right_before_reset() {
             "N={len}: {tally}"
         );
     }
-    assert_no_outstanding_receives();
+    assert_no_outstanding_receives().await;
 }
 
 fn reset_code() -> i32 {
@@ -139,7 +158,7 @@ fn keeps_reply_without_forced_delay_on_a_busy_runtime() {
     rt.block_on(async {
         let busy = super::harness::spawn_filler(8);
         for len in SIZES {
-            let origin = spawn_origin(len, Close::Reset, RESET_GAP).await;
+            let origin = spawn_origin(len, Close::Reset).await;
             let addr = origin.addr;
             let tally = tally(RUNS, 32, len, move || async move {
                 let mut stream = connect(addr).await;
@@ -156,7 +175,7 @@ fn keeps_reply_without_forced_delay_on_a_busy_runtime() {
 #[tokio::test(flavor = "multi_thread")]
 async fn keeps_reply_on_close_with_unread_input_and_after_late_send() {
     for len in SIZES {
-        let origin = spawn_origin(len, Close::UnreadInput, RESET_GAP).await;
+        let origin = spawn_origin(len, Close::UnreadInput).await;
         let addr = origin.addr;
         let seen = tally(200, 32, len, move || async move {
             let mut stream = connect(addr).await;
@@ -165,7 +184,7 @@ async fn keeps_reply_on_close_with_unread_input_and_after_late_send() {
         .await;
         assert_eq!(seen.complete, 200, "unread input, N={len}: {seen}");
 
-        let origin = spawn_origin(len, Close::Fin, Duration::ZERO).await;
+        let origin = spawn_origin(len, Close::Fin).await;
         let addr = origin.addr;
         let seen = tally(200, 32, len, move || async move {
             let mut stream = connect(addr).await;
@@ -183,7 +202,7 @@ async fn keeps_reply_on_close_with_unread_input_and_after_late_send() {
 #[tokio::test(flavor = "multi_thread")]
 async fn graceful_end_of_stream_after_all_bytes() {
     for len in SIZES.into_iter().chain([0, kib(200)]) {
-        let origin = spawn_origin(len, Close::Fin, Duration::ZERO).await;
+        let origin = spawn_origin(len, Close::Fin).await;
         let addr = origin.addr;
         let seen = tally(200, 32, len, move || async move {
             let mut stream = connect(addr).await;
@@ -193,7 +212,7 @@ async fn graceful_end_of_stream_after_all_bytes() {
         assert_eq!(seen.complete, 200, "N={len}: {seen}");
         assert_eq!(seen.ends, [(None, None)], "N={len}: {seen}");
     }
-    assert_no_outstanding_receives();
+    assert_no_outstanding_receives().await;
 }
 
 /// With a stalled reader at most [`PostedRecvConfig::max_buffered`] bytes, plus
@@ -206,7 +225,6 @@ async fn reply_beyond_capacity_keeps_an_intact_prefix() {
         let mut req = vec![0; REQUEST.len()];
         _ = stream.read_exact(&mut req).await;
         _ = tokio::time::timeout(Duration::from_millis(200), stream.write_all(&reply(len))).await;
-        tokio::time::sleep(RESET_GAP).await;
         _ = stream.set_zero_linger();
     })
     .await;
@@ -243,7 +261,7 @@ async fn tiny_slots_keep_stream_order() {
         .with_max_buffered(0);
     let len = kib(64);
     for close in [Close::Fin, Close::Reset] {
-        let origin = spawn_origin(len, close, RESET_GAP).await;
+        let origin = spawn_origin(len, close).await;
         let mut stream = connect_with(origin.addr, &config).await;
         let received = exchange(&mut stream, Duration::ZERO).await;
         assert_eq!(
@@ -348,7 +366,7 @@ async fn peer_saw(mut stream: tokio::net::TcpStream) -> PeerSaw {
 /// once they completed, without blocking.
 #[tokio::test(flavor = "multi_thread")]
 async fn drop_with_posted_receives_closes_gracefully() {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let listener = super::harness::listen();
     let addr = listener.local_addr().unwrap();
     let watches = Watches::default();
     let mut peers = JoinSet::new();
@@ -376,7 +394,7 @@ async fn drop_with_posted_receives_closes_gracefully() {
         slowest_drop < Duration::from_secs(1),
         "drop blocked for {slowest_drop:?}"
     );
-    assert_no_outstanding_receives();
+    assert_no_outstanding_receives().await;
 }
 
 /// Dropping a pending read and reading again later loses nothing.
@@ -412,7 +430,7 @@ async fn dropped_read_future_loses_nothing() {
 /// release their receives and close.
 #[tokio::test(flavor = "multi_thread")]
 async fn drop_around_reset_stress() {
-    let origin = spawn_origin(SIZES[1], Close::Reset, Duration::ZERO).await;
+    let origin = spawn_origin(SIZES[1], Close::Reset).await;
     let addr = origin.addr;
     let watches = Arc::new(Watches::default());
     let mut set = JoinSet::new();
@@ -442,14 +460,14 @@ async fn drop_around_reset_stress() {
         done.unwrap();
     }
     watches.all_closed().await;
-    assert_no_outstanding_receives();
+    assert_no_outstanding_receives().await;
 }
 
 /// Many concurrent flows each receive a bulk transfer intact.
 #[tokio::test(flavor = "multi_thread")]
 async fn many_concurrent_bulk_flows() {
     let len = kib(128);
-    let origin = spawn_origin(len, Close::Fin, Duration::ZERO).await;
+    let origin = spawn_origin(len, Close::Fin).await;
     let addr = origin.addr;
     let tally = tally(1000, 1000, len, move || async move {
         let mut stream = connect(addr).await;
@@ -465,7 +483,7 @@ async fn many_concurrent_bulk_flows() {
 #[tokio::test(flavor = "multi_thread")]
 async fn forward_keeps_reply_of_resetting_origin() {
     for len in SIZES {
-        let origin = spawn_origin(len, Close::Reset, RESET_GAP).await;
+        let origin = spawn_origin(len, Close::Reset).await;
         let proxy = spawn_proxy(origin.addr, true, true).await;
         let proxy_addr = proxy.addr;
         let tally = tally(RUNS, 100, len, move || async move {
@@ -484,11 +502,11 @@ async fn forward_keeps_reply_of_resetting_origin() {
 #[tokio::test(flavor = "multi_thread")]
 async fn forward_with_lingering_keeps_reply_while_client_sends() {
     let len = SIZES[2];
-    let origin = spawn_origin(len, Close::Reset, RESET_GAP).await;
+    let origin = spawn_origin(len, Close::Reset).await;
     let origin_addr = origin.addr;
     let proxy = spawn_origin_fn(move |client| async move {
         let egress = TcpStream::new(TokioTcpStream::connect(origin_addr).await.unwrap());
-        let egress = PostedRecv::new(egress).unwrap();
+        let egress = PostedRecv::new(egress);
         let svc = IoForwardService::default().with_lingering_close(LingeringClose::default());
         _ = svc.serve(BridgeIo(client, egress)).await;
     })
@@ -523,13 +541,13 @@ async fn forward_with_lingering_keeps_reply_while_client_sends() {
 #[tokio::test(flavor = "multi_thread")]
 async fn pass_resets_forwards_origin_reset_to_client() {
     let len = SIZES[2];
-    let origin = spawn_origin(len, Close::Reset, RESET_GAP).await;
+    let origin = spawn_origin(len, Close::Reset).await;
     for pass_resets in [true, false] {
         let origin_addr = origin.addr;
         let proxy = spawn_origin_fn(move |client| async move {
-            let client = PostedRecv::new(TcpStream::new(client)).unwrap();
+            let client = PostedRecv::new(TcpStream::new(client));
             let egress = TcpStream::new(TokioTcpStream::connect(origin_addr).await.unwrap());
-            let egress = PostedRecv::new(egress).unwrap();
+            let egress = PostedRecv::new(egress);
             let svc = IoForwardService::default();
             if pass_resets {
                 _ = svc.pass_resets().serve(BridgeIo(client, egress)).await;
@@ -560,7 +578,7 @@ async fn pass_resets_forwards_origin_reset_to_client() {
 
 #[tokio::test]
 async fn connection_abort_resets_the_peer_and_is_inert_after_drop() {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let listener = super::harness::listen();
     let addr = listener.local_addr().unwrap();
     for abort in [true, false] {
         let (client, accepted) = tokio::join!(connect(addr), listener.accept());
@@ -586,13 +604,16 @@ async fn connection_abort_resets_the_peer_and_is_inert_after_drop() {
 /// the bridge reading late and in the natural race (an origin that resets
 /// right after replying and a bridge that reads right away), and the posted
 /// egress in that natural race.
+#[cfg(target_os = "windows")]
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "characterization: prints the baseline loss rate"]
 async fn forward_baseline_loses_reply_of_resetting_origin() {
+    if !super::harness::characterizing() {
+        return;
+    }
     for (posted, read_late) in [(false, true), (false, false), (true, false)] {
         for len in SIZES {
-            let gap = if read_late { RESET_GAP } else { Duration::ZERO };
-            let origin = spawn_origin(len, Close::Reset, gap).await;
+            let origin = spawn_origin(len, Close::Reset).await;
             let proxy = spawn_proxy(origin.addr, posted, read_late).await;
             let proxy_addr = proxy.addr;
             let tally = tally(RUNS, 32, len, move || async move {
@@ -633,7 +654,7 @@ async fn spawn_proxy(
     spawn_origin_fn(move |client| async move {
         let egress = TcpStream::new(TokioTcpStream::connect(origin).await.unwrap());
         if posted {
-            bridge(client, PostedRecv::new(egress).unwrap(), read_late).await;
+            bridge(client, PostedRecv::new(egress), read_late).await;
         } else {
             bridge(client, egress, read_late).await;
         }
@@ -646,7 +667,7 @@ async fn spawn_proxy(
 #[tokio::test(flavor = "multi_thread")]
 async fn layer_wraps_tcp_connector_output() {
     let len = SIZES[2];
-    let origin = spawn_origin(len, Close::Reset, RESET_GAP).await;
+    let origin = spawn_origin(len, Close::Reset).await;
     let connector = PostedRecvLayer::new().into_layer(TcpConnector::new());
     let connected = Arc::new(AtomicUsize::new(0));
     let mut set = JoinSet::new();
@@ -673,28 +694,141 @@ async fn layer_wraps_tcp_connector_output() {
     assert_eq!(connected.load(Ordering::Relaxed), 100);
 }
 
-/// A socket already attached to another completion port cannot be wrapped.
+/// A socket already attached to another completion port cannot have its
+/// receives posted: `try_with_config` hands it back, and `new` falls back to
+/// passing reads through.
 #[cfg(target_os = "windows")]
 #[tokio::test]
-async fn wrapping_a_socket_attached_elsewhere_fails() {
+async fn wrapping_a_socket_attached_elsewhere_fails_open() {
     use std::os::windows::io::AsRawSocket as _;
     use windows_sys::Win32::{
         Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE},
         System::IO::CreateIoCompletionPort,
     };
 
-    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
-    let stream = TokioTcpStream::connect(listener.local_addr().unwrap())
-        .await
-        .unwrap();
+    let listener = super::harness::listen();
+    let (stream, peer) = tokio::join!(
+        TokioTcpStream::connect(listener.local_addr().unwrap()),
+        listener.accept()
+    );
+    let (stream, mut peer) = (stream.unwrap(), peer.unwrap().0);
     // SAFETY: creates a new port without borrowing any handle.
     let other = unsafe { CreateIoCompletionPort(INVALID_HANDLE_VALUE, std::ptr::null_mut(), 0, 1) };
     // SAFETY: the socket is open.
     let attached = unsafe { CreateIoCompletionPort(stream.as_raw_socket() as HANDLE, other, 0, 0) };
     assert_eq!(attached, other);
-    let err = PostedRecv::new(stream).unwrap_err();
+
+    let (err, stream) = PostedRecv::try_with_config(stream, &PostedRecvConfig::default())
+        .expect_err("the socket is attached elsewhere");
     eprintln!("wrapping a socket attached elsewhere: {err}");
+    let mut stream = PostedRecv::new(stream);
+    assert!(!stream.is_posted());
+    peer.write_all(b"hello").await.unwrap();
+    let mut buf = [0; 5];
+    stream.read_exact(&mut buf).await.unwrap();
+    assert_eq!(&buf, b"hello");
+
+    drop(stream);
     // SAFETY: the port is ours.
     let closed = unsafe { CloseHandle(other) };
     assert_ne!(closed, 0);
+}
+
+/// The control for everything above: without the wrapper, Windows drops a
+/// reply that arrived before the reset, and the read fails with the reset.
+#[cfg(target_os = "windows")]
+#[tokio::test(flavor = "multi_thread")]
+async fn control_plain_stream_loses_reply_before_reset() {
+    let len = SIZES[2];
+    let origin = spawn_origin(len, Close::Reset).await;
+    let addr = origin.addr;
+    let tally = tally(20, 20, len, move || async move {
+        let mut stream = TokioTcpStream::connect(addr).await.unwrap();
+        exchange(&mut stream, FORCED_DELAY).await
+    })
+    .await;
+    assert_eq!(tally.empty, 20, "{tally}");
+    assert_eq!(
+        tally.ends,
+        [(Some(reset_code()), Some(io::ErrorKind::ConnectionReset))],
+        "{tally}"
+    );
+}
+
+/// When the system runs out of buffers for receives, reads pass through
+/// tokio until receives can be posted again, without losing order.
+#[cfg(target_os = "windows")]
+#[tokio::test(flavor = "multi_thread")]
+async fn out_of_buffers_falls_back_to_plain_reads() {
+    let len = kib(200);
+    for failures in [3, usize::MAX] {
+        let origin = spawn_origin(len, Close::Fin).await;
+        let mut stream = connect(origin.addr).await;
+        stream.reader().unwrap().fail_next_posts(failures);
+        let received = exchange(&mut stream, Duration::ZERO).await;
+        assert!(
+            received.is_complete(len),
+            "failures={failures}: {}",
+            received.bytes.len()
+        );
+        received.end.unwrap();
+    }
+}
+
+/// A plain `TcpStream` made abortable resets its peer once aborted, closes
+/// cleanly otherwise, and its capability is inert after the drop.
+#[tokio::test]
+async fn tcp_stream_connection_abort() {
+    let listener = super::harness::listen();
+    let addr = listener.local_addr().unwrap();
+    for abort in [true, false] {
+        let (client, accepted) = tokio::join!(TokioTcpStream::connect(addr), listener.accept());
+        let peer = tokio::spawn(peer_saw(accepted.unwrap().0));
+        let client = TcpStream::new(client.unwrap())
+            .with_connection_abort()
+            .unwrap();
+        let handle = client
+            .extensions()
+            .self_get_ref::<ConnectionAbort>()
+            .cloned()
+            .unwrap();
+        if abort {
+            handle.abort().unwrap();
+        }
+        drop(client);
+        let expected = if abort { PeerSaw::Reset } else { PeerSaw::Fin };
+        assert_eq!(peer.await.unwrap(), expected);
+        handle.abort().unwrap();
+    }
+}
+
+/// With both legs plain but abortable, a reset from the origin reaches the
+/// client as a reset.
+#[tokio::test(flavor = "multi_thread")]
+async fn pass_resets_with_abortable_plain_streams() {
+    let len = SIZES[2];
+    let origin = spawn_origin(len, Close::Reset).await;
+    let origin_addr = origin.addr;
+    let proxy = spawn_origin_fn(move |client| async move {
+        let client = TcpStream::new(client).with_connection_abort().unwrap();
+        let egress = TcpStream::new(TokioTcpStream::connect(origin_addr).await.unwrap());
+        let egress = PostedRecv::new(egress.with_connection_abort().unwrap());
+        _ = IoForwardService::default()
+            .pass_resets()
+            .serve(BridgeIo(client, egress))
+            .await;
+    })
+    .await;
+    let proxy_addr = proxy.addr;
+    let tally = tally(50, 16, len, move || async move {
+        let mut client = connect(proxy_addr).await;
+        exchange(&mut client, FORCED_DELAY).await
+    })
+    .await;
+    assert_eq!(tally.complete, 50, "{tally}");
+    assert_eq!(
+        tally.ends,
+        [(Some(reset_code()), Some(io::ErrorKind::ConnectionReset))],
+        "{tally}"
+    );
 }
