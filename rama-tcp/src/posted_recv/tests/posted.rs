@@ -775,6 +775,57 @@ async fn out_of_buffers_falls_back_to_plain_reads() {
     }
 }
 
+/// A posted receive completes with whatever arrived, however little. A reply
+/// in more parts than there are slots can so outrun a completion thread that
+/// lags: a part that arrives while no receive is posted waits in the kernel,
+/// where the reset discards it, even though the reply is far smaller than
+/// the slots together.
+#[cfg(target_os = "windows")]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reply_in_more_parts_than_slots_is_exposed_while_completions_lag() {
+    const PARTS: usize = 3;
+    const PART: usize = 100;
+    let origin = spawn_origin_fn(|mut stream| async move {
+        _ = async {
+            let mut req = vec![0; REQUEST.len()];
+            stream.read_exact(&mut req).await?;
+            stream.set_nodelay(true)?;
+            for part in reply(PARTS * PART).chunks(PART) {
+                stream.write_all(part).await?;
+                // Each part arrives on its own and completes a receive.
+                tokio::time::sleep(Duration::from_millis(30)).await;
+            }
+            super::harness::wait_until_acked(&stream, PARTS * PART).await?;
+            stream.set_zero_linger()?;
+            drop(stream);
+            io::Result::Ok(())
+        }
+        .await;
+    })
+    .await;
+    for slots in [PARTS - 1, PARTS] {
+        let mut stream =
+            connect_with(origin.addr, &PostedRecvConfig::default().with_slots(slots)).await;
+        // Well past the parts and the reset, which take some 300 ms at most.
+        stream
+            .reader()
+            .unwrap()
+            .delay_completions(Duration::from_millis(600));
+        let received = exchange(&mut stream, Duration::ZERO).await;
+        stream.reader().unwrap().delay_completions(Duration::ZERO);
+        assert_eq!(
+            received.bytes,
+            reply(slots.min(PARTS) * PART),
+            "slots={slots}"
+        );
+        assert_eq!(
+            received.end_kind(),
+            Some(io::ErrorKind::ConnectionReset),
+            "slots={slots}"
+        );
+    }
+}
+
 /// A plain `TcpStream` made abortable resets its peer once aborted, closes
 /// cleanly otherwise, and its capability is inert after the drop.
 #[tokio::test]

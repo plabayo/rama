@@ -21,14 +21,19 @@
 //!
 //! # Limits
 //!
-//! A reply that fits in the posted receives, [`slots`](PostedRecvConfig::slots)
-//! × [`slot_size`](PostedRecvConfig::slot_size) (32 KiB by default), is kept
-//! whatever follows it. Bytes beyond that wait in the kernel, already
-//! acknowledged, until the completion thread posts the next receive, which
-//! takes microseconds; a peer that resets right after its reply is
-//! acknowledged can beat that, and those bytes are lost. Size the slots for
-//! the largest reply that must survive a reset. How busy the tokio runtime
-//! is does not matter.
+//! Bytes are kept whatever follows them if a receive is posted when they
+//! arrive. Each receive completes with whatever arrived, up to
+//! [`slot_size`](PostedRecvConfig::slot_size), and is posted again once a
+//! completion thread handled it, which takes microseconds. So a reply is
+//! kept for sure if it arrives in at most
+//! [`slots`](PostedRecvConfig::slots) parts, and at most `slots × slot_size`
+//! in total: 2 parts and 32 KiB by default. Bytes beyond that, even a small
+//! third part, can arrive while no receive is posted and wait in the kernel,
+//! already acknowledged; a peer that resets right after they are
+//! acknowledged can beat the completion thread, and those bytes are lost.
+//! Size the slots for the replies that must survive a reset: more of them
+//! for replies sent in many writes, larger ones for large replies. How busy
+//! the tokio runtime is does not matter.
 //!
 //! No receive is posted while more than
 //! [`max_buffered`](PostedRecvConfig::max_buffered) bytes wait for the
@@ -140,8 +145,9 @@ impl PostedRecvConfig {
     generate_set_and_with! {
         /// Number of receives kept posted on the socket (at least 1).
         ///
-        /// Together with [`slot_size`](Self::slot_size) this sets the largest
-        /// reply kept before a reset, see the [module docs](crate::posted_recv#limits).
+        /// This sets in how many parts a reply is surely kept before a
+        /// reset, and together with [`slot_size`](Self::slot_size) how large
+        /// it can be, see the [module docs](crate::posted_recv#limits).
         pub fn slots(mut self, slots: usize) -> Self {
             self.slots = slots.max(1);
             self

@@ -389,6 +389,8 @@ impl Slot {
     /// Called on the completion thread for each completed receive. Returns
     /// false if the completion was queued again to be handled later.
     fn complete(slot: Box<Self>, bytes: u32, port: Port) -> bool {
+        #[cfg(test)]
+        slot.flow.lag();
         // Keeps the flow alive until the lock is released; dropping it last
         // may close the socket of a reader that is gone.
         let flow = slot.flow.clone();
@@ -535,6 +537,8 @@ struct Flow {
     state: Mutex<State>,
     #[cfg(test)]
     fail_posts: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
+    completion_delay_ms: std::sync::atomic::AtomicU64,
 }
 
 /// A received buffer, handed over from a slot without copying.
@@ -610,6 +614,8 @@ impl Flow {
             }),
             #[cfg(test)]
             fail_posts: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(test)]
+            completion_delay_ms: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -725,6 +731,17 @@ impl Flow {
     #[expect(clippy::unused_self, reason = "the test build injects failures here")]
     fn injected_failure(&self) -> Option<i32> {
         None
+    }
+
+    /// Hold up the completion thread, as a busy one would be.
+    #[cfg(test)]
+    fn lag(&self) {
+        let ms = self
+            .completion_delay_ms
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if ms > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(ms));
+        }
     }
 
     /// Record the outcome of receive `seq` in stream order. Returns whether
@@ -920,6 +937,15 @@ impl Reader {
         self.flow
             .fail_posts
             .store(n, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Delay the handling of each completion of this flow by `delay`.
+    #[cfg(test)]
+    pub(super) fn delay_completions(&self, delay: std::time::Duration) {
+        self.flow.completion_delay_ms.store(
+            u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
+            std::sync::atomic::Ordering::Relaxed,
+        );
     }
 }
 
