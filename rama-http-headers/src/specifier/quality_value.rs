@@ -201,56 +201,64 @@ impl<T: fmt::Display> fmt::Display for QualityValue<T> {
 impl<T: str::FromStr> str::FromStr for QualityValue<T> {
     type Err = Error;
     fn from_str(s: &str) -> Result<Self, Error> {
-        // `item *( OWS ";" OWS [ name "=" value ] ) [ weight ]` (RFC 9110 §5.6.6, §12.4.2)
+        // `item *( OWS ";" OWS [ name "=" value ] )` with one `q` weight (RFC 9110 §5.6.6, §12.4.2)
+        let s = trim_ows(s);
         let mut parts = item_parts(s);
         let name = parts.next().ok_or_else(Error::invalid)??.1;
-        if name.trim().is_empty() {
+        if trim_ows(name).is_empty() {
             return Err(Error::invalid());
         }
         let mut quality = None;
         let mut item_end = s.len();
         let mut pending_empty = false;
-        let mut inner_empty = false;
+        let mut normalise = false;
         for part in parts {
             let (separator, part) = part?;
-            let part = part.trim();
+            let part = trim_ows(part);
             if part.is_empty() {
                 pending_empty = true;
                 continue;
             }
-            if quality.is_some() {
-                // the weight comes last
-                return Err(Error::invalid());
-            }
             if part.starts_with("q=") || part.starts_with("Q=") {
+                // any parameter named `q` is the weight, wherever it sits (RFC 9110 §12.5.1)
+                if quality.is_some() {
+                    return Err(Error::invalid());
+                }
                 quality = Some(Quality::from_str(part)?);
                 item_end = separator;
                 continue;
             }
-            if !part.contains('=') {
+            // `parameter-name "=" parameter-value`, with a non-empty token name
+            if !part.contains('=') || part.starts_with('=') {
                 return Err(Error::invalid());
             }
-            inner_empty |= pending_empty;
+            // a parameter after the weight, or after an empty one, needs a rebuilt item
+            normalise |= pending_empty || quality.is_some();
             pending_empty = false;
         }
-        let item = s
-            .get(..item_end)
-            .unwrap_or_default()
-            .trim_end_matches([';', ' ', '\t']);
-        let parsed = if inner_empty {
-            // drop empty parameters so the item re-encodes to what it decodes from
-            let parts: Vec<&str> = item_parts(item)
-                .filter_map(|part| part.ok().map(|(_, part)| part))
-                .filter(|part| !part.trim().is_empty())
+        let parsed = if normalise {
+            // drop empty parameters and the weight so the item re-encodes to what it decodes from
+            let parts: Vec<&str> = item_parts(s)
+                .filter_map(|part| part.ok().map(|(_, part)| trim_ows(part)))
+                .filter(|part| {
+                    !part.is_empty() && !part.starts_with("q=") && !part.starts_with("Q=")
+                })
                 .collect();
             parts.join(";").parse::<T>()
         } else {
-            item.parse::<T>()
+            s.get(..item_end)
+                .unwrap_or_default()
+                .trim_end_matches([';', ' ', '\t'])
+                .parse::<T>()
         };
         parsed
             .map(|item| Self::new(item, quality.unwrap_or_else(Quality::one)))
             .map_err(|_err| Error::invalid())
     }
+}
+
+fn trim_ows(s: &str) -> &str {
+    s.trim_matches([' ', '\t'])
 }
 
 /// The `;`-separated parts of a list item, each with the offset of the `;` before it.
@@ -467,7 +475,8 @@ mod tests {
             "a;b;q=1",
             "text/html;q=2;q=1",
             "a;b",
-            "a;q=0.5;b=1",
+            "a;=b",
+            "a;q=0.5;q=1",
             "a;p=\"x",
             "a;p=\"x;q=1",
         ] {
@@ -485,6 +494,12 @@ mod tests {
             ("a;;b=1", "a;b=1", 1000),
             ("a;;b=1;q=0.2", "a;b=1", 200),
             ("text/html;p=\"a;;b\";q=0.5", "text/html;p=\"a;;b\"", 500),
+            // any parameter named `q` is the weight (RFC 9110 §12.5.1)
+            ("text/html;q=0.5;level=1", "text/html;level=1", 500),
+            ("*/*;q=0.1;charset=utf-8", "*/*;charset=utf-8", 100),
+            ("a;q=0.5;;b=1", "a;b=1", 500),
+            (" text/html;q=0.5", "text/html", 500),
+            ("text/html;q=0.5\t", "text/html", 500),
         ] {
             let qv = input.parse::<QualityValue<String>>().unwrap();
             assert_eq!(qv.value, value, "{input:?}");
