@@ -59,12 +59,12 @@ impl<T: AsRef<[u8]>> EntityTag<T> {
     /// Get the opaque tag, `None` if the value is not a well-formed entity-tag.
     #[cfg(test)]
     pub(crate) fn tag(&self) -> Option<&[u8]> {
-        split_opaque_tag(self.0.as_ref()).map(|(_, tag)| tag)
+        split_entity_tag(self.0.as_ref()).map(|(_, tag)| tag)
     }
 
     /// Return if this is a "weak" tag.
     pub(crate) fn is_weak(&self) -> bool {
-        matches!(split_opaque_tag(self.0.as_ref()), Some((true, _)))
+        split_weak(self.0.as_ref()).0
     }
 
     /// For strong comparison two entity-tags are equivalent if both are not weak and their
@@ -74,8 +74,8 @@ impl<T: AsRef<[u8]>> EntityTag<T> {
         R: AsRef<[u8]>,
     {
         matches!(
-            (split_opaque_tag(self.0.as_ref()), split_opaque_tag(other.0.as_ref())),
-            (Some((false, a)), Some((false, b))) if a == b
+            (split_weak(self.0.as_ref()), split_weak(other.0.as_ref())),
+            ((false, a), (false, b)) if a == b
         )
     }
 
@@ -87,10 +87,7 @@ impl<T: AsRef<[u8]>> EntityTag<T> {
     where
         R: AsRef<[u8]>,
     {
-        matches!(
-            (split_opaque_tag(self.0.as_ref()), split_opaque_tag(other.0.as_ref())),
-            (Some((_, a)), Some((_, b))) if a == b
-        )
+        split_weak(self.0.as_ref()).1 == split_weak(other.0.as_ref()).1
     }
 
     /// The inverse of `EntityTag.strong_eq()`.
@@ -118,12 +115,17 @@ fn split_entity_tag(bytes: &[u8]) -> Option<(bool, &[u8])> {
 
 /// Split `[W/]"<tag>"` without validating the tag bytes.
 fn split_opaque_tag(bytes: &[u8]) -> Option<(bool, &[u8])> {
-    let (weak, opaque) = match bytes.strip_prefix(b"W/") {
-        Some(opaque) => (true, opaque),
-        None => (false, bytes),
-    };
+    let (weak, opaque) = split_weak(bytes);
     let tag = opaque.strip_prefix(b"\"")?.strip_suffix(b"\"")?;
     Some((weak, tag))
+}
+
+/// Split off the weakness flag, keeping the quotes: valid tags compare equal quoted or bare.
+fn split_weak(bytes: &[u8]) -> (bool, &[u8]) {
+    match bytes.strip_prefix(b"W/") {
+        Some(opaque) => (true, opaque),
+        None => (false, bytes),
+    }
 }
 
 impl EntityTag {
@@ -234,26 +236,22 @@ fn check_slice_validity(slice: &[u8]) -> bool {
 
 impl EntityTagRange {
     pub(crate) fn matches_strong(&self, entity: &EntityTag) -> bool {
-        self.matches_if(entity, true)
+        self.matches_if::<true>(entity)
     }
 
     pub(crate) fn matches_weak(&self, entity: &EntityTag) -> bool {
-        self.matches_if(entity, false)
+        self.matches_if::<false>(entity)
     }
 
-    fn matches_if(&self, entity: &EntityTag, strong: bool) -> bool {
+    fn matches_if<const STRONG: bool>(&self, entity: &EntityTag) -> bool {
         let Self::Tags(tags) = self else {
             return true;
         };
-        let Some((weak, tag)) = split_opaque_tag(entity.as_ref()) else {
-            return false;
-        };
-        !(strong && weak)
+        let (weak, opaque) = split_weak(entity.as_ref());
+        !(STRONG && weak)
             && tags.iter().any(|member| {
-                matches!(
-                    split_opaque_tag(member.as_ref()),
-                    Some((member_weak, member_tag)) if !(strong && member_weak) && member_tag == tag
-                )
+                let (member_weak, member_opaque) = split_weak(member.as_ref());
+                !(STRONG && member_weak) && member_opaque == opaque
             })
     }
 }
@@ -467,6 +465,24 @@ mod tests {
             _ = tag.strong_eq(&tag);
             _ = range.matches_strong(&tag);
             _ = range.matches_weak(&tag);
+        }
+    }
+
+    #[test]
+    fn test_comparisons_follow_the_opaque_tags() {
+        let mut tags = Vec::new();
+        for_each_small_input(b"W/\"a", 5, |input| tags.extend(parse(input)));
+        for a in &tags {
+            let (a_weak, a_tag) = split_entity_tag(a.as_ref()).unwrap();
+            let range = EntityTagRange::Tags(NonEmptyVec::new(a.clone()));
+            for b in &tags {
+                let (b_weak, b_tag) = split_entity_tag(b.as_ref()).unwrap();
+                let strong = !a_weak && !b_weak && a_tag == b_tag;
+                assert_eq!(a.strong_eq(b), strong, "{a:?} {b:?}");
+                assert_eq!(a.weak_eq(b), a_tag == b_tag, "{a:?} {b:?}");
+                assert_eq!(range.matches_strong(b), strong, "{a:?} {b:?}");
+                assert_eq!(range.matches_weak(b), a_tag == b_tag, "{a:?} {b:?}");
+            }
         }
     }
 
