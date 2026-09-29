@@ -797,6 +797,65 @@ mod tests {
         svc_task.await.unwrap();
     }
 
+    /// Reads EOF right away and records every write it gets.
+    #[derive(Clone, Default)]
+    struct WriteRecorder(Arc<parking_lot::Mutex<Vec<Vec<u8>>>>);
+
+    impl tokio::io::AsyncRead for WriteRecorder {
+        fn poll_read(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            _: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    impl tokio::io::AsyncWrite for WriteRecorder {
+        fn poll_write(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            buf: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            self.0.lock().push(buf.to_vec());
+            std::task::Poll::Ready(Ok(buf.len()))
+        }
+
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn forward_sends_peeked_prefix_with_buffered_rest() {
+        use rama_core::bytes::Bytes;
+        use rama_core::io::{PrefixedIo, ReplayReader};
+
+        // A 2 byte peek splits a length-prefixed request;
+        // some servers reset on a first segment that short.
+        let (mut client, proxy) = duplex(64);
+        client.write_all(b"\x00\x05hello").await.unwrap();
+        drop(client);
+
+        let left = PrefixedIo::new(ReplayReader::new(Bytes::from_static(b"\x00\x00")), proxy);
+        let right = WriteRecorder::default();
+        let writes = right.0.clone();
+
+        run_default(left, right).await;
+
+        assert_eq!(*writes.lock(), [b"\x00\x00\x00\x05hello".to_vec()]);
+    }
+
     async fn shutdown_pair() -> (Shutdown, tokio::sync::oneshot::Sender<()>) {
         let (tx, rx) = tokio::sync::oneshot::channel::<()>();
         let shutdown = Shutdown::new(async move {
