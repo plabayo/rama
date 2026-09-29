@@ -46,7 +46,8 @@ impl SecWebSocketExtensions {
     /// Decode a client's offers, skipping each one that does not parse.
     ///
     /// A server declines such an offer on its own (RFC 7692 §5), where
-    /// [`HeaderDecode`](crate::HeaderDecode) rejects the whole header.
+    /// [`HeaderDecode`](crate::HeaderDecode) rejects the whole header. An unterminated
+    /// quoted-string ends the rest of its header line.
     pub fn decode_offers<'i>(values: impl IntoIterator<Item = &'i HeaderValue>) -> Option<Self> {
         let offers = values
             .into_iter()
