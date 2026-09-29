@@ -90,7 +90,8 @@ async fn main() {
                     .or_method_delete()
                     .or_method_patch()
                     .or_method_post()
-                    .or_method_put(),
+                    .or_method_put()
+                    .or_method_query(),
                 handlers::test,
             ),
         );
