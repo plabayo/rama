@@ -317,7 +317,7 @@ mod tests {
             assert_eq!(key.signature_len(), len);
             let signature = sign(&key, b"message");
             key.verify(b"message", &signature).unwrap();
-            key.clone().verify(b"message", &signature).unwrap();
+            key.verify(b"message", &signature).unwrap();
             assert_ne!(signature, sign(&other, b"message"));
             assert!(other.verify(b"message", &signature).is_err());
         }

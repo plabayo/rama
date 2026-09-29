@@ -246,10 +246,7 @@ impl Error {
     #[inline(always)]
     #[must_use]
     pub fn is_shutdown(&self) -> bool {
-        if matches!(self.inner.kind, Kind::Shutdown) {
-            return true;
-        }
-        false
+        matches!(self.inner.kind, Kind::Shutdown)
     }
 
     /// Returns true if the error was caused by a timeout.
