@@ -395,6 +395,11 @@ where
     ) -> Poll<io::Result<()>> {
         let me = self.project();
 
+        // an empty buf would look like EOF of the first reader
+        if buf.remaining() == 0 {
+            return Poll::Ready(Ok(()));
+        }
+
         if !*me.done_first {
             let rem = buf.remaining();
             ready!(me.first.poll_read(cx, buf))?;
@@ -414,6 +419,10 @@ where
     U: Read,
 {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        // an empty buf would look like EOF of the first reader
+        if buf.is_empty() {
+            return Ok(0);
+        }
         if !self.done_first {
             let n = self.first.read(buf)?;
             if n == 0 {
@@ -642,5 +651,19 @@ mod test {
         }
         .test_sync_and_async()
         .await;
+    }
+
+    #[tokio::test]
+    async fn test_chain_reader_zero_capacity_read_keeps_first() {
+        let mut reader = ChainReader::new(Cursor::new("ab"), Cursor::new("cd"));
+        assert_eq!(AsyncReadExt::read(&mut reader, &mut []).await.unwrap(), 0);
+        let mut buf = [0u8; 8];
+        let n = AsyncReadExt::read(&mut reader, &mut buf).await.unwrap();
+        assert_eq!(&buf[..n], b"ab");
+
+        let mut reader = ChainReader::new(Cursor::new("ab"), Cursor::new("cd"));
+        assert_eq!(Read::read(&mut reader, &mut []).unwrap(), 0);
+        let n = Read::read(&mut reader, &mut buf).unwrap();
+        assert_eq!(&buf[..n], b"ab");
     }
 }
