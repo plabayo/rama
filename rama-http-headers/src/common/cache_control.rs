@@ -598,6 +598,10 @@ impl FromStr for KnownDirective {
                 spaced = true;
                 continue;
             }
+            if spaced {
+                // whitespace inside a name makes it another (unknown) token
+                return Ok(Self::Unknown);
+            }
             let Some(slot) = name.get_mut(len) else {
                 return Ok(Self::Unknown);
             };
@@ -782,6 +786,23 @@ mod tests {
         assert_eq!(cc.max_age(), Some(Duration::ZERO));
         let cc = test_decode::<CacheControl>(&[r#"private ="set-cookie""#]).unwrap();
         assert!(cc.has_private());
+    }
+
+    #[test]
+    fn whitespace_inside_a_name_is_unknown() {
+        for value in [
+            "pub lic",
+            "immu table",
+            "no-st ore",
+            "max -age=60",
+            "pri\tvate",
+        ] {
+            assert_eq!(
+                test_decode::<CacheControl>(&[value]),
+                Some(CacheControl::new()),
+                "{value}"
+            );
+        }
     }
 
     #[test]
