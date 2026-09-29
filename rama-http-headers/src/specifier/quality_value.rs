@@ -238,13 +238,19 @@ impl<T: str::FromStr> str::FromStr for QualityValue<T> {
         }
         let parsed = if normalise {
             // drop empty parameters and the weight so the item re-encodes to what it decodes from
-            let parts: Vec<&str> = item_parts(s)
-                .filter_map(|part| part.ok().map(|(_, part)| trim_ows(part)))
-                .filter(|part| {
-                    !part.is_empty() && !part.starts_with("q=") && !part.starts_with("Q=")
-                })
-                .collect();
-            parts.join(";").parse::<T>()
+            let mut item = String::with_capacity(s.len());
+            let parts = item_parts(s).filter_map(|part| part.ok().map(|(_, part)| trim_ows(part)));
+            for (index, part) in parts.enumerate() {
+                let is_weight = index > 0 && (part.starts_with("q=") || part.starts_with("Q="));
+                if part.is_empty() || is_weight {
+                    continue;
+                }
+                if index > 0 {
+                    item.push(';');
+                }
+                item.push_str(part);
+            }
+            item.parse::<T>()
         } else {
             s.get(..item_end)
                 .unwrap_or_default()
@@ -469,7 +475,7 @@ mod tests {
 
     #[test]
     fn test_parameters_follow_the_grammar() {
-        // a parameter is `name=value`, and the weight comes once and last
+        // a parameter is `name=value`, and the weight comes once
         for input in [
             "a;q=2;q=1",
             "a;b;q=1",
@@ -500,6 +506,12 @@ mod tests {
             ("a;q=0.5;;b=1", "a;b=1", 500),
             (" text/html;q=0.5", "text/html", 500),
             ("text/html;q=0.5\t", "text/html", 500),
+            // an item name is never taken as the weight
+            ("q=1;;a=b", "q=1;a=b", 1000),
+            ("q=1;q=0.5;a=b", "q=1;a=b", 500),
+            // only OWS (SP, HTAB) is trimmed (RFC 9110 §5.6.3)
+            ("\u{a0}a;q=0.5", "\u{a0}a", 500),
+            ("a;q=0.5;b=\u{a0}", "a;b=\u{a0}", 500),
         ] {
             let qv = input.parse::<QualityValue<String>>().unwrap();
             assert_eq!(qv.value, value, "{input:?}");

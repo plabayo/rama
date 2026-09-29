@@ -132,7 +132,10 @@ mod tests {
     use std::str::FromStr;
 
     use super::*;
-    use crate::{HeaderDecode, HeaderEncode, specifier::Quality, util::for_each_small_input};
+    use crate::{
+        HeaderDecode, HeaderEncode, common::test_decode, specifier::Quality,
+        util::for_each_small_input,
+    };
     use rama_http_types::{
         HeaderValue,
         mime::{TEXT_HTML, TEXT_PLAIN, TEXT_PLAIN_UTF_8},
@@ -206,6 +209,22 @@ mod tests {
                 _ = accept.encode_to_value();
             }
         });
+    }
+
+    #[test]
+    fn test_accept_weight_before_parameters() {
+        let Accept(items) = test_decode(&["text/html;q=0.5;level=1, */*;q=0.1"]).unwrap();
+        let items: Vec<_> = items
+            .iter()
+            .map(|qv| (qv.value.to_string(), qv.quality))
+            .collect();
+        assert_eq!(
+            items,
+            [
+                ("text/html;level=1".to_owned(), Quality::new_clamped(500)),
+                ("*/*".to_owned(), Quality::new_clamped(100)),
+            ]
+        );
     }
 
     #[test]
