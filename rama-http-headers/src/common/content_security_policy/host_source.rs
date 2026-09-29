@@ -80,6 +80,10 @@ impl HostSource {
             }
             None => (host_port, None),
         };
+        // `host-char` is ASCII (CSP3 §2.3.1), so an IDNA-enabled `Domain` must not map it
+        if !host_str.is_ascii() {
+            return Err(Error::invalid());
+        }
         let host = Domain::try_from(host_str).map_err(|_err| Error::invalid())?;
         Ok(Self {
             scheme,
@@ -288,6 +292,7 @@ mod tests {
         let h = HostSource::try_parse("example.com/é?€").unwrap();
         assert_eq!(h.path(), Some("/é?€"));
         HostSource::try_parse("é:80").unwrap_err();
+        HostSource::try_parse("https://*.é.com").unwrap_err();
         HostSource::try_parse("example.com:é").unwrap_err();
     }
 }
