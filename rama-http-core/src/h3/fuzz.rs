@@ -599,12 +599,13 @@ mod tests {
     /// CONNECT off/on) accept each head; every accepted one must round-trip unchanged.
     #[test]
     fn named_request_targets_follow_the_forwarding_contract() {
-        let (method, scheme, authority, path, protocol) = (
+        let (method, scheme, authority, path, protocol, host) = (
             &b":method"[..],
             &b":scheme"[..],
             &b":authority"[..],
             &b":path"[..],
             &b":protocol"[..],
+            &b"host"[..],
         );
         for (fields, accepted) in [
             (
@@ -694,7 +695,7 @@ mod tests {
                 ],
                 0,
             ),
-            // RFC 8441 §5: an Extended CONNECT target uses its http/https scheme.
+            // Encoders send ws/wss as http/https, so a raw ws/wss scheme is refused.
             (
                 &[
                     (method, "CONNECT"),
@@ -704,6 +705,28 @@ mod tests {
                     (protocol, "x"),
                 ],
                 0,
+            ),
+            // RFC 8441 §5: a WebSocket bootstrap uses http or https.
+            (
+                &[
+                    (method, "CONNECT"),
+                    (scheme, "custom"),
+                    (authority, "example.com"),
+                    (path, "/"),
+                    (protocol, "websocket"),
+                ],
+                0,
+            ),
+            // RFC 9114 §4.3.1: Host stands in for :authority.
+            (
+                &[
+                    (method, "CONNECT"),
+                    (scheme, "https"),
+                    (path, "/"),
+                    (protocol, "websocket"),
+                    (host, "example.com"),
+                ],
+                1,
             ),
         ] {
             assert_eq!(request_head(&head(fields)), accepted, "{fields:?}");

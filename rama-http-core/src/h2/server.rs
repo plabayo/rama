@@ -1808,6 +1808,10 @@ impl proto::Peer for Peer {
             malformed!("malformed headers: missing method");
         }
 
+        let websocket = pseudo
+            .protocol
+            .as_ref()
+            .is_some_and(ext::Protocol::is_websocket);
         let has_protocol = if let Some(protocol) = pseudo.protocol {
             if is_connect {
                 // Assert that we have the right type.
@@ -1848,6 +1852,14 @@ impl proto::Peer for Peer {
                 malformed!("malformed headers: :scheme in CONNECT");
             }
             match scheme.parse::<rama_net::Protocol>() {
+                // RFC 8441 §5: a WebSocket bootstrap uses http or https.
+                Ok(scheme) if websocket && !scheme.is_http() => {
+                    malformed!("malformed headers: websocket extended CONNECT requires http(s)")
+                }
+                // Encoders send ws/wss as http/https, so a raw ws/wss scheme cannot be forwarded as is.
+                Ok(scheme) if has_protocol && scheme.is_ws() => {
+                    malformed!("malformed headers: extended CONNECT sends ws/wss as http(s)")
+                }
                 // It's not possible to build a URI from a scheme and no
                 // authority, so — after validating it — the scheme is dropped
                 // when there is no :authority (mirrors the original behavior).
@@ -2091,5 +2103,31 @@ mod path_form_tests {
         let req = decode(pseudo).expect("CONNECT without :path is valid");
         assert_eq!(req.method(), Method::CONNECT);
         assert_eq!(req.uri().host_str().as_deref(), Some("real.example"),);
+    }
+
+    // RFC 8441 §5 for websocket, and ws/wss never on the wire, as the H3 decoder does.
+    #[test]
+    fn extended_connect_schemes_follow_rfc8441() {
+        for (protocol, scheme, accepted) in [
+            ("websocket", "https", true),
+            ("websocket", "http", true),
+            ("WebSocket", "https", true),
+            ("websocket", "custom", false),
+            ("WebSocket", "ftp", false),
+            ("websocket", "wss", false),
+            ("x", "custom", true),
+            ("x", "ws", false),
+            ("x", "wss", false),
+        ] {
+            let pseudo = Pseudo {
+                method: Some(Method::CONNECT),
+                scheme: Some(bs(scheme)),
+                authority: Some(bs("real.example")),
+                path: Some(bs("/chat")),
+                protocol: Some(ext::Protocol::from_static(protocol)),
+                ..Default::default()
+            };
+            assert_eq!(decode(pseudo).is_ok(), accepted, "{protocol} {scheme}");
+        }
     }
 }

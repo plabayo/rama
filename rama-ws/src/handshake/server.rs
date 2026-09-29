@@ -168,7 +168,7 @@ pub fn validate_http_client_request<Body>(
             match request.extensions().get_ref::<Protocol>() {
                 None => return Err(RequestValidateError::UnexpectedPseudoProtocolHeader(None)),
                 Some(protocol) => {
-                    if !protocol.as_str().trim().eq_ignore_ascii_case("websocket") {
+                    if !protocol.is_websocket() {
                         return Err(RequestValidateError::UnexpectedPseudoProtocolHeader(Some(
                             protocol.clone(),
                         )));

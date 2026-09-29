@@ -65,6 +65,12 @@ impl Protocol {
         self.value.as_str()
     }
 
+    /// Returns true for the [`WEBSOCKET`](Self::WEBSOCKET) token, compared case-insensitively.
+    #[must_use]
+    pub fn is_websocket(&self) -> bool {
+        self.as_str().eq_ignore_ascii_case(Self::WEBSOCKET.as_str())
+    }
+
     /// Parses a `:protocol` value from raw wire bytes, validating that it is a non-empty token.
     pub fn try_from_bytes(bytes: Bytes) -> Result<Self, InvalidProtocol> {
         if !is_token(bytes.as_ref()) {

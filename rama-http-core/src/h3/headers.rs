@@ -221,9 +221,15 @@ pub(crate) fn request_head(
             .map_err(|_error| malformed("invalid scheme"))?;
         let path = text(fields.path.as_ref().ok_or(malformed("missing path"))?)?;
         let http_scheme = scheme.is_http();
-        // RFC 8441 §5: a WebSocket target is sent with its http/https scheme.
+        // RFC 8441 §5: a WebSocket bootstrap uses http or https.
+        if protocol.as_ref().is_some_and(ext::Protocol::is_websocket) && !http_scheme {
+            return Err(malformed(
+                "websocket extended CONNECT requires http or https",
+            ));
+        }
+        // Encoders send ws/wss as http/https, so a raw ws/wss scheme cannot be forwarded as is.
         if protocol.is_some() && scheme.is_ws() {
-            return Err(malformed("extended CONNECT scheme must be http or https"));
+            return Err(malformed("extended CONNECT sends ws/wss as http/https"));
         }
         if http_scheme && authority.is_none() {
             return Err(malformed("HTTP URI requires an authority"));
@@ -444,12 +450,12 @@ pub(crate) fn encode_request<B>(
         request.uri().write_h2_path(&mut target);
     }
     let (authority, path) = target.split_at(authority_len);
+    // RFC 9114 §4.3.1: http(s) needs :authority or Host, for Extended CONNECT too.
     if http_scheme && authority.is_empty() && !request.headers().contains_key(header::HOST) {
         return Err(malformed("HTTP URI requires authority"));
     }
-    // RFC 9114 §4.3.1: only http(s) targets need a non-empty authority and path.
-    if protocol.is_some() && http_scheme && (authority.is_empty() || path.is_empty()) {
-        return Err(malformed("extended CONNECT requires authority and path"));
+    if protocol.is_some() && http_scheme && path.is_empty() {
+        return Err(malformed("extended CONNECT requires a path"));
     }
     let mut pseudo = [
         Some((PseudoHeader::Method, request.method().as_str().as_bytes())),
@@ -1271,6 +1277,71 @@ mod tests {
                 .find(|field| field.name == ":scheme")
                 .map(|field| field.value.clone());
             assert_eq!(value.as_deref(), Some(scheme.as_bytes()), "{uri}");
+        }
+    }
+
+    // RFC 8441 §5 for websocket; other protocols keep their scheme, except ws/wss.
+    #[test]
+    fn extended_connect_schemes_follow_rfc8441() {
+        for (protocol, scheme, accepted) in [
+            ("websocket", "https", true),
+            ("websocket", "http", true),
+            ("WebSocket", "https", true),
+            ("websocket", "custom", false),
+            ("WebSocket", "ftp", false),
+            ("websocket", "wss", false),
+            ("x", "custom", true),
+            ("x", "ws", false),
+            ("x", "wss", false),
+        ] {
+            let head = [
+                (":method", "CONNECT"),
+                (":protocol", protocol),
+                (":scheme", scheme),
+                (":authority", "example.com"),
+                (":path", "/chat"),
+            ];
+            assert_eq!(
+                request_head(fields(&head), true).is_ok(),
+                accepted,
+                "{protocol} {scheme}"
+            );
+        }
+    }
+
+    // RFC 9114 §4.3.1: Host stands in for a missing :authority, for Extended CONNECT too.
+    #[test]
+    fn host_stands_in_for_the_authority_of_every_request_kind() {
+        for (method, protocol, uri) in [
+            (Method::GET, None, "https:/chat"),
+            (
+                Method::CONNECT,
+                Some(ext::Protocol::WEBSOCKET),
+                "https:/chat",
+            ),
+            (Method::CONNECT, Some(ext::Protocol::WEBSOCKET), "wss:/chat"),
+        ] {
+            let mut request = Request::new(());
+            *request.method_mut() = method;
+            *request.uri_mut() = Uri::parse(uri).unwrap();
+            if let Some(protocol) = protocol {
+                request.extensions().insert(protocol);
+            }
+            encode_request(&shared(), 0, &request).unwrap_err();
+            request
+                .headers_mut()
+                .insert(header::HOST, HeaderValue::from_static("example.com"));
+            let output = decode(encode_request(&shared(), 0, &request).unwrap());
+            assert!(
+                !output.iter().any(|field| field.name == ":authority"),
+                "{uri}"
+            );
+            let decoded = request_head(output, true).unwrap();
+            assert_eq!(
+                decoded.uri().to_string(),
+                "https://example.com/chat",
+                "{uri}"
+            );
         }
     }
 
