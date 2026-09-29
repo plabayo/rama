@@ -8,11 +8,11 @@ use rama::http::{
     HeaderMap, HeaderValue,
     headers::{
         Accept, Authorization, CacheControl, Connection, ContentLength, ContentRange, ContentType,
-        Cookie, ETag, HeaderDecode, HeaderEncode, HeaderMapExt, Host, IfMatch, IfModifiedSince,
-        IfNoneMatch, IfRange, Origin, Priority, Range, SecWebSocketExtensions,
-        StrictTransportSecurity, Te, UserAgent, Vary, XRobotsTag,
+        Cookie, CrossOriginOpenerPolicy, ETag, HeaderDecode, HeaderEncode, HeaderMapExt, Host,
+        IfMatch, IfModifiedSince, IfNoneMatch, IfRange, Origin, Priority, Range,
+        SecWebSocketExtensions, StrictTransportSecurity, Te, UserAgent, Vary, XRobotsTag,
         encoding::{AcceptEncoding, parse_accept_encoding_headers},
-        forwarded::{Forwarded, XForwardedFor},
+        forwarded::{Forwarded, Via, XForwardedFor},
     },
 };
 use rama::net::user::{Basic, Bearer};
@@ -122,6 +122,12 @@ mod decode {
         forwarded,
         Forwarded,
         "for=192.0.2.60;proto=http;by=203.0.113.43, for=\"[2001:db8:cafe::17]:4711\""
+    );
+    decode_bench!(via, Via, "1.1 vegur, HTTP/1.0 fred, 1.1 p.example.net");
+    decode_bench!(
+        cross_origin_opener_policy,
+        CrossOriginOpenerPolicy,
+        "same-origin; report-to=\"coop-endpoint\""
     );
     decode_bench!(
         sec_websocket_extensions,
