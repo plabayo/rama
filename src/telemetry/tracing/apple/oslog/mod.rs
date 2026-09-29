@@ -379,38 +379,7 @@ impl OsLogLayer {
         }
 
         if self.include_span_context {
-            let mut wrote_span = false;
-            if let Some(scope) = ctx.event_scope(event) {
-                for span in scope.from_root() {
-                    let extensions = span.extensions();
-                    let Some(states) = extensions.get::<SpanStates>() else {
-                        continue;
-                    };
-                    let Some(state) = states.0.get(&self.layer_id) else {
-                        continue;
-                    };
-
-                    if !wrote_span {
-                        if !output.is_empty() {
-                            output.push_str(" ");
-                        }
-                        output.push_str("spans=[");
-                        wrote_span = true;
-                    } else {
-                        output.push_str(" > ");
-                    }
-
-                    output.push_str(state.metadata.name());
-                    if !state.fields.is_empty() {
-                        output.push_str("{");
-                        output.push_bounded(&state.fields);
-                        output.push_str("}");
-                    }
-                }
-            }
-            if wrote_span {
-                output.push_str("]");
-            }
+            self.append_span_context(event, ctx, &mut output);
         }
 
         output.into_c_message()

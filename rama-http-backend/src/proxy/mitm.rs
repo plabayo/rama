@@ -84,8 +84,8 @@ impl DefaultErrorResponse {
             .into_response()
     }
 
-    /// `retry_safe` only for requests that provably never reached the
-    /// egress: h2 then resets the stream with `REFUSED_STREAM`, which
+    /// `retry_safe` only for requests the egress provably never
+    /// processed: h2 then resets the stream with `REFUSED_STREAM`, which
     /// clients may replay (even a POST), so never for anything else.
     #[inline(always)]
     fn response_for_version(version: Version, retry_safe: bool) -> Response {
@@ -155,10 +155,12 @@ pub type DefaultMiddleware = (
 /// When an HTTP/2 egress connection ends (EOF, `GOAWAY`, error), the
 /// ingress connection is shut down gracefully with a `GOAWAY`, so idle
 /// clients reconnect instead of sending into a dead relay. Ingress
-/// requests that raced that close and never reached the egress (over
-/// all attempts middleware made for them) are reset with
-/// `REFUSED_STREAM`, which clients may safely retry. This replaces any
-/// response middleware made for such a request, e.g. the default `502`.
+/// requests the egress provably never processed (over all attempts
+/// middleware made for them) are reset with `REFUSED_STREAM`, which
+/// clients may safely retry: they raced that close (never sent, or not
+/// covered by the egress `GOAWAY`), or the egress refused their stream.
+/// This replaces any response middleware made for such a request, e.g.
+/// the default `502`.
 ///
 /// The relay does not consume proxy-authentication fields: a transparent
 /// intermediary may be forwarding them to the proxy that owns the exchange.
@@ -851,16 +853,15 @@ where
         .extensions()
         .insert_arc(Arc::new(SendAttempts::default()));
     let result = client.serve(req).await.map_err(Into::into);
-    if attempts.none_sent() {
-        // raced the egress close, also when middleware already turned
-        // that failure into a response: the client can safely retry
+    if attempts.none_processed() {
+        // even when middleware already turned the failure into a response
         tracing::debug!(
             http.request.method = %method,
             url.full = %uri,
             ?version,
-            "MITM relay request never reached egress: refuse it (retry safe)"
+            egress.broken = health.health() == ConnectionHealth::Broken,
+            "MITM relay request never processed by egress: refuse it (retry safe)"
         );
-        health.mark_broken();
         return DefaultErrorResponse::response_for_version(version, true);
     }
     match result {
