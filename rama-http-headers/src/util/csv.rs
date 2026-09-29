@@ -21,28 +21,29 @@ where
         .collect()
 }
 
+/// Split on `,` outside quoted-strings; an unterminated one runs to the end.
 pub(crate) fn split_csv_str<T: std::str::FromStr>(
     string: &str,
 ) -> impl Iterator<Item = Result<T, Error>> + use<'_, T> {
     let mut in_quotes = false;
+    let mut escaped = false;
     string
         .split(move |c| {
-            #[expect(clippy::collapsible_else_if)]
-            if in_quotes {
-                if c == '"' {
-                    in_quotes = false;
+            // a quoted-pair never closes the quoted-string (RFC 9110 §5.6.4)
+            if escaped {
+                escaped = false;
+            } else if in_quotes {
+                match c {
+                    '\\' => escaped = true,
+                    '"' => in_quotes = false,
+                    _ => {}
                 }
-                false // don't split
+            } else if c == '"' {
+                in_quotes = true;
             } else {
-                if c == ',' {
-                    true // split
-                } else {
-                    if c == '"' {
-                        in_quotes = true;
-                    }
-                    false // don't split
-                }
+                return c == ',';
             }
+            false
         })
         .filter_map(|x| match x.trim() {
             "" => None,
