@@ -418,3 +418,83 @@ fn multiplex_contended_checkout_round_robin(
 ) {
     bench_multiplex_contended_checkout(bencher, threads, resident, MuxSelection::RoundRobin);
 }
+
+/// A pool at `max_total`: `tasks` concurrent checkouts share `connections`
+/// exclusive connections, so all but `connections` of them wait for a release at
+/// any time. This is a proxy whose upstream pool limit is far below its client
+/// concurrency, with every request holding its connection across a scheduler
+/// round trip, like a request in flight does.
+fn bench_saturated_pool(
+    bencher: divan::Bencher,
+    worker_threads: usize,
+    tasks: usize,
+    connections: usize,
+) {
+    const CHECKOUTS_PER_TASK: usize = 20;
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(worker_threads)
+        .build()
+        .unwrap();
+    let pool =
+        Arc::new(MultiplexPool::<ServiceInput<()>, BenchId>::try_new(1, connections).unwrap());
+    runtime.block_on(async {
+        let mut held = Vec::with_capacity(connections);
+        for _ in 0..connections {
+            let ConnectionResult::CreatePermit(permit) =
+                pool.get_conn(&BenchId(0), &EMPTY_INPUT).await.unwrap()
+            else {
+                unreachable!("all previous connections are still held");
+            };
+            let conn = ServiceInput::new(());
+            conn.extensions().insert(MaxConcurrency::new(1));
+            held.push(
+                pool.create(BenchId(0), conn, permit, &Extensions::new())
+                    .await
+                    .unwrap(),
+            );
+        }
+        drop(held);
+    });
+
+    bencher
+        .counter(ItemsCount::new(tasks * CHECKOUTS_PER_TASK))
+        .bench_local(|| {
+            runtime.block_on(async {
+                let mut joins = Vec::with_capacity(tasks);
+                for _ in 0..tasks {
+                    let pool = Arc::clone(&pool);
+                    joins.push(tokio::spawn(async move {
+                        for _ in 0..CHECKOUTS_PER_TASK {
+                            // A checkout can also win the slot of a connection that
+                            // just went idle, which is evicted; it dials a new one.
+                            let conn = match pool.get_conn(&BenchId(0), &EMPTY_INPUT).await.unwrap()
+                            {
+                                ConnectionResult::Connection(conn) => conn,
+                                ConnectionResult::CreatePermit(permit) => {
+                                    let conn = ServiceInput::new(());
+                                    conn.extensions().insert(MaxConcurrency::new(1));
+                                    pool.create(BenchId(0), conn, permit, &Extensions::new())
+                                        .await
+                                        .unwrap()
+                                }
+                            };
+                            tokio::task::yield_now().await;
+                            black_box(conn);
+                        }
+                    }));
+                }
+                for join in joins {
+                    join.await.unwrap();
+                }
+            });
+        });
+}
+
+#[divan::bench(args = [(1_usize, 256_usize, 50_usize), (4, 256, 50), (4, 1024, 50), (4, 256, 8)], sample_count = 10)]
+fn multiplex_saturated_pool(
+    bencher: divan::Bencher,
+    (worker_threads, tasks, connections): (usize, usize, usize),
+) {
+    bench_saturated_pool(bencher, worker_threads, tasks, connections);
+}
