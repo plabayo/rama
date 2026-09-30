@@ -10,7 +10,10 @@
     reason = "bench: panic-on-error is the standard pattern for harnesses"
 )]
 
-use std::sync::LazyLock;
+use std::sync::{
+    LazyLock,
+    atomic::{AtomicUsize, Ordering},
+};
 
 use divan::{Bencher, black_box};
 use rama::{
@@ -41,6 +44,9 @@ static HOST: LazyLock<Domain> = LazyLock::new(|| {
 
 const BURSTS: &[usize] = &[1, 64, 1024];
 
+/// Lookups that resolved no address during the current bench.
+static UNRESOLVED: AtomicUsize = AtomicUsize::new(0);
+
 /// Addresses resolved by `lookups` concurrent A + AAAA lookups; errors count as none.
 async fn burst<R>(resolver: R, lookups: usize) -> usize
 where
@@ -59,6 +65,9 @@ where
                     .filter(|result| std::future::ready(result.is_ok()))
                     .count(),
             );
+            if v6 + v4 == 0 {
+                UNRESOLVED.fetch_add(1, Ordering::Relaxed);
+            }
             v6 + v4
         })
     });
@@ -75,6 +84,18 @@ where
         "{} does not resolve; set RAMA_DNS_BENCH_HOST",
         *HOST,
     );
+    UNRESOLVED.store(0, Ordering::Relaxed);
+}
+
+/// A timing that includes failed lookups must not pass for a fast one.
+fn report_unresolved<R>(lookups: usize) {
+    let unresolved = UNRESOLVED.swap(0, Ordering::Relaxed);
+    if unresolved > 0 {
+        eprintln!(
+            "warning: {} x{lookups}: {unresolved} lookups resolved nothing; these timings include failures",
+            std::any::type_name::<R>(),
+        );
+    }
 }
 
 fn cold<R>(bencher: Bencher, lookups: usize, new: fn() -> R)
@@ -85,6 +106,7 @@ where
     bencher
         .with_inputs(new)
         .bench_local_values(|resolver| black_box(RT.block_on(burst(resolver, lookups))));
+    report_unresolved::<R>(lookups);
 }
 
 fn warm<R>(bencher: Bencher, lookups: usize, new: fn() -> R)
@@ -94,6 +116,7 @@ where
     let resolver = new();
     assert_resolves(resolver.clone());
     bencher.bench_local(|| black_box(RT.block_on(burst(resolver.clone(), lookups))));
+    report_unresolved::<R>(lookups);
 }
 
 mod native {
