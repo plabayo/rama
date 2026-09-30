@@ -247,7 +247,7 @@ mod tests {
                 .expect("read frame");
             let frame = Frame::decode(bytes).expect("decode frame");
             assert_eq!(
-                frame.message.bytes.clone().try_into_buf().is_ok(),
+                frame.message.bytes.try_into_buf().is_ok(),
                 fits,
                 "boundary mismatch at {len}"
             );
