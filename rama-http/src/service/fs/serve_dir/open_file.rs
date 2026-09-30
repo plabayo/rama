@@ -18,7 +18,6 @@ use std::{
     io::{self, ErrorKind, SeekFrom},
     ops::RangeInclusive,
     path::{Path, PathBuf},
-    time::SystemTime,
 };
 use tokio::io::AsyncRead;
 use tokio::{fs::File, io::AsyncSeekExt};
@@ -197,12 +196,7 @@ pub(super) async fn open_file(
                     return Ok(output);
                 }
 
-                let range_header = preconditions.applicable_range(
-                    range_header,
-                    etag.as_ref(),
-                    last_modified.as_ref(),
-                    SystemTime::now,
-                );
+                let range_header = preconditions.applicable_range(range_header, etag.as_ref());
                 let maybe_range =
                     try_parse_range(range_header, meta.len(), ignore_multi_range_requests);
 
@@ -240,12 +234,7 @@ pub(super) async fn open_file(
                     return Ok(output);
                 }
 
-                let range_header = preconditions.applicable_range(
-                    range_header,
-                    etag.as_ref(),
-                    last_modified.as_ref(),
-                    SystemTime::now,
-                );
+                let range_header = preconditions.applicable_range(range_header, etag.as_ref());
                 let maybe_range =
                     try_parse_range(range_header, content_length, ignore_multi_range_requests);
 
@@ -291,12 +280,7 @@ pub(super) async fn open_file(
                     return Ok(output);
                 }
 
-                let range_header = preconditions.applicable_range(
-                    range_header,
-                    etag.as_ref(),
-                    last_modified.as_ref(),
-                    SystemTime::now,
-                );
+                let range_header = preconditions.applicable_range(range_header, etag.as_ref());
                 let maybe_range =
                     try_parse_range(range_header, meta.len(), ignore_multi_range_requests);
                 if let Some(Ok(range)) = maybe_range.as_ref() {
@@ -338,12 +322,7 @@ pub(super) async fn open_file(
                     return Ok(output);
                 }
 
-                let range_header = preconditions.applicable_range(
-                    range_header,
-                    etag.as_ref(),
-                    last_modified.as_ref(),
-                    SystemTime::now,
-                );
+                let range_header = preconditions.applicable_range(range_header, etag.as_ref());
                 let maybe_range =
                     try_parse_range(range_header, content_length, ignore_multi_range_requests);
 
@@ -421,27 +400,12 @@ impl Preconditions {
         }
     }
 
-    /// RFC 9110 §13.1.5: `Range` only applies while `If-Range` matches the representation.
-    fn applicable_range<'a>(
-        &self,
-        range: Option<&'a str>,
-        etag: Option<&ETag>,
-        last_modified: Option<&LastModified>,
-        now: impl FnOnce() -> SystemTime,
-    ) -> Option<&'a str> {
+    /// RFC 9110 §13.1.5: `Range` only applies while `If-Range` strongly matches the representation.
+    fn applicable_range<'a>(&self, range: Option<&'a str>, etag: Option<&ETag>) -> Option<&'a str> {
         match &self.if_range {
             IfRangeCondition::Absent => range,
-            IfRangeCondition::Valid(if_range)
-                if !if_range.is_modified(
-                    etag,
-                    last_modified
-                        .filter(|lm| lm.is_strong(now()))
-                        .map(LastModified::to_typed)
-                        .as_ref(),
-                ) =>
-            {
-                range
-            }
+            // a date cannot rule out a second change within its second (RFC 9110 §8.8.2.2)
+            IfRangeCondition::Valid(if_range) if !if_range.is_modified(etag, None) => range,
             IfRangeCondition::Valid(_) | IfRangeCondition::Invalid => None,
         }
     }
@@ -878,31 +842,30 @@ fn append_slash_on_path(mut uri: Uri) -> Result<Uri, OpenFileOutput> {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::time::{Duration, SystemTime};
 
     use super::*;
 
     #[test]
-    fn if_range_date_needs_a_strong_last_modified() {
+    fn if_range_date_never_applies_a_range() {
         let modified = SystemTime::UNIX_EPOCH
             .checked_add(Duration::from_secs(1_700_000_000))
             .unwrap();
-        let last_modified = LastModified::try_from_system_time(modified).unwrap();
-        let preconditions = Preconditions {
+        let etag = etag_from_metadata(10, modified).unwrap();
+        let preconditions = |if_range| Preconditions {
             if_match: None,
             if_unmodified_since: None,
             if_none_match: None,
             if_modified_since: None,
-            if_range: IfRangeCondition::Valid(IfRange::date(modified)),
+            if_range: IfRangeCondition::Valid(if_range),
         };
         let range = Some("bytes=0-1");
-        let strong_at = modified.checked_add(Duration::from_secs(1)).unwrap();
         assert_eq!(
-            preconditions.applicable_range(range, None, Some(&last_modified), || modified),
+            preconditions(IfRange::date(modified)).applicable_range(range, Some(&etag)),
             None
         );
         assert_eq!(
-            preconditions.applicable_range(range, None, Some(&last_modified), || strong_at),
+            preconditions(IfRange::etag(etag.clone())).applicable_range(range, Some(&etag)),
             range
         );
     }

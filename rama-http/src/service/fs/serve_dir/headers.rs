@@ -1,7 +1,7 @@
 use crate::header::HeaderValue;
 use crate::headers::{self, ETag};
 use httpdate::HttpDate;
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 /// Generate a strong [`ETag`] from file metadata (size + mtime with nanosecond precision).
 ///
@@ -28,16 +28,6 @@ impl LastModified {
     /// `None` for modification times an HTTP-date cannot represent (pre-epoch or past year 9999).
     pub(super) fn try_from_system_time(time: SystemTime) -> Option<Self> {
         headers::util::HttpDate::try_from_system_time(time).map(|_| Self(time.into()))
-    }
-
-    pub(super) fn to_typed(&self) -> headers::LastModified {
-        headers::LastModified::from(SystemTime::from(self.0))
-    }
-
-    /// RFC 9110 §8.8.2.2: only a date at least a second in the past is a strong validator.
-    pub(super) fn is_strong(&self, now: SystemTime) -> bool {
-        now.duration_since(SystemTime::from(self.0))
-            .is_ok_and(|age| age >= Duration::from_secs(1))
     }
 }
 
@@ -76,6 +66,7 @@ impl IfUnmodifiedSince {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn last_modified_rejects_unrepresentable_times() {
@@ -90,18 +81,5 @@ mod tests {
         let past_9999 = last.checked_add(Duration::from_secs(1)).unwrap();
         assert!(LastModified::try_from_system_time(before_epoch).is_none());
         assert!(LastModified::try_from_system_time(past_9999).is_none());
-    }
-
-    #[test]
-    fn last_modified_strength_needs_a_second_of_age() {
-        let now = SystemTime::UNIX_EPOCH
-            .checked_add(Duration::from_secs(1_700_000_000))
-            .unwrap();
-        let fresh = LastModified::try_from_system_time(now).unwrap();
-        let old =
-            LastModified::try_from_system_time(now.checked_sub(Duration::from_secs(1)).unwrap())
-                .unwrap();
-        assert!(!fresh.is_strong(now));
-        assert!(old.is_strong(now));
     }
 }

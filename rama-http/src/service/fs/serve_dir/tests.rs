@@ -13,7 +13,9 @@ use rama_core::bytes::Bytes;
 use rama_core::service::service_fn;
 use rama_utils::include_dir::{Dir, include_dir};
 use std::convert::Infallible;
+use std::fs::{File, FileTimes};
 use std::io::Read;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[tokio::test]
 async fn basic() {
@@ -1128,7 +1130,8 @@ async fn test_if_range_gates_partial_content(svc: ServeDir) {
 
     for (if_range, expected) in [
         (etag, StatusCode::PARTIAL_CONTENT),
-        (last_modified, StatusCode::PARTIAL_CONTENT),
+        // a date cannot rule out a second change within its second (RFC 9110 §8.8.2.2)
+        (last_modified, StatusCode::OK),
         (HeaderValue::from_static("\"other\""), StatusCode::OK),
         // a weak entity-tag never matches: If-Range uses strong comparison
         (weak_etag, StatusCode::OK),
@@ -1160,6 +1163,58 @@ async fn test_if_range_gates_partial_content(svc: ServeDir) {
             assert_eq!(body_len, 2, "{if_range:?}");
         }
     }
+}
+
+#[tokio::test]
+async fn if_range_date_is_ambiguous_within_its_second() {
+    let dir = rama_utils::fs::tempdir().unwrap();
+    let path = dir.path().join("data.txt");
+    let second = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        .saturating_sub(60);
+    let write = |body: &str, nanos| {
+        std::fs::write(&path, body).unwrap();
+        let modified = UNIX_EPOCH
+            .checked_add(Duration::new(second, nanos))
+            .unwrap();
+        File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_times(FileTimes::new().set_modified(modified))
+            .unwrap();
+    };
+    let svc = ServeDir::new(dir.path());
+    let get = |if_range: Option<HeaderValue>| {
+        let mut req = Request::builder()
+            .uri("/data.txt")
+            .header(header::RANGE, "bytes=4-");
+        if let Some(if_range) = if_range {
+            req = req.header(header::IF_RANGE, if_range);
+        }
+        svc.serve(req.body(Body::empty()).unwrap())
+    };
+
+    write("old-body", 100_000_000);
+    let old = get(None).await.unwrap();
+    let old_date = old.headers()[header::LAST_MODIFIED].clone();
+    let old_etag = old.headers()[header::ETAG].clone();
+
+    // a second version within the same second keeps the Last-Modified date
+    write("new-data", 800_000_000);
+    let new = get(Some(old_date.clone())).await.unwrap();
+    assert_eq!(new.headers()[header::LAST_MODIFIED], old_date);
+    assert_eq!(new.status(), StatusCode::OK);
+    assert_eq!(body_into_text(new.into_body()).await, "new-data");
+
+    let new = get(Some(old_etag)).await.unwrap();
+    assert_eq!(new.status(), StatusCode::OK);
+    let new_etag = new.headers()[header::ETAG].clone();
+    let new = get(Some(new_etag)).await.unwrap();
+    assert_eq!(new.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(body_into_text(new.into_body()).await, "data");
 }
 
 #[tokio::test]
