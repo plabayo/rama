@@ -1887,7 +1887,7 @@ async fn http_connect_new() {
         let mut tcp = connect(&addr);
         tcp.write_all(
             b"\
-            CONNECT localhost HTTP/1.1\r\n\
+            CONNECT localhost:80 HTTP/1.1\r\n\
             \r\n\
             eagerly optimistic\
         ",
@@ -1956,7 +1956,7 @@ async fn h2_connect() {
     async fn connect_and_recv_bread(
         h2: &mut SendRequest<Bytes>,
     ) -> (RecvStream, SendStream<Bytes>) {
-        let request = Request::connect(Uri::parse_authority_form("localhost").unwrap())
+        let request = Request::connect(Uri::parse_authority_form("localhost:80").unwrap())
             .body(())
             .unwrap();
         let (response, send_stream) = h2.send_request(request, false).unwrap();
@@ -2029,7 +2029,7 @@ async fn h2_connect_multiplex() {
         let mut streams = vec![];
         for i in 0..80 {
             let request = Request::connect(
-                Uri::parse_authority_form(format!("localhost_{}", i % 4)).unwrap(),
+                Uri::parse_authority_form(format!("localhost_{}:80", i % 4)).unwrap(),
             )
             .body(())
             .unwrap();
@@ -2140,7 +2140,7 @@ async fn h2_connect_large_body() {
     async fn connect_and_recv_bread(
         h2: &mut SendRequest<Bytes>,
     ) -> (RecvStream, SendStream<Bytes>) {
-        let request = Request::connect(Uri::parse_authority_form("localhost").unwrap())
+        let request = Request::connect(Uri::parse_authority_form("localhost:80").unwrap())
             .body(())
             .unwrap();
         let (response, send_stream) = h2.send_request(request, false).unwrap();
@@ -2214,7 +2214,7 @@ async fn h2_connect_empty_frames() {
     async fn connect_and_recv_bread(
         h2: &mut SendRequest<Bytes>,
     ) -> (RecvStream, SendStream<Bytes>) {
-        let request = Request::connect(Uri::parse_authority_form("localhost").unwrap())
+        let request = Request::connect(Uri::parse_authority_form("localhost:80").unwrap())
             .body(())
             .unwrap();
         let (response, send_stream) = h2.send_request(request, false).unwrap();
@@ -2290,7 +2290,7 @@ async fn h2_connect_backpressure_respected() {
     const TOTAL_LEN: usize = CHUNK.len() * 2000;
 
     let client_handle = tokio::spawn(async move {
-        let request = Request::connect(Uri::parse_authority_form("localhost").unwrap())
+        let request = Request::connect(Uri::parse_authority_form("localhost:80").unwrap())
             .body(())
             .unwrap();
         let (response, _send_stream) = h2.send_request(request, false).unwrap();
@@ -2362,7 +2362,7 @@ async fn h2_connect_zero_window_then_release() {
     const DATA: &[u8] = b"Hello from upgraded stream";
 
     let client_handle = tokio::spawn(async move {
-        let request = Request::connect(Uri::parse_authority_form("localhost").unwrap())
+        let request = Request::connect(Uri::parse_authority_form("localhost:80").unwrap())
             .body(())
             .unwrap();
         let (response, _send_stream) = h2.send_request(request, false).unwrap();
@@ -2432,7 +2432,7 @@ async fn h2_connect_shutdown_while_send_backpressured() {
     let shutdown_tx = Arc::new(Mutex::new(Some(shutdown_tx)));
 
     let client_handle = tokio::spawn(async move {
-        let request = Request::connect(Uri::parse_authority_form("localhost").unwrap())
+        let request = Request::connect(Uri::parse_authority_form("localhost:80").unwrap())
             .body(())
             .unwrap();
         let (response, _send_stream) = h2.send_request(request, false).unwrap();
@@ -2512,7 +2512,7 @@ async fn h2_connect_reset_during_backpressure() {
     let reset_rx = Arc::new(Mutex::new(Some(reset_rx)));
 
     let client_handle = tokio::spawn(async move {
-        let request = Request::connect(Uri::parse_authority_form("localhost").unwrap())
+        let request = Request::connect(Uri::parse_authority_form("localhost:80").unwrap())
             .body(())
             .unwrap();
         let (response, mut send_stream) = h2.send_request(request, false).unwrap();
@@ -2595,7 +2595,7 @@ async fn h2_connect_backpressure_bidirectional() {
     let expected_len = PATTERN.len() * REPEAT;
 
     let client_handle = tokio::spawn(async move {
-        let request = Request::connect(Uri::parse_authority_form("localhost").unwrap())
+        let request = Request::connect(Uri::parse_authority_form("localhost:80").unwrap())
             .body(())
             .unwrap();
         let (response, mut send_stream) = h2.send_request(request, false).unwrap();

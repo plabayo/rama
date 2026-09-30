@@ -1845,8 +1845,8 @@ impl PushedResponseFuture {
 
 /// A single valid `Host` becomes `:authority` when [`host_is_wire_authority`] says so,
 /// keeping its sensitivity; the `Host` line itself is sent unchanged. Any other `Host` next to
-/// `:authority` is dropped, so one authority reaches the wire. A Host that would become an
-/// ordinary CONNECT's authority must name a port (RFC 9113 §8.5).
+/// `:authority` is dropped, so one authority reaches the wire. An ordinary CONNECT's final
+/// authority must name a port (RFC 9113 §8.5).
 fn host_as_authority(
     pseudo: &mut Pseudo,
     headers: &mut HeaderMap,
@@ -1860,9 +1860,6 @@ fn host_as_authority(
                 && host_is_wire_authority(projected, parsed)
                 && let Ok(value) = BytesStr::try_from(Bytes::copy_from_slice(host.as_bytes()))
             {
-                if ordinary_connect && parsed.port_u16().is_none() {
-                    return Err(UserError::MalformedHeaders);
-                }
                 let sensitive = host.is_sensitive();
                 pseudo.set_authority(value);
                 if sensitive {
@@ -1877,6 +1874,16 @@ fn host_as_authority(
     }
     if drop_host {
         headers.remove(rama_http_types::header::HOST);
+    }
+    // RFC 9113 §8.5: an ordinary CONNECT names a host and port, whichever field supplied them.
+    if ordinary_connect
+        && !pseudo
+            .authority
+            .as_deref()
+            .and_then(|authority| AuthorityRef::try_from(authority).ok())
+            .is_some_and(|authority| authority.port_u16().is_some())
+    {
+        return Err(UserError::MalformedHeaders);
     }
     Ok(())
 }

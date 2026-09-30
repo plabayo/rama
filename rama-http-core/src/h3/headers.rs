@@ -198,11 +198,14 @@ pub(crate) fn request_head(
         if fields.scheme.is_some() || fields.path.is_some() || fields.authority.is_none() {
             return Err(malformed("invalid CONNECT pseudo-headers"));
         }
-        Uri::parse_http_request_target(
-            authority.ok_or(malformed("missing CONNECT authority"))?,
-            true,
-        )
-        .map_err(|_error| malformed("invalid CONNECT authority"))?
+        let uri =
+            Uri::parse_authority_form(authority.ok_or(malformed("missing CONNECT authority"))?)
+                .map_err(|_error| malformed("invalid CONNECT authority"))?;
+        // RFC 9114 §4.4: CONNECT names a host and port; there is no default to guess.
+        if uri.port_u16().is_none() {
+            return Err(malformed("CONNECT without a port"));
+        }
+        uri
     } else {
         let mut scheme = text(fields.scheme.as_ref().ok_or(malformed("missing scheme"))?)?
             .parse::<Protocol>()
@@ -1288,6 +1291,102 @@ mod tests {
             )
             .unwrap();
             assert_eq!(&h1[..], h1_target.as_bytes(), "{uri}");
+        }
+    }
+
+    /// A plain CONNECT names a host and port on every version, received or sent: there is no
+    /// default port to guess. Userinfo is accepted on receipt and never sent.
+    #[test]
+    fn ordinary_connect_names_a_port_on_every_version() {
+        use crate::proto::h1::test_util as h1;
+
+        for (authority, routed) in [
+            ("example.com", None),
+            ("example.com:", None),
+            ("[::1]", None),
+            ("[::1]:", None),
+            ("example.com:443", Some("example.com:443")),
+            ("[::1]:8443", Some("[::1]:8443")),
+            ("user@example.com:443", Some("example.com:443")),
+        ] {
+            let raw = format!("CONNECT {authority} HTTP/1.1\r\n\r\n");
+            let h1 = (!h1::refuses(&raw)).then(|| h1::receive(&raw).0.to_string());
+            let h2 = crate::h2::server::test_util::receive(
+                frame::Pseudo {
+                    method: Some(Method::CONNECT),
+                    authority: Some(
+                        hpack::BytesStr::try_from(Bytes::copy_from_slice(authority.as_bytes()))
+                            .unwrap(),
+                    ),
+                    ..Default::default()
+                },
+                HeaderMap::new(),
+            )
+            .ok()
+            .map(|request| request.uri().to_string());
+            let h3 = request_head(
+                vec![
+                    FieldPair {
+                        name: Bytes::from_static(b":method"),
+                        value: Bytes::from_static(b"CONNECT"),
+                        never_index: false,
+                    },
+                    FieldPair {
+                        name: Bytes::from_static(b":authority"),
+                        value: Bytes::copy_from_slice(authority.as_bytes()),
+                        never_index: false,
+                    },
+                ],
+                true,
+            )
+            .ok()
+            .map(|request| request.uri().to_string());
+            for (version, received) in [("h1", h1), ("h2", h2), ("h3", h3)] {
+                assert_eq!(
+                    received.as_deref(),
+                    routed,
+                    "{version} received {authority}"
+                );
+            }
+
+            let uri = Uri::parse_authority_form(authority).unwrap();
+            let connect = || {
+                let mut request = Request::new(());
+                *request.method_mut() = Method::CONNECT;
+                *request.uri_mut() = uri.clone();
+                request
+            };
+            let h1 = h1::send(Method::CONNECT, uri.clone()).map(|head| {
+                let line = head.lines().next().unwrap().to_owned();
+                line.strip_prefix("CONNECT ")
+                    .unwrap()
+                    .strip_suffix(" HTTP/1.1")
+                    .unwrap()
+                    .to_owned()
+            });
+            let h2 = crate::h2::client::Peer::convert_send_message(
+                StreamId::from(1),
+                connect(),
+                None,
+                true,
+                None,
+                None,
+            )
+            .ok()
+            .map(|(frame, _)| frame.pseudo().authority.as_deref().unwrap().to_owned());
+            let h3 = encode_request(&shared(), 0, &connect())
+                .ok()
+                .map(|encoded| {
+                    let fields = decode(encoded);
+                    let authority = fields
+                        .iter()
+                        .find(|field| field.name == ":authority")
+                        .unwrap();
+                    String::from_utf8(authority.value.to_vec()).unwrap()
+                });
+            for (version, sent) in [("h1", h1), ("h2", h2), ("h3", h3)] {
+                assert_eq!(sent.as_deref(), routed, "{version} sent {authority}");
+            }
         }
     }
 

@@ -101,6 +101,9 @@ pub(super) enum User {
     ///
     /// For example, sending both `content-length` and `transfer-encoding`.
     UnexpectedHeader,
+    /// User tried to send a request target its method cannot carry, such as a CONNECT
+    /// without a port.
+    InvalidTarget,
     /// User tried to respond with a 1xx (not 101) response code.
     UnsupportedStatusCode,
 
@@ -358,6 +361,11 @@ impl Error {
     }
 
     #[inline(always)]
+    pub(super) fn new_user_target() -> Self {
+        Self::new_user(User::InvalidTarget)
+    }
+
+    #[inline(always)]
     pub(super) fn new_header_timeout() -> Self {
         Self::new(Kind::HeaderTimeout)
     }
@@ -431,6 +439,7 @@ impl Error {
             Kind::User(User::BodyWriteAborted) => "user body write aborted",
             Kind::User(User::Service) => "error from user's Service",
             Kind::User(User::UnexpectedHeader) => "user sent unexpected header",
+            Kind::User(User::InvalidTarget) => "user sent an invalid request target",
             Kind::User(User::UnsupportedStatusCode) => {
                 "response has 1xx status code, not supported by server"
             }

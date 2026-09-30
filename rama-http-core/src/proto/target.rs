@@ -17,7 +17,17 @@ pub(crate) fn normalize_received(
 ) {
     // RFC 9110 §4.2.4: the HTTP family, and scheme-less CONNECT, never carry userinfo.
     if uri.userinfo().is_some() && uri.scheme().is_none_or(Protocol::is_http_based) {
-        uri.unset_user_info();
+        match uri.authority().filter(|_| uri.scheme().is_none()) {
+            // An authority-form target is rebuilt as one, not as a `//host` reference.
+            Some(authority) => {
+                let mut authority = authority.into_owned();
+                authority.user_info = None;
+                *uri = Uri::from_authority_form(authority);
+            }
+            None => {
+                uri.unset_user_info();
+            }
+        }
     }
     if let Some(host) = replacement_host(uri.authority(), headers, authority_sensitive) {
         set_host(headers, host);

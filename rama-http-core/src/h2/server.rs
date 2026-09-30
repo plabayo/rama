@@ -1937,8 +1937,11 @@ impl proto::Peer for Peer {
             None => match authority {
                 // The authority is already parsed; build the authority-form URI
                 // directly instead of re-serializing and re-parsing it.
-                Some(authority) => uri::Uri::from_authority_form(authority),
-                None => uri::Uri::default(),
+                Some(authority) if authority.port_u16().is_some() => {
+                    uri::Uri::from_authority_form(authority)
+                }
+                // RFC 9113 §8.5: CONNECT names a host and port; there is no default to guess.
+                _ => malformed!("malformed headers: CONNECT without a host and port"),
             },
         };
 

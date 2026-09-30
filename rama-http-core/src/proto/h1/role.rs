@@ -195,7 +195,12 @@ impl Http1Transaction for Server {
             // authority-form target (`host:port`); every other method carries
             // origin-/absolute-/asterisk-form, all handled by `parse`.
             let uri = if method == Method::CONNECT {
-                rama_net::uri::Uri::parse_authority_form(uri_bytes.clone())?
+                let uri = rama_net::uri::Uri::parse_authority_form(uri_bytes.clone())?;
+                // RFC 9112 §3.2.3: CONNECT has no default port, so there is no target to guess.
+                if uri.port_u16().is_none() {
+                    return Err(Parse::Uri);
+                }
+                uri
             } else {
                 let uri = rama_net::uri::Uri::parse(uri_bytes.clone())?;
                 // A scheme without an authority (opaque `scheme:path`, e.g.
@@ -1109,6 +1114,11 @@ impl Http1Transaction for Client {
         );
 
         *msg.req_method = Some(msg.head.subject.0.clone());
+
+        // RFC 9112 §3.2.3: a CONNECT target is `host:port`.
+        if msg.head.subject.0 == Method::CONNECT && msg.head.subject.1.port_u16().is_none() {
+            return Err(crate::Error::new_user_target());
+        }
 
         let body = Self::set_length(&mut msg.head, msg.body);
 

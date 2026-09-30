@@ -174,7 +174,7 @@ async fn serve_connect() {
                     // relative-ref URIs, so build the authority-form URI here.
                     .request(
                         "CONNECT",
-                        rama::net::uri::Uri::parse_authority_form("localhost").unwrap(),
+                        rama::net::uri::Uri::parse_authority_form("localhost:80").unwrap(),
                     )
                     .eos(),
             )

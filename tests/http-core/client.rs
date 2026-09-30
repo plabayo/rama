@@ -2947,7 +2947,7 @@ mod conn {
             conn.await.expect("client conn shouldn't error");
         });
 
-        let req = Request::connect(Uri::parse_authority_form("localhost").unwrap())
+        let req = Request::connect(Uri::parse_authority_form("localhost:80").unwrap())
             .body(Empty::<Bytes>::new())
             .unwrap();
         let res = client.send_request(req).await.expect("send_request");
@@ -2998,7 +2998,7 @@ mod conn {
             conn.await.expect("client conn shouldn't error");
         });
 
-        let req = Request::connect(Uri::parse_authority_form("localhost").unwrap())
+        let req = Request::connect(Uri::parse_authority_form("localhost:80").unwrap())
             .body(Empty::new())
             .unwrap();
         let res = client.send_request(req).await.expect("send_request");
@@ -3060,7 +3060,7 @@ mod conn {
                     .expect("stream errors must not close the connection");
             });
 
-            let req = Request::connect(Uri::parse_authority_form("localhost").unwrap())
+            let req = Request::connect(Uri::parse_authority_form("localhost:80").unwrap())
                 .body(Empty::new())
                 .unwrap();
             let res = tokio::time::timeout(Duration::from_secs(2), client.send_request(req))
