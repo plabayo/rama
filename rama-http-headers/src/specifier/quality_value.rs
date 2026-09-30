@@ -7,7 +7,7 @@ use std::str;
 
 use rama_utils::collections::NonEmptySmallVec;
 use rama_utils::collections::NonEmptyVec;
-use rama_utils::str::trim_ows;
+use rama_utils::str::{starts_with_ignore_ascii_case, trim_ows};
 
 use crate::{Error, util::unquoted_members};
 
@@ -219,7 +219,7 @@ impl<T: str::FromStr> str::FromStr for QualityValue<T> {
                 pending_empty = true;
                 continue;
             }
-            if part.starts_with("q=") || part.starts_with("Q=") {
+            if starts_with_ignore_ascii_case(part, "q=") {
                 // any parameter named `q` is the weight, wherever it sits (RFC 9110 §12.5.1)
                 if quality.is_some() {
                     return Err(Error::invalid());
@@ -241,7 +241,7 @@ impl<T: str::FromStr> str::FromStr for QualityValue<T> {
             let mut item = String::with_capacity(s.len());
             let parts = item_parts(s).filter_map(|part| part.ok().map(|(_, part)| trim_ows(part)));
             for (index, part) in parts.enumerate() {
-                let is_weight = index > 0 && (part.starts_with("q=") || part.starts_with("Q="));
+                let is_weight = index > 0 && starts_with_ignore_ascii_case(part, "q=");
                 if part.is_empty() || is_weight {
                     continue;
                 }
