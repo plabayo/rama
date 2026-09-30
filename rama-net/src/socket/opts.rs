@@ -877,6 +877,10 @@ pub struct SocketOptions {
     /// even if there is only a small amount of data. When not set,
     /// data is buffered until there is a sufficient amount to send out,
     /// thereby avoiding the frequent sending of small packets.
+    ///
+    /// When left unset, sockets connected by rama's TCP connector
+    /// (`rama-tcp`) still get `TCP_NODELAY`, use `Some(false)` to keep
+    /// the operating system default (Nagle enabled) instead.
     pub tcp_no_delay: Option<bool>,
 
     #[cfg(all(target_family = "unix", not(target_os = "redox")))]

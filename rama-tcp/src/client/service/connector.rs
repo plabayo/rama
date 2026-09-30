@@ -27,6 +27,11 @@ use crate::client::connect::TcpStreamConnector;
 const DEFAULT_MAX_IN_FLIGHT_CONNECT_ATTEMPTS: usize = 3;
 
 /// A connector which can be used to establish a TCP connection to a server.
+///
+/// Established connections have `TCP_NODELAY` set (Nagle's algorithm disabled)
+/// by default. To keep the operating system default instead, use a
+/// [`TcpStreamConnector`] backed by [`SocketOptions`](rama_net::socket::SocketOptions)
+/// with `tcp_no_delay: Some(false)`, see [`TcpConnector::with_connector`].
 #[derive(Debug, Clone)]
 pub struct TcpConnector<StreamConnector = ()> {
     connector: StreamConnector,
@@ -257,6 +262,24 @@ mod tests {
             );
             assert!(!established.conn.extensions().contains::<ProxyRoute>());
         }
+    }
+
+    #[tokio::test]
+    async fn established_connection_has_tcp_nodelay_by_default() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let input = ConnectRequest::new(listener.local_addr().unwrap().into());
+        let connector = TcpConnector::new();
+        let (established, _peer) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::try_join!(connector.serve(input), async {
+                listener.accept().await.map_err(|error| {
+                    ConnectionError::transport(error, ConnectionErrorKind::Unavailable)
+                })
+            })
+        })
+        .await
+        .expect("TCP fixture timed out")
+        .unwrap();
+        assert!(established.conn.stream.nodelay().unwrap());
     }
 
     #[tokio::test]

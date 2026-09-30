@@ -20,6 +20,7 @@ use crate::TcpStream;
 /// Builder for `TcpListener`.
 pub struct TcpListenerBuilder {
     ttl: Option<u32>,
+    tcp_no_delay: bool,
     exec: Executor,
 }
 
@@ -27,7 +28,11 @@ impl TcpListenerBuilder {
     /// Create a new `TcpListenerBuilder` without a state.
     #[must_use]
     pub fn new(exec: Executor) -> Self {
-        Self { ttl: None, exec }
+        Self {
+            ttl: None,
+            tcp_no_delay: true,
+            exec,
+        }
     }
 }
 
@@ -39,6 +44,21 @@ impl TcpListenerBuilder {
         /// from this socket.
         pub fn ttl(mut self, ttl: u32) -> Self {
             self.ttl = Some(ttl);
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set whether `TCP_NODELAY` (disable Nagle's algorithm) is applied to
+        /// every accepted connection.
+        ///
+        /// Enabled by default, so that a response written in several segments
+        /// is not held back by the interaction of Nagle's algorithm and the
+        /// peer's delayed ACKs (a latency stall of tens of milliseconds
+        /// on Linux). Pass `false` to leave accepted sockets as the operating
+        /// system created them.
+        pub fn tcp_no_delay(mut self, no_delay: bool) -> Self {
+            self.tcp_no_delay = no_delay;
             self
         }
     }
@@ -69,6 +89,7 @@ impl TcpListenerBuilder {
         Ok(TcpListener {
             inner,
             exec: self.exec,
+            tcp_no_delay: self.tcp_no_delay,
         })
     }
 
@@ -82,7 +103,7 @@ impl TcpListenerBuilder {
         self,
         socket: rama_net::socket::core::Socket,
     ) -> Result<TcpListener, BoxError> {
-        bind_socket_internal(socket, self.exec)
+        bind_socket_internal(socket, self.exec, self.tcp_no_delay)
     }
 
     #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
@@ -109,16 +130,21 @@ impl TcpListenerBuilder {
         socket
             .listen(backlog.unwrap_or(4096))
             .context("mark the socket as ready to accept incoming connection requests")?;
-        bind_socket_internal(socket, self.exec)
+        bind_socket_internal(socket, self.exec, self.tcp_no_delay)
     }
 }
 
 #[derive(Debug)]
 /// A TCP socket server, listening for incoming connections once served
 /// using one of the `serve` methods such as [`TcpListener::serve`].
+///
+/// Accepted connections have `TCP_NODELAY` set (Nagle's algorithm disabled)
+/// by default, see [`TcpListenerBuilder::set_tcp_no_delay`] to opt out.
+/// Connections obtained through [`TcpListener::into_inner`] are left untouched.
 pub struct TcpListener {
     inner: TokioTcpListener,
     exec: Executor,
+    tcp_no_delay: bool,
 }
 
 impl TcpListener {
@@ -178,6 +204,7 @@ impl TcpListener {
 fn bind_socket_internal(
     socket: rama_net::socket::core::Socket,
     exec: Executor,
+    tcp_no_delay: bool,
 ) -> Result<TcpListener, BoxError> {
     let listener = std::net::TcpListener::from(socket);
     listener
@@ -186,6 +213,7 @@ fn bind_socket_internal(
     Ok(TcpListener {
         inner: TokioTcpListener::from_std(listener)?,
         exec,
+        tcp_no_delay,
     })
 }
 
@@ -215,6 +243,31 @@ impl TcpListener {
         self.inner.set_ttl(ttl)
     }
 
+    /// Returns whether `TCP_NODELAY` is applied to accepted connections
+    /// (the default).
+    #[must_use]
+    pub fn tcp_no_delay(&self) -> bool {
+        self.tcp_no_delay
+    }
+
+    /// Set whether `TCP_NODELAY` (disable Nagle's algorithm) is applied to
+    /// every connection accepted by [`TcpListener::accept`] and
+    /// [`TcpListener::serve`].
+    ///
+    /// See [`TcpListenerBuilder::set_tcp_no_delay`] for the rationale
+    /// behind the default of `true`.
+    pub fn set_tcp_no_delay(&mut self, no_delay: bool) -> &mut Self {
+        self.tcp_no_delay = no_delay;
+        self
+    }
+
+    /// Consuming variant of [`TcpListener::set_tcp_no_delay`].
+    #[must_use]
+    pub fn with_tcp_no_delay(mut self, no_delay: bool) -> Self {
+        self.tcp_no_delay = no_delay;
+        self
+    }
+
     /// Converts this [`TcpListener`] into a [`std::net::TcpListener`].
     ///
     /// The returned listener will be in blocking mode. To convert it back
@@ -239,6 +292,7 @@ impl TcpListener {
         Self {
             inner: listener,
             exec,
+            tcp_no_delay: true,
         }
     }
 
@@ -260,6 +314,7 @@ impl TcpListener {
         Ok(Self {
             inner: TokioTcpListener::from_std(listener)?,
             exec,
+            tcp_no_delay: true,
         })
     }
 }
@@ -270,7 +325,20 @@ impl TcpListener {
     #[inline]
     pub async fn accept(&self) -> std::io::Result<(TcpStream, SocketAddress)> {
         let (stream, addr) = self.inner.accept().await?;
+        self.apply_stream_defaults(&stream);
         Ok((stream.into(), addr.into()))
+    }
+
+    /// Apply the listener's per-connection defaults to an accepted socket.
+    ///
+    /// A failure here (for example a peer that already reset the connection)
+    /// is not fatal: the connection is served without the option.
+    fn apply_stream_defaults(&self, stream: &tokio::net::TcpStream) {
+        if self.tcp_no_delay
+            && let Err(err) = stream.set_nodelay(true)
+        {
+            tracing::debug!("failed to set TCP_NODELAY on accepted tcp stream: {err:?}");
+        }
     }
 
     /// Serve connections from this listener with the given service.
@@ -302,6 +370,7 @@ impl TcpListener {
                 result = self.inner.accept() => {
                     match result {
                         Ok((socket, peer_addr)) => {
+                            self.apply_stream_defaults(&socket);
                             let socket = TcpStream::new(socket);
                             let service = service.clone();
 
@@ -392,5 +461,131 @@ mod windows_socket {
         fn as_socket(&self) -> BorrowedSocket<'_> {
             self.inner.as_socket()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rama_core::service::service_fn;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::sync::mpsc;
+
+    async fn listener(exec: Executor) -> TcpListener {
+        TcpListener::bind_address(SocketAddress::local_ipv4(0), exec)
+            .await
+            .unwrap()
+    }
+
+    async fn accepted_nodelay(listener: TcpListener) -> bool {
+        let addr = listener.local_addr().unwrap();
+        let (accepted, _client) = tokio::join!(listener.accept(), async {
+            tokio::net::TcpStream::connect(addr).await.unwrap()
+        });
+        let (stream, _) = accepted.unwrap();
+        stream.stream.nodelay().unwrap()
+    }
+
+    #[tokio::test]
+    async fn accept_sets_tcp_nodelay_by_default() {
+        let listener = listener(Executor::default()).await;
+        assert!(listener.tcp_no_delay());
+        assert!(accepted_nodelay(listener).await);
+    }
+
+    #[tokio::test]
+    async fn accept_can_opt_out_of_tcp_nodelay() {
+        let listener = listener(Executor::default()).await.with_tcp_no_delay(false);
+        assert!(!listener.tcp_no_delay());
+        assert!(!accepted_nodelay(listener).await);
+    }
+
+    #[tokio::test]
+    async fn builder_can_opt_out_of_tcp_nodelay() {
+        let listener = TcpListener::build(Executor::default())
+            .with_tcp_no_delay(false)
+            .bind_address(SocketAddress::local_ipv4(0))
+            .await
+            .unwrap();
+        assert!(!listener.tcp_no_delay());
+        assert!(!accepted_nodelay(listener).await);
+    }
+
+    #[tokio::test]
+    async fn listener_from_std_and_tokio_default_to_tcp_nodelay() {
+        let std_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let listener =
+            TcpListener::try_from_std_tcp_listener(std_listener, Executor::default()).unwrap();
+        assert!(accepted_nodelay(listener).await);
+
+        let tokio_listener = TokioTcpListener::bind("127.0.0.1:0").await.unwrap();
+        let listener = TcpListener::from_tokio_tcp_listener(tokio_listener, Executor::default());
+        assert!(accepted_nodelay(listener).await);
+    }
+
+    async fn served_nodelay(listener: TcpListener) -> bool {
+        let addr = listener.local_addr().unwrap();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let tx = Arc::new(tx);
+        let server = tokio::spawn(listener.serve(service_fn(move |stream: TcpStream| {
+            let tx = tx.clone();
+            async move {
+                _ = tx.send(stream.stream.nodelay().unwrap());
+                Ok::<_, std::convert::Infallible>(())
+            }
+        })));
+        let _client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let nodelay = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("serve did not call the service")
+            .unwrap();
+        server.abort();
+        nodelay
+    }
+
+    #[tokio::test]
+    async fn serve_sets_tcp_nodelay_by_default() {
+        assert!(served_nodelay(listener(Executor::default()).await).await);
+    }
+
+    #[tokio::test]
+    async fn stream_options_layer_overrides_the_listener_default() {
+        use rama_core::Layer as _;
+        use rama_net::stream::layer::{TcpStreamOptions, TcpStreamOptionsLayer};
+
+        let listener = listener(Executor::default()).await;
+        let addr = listener.local_addr().unwrap();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let tx = Arc::new(tx);
+        let service = TcpStreamOptionsLayer::new(TcpStreamOptions {
+            tcp_no_delay: Some(false),
+            ..Default::default()
+        })
+        .into_layer(service_fn(move |stream: TcpStream| {
+            let tx = tx.clone();
+            async move {
+                _ = tx.send(stream.stream.nodelay().unwrap());
+                Ok::<_, std::convert::Infallible>(())
+            }
+        }));
+        let server = tokio::spawn(listener.serve(service));
+        let _client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let nodelay = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("serve did not call the service")
+            .unwrap();
+        server.abort();
+        assert!(
+            !nodelay,
+            "an explicit per-stream option must win over the listener default"
+        );
+    }
+
+    #[tokio::test]
+    async fn serve_can_opt_out_of_tcp_nodelay() {
+        assert!(
+            !served_nodelay(listener(Executor::default()).await.with_tcp_no_delay(false)).await
+        );
     }
 }
