@@ -64,8 +64,11 @@ impl TokioDnsResolver {
     }
 
     generate_set_and_with! {
+        /// Concurrent lookups are only shared between resolvers with the
+        /// same timeout.
         pub fn timeout(mut self, timeout: Duration) -> Self {
             self.timeout = timeout;
+            self.in_flight = InFlight::default();
             self
         }
     }
@@ -295,6 +298,14 @@ mod tests {
         for lookup in lookups {
             lookup.await.expect("lookup task");
         }
+    }
+
+    #[test]
+    fn only_resolvers_with_the_same_timeout_share_lookups() {
+        let resolver = TokioDnsResolver::new();
+        assert!(resolver.clone().in_flight.shares_with(&resolver.in_flight));
+        let hasty = resolver.clone().with_timeout(Duration::from_millis(100));
+        assert!(!hasty.in_flight.shares_with(&resolver.in_flight));
     }
 
     #[tokio::test]

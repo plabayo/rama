@@ -64,6 +64,10 @@ impl<K> InFlight<K> {
     pub(crate) fn running(&self) -> usize {
         self.flights.lock().len()
     }
+
+    pub(crate) fn shares_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.flights, &other.flights)
+    }
 }
 
 enum Joined<V> {

@@ -388,9 +388,11 @@ impl LinuxDnsResolver {
         /// Set the timeout for each DNS backend attempt.
         ///
         /// See [`LinuxDnsResolverBuilder::timeout`] for fallback latency
-        /// semantics.
+        /// semantics. The cache stays shared with clones; concurrent lookups
+        /// are only shared between resolvers with the same timeout.
         pub fn timeout(mut self, timeout: Duration) -> Self {
             self.timeout = timeout;
+            self.in_flight = InFlight::default();
             self
         }
     }
@@ -1450,6 +1452,22 @@ mod tests {
 
         let resolver = resolver.with_native_max_concurrency(3);
         assert_eq!(resolver.native_max_concurrency(), 3);
+    }
+
+    #[test]
+    fn only_resolvers_with_the_same_timeout_share_lookups() {
+        let resolver = super::LinuxDnsResolver::builder()
+            .with_systemd_resolved(false)
+            .build();
+        let clone = resolver.clone();
+        assert!(clone.in_flight.shares_with(&resolver.in_flight));
+
+        let hasty = resolver.clone().with_timeout(Duration::from_millis(100));
+        assert!(!hasty.in_flight.shares_with(&resolver.in_flight));
+        assert!(
+            Arc::ptr_eq(&hasty.cache, &resolver.cache),
+            "answers stay shared"
+        );
     }
 
     /// A backend that counts its lookups and answers once `gate` opens.

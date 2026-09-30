@@ -88,8 +88,11 @@ impl AppleDnsResolver {
     }
 
     generate_set_and_with! {
+        /// Concurrent lookups are only shared between resolvers with the
+        /// same timeout.
         pub fn timeout(mut self, timeout: Duration) -> Self {
             self.timeout = timeout;
+            self.in_flight = InFlight::default();
             self
         }
     }
@@ -846,6 +849,14 @@ mod tests {
                     .all(|addr| addr.as_ref().is_ok_and(Ipv4Addr::is_loopback))
             );
         }
+    }
+
+    #[test]
+    fn only_resolvers_with_the_same_timeout_share_lookups() {
+        let resolver = AppleDnsResolver::new();
+        assert!(resolver.clone().in_flight.shares_with(&resolver.in_flight));
+        let hasty = resolver.clone().with_timeout(Duration::from_millis(100));
+        assert!(!hasty.in_flight.shares_with(&resolver.in_flight));
     }
 
     #[test]

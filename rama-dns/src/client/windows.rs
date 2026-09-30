@@ -119,8 +119,11 @@ impl WindowsDnsResolver {
     }
 
     generate_set_and_with! {
+        /// Concurrent lookups are only shared between resolvers with the
+        /// same timeout.
         pub fn timeout(mut self, timeout: Duration) -> Self {
             self.timeout = timeout;
+            self.in_flight = InFlight::default();
             self
         }
     }
