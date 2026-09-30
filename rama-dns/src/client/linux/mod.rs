@@ -1454,6 +1454,51 @@ mod tests {
         assert_eq!(resolver.native_max_concurrency(), 3);
     }
 
+    #[cfg(not(any(
+        all(target_os = "linux", target_env = "gnu"),
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+    )))]
+    #[tokio::test]
+    async fn unsupported_record_lookups_keep_their_typed_error() {
+        async fn first_error<T>(items: impl Stream<Item = Result<T, BoxError>>) -> BoxError {
+            match std::pin::pin!(items).next().await {
+                Some(Err(err)) => err,
+                _ => panic!("expected an unsupported error"),
+            }
+        }
+        let resolver = super::LinuxDnsResolver::builder()
+            .with_systemd_resolved(false)
+            .build();
+
+        let txt = first_error(super::DnsTxtResolver::lookup_txt(&resolver, test_domain())).await;
+        assert!(
+            txt.downcast_ref::<super::LinuxDnsTxtUnsupportedError>()
+                .is_some()
+        );
+        let cname = first_error(super::DnsCnameResolver::lookup_cname(
+            &resolver,
+            test_domain(),
+        ))
+        .await;
+        assert!(
+            cname
+                .downcast_ref::<super::LinuxDnsCnameUnsupportedError>()
+                .is_some()
+        );
+        let https = first_error(super::DnsServiceBindingResolver::lookup_https(
+            &resolver,
+            test_domain(),
+        ))
+        .await;
+        assert!(
+            https
+                .downcast_ref::<super::LinuxDnsServiceBindingUnsupportedError>()
+                .is_some()
+        );
+    }
+
     #[test]
     fn only_resolvers_with_the_same_timeout_share_lookups() {
         let resolver = super::LinuxDnsResolver::builder()

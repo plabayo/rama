@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::ffi::CStr;
 use std::{
     mem::size_of,
@@ -7,6 +6,7 @@ use std::{
     time::Duration,
 };
 
+use ahash::{HashSet, HashSetExt as _};
 use libc::{AF_INET, AF_INET6, SOCK_STREAM, addrinfo};
 use rama_core::{
     error::BoxError,
@@ -24,7 +24,13 @@ pub(super) fn lookup_ipv4_stream(
     timeout: Duration,
     native: NativeConfig,
 ) -> impl Stream<Item = Result<LookupEvent<Ipv4Addr>, BoxError>> + Send {
-    lookup_address_stream(domain, timeout, native, AF_INET, lookup_ipv4_impl)
+    lookup_address_stream(
+        domain,
+        timeout,
+        native,
+        AF_INET,
+        lookup_addresses_impl::<Ipv4Addr>,
+    )
 }
 
 pub(super) fn lookup_ipv6_stream(
@@ -32,7 +38,13 @@ pub(super) fn lookup_ipv6_stream(
     timeout: Duration,
     native: NativeConfig,
 ) -> impl Stream<Item = Result<LookupEvent<Ipv6Addr>, BoxError>> + Send {
-    lookup_address_stream(domain, timeout, native, AF_INET6, lookup_ipv6_impl)
+    lookup_address_stream(
+        domain,
+        timeout,
+        native,
+        AF_INET6,
+        lookup_addresses_impl::<Ipv6Addr>,
+    )
 }
 
 fn lookup_address_stream<T, F>(
@@ -45,9 +57,9 @@ fn lookup_address_stream<T, F>(
 where
     T: Send + 'static + std::fmt::Debug,
     F: FnOnce(
-            Domain,
+            &Domain,
             libc::c_int,
-            mpsc::Sender<Result<LookupEvent<T>, BoxError>>,
+            &mpsc::Sender<Result<LookupEvent<T>, BoxError>>,
         ) -> Result<(), BoxError>
         + Send
         + 'static,
@@ -61,7 +73,7 @@ where
             if budget.is_zero() {
                 return Err(LinuxDnsResolverError::timeout(timeout).into());
             }
-            lookup(domain, family, tx)
+            lookup(&domain, family, &tx)
         });
         let Some(join) = task.await else {
             tracing::debug!("linux::getaddrinfo: no native lookup slot before the deadline");
@@ -108,26 +120,10 @@ where
     })
 }
 
-fn lookup_ipv4_impl(
-    domain: Domain,
-    family: libc::c_int,
-    tx: mpsc::Sender<Result<LookupEvent<Ipv4Addr>, BoxError>>,
-) -> Result<(), BoxError> {
-    lookup_addresses_impl::<Ipv4Addr>(domain, family, tx)
-}
-
-fn lookup_ipv6_impl(
-    domain: Domain,
-    family: libc::c_int,
-    tx: mpsc::Sender<Result<LookupEvent<Ipv6Addr>, BoxError>>,
-) -> Result<(), BoxError> {
-    lookup_addresses_impl::<Ipv6Addr>(domain, family, tx)
-}
-
 fn lookup_addresses_impl<T>(
-    domain: Domain,
+    domain: &Domain,
     family: libc::c_int,
-    tx: mpsc::Sender<Result<LookupEvent<T>, BoxError>>,
+    tx: &mpsc::Sender<Result<LookupEvent<T>, BoxError>>,
 ) -> Result<(), BoxError>
 where
     T: FromSockAddr,
@@ -148,7 +144,9 @@ where
     let mut result: *mut addrinfo = ptr::null_mut();
     let status = unsafe { libc::getaddrinfo(name.as_ptr(), ptr::null(), &hints, &mut result) };
     if status != 0 {
-        let message = unsafe { CStr::from_ptr(libc::gai_strerror(status)) }
+        // SAFETY: `gai_strerror` returns a static NUL-terminated message.
+        let message = unsafe { libc::gai_strerror(status) };
+        let message = unsafe { CStr::from_ptr(message) }
             .to_string_lossy()
             .into_owned();
         return Err(
@@ -199,11 +197,11 @@ trait FromSockAddr: Sized {
 }
 
 impl FromSockAddr for Ipv4Addr {
-    type Key = Ipv4Addr;
+    type Key = Self;
 
     unsafe fn from_sockaddr(addr: *const libc::sockaddr) -> Self {
         let addr = unsafe { &*addr.cast::<libc::sockaddr_in>() };
-        Ipv4Addr::from(addr.sin_addr.s_addr.to_ne_bytes())
+        Self::from(addr.sin_addr.s_addr.to_ne_bytes())
     }
 
     fn sockaddr_len() -> usize {
@@ -216,11 +214,11 @@ impl FromSockAddr for Ipv4Addr {
 }
 
 impl FromSockAddr for Ipv6Addr {
-    type Key = Ipv6Addr;
+    type Key = Self;
 
     unsafe fn from_sockaddr(addr: *const libc::sockaddr) -> Self {
         let addr = unsafe { &*addr.cast::<libc::sockaddr_in6>() };
-        Ipv6Addr::from(addr.sin6_addr.s6_addr)
+        Self::from(addr.sin6_addr.s6_addr)
     }
 
     fn sockaddr_len() -> usize {
