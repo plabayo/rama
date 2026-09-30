@@ -260,8 +260,7 @@ static_assertions = "1"
 syn = "3.0"
 sync_wrapper = "1.0"
 terminal-prompt = "0.2"
-# TEMPORARY: see https://github.com/time-rs/time/issues/783.
-time = "=0.3.47"
+time = "0.3.55"
 tokio = "1.53"
 tokio-graceful = "0.2"
 tokio-postgres = "0.7"
@@ -410,7 +409,6 @@ default = ["std"]
 std = [
     "dep:ahash",
     "dep:rama-json",
-    "dep:time",
     "dep:tokio-util",
     "dep:tracing-subscriber",
     "rama-core/std",
@@ -627,7 +625,6 @@ rama-ws = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
-time = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "io-std"], optional = true }
 tokio-util = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"], optional = true }
