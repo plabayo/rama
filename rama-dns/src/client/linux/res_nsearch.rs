@@ -241,7 +241,8 @@ fn lookup_record_packet(
     if unsafe { ffi::res_ninit(&mut state) } != 0 {
         return Err(LinuxDnsResolverError::message("res_ninit failed").into());
     }
-    let _guard = ResStateGuard(&mut state as *mut _);
+    // every later access goes through the guard, so its drop never aliases
+    let state = ResStateGuard(&mut state);
 
     let mut buffer = vec![0_u8; INITIAL_RESPONSE_BUFFER_SIZE.min(max_response_size)];
 
@@ -257,7 +258,7 @@ fn lookup_record_packet(
         // would resolve them.
         let response_len = unsafe {
             ffi::res_nsearch(
-                &mut state,
+                state.0,
                 name.as_ptr(),
                 ffi::NS_C_IN as libc::c_int,
                 rrtype,
@@ -267,7 +268,7 @@ fn lookup_record_packet(
         };
 
         if response_len < 0 {
-            let h_errno = state.res_h_errno;
+            let h_errno = state.0.res_h_errno;
             if matches!(h_errno, 0 | ffi::HOST_NOT_FOUND | ffi::NO_DATA) {
                 tracing::debug!(%domain, rrtype, h_errno, "dns::linux: res_nsearch empty result");
                 // glibc copies the wire response into `buffer` before classifying
@@ -328,10 +329,11 @@ fn grow_response_buffer(
     Ok(true)
 }
 
-struct ResStateGuard(*mut ffi::ResState);
+struct ResStateGuard<'a>(&'a mut ffi::ResState);
 
-impl Drop for ResStateGuard {
+impl Drop for ResStateGuard<'_> {
     fn drop(&mut self) {
+        // SAFETY: the state was initialized by `res_ninit` and is closed once.
         unsafe {
             ffi::res_nclose(self.0);
         }
