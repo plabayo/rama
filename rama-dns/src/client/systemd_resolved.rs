@@ -621,7 +621,9 @@ impl SystemdResolved {
         let this = self.clone();
         rama_core::rt::spawn(async move {
             match this.call(METHOD_GET_INFO, &NoParams {}, budget).await {
-                Ok(_info) => {
+                // any reply proves liveness: systemd 252 answers GetInfo
+                // with MethodNotImplemented
+                Ok(_reply) => {
                     this.report_success(claim);
                 }
                 Err(failure) => {
@@ -1370,6 +1372,25 @@ mod tests {
             ResolvedLookup::Records(_),
         ));
         assert_eq!(server.connections(), 1);
+        assert_available(&resolved);
+    }
+
+    #[tokio::test]
+    async fn error_reply_to_the_probe_still_proves_the_daemon_alive() {
+        let server = FakeResolved::spawn_with_probe(
+            test_socket_path(),
+            Behavior::Reply(json!({ "error": "org.varlink.service.MethodNotImplemented" })),
+            vec![Behavior::Reply(hostname_reply(&json!([
+                { "family": 2, "address": [1, 2, 3, 4] },
+            ])))],
+        );
+        let resolved = resolver(server.path.clone());
+        assert!(matches!(
+            resolved
+                .lookup_ipv4(&domain(), Duration::from_secs(1))
+                .await,
+            ResolvedLookup::Records(_),
+        ));
         assert_available(&resolved);
     }
 
