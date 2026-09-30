@@ -43,9 +43,9 @@
 //! selected or available it falls back to `res_nsearch` / `getaddrinfo`, and
 //! there — as with [`client::TokioDnsResolver`] (via `getaddrinfo`) — each
 //! lookup occupies a tokio blocking-pool thread for the duration of the libc
-//! call. Those resolvers bound how many such calls run at once (64 by
-//! default), so a burst of distinct names queues instead of flooding the
-//! pool or a local stub resolver. Under sustained high-concurrency DNS load
+//! call. Those resolvers bound how many such calls run at once (by default
+//! 128 with `res_nsearch`, 64 with `getaddrinfo`), so a burst of distinct
+//! names queues instead of flooding the pool or a local stub resolver. Under sustained high-concurrency DNS load
 //! (typical for forward proxies) prefer the pure-Rust
 //! `client::HickoryDnsResolver` (gated behind the `hickory` feature), which
 //! speaks DNS directly over async UDP/TCP and gives finer control over

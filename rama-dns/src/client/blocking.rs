@@ -3,7 +3,9 @@ use std::{sync::Arc, time::Duration};
 use rama_core::telemetry::tracing;
 use tokio::{sync::Semaphore, task::JoinHandle, time::Instant};
 
-/// Default bound on concurrent blocking lookups per resolver.
+/// Default bound on concurrent blocking lookups per resolver: 64 calls that
+/// each send A and AAAA together (`getaddrinfo`) fit a local stub's default
+/// receive buffer of about 256 small datagrams, with room to spare.
 pub(crate) const DEFAULT_MAX_BLOCKING_LOOKUPS: usize = 64;
 
 /// Bounds concurrent blocking (libc) lookups.

@@ -86,6 +86,12 @@ const NATIVE_RECORD_LOOKUPS: bool = cfg!(any(
     target_os = "openbsd",
     target_os = "netbsd",
 ));
+/// `res_nsearch` keeps one query in flight per call, `getaddrinfo` two.
+const DEFAULT_NATIVE_MAX_CONCURRENCY: usize = if NATIVE_RECORD_LOOKUPS {
+    128
+} else {
+    DEFAULT_MAX_BLOCKING_LOOKUPS
+};
 
 #[derive(Debug, Clone)]
 /// Used to build a [`LinuxDnsResolver`] instance.
@@ -108,7 +114,7 @@ impl Default for LinuxDnsResolverBuilder {
             negative_cache_ttl: DEFAULT_NEGATIVE_CACHE_TTL,
             cache_capacity: DEFAULT_CACHE_CAPACITY,
             response_buffer_size: DEFAULT_RESPONSE_BUFFER_SIZE,
-            native_max_concurrency: DEFAULT_MAX_BLOCKING_LOOKUPS,
+            native_max_concurrency: DEFAULT_NATIVE_MAX_CONCURRENCY,
             // A running daemon may only be maintained as a secondary DNS
             // view. Use it automatically only when NSS actually selects
             // nss-resolve; callers can still opt in explicitly below.
@@ -173,10 +179,11 @@ impl LinuxDnsResolverBuilder {
     }
 
     generate_set_and_with! {
-        /// Maximum concurrent native (libc) lookups (default 64). Each holds
-        /// a blocking-pool thread until libc returns, which a timeout cannot
-        /// cancel; the bound also keeps a burst of distinct names from
-        /// overflowing a local stub resolver.
+        /// Maximum concurrent native (libc) lookups: 128 by default with
+        /// `res_nsearch`, 64 where `getaddrinfo` sends A and AAAA together.
+        /// Each holds a blocking-pool thread until libc returns, which a
+        /// timeout cannot cancel; the bound also keeps a burst of distinct
+        /// names from overflowing a local stub resolver.
         pub fn native_max_concurrency(mut self, max: usize) -> Self {
             self.native_max_concurrency = max;
             self
@@ -1438,7 +1445,10 @@ mod tests {
             .build();
         assert_eq!(resolver.timeout(), Duration::from_secs(9));
         assert_eq!(resolver.response_buffer_size(), usize::from(u16::MAX));
-        assert_eq!(resolver.native_max_concurrency(), 64);
+        assert_eq!(
+            resolver.native_max_concurrency(),
+            super::DEFAULT_NATIVE_MAX_CONCURRENCY
+        );
         assert!(!resolver.systemd_resolved_enabled());
 
         let resolver = super::LinuxDnsResolver::builder()
