@@ -1,5 +1,8 @@
 pub mod resolver;
 
+mod blocking;
+mod in_flight;
+
 mod connector;
 #[doc(inline)]
 pub use connector::{DnsConnector, DnsConnectorLayer};

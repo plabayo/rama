@@ -22,6 +22,7 @@
 //! - The DNS-SD callback decodes records into an in-memory queue that is then
 //!   drained by the polling future.
 //! - Lookups are bounded by a configurable timeout, defaulting to 5 seconds.
+//! - Concurrent lookups of the same name and record type share one query.
 //!
 //! For the platform header itself, see the SDK copy at:
 //! `/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/dns_sd.h`
@@ -45,8 +46,12 @@ use rama_utils::str::arcstr::ArcStr;
 use tokio::io::unix::AsyncFd;
 use tokio::time::Instant;
 
-use super::resolver::{
-    DnsAddressResolver, DnsCnameResolver, DnsResolver, DnsServiceBindingResolver, DnsTxtResolver,
+use super::{
+    in_flight::{InFlight, coalesced_stream},
+    resolver::{
+        DnsAddressResolver, DnsCnameResolver, DnsResolver, DnsServiceBindingResolver,
+        DnsTxtResolver,
+    },
 };
 use crate::wire::{Name, RecordType, ServiceBinding, Txt, parse_a_rdata, parse_aaaa_rdata};
 
@@ -59,12 +64,14 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 /// The default timeout is 5 seconds. Use [`Self::with_timeout`] to override it.
 pub struct AppleDnsResolver {
     timeout: Duration,
+    in_flight: InFlight<(Domain, u16)>,
 }
 
 impl Default for AppleDnsResolver {
     fn default() -> Self {
         Self {
             timeout: DEFAULT_TIMEOUT,
+            in_flight: InFlight::default(),
         }
     }
 }
@@ -86,6 +93,25 @@ impl AppleDnsResolver {
             self
         }
     }
+
+    fn query<T, P>(
+        &self,
+        domain: Domain,
+        rrtype: u16,
+        parser: P,
+    ) -> impl Stream<Item = Result<T, BoxError>> + Send + '_
+    where
+        T: fmt::Debug + Clone + Send + Sync + 'static,
+        P: Fn(&[u8], &mut dyn FnMut(T)) -> Result<(), BoxError> + Send + Sync + 'static,
+    {
+        let timeout = self.timeout;
+        coalesced_stream(
+            self.in_flight.clone(),
+            (domain.clone(), rrtype),
+            timeout,
+            move || query_record_stream(domain, timeout, rrtype, parser),
+        )
+    }
 }
 
 impl DnsAddressResolver for AppleDnsResolver {
@@ -95,19 +121,14 @@ impl DnsAddressResolver for AppleDnsResolver {
         &self,
         domain: Domain,
     ) -> impl Stream<Item = Result<Ipv4Addr, Self::Error>> + Send + '_ {
-        query_record_stream::<Ipv4Addr, _>(domain, self.timeout, ffi::K_DNS_SERVICE_TYPE_A, parse_a)
+        self.query(domain, ffi::K_DNS_SERVICE_TYPE_A, parse_a)
     }
 
     fn lookup_ipv6(
         &self,
         domain: Domain,
     ) -> impl Stream<Item = Result<Ipv6Addr, Self::Error>> + Send + '_ {
-        query_record_stream::<Ipv6Addr, _>(
-            domain,
-            self.timeout,
-            ffi::K_DNS_SERVICE_TYPE_AAAA,
-            parse_aaaa,
-        )
+        self.query(domain, ffi::K_DNS_SERVICE_TYPE_AAAA, parse_aaaa)
     }
 }
 
@@ -118,7 +139,7 @@ impl DnsTxtResolver for AppleDnsResolver {
         &self,
         domain: Domain,
     ) -> impl Stream<Item = Result<Txt, Self::Error>> + Send + '_ {
-        query_record_stream::<Txt, _>(domain, self.timeout, ffi::K_DNS_SERVICE_TYPE_TXT, parse_txt)
+        self.query(domain, ffi::K_DNS_SERVICE_TYPE_TXT, parse_txt)
     }
 }
 
@@ -129,12 +150,7 @@ impl DnsCnameResolver for AppleDnsResolver {
         &self,
         domain: Domain,
     ) -> impl Stream<Item = Result<Name, Self::Error>> + Send + '_ {
-        query_record_stream::<Name, _>(
-            domain,
-            self.timeout,
-            ffi::K_DNS_SERVICE_TYPE_CNAME,
-            parse_cname,
-        )
+        self.query(domain, ffi::K_DNS_SERVICE_TYPE_CNAME, parse_cname)
     }
 }
 
@@ -145,24 +161,14 @@ impl DnsServiceBindingResolver for AppleDnsResolver {
         &self,
         domain: Domain,
     ) -> impl Stream<Item = Result<ServiceBinding, BoxError>> + Send + '_ {
-        query_record_stream::<ServiceBinding, _>(
-            domain,
-            self.timeout,
-            RecordType::SVCB.into(),
-            parse_service_binding,
-        )
+        self.query(domain, RecordType::SVCB.into(), parse_service_binding)
     }
 
     fn lookup_https(
         &self,
         domain: Domain,
     ) -> impl Stream<Item = Result<ServiceBinding, BoxError>> + Send + '_ {
-        query_record_stream::<ServiceBinding, _>(
-            domain,
-            self.timeout,
-            RecordType::HTTPS.into(),
-            parse_service_binding,
-        )
+        self.query(domain, RecordType::HTTPS.into(), parse_service_binding)
     }
 }
 
@@ -822,7 +828,25 @@ mod ffi {
 
 #[cfg(test)]
 mod tests {
+    use rama_core::futures::{StreamExt as _, future::join_all};
+
     use super::*;
+
+    #[tokio::test]
+    async fn burst_of_lookups_for_one_name_all_resolve() {
+        let resolver = AppleDnsResolver::new();
+        let domain = Domain::from_static("localhost");
+
+        let lookups = (0..256).map(|_| resolver.lookup_ipv4(domain.clone()).collect::<Vec<_>>());
+        for addrs in join_all(lookups).await {
+            assert!(!addrs.is_empty(), "localhost resolves");
+            assert!(
+                addrs
+                    .iter()
+                    .all(|addr| addr.as_ref().is_ok_and(Ipv4Addr::is_loopback))
+            );
+        }
+    }
 
     #[test]
     fn apple_resolver_defaults_to_five_second_timeout() {

@@ -12,7 +12,6 @@ use std::{
 use rama_core::{
     error::BoxError,
     futures::{Stream, async_stream::stream_fn},
-    stream::{StreamExt, wrappers::ReceiverStream},
     telemetry::tracing,
 };
 use rama_net::address::Domain;
@@ -21,8 +20,11 @@ use rama_utils::octets::kib;
 use libc::c_int;
 use tokio::sync::mpsc;
 
-use super::{LinuxDnsResolverError, LookupEvent, dns_name_from_domain};
-use crate::wire::{Name, RecordType, ServiceBinding, Txt, parse_a_rdata, parse_aaaa_rdata};
+use super::{LinuxDnsResolverError, LookupEvent, NativeConfig, dns_name_from_domain};
+use crate::{
+    client::blocking::deadline_after,
+    wire::{Name, RecordType, ServiceBinding, Txt, parse_a_rdata, parse_aaaa_rdata},
+};
 
 const INITIAL_RESPONSE_BUFFER_SIZE: usize = kib(16);
 const DNS_HEADER_SIZE: usize = 12;
@@ -31,12 +33,12 @@ const MAX_DNS_MESSAGE_SIZE: usize = u16::MAX as usize;
 pub(super) fn lookup_ipv4_stream(
     domain: Domain,
     timeout: Duration,
-    response_buffer_size: usize,
+    native: NativeConfig,
 ) -> impl Stream<Item = Result<LookupEvent<Ipv4Addr>, BoxError>> + Send {
     lookup_record_stream(
         domain,
         timeout,
-        response_buffer_size,
+        native,
         ffi::NS_T_A as c_int,
         parse_a_response,
     )
@@ -45,12 +47,12 @@ pub(super) fn lookup_ipv4_stream(
 pub(super) fn lookup_ipv6_stream(
     domain: Domain,
     timeout: Duration,
-    response_buffer_size: usize,
+    native: NativeConfig,
 ) -> impl Stream<Item = Result<LookupEvent<Ipv6Addr>, BoxError>> + Send {
     lookup_record_stream(
         domain,
         timeout,
-        response_buffer_size,
+        native,
         ffi::NS_T_AAAA as c_int,
         parse_aaaa_response,
     )
@@ -59,12 +61,12 @@ pub(super) fn lookup_ipv6_stream(
 pub(super) fn lookup_txt_stream(
     domain: Domain,
     timeout: Duration,
-    response_buffer_size: usize,
+    native: NativeConfig,
 ) -> impl Stream<Item = Result<LookupEvent<Txt>, BoxError>> + Send {
     lookup_record_stream(
         domain,
         timeout,
-        response_buffer_size,
+        native,
         ffi::NS_T_TXT as c_int,
         parse_txt_response,
     )
@@ -73,12 +75,12 @@ pub(super) fn lookup_txt_stream(
 pub(super) fn lookup_cname_stream(
     domain: Domain,
     timeout: Duration,
-    response_buffer_size: usize,
+    native: NativeConfig,
 ) -> impl Stream<Item = Result<LookupEvent<Name>, BoxError>> + Send {
     lookup_record_stream(
         domain,
         timeout,
-        response_buffer_size,
+        native,
         ffi::NS_T_CNAME as c_int,
         parse_cname_response,
     )
@@ -87,29 +89,29 @@ pub(super) fn lookup_cname_stream(
 pub(super) fn lookup_svcb_stream(
     domain: Domain,
     timeout: Duration,
-    response_buffer_size: usize,
+    native: NativeConfig,
 ) -> impl Stream<Item = Result<LookupEvent<ServiceBinding>, BoxError>> + Send {
-    lookup_service_binding_stream(domain, timeout, response_buffer_size, RecordType::SVCB)
+    lookup_service_binding_stream(domain, timeout, native, RecordType::SVCB)
 }
 
 pub(super) fn lookup_https_stream(
     domain: Domain,
     timeout: Duration,
-    response_buffer_size: usize,
+    native: NativeConfig,
 ) -> impl Stream<Item = Result<LookupEvent<ServiceBinding>, BoxError>> + Send {
-    lookup_service_binding_stream(domain, timeout, response_buffer_size, RecordType::HTTPS)
+    lookup_service_binding_stream(domain, timeout, native, RecordType::HTTPS)
 }
 
 fn lookup_service_binding_stream(
     domain: Domain,
     timeout: Duration,
-    response_buffer_size: usize,
+    native: NativeConfig,
     record_type: RecordType,
 ) -> impl Stream<Item = Result<LookupEvent<ServiceBinding>, BoxError>> + Send {
     lookup_record_stream(
         domain,
         timeout,
-        response_buffer_size,
+        native,
         i32::from(u16::from(record_type)),
         move |packet, emit| parse_service_binding_response(packet, record_type, emit),
     )
@@ -118,7 +120,7 @@ fn lookup_service_binding_stream(
 fn lookup_record_stream<T, P>(
     domain: Domain,
     timeout: Duration,
-    response_buffer_size: usize,
+    native: NativeConfig,
     rrtype: libc::c_int,
     parser: P,
 ) -> impl Stream<Item = Result<LookupEvent<T>, BoxError>> + Send
@@ -129,8 +131,13 @@ where
     stream_fn(async move |mut yielder| {
         tracing::debug!(?timeout, %domain, rrtype, "dns::linux: res_nsearch");
 
-        let (tx, rx) = mpsc::channel(8);
-        let join = tokio::task::spawn_blocking(move || {
+        let deadline = deadline_after(timeout);
+        let (tx, mut rx) = mpsc::channel(8);
+        let response_buffer_size = native.response_buffer_size;
+        let task = native.blocking.spawn(deadline, move |budget| {
+            if budget.is_zero() {
+                return Err(LinuxDnsResolverError::timeout(timeout).into());
+            }
             // `lookup_record_packet` always returns the wire response (or None
             // for transport errors); NXDOMAIN/NODATA come back as a packet
             // whose answer section is empty but whose authority section
@@ -158,12 +165,18 @@ where
 
             Ok::<_, BoxError>(())
         });
+        let Some(join) = task.await else {
+            tracing::debug!("linux::res_nsearch: no native lookup slot before the deadline");
+            yielder
+                .yield_item(Err(LinuxDnsResolverError::timeout(timeout).into()))
+                .await;
+            return;
+        };
 
-        let mut stream = std::pin::pin!(ReceiverStream::new(rx).timeout(timeout));
-
-        while let Some(result) = stream.next().await {
-            match result {
-                Ok(item) => yielder.yield_item(item).await,
+        loop {
+            match tokio::time::timeout_at(deadline, rx.recv()).await {
+                Ok(Some(item)) => yielder.yield_item(item).await,
+                Ok(None) => break,
                 Err(err) => {
                     tracing::debug!(
                         %err,

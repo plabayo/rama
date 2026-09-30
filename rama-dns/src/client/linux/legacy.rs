@@ -11,31 +11,34 @@ use libc::{AF_INET, AF_INET6, SOCK_STREAM, addrinfo};
 use rama_core::{
     error::BoxError,
     futures::{Stream, async_stream::stream_fn},
-    stream::{StreamExt, wrappers::ReceiverStream},
     telemetry::tracing,
 };
 use rama_net::address::Domain;
 use tokio::sync::mpsc;
 
-use super::{LinuxDnsResolverError, LookupEvent, dns_name_from_domain};
+use super::{LinuxDnsResolverError, LookupEvent, NativeConfig, dns_name_from_domain};
+use crate::client::blocking::deadline_after;
 
 pub(super) fn lookup_ipv4_stream(
     domain: Domain,
     timeout: Duration,
+    native: NativeConfig,
 ) -> impl Stream<Item = Result<LookupEvent<Ipv4Addr>, BoxError>> + Send {
-    lookup_address_stream(domain, timeout, AF_INET, lookup_ipv4_impl)
+    lookup_address_stream(domain, timeout, native, AF_INET, lookup_ipv4_impl)
 }
 
 pub(super) fn lookup_ipv6_stream(
     domain: Domain,
     timeout: Duration,
+    native: NativeConfig,
 ) -> impl Stream<Item = Result<LookupEvent<Ipv6Addr>, BoxError>> + Send {
-    lookup_address_stream(domain, timeout, AF_INET6, lookup_ipv6_impl)
+    lookup_address_stream(domain, timeout, native, AF_INET6, lookup_ipv6_impl)
 }
 
 fn lookup_address_stream<T, F>(
     domain: Domain,
     timeout: Duration,
+    native: NativeConfig,
     family: libc::c_int,
     lookup: F,
 ) -> impl Stream<Item = Result<LookupEvent<T>, BoxError>> + Send
@@ -52,14 +55,26 @@ where
     stream_fn(async move |mut yielder| {
         tracing::debug!(?timeout, %domain, family, "dns::linux: getaddrinfo query");
 
-        let (tx, rx) = mpsc::channel(8);
-        let join = tokio::task::spawn_blocking(move || lookup(domain, family, tx));
+        let deadline = deadline_after(timeout);
+        let (tx, mut rx) = mpsc::channel(8);
+        let task = native.blocking.spawn(deadline, move |budget| {
+            if budget.is_zero() {
+                return Err(LinuxDnsResolverError::timeout(timeout).into());
+            }
+            lookup(domain, family, tx)
+        });
+        let Some(join) = task.await else {
+            tracing::debug!("linux::getaddrinfo: no native lookup slot before the deadline");
+            yielder
+                .yield_item(Err(LinuxDnsResolverError::timeout(timeout).into()))
+                .await;
+            return;
+        };
 
-        let mut stream = std::pin::pin!(ReceiverStream::new(rx).timeout(timeout));
-
-        while let Some(result) = stream.next().await {
-            match result {
-                Ok(item) => yielder.yield_item(item).await,
+        loop {
+            match tokio::time::timeout_at(deadline, rx.recv()).await {
+                Ok(Some(item)) => yielder.yield_item(item).await,
+                Ok(None) => break,
                 Err(err) => {
                     tracing::debug!(
                         %err,

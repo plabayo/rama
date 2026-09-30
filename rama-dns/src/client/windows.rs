@@ -30,8 +30,12 @@ use windows_sys::core::PCWSTR;
 #[cfg(test)]
 use std::sync::atomic::AtomicU16;
 
-use super::resolver::{
-    DnsAddressResolver, DnsCnameResolver, DnsResolver, DnsServiceBindingResolver, DnsTxtResolver,
+use super::{
+    in_flight::{InFlight, coalesced_stream},
+    resolver::{
+        DnsAddressResolver, DnsCnameResolver, DnsResolver, DnsServiceBindingResolver,
+        DnsTxtResolver,
+    },
 };
 use crate::wire::{Name, RecordType, ServiceBinding, Txt};
 
@@ -91,12 +95,14 @@ const _: () = assert!(std::mem::size_of::<DnsBackend>() == 0);
 /// Hickory when exact TXT octets are required on Windows.
 pub struct WindowsDnsResolver {
     timeout: Duration,
+    in_flight: InFlight<(Domain, u16)>,
 }
 
 impl Default for WindowsDnsResolver {
     fn default() -> Self {
         Self {
             timeout: DEFAULT_TIMEOUT,
+            in_flight: InFlight::default(),
         }
     }
 }
@@ -118,6 +124,26 @@ impl WindowsDnsResolver {
             self
         }
     }
+
+    /// Concurrent lookups of one name and record type share one query.
+    fn coalesced<T, S>(
+        &self,
+        domain: Domain,
+        rrtype: u16,
+        lookup: impl FnOnce(Domain, Duration) -> S + Send + 'static,
+    ) -> impl Stream<Item = Result<T, BoxError>> + Send + '_
+    where
+        T: Clone + Send + Sync + 'static,
+        S: Stream<Item = Result<T, BoxError>> + Send + 'static,
+    {
+        let timeout = self.timeout;
+        coalesced_stream(
+            self.in_flight.clone(),
+            (domain.clone(), rrtype),
+            timeout,
+            move || lookup(domain, timeout),
+        )
+    }
 }
 
 impl DnsAddressResolver for WindowsDnsResolver {
@@ -127,14 +153,18 @@ impl DnsAddressResolver for WindowsDnsResolver {
         &self,
         domain: Domain,
     ) -> impl Stream<Item = Result<Ipv4Addr, Self::Error>> + Send + '_ {
-        query_record_stream(domain, self.timeout, ffi::DNS_TYPE_A, parse_a_records)
+        self.coalesced(domain, ffi::DNS_TYPE_A, |domain, timeout| {
+            query_record_stream(domain, timeout, ffi::DNS_TYPE_A, parse_a_records)
+        })
     }
 
     fn lookup_ipv6(
         &self,
         domain: Domain,
     ) -> impl Stream<Item = Result<Ipv6Addr, Self::Error>> + Send + '_ {
-        query_record_stream(domain, self.timeout, ffi::DNS_TYPE_AAAA, parse_aaaa_records)
+        self.coalesced(domain, ffi::DNS_TYPE_AAAA, |domain, timeout| {
+            query_record_stream(domain, timeout, ffi::DNS_TYPE_AAAA, parse_aaaa_records)
+        })
     }
 }
 
@@ -145,7 +175,9 @@ impl DnsTxtResolver for WindowsDnsResolver {
         &self,
         domain: Domain,
     ) -> impl Stream<Item = Result<Txt, Self::Error>> + Send + '_ {
-        query_record_stream(domain, self.timeout, ffi::DNS_TYPE_TEXT, parse_txt_records)
+        self.coalesced(domain, ffi::DNS_TYPE_TEXT, |domain, timeout| {
+            query_record_stream(domain, timeout, ffi::DNS_TYPE_TEXT, parse_txt_records)
+        })
     }
 }
 
@@ -156,12 +188,9 @@ impl DnsCnameResolver for WindowsDnsResolver {
         &self,
         domain: Domain,
     ) -> impl Stream<Item = Result<Name, Self::Error>> + Send + '_ {
-        query_record_stream(
-            domain,
-            self.timeout,
-            ffi::DNS_TYPE_CNAME,
-            parse_cname_records,
-        )
+        self.coalesced(domain, ffi::DNS_TYPE_CNAME, |domain, timeout| {
+            query_record_stream(domain, timeout, ffi::DNS_TYPE_CNAME, parse_cname_records)
+        })
     }
 }
 
@@ -172,14 +201,18 @@ impl DnsServiceBindingResolver for WindowsDnsResolver {
         &self,
         domain: Domain,
     ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
-        query_service_binding_stream(domain, self.timeout, RecordType::SVCB)
+        self.coalesced(domain, RecordType::SVCB.into(), |domain, timeout| {
+            query_service_binding_stream(domain, timeout, RecordType::SVCB)
+        })
     }
 
     fn lookup_https(
         &self,
         domain: Domain,
     ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
-        query_service_binding_stream(domain, self.timeout, RecordType::HTTPS)
+        self.coalesced(domain, RecordType::HTTPS.into(), |domain, timeout| {
+            query_service_binding_stream(domain, timeout, RecordType::HTTPS)
+        })
     }
 }
 

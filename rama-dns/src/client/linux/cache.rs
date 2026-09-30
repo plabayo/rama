@@ -191,33 +191,51 @@ pub(super) enum CacheLookup<T> {
     Negative,
 }
 
+/// `Domain` equality ignores a trailing dot, but a rooted name skips the
+/// resolv.conf search list, so it can resolve differently.
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
-struct CacheKey {
+pub(super) struct CacheKey {
     domain: Domain,
+    rooted: bool,
     kind: RecordKind,
 }
 
 impl CacheKey {
-    fn new(domain: Domain, kind: RecordKind) -> Self {
-        Self { domain, kind }
+    pub(super) fn new(domain: Domain, kind: RecordKind) -> Self {
+        let rooted = domain.is_fqdn();
+        Self {
+            domain,
+            rooted,
+            kind,
+        }
     }
 }
 
 struct CacheLookupKey<'a> {
     domain: &'a Domain,
+    rooted: bool,
     kind: RecordKind,
 }
 
 impl<'a> CacheLookupKey<'a> {
     fn new(domain: &'a Domain, kind: RecordKind) -> Self {
-        Self { domain, kind }
+        Self {
+            domain,
+            rooted: domain.is_fqdn(),
+            kind,
+        }
     }
 }
 
 impl Hash for CacheLookupKey<'_> {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        let Self { domain, kind } = self;
+        let Self {
+            domain,
+            rooted,
+            kind,
+        } = self;
         domain.hash(state);
+        rooted.hash(state);
         kind.hash(state);
     }
 }
@@ -226,14 +244,16 @@ impl Equivalent<CacheKey> for CacheLookupKey<'_> {
     fn equivalent(&self, key: &CacheKey) -> bool {
         let Self {
             domain: lookup_domain,
+            rooted: lookup_rooted,
             kind: lookup_kind,
         } = self;
         let CacheKey {
             domain: key_domain,
+            rooted: key_rooted,
             kind: key_kind,
         } = key;
 
-        lookup_kind == key_kind && *lookup_domain == key_domain
+        lookup_kind == key_kind && lookup_rooted == key_rooted && *lookup_domain == key_domain
     }
 }
 
