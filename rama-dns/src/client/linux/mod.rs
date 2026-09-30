@@ -1814,7 +1814,7 @@ mod tests {
         let counter = calls.clone();
         let server = tokio::spawn(async move {
             while let Ok((mut stream, _)) = listener.accept().await {
-                counter.fetch_add(1, Ordering::SeqCst);
+                let counter = counter.clone();
                 tokio::spawn(async move {
                     let mut request = Vec::new();
                     while !request.contains(&0) {
@@ -1824,6 +1824,11 @@ mod tests {
                     }
                     let request: serde_json::Value =
                         serde_json::from_slice(&request[..request.len() - 1]).expect("json call");
+                    if request["method"] == "org.varlink.service.GetInfo" {
+                        _ = stream.write_all(b"{\"parameters\":{}}\0").await;
+                        return;
+                    }
+                    counter.fetch_add(1, Ordering::SeqCst);
                     let family = request["parameters"]["family"].as_i64().expect("family");
                     let address = if family == 2 {
                         json!([192, 0, 2, 7])
