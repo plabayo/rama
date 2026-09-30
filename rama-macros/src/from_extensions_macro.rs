@@ -165,14 +165,20 @@ fn expand_struct(
                 ext: & #lt #root::extensions::Extensions,
             ) -> Self {
                 const __N: usize = #( #contribs )+*;
-                let mut __targets = [::core::any::TypeId::of::<()>(); __N];
-                let mut __off = 0usize;
-                #( #target_fills )*
-                let _ = __off;
+                // The targets are the same on every call, so they are prepared once.
+                static __PLAN: #root::extensions::TargetPlan<__N> =
+                    #root::extensions::TargetPlan::new();
+                let __plan = __PLAN.get(|| {
+                    let mut __targets = [::core::any::TypeId::of::<()>(); __N];
+                    let mut __off = 0usize;
+                    #( #target_fills )*
+                    let _ = __off;
+                    __targets
+                });
                 let mut __out: [
                     ::core::option::Option<(& #lt #root::extensions::TypeErasedExtension, usize)>; __N
                 ] = [::core::option::Option::None; __N];
-                ext.get_many_erased(&__targets, &mut __out);
+                ext.get_many_targets(__plan, &mut __out);
                 let mut __off = 0usize;
                 #( #field_lets )*
                 let _ = __off;
@@ -287,14 +293,20 @@ fn expand_enum(
             pub fn from_extensions #fn_generics (
                 ext: & #lt #root::extensions::Extensions,
             ) -> ::core::option::Option<Self> {
-                let mut __targets = [::core::any::TypeId::of::<()>(); #n];
-                <Self as #root::extensions::FromExtensionsGroup<#lt>>::from_ext_targets(
-                    &mut __targets, 0,
-                );
+                // The targets are the same on every call, so they are prepared once.
+                static __PLAN: #root::extensions::TargetPlan<#n> =
+                    #root::extensions::TargetPlan::new();
+                let __plan = __PLAN.get(|| {
+                    let mut __targets = [::core::any::TypeId::of::<()>(); #n];
+                    <Self as #root::extensions::FromExtensionsGroup<#lt>>::from_ext_targets(
+                        &mut __targets, 0,
+                    );
+                    __targets
+                });
                 let mut __out: [
                     ::core::option::Option<(& #lt #root::extensions::TypeErasedExtension, usize)>; #n
                 ] = [::core::option::Option::None; #n];
-                ext.get_many_erased(&__targets, &mut __out);
+                ext.get_many_targets(__plan, &mut __out);
                 <Self as #root::extensions::FromExtensionsGroup<#lt>>::from_ext_slots(&__out, 0)
             }
         }
@@ -640,7 +652,9 @@ mod tests {
             }
         });
         assert!(out.contains("fn from_extensions"), "{out}");
-        assert!(out.contains("get_many_erased"), "{out}");
+        assert!(out.contains("get_many_targets"), "{out}");
+        // the targets are prepared once per type, not on every call
+        assert!(out.contains("TargetPlan"), "{out}");
         assert!(out.contains("downcast_ref"), "{out}");
         assert!(out.contains("cloned_downcast"), "{out}");
     }
@@ -664,6 +678,8 @@ mod tests {
         assert!(out.contains("from_ext_slots"), "{out}");
         assert!(out.contains("min_by_key"), "{out}");
         assert!(out.contains("fn from_extensions"), "{out}");
+        assert!(out.contains("TargetPlan"), "{out}");
+        assert!(out.contains("get_many_targets"), "{out}");
     }
 
     #[test]
@@ -678,7 +694,7 @@ mod tests {
         // not by calling its own `from_extensions`.
         assert!(out.contains("from_ext_targets"), "{out}");
         assert!(out.contains("from_ext_slots"), "{out}");
-        assert!(out.contains("get_many_erased"), "{out}");
+        assert!(out.contains("get_many_targets"), "{out}");
         // its width is read via the anonymous lifetime for the const buffer size.
         assert!(out.contains("'_"), "{out}");
     }
