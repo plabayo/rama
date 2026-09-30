@@ -132,6 +132,8 @@ impl AbortRequest for StreamAbortHandle {
 struct Slot<A> {
     semantics: Semantics,
     queue: VecDeque<Bytes>,
+    // Payload bytes in `queue`, so an over-budget admission can find the largest queue.
+    bytes: usize,
     waker: Option<Waker>,
     dropped: u64,
     receive: Option<ReceiveEnd>,
@@ -229,26 +231,10 @@ impl<A: AbortRequest> Demux<A> {
         }
         match slot.semantics {
             Semantics::None => violation(slot, config.violations, &mut self.drops),
-            Semantics::Provisional => {
+            // A client claim can still become None on a refused response.
+            Semantics::Provisional | Semantics::Claimed => {
                 slot.observed = true;
-                enqueue(
-                    slot,
-                    &config.limits,
-                    payload,
-                    &mut self.buffered,
-                    &mut self.drops,
-                )
-            }
-            Semantics::Claimed => {
-                // A client claim can still become None on a refused response.
-                slot.observed = true;
-                enqueue(
-                    slot,
-                    &config.limits,
-                    payload,
-                    &mut self.buffered,
-                    &mut self.drops,
-                )
+                self.enqueue(&config.limits, stream, payload)
             }
         }
     }
@@ -265,41 +251,52 @@ impl<A: AbortRequest> Demux<A> {
     ) -> Action<A> {
         self.expire(now);
         self.watermark = self.watermark.max(stream.saturating_add(4));
-        let mut slot = Slot {
-            semantics,
-            queue: VecDeque::new(),
-            waker: None,
-            dropped: 0,
-            receive: None,
-            observed: false,
-            abort,
-            violated,
-        };
+        self.slots.insert(
+            stream,
+            Slot {
+                semantics,
+                queue: VecDeque::new(),
+                bytes: 0,
+                waker: None,
+                dropped: 0,
+                receive: None,
+                observed: false,
+                abort,
+                violated,
+            },
+        );
         let mut action = Action::default();
         let mut held = Vec::new();
+        let mut expired = 0;
+        let mut released = 0;
         self.pending.retain(|pending| {
             let keep = pending.stream != stream;
             if !keep {
-                held.push(pending.payload.clone());
+                released += pending.payload.len();
+                // Lifetimes follow the RTT at arrival, so a later entry can expire first.
+                if pending.expires > now {
+                    held.push(pending.payload.clone());
+                } else {
+                    expired += 1;
+                }
             }
             keep
         });
+        self.drops.expired += expired;
+        self.buffered -= released;
         for payload in held {
-            self.buffered -= payload.len();
+            let Some(slot) = self.slots.get_mut(&stream) else {
+                break;
+            };
             slot.observed = true;
             let next = match slot.semantics {
-                Semantics::None => violation(&mut slot, config.violations, &mut self.drops),
-                Semantics::Provisional | Semantics::Claimed => enqueue(
-                    &mut slot,
-                    &config.limits,
-                    payload,
-                    &mut self.buffered,
-                    &mut self.drops,
-                ),
+                Semantics::None => violation(slot, config.violations, &mut self.drops),
+                Semantics::Provisional | Semantics::Claimed => {
+                    self.enqueue(&config.limits, stream, payload)
+                }
             };
             action.merge(next);
         }
-        self.slots.insert(stream, slot);
         action
     }
 
@@ -319,11 +316,8 @@ impl<A: AbortRequest> Demux<A> {
         }
         slot.semantics = Semantics::None;
         self.drops.no_semantics += slot.queue.len() as u64;
-        self.buffered -= slot
-            .queue
-            .drain(..)
-            .map(|payload| payload.len())
-            .sum::<usize>();
+        slot.queue.clear();
+        self.buffered -= std::mem::take(&mut slot.bytes);
         if !slot.observed {
             return Action::default();
         }
@@ -333,7 +327,7 @@ impl<A: AbortRequest> Demux<A> {
     /// Release a stream and anything still buffered for it.
     pub(crate) fn unregister(&mut self, stream: u64) -> Option<Waker> {
         let slot = self.slots.remove(&stream)?;
-        self.buffered -= slot.queue.iter().map(Bytes::len).sum::<usize>();
+        self.buffered -= slot.bytes;
         slot.waker
     }
 
@@ -349,11 +343,8 @@ impl<A: AbortRequest> Demux<A> {
         }
         if local {
             self.drops.receive_closed += slot.queue.len() as u64;
-            self.buffered -= slot
-                .queue
-                .drain(..)
-                .map(|payload| payload.len())
-                .sum::<usize>();
+            slot.queue.clear();
+            self.buffered -= std::mem::take(&mut slot.bytes);
         }
         slot.waker.take()
     }
@@ -367,6 +358,7 @@ impl<A: AbortRequest> Demux<A> {
             return Poll::Ready(Ok(None));
         };
         if let Some(payload) = slot.queue.pop_front() {
+            slot.bytes -= payload.len();
             self.buffered -= payload.len();
             return Poll::Ready(Ok(Some(payload)));
         }
@@ -457,6 +449,7 @@ impl<A: AbortRequest> Demux<A> {
         assert!(self.pending.len() <= limits.pending_len);
         for slot in self.slots.values() {
             assert!(slot.queue.len() <= limits.queue_len);
+            assert_eq!(slot.bytes, slot.queue.iter().map(Bytes::len).sum::<usize>());
         }
     }
 
@@ -473,6 +466,62 @@ impl<A: AbortRequest> Demux<A> {
             .values_mut()
             .filter_map(|slot| slot.waker.take())
             .collect()
+    }
+
+    /// Queue a payload for a registered stream. Over the byte budget the oldest datagram of
+    /// the largest queue makes room, so stalled consumers cannot starve the others.
+    fn enqueue(&mut self, limits: &DatagramLimits, stream: u64, payload: Bytes) -> Action<A> {
+        let Some(slot) = self.slots.get_mut(&stream) else {
+            return Action::default();
+        };
+        if limits.queue_len == 0 {
+            slot.dropped += 1;
+            self.drops.queue_full += 1;
+            return Action::default();
+        }
+        if slot.queue.len() >= limits.queue_len
+            && let Some(oldest) = slot.queue.pop_front()
+        {
+            slot.bytes -= oldest.len();
+            self.buffered -= oldest.len();
+            slot.dropped += 1;
+            self.drops.queue_full += 1;
+        }
+        while self.buffered + payload.len() > limits.max_buffered_bytes {
+            let largest = (payload.len() <= limits.max_buffered_bytes)
+                .then(|| {
+                    self.slots
+                        .iter_mut()
+                        .filter(|(_, slot)| slot.bytes > 0)
+                        .max_by_key(|(_, slot)| slot.bytes)
+                        .map(|(_, slot)| slot)
+                })
+                .flatten();
+            let Some(largest) = largest else {
+                // Only held datagrams fill the budget, or the payload can never fit.
+                if let Some(slot) = self.slots.get_mut(&stream) {
+                    slot.dropped += 1;
+                }
+                self.drops.over_budget += 1;
+                return Action::default();
+            };
+            if let Some(oldest) = largest.queue.pop_front() {
+                largest.bytes -= oldest.len();
+                self.buffered -= oldest.len();
+                largest.dropped += 1;
+                self.drops.over_budget += 1;
+            }
+        }
+        let Some(slot) = self.slots.get_mut(&stream) else {
+            return Action::default();
+        };
+        self.buffered += payload.len();
+        slot.bytes += payload.len();
+        slot.queue.push_back(payload);
+        Action {
+            wake: slot.waker.take(),
+            abort: None,
+        }
     }
 
     fn hold(&mut self, limits: &DatagramLimits, stream: u64, payload: Bytes, expires: Instant) {
@@ -513,38 +562,6 @@ impl<A> Action<A> {
     fn merge(&mut self, other: Self) {
         self.wake = self.wake.take().or(other.wake);
         self.abort = self.abort.take().or(other.abort);
-    }
-}
-
-fn enqueue<A>(
-    slot: &mut Slot<A>,
-    limits: &DatagramLimits,
-    payload: Bytes,
-    buffered: &mut usize,
-    drops: &mut DatagramDrops,
-) -> Action<A> {
-    if limits.queue_len == 0 {
-        slot.dropped += 1;
-        drops.queue_full += 1;
-        return Action::default();
-    }
-    if slot.queue.len() >= limits.queue_len
-        && let Some(oldest) = slot.queue.pop_front()
-    {
-        *buffered -= oldest.len();
-        slot.dropped += 1;
-        drops.queue_full += 1;
-    }
-    if *buffered + payload.len() > limits.max_buffered_bytes {
-        slot.dropped += 1;
-        drops.over_budget += 1;
-        return Action::default();
-    }
-    *buffered += payload.len();
-    slot.queue.push_back(payload);
-    Action {
-        wake: slot.waker.take(),
-        abort: None,
     }
 }
 
@@ -594,16 +611,19 @@ pub(crate) fn split(datagram: Bytes, role_is_server: bool, remote_bidi_limit: u6
 
 /// The connection error [`ViolationPolicy::Reject`] applies to an invalid prefix.
 pub(crate) fn invalid_prefix_error(beyond_limit: bool) -> Error {
+    // Both are the peer's datagrams, like every other received-input violation.
     if beyond_limit {
         Error::connection(
             Code::H3_ID_ERROR,
             "datagram for a stream beyond the stream limit",
         )
+        .remote()
     } else {
         Error::connection(
             Code::H3_DATAGRAM_ERROR,
             "invalid datagram quarter stream ID",
         )
+        .remote()
     }
 }
 

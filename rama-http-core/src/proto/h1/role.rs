@@ -1237,6 +1237,10 @@ impl Client {
     fn set_length(head: &mut EncodeHead<'_, RequestLine>, body: Option<BodyLength>) -> Encoder {
         let Some(body) = body else {
             head.headers.remove(header::TRANSFER_ENCODING);
+            // A length the empty body cannot deliver would stall the peer reading it.
+            if headers::content_length_parse_all(&head.headers).is_none_or(|len| len != 0) {
+                head.headers.remove(header::CONTENT_LENGTH);
+            }
             return Encoder::length(0);
         };
 
@@ -1814,7 +1818,7 @@ mod tests {
         }
     }
 
-    /// PR9-M5-006: a replaced or collapsed Host keeps the first line's spelling and position.
+    /// A replaced or collapsed Host keeps the first line's spelling and position.
     #[test]
     fn normalized_hosts_keep_their_name_and_position() {
         for (target, host, extra, expected) in [
@@ -2812,6 +2816,41 @@ mod tests {
         assert_eq!(unfold("a normal line"), "a normal line",);
 
         assert_eq!(unfold("obs\r\n fold\r\n\t line"), "obs fold line",);
+    }
+
+    /// An empty request body never carries a positive Content-Length.
+    #[test]
+    fn empty_request_bodies_drop_a_positive_content_length() {
+        use rama_http_types::header::HeaderValue;
+
+        for (length, expected) in [
+            ("5", "GET / HTTP/1.1\r\n\r\n"),
+            ("0", "GET / HTTP/1.1\r\ncontent-length: 0\r\n\r\n"),
+        ] {
+            let mut head = MessageHead::default();
+            head.headers
+                .insert("content-length", HeaderValue::from_static(length));
+            let mut vec = Vec::new();
+            let encoder = Client::encode(
+                Encode {
+                    head: EncodeHead {
+                        version: head.version,
+                        subject: head.subject,
+                        headers: head.headers,
+                        extensions: &mut head.extensions,
+                    },
+                    body: None,
+                    keep_alive: true,
+                    req_method: &mut None,
+                    title_case_headers: false,
+                    date_header: true,
+                },
+                &mut vec,
+            )
+            .unwrap();
+            assert!(encoder.is_eof(), "{length}");
+            assert_eq!(String::from_utf8(vec).unwrap(), expected, "{length}");
+        }
     }
 
     #[test]

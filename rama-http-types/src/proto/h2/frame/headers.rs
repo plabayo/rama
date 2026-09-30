@@ -692,7 +692,11 @@ impl Pseudo {
             // component is the "OPTIONS *" form and MUST carry `:path = *`.
             // The origin-form writer normalises an absent path to `/`, so the
             // absent path is detected via the typed accessor instead.
-            let path = if method == Method::OPTIONS && !uri.is_asterisk() && uri.is_path_empty() {
+            let path = if method == Method::OPTIONS
+                && !uri.is_asterisk()
+                && uri.is_path_empty()
+                && uri.query().is_none()
+            {
                 BytesStr::from_static("*")
             } else {
                 path

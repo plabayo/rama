@@ -140,7 +140,7 @@
 use crate::h2::codec::{Codec, SendError, UserError};
 use crate::h2::proto::{self, Error};
 use crate::h2::{FlowControl, PingPong, RecvStream, SendStream};
-use crate::proto::target::host_is_wire_authority;
+use crate::proto::target::{OutgoingHost, host_is_wire_authority, outgoing_host};
 use rama_core::bytes::{Buf, Bytes};
 use rama_core::error::{BoxError, BoxErrorExt};
 use rama_core::extensions::{Extensions, ExtensionsRef};
@@ -1844,36 +1844,39 @@ impl PushedResponseFuture {
 // ===== impl Peer =====
 
 /// A single valid `Host` becomes `:authority` when [`host_is_wire_authority`] says so,
-/// keeping its sensitivity; the `Host` line itself is sent unchanged. An ordinary CONNECT
-/// still needs a port from it (RFC 9113 §8.5).
+/// keeping its sensitivity; the `Host` line itself is sent unchanged. Any other `Host` next to
+/// `:authority` is dropped, so one authority reaches the wire. A Host that would become an
+/// ordinary CONNECT's authority must name a port (RFC 9113 §8.5).
 fn host_as_authority(
     pseudo: &mut Pseudo,
-    headers: &HeaderMap,
+    headers: &mut HeaderMap,
     ordinary_connect: bool,
 ) -> Result<(), UserError> {
-    let mut hosts = headers.get_all(rama_http_types::header::HOST).iter();
-    let (Some(host), None) = (hosts.next(), hosts.next()) else {
-        return Ok(());
-    };
-    let (Some(Ok(projected)), Ok(parsed)) = (
-        pseudo.authority.as_deref().map(AuthorityRef::try_from),
-        AuthorityRef::try_from(host.as_bytes()),
-    ) else {
-        return Ok(());
-    };
-    if parsed.userinfo().is_some() || !host_is_wire_authority(projected, parsed) {
-        return Ok(());
-    }
-    if ordinary_connect && parsed.port_u16().is_none() {
-        return Err(UserError::MalformedHeaders);
-    }
-    if let Ok(value) = BytesStr::try_from(Bytes::copy_from_slice(host.as_bytes())) {
-        pseudo.set_authority(value);
-        if host.is_sensitive() {
-            pseudo
-                .sensitivity
-                .set_sensitive(PseudoHeader::Authority, true);
+    let mut drop_host = false;
+    match outgoing_host(headers) {
+        OutgoingHost::Usable(host, parsed) => {
+            let projected = pseudo.authority.as_deref().map(AuthorityRef::try_from);
+            if let Some(Ok(projected)) = projected
+                && host_is_wire_authority(projected, parsed)
+                && let Ok(value) = BytesStr::try_from(Bytes::copy_from_slice(host.as_bytes()))
+            {
+                if ordinary_connect && parsed.port_u16().is_none() {
+                    return Err(UserError::MalformedHeaders);
+                }
+                let sensitive = host.is_sensitive();
+                pseudo.set_authority(value);
+                if sensitive {
+                    pseudo
+                        .sensitivity
+                        .set_sensitive(PseudoHeader::Authority, true);
+                }
+            }
         }
+        OutgoingHost::Unusable => drop_host = pseudo.authority.is_some(),
+        OutgoingHost::Absent => {}
+    }
+    if drop_host {
+        headers.remove(rama_http_types::header::HOST);
     }
     Ok(())
 }
@@ -1893,7 +1896,7 @@ impl Peer {
             Parts {
                 method,
                 uri,
-                headers,
+                mut headers,
                 version,
                 extensions,
                 ..
@@ -1921,7 +1924,7 @@ impl Peer {
             .get_ref::<PseudoHeaderSensitivity>()
             .copied()
             .unwrap_or_default();
-        host_as_authority(&mut pseudo, &headers, ordinary_connect)?;
+        host_as_authority(&mut pseudo, &mut headers, ordinary_connect)?;
 
         if pseudo.scheme.is_none() {
             // If the scheme is not set, then there are a two options.

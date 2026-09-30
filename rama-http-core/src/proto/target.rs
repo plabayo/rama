@@ -88,6 +88,27 @@ fn set_host(headers: &mut HeaderMap, host: HeaderValue) {
     }
 }
 
+/// The `Host` of an outgoing request, as an encoder may use it.
+pub(crate) enum OutgoingHost<'a> {
+    Absent,
+    /// One parseable line without userinfo.
+    Usable(&'a HeaderValue, AuthorityRef<'a>),
+    /// Unparseable, carrying userinfo, or several lines: never sent next to a URI authority.
+    Unusable,
+}
+
+pub(crate) fn outgoing_host(headers: &HeaderMap) -> OutgoingHost<'_> {
+    let mut hosts = headers.get_all(header::HOST).iter();
+    match (hosts.next(), hosts.next()) {
+        (None, _) => OutgoingHost::Absent,
+        (Some(host), None) => match AuthorityRef::try_from(host.as_bytes()) {
+            Ok(parsed) if parsed.userinfo().is_none() => OutgoingHost::Usable(host, parsed),
+            _ => OutgoingHost::Unusable,
+        },
+        _ => OutgoingHost::Unusable,
+    }
+}
+
 /// Whether an outgoing `:authority` takes the `Host` bytes: a `Host` naming another host or port
 /// is the wire authority (as with curl), and a matching one is sent exactly (RFC 9114 §4.3.1)
 /// unless the URI adds userinfo, which `Host` cannot carry.
@@ -201,7 +222,7 @@ mod tests {
         }
     }
 
-    /// Found by the `h3_request_head` fuzz oracle: `h:` and `h` differ on the wire.
+    /// `h:` and `h` differ on the wire.
     #[test]
     fn an_empty_port_is_another_authority() {
         assert_eq!(
@@ -225,7 +246,7 @@ mod tests {
         ));
     }
 
-    /// PR9-M5-005: derived and collapsed Hosts never lose a never-index restriction.
+    /// Derived and collapsed Hosts never lose a never-index restriction.
     #[test]
     fn normalization_keeps_every_sensitivity() {
         let host = |value: &'static str, sensitive: bool| {

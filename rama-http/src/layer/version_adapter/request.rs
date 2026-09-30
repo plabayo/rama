@@ -11,11 +11,12 @@ use rama_http_headers::Host;
 use rama_http_headers::SecWebSocketKey;
 use rama_http_headers::SecWebSocketVersion;
 use rama_http_headers::Upgrade;
+use rama_http_types::HeaderMap;
 use rama_http_types::Method;
 use rama_http_types::Request;
 use rama_http_types::Version;
 use rama_http_types::conn::TargetHttpVersion;
-use rama_http_types::header::HOST;
+use rama_http_types::header::{CONTENT_LENGTH, HOST, TRANSFER_ENCODING};
 use rama_http_types::header::{SEC_WEBSOCKET_KEY, SEC_WEBSOCKET_VERSION};
 use rama_http_types::proto::ext::Protocol;
 use rama_net::client::{
@@ -239,6 +240,9 @@ fn translate_request_upgrade<Body>(request: &mut Request<Body>) -> Result<(), Bo
             // `GET` + `Upgrade: websocket` -> `CONNECT` + `:protocol: websocket`.
             tracing::trace!("translating h1 websocket upgrade into h2/h3 extended CONNECT");
             *request.method_mut() = Method::CONNECT;
+            // The tunnel bytes are the Extended CONNECT stream itself, which no
+            // Content-Length of the upgrade request describes.
+            remove_body_framing(request.headers_mut());
             request
                 .extensions()
                 .insert(Protocol::from_static("websocket"));
@@ -268,6 +272,8 @@ fn translate_request_downgrade<Body>(request: &mut Request<Body>) -> Result<(), 
             *request.method_mut() = Method::GET;
 
             let headers = request.headers_mut();
+            // An HTTP/1 upgrade request has no body: the tunnel follows the 101.
+            remove_body_framing(headers);
             headers.typed_insert(Upgrade::websocket());
             headers.typed_insert(Connection::upgrade());
             if !headers.contains_key(SEC_WEBSOCKET_KEY) {
@@ -290,6 +296,11 @@ fn translate_request_downgrade<Body>(request: &mut Request<Body>) -> Result<(), 
         None => {}
     }
     Ok(())
+}
+
+fn remove_body_framing(headers: &mut HeaderMap) {
+    headers.remove(CONTENT_LENGTH);
+    headers.remove(TRANSFER_ENCODING);
 }
 
 /// Ensure an HTTP/1.x request carries a `Host` header.
@@ -431,6 +442,43 @@ mod tests {
         // a fresh key is generated and the version is retained
         assert!(req.headers().contains_key(SEC_WEBSOCKET_KEY));
         assert_eq!(req.headers().get(SEC_WEBSOCKET_VERSION).unwrap(), "13");
+    }
+
+    /// The translated WebSocket handshake never advertises a body it will not send.
+    #[test]
+    fn websocket_translations_drop_body_framing() {
+        for (from, to) in [
+            (Version::HTTP_2, Version::HTTP_11),
+            (Version::HTTP_3, Version::HTTP_11),
+        ] {
+            let mut req = Request::builder()
+                .version(from)
+                .method(Method::CONNECT)
+                .uri("https://example.com/chat")
+                .header(CONTENT_LENGTH, "5")
+                .header(SEC_WEBSOCKET_VERSION, "13")
+                .body(())
+                .unwrap();
+            req.extensions().insert(Protocol::from_static("websocket"));
+            adapt_request_version(&mut req, to).unwrap();
+            assert_eq!(req.method(), Method::GET, "{from:?}");
+            assert!(!req.headers().contains_key(CONTENT_LENGTH), "{from:?}");
+            assert!(!req.headers().contains_key(TRANSFER_ENCODING), "{from:?}");
+        }
+        for to in [Version::HTTP_2, Version::HTTP_3] {
+            let mut req = Request::builder()
+                .version(Version::HTTP_11)
+                .method(Method::GET)
+                .uri("https://example.com/chat")
+                .header(UPGRADE, "websocket")
+                .header(CONNECTION, "Upgrade")
+                .header(CONTENT_LENGTH, "0")
+                .body(())
+                .unwrap();
+            adapt_request_version(&mut req, to).unwrap();
+            assert_eq!(req.method(), Method::CONNECT, "{to:?}");
+            assert!(!req.headers().contains_key(CONTENT_LENGTH), "{to:?}");
+        }
     }
 
     #[test]

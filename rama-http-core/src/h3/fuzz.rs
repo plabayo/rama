@@ -742,7 +742,7 @@ mod tests {
                 ],
                 2,
             ),
-            // An empty-port Host is not the same authority, so it is replaced (fuzz finding).
+            // An empty-port Host is not the same authority, so it is replaced.
             (
                 &[
                     (path, ""),
@@ -753,7 +753,7 @@ mod tests {
                 ],
                 2,
             ),
-            // PR9-M5-007: bare asterisk targets keep their scheme in an extension.
+            // Bare asterisk targets keep their scheme in an extension.
             (&[(method, "OPTIONS"), (scheme, "http"), (path, "*")], 2),
             (&[(method, "OPTIONS"), (scheme, "HTTP"), (path, "*")], 2),
             (&[(method, "OPTIONS"), (scheme, "custom"), (path, "*")], 2),

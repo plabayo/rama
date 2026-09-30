@@ -4,7 +4,9 @@ use super::{
     Error,
     qpack::{EncodeField, FieldPair},
 };
-use crate::proto::target::{host_is_wire_authority, normalize_received, reconcile_host};
+use crate::proto::target::{
+    OutgoingHost, host_is_wire_authority, normalize_received, outgoing_host, reconcile_host,
+};
 use rama_core::{
     bytes::{Bytes, BytesMut},
     extensions::ExtensionsRef,
@@ -165,12 +167,11 @@ pub(crate) fn request_head(
             ext::Protocol::try_from_bytes(value).map_err(|_error| malformed("invalid :protocol"))
         })
         .transpose()?;
-    // Several Host lines collapse onto the routed authority once the request is built.
-    let host = fields.headers.get(header::HOST);
-    if let Some(host) = host {
-        AuthorityRef::try_from(host.as_bytes())
-            .map_err(|_error| malformed("invalid Host authority"))?;
-    }
+    // Only a parseable first Host stands in for a missing :authority; any other Host is
+    // reconciled with the request authority once the request is built.
+    let host = fields.headers.get(header::HOST).filter(|host| {
+        fields.authority.is_none() && AuthorityRef::try_from(host.as_bytes()).is_ok()
+    });
     // Normalizing Host into the URI must retain its compression restriction
     // when a subsequent HTTP/2 or HTTP/3 encoder emits it as :authority.
     if fields.authority.is_none() && host.is_some_and(HeaderValue::is_sensitive) {
@@ -367,26 +368,28 @@ pub(crate) fn encode_request<B>(
             .write_h2_authority(&mut target)
             .map_err(|_error| malformed("invalid request authority"))?;
     }
-    let host_values = request.headers().get_all(header::HOST);
-    let mut hosts = host_values.iter();
     let mut authority_from_host = false;
-    if let Some(host) = hosts.next() {
-        let parsed_host = AuthorityRef::try_from(host.as_bytes())
-            .map_err(|_error| malformed("invalid Host authority"))?;
-        if parsed_host.userinfo().is_some() || host.is_empty() || hosts.next().is_some() {
-            return Err(malformed("invalid Host"));
+    let mut drop_host = false;
+    match outgoing_host(request.headers()) {
+        OutgoingHost::Usable(host, parsed_host) => {
+            // Compared with the wire projection, as parsed host and port: `Host: h:02` is port 2.
+            authority_from_host = AuthorityRef::try_from(&target[..])
+                .is_ok_and(|projected| host_is_wire_authority(projected, parsed_host));
+            if authority_from_host {
+                target.clear();
+                target.extend_from_slice(host.as_bytes());
+            }
         }
-        // Compared with the wire projection, as parsed host and port: `Host: h:02` is port 2.
-        authority_from_host = AuthorityRef::try_from(&target[..])
-            .is_ok_and(|projected| host_is_wire_authority(projected, parsed_host));
-        if authority_from_host {
-            target.clear();
-            target.extend_from_slice(host.as_bytes());
+        // Next to a URI authority it is dropped, so one authority reaches the wire.
+        OutgoingHost::Unusable if !target.is_empty() => drop_host = true,
+        OutgoingHost::Unusable => return Err(malformed("invalid Host")),
+        OutgoingHost::Absent
+            if target.is_empty()
+                && (connect || request.uri().scheme().is_some_and(Protocol::is_http)) =>
+        {
+            return Err(malformed("missing request authority"));
         }
-    } else if target.is_empty()
-        && (connect || request.uri().scheme().is_some_and(Protocol::is_http))
-    {
-        return Err(malformed("missing request authority"));
+        OutgoingHost::Absent => {}
     }
     // RFC 9114 §4.4: an ordinary CONNECT names a host and port, whichever field supplied them.
     if connect
@@ -427,7 +430,17 @@ pub(crate) fn encode_request<B>(
     let http_scheme = scheme.is_some_and(Protocol::is_http);
 
     let authority_len = target.len();
-    if !connect && (request.uri().is_asterisk() || http_scheme || !request.uri().is_path_empty()) {
+    if !connect
+        && http_scheme
+        && request.method() == Method::OPTIONS
+        && request.uri().is_path_empty()
+        && request.uri().query().is_none()
+    {
+        // RFC 9112 §3.2.4: an OPTIONS request without a path is for the whole server.
+        target.extend_from_slice(b"*");
+    } else if !connect
+        && (request.uri().is_asterisk() || http_scheme || !request.uri().is_path_empty())
+    {
         request.uri().write_h2_path(&mut target);
     }
     let (authority, path) = target.split_at(authority_len);
@@ -486,6 +499,7 @@ pub(crate) fn encode_request<B>(
             request
                 .headers()
                 .ordered_iter()
+                .filter(|(name, _)| !drop_host || *name != header::HOST)
                 .map(|(name, value)| EncodeField::from_header(name, value)),
         ),
     )
@@ -1072,7 +1086,7 @@ mod tests {
             .map(|field| field.value)
     }
 
-    /// PR9-M5-001: Host is compared with the projected wire authority, not the raw URI.
+    /// Host is compared with the projected wire authority, not the raw URI.
     #[test]
     fn host_is_compared_with_the_projected_authority() {
         for (uri, host, expected) in [
@@ -1112,8 +1126,12 @@ mod tests {
                 Some("other.example:21"),
                 Some("other.example:21"),
             ),
-            // Host itself never carries userinfo.
-            ("https://example.com/", Some("user@example.com"), None),
+            // A Host carrying userinfo is dropped next to the URI authority.
+            (
+                "https://example.com/",
+                Some("user@example.com"),
+                Some("example.com"),
+            ),
         ] {
             assert_eq!(
                 wire_authority(uri, host),
@@ -1137,7 +1155,143 @@ mod tests {
         }
     }
 
-    /// PR9-M5-003: an ordinary CONNECT still names a port after a Host override, on H2 and H3.
+    /// An unusable Host never reaches the wire next to a URI authority, on H2 or H3; without one,
+    /// H3 refuses it.
+    #[test]
+    fn unusable_hosts_are_dropped_next_to_the_uri_authority() {
+        let request = |uri: &str, hosts: &[&'static str]| {
+            let mut request = Request::new(());
+            *request.uri_mut() = Uri::parse(uri).unwrap();
+            for host in hosts {
+                request
+                    .headers_mut()
+                    .append(header::HOST, HeaderValue::from_static(host));
+            }
+            request
+        };
+        for hosts in [
+            &["bad host"][..],
+            &["a@b@evil.example"][..],
+            &["user@other.example"][..],
+            &["a.example", "b.example"][..],
+        ] {
+            let sent = decode(
+                encode_request(&shared(), 0, &request("https://good.example/", hosts)).unwrap(),
+            );
+            let authorities: Vec<_> = sent
+                .iter()
+                .filter(|field| field.name == ":authority" || field.name == "host")
+                .map(|field| (field.name.clone(), field.value.clone()))
+                .collect();
+            assert_eq!(
+                authorities,
+                [(
+                    Bytes::from_static(b":authority"),
+                    Bytes::from_static(b"good.example")
+                )],
+                "h3 {hosts:?}"
+            );
+            let (frame, _) = crate::h2::client::Peer::convert_send_message(
+                StreamId::from(1),
+                request("https://good.example/", hosts),
+                None,
+                true,
+                None,
+                None,
+            )
+            .unwrap();
+            assert_eq!(
+                frame.pseudo().authority.as_deref(),
+                Some("good.example"),
+                "h2 {hosts:?}"
+            );
+            assert!(frame.fields().get(header::HOST).is_none(), "h2 {hosts:?}");
+            // Without a URI authority the Host is all there is: H3 cannot send it.
+            encode_request(&shared(), 0, &request("custom:/p", hosts)).unwrap_err();
+        }
+    }
+
+    /// With an :authority, H3 accepts and replaces any Host, whatever its order.
+    #[test]
+    fn unparseable_hosts_are_replaced_by_the_authority() {
+        for hosts in [
+            &["bad host"][..],
+            &[""][..],
+            &["a@b@evil.example"][..],
+            &["example.com:99999"][..],
+            &["bad host", "example.com"][..],
+            &["example.com", "bad host"][..],
+        ] {
+            let mut head = vec![
+                (":method", "GET"),
+                (":scheme", "https"),
+                (":authority", "example.com"),
+                (":path", "/"),
+            ];
+            head.extend(hosts.iter().map(|host| ("host", *host)));
+            let received = request_head(fields(&head), true).unwrap();
+            let received_hosts: Vec<_> = received.headers().get_all(header::HOST).iter().collect();
+            assert_eq!(received_hosts, ["example.com"], "{hosts:?}");
+        }
+        // Without one, an unparseable first Host is kept, like H1/H2, and cannot be sent on.
+        let received = request_head(
+            fields(&[
+                (":method", "GET"),
+                (":scheme", "https"),
+                (":path", "/"),
+                ("host", "bad host"),
+            ]),
+            true,
+        )
+        .unwrap();
+        assert!(received.uri().authority().is_none());
+        assert_eq!(received.headers()[header::HOST], "bad host");
+        encode_request(&shared(), 0, &received).unwrap_err();
+    }
+
+    /// An OPTIONS request without a path is `*` on H1, H2 and H3 (RFC 9112 §3.2.4).
+    #[test]
+    fn options_without_a_path_is_sent_as_asterisk() {
+        let pseudo = frame::Pseudo {
+            method: Some(Method::OPTIONS),
+            scheme: Some(hpack::BytesStr::try_from(Bytes::from_static(b"https")).unwrap()),
+            authority: Some(
+                hpack::BytesStr::try_from(Bytes::from_static(b"real.example")).unwrap(),
+            ),
+            path: Some(hpack::BytesStr::try_from(Bytes::from_static(b"*")).unwrap()),
+            ..Default::default()
+        };
+        let received = crate::h2::server::test_util::receive(pseudo, HeaderMap::new()).unwrap();
+        let sent = decode(encode_request(&shared(), 0, &received).unwrap());
+        let path = sent.iter().find(|field| field.name == ":path").unwrap();
+        assert_eq!(path.value, &b"*"[..]);
+        let mut h1 = BytesMut::new();
+        rama_http_types::proto::h1::head::encode_request_target(
+            &Method::OPTIONS,
+            received.uri(),
+            received.extensions(),
+            &mut h1,
+        )
+        .unwrap();
+        assert_eq!(&h1[..], b"*");
+        // A path or query is kept as is.
+        for (uri, h1_target) in [
+            ("https://real.example/", "/"),
+            ("https://real.example?q", "/?q"),
+        ] {
+            let mut h1 = BytesMut::new();
+            rama_http_types::proto::h1::head::encode_request_target(
+                &Method::OPTIONS,
+                &Uri::parse(uri).unwrap(),
+                &Default::default(),
+                &mut h1,
+            )
+            .unwrap();
+            assert_eq!(&h1[..], h1_target.as_bytes(), "{uri}");
+        }
+    }
+
+    /// An ordinary CONNECT still names a port after a Host override, on H2 and H3.
     #[test]
     fn ordinary_connect_keeps_a_port_after_a_host_override() {
         for (host, sent) in [
@@ -1222,7 +1376,7 @@ mod tests {
         }
     }
 
-    /// PR9-M5-004: an asterisk target's explicit `:authority` wins over Host, as on H2.
+    /// An asterisk target's explicit `:authority` wins over Host, as on H2.
     #[test]
     fn asterisk_authority_wins_over_host() {
         for scheme in ["https", "custom"] {
@@ -1273,7 +1427,7 @@ mod tests {
         assert!(received.headers()[header::HOST].is_sensitive());
     }
 
-    /// PR9-M5-005: a Host derived from a sensitive :authority is never indexed on either version.
+    /// A Host derived from a sensitive :authority is never indexed on either version.
     #[test]
     fn hosts_derived_from_a_sensitive_authority_stay_sensitive() {
         let h3 = {
@@ -1380,7 +1534,7 @@ mod tests {
         service.serve(request).await.unwrap();
     }
 
-    /// Found by the `h3_request_head` round-trip oracle: heads the encoder could not forward.
+    /// A decoded Host, userinfo removed, re-encodes to the same request.
     #[test]
     fn decoded_hosts_reencode_and_never_carry_userinfo() {
         for scheme in ["custom", "https"] {

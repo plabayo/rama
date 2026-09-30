@@ -1,7 +1,8 @@
 //! The datagram demultiplexer's budgets, lifetimes and end-of-receive rules, driven directly.
 
 use crate::h3::datagram::{
-    AbortRequest, DatagramConfig, DatagramLimits, Demux, ReceiveEnd, Semantics, pending_lifetime,
+    AbortRequest, DatagramConfig, DatagramLimits, Demux, ReceiveEnd, Semantics,
+    invalid_prefix_error, pending_lifetime,
 };
 use rama_core::bytes::Bytes;
 use rama_http::datagram::{NativeRecvError, ViolationPolicy};
@@ -83,13 +84,14 @@ fn payloads_that_exactly_fit_the_budget_are_kept() {
     deliver(&mut demux, &config, 4, 8, now);
     register(&mut demux, &config, 4, now);
     assert!(matches!(poll(&mut demux, 4), Poll::Ready(Ok(Some(payload))) if payload.len() == 8));
-    // Queued: a sum that fits where a product would not, then one over the budget.
+    // Queued: a sum that fits where a product would not, then one over the budget, for
+    // which the oldest makes room.
     register(&mut demux, &config, 8, now);
     deliver(&mut demux, &config, 8, 2, now);
     deliver(&mut demux, &config, 8, 5, now);
     deliver(&mut demux, &config, 8, 2, now);
-    assert!(matches!(poll(&mut demux, 8), Poll::Ready(Ok(Some(payload))) if payload.len() == 2));
     assert!(matches!(poll(&mut demux, 8), Poll::Ready(Ok(Some(payload))) if payload.len() == 5));
+    assert!(matches!(poll(&mut demux, 8), Poll::Ready(Ok(Some(payload))) if payload.len() == 2));
     assert!(poll(&mut demux, 8).is_pending());
     assert_eq!(demux.drops().over_budget, 1);
     // The request's own count, reported through its native channel.
@@ -230,4 +232,83 @@ fn bursts_and_churn_leave_bounded_storage() {
         "{churned:?} {burst:?}"
     );
     assert_eq!(churned.2, 0);
+}
+
+/// Stalled queues make room for a healthy one instead of starving it of the budget.
+#[test]
+fn stalled_queues_make_room_for_a_healthy_one() {
+    let config = config(4, 4, 64);
+    let now = Instant::now();
+    let mut demux = Demux::default();
+    for stream in [0, 4, 8] {
+        register(&mut demux, &config, stream, now);
+    }
+    // Two consumers that never read fill the budget exactly.
+    for stream in [0, 4] {
+        for _ in 0..4 {
+            deliver(&mut demux, &config, stream, 8, now);
+        }
+    }
+    assert_eq!(demux.buffered(), 64);
+    for _ in 0..100 {
+        deliver(&mut demux, &config, 8, 8, now);
+        assert!(
+            matches!(poll(&mut demux, 8), Poll::Ready(Ok(Some(payload))) if payload.len() == 8)
+        );
+    }
+    assert_eq!(demux.slot_dropped(8), 0);
+    assert_eq!(demux.slot_dropped(0) + demux.slot_dropped(4), 1);
+    assert_eq!(demux.drops().over_budget, 1);
+    // A payload that can never fit is dropped without evicting anyone.
+    deliver(&mut demux, &config, 8, 65, now);
+    assert_eq!(demux.slot_dropped(8), 1);
+    assert_eq!(demux.slot_dropped(0) + demux.slot_dropped(4), 1);
+    assert!(demux.buffered() <= 64);
+}
+
+/// A held datagram is adopted only within its own lifetime, whatever the queue order.
+#[test]
+fn held_datagrams_expire_by_their_own_lifetime() {
+    let config = config(4, 4, 64);
+    let start = Instant::now();
+    let mut demux = Demux::<Aborts>::default();
+    demux
+        .deliver(
+            &config,
+            4,
+            Bytes::from_static(b"long"),
+            start,
+            Duration::from_millis(600),
+        )
+        .run();
+    // Arrives later with a shorter lifetime, after the RTT fell.
+    demux
+        .deliver(
+            &config,
+            8,
+            Bytes::from_static(b"short"),
+            start + Duration::from_millis(10),
+            Duration::from_millis(100),
+        )
+        .run();
+    register(&mut demux, &config, 8, start + Duration::from_millis(200));
+    assert!(poll(&mut demux, 8).is_pending());
+    assert_eq!(demux.drops().expired, 1);
+    assert_eq!(demux.pending_len(), 1);
+    register(&mut demux, &config, 4, start + Duration::from_millis(300));
+    assert!(
+        matches!(poll(&mut demux, 4), Poll::Ready(Ok(Some(payload))) if payload == b"long"[..])
+    );
+    assert_eq!(demux.buffered(), 0);
+}
+
+/// An invalid datagram prefix is the peer's failure, like every received-input violation.
+#[test]
+fn invalid_prefixes_are_remote_failures() {
+    for beyond_limit in [false, true] {
+        assert!(
+            invalid_prefix_error(beyond_limit).is_remote_failure(),
+            "{beyond_limit}"
+        );
+    }
 }

@@ -243,7 +243,7 @@ fn reject_forbidden_fields(
         (_, Message::Request) if *name == header::CONTENT_LENGTH => headers
             .get_all(name)
             .iter()
-            .any(|value| value.as_bytes().trim_ascii() != b"0"),
+            .any(|value| !is_zero_length(value)),
         (_, Message::Request) if *name == header::TRANSFER_ENCODING => headers.contains_key(name),
         _ => false,
     };
@@ -253,6 +253,14 @@ fn reject_forbidden_fields(
         .map_or(Ok(()), |name| {
             Err(CapsuleHandshakeError::ForbiddenField(name.clone()))
         })
+}
+
+/// A zero `Content-Length` in any RFC 9110 §8.6 spelling: `1*DIGIT`, or an identical list.
+fn is_zero_length(value: &HeaderValue) -> bool {
+    value.as_bytes().split(|&byte| byte == b',').all(|part| {
+        let part = part.trim_ascii();
+        !part.is_empty() && part.iter().all(|&byte| byte == b'0')
+    })
 }
 
 #[cfg(test)]
@@ -492,6 +500,11 @@ mod tests {
             for (name, value, accepted) in [
                 (header::CONTENT_LENGTH, "0", true),
                 (header::CONTENT_LENGTH, " 0 ", true),
+                (header::CONTENT_LENGTH, "00", true),
+                (header::CONTENT_LENGTH, "0, 0", true),
+                (header::CONTENT_LENGTH, "+0", false),
+                (header::CONTENT_LENGTH, "0, 1", false),
+                (header::CONTENT_LENGTH, "", false),
                 (header::CONTENT_LENGTH, "5", false),
                 (header::CONTENT_LENGTH, "invalid", false),
                 (header::TRANSFER_ENCODING, "chunked", false),

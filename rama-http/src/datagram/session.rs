@@ -159,13 +159,15 @@ impl From<InvalidCapsule> for SessionError {
 ///
 /// A send accepts its value when a poll finds no earlier accepted bytes left to write; from
 /// then on the session owns it, and dropping the future leaves it to be written by the next
-/// send or [`close`](Self::close). A future dropped before that point sent nothing. Capsule
-/// headers are never interleaved. [`recv`](Self::recv) is cancel safe.
+/// capsule send (including a datagram carried as a capsule) or [`close`](Self::close). A
+/// native datagram send never waits for those bytes. A future dropped before that point sent
+/// nothing. Capsule headers are never interleaved. [`recv`](Self::recv) is cancel safe.
 ///
-/// Dropping the sender while a capsule is partially on the wire, or receiving a malformed
-/// data stream, aborts the carrier: through its [`OnMalformedMessage`] hook when published,
-/// and by closing the I/O in any case, even while the other half is retained. The peer never
-/// sees a clean end mid-value.
+/// Dropping a healthy sender while a capsule is partially on the wire, or receiving a
+/// malformed data stream, aborts the carrier: through its [`OnMalformedMessage`] hook when
+/// published, and by closing the I/O in any case, even while the other half is retained. The
+/// peer then sees a reset where the carrier has one, and otherwise a close its decoder
+/// reports as truncated. A sender whose writes already failed leaves the receive half alone.
 pub struct HttpDatagramSession<T = Upgraded> {
     sender: SessionSender<T>,
     receiver: SessionReceiver<T>,
@@ -213,6 +215,7 @@ where
                 native_first: true,
                 native_open: true,
                 native_released: false,
+                stream_ended: false,
                 end: None,
             },
         }
@@ -455,8 +458,7 @@ impl<T: AsyncWrite> SessionSender<T> {
         std::future::poll_fn(|cx| {
             ready!(self.poll_write_pending(cx))?;
             if let Some(value) = value.take() {
-                self.accept_header(header);
-                self.pending[1] = value;
+                self.accept_capsule(header, value);
             }
             self.poll_write_and_flush(cx)
         })
@@ -560,6 +562,20 @@ impl<T: AsyncWrite> SessionSender<T> {
         Ok(())
     }
 
+    /// Accept a complete capsule. A small value is copied behind its header so it takes one
+    /// write, and so one frame on HTTP/2 and HTTP/3; a large one is written without a copy.
+    fn accept_capsule(&mut self, header: CapsuleHeader, value: Bytes) {
+        if value.len() > COALESCE_MAX {
+            self.accept_header(header);
+            self.pending[1] = value;
+            return;
+        }
+        self.scratch.reserve(CapsuleHeader::MAX_SIZE + value.len());
+        header.encode(&mut self.scratch);
+        self.scratch.extend_from_slice(&value);
+        self.pending[0] = self.scratch.split().freeze();
+    }
+
     fn accept_header(&mut self, header: CapsuleHeader) {
         self.scratch.reserve(CapsuleHeader::MAX_SIZE);
         header.encode(&mut self.scratch);
@@ -608,6 +624,8 @@ impl<T: AsyncWrite> SessionSender<T> {
     fn stop(&mut self, state: SendState) {
         self.state = state;
         self.pending = [Bytes::new(), Bytes::new()];
+        // A partial capsule can no longer be finished, so dropping must not blame the peer.
+        self.on_wire = false;
     }
 }
 
@@ -623,6 +641,10 @@ enum RecvEnd {
 /// Reads and decoded skips a receive poll performs before yielding to other work.
 const MAX_READS_PER_POLL: usize = 16;
 
+/// Values up to this size are copied behind their capsule header: about one packet's payload,
+/// where the copy costs less than a second write and frame.
+const COALESCE_MAX: usize = 1500;
+
 /// The receiving half of an [`HttpDatagramSession`].
 pub struct SessionReceiver<T> {
     io: SharedIo<T>,
@@ -634,6 +656,8 @@ pub struct SessionReceiver<T> {
     native_open: bool,
     // The native consumer was released, at a clean end or on drop.
     native_released: bool,
+    // The data stream ended cleanly; datagrams already received are still delivered.
+    stream_ended: bool,
     end: Option<RecvEnd>,
 }
 
@@ -703,6 +727,9 @@ impl<T: AsyncRead> SessionReceiver<T> {
             self.terminate(RecvEnd::Failed(io::ErrorKind::ConnectionAborted));
             return Poll::Ready(Err(SessionError::Io(aborted())));
         }
+        if self.stream_ended {
+            return Poll::Ready(self.drain_after_end(cx));
+        }
         // Alternate sources per event so neither can starve the other.
         self.native_first = !self.native_first;
         if self.native_first
@@ -741,8 +768,8 @@ impl<T: AsyncRead> SessionReceiver<T> {
                 Ok(0) => {
                     return Poll::Ready(match self.decoder.finish() {
                         Ok(()) => {
-                            self.terminate(RecvEnd::Clean);
-                            Ok(None)
+                            self.stream_ended = true;
+                            self.drain_after_end(cx)
                         }
                         Err(error) => Err(self.fail(error)),
                     });
@@ -777,6 +804,21 @@ impl<T: AsyncRead> SessionReceiver<T> {
             Err(error) => {
                 self.terminate(RecvEnd::Native(error));
                 Poll::Ready(Some(Err(SessionError::NativeRecv(error))))
+            }
+        }
+    }
+
+    /// After a clean stream end, native datagrams already queued arrive before the end; this
+    /// never waits for more.
+    fn drain_after_end(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Result<Option<SessionEvent>, SessionError> {
+        match self.poll_native(cx) {
+            Poll::Ready(Some(result)) => result.map(|payload| Some(native_event(payload))),
+            Poll::Ready(None) | Poll::Pending => {
+                self.terminate(RecvEnd::Clean);
+                Ok(None)
             }
         }
     }

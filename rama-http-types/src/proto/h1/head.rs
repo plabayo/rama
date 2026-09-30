@@ -341,6 +341,10 @@ pub fn encode_request_target(
         let is_insecure = !crate::protocol_from_uri_or_extensions(extensions, uri).is_secure();
         if via_http_proxy && is_insecure {
             uri.write_http_absolute_form(output)
+        } else if *method == Method::OPTIONS && uri.is_path_empty() && uri.query().is_none() {
+            // RFC 9112 §3.2.4: the last hop sends an OPTIONS request without a path as `*`.
+            output.extend_from_slice(b"*");
+            Ok(())
         } else {
             uri.write_http_origin_form(output)
         }

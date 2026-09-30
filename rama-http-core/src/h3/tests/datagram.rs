@@ -1477,7 +1477,7 @@ async fn a_pending_shutdown_closes_native_sending_before_its_fin() {
 }
 
 #[tokio::test]
-async fn a_cleanly_ended_session_frees_its_pre_fin_native_queue() {
+async fn a_cleanly_ended_session_delivers_then_frees_its_pre_fin_native_queue() {
     for through_session in [false, true] {
         tokio::time::timeout(LIMIT, async {
             let pair = Pair::in_memory(None, None).await;
@@ -1511,9 +1511,17 @@ async fn a_cleanly_ended_session_frees_its_pre_fin_native_queue() {
                 return;
             }
             let mut server_session = HttpDatagramSession::new(server_io);
+            // What arrived before the FIN is delivered before the end.
+            assert_eq!(
+                server_session.recv().await.unwrap(),
+                Some(SessionEvent::Datagram {
+                    payload: Bytes::from_static(b"pre-fin"),
+                    transport: DatagramTransport::Native,
+                })
+            );
             assert_eq!(server_session.recv().await.unwrap(), None);
             assert_eq!(server_session.recv().await.unwrap(), None);
-            // The ended receiver is still alive, yet its unreachable queue is released.
+            // The ended receiver is still alive, yet its native queue is released.
             assert_eq!(server.shared().datagram_demux().buffered(), 0);
             // The healthy reverse direction keeps working.
             assert_eq!(

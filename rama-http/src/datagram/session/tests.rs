@@ -1540,6 +1540,9 @@ impl Drop for Owned {
     }
 }
 
+/// Large enough to be written without a copy, so its storage stays owned until written.
+const UNCOPIED: usize = COALESCE_MAX + 1;
+
 fn owned(len: usize, dropped: &Arc<AtomicUsize>) -> Bytes {
     Bytes::from_owner(Owned(vec![7; len], dropped.clone()))
 }
@@ -1598,7 +1601,7 @@ async fn cancelled_sends_keep_their_accepted_payload_until_written() {
     let mut session = HttpDatagramSession::with_config(ServiceInput::new(a), config());
     let dropped = Arc::new(AtomicUsize::new(0));
     {
-        let send = session.send_capsule(CONTROL, owned(32, &dropped));
+        let send = session.send_capsule(CONTROL, owned(UNCOPIED, &dropped));
         tokio::pin!(send);
         let mut cx = Context::from_waker(Waker::noop());
         assert!(send.as_mut().poll(&mut cx).is_pending());
@@ -1613,7 +1616,7 @@ async fn cancelled_sends_keep_their_accepted_payload_until_written() {
     session.close().await.unwrap();
     drop(session);
     let wire = reader.await.unwrap();
-    assert_eq!(wire, encode_capsule(CONTROL, &[7; 32]).unwrap());
+    assert_eq!(wire, encode_capsule(CONTROL, &[7; UNCOPIED]).unwrap());
     assert_eq!(dropped.load(Ordering::Acquire), 1);
 }
 
@@ -1643,7 +1646,7 @@ async fn aborted_sessions_release_accepted_payloads_on_any_next_send() {
             {
                 let mut cx = Context::from_waker(Waker::noop());
                 if accepted == "capsule" {
-                    let send = sender.send_capsule(CONTROL, owned(32, &dropped));
+                    let send = sender.send_capsule(CONTROL, owned(UNCOPIED, &dropped));
                     tokio::pin!(send);
                     assert!(send.as_mut().poll(&mut cx).is_pending());
                 } else {
@@ -1685,5 +1688,180 @@ async fn aborted_sessions_release_accepted_payloads_on_any_next_send() {
             assert_eq!(dropped.load(Ordering::Acquire), 1, "{accepted}/{operation}");
             drop(sender);
         }
+    }
+}
+
+/// Reads `input` then EOF; its first write takes one byte and every later one fails.
+struct FailsAfterFirstWrite {
+    input: Bytes,
+    writes: usize,
+    extensions: Extensions,
+}
+
+impl ExtensionsRef for FailsAfterFirstWrite {
+    fn extensions(&self) -> &Extensions {
+        &self.extensions
+    }
+}
+
+impl AsyncRead for FailsAfterFirstWrite {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let len = self.input.len().min(buf.remaining());
+        let chunk = self.input.split_to(len);
+        buf.put_slice(&chunk);
+        Poll::Ready(Ok(()))
+    }
+}
+
+impl AsyncWrite for FailsAfterFirstWrite {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        self.writes += 1;
+        if self.writes == 1 {
+            return Poll::Ready(Ok(buf.len().min(1)));
+        }
+        Poll::Ready(Err(io::ErrorKind::BrokenPipe.into()))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+/// A send that fails after its header is on the wire leaves the receive half alone,
+/// so the peer's last capsules still arrive and nothing is reported as malformed.
+#[tokio::test]
+async fn failed_sends_leave_the_receive_half_alone() {
+    for streamed in [false, true] {
+        let io = FailsAfterFirstWrite {
+            input: encode_capsule(CONTROL, b"bye").unwrap(),
+            writes: 0,
+            extensions: Extensions::new(),
+        };
+        let aborted = Arc::new(AtomicUsize::new(0));
+        io.extensions.insert(OnMalformedMessage::new({
+            let aborted = aborted.clone();
+            move || {
+                aborted.fetch_add(1, Ordering::Relaxed);
+            }
+        }));
+        let (mut sender, mut receiver) = HttpDatagramSession::with_config(io, config()).split();
+        let error = if streamed {
+            sender.start_capsule(header(0x4242, 10)).await.unwrap_err()
+        } else {
+            sender
+                .send_capsule(CONTROL, Bytes::from_static(&[7; 32]))
+                .await
+                .unwrap_err()
+        };
+        assert!(
+            matches!(error, SessionError::Io(_)),
+            "{streamed}: {error:?}"
+        );
+        drop(sender);
+        assert_eq!(aborted.load(Ordering::Relaxed), 0, "{streamed}");
+        assert!(
+            matches!(
+                receiver.recv().await.unwrap(),
+                Some(SessionEvent::Capsule { ty, value }) if ty == CONTROL && value == b"bye"[..]
+            ),
+            "{streamed}"
+        );
+        assert!(receiver.recv().await.unwrap().is_none(), "{streamed}");
+    }
+}
+
+/// Native datagrams received before the data stream's clean end still arrive.
+#[tokio::test]
+async fn native_datagrams_queued_before_a_clean_end_are_delivered() {
+    let native = FakeNative::default();
+    let (session, peer) = native_pair(&native);
+    let (_sender, mut receiver) = session.split();
+    for payload in [&b"one"[..], b"two", b"three"] {
+        native.push(payload);
+    }
+    drop(peer);
+    let mut received = Vec::new();
+    while let Some(event) = receiver.recv().await.unwrap() {
+        received.push(event);
+    }
+    assert_eq!(
+        received,
+        [
+            datagram(b"one", DatagramTransport::Native),
+            datagram(b"two", DatagramTransport::Native),
+            datagram(b"three", DatagramTransport::Native),
+        ]
+    );
+    assert!(receiver.recv().await.unwrap().is_none());
+    assert_eq!(native.0.lock().released, 1);
+}
+
+/// Counts writes; accepts everything.
+#[derive(Default)]
+struct CountsWrites {
+    writes: Arc<AtomicUsize>,
+    extensions: Extensions,
+}
+
+impl ExtensionsRef for CountsWrites {
+    fn extensions(&self) -> &Extensions {
+        &self.extensions
+    }
+}
+
+impl AsyncRead for CountsWrites {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+        _: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        Poll::Pending
+    }
+}
+
+impl AsyncWrite for CountsWrites {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        self.writes.fetch_add(1, Ordering::Relaxed);
+        Poll::Ready(Ok(buf.len()))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+/// A small capsule takes one write, so one frame on HTTP/2 and HTTP/3; a large one is
+/// written without a copy.
+#[tokio::test]
+async fn small_capsules_take_one_write() {
+    for (len, writes) in [(0, 1), (32, 1), (COALESCE_MAX, 1), (UNCOPIED, 2)] {
+        let io = CountsWrites::default();
+        let counted = io.writes.clone();
+        let mut session = HttpDatagramSession::with_config(io, config());
+        session
+            .send_capsule(CONTROL, Bytes::from(vec![7; len]))
+            .await
+            .unwrap();
+        assert_eq!(counted.load(Ordering::Relaxed), writes, "{len}");
     }
 }
