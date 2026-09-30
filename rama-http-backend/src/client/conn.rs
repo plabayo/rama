@@ -577,6 +577,8 @@ where
                 .instrument(conn_span),
             );
 
+            // The pool admits by the streams actually open, as for HTTP/3.
+            extensions.insert(sender.connection_admission());
             let svc = HttpClientService {
                 sender: SendRequest::Http2(sender),
                 extensions,
@@ -668,6 +670,7 @@ where
         .instrument(conn_span),
     );
 
+    extensions.insert(sender.connection_admission());
     let svc = HttpClientService {
         sender: SendRequest::Http2(sender),
         extensions,

@@ -15,6 +15,7 @@ use rama_http::proto::h2::frame::EarlyFrame;
 use rama_http_types::proto::h2::frame::{SettingOrder, SettingsConfig};
 use rama_http_types::proto::{ext::Protocol, h2::PseudoHeaderOrder};
 use rama_http_types::{Request, Response, StreamingBody};
+use rama_net::client::pool::ConnectionAdmission;
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -26,6 +27,7 @@ use crate::proto;
 pub struct SendRequest<B> {
     dispatch: dispatch::UnboundedSender<Request<B>, Response<IncomingBody>>,
     peer_settings: H2PeerSettingsHandle,
+    admission: ConnectionAdmission,
 }
 
 impl<B> Clone for SendRequest<B> {
@@ -33,6 +35,7 @@ impl<B> Clone for SendRequest<B> {
         Self {
             dispatch: self.dispatch.clone(),
             peer_settings: self.peer_settings.clone(),
+            admission: self.admission.clone(),
         }
     }
 }
@@ -125,6 +128,16 @@ impl<B> SendRequest<B> {
     #[must_use]
     pub fn is_ready(&self) -> bool {
         self.dispatch.is_ready()
+    }
+
+    /// Publish exact request admission for a multiplexing connection pool.
+    ///
+    /// A checkout reserves one of the peer's concurrent streams. The request takes it into its
+    /// stream, which holds it until the stream ends, including an upgraded tunnel that outlives
+    /// its response. The policy holds the connection weakly.
+    #[must_use]
+    pub fn connection_admission(&self) -> ConnectionAdmission {
+        self.admission.clone()
     }
 
     /// Checks if the connection side has been closed.
@@ -763,6 +776,7 @@ impl Builder {
                 SendRequest {
                     dispatch: tx.unbound(),
                     peer_settings: h2.peer_settings_handle(),
+                    admission: h2.connection_admission(),
                 },
                 Connection {
                     inner: (PhantomData, h2),

@@ -5,6 +5,7 @@ mod discovery_outcomes;
 mod ip_policy;
 #[cfg(all(feature = "boring", feature = "rustls"))]
 mod mixed_tls;
+mod pool_admission;
 mod redirects;
 mod websocket_pool;
 
