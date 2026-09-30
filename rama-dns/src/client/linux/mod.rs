@@ -40,8 +40,8 @@ use rama_utils::{
 };
 
 use super::{
-    blocking::{BlockingLookups, DEFAULT_MAX_BLOCKING_LOOKUPS},
     in_flight::{self, InFlight, Outcome},
+    limit::{DEFAULT_MAX_LOOKUPS, LookupLimit},
     resolver::{
         DnsAddressResolver, DnsCnameResolver, DnsResolver, DnsServiceBindingResolver,
         DnsTxtResolver,
@@ -90,7 +90,7 @@ const NATIVE_RECORD_LOOKUPS: bool = cfg!(any(
 const DEFAULT_NATIVE_MAX_CONCURRENCY: usize = if NATIVE_RECORD_LOOKUPS {
     128
 } else {
-    DEFAULT_MAX_BLOCKING_LOOKUPS
+    DEFAULT_MAX_LOOKUPS
 };
 
 #[derive(Debug, Clone)]
@@ -269,7 +269,7 @@ impl LinuxDnsResolverBuilder {
             cache_capacity: self.cache_capacity,
             native: NativeConfig {
                 response_buffer_size: self.response_buffer_size,
-                blocking: BlockingLookups::new(self.native_max_concurrency),
+                limit: LookupLimit::new(self.native_max_concurrency),
             },
             cache: Arc::new(cache::LinuxDnsCache::new(
                 self.cache_capacity,
@@ -341,7 +341,7 @@ pub struct LinuxDnsResolver {
 #[derive(Debug, Clone)]
 struct NativeConfig {
     response_buffer_size: usize,
-    blocking: BlockingLookups,
+    limit: LookupLimit,
 }
 
 impl Default for LinuxDnsResolver {
@@ -383,7 +383,7 @@ impl LinuxDnsResolver {
 
     #[must_use]
     pub fn native_max_concurrency(&self) -> usize {
-        self.native.blocking.max()
+        self.native.limit.max()
     }
 
     #[must_use]
@@ -410,7 +410,7 @@ impl LinuxDnsResolver {
         /// See [`LinuxDnsResolverBuilder::native_max_concurrency`]. Clones
         /// made before this call keep their own bound.
         pub fn native_max_concurrency(mut self, max: usize) -> Self {
-            self.native.blocking = BlockingLookups::new(max);
+            self.native.limit = LookupLimit::new(max);
             self
         }
     }
@@ -1096,9 +1096,9 @@ static_str_error! {
 #[cfg(test)]
 mod tests {
     use super::{
-        BlockingLookups, DnsAddressResolver as _, InFlight, LookupEvent, NativeConfig,
-        ResolvedLookup, cache, dns_name_from_domain, in_flight, lookup_and_cache,
-        lookup_cached_stream, native_lookup_ipv4_stream, resolved_first_stream,
+        DnsAddressResolver as _, InFlight, LookupEvent, LookupLimit, NativeConfig, ResolvedLookup,
+        cache, dns_name_from_domain, in_flight, lookup_and_cache, lookup_cached_stream,
+        native_lookup_ipv4_stream, resolved_first_stream,
     };
     use rama_core::{
         bytes::Bytes,
@@ -1942,12 +1942,12 @@ mod tests {
     async fn native_lookup_waiting_for_a_busy_slot_times_out() {
         let native = NativeConfig {
             response_buffer_size: 4096,
-            blocking: BlockingLookups::new(1),
+            limit: LookupLimit::new(1),
         };
         let (release, held) = mpsc::channel::<()>();
         let busy = native
-            .blocking
-            .spawn(Instant::now() + Duration::from_secs(10), move |_budget| {
+            .limit
+            .spawn_blocking(Instant::now() + Duration::from_secs(10), move |_budget| {
                 held.recv_timeout(Duration::from_secs(3)).ok()
             })
             .await

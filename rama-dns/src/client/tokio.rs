@@ -16,8 +16,8 @@ use rama_utils::{
 };
 
 use super::{
-    blocking::{BlockingLookups, deadline_after},
     in_flight::{InFlight, coalesced_stream},
+    limit::{LookupLimit, deadline_after},
     resolver::{
         DnsAddressResolver, DnsCnameResolver, DnsResolver, DnsServiceBindingResolver,
         DnsTxtResolver,
@@ -37,7 +37,7 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 /// name share a single `getaddrinfo` call.
 pub struct TokioDnsResolver {
     timeout: Duration,
-    blocking: BlockingLookups,
+    limit: LookupLimit,
     // rooted flag: `Domain` equality ignores the trailing dot getaddrinfo honours
     in_flight: InFlight<(Domain, bool)>,
 }
@@ -46,7 +46,7 @@ impl Default for TokioDnsResolver {
     fn default() -> Self {
         Self {
             timeout: DEFAULT_TIMEOUT,
-            blocking: BlockingLookups::default(),
+            limit: LookupLimit::default(),
             in_flight: InFlight::default(),
         }
     }
@@ -75,7 +75,7 @@ impl TokioDnsResolver {
 
     #[must_use]
     pub fn max_concurrency(&self) -> usize {
-        self.blocking.max()
+        self.limit.max()
     }
 
     generate_set_and_with! {
@@ -83,7 +83,7 @@ impl TokioDnsResolver {
         /// blocking-pool thread until libc returns, which a timeout cannot
         /// cancel.
         pub fn max_concurrency(mut self, max: usize) -> Self {
-            self.blocking = BlockingLookups::new(max);
+            self.limit = LookupLimit::new(max);
             self
         }
     }
@@ -92,10 +92,10 @@ impl TokioDnsResolver {
         &self,
         domain: Domain,
     ) -> impl Stream<Item = Result<IpAddr, BoxError>> + Send {
-        let (timeout, blocking) = (self.timeout, self.blocking.clone());
+        let (timeout, limit) = (self.timeout, self.limit.clone());
         let key = (domain.clone(), domain.is_fqdn());
         coalesced_stream(self.in_flight.clone(), key, timeout, move || {
-            lookup_host_stream(domain, timeout, blocking)
+            lookup_host_stream(domain, timeout, limit)
         })
     }
 }
@@ -179,13 +179,13 @@ impl DnsResolver for TokioDnsResolver {}
 fn lookup_host_stream(
     domain: Domain,
     timeout: Duration,
-    blocking: BlockingLookups,
+    limit: LookupLimit,
 ) -> impl Stream<Item = Result<IpAddr, BoxError>> + Send {
     stream_fn(async move |mut yielder| {
         tracing::debug!(?timeout, %domain, "dns::tokio: getaddrinfo");
 
         let deadline = deadline_after(timeout);
-        let task = blocking.spawn(deadline, move |budget| {
+        let task = limit.spawn_blocking(deadline, move |budget| {
             // `None`: the caller already gave up
             (!budget.is_zero()).then(|| {
                 (domain.as_str(), 0)
@@ -271,8 +271,8 @@ mod tests {
         let resolver = TokioDnsResolver::new().with_max_concurrency(1);
         let (release, held) = std::sync::mpsc::channel::<()>();
         let busy = resolver
-            .blocking
-            .spawn(
+            .limit
+            .spawn_blocking(
                 tokio::time::Instant::now() + Duration::from_secs(10),
                 move |_budget| held.recv_timeout(Duration::from_secs(3)).ok(),
             )
@@ -349,8 +349,8 @@ mod tests {
             .with_timeout(Duration::from_millis(100));
         let (release, held) = std::sync::mpsc::channel::<()>();
         let busy = resolver
-            .blocking
-            .spawn(
+            .limit
+            .spawn_blocking(
                 tokio::time::Instant::now() + Duration::from_secs(10),
                 move |_budget| held.recv_timeout(Duration::from_secs(3)).ok(),
             )

@@ -22,7 +22,7 @@ use tokio::sync::mpsc;
 
 use super::{LinuxDnsResolverError, LookupEvent, NativeConfig, dns_name_from_domain};
 use crate::{
-    client::blocking::deadline_after,
+    client::limit::deadline_after,
     wire::{Name, RecordType, ServiceBinding, Txt, parse_a_rdata, parse_aaaa_rdata},
 };
 
@@ -134,7 +134,7 @@ where
         let deadline = deadline_after(timeout);
         let (tx, mut rx) = mpsc::channel(8);
         let response_buffer_size = native.response_buffer_size;
-        let task = native.blocking.spawn(deadline, move |budget| {
+        let task = native.limit.spawn_blocking(deadline, move |budget| {
             if budget.is_zero() {
                 return Err(LinuxDnsResolverError::timeout(timeout).into());
             }

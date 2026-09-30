@@ -17,7 +17,7 @@ use rama_net::address::Domain;
 use tokio::sync::mpsc;
 
 use super::{LinuxDnsResolverError, LookupEvent, NativeConfig, dns_name_from_domain};
-use crate::client::blocking::deadline_after;
+use crate::client::limit::deadline_after;
 
 pub(super) fn lookup_ipv4_stream(
     domain: Domain,
@@ -69,7 +69,7 @@ where
 
         let deadline = deadline_after(timeout);
         let (tx, mut rx) = mpsc::channel(8);
-        let task = native.blocking.spawn(deadline, move |budget| {
+        let task = native.limit.spawn_blocking(deadline, move |budget| {
             if budget.is_zero() {
                 return Err(LinuxDnsResolverError::timeout(timeout).into());
             }

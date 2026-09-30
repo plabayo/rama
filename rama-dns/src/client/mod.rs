@@ -1,7 +1,7 @@
 pub mod resolver;
 
-mod blocking;
 mod in_flight;
+mod limit;
 
 mod connector;
 #[doc(inline)]
