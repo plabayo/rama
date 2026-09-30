@@ -11,7 +11,7 @@ use rama::{
     net::{
         client::pool::{
             ConnID, ConnectionResult, ConnectionReuse, ConnectionReusePolicy, LruDropPool,
-            MultiplexPool, Pool,
+            MultiplexPool, MuxSelection, Pool,
         },
         conn::MaxConcurrency,
     },
@@ -324,12 +324,97 @@ fn bench_multiplex_same_id(bencher: divan::Bencher, resident: usize, with_policy
     });
 }
 
-#[divan::bench(args = [1_usize, 16, 128], sample_count = 100)]
+#[divan::bench(args = [1_usize, 16, 128, 1024], sample_count = 100)]
 fn multiplex_policy_hit(bencher: divan::Bencher, resident: usize) {
     bench_multiplex_same_id(bencher, resident, true);
 }
 
-#[divan::bench(args = [1_usize, 16, 128], sample_count = 100)]
+#[divan::bench(args = [1_usize, 16, 128, 1024], sample_count = 100)]
 fn multiplex_plain_hit(bencher: divan::Bencher, resident: usize) {
     bench_multiplex_same_id(bencher, resident, false);
+}
+
+/// Concurrent checkout of one id served by many resident, mostly idle,
+/// exclusive (capacity one) connections, the shape of an HTTP/1 origin behind a
+/// forward proxy after a load burst. Each thread repeatedly checks out and
+/// releases a connection, so the pool's lock and per-checkout work are the only
+/// shared cost.
+fn bench_multiplex_contended_checkout(
+    bencher: divan::Bencher,
+    threads: usize,
+    resident: usize,
+    selection: MuxSelection,
+) {
+    const CHECKOUTS_PER_THREAD: usize = 2_000;
+
+    let pool = Arc::new(
+        MultiplexPool::<ServiceInput<()>, BenchId>::try_new(1, resident)
+            .unwrap()
+            .with_selection(selection),
+    );
+    let setup = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    setup.block_on(async {
+        let mut held = Vec::with_capacity(resident);
+        for _ in 0..resident {
+            let ConnectionResult::CreatePermit(permit) =
+                pool.get_conn(&BenchId(0), &EMPTY_INPUT).await.unwrap()
+            else {
+                unreachable!("all previous connections are at capacity");
+            };
+            held.push(
+                pool.create(
+                    BenchId(0),
+                    ServiceInput::new(()),
+                    permit,
+                    &Extensions::new(),
+                )
+                .await
+                .unwrap(),
+            );
+        }
+        drop(held);
+    });
+
+    bencher
+        .counter(ItemsCount::new(threads * CHECKOUTS_PER_THREAD))
+        .bench_local(|| {
+            std::thread::scope(|scope| {
+                for _ in 0..threads {
+                    let pool = &pool;
+                    scope.spawn(move || {
+                        let runtime = tokio::runtime::Builder::new_current_thread()
+                            .build()
+                            .unwrap();
+                        runtime.block_on(async {
+                            for _ in 0..CHECKOUTS_PER_THREAD {
+                                let ConnectionResult::Connection(conn) =
+                                    pool.get_conn(&BenchId(0), &EMPTY_INPUT).await.unwrap()
+                                else {
+                                    unreachable!("resident connections are idle");
+                                };
+                                black_box(conn);
+                            }
+                        });
+                    });
+                }
+            });
+        });
+}
+
+#[divan::bench(args = [(1_usize, 64_usize), (4, 64), (4, 1024), (8, 1024)], sample_count = 20)]
+fn multiplex_contended_checkout_least_loaded(
+    bencher: divan::Bencher,
+    (threads, resident): (usize, usize),
+) {
+    bench_multiplex_contended_checkout(bencher, threads, resident, MuxSelection::LeastLoaded);
+}
+
+#[divan::bench(args = [(4_usize, 1024_usize)], sample_count = 20)]
+fn multiplex_contended_checkout_round_robin(
+    bencher: divan::Bencher,
+    (threads, resident): (usize, usize),
+) {
+    bench_multiplex_contended_checkout(bencher, threads, resident, MuxSelection::RoundRobin);
 }
