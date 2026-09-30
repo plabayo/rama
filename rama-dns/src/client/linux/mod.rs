@@ -395,6 +395,17 @@ impl LinuxDnsResolver {
         }
     }
 
+    generate_set_and_with! {
+        /// Set the maximum concurrent native (libc) lookups.
+        ///
+        /// See [`LinuxDnsResolverBuilder::native_max_concurrency`]. Clones
+        /// made before this call keep their own bound.
+        pub fn native_max_concurrency(mut self, max: usize) -> Self {
+            self.native.blocking = BlockingLookups::new(max);
+            self
+        }
+    }
+
     #[must_use]
     pub fn builder() -> LinuxDnsResolverBuilder {
         LinuxDnsResolverBuilder::default()
@@ -1436,6 +1447,9 @@ mod tests {
         assert_eq!(resolver.response_buffer_size(), 4096);
         assert_eq!(resolver.native_max_concurrency(), 8);
         assert!(resolver.systemd_resolved_enabled());
+
+        let resolver = resolver.with_native_max_concurrency(3);
+        assert_eq!(resolver.native_max_concurrency(), 3);
     }
 
     /// A backend that counts its lookups and answers once `gate` opens.
