@@ -142,7 +142,11 @@ fn type_bit(id: TypeId) -> usize {
 /// Testing an entry against every target costs one comparison per target.
 /// The slots reduce this to a table read for the (vast) majority of entries
 /// that are none of the targets, and to a comparison or two for the others.
-struct Targets<const N: usize> {
+///
+/// Hidden and not part of the public API surface: `#[derive(FromExtensions)]`
+/// builds it once per type through a [`TargetPlan`].
+#[doc(hidden)]
+pub struct Targets<const N: usize> {
     ids: [TypeId; N],
     /// Per slot: 1 + the index of the last target in that slot, 0 for none.
     head: [u16; usize::BITS as usize],
@@ -171,6 +175,48 @@ impl<const N: usize> Targets<N> {
             targets.bits |= 1 << slot;
         }
         targets
+    }
+}
+
+/// The [`Targets`] of a `#[derive(FromExtensions)]` type, built on first use.
+///
+/// The targets of such a type never change, so the derive keeps them in a
+/// `static` instead of rebuilding them on every lookup. Without the `std`
+/// feature there is no cell to keep them in and every lookup builds them.
+///
+/// Hidden and not part of the public API surface.
+#[doc(hidden)]
+pub struct TargetPlan<const N: usize> {
+    #[cfg(feature = "std")]
+    targets: std::sync::OnceLock<Targets<N>>,
+}
+
+impl<const N: usize> TargetPlan<N> {
+    /// An empty plan, to be kept in a `static`.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            #[cfg(feature = "std")]
+            targets: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// The targets, built from `ids` on the first call.
+    #[cfg(feature = "std")]
+    pub fn get(&self, ids: impl FnOnce() -> [TypeId; N]) -> &Targets<N> {
+        self.targets.get_or_init(|| Targets::new(ids()))
+    }
+
+    /// The targets, built from `ids`.
+    #[cfg(not(feature = "std"))]
+    pub fn get(&self, ids: impl FnOnce() -> [TypeId; N]) -> Targets<N> {
+        Targets::new(ids())
+    }
+}
+
+impl<const N: usize> Default for TargetPlan<N> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -526,9 +572,21 @@ impl Extensions {
         targets: &[TypeId; N],
         out: &mut [Option<(&'a TypeErasedExtension, usize)>; N],
     ) {
+        self.get_many_targets(Targets::new(*targets), out);
+    }
+
+    /// [`Self::get_many_erased`] for prepared `targets`: a [`Targets`] itself,
+    /// or a reference to one that is kept between lookups (see [`TargetPlan`]).
+    #[doc(hidden)]
+    #[inline]
+    pub fn get_many_targets<'a, const N: usize>(
+        &'a self,
+        targets: impl core::borrow::Borrow<Targets<N>>,
+        out: &mut [Option<(&'a TypeErasedExtension, usize)>; N],
+    ) {
         let mut rank = 0;
         let mut remaining = out.iter().filter(|slot| slot.is_none()).count();
-        self.get_many_erased_ranked(&Targets::new(*targets), out, &mut rank, &mut remaining);
+        self.get_many_erased_ranked(targets.borrow(), out, &mut rank, &mut remaining);
     }
 
     /// One level of [`Self::get_many_erased`], then its wrappers and its parents
