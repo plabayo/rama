@@ -142,7 +142,8 @@ where
             // for transport errors); NXDOMAIN/NODATA come back as a packet
             // whose answer section is empty but whose authority section
             // typically carries a SOA RR — see RFC 2308 §5.
-            let Some(packet) = lookup_record_packet(domain, rrtype, response_buffer_size)? else {
+            let Some(packet) = lookup_record_packet(domain, rrtype, response_buffer_size, budget)?
+            else {
                 return Ok(());
             };
 
@@ -232,6 +233,7 @@ fn lookup_record_packet(
     domain: Domain,
     rrtype: libc::c_int,
     response_buffer_size: usize,
+    budget: Duration,
 ) -> Result<Option<Vec<u8>>, BoxError> {
     let max_response_size = response_buffer_limit(response_buffer_size)?;
     let name = dns_name_from_domain(domain.as_str())?;
@@ -243,6 +245,7 @@ fn lookup_record_packet(
     }
     // every later access goes through the guard, so its drop never aliases
     let state = ResStateGuard(&mut state);
+    fit_retransmits(state.0, budget);
 
     let mut buffer = vec![0_u8; INITIAL_RESPONSE_BUFFER_SIZE.min(max_response_size)];
 
@@ -299,6 +302,16 @@ fn lookup_record_packet(
         buffer.truncate(response_len);
         return Ok(Some(buffer));
     }
+}
+
+/// Shorten libc's wait per try so its retransmits land inside `budget`.
+///
+/// glibc waits `retrans` seconds (5 by default) per nameserver per try, so a
+/// single lost datagram otherwise uses up the whole default budget.
+fn fit_retransmits(state: &mut ffi::ResState, budget: Duration) {
+    let waits = state.retry.max(1).saturating_mul(state.nscount.max(1));
+    let budget_secs = c_int::try_from(budget.as_secs()).unwrap_or(c_int::MAX);
+    state.retrans = state.retrans.min((budget_secs / waits).max(1));
 }
 
 fn response_buffer_limit(configured: usize) -> Result<usize, BoxError> {
@@ -662,7 +675,34 @@ mod ffi {
 
 #[cfg(test)]
 mod response_buffer_tests {
-    use super::{DNS_HEADER_SIZE, grow_response_buffer, response_buffer_limit};
+    use std::{mem, time::Duration};
+
+    use super::{
+        DNS_HEADER_SIZE, ffi, fit_retransmits, grow_response_buffer, response_buffer_limit,
+    };
+
+    #[test]
+    fn retransmits_fit_the_lookup_budget() {
+        let fitted = |retrans, retry, nscount, budget_secs| {
+            // SAFETY: `__res_state` is plain old data; zeroed is a valid value.
+            let mut state: ffi::ResState = unsafe { mem::zeroed() };
+            state.retrans = retrans;
+            state.retry = retry;
+            state.nscount = nscount;
+            fit_retransmits(&mut state, Duration::from_secs(budget_secs));
+            state.retrans
+        };
+
+        // glibc defaults against one stub: retransmit after 2s, not at 5s
+        assert_eq!(fitted(5, 2, 1, 5), 2);
+        assert_eq!(fitted(5, 2, 3, 5), 1);
+        // glibc waits at least a second per try
+        assert_eq!(fitted(5, 2, 1, 1), 1);
+        // a shorter configured wait is kept, a fitting one is never lengthened
+        assert_eq!(fitted(1, 2, 1, 5), 1);
+        assert_eq!(fitted(5, 2, 1, 30), 5);
+        assert_eq!(fitted(5, 0, 0, 5), 5);
+    }
 
     #[test]
     fn rejects_capacities_smaller_than_the_fixed_dns_header() {
