@@ -1,6 +1,8 @@
 //! Connection utilities
 
-use std::io;
+use std::{fmt, io};
+
+use parking_lot::Mutex;
 
 use rama_core::extensions::{Extension, Extensions};
 use rama_utils::reactive::{Changed, Reactive, ReactiveRepr};
@@ -113,7 +115,7 @@ impl ReactiveRepr for ConnectionHealth {
     }
 }
 
-#[derive(Debug, Extension)]
+#[derive(Extension)]
 #[extension(tags(net))]
 /// Hint for the maximum number of concurrent requests/streams a connection can
 /// serve at once.
@@ -122,28 +124,56 @@ impl ReactiveRepr for ConnectionHealth {
 /// Connectors should set this on the connection's extensions: e.g. an http/2
 /// connector from the peer's `SETTINGS_MAX_CONCURRENT_STREAMS`, and an http/1
 /// connector to `1` (http/1 cannot multiplex).
-pub struct MaxConcurrency(Reactive<usize>);
+pub struct MaxConcurrency {
+    value: Reactive<usize>,
+    hooks: Mutex<Vec<ChangeHook>>,
+}
+
+/// Callback run by [`MaxConcurrency::set`], see [`MaxConcurrency::on_change`].
+type ChangeHook = Box<dyn Fn() + Send + Sync>;
+
+impl fmt::Debug for MaxConcurrency {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("MaxConcurrency").field(&self.value).finish()
+    }
+}
 
 impl MaxConcurrency {
     #[must_use]
     pub fn new(max: usize) -> Self {
-        Self(Reactive::new(max))
+        Self {
+            value: Reactive::new(max),
+            hooks: Mutex::new(Vec::new()),
+        }
     }
 
     /// Set the maximum number of concurrent requests/streams.
     pub fn set(&self, max: usize) {
-        self.0.set(max);
+        self.value.set(max);
+        for hook in self.hooks.lock().iter() {
+            hook();
+        }
     }
 
     /// Get the maximum number of concurrent requests/streams.
     #[must_use]
     pub fn get(&self) -> usize {
-        self.0.get()
+        self.value.get()
     }
 
     /// Subscribe to changes: [`Changed::changed`] yields each new value.
     #[must_use]
     pub fn watch(&self) -> Changed<usize> {
-        self.0.watch()
+        self.value.watch()
+    }
+
+    /// Run `hook` after every [`Self::set`], on the caller's thread.
+    ///
+    /// Unlike [`Self::watch`], a hook costs nothing per waiter: a pool with
+    /// many connections and many parked checkouts registers one hook per
+    /// connection when it stores it, instead of a watcher per (waiter,
+    /// connection) pair. The hook must not block or call back into this value.
+    pub(crate) fn on_change(&self, hook: impl Fn() + Send + Sync + 'static) {
+        self.hooks.lock().push(Box::new(hook));
     }
 }
