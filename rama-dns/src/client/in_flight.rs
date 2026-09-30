@@ -2,7 +2,10 @@ use std::{
     any::{Any, TypeId},
     fmt,
     hash::Hash,
-    sync::Arc,
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::Duration,
 };
 
@@ -19,26 +22,36 @@ use rama_core::{
     rt,
     telemetry::tracing::{self, Instrument as _},
 };
-use tokio::sync::oneshot;
+use tokio::{sync::oneshot, task::AbortHandle};
 
 /// `None`: the run ended without an answer (its runtime shut down, or it panicked).
 type Flight<V> = Shared<BoxFuture<'static, Option<Result<Arc<V>, ArcError>>>>;
 type Flights<K> = Arc<Mutex<HashMap<(K, TypeId), Box<dyn Any + Send + Sync>>>>;
 type Reply<V> = oneshot::Sender<Result<Arc<V>, ArcError>>;
 
+/// What happens to a run once every caller stopped waiting for it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum Abandoned {
+    /// Complete it anyway, e.g. to fill a cache or because it cannot be
+    /// cancelled (a blocking libc call).
+    #[default]
+    Finish,
+    /// Cancel it, releasing whatever it holds.
+    Cancel,
+}
+
 /// Concurrent lookups for the same key share one run of the lookup.
 ///
-/// The run is its own task, so it completes (and can fill a cache) even when
-/// every caller stops waiting. Nothing is kept once it is done.
+/// The run is its own task, so no single caller's cancellation cancels it.
+/// Nothing is kept once it is done.
 pub(crate) struct InFlight<K> {
     flights: Flights<K>,
+    abandoned: Abandoned,
 }
 
 impl<K> Default for InFlight<K> {
     fn default() -> Self {
-        Self {
-            flights: Arc::default(),
-        }
+        Self::new(Abandoned::default())
     }
 }
 
@@ -46,6 +59,7 @@ impl<K> Clone for InFlight<K> {
     fn clone(&self) -> Self {
         Self {
             flights: self.flights.clone(),
+            abandoned: self.abandoned,
         }
     }
 }
@@ -70,9 +84,48 @@ impl<K> InFlight<K> {
     }
 }
 
+/// A run as the map stores it.
+struct Entry<V> {
+    flight: Flight<V>,
+    waiters: Arc<Waiters>,
+}
+
+/// Callers waiting on one run, and how to cancel it.
+#[derive(Default)]
+struct Waiters {
+    count: AtomicUsize,
+    abort: OnceLock<AbortHandle>,
+}
+
+/// One caller waiting on a run; the last one to leave may cancel it.
+struct Waiting {
+    waiters: Arc<Waiters>,
+    abandoned: Abandoned,
+}
+
+impl Drop for Waiting {
+    fn drop(&mut self) {
+        if self.waiters.count.fetch_sub(1, Ordering::AcqRel) == 1
+            && self.abandoned == Abandoned::Cancel
+            && let Some(abort) = self.waiters.abort.get()
+        {
+            abort.abort();
+        }
+    }
+}
+
 enum Joined<V> {
-    Running(Flight<V>),
-    Started(Flight<V>, Reply<V>),
+    Running(Flight<V>, Waiting),
+    Started(Flight<V>, Reply<V>, Waiting),
+}
+
+impl<K> InFlight<K> {
+    pub(crate) fn new(abandoned: Abandoned) -> Self {
+        Self {
+            flights: Arc::default(),
+            abandoned,
+        }
+    }
 }
 
 impl<K: Hash + Eq + Clone + Send + Sync + 'static> InFlight<K> {
@@ -94,21 +147,25 @@ impl<K: Hash + Eq + Clone + Send + Sync + 'static> InFlight<K> {
         let slot = (key, TypeId::of::<V>());
         let wait = max_duration.saturating_add(max_duration / 4);
         let shared = async {
-            let flight = match self.join(&slot) {
-                Joined::Running(flight) => match flight.await {
-                    Some(answer) => return answer,
-                    // it died with another runtime: take over, once
-                    None => match self.join(&slot) {
-                        Joined::Running(flight) => flight,
-                        Joined::Started(flight, reply) => {
-                            self.start(slot, max_duration, reply, lookup);
-                            flight
+            let (flight, _waiting) = match self.join(&slot) {
+                Joined::Running(flight, waiting) => {
+                    if let Some(answer) = flight.await {
+                        return answer;
+                    }
+                    // it died with another runtime (or was cancelled right
+                    // as we joined): take over, once
+                    drop(waiting);
+                    match self.join(&slot) {
+                        Joined::Running(flight, waiting) => (flight, waiting),
+                        Joined::Started(flight, reply, waiting) => {
+                            self.start(slot, max_duration, reply, &waiting, lookup);
+                            (flight, waiting)
                         }
-                    },
-                },
-                Joined::Started(flight, reply) => {
-                    self.start(slot, max_duration, reply, lookup);
-                    flight
+                    }
+                }
+                Joined::Started(flight, reply, waiting) => {
+                    self.start(slot, max_duration, reply, &waiting, lookup);
+                    (flight, waiting)
                 }
             };
             flight.await.unwrap_or_else(|| {
@@ -127,16 +184,36 @@ impl<K: Hash + Eq + Clone + Send + Sync + 'static> InFlight<K> {
 
     fn join<V: Send + Sync + 'static>(&self, slot: &(K, TypeId)) -> Joined<V> {
         let mut flights = self.flights.lock();
-        if let Some(flight) = flights
+        if let Some(entry) = flights
             .get(slot)
-            .and_then(|flight| flight.downcast_ref::<Flight<V>>())
+            .and_then(|entry| entry.downcast_ref::<Entry<V>>())
         {
-            return Joined::Running(flight.clone());
+            // counted under the lock, so a leaving waiter never misses us
+            entry.waiters.count.fetch_add(1, Ordering::AcqRel);
+            return Joined::Running(entry.flight.clone(), self.waiting(&entry.waiters));
         }
         let (reply, answer) = oneshot::channel();
         let flight: Flight<V> = answer.map(Result::ok).boxed().shared();
-        flights.insert(slot.clone(), Box::new(flight.clone()));
-        Joined::Started(flight, reply)
+        let waiters = Arc::new(Waiters {
+            count: AtomicUsize::new(1),
+            abort: OnceLock::new(),
+        });
+        let waiting = self.waiting(&waiters);
+        flights.insert(
+            slot.clone(),
+            Box::new(Entry {
+                flight: flight.clone(),
+                waiters,
+            }),
+        );
+        Joined::Started(flight, reply, waiting)
+    }
+
+    fn waiting(&self, waiters: &Arc<Waiters>) -> Waiting {
+        Waiting {
+            waiters: waiters.clone(),
+            abandoned: self.abandoned,
+        }
     }
 
     fn start<V, F>(
@@ -144,6 +221,7 @@ impl<K: Hash + Eq + Clone + Send + Sync + 'static> InFlight<K> {
         slot: (K, TypeId),
         max_duration: Duration,
         reply: Reply<V>,
+        waiting: &Waiting,
         lookup: impl FnOnce() -> F,
     ) where
         V: Send + Sync + 'static,
@@ -158,7 +236,7 @@ impl<K: Hash + Eq + Clone + Send + Sync + 'static> InFlight<K> {
         let lookup = lookup();
         let span = tracing::debug_span!("dns lookup");
         span.follows_from(tracing::Span::current());
-        rt::spawn(
+        let task = rt::spawn(
             async move {
                 let answer = tokio::time::timeout(max_duration.saturating_mul(3), lookup)
                     .await
@@ -172,6 +250,7 @@ impl<K: Hash + Eq + Clone + Send + Sync + 'static> InFlight<K> {
             }
             .instrument(span),
         );
+        _ = waiting.waiters.abort.set(task.abort_handle());
     }
 }
 
@@ -362,6 +441,105 @@ mod tests {
         assert_eq!(*value.unwrap(), 7, "a late caller gets the abandoned run");
         assert_eq!(starts.load(Ordering::SeqCst), 1);
         assert_eq!(in_flight.running(), 0);
+    }
+
+    /// Flags when the lookup it is part of gets dropped.
+    struct DropFlag(Arc<AtomicUsize>);
+
+    impl Drop for DropFlag {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    async fn until(condition: impl Fn() -> bool) {
+        while !condition() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn abandoned_run_is_cancelled_when_asked_to() {
+        let in_flight = InFlight::new(Abandoned::Cancel);
+        let dropped = Arc::new(AtomicUsize::new(0));
+
+        let flag = DropFlag(dropped.clone());
+        let caller = in_flight.run("key", TIMEOUT, move || async move {
+            let _flag = flag;
+            std::future::pending::<usize>().await
+        });
+        tokio::time::timeout(Duration::from_millis(20), caller)
+            .await
+            .expect_err("nobody answers");
+
+        tokio::time::timeout(TIMEOUT, until(|| dropped.load(Ordering::SeqCst) == 1))
+            .await
+            .expect("the abandoned lookup is cancelled");
+        tokio::time::timeout(TIMEOUT, until(|| in_flight.running() == 0))
+            .await
+            .expect("and its key freed");
+    }
+
+    #[tokio::test]
+    async fn cancelling_run_lives_while_anyone_waits() {
+        let in_flight = InFlight::new(Abandoned::Cancel);
+        let starts = Arc::new(AtomicUsize::new(0));
+        let gate = Arc::new(Notify::new());
+
+        let leaving = in_flight.run("key", TIMEOUT, || gated(&starts, &gate, 5));
+        tokio::time::timeout(Duration::from_millis(20), leaving)
+            .await
+            .expect_err("the first caller leaves early");
+
+        let staying = in_flight.run("key", TIMEOUT, || gated(&starts, &gate, 6));
+        let (value, ()) = tokio::join!(staying, open(&gate));
+        assert_eq!(
+            starts.load(Ordering::SeqCst),
+            2,
+            "the lone waiter left, so it restarted"
+        );
+        assert_eq!(*value.unwrap(), 6);
+
+        let starts = Arc::new(AtomicUsize::new(0));
+        let mut first = Box::pin(in_flight.run("other", TIMEOUT, || gated(&starts, &gate, 7)));
+        let mut second = Box::pin(in_flight.run("other", TIMEOUT, || gated(&starts, &gate, 8)));
+        assert!(
+            first.as_mut().now_or_never().is_none(),
+            "first started the run"
+        );
+        assert!(second.as_mut().now_or_never().is_none(), "second joined it");
+        drop(first);
+        let (value, ()) = tokio::join!(second, open(&gate));
+        assert_eq!(
+            *value.unwrap(),
+            7,
+            "one caller left, the other still got the run"
+        );
+        assert_eq!(starts.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn default_policy_finishes_abandoned_runs() {
+        let in_flight = InFlight::default();
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let finished = Arc::new(Notify::new());
+
+        let (flag, done) = (DropFlag(dropped.clone()), finished.clone());
+        let caller = in_flight.run("key", TIMEOUT, move || async move {
+            let _flag = flag;
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            done.notify_one();
+        });
+        tokio::time::timeout(Duration::from_millis(10), caller)
+            .await
+            .expect_err("the caller leaves early");
+
+        finished.notified().await;
+        assert_eq!(
+            dropped.load(Ordering::SeqCst),
+            1,
+            "dropped only after finishing"
+        );
     }
 
     #[tokio::test]

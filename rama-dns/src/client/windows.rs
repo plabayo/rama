@@ -31,7 +31,7 @@ use windows_sys::core::PCWSTR;
 use std::sync::atomic::AtomicU16;
 
 use super::{
-    in_flight::{InFlight, coalesced_stream},
+    in_flight::{Abandoned, InFlight, coalesced_stream},
     resolver::{
         DnsAddressResolver, DnsCnameResolver, DnsResolver, DnsServiceBindingResolver,
         DnsTxtResolver,
@@ -102,7 +102,7 @@ impl Default for WindowsDnsResolver {
     fn default() -> Self {
         Self {
             timeout: DEFAULT_TIMEOUT,
-            in_flight: InFlight::default(),
+            in_flight: InFlight::new(Abandoned::Cancel),
         }
     }
 }
@@ -123,7 +123,7 @@ impl WindowsDnsResolver {
         /// same timeout.
         pub fn timeout(mut self, timeout: Duration) -> Self {
             self.timeout = timeout;
-            self.in_flight = InFlight::default();
+            self.in_flight = InFlight::new(Abandoned::Cancel);
             self
         }
     }
@@ -1835,6 +1835,42 @@ mod tests {
             !addrs.iter().any(|result| result.is_ok()),
             "unexpected answer for reserved .invalid name: {addrs:?}",
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn abandoned_shared_query_is_cancelled() {
+        let fake = Arc::new(FakeDnsBackend::new());
+        let backend = fake.clone();
+        let stream = coalesced_stream(
+            InFlight::new(Abandoned::Cancel),
+            (Domain::example(), ffi::DNS_TYPE_A),
+            Duration::from_secs(30),
+            move || {
+                query_record_stream_with_backend(
+                    Domain::example(),
+                    Duration::from_secs(30),
+                    ffi::DNS_TYPE_A,
+                    parse_a_records,
+                    DnsBackend::Fake(backend),
+                )
+            },
+        );
+        let caller = tokio::spawn(async move { pin!(stream).next().await });
+
+        tokio::time::timeout(Duration::from_secs(5), fake.started.notified())
+            .await
+            .expect("fake DNS query did not start");
+        caller.abort();
+        _ = caller.await;
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !fake.cancel_called.load(Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the abandoned shared query was not cancelled");
+        fake.join_callback_threads();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

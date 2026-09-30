@@ -23,7 +23,8 @@
 //!   drained by the polling future.
 //! - Lookups are bounded by a configurable timeout, defaulting to 5 seconds.
 //! - Concurrent lookups of the same name and record type share one query,
-//!   and at most 64 queries (configurable) run at once.
+//!   cancelled once every caller stopped waiting; at most 64 queries
+//!   (configurable) run at once.
 //!
 //! For the platform header itself, see the SDK copy at:
 //! `/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/dns_sd.h`
@@ -48,7 +49,7 @@ use tokio::io::unix::AsyncFd;
 use tokio::time::Instant;
 
 use super::{
-    in_flight::{InFlight, coalesced_stream},
+    in_flight::{Abandoned, InFlight, coalesced_stream},
     limit::{DEFAULT_MAX_LOOKUPS, LookupLimit, deadline_after},
     resolver::{
         DnsAddressResolver, DnsCnameResolver, DnsResolver, DnsServiceBindingResolver,
@@ -75,7 +76,7 @@ impl Default for AppleDnsResolver {
         Self {
             timeout: DEFAULT_TIMEOUT,
             limit: LookupLimit::new(DEFAULT_MAX_LOOKUPS),
-            in_flight: InFlight::default(),
+            in_flight: InFlight::new(Abandoned::Cancel),
         }
     }
 }
@@ -96,7 +97,7 @@ impl AppleDnsResolver {
         /// same timeout.
         pub fn timeout(mut self, timeout: Duration) -> Self {
             self.timeout = timeout;
-            self.in_flight = InFlight::default();
+            self.in_flight = InFlight::new(Abandoned::Cancel);
             self
         }
     }
