@@ -41,6 +41,7 @@ static HOST: LazyLock<Domain> = LazyLock::new(|| {
 
 const BURSTS: &[usize] = &[1, 64, 1024];
 
+/// Addresses resolved by `lookups` concurrent A + AAAA lookups; errors count as none.
 async fn burst<R>(resolver: R, lookups: usize) -> usize
 where
     R: DnsAddressResolver + Clone + Send + Sync + 'static,
@@ -49,8 +50,14 @@ where
         let resolver = resolver.clone();
         tokio::spawn(async move {
             let (v6, v4) = tokio::join!(
-                resolver.lookup_ipv6(HOST.clone()).count(),
-                resolver.lookup_ipv4(HOST.clone()).count(),
+                resolver
+                    .lookup_ipv6(HOST.clone())
+                    .filter(|result| std::future::ready(result.is_ok()))
+                    .count(),
+                resolver
+                    .lookup_ipv4(HOST.clone())
+                    .filter(|result| std::future::ready(result.is_ok()))
+                    .count(),
             );
             v6 + v4
         })
@@ -58,10 +65,23 @@ where
     join_all(tasks).await.into_iter().map(Result::unwrap).sum()
 }
 
+/// Fail loudly instead of timing lookups of a host that does not resolve.
+fn assert_resolves<R>(resolver: R)
+where
+    R: DnsAddressResolver + Clone + Send + Sync + 'static,
+{
+    assert!(
+        RT.block_on(burst(resolver, 1)) > 0,
+        "{} does not resolve; set RAMA_DNS_BENCH_HOST",
+        *HOST,
+    );
+}
+
 fn cold<R>(bencher: Bencher, lookups: usize, new: fn() -> R)
 where
     R: DnsAddressResolver + Clone + Send + Sync + 'static,
 {
+    assert_resolves(new());
     bencher
         .with_inputs(new)
         .bench_local_values(|resolver| black_box(RT.block_on(burst(resolver, lookups))));
@@ -72,7 +92,7 @@ where
     R: DnsAddressResolver + Clone + Send + Sync + 'static,
 {
     let resolver = new();
-    RT.block_on(burst(resolver.clone(), 1));
+    assert_resolves(resolver.clone());
     bencher.bench_local(|| black_box(RT.block_on(burst(resolver.clone(), lookups))));
 }
 
