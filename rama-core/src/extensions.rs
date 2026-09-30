@@ -33,7 +33,9 @@
 
 use core::any::{Any, TypeId};
 use core::fmt;
+use core::hash::{Hash, Hasher};
 use core::pin::Pin;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::std::{boxed::Box, sync::Arc, vec::Vec};
 
@@ -63,8 +65,168 @@ use rama_utils::macros::impl_deref;
 /// - HTTP layered on top of TLS
 /// - ...
 pub struct Extensions {
-    extensions: Arc<AppendOnlyVec<TypeErasedExtension, 12, 3>>,
+    extensions: Arc<Store>,
     parent: Option<Box<Self>>,
+}
+
+/// The entries of one [`Extensions`] level, shared by all its clones.
+///
+/// Next to the entries it keeps `seen`, a tiny bloom filter over the
+/// [`TypeId`]s pushed so far. Type lookups are dominated by misses (optional
+/// extensions that were never inserted) and each miss walks every level of
+/// the chain and every entry in it. A level whose filter has none of the
+/// requested bits cannot hold a match, so it is skipped in O(1) instead of
+/// scanned.
+#[derive(Default)]
+struct Store {
+    /// One [`type_bit`] per distinct type pushed, plus [`WRAPPER_BIT`] once an
+    /// [`Egress`] or [`Ingress`] wrapper is pushed. It is only ever set, never
+    /// cleared, and is updated before the entry becomes visible. A reader that
+    /// can see an entry therefore also sees its bit.
+    seen: AtomicUsize,
+    entries: AppendOnlyVec<TypeErasedExtension, 11, 3>,
+}
+
+/// Bit of [`Store::seen`] reserved for [`Egress`] and [`Ingress`] wrappers.
+///
+/// Lookups recurse into these wrappers, so a level holding one can never be
+/// skipped, whatever the requested type. They get their own bit rather than a
+/// [`type_bit`] so this holds without any per-type bookkeeping.
+const WRAPPER_BIT: usize = 1 << (usize::BITS - 1);
+
+/// Number of slots a [`TypeId`] can hash to: every bit of [`Store::seen`]
+/// except [`WRAPPER_BIT`].
+const TYPE_SLOTS: usize = usize::BITS as usize - 1;
+
+/// The slot of a [`TypeId`], below [`TYPE_SLOTS`].
+///
+/// `TypeId` hashes to (the low half of) an already well distributed 128-bit
+/// value, so the hash is used as is, without another round of mixing.
+#[inline(always)]
+fn type_slot(id: TypeId) -> usize {
+    struct Fold(u64);
+
+    impl Hasher for Fold {
+        #[inline(always)]
+        fn finish(&self) -> u64 {
+            self.0
+        }
+
+        #[inline(always)]
+        fn write(&mut self, bytes: &[u8]) {
+            for byte in bytes {
+                self.0 = self.0.rotate_left(8) ^ u64::from(*byte);
+            }
+        }
+
+        #[inline(always)]
+        fn write_u64(&mut self, v: u64) {
+            self.0 ^= v;
+        }
+    }
+
+    let mut hasher = Fold(0);
+    id.hash(&mut hasher);
+    // a mask is cheaper than a modulo, the one slot left over folds into the last
+    ((hasher.finish() as usize) & (usize::BITS as usize - 1)).min(TYPE_SLOTS - 1)
+}
+
+/// The bit a [`TypeId`] sets in [`Store::seen`], never [`WRAPPER_BIT`].
+#[inline(always)]
+fn type_bit(id: TypeId) -> usize {
+    1 << type_slot(id)
+}
+
+/// The target types of one multi-type lookup, indexed by [`type_slot`].
+///
+/// Testing an entry against every target costs one comparison per target.
+/// The slots reduce this to a table read for the (vast) majority of entries
+/// that are none of the targets, and to a comparison or two for the others.
+struct Targets<const N: usize> {
+    ids: [TypeId; N],
+    /// Per slot: 1 + the index of the last target in that slot, 0 for none.
+    head: [u16; usize::BITS as usize],
+    /// Per target: the same for the target before it in its slot.
+    next: [u16; N],
+    /// The [`type_bit`] of every target, see [`Store::may_contain`].
+    bits: usize,
+}
+
+impl<const N: usize> Targets<N> {
+    #[inline(always)]
+    fn new(ids: [TypeId; N]) -> Self {
+        const {
+            assert!(N < u16::MAX as usize, "too many extension targets");
+        }
+        let mut targets = Self {
+            ids,
+            head: [0; usize::BITS as usize],
+            next: [0; N],
+            bits: 0,
+        };
+        for (i, &id) in ids.iter().enumerate() {
+            let slot = type_slot(id);
+            targets.next[i] = targets.head[slot];
+            targets.head[slot] = i as u16 + 1;
+            targets.bits |= 1 << slot;
+        }
+        targets
+    }
+}
+
+impl Store {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    /// The bit of [`Self::seen`] that an entry of type `T` sets.
+    ///
+    /// A constant for every `T`, so pushing a typed value needs no hashing.
+    #[inline(always)]
+    fn seen_bit_of<T: Extension>() -> usize {
+        Self::seen_bit(TypeId::of::<T>())
+    }
+
+    #[inline(always)]
+    fn seen_bit(id: TypeId) -> usize {
+        if id == TypeId::of::<Egress<Extensions>>() || id == TypeId::of::<Ingress<Extensions>>() {
+            WRAPPER_BIT
+        } else {
+            type_bit(id)
+        }
+    }
+
+    fn push(&self, extension: TypeErasedExtension) -> usize {
+        let bit = Self::seen_bit(extension.type_id);
+        self.push_with_bit(extension, bit)
+    }
+
+    /// Push an entry whose [`Self::seen_bit`] is already known.
+    #[inline(always)]
+    fn push_with_bit(&self, extension: TypeErasedExtension, bit: usize) -> usize {
+        // Before the push, so the bit is visible together with the entry
+        // (the push publishes the entry with `Release`). The load skips the
+        // atomic read-modify-write for a type this level already holds.
+        if self.seen.load(Ordering::Relaxed) & bit == 0 {
+            self.seen.fetch_or(bit, Ordering::Relaxed);
+        }
+        self.entries.push(extension)
+    }
+
+    /// Whether this level holds an [`Egress`] or [`Ingress`] wrapper. Read it
+    /// after the entries to scan (see [`Self::push_with_bit`]), then no wrapper among
+    /// them is missed.
+    #[inline(always)]
+    fn has_wrappers(&self) -> bool {
+        self.seen.load(Ordering::Relaxed) & WRAPPER_BIT != 0
+    }
+
+    /// Whether a lookup for `targets` (the OR of their [`type_bit`]s) has to
+    /// scan this level: false only if it can hold neither of them nor a wrapper.
+    #[inline(always)]
+    fn may_contain(&self, targets: usize) -> bool {
+        self.seen.load(Ordering::Relaxed) & (targets | WRAPPER_BIT) != 0
+    }
 }
 
 impl Extensions {
@@ -85,7 +247,7 @@ impl Extensions {
     #[must_use]
     pub fn fork(&self) -> Self {
         Self {
-            extensions: Arc::new(AppendOnlyVec::new()),
+            extensions: Arc::new(Store::new()),
             parent: Some(Box::new(self.clone())),
         }
     }
@@ -126,13 +288,15 @@ impl Extensions {
     /// an `Arc<Arc<T>>`.
     pub fn insert<T: Extension>(&self, val: T) -> &T {
         let extension = TypeErasedExtension::new(val);
-        let idx = self.extensions.push(extension);
+        let idx = self
+            .extensions
+            .push_with_bit(extension, Store::seen_bit_of::<T>());
 
         #[expect(
             clippy::unwrap_used,
             reason = "`downcast_ref` can only be none if TypeId doesn't match, but we just inserted this type"
         )]
-        self.extensions[idx].downcast_ref::<T>().unwrap()
+        self.extensions.entries[idx].downcast_ref::<T>().unwrap()
     }
 
     /// Insert a type `Arc<T>` into this [`Extensions]` store.
@@ -143,13 +307,15 @@ impl Extensions {
     /// need a cloned `Arc<T>` prefer using [`Self::insert()`]
     pub fn insert_arc<T: Extension>(&self, val: Arc<T>) -> Arc<T> {
         let extension = TypeErasedExtension::new_arc(val);
-        let idx = self.extensions.push(extension);
+        let idx = self
+            .extensions
+            .push_with_bit(extension, Store::seen_bit_of::<T>());
 
         #[expect(
             clippy::unwrap_used,
             reason = "`cloned_downcast` can only be none if TypeId doesn't match, but we just inserted this type"
         )]
-        self.extensions[idx].cloned_downcast::<T>().unwrap()
+        self.extensions.entries[idx].cloned_downcast::<T>().unwrap()
     }
 
     /// Insert an already erased extension, retaining its original type identity.
@@ -161,7 +327,7 @@ impl Extensions {
     ///
     /// The other [`Extensions`]s will be appended behind the current ones
     pub fn extend(&self, other: &Self) {
-        for ext in other.extensions.iter() {
+        for ext in other.extensions.entries.iter() {
             self.extensions.push(ext.clone());
         }
     }
@@ -185,6 +351,7 @@ impl Extensions {
     pub fn self_contains<T: Extension>(&self) -> bool {
         let type_id = TypeId::of::<T>();
         self.extensions
+            .entries
             .iter()
             .rev()
             .any(|item| item.type_id == type_id)
@@ -220,21 +387,30 @@ impl Extensions {
         let target = TypeId::of::<T>();
         let egress_id = TypeId::of::<Egress<Self>>();
         let ingress_id = TypeId::of::<Ingress<Self>>();
-        for ext in self.extensions.iter().rev() {
-            if ext.type_id == target {
-                if let Some(v) = ext.downcast_ref::<T>() {
-                    return Some(v);
+        if self.extensions.may_contain(type_bit(target)) {
+            let chunks = self.extensions.entries.chunks();
+            // Read after the chunks (see `Store::push_with_bit`).
+            let has_wrappers = self.extensions.has_wrappers();
+            for chunk in chunks.rev() {
+                for ext in chunk.iter().rev() {
+                    if ext.type_id == target {
+                        if let Some(v) = ext.downcast_ref::<T>() {
+                            return Some(v);
+                        }
+                    } else if has_wrappers
+                        && ext.type_id == egress_id
+                        && let Some(eg) = ext.downcast_ref::<Egress<Self>>()
+                        && let Some(v) = eg.0.get_ref::<T>()
+                    {
+                        return Some(v);
+                    } else if has_wrappers
+                        && ext.type_id == ingress_id
+                        && let Some(ig) = ext.downcast_ref::<Ingress<Self>>()
+                        && let Some(v) = ig.0.get_ref::<T>()
+                    {
+                        return Some(v);
+                    }
                 }
-            } else if ext.type_id == egress_id
-                && let Some(eg) = ext.downcast_ref::<Egress<Self>>()
-                && let Some(v) = eg.0.get_ref::<T>()
-            {
-                return Some(v);
-            } else if ext.type_id == ingress_id
-                && let Some(ig) = ext.downcast_ref::<Ingress<Self>>()
-                && let Some(v) = ig.0.get_ref::<T>()
-            {
-                return Some(v);
             }
         }
         self.parent().and_then(|p| p.get_ref::<T>())
@@ -247,6 +423,7 @@ impl Extensions {
     pub fn self_get_ref<T: Extension>(&self) -> Option<&T> {
         let type_id = TypeId::of::<T>();
         self.extensions
+            .entries
             .iter()
             .rev()
             .find(|item| item.type_id == type_id)
@@ -264,21 +441,30 @@ impl Extensions {
         let target = TypeId::of::<T>();
         let egress_id = TypeId::of::<Egress<Self>>();
         let ingress_id = TypeId::of::<Ingress<Self>>();
-        for ext in self.extensions.iter().rev() {
-            if ext.type_id == target {
-                if let Some(v) = ext.cloned_downcast::<T>() {
-                    return Some(v);
+        if self.extensions.may_contain(type_bit(target)) {
+            let chunks = self.extensions.entries.chunks();
+            // Read after the chunks (see `Store::push_with_bit`).
+            let has_wrappers = self.extensions.has_wrappers();
+            for chunk in chunks.rev() {
+                for ext in chunk.iter().rev() {
+                    if ext.type_id == target {
+                        if let Some(v) = ext.cloned_downcast::<T>() {
+                            return Some(v);
+                        }
+                    } else if has_wrappers
+                        && ext.type_id == egress_id
+                        && let Some(eg) = ext.downcast_ref::<Egress<Self>>()
+                        && let Some(v) = eg.0.get_arc::<T>()
+                    {
+                        return Some(v);
+                    } else if has_wrappers
+                        && ext.type_id == ingress_id
+                        && let Some(ig) = ext.downcast_ref::<Ingress<Self>>()
+                        && let Some(v) = ig.0.get_arc::<T>()
+                    {
+                        return Some(v);
+                    }
                 }
-            } else if ext.type_id == egress_id
-                && let Some(eg) = ext.downcast_ref::<Egress<Self>>()
-                && let Some(v) = eg.0.get_arc::<T>()
-            {
-                return Some(v);
-            } else if ext.type_id == ingress_id
-                && let Some(ig) = ext.downcast_ref::<Ingress<Self>>()
-                && let Some(v) = ig.0.get_arc::<T>()
-            {
-                return Some(v);
             }
         }
         self.parent().and_then(|p| p.get_arc::<T>())
@@ -291,6 +477,7 @@ impl Extensions {
     pub fn self_get_arc<T: Extension>(&self) -> Option<Arc<T>> {
         let type_id = TypeId::of::<T>();
         self.extensions
+            .entries
             .iter()
             .rev()
             .find(|item| item.type_id == type_id)
@@ -333,63 +520,84 @@ impl Extensions {
     /// A rank is a completely opaque type and should only be used to compare positions,
     /// it does not tell anything about the absolute position.
     #[doc(hidden)]
+    #[inline]
     pub fn get_many_erased<'a, const N: usize>(
         &'a self,
         targets: &[TypeId; N],
         out: &mut [Option<(&'a TypeErasedExtension, usize)>; N],
     ) {
         let mut rank = 0;
-        self.get_many_erased_ranked(targets, out, &mut rank);
+        let mut remaining = out.iter().filter(|slot| slot.is_none()).count();
+        self.get_many_erased_ranked(&Targets::new(*targets), out, &mut rank, &mut remaining);
     }
 
+    /// One level of [`Self::get_many_erased`], then its wrappers and its parents
+    /// in the order of [`Self::get_ref`]. `remaining` counts the slots of `out`
+    /// that are still empty, and is kept up to date across the recursion.
     fn get_many_erased_ranked<'a, const N: usize>(
         &'a self,
-        targets: &[TypeId; N],
+        targets: &Targets<N>,
         out: &mut [Option<(&'a TypeErasedExtension, usize)>; N],
         rank: &mut usize,
+        remaining: &mut usize,
     ) {
-        let egress_id = TypeId::of::<Egress<Self>>();
-        let ingress_id = TypeId::of::<Ingress<Self>>();
-        let mut remaining = out.iter().filter(|slot| slot.is_none()).count();
-        if remaining == 0 {
+        if *remaining == 0 {
             return;
         }
-        for ext in self.extensions.iter().rev() {
-            let current = *rank;
-            *rank += 1;
-            for (i, &tid) in targets.iter().enumerate() {
-                if out[i].is_none() && ext.type_id == tid {
-                    out[i] = Some((ext, current));
-                    remaining -= 1;
+        if self.extensions.may_contain(targets.bits) {
+            let egress_id = TypeId::of::<Egress<Self>>();
+            let ingress_id = TypeId::of::<Ingress<Self>>();
+            let chunks = self.extensions.entries.chunks();
+            // Read after the chunks (see `Store::push_with_bit`): every entry they
+            // yield has its bit in here.
+            let has_wrappers = self.extensions.has_wrappers();
+            for chunk in chunks.rev() {
+                for ext in chunk.iter().rev() {
+                    let current = *rank;
+                    *rank += 1;
 
-                    if remaining == 0 {
-                        return;
+                    // Most entries are none of the targets: their slot has none.
+                    let mut target = targets.head[type_slot(ext.type_id)];
+                    while target != 0 {
+                        let i = usize::from(target) - 1;
+                        if out[i].is_none() && ext.type_id == targets.ids[i] {
+                            out[i] = Some((ext, current));
+                            *remaining -= 1;
+
+                            if *remaining == 0 {
+                                return;
+                            }
+                        }
+                        target = targets.next[i];
+                    }
+
+                    if !has_wrappers {
+                        continue;
+                    }
+                    if ext.type_id == egress_id
+                        && let Some(eg) = ext.downcast_ref::<Egress<Self>>()
+                    {
+                        eg.0.get_many_erased_ranked(targets, out, rank, remaining);
+                        if *remaining == 0 {
+                            return;
+                        }
+                    } else if ext.type_id == ingress_id
+                        && let Some(ig) = ext.downcast_ref::<Ingress<Self>>()
+                    {
+                        ig.0.get_many_erased_ranked(targets, out, rank, remaining);
+                        if *remaining == 0 {
+                            return;
+                        }
                     }
                 }
             }
-
-            if ext.type_id == egress_id
-                && let Some(eg) = ext.downcast_ref::<Egress<Self>>()
-            {
-                eg.0.get_many_erased_ranked(targets, out, rank);
-                remaining = out.iter().filter(|slot| slot.is_none()).count();
-                if remaining == 0 {
-                    return;
-                }
-            } else if ext.type_id == ingress_id
-                && let Some(ig) = ext.downcast_ref::<Ingress<Self>>()
-            {
-                ig.0.get_many_erased_ranked(targets, out, rank);
-                remaining = out.iter().filter(|slot| slot.is_none()).count();
-                if remaining == 0 {
-                    return;
-                }
-            }
+        } else {
+            // Nothing in this level is a target or a wrapper. Still count its
+            // entries, so ranks stay the positions in the full traversal.
+            *rank += self.extensions.entries.len();
         }
-        if remaining != 0
-            && let Some(parent) = self.parent()
-        {
-            parent.get_many_erased_ranked(targets, out, rank);
+        if let Some(parent) = self.parent() {
+            parent.get_many_erased_ranked(targets, out, rank, remaining);
         }
     }
 
@@ -459,6 +667,7 @@ impl Extensions {
     pub fn self_first_ref<T: Extension>(&self) -> Option<&T> {
         let type_id = TypeId::of::<T>();
         self.extensions
+            .entries
             .iter()
             .find(|item| item.type_id == type_id)
             .and_then(|ext| ext.downcast_ref())
@@ -470,6 +679,7 @@ impl Extensions {
     pub fn self_first_arc<T: Extension>(&self) -> Option<Arc<T>> {
         let type_id = TypeId::of::<T>();
         self.extensions
+            .entries
             .iter()
             .find(|item| item.type_id == type_id)
             .and_then(|ext| ext.cloned_downcast())
@@ -484,6 +694,7 @@ impl Extensions {
         let type_id = TypeId::of::<T>();
 
         self.extensions
+            .entries
             .iter()
             .rev()
             .filter(move |item| item.type_id == type_id)
@@ -499,6 +710,7 @@ impl Extensions {
         let type_id = TypeId::of::<T>();
 
         self.extensions
+            .entries
             .iter()
             .rev()
             .filter(move |item| item.type_id == type_id)
@@ -512,7 +724,7 @@ impl Extensions {
     /// iteration. [`TypeErasedExtension`] exposes methods to convert back to
     /// type `T` when it matches the erased type.
     pub fn self_iter_all(&self) -> impl Iterator<Item = &TypeErasedExtension> {
-        self.extensions.iter()
+        self.extensions.entries.iter()
     }
 
     /// Iterate over all inserted items of type `T`, walking the parent chain
@@ -545,7 +757,7 @@ impl Extensions {
         let target = TypeId::of::<T>();
         let egress_id = TypeId::of::<Egress<Self>>();
         let ingress_id = TypeId::of::<Ingress<Self>>();
-        let local = self.extensions.iter().rev().flat_map(
+        let local = self.extensions.entries.iter().rev().flat_map(
             move |ext| -> Box<dyn Iterator<Item = &T> + '_> {
                 if ext.type_id == target {
                     match ext.downcast_ref::<T>() {
@@ -579,7 +791,7 @@ impl Extensions {
         let target = TypeId::of::<T>();
         let egress_id = TypeId::of::<Egress<Self>>();
         let ingress_id = TypeId::of::<Ingress<Self>>();
-        let local = self.extensions.iter().rev().flat_map(
+        let local = self.extensions.entries.iter().rev().flat_map(
             move |ext| -> Box<dyn Iterator<Item = Arc<T>> + '_> {
                 if ext.type_id == target {
                     match ext.cloned_downcast::<T>() {
@@ -757,7 +969,12 @@ impl fmt::Debug for Extensions {
         }
         s.field(
             "entries",
-            &self.extensions.iter().map(|e| &e.value).collect::<Vec<_>>(),
+            &self
+                .extensions
+                .entries
+                .iter()
+                .map(|e| &e.value)
+                .collect::<Vec<_>>(),
         );
 
         s.finish()
@@ -1849,5 +2066,288 @@ mod tests {
             AnyOf::from_extensions(&child),
             Some(AnyOf::Req(&RequestId(7)))
         );
+    }
+
+    // The lookups skip levels and entries with the `Store::seen` bloom filter.
+    // These tests pin that it never changes an answer: every lookup is compared
+    // with a plain reference walk that has no filter, over pseudo-random chains
+    // with more types than the filter has bits, so collisions are exercised.
+
+    /// 72 distinct types: more than the bits in `Store::seen`.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct Filler<const N: usize>(u32);
+
+    impl<const N: usize> Extension for Filler<N> {}
+
+    /// Calls the macro with the number of every [`Filler`] type.
+    macro_rules! with_fillers {
+        ($callback:ident) => {
+            $callback!(
+                0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30
+                31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58
+                59 60 61 62 63 64 65 66 67 68 69 70 71
+            )
+        };
+    }
+
+    macro_rules! filler_inserters {
+        ($($n:literal)+) => {
+            [$(|ext: &Extensions, value: u32| _ = ext.insert(Filler::<$n>(value))),+]
+        };
+    }
+
+    macro_rules! filler_ids {
+        ($($n:literal)+) => {
+            [$(TypeId::of::<Filler<$n>>()),+]
+        };
+    }
+
+    macro_rules! filler_finders {
+        ($($n:literal)+) => {
+            [$(|ext: &Extensions| ext.get_ref::<Filler<$n>>().is_some()),+]
+        };
+    }
+
+    const FILLERS: [fn(&Extensions, u32); 72] = with_fillers!(filler_inserters);
+    const FILLER_FINDERS: [fn(&Extensions) -> bool; 72] = with_fillers!(filler_finders);
+
+    /// Newest-first entries in the same order as [`Extensions::get_ref`] walks
+    /// them, together with the rank they have in the traversal.
+    fn reference_walk<'a>(ext: &'a Extensions, out: &mut Vec<&'a TypeErasedExtension>) {
+        let mut entries: Vec<_> = ext.self_iter_all().collect();
+        entries.reverse();
+        for entry in entries {
+            out.push(entry);
+            if let Some(eg) = entry.downcast_ref::<Egress<Extensions>>() {
+                reference_walk(&eg.0, out);
+            } else if let Some(ig) = entry.downcast_ref::<Ingress<Extensions>>() {
+                reference_walk(&ig.0, out);
+            }
+        }
+        if let Some(parent) = ext.parent() {
+            reference_walk(parent, out);
+        }
+    }
+
+    fn reference_get(ext: &Extensions, id: TypeId) -> Option<(&TypeErasedExtension, usize)> {
+        let mut walk = Vec::new();
+        reference_walk(ext, &mut walk);
+        walk.into_iter()
+            .enumerate()
+            .find(|(_, entry)| TypeErasedExtension::type_id(entry) == id)
+            .map(|(rank, entry)| (entry, rank))
+    }
+
+    struct Xorshift(u64);
+
+    impl Xorshift {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+
+        fn below(&mut self, n: u64) -> u64 {
+            self.next() % n
+        }
+    }
+
+    fn insert_filler(ext: &Extensions, kind: u64, value: u32) {
+        FILLERS[(kind % 72) as usize](ext, value);
+    }
+
+    /// A random tree of levels: forks, wrappers, and `with_base` overlays.
+    fn random_chain(rng: &mut Xorshift, depth: u32) -> Extensions {
+        let mut ext = Extensions::new();
+        for _ in 0..rng.below(14) {
+            match rng.below(12) {
+                0 if depth > 0 => {
+                    ext.insert(Egress(random_chain(rng, depth - 1)));
+                }
+                1 if depth > 0 => {
+                    ext.insert(Ingress(random_chain(rng, depth - 1)));
+                }
+                2 if depth > 0 => ext = ext.fork(),
+                _ => insert_filler(&ext, rng.next(), rng.next() as u32),
+            }
+        }
+        if depth > 0 && rng.below(4) == 0 {
+            ext = ext.with_base(&random_chain(rng, depth - 1));
+        }
+        ext
+    }
+
+    #[test]
+    fn get_ref_matches_unfiltered_walk_on_random_chains() {
+        let mut rng = Xorshift(0x9E37_79B9_7F4A_7C15);
+        for _ in 0..500 {
+            let ext = random_chain(&mut rng, 3);
+            macro_rules! check {
+                ($($t:ty),+) => {$(
+                    let expected = reference_get(&ext, TypeId::of::<$t>())
+                        .and_then(|(entry, _)| entry.downcast_ref::<$t>());
+                    assert_eq!(ext.get_ref::<$t>(), expected, "get_ref::<{}>", stringify!($t));
+                    assert_eq!(ext.get_arc::<$t>().as_deref(), expected, "get_arc::<{}>", stringify!($t));
+                    assert_eq!(ext.contains::<$t>(), expected.is_some());
+                )+};
+            }
+            check!(
+                Filler<0>,
+                Filler<7>,
+                Filler<13>,
+                Filler<21>,
+                Filler<34>,
+                Filler<42>,
+                Filler<55>,
+                Filler<63>,
+                Filler<71>
+            );
+            let egress = reference_get(&ext, TypeId::of::<Egress<Extensions>>()).is_some();
+            assert_eq!(ext.egress().is_some(), egress);
+            let ingress = reference_get(&ext, TypeId::of::<Ingress<Extensions>>()).is_some();
+            assert_eq!(ext.ingress().is_some(), ingress);
+        }
+    }
+
+    #[test]
+    fn get_many_matches_unfiltered_walk_on_random_chains() {
+        let mut rng = Xorshift(0xD1B5_4A32_D192_ED03);
+        for _ in 0..500 {
+            let ext = random_chain(&mut rng, 3);
+            let targets = [
+                TypeId::of::<Filler<2>>(),
+                TypeId::of::<Filler<19>>(),
+                TypeId::of::<Filler<33>>(),
+                TypeId::of::<Filler<48>>(),
+                TypeId::of::<Filler<60>>(),
+                TypeId::of::<Filler<70>>(),
+                TypeId::of::<Egress<Extensions>>(),
+                TypeId::of::<Ingress<Extensions>>(),
+            ];
+            let mut out = [None; 8];
+            ext.get_many_erased(&targets, &mut out);
+            for (target, found) in targets.iter().zip(out) {
+                let expected = reference_get(&ext, *target);
+                assert_eq!(
+                    found.map(|(entry, rank)| (entry as *const _, rank)),
+                    expected.map(|(entry, rank)| (entry as *const _, rank)),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn get_many_of_more_targets_than_slots_matches_unfiltered_walk() {
+        let mut rng = Xorshift(0xA076_1D64_78BD_642F);
+        // every filler once, then again: several targets share a slot, and
+        // duplicates ask the same question twice
+        let mut targets = with_fillers!(filler_ids).to_vec();
+        targets.extend_from_slice(&targets.clone());
+        let targets: [TypeId; 144] = targets.try_into().unwrap();
+        for _ in 0..200 {
+            let ext = random_chain(&mut rng, 3);
+            let mut out = [None; 144];
+            ext.get_many_erased(&targets, &mut out);
+            for (target, found) in targets.iter().zip(out) {
+                let expected = reference_get(&ext, *target);
+                assert_eq!(
+                    found.map(|(entry, rank)| (entry as *const _, rank)),
+                    expected.map(|(entry, rank)| (entry as *const _, rank)),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn lookups_see_the_inserts_that_completed_on_other_threads() {
+        use core::sync::atomic::{AtomicUsize, Ordering};
+
+        const WRITERS: usize = 4;
+        const PER_WRITER: usize = 18;
+
+        let ext = Extensions::new();
+        let wrapped = Extensions::new();
+        ext.insert(Egress(wrapped.clone()));
+        let done: [AtomicUsize; WRITERS] = core::array::from_fn(|_| AtomicUsize::new(0));
+
+        std::thread::scope(|scope| {
+            for writer in 0..WRITERS {
+                let (ext, wrapped, done) = (&ext, &wrapped, &done);
+                scope.spawn(move || {
+                    for i in 0..PER_WRITER {
+                        // half of them go straight in, half through the wrapped store
+                        let target = if i % 2 == 0 { ext } else { wrapped };
+                        FILLERS[writer * PER_WRITER + i](target, 0);
+                        done[writer].store(i + 1, Ordering::Release);
+                    }
+                });
+            }
+            for _ in 0..2 {
+                let (ext, done) = (&ext, &done);
+                scope.spawn(move || {
+                    while done.iter().any(|d| d.load(Ordering::Acquire) < PER_WRITER) {
+                        for (writer, d) in done.iter().enumerate() {
+                            let inserted = d.load(Ordering::Acquire);
+                            for i in 0..inserted {
+                                assert!(
+                                    FILLER_FINDERS[writer * PER_WRITER + i](ext),
+                                    "writer {writer} insert {i} was done but is not found"
+                                );
+                            }
+                        }
+                    }
+                });
+            }
+        });
+    }
+
+    #[test]
+    fn lookups_still_find_a_type_behind_many_skipped_levels() {
+        let root = Extensions::new();
+        root.insert(Filler::<5>(1));
+        let mut leaf = root;
+        for level in 0..20 {
+            leaf = leaf.fork();
+            insert_filler(&leaf, 10 + level, 0);
+        }
+        assert_eq!(leaf.get_ref::<Filler<5>>(), Some(&Filler::<5>(1)));
+        assert_eq!(leaf.get_ref::<Filler<6>>(), None);
+
+        let (found, missing) = leaf.get_many_ref::<(Filler<5>, Filler<6>)>();
+        assert_eq!(found, Some(&Filler::<5>(1)));
+        assert_eq!(missing, None);
+    }
+
+    #[test]
+    fn lookups_see_entries_pushed_through_a_clone_and_extend() {
+        let ext = Extensions::new();
+        let clone = ext.clone();
+        assert_eq!(ext.get_ref::<Filler<11>>(), None);
+        clone.insert(Filler::<11>(4));
+        assert_eq!(ext.get_ref::<Filler<11>>(), Some(&Filler::<11>(4)));
+
+        let other = Extensions::new();
+        other.extend(&ext);
+        assert_eq!(other.get_ref::<Filler<11>>(), Some(&Filler::<11>(4)));
+        assert_eq!(
+            other.get_many_ref::<(Filler<11>, Filler<12>)>(),
+            (Some(&Filler::<11>(4)), None)
+        );
+    }
+
+    #[test]
+    fn wrapper_lookups_survive_the_filter() {
+        let conn = Extensions::new();
+        conn.insert(Filler::<9>(9));
+        let request = Extensions::new();
+        request.insert(Egress(conn.clone()));
+        // added to the wrapped store after it was wrapped
+        conn.insert(Filler::<10>(10));
+
+        assert_eq!(request.get_ref::<Filler<9>>(), Some(&Filler::<9>(9)));
+        assert_eq!(request.get_ref::<Filler<10>>(), Some(&Filler::<10>(10)));
+        assert!(request.egress().is_some());
+        assert!(request.ingress().is_none());
     }
 }
