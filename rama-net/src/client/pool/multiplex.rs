@@ -2698,17 +2698,32 @@ mod tests {
     /// Once nothing is in flight the bucket's `open` index lists exactly the
     /// stored connections that have room, each once.
     fn assert_open_matches_capacity(pool: &MultiplexPool<Conn, TestId>) {
+        assert_open_index(pool, true);
+    }
+
+    /// The structural invariants of the `open` index. `exact` also demands that
+    /// it lists every connection that has room; a hint may miss one after a
+    /// release raced a checkout's unlisting (see [`IdBucket`]), which the next
+    /// exact checkout repairs.
+    fn assert_open_index(pool: &MultiplexPool<Conn, TestId>, exact: bool) {
         let storage = pool.storage.lock();
         for bucket in storage.by_id.values() {
             for conn in &bucket.conns {
                 let listed = bucket.open.contains_key(&conn.seq);
                 assert_eq!(listed, conn.listed.load(Ordering::Relaxed), "{}", conn.seq);
-                assert_eq!(
-                    listed,
-                    conn.has_capacity(pool.max_concurrent_streams),
-                    "connection {} is listed iff it has room",
-                    conn.seq
-                );
+                if exact {
+                    assert_eq!(
+                        listed,
+                        conn.has_capacity(pool.max_concurrent_streams),
+                        "connection {} is listed iff it has room",
+                        conn.seq
+                    );
+                } else if listed {
+                    assert!(
+                        conn.has_capacity(pool.max_concurrent_streams),
+                        "nothing is in flight, so a listed connection has room"
+                    );
+                }
             }
             assert!(bucket.conns.windows(2).all(|w| w[0].seq < w[1].seq));
             assert!(
@@ -2890,18 +2905,36 @@ mod tests {
             // A checkout racing a release can evict the connection that just went
             // idle and dial another, so `created` may exceed the limit; what is
             // stored may not, and every slot must be accounted for.
-            let storage = pool.storage.lock();
-            let stored = &storage.by_id[&TestId(0)].conns;
-            assert!(stored.len() <= 12);
-            assert_eq!(
-                pool.total_slots.available_permits(),
-                12 - stored.len(),
-                "no slot leaked ({selection:?})"
-            );
-            for conn in stored {
-                assert_eq!(conn.active.load(Ordering::Relaxed), 0);
+            let stored = {
+                let storage = pool.storage.lock();
+                let stored = &storage.by_id[&TestId(0)].conns;
+                assert!(stored.len() <= 12);
+                assert_eq!(
+                    pool.total_slots.available_permits(),
+                    12 - stored.len(),
+                    "no slot leaked ({selection:?})"
+                );
+                for conn in stored {
+                    assert_eq!(conn.active.load(Ordering::Relaxed), 0);
+                }
+                stored.len()
+            };
+            // A release racing a checkout's unlisting can leave a connection with
+            // room out of the index. That is only a missed hint: the exact path
+            // finds it, so holding every stored connection at once dials nothing
+            // new, and afterwards the index is complete again.
+            assert_open_index(&pool, false);
+            let dialed = created(&svc);
+            let mut held = Vec::new();
+            for _ in 0..stored {
+                held.push(connect(&svc, 0).await);
             }
-            drop(storage);
+            assert_eq!(
+                created(&svc),
+                dialed,
+                "missed hints are recovered ({selection:?})"
+            );
+            drop(held);
             assert_open_matches_capacity(&pool);
         }
     }
