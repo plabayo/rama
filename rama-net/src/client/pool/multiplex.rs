@@ -16,6 +16,13 @@
 //! the negotiated http version) and concurrency is metered by counting live
 //! handouts. A [`MultiplexedConnection`] is not meant to outlive a single logical request and
 //! when it does it should only be used for one input/request at a time.
+//!
+//! Checking out a connection does not look at every connection of the ID. Each ID keeps an
+//! index of its connections that have a free stream slot, in creation order, and the selection
+//! strategy picks from it: the cost of a checkout does not grow with the number of idle
+//! connections an ID has accumulated. Selection prefers earlier connections, so a burst that
+//! opened many connections leaves the later ones untouched and idle, where the idle timeout
+//! reaps them (see [`MultiplexPool::with_idle_timeout`]).
 
 use super::{
     ConnID, ConnectionAdmission, ConnectionAdmissionLease, ConnectionResult, ConnectionReuse, Pool,
@@ -33,13 +40,14 @@ use rama_core::futures::stream::FuturesUnordered;
 use rama_core::telemetry::tracing::trace;
 use rama_utils::collections::smallvec::SmallVec;
 use rama_utils::macros::generate_set_and_with;
-use rama_utils::time::AtomicInstant;
+use rama_utils::time::{AtomicInstant, now_monotonic_nanos};
+use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::future::Future;
 use std::num::NonZeroUsize;
 use std::pin::Pin;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 
@@ -69,6 +77,12 @@ pub enum MuxSelection {
 struct StoredConnection<C, ID> {
     conn: C,
     id: ID,
+    /// Creation order within the pool. Orders a bucket, and so
+    /// [`MuxSelection::FirstAvailable`].
+    seq: u64,
+    /// The pool's `max_concurrent_streams`, needed to judge spare capacity when
+    /// a handout is released.
+    stream_cap: usize,
     max_concurrency: Option<Arc<MaxConcurrency>>,
     admission: Option<ConnectionAdmission>,
     active: AtomicUsize,
@@ -76,7 +90,19 @@ struct StoredConnection<C, ID> {
     notify: Arc<Notify>,
     last_idle: AtomicInstant,
     pool_slot: Mutex<ConnectionSlot>,
+    /// Whether the bucket's `open` set lists this connection. Only written with
+    /// the storage lock held; released handouts read it without the lock to
+    /// skip re-listing a connection that is still listed.
+    listed: AtomicBool,
+    /// Where released handouts re-list this connection. Weak, since storage owns
+    /// the connection.
+    storage: Weak<Mutex<Storage<C, ID>>>,
+    relist_fn: fn(&Arc<Self>),
 }
+
+/// A stream reserved on a connection by [`StoredConnection::try_admit`], with
+/// the transport credit reserved for it, if the connection has a provider.
+struct Admitted(Option<ConnectionAdmissionLease>);
 
 /// Admission and eviction share this lock so a previously captured snapshot
 /// cannot acquire a stream after the connection's capacity has been transferred.
@@ -120,6 +146,26 @@ impl<C, ID> StoredConnection<C, ID> {
             .min(cap)
     }
 
+    /// Whether a stream slot is free right now, judged live like every admission.
+    fn has_capacity(&self, cap: usize) -> bool {
+        self.active.load(Ordering::Relaxed) < self.effective_capacity(cap)
+    }
+
+    /// Re-list a connection that has spare stream capacity in its bucket's
+    /// `open` set after a handout was released.
+    ///
+    /// A connection stays listed while it has room, so a busy multiplexed
+    /// connection costs no lock here. It is only unlisted when a checkout took
+    /// its last slot, and only exclusive connections pay the lock on every
+    /// release. A release racing that unlisting can skip the re-listing; the
+    /// connection then rejoins on its next release, or on the next exact
+    /// checkout, since `open` is only a hint (see [`IdBucket`]).
+    fn relist(self: &Arc<Self>) {
+        if !self.listed.load(Ordering::Relaxed) {
+            (self.relist_fn)(self);
+        }
+    }
+
     /// Admit a new in-flight stream (while `active < limit`) and bind it to a
     /// [`MultiplexedConnection`] in one step, so `active` is never incremented
     /// without a handout to release it on drop. Returns `None` at capacity.
@@ -131,6 +177,23 @@ impl<C, ID> StoredConnection<C, ID> {
         cap: usize,
         input: &Extensions,
     ) -> Option<MultiplexedConnection<C, ID>>
+    where
+        C: ExtensionsRef,
+    {
+        self.try_admit(cap, input)
+            .map(|Admitted(admission)| MultiplexedConnection {
+                inner: self.clone(),
+                admission,
+            })
+    }
+
+    /// Reserve one stream, and its transport credit if the connection publishes
+    /// a provider, or return `None` without side effects when the connection
+    /// cannot take a stream now.
+    ///
+    /// The caller must turn a successful result into a handout, since the
+    /// stream counter is only released by dropping one.
+    fn try_admit(&self, cap: usize, input: &Extensions) -> Option<Admitted>
     where
         C: ExtensionsRef,
     {
@@ -168,20 +231,28 @@ impl<C, ID> StoredConnection<C, ID> {
             .extensions()
             .get_ref::<ConnectionHealthWatcher>()
             .is_some_and(|health| health.health() == ConnectionHealth::Broken);
-        if slot.retired
-            || broken
-            || self.active.load(Ordering::Relaxed) >= self.effective_capacity(cap)
-        {
+        if slot.retired || broken || !self.has_capacity(cap) {
             return None;
         }
         // Admission is serialized with retirement. Concurrent lease drops only
         // decrease the count, so no compare/exchange loop is needed here.
         self.active.fetch_add(1, Ordering::Relaxed);
         drop(slot);
-        Some(MultiplexedConnection {
-            inner: self.clone(),
-            admission,
-        })
+        Some(Admitted(admission))
+    }
+}
+
+/// [`StoredConnection::relist_fn`]: lock the storage the connection belongs to
+/// and list the connection again, if it is still stored and has room.
+///
+/// Free function since the handout's `Drop` impl cannot carry the `ConnID`
+/// bounds that hashing needs; connections capture this at creation.
+fn relist_stored<C, ID: ConnID>(conn: &Arc<StoredConnection<C, ID>>) {
+    let Some(storage) = conn.storage.upgrade() else {
+        return;
+    };
+    if let Some(bucket) = storage.lock().by_id.get_mut(&conn.id) {
+        bucket.list(conn);
     }
 }
 
@@ -202,6 +273,11 @@ impl<C, ID> Drop for MultiplexedConnection<C, ID> {
         let prev = self.inner.active.fetch_sub(1, Ordering::Release);
         if prev == 1 {
             self.inner.last_idle.set_now();
+        }
+        // Make the spare stream slot visible to checkouts before waking any
+        // waiter that will look for it.
+        self.inner.relist();
+        if prev == 1 {
             if self.inner.in_use_unleased() {
                 // Evictable only once that work ends: every waiter subscribes to it,
                 // so none depends on another one staying to pass the news on.
@@ -255,16 +331,183 @@ where
     }
 }
 
-type Bucket<C, ID> = Vec<Arc<StoredConnection<C, ID>>>;
+/// Connections taken out of storage, dropped only after the storage lock is
+/// released so their sockets close outside it.
+type Doomed<C, ID> = Vec<Arc<StoredConnection<C, ID>>>;
 
 /// Same-id connections copied out of storage so selection and waiter
 /// registration run without holding the storage lock.
 type Snapshot<C, ID> = SmallVec<[Arc<StoredConnection<C, ID>>; 4]>;
 
+/// How many `open` candidates one checkout tries before it falls back to the
+/// exact path. Incompatible or refusing candidates are the exception; the
+/// exact path handles them (and stays O(connections) as it always was).
+const OPEN_CANDIDATES: usize = 4;
+
+/// Upper bound on how long an idle or broken connection can linger unnoticed
+/// in a bucket whose checkouts never come across it. Sweeping the bucket at
+/// this pace amortizes to nothing.
+const MAX_SWEEP_INTERVAL: Duration = Duration::from_secs(1);
+const MIN_SWEEP_INTERVAL: Duration = Duration::from_millis(1);
+
+/// All connections of one id.
+///
+/// `conns` is every connection in creation order. `open` is an index over it:
+/// the connections which have a free stream slot, ordered by creation, so a
+/// checkout picks its connection in O(1) instead of looking at every one.
+///
+/// `open` is a hint, not a copy of the truth. A live capacity change (an h2
+/// SETTINGS raise, transport credit returning) is only seen by a checkout that
+/// reads the connection, and a release can race an unlisting. So it can hold
+/// entries that turn out full, which selection unlists as it meets them, and
+/// it can miss a connection with room. A checkout that finds nothing in `open`
+/// therefore takes the exact path, which reads every connection and lists the
+/// ones the hint missed.
+struct IdBucket<C, ID> {
+    conns: Vec<Arc<StoredConnection<C, ID>>>,
+    open: BTreeMap<u64, Arc<StoredConnection<C, ID>>>,
+    /// The `seq` last chosen by [`MuxSelection::RoundRobin`].
+    rr_after: Option<u64>,
+    /// Nanoseconds (see [`now_monotonic_nanos`]) when the next full sweep is due.
+    next_sweep: u64,
+}
+
+impl<C, ID> IdBucket<C, ID> {
+    fn new(next_sweep: u64) -> Self {
+        Self {
+            conns: Vec::new(),
+            open: BTreeMap::new(),
+            rr_after: None,
+            next_sweep,
+        }
+    }
+
+    /// Whether `conn` is still stored in this bucket.
+    fn contains(&self, conn: &StoredConnection<C, ID>) -> bool {
+        let pos = self.conns.partition_point(|stored| stored.seq < conn.seq);
+        self.conns
+            .get(pos)
+            .is_some_and(|stored| stored.seq == conn.seq)
+    }
+
+    /// Store `conn`, keeping creation order even if concurrent creations
+    /// publish out of order, and list it if it can take more than the
+    /// establishing stream.
+    fn insert(&mut self, conn: &Arc<StoredConnection<C, ID>>) {
+        let pos = self.conns.partition_point(|stored| stored.seq < conn.seq);
+        self.conns.insert(pos, conn.clone());
+        self.list(conn);
+    }
+
+    /// List `conn` as having room, if it is stored, unlisted and has room.
+    fn list(&mut self, conn: &Arc<StoredConnection<C, ID>>) {
+        if conn.listed.load(Ordering::Relaxed)
+            || !conn.has_capacity(conn.stream_cap)
+            || !self.contains(conn)
+        {
+            return;
+        }
+        conn.listed.store(true, Ordering::Relaxed);
+        self.open.insert(conn.seq, conn.clone());
+    }
+
+    fn unlist(&mut self, seq: u64) -> Option<Arc<StoredConnection<C, ID>>> {
+        let conn = self.open.remove(&seq)?;
+        conn.listed.store(false, Ordering::Relaxed);
+        Some(conn)
+    }
+
+    /// Remove the connection at `pos` from the bucket, and from `open`.
+    fn remove_at(&mut self, pos: usize) -> Arc<StoredConnection<C, ID>> {
+        let conn = self.conns.remove(pos);
+        self.unlist(conn.seq);
+        conn
+    }
+
+    /// Pick the connection the selection strategy prefers among the listed
+    /// ones, skipping `skip`, and claim it for one checkout.
+    ///
+    /// Entries without room are unlisted on the way. A connection this checkout
+    /// is about to fill is unlisted as well, which makes the claim exclusive,
+    /// so concurrent checkouts spread over distinct exclusive connections
+    /// instead of racing for one; the release relists it. Any other connection
+    /// stays listed for concurrent users.
+    fn claim(
+        &mut self,
+        selection: MuxSelection,
+        cap: usize,
+        skip: &[u64],
+    ) -> Option<Arc<StoredConnection<C, ID>>> {
+        let mut full: SmallVec<[u64; 2]> = SmallVec::new();
+        let usable =
+            |seq: u64, conn: &Arc<StoredConnection<C, ID>>, full: &mut SmallVec<[u64; 2]>| {
+                if skip.contains(&seq) {
+                    return false;
+                }
+                if conn.has_capacity(cap) {
+                    return true;
+                }
+                full.push(seq);
+                false
+            };
+        let chosen = match selection {
+            MuxSelection::FirstAvailable => self
+                .open
+                .iter()
+                .find(|(seq, conn)| usable(**seq, conn, &mut full))
+                .map(|(seq, _)| *seq),
+            MuxSelection::LeastLoaded => {
+                // Ties go to the earliest connection. A connection with no
+                // streams cannot be beaten, which ends the scan at once for
+                // exclusive connections however many are listed.
+                let mut best: Option<(usize, u64)> = None;
+                for (seq, conn) in &self.open {
+                    if !usable(*seq, conn, &mut full) {
+                        continue;
+                    }
+                    let active = conn.active.load(Ordering::Relaxed);
+                    if best.is_none_or(|(least, _)| active < least) {
+                        best = Some((active, *seq));
+                        if active == 0 {
+                            break;
+                        }
+                    }
+                }
+                best.map(|(_, seq)| seq)
+            }
+            MuxSelection::RoundRobin => {
+                // Continue after the connection chosen last, then wrap around.
+                let start = self.rr_after.map_or(0, |seq| seq.saturating_add(1));
+                let chosen = self
+                    .open
+                    .range(start..)
+                    .chain(self.open.range(..start))
+                    .find(|(seq, conn)| usable(**seq, conn, &mut full))
+                    .map(|(seq, _)| *seq);
+                if chosen.is_some() {
+                    self.rr_after = chosen;
+                }
+                chosen
+            }
+        };
+        for seq in full {
+            self.unlist(seq);
+        }
+        let seq = chosen?;
+        let conn = self.open.get(&seq)?;
+        // Read after the scan, this checkout's own stream not counted yet.
+        if conn.active.load(Ordering::Relaxed) + 1 >= conn.effective_capacity(cap) {
+            self.unlist(seq)
+        } else {
+            Some(conn.clone())
+        }
+    }
+}
+
 /// Connections grouped by id, so a handout only touches its own bucket and
 /// the lock is never held for a scan of the whole pool.
 struct Storage<C, ID> {
-    by_id: HashMap<ID, Bucket<C, ID>>,
+    by_id: HashMap<ID, IdBucket<C, ID>>,
 }
 
 /// Connection pool that multiplexes concurrent users over shared
@@ -276,6 +519,7 @@ pub struct MultiplexPool<C, ID> {
     max_concurrent_streams: usize,
     selection: MuxSelection,
     rr_cursor: Arc<AtomicUsize>,
+    next_seq: Arc<AtomicU64>,
     notify: Arc<Notify>,
     #[cfg(feature = "opentelemetry")]
     metrics: Option<Arc<metrics::PoolMetrics>>,
@@ -316,6 +560,7 @@ impl<C, ID> Clone for MultiplexPool<C, ID> {
             max_concurrent_streams: self.max_concurrent_streams,
             selection: self.selection,
             rr_cursor: self.rr_cursor.clone(),
+            next_seq: self.next_seq.clone(),
             notify: self.notify.clone(),
             #[cfg(feature = "opentelemetry")]
             metrics: self.metrics.clone(),
@@ -336,6 +581,7 @@ impl<C, ID> MultiplexPool<C, ID> {
             max_concurrent_streams: max_concurrent_streams.get(),
             selection: MuxSelection::default(),
             rr_cursor: Arc::new(AtomicUsize::new(0)),
+            next_seq: Arc::new(AtomicU64::new(0)),
             notify: Arc::new(Notify::new()),
             #[cfg(feature = "opentelemetry")]
             metrics: None,
@@ -365,7 +611,9 @@ impl<C, ID> MultiplexPool<C, ID> {
 
     generate_set_and_with! {
         /// Drop connections that have been idle (no active streams) for longer than
-        /// the given timeout. Only checked when a connection is requested.
+        /// the given timeout. Only checked when a connection is requested: the
+        /// connection a checkout is about to hand out is always checked, and the
+        /// id's other connections are swept at least about once a second.
         pub fn idle_timeout(mut self, timeout: Option<Duration>) -> Self {
             self.idle_timeout = timeout;
             self
@@ -419,45 +667,62 @@ where
         !broken
     }
 
-    /// Move ineligible connections out of `bucket` into `doomed`, so their
-    /// sockets close once the caller has released the storage lock.
-    fn sweep_bucket(&self, bucket: &mut Bucket<C, ID>, doomed: &mut Bucket<C, ID>) {
-        let mut i = 0;
-        while i < bucket.len() {
-            if self.is_eligible(&bucket[i]) {
-                i += 1;
-            } else {
-                bucket[i].pool_slot.lock().retired = true;
-                doomed.push(bucket.remove(i));
-            }
-        }
+    /// The pace of the full bucket sweeps that reap connections which checkouts
+    /// never come across, a quarter of the idle timeout within fixed bounds.
+    fn sweep_interval(&self) -> Duration {
+        self.idle_timeout
+            .map_or(MAX_SWEEP_INTERVAL, |timeout| timeout / 4)
+            .clamp(MIN_SWEEP_INTERVAL, MAX_SWEEP_INTERVAL)
     }
 
-    /// Sweep the bucket for `id` and copy out what is left. Every handout path
-    /// must go through this before selecting.
+    /// The instant the next sweep of a bucket swept now is due.
+    fn next_sweep_after(&self, now: u64) -> u64 {
+        now.saturating_add(self.sweep_interval().as_nanos() as u64)
+    }
+
+    /// Move ineligible connections out of `bucket` into `doomed`, so their
+    /// sockets close once the caller has released the storage lock.
+    fn sweep_bucket(&self, bucket: &mut IdBucket<C, ID>, doomed: &mut Doomed<C, ID>) {
+        bucket.next_sweep = self.next_sweep_after(now_monotonic_nanos());
+        let IdBucket { conns, open, .. } = bucket;
+        conns.retain(|conn| {
+            if self.is_eligible(conn) {
+                return true;
+            }
+            conn.pool_slot.lock().retired = true;
+            if open.remove(&conn.seq).is_some() {
+                conn.listed.store(false, Ordering::Relaxed);
+            }
+            doomed.push(conn.clone());
+            false
+        });
+    }
+
+    /// Sweep the bucket for `id` and copy out what is left. Every exact handout
+    /// path must go through this before selecting.
     fn snapshot(
         &self,
         storage: &mut Storage<C, ID>,
         id: &ID,
-        doomed: &mut Bucket<C, ID>,
+        doomed: &mut Doomed<C, ID>,
     ) -> Snapshot<C, ID> {
         let Some(bucket) = storage.by_id.get_mut(id) else {
             return Snapshot::new();
         };
         self.sweep_bucket(bucket, doomed);
-        if bucket.is_empty() {
+        if bucket.conns.is_empty() {
             storage.by_id.remove(id);
             return Snapshot::new();
         }
-        bucket.iter().cloned().collect()
+        bucket.conns.iter().cloned().collect()
     }
 
     /// Sweep every bucket. Slow path only: it frees pool slots held by stale
     /// connections of other ids before falling back to LRU eviction.
-    fn sweep_all(&self, storage: &mut Storage<C, ID>, doomed: &mut Bucket<C, ID>) {
+    fn sweep_all(&self, storage: &mut Storage<C, ID>, doomed: &mut Doomed<C, ID>) {
         storage.by_id.retain(|_, bucket| {
             self.sweep_bucket(bucket, doomed);
-            !bucket.is_empty()
+            !bucket.conns.is_empty()
         });
     }
 
@@ -471,7 +736,7 @@ where
             let mut candidate = None;
             let mut oldest = u64::MAX;
             for (id, bucket) in &storage.by_id {
-                for (pos, conn) in bucket.iter().enumerate() {
+                for (pos, conn) in bucket.conns.iter().enumerate() {
                     let last_idle = conn.last_idle.as_nanos();
                     if last_idle >= oldest || !conn.is_idle() {
                         continue;
@@ -491,11 +756,139 @@ where
             (id.clone(), pos, slot.permit.take())
         };
         let bucket = storage.by_id.get_mut(&id)?;
-        let evicted = bucket.remove(pos);
-        if bucket.is_empty() {
+        let evicted = bucket.remove_at(pos);
+        if bucket.conns.is_empty() {
             storage.by_id.remove(&id);
         }
         Some((evicted, slot))
+    }
+
+    /// Fast checkout: hand out the connection the selection strategy prefers
+    /// among those its bucket lists as having room, without looking at any other
+    /// connection. Returns `None` when nothing listed can take the request,
+    /// which does not mean no connection can: see [`Self::checkout_exact`].
+    ///
+    /// The storage lock is held only to pick and claim a candidate, no longer
+    /// than a map lookup and a pop, and never across a compatibility policy, a
+    /// resource provider or the connection's own admission.
+    fn checkout_open(&self, id: &ID, input: &Extensions) -> Option<MultiplexedConnection<C, ID>> {
+        if !id.is_reusable() {
+            return None;
+        }
+        let cap = self.max_concurrent_streams;
+        // Candidates claimed but not used, tried in this order of trouble:
+        // `rejected` ones are alive but unfit and go back to `open`, `retired`
+        // ones are gone. Settled under one lock once the checkout is done.
+        let mut rejected: SmallVec<[Arc<StoredConnection<C, ID>>; 2]> = SmallVec::new();
+        let mut retired: SmallVec<[Arc<StoredConnection<C, ID>>; 2]> = SmallVec::new();
+        let mut skip: SmallVec<[u64; 4]> = SmallVec::new();
+        let mut doomed = Doomed::new();
+        let mut handout = None;
+
+        let now = now_monotonic_nanos();
+        for _ in 0..OPEN_CANDIDATES {
+            let claimed = {
+                let mut storage = self.storage.lock();
+                let Some(bucket) = storage.by_id.get_mut(id) else {
+                    break;
+                };
+                if now >= bucket.next_sweep {
+                    self.sweep_bucket(bucket, &mut doomed);
+                }
+                bucket.claim(self.selection, cap, &skip)
+            };
+            let Some(conn) = claimed else {
+                break;
+            };
+            skip.push(conn.seq);
+            if !self.is_eligible(&conn) {
+                retired.push(conn);
+                continue;
+            }
+            let compatible = conn
+                .conn
+                .extensions()
+                .get_ref::<ConnectionReuse>()
+                .is_none_or(|policy| policy.matches(input));
+            if !compatible {
+                rejected.push(conn);
+                continue;
+            }
+            match conn.try_admit(cap, input) {
+                Some(Admitted(admission)) => {
+                    handout = Some(MultiplexedConnection {
+                        inner: conn,
+                        admission,
+                    });
+                    break;
+                }
+                None => rejected.push(conn),
+            }
+        }
+
+        if !rejected.is_empty() || !retired.is_empty() || !doomed.is_empty() {
+            {
+                let mut storage = self.storage.lock();
+                let mut empty = false;
+                if let Some(bucket) = storage.by_id.get_mut(id) {
+                    for conn in &retired {
+                        if let Some(pos) = bucket
+                            .conns
+                            .iter()
+                            .position(|stored| stored.seq == conn.seq)
+                        {
+                            conn.pool_slot.lock().retired = true;
+                            doomed.push(bucket.remove_at(pos));
+                        }
+                    }
+                    for conn in &rejected {
+                        bucket.list(conn);
+                    }
+                    empty = bucket.conns.is_empty();
+                }
+                if empty {
+                    storage.by_id.remove(id);
+                }
+            }
+            // Connections that were retired, and so may be the last handle to a
+            // socket, close outside the lock.
+            drop((retired, rejected, doomed));
+        }
+        handout
+    }
+
+    /// Exact checkout: sweep the bucket, then select among every compatible
+    /// connection of `id` with room. Where [`Self::checkout_open`] trusts the
+    /// bucket's index, this reads every connection's live capacity, so it
+    /// also finds room the index does not show, and lists it.
+    ///
+    /// Returns what it read of the bucket, so waiters can subscribe to it.
+    /// `subscribe` asks for a full snapshot in any case; otherwise one is only
+    /// taken if some connection has room, keeping a fully busy bucket, which is
+    /// the reason to create a connection or wait, at a bare scan of counters.
+    /// Then the snapshot is empty and the flag says the bucket holds saturated
+    /// connections.
+    fn snapshot_exact(&self, id: &ID, subscribe: bool) -> (Snapshot<C, ID>, bool) {
+        if !id.is_reusable() {
+            return (Snapshot::new(), false);
+        }
+        let mut doomed = Doomed::new();
+        let mut storage = self.storage.lock();
+        let Some(bucket) = storage.by_id.get_mut(id) else {
+            return (Snapshot::new(), false);
+        };
+        if !subscribe
+            && !bucket
+                .conns
+                .iter()
+                .any(|conn| conn.has_capacity(self.max_concurrent_streams))
+        {
+            return (Snapshot::new(), !bucket.conns.is_empty());
+        }
+        let snapshot = self.snapshot(&mut storage, id, &mut doomed);
+        drop(storage);
+        drop(doomed);
+        (snapshot, false)
     }
 
     /// Turn a fairly acquired total-slot permit into a handout. Reuse a
@@ -532,6 +925,7 @@ where
                 ?id,
                 "multiplex pool: reusing connection (woken by freed slot)"
             );
+            conn.inner.relist();
             return ConnectionResult::Connection(conn);
         }
         trace!(
@@ -575,15 +969,28 @@ where
                 FuturesUnordered<_>,
             ),
         > {
+            // Common case: an idle or shareable connection is listed in the id's
+            // bucket. Waiters registering below want the exact view instead.
+            if !want_cap_changes && let Some(conn) = self.checkout_open(id, input) {
+                trace!(?id, "multiplex pool: reusing connection");
+                #[cfg(feature = "opentelemetry")]
+                if let Some((metrics, attrs)) = &metrics {
+                    metrics.reused_connections.add(1, attrs);
+                    metrics.streams.add(1, attrs);
+                    metrics
+                        .concurrent_streams
+                        .record(conn.inner.active.load(Ordering::Relaxed) as f64, attrs);
+                    metrics
+                        .active_connection_delay_nanoseconds
+                        .record(start.elapsed().as_nanos() as f64, attrs);
+                }
+                return Ok(ConnectionResult::Connection(conn));
+            }
+
             // Only this id's bucket is touched under the lock; swept
             // connections close after it is released.
             let mut doomed = Vec::new();
-            let mut same_id = if id.is_reusable() {
-                self.snapshot(&mut self.storage.lock(), id, &mut doomed)
-            } else {
-                Snapshot::new()
-            };
-            doomed.clear();
+            let (mut same_id, saturated_bucket) = self.snapshot_exact(id, want_cap_changes);
             same_id.retain(|conn| {
                 conn.conn
                     .extensions()
@@ -650,6 +1057,8 @@ where
                 input,
             ) {
                 trace!(?id, "multiplex pool: reusing connection");
+                // Room the bucket's index did not show is listed from now on.
+                conn.inner.relist();
                 #[cfg(feature = "opentelemetry")]
                 if let Some((metrics, attrs)) = &metrics {
                     metrics.reused_connections.add(1, attrs);
@@ -664,7 +1073,7 @@ where
                 return Ok(ConnectionResult::Connection(conn));
             }
 
-            let saturation = !same_id.is_empty();
+            let saturation = !same_id.is_empty() || saturated_bucket;
 
             // Claim a fresh connection slot, evicting the least-recently-used idle
             // connection (any id) if the pool is at its total capacity.
@@ -687,7 +1096,7 @@ where
                             storage
                                 .by_id
                                 .values()
-                                .flatten()
+                                .flat_map(|bucket| &bucket.conns)
                                 .filter(|conn| {
                                     conn.active.load(Ordering::Relaxed) == 0
                                         && conn.in_use_unleased()
@@ -831,6 +1240,8 @@ where
                 .cloned(),
             conn,
             id,
+            seq: self.next_seq.fetch_add(1, Ordering::Relaxed),
+            stream_cap: self.max_concurrent_streams,
             active: AtomicUsize::new(1),
             capacity_notify: Arc::new(Notify::new()),
             notify: self.notify.clone(),
@@ -839,6 +1250,10 @@ where
                 permit: Some(pool_slot),
                 retired: false,
             }),
+            listed: AtomicBool::new(false),
+            storage: Arc::downgrade(&self.storage),
+            // A connection that is never stored has no bucket to re-list in.
+            relist_fn: if reusable { relist_stored } else { |_| {} },
         });
 
         trace!(id = ?conn.id, "multiplex pool: adding new connection");
@@ -847,8 +1262,8 @@ where
                 .lock()
                 .by_id
                 .entry(conn.id.clone())
-                .or_default()
-                .push(conn.clone());
+                .or_insert_with(|| IdBucket::new(self.next_sweep_after(now_monotonic_nanos())))
+                .insert(&conn);
         }
 
         // A freshly added connection has spare capacity beyond its establishing
@@ -1834,7 +2249,7 @@ mod tests {
                     let mut doomed = Vec::new();
                     {
                         let mut storage = self.pool.storage.lock();
-                        storage.by_id[&TestId(0)][0]
+                        storage.by_id[&TestId(0)].conns[0]
                             .conn
                             .extensions()
                             .get_ref::<ConnectionHealthWatcher>()
@@ -1928,7 +2343,7 @@ mod tests {
         let pool = MultiplexPool::try_new(1, 1).unwrap();
         let svc = connector(pool.clone());
         let handout = connect(&svc, 0).await;
-        let stored = Arc::clone(&pool.storage.lock().by_id[&TestId(0)][0]);
+        let stored = Arc::clone(&pool.storage.lock().by_id[&TestId(0)].conns[0]);
 
         assert_eq!(stored.active.load(Ordering::Relaxed), 1);
         let previous_idle = stored.last_idle.as_nanos();
@@ -2537,6 +2952,217 @@ mod tests {
             .await
             .expect("waiter must be woken by the freed slot");
         waited.unwrap().unwrap();
+    }
+
+    /// Once nothing is in flight the bucket's `open` index lists exactly the
+    /// stored connections that have room, each once.
+    fn assert_open_matches_capacity(pool: &MultiplexPool<Conn, TestId>) {
+        let storage = pool.storage.lock();
+        for bucket in storage.by_id.values() {
+            for conn in &bucket.conns {
+                let listed = bucket.open.contains_key(&conn.seq);
+                assert_eq!(listed, conn.listed.load(Ordering::Relaxed), "{}", conn.seq);
+                assert_eq!(
+                    listed,
+                    conn.has_capacity(pool.max_concurrent_streams),
+                    "connection {} is listed iff it has room",
+                    conn.seq
+                );
+            }
+            assert!(bucket.conns.windows(2).all(|w| w[0].seq < w[1].seq));
+            assert!(
+                bucket
+                    .open
+                    .keys()
+                    .all(|seq| bucket.conns.iter().any(|conn| conn.seq == *seq))
+            );
+        }
+    }
+
+    async fn serial_of(handout: &MultiplexedConnection<Conn, TestId>) -> usize {
+        handout.serve(ServiceInput::new(())).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn selection_walks_idle_exclusive_connections_in_creation_order() {
+        for (selection, expected) in [
+            (MuxSelection::FirstAvailable, [0, 0, 0, 0, 0, 0]),
+            (MuxSelection::LeastLoaded, [0, 0, 0, 0, 0, 0]),
+            (MuxSelection::RoundRobin, [0, 1, 2, 3, 0, 1]),
+        ] {
+            let pool = MultiplexPool::try_new(1, 8)
+                .unwrap()
+                .with_selection(selection);
+            let svc = connector(pool.clone());
+            let mut held = Vec::new();
+            for _ in 0..4 {
+                held.push(connect(&svc, 0).await);
+            }
+            assert_eq!(created(&svc), 4);
+            // Nothing has room, so the index is empty.
+            assert!(pool.storage.lock().by_id[&TestId(0)].open.is_empty());
+            drop(held);
+            assert_open_matches_capacity(&pool);
+
+            let mut serials = Vec::new();
+            for _ in 0..expected.len() {
+                let handout = connect(&svc, 0).await;
+                serials.push(serial_of(&handout.conn).await);
+            }
+            assert_eq!(serials, expected, "{selection:?}");
+            assert_eq!(created(&svc), 4, "idle connections are reused");
+            assert_open_matches_capacity(&pool);
+
+            // Concurrent checkouts spread over distinct connections.
+            let first = connect(&svc, 0).await;
+            let second = connect(&svc, 0).await;
+            assert_ne!(serial_of(&first.conn).await, serial_of(&second.conn).await);
+            assert_eq!(created(&svc), 4);
+            drop((first, second));
+            assert_open_matches_capacity(&pool);
+        }
+    }
+
+    #[tokio::test]
+    async fn multiplexed_connection_stays_listed_until_full() {
+        let pool = MultiplexPool::try_new(3, 4).unwrap();
+        let svc = connector(pool.clone());
+        let first = connect(&svc, 0).await;
+        let second = connect(&svc, 0).await;
+        assert!(pool.storage.lock().by_id[&TestId(0)].open.len() == 1);
+        let third = connect(&svc, 0).await;
+        assert!(
+            pool.storage.lock().by_id[&TestId(0)].open.is_empty(),
+            "the last stream slot unlists the connection"
+        );
+        drop(second);
+        assert_eq!(pool.storage.lock().by_id[&TestId(0)].open.len(), 1);
+        drop((first, third));
+        assert_open_matches_capacity(&pool);
+        assert_eq!(created(&svc), 1);
+    }
+
+    #[tokio::test]
+    async fn released_connection_is_found_again_after_its_bucket_was_swept_empty() {
+        let pool = MultiplexPool::try_new(1, 2).unwrap();
+        let svc = connector(pool.clone());
+        let held = connect(&svc, 0).await;
+        held.conn
+            .extensions()
+            .get_ref::<ConnectionHealthWatcher>()
+            .unwrap()
+            .mark_broken();
+        let mut doomed = Vec::new();
+        pool.sweep_all(&mut pool.storage.lock(), &mut doomed);
+        drop(doomed);
+        assert!(pool.storage.lock().by_id.is_empty());
+        // Releasing a retired connection must not resurrect it.
+        drop(held);
+        assert!(pool.storage.lock().by_id.is_empty());
+        let fresh = connect(&svc, 0).await;
+        assert_eq!(created(&svc), 2);
+        drop(fresh);
+        assert_open_matches_capacity(&pool);
+    }
+
+    #[tokio::test]
+    async fn broken_listed_connection_is_retired_when_selected() {
+        let pool = MultiplexPool::try_new(1, 8).unwrap();
+        let svc = connector(pool.clone());
+        let mut held = Vec::new();
+        for _ in 0..3 {
+            held.push(connect(&svc, 0).await);
+        }
+        held[1]
+            .conn
+            .extensions()
+            .get_ref::<ConnectionHealthWatcher>()
+            .unwrap()
+            .mark_broken();
+        drop(held);
+
+        // Serials 0 and 2 serve; the broken 1 sits between them and is retired
+        // when selected, not handed out.
+        let a = connect(&svc, 0).await;
+        let b = connect(&svc, 0).await;
+        assert_eq!(serial_of(&a.conn).await, 0);
+        assert_eq!(serial_of(&b.conn).await, 2);
+        assert_eq!(created(&svc), 3);
+        drop((a, b));
+        let bucket_len = pool.storage.lock().by_id[&TestId(0)].conns.len();
+        assert_eq!(bucket_len, 2);
+        assert_open_matches_capacity(&pool);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cold_idle_connections_are_reaped_while_a_hot_one_serves() {
+        let pool = MultiplexPool::try_new(1, 8)
+            .unwrap()
+            .with_idle_timeout(Duration::from_secs(4));
+        let svc = connector(pool.clone());
+        let mut held = Vec::new();
+        for _ in 0..4 {
+            held.push(connect(&svc, 0).await);
+        }
+        drop(held);
+
+        // Only the earliest connection is ever selected, so the others are
+        // never looked at by a checkout. The bucket's own sweep reaps them.
+        for _ in 0..10 {
+            tokio::time::sleep(Duration::from_millis(600)).await;
+            let handout = connect(&svc, 0).await;
+            assert_eq!(serial_of(&handout.conn).await, 0);
+        }
+        assert_eq!(pool.storage.lock().by_id[&TestId(0)].conns.len(), 1);
+        assert_eq!(pool.total_slots.available_permits(), 7);
+        assert_eq!(created(&svc), 4);
+        assert_open_matches_capacity(&pool);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_checkouts_keep_the_open_index_consistent() {
+        for selection in [
+            MuxSelection::FirstAvailable,
+            MuxSelection::LeastLoaded,
+            MuxSelection::RoundRobin,
+        ] {
+            let pool = MultiplexPool::try_new(1, 12)
+                .unwrap()
+                .with_selection(selection);
+            let svc = Arc::new(connector(pool.clone()));
+            let mut tasks = Vec::new();
+            for task in 0..32 {
+                let svc = svc.clone();
+                tasks.push(tokio::spawn(async move {
+                    for round in 0..300 {
+                        let handout = connect(&svc, 0).await;
+                        if (round + task) % 3 == 0 {
+                            tokio::task::yield_now().await;
+                        }
+                        drop(handout);
+                    }
+                }));
+            }
+            for task in tasks {
+                task.await.unwrap();
+            }
+            // A checkout racing a release can evict the connection that just went
+            // idle and dial another, so `created` may exceed the limit; what is
+            // stored may not, and every slot must be accounted for.
+            let storage = pool.storage.lock();
+            let stored = &storage.by_id[&TestId(0)].conns;
+            assert!(stored.len() <= 12);
+            assert_eq!(
+                pool.total_slots.available_permits(),
+                12 - stored.len(),
+                "no slot leaked ({selection:?})"
+            );
+            for conn in stored {
+                assert_eq!(conn.active.load(Ordering::Relaxed), 0);
+            }
+            drop(storage);
+            assert_open_matches_capacity(&pool);
+        }
     }
 
     #[test]
