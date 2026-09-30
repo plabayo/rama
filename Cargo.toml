@@ -767,6 +767,11 @@ required-features = ["dns"]
 harness = false
 
 [[bench]]
+name = "extensions_lookup"
+required-features = ["boring"]
+harness = false
+
+[[bench]]
 name = "rss_parser"
 required-features = ["rss"]
 harness = false
