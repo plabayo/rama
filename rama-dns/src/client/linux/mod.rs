@@ -1064,10 +1064,6 @@ impl LinuxDnsResolverError {
     fn message(message: impl Into<ArcStr>) -> Self {
         Self(message.into())
     }
-
-    fn timeout(timeout: Duration) -> Self {
-        Self::message(format!("linux dns query timed out after {timeout:?}"))
-    }
 }
 
 impl fmt::Display for LinuxDnsResolverError {
@@ -1102,7 +1098,7 @@ mod tests {
     };
     use rama_core::{
         bytes::Bytes,
-        error::{BoxError, BoxErrorExt as _},
+        error::{BoxError, BoxErrorExt as _, error_chain},
         futures::{Stream, StreamExt as _, future::join_all, stream},
     };
     use rama_net::address::Domain;
@@ -1123,7 +1119,10 @@ mod tests {
         time::Instant,
     };
 
-    use crate::wire::{ServiceBinding, Txt};
+    use crate::{
+        client::DnsTimeoutError,
+        wire::{ServiceBinding, Txt},
+    };
 
     fn test_cache() -> Arc<cache::LinuxDnsCache> {
         Arc::new(cache::LinuxDnsCache::new(
@@ -1961,7 +1960,7 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(2));
         assert!(matches!(
             items.as_slice(),
-            [Err(err)] if err.to_string().contains("timed out after")
+            [Err(err)] if error_chain(err.as_ref()).any(|cause| cause.is::<DnsTimeoutError>())
         ));
 
         drop(release);

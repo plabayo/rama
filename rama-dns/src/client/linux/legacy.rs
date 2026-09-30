@@ -17,7 +17,7 @@ use rama_net::address::Domain;
 use tokio::sync::mpsc;
 
 use super::{LinuxDnsResolverError, LookupEvent, NativeConfig, dns_name_from_domain};
-use crate::client::limit::deadline_after;
+use crate::client::limit::{DnsTimeoutError, deadline_after};
 
 pub(super) fn lookup_ipv4_stream(
     domain: Domain,
@@ -71,14 +71,14 @@ where
         let (tx, mut rx) = mpsc::channel(8);
         let task = native.limit.spawn_blocking(deadline, move |budget| {
             if budget.is_zero() {
-                return Err(LinuxDnsResolverError::timeout(timeout).into());
+                return Err(DnsTimeoutError::new(timeout).into());
             }
             lookup(&domain, family, &tx)
         });
         let Some(join) = task.await else {
             tracing::debug!("linux::getaddrinfo: no native lookup slot before the deadline");
             yielder
-                .yield_item(Err(LinuxDnsResolverError::timeout(timeout).into()))
+                .yield_item(Err(DnsTimeoutError::new(timeout).into()))
                 .await;
             return;
         };
@@ -96,7 +96,7 @@ where
                     // waiting for the worker result; it does not cancel the underlying OS
                     // resolver call once it has started.
                     yielder
-                        .yield_item(Err(LinuxDnsResolverError::timeout(timeout).into()))
+                        .yield_item(Err(DnsTimeoutError::new(timeout).into()))
                         .await;
                     return;
                 }

@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::{fmt, sync::Arc, time::Duration};
 
 use rama_core::telemetry::tracing;
 use tokio::{
@@ -75,6 +75,35 @@ impl LookupLimit {
         }))
     }
 }
+
+/// A DNS lookup that ran out of time, whichever resolver served it.
+///
+/// Lookups shared by concurrent callers report it wrapped in an
+/// `ArcError`, so look for it along the error's source chain.
+#[derive(Debug, Clone, Copy)]
+pub struct DnsTimeoutError {
+    timeout: Duration,
+}
+
+impl DnsTimeoutError {
+    pub(crate) const fn new(timeout: Duration) -> Self {
+        Self { timeout }
+    }
+
+    /// The budget the lookup ran out of.
+    #[must_use]
+    pub const fn timeout(&self) -> Duration {
+        self.timeout
+    }
+}
+
+impl fmt::Display for DnsTimeoutError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "dns lookup timed out after {:?}", self.timeout)
+    }
+}
+
+impl std::error::Error for DnsTimeoutError {}
 
 /// `timeout` from now, saturating instead of overflowing.
 pub(crate) fn deadline_after(timeout: Duration) -> Instant {
@@ -212,6 +241,13 @@ mod tests {
             budget > Duration::from_secs(4) && budget <= Duration::from_secs(5),
             "budget {budget:?}",
         );
+    }
+
+    #[test]
+    fn timeout_error_reads_the_same_for_every_backend() {
+        let err = DnsTimeoutError::new(Duration::from_millis(50));
+        assert_eq!(err.to_string(), "dns lookup timed out after 50ms");
+        assert_eq!(err.timeout(), Duration::from_millis(50));
     }
 
     #[test]

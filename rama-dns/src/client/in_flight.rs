@@ -24,6 +24,8 @@ use rama_core::{
 };
 use tokio::{sync::oneshot, task::AbortHandle};
 
+use super::limit::DnsTimeoutError;
+
 /// `None`: the run ended without an answer (its runtime shut down, or it panicked).
 type Flight<V> = Shared<BoxFuture<'static, Option<Result<Arc<V>, ArcError>>>>;
 type Flights<K> = Arc<Mutex<HashMap<(K, TypeId), Box<dyn Any + Send + Sync>>>>;
@@ -176,10 +178,7 @@ impl<K: Hash + Eq + Clone + Send + Sync + 'static> InFlight<K> {
         };
         tokio::time::timeout(wait, shared)
             .await
-            .unwrap_or_else(|_elapsed| {
-                Err(ArcError::from_static_str("dns lookup timed out")
-                    .context_debug_field("timeout", wait))
-            })
+            .unwrap_or_else(|_elapsed| Err(ArcError::new(DnsTimeoutError::new(max_duration))))
     }
 
     fn join<V: Send + Sync + 'static>(&self, slot: &(K, TypeId)) -> Joined<V> {
@@ -614,7 +613,15 @@ mod tests {
         let (patient, (hasty, waited), ()) = tokio::join!(patient, hasty, release);
 
         assert_eq!(*patient.unwrap(), 1);
-        hasty.expect_err("the hasty caller times out on its own");
+        let err = hasty.expect_err("the hasty caller times out on its own");
+        let timeout = err
+            .downcast_ref::<DnsTimeoutError>()
+            .expect("a typed timeout");
+        assert_eq!(
+            timeout.timeout(),
+            Duration::from_millis(100),
+            "its own budget"
+        );
         assert!(waited <= Duration::from_millis(125), "waited {waited:?}");
         assert_eq!(starts.load(Ordering::SeqCst), 1);
     }

@@ -39,7 +39,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use parking_lot::Mutex;
-use rama_core::error::{BoxError, ErrorExt};
+use rama_core::error::BoxError;
 use rama_core::futures::{Stream, StreamExt as _, async_stream::stream_fn};
 use rama_core::telemetry::tracing;
 use rama_net::address::Domain;
@@ -50,7 +50,7 @@ use tokio::time::Instant;
 
 use super::{
     in_flight::{Abandoned, InFlight, coalesced_stream},
-    limit::{DEFAULT_MAX_LOOKUPS, LookupLimit, deadline_after},
+    limit::{DEFAULT_MAX_LOOKUPS, DnsTimeoutError, LookupLimit, deadline_after},
     resolver::{
         DnsAddressResolver, DnsCnameResolver, DnsResolver, DnsServiceBindingResolver,
         DnsTxtResolver,
@@ -153,7 +153,7 @@ where
         let deadline = deadline_after(timeout);
         let Some(_slot) = limit.acquire(deadline).await else {
             yielder
-                .yield_item(Err(AppleDnsResolverError::timeout(timeout).into()))
+                .yield_item(Err(DnsTimeoutError::new(timeout).into()))
                 .await;
             return;
         };
@@ -344,7 +344,7 @@ where
 
             let now = Instant::now();
             if now >= deadline {
-                queue_error(&state, AppleDnsResolverError::timeout(timeout));
+                queue_error(&state, DnsTimeoutError::new(timeout));
                 continue;
             }
 
@@ -360,7 +360,7 @@ where
                     continue;
                 }
                 Err(_) => {
-                    queue_error(&state, AppleDnsResolverError::timeout(timeout));
+                    queue_error(&state, DnsTimeoutError::new(timeout));
                     continue;
                 }
             };
@@ -392,7 +392,7 @@ fn dns_name_from_domain(domain: &str) -> Result<CString, BoxError> {
     })
 }
 
-fn queue_error<T, P>(state: &QueryState<T, P>, err: AppleDnsResolverError)
+fn queue_error<T, P>(state: &QueryState<T, P>, err: impl Into<BoxError>)
 where
     T: Send + 'static,
     P: Fn(&[u8], &mut dyn FnMut(T)) -> Result<(), BoxError> + Send + Sync,
@@ -401,7 +401,7 @@ where
     state.more_coming.store(false, Ordering::SeqCst);
     let mut queue = state.queue.lock();
     queue.clear();
-    queue.push_back(Err(err.into_box_error()));
+    queue.push_back(Err(err.into()));
 }
 
 fn finish_empty<T, P>(
@@ -609,10 +609,6 @@ struct AppleDnsResolverError(ArcStr);
 impl AppleDnsResolverError {
     fn message(message: impl Into<ArcStr>) -> Self {
         Self(message.into())
-    }
-
-    fn timeout(timeout: Duration) -> Self {
-        Self::message(format!("apple dns query timed out after {timeout:?}"))
     }
 
     fn dns_service(operation: &str, code: ffi::DNSServiceErrorType) -> Self {
@@ -879,7 +875,7 @@ mod ffi {
 
 #[cfg(test)]
 mod tests {
-    use rama_core::futures::future::join_all;
+    use rama_core::{error::error_chain, futures::future::join_all};
 
     use super::*;
 
@@ -919,7 +915,7 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(1));
         assert!(matches!(
             items.as_slice(),
-            [Err(err)] if err.to_string().contains("timed out")
+            [Err(err)] if error_chain(err.as_ref()).any(|cause| cause.is::<DnsTimeoutError>())
         ));
     }
 

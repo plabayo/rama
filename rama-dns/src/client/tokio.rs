@@ -17,7 +17,7 @@ use rama_utils::{
 
 use super::{
     in_flight::{InFlight, coalesced_stream},
-    limit::{LookupLimit, deadline_after},
+    limit::{DnsTimeoutError, LookupLimit, deadline_after},
     resolver::{
         DnsAddressResolver, DnsCnameResolver, DnsResolver, DnsServiceBindingResolver,
         DnsTxtResolver,
@@ -217,7 +217,7 @@ fn lookup_host_stream(
             Some(Ok(None)) | None => {
                 tracing::debug!(?timeout, "dns::tokio: lookup timed out");
                 yielder
-                    .yield_item(Err(TokioDnsResolverError::timeout(timeout).into()))
+                    .yield_item(Err(DnsTimeoutError::new(timeout).into()))
                     .await;
             }
         }
@@ -230,10 +230,6 @@ struct TokioDnsResolverError(ArcStr);
 impl TokioDnsResolverError {
     fn message(message: impl Into<ArcStr>) -> Self {
         Self(message.into())
-    }
-
-    fn timeout(timeout: Duration) -> Self {
-        Self::message(format!("tokio dns lookup timed out after {timeout:?}"))
     }
 }
 
@@ -262,7 +258,7 @@ static_str_error! {
 
 #[cfg(test)]
 mod tests {
-    use rama_core::futures::future::join_all;
+    use rama_core::{error::error_chain, futures::future::join_all};
 
     use super::*;
 
@@ -365,7 +361,7 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(2));
         assert!(matches!(
             items.as_slice(),
-            [Err(err)] if err.to_string().contains("timed out after")
+            [Err(err)] if error_chain(err.as_ref()).any(|cause| cause.is::<DnsTimeoutError>())
         ));
 
         drop(release);

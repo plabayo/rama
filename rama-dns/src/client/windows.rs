@@ -32,6 +32,7 @@ use std::sync::atomic::AtomicU16;
 
 use super::{
     in_flight::{Abandoned, InFlight, coalesced_stream},
+    limit::DnsTimeoutError,
     resolver::{
         DnsAddressResolver, DnsCnameResolver, DnsResolver, DnsServiceBindingResolver,
         DnsTxtResolver,
@@ -427,7 +428,7 @@ fn handle_query_result<T, P>(
         state
             .queue
             .lock()
-            .push_back(Err(WindowsDnsResolverError::timeout(state.timeout).into()));
+            .push_back(Err(DnsTimeoutError::new(state.timeout).into()));
         cleanup_result(result);
         mark_done(state);
         return;
@@ -953,10 +954,6 @@ struct WindowsDnsResolverError(ArcStr);
 impl WindowsDnsResolverError {
     fn message(message: impl Into<ArcStr>) -> Self {
         Self(message.into())
-    }
-
-    fn timeout(timeout: Duration) -> Self {
-        Self::message(format!("windows dns query timed out after {timeout:?}"))
     }
 
     fn dns_status(operation: &str, status: u32) -> Self {

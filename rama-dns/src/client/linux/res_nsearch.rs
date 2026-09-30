@@ -22,7 +22,7 @@ use tokio::sync::mpsc;
 
 use super::{LinuxDnsResolverError, LookupEvent, NativeConfig, dns_name_from_domain};
 use crate::{
-    client::limit::deadline_after,
+    client::limit::{DnsTimeoutError, deadline_after},
     wire::{Name, RecordType, ServiceBinding, Txt, parse_a_rdata, parse_aaaa_rdata},
 };
 
@@ -136,7 +136,7 @@ where
         let response_buffer_size = native.response_buffer_size;
         let task = native.limit.spawn_blocking(deadline, move |budget| {
             if budget.is_zero() {
-                return Err(LinuxDnsResolverError::timeout(timeout).into());
+                return Err(DnsTimeoutError::new(timeout).into());
             }
             // `lookup_record_packet` always returns the wire response (or None
             // for transport errors); NXDOMAIN/NODATA come back as a packet
@@ -169,7 +169,7 @@ where
         let Some(join) = task.await else {
             tracing::debug!("linux::res_nsearch: no native lookup slot before the deadline");
             yielder
-                .yield_item(Err(LinuxDnsResolverError::timeout(timeout).into()))
+                .yield_item(Err(DnsTimeoutError::new(timeout).into()))
                 .await;
             return;
         };
@@ -187,7 +187,7 @@ where
                     // waiting for the worker result; it does not cancel the underlying OS
                     // resolver call once it has started.
                     yielder
-                        .yield_item(Err(LinuxDnsResolverError::timeout(timeout).into()))
+                        .yield_item(Err(DnsTimeoutError::new(timeout).into()))
                         .await;
                     return;
                 }
@@ -209,7 +209,7 @@ where
                     "linux::res_nsearch: lookup_record_stream error = {err} (report as timeout)"
                 );
                 yielder
-                    .yield_item(Err(LinuxDnsResolverError::timeout(timeout).into()))
+                    .yield_item(Err(DnsTimeoutError::new(timeout).into()))
                     .await;
             }
         }
