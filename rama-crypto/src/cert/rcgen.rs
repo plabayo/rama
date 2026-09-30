@@ -8,7 +8,7 @@ use super::{
 use crate::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext};
 use rcgen::PublicKeyData as _;
-use time::{Duration, OffsetDateTime};
+use time::{OffsetDateTime, SignedDuration};
 
 pub(super) fn validate_certificate_authority_key(
     certificate: &CertificateDer<'_>,
@@ -90,10 +90,11 @@ fn generate_key(kind: CertificateKeyKind) -> Result<rcgen::KeyPair, BoxError> {
         .context("generate certificate key pair")
 }
 
-fn duration(value: std::time::Duration) -> Result<Duration, BoxError> {
+fn duration(value: std::time::Duration) -> Result<SignedDuration, BoxError> {
     let seconds =
         i64::try_from(value.as_secs()).context("certificate duration exceeds i64 seconds")?;
-    Ok(Duration::seconds(seconds) + Duration::nanoseconds(i64::from(value.subsec_nanos())))
+    Ok(SignedDuration::seconds(seconds)
+        + SignedDuration::nanoseconds(i64::from(value.subsec_nanos())))
 }
 
 fn validity_bounds(
@@ -317,11 +318,11 @@ mod tests {
     fn duration_converts_seconds_and_nanoseconds() {
         assert_eq!(
             duration(std::time::Duration::from_millis(1_500)).unwrap(),
-            Duration::milliseconds(1_500)
+            SignedDuration::milliseconds(1_500)
         );
         assert_eq!(
             duration(std::time::Duration::from_nanos(1)).unwrap(),
-            Duration::nanoseconds(1)
+            SignedDuration::nanoseconds(1)
         );
     }
 
@@ -335,8 +336,8 @@ mod tests {
         .unwrap();
         let after = OffsetDateTime::now_utc();
 
-        assert_eq!(not_after - not_before, Duration::milliseconds(1_500));
-        assert!(not_before >= before - Duration::seconds(2));
-        assert!(not_before <= after - Duration::seconds(2));
+        assert_eq!(not_after - not_before, SignedDuration::milliseconds(1_500));
+        assert!(not_before >= before - SignedDuration::seconds(2));
+        assert!(not_before <= after - SignedDuration::seconds(2));
     }
 }
