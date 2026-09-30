@@ -409,7 +409,6 @@ default = ["std"]
 std = [
     "dep:ahash",
     "dep:rama-json",
-    "dep:time",
     "dep:tokio-util",
     "dep:tracing-subscriber",
     "rama-core/std",
@@ -625,7 +624,6 @@ rama-ws = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
-time = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "io-std"], optional = true }
 tokio-util = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"], optional = true }
