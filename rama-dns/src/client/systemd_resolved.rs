@@ -44,7 +44,7 @@ use rama_utils::{octets::kib, str::arcstr::ArcStr};
 use serde::{Deserialize, Serialize};
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
-    sync::Semaphore,
+    sync::{Notify, Semaphore},
     time::Instant,
 };
 
@@ -124,9 +124,10 @@ struct Availability {
 /// Availability tracking: the first lookup doubles as the probe
 /// (single-flight), transport failures feed a consecutive-failure breaker,
 /// and an unavailable daemon is re-probed at most once per
-/// [`Config::reprobe_interval`]. Lookups never wait on a probe: whoever does
-/// not hold the claim reports [`ResolvedLookup::Unavailable`] so the caller
-/// uses the native backend instead. Transitions go through one mutex (its
+/// [`Config::reprobe_interval`]. Lookups arriving mid-probe wait up to
+/// [`Config::connect_timeout`] for its verdict; otherwise whoever does not
+/// hold the claim reports [`ResolvedLookup::Unavailable`] so the caller uses
+/// the native backend instead. Transitions go through one mutex (its
 /// critical sections are a few loads/stores) so a success and a concurrent
 /// failure can never interleave into a wrong breaker verdict.
 #[derive(Debug)]
@@ -135,6 +136,7 @@ pub(super) struct SystemdResolved {
     state: Mutex<Availability>,
     record_supported: AtomicBool,
     permits: Semaphore,
+    probe_settled: Notify,
 }
 
 pub(super) enum ResolvedLookup<T> {
@@ -215,6 +217,7 @@ impl SystemdResolved {
             }),
             record_supported: AtomicBool::new(true),
             permits,
+            probe_settled: Notify::new(),
         }
     }
 
@@ -330,9 +333,11 @@ impl SystemdResolved {
         // only a rooted name may treat a negative answer as authoritative;
         // relative ones are retried natively so the search list applies
         let rooted = domain.is_fqdn();
-        let Some(claim) = self.claim() else {
+        let started = Instant::now();
+        let Some(claim) = self.claim_after_probe(timeout).await else {
             return ResolvedLookup::Unavailable;
         };
+        let timeout = timeout.saturating_sub(started.elapsed());
         // read after claim(): its recovery-reprobe arm resets this pin
         if !self.record_supported.load(Ordering::Acquire) {
             // the daemon never saw a query: hand back any probe slot
@@ -354,9 +359,11 @@ impl SystemdResolved {
         timeout: Duration,
         decode: fn(&[u8]) -> Option<T>,
     ) -> ResolvedLookup<T> {
-        let Some(claim) = self.claim() else {
+        let started = Instant::now();
+        let Some(claim) = self.claim_after_probe(timeout).await else {
             return ResolvedLookup::Unavailable;
         };
+        let timeout = timeout.saturating_sub(started.elapsed());
         let this = self.clone();
         let name = wire_name(domain);
         join(rama_core::rt::spawn(async move {
@@ -572,6 +579,26 @@ impl SystemdResolved {
         ResolvedLookup::Unavailable
     }
 
+    /// [`Self::claim`], but a lookup that finds a probe running waits (at
+    /// most `budget`, capped at the connect timeout) for its verdict instead
+    /// of bypassing a daemon that is most likely about to become available.
+    async fn claim_after_probe(&self, budget: Duration) -> Option<Claim> {
+        let settled = self.probe_settled.notified();
+        let mut settled = std::pin::pin!(settled);
+        settled.as_mut().enable();
+        if let Some(claim) = self.claim() {
+            return Some(claim);
+        }
+        if !matches!(self.state.lock().phase, Phase::Probing { .. }) {
+            // the probe may have settled since our claim attempt
+            return self.claim();
+        }
+        tokio::time::timeout(budget.min(self.config.connect_timeout), settled)
+            .await
+            .ok()?;
+        self.claim()
+    }
+
     fn claim(&self) -> Option<Claim> {
         let mut state = self.state.lock();
         match state.phase {
@@ -611,6 +638,9 @@ impl SystemdResolved {
                 Phase::Available,
             )
         };
+        if claim.probe_generation.is_some() {
+            self.probe_settled.notify_waiters();
+        }
         if became_available {
             tracing::debug!("dns::systemd-resolved: available");
         }
@@ -645,6 +675,9 @@ impl SystemdResolved {
                 }
             }
         };
+        if claim.probe_generation.is_some() {
+            self.probe_settled.notify_waiters();
+        }
         if flipped {
             tracing::debug!(
                 reprobe_interval = ?self.config.reprobe_interval,
@@ -1268,9 +1301,47 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn probe_is_single_flight() {
+    async fn lookups_arriving_mid_probe_wait_for_its_verdict() {
+        let reply = hostname_reply(&json!([{ "family": 2, "address": [1, 2, 3, 4] }]));
+        let server = FakeResolved::spawn(vec![
+            Behavior::DelayedReply(Duration::from_millis(100), reply.clone()),
+            Behavior::Reply(reply),
+        ]);
+        let resolved = resolver(server.path.clone());
+
+        let prober = {
+            let resolved = resolved.clone();
+            tokio::spawn(async move {
+                resolved
+                    .lookup_ipv4(&domain(), Duration::from_secs(2))
+                    .await
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        let name = domain();
+        let (first, second) = tokio::join!(
+            resolved.lookup_ipv4(&name, Duration::from_secs(2)),
+            resolved.lookup_ipv4(&name, Duration::from_secs(2)),
+        );
+        assert!(matches!(first, ResolvedLookup::Records(_)));
+        assert!(matches!(second, ResolvedLookup::Records(_)));
+        assert!(matches!(
+            prober.await.expect("probe task"),
+            ResolvedLookup::Records(_),
+        ));
+        assert_eq!(
+            server.connections(),
+            3,
+            "waiters query only after the probe"
+        );
+        assert_available(&resolved);
+    }
+
+    #[tokio::test]
+    async fn probe_outlasting_the_connect_timeout_lets_waiters_fall_back() {
         let server = FakeResolved::spawn(vec![Behavior::DelayedReply(
-            Duration::from_millis(300),
+            Duration::from_millis(600),
             hostname_reply(&json!([{ "family": 2, "address": [1, 2, 3, 4] }])),
         )]);
         let resolved = resolver(server.path.clone());
@@ -1283,28 +1354,146 @@ mod tests {
                     .await
             })
         };
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
 
-        // while the probe is in flight, other lookups fall back immediately
-        assert!(matches!(
-            resolved
-                .lookup_ipv4(&domain(), Duration::from_secs(2))
-                .await,
-            ResolvedLookup::Unavailable,
-        ));
+        let started = Instant::now();
         assert!(matches!(
             resolved
                 .lookup_ipv6(&domain(), Duration::from_secs(2))
                 .await,
             ResolvedLookup::Unavailable,
         ));
-        assert_eq!(server.connections(), 1);
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "the wait is capped by the connect timeout",
+        );
+        assert_eq!(server.connections(), 1, "the probe stays single-flight");
 
         assert!(matches!(
             prober.await.expect("probe task"),
             ResolvedLookup::Records(_),
         ));
         assert_available(&resolved);
+    }
+
+    /// A resolver whose connect timeout is long enough to tell a woken
+    /// waiter from one that sat out the full wait.
+    fn patient_resolver(path: PathBuf) -> Arc<SystemdResolved> {
+        Arc::new(SystemdResolved::new(Config {
+            connect_timeout: Duration::from_secs(2),
+            ..test_config(path)
+        }))
+    }
+
+    #[tokio::test]
+    async fn failed_probe_releases_waiters_before_the_connect_timeout() {
+        let server = FakeResolved::spawn(vec![Behavior::DelayedReply(
+            Duration::from_millis(100),
+            json!({ "parameters": {} }),
+        )]);
+        let resolved = patient_resolver(server.path.clone());
+
+        let prober = {
+            let resolved = resolved.clone();
+            tokio::spawn(async move {
+                resolved
+                    .lookup_ipv4(&domain(), Duration::from_secs(3))
+                    .await
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        let started = Instant::now();
+        assert!(matches!(
+            resolved
+                .lookup_ipv6(&domain(), Duration::from_secs(3))
+                .await,
+            ResolvedLookup::Unavailable,
+        ));
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "a failed probe wakes its waiters",
+        );
+        assert_eq!(server.connections(), 1, "waiters skip the failed daemon");
+        assert!(matches!(
+            prober.await.expect("probe task"),
+            ResolvedLookup::Unavailable,
+        ));
+        assert_unavailable(&resolved);
+    }
+
+    #[tokio::test]
+    async fn waiter_budget_shorter_than_the_connect_timeout_bounds_the_wait() {
+        let server = FakeResolved::spawn(vec![Behavior::DelayedReply(
+            Duration::from_millis(600),
+            hostname_reply(&json!([{ "family": 2, "address": [1, 2, 3, 4] }])),
+        )]);
+        let resolved = patient_resolver(server.path.clone());
+
+        let prober = {
+            let resolved = resolved.clone();
+            tokio::spawn(async move {
+                resolved
+                    .lookup_ipv4(&domain(), Duration::from_secs(3))
+                    .await
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        let started = Instant::now();
+        assert!(matches!(
+            resolved
+                .lookup_ipv6(&domain(), Duration::from_millis(100))
+                .await,
+            ResolvedLookup::Unavailable,
+        ));
+        let waited = started.elapsed();
+        assert!(
+            waited >= Duration::from_millis(90) && waited < Duration::from_millis(450),
+            "waited {waited:?}",
+        );
+        assert_eq!(server.connections(), 1);
+        assert!(matches!(
+            prober.await.expect("probe task"),
+            ResolvedLookup::Records(_),
+        ));
+    }
+
+    #[tokio::test]
+    async fn waiting_for_the_probe_counts_against_the_lookup_timeout() {
+        let reply = hostname_reply(&json!([{ "family": 2, "address": [1, 2, 3, 4] }]));
+        let server = FakeResolved::spawn(vec![
+            Behavior::DelayedReply(Duration::from_millis(300), reply.clone()),
+            // in time for the full budget, too late for what the wait left
+            Behavior::DelayedReply(Duration::from_millis(450), reply),
+        ]);
+        let resolved = patient_resolver(server.path.clone());
+
+        let prober = {
+            let resolved = resolved.clone();
+            tokio::spawn(async move {
+                resolved
+                    .lookup_ipv4(&domain(), Duration::from_secs(3))
+                    .await
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        assert!(matches!(
+            resolved
+                .lookup_ipv4(&domain(), Duration::from_millis(600))
+                .await,
+            ResolvedLookup::Unavailable,
+        ));
+        assert_eq!(
+            server.connections(),
+            2,
+            "the waiter queried after the probe"
+        );
+        assert!(matches!(
+            prober.await.expect("probe task"),
+            ResolvedLookup::Records(_),
+        ));
     }
 
     #[tokio::test]
