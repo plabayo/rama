@@ -5,8 +5,10 @@ use std::{
 };
 
 use moka::{Equivalent, Expiry, sync::Cache};
+use rama_core::error::ArcError;
 use rama_net::address::Domain;
 
+use super::single_flight::SingleFlight;
 use crate::wire::{Name, ServiceBinding, Txt};
 
 /// Linux-only DNS response cache.
@@ -17,6 +19,7 @@ use crate::wire::{Name, ServiceBinding, Txt};
 #[derive(Debug, Clone)]
 pub(super) struct LinuxDnsCache {
     entries: Cache<CacheKey, CacheEntry, ahash::RandomState>,
+    in_flight: InFlight,
 }
 
 impl LinuxDnsCache {
@@ -29,6 +32,7 @@ impl LinuxDnsCache {
                     negative_ttl,
                 })
                 .build_with_hasher(ahash::RandomState::default()),
+            in_flight: InFlight::default(),
         }
     }
 
@@ -191,14 +195,76 @@ pub(super) enum CacheLookup<T> {
     Negative,
 }
 
+/// What one backend lookup produced, shared by every caller that was
+/// coalesced onto it.
+///
+/// A lookup can fail after having produced records, so both are kept: callers
+/// see the records first and the error after, as with an uncoalesced lookup.
+#[derive(Debug)]
+pub(super) struct LookupOutcome<T> {
+    pub(super) values: Vec<T>,
+    pub(super) error: Option<ArcError>,
+}
+
+pub(super) type LookupFlights<T> = SingleFlight<CacheKey, Arc<LookupOutcome<T>>>;
+
+/// Backend lookups currently running, per record type.
+///
+/// Concurrent cache misses for one `(domain, record-kind)` share the lookup
+/// that is already running instead of each sending a query of their own.
+#[derive(Debug, Clone, Default)]
+struct InFlight {
+    ipv4: LookupFlights<std::net::Ipv4Addr>,
+    ipv6: LookupFlights<std::net::Ipv6Addr>,
+    txt: LookupFlights<Txt>,
+    cname: LookupFlights<Name>,
+    // SVCB and HTTPS share a record type; their `RecordKind` in the key keeps them apart
+    service_binding: LookupFlights<ServiceBinding>,
+}
+
+/// A record type of which concurrent identical lookups are coalesced.
+pub(super) trait CoalescedRecord: Clone + Send + Sync + Sized + 'static {
+    fn in_flight(cache: &LinuxDnsCache) -> &LookupFlights<Self>;
+}
+
+impl CoalescedRecord for std::net::Ipv4Addr {
+    fn in_flight(cache: &LinuxDnsCache) -> &LookupFlights<Self> {
+        &cache.in_flight.ipv4
+    }
+}
+
+impl CoalescedRecord for std::net::Ipv6Addr {
+    fn in_flight(cache: &LinuxDnsCache) -> &LookupFlights<Self> {
+        &cache.in_flight.ipv6
+    }
+}
+
+impl CoalescedRecord for Txt {
+    fn in_flight(cache: &LinuxDnsCache) -> &LookupFlights<Self> {
+        &cache.in_flight.txt
+    }
+}
+
+impl CoalescedRecord for Name {
+    fn in_flight(cache: &LinuxDnsCache) -> &LookupFlights<Self> {
+        &cache.in_flight.cname
+    }
+}
+
+impl CoalescedRecord for ServiceBinding {
+    fn in_flight(cache: &LinuxDnsCache) -> &LookupFlights<Self> {
+        &cache.in_flight.service_binding
+    }
+}
+
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
-struct CacheKey {
+pub(super) struct CacheKey {
     domain: Domain,
     kind: RecordKind,
 }
 
 impl CacheKey {
-    fn new(domain: Domain, kind: RecordKind) -> Self {
+    pub(super) fn new(domain: Domain, kind: RecordKind) -> Self {
         Self { domain, kind }
     }
 }

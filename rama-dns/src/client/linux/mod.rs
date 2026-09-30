@@ -26,7 +26,7 @@ use std::{
 };
 
 use rama_core::{
-    error::BoxError,
+    error::{ArcError, BoxError},
     futures::{Stream, StreamExt as _, async_stream::stream_fn},
     telemetry::tracing,
 };
@@ -46,6 +46,7 @@ use super::{
 use crate::wire::{Name, ServiceBinding, Txt};
 
 mod cache;
+mod single_flight;
 
 #[cfg(not(any(
     all(target_os = "linux", target_env = "gnu"),
@@ -513,6 +514,12 @@ pub(super) enum LookupEvent<T> {
 /// Lookup a domain and produce a stream that is cached on succes. If a
 /// cached result is available we use that instead of doing a fresh lookup.
 ///
+/// Concurrent cache misses for the same domain and record kind share a single
+/// backend lookup, however many callers there are. Without this a burst of
+/// connections to one name sends one query each: enough of them overflow the
+/// receive queue of a local stub resolver, and every query that is dropped
+/// there is only noticed once its timeout fires.
+///
 /// WARNING: the output of lookup() is fully buffered and not streamed!
 /// This is needed so we can cache results even if the output stream is never
 /// fully consumed (which is the case when we do things like `race_connect`).
@@ -528,85 +535,153 @@ fn lookup_cached_stream<T, S, G, I, F>(
     lookup: F,
 ) -> impl Stream<Item = Result<T, BoxError>> + Send
 where
-    T: Clone + Send + Sync + 'static,
+    T: cache::CoalescedRecord,
     S: Stream<Item = Result<LookupEvent<T>, BoxError>> + Send + 'static,
     G: Fn(&cache::LinuxDnsCache, &Domain) -> Option<cache::CacheLookup<T>> + Send + 'static,
     I: Fn(&cache::LinuxDnsCache, Domain, Vec<T>, Option<Duration>) + Send + 'static,
     F: FnOnce(Domain, Duration) -> S + Send + 'static,
 {
     stream_fn(async move |mut yielder| {
-        match get_cached(&cache, &domain) {
-            Some(cache::CacheLookup::Positive(values)) => {
-                tracing::debug!(%domain, "dns::linux: cache hit (positive)");
-                for value in values.iter().cloned() {
-                    yielder.yield_item(Ok(value)).await;
-                }
-                return;
-            }
-            Some(cache::CacheLookup::Negative) => {
-                tracing::debug!(%domain, "dns::linux: cache hit (negative)");
-                return;
-            }
-            None => {}
-        }
-
-        // Instead of yielding each item directly, we need to: collect all of them first,
-        // cache them, and yield them one by one. If we yield them one by one
-        // and the consumer stops polling we never reach our cache logic, so
-        // we need to make sure that we have cached everything before this generator
-        // could be suspended. Buffering a `Stream` here is fine since both
-        // `res_nsearch.rs` and `legacy.rs` actually return a single complete response,
-        // which is then just parsed and then send over a channel piece by piece. By draining it fast
-        // here, we also release our `spawn_blocking` worker, which is important since these
-        // are finite and having all of them in use becomes a single bottleneck for the entire stack.
-        let mut values = Vec::new();
-        let mut min_ttl_secs: Option<u32> = None;
-        let mut authoritative_negative: Option<u32> = None;
-        let mut lookup = std::pin::pin!(lookup(domain.clone(), timeout));
-        while let Some(item) = lookup.next().await {
-            match item {
-                Ok(LookupEvent::Record(value, ttl)) => {
-                    if let Some(ttl) = ttl {
-                        min_ttl_secs = Some(min_ttl_secs.map_or(ttl, |prev| prev.min(ttl)));
-                    }
-                    values.push(value);
-                }
-                Ok(LookupEvent::AuthoritativeNegative { soa_ttl }) => {
-                    authoritative_negative = soa_ttl;
-                }
-                Err(err) => {
-                    // Preserve values the backend already accepted, but do not
-                    // cache an incomplete lookup. Backends requiring atomic
-                    // RRsets validate the complete response before emitting.
-                    for value in values {
-                        yielder.yield_item(Ok(value)).await;
-                    }
-                    yielder.yield_item(Err(err)).await;
-                    return;
-                }
-            }
-        }
-
-        if values.is_empty() {
-            // RFC 2308 §5: negative responses MAY be cached, but only if they
-            // carry an SOA from which to derive a bounded TTL. Responses
-            // without an SOA "SHOULD NOT be cached" — there is no
-            // authoritative countdown to prevent looping. A SOA-derived TTL
-            // of zero likewise means "do not cache". We additionally require
-            // the backend to have signalled that the empty result is an
-            // authoritative DNS negative (the legacy `getaddrinfo` path
-            // cannot — see `legacy.rs`).
-            if let Some(soa_ttl_secs) = authoritative_negative {
-                cache.insert_negative(domain, kind, Duration::from_secs(u64::from(soa_ttl_secs)));
-            }
-        } else {
-            let ttl = min_ttl_secs.map(|secs| Duration::from_secs(u64::from(secs)));
-            insert_cached(&cache, domain, values.clone(), ttl);
-
-            for value in values {
+        if let Some(outcome) = cached_outcome(&cache, &domain, &get_cached) {
+            for value in outcome.values.iter().cloned() {
                 yielder.yield_item(Ok(value)).await;
             }
+            return;
         }
+
+        let flight_cache = cache.clone();
+        let flight_domain = domain.clone();
+        let outcome = T::in_flight(&cache)
+            .run(cache::CacheKey::new(domain, kind), move || {
+                lookup_uncached_and_cache(
+                    flight_domain,
+                    timeout,
+                    flight_cache,
+                    kind,
+                    get_cached,
+                    insert_cached,
+                    lookup,
+                )
+            })
+            .await;
+
+        for value in outcome.values.iter().cloned() {
+            yielder.yield_item(Ok(value)).await;
+        }
+        if let Some(err) = &outcome.error {
+            yielder.yield_item(Err(err.clone().into())).await;
+        }
+    })
+}
+
+/// The cached answer for `domain`, as an outcome without an error.
+fn cached_outcome<T, G>(
+    cache: &cache::LinuxDnsCache,
+    domain: &Domain,
+    get_cached: &G,
+) -> Option<Arc<cache::LookupOutcome<T>>>
+where
+    T: Clone,
+    G: Fn(&cache::LinuxDnsCache, &Domain) -> Option<cache::CacheLookup<T>>,
+{
+    let values = match get_cached(cache, domain)? {
+        cache::CacheLookup::Positive(values) => {
+            tracing::debug!(%domain, "dns::linux: cache hit (positive)");
+            values.to_vec()
+        }
+        cache::CacheLookup::Negative => {
+            tracing::debug!(%domain, "dns::linux: cache hit (negative)");
+            Vec::new()
+        }
+    };
+    Some(Arc::new(cache::LookupOutcome {
+        values,
+        error: None,
+    }))
+}
+
+/// Run the backend lookup, cache what it found and hand out the outcome.
+///
+/// This is the body of the lookup that concurrent callers share, so it is
+/// driven by whichever of them is still waiting.
+async fn lookup_uncached_and_cache<T, S, G, I, F>(
+    domain: Domain,
+    timeout: Duration,
+    cache: Arc<cache::LinuxDnsCache>,
+    kind: cache::RecordKind,
+    get_cached: G,
+    insert_cached: I,
+    lookup: F,
+) -> Arc<cache::LookupOutcome<T>>
+where
+    T: Clone + Send + 'static,
+    S: Stream<Item = Result<LookupEvent<T>, BoxError>> + Send + 'static,
+    G: Fn(&cache::LinuxDnsCache, &Domain) -> Option<cache::CacheLookup<T>> + Send + 'static,
+    I: Fn(&cache::LinuxDnsCache, Domain, Vec<T>, Option<Duration>) + Send + 'static,
+    F: FnOnce(Domain, Duration) -> S + Send + 'static,
+{
+    // An earlier lookup may have finished, and cached its answer, between our
+    // cache miss and us becoming the one that looks up.
+    if let Some(outcome) = cached_outcome(&cache, &domain, &get_cached) {
+        return outcome;
+    }
+
+    // Instead of handing out each item as it arrives, we need to: collect all of them first,
+    // cache them, and hand them out one by one. If we yield them one by one
+    // and the consumer stops polling we never reach our cache logic, so
+    // we need to make sure that we have cached everything before this generator
+    // could be suspended. Buffering a `Stream` here is fine since both
+    // `res_nsearch.rs` and `legacy.rs` actually return a single complete response,
+    // which is then just parsed and then send over a channel piece by piece. By draining it fast
+    // here, we also release our `spawn_blocking` worker, which is important since these
+    // are finite and having all of them in use becomes a single bottleneck for the entire stack.
+    let mut values = Vec::new();
+    let mut min_ttl_secs: Option<u32> = None;
+    let mut authoritative_negative: Option<u32> = None;
+    let mut lookup = std::pin::pin!(lookup(domain.clone(), timeout));
+    while let Some(item) = lookup.next().await {
+        match item {
+            Ok(LookupEvent::Record(value, ttl)) => {
+                if let Some(ttl) = ttl {
+                    min_ttl_secs = Some(min_ttl_secs.map_or(ttl, |prev| prev.min(ttl)));
+                }
+                values.push(value);
+            }
+            Ok(LookupEvent::AuthoritativeNegative { soa_ttl }) => {
+                authoritative_negative = soa_ttl;
+            }
+            Err(err) => {
+                // Preserve values the backend already accepted, but do not
+                // cache an incomplete lookup. Backends requiring atomic
+                // RRsets validate the complete response before emitting.
+                return Arc::new(cache::LookupOutcome {
+                    values,
+                    error: Some(ArcError::from_box_error(err)),
+                });
+            }
+        }
+    }
+
+    if values.is_empty() {
+        // RFC 2308 §5: negative responses MAY be cached, but only if they
+        // carry an SOA from which to derive a bounded TTL. Responses
+        // without an SOA "SHOULD NOT be cached" — there is no
+        // authoritative countdown to prevent looping. A SOA-derived TTL
+        // of zero likewise means "do not cache". We additionally require
+        // the backend to have signalled that the empty result is an
+        // authoritative DNS negative (the legacy `getaddrinfo` path
+        // cannot — see `legacy.rs`).
+        if let Some(soa_ttl_secs) = authoritative_negative {
+            cache.insert_negative(domain, kind, Duration::from_secs(u64::from(soa_ttl_secs)));
+        }
+    } else {
+        let ttl = min_ttl_secs.map(|secs| Duration::from_secs(u64::from(secs)));
+        insert_cached(&cache, domain, values.clone(), ttl);
+    }
+
+    Arc::new(cache::LookupOutcome {
+        values,
+        error: None,
     })
 }
 
@@ -984,17 +1059,18 @@ mod tests {
     use rama_core::{
         bytes::Bytes,
         error::{BoxError, BoxErrorExt as _},
-        futures::{Stream, StreamExt as _, stream},
+        futures::{Stream, StreamExt as _, future::join_all, stream},
     };
     use rama_net::address::Domain;
     use std::{
         net::Ipv4Addr,
         sync::{
             Arc,
-            atomic::{AtomicBool, Ordering},
+            atomic::{AtomicBool, AtomicUsize, Ordering},
         },
         time::Duration,
     };
+    use tokio::sync::Notify;
 
     use crate::wire::{ServiceBinding, Txt};
 
@@ -1135,6 +1211,192 @@ mod tests {
             move |cache, domain, values, ttl| cache.insert_txt(domain, values, ttl),
             move |_domain, _timeout| backend,
         )
+    }
+
+    /// Backend that counts the lookups it is asked for and only answers once
+    /// `gate` opens, so tests control how many callers pile up meanwhile.
+    fn gated_ipv4_stream(
+        domain: Domain,
+        cache: Arc<cache::LinuxDnsCache>,
+        lookups: Arc<AtomicUsize>,
+        gate: Arc<Notify>,
+        answer: Result<(Ipv4Addr, u32), &'static str>,
+    ) -> impl Stream<Item = Result<Ipv4Addr, BoxError>> + Send {
+        lookup_cached_stream(
+            domain,
+            Duration::from_secs(5),
+            cache,
+            cache::RecordKind::Ipv4,
+            move |cache, domain| cache.get_ipv4(domain),
+            move |cache, domain, values, ttl| cache.insert_ipv4(domain, values, ttl),
+            move |_domain, _timeout| {
+                lookups.fetch_add(1, Ordering::SeqCst);
+                stream::once(async move {
+                    gate.notified().await;
+                    answer
+                        .map(|(addr, ttl)| LookupEvent::Record(addr, Some(ttl)))
+                        .map_err(BoxError::from_static_str)
+                })
+            },
+        )
+    }
+
+    /// Open the gate once every caller had the chance to reach the backend.
+    async fn open_gate_later(gate: &Notify) {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        gate.notify_one();
+    }
+
+    #[tokio::test]
+    async fn concurrent_lookups_issue_a_single_backend_lookup() {
+        const CALLERS: usize = 1000;
+
+        for wire_ttl in [60, 0] {
+            let cache = test_cache();
+            let domain = test_domain();
+            let addr = Ipv4Addr::new(192, 0, 2, 7);
+            let lookups = Arc::new(AtomicUsize::new(0));
+            let gate = Arc::new(Notify::new());
+
+            let callers = join_all((0..CALLERS).map(|_| {
+                gated_ipv4_stream(
+                    domain.clone(),
+                    cache.clone(),
+                    lookups.clone(),
+                    gate.clone(),
+                    Ok((addr, wire_ttl)),
+                )
+                .collect::<Vec<_>>()
+            }));
+            let (results, ()) = tokio::join!(callers, open_gate_later(&gate));
+
+            assert_eq!(
+                lookups.load(Ordering::SeqCst),
+                1,
+                "{CALLERS} concurrent lookups must share one backend lookup (wire ttl {wire_ttl})",
+            );
+            assert_eq!(results.len(), CALLERS);
+            for items in results {
+                assert!(matches!(items.as_slice(), [Ok(got)] if *got == addr));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_lookups_of_different_names_or_kinds_do_not_share() {
+        let cache = test_cache();
+        let lookups = Arc::new(AtomicUsize::new(0));
+        let gate = Arc::new(Notify::new());
+        let addr = Ipv4Addr::new(192, 0, 2, 7);
+        let other: Domain = "other.example.".try_into().expect("valid domain");
+
+        let callers = join_all(
+            [test_domain(), other.clone(), test_domain(), other]
+                .into_iter()
+                .map(|domain| {
+                    gated_ipv4_stream(
+                        domain,
+                        cache.clone(),
+                        lookups.clone(),
+                        gate.clone(),
+                        Ok((addr, 60)),
+                    )
+                    .collect::<Vec<_>>()
+                }),
+        );
+        let release = async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            gate.notify_waiters();
+        };
+        let (results, ()) = tokio::join!(callers, release);
+
+        assert_eq!(lookups.load(Ordering::SeqCst), 2);
+        assert!(results.iter().all(|items| items.len() == 1));
+    }
+
+    #[tokio::test]
+    async fn every_coalesced_caller_sees_the_shared_failure() {
+        let cache = test_cache();
+        let domain = test_domain();
+        let lookups = Arc::new(AtomicUsize::new(0));
+        let gate = Arc::new(Notify::new());
+
+        let callers = join_all((0..50).map(|_| {
+            gated_ipv4_stream(
+                domain.clone(),
+                cache.clone(),
+                lookups.clone(),
+                gate.clone(),
+                Err("upstream unreachable"),
+            )
+            .collect::<Vec<_>>()
+        }));
+        let (results, ()) = tokio::join!(callers, open_gate_later(&gate));
+
+        assert_eq!(lookups.load(Ordering::SeqCst), 1);
+        for items in results {
+            assert!(
+                matches!(items.as_slice(), [Err(err)] if err.to_string() == "upstream unreachable"),
+            );
+        }
+        assert!(
+            cached_ipv4(&cache, &domain).is_none(),
+            "a failed lookup must not be cached",
+        );
+
+        // the failure is not sticky: the next lookup asks the backend again
+        gate.notify_one();
+        let items: Vec<_> = gated_ipv4_stream(
+            domain,
+            cache,
+            lookups.clone(),
+            gate,
+            Ok((Ipv4Addr::new(192, 0, 2, 8), 60)),
+        )
+        .collect()
+        .await;
+        assert_eq!(lookups.load(Ordering::SeqCst), 2);
+        assert!(matches!(items.as_slice(), [Ok(_)]));
+    }
+
+    #[tokio::test]
+    async fn abandoned_leader_does_not_fail_coalesced_callers() {
+        let cache = test_cache();
+        let domain = test_domain();
+        let addr = Ipv4Addr::new(192, 0, 2, 9);
+        let lookups = Arc::new(AtomicUsize::new(0));
+        let gate = Arc::new(Notify::new());
+
+        let leader = gated_ipv4_stream(
+            domain.clone(),
+            cache.clone(),
+            lookups.clone(),
+            gate.clone(),
+            Ok((addr, 60)),
+        );
+        let mut leader = Box::pin(leader);
+        // the leader starts the lookup and is then given up on, as a
+        // dial race that was already won would do
+        assert!(rama_core::futures::poll!(leader.next()).is_pending());
+
+        let follower = gated_ipv4_stream(
+            domain.clone(),
+            cache.clone(),
+            lookups.clone(),
+            gate.clone(),
+            Ok((addr, 60)),
+        )
+        .collect::<Vec<_>>();
+        let release = async {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            drop(leader);
+            open_gate_later(&gate).await;
+        };
+        let (items, ()) = tokio::join!(follower, release);
+
+        assert!(matches!(items.as_slice(), [Ok(got)] if *got == addr));
+        assert_eq!(lookups.load(Ordering::SeqCst), 1);
+        assert_eq!(cached_ipv4(&cache, &domain), Some(vec![addr]));
     }
 
     #[tokio::test]
