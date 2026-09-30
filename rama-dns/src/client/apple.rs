@@ -22,7 +22,8 @@
 //! - The DNS-SD callback decodes records into an in-memory queue that is then
 //!   drained by the polling future.
 //! - Lookups are bounded by a configurable timeout, defaulting to 5 seconds.
-//! - Concurrent lookups of the same name and record type share one query.
+//! - Concurrent lookups of the same name and record type share one query,
+//!   and at most 64 queries (configurable) run at once.
 //!
 //! For the platform header itself, see the SDK copy at:
 //! `/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/dns_sd.h`
@@ -38,7 +39,7 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 use rama_core::error::{BoxError, ErrorExt};
-use rama_core::futures::{Stream, async_stream::stream_fn};
+use rama_core::futures::{Stream, StreamExt as _, async_stream::stream_fn};
 use rama_core::telemetry::tracing;
 use rama_net::address::Domain;
 use rama_utils::macros::generate_set_and_with;
@@ -48,6 +49,7 @@ use tokio::time::Instant;
 
 use super::{
     in_flight::{InFlight, coalesced_stream},
+    limit::{DEFAULT_MAX_LOOKUPS, LookupLimit, deadline_after},
     resolver::{
         DnsAddressResolver, DnsCnameResolver, DnsResolver, DnsServiceBindingResolver,
         DnsTxtResolver,
@@ -64,6 +66,7 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 /// The default timeout is 5 seconds. Use [`Self::with_timeout`] to override it.
 pub struct AppleDnsResolver {
     timeout: Duration,
+    limit: LookupLimit,
     in_flight: InFlight<(Domain, u16)>,
 }
 
@@ -71,6 +74,7 @@ impl Default for AppleDnsResolver {
     fn default() -> Self {
         Self {
             timeout: DEFAULT_TIMEOUT,
+            limit: LookupLimit::new(DEFAULT_MAX_LOOKUPS),
             in_flight: InFlight::default(),
         }
     }
@@ -97,6 +101,21 @@ impl AppleDnsResolver {
         }
     }
 
+    #[must_use]
+    pub fn max_concurrency(&self) -> usize {
+        self.limit.max()
+    }
+
+    generate_set_and_with! {
+        /// Maximum concurrent DNS-SD queries (default 64). Each holds its own
+        /// mDNSResponder connection and file descriptor (launchd's default
+        /// soft limit is 256); an unbounded burst of distinct names times out.
+        pub fn max_concurrency(mut self, max: usize) -> Self {
+            self.limit = LookupLimit::new(max);
+            self
+        }
+    }
+
     fn query<T, P>(
         &self,
         domain: Domain,
@@ -107,14 +126,42 @@ impl AppleDnsResolver {
         T: fmt::Debug + Clone + Send + Sync + 'static,
         P: Fn(&[u8], &mut dyn FnMut(T)) -> Result<(), BoxError> + Send + Sync + 'static,
     {
-        let timeout = self.timeout;
+        let (timeout, limit) = (self.timeout, self.limit.clone());
         coalesced_stream(
             self.in_flight.clone(),
             (domain.clone(), rrtype),
             timeout,
-            move || query_record_stream(domain, timeout, rrtype, parser),
+            move || limited_query_stream(domain, timeout, limit, rrtype, parser),
         )
     }
+}
+
+/// [`query_record_stream`] once a query slot is free, all within `timeout`.
+fn limited_query_stream<T, P>(
+    domain: Domain,
+    timeout: Duration,
+    limit: LookupLimit,
+    rrtype: u16,
+    parser: P,
+) -> impl Stream<Item = Result<T, BoxError>> + Send
+where
+    T: fmt::Debug + Send + 'static,
+    P: Fn(&[u8], &mut dyn FnMut(T)) -> Result<(), BoxError> + Send + Sync + 'static,
+{
+    stream_fn(async move |mut yielder| {
+        let deadline = deadline_after(timeout);
+        let Some(_slot) = limit.acquire(deadline).await else {
+            yielder
+                .yield_item(Err(AppleDnsResolverError::timeout(timeout).into()))
+                .await;
+            return;
+        };
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let mut records = std::pin::pin!(query_record_stream(domain, remaining, rrtype, parser));
+        while let Some(record) = records.next().await {
+            yielder.yield_item(record).await;
+        }
+    })
 }
 
 impl DnsAddressResolver for AppleDnsResolver {
@@ -831,7 +878,7 @@ mod ffi {
 
 #[cfg(test)]
 mod tests {
-    use rama_core::futures::{StreamExt as _, future::join_all};
+    use rama_core::futures::future::join_all;
 
     use super::*;
 
@@ -849,6 +896,30 @@ mod tests {
                     .all(|addr| addr.as_ref().is_ok_and(Ipv4Addr::is_loopback))
             );
         }
+    }
+
+    #[tokio::test]
+    async fn lookup_waiting_for_a_busy_slot_times_out() {
+        let resolver = AppleDnsResolver::new()
+            .with_max_concurrency(1)
+            .with_timeout(Duration::from_millis(100));
+        assert_eq!(resolver.max_concurrency(), 1);
+        let _busy = resolver
+            .limit
+            .acquire(deadline_after(Duration::from_secs(5)))
+            .await
+            .expect("the only slot");
+
+        let started = Instant::now();
+        let items: Vec<_> = resolver
+            .lookup_ipv4(Domain::from_static("localhost"))
+            .collect()
+            .await;
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(matches!(
+            items.as_slice(),
+            [Err(err)] if err.to_string().contains("timed out")
+        ));
     }
 
     #[test]
