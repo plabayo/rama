@@ -789,9 +789,18 @@ impl Builder {
 #[cfg(test)]
 mod tests {
     use crate::{h2::Error as H2Error, server, service::RamaHttpService};
-    use rama_core::{ServiceInput, extensions::ExtensionsRef, rt::Executor, service::service_fn};
+    use rama_core::{
+        ServiceInput,
+        bytes::Bytes,
+        extensions::{Extensions, ExtensionsRef},
+        futures::{StreamExt as _, stream},
+        rt::Executor,
+        service::service_fn,
+    };
     use rama_http_types::{
-        Body, Method, Request, Response, body::util::Empty, proto::ext::Protocol,
+        Body, Method, Request, Response,
+        body::util::{BodyExt as _, Empty},
+        proto::ext::Protocol,
     };
     use std::{
         convert::Infallible,
@@ -840,6 +849,227 @@ mod tests {
 
     /// RFC 8441 §3: `:protocol` is only sent after the server enabled it, even when the
     /// request is issued before the server's SETTINGS arrive.
+    /// A connection to a server allowing one concurrent stream, once its SETTINGS have arrived.
+    async fn one_stream_connection<S>(
+        stream_window: u32,
+        service: S,
+    ) -> (
+        crate::client::conn::http2::SendRequest<Body>,
+        tokio::task::JoinHandle<crate::Result<()>>,
+    )
+    where
+        S: rama_core::Service<Request, Output = Response, Error = Infallible> + Clone,
+    {
+        let (client_io, server_io) = tokio::io::duplex(1 << 20);
+        let (mut sender, connection) = crate::client::conn::http2::handshake::<_, Body>(
+            Executor::default(),
+            ServiceInput::new(client_io),
+        )
+        .await
+        .unwrap();
+        let task = tokio::spawn(connection);
+        let mut builder = server::conn::http2::Builder::new(Executor::default());
+        builder.set_max_concurrent_streams(1);
+        builder.set_initial_stream_window_size(stream_window);
+        tokio::spawn(
+            builder.serve_connection(ServiceInput::new(server_io), RamaHttpService::new(service)),
+        );
+        // One exchange, so the peer's stream limit is known.
+        let warmup = Request::builder()
+            .uri("https://example.com/")
+            .body(Body::empty())
+            .unwrap();
+        let response = sender.send_request(warmup).await.unwrap();
+        drop(response.into_body().collect().await.unwrap());
+        (sender, task)
+    }
+
+    fn answer_at_once()
+    -> impl rama_core::Service<Request, Output = Response, Error = Infallible> + Clone {
+        service_fn(|request: Request| {
+            // Answer at once, and keep reading the upload.
+            tokio::spawn(async move {
+                _ = request.into_body().collect().await;
+            });
+            std::future::ready(Ok::<_, Infallible>(Response::new(Body::empty())))
+        })
+    }
+
+    /// An upload that sends one chunk, then ends only when the returned sender is dropped.
+    fn open_upload() -> (tokio::sync::oneshot::Sender<()>, Request<Body>) {
+        let (finish, finished) = tokio::sync::oneshot::channel::<()>();
+        let body = stream::once(async { Ok::<_, Infallible>(Bytes::from_static(b"part")) }).chain(
+            stream::once(async move {
+                _ = finished.await;
+            })
+            .filter_map(|()| async { None }),
+        );
+        let upload = Request::builder()
+            .method(Method::POST)
+            .uri("https://example.com/upload")
+            .body(Body::from_stream(body))
+            .unwrap();
+        (finish, upload)
+    }
+
+    fn admits(sender: &crate::client::conn::http2::SendRequest<Body>) -> bool {
+        sender
+            .connection_admission()
+            .try_acquire(&Extensions::new())
+            .unwrap()
+            .is_some()
+    }
+
+    /// Wait until a stream retires and the connection admits again.
+    async fn admits_again(sender: &crate::client::conn::http2::SendRequest<Body>) {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let changed = sender.connection_admission().watch();
+                if admits(sender) {
+                    return;
+                }
+                changed.await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    /// A stream counts until h2 retires it, not until its response or its body pipe ends: an
+    /// upload still buffered behind flow control keeps its slot (RFC 9113 §5.1.2).
+    #[tokio::test]
+    async fn an_upload_buffered_behind_flow_control_keeps_its_slot() {
+        // The server answers at once and never reads the upload.
+        let held = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let service = {
+            let held = held.clone();
+            service_fn(move |request: Request| {
+                if request.method() == Method::POST {
+                    held.lock().push(request.into_body());
+                }
+                std::future::ready(Ok::<_, Infallible>(Response::new(Body::empty())))
+            })
+        };
+        let (sender, _task) = one_stream_connection(1, service).await;
+        assert!(admits(&sender));
+        for (len, buffered) in [(1, false), (65_536, true)] {
+            let upload = Request::builder()
+                .method(Method::POST)
+                .uri("https://example.com/upload")
+                .body(Body::from(vec![0; len]))
+                .unwrap();
+            let response = sender.clone().send_request(upload).await.unwrap();
+            drop(response.into_body().collect().await.unwrap());
+            if buffered {
+                // No reader ever opens the one-byte window: the stream stays open.
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                assert!(!admits(&sender), "{len}");
+            } else {
+                admits_again(&sender).await;
+            }
+        }
+        // Releasing the unread upload resets its stream, which frees the slot.
+        held.lock().clear();
+        admits_again(&sender).await;
+    }
+
+    /// Requests sent directly, without a pool checkout, count like any other stream.
+    #[tokio::test]
+    async fn requests_without_a_checkout_are_counted() {
+        let (sender, _task) = one_stream_connection(65_535, answer_at_once()).await;
+        let (finish, upload) = open_upload();
+        let response = sender.clone().send_request(upload).await.unwrap();
+        drop(response.into_body().collect().await.unwrap());
+        // The upload is still open.
+        assert!(!admits(&sender));
+        drop(finish);
+        admits_again(&sender).await;
+    }
+
+    /// A checkout only counts on the connection it was made on.
+    #[tokio::test]
+    async fn a_checkout_sent_on_another_connection_is_not_spent() {
+        let (first, _first_task) = one_stream_connection(65_535, answer_at_once()).await;
+        let (second, _second_task) = one_stream_connection(65_535, answer_at_once()).await;
+        let checkout = first
+            .connection_admission()
+            .try_acquire(&Extensions::new())
+            .unwrap()
+            .unwrap();
+        let mut extensions = Extensions::new();
+        checkout.bind(&mut extensions);
+        let request = Request::builder_with_extensions(extensions)
+            .uri("https://example.com/")
+            .body(Body::empty())
+            .unwrap();
+        let response = second.clone().send_request(request).await.unwrap();
+        drop(response.into_body().collect().await.unwrap());
+        admits_again(&second).await;
+        // Still reserved on the first connection.
+        assert!(!admits(&first));
+        drop(checkout);
+        assert!(admits(&first));
+    }
+
+    /// Once the connection task ends, nothing more is admitted, even while a stream lives on.
+    #[tokio::test]
+    async fn an_ended_connection_task_admits_nothing() {
+        let (sender, task) = one_stream_connection(65_535, answer_at_once()).await;
+        let (_finish, upload) = open_upload();
+        let response = sender.clone().send_request(upload).await.unwrap();
+        drop(response.into_body().collect().await.unwrap());
+        task.abort();
+        _ = task.await;
+        sender
+            .connection_admission()
+            .try_acquire(&Extensions::new())
+            .unwrap_err();
+    }
+
+    /// An unused checkout gives its slot back; a used one hands it to its stream.
+    #[tokio::test]
+    async fn checkouts_hold_a_slot_until_dispatched_or_dropped() {
+        let service = service_fn(|_: Request| {
+            std::future::ready(Ok::<_, Infallible>(Response::new(Body::empty())))
+        });
+        let (sender, _task) = one_stream_connection(65_535, service).await;
+        let admission = sender.connection_admission();
+        let unused = admission.try_acquire(&Extensions::new()).unwrap().unwrap();
+        assert!(!admits(&sender));
+        drop(unused);
+        assert!(admits(&sender));
+
+        let used = admission.try_acquire(&Extensions::new()).unwrap().unwrap();
+        let mut extensions = Extensions::new();
+        used.bind(&mut extensions);
+        let request = Request::builder_with_extensions(extensions)
+            .uri("https://example.com/")
+            .body(Body::empty())
+            .unwrap();
+        let response = sender.clone().send_request(request).await.unwrap();
+        // Dispatched: the checkout is spent even while its handout lives on.
+        drop(response.into_body().collect().await.unwrap());
+        admits_again(&sender).await;
+        drop(used);
+        assert!(admits(&sender));
+    }
+
+    /// Once the connection task ends, nothing more is admitted.
+    #[tokio::test]
+    async fn ended_connections_admit_nothing() {
+        let (client_io, _server_io) = tokio::io::duplex(1024);
+        let (sender, connection) = crate::client::conn::http2::handshake::<_, Body>(
+            Executor::default(),
+            ServiceInput::new(client_io),
+        )
+        .await
+        .unwrap();
+        let admission = sender.connection_admission();
+        assert!(admission.try_acquire(&Extensions::new()).unwrap().is_some());
+        drop(connection);
+        admission.try_acquire(&Extensions::new()).unwrap_err();
+    }
+
     #[tokio::test]
     async fn extended_connect_waits_for_and_requires_server_setting() {
         for enabled in [false, true] {

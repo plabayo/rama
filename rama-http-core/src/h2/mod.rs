@@ -104,6 +104,8 @@ mod proto;
 #[cfg_attr(docsrs, doc(cfg(feature = "unstable")))]
 pub mod proto;
 
+pub(crate) use self::proto::LocalStreams;
+
 pub mod client;
 pub mod server;
 mod share;

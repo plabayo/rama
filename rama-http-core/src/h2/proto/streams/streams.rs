@@ -5,7 +5,9 @@
 
 use super::recv::RecvHeaderBlockError;
 use super::store::{self, Entry, Resolve, Store};
-use super::{Buffer, BufferStatus, Config, Counts, Prioritized, Recv, Send, Stream, StreamId};
+use super::{
+    Buffer, BufferStatus, Config, Counts, LocalStreams, Prioritized, Recv, Send, Stream, StreamId,
+};
 use crate::h2::codec::{Codec, UserError};
 use crate::h2::proto::{Error, Initiator, Open, Peer, WindowSize, peer};
 use crate::h2::{client, proto, server};
@@ -490,6 +492,7 @@ where
         // Given that the stream has been initialized, it should not be in the
         // closed state.
         debug_assert!(!stream.state.is_closed());
+        me.counts.open_local(&mut stream);
 
         // TODO: ideally, OpaqueStreamRefs::new would do this, but we're holding
         // the lock, so it can't.
@@ -525,6 +528,10 @@ where
     pub(crate) fn current_max_send_streams(&self) -> usize {
         let me = self.inner.lock();
         me.counts.max_send_streams()
+    }
+
+    pub(crate) fn local_streams(&self) -> Arc<LocalStreams> {
+        self.inner.lock().counts.local_streams()
     }
 
     pub(crate) fn current_max_recv_streams(&self) -> usize {

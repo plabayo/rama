@@ -1,5 +1,61 @@
 use super::*;
 use rama_core::telemetry::tracing;
+use rama_utils::reactive::{Changed, Reactive};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+};
+
+/// Locally initiated streams from creation until they close, including sends still buffered
+/// behind flow control (RFC 9113 §5.1.2: half-closed streams still count). A pool admits by it.
+#[derive(Debug)]
+pub(crate) struct LocalStreams {
+    live: AtomicUsize,
+    changed: Reactive<usize>,
+    ended: AtomicBool,
+}
+
+impl LocalStreams {
+    fn new() -> Self {
+        Self {
+            live: AtomicUsize::new(0),
+            changed: Reactive::new(0),
+            ended: AtomicBool::new(false),
+        }
+    }
+
+    pub(crate) fn live(&self) -> usize {
+        self.live.load(Ordering::Acquire)
+    }
+
+    /// The connection's streams are gone: it opens no more.
+    pub(crate) fn is_ended(&self) -> bool {
+        self.ended.load(Ordering::Acquire)
+    }
+
+    /// Subscribe to retirements and the connection's end.
+    pub(crate) fn watch(&self) -> Changed<usize> {
+        self.changed.watch()
+    }
+
+    fn opened(&self) {
+        self.live.fetch_add(1, Ordering::AcqRel);
+    }
+
+    fn retired(&self) {
+        self.live.fetch_sub(1, Ordering::AcqRel);
+        self.bump();
+    }
+
+    fn end(&self) {
+        self.ended.store(true, Ordering::Release);
+        self.bump();
+    }
+
+    fn bump(&self) {
+        self.changed.set(self.changed.get().wrapping_add(1));
+    }
+}
 
 #[derive(Debug)]
 struct Budget {
@@ -70,6 +126,9 @@ pub(super) struct Counts {
 
     /// Credit for receiving DATA frames without excessive framing overhead.
     data_frame_budget: Budget,
+
+    /// Local streams not yet closed, shared with pool admission.
+    local_streams: Arc<LocalStreams>,
 }
 
 impl Counts {
@@ -88,7 +147,19 @@ impl Counts {
             max_local_error_reset_streams: config.local_max_error_reset_streams,
             num_local_error_reset_streams: 0,
             data_frame_budget: Budget::new(DEFAULT_DATA_FRAME_BUDGET),
+            local_streams: Arc::new(LocalStreams::new()),
         }
+    }
+
+    pub(super) fn local_streams(&self) -> Arc<LocalStreams> {
+        self.local_streams.clone()
+    }
+
+    /// A local stream now exists; it counts until it closes.
+    pub(super) fn open_local(&self, stream: &mut store::Ptr) {
+        debug_assert!(!stream.is_live_local);
+        stream.is_live_local = true;
+        self.local_streams.opened();
     }
 
     /// Records the framing overhead of a DATA frame.
@@ -287,6 +358,10 @@ impl Counts {
                 // Decrement the number of active streams.
                 self.dec_num_streams(&mut stream);
             }
+
+            if std::mem::take(&mut stream.is_live_local) {
+                self.local_streams.retired();
+            }
         }
 
         // Release the stream if it requires releasing
@@ -330,6 +405,8 @@ impl Counts {
 impl Drop for Counts {
     fn drop(&mut self) {
         use std::thread;
+
+        self.local_streams.end();
 
         if !thread::panicking() {
             debug_assert!(!self.has_streams());

@@ -30,7 +30,7 @@ use std::sync::Arc;
 use std::task::ready;
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use super::admission::{AdmissionOwner, Ticket};
+use super::admission::AdmissionOwner;
 use super::ping::{Ponger, Recorder};
 use super::{PipeToSendStream, SendBuf, ping};
 use crate::body::Incoming as IncomingBody;
@@ -207,7 +207,7 @@ where
     let max = extensions
         .get_arc::<MaxConcurrency>()
         .unwrap_or_else(|| Arc::new(MaxConcurrency::new(h2_tx.current_max_send_streams())));
-    let admission = AdmissionOwner::new(max);
+    let admission = AdmissionOwner::new(h2_tx.local_streams(), max);
 
     // An mpsc channel is used entirely to detect when the
     // 'Client' has been dropped. This is to get around a bug
@@ -512,7 +512,6 @@ where
     body_tx: SendStream<SendBuf<B::Data>>,
     body: B,
     cb: Callback<Request<B>, Response<IncomingBody>>,
-    ticket: Option<Ticket>,
 }
 
 impl<B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin> Unpin
@@ -571,8 +570,6 @@ pin_project! {
         #[pin]
         ping: Option<Recorder>,
         cancel_rx: Option<oneshot::Receiver<()>>,
-        // The stream stays counted while its request body is still being sent.
-        ticket: Option<Ticket>,
     }
 }
 
@@ -683,7 +680,6 @@ where
                             conn_drop_ref: Some(conn_drop_ref),
                             ping: Some(ping),
                             cancel_rx: Some(cancel_rx),
-                            ticket: f.ticket.clone(),
                         };
 
                         let pipe_span = trace_root_span!(
@@ -721,7 +717,6 @@ where
                     exec: self.executor.clone(),
                     cancel_tx: Some(cancel_tx),
                     h2_tx: self.h2_tx.clone(),
-                    ticket: f.ticket,
                 },
                 call_back: Some(f.cb),
             },
@@ -753,8 +748,6 @@ pin_project! {
         // snapshot the peer's initial SETTINGS frame at response-receipt
         // time and surface it as a `PeerH2Settings` response extension.
         h2_tx: SendRequest<SendBuf<<B as StreamingBody>::Data>>,
-        // Moved into an upgraded tunnel, which outlives the response body.
-        ticket: Option<Ticket>,
     }
 }
 
@@ -816,10 +809,7 @@ where
                     let (pending, on_upgrade) = upgrade::pending();
 
                     let h2_up = super::upgrade::upgraded(send_stream, recv_stream, ping);
-                    let mut upgraded = Upgraded::new(h2_up, Bytes::new());
-                    if let Some(ticket) = this.ticket.take() {
-                        upgraded = upgraded.with_guard(ticket);
-                    }
+                    let upgraded = Upgraded::new(h2_up, Bytes::new());
                     // Preserve the peer's connection metadata explicitly; sharing
                     // its immutable snapshot cannot retain the handshake message.
                     if let Some(peer) = peer_settings {
@@ -884,7 +874,7 @@ where
                         trace!("request callback is canceled");
                         continue;
                     }
-                    let ticket = self.admission.ticket(req.extensions());
+                    let checkout = self.admission.checkout(req.extensions());
                     let (head, body) = req.into_parts();
                     let mut req = Request::from_parts(head, ());
                     super::strip_connection_headers(req.headers_mut(), super::MessageKind::Request);
@@ -910,7 +900,13 @@ where
                     }
 
                     let (fut, body_tx) = match self.h2_tx.send_request(req, !is_connect && eos) {
-                        Ok(ok) => ok,
+                        Ok(ok) => {
+                            // h2 counts the stream from here until it closes.
+                            if let Some(checkout) = checkout {
+                                checkout.dispatched();
+                            }
+                            ok
+                        }
                         Err(err) => {
                             debug!("client send request error: {}", err);
                             cb.send(Err(TrySendError {
@@ -928,7 +924,6 @@ where
                         body_tx,
                         body,
                         cb,
-                        ticket,
                     };
 
                     // Check poll_ready() again.

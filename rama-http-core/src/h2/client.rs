@@ -628,6 +628,11 @@ where
         self.inner.current_max_send_streams()
     }
 
+    /// Local streams not yet closed, for exact pool admission.
+    pub(crate) fn local_streams(&self) -> std::sync::Arc<crate::h2::proto::LocalStreams> {
+        self.inner.local_streams()
+    }
+
     /// Returns the current max recv streams
     #[must_use]
     pub fn current_max_recv_streams(&self) -> usize {
