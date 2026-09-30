@@ -201,6 +201,37 @@ mod tests {
         ]))
     );
 
+    test_header!(test_invalid_ip, vec!["203.0.113.195, foo"], None);
+    test_header!(test_ip_with_port, vec!["203.0.113.195:80"], None);
+
+    #[test]
+    fn test_x_forwarded_for_adversarial_input_no_panic() {
+        for input in [
+            "",
+            ",",
+            ",,",
+            " , ",
+            ":",
+            "[::1]",
+            "[::1]:80",
+            "::ffff:1.2.3.4",
+            "1.2.3.4%eth0",
+            "fe80::1%eth0",
+            "ü",
+            "\"1.2.3.4\"",
+            "\"",
+        ] {
+            let Ok(value) = HeaderValue::from_bytes(input.as_bytes()) else {
+                continue;
+            };
+            if let Ok(header) = XForwardedFor::decode(&mut [value].iter()) {
+                let mut values = Vec::new();
+                header.encode(&mut values);
+                header.into_iter().for_each(|el| _ = el.to_string());
+            }
+        }
+    }
+
     #[test]
     fn test_x_forwarded_for_symmetric_encoder() {
         for input in [

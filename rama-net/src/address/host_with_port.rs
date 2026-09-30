@@ -438,6 +438,8 @@ mod tests {
             "[2001:db8:3333:4444:5555:6666:7777:8888]",
             "example.com",
             "example.com:",
+            "example.com:+80",
+            "127.0.0.1:+80",
             "example.com:-1",
             "example.com:999999",
             "example:com",

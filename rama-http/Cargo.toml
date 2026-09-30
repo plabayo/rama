@@ -23,6 +23,8 @@ targets = ["x86_64-unknown-linux-gnu"]
 default = []
 inspect = ["dep:rama-inspect", "dep:arc-swap", "rama-net/inspect"]
 dial9 = ["rama-core/dial9"]
+# Forward the typed header fuzz harnesses.
+fuzz-utils = ["rama-http-headers/fuzz-utils"]
 opentelemetry = ["rama-core/opentelemetry", "rama-net/opentelemetry"]
 compression = [
     "dep:async-compression",

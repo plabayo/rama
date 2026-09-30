@@ -94,8 +94,12 @@ impl XClacksOverhead {
 
     #[inline(always)]
     fn new_with_index(n: usize) -> Self {
-        let index = n % NAMES.len();
-        Self(HeaderValueString::from_static(NAMES[index]))
+        let name = n
+            .checked_rem(NAMES.len())
+            .and_then(|index| NAMES.get(index))
+            .copied()
+            .unwrap_or("GNU Sir Terry Pratchett");
+        Self(HeaderValueString::from_static(name))
     }
 
     /// Construct an `XClacksOverhead` from a static string.
@@ -145,7 +149,8 @@ impl fmt::Display for XClacksOverhead {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::HeaderEncode;
+    use crate::{HeaderDecode, HeaderEncode};
+    use rama_http_types::HeaderValue;
 
     use ahash::{HashSet, HashSetExt as _};
 
@@ -179,5 +184,23 @@ mod tests {
             unique_values.insert(s);
         }
         assert_eq!(NAMES.len(), unique_values.len());
+    }
+
+    #[test]
+    fn test_extreme_index() {
+        for index in [0, 1, usize::MAX, NAMES.len()] {
+            let value = XClacksOverhead::new_with_index(index);
+            _ = test_value(&value);
+        }
+    }
+
+    #[test]
+    fn test_decode_arbitrary_value() {
+        for input in [&b""[..], b" ", b"\t", b"\xff", b"\xc3\xbc", b"GNU \x80"] {
+            let value = HeaderValue::from_bytes(input).unwrap();
+            if let Ok(header) = XClacksOverhead::decode(&mut [value].iter()) {
+                _ = test_value(&header);
+            }
+        }
     }
 }

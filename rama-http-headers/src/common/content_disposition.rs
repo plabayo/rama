@@ -95,7 +95,7 @@ impl ContentDisposition {
             return Err(InvalidContentDispositionFilename { _private: () });
         }
 
-        let mut value = String::with_capacity(filename.len() + 32);
+        let mut value = String::with_capacity(filename.len().saturating_add(32));
         value.push_str("attachment; filename=\"");
         for character in filename.chars() {
             match character {
@@ -153,7 +153,7 @@ const RFC8187_ATTR_CHAR_BYTES: [bool; 256] =
 
 #[inline]
 fn is_rfc8187_attr_char(byte: u8) -> bool {
-    RFC8187_ATTR_CHAR_BYTES[usize::from(byte)]
+    RFC8187_ATTR_CHAR_BYTES.get(usize::from(byte)) == Some(&true)
 }
 
 impl TypedHeader for ContentDisposition {
@@ -209,6 +209,44 @@ mod tests {
             value(&ContentDisposition::attachment("café €.txt")),
             "attachment; filename=\"caf_ _.txt\"; filename*=UTF-8''caf%C3%A9%20%E2%82%AC.txt"
         );
+    }
+
+    #[test]
+    fn attr_char_table_matches_rfc8187_for_every_byte() {
+        for byte in 0..=u8::MAX {
+            let expected = byte.is_ascii_alphanumeric() || b"!#$&+-.^_`|~".contains(&byte);
+            assert_eq!(is_rfc8187_attr_char(byte), expected, "{byte:#04x}");
+        }
+    }
+
+    #[test]
+    fn adversarial_values_do_not_panic() {
+        for raw in [
+            b"".as_slice(),
+            b";",
+            b"attachment; filename*=UTF-8''%",
+            b"attachment; filename*=UTF-8''%G1",
+            b"attachment; filename*=bogus''%FF",
+            b"attachment; filename=\"\\",
+            b"\xff\xfe; filename=\"\xc3\xa9\"",
+        ] {
+            let value = HeaderValue::from_bytes(raw).unwrap();
+            let disposition = ContentDisposition::decode(&mut std::iter::once(&value)).unwrap();
+            _ = (
+                disposition.is_inline(),
+                disposition.is_attachment(),
+                disposition.is_form_data(),
+            );
+        }
+
+        let filename: String = ['%', '"', '\\', ' ', 'é', '€', '\u{10FFFF}', '\u{7f}']
+            .into_iter()
+            .cycle()
+            .take(4096)
+            .filter(|c| !c.is_control())
+            .collect();
+        let disposition = ContentDisposition::try_attachment(&filename).unwrap();
+        assert!(disposition.is_attachment());
     }
 
     #[test]

@@ -3,7 +3,10 @@ use std::ops::{Bound, RangeBounds};
 
 use rama_http_types::{HeaderName, HeaderValue};
 
-use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader, util};
+use crate::{
+    Error, HeaderDecode, HeaderEncode, TypedHeader,
+    util::{self, parse_digits},
+};
 
 /// Content-Range, described in [RFC7233](https://tools.ietf.org/html/rfc7233#section-4.2)
 ///
@@ -52,6 +55,8 @@ rama_utils::macros::error::static_str_error! {
 
 impl ContentRange {
     /// Construct a new `Content-Range: bytes ..` header.
+    ///
+    /// Errors if the range is empty or does not end before `complete_length`.
     pub fn bytes(
         range: impl RangeBounds<u64>,
         complete_length: impl Into<Option<u64>>,
@@ -59,19 +64,23 @@ impl ContentRange {
         let complete_length = complete_length.into();
 
         let start = match range.start_bound() {
-            Bound::Included(&s) => s,
-            Bound::Excluded(&s) => s + 1,
-            Bound::Unbounded => 0,
+            Bound::Included(&s) => Some(s),
+            Bound::Excluded(&s) => s.checked_add(1),
+            Bound::Unbounded => Some(0),
         };
 
         let end = match range.end_bound() {
-            Bound::Included(&e) => e,
-            Bound::Excluded(&e) => e - 1,
-            Bound::Unbounded => match complete_length {
-                Some(max) => max - 1,
-                None => return Err(InvalidContentRange),
-            },
+            Bound::Included(&e) => Some(e),
+            Bound::Excluded(&e) => e.checked_sub(1),
+            Bound::Unbounded => complete_length.and_then(|max| max.checked_sub(1)),
         };
+
+        let (Some(start), Some(end)) = (start, end) else {
+            return Err(InvalidContentRange);
+        };
+        if !is_valid_byte_range_resp(start, end, complete_length) {
+            return Err(InvalidContentRange);
+        }
 
         Ok(Self {
             range: Some((start, end)),
@@ -128,20 +137,25 @@ impl HeaderDecode for ContentRange {
                 let complete_length = if complete_length == "*" {
                     None
                 } else {
-                    Some(complete_length.parse().ok()?)
+                    Some(parse_digits(complete_length)?)
                 };
 
                 let range = if range == "*" {
                     None
                 } else {
                     let (first_byte, last_byte) = split_in_two(range, '-')?;
-                    let first_byte = first_byte.parse().ok()?;
-                    let last_byte = last_byte.parse().ok()?;
-                    if last_byte < first_byte {
+                    let first_byte = parse_digits(first_byte)?;
+                    let last_byte = parse_digits(last_byte)?;
+                    if !is_valid_byte_range_resp(first_byte, last_byte, complete_length) {
                         return None;
                     }
                     Some((first_byte, last_byte))
                 };
+
+                // unsatisfied-range = "*/" complete-length
+                if range.is_none() && complete_length.is_none() {
+                    return None;
+                }
 
                 Some(Self {
                     range,
@@ -176,8 +190,13 @@ impl HeaderEncode for ContentRange {
             }
         }
 
-        values.extend(::std::iter::once(util::fmt(Adapter(self))));
+        values.extend(util::fmt(Adapter(self)));
     }
+}
+
+/// RFC 9110 §14.4: `first <= last` and `last < complete-length` when known.
+fn is_valid_byte_range_resp(first: u64, last: u64, complete_length: Option<u64>) -> bool {
+    first <= last && complete_length.is_none_or(|len| last < len)
 }
 
 fn split_in_two(s: &str, separator: char) -> Option<(&str, &str)> {
@@ -246,3 +265,113 @@ test_header!(test_bytes_unknown_range,
             vec![b"bytes 1-2-3/500"],
             None::<ContentRange>);
 */
+
+#[cfg(test)]
+mod tests {
+    use std::iter;
+
+    use super::*;
+    use crate::common::{test_decode, test_encode};
+    use crate::util::for_each_small_input;
+
+    #[test]
+    fn bytes_constructor_rejects_unrepresentable_without_panic() {
+        for (range, len) in [
+            ((Bound::Excluded(u64::MAX), Bound::Unbounded), Some(10)),
+            ((Bound::Included(0), Bound::Excluded(0)), Some(10)),
+            ((Bound::Unbounded, Bound::Unbounded), Some(0)),
+            ((Bound::Included(5), Bound::Included(3)), Some(10)),
+            ((Bound::Included(0), Bound::Included(10)), Some(10)),
+            ((Bound::Unbounded, Bound::Unbounded), None),
+        ] {
+            assert!(
+                ContentRange::bytes(range, len).is_err(),
+                "range: {range:?}, len: {len:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn bytes_constructor_encodes() {
+        for (range, len, expected) in [
+            (
+                (Bound::Included(0), Bound::Excluded(5)),
+                Some(13),
+                "bytes 0-4/13",
+            ),
+            ((Bound::Unbounded, Bound::Unbounded), Some(1), "bytes 0-0/1"),
+            (
+                (Bound::Excluded(0), Bound::Included(u64::MAX)),
+                None,
+                "bytes 1-18446744073709551615/*",
+            ),
+        ] {
+            let content_range = ContentRange::bytes(range, len).unwrap();
+            assert_eq!(test_encode(content_range)["content-range"], expected);
+        }
+    }
+
+    #[test]
+    fn decode_valid() {
+        for (value, range, len) in [
+            ("bytes 0-499/500", Some((0, 499)), Some(500)),
+            ("bytes 0-499/*", Some((0, 499)), None),
+            ("bytes */500", None, Some(500)),
+        ] {
+            let content_range: ContentRange = test_decode(&[value]).unwrap();
+            assert_eq!(content_range.bytes_range(), range, "value: {value:?}");
+            assert_eq!(content_range.bytes_len(), len, "value: {value:?}");
+        }
+    }
+
+    #[test]
+    fn small_inputs_never_panic() {
+        for_each_small_input(b"01-/* ", 6, |input| {
+            let Ok(value) = HeaderValue::from_bytes(&[b"bytes ".as_slice(), input].concat()) else {
+                return;
+            };
+            let Ok(content_range) = ContentRange::decode(&mut iter::once(&value)) else {
+                return;
+            };
+            if let Some((first, last)) = content_range.bytes_range() {
+                assert!(first <= last, "input: {input:?}");
+                if let Some(len) = content_range.bytes_len() {
+                    assert!(last < len, "input: {input:?}");
+                }
+            } else {
+                assert!(content_range.bytes_len().is_some(), "input: {input:?}");
+            }
+            assert!(
+                content_range.encode_to_value().is_some(),
+                "input: {input:?}"
+            );
+        });
+    }
+
+    #[test]
+    fn decode_rejects_invalid() {
+        for value in [
+            "",
+            "bytes",
+            "seconds 1-2",
+            "bytes 0-499",
+            "bytes 499-0/500",
+            "bytes 0-500/500",
+            "bytes 0-0/0",
+            "bytes */*",
+            "bytes 1-2/500 3",
+            "bytes 1-2/500/600",
+            "bytes 1-2-3/500",
+            "bytes 0-18446744073709551616/*",
+            "bytes +0-1/2",
+            "bytes 0-+1/2",
+            "bytes 0-1/+2",
+            "bytes */+2",
+        ] {
+            assert!(
+                test_decode::<ContentRange>(&[value]).is_none(),
+                "value: {value:?}"
+            );
+        }
+    }
+}

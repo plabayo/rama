@@ -153,6 +153,8 @@ impl SetRequestHeaderLayer<Option<HeaderValue>> {
     /// Create a new [`SetRequestHeaderLayer`] from a typed [`HeaderEncode`].
     ///
     /// See [`SetRequestHeaderLayer::overriding`] for more details.
+    ///
+    /// A `header` that encodes to no value leaves the request headers untouched.
     #[inline(always)]
     pub fn overriding_typed<H: HeaderEncode>(header: H) -> Self {
         Self::overriding(H::name().clone(), header.encode_to_value())

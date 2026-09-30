@@ -7,8 +7,9 @@ use std::str;
 
 use rama_utils::collections::NonEmptySmallVec;
 use rama_utils::collections::NonEmptyVec;
+use rama_utils::str::{starts_with_ignore_ascii_case, trim_ows};
 
-use crate::Error;
+use crate::{Error, util::unquoted_members};
 
 use self::internal::IntoQuality;
 
@@ -83,7 +84,7 @@ impl str::FromStr for Quality {
         // Parse optional fractional digits. The value of each digit is multiplied by `factor`.
         // Since the q-value is represented as an integer between 0 and 1000, `factor` is `100` for
         // the first digit, `10` for the next, and `1` for the digit after that.
-        let mut factor = 100;
+        let mut factor: u16 = 100;
         loop {
             match c.next() {
                 Some(n @ '0'..='9') => {
@@ -93,7 +94,8 @@ impl str::FromStr for Quality {
                         return Err(Error::invalid());
                     }
                     // Add the digit's value multiplied by `factor` to `value`.
-                    value += factor * (n as u16 - '0' as u16);
+                    let digit = (n as u16).saturating_sub('0' as u16);
+                    value = value.saturating_add(factor.saturating_mul(digit));
                 }
                 None => {
                     // No more characters to parse. Check that the value representing the q-value is
@@ -130,11 +132,11 @@ pub struct QualityValue<T> {
 pub fn sort_quality_values_non_empty_smallvec<const N: usize, T>(
     values: &mut NonEmptySmallVec<N, QualityValue<T>>,
 ) {
-    values.sort_by_cached_key(|qv| u16::MAX - qv.quality.as_u16());
+    values.sort_by_cached_key(|qv| cmp::Reverse(qv.quality));
 }
 
 pub fn sort_quality_values_non_empty_vec<T>(values: &mut NonEmptyVec<QualityValue<T>>) {
-    values.sort_by_cached_key(|qv| u16::MAX - qv.quality.as_u16());
+    values.sort_by_cached_key(|qv| cmp::Reverse(qv.quality));
 }
 
 impl<T: Copy> Copy for QualityValue<T> {}
@@ -199,26 +201,83 @@ impl<T: fmt::Display> fmt::Display for QualityValue<T> {
 impl<T: str::FromStr> str::FromStr for QualityValue<T> {
     type Err = Error;
     fn from_str(s: &str) -> Result<Self, Error> {
-        // Set defaults used if parsing fails.
-        let mut raw_item = s;
-        let mut quality = Quality::one();
-
-        let mut parts = s.rsplitn(2, ';').map(|x| x.trim());
-        if let (Some(first), Some(second), None) = (parts.next(), parts.next(), parts.next()) {
-            if first.len() < 2 {
+        // `item *( OWS ";" OWS [ name "=" value ] )` with one `q` weight (RFC 9110 §5.6.6, §12.4.2)
+        let s = trim_ows(s);
+        let mut parts = item_parts(s);
+        let name = parts.next().ok_or_else(Error::invalid)??.1;
+        if trim_ows(name).is_empty() {
+            return Err(Error::invalid());
+        }
+        let mut quality = None;
+        let mut item_end = s.len();
+        let mut pending_empty = false;
+        let mut normalise = false;
+        for part in parts {
+            let (separator, part) = part?;
+            let part = trim_ows(part);
+            if part.is_empty() {
+                pending_empty = true;
+                continue;
+            }
+            if starts_with_ignore_ascii_case(part, "q=") {
+                // any parameter named `q` is the weight, wherever it sits (RFC 9110 §12.5.1)
+                if quality.is_some() {
+                    return Err(Error::invalid());
+                }
+                quality = Some(Quality::from_str(part)?);
+                item_end = separator;
+                continue;
+            }
+            // `parameter-name "=" parameter-value`, with a non-empty token name
+            if !part.contains('=') || part.starts_with('=') {
                 return Err(Error::invalid());
             }
-            if first.starts_with("q=") || first.starts_with("Q=") {
-                quality = Quality::from_str(first)?;
-                raw_item = second;
+            // a parameter after the weight, or after an empty one, needs a rebuilt item
+            normalise |= pending_empty || quality.is_some();
+            pending_empty = false;
+        }
+        let parsed = if normalise {
+            // drop empty parameters and the weight so the item re-encodes to what it decodes from
+            let mut item = String::with_capacity(s.len());
+            let parts = item_parts(s).filter_map(|part| part.ok().map(|(_, part)| trim_ows(part)));
+            for (index, part) in parts.enumerate() {
+                let is_weight = index > 0 && starts_with_ignore_ascii_case(part, "q=");
+                if part.is_empty() || is_weight {
+                    continue;
+                }
+                if index > 0 {
+                    item.push(';');
+                }
+                item.push_str(part);
             }
-        }
-        match raw_item.parse::<T>() {
-            // we already checked above that the quality is within range
-            Ok(item) => Ok(Self::new(item, quality)),
-            Err(_) => Err(Error::invalid()),
-        }
+            item.parse::<T>()
+        } else {
+            let item = s.get(..item_end).unwrap_or_default();
+            // `;`, SP and HTAB are ASCII, so cutting after the last other byte keeps a char boundary
+            let len = item
+                .bytes()
+                .rposition(|byte| !matches!(byte, b';' | b' ' | b'\t'))
+                .map_or(0, |last| last.saturating_add(1));
+            item.get(..len).unwrap_or_default().parse::<T>()
+        };
+        parsed
+            .map(|item| Self::new(item, quality.unwrap_or_else(Quality::one)))
+            .map_err(|_err| Error::invalid())
     }
+}
+
+/// The `;`-separated parts of a list item, each with the offset of the `;` before it.
+///
+/// Quoted strings, including their quoted-pairs, never split; an unterminated one fails.
+fn item_parts(s: &str) -> impl Iterator<Item = Result<(usize, &str), Error>> {
+    // `;` and `"` are ASCII, so every cut keeps a char boundary
+    unquoted_members::<b';'>(s.as_bytes()).map(move |member| {
+        let range = member.map_err(|_start| Error::invalid())?;
+        Ok((
+            range.start.saturating_sub(1),
+            s.get(range).unwrap_or_default(),
+        ))
+    })
 }
 
 #[inline]
@@ -275,6 +334,8 @@ mod internal {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::util::for_each_small_input;
+    use rama_utils::collections::non_empty_vec;
 
     #[test]
     fn test_quality_item_fmt_q_1() {
@@ -379,10 +440,124 @@ mod tests {
     }
 
     #[test]
+    fn test_weight_without_item_is_rejected() {
+        for input in [
+            ";q=1", " ;q=0.5", ";", ";;q=1", ";0;q=1", ";q=;;q=1", ";\t;q=1.", " ; a=b",
+        ] {
+            assert!(input.parse::<QualityValue<String>>().is_err(), "{input:?}");
+        }
+    }
+
+    #[test]
+    fn test_parameters_follow_the_grammar() {
+        // a parameter is `name=value`, and the weight comes once
+        for input in [
+            "a;q=2;q=1",
+            "a;b;q=1",
+            "text/html;q=2;q=1",
+            "a;b",
+            "a;=b",
+            "a;q=0.5;q=1",
+            "a;p=\"x",
+            "a;p=\"x;q=1",
+            "a;p=\"x\\\"",
+        ] {
+            assert!(input.parse::<QualityValue<String>>().is_err(), "{input:?}");
+        }
+    }
+
+    #[test]
+    fn test_empty_parameters_are_dropped() {
+        for (input, value, quality) in [
+            ("f;;q=1", "f", 1000),
+            ("f;", "f", 1000),
+            ("f; ;q=0.5", "f", 500),
+            ("text/html;;q=0.5", "text/html", 500),
+            ("a;;b=1", "a;b=1", 1000),
+            ("a;;b=1;q=0.2", "a;b=1", 200),
+            ("text/html;p=\"a;;b\";q=0.5", "text/html;p=\"a;;b\"", 500),
+            ("a;p=\"x\\\";q=0.5\";q=0.2", "a;p=\"x\\\";q=0.5\"", 200),
+            // any parameter named `q` is the weight (RFC 9110 §12.5.1)
+            ("text/html;q=0.5;level=1", "text/html;level=1", 500),
+            ("*/*;q=0.1;charset=utf-8", "*/*;charset=utf-8", 100),
+            ("a;q=0.5;;b=1", "a;b=1", 500),
+            (" text/html;q=0.5", "text/html", 500),
+            ("text/html;q=0.5\t", "text/html", 500),
+            ("a;\tq=0.5", "a", 500),
+            ("a\t;q=0.5", "a", 500),
+            // an item name is never taken as the weight
+            ("q=1;;a=b", "q=1;a=b", 1000),
+            ("q=1;q=0.5;a=b", "q=1;a=b", 500),
+            // only OWS (SP, HTAB) is trimmed (RFC 9110 §5.6.3)
+            ("\u{a0}a;q=0.5", "\u{a0}a", 500),
+            ("a;q=0.5;b=\u{a0}", "a;b=\u{a0}", 500),
+        ] {
+            let qv = input.parse::<QualityValue<String>>().unwrap();
+            assert_eq!(qv.value, value, "{input:?}");
+            assert_eq!(qv.quality, Quality(quality), "{input:?}");
+            // re-encoding yields an equivalent item
+            let again = qv.to_string().parse::<QualityValue<String>>().unwrap();
+            assert_eq!(again.value, qv.value, "{input:?}");
+        }
+    }
+
+    #[test]
+    fn test_quality_from_str_extremes() {
+        assert_eq!("q=0.999".parse::<Quality>().unwrap(), Quality(999));
+        assert_eq!("Q=1.000".parse::<Quality>().unwrap(), Quality(1000));
+        assert_eq!("q=0.".parse::<Quality>().unwrap(), Quality(0));
+        for value in [
+            "q=1.999",
+            "q=1.001",
+            "q=0.9999",
+            "q=9",
+            "q=",
+            "q",
+            "",
+            "q=0.a",
+            "q=\u{0660}",
+        ] {
+            assert!(value.parse::<Quality>().is_err(), "value: {value:?}");
+        }
+    }
+
+    #[test]
+    fn test_small_inputs_never_panic() {
+        for_each_small_input(b"qQ=019. ;a", 6, |input| {
+            let Ok(s) = str::from_utf8(input) else {
+                return;
+            };
+            if let Ok(quality) = s.parse::<Quality>() {
+                assert!(quality.as_u16() <= 1000, "input: {s:?}");
+            }
+            if let Ok(qv) = s.parse::<QualityValue<String>>() {
+                assert!(qv.quality.as_u16() <= 1000, "input: {s:?}");
+                _ = qv.to_string();
+            }
+        });
+    }
+
+    #[test]
+    fn test_sort_quality_values_is_stable_descending() {
+        let mut values = non_empty_vec![
+            QualityValue::new("a", Quality(0)),
+            QualityValue::new("b", Quality(1000)),
+            QualityValue::new("c", Quality(500)),
+            QualityValue::new("d", Quality(1000)),
+        ];
+        sort_quality_values_non_empty_vec(&mut values);
+        let order: Vec<_> = values.iter().map(|qv| qv.value).collect();
+        assert_eq!(order, ["b", "d", "c", "a"]);
+    }
+
+    #[test]
     fn test_fuzzing_bugs() {
-        "99999;".parse::<QualityValue<String>>().unwrap_err();
+        assert_eq!(
+            "99999;".parse::<QualityValue<String>>().unwrap().value,
+            "99999"
+        );
         "\x0d;;;=\u{d6aa}=="
             .parse::<QualityValue<String>>()
-            .unwrap();
+            .unwrap_err();
     }
 }

@@ -390,13 +390,12 @@ pub fn validate_http_server_response<Body>(
     // indicated an extension not requested by the client), the client
     // MUST _Fail the WebSocket Connection_. (RFC 6455)
     let mut accepted_extension = None;
-    match (
-        response
-            .headers()
-            .typed_get::<SecWebSocketExtensions>()
-            .map(|ext| ext.0.head),
-        extensions,
-    ) {
+    // RFC 7692 §7.1: an extension response that does not parse fails the connection
+    let Ok(response_extension) = response.headers().typed_try_get::<SecWebSocketExtensions>()
+    else {
+        return Err(ResponseValidateError::ExtensionMismatch(None));
+    };
+    match (response_extension.map(|ext| ext.0.head), extensions) {
         (None, Some(allowed_extensions)) => {
             tracing::trace!(
                 ws.extensions = ?allowed_extensions,
@@ -415,7 +414,8 @@ pub fn validate_http_server_response<Body>(
                             ) {
                                 (None, None | Some(_)) => None,
                                 (Some(srv), maybe_offered) => {
-                                    if !(8..=15).contains(&srv) || maybe_offered.map(|offered| offered != 0 && srv > offered).unwrap_or_default() {
+                                    // zlib cannot compress within an 8-bit window
+                                    if !(9..=15).contains(&srv) || maybe_offered.map(|offered| offered != 0 && srv > offered).unwrap_or_default() {
                                         tracing::debug!("server offered invalid client_max_window_bits (pmd)... ext mismatch!");
                                         return Some(Err(
                                             ResponseValidateError::ExtensionMismatch(Some(
@@ -1558,10 +1558,34 @@ mod tests {
     use super::*;
     use rama_core::{ServiceInput, bytes::Bytes, service::service_fn};
     use rama_http::HeaderMap;
+    #[cfg(feature = "compression")]
+    use std::io::Cursor;
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     };
+
+    #[cfg(feature = "compression")]
+    #[test]
+    fn relay_config_from_upstream_window_bits_does_not_panic() {
+        for raw in [
+            "permessage-deflate; client_max_window_bits",
+            "permessage-deflate; server_max_window_bits",
+            "permessage-deflate; server_max_window_bits=8; client_max_window_bits=8",
+        ] {
+            let mut res = Response::new(());
+            res.headers_mut()
+                .insert(header::SEC_WEBSOCKET_EXTENSIONS, raw.parse().unwrap());
+            let cfg = apply_response_data_to_base_websocket_config(None, &mut res);
+            for role in [Role::Client, Role::Server] {
+                drop(WebSocket::from_raw_socket(
+                    Cursor::new(Vec::<u8>::new()),
+                    role,
+                    cfg,
+                ));
+            }
+        }
+    }
 
     struct ResponseLease(Arc<AtomicUsize>);
 
@@ -1834,6 +1858,43 @@ mod tests {
         match accepted.extension {
             Some(Extension::PerMessageDeflate(cfg)) => Ok(cfg.client_max_window_bits),
             other => panic!("expected per-message-deflate extension, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn eight_bit_client_window_fails_the_handshake() {
+        let result = validate_pmd(
+            "permessage-deflate; client_max_window_bits=8",
+            "permessage-deflate; client_max_window_bits",
+        );
+        assert!(
+            matches!(
+                result,
+                Err(ResponseValidateError::ExtensionMismatch(Some(_)))
+            ),
+            "{result:?}"
+        );
+    }
+
+    #[test]
+    fn invalid_extension_response_fails_the_handshake() {
+        for server_raw in [
+            "permessage-deflate; server_max_window_bits",
+            "permessage-deflate; server_max_window_bits=20",
+            "permessage-deflate; server_max_window_bits=10; server_max_window_bits=10",
+            "",
+        ] {
+            let response = h2_response_with_pmd(server_raw);
+            let result = validate_http_server_response(
+                &response,
+                None,
+                None,
+                offered_pmd("permessage-deflate; client_max_window_bits"),
+            );
+            assert!(
+                matches!(result, Err(ResponseValidateError::ExtensionMismatch(None))),
+                "{server_raw:?}: {result:?}"
+            );
         }
     }
 

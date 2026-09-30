@@ -4,7 +4,7 @@ use crate::header::ALLOW;
 use crate::service::fs::ServeDirSymlinkPolicy;
 use crate::service::fs::serve_dir::DirSource;
 use crate::service::fs::{DirectoryServeMode, ServeDir, ServeFile};
-use crate::{Body, Request, StatusCode, StreamingBody};
+use crate::{Body, HeaderValue, Request, StatusCode, StreamingBody};
 use crate::{Method, Response, header};
 use brotli::BrotliDecompress;
 use flate2::bufread::{DeflateDecoder, GzDecoder};
@@ -13,7 +13,9 @@ use rama_core::bytes::Bytes;
 use rama_core::service::service_fn;
 use rama_utils::include_dir::{Dir, include_dir};
 use std::convert::Infallible;
+use std::fs::{File, FileTimes};
 use std::io::Read;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[tokio::test]
 async fn basic() {
@@ -986,17 +988,27 @@ async fn read_partial_empty_embedded() {
 }
 
 async fn test_read_partial_empty(svc: ServeDir) {
+    // no int-range is satisfiable for a zero-length representation
+    for range in ["bytes=0-", "bytes=0-0", "bytes=-0"] {
+        let req = Request::builder()
+            .uri("/empty.txt")
+            .header("Range", range)
+            .body(Body::empty())
+            .unwrap();
+        let res = svc.serve(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::RANGE_NOT_SATISFIABLE, "{range}");
+        assert_eq!(res.headers()["content-range"], "bytes */0", "{range}");
+    }
+
+    // a suffix of an empty representation is the whole (empty) representation
     let req = Request::builder()
         .uri("/empty.txt")
-        .header("Range", "bytes=0-")
+        .header("Range", "bytes=-5")
         .body(Body::empty())
         .unwrap();
-
     let res = svc.serve(req).await.unwrap();
-    assert_eq!(res.status(), StatusCode::PARTIAL_CONTENT);
-    assert_eq!(res.headers()["content-length"], "0");
-    assert_eq!(res.headers()["content-range"], "bytes 0-0/0");
-
+    assert_eq!(res.status(), StatusCode::OK);
+    assert!(res.headers().get(header::CONTENT_RANGE).is_none());
     let body = res.into_body().collect().await.unwrap().to_bytes();
     assert!(body.is_empty());
 }
@@ -1093,6 +1105,119 @@ async fn test_read_partial_accepts_out_of_bounds_range(svc: ServeDir) {
 }
 
 #[tokio::test]
+async fn if_range_gates_partial_content() {
+    let svc = ServeDir::new("../rama-http");
+    test_if_range_gates_partial_content(svc).await;
+}
+
+#[tokio::test]
+async fn if_range_gates_partial_content_embedded() {
+    const EMBEDDED_FILES: Dir = include_dir!("$CARGO_MANIFEST_DIR");
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES);
+    test_if_range_gates_partial_content(svc).await;
+}
+
+async fn test_if_range_gates_partial_content(svc: ServeDir) {
+    let req = Request::builder()
+        .uri("/README.md")
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.serve(req).await.unwrap();
+    let etag = res.headers()[header::ETAG].clone();
+    let last_modified = res.headers()[header::LAST_MODIFIED].clone();
+    let weak_etag = HeaderValue::try_from(format!("W/{}", etag.to_str().unwrap())).unwrap();
+    let full_len = res.into_body().collect().await.unwrap().to_bytes().len();
+
+    for (if_range, expected) in [
+        (etag, StatusCode::PARTIAL_CONTENT),
+        // a date cannot rule out a second change within its second (RFC 9110 §8.8.2.2)
+        (last_modified, StatusCode::OK),
+        (HeaderValue::from_static("\"other\""), StatusCode::OK),
+        // a weak entity-tag never matches: If-Range uses strong comparison
+        (weak_etag, StatusCode::OK),
+        (
+            HeaderValue::from_static("Fri, 09 Aug 1996 14:21:40 GMT"),
+            StatusCode::OK,
+        ),
+        // a date must match Last-Modified exactly, not merely be newer
+        (
+            HeaderValue::from_static("Fri, 31 Dec 9999 23:59:59 GMT"),
+            StatusCode::OK,
+        ),
+        (HeaderValue::from_static("garbage"), StatusCode::OK),
+    ] {
+        let req = Request::builder()
+            .uri("/README.md")
+            .header(header::RANGE, "bytes=0-1")
+            .header(header::IF_RANGE, if_range.clone())
+            .body(Body::empty())
+            .unwrap();
+        let res = svc.serve(req).await.unwrap();
+        assert_eq!(res.status(), expected, "{if_range:?}");
+        let has_content_range = res.headers().contains_key(header::CONTENT_RANGE);
+        let body_len = res.into_body().collect().await.unwrap().to_bytes().len();
+        if expected == StatusCode::OK {
+            assert!(!has_content_range, "{if_range:?}");
+            assert_eq!(body_len, full_len, "{if_range:?}");
+        } else {
+            assert_eq!(body_len, 2, "{if_range:?}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn if_range_date_is_ambiguous_within_its_second() {
+    let dir = rama_utils::fs::tempdir().unwrap();
+    let path = dir.path().join("data.txt");
+    let second = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        .saturating_sub(60);
+    let write = |body: &str, nanos| {
+        std::fs::write(&path, body).unwrap();
+        let modified = UNIX_EPOCH
+            .checked_add(Duration::new(second, nanos))
+            .unwrap();
+        File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_times(FileTimes::new().set_modified(modified))
+            .unwrap();
+    };
+    let svc = ServeDir::new(dir.path());
+    let get = |if_range: Option<HeaderValue>| {
+        let mut req = Request::builder()
+            .uri("/data.txt")
+            .header(header::RANGE, "bytes=4-");
+        if let Some(if_range) = if_range {
+            req = req.header(header::IF_RANGE, if_range);
+        }
+        svc.serve(req.body(Body::empty()).unwrap())
+    };
+
+    write("old-body", 100_000_000);
+    let old = get(None).await.unwrap();
+    let old_date = old.headers()[header::LAST_MODIFIED].clone();
+    let old_etag = old.headers()[header::ETAG].clone();
+
+    // a second version within the same second keeps the Last-Modified date
+    write("new-data", 800_000_000);
+    let new = get(Some(old_date.clone())).await.unwrap();
+    assert_eq!(new.headers()[header::LAST_MODIFIED], old_date);
+    assert_eq!(new.status(), StatusCode::OK);
+    assert_eq!(body_into_text(new.into_body()).await, "new-data");
+
+    let new = get(Some(old_etag)).await.unwrap();
+    assert_eq!(new.status(), StatusCode::OK);
+    let new_etag = new.headers()[header::ETAG].clone();
+    let new = get(Some(new_etag)).await.unwrap();
+    assert_eq!(new.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(body_into_text(new.into_body()).await, "data");
+}
+
+#[tokio::test]
 async fn read_partial_errs_on_garbage_header() {
     let svc = ServeDir::new("../rama-http");
     test_read_partial_errs_on_garbage_header(svc).await;
@@ -1154,6 +1279,24 @@ async fn test_read_partial_errs_on_bad_range(svc: ServeDir) {
         res.headers()["content-range"],
         &format!("bytes */{}", file_contents.len())
     )
+}
+
+#[tokio::test]
+async fn multipart_range_on_empty_file_can_be_ignored() {
+    let svc = ServeDir::new("../test-files").with_ignore_multi_range_requests(true);
+    for range in ["bytes=0-0,-5", "bytes=0-,0-"] {
+        let req = Request::builder()
+            .uri("/empty.txt")
+            .header(header::RANGE, range)
+            .body(Body::empty())
+            .unwrap();
+        let res = svc.serve(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "{range}");
+        assert!(
+            res.headers().get(header::CONTENT_RANGE).is_none(),
+            "{range}"
+        );
+    }
 }
 
 #[tokio::test]

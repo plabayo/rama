@@ -1,6 +1,6 @@
 use rama_http_types::{HeaderName, HeaderValue};
 
-use super::authorization::{Authorization, Credentials};
+use super::authorization::{Authorization, Credentials, encode_credentials};
 use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 
 /// `Proxy-Authorization` header, defined in [RFC7235](https://tools.ietf.org/html/rfc7235#section-4.4)
@@ -41,16 +41,7 @@ impl<C: Credentials> HeaderDecode for ProxyAuthorization<C> {
 
 impl<C: Credentials> HeaderEncode for ProxyAuthorization<C> {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
-        values.extend(self.0.encode().map(|mut value| {
-            value.set_sensitive(true);
-            debug_assert!(
-                value.as_bytes().starts_with(C::SCHEME.as_bytes()),
-                "Credentials::encode should include its scheme: scheme = {:?}, encoded = {:?}",
-                C::SCHEME,
-                value,
-            );
-            value
-        }));
+        values.extend(encode_credentials(&self.0));
     }
 }
 
@@ -60,8 +51,33 @@ mod tests {
     use rama_net::user::{Basic, Bearer};
 
     use crate::HeaderMapExt as _;
+    use crate::common::{test_decode, test_encode};
 
-    use super::ProxyAuthorization;
+    use super::{Credentials, HeaderValue, ProxyAuthorization};
+
+    #[derive(Debug, Clone, PartialEq)]
+    struct Passthrough(HeaderValue);
+
+    impl Credentials for Passthrough {
+        const SCHEME: &'static str = "Digest";
+
+        fn decode(value: &HeaderValue) -> Option<Self> {
+            Some(Self(value.clone()))
+        }
+
+        fn encode(&self) -> Option<HeaderValue> {
+            Some(self.0.clone())
+        }
+    }
+
+    #[test]
+    fn encode_of_case_folded_scheme_does_not_panic() {
+        let auth: ProxyAuthorization<Passthrough> =
+            test_decode(&["DIGEST username=\"a\""]).unwrap();
+        let headers = test_encode(auth);
+        assert_eq!(headers[PROXY_AUTHORIZATION], "DIGEST username=\"a\"");
+        assert!(headers[PROXY_AUTHORIZATION].is_sensitive());
+    }
 
     #[test]
     fn encoded_proxy_credentials_are_sensitive_and_wire_correct() {

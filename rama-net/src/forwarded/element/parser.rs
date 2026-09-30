@@ -7,7 +7,10 @@ use crate::forwarded::ForwardedProtocol;
 
 use rama_core::error::BoxErrorExt as _;
 use rama_core::error::{BoxError, ErrorContext, ErrorExt};
-use rama_utils::macros::match_ignore_ascii_case_str;
+use rama_utils::{
+    bytes::{trim_ows, trim_ows_start},
+    macros::match_ignore_ascii_case_str,
+};
 
 pub(crate) fn parse_single_forwarded_element(bytes: &[u8]) -> Result<ForwardedElement, BoxError> {
     if bytes.len() > 512 {
@@ -88,13 +91,13 @@ fn parse_next_forwarded_element(mut bytes: &[u8]) -> Result<(ForwardedElement, &
 
     loop {
         let Some(separator_index) = bytes.iter().position(|b| *b == b'=') else {
-            bytes = trim_left(bytes);
+            bytes = trim_ows_start(bytes);
             // finished parsing
             break;
         };
 
-        let key = parse_value(trim(&bytes[..separator_index]))?;
-        bytes = trim_left(&bytes[separator_index + 1..]);
+        let key = parse_value(trim_ows(&bytes[..separator_index]))?;
+        bytes = trim_ows_start(&bytes[separator_index + 1..]);
 
         // `unescaped` holds the decoded value only when the quoted form
         // actually contained a `\`-escape (RFC 7230 §3.2.6 `quoted-pair`);
@@ -198,7 +201,7 @@ fn parse_next_forwarded_element(mut bytes: &[u8]) -> Result<(ForwardedElement, &
         }
 
         // look for (semi) colon, otherwise we are finished...
-        bytes = trim_left(bytes);
+        bytes = trim_ows_start(bytes);
         if bytes.is_empty() || bytes[0] != b';' {
             // finished parsing
             break;
@@ -215,7 +218,7 @@ fn parse_next_forwarded_element(mut bytes: &[u8]) -> Result<(ForwardedElement, &
         ));
     }
 
-    bytes = trim_left(bytes);
+    bytes = trim_ows_start(bytes);
     Ok((el, bytes))
 }
 
@@ -270,30 +273,6 @@ fn scan_quoted_string(bytes: &[u8]) -> Result<QuotedScan, BoxError> {
     Err(BoxError::from_static_str(
         "quote string missing trailer quote",
     ))
-}
-
-fn trim_left(b: &[u8]) -> &[u8] {
-    let mut offset = 0;
-    while offset < b.len() && matches!(b[offset], b' ' | b'\t') {
-        offset += 1;
-    }
-    &b[offset..]
-}
-
-fn trim_right(b: &[u8]) -> &[u8] {
-    if b.is_empty() {
-        return b;
-    }
-
-    let mut offset = b.len();
-    while offset > 0 && matches!(b[offset - 1], b' ' | b'\t') {
-        offset -= 1;
-    }
-    &b[..offset]
-}
-
-fn trim(b: &[u8]) -> &[u8] {
-    trim_right(trim_left(b))
 }
 
 /// Parse a `token`-form value: visible ASCII (`0x21..=0x7E`) only, no `"`.

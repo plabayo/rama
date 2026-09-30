@@ -123,3 +123,53 @@ impl ForwardHeader for Forwarded {
         Some(Self(forwarded))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_forwarded_adversarial_input_no_panic() {
+        for input in [
+            "",
+            ",",
+            ";",
+            "=",
+            "for",
+            "for=",
+            "for=\"",
+            "for=\"\"",
+            "for=\"[\"",
+            "for=\"[::1\"",
+            "for=\"[::1]:\"",
+            "for=\"[::1]:99999\"",
+            "for=\"1.2.3.4:\"",
+            "for=_a:_",
+            "for=a:",
+            "for=:",
+            "for=\"a\\\"b\"",
+            "for=\"\\\"",
+            "for=ü",
+            "for=\"ü\"",
+            "for=a;for=b",
+            "for=a,,for=b",
+            "host=",
+            "host=\"[\"",
+            "host=\"[::1]:\"",
+            "host=example.com:99999",
+            "proto=",
+            "proto=ü",
+            "by=unknown;for=unknown;host=unknown;proto=http",
+            "for=1.2.3.4;by=\"[::1]:80\";host=\"example.com:443\";proto=https",
+        ] {
+            let Ok(value) = HeaderValue::from_bytes(input.as_bytes()) else {
+                continue;
+            };
+            if let Ok(header) = Forwarded::decode(&mut [value.clone(), value].iter()) {
+                let mut values = Vec::new();
+                header.encode(&mut values);
+                header.into_iter().for_each(|el| _ = el.to_string());
+            }
+        }
+    }
+}

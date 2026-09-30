@@ -3,7 +3,7 @@ use std::time::Duration;
 use rama_http_types::{HeaderName, HeaderValue};
 use rama_utils::collections::NonEmptySmallVec;
 
-use crate::util::{self, IterExt};
+use crate::util::{self, IterExt, parse_digits};
 use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 
 macro_rules! client_hint {
@@ -12,7 +12,7 @@ macro_rules! client_hint {
         pub enum ClientHint {
             $(
                 #[doc = $doc:literal]
-                $name:ident($($str:literal),*),
+                $name:ident($str:literal $(, $alias:literal)*),
             )+
         }
     ) => {
@@ -41,7 +41,7 @@ macro_rules! client_hint {
                 match self {
                     $(
                         Self::$name => {
-                            const NAMES: &[&str] = &[$($str,)+];
+                            const NAMES: &[&str] = &[$str, $($alias,)*];
                             NAMES
                         },
                     )+
@@ -58,7 +58,11 @@ macro_rules! client_hint {
 
             #[doc = "Returns the preferred string representation of the client hint."]
             #[must_use] pub fn as_str(&self) -> &'static str {
-                self.header_name_strs()[0]
+                match self {
+                    $(
+                        Self::$name => $str,
+                    )+
+                }
             }
         }
 
@@ -74,7 +78,7 @@ macro_rules! client_hint {
                 rama_utils::macros::match_ignore_ascii_case_str! {
                     match (name) {
                         $(
-                            $($str)|+ => Ok(Self::$name),
+                            $str $(| $alias)* => Ok(Self::$name),
                         )+
                         _ => Err(ClientHintParsingError),
                     }
@@ -154,7 +158,7 @@ macro_rules! client_hint {
         pub fn all_client_hint_header_name_strings() -> impl Iterator<Item = &'static str> {
             [
                 $(
-                    $($str,)+
+                    $str, $($alias,)*
                 )+
             ].into_iter()
         }
@@ -620,7 +624,7 @@ impl HeaderDecode for Rtt {
         values
             .just_one()
             .and_then(|value| value.to_str().ok())
-            .and_then(|s| s.parse::<u64>().ok())
+            .and_then(parse_digits)
             .map(Self)
             .ok_or_else(Error::invalid)
     }
@@ -694,7 +698,7 @@ impl HeaderDecode for Downlink {
 
 impl HeaderEncode for Downlink {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
-        values.extend(std::iter::once(util::fmt(self.0)));
+        values.extend(util::fmt(self.0));
     }
 }
 
@@ -856,6 +860,7 @@ mod tests {
         );
         assert_eq!(decode::<Rtt>(&["0"]), Some(Rtt::from_millis(0)));
         assert!(decode::<Rtt>(&["-25"]).is_none());
+        assert!(decode::<Rtt>(&["+25"]).is_none());
         assert!(decode::<Rtt>(&["1.5"]).is_none());
         assert!(decode::<Rtt>(&["fast"]).is_none());
     }
@@ -960,7 +965,7 @@ mod tests {
         assert_eq!(ClientHint::Ua.header_name_strs(), &["sec-ch-ua"]);
         // `as_str` is always the first (preferred) spelling
         for hint in all_client_hints() {
-            assert_eq!(hint.as_str(), hint.header_name_strs()[0]);
+            assert_eq!(Some(&hint.as_str()), hint.header_name_strs().first());
             // `iter_header_names` agrees with the str slice
             let names: Vec<_> = hint
                 .iter_header_names()
@@ -1004,6 +1009,59 @@ mod tests {
     fn test_critical_ch_emits_all_aliases() {
         let header = CriticalCh::new(ClientHint::SaveData);
         assert_eq!(encode(header), "sec-ch-save-data, save-data");
+    }
+
+    #[test]
+    fn test_adversarial_values_no_panic() {
+        for value in [
+            "",
+            ",",
+            ", ,",
+            "\"\"",
+            "-0",
+            "+1",
+            "1e308",
+            "1e400",
+            "-1e400",
+            "NaN",
+            "inf",
+            "1.7976931348623157e308",
+            "4.9e-324",
+            "18446744073709551615",
+            "18446744073709551616",
+            "sec-ch-ua,",
+            "sec-ch-ua, , sec-ch-ua",
+        ] {
+            if let Some(v) = decode::<AcceptCh>(&[value]) {
+                _ = encode(v);
+            }
+            if let Some(v) = decode::<CriticalCh>(&[value]) {
+                _ = encode(v);
+            }
+            if let Some(v) = decode::<SaveData>(&[value]) {
+                _ = encode(v);
+            }
+            if let Some(v) = decode::<Ect>(&[value]) {
+                _ = encode(v);
+            }
+            if let Some(v) = decode::<Rtt>(&[value]) {
+                _ = Duration::from(v);
+                _ = encode(v);
+            }
+            if let Some(v) = decode::<Downlink>(&[value]) {
+                _ = encode(v);
+            }
+        }
+        for mbps in [
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::MAX,
+            f64::MIN,
+        ] {
+            _ = encode(Downlink::new(mbps));
+        }
+        _ = Rtt::from_millis(u64::MAX).as_duration();
     }
 
     #[test]

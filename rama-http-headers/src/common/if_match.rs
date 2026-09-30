@@ -98,6 +98,7 @@ impl From<ETag> for IfMatch {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::test_decode;
 
     #[test]
     fn is_any() {
@@ -132,5 +133,34 @@ mod tests {
         let if_match = IfMatch::any();
 
         assert!(if_match.precondition_passes(&foo));
+    }
+
+    #[test]
+    fn decode_rejects_malformed_tags_without_panic() {
+        let etag = ETag::from_static("\"a\"");
+        for value in [
+            "", "x", "W", "W/", "W/\"", "\"", "*, \"a\"", "\"a\", *", "\"a b\"",
+        ] {
+            let decoded = test_decode::<IfMatch>(&[value]);
+            if let Some(if_match) = &decoded {
+                _ = if_match.is_any();
+                _ = if_match.precondition_passes(&etag);
+            }
+            assert!(decoded.is_none(), "value: {value:?}");
+        }
+        assert!(test_decode::<IfMatch>(&["*", "\"a\""]).is_none());
+    }
+
+    #[test]
+    fn decode_any_and_list() {
+        let etag = ETag::from_static("\"a\"");
+        let any: IfMatch = test_decode(&["*"]).unwrap();
+        assert!(any.is_any());
+        assert!(any.precondition_passes(&etag));
+
+        let list: IfMatch = test_decode(&["\"b\", \"a\""]).unwrap();
+        assert!(!list.is_any());
+        assert!(list.precondition_passes(&etag));
+        assert!(!list.precondition_passes(&ETag::from_static("W/\"a\"")));
     }
 }

@@ -4,7 +4,7 @@ use std::time::Duration;
 use rama_http_types::HeaderValue;
 
 use crate::Error;
-use crate::util::IterExt;
+use crate::util::{IterExt, parse_delta_seconds};
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Seconds(u64);
@@ -17,7 +17,7 @@ impl Seconds {
 
     #[must_use]
     pub fn try_from_val(val: &HeaderValue) -> Option<Self> {
-        let secs = val.to_str().ok()?.parse().ok()?;
+        let secs = parse_delta_seconds(val.as_bytes().iter().copied())?;
 
         Some(Self::new(secs))
     }
@@ -85,5 +85,32 @@ impl fmt::Debug for Seconds {
 impl fmt::Display for Seconds {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         fmt::Display::fmt(&self.as_u64(), f)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn try_from_val_accepts_only_clamped_digits() {
+        assert_eq!(
+            Seconds::try_from_val(&HeaderValue::from_static("0042")),
+            Some(Seconds::new(42))
+        );
+        for value in ["2147483648", "18446744073709551615", "18446744073709551616"] {
+            assert_eq!(
+                Seconds::try_from_val(&HeaderValue::from_static(value)),
+                Some(Seconds::new(2_147_483_648)),
+                "value: {value:?}"
+            );
+        }
+        for value in ["", "+5", "-5", " 5", "5s"] {
+            assert_eq!(
+                Seconds::try_from_val(&HeaderValue::from_static(value)),
+                None,
+                "value: {value:?}"
+            );
+        }
     }
 }

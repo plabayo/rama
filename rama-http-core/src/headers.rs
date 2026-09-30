@@ -5,7 +5,7 @@ use rama_http_types::{
         CONNECTION, CONTENT_LENGTH, OccupiedEntry, TE, TRAILER, TRANSFER_ENCODING, ValueIter,
     },
 };
-use rama_utils::collections::smallvec::SmallVec;
+use rama_utils::{bytes::trim_ows, collections::smallvec::SmallVec};
 
 pub(super) type ConnectionHeaderNames = SmallVec<[HeaderName; 4]>;
 
@@ -37,16 +37,6 @@ fn comma_header_names(values: ValueIter<'_, HeaderValue>) -> impl Iterator<Item 
         .flat_map(|value| value.as_bytes().split(|byte| *byte == b','))
         .map(trim_ows)
         .filter_map(|name| HeaderName::from_bytes(name).ok())
-}
-
-fn trim_ows(mut value: &[u8]) -> &[u8] {
-    while matches!(value.first(), Some(b' ' | b'\t')) {
-        value = &value[1..];
-    }
-    while matches!(value.last(), Some(b' ' | b'\t')) {
-        value = &value[..value.len() - 1];
-    }
-    value
 }
 
 fn connection_has(value: &HeaderValue, needle: &str) -> bool {

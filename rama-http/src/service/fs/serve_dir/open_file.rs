@@ -2,9 +2,10 @@ use super::{
     DirSource, DirectoryServeMode, ServeDirSymlinkPolicy, ServeVariant,
     headers::{IfModifiedSince, IfUnmodifiedSince, LastModified, etag_from_metadata},
 };
-use crate::headers::{ETag, HeaderMapExt as _, IfMatch, IfNoneMatch};
+use crate::headers::{ETag, HeaderMapExt as _, IfMatch, IfNoneMatch, IfRange};
 use crate::headers::{encoding::Encoding, specifier::QualityValue};
 use crate::{HeaderValue, Method, Request, header};
+use http_range_header::StartPosition;
 use rama_core::combinators::Either;
 use rama_core::telemetry::tracing;
 use rama_http_types::mime::Mime;
@@ -183,7 +184,10 @@ pub(super) async fn open_file(
                 )
                 .await?;
 
-                let last_modified = meta.modified().ok().map(LastModified::from);
+                let last_modified = meta
+                    .modified()
+                    .ok()
+                    .and_then(LastModified::try_from_system_time);
                 let etag = meta
                     .modified()
                     .ok()
@@ -192,6 +196,7 @@ pub(super) async fn open_file(
                     return Ok(output);
                 }
 
+                let range_header = preconditions.applicable_range(range_header, etag.as_ref());
                 let maybe_range =
                     try_parse_range(range_header, meta.len(), ignore_multi_range_requests);
 
@@ -220,8 +225,8 @@ pub(super) async fn open_file(
                 };
 
                 let content_length = contents.len() as u64;
-                let last_modified =
-                    metadata.map(|metadata| LastModified::from(metadata.modified()));
+                let last_modified = metadata
+                    .and_then(|metadata| LastModified::try_from_system_time(metadata.modified()));
                 let etag = metadata
                     .and_then(|metadata| etag_from_metadata(content_length, metadata.modified()));
 
@@ -229,6 +234,7 @@ pub(super) async fn open_file(
                     return Ok(output);
                 }
 
+                let range_header = preconditions.applicable_range(range_header, etag.as_ref());
                 let maybe_range =
                     try_parse_range(range_header, content_length, ignore_multi_range_requests);
 
@@ -262,7 +268,10 @@ pub(super) async fn open_file(
                     Err(err) => return Err(err),
                 };
                 let meta = file.metadata().await?;
-                let last_modified = meta.modified().ok().map(LastModified::from);
+                let last_modified = meta
+                    .modified()
+                    .ok()
+                    .and_then(LastModified::try_from_system_time);
                 let etag = meta
                     .modified()
                     .ok()
@@ -271,6 +280,7 @@ pub(super) async fn open_file(
                     return Ok(output);
                 }
 
+                let range_header = preconditions.applicable_range(range_header, etag.as_ref());
                 let maybe_range =
                     try_parse_range(range_header, meta.len(), ignore_multi_range_requests);
                 if let Some(Ok(range)) = maybe_range.as_ref() {
@@ -304,7 +314,7 @@ pub(super) async fn open_file(
                 let content_length = contents.len() as u64;
                 let last_modified = metadata
                     .as_ref()
-                    .map(|meta| LastModified::from(meta.modified()));
+                    .and_then(|meta| LastModified::try_from_system_time(meta.modified()));
                 let etag =
                     metadata.and_then(|meta| etag_from_metadata(content_length, meta.modified()));
 
@@ -312,6 +322,7 @@ pub(super) async fn open_file(
                     return Ok(output);
                 }
 
+                let range_header = preconditions.applicable_range(range_header, etag.as_ref());
                 let maybe_range =
                     try_parse_range(range_header, content_length, ignore_multi_range_requests);
 
@@ -358,6 +369,14 @@ struct Preconditions {
     if_unmodified_since: Option<IfUnmodifiedSince>,
     if_none_match: Option<IfNoneMatch>,
     if_modified_since: Option<IfModifiedSince>,
+    if_range: IfRangeCondition,
+}
+
+/// The `If-Range` header, kept even when it does not decode.
+enum IfRangeCondition {
+    Absent,
+    Valid(IfRange),
+    Invalid,
 }
 
 impl Preconditions {
@@ -373,6 +392,21 @@ impl Preconditions {
                 .headers()
                 .get(header::IF_MODIFIED_SINCE)
                 .and_then(IfModifiedSince::from_header_value),
+            if_range: match req.headers().typed_try_get::<IfRange>() {
+                Ok(None) => IfRangeCondition::Absent,
+                Ok(Some(if_range)) => IfRangeCondition::Valid(if_range),
+                Err(_) => IfRangeCondition::Invalid,
+            },
+        }
+    }
+
+    /// RFC 9110 §13.1.5: `Range` only applies while `If-Range` strongly matches the representation.
+    fn applicable_range<'a>(&self, range: Option<&'a str>, etag: Option<&ETag>) -> Option<&'a str> {
+        match &self.if_range {
+            IfRangeCondition::Absent => range,
+            // a date cannot rule out a second change within its second (RFC 9110 §8.8.2.2)
+            IfRangeCondition::Valid(if_range) if !if_range.is_modified(etag, None) => range,
+            IfRangeCondition::Valid(_) | IfRangeCondition::Invalid => None,
         }
     }
 
@@ -384,20 +418,20 @@ impl Preconditions {
     /// 3. `If-None-Match` (weak comparison) → 304 on failure (for GET/HEAD)
     /// 4. `If-Modified-Since` (only if `If-None-Match` absent) → 304 on failure
     fn check(
-        self,
+        &self,
         etag: Option<&ETag>,
         last_modified: Option<&LastModified>,
     ) -> Option<OpenFileOutput> {
         // Step 1: If-Match. RFC 9110 §13.1.1: with no current representation (no ETag), the
         // condition is false, including for `*`.
-        if let Some(if_match) = self.if_match {
+        if let Some(if_match) = &self.if_match {
             let passes = etag
                 .map(|etag| if_match.precondition_passes(etag))
                 .unwrap_or(false);
             if !passes {
                 return Some(OpenFileOutput::PreconditionFailed);
             }
-        } else if let Some(since) = self.if_unmodified_since {
+        } else if let Some(since) = &self.if_unmodified_since {
             // Step 2: If-Unmodified-Since (only when If-Match is absent). RFC 9110 §13.1.4:
             // ignored when no modification date is available.
             let passes = last_modified
@@ -410,7 +444,7 @@ impl Preconditions {
 
         // Step 3: If-None-Match (weak comparison). No ETag means the condition is vacuously
         // satisfied, so serve normally.
-        if let Some(if_none_match) = self.if_none_match {
+        if let Some(if_none_match) = &self.if_none_match {
             let passes = etag
                 .map(|etag| if_none_match.precondition_passes(etag))
                 .unwrap_or(true);
@@ -420,7 +454,7 @@ impl Preconditions {
                     last_modified: last_modified.cloned(),
                 });
             }
-        } else if let Some(since) = self.if_modified_since {
+        } else if let Some(since) = &self.if_modified_since {
             // Step 4: If-Modified-Since (only when If-None-Match is absent). No last-modified
             // date means it is treated as modified (serve normally).
             let unmodified = last_modified
@@ -744,6 +778,15 @@ fn try_parse_range(
         };
     }
 
+    if file_size == 0 {
+        // RFC 9110 §14.1.1: only a non-empty suffix fits, and it is the whole (empty) file
+        let satisfiable = parsed
+            .ranges
+            .first()
+            .is_some_and(|range| matches!(range.start, StartPosition::FromLast(n) if n > 0));
+        return (!satisfiable).then_some(Err(RangeError::Unsatisfiable));
+    }
+
     Some(
         parsed
             .validate(file_size)
@@ -789,4 +832,35 @@ fn append_slash_on_path(mut uri: Uri) -> Result<Uri, OpenFileOutput> {
     // Scheme, authority and query are preserved; only the path gains a `/`.
     uri.ensure_path_trailing_slash();
     Ok(uri)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, SystemTime};
+
+    use super::*;
+
+    #[test]
+    fn if_range_date_never_applies_a_range() {
+        let modified = SystemTime::UNIX_EPOCH
+            .checked_add(Duration::from_secs(1_700_000_000))
+            .unwrap();
+        let etag = etag_from_metadata(10, modified).unwrap();
+        let preconditions = |if_range| Preconditions {
+            if_match: None,
+            if_unmodified_since: None,
+            if_none_match: None,
+            if_modified_since: None,
+            if_range: IfRangeCondition::Valid(if_range),
+        };
+        let range = Some("bytes=0-1");
+        assert_eq!(
+            preconditions(IfRange::date(modified)).applicable_range(range, Some(&etag)),
+            None
+        );
+        assert_eq!(
+            preconditions(IfRange::etag(etag.clone())).applicable_range(range, Some(&etag)),
+            range
+        );
+    }
 }

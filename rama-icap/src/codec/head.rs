@@ -3,11 +3,11 @@ use core::fmt;
 use rama_net::{Protocol, address::AuthorityRef, uri::AbsoluteUriRef};
 #[cfg(feature = "http")]
 use rama_net::{address::OptPort, uri::Uri};
+use rama_utils::bytes::trim_ows;
 
 use crate::{
     byte_sets::{
         comma_separated_items, is_field_value_byte, is_horizontal_whitespace_byte, is_token_byte,
-        trim_ows,
     },
     proto::{
         InvalidMethod, InvalidStatusCode, InvalidVersion, Method, MethodKind, Preview, StatusCode,

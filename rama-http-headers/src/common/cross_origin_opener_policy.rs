@@ -5,10 +5,11 @@
 use std::borrow::Cow;
 use std::fmt;
 
+use rama_core::telemetry::tracing;
 use rama_http_types::{HeaderName, HeaderValue};
 use rama_utils::macros::enums::enum_builder;
 
-use crate::util::{self, IterExt};
+use crate::util::IterExt;
 use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 
 use super::cross_origin_policy_util::{
@@ -161,7 +162,14 @@ impl HeaderDecode for CrossOriginOpenerPolicy {
 
 impl HeaderEncode for CrossOriginOpenerPolicy {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
-        values.extend(::std::iter::once(util::fmt(self)));
+        match HeaderValue::try_from(self.to_string()) {
+            Ok(value) => values.extend(::std::iter::once(value)),
+            Err(err) => {
+                tracing::debug!(
+                    "failed to encode cross-origin-opener-policy value as header: {err}"
+                );
+            }
+        }
     }
 }
 
@@ -220,7 +228,14 @@ impl HeaderDecode for CrossOriginOpenerPolicyReportOnly {
 
 impl HeaderEncode for CrossOriginOpenerPolicyReportOnly {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
-        values.extend(::std::iter::once(util::fmt(self)));
+        match HeaderValue::try_from(self.to_string()) {
+            Ok(value) => values.extend(::std::iter::once(value)),
+            Err(err) => {
+                tracing::debug!(
+                    "failed to encode cross-origin-opener-policy value as header: {err}"
+                );
+            }
+        }
     }
 }
 
@@ -342,5 +357,18 @@ mod tests {
             CrossOriginOpenerPolicy::name(),
             CrossOriginOpenerPolicyReportOnly::name(),
         );
+    }
+
+    #[test]
+    fn encode_skips_values_that_are_not_valid_header_values() {
+        // an unrepresentable endpoint drops reporting, never the policy itself
+        let map = test_encode(CrossOriginOpenerPolicy::same_origin().with_report_to("a\r\nb"));
+        assert_eq!(map[CrossOriginOpenerPolicy::name()], "same-origin");
+
+        let map = test_encode(CrossOriginOpenerPolicyReportOnly {
+            value: "\u{7f}".parse().unwrap(),
+            report_to: None,
+        });
+        assert!(map.get(CrossOriginOpenerPolicyReportOnly::name()).is_none());
     }
 }

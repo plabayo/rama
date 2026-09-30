@@ -1,6 +1,9 @@
 //! Byte-class tables shared by the ICAP grammar.
 
-use rama_utils::byte_set::{set_ascii_alphanum, set_each, set_range};
+use rama_utils::{
+    byte_set::{set_ascii_alphanum, set_each, set_range},
+    bytes::trim_ows,
+};
 
 /// RFC 2616 `token`, used by ICAP methods, field names, and chunk extensions.
 const TOKEN_BYTE_SET: [bool; 256] = set_each(set_ascii_alphanum([false; 256]), b"!#$%&'*+-.^_`|~");
@@ -46,22 +49,6 @@ pub(crate) const fn is_quoted_text_byte(byte: u8) -> bool {
 #[inline(always)]
 pub(crate) const fn is_horizontal_whitespace_byte(byte: u8) -> bool {
     HORIZONTAL_WHITESPACE_BYTE_SET[byte as usize]
-}
-
-pub(crate) fn trim_ows(mut value: &[u8]) -> &[u8] {
-    while value
-        .first()
-        .is_some_and(|byte| is_horizontal_whitespace_byte(*byte))
-    {
-        value = &value[1..];
-    }
-    while value
-        .last()
-        .is_some_and(|byte| is_horizontal_whitespace_byte(*byte))
-    {
-        value = &value[..value.len() - 1];
-    }
-    value
 }
 
 pub(crate) fn comma_separated_items(value: &[u8]) -> impl Iterator<Item = &[u8]> {

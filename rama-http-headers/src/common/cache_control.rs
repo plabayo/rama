@@ -6,7 +6,7 @@ use std::time::Duration;
 use rama_core::error::{BoxError, ErrorContext as _};
 use rama_http_types::{HeaderName, HeaderValue};
 
-use crate::util::{self, Seconds, csv};
+use crate::util::{self, Seconds, csv, parse_delta_seconds};
 use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 
 /// `Cache-Control` header, defined in [RFC7234](https://tools.ietf.org/html/rfc7234#section-5.2)
@@ -401,7 +401,7 @@ impl HeaderDecode for CacheControl {
 
 impl HeaderEncode for CacheControl {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
-        values.extend(::std::iter::once(util::fmt(Fmt(self))));
+        values.extend(util::fmt(Fmt(self)));
     }
 }
 
@@ -453,17 +453,18 @@ impl FromIterator<KnownDirective> for FromIter {
                 Directive::ProxyRevalidate => {
                     cc.flags.insert(Flags::PROXY_REVALIDATE);
                 }
+                // the first of repeated directives wins (RFC 9111 §4.2.1)
                 Directive::MaxAge(secs) => {
-                    cc.max_age = Some(Seconds::new(secs));
+                    cc.max_age.get_or_insert(Seconds::new(secs));
                 }
                 Directive::MaxStale(secs) => {
-                    cc.max_stale = Some(Seconds::new(secs));
+                    cc.max_stale.get_or_insert(Seconds::new(secs));
                 }
                 Directive::MinFresh(secs) => {
-                    cc.min_fresh = Some(Seconds::new(secs));
+                    cc.min_fresh.get_or_insert(Seconds::new(secs));
                 }
                 Directive::SMaxAge(secs) => {
-                    cc.s_max_age = Some(Seconds::new(secs));
+                    cc.s_max_age.get_or_insert(Seconds::new(secs));
                 }
             }
         }
@@ -576,40 +577,95 @@ impl fmt::Display for Directive {
 impl FromStr for KnownDirective {
     type Err = ();
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(Self::Known(match s {
-            "no-cache" => Directive::NoCache,
-            "no-store" => Directive::NoStore,
-            "no-transform" => Directive::NoTransform,
-            "only-if-cached" => Directive::OnlyIfCached,
-            "must-revalidate" => Directive::MustRevalidate,
-            "public" => Directive::Public,
-            "private" => Directive::Private,
-            "immutable" => Directive::Immutable,
-            "must-understand" => Directive::MustUnderstand,
-            "proxy-revalidate" => Directive::ProxyRevalidate,
+        // canonical valueless directives need no split nor case folding
+        let canonical = match s {
             "" => return Err(()),
-            _ => match s.find('=') {
-                Some(idx) if idx + 1 < s.len() => {
-                    match (&s[..idx], (s[idx + 1..]).trim_matches('"')) {
-                        ("max-age", secs) => {
-                            secs.parse().map(Directive::MaxAge).map_err(|_e| ())?
-                        }
-                        ("max-stale", secs) => {
-                            secs.parse().map(Directive::MaxStale).map_err(|_e| ())?
-                        }
-                        ("min-fresh", secs) => {
-                            secs.parse().map(Directive::MinFresh).map_err(|_e| ())?
-                        }
-                        ("s-maxage", secs) => {
-                            secs.parse().map(Directive::SMaxAge).map_err(|_e| ())?
-                        }
-                        _unknown => return Ok(Self::Unknown),
-                    }
-                }
-                Some(_) | None => return Ok(Self::Unknown),
-            },
-        }))
+            "no-cache" => Some(Directive::NoCache),
+            "no-store" => Some(Directive::NoStore),
+            "no-transform" => Some(Directive::NoTransform),
+            "only-if-cached" => Some(Directive::OnlyIfCached),
+            "must-revalidate" => Some(Directive::MustRevalidate),
+            "public" => Some(Directive::Public),
+            "private" => Some(Directive::Private),
+            "immutable" => Some(Directive::Immutable),
+            "must-understand" => Some(Directive::MustUnderstand),
+            "proxy-revalidate" => Some(Directive::ProxyRevalidate),
+            // a `&str` match is cheaper than `from_name`'s (name, value) byte-tuple match
+            _ => None,
+        };
+        if let Some(directive) = canonical {
+            return Ok(Self::Known(directive));
+        }
+        // directive names are case-insensitive (RFC 9111 §5.2)
+        let mut name = [0; MAX_DIRECTIVE_NAME_LEN];
+        let mut len = 0_usize;
+        let mut value = None;
+        let mut spaced = false;
+        for (idx, byte) in s.bytes().enumerate() {
+            if byte == b'=' {
+                value = s.get(idx.saturating_add(1)..).map(unquote);
+                break;
+            }
+            if matches!(byte, b' ' | b'\t') {
+                spaced = true;
+                continue;
+            }
+            if spaced {
+                // whitespace inside a name makes it another (unknown) token
+                return Ok(Self::Unknown);
+            }
+            let Some(slot) = name.get_mut(len) else {
+                return Ok(Self::Unknown);
+            };
+            *slot = byte.to_ascii_lowercase();
+            len = len.saturating_add(1);
+        }
+        // whitespace around `=` is invalid, which a freshness directive treats as stale
+        if spaced && value.is_some() {
+            value = Some("");
+        }
+        Ok(Self::from_name(name.get(..len).unwrap_or_default(), value))
     }
+}
+
+impl KnownDirective {
+    fn from_name(name: &[u8], value: Option<&str>) -> Self {
+        let seconds = || value.and_then(|value| parse_delta_seconds(value.bytes()));
+        match (name, value) {
+            // a field-qualified form is kept as its stricter unqualified form (RFC 9111 §5.2.2.4)
+            (b"no-cache", _) => Self::Known(Directive::NoCache),
+            (b"no-store", None) => Self::Known(Directive::NoStore),
+            (b"no-transform", None) => Self::Known(Directive::NoTransform),
+            (b"only-if-cached", None) => Self::Known(Directive::OnlyIfCached),
+            (b"must-revalidate", None) => Self::Known(Directive::MustRevalidate),
+            (b"public", None) => Self::Known(Directive::Public),
+            (b"private", _) => Self::Known(Directive::Private),
+            (b"immutable", None) => Self::Known(Directive::Immutable),
+            (b"must-understand", None) => Self::Known(Directive::MustUnderstand),
+            (b"proxy-revalidate", None) => Self::Known(Directive::ProxyRevalidate),
+            // invalid freshness information makes a response stale (RFC 9111 §4.2.1)
+            (b"max-age", _) => Self::Known(Directive::MaxAge(seconds().unwrap_or(0))),
+            (b"s-maxage", _) => Self::Known(Directive::SMaxAge(seconds().unwrap_or(0))),
+            (b"max-stale", _) => {
+                seconds().map_or(Self::Unknown, |secs| Self::Known(Directive::MaxStale(secs)))
+            }
+            (b"min-fresh", _) => {
+                seconds().map_or(Self::Unknown, |secs| Self::Known(Directive::MinFresh(secs)))
+            }
+            _ => Self::Unknown,
+        }
+    }
+}
+
+/// Longest known directive name (`proxy-revalidate`).
+const MAX_DIRECTIVE_NAME_LEN: usize = 16;
+
+/// Strip one pair of surrounding quotes, as directive arguments may be quoted-strings.
+fn unquote(value: &str) -> &str {
+    value
+        .strip_prefix('"')
+        .and_then(|value| value.strip_suffix('"'))
+        .unwrap_or(value)
 }
 
 #[cfg(test)]
@@ -648,6 +704,27 @@ mod tests {
             CacheControl::new().with_no_cache(),
             "unknown extensions are ignored but shouldn't fail parsing",
         )
+    }
+
+    #[test]
+    fn quoted_pairs_do_not_hide_later_directives() {
+        assert_eq!(
+            test_decode::<CacheControl>(&[r#"no-cache="\"", no-store"#]).unwrap(),
+            CacheControl::new().with_no_cache().with_no_store(),
+        );
+        assert_eq!(
+            test_decode::<CacheControl>(&[r#"foo="a\",b", max-age=5"#]).unwrap(),
+            CacheControl::new().with_max_age_seconds(5),
+        );
+        // an unterminated quoted-string keeps the directives before it, and swallows those after
+        assert_eq!(
+            test_decode::<CacheControl>(&[r#"no-store, foo="open, max-age=5"#]).unwrap(),
+            CacheControl::new().with_no_store(),
+        );
+        assert_eq!(
+            test_decode::<CacheControl>(&[r#"max-age=5, foo="open, no-store"#]).unwrap(),
+            CacheControl::new().with_max_age_seconds(5),
+        );
     }
 
     #[test]
@@ -693,8 +770,142 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_bad_syntax() {
-        assert_eq!(test_decode::<CacheControl>(&["max-age=lolz"]), None);
+    fn invalid_freshness_is_stale_and_keeps_other_directives() {
+        for value in [
+            "max-age=lolz",
+            "max-age=+5",
+            "max-age=-1",
+            "max-age=\"\"",
+            "max-age=\"5",
+            "max-age=1.5",
+            "max-age=",
+            "max-age",
+        ] {
+            let cc =
+                test_decode::<CacheControl>(&[&format!("no-store, private, {value}")]).unwrap();
+            assert_eq!(cc.max_age(), Some(Duration::ZERO), "{value}");
+            assert!(cc.clone().has_no_store(), "{value}");
+            assert!(cc.has_private(), "{value}");
+        }
+        let cc = test_decode::<CacheControl>(&["s-maxage=x"]).unwrap();
+        assert_eq!(cc.s_max_age(), Some(Duration::ZERO));
+    }
+
+    #[test]
+    fn invalid_request_limits_are_ignored() {
+        let cc = test_decode::<CacheControl>(&["no-cache, max-stale=x, min-fresh=-1"]).unwrap();
+        assert_eq!(cc.max_stale(), None);
+        assert_eq!(cc.min_fresh(), None);
+        assert!(cc.has_no_cache());
+    }
+
+    #[test]
+    fn qualified_no_cache_and_private_keep_their_flag() {
+        let cc = test_decode::<CacheControl>(&[r#"private="set-cookie", max-age=60"#]).unwrap();
+        assert_eq!(cc.max_age(), Some(Duration::from_secs(60)));
+        assert!(cc.has_private());
+        let cc = test_decode::<CacheControl>(&[r#"no-cache="set-cookie, x-a""#]).unwrap();
+        assert!(cc.has_no_cache());
+    }
+
+    #[test]
+    fn whitespace_around_equals_is_invalid_freshness() {
+        // `cache-directive = token [ "=" ... ]` allows no whitespace around `=`
+        for value in ["max-age =60", "max-age\t=60", "max-age = 60", "max-age= 60"] {
+            let cc = test_decode::<CacheControl>(&[value]).unwrap();
+            assert_eq!(cc.max_age(), Some(Duration::ZERO), "{value}");
+        }
+        let cc = test_decode::<CacheControl>(&["max-age =60, max-age=120"]).unwrap();
+        assert_eq!(cc.max_age(), Some(Duration::ZERO));
+        let cc = test_decode::<CacheControl>(&[r#"private ="set-cookie""#]).unwrap();
+        assert!(cc.has_private());
+    }
+
+    #[test]
+    fn whitespace_inside_a_name_is_unknown() {
+        for value in [
+            "pub lic",
+            "immu table",
+            "no-st ore",
+            "max -age=60",
+            "pri\tvate",
+        ] {
+            assert_eq!(
+                test_decode::<CacheControl>(&[value]),
+                Some(CacheControl::new()),
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn repeated_freshness_uses_the_first() {
+        for (value, expected) in [
+            ("max-age=60, max-age=120", 60),
+            ("max-age=x, max-age=60", 0),
+            ("max-age=0, max-age=60", 0),
+        ] {
+            let cc = test_decode::<CacheControl>(&[value]).unwrap();
+            assert_eq!(cc.max_age(), Some(Duration::from_secs(expected)), "{value}");
+        }
+        let cc = test_decode::<CacheControl>(&["s-maxage=5", "s-maxage=500"]).unwrap();
+        assert_eq!(cc.s_max_age(), Some(Duration::from_secs(5)));
+        let cc =
+            test_decode::<CacheControl>(&["max-stale=5, min-fresh=6, max-stale=50, min-fresh=60"])
+                .unwrap();
+        assert_eq!(cc.max_stale(), Some(Duration::from_secs(5)));
+        assert_eq!(cc.min_fresh(), Some(Duration::from_secs(6)));
+    }
+
+    #[test]
+    fn directive_names_are_case_insensitive() {
+        let cc = test_decode::<CacheControl>(&["No-Store, PRIVATE, Max-Age=5"]).unwrap();
+        assert_eq!(cc.max_age(), Some(Duration::from_secs(5)));
+        assert!(cc.clone().has_no_store());
+        assert!(cc.has_private());
+    }
+
+    #[test]
+    fn delta_seconds_overflow_clamps() {
+        let cc = test_decode::<CacheControl>(&[
+            "no-store, max-age=99999999999999999999, s-maxage=\"18446744073709551616\"",
+        ])
+        .unwrap();
+        assert!(cc.clone().has_no_store());
+        assert_eq!(cc.max_age(), Some(Duration::from_secs(2_147_483_648)));
+        assert_eq!(cc.s_max_age(), Some(Duration::from_secs(2_147_483_648)));
+
+        let cc =
+            test_decode::<CacheControl>(&["max-stale=18446744073709551615, min-fresh=0"]).unwrap();
+        assert_eq!(cc.max_stale(), Some(Duration::from_secs(2_147_483_648)));
+        assert_eq!(cc.min_fresh(), Some(Duration::ZERO));
+        let headers = test_encode(cc);
+        assert_eq!(
+            headers["cache-control"],
+            "max-stale=2147483648, min-fresh=0"
+        );
+    }
+
+    #[test]
+    fn adversarial_directives_do_not_panic() {
+        for value in ["=", "=5", "max-age=", "max-age", "\"=\"", "no-cache="] {
+            assert!(test_decode::<CacheControl>(&[value]).is_some(), "{value}");
+        }
+        for value in ["max-agé=5", "é=5", "é=", "=é", "no-store=1"] {
+            assert!(
+                matches!(value.parse(), Ok(KnownDirective::Unknown)),
+                "{value}"
+            );
+        }
+        for value in ["max-age=é", "max-age=\"é\"", "max-age=5é"] {
+            assert!(
+                matches!(
+                    value.parse(),
+                    Ok(KnownDirective::Known(Directive::MaxAge(0)))
+                ),
+                "{value}"
+            );
+        }
     }
 
     #[test]

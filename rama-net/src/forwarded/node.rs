@@ -4,11 +4,12 @@ use core::{
 };
 
 use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext};
-use rama_utils::str::smol_str::SmolStr;
 
 use super::{ObfNode, ObfPort};
 use crate::{
-    address::{Domain, Host, HostWithOptPort, HostWithPort, SocketAddress},
+    address::{
+        Domain, Host, HostWithOptPort, HostWithPort, SocketAddress, parse_utils::parse_port_bytes,
+    },
     std::{borrow::ToOwned, string::String, vec::Vec},
 };
 
@@ -143,9 +144,9 @@ impl NodeId {
 impl NodePort {
     /// Converts a string slice to a [`NodePort`], converting invalid characters to underscore.
     fn from_str_lossy(s: &str) -> Self {
-        s.parse::<u16>()
+        parse_port_bytes(s.as_bytes())
             .map(NodePort::Num)
-            .unwrap_or_else(|_| Self::Obf(ObfPort::from_str_lossy(s)))
+            .unwrap_or_else(|| Self::Obf(ObfPort::from_str_lossy(s)))
     }
 }
 
@@ -189,9 +190,8 @@ impl From<(Domain, u16)> for NodeId {
 impl From<(Domain, Option<u16>)> for NodeId {
     fn from((domain, port): (Domain, Option<u16>)) -> Self {
         Self {
-            // NOTE: this assumes all domains are valid obf nodes,
-            // which should be ok given the validation rules for domains are more strict!
-            name: NodeName::Obf(ObfNode::from_inner(SmolStr::from(domain.as_str()))),
+            // lossy: a wildcard domain's `*` is not a valid obfnode char
+            name: NodeName::Obf(ObfNode::from_str_lossy(domain.as_str())),
             port: port.map(NodePort::Num),
         }
     }
@@ -278,7 +278,11 @@ impl fmt::Display for NodeId {
         match &self.name {
             NodeName::Unknown => UNKNOWN_STR.fmt(f),
             NodeName::Ip(ip) => match &self.port {
-                None => ip.fmt(f),
+                // RFC 7239 §6: an IPv6 nodename is always bracketed
+                None => match ip {
+                    core::net::IpAddr::V4(ip) => ip.fmt(f),
+                    core::net::IpAddr::V6(ip) => write!(f, "[{ip}]"),
+                },
                 Some(port) => match ip {
                     core::net::IpAddr::V4(ip) => write!(f, "{ip}:{port}"),
                     core::net::IpAddr::V6(ip) => write!(f, "[{ip}]:{port}"),
@@ -409,10 +413,13 @@ impl core::str::FromStr for NodePort {
     type Err = BoxError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        s.parse::<u16>()
-            .map(NodePort::Num)
-            .or_else(|_| s.parse::<ObfPort>().map(NodePort::Obf))
-            .context("parse str as NodePort")
+        match parse_port_bytes(s.as_bytes()) {
+            Some(port) => Ok(Self::Num(port)),
+            None => s
+                .parse::<ObfPort>()
+                .map(Self::Obf)
+                .context("parse str as NodePort"),
+        }
     }
 }
 
@@ -423,6 +430,7 @@ impl_serde_str!(display NodeId);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::forwarded::ForwardedElement;
 
     #[test]
     fn test_parse_node_id_valid() {
@@ -593,6 +601,42 @@ mod tests {
 
             let node_id = NodeId::from_bytes_lossy(s.as_bytes());
             assert_eq!(node_id, expected, "parse bytes: {s}");
+        }
+    }
+
+    #[test]
+    fn wildcard_domain_node_id_is_lossy_obfnode() {
+        let node = NodeId::from((Domain::from_static("*.example.com"), 8080));
+        assert_eq!(node.to_string(), "_.example.com:8080");
+        assert_eq!(node.port(), Some(8080));
+
+        let host: HostWithOptPort = "*.example.com".parse().unwrap();
+        let node = NodeId::from(host);
+        assert_eq!(node.to_string(), "_.example.com");
+
+        let el = ForwardedElement::new_forwarded_for(node);
+        let parsed: ForwardedElement = el.to_string().parse().unwrap();
+        assert_eq!(parsed, el);
+    }
+
+    #[test]
+    fn bare_ipv6_node_is_bracketed() {
+        let node = NodeId::from(IpAddr::V6(Ipv6Addr::LOCALHOST));
+        assert_eq!(node.to_string(), "[::1]");
+        let el = ForwardedElement::new_forwarded_for(node);
+        assert_eq!(el.to_string(), r#"for="[::1]""#);
+        let parsed: ForwardedElement = el.to_string().parse().unwrap();
+        assert_eq!(parsed, el);
+    }
+
+    #[test]
+    fn node_port_requires_digits() {
+        "+80".parse::<NodePort>().unwrap_err();
+        assert!(matches!("80".parse::<NodePort>(), Ok(NodePort::Num(80))));
+        for input in [r#"for="1.2.3.4:+80""#, r#"for="[::1]:+80""#] {
+            if let Ok(el) = input.parse::<ForwardedElement>() {
+                assert_eq!(el.forwarded_for().and_then(NodeId::port), None, "{input}");
+            }
         }
     }
 }

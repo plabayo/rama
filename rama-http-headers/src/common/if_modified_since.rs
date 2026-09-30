@@ -65,7 +65,10 @@ impl IfModifiedSince {
     /// Check if the supplied time means the resource has been modified.
     #[must_use]
     pub fn is_modified(&self, last_modified: SystemTime) -> bool {
-        self.0 < last_modified.into()
+        // whole-second precision like an HTTP-date, total for any `SystemTime`
+        last_modified
+            .duration_since(SystemTime::from(self.0))
+            .is_ok_and(|newer_by| newer_by.as_secs() > 0)
     }
 }
 
@@ -84,7 +87,8 @@ impl From<IfModifiedSince> for SystemTime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
+    use crate::common::test_decode;
+    use std::time::{Duration, UNIX_EPOCH};
 
     #[test]
     fn is_modified() {
@@ -96,5 +100,32 @@ mod tests {
         assert!(if_mod.is_modified(newer));
         assert!(!if_mod.is_modified(exact));
         assert!(!if_mod.is_modified(older));
+    }
+
+    #[test]
+    fn is_modified_ignores_sub_second_precision() {
+        let if_mod = test_decode::<IfModifiedSince>(&["Sun, 06 Nov 1994 08:49:37 GMT"]).unwrap();
+        let exact = SystemTime::from(if_mod);
+        assert!(!if_mod.is_modified(exact + Duration::from_millis(999)));
+        assert!(if_mod.is_modified(exact + Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn is_modified_with_out_of_range_last_modified() {
+        let if_mod = test_decode::<IfModifiedSince>(&["Thu, 01 Jan 1970 00:00:00 GMT"]).unwrap();
+        if let Some(before_epoch) = UNIX_EPOCH.checked_sub(Duration::from_millis(1)) {
+            assert!(!if_mod.is_modified(before_epoch));
+        }
+        if let Some(after_year_9999) = UNIX_EPOCH.checked_add(Duration::from_secs(253_402_300_800))
+        {
+            assert!(if_mod.is_modified(after_year_9999));
+        }
+
+        // clamping the last-modified time to 9999 would hide this modification
+        let if_mod = test_decode::<IfModifiedSince>(&["Fri, 31 Dec 9999 23:59:59 GMT"]).unwrap();
+        let year_10001 = UNIX_EPOCH
+            .checked_add(Duration::from_secs(253_433_923_200))
+            .unwrap();
+        assert!(if_mod.is_modified(year_10001));
     }
 }

@@ -3,9 +3,10 @@
 use core::fmt;
 
 use rama_core::bytes::{Bytes, BytesMut};
+use rama_utils::bytes::trim_ows;
 
 use crate::{
-    byte_sets::{comma_separated_items, is_token_byte, trim_ows},
+    byte_sets::{comma_separated_items, is_token_byte},
     codec::{
         self, DEFAULT_MAX_HEAD_BYTES, DEFAULT_MAX_HEADERS, EncodeError, HeadParserConfig, Header,
         HeaderSlot, HeaderValue, ParseError, ParseStatus, RequestHead, RequestLine,
