@@ -7,7 +7,7 @@ use std::{
     pin::{Pin, pin},
     sync::{
         Arc, OnceLock,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     task::{Context, Poll, Waker, ready},
     time::Duration,
@@ -18,23 +18,16 @@ use parking_lot::Mutex;
 use pin_project_lite::pin_project;
 use rama_core::{
     error::{ArcError, BoxError, BoxErrorExt as _},
-    futures::{
-        FutureExt as _, Stream, StreamExt as _,
-        async_stream::stream_fn,
-        future::{BoxFuture, Shared},
-    },
+    futures::{Stream, StreamExt as _, async_stream::stream_fn},
     rt,
     telemetry::tracing::{self, Instrument as _},
 };
 use rama_net::address::Domain;
-use tokio::{sync::oneshot, task::AbortHandle, time::error::Elapsed};
+use tokio::{sync::Notify, task::AbortHandle, time::error::Elapsed};
 
 use super::limit::DnsTimeoutError;
 
-/// `None`: the run ended without an answer (its runtime shut down, or it panicked).
-type Flight<V> = Shared<BoxFuture<'static, Option<Result<Arc<V>, ArcError>>>>;
-type Flights<K> = Arc<Mutex<HashMap<(K, TypeId), Box<dyn Any + Send + Sync>>>>;
-type Reply<V> = oneshot::Sender<Result<Arc<V>, ArcError>>;
+type Flights<K> = Arc<Mutex<HashMap<(K, TypeId), Arc<dyn Any + Send + Sync>>>>;
 
 /// What happens to a run once every caller stopped waiting for it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -95,30 +88,60 @@ impl<K> InFlight<K> {
     }
 }
 
-/// A run as the map stores it.
-struct Entry<V> {
-    flight: Flight<V>,
-    waiters: Arc<Waiters>,
-}
-
-/// Callers waiting on one run, and how to cancel it.
-#[derive(Default)]
-struct Waiters {
-    count: AtomicUsize,
+/// One run and everyone waiting on it, in a single allocation.
+struct Flight<V> {
+    answer: OnceLock<Result<Arc<V>, ArcError>>,
+    /// Set once the run ended, with or without an answer.
+    ended: AtomicBool,
+    done: Notify,
+    waiters: AtomicUsize,
     abort: OnceLock<AbortHandle>,
 }
 
+impl<V> Flight<V> {
+    fn new() -> Self {
+        Self {
+            answer: OnceLock::new(),
+            ended: AtomicBool::new(false),
+            done: Notify::new(),
+            waiters: AtomicUsize::new(1),
+            abort: OnceLock::new(),
+        }
+    }
+
+    /// The run's answer; `None` when it ended without one (its runtime shut
+    /// down, or it panicked).
+    async fn answer(&self) -> Option<Result<Arc<V>, ArcError>> {
+        loop {
+            let mut done = pin!(self.done.notified());
+            done.as_mut().enable();
+            if self.ended.load(Ordering::Acquire) {
+                return self.answer.get().cloned();
+            }
+            done.await;
+        }
+    }
+
+    fn end(&self, answer: Option<Result<Arc<V>, ArcError>>) {
+        if let Some(answer) = answer {
+            _ = self.answer.set(answer);
+        }
+        self.ended.store(true, Ordering::Release);
+        self.done.notify_waiters();
+    }
+}
+
 /// One caller waiting on a run; the last one to leave may cancel it.
-struct Waiting {
-    waiters: Arc<Waiters>,
+struct Waiting<V> {
+    flight: Arc<Flight<V>>,
     abandoned: Abandoned,
 }
 
-impl Drop for Waiting {
+impl<V> Drop for Waiting<V> {
     fn drop(&mut self) {
-        if self.waiters.count.fetch_sub(1, Ordering::AcqRel) == 1
+        if self.flight.waiters.fetch_sub(1, Ordering::AcqRel) == 1
             && self.abandoned == Abandoned::Cancel
-            && let Some(abort) = self.waiters.abort.get()
+            && let Some(abort) = self.flight.abort.get()
         {
             abort.abort();
         }
@@ -126,8 +149,8 @@ impl Drop for Waiting {
 }
 
 enum Joined<V> {
-    Running(Flight<V>, Waiting),
-    Started(Flight<V>, Reply<V>, Waiting),
+    Running(Waiting<V>),
+    Started(Waiting<V>),
 }
 
 impl<K> InFlight<K> {
@@ -160,23 +183,22 @@ impl<K: Hash + Eq + Clone + Send + Sync + 'static> InFlight<K> {
         let shared = async {
             let mut lookup = Some(lookup);
             loop {
-                match self.join(&slot) {
-                    Joined::Running(flight, waiting) => {
-                        if let Some(answer) = flight.await {
+                match self.join::<V>(&slot) {
+                    Joined::Running(waiting) => {
+                        if let Some(answer) = waiting.flight.answer().await {
                             return answer;
                         }
                         // it died with another runtime, or was cancelled as we
                         // joined: join or start the next run, within our deadline
-                        drop(waiting);
                     }
-                    Joined::Started(flight, reply, waiting) => {
+                    Joined::Started(waiting) => {
                         let Some(lookup) = lookup.take() else {
                             return Err(ArcError::from_static_str(
                                 "dns lookup ended without an answer",
                             ));
                         };
-                        self.start(slot, max_duration, reply, &waiting, lookup);
-                        return flight.await.unwrap_or_else(|| {
+                        self.start(slot, max_duration, &waiting.flight, lookup);
+                        return waiting.flight.answer().await.unwrap_or_else(|| {
                             Err(ArcError::from_static_str(
                                 "dns lookup ended without an answer",
                             ))
@@ -191,35 +213,33 @@ impl<K: Hash + Eq + Clone + Send + Sync + 'static> InFlight<K> {
     }
 
     fn join<V: Send + Sync + 'static>(&self, slot: &(K, TypeId)) -> Joined<V> {
-        let mut flights = self.flights.lock();
-        if let Some(entry) = flights
-            .get(slot)
-            .and_then(|entry| entry.downcast_ref::<Entry<V>>())
-        {
-            // counted under the lock, so a leaving waiter never misses us
-            entry.waiters.count.fetch_add(1, Ordering::AcqRel);
-            return Joined::Running(entry.flight.clone(), self.waiting(&entry.waiters));
+        if let Some(waiting) = self.join_running(&self.flights.lock(), slot) {
+            return Joined::Running(waiting);
         }
-        let (reply, answer) = oneshot::channel();
-        let flight: Flight<V> = answer.map(Result::ok).boxed().shared();
-        let waiters = Arc::new(Waiters {
-            count: AtomicUsize::new(1),
-            abort: OnceLock::new(),
-        });
-        let waiting = self.waiting(&waiters);
-        flights.insert(
-            slot.clone(),
-            Box::new(Entry {
-                flight: flight.clone(),
-                waiters,
-            }),
-        );
-        Joined::Started(flight, reply, waiting)
+        // allocated outside the lock; a racing starter may still win the slot
+        let flight = Arc::new(Flight::new());
+        let mut flights = self.flights.lock();
+        if let Some(waiting) = self.join_running(&flights, slot) {
+            return Joined::Running(waiting);
+        }
+        flights.insert(slot.clone(), flight.clone());
+        Joined::Started(self.waiting(flight))
     }
 
-    fn waiting(&self, waiters: &Arc<Waiters>) -> Waiting {
+    fn join_running<V: Send + Sync + 'static>(
+        &self,
+        flights: &HashMap<(K, TypeId), Arc<dyn Any + Send + Sync>>,
+        slot: &(K, TypeId),
+    ) -> Option<Waiting<V>> {
+        let flight = flights.get(slot)?.clone().downcast::<Flight<V>>().ok()?;
+        // counted under the lock, so a leaving waiter never misses us
+        flight.waiters.fetch_add(1, Ordering::AcqRel);
+        Some(self.waiting(flight))
+    }
+
+    fn waiting<V>(&self, flight: Arc<Flight<V>>) -> Waiting<V> {
         Waiting {
-            waiters: waiters.clone(),
+            flight,
             abandoned: self.abandoned,
         }
     }
@@ -228,8 +248,7 @@ impl<K: Hash + Eq + Clone + Send + Sync + 'static> InFlight<K> {
         &self,
         slot: (K, TypeId),
         max_duration: Duration,
-        reply: Reply<V>,
-        waiting: &Waiting,
+        flight: &Arc<Flight<V>>,
         lookup: impl FnOnce() -> F,
     ) where
         V: Send + Sync + 'static,
@@ -239,7 +258,7 @@ impl<K: Hash + Eq + Clone + Send + Sync + 'static> InFlight<K> {
         let release = Release {
             flights: self.flights.clone(),
             slot,
-            reply: Some(reply),
+            flight: Some(flight.clone()),
         };
         let span = tracing::debug_span!("dns lookup");
         span.follows_from(tracing::Span::current());
@@ -255,7 +274,7 @@ impl<K: Hash + Eq + Clone + Send + Sync + 'static> InFlight<K> {
             Ok(Poll::Pending) => {
                 let task =
                     rt::spawn(async move { release.finish(answer_of(run.await, max_duration)) });
-                _ = waiting.waiters.abort.set(task.abort_handle());
+                _ = flight.abort.set(task.abort_handle());
             }
             // the run died: its waiters see it end without an answer
             Err(_panic) => drop(release),
@@ -278,26 +297,32 @@ fn answer_of<V>(answer: Result<V, Elapsed>, max_duration: Duration) -> Result<Ar
 struct Release<K: Hash + Eq, V> {
     flights: Flights<K>,
     slot: (K, TypeId),
-    reply: Option<Reply<V>>,
+    flight: Option<Arc<Flight<V>>>,
 }
 
 impl<K: Hash + Eq, V> Release<K, V> {
     fn finish(mut self, answer: Result<Arc<V>, ArcError>) {
-        let reply = self.reply.take();
+        let flight = self.flight.take();
         drop(self);
-        if let Some(reply) = reply {
-            _ = reply.send(answer);
+        if let Some(flight) = flight {
+            flight.end(Some(answer));
         }
     }
 }
 
 impl<K: Hash + Eq, V> Drop for Release<K, V> {
     fn drop(&mut self) {
-        let mut flights = self.flights.lock();
-        flights.remove(&self.slot);
-        // don't keep a burst's peak capacity once it has drained
-        if flights.is_empty() && flights.capacity() > RETAINED_CAPACITY {
-            flights.shrink_to(RETAINED_CAPACITY);
+        {
+            let mut flights = self.flights.lock();
+            flights.remove(&self.slot);
+            // don't keep a burst's peak capacity once it has drained
+            if flights.is_empty() && flights.capacity() > RETAINED_CAPACITY {
+                flights.shrink_to(RETAINED_CAPACITY);
+            }
+        }
+        // ended without an answer
+        if let Some(flight) = self.flight.take() {
+            flight.end(None);
         }
     }
 }
@@ -423,10 +448,8 @@ where
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use rama_core::futures::{future::join_all, stream};
-    use tokio::sync::Notify;
-
     use super::*;
+    use rama_core::futures::{FutureExt as _, future::join_all, stream};
 
     const TIMEOUT: Duration = Duration::from_secs(5);
 
