@@ -69,16 +69,8 @@ async fn origin(request: Request) -> Result<Response, Infallible> {
     let mut response = Response::new(Body::empty());
     let headers = response.headers_mut();
     headers.insert("x-saw-version", saw(format!("{:?}", request.version())));
-    // The REQMOD head is an origin-form HTTP/1 head: the authority returns as Host.
-    headers.insert(
-        "x-saw-authority",
-        request
-            .uri()
-            .authority()
-            .map(|authority| saw(authority.to_string()))
-            .or_else(|| request.headers().get("host").cloned())
-            .unwrap_or_else(|| HeaderValue::from_static("none")),
-    );
+    // The adapted head gets its absolute target back, routable on any version.
+    headers.insert("x-saw-target", saw(request.uri().to_string()));
     headers.insert(
         "x-saw-icap",
         request
@@ -155,7 +147,10 @@ async fn icap_adapts_both_directions_of_an_http3_exchange() {
     assert_eq!(headers["x-icap-response"], "adapted");
     assert_eq!(headers["x-saw-icap"], "adapted");
     assert_eq!(headers["x-saw-version"], "HTTP/3.0");
-    assert_eq!(headers["x-saw-authority"], format!("localhost:{port}"));
+    assert_eq!(
+        headers["x-saw-target"],
+        format!("https://localhost:{port}/scan")
+    );
     let body = response.into_body().collect().await.unwrap().to_bytes();
     assert_eq!(body, "scan me");
 
