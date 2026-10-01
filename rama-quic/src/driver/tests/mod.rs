@@ -904,7 +904,11 @@ async fn try_send_datagram_reports_a_full_buffer_without_discarding() {
     }
     assert!(queued > 0);
     for expected in 0..queued {
-        let datagram = server.read_datagram().await.unwrap();
+        // A lost datagram fails the test instead of waiting forever.
+        let datagram = tokio::time::timeout(Duration::from_secs(10), server.read_datagram())
+            .await
+            .expect("every queued datagram arrives")
+            .unwrap();
         assert_eq!(datagram[0], expected, "no queued datagram may be discarded");
     }
 }
