@@ -189,6 +189,27 @@ impl<T, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32>
         }
     }
 
+    /// Returns the elements currently in the vector as contiguous slices, oldest first.
+    ///
+    /// Every bin is one slice, so walking the elements with two nested loops does
+    /// the bin arithmetic once per bin instead of once per element like [`Self::iter`].
+    /// Like [`Self::iter`] this snapshots the length at creation time. The iterator is
+    /// double ended: `.rev()` yields the newest slice first.
+    pub fn chunks(&self) -> Chunks<'_, T, AMOUNT_OF_BINS, BIN_OFFSET> {
+        let len = self.len();
+        Chunks {
+            vec: self,
+            len,
+            front: 0,
+            // bins that hold at least one of the `len` elements
+            back: if len == 0 {
+                0
+            } else {
+                Self::indices(len - 1).0 + 1
+            },
+        }
+    }
+
     /// Returns a pointer to the bin with bin_idx. If this bin does not exist it will be created.
     ///
     /// Note: this functions supports cooperative allocations. Meaning it can be called
@@ -428,6 +449,79 @@ impl<T, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32> Index<usize>
     }
 }
 
+/// A double-ended iterator over the bins of an [`AppendOnlyVec`] as slices,
+/// created by [`AppendOnlyVec::chunks`].
+pub struct Chunks<'a, T, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32> {
+    vec: &'a AppendOnlyVec<T, AMOUNT_OF_BINS, BIN_OFFSET>,
+    /// Length of the vec when the iterator was created.
+    len: usize,
+    /// Next bin to yield from the front.
+    front: usize,
+    /// One past the last bin to yield from the back.
+    back: usize,
+}
+
+impl<'a, T, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32>
+    Chunks<'a, T, AMOUNT_OF_BINS, BIN_OFFSET>
+{
+    /// The initialized part of bin `bin`, which must hold at least one of the first `self.len` elements.
+    fn bin(&self, bin: usize) -> &'a [T] {
+        // Index of the first element of this bin: all earlier bins are full.
+        let first = AppendOnlyVec::<T, AMOUNT_OF_BINS, BIN_OFFSET>::bin_size(bin)
+            - AppendOnlyVec::<T, AMOUNT_OF_BINS, BIN_OFFSET>::INITIAL_BIN_SIZE;
+        let count = core::cmp::min(
+            self.len - first,
+            AppendOnlyVec::<T, AMOUNT_OF_BINS, BIN_OFFSET>::bin_size(bin),
+        );
+        let ptr = self.vec.data[bin].load(Ordering::Acquire);
+        // Safety:
+        // - `len` was read with `Acquire` from `count`, which is only advanced after the
+        //   element and its bin were written, so the first `count` slots of this bin are
+        //   initialized and the bin is allocated (a zero sized bin is dangling but aligned)
+        // - elements are never removed or moved while the vec is borrowed
+        unsafe { core::slice::from_raw_parts(ptr, count) }
+    }
+}
+
+impl<'a, T, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32> Iterator
+    for Chunks<'a, T, AMOUNT_OF_BINS, BIN_OFFSET>
+{
+    type Item = &'a [T];
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.front < self.back {
+            let bin = self.front;
+            self.front += 1;
+            Some(self.bin(bin))
+        } else {
+            None
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let bins = self.back - self.front;
+        (bins, Some(bins))
+    }
+}
+
+impl<'a, T, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32> DoubleEndedIterator
+    for Chunks<'a, T, AMOUNT_OF_BINS, BIN_OFFSET>
+{
+    fn next_back(&mut self) -> Option<Self::Item> {
+        if self.front < self.back {
+            self.back -= 1;
+            Some(self.bin(self.back))
+        } else {
+            None
+        }
+    }
+}
+
+impl<'a, T, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32> ExactSizeIterator
+    for Chunks<'a, T, AMOUNT_OF_BINS, BIN_OFFSET>
+{
+}
+
 /// A double-ended iterator for [`AppendOnlyVec`]
 pub struct Iter<'a, T, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32> {
     vec: &'a AppendOnlyVec<T, AMOUNT_OF_BINS, BIN_OFFSET>,
@@ -625,6 +719,76 @@ mod tests {
     }
 
     #[test]
+    fn chunks_are_the_bins_in_order_and_match_iter() {
+        let vec: AppendOnlyVec<usize, 5, 2> = AppendOnlyVec::new();
+        assert_eq!(vec.chunks().count(), 0);
+
+        // bins hold 4, 8, 16 and 32 elements
+        for len in 1..=60 {
+            vec.push(len - 1);
+
+            let chunks: Vec<&[usize]> = vec.chunks().collect();
+            let flat: Vec<usize> = chunks.iter().flat_map(|c| c.iter().copied()).collect();
+            assert_eq!(flat, (0..len).collect::<Vec<_>>(), "len {len}");
+            assert_eq!(flat, vec.iter().copied().collect::<Vec<_>>());
+
+            // only the last chunk may be partially filled, and none is empty
+            for (i, chunk) in chunks.iter().enumerate() {
+                assert!(!chunk.is_empty());
+                assert!(
+                    chunk.len() == 4 << i || i == chunks.len() - 1,
+                    "len {len} bin {i}"
+                );
+            }
+
+            let reversed: Vec<usize> = vec
+                .chunks()
+                .rev()
+                .flat_map(|c| c.iter().rev().copied())
+                .collect();
+            assert_eq!(reversed, (0..len).rev().collect::<Vec<_>>());
+        }
+    }
+
+    #[test]
+    fn chunks_is_a_snapshot_of_length_at_creation() {
+        let vec: AppendOnlyVec<usize, 3, 1> = AppendOnlyVec::new();
+        vec.push(1);
+
+        let chunks = vec.chunks();
+        vec.push(2);
+        vec.push(3);
+
+        let items: Vec<usize> = chunks.flat_map(|c| c.iter().copied()).collect();
+        assert_eq!(items, vec![1]);
+        assert_eq!(vec.chunks().flat_map(|c| c.iter().copied()).count(), 3);
+    }
+
+    #[test]
+    fn chunks_of_zero_sized_types() {
+        let vec: AppendOnlyVec<NoSize> = AppendOnlyVec::new();
+        for _ in 0..20 {
+            vec.push(NoSize);
+        }
+        assert_eq!(vec.chunks().map(<[NoSize]>::len).sum::<usize>(), 20);
+    }
+
+    #[test]
+    fn chunks_meet_in_the_middle_from_both_ends() {
+        let vec: AppendOnlyVec<usize, 4, 1> = AppendOnlyVec::new();
+        for i in 0..14 {
+            vec.push(i);
+        }
+        let mut chunks = vec.chunks();
+        assert_eq!(chunks.len(), 3);
+        assert_eq!(chunks.next().unwrap(), &[0, 1]);
+        assert_eq!(chunks.next_back().unwrap(), &[6, 7, 8, 9, 10, 11, 12, 13]);
+        assert_eq!(chunks.next().unwrap(), &[2, 3, 4, 5]);
+        assert!(chunks.next().is_none());
+        assert!(chunks.next_back().is_none());
+    }
+
+    #[test]
     #[should_panic(expected = "append only vec has exceeded max capacity")]
     fn push_panics_when_capacity_is_exceeded() {
         let vec: AppendOnlyVec<u8, 1, 1> = AppendOnlyVec::new();
@@ -705,6 +869,27 @@ mod loom_tests {
 
             // Make sure to wait for this thread to finish so loom can cleanup everything while this
             // closure is still active, otherwise it will panick
+            t1.join().unwrap();
+        });
+    }
+
+    #[test]
+    fn chunks_read_while_push() {
+        create_builder().check(|| {
+            // bins hold 2 and 4 elements: the second push opens a new bin
+            let vec = Arc::new(AppendOnlyVec::<usize, 3, 1>::new());
+            vec.push(1);
+            vec.push(2);
+            let v1 = vec.clone();
+
+            let t1 = loom::thread::spawn(move || {
+                v1.push(3);
+            });
+
+            // Whatever the chunks report as present must be readable, in order.
+            let seen: Vec<usize> = vec.chunks().flat_map(|c| c.iter().copied()).collect();
+            assert!(seen == [1, 2] || seen == [1, 2, 3], "{seen:?}");
+
             t1.join().unwrap();
         });
     }

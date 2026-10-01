@@ -23,6 +23,8 @@ pub trait TcpStreamConnector: Send + Sync + 'static {
     ) -> impl Future<Output = Result<TcpStream, Self::Error>> + Send + '_;
 }
 
+/// The default connector: a plain (`connect(2)`) dial that sets `TCP_NODELAY`
+/// on the established stream.
 impl TcpStreamConnector for () {
     type Error = std::io::Error;
 
@@ -30,6 +32,7 @@ impl TcpStreamConnector for () {
         // v4-mapped IPv6 is IPv4 wire traffic: dial it as such
         // (see `IntoCanonicalIpAddr`; RFC 4291, Section 2.5.5.2)
         let stream = tokio::net::TcpStream::connect(addr.into_canonical_ip_addr()).await?;
+        apply_default_nodelay(&stream);
         Ok(stream.into())
     }
 }
@@ -140,7 +143,28 @@ async fn tcp_connect_with_socket_opts_async(
         .await
         .context("complete nonblocking connect to the provided socket addr")?;
 
+    // An explicit `tcp_no_delay` (either way) was already applied to the socket
+    // as part of `try_build_socket`; only fall back to the default when unset.
+    if opts.tcp_no_delay.is_none() {
+        apply_default_nodelay(&stream.stream);
+    }
+
     Ok(stream)
+}
+
+/// Disable Nagle's algorithm on a freshly connected stream.
+///
+/// This is the default for connections established by rama: Nagle's algorithm
+/// combined with the peer's delayed ACKs stalls a multi-segment write for tens
+/// of milliseconds (on Linux), which is hit by every proxied HTTP message that
+/// does not fit a single segment. Callers that want the operating system
+/// default configure `tcp_no_delay: Some(false)` on their [`SocketOptions`].
+///
+/// A failure to set the option is not fatal for the connection.
+fn apply_default_nodelay(stream: &tokio::net::TcpStream) {
+    if let Err(err) = stream.set_nodelay(true) {
+        tracing::debug!("failed to set TCP_NODELAY on connected tcp stream: {err:?}");
+    }
 }
 
 fn nonblocking_connect_in_progress(err: &std::io::Error) -> bool {
@@ -426,6 +450,50 @@ mod unix_windows_tests {
     #[tokio::test]
     async fn test_unit_connector_dials_v4_mapped_target_as_ipv4() {
         test_generic_connector_dials_v4_mapped_target_as_ipv4(()).await;
+    }
+
+    #[expect(
+        clippy::unwrap_used,
+        reason = "test helper: cfg(test) module, but clippy's allow-*-in-tests detection doesn't propagate through this generic test fn"
+    )]
+    async fn connect_nodelay<C>(connector: C) -> bool
+    where
+        C: TcpStreamConnector<Error: std::fmt::Debug>,
+    {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let stream = connector.connect(addr).await.unwrap();
+        stream.stream.nodelay().unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_unit_connector_sets_nodelay_by_default() {
+        assert!(connect_nodelay(()).await);
+    }
+
+    #[tokio::test]
+    async fn test_socket_opts_connector_sets_nodelay_by_default() {
+        assert!(connect_nodelay(Arc::new(SocketOptions::default_tcp())).await);
+    }
+
+    #[tokio::test]
+    async fn test_socket_opts_connector_respects_explicit_nodelay_opt_out() {
+        let opts = SocketOptions {
+            tcp_no_delay: Some(false),
+            ..SocketOptions::default_tcp()
+        };
+        assert!(!connect_nodelay(Arc::new(opts)).await);
+
+        let opts = SocketOptions {
+            tcp_no_delay: Some(true),
+            ..SocketOptions::default_tcp()
+        };
+        assert!(connect_nodelay(Arc::new(opts)).await);
+    }
+
+    #[tokio::test]
+    async fn test_bind_address_connector_sets_nodelay_by_default() {
+        assert!(connect_nodelay(SocketAddress::local_ipv4(0)).await);
     }
 
     #[tokio::test]
