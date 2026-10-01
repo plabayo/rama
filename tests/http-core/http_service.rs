@@ -2,6 +2,8 @@
 
 mod deployment;
 mod discovery_outcomes;
+#[cfg(feature = "icap")]
+mod icap_h3;
 mod ip_policy;
 #[cfg(all(feature = "boring", feature = "rustls"))]
 mod mixed_tls;
