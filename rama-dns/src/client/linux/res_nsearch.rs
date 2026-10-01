@@ -142,7 +142,8 @@ where
             // for transport errors); NXDOMAIN/NODATA come back as a packet
             // whose answer section is empty but whose authority section
             // typically carries a SOA RR — see RFC 2308 §5.
-            let Some(packet) = lookup_record_packet(domain, rrtype, response_buffer_size, budget)?
+            let Some(packet) =
+                lookup_record_packet(domain, rrtype, response_buffer_size, budget, timeout)?
             else {
                 return Ok(());
             };
@@ -196,14 +197,8 @@ where
 
         match join.await {
             Ok(Ok(())) => {}
-            Ok(Err(err)) => {
-                yielder
-                    .yield_item(Err(LinuxDnsResolverError::message(format!(
-                        "linux dns res_nsearch task failed: {err}"
-                    ))
-                    .into()))
-                    .await;
-            }
+            // as is, so a timeout stays a `DnsTimeoutError`
+            Ok(Err(err)) => yielder.yield_item(Err(err)).await,
             Err(err) => {
                 tracing::debug!(
                     "linux::res_nsearch: lookup_record_stream error = {err} (report as timeout)"
@@ -234,6 +229,7 @@ fn lookup_record_packet(
     rrtype: libc::c_int,
     response_buffer_size: usize,
     budget: Duration,
+    timeout: Duration,
 ) -> Result<Option<Vec<u8>>, BoxError> {
     let max_response_size = response_buffer_limit(response_buffer_size)?;
     let name = dns_name_from_domain(domain.as_str())?;
@@ -250,6 +246,7 @@ fn lookup_record_packet(
     let mut buffer = vec![0_u8; INITIAL_RESPONSE_BUFFER_SIZE.min(max_response_size)];
 
     loop {
+        clear_errno();
         // SAFETY:
         // - `state` is initialized by `res_ninit`.
         // - `name` is a valid NUL-terminated DNS name.
@@ -285,6 +282,9 @@ fn lookup_record_packet(
                 // section for RFC 2308-correct negative caching.
                 return Ok(Some(buffer));
             }
+            if timed_out(h_errno, std::io::Error::last_os_error().raw_os_error()) {
+                return Err(DnsTimeoutError::new(timeout).into());
+            }
             return Err(LinuxDnsResolverError::message(format!(
                 "res_nsearch failed (h_errno={h_errno})",
             ))
@@ -302,6 +302,27 @@ fn lookup_record_packet(
         buffer.truncate(response_len);
         return Ok(Some(buffer));
     }
+}
+
+/// Whether a failed `res_nsearch` ran out of retransmits: libc reports
+/// `TRY_AGAIN` both for that and for a SERVFAIL, but only sets `ETIMEDOUT`
+/// when nameservers were reached and none answered in time.
+const fn timed_out(h_errno: c_int, errno: Option<c_int>) -> bool {
+    h_errno == ffi::TRY_AGAIN && matches!(errno, Some(libc::ETIMEDOUT))
+}
+
+/// libc leaves `errno` alone on success, so a value from an earlier call on
+/// this thread must not pass for this call's.
+fn clear_errno() {
+    // SAFETY: each returns this thread's errno slot, valid for its lifetime
+    #[cfg(target_os = "linux")]
+    let errno = unsafe { libc::__errno_location() };
+    #[cfg(target_os = "freebsd")]
+    let errno = unsafe { libc::__error() };
+    #[cfg(any(target_os = "openbsd", target_os = "netbsd"))]
+    let errno = unsafe { libc::__errno() };
+    // SAFETY: the slot is this thread's own and writable
+    unsafe { *errno = 0 };
 }
 
 /// Shorten libc's wait per try so its retransmits land inside `budget`.
@@ -609,6 +630,8 @@ mod ffi {
 
     /// Authoritative Answer Host not found.
     pub(super) const HOST_NOT_FOUND: c_int = 1;
+    /// Non-authoritative failure: SERVFAIL, or no nameserver answered.
+    pub(super) const TRY_AGAIN: c_int = 2;
     /// Valid name, no data record of requested type.
     pub(super) const NO_DATA: c_int = 4;
 
@@ -678,8 +701,32 @@ mod response_buffer_tests {
     use std::{mem, time::Duration};
 
     use super::{
-        DNS_HEADER_SIZE, ffi, fit_retransmits, grow_response_buffer, response_buffer_limit,
+        DNS_HEADER_SIZE, clear_errno, ffi, fit_retransmits, grow_response_buffer,
+        response_buffer_limit, timed_out,
     };
+
+    #[test]
+    fn only_running_out_of_retransmits_is_a_timeout() {
+        assert!(timed_out(ffi::TRY_AGAIN, Some(libc::ETIMEDOUT)));
+        // a SERVFAIL, or no nameserver reachable at all
+        assert!(!timed_out(ffi::TRY_AGAIN, Some(0)));
+        assert!(!timed_out(ffi::TRY_AGAIN, Some(libc::ECONNREFUSED)));
+        assert!(!timed_out(ffi::TRY_AGAIN, None));
+        assert!(!timed_out(ffi::HOST_NOT_FOUND, Some(libc::ETIMEDOUT)));
+    }
+
+    #[test]
+    fn a_stale_errno_is_cleared() {
+        // SAFETY: closing an invalid fd only sets errno
+        let closed = unsafe { libc::close(-1) };
+        assert_eq!(closed, -1);
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::EBADF)
+        );
+        clear_errno();
+        assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(0));
+    }
 
     #[test]
     fn retransmits_fit_the_lookup_budget() {

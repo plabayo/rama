@@ -251,9 +251,10 @@ impl<K: Hash + Eq + Clone + Send + Sync + 'static> InFlight<K> {
         // callers ask; the task's own first poll registers its waker
         let mut cx = Context::from_waker(Waker::noop());
         match catch_unwind(AssertUnwindSafe(|| run.as_mut().poll(&mut cx))) {
-            Ok(Poll::Ready(answer)) => release.finish(answer_of(answer)),
+            Ok(Poll::Ready(answer)) => release.finish(answer_of(answer, max_duration)),
             Ok(Poll::Pending) => {
-                let task = rt::spawn(async move { release.finish(answer_of(run.await)) });
+                let task =
+                    rt::spawn(async move { release.finish(answer_of(run.await, max_duration)) });
                 _ = waiting.waiters.abort.set(task.abort_handle());
             }
             // the run died: its waiters see it end without an answer
@@ -262,9 +263,13 @@ impl<K: Hash + Eq + Clone + Send + Sync + 'static> InFlight<K> {
     }
 }
 
-fn answer_of<V>(answer: Result<V, Elapsed>) -> Result<Arc<V>, ArcError> {
+fn answer_of<V>(answer: Result<V, Elapsed>, max_duration: Duration) -> Result<Arc<V>, ArcError> {
     answer.map(Arc::new).map_err(|_elapsed| {
-        ArcError::from_static_str("dns lookup abandoned: backend ignored its deadline")
+        tracing::debug!(
+            ?max_duration,
+            "dns lookup abandoned: backend ignored its deadline"
+        );
+        ArcError::new(DnsTimeoutError::new(max_duration))
     })
 }
 
@@ -365,11 +370,20 @@ where
                 yielder.yield_item(Ok(record.clone())).await;
             }
             if let Some(err) = &outcome.error {
-                yielder.yield_item(Err(err.clone().into())).await;
+                yielder.yield_item(Err(replay(err))).await;
             }
         }
-        Err(err) => yielder.yield_item(Err(err.into())).await,
+        Err(err) => yielder.yield_item(Err(replay(&err))).await,
     })
+}
+
+/// One caller's copy of a shared error: a timeout as itself, so a plain
+/// downcast finds it.
+fn replay(err: &ArcError) -> BoxError {
+    match err.downcast_ref::<DnsTimeoutError>() {
+        Some(timeout) => (*timeout).into(),
+        None => err.clone().into(),
+    }
 }
 
 /// `Domain` equality ignores a leading dot, yet no backend accepts one in a
@@ -710,6 +724,51 @@ mod tests {
 
         result.expect_err("a panicking run fails its callers");
         assert_eq!(in_flight.running(), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn late_joiner_of_an_abandoned_run_sees_a_timeout() {
+        let in_flight = InFlight::<&str>::default();
+        let budget = Duration::from_secs(1);
+
+        let first = in_flight.run("key", budget, std::future::pending::<usize>);
+        // joins the lingering run, which is abandoned before this caller's own bound
+        let late = async {
+            tokio::time::sleep(Duration::from_millis(2500)).await;
+            in_flight
+                .run("key", budget, std::future::pending::<usize>)
+                .await
+        };
+        let (first, late) = tokio::join!(first, late);
+
+        for result in [first, late] {
+            let err = result.expect_err("a stuck run fails its callers");
+            let timeout = err
+                .downcast_ref::<DnsTimeoutError>()
+                .map(DnsTimeoutError::timeout);
+            assert_eq!(timeout, Some(budget), "{err}");
+        }
+    }
+
+    #[tokio::test]
+    async fn shared_timeout_reaches_every_caller_as_itself() {
+        let in_flight = InFlight::default();
+        let callers = (0..3).map(|_| {
+            coalesced_stream(in_flight.clone(), "key", TIMEOUT, || {
+                stream::once(async {
+                    tokio::task::yield_now().await;
+                    Err::<usize, _>(BoxError::from(DnsTimeoutError::new(TIMEOUT)))
+                })
+            })
+            .collect::<Vec<_>>()
+        });
+
+        for items in join_all(callers).await {
+            assert!(
+                matches!(items.as_slice(), [Err(err)] if err.downcast_ref::<DnsTimeoutError>().is_some()),
+                "{items:?}"
+            );
+        }
     }
 
     #[tokio::test(start_paused = true)]

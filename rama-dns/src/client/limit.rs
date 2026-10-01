@@ -78,8 +78,8 @@ impl LookupLimit {
 
 /// A DNS lookup that ran out of time, whichever resolver served it.
 ///
-/// Lookups shared by concurrent callers report it wrapped in an
-/// `ArcError`, so look for it along the error's source chain.
+/// Every native resolver yields it as the error itself, also to callers that
+/// shared a lookup, so a plain `downcast_ref` finds it.
 #[derive(Debug, Clone, Copy)]
 pub struct DnsTimeoutError {
     timeout: Duration,
