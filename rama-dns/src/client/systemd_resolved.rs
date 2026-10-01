@@ -108,9 +108,17 @@ impl Default for Config {
 #[derive(Debug, Clone, Copy)]
 enum Phase {
     Untested,
-    Probing { since: Instant, generation: u64 },
+    /// `recovery`: re-testing a daemon that failed before, so lookups that
+    /// already use the native backend keep doing so meanwhile
+    Probing {
+        since: Instant,
+        generation: u64,
+        recovery: bool,
+    },
     Available,
-    Unavailable { since: Instant },
+    Unavailable {
+        since: Instant,
+    },
 }
 
 #[derive(Debug)]
@@ -127,9 +135,9 @@ struct Availability {
 /// `GetInfo` probe, transport failures feed a consecutive-failure breaker,
 /// and an unavailable daemon is re-probed at most once per
 /// [`Config::reprobe_interval`]. Lookups wait up to
-/// [`Config::connect_timeout`] for a running probe's verdict; otherwise they
-/// report [`ResolvedLookup::Unavailable`] so the caller uses the native
-/// backend instead. Transitions go through one mutex (its critical sections
+/// [`Config::connect_timeout`] for the first probe's verdict; otherwise, and
+/// during a re-probe, they report [`ResolvedLookup::Unavailable`] so the
+/// caller uses the native backend instead. Transitions go through one mutex (its critical sections
 /// are a few loads/stores) so a success and a concurrent failure can never
 /// interleave into a wrong breaker verdict.
 #[derive(Debug)]
@@ -582,20 +590,30 @@ impl SystemdResolved {
     }
 
     /// Claim the daemon for one lookup, first probing an untested daemon or
-    /// waiting (at most `budget`, capped at the connect timeout) for a
-    /// running probe's verdict.
+    /// waiting (at most `budget`, capped at the connect timeout) for the first
+    /// probe's verdict; a re-probe of a failed daemon is never waited for.
     async fn claim_after_probe(self: &Arc<Self>, budget: Duration) -> Option<Claim> {
         let settled = self.probe_settled.notified();
         let mut settled = std::pin::pin!(settled);
         settled.as_mut().enable();
         match self.claim() {
             Some(claim) if claim.probe_generation.is_none() => return Some(claim),
-            Some(probe) => self.spawn_probe(probe, budget),
-            // the probe may have settled since our claim attempt
-            None if !matches!(self.state.lock().phase, Phase::Probing { .. }) => {
-                return self.claim_without_probe(budget);
+            Some(probe) => {
+                let recovery = self.recovering();
+                self.spawn_probe(probe, budget);
+                if recovery {
+                    return None;
+                }
             }
-            None => {}
+            None => {
+                let phase = self.state.lock().phase;
+                match phase {
+                    Phase::Probing { recovery: true, .. } => return None,
+                    Phase::Probing { .. } => {}
+                    // the probe may have settled since our claim attempt
+                    _ => return self.claim_without_probe(budget),
+                }
+            }
         }
         tokio::time::timeout(budget.min(self.config.connect_timeout), settled)
             .await
@@ -633,25 +651,32 @@ impl SystemdResolved {
         });
     }
 
+    fn recovering(&self) -> bool {
+        matches!(
+            self.state.lock().phase,
+            Phase::Probing { recovery: true, .. }
+        )
+    }
+
     fn claim(&self) -> Option<Claim> {
         let mut state = self.state.lock();
         match state.phase {
             Phase::Available => Some(Claim {
                 probe_generation: None,
             }),
-            Phase::Untested => Some(begin_probe(&mut state)),
+            Phase::Untested => Some(begin_probe(&mut state, false)),
             // a probe claim older than the stale bound is assumed orphaned
             // (its task died without reporting) and may be re-claimed
-            Phase::Probing { since, .. } => {
-                (since.elapsed() > PROBE_STALE).then(|| begin_probe(&mut state))
-            }
+            Phase::Probing {
+                since, recovery, ..
+            } => (since.elapsed() > PROBE_STALE).then(|| begin_probe(&mut state, recovery)),
             Phase::Unavailable { since } => {
                 (since.elapsed() >= self.config.reprobe_interval).then(|| {
                     // A daemon replacement may implement methods that the
                     // previous instance did not. Re-test raw-record support
                     // whenever transport recovery starts a new probe generation.
                     self.record_supported.store(true, Ordering::Release);
-                    begin_probe(&mut state)
+                    begin_probe(&mut state, true)
                 })
             }
         }
@@ -727,7 +752,9 @@ impl SystemdResolved {
         timeout: Duration,
     ) -> Result<Envelope, TransportFailure> {
         let started = Instant::now();
-        let permit = match tokio::time::timeout(timeout, self.permits.acquire()).await {
+        // past the connect timeout the native backend serves a lookup sooner
+        let slot_wait = timeout.min(self.config.connect_timeout);
+        let permit = match tokio::time::timeout(slot_wait, self.permits.acquire()).await {
             Ok(Ok(permit)) => permit,
             Ok(Err(err)) => {
                 return Err(TransportFailure::soft(
@@ -735,7 +762,7 @@ impl SystemdResolved {
                 ));
             }
             Err(_) => {
-                return Err(TransportFailure::overload(no_slot_error(timeout)));
+                return Err(TransportFailure::overload(no_slot_error(slot_wait)));
             }
         };
         let remaining = timeout.saturating_sub(started.elapsed());
@@ -813,12 +840,13 @@ impl SystemdResolved {
     }
 }
 
-fn begin_probe(state: &mut Availability) -> Claim {
+fn begin_probe(state: &mut Availability, recovery: bool) -> Claim {
     let generation = state.next_probe_generation;
     state.next_probe_generation = state.next_probe_generation.wrapping_add(1);
     state.phase = Phase::Probing {
         since: Instant::now(),
         generation,
+        recovery,
     };
     Claim {
         probe_generation: Some(generation),
@@ -872,8 +900,7 @@ fn is_negative_reply(error: &str, parameters: &serde_json::Value) -> bool {
 }
 
 fn no_slot_error(timeout: Duration) -> BoxError {
-    BoxError::from_static_str("no varlink slot within the lookup deadline")
-        .context_debug_field("timeout", timeout)
+    BoxError::from_static_str("no varlink slot in time").context_debug_field("timeout", timeout)
 }
 
 /// Positive sub-second TTLs round up to one second instead of expiring immediately.
@@ -1365,6 +1392,14 @@ mod tests {
             ))],
         );
         tokio::time::sleep(Duration::from_millis(80)).await;
+        // the re-probe runs on its own; meanwhile lookups stay native
+        assert!(matches!(
+            resolved
+                .lookup_ipv4(&domain(), Duration::from_secs(1))
+                .await,
+            ResolvedLookup::Unavailable,
+        ));
+        wait_until_available(&resolved).await;
         assert!(matches!(
             resolved
                 .lookup_ipv4(&domain(), Duration::from_secs(1))
@@ -1372,7 +1407,88 @@ mod tests {
             ResolvedLookup::Records(_),
         ));
         assert_eq!(server.connections(), 1);
-        assert_available(&resolved);
+        assert_eq!(server.probes(), 1);
+    }
+
+    async fn wait_until_available(resolved: &SystemdResolved) {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !matches!(phase(resolved), Phase::Available) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the probe marks the daemon available");
+    }
+
+    #[tokio::test]
+    async fn lookups_do_not_wait_for_a_silent_reprobe() {
+        let path = test_socket_path();
+        let mut config = test_config(path.clone());
+        config.reprobe_interval = Duration::from_millis(50);
+        let resolved = Arc::new(SystemdResolved::new(config));
+        assert!(matches!(
+            resolved
+                .lookup_ipv4(&domain(), Duration::from_secs(1))
+                .await,
+            ResolvedLookup::Unavailable,
+        ));
+
+        // a socket that accepts but never answers GetInfo
+        let server = FakeResolved::spawn_with_probe(path, Behavior::Hang, vec![Behavior::Hang]);
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        for _ in 0..3 {
+            let started = Instant::now();
+            let lookup = resolved
+                .lookup_ipv4(&domain(), Duration::from_secs(1))
+                .await;
+            assert!(matches!(lookup, ResolvedLookup::Unavailable));
+            assert!(
+                started.elapsed() < Duration::from_millis(100),
+                "{:?}",
+                started.elapsed()
+            );
+        }
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while server.probes() == 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the re-probe reached the socket");
+        assert_eq!(server.probes(), 1, "one probe, not one per lookup");
+        assert_eq!(server.connections(), 0);
+    }
+
+    #[tokio::test]
+    async fn busy_varlink_slots_fall_back_within_the_connect_timeout() {
+        let path = test_socket_path();
+        let mut config = test_config(path.clone());
+        config.max_concurrency = 1;
+        let resolved = Arc::new(SystemdResolved::new(config));
+        let good = hostname_reply(&json!([{ "family": 2, "address": [1, 2, 3, 4] }]));
+        let _server = FakeResolved::spawn_at(path, vec![Behavior::Reply(good), Behavior::Hang]);
+        assert!(matches!(
+            resolved
+                .lookup_ipv4(&domain(), Duration::from_secs(5))
+                .await,
+            ResolvedLookup::Records(_),
+        ));
+
+        let domain = domain();
+        let hung = resolved.lookup_ipv4(&domain, Duration::from_secs(5));
+        let queued = async {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            let started = Instant::now();
+            let lookup = resolved.lookup_ipv4(&domain, Duration::from_secs(5)).await;
+            (lookup, started.elapsed())
+        };
+        let ((queued, waited), _hung) = tokio::select! {
+            queued = queued => (queued, ()),
+            _ = hung => panic!("the hung call ends first"),
+        };
+        assert!(matches!(queued, ResolvedLookup::Unavailable));
+        // test_config's connect timeout, not the 5s lookup budget
+        assert!(waited < Duration::from_secs(1), "{waited:?}");
     }
 
     #[tokio::test]
