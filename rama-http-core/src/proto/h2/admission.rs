@@ -160,8 +160,10 @@ impl ConnectionAdmissionPolicy for AdmissionPolicy {
     }
 
     fn watch(&self) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+        // The connection ended: nothing changes any more, and its broken marking frees the
+        // waiters; an at once ready future would only spin them.
         let Some(state) = self.0.upgrade() else {
-            return Box::pin(async {});
+            return Box::pin(std::future::pending());
         };
         // Subscribe before the pool looks again, so no release, retirement, limit change or
         // end of the connection (the release signal's owner drops) is missed.

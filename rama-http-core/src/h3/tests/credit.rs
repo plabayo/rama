@@ -310,6 +310,14 @@ async fn draining_connection_wakes_admission_waiters_without_stream_credit() {
         admission.try_acquire(&Extensions::new()).unwrap_err();
         // Its work goes on, but a draining connection is left for the pool to retire.
         assert!(!admission.in_use());
+        // Nothing changes any more, so its watch cannot spin pool waiters.
+        let mut watch = pin!(admission.watch());
+        assert!(
+            watch
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()))
+                .is_pending()
+        );
         drop(first);
         pair.close().await;
         _ = client_driver.await;

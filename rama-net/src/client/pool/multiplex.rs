@@ -35,7 +35,9 @@ use rama_utils::collections::smallvec::SmallVec;
 use rama_utils::macros::generate_set_and_with;
 use rama_utils::time::AtomicInstant;
 use std::fmt::Debug;
+use std::future::Future;
 use std::num::NonZeroUsize;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -621,6 +623,19 @@ where
                 same_id
                     .iter()
                     .filter_map(|conn| conn.admission.as_ref().map(ConnectionAdmission::watch))
+                    // A candidate going broken is swept on the next look, which may free a slot.
+                    .chain(same_id.iter().filter_map(|conn| {
+                        let mut changed = conn
+                            .conn
+                            .extensions()
+                            .get_ref::<ConnectionHealthWatcher>()?
+                            .watch();
+                        let changed: Pin<Box<dyn Future<Output = ()> + Send>> =
+                            Box::pin(async move {
+                                _ = changed.changed().await;
+                            });
+                        Some(changed)
+                    }))
                     .collect()
             } else {
                 FuturesUnordered::new()
@@ -1325,6 +1340,38 @@ mod tests {
         .expect("the outer connection's admission does not apply")
         .unwrap();
         assert_eq!(state.reserved.load(Ordering::SeqCst), 0);
+    }
+
+    /// A saturated candidate that goes broken wakes its waiters, so they look again rather
+    /// than wait for its handouts.
+    #[tokio::test]
+    async fn a_saturated_candidate_going_broken_wakes_its_waiters() {
+        let pool = MultiplexPool::try_new(1, 1).unwrap();
+        let svc = connector(pool);
+        let held = connect(&svc, 0).await;
+        let mut waiter = tokio_test::task::spawn(connect(&svc, 0));
+        assert!(waiter.poll().is_pending());
+        // Settle until it waits on nothing but the pool.
+        for _ in 0..16 {
+            if !waiter.is_woken() {
+                break;
+            }
+            assert!(waiter.poll().is_pending());
+        }
+        assert!(!waiter.is_woken());
+        held.conn
+            .extensions()
+            .get_ref::<ConnectionHealthWatcher>()
+            .unwrap()
+            .mark_broken();
+        assert!(waiter.is_woken(), "a broken candidate woke nobody");
+        assert!(
+            waiter.poll().is_pending(),
+            "its handout still holds the slot"
+        );
+        drop(held);
+        assert!(waiter.is_woken());
+        assert!(waiter.poll().is_ready());
     }
 
     #[tokio::test]

@@ -1083,6 +1083,25 @@ mod tests {
         assert!(admits(&sender));
     }
 
+    /// Subscribers wake as the connection ends; after that its watch never fires again, so
+    /// pool waiters cannot spin on it.
+    #[tokio::test]
+    async fn an_ended_connection_watch_stays_pending() {
+        let (sender, task) = one_stream_connection(65_535, answer_at_once()).await;
+        let admission = sender.connection_admission();
+        let before = admission.watch();
+        task.abort();
+        _ = task.await;
+        tokio::time::timeout(Duration::from_secs(5), before)
+            .await
+            .expect("subscribers wake as the connection ends");
+        let mut after = pin!(admission.watch());
+        let cx = &mut Context::from_waker(Waker::noop());
+        assert!(after.as_mut().poll(cx).is_pending());
+        tokio::task::yield_now().await;
+        assert!(after.as_mut().poll(cx).is_pending());
+    }
+
     /// Handing a checkout's request to h2 frees nothing on a saturated connection, so no
     /// waiter is woken; the stream's retirement does wake them.
     #[tokio::test]

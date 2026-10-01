@@ -326,8 +326,13 @@ impl ConnectionAdmissionPolicy for RequestAdmission {
     }
 
     fn watch(&self) -> Pin<Box<dyn Future<Output = ()> + Send>> {
-        let Some(lifetime) = self.lifetime.upgrade() else {
-            return Box::pin(async {});
+        // Once ended or draining nothing changes any more, and its broken marking frees the
+        // waiters; an at once ready future would only spin them.
+        let Some(lifetime) = self.lifetime.upgrade().filter(|lifetime| {
+            lifetime.connection.close_reason().is_none()
+                && lifetime.shared.rejection(None).is_none()
+        }) else {
+            return Box::pin(std::future::pending());
         };
         // Capture subscriptions before the pool tries to acquire, including
         // local-permit releases that do not alter the transport's stream limit.
