@@ -149,32 +149,32 @@ impl<K: Hash + Eq + Clone + Send + Sync + 'static> InFlight<K> {
         let slot = (key, TypeId::of::<V>());
         let wait = max_duration.saturating_add(max_duration / 4);
         let shared = async {
-            let (flight, _waiting) = match self.join(&slot) {
-                Joined::Running(flight, waiting) => {
-                    if let Some(answer) = flight.await {
-                        return answer;
-                    }
-                    // it died with another runtime (or was cancelled right
-                    // as we joined): take over, once
-                    drop(waiting);
-                    match self.join(&slot) {
-                        Joined::Running(flight, waiting) => (flight, waiting),
-                        Joined::Started(flight, reply, waiting) => {
-                            self.start(slot, max_duration, reply, &waiting, lookup);
-                            (flight, waiting)
+            let mut lookup = Some(lookup);
+            loop {
+                match self.join(&slot) {
+                    Joined::Running(flight, waiting) => {
+                        if let Some(answer) = flight.await {
+                            return answer;
                         }
+                        // it died with another runtime, or was cancelled as we
+                        // joined: join or start the next run, within our deadline
+                        drop(waiting);
+                    }
+                    Joined::Started(flight, reply, waiting) => {
+                        let Some(lookup) = lookup.take() else {
+                            return Err(ArcError::from_static_str(
+                                "dns lookup ended without an answer",
+                            ));
+                        };
+                        self.start(slot, max_duration, reply, &waiting, lookup);
+                        return flight.await.unwrap_or_else(|| {
+                            Err(ArcError::from_static_str(
+                                "dns lookup ended without an answer",
+                            ))
+                        });
                     }
                 }
-                Joined::Started(flight, reply, waiting) => {
-                    self.start(slot, max_duration, reply, &waiting, lookup);
-                    (flight, waiting)
-                }
-            };
-            flight.await.unwrap_or_else(|| {
-                Err(ArcError::from_static_str(
-                    "dns lookup ended without an answer",
-                ))
-            })
+            }
         };
         tokio::time::timeout(wait, shared)
             .await
@@ -515,6 +515,28 @@ mod tests {
             "one caller left, the other still got the run"
         );
         assert_eq!(starts.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn waiter_survives_repeated_cancellation() {
+        let in_flight = InFlight::new(Abandoned::Cancel);
+
+        // A starts a run and leaves; B joins it before it is cleaned up
+        let mut a = Box::pin(in_flight.run("key", TIMEOUT, std::future::pending::<usize>));
+        assert!(a.as_mut().now_or_never().is_none());
+        drop(a);
+        let mut b = Box::pin(in_flight.run("key", TIMEOUT, || async { 42_usize }));
+        assert!(b.as_mut().now_or_never().is_none());
+        tokio::task::yield_now().await;
+
+        // C starts the replacement and leaves too, before B takes over
+        let mut c = Box::pin(in_flight.run("key", TIMEOUT, std::future::pending::<usize>));
+        assert!(c.as_mut().now_or_never().is_none());
+        drop(c);
+        assert!(b.as_mut().now_or_never().is_none());
+        tokio::task::yield_now().await;
+
+        assert_eq!(*b.await.unwrap(), 42, "B falls back to its own lookup");
     }
 
     #[tokio::test]
