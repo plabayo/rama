@@ -2070,15 +2070,17 @@ mod tests {
                         _ = lookup_v4.next() => {}
                         _ = lookup_v6.next() => {}
                     }
+                    _ = done.send(());
                 }
             });
-            _ = done.send(());
         });
 
-        // 180s > worst case of 64 iterations each hitting the 2s lookup timeout
-        finished
-            .recv_timeout(Duration::from_secs(180))
-            .expect("in-flight query cancellation deadlocked");
+        for _ in 0..64 {
+            // one iteration takes at most the 2s lookup timeout and its cancel
+            finished
+                .recv_timeout(Duration::from_secs(15))
+                .expect("in-flight query cancellation deadlocked");
+        }
     }
 
     #[tokio::test]

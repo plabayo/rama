@@ -302,7 +302,10 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn rooted_and_relative_names_do_not_share() {
-        let resolver = TokioDnsResolver::new().with_max_concurrency(1);
+        // both time out waiting for the busy slot, so no query leaves the host
+        let resolver = TokioDnsResolver::new()
+            .with_max_concurrency(1)
+            .with_timeout(Duration::from_millis(300));
         let (release, held) = std::sync::mpsc::channel::<()>();
         let busy = resolver
             .limit
