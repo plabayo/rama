@@ -5,6 +5,7 @@ use std::{
     ffi::c_void,
     fmt,
     net::{Ipv4Addr, Ipv6Addr},
+    pin::pin,
     ptr,
     sync::{
         Arc,
@@ -15,7 +16,7 @@ use std::{
 
 use rama_core::{
     error::BoxError,
-    futures::{Stream, async_stream::stream_fn, future::Either, stream},
+    futures::{Stream, StreamExt as _, async_stream::stream_fn, future::Either, stream},
     telemetry::tracing,
 };
 use rama_net::address::Domain;
@@ -32,7 +33,7 @@ use std::sync::atomic::AtomicU16;
 
 use super::{
     in_flight::{Abandoned, InFlight, coalesced_stream, leading_dot_refusal},
-    limit::DnsTimeoutError,
+    limit::{DnsTimeoutError, Limits, LookupLimit, deadline_after},
     resolver::{
         DnsAddressResolver, DnsCnameResolver, DnsResolver, DnsServiceBindingResolver,
         DnsTxtResolver,
@@ -96,6 +97,7 @@ const _: () = assert!(std::mem::size_of::<DnsBackend>() == 0);
 /// Hickory when exact TXT octets are required on Windows.
 pub struct WindowsDnsResolver {
     timeout: Duration,
+    limit: LookupLimit,
     in_flight: InFlight<(Domain, u16)>,
 }
 
@@ -103,6 +105,7 @@ impl Default for WindowsDnsResolver {
     fn default() -> Self {
         Self {
             timeout: DEFAULT_TIMEOUT,
+            limit: LookupLimit::new(Limits::ONE_QUERY),
             in_flight: InFlight::new(Abandoned::Cancel),
         }
     }
@@ -129,6 +132,49 @@ impl WindowsDnsResolver {
         }
     }
 
+    #[must_use]
+    pub fn max_concurrency(&self) -> usize {
+        self.limit.limits().max_concurrency
+    }
+
+    generate_set_and_with! {
+        /// Maximum concurrent `DnsQueryEx` queries (default 384). Each holds a
+        /// request in the machine-wide DNS Client service, whose thread pool
+        /// otherwise grows with a burst.
+        pub fn max_concurrency(mut self, max: usize) -> Self {
+            self.limit = self.limit.with(|limits| limits.max_concurrency = max);
+            self
+        }
+    }
+
+    #[must_use]
+    pub fn burst_limit(&self) -> usize {
+        self.limit.limits().burst_limit
+    }
+
+    generate_set_and_with! {
+        /// Maximum queries started within one [burst window](Self::burst_window)
+        /// and still unanswered (default 128); an answer frees its place at
+        /// once, a query waiting on a slow upstream once the window has passed.
+        pub fn burst_limit(mut self, max: usize) -> Self {
+            self.limit = self.limit.with(|limits| limits.burst_limit = max);
+            self
+        }
+    }
+
+    #[must_use]
+    pub fn burst_window(&self) -> Duration {
+        self.limit.limits().burst_window
+    }
+
+    generate_set_and_with! {
+        /// The window of [`Self::burst_limit`] (default 50ms).
+        pub fn burst_window(mut self, window: Duration) -> Self {
+            self.limit = self.limit.with(|limits| limits.burst_window = window);
+            self
+        }
+    }
+
     /// Concurrent lookups of one name and record type share one query.
     fn coalesced<T, S>(
         &self,
@@ -143,16 +189,44 @@ impl WindowsDnsResolver {
         if let Some(err) = leading_dot_refusal(&domain) {
             return Either::Left(stream::once(std::future::ready(Err(err))));
         }
-        let timeout = self.timeout;
+        let (timeout, limit) = (self.timeout, self.limit.clone());
         // the name goes out without its root dot: `x` and `x.` are one query
         let key = (domain.clone(), rrtype);
         Either::Right(coalesced_stream(
             self.in_flight.clone(),
             key,
             timeout,
-            move || lookup(domain, timeout),
+            move || limited_stream(limit, timeout, move |budget| lookup(domain, budget)),
         ))
     }
+}
+
+/// `lookup` once `limit` has a slot for it, holding the slot until it ends.
+///
+/// `lookup` gets the budget left of `timeout` once the slot is taken.
+pub(crate) fn limited_stream<T, S>(
+    limit: LookupLimit,
+    timeout: Duration,
+    lookup: impl FnOnce(Duration) -> S + Send + 'static,
+) -> impl Stream<Item = Result<T, BoxError>> + Send
+where
+    T: Send + 'static,
+    S: Stream<Item = Result<T, BoxError>> + Send,
+{
+    stream_fn(async move |mut yielder| {
+        let deadline = deadline_after(timeout);
+        let Some(_slot) = limit.acquire(deadline).await else {
+            yielder
+                .yield_item(Err(DnsTimeoutError::new(timeout).into()))
+                .await;
+            return;
+        };
+        let budget = deadline.saturating_duration_since(Instant::now());
+        let mut items = pin!(lookup(budget));
+        while let Some(item) = items.next().await {
+            yielder.yield_item(item).await;
+        }
+    })
 }
 
 impl DnsAddressResolver for WindowsDnsResolver {
@@ -1883,6 +1957,32 @@ mod tests {
         assert_eq!(running, 1);
         assert!(matches!(relative.as_slice(), [Ok(_)]), "{relative:?}");
         assert!(matches!(rooted.as_slice(), [Ok(_)]), "{rooted:?}");
+    }
+
+    #[tokio::test]
+    async fn lookup_waiting_for_a_busy_slot_times_out() {
+        let resolver = WindowsDnsResolver::new()
+            .with_max_concurrency(1)
+            .with_timeout(Duration::from_millis(100));
+        let _busy = resolver
+            .limit
+            .acquire(deadline_after(Duration::from_secs(5)))
+            .await
+            .expect("the only slot");
+        let gate = Arc::new(Notify::new());
+
+        let items: Vec<_> = resolver
+            .coalesced(
+                Domain::from_static("intranet"),
+                ffi::DNS_TYPE_A,
+                gated_lookup(&gate),
+            )
+            .collect()
+            .await;
+        assert!(
+            matches!(items.as_slice(), [Err(err)] if err.downcast_ref::<DnsTimeoutError>().is_some()),
+            "{items:?}"
+        );
     }
 
     #[tokio::test]

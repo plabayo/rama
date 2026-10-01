@@ -30,11 +30,11 @@
 //!
 //! ### Picking a resolver for high-QPS workloads
 //!
-//! On Apple platforms (`AppleDnsResolver`, via `DNSServiceQueryRecord` +
-//! `AsyncFd`) and Windows (`WindowsDnsResolver`, via `DnsQueryEx` with a
-//! completion callback on the system thread pool), the native resolvers
-//! are fully asynchronous and scale naturally — no tokio blocking-pool
-//! traffic.
+//! On Apple platforms (`AppleDnsResolver`, via `DNSServiceQueryRecord`) and
+//! Windows (`WindowsDnsResolver`, via `DnsQueryEx` with a completion callback
+//! on the system thread pool), the native resolvers are asynchronous: no
+//! tokio blocking-pool traffic. They are still bounded like the others below,
+//! as mDNSResponder and the DNS Client service serve the whole machine.
 //!
 //! On Linux hosts whose NSS configuration selects `nss-resolve`,
 //! `LinuxDnsResolver` first tries systemd-resolved's varlink socket, which is
