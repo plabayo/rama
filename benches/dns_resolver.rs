@@ -18,7 +18,7 @@ use std::sync::{
 use divan::{Bencher, black_box};
 use rama::{
     dns::client::{NativeDnsResolver, TokioDnsResolver, resolver::DnsAddressResolver},
-    futures::{StreamExt as _, future::join_all},
+    futures::{Stream, StreamExt as _, future::join_all},
     net::address::Domain,
 };
 use tokio::runtime::Runtime;
@@ -46,8 +46,22 @@ const BURSTS: &[usize] = &[1, 64, 1024];
 
 /// Lookups that resolved no address during the current bench.
 static UNRESOLVED: AtomicUsize = AtomicUsize::new(0);
+/// Errors yielded during the current bench, also next to resolved addresses.
+static ERRORS: AtomicUsize = AtomicUsize::new(0);
 
-/// Addresses resolved by `lookups` concurrent A + AAAA lookups; errors count as none.
+/// Addresses in `stream`, counting its errors in [`ERRORS`].
+async fn addresses<S: Stream<Item = Result<T, E>>, T, E>(stream: S) -> usize {
+    stream
+        .fold(0, |found, result| {
+            if result.is_err() {
+                ERRORS.fetch_add(1, Ordering::Relaxed);
+            }
+            std::future::ready(found + usize::from(result.is_ok()))
+        })
+        .await
+}
+
+/// Addresses resolved by `lookups` concurrent A + AAAA lookups.
 async fn burst<R>(resolver: R, lookups: usize) -> usize
 where
     R: DnsAddressResolver + Clone + Send + Sync + 'static,
@@ -56,14 +70,8 @@ where
         let resolver = resolver.clone();
         tokio::spawn(async move {
             let (v6, v4) = tokio::join!(
-                resolver
-                    .lookup_ipv6(HOST.clone())
-                    .filter(|result| std::future::ready(result.is_ok()))
-                    .count(),
-                resolver
-                    .lookup_ipv4(HOST.clone())
-                    .filter(|result| std::future::ready(result.is_ok()))
-                    .count(),
+                addresses(resolver.lookup_ipv6(HOST.clone())),
+                addresses(resolver.lookup_ipv4(HOST.clone())),
             );
             if v6 + v4 == 0 {
                 UNRESOLVED.fetch_add(1, Ordering::Relaxed);
@@ -85,14 +93,16 @@ where
         *HOST,
     );
     UNRESOLVED.store(0, Ordering::Relaxed);
+    ERRORS.store(0, Ordering::Relaxed);
 }
 
 /// A timing that includes failed lookups must not pass for a fast one.
 fn report_unresolved<R>(lookups: usize) {
     let unresolved = UNRESOLVED.swap(0, Ordering::Relaxed);
-    if unresolved > 0 {
+    let errors = ERRORS.swap(0, Ordering::Relaxed);
+    if unresolved > 0 || errors > 0 {
         eprintln!(
-            "warning: {} x{lookups}: {unresolved} lookups resolved nothing; these timings include failures",
+            "warning: {} x{lookups}: {unresolved} lookups resolved nothing, {errors} errors; these timings include failures",
             std::any::type_name::<R>(),
         );
     }
