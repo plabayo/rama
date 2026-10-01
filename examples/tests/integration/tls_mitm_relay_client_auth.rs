@@ -1,10 +1,12 @@
 //! Run the shipped example as a subprocess, using real TCP/TLS on both relay legs.
+use super::utils;
 use std::{process::Output, time::Duration};
 
 async fn run(args: &[&str]) -> Output {
+    let command = utils::ExampleRunner::command("tls_mitm_relay_client_auth", Some("boring"));
     tokio::time::timeout(
         Duration::from_secs(30),
-        tokio::process::Command::new(env!("CARGO_BIN_EXE_tls_mitm_relay_client_auth"))
+        tokio::process::Command::from(command)
             .args(args)
             .env("RUST_LOG", "info")
             .kill_on_drop(true)

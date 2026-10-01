@@ -37,7 +37,7 @@ async fn test_http_datagram_echo() {
     fs::write(&key, auth.private_key.to_pem()).await.unwrap();
     let mut server = utils::ExampleRunner::capturing(
         "http_datagram_echo",
-        None,
+        Some(utils::QUIC_BACKEND),
         [
             "server",
             "--listen",
@@ -62,13 +62,16 @@ async fn test_http_datagram_echo() {
 
     let output = timeout(
         LIMIT,
-        Command::new(env!("CARGO_BIN_EXE_http_datagram_echo"))
-            .kill_on_drop(true)
-            .env("RUST_LOG", "http_datagram_echo=info")
-            .args(["client", "--ca"])
-            .arg(&cert)
-            .args(["--url", &url, "--datagram", "alpha", "--datagram", "beta"])
-            .output(),
+        Command::from(utils::ExampleRunner::command(
+            "http_datagram_echo",
+            Some(utils::QUIC_BACKEND),
+        ))
+        .kill_on_drop(true)
+        .env("RUST_LOG", "http_datagram_echo=info")
+        .args(["client", "--ca"])
+        .arg(&cert)
+        .args(["--url", &url, "--datagram", "alpha", "--datagram", "beta"])
+        .output(),
     )
     .await
     .unwrap()

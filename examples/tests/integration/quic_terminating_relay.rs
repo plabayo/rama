@@ -215,7 +215,7 @@ impl Relay {
         // released for something else to take.
         let mut process = utils::ExampleRunner::capturing(
             "quic_terminating_relay",
-            None,
+            Some(utils::QUIC_BACKEND),
             [
                 "--listen".to_owned(),
                 localhost().to_string(),
