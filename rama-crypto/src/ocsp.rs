@@ -341,15 +341,8 @@ pub fn parse_ocsp_request(der: &[u8]) -> Result<OcspRequestInfo, BoxError> {
     .map_err(|e| BoxError::from(format!("ocsp: parse request: {e}")))
 }
 
-/// Convert a `SystemTime` to a DER `GeneralizedTime`. `time::OffsetDateTime` is
-/// used only here (internal); it never appears in the public API.
 fn generalized_time(t: SystemTime) -> Result<GeneralizedTime, BoxError> {
-    let secs = t
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .context("ocsp: timestamp before unix epoch")?
-        .as_secs();
-    let odt = time::OffsetDateTime::from_unix_timestamp(secs as i64)
-        .map_err(|e| BoxError::from(format!("ocsp: invalid timestamp: {e}")))?;
+    let odt = crate::asn1::datetime(t).context("ocsp")?;
     Ok(GeneralizedTime::from_datetime(odt))
 }
 

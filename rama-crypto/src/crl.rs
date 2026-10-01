@@ -188,12 +188,7 @@ enum X509Time {
 }
 
 fn x509_time(t: SystemTime) -> Result<X509Time, BoxError> {
-    let secs = t
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .context("crl: timestamp before unix epoch")?
-        .as_secs();
-    let odt = time::OffsetDateTime::from_unix_timestamp(secs as i64)
-        .map_err(|e| BoxError::from(format!("crl: invalid timestamp: {e}")))?;
+    let odt = crate::asn1::datetime(t).context("crl")?;
     Ok(if odt.year() < 2050 {
         X509Time::Utc(UTCTime::from_datetime(odt))
     } else {
@@ -274,11 +269,12 @@ mod tests {
             serial: &[0x12, 0x34, 0x56],
             revocation_date: SystemTime::UNIX_EPOCH + Duration::from_secs(T0),
         }];
-        let der = build_crl(
-            &params(&issuer, &revoked),
-            CrlSignatureAlgorithm::RsaSha256,
-            |_| Ok(vec![0x00]),
-        )
+        let mut params = params(&issuer, &revoked);
+        params.this_update = SystemTime::UNIX_EPOCH + Duration::from_secs(2_524_607_999);
+        params.next_update = params.this_update + Duration::from_secs(1);
+        let der = build_crl(&params, CrlSignatureAlgorithm::RsaSha256, |_| {
+            Ok(vec![0x00])
+        })
         .expect("build crl");
 
         let serials = yasna::parse_der(&der, |r| {
@@ -287,8 +283,11 @@ mod tests {
                     let _version = r.next().read_i64()?;
                     let _alg = r.next().read_der()?;
                     let _issuer = r.next().read_der()?;
-                    let _this = r.next().read_der()?;
-                    let _next = r.next().read_der()?;
+                    assert_eq!(r.next().read_utctime()?.to_bytes(), b"491231235959Z");
+                    assert_eq!(
+                        r.next().read_generalized_time()?.to_bytes(),
+                        b"20500101000000Z"
+                    );
                     let mut serials: Vec<Vec<u8>> = Vec::new();
                     r.next().read_sequence_of(|r| {
                         r.read_sequence(|r| {
