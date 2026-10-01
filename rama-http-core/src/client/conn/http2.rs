@@ -888,15 +888,17 @@ mod tests {
     #[tokio::test]
     async fn an_empty_body_drops_a_positive_content_length() {
         let service = service_fn(|request: Request| {
-            let answer = if request.headers().contains_key(CONTENT_LENGTH) {
-                "length"
-            } else {
-                "none"
-            };
+            let answer = request
+                .headers()
+                .get(CONTENT_LENGTH)
+                .map_or_else(Bytes::new, |length| {
+                    Bytes::copy_from_slice(length.as_bytes())
+                });
             std::future::ready(Ok::<_, Infallible>(Response::new(Body::from(answer))))
         });
         let (mut sender, _task) = one_stream_connection(65_535, service).await;
-        for method in [Method::POST, Method::GET] {
+        // As an empty body without a length: `0` where the method defines a payload.
+        for (method, sent) in [(Method::POST, "0"), (Method::GET, "")] {
             let request = Request::builder()
                 .method(method)
                 .uri("https://example.com/")
@@ -905,7 +907,7 @@ mod tests {
                 .unwrap();
             let response = sender.send_request(request).await.unwrap();
             let body = response.into_body().collect().await.unwrap().to_bytes();
-            assert_eq!(body, "none");
+            assert_eq!(body, sent);
         }
     }
 

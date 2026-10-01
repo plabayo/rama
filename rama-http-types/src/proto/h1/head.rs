@@ -293,9 +293,12 @@ fn encode_request_target_preserving_form(
                 uri.write_http_origin_form(output)
             }
             RequestTargetForm::Absolute if *method != Method::CONNECT && !uri.is_asterisk() => {
-                uri.write_http_absolute_form(output)
+                write_absolute_form(method, uri, output)
             }
-            RequestTargetForm::Authority if *method == Method::CONNECT => {
+            // RFC 9112 §3.2.3: a CONNECT target is `host:port`.
+            RequestTargetForm::Authority
+                if *method == Method::CONNECT && uri.port_u16().is_some() =>
+            {
                 uri.write_http_authority_form(output)
             }
             RequestTargetForm::Asterisk if *method == Method::OPTIONS && uri.is_asterisk() => {
@@ -343,17 +346,9 @@ pub fn encode_request_target(
             .get_ref::<EstablishedProxyRoute>()
             .is_some_and(EstablishedProxyRoute::is_http_forward);
         let is_insecure = !crate::protocol_from_uri_or_extensions(extensions, uri).is_secure();
-        // RFC 9112 §3.2.4: an OPTIONS request without a path stays path-less up to the last
-        // hop, which sends it as `*`.
-        let server_wide =
-            *method == Method::OPTIONS && uri.is_path_empty() && uri.query().is_none();
         if via_http_proxy && is_insecure {
-            let result = uri.write_http_absolute_form(output);
-            if result.is_ok() && server_wide && output.ends_with(b"/") {
-                output.truncate(output.len() - 1);
-            }
-            result
-        } else if server_wide {
+            write_absolute_form(method, uri, output)
+        } else if is_server_wide(method, uri) {
             output.extend_from_slice(b"*");
             Ok(())
         } else {
@@ -361,6 +356,24 @@ pub fn encode_request_target(
         }
     };
     result.map_err(|_error| HeadError::new(HeadErrorKind::InvalidTarget))
+}
+
+/// RFC 9112 §3.2.4: an OPTIONS request without a path is for the server as a whole.
+fn is_server_wide(method: &Method, uri: &Uri) -> bool {
+    *method == Method::OPTIONS && uri.is_path_empty() && uri.query().is_none()
+}
+
+/// A server-wide OPTIONS stays path-less up to the last hop, which sends it as `*`.
+fn write_absolute_form(
+    method: &Method,
+    uri: &Uri,
+    output: &mut BytesMut,
+) -> Result<(), rama_net::uri::WireError> {
+    let result = uri.write_http_absolute_form(output);
+    if result.is_ok() && is_server_wide(method, uri) && output.ends_with(b"/") {
+        output.truncate(output.len() - 1);
+    }
+    result
 }
 
 /// Append HTTP header fields in their insertion order and original casing.
@@ -497,12 +510,24 @@ mod tests {
             b"GET http://example.test/path?q=1 HTTP/1.1\r\nHost: example.test\r\n\r\n",
             b"CONNECT example.test:443 HTTP/1.1\r\nHost: example.test:443\r\n\r\n",
             b"OPTIONS * HTTP/1.1\r\nHost: example.test\r\n\r\n",
+            b"OPTIONS http://example.test:8001 HTTP/1.1\r\nHost: example.test:8001\r\n\r\n",
         ] {
             let request = HeadParser::new()
                 .parse_request(&Bytes::copy_from_slice(wire))
                 .unwrap();
             assert_eq!(encode_request(&request).unwrap().as_ref(), wire);
         }
+        // A kept authority-form still needs a port once the target is rewritten.
+        let mut request = HeadParser::new()
+            .parse_request(&Bytes::from_static(
+                b"CONNECT example.test:443 HTTP/1.1\r\nHost: example.test:443\r\n\r\n",
+            ))
+            .unwrap();
+        *request.uri_mut() = Uri::parse_authority_form("example.test").unwrap();
+        assert_eq!(
+            encode_request(&request).unwrap_err().kind(),
+            HeadErrorKind::InvalidTarget,
+        );
     }
 
     #[test]

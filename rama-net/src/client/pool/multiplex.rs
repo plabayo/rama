@@ -398,9 +398,10 @@ where
     /// connection alive via the outstanding handles, but it is no longer
     /// handed out).
     fn is_eligible(&self, conn: &StoredConnection<C, ID>) -> bool {
+        // Idle first: seeing work that outlived its handouts restarts the idle clock.
         if let Some(idle_timeout) = self.idle_timeout
-            && conn.last_idle.elapsed() >= idle_timeout
             && conn.is_idle()
+            && conn.last_idle.elapsed() >= idle_timeout
         {
             trace!(id = ?conn.id, "multiplex pool: dropping idle connection");
             return false;
@@ -1267,6 +1268,37 @@ mod tests {
                 Ok(ConnectionResult::Connection(_))
             ),
             "work that just ended does not count as idle time"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_lookup_during_outliving_work_restarts_the_idle_clock() {
+        let pool = MultiplexPool::try_new(32, 2)
+            .unwrap()
+            .with_idle_timeout(Duration::from_millis(30));
+        let permit = new_slot(&pool).await;
+        let (conn, state) = admission_connection(&pool, 4);
+        let input = Extensions::new();
+        let first = pool.create(TestId(0), conn, permit, &input).await.unwrap();
+        state.set_in_use(true);
+        drop(first);
+        // Before the timeout, a lookup that cannot use the connection still sees its work.
+        state.set_limit(0);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(matches!(
+            pool.get_conn(&TestId(0), &EMPTY_INPUT).await,
+            Ok(ConnectionResult::CreatePermit(_))
+        ));
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        state.set_in_use(false);
+        state.set_limit(4);
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        assert!(
+            matches!(
+                pool.get_conn(&TestId(0), &EMPTY_INPUT).await,
+                Ok(ConnectionResult::Connection(_))
+            ),
+            "idle for 5ms of a 30ms timeout"
         );
     }
 

@@ -877,6 +877,10 @@ where
                     let (head, body) = req.into_parts();
                     let mut req = Request::from_parts(head, ());
                     super::strip_connection_headers(req.headers_mut(), super::MessageKind::Request);
+                    let eos = body.is_end_stream();
+                    if eos {
+                        headers::drop_undeliverable_content_length(req.headers_mut());
+                    }
                     if let Some(len) = body.size_hint().exact()
                         && (len != 0 || headers::method_has_defined_payload_semantics(req.method()))
                     {
@@ -884,10 +888,6 @@ where
                     }
 
                     let is_connect = req.method() == Method::CONNECT;
-                    let eos = body.is_end_stream();
-                    if eos {
-                        headers::drop_undeliverable_content_length(req.headers_mut());
-                    }
 
                     if is_connect
                         && headers::content_length_parse_all(req.headers())
