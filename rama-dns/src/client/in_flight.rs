@@ -1,26 +1,27 @@
 use std::{
     any::{Any, TypeId},
     fmt,
-    future::poll_fn,
     hash::Hash,
+    mem::take,
     panic::{AssertUnwindSafe, catch_unwind},
+    pin::{Pin, pin},
     sync::{
         Arc, OnceLock,
         atomic::{AtomicUsize, Ordering},
     },
-    task::Poll,
+    task::{Context, Poll, Waker, ready},
     time::Duration,
 };
 
 use ahash::HashMap;
 use parking_lot::Mutex;
+use pin_project_lite::pin_project;
 use rama_core::{
     error::{ArcError, BoxError},
     futures::{
         FutureExt as _, Stream, StreamExt as _,
         async_stream::stream_fn,
         future::{BoxFuture, Shared},
-        stream,
     },
     rt,
     telemetry::tracing::{self, Instrument as _},
@@ -82,6 +83,10 @@ impl<K> InFlight<K> {
     /// Keys with a run in progress.
     pub(crate) fn running(&self) -> usize {
         self.flights.lock().len()
+    }
+
+    fn capacity(&self) -> usize {
+        self.flights.lock().capacity()
     }
 
     pub(crate) fn shares_with(&self, other: &Self) -> bool {
@@ -169,8 +174,7 @@ impl<K: Hash + Eq + Clone + Send + Sync + 'static> InFlight<K> {
                                 "dns lookup ended without an answer",
                             ));
                         };
-                        self.start(slot, max_duration, reply, &waiting, lookup)
-                            .await;
+                        self.start(slot, max_duration, reply, &waiting, lookup);
                         return flight.await.unwrap_or_else(|| {
                             Err(ArcError::from_static_str(
                                 "dns lookup ended without an answer",
@@ -219,7 +223,7 @@ impl<K: Hash + Eq + Clone + Send + Sync + 'static> InFlight<K> {
         }
     }
 
-    async fn start<V, F>(
+    fn start<V, F>(
         &self,
         slot: (K, TypeId),
         max_duration: Duration,
@@ -243,11 +247,9 @@ impl<K: Hash + Eq + Clone + Send + Sync + 'static> InFlight<K> {
         );
 
         // first poll in the caller's own turn, so queries go out in the order
-        // callers ask (a spawned task first polled later could reorder them)
-        let first =
-            poll_fn(|cx| Poll::Ready(catch_unwind(AssertUnwindSafe(|| run.as_mut().poll(cx)))))
-                .await;
-        match first {
+        // callers ask; the task's own first poll registers its waker
+        let mut cx = Context::from_waker(Waker::noop());
+        match catch_unwind(AssertUnwindSafe(|| run.as_mut().poll(&mut cx))) {
             Ok(Poll::Ready(answer)) => release.finish(answer_of(answer)),
             Ok(Poll::Pending) => {
                 let task = rt::spawn(async move { release.finish(answer_of(run.await)) });
@@ -285,9 +287,16 @@ impl<K: Hash + Eq, V> Release<K, V> {
 
 impl<K: Hash + Eq, V> Drop for Release<K, V> {
     fn drop(&mut self) {
-        self.flights.lock().remove(&self.slot);
+        let mut flights = self.flights.lock();
+        flights.remove(&self.slot);
+        // don't keep a burst's peak capacity once it has drained
+        if flights.is_empty() && flights.capacity() > RETAINED_CAPACITY {
+            flights.shrink_to(RETAINED_CAPACITY);
+        }
     }
 }
+
+const RETAINED_CAPACITY: usize = 16;
 
 /// What a shared lookup produced: its records, then the error that ended it.
 pub(crate) struct Outcome<T> {
@@ -304,19 +313,41 @@ impl<T> Outcome<T> {
     }
 
     /// Drain `stream` up to and including its first error.
-    pub(crate) async fn collect<S>(stream: S) -> Self
+    pub(crate) fn collect<S>(stream: S) -> Collect<S, T>
     where
         S: Stream<Item = Result<T, BoxError>>,
     {
-        let mut stream = std::pin::pin!(stream);
-        let mut records = Vec::new();
-        while let Some(item) = stream.next().await {
-            match item {
-                Ok(record) => records.push(record),
-                Err(err) => return Self::new(records, Some(err)),
+        Collect {
+            stream,
+            records: Vec::new(),
+        }
+    }
+}
+
+pin_project! {
+    /// The future of [`Outcome::collect`]; holds its stream once, unlike an `async fn`.
+    pub(crate) struct Collect<S, T> {
+        #[pin]
+        stream: S,
+        records: Vec<T>,
+    }
+}
+
+impl<S, T> Future for Collect<S, T>
+where
+    S: Stream<Item = Result<T, BoxError>>,
+{
+    type Output = Outcome<T>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut this = self.project();
+        loop {
+            match ready!(this.stream.as_mut().poll_next(cx)) {
+                Some(Ok(record)) => this.records.push(record),
+                Some(Err(err)) => return Poll::Ready(Outcome::new(take(this.records), Some(err))),
+                None => return Poll::Ready(Outcome::new(take(this.records), None)),
             }
         }
-        Self::new(records, None)
     }
 }
 
@@ -352,19 +383,26 @@ where
     T: Clone + Send + Sync + 'static,
     S: Stream<Item = Result<T, BoxError>> + Send + 'static,
 {
-    stream::once(async move {
-        in_flight
+    // one stream, so waiting for the run and replaying it share their state
+    stream_fn(async move |mut yielder| {
+        let outcome = in_flight
             .run(key, timeout, move || Outcome::collect(lookup()))
-            .await
+            .await;
+        let mut items = pin!(outcome_stream(outcome));
+        while let Some(item) = items.next().await {
+            yielder.yield_item(item).await;
+        }
     })
-    .flat_map(outcome_stream)
 }
 
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use rama_core::{error::BoxErrorExt as _, futures::future::join_all};
+    use rama_core::{
+        error::BoxErrorExt as _,
+        futures::{future::join_all, stream},
+    };
     use tokio::sync::Notify;
 
     use super::*;
@@ -458,6 +496,28 @@ mod tests {
         .unwrap();
 
         assert_eq!(*issued.lock(), ["aaaa", "a"]);
+    }
+
+    #[tokio::test]
+    async fn drained_burst_frees_its_capacity() {
+        let in_flight = InFlight::default();
+        let starts = Arc::new(AtomicUsize::new(0));
+        let gate = Arc::new(Notify::new());
+
+        let (starts_ref, gate_ref) = (&starts, &gate);
+        let callers = join_all(
+            (0..1000)
+                .map(|key| in_flight.run(key, TIMEOUT, move || gated(starts_ref, gate_ref, key))),
+        );
+        let (results, ()) = tokio::join!(callers, open(&gate));
+
+        assert!(results.iter().all(Result::is_ok));
+        assert_eq!(in_flight.running(), 0);
+        assert!(
+            in_flight.capacity() <= 2 * RETAINED_CAPACITY,
+            "{}",
+            in_flight.capacity()
+        );
     }
 
     #[tokio::test]
