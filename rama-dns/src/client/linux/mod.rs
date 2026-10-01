@@ -131,7 +131,8 @@ impl LinuxDnsResolverBuilder {
         /// If a systemd-resolved transport attempt consumes this budget and
         /// falls back to the native backend, that fallback receives a fresh
         /// budget. During the short pre-breaker window, total lookup latency
-        /// can therefore approach twice this value.
+        /// can therefore approach twice this value; while a daemon probe
+        /// settles, it is at most the connect timeout plus this value.
         pub fn timeout(mut self, timeout: Duration) -> Self {
             self.timeout = timeout;
             self
