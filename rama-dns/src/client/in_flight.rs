@@ -1,11 +1,14 @@
 use std::{
     any::{Any, TypeId},
     fmt,
+    future::poll_fn,
     hash::Hash,
+    panic::{AssertUnwindSafe, catch_unwind},
     sync::{
         Arc, OnceLock,
         atomic::{AtomicUsize, Ordering},
     },
+    task::Poll,
     time::Duration,
 };
 
@@ -22,7 +25,7 @@ use rama_core::{
     rt,
     telemetry::tracing::{self, Instrument as _},
 };
-use tokio::{sync::oneshot, task::AbortHandle};
+use tokio::{sync::oneshot, task::AbortHandle, time::error::Elapsed};
 
 use super::limit::DnsTimeoutError;
 
@@ -166,7 +169,8 @@ impl<K: Hash + Eq + Clone + Send + Sync + 'static> InFlight<K> {
                                 "dns lookup ended without an answer",
                             ));
                         };
-                        self.start(slot, max_duration, reply, &waiting, lookup);
+                        self.start(slot, max_duration, reply, &waiting, lookup)
+                            .await;
                         return flight.await.unwrap_or_else(|| {
                             Err(ArcError::from_static_str(
                                 "dns lookup ended without an answer",
@@ -215,7 +219,7 @@ impl<K: Hash + Eq + Clone + Send + Sync + 'static> InFlight<K> {
         }
     }
 
-    fn start<V, F>(
+    async fn start<V, F>(
         &self,
         slot: (K, TypeId),
         max_duration: Duration,
@@ -232,25 +236,33 @@ impl<K: Hash + Eq + Clone + Send + Sync + 'static> InFlight<K> {
             slot,
             reply: Some(reply),
         };
-        let lookup = lookup();
         let span = tracing::debug_span!("dns lookup");
         span.follows_from(tracing::Span::current());
-        let task = rt::spawn(
-            async move {
-                let answer = tokio::time::timeout(max_duration.saturating_mul(3), lookup)
-                    .await
-                    .map(Arc::new)
-                    .map_err(|_elapsed| {
-                        ArcError::from_static_str(
-                            "dns lookup abandoned: backend ignored its deadline",
-                        )
-                    });
-                release.finish(answer);
-            }
-            .instrument(span),
+        let mut run = Box::pin(
+            tokio::time::timeout(max_duration.saturating_mul(3), lookup()).instrument(span),
         );
-        _ = waiting.waiters.abort.set(task.abort_handle());
+
+        // first poll in the caller's own turn, so queries go out in the order
+        // callers ask (a spawned task first polled later could reorder them)
+        let first =
+            poll_fn(|cx| Poll::Ready(catch_unwind(AssertUnwindSafe(|| run.as_mut().poll(cx)))))
+                .await;
+        match first {
+            Ok(Poll::Ready(answer)) => release.finish(answer_of(answer)),
+            Ok(Poll::Pending) => {
+                let task = rt::spawn(async move { release.finish(answer_of(run.await)) });
+                _ = waiting.waiters.abort.set(task.abort_handle());
+            }
+            // the run died: its waiters see it end without an answer
+            Err(_panic) => drop(release),
+        }
     }
+}
+
+fn answer_of<V>(answer: Result<V, Elapsed>) -> Result<Arc<V>, ArcError> {
+    answer.map(Arc::new).map_err(|_elapsed| {
+        ArcError::from_static_str("dns lookup abandoned: backend ignored its deadline")
+    })
 }
 
 /// Frees the key when its run ends, however it ends, before its callers
@@ -420,6 +432,32 @@ mod tests {
         assert_eq!(*a.unwrap(), 1);
         assert_eq!(*b.unwrap(), 2);
         assert_eq!(*typed.unwrap(), "other type");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn lookups_go_out_in_the_order_callers_ask() {
+        let issued = Arc::new(Mutex::new(Vec::new()));
+        let log = issued.clone();
+        let lookup = move |name: &'static str| {
+            let issued = log.clone();
+            move || async move {
+                issued.lock().push(name);
+                tokio::task::yield_now().await;
+            }
+        };
+
+        // on a worker, so spawned runs pass through tokio's LIFO slot
+        tokio::spawn(async move {
+            let in_flight = InFlight::default();
+            _ = tokio::join!(
+                in_flight.run("aaaa", TIMEOUT, lookup("aaaa")),
+                in_flight.run("a", TIMEOUT, lookup("a")),
+            );
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(*issued.lock(), ["aaaa", "a"]);
     }
 
     #[tokio::test]
@@ -592,6 +630,21 @@ mod tests {
         assert_eq!(in_flight.running(), 0);
     }
 
+    #[tokio::test]
+    async fn run_panicking_after_its_first_poll_fails_its_callers() {
+        let in_flight = InFlight::<&str>::default();
+
+        let result = in_flight
+            .run("key", TIMEOUT, || async {
+                tokio::task::yield_now().await;
+                panic!("backend bug")
+            })
+            .await;
+
+        result.expect_err("a panicking run fails its callers");
+        assert_eq!(in_flight.running(), 0);
+    }
+
     #[tokio::test(start_paused = true)]
     async fn stuck_run_is_abandoned_after_its_bound() {
         let in_flight = InFlight::<&str>::default();
@@ -736,7 +789,10 @@ mod tests {
             let starts = starts.clone();
             move || {
                 starts.fetch_add(1, Ordering::SeqCst);
-                stream::iter([Ok(1), Ok(2), Err(BoxError::from_static_str("boom")), Ok(3)])
+                // pending at first, as a real query: an instant answer has nothing to share
+                stream::once(tokio::task::yield_now()).flat_map(|()| {
+                    stream::iter([Ok(1), Ok(2), Err(BoxError::from_static_str("boom")), Ok(3)])
+                })
             }
         };
         let callers = (0..10).map(|_| {
