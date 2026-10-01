@@ -144,7 +144,7 @@ impl ConnectionAdmissionPolicy for AdmissionPolicy {
         let max = state.max.get();
         if state
             .reserved
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |reserved| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |reserved| {
                 (state.streams.live() + reserved < max).then_some(reserved + 1)
             })
             .is_err()
