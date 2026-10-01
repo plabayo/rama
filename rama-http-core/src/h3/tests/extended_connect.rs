@@ -212,6 +212,11 @@ async fn connect_sends_no_body_and_refuses_one_announcing_content() {
         assert_eq!(response.status(), StatusCode::OK);
         let mut tunnel = handle_upgrade(&response).await.unwrap();
         tunnel.shutdown().await.unwrap();
+        // As on HTTP/2, a shut-down tunnel takes no more writes.
+        assert_eq!(
+            tunnel.write(b"late").await.unwrap_err().kind(),
+            std::io::ErrorKind::BrokenPipe
+        );
 
         let mut request = extended_connect(
             "https://localhost/chat",

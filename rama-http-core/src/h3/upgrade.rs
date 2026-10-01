@@ -77,6 +77,7 @@ pub(crate) fn new(
             priority_lease: priority,
             permit: Some(permit),
             shutdown: None,
+            send_closed: false,
             acknowledged: None,
             association,
             aborted,
@@ -94,6 +95,8 @@ struct Tunnel<R: RecvStream, S: SendStream> {
     extensions: Extensions,
     permit: Option<Arc<dyn Send + Sync>>,
     shutdown: Option<Result<(), Error>>,
+    // Shutdown began: nothing more may be written.
+    send_closed: bool,
     acknowledged: Option<Acknowledged>,
     priority_lease: Option<super::priority::Lease>,
     association: Option<Arc<Association>>,
@@ -194,6 +197,9 @@ impl<R: RecvStream + Unpin, S: SendStream + Unpin> AsyncWrite for Tunnel<R, S> {
         src: &[u8],
     ) -> Poll<io::Result<usize>> {
         self.check_aborted()?;
+        if self.send_closed {
+            return Poll::Ready(Err(io::ErrorKind::BrokenPipe.into()));
+        }
         ready!(self.flush(cx)).map_err(io::Error::other)?;
         let count = src.len().min(self.reader.shared.config.read_chunk_size);
         if count != 0 {
@@ -215,6 +221,7 @@ impl<R: RecvStream + Unpin, S: SendStream + Unpin> AsyncWrite for Tunnel<R, S> {
             return Poll::Ready(result.map_err(io::Error::other));
         }
         self.check_aborted()?;
+        self.send_closed = true;
         // RFC 9297 §2.1: no datagrams once the end of the send side is committed.
         if let Some(association) = &self.association {
             association.close_send();
@@ -333,6 +340,7 @@ mod tests {
             extensions: Extensions::new(),
             permit: None,
             shutdown: None,
+            send_closed: false,
             acknowledged: None,
             priority_lease: None,
             association: None,
