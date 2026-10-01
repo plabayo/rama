@@ -50,7 +50,7 @@ use tokio::time::Instant;
 
 use super::{
     in_flight::{Abandoned, InFlight, coalesced_stream, leading_dot_refusal},
-    limit::{DEFAULT_MAX_LOOKUPS, DnsTimeoutError, LookupLimit, deadline_after},
+    limit::{DnsTimeoutError, Limits, LookupLimit, deadline_after},
     resolver::{
         DnsAddressResolver, DnsCnameResolver, DnsResolver, DnsServiceBindingResolver,
         DnsTxtResolver,
@@ -75,7 +75,10 @@ impl Default for AppleDnsResolver {
     fn default() -> Self {
         Self {
             timeout: DEFAULT_TIMEOUT,
-            limit: LookupLimit::new(DEFAULT_MAX_LOOKUPS),
+            limit: LookupLimit::new(Limits {
+                max_concurrency: 64,
+                ..Limits::ONE_QUERY
+            }),
             in_flight: InFlight::new(Abandoned::Cancel),
         }
     }
@@ -104,7 +107,7 @@ impl AppleDnsResolver {
 
     #[must_use]
     pub fn max_concurrency(&self) -> usize {
-        self.limit.max()
+        self.limit.limits().max_concurrency
     }
 
     generate_set_and_with! {
@@ -112,7 +115,35 @@ impl AppleDnsResolver {
         /// mDNSResponder connection and file descriptor (launchd's default
         /// soft limit is 256); an unbounded burst of distinct names times out.
         pub fn max_concurrency(mut self, max: usize) -> Self {
-            self.limit = LookupLimit::new(max);
+            self.limit = self.limit.with(|limits| limits.max_concurrency = max);
+            self
+        }
+    }
+
+    #[must_use]
+    pub fn burst_limit(&self) -> usize {
+        self.limit.limits().burst_limit
+    }
+
+    generate_set_and_with! {
+        /// Maximum queries started within one [burst window](Self::burst_window)
+        /// and still unanswered (default 128); an answer frees its place at
+        /// once, a query waiting on a slow upstream once the window has passed.
+        pub fn burst_limit(mut self, max: usize) -> Self {
+            self.limit = self.limit.with(|limits| limits.burst_limit = max);
+            self
+        }
+    }
+
+    #[must_use]
+    pub fn burst_window(&self) -> Duration {
+        self.limit.limits().burst_window
+    }
+
+    generate_set_and_with! {
+        /// The window of [`Self::burst_limit`] (default 50ms).
+        pub fn burst_window(mut self, window: Duration) -> Self {
+            self.limit = self.limit.with(|limits| limits.burst_window = window);
             self
         }
     }

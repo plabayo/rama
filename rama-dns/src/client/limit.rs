@@ -1,53 +1,95 @@
-use std::{fmt, sync::Arc, time::Duration};
+use std::{collections::VecDeque, fmt, pin::pin, sync::Arc, time::Duration};
 
+use parking_lot::Mutex;
 use rama_core::telemetry::tracing;
 use tokio::{
-    sync::{OwnedSemaphorePermit, Semaphore},
+    sync::{Notify, OwnedSemaphorePermit, Semaphore},
     task::JoinHandle,
     time::Instant,
 };
 
-/// Default bound on concurrent lookups per resolver: 64 calls that each send
-/// A and AAAA together (`getaddrinfo`) fit a local stub's default receive
-/// buffer of about 256 small datagrams, with room to spare.
-pub(crate) const DEFAULT_MAX_LOOKUPS: usize = 64;
-
-/// Bounds concurrent lookups of one resolver.
-#[derive(Debug, Clone)]
-pub(crate) struct LookupLimit {
-    permits: Arc<Semaphore>,
-    max: usize,
+/// Bounds on one resolver's lookups.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Limits {
+    /// Lookups running at once: each blocking call holds a thread.
+    pub(crate) max_concurrency: usize,
+    /// Queries sent within the last `burst_window` and still unanswered: a
+    /// local stub such as systemd-resolved drops what arrives faster than it
+    /// reads, whereas a query waiting on a slow upstream has long been read.
+    pub(crate) burst_limit: usize,
+    pub(crate) burst_window: Duration,
 }
 
-impl Default for LookupLimit {
-    fn default() -> Self {
-        Self::new(DEFAULT_MAX_LOOKUPS)
-    }
+impl Limits {
+    /// For lookups that send one query each. 384 calls leave a quarter of
+    /// tokio's 512 blocking threads to the rest; 128 queries are half of the
+    /// ~256 datagrams a stub's default receive buffer holds, and a busy stub
+    /// reads a full buffer well within 50ms.
+    pub(crate) const ONE_QUERY: Self = Self {
+        max_concurrency: 384,
+        burst_limit: 128,
+        burst_window: Duration::from_millis(50),
+    };
+
+    /// For `getaddrinfo` calls that ask for A and AAAA at once.
+    pub(crate) const TWO_QUERIES: Self = Self {
+        burst_limit: 64,
+        ..Self::ONE_QUERY
+    };
+}
+
+/// Bounds one resolver's lookups by [`Limits`].
+#[derive(Debug, Clone)]
+pub(crate) struct LookupLimit {
+    calls: Arc<Semaphore>,
+    burst: Arc<Burst>,
+    limits: Limits,
 }
 
 impl LookupLimit {
-    pub(crate) fn new(max: usize) -> Self {
-        let max = max.clamp(1, Semaphore::MAX_PERMITS);
+    pub(crate) fn new(limits: Limits) -> Self {
+        let limits = Limits {
+            max_concurrency: limits.max_concurrency.clamp(1, Semaphore::MAX_PERMITS),
+            burst_limit: limits.burst_limit.max(1),
+            burst_window: limits.burst_window,
+        };
         Self {
-            permits: Arc::new(Semaphore::new(max)),
-            max,
+            calls: Arc::new(Semaphore::new(limits.max_concurrency)),
+            burst: Arc::new(Burst::new(limits.burst_limit, limits.burst_window)),
+            limits,
         }
     }
 
-    pub(crate) fn max(&self) -> usize {
-        self.max
+    pub(crate) fn limits(&self) -> Limits {
+        self.limits
     }
 
-    /// A lookup slot, or `None` when none frees up before `deadline`.
-    pub(crate) async fn acquire(&self, deadline: Instant) -> Option<OwnedSemaphorePermit> {
-        if let Ok(permit) = self.permits.clone().try_acquire_owned() {
-            return Some(permit);
-        }
-        tracing::debug!(max = self.max, "dns: all lookup slots taken; waiting");
-        tokio::time::timeout_at(deadline, self.permits.clone().acquire_owned())
-            .await
-            .ok()?
-            .ok()
+    /// A limit with fresh slots, `change`d from this one's.
+    pub(crate) fn with(&self, change: impl FnOnce(&mut Limits)) -> Self {
+        let mut limits = self.limits;
+        change(&mut limits);
+        Self::new(limits)
+    }
+
+    /// A slot for one lookup, or `None` when none frees up before `deadline`.
+    pub(crate) async fn acquire(&self, deadline: Instant) -> Option<Slot> {
+        let call = if let Ok(call) = self.calls.clone().try_acquire_owned() {
+            call
+        } else {
+            tracing::debug!(
+                max = self.limits.max_concurrency,
+                "dns: all lookup slots taken; waiting"
+            );
+            tokio::time::timeout_at(deadline, self.calls.clone().acquire_owned())
+                .await
+                .ok()?
+                .ok()?
+        };
+        let burst = self.burst.acquire(deadline).await?;
+        Some(Slot {
+            _call: call,
+            _burst: burst,
+        })
     }
 
     /// Run a blocking `lookup` once a slot is free, or `None` when none frees
@@ -65,14 +107,129 @@ impl LookupLimit {
         F: FnOnce(Duration) -> T + Send + 'static,
         T: Send + 'static,
     {
-        let permit = self.acquire(deadline).await?;
+        let slot = self.acquire(deadline).await?;
         // budget in tokio time (which tests may pause), queueing in wall time
         let budget = deadline.saturating_duration_since(Instant::now());
         let queued = std::time::Instant::now();
         Some(tokio::task::spawn_blocking(move || {
-            let _permit = permit;
+            let _slot = slot;
             lookup(budget.saturating_sub(queued.elapsed()))
         }))
+    }
+}
+
+/// A running lookup's place: its call slot until it ends, its burst slot
+/// until it is answered or a burst window old.
+#[derive(Debug)]
+pub(crate) struct Slot {
+    _call: OwnedSemaphorePermit,
+    _burst: BurstSlot,
+}
+
+/// At most `max` queries started within the last `window` and unanswered.
+///
+/// An answer frees its place at once; age frees it lazily, when the next
+/// caller looks, so a running query needs no timer of its own.
+#[derive(Debug)]
+struct Burst {
+    max: usize,
+    window: Duration,
+    state: Mutex<BurstState>,
+    freed: Notify,
+}
+
+#[derive(Debug, Default)]
+struct BurstState {
+    /// The id of `starts[0]`.
+    first: u64,
+    /// When each query since `first` started, `None` once answered.
+    starts: VecDeque<Option<Instant>>,
+    /// The `Some` entries of `starts`.
+    young: usize,
+}
+
+impl BurstState {
+    /// Forget answered and aged queries at the front, returning when the
+    /// oldest query still young ages.
+    fn expire(&mut self, now: Instant, window: Duration) -> Option<Instant> {
+        while let Some(&front) = self.starts.front() {
+            match front {
+                Some(started) if now.saturating_duration_since(started) < window => {
+                    return Some(started + window);
+                }
+                Some(_) => self.young -= 1,
+                None => {}
+            }
+            self.starts.pop_front();
+            self.first += 1;
+        }
+        None
+    }
+}
+
+impl Burst {
+    fn new(max: usize, window: Duration) -> Self {
+        Self {
+            max,
+            window,
+            state: Mutex::default(),
+            freed: Notify::new(),
+        }
+    }
+
+    async fn acquire(self: &Arc<Self>, deadline: Instant) -> Option<BurstSlot> {
+        loop {
+            let mut freed = pin!(self.freed.notified());
+            freed.as_mut().enable();
+            let ages_at = {
+                let mut state = self.state.lock();
+                let now = Instant::now();
+                let ages_at = state.expire(now, self.window);
+                if state.young < self.max {
+                    let id = state.first + state.starts.len() as u64;
+                    state.starts.push_back(Some(now));
+                    state.young += 1;
+                    return Some(BurstSlot {
+                        burst: self.clone(),
+                        id,
+                    });
+                }
+                ages_at
+            };
+            if Instant::now() >= deadline {
+                return None;
+            }
+            let wake = ages_at.map_or(deadline, |at| at.min(deadline));
+            tokio::select! {
+                () = freed => {}
+                () = tokio::time::sleep_until(wake) => {}
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+struct BurstSlot {
+    burst: Arc<Burst>,
+    id: u64,
+}
+
+impl Drop for BurstSlot {
+    fn drop(&mut self) {
+        let mut state = self.burst.state.lock();
+        // an aged query already gave its place up
+        let Some(index) = self.id.checked_sub(state.first) else {
+            return;
+        };
+        if let Some(started @ Some(_)) = usize::try_from(index)
+            .ok()
+            .and_then(|index| state.starts.get_mut(index))
+        {
+            *started = None;
+            state.young -= 1;
+            drop(state);
+            self.burst.freed.notify_one();
+        }
     }
 }
 
@@ -127,9 +284,100 @@ mod tests {
         Instant::now() + Duration::from_secs(secs)
     }
 
+    /// At most `max` calls, with a burst limit that never gets in the way.
+    fn calls(max: usize) -> LookupLimit {
+        LookupLimit::new(Limits {
+            max_concurrency: max,
+            burst_limit: usize::MAX,
+            ..Limits::ONE_QUERY
+        })
+    }
+
+    /// Plenty of calls, at most `max` unanswered per `window`.
+    fn burst(max: usize, window: Duration) -> LookupLimit {
+        LookupLimit::new(Limits {
+            max_concurrency: 1024,
+            burst_limit: max,
+            burst_window: window,
+        })
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn unanswered_queries_are_bounded_per_window() {
+        let lookups = burst(2, Duration::from_millis(10));
+        let started = Instant::now();
+        let _first = lookups.acquire(deadline_in(5)).await.expect("slot");
+        let _second = lookups.acquire(deadline_in(5)).await.expect("slot");
+
+        // neither answered: the third starts once the first is a window old
+        let _third = lookups.acquire(deadline_in(5)).await.expect("slot");
+        assert_eq!(started.elapsed(), Duration::from_millis(10));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_answer_frees_its_place_at_once() {
+        let lookups = burst(1, Duration::from_secs(60));
+        let started = Instant::now();
+        let answered = lookups.acquire(deadline_in(5)).await.expect("slot");
+        let next = lookups.acquire(deadline_in(5));
+        let answer = async {
+            tokio::time::sleep(Duration::from_millis(3)).await;
+            drop(answered);
+        };
+        let (next, ()) = tokio::join!(next, answer);
+
+        assert!(next.is_some());
+        assert_eq!(started.elapsed(), Duration::from_millis(3));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_aged_query_keeps_its_call_slot() {
+        let lookups = LookupLimit::new(Limits {
+            max_concurrency: 2,
+            burst_limit: 1,
+            burst_window: Duration::from_millis(10),
+        });
+        let _slow = lookups.acquire(deadline_in(5)).await.expect("slot");
+        // a slow query frees its burst place by age, not its call slot
+        let _second = lookups.acquire(deadline_in(5)).await.expect("slot");
+        let third = lookups
+            .acquire(Instant::now() + Duration::from_millis(100))
+            .await;
+        assert!(third.is_none(), "both calls still run");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn waiting_for_a_burst_place_counts_against_the_deadline() {
+        let lookups = burst(1, Duration::from_secs(60));
+        let _held = lookups.acquire(deadline_in(5)).await.expect("slot");
+        let started = Instant::now();
+        let starved = lookups
+            .acquire(Instant::now() + Duration::from_millis(50))
+            .await;
+        assert!(starved.is_none());
+        assert_eq!(started.elapsed(), Duration::from_millis(50));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn answered_queries_are_forgotten() {
+        let lookups = burst(4, Duration::from_millis(10));
+        for _ in 0..1000 {
+            drop(lookups.acquire(deadline_in(5)).await.expect("slot"));
+        }
+        let held = lookups.acquire(deadline_in(5)).await.expect("slot");
+        assert!(lookups.burst.state.lock().starts.len() <= 1);
+
+        // an unanswered query is forgotten once it ages
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let probe = lookups.acquire(deadline_in(5)).await.expect("slot");
+        assert_eq!(lookups.burst.state.lock().starts.len(), 1, "only the probe");
+        drop((probe, held));
+        assert_eq!(lookups.burst.state.lock().young, 0);
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn concurrent_lookups_stay_within_the_bound() {
-        let lookups = LookupLimit::new(3);
+        let lookups = calls(3);
         let running = Arc::new(AtomicUsize::new(0));
         let peak = Arc::new(AtomicUsize::new(0));
 
@@ -156,7 +404,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn waiting_for_a_slot_counts_against_the_deadline() {
-        let lookups = LookupLimit::new(1);
+        let lookups = calls(1);
         let (release, held) = mpsc::channel::<()>();
         let busy = lookups
             .spawn_blocking(deadline_in(10), move |_budget| held.recv().ok())
@@ -181,7 +429,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn slot_stays_taken_after_the_caller_gave_up() {
-        let lookups = LookupLimit::new(1);
+        let lookups = calls(1);
         let (release, held) = mpsc::channel::<()>();
         let abandoned = lookups
             .spawn_blocking(deadline_in(10), move |_budget| held.recv().ok())
@@ -201,8 +449,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn lookup_gets_the_remaining_budget() {
-        let lookups = LookupLimit::default();
-        assert_eq!(lookups.max(), DEFAULT_MAX_LOOKUPS);
+        let lookups = LookupLimit::new(Limits::ONE_QUERY);
 
         let budget = lookups
             .spawn_blocking(deadline_in(5), |budget| budget)
@@ -227,7 +474,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn budget_follows_a_paused_clock() {
-        let lookups = LookupLimit::new(1);
+        let lookups = calls(1);
         // the paused clock runs ahead of wall time from here on
         tokio::time::sleep(Duration::from_secs(60)).await;
 
@@ -251,8 +498,16 @@ mod tests {
     }
 
     #[test]
-    fn bound_is_clamped() {
-        assert_eq!(LookupLimit::new(0).max(), 1);
-        assert_eq!(LookupLimit::new(usize::MAX).max(), Semaphore::MAX_PERMITS);
+    fn bounds_are_clamped() {
+        let none = LookupLimit::new(Limits {
+            max_concurrency: 0,
+            burst_limit: 0,
+            ..Limits::ONE_QUERY
+        });
+        assert_eq!(none.limits().max_concurrency, 1);
+        assert_eq!(none.limits().burst_limit, 1);
+        let all = none.with(|limits| limits.max_concurrency = usize::MAX);
+        assert_eq!(all.limits().max_concurrency, Semaphore::MAX_PERMITS);
+        assert_eq!(all.limits().burst_limit, 1);
     }
 }

@@ -41,7 +41,7 @@ use rama_utils::{
 
 use super::{
     in_flight::{self, InFlight, Outcome},
-    limit::{DEFAULT_MAX_LOOKUPS, LookupLimit},
+    limit::{Limits, LookupLimit},
     resolver::{
         DnsAddressResolver, DnsCnameResolver, DnsResolver, DnsServiceBindingResolver,
         DnsTxtResolver,
@@ -86,12 +86,6 @@ const NATIVE_RECORD_LOOKUPS: bool = cfg!(any(
     target_os = "openbsd",
     target_os = "netbsd",
 ));
-/// `res_nsearch` keeps one query in flight per call, `getaddrinfo` two.
-const DEFAULT_NATIVE_MAX_CONCURRENCY: usize = if NATIVE_RECORD_LOOKUPS {
-    128
-} else {
-    DEFAULT_MAX_LOOKUPS
-};
 
 #[derive(Debug, Clone)]
 /// Used to build a [`LinuxDnsResolver`] instance.
@@ -101,7 +95,7 @@ pub struct LinuxDnsResolverBuilder {
     negative_cache_ttl: Duration,
     cache_capacity: u64,
     response_buffer_size: usize,
-    native_max_concurrency: usize,
+    native_limits: Limits,
     systemd_resolved: bool,
     systemd_resolved_config: systemd_resolved::Config,
 }
@@ -114,7 +108,8 @@ impl Default for LinuxDnsResolverBuilder {
             negative_cache_ttl: DEFAULT_NEGATIVE_CACHE_TTL,
             cache_capacity: DEFAULT_CACHE_CAPACITY,
             response_buffer_size: DEFAULT_RESPONSE_BUFFER_SIZE,
-            native_max_concurrency: DEFAULT_NATIVE_MAX_CONCURRENCY,
+            // both `res_nsearch` and musl's per-family `getaddrinfo` send one query a call
+            native_limits: Limits::ONE_QUERY,
             // A running daemon may only be maintained as a secondary DNS
             // view. Use it automatically only when NSS actually selects
             // nss-resolve; callers can still opt in explicitly below.
@@ -180,13 +175,31 @@ impl LinuxDnsResolverBuilder {
     }
 
     generate_set_and_with! {
-        /// Maximum concurrent native (libc) lookups: 128 by default with
-        /// `res_nsearch`, 64 where `getaddrinfo` sends A and AAAA together.
-        /// Each holds a blocking-pool thread until libc returns, which a
-        /// timeout cannot cancel; the bound also keeps a burst of distinct
-        /// names from overflowing a local stub resolver.
+        /// Maximum concurrent native (libc) lookups (default 384). Each holds
+        /// a blocking-pool thread until libc returns, which a timeout cannot
+        /// cancel.
         pub fn native_max_concurrency(mut self, max: usize) -> Self {
-            self.native_max_concurrency = max;
+            self.native_limits.max_concurrency = max;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Maximum native lookups started within one
+        /// [burst window](Self::native_burst_window) and still unanswered
+        /// (default 128). A local stub such as systemd-resolved drops queries
+        /// that arrive faster than it reads them; an answer frees its place at
+        /// once, a query waiting on a slow upstream once the window has passed.
+        pub fn native_burst_limit(mut self, max: usize) -> Self {
+            self.native_limits.burst_limit = max;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// The window of [`Self::native_burst_limit`] (default 50ms).
+        pub fn native_burst_window(mut self, window: Duration) -> Self {
+            self.native_limits.burst_window = window;
             self
         }
     }
@@ -270,7 +283,7 @@ impl LinuxDnsResolverBuilder {
             cache_capacity: self.cache_capacity,
             native: NativeConfig {
                 response_buffer_size: self.response_buffer_size,
-                limit: LookupLimit::new(self.native_max_concurrency),
+                limit: LookupLimit::new(self.native_limits),
             },
             cache: Arc::new(cache::LinuxDnsCache::new(
                 self.cache_capacity,
@@ -384,7 +397,17 @@ impl LinuxDnsResolver {
 
     #[must_use]
     pub fn native_max_concurrency(&self) -> usize {
-        self.native.limit.max()
+        self.native.limit.limits().max_concurrency
+    }
+
+    #[must_use]
+    pub fn native_burst_limit(&self) -> usize {
+        self.native.limit.limits().burst_limit
+    }
+
+    #[must_use]
+    pub fn native_burst_window(&self) -> Duration {
+        self.native.limit.limits().burst_window
     }
 
     #[must_use]
@@ -409,9 +432,27 @@ impl LinuxDnsResolver {
         /// Set the maximum concurrent native (libc) lookups.
         ///
         /// See [`LinuxDnsResolverBuilder::native_max_concurrency`]. Clones
-        /// made before this call keep their own bound.
+        /// made before this call keep their own bounds.
         pub fn native_max_concurrency(mut self, max: usize) -> Self {
-            self.native.limit = LookupLimit::new(max);
+            self.native.limit = self.native.limit.with(|limits| limits.max_concurrency = max);
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// See [`LinuxDnsResolverBuilder::native_burst_limit`]. Clones made
+        /// before this call keep their own bounds.
+        pub fn native_burst_limit(mut self, max: usize) -> Self {
+            self.native.limit = self.native.limit.with(|limits| limits.burst_limit = max);
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// See [`LinuxDnsResolverBuilder::native_burst_window`]. Clones made
+        /// before this call keep their own bounds.
+        pub fn native_burst_window(mut self, window: Duration) -> Self {
+            self.native.limit = self.native.limit.with(|limits| limits.burst_window = window);
             self
         }
     }
@@ -1097,9 +1138,9 @@ static_str_error! {
 #[cfg(test)]
 mod tests {
     use super::{
-        DnsAddressResolver as _, InFlight, LookupEvent, LookupLimit, NativeConfig, ResolvedLookup,
-        cache, dns_name_from_domain, in_flight, lookup_and_cache, lookup_cached_stream,
-        native_lookup_ipv4_stream, resolved_first_stream,
+        DnsAddressResolver as _, InFlight, Limits, LookupEvent, LookupLimit, NativeConfig,
+        ResolvedLookup, cache, dns_name_from_domain, in_flight, lookup_and_cache,
+        lookup_cached_stream, native_lookup_ipv4_stream, resolved_first_stream,
     };
     use rama_core::{
         bytes::Bytes,
@@ -1449,22 +1490,30 @@ mod tests {
             .build();
         assert_eq!(resolver.timeout(), Duration::from_secs(9));
         assert_eq!(resolver.response_buffer_size(), usize::from(u16::MAX));
-        assert_eq!(
-            resolver.native_max_concurrency(),
-            super::DEFAULT_NATIVE_MAX_CONCURRENCY
-        );
+        assert_eq!(resolver.native_max_concurrency(), 384);
+        assert_eq!(resolver.native_burst_limit(), 128);
+        assert_eq!(resolver.native_burst_window(), Duration::from_millis(50));
         assert!(!resolver.systemd_resolved_enabled());
 
         let resolver = super::LinuxDnsResolver::builder()
             .with_response_buffer_size(4096)
             .with_native_max_concurrency(8)
+            .with_native_burst_limit(4)
+            .with_native_burst_window(Duration::from_millis(20))
             .with_systemd_resolved(true)
             .build();
         assert_eq!(resolver.response_buffer_size(), 4096);
         assert_eq!(resolver.native_max_concurrency(), 8);
+        assert_eq!(resolver.native_burst_limit(), 4);
+        assert_eq!(resolver.native_burst_window(), Duration::from_millis(20));
         assert!(resolver.systemd_resolved_enabled());
 
+        // one setter keeps the other bounds
         let resolver = resolver.with_native_max_concurrency(3);
+        assert_eq!(resolver.native_max_concurrency(), 3);
+        assert_eq!(resolver.native_burst_limit(), 4);
+        let resolver = resolver.with_native_burst_limit(2);
+        assert_eq!(resolver.native_burst_limit(), 2);
         assert_eq!(resolver.native_max_concurrency(), 3);
     }
 
@@ -1974,7 +2023,10 @@ mod tests {
     async fn native_lookup_waiting_for_a_busy_slot_times_out() {
         let native = NativeConfig {
             response_buffer_size: 4096,
-            limit: LookupLimit::new(1),
+            limit: LookupLimit::new(Limits {
+                max_concurrency: 1,
+                ..Limits::ONE_QUERY
+            }),
         };
         let (release, held) = mpsc::channel::<()>();
         let busy = native
