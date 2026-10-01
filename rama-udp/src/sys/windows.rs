@@ -230,12 +230,8 @@ impl UdpSocketState {
                 None,
             );
             if rc == -1 {
-                let error = io::Error::last_os_error();
-                if error.raw_os_error() == Some(WinSock::WSAEMSGSIZE) {
-                    truncated = true;
-                } else {
-                    return Err(error);
-                }
+                receive_failure(io::Error::last_os_error())?;
+                truncated = true;
             }
         }
         truncated |= wsa_msg.dwFlags & WinSock::MSG_PARTIAL != 0;
@@ -595,5 +591,33 @@ fn max_gso_segments(socket: &impl AsRawSocket) -> io::Result<usize> {
             Ok(512)
         }
         Err(_) => Ok(1),
+    }
+}
+
+/// A failed `WSARecvMsg`: `Ok` when only the datagram was truncated.
+fn receive_failure(error: io::Error) -> io::Result<()> {
+    match error.raw_os_error() {
+        Some(WinSock::WSAEMSGSIZE) => Ok(()),
+        // An ICMP time-exceeded for an earlier send: like WSAECONNRESET it is about one
+        // datagram, not the socket, but std leaves it uncategorized.
+        Some(WinSock::WSAENETRESET) => Err(io::Error::new(io::ErrorKind::ConnectionReset, error)),
+        _ => Err(error),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn per_datagram_icmp_errors_read_as_resets() {
+        for code in [WinSock::WSAECONNRESET, WinSock::WSAENETRESET] {
+            let error = receive_failure(io::Error::from_raw_os_error(code)).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::ConnectionReset, "{code}");
+        }
+        receive_failure(io::Error::from_raw_os_error(WinSock::WSAEMSGSIZE)).unwrap();
+        let error =
+            receive_failure(io::Error::from_raw_os_error(WinSock::WSAENOTSOCK)).unwrap_err();
+        assert_ne!(error.kind(), io::ErrorKind::ConnectionReset);
     }
 }
