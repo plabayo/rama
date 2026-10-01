@@ -223,6 +223,12 @@ pub(crate) fn request_head(
         {
             return Err(malformed("invalid request path"));
         }
+        // A path-less OPTIONS is the server-wide request every version sends as `*`.
+        let path = if method == Method::OPTIONS && path.is_empty() {
+            "*"
+        } else {
+            path
+        };
         if path == "*" {
             asterisk_scheme = Some(scheme.clone());
         }
@@ -1296,6 +1302,53 @@ mod tests {
             .unwrap();
             assert_eq!(&h1[..], h1_target.as_bytes(), "{uri}");
         }
+    }
+
+    /// Outside http(s) a request may have an empty `:path` (RFC 9113 §8.3.1, RFC 9114 §4.3.1)
+    /// on H2 as on H3; on OPTIONS it is the server-wide `*`, which both relay as `*`.
+    #[test]
+    fn empty_paths_of_other_schemes_are_received_alike_on_h2_and_h3() {
+        let text = |value: &'static str| {
+            hpack::BytesStr::try_from(Bytes::from_static(value.as_bytes())).unwrap()
+        };
+        for (method, protocol, sent_path) in [
+            ("OPTIONS", None, &b"*"[..]),
+            ("GET", None, b""),
+            ("CONNECT", Some("x-custom"), b""),
+        ] {
+            let mut h3_fields = vec![
+                (":method", method),
+                (":scheme", "custom"),
+                (":authority", "example.com"),
+                (":path", ""),
+            ];
+            h3_fields.extend(protocol.map(|protocol| (":protocol", protocol)));
+            let h3 = request_head(fields(&h3_fields), true).unwrap();
+            let pseudo = frame::Pseudo {
+                method: Some(Method::from_bytes(method.as_bytes()).unwrap()),
+                scheme: Some(text("custom")),
+                authority: Some(text("example.com")),
+                path: Some(text("")),
+                protocol: protocol.map(rama_http_types::proto::ext::Protocol::from_static),
+                ..Default::default()
+            };
+            let h2 = crate::h2::server::test_util::receive(pseudo, HeaderMap::new())
+                .unwrap_or_else(|error| panic!("h2 {method}: {error:?}"));
+            for (version, received) in [("h2", &h2), ("h3", &h3)] {
+                let sent = decode(encode_request(&shared(), 0, received).unwrap());
+                let path = sent.iter().find(|field| field.name == ":path").unwrap();
+                assert_eq!(&path.value[..], sent_path, "{version} {method}");
+            }
+        }
+        // http(s) still needs a path.
+        let pseudo = frame::Pseudo {
+            method: Some(Method::GET),
+            scheme: Some(text("https")),
+            authority: Some(text("example.com")),
+            path: Some(text("")),
+            ..Default::default()
+        };
+        crate::h2::server::test_util::receive(pseudo, HeaderMap::new()).unwrap_err();
     }
 
     /// A plain CONNECT names a host and port on every version, received or sent: there is no

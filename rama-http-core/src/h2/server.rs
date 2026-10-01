@@ -1874,8 +1874,8 @@ impl proto::Peer for Peer {
             if is_connect && !has_protocol {
                 malformed!("malformed headers: :path in CONNECT");
             }
-            // This cannot be empty
-            if path.is_empty() {
+            // RFC 9113 §8.3.1: only an http(s) target needs a non-empty path.
+            if path.is_empty() && scheme.as_ref().is_none_or(rama_net::Protocol::is_http) {
                 malformed!("malformed headers: missing path");
             }
             Some(path)
@@ -1905,6 +1905,18 @@ impl proto::Peer for Peer {
                 }
                 None => uri::Uri::from_static("*"),
             },
+            // A target of another scheme without a path (RFC 9113 §8.3.1); a path-less
+            // OPTIONS is sent on as `*` again.
+            Some("") => {
+                let mut uri = uri::Uri::default().without_path();
+                if let Some(authority) = authority {
+                    uri.set_authority(authority);
+                    if let Some(scheme) = scheme {
+                        uri.set_scheme(scheme);
+                    }
+                }
+                uri
+            }
             // origin-form: parse the path/query, then graft the typed
             // authority (and scheme, which is only meaningful with one).
             Some(path) => {

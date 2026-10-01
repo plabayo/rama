@@ -758,6 +758,16 @@ mod tests {
                 ],
                 2,
             ),
+            // A path-less OPTIONS of another scheme is the server-wide `*`, on every version.
+            (
+                &[
+                    (method, "OPTIONS"),
+                    (scheme, "custom"),
+                    (authority, "example.com"),
+                    (path, ""),
+                ],
+                2,
+            ),
             // Accepted like H1/H2, but a Host unusable as the only authority is not sent on.
             (
                 &[(path, ""), (method, "~"), (scheme, "-"), (host, "bad host")],
