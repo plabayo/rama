@@ -1,4 +1,13 @@
-use std::{collections::VecDeque, fmt, pin::pin, sync::Arc, time::Duration};
+use std::{
+    collections::VecDeque,
+    fmt,
+    pin::pin,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 
 use parking_lot::Mutex;
 use rama_core::telemetry::tracing;
@@ -129,39 +138,34 @@ pub(crate) struct Slot {
 /// At most `max` queries started within the last `window` and unanswered.
 ///
 /// An answer frees its place at once; age frees it lazily, when the next
-/// caller looks, so a running query needs no timer of its own.
+/// caller looks, so a running query needs no timer of its own. Callers that
+/// have to wait for a place get one in the order they came.
 #[derive(Debug)]
 struct Burst {
     max: usize,
     window: Duration,
     state: Mutex<BurstState>,
     freed: Notify,
+    /// Callers queued for a place; newcomers line up behind them.
+    queued: AtomicUsize,
+    turn: tokio::sync::Mutex<()>,
 }
 
 #[derive(Debug, Default)]
 struct BurstState {
-    /// The id of `starts[0]`.
-    first: u64,
-    /// When each query since `first` started, `None` once answered.
-    starts: VecDeque<Option<Instant>>,
-    /// The `Some` entries of `starts`.
-    young: usize,
+    next: u64,
+    /// Unanswered queries still young, oldest first, by id.
+    young: VecDeque<(u64, Instant)>,
 }
 
 impl BurstState {
-    /// Forget answered and aged queries at the front, returning when the
-    /// oldest query still young ages.
+    /// Forget aged queries, returning when the oldest one left ages.
     fn expire(&mut self, now: Instant, window: Duration) -> Option<Instant> {
-        while let Some(&front) = self.starts.front() {
-            match front {
-                Some(started) if now.saturating_duration_since(started) < window => {
-                    return Some(started + window);
-                }
-                Some(_) => self.young -= 1,
-                None => {}
+        while let Some(&(_, started)) = self.young.front() {
+            if now.saturating_duration_since(started) < window {
+                return Some(started + window);
             }
-            self.starts.pop_front();
-            self.first += 1;
+            self.young.pop_front();
         }
         None
     }
@@ -174,27 +178,28 @@ impl Burst {
             window,
             state: Mutex::default(),
             freed: Notify::new(),
+            queued: AtomicUsize::new(0),
+            turn: tokio::sync::Mutex::new(()),
         }
     }
 
     async fn acquire(self: &Arc<Self>, deadline: Instant) -> Option<BurstSlot> {
+        if self.queued.load(Ordering::Acquire) == 0
+            && let Ok(slot) = self.take()
+        {
+            return Some(slot);
+        }
+        self.queued.fetch_add(1, Ordering::AcqRel);
+        let _queued = Queued(&self.queued);
+        let _turn = tokio::time::timeout_at(deadline, self.turn.lock())
+            .await
+            .ok()?;
         loop {
             let mut freed = pin!(self.freed.notified());
             freed.as_mut().enable();
-            let ages_at = {
-                let mut state = self.state.lock();
-                let now = Instant::now();
-                let ages_at = state.expire(now, self.window);
-                if state.young < self.max {
-                    let id = state.first + state.starts.len() as u64;
-                    state.starts.push_back(Some(now));
-                    state.young += 1;
-                    return Some(BurstSlot {
-                        burst: self.clone(),
-                        id,
-                    });
-                }
-                ages_at
+            let ages_at = match self.take() {
+                Ok(slot) => return Some(slot),
+                Err(ages_at) => ages_at,
             };
             if Instant::now() >= deadline {
                 return None;
@@ -205,6 +210,32 @@ impl Burst {
                 () = tokio::time::sleep_until(wake) => {}
             }
         }
+    }
+
+    /// A place now, or when the oldest young query ages.
+    fn take(self: &Arc<Self>) -> Result<BurstSlot, Option<Instant>> {
+        let mut state = self.state.lock();
+        let now = Instant::now();
+        let ages_at = state.expire(now, self.window);
+        if state.young.len() >= self.max {
+            return Err(ages_at);
+        }
+        let id = state.next;
+        state.next += 1;
+        state.young.push_back((id, now));
+        Ok(BurstSlot {
+            burst: self.clone(),
+            id,
+        })
+    }
+}
+
+/// Leaves the queue however its caller stops waiting.
+struct Queued<'a>(&'a AtomicUsize);
+
+impl Drop for Queued<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
@@ -218,15 +249,8 @@ impl Drop for BurstSlot {
     fn drop(&mut self) {
         let mut state = self.burst.state.lock();
         // an aged query already gave its place up
-        let Some(index) = self.id.checked_sub(state.first) else {
-            return;
-        };
-        if let Some(started @ Some(_)) = usize::try_from(index)
-            .ok()
-            .and_then(|index| state.starts.get_mut(index))
-        {
-            *started = None;
-            state.young -= 1;
+        if let Ok(index) = state.young.binary_search_by_key(&self.id, |&(id, _)| id) {
+            state.young.remove(index);
             drop(state);
             self.burst.freed.notify_one();
         }
@@ -276,7 +300,7 @@ mod tests {
         mpsc,
     };
 
-    use rama_core::futures::future::join_all;
+    use rama_core::futures::{FutureExt as _, future::join_all};
 
     use super::*;
 
@@ -359,20 +383,51 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn answered_queries_are_forgotten() {
-        let lookups = burst(4, Duration::from_millis(10));
-        for _ in 0..1000 {
+    async fn only_unanswered_queries_are_kept() {
+        let lookups = LookupLimit::new(Limits {
+            max_concurrency: 2,
+            burst_limit: 2,
+            burst_window: Duration::from_hours(1),
+        });
+        // one query stays unanswered while many others come and go
+        let held = lookups.acquire(deadline_in(5)).await.expect("slot");
+        for _ in 0..10_000 {
             drop(lookups.acquire(deadline_in(5)).await.expect("slot"));
         }
-        let held = lookups.acquire(deadline_in(5)).await.expect("slot");
-        assert!(lookups.burst.state.lock().starts.len() <= 1);
+        assert_eq!(lookups.burst.state.lock().young.len(), 1);
+        drop(held);
+        assert!(lookups.burst.state.lock().young.is_empty());
 
         // an unanswered query is forgotten once it ages
-        tokio::time::sleep(Duration::from_millis(10)).await;
-        let probe = lookups.acquire(deadline_in(5)).await.expect("slot");
-        assert_eq!(lookups.burst.state.lock().starts.len(), 1, "only the probe");
-        drop((probe, held));
-        assert_eq!(lookups.burst.state.lock().young, 0);
+        let aging = lookups.acquire(deadline_in(5)).await.expect("slot");
+        tokio::time::sleep(Duration::from_hours(1)).await;
+        drop(lookups.acquire(deadline_in(5)).await.expect("slot"));
+        assert!(lookups.burst.state.lock().young.is_empty());
+        drop(aging);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn queued_callers_get_places_in_order() {
+        let lookups = LookupLimit::new(Limits {
+            max_concurrency: 8,
+            burst_limit: 1,
+            burst_window: Duration::from_secs(60),
+        });
+        let held = lookups.acquire(deadline_in(5)).await.expect("slot");
+        let mut first = pin!(lookups.acquire(deadline_in(5)));
+        assert!(first.as_mut().now_or_never().is_none(), "first queues");
+
+        drop(held);
+        // a newcomer polled before the queued caller does not get its place
+        let mut newcomer = pin!(lookups.acquire(deadline_in(5)));
+        assert!(
+            newcomer.as_mut().now_or_never().is_none(),
+            "newcomer queues"
+        );
+        let first = first.await.expect("the first in line gets the place");
+        assert!(newcomer.as_mut().now_or_never().is_none());
+        drop(first);
+        assert!(newcomer.await.is_some());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
