@@ -240,6 +240,28 @@ impl ExampleRunner {
     }
 }
 
+/// A child inherits whether ctrl-c is ignored: a runner started from a shell that ignores
+/// it would otherwise spawn examples the raised event can never stop.
+#[cfg(windows)]
+#[expect(
+    unsafe_code,
+    reason = "restoring default ctrl-c processing requires Windows FFI"
+)]
+fn process_ctrl_c_in_children() {
+    unsafe extern "system" {
+        fn SetConsoleCtrlHandler(
+            handler: Option<unsafe extern "system" fn(u32) -> i32>,
+            add: i32,
+        ) -> i32;
+    }
+    static RESTORED: Once = Once::new();
+    RESTORED.call_once(|| {
+        // SAFETY: a null handler with add=0 requests the documented default ctrl-c processing.
+        // Best effort: without a console of its own there is nothing to restore.
+        _ = unsafe { SetConsoleCtrlHandler(None, 0) };
+    });
+}
+
 /// Owns the ctrl-c helper while the interrupt is in flight. It is a child of this process, so
 /// every way out of the wait — its own exit, a panic, or the waiting test being dropped — has
 /// to end it.
@@ -441,6 +463,7 @@ impl ExampleRunner {
                 use std::os::windows::process::CommandExt as _;
                 const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
                 command.creation_flags(CREATE_NEW_CONSOLE);
+                process_ctrl_c_in_children();
             }
         }
         let mut child = command.spawn().unwrap();
