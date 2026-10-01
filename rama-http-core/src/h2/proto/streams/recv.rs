@@ -302,6 +302,12 @@ impl Recv {
             return Err(Error::library_reset(stream.id, Reason::PROTOCOL_ERROR).into());
         }
 
+        // RFC 9113 §8.3.2: every response carries `:status`.
+        if pseudo.status.is_none() && !counts.peer().is_server() {
+            proto_err!(stream: "missing :status in response; stream={:?}", stream.id);
+            return Err(Error::library_reset(stream.id, Reason::PROTOCOL_ERROR).into());
+        }
+
         if !pseudo.is_informational() {
             let extensions = if counts.peer().is_server() {
                 // Server receiving a request

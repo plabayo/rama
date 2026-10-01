@@ -841,6 +841,42 @@ async fn sending_request_on_closed_connection() {
     join(srv, h2).await;
 }
 
+/// RFC 9113 §8.3.2: a response without `:status` is malformed, never a `200`.
+#[tokio::test]
+async fn a_response_without_status_is_malformed() {
+    h2_support::trace_init!();
+    let (io, mut srv) = mock::new();
+
+    let srv = async move {
+        let settings = srv.assert_client_handshake().await;
+        assert_default_settings!(settings);
+        srv.recv_frame(
+            frames::headers(1)
+                .request("GET", "https://example.com/")
+                .eos(),
+        )
+        .await;
+        srv.send_frame(frames::headers(1).field("x-no-status", "1"))
+            .await;
+        srv.recv_frame(frames::reset(1).protocol_error()).await;
+        idle_ms(10).await;
+    };
+
+    let client = async move {
+        let (mut client, mut conn) = client::handshake(io).await.expect("handshake");
+        let request = Request::builder()
+            .uri("https://example.com/")
+            .body(())
+            .unwrap();
+        let response = client.send_request(request, true).expect("send_request").0;
+        let err = conn.drive(response).await.expect_err("response");
+        assert_eq!(err.reason(), Some(Reason::PROTOCOL_ERROR));
+        conn.await.expect("connection");
+    };
+
+    join(srv, client).await;
+}
+
 #[tokio::test]
 #[ignore]
 async fn recv_too_big_headers() {
