@@ -155,6 +155,9 @@ impl LinuxDnsCache {
     /// stored TTL is still clamped by the configured `negative_ttl` ceiling
     /// in [`EntryExpiry`].
     pub(super) fn insert_negative(&self, domain: Domain, kind: RecordKind, ttl: Duration) {
+        if !is_cacheable(Some(ttl)) {
+            return;
+        }
         self.entries.insert(
             CacheKey::new(domain, kind),
             CacheEntry {
@@ -176,6 +179,9 @@ impl LinuxDnsCache {
     }
 
     fn insert(&self, domain: Domain, kind: RecordKind, value: CacheValue, ttl: Option<Duration>) {
+        if !is_cacheable(ttl) {
+            return;
+        }
         self.entries.insert(
             CacheKey::new(domain, kind),
             CacheEntry {
@@ -184,6 +190,12 @@ impl LinuxDnsCache {
             },
         );
     }
+}
+
+/// A zero TTL means "do not cache": storing it would only hold memory until
+/// the cache's next housekeeping evicts it.
+fn is_cacheable(ttl: Option<Duration>) -> bool {
+    ttl.is_none_or(|ttl| !ttl.is_zero())
 }
 
 pub(super) enum CacheLookup<T> {
@@ -308,5 +320,18 @@ impl Expiry<CacheKey, CacheEntry> for EntryExpiry {
             .explicit_ttl
             .map_or(bound, |explicit| explicit.min(bound));
         Some(chosen)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zero_ttl_answers_are_not_stored() {
+        assert!(!is_cacheable(Some(Duration::ZERO)));
+        assert!(is_cacheable(Some(Duration::from_secs(1))));
+        // no TTL: the configured default applies
+        assert!(is_cacheable(None));
     }
 }
