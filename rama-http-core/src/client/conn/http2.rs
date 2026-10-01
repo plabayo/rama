@@ -807,10 +807,12 @@ mod tests {
     use std::{
         convert::Infallible,
         error::Error,
+        pin::pin,
         sync::{
             Arc,
             atomic::{AtomicUsize, Ordering},
         },
+        task::{Context, Waker},
         time::Duration,
     };
     use tokio::io::{AsyncRead, AsyncWrite};
@@ -1079,6 +1081,46 @@ mod tests {
         admits_again(&sender).await;
         drop(used);
         assert!(admits(&sender));
+    }
+
+    /// Handing a checkout's request to h2 frees nothing on a saturated connection, so no
+    /// waiter is woken; the stream's retirement does wake them.
+    #[tokio::test]
+    async fn dispatching_on_a_saturated_connection_wakes_nobody() {
+        let (release, upload) = open_upload();
+        let (sender, _task) = one_stream_connection(65_535, answer_at_once()).await;
+        let admission = sender.connection_admission();
+        // An unused checkout returns its slot, which wakes waiters.
+        let unused = admission.try_acquire(&Extensions::new()).unwrap().unwrap();
+        let mut changed = pin!(admission.watch());
+        let cx = &mut Context::from_waker(Waker::noop());
+        assert!(changed.as_mut().poll(cx).is_pending());
+        drop(unused);
+        assert!(changed.as_mut().poll(cx).is_ready());
+
+        let checkout = admission.try_acquire(&Extensions::new()).unwrap().unwrap();
+        let mut extensions = Extensions::new();
+        checkout.bind(&mut extensions);
+        let request = Request::builder_with_extensions(extensions)
+            .method(Method::POST)
+            .uri("https://example.com/upload")
+            .body(upload.into_body())
+            .unwrap();
+        let mut changed = pin!(admission.watch());
+        assert!(changed.as_mut().poll(cx).is_pending());
+        let response = sender.clone().send_request(request).await.unwrap();
+        drop(checkout);
+        assert!(
+            changed.as_mut().poll(cx).is_pending(),
+            "a dispatch woke waiters"
+        );
+        assert!(!admits(&sender));
+
+        drop(release);
+        drop(response.into_body().collect().await.unwrap());
+        tokio::time::timeout(Duration::from_secs(5), changed)
+            .await
+            .expect("the retired stream wakes waiters");
     }
 
     /// RFC 8441 §3: `:protocol` is only sent after the server enabled it, even when the

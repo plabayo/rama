@@ -97,10 +97,14 @@ impl Reservation {
         if self.released.swap(true, Ordering::AcqRel) {
             return;
         }
-        // Release first, then wake: a woken acquirer must see the returned reservation.
+        // Release first, then wake: a woken acquirer must see the returned reservation. A
+        // dispatch only moves the stream into h2's count, so nobody is woken unless a
+        // stream already retired meanwhile.
         if let Some(state) = self.state.upgrade() {
-            state.reserved.fetch_sub(1, Ordering::AcqRel);
-            state.bump();
+            let reserved = state.reserved.fetch_sub(1, Ordering::AcqRel) - 1;
+            if state.streams.live() + reserved < state.max.get() {
+                state.bump();
+            }
         }
     }
 }
