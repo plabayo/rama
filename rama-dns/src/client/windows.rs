@@ -15,7 +15,7 @@ use std::{
 
 use rama_core::{
     error::BoxError,
-    futures::{Stream, async_stream::stream_fn},
+    futures::{Stream, async_stream::stream_fn, future::Either, stream},
     telemetry::tracing,
 };
 use rama_net::address::Domain;
@@ -31,7 +31,7 @@ use windows_sys::core::PCWSTR;
 use std::sync::atomic::AtomicU16;
 
 use super::{
-    in_flight::{Abandoned, InFlight, coalesced_stream},
+    in_flight::{Abandoned, InFlight, coalesced_stream, leading_dot_refusal},
     limit::DnsTimeoutError,
     resolver::{
         DnsAddressResolver, DnsCnameResolver, DnsResolver, DnsServiceBindingResolver,
@@ -96,7 +96,7 @@ const _: () = assert!(std::mem::size_of::<DnsBackend>() == 0);
 /// Hickory when exact TXT octets are required on Windows.
 pub struct WindowsDnsResolver {
     timeout: Duration,
-    in_flight: InFlight<(Domain, u16)>,
+    in_flight: InFlight<(Domain, bool, u16)>,
 }
 
 impl Default for WindowsDnsResolver {
@@ -140,13 +140,18 @@ impl WindowsDnsResolver {
         T: Clone + Send + Sync + 'static,
         S: Stream<Item = Result<T, BoxError>> + Send + 'static,
     {
+        if let Some(err) = leading_dot_refusal(&domain) {
+            return Either::Left(stream::once(std::future::ready(Err(err))));
+        }
         let timeout = self.timeout;
-        coalesced_stream(
+        // DnsQueryEx appends the suffix search list to relative names only
+        let key = (domain.clone(), domain.is_fqdn(), rrtype);
+        Either::Right(coalesced_stream(
             self.in_flight.clone(),
-            (domain.clone(), rrtype),
+            key,
             timeout,
             move || lookup(domain, timeout),
-        )
+        ))
     }
 }
 
@@ -1306,7 +1311,7 @@ mod ffi {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rama_core::futures::StreamExt;
+    use rama_core::futures::{StreamExt, stream::BoxStream};
     use std::pin::pin;
 
     use crate::wire::SvcParam;
@@ -1831,6 +1836,85 @@ mod tests {
         assert!(
             !addrs.iter().any(|result| result.is_ok()),
             "unexpected answer for reserved .invalid name: {addrs:?}",
+        );
+    }
+
+    /// A lookup that answers `127.0.0.1` once `gate` opens.
+    fn gated_lookup(
+        gate: &Arc<Notify>,
+    ) -> impl FnOnce(Domain, Duration) -> BoxStream<'static, Result<Ipv4Addr, BoxError>> + Send + 'static
+    {
+        let gate = gate.clone();
+        move |_domain, _timeout| {
+            stream::once(async move {
+                gate.notified().await;
+                Ok(Ipv4Addr::LOCALHOST)
+            })
+            .boxed()
+        }
+    }
+
+    #[tokio::test]
+    async fn rooted_and_relative_names_do_not_share() {
+        let resolver = WindowsDnsResolver::new();
+        let gate = Arc::new(Notify::new());
+        // DnsQueryEx walks the suffix search list for a relative name only
+        let relative = resolver
+            .coalesced(
+                Domain::from_static("intranet"),
+                ffi::DNS_TYPE_A,
+                gated_lookup(&gate),
+            )
+            .collect::<Vec<_>>();
+        let rooted = resolver
+            .coalesced(
+                Domain::from_static("intranet."),
+                ffi::DNS_TYPE_A,
+                gated_lookup(&gate),
+            )
+            .collect::<Vec<_>>();
+        let both_running = async {
+            let running = resolver.in_flight.running();
+            gate.notify_waiters();
+            running
+        };
+        let (relative, rooted, running) = tokio::join!(relative, rooted, both_running);
+
+        assert_eq!(running, 2);
+        assert!(matches!(relative.as_slice(), [Ok(_)]), "{relative:?}");
+        assert!(matches!(rooted.as_slice(), [Ok(_)]), "{rooted:?}");
+    }
+
+    #[tokio::test]
+    async fn leading_dot_name_is_refused_before_sharing() {
+        let resolver = WindowsDnsResolver::new();
+        let gate = Arc::new(Notify::new());
+        let bare = resolver
+            .coalesced(
+                Domain::from_static("intranet"),
+                ffi::DNS_TYPE_A,
+                gated_lookup(&gate),
+            )
+            .collect::<Vec<_>>();
+        let dotted = resolver
+            .coalesced(
+                Domain::from_static(".intranet"),
+                ffi::DNS_TYPE_A,
+                gated_lookup(&gate),
+            )
+            .collect::<Vec<_>>();
+        let open = async {
+            let running = resolver.in_flight.running();
+            gate.notify_waiters();
+            running
+        };
+        let (bare, dotted, running) = tokio::join!(bare, dotted, open);
+
+        assert_eq!(running, 1);
+        assert!(matches!(bare.as_slice(), [Ok(_)]), "{bare:?}");
+        assert!(
+            matches!(dotted.as_slice(), [Err(err)] if err.to_string().contains("starts with a dot")),
+            "{dotted:?}"
         );
     }
 

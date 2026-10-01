@@ -621,6 +621,10 @@ where
     F: FnOnce(Domain, Duration) -> S + Send + 'static,
 {
     stream_fn(async move |mut yielder| {
+        if let Some(err) = in_flight::leading_dot_refusal(&domain) {
+            yielder.yield_item(Err(err)).await;
+            return;
+        }
         match get_cached(&cache, &domain) {
             Some(cache::CacheLookup::Positive(values)) => {
                 tracing::debug!(%domain, "dns::linux: cache hit (positive)");
@@ -1700,6 +1704,34 @@ mod tests {
         assert!(
             matches!(items.as_slice(), [Ok(got)] if *got == addr),
             "{items:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn leading_dot_name_is_refused_before_sharing() {
+        let (cache, in_flight) = (test_cache(), InFlight::default());
+        let lookups = Arc::new(AtomicUsize::new(0));
+        let gate = Arc::new(Notify::new());
+
+        // `Domain` equality ignores the leading dot, which no backend accepts
+        let callers = join_all(["intranet", ".intranet"].map(|name| {
+            gated_ipv4_stream(
+                name.try_into().expect("valid domain"),
+                cache.clone(),
+                in_flight.clone(),
+                lookups.clone(),
+                gate.clone(),
+                Ok((Ipv4Addr::new(192, 0, 2, 10), 60)),
+            )
+            .collect::<Vec<_>>()
+        }));
+        let (results, ()) = tokio::join!(callers, open_gate_later(&gate));
+
+        assert_eq!(lookups.load(Ordering::SeqCst), 1);
+        assert!(matches!(results[0].as_slice(), [Ok(_)]), "{results:?}");
+        assert!(
+            matches!(results[1].as_slice(), [Err(err)] if err.to_string().contains("starts with a dot")),
+            "{results:?}"
         );
     }
 

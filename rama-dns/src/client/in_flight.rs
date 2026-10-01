@@ -17,7 +17,7 @@ use ahash::HashMap;
 use parking_lot::Mutex;
 use pin_project_lite::pin_project;
 use rama_core::{
-    error::{ArcError, BoxError},
+    error::{ArcError, BoxError, BoxErrorExt as _},
     futures::{
         FutureExt as _, Stream, StreamExt as _,
         async_stream::stream_fn,
@@ -26,6 +26,7 @@ use rama_core::{
     rt,
     telemetry::tracing::{self, Instrument as _},
 };
+use rama_net::address::Domain;
 use tokio::{sync::oneshot, task::AbortHandle, time::error::Elapsed};
 
 use super::limit::DnsTimeoutError;
@@ -371,6 +372,15 @@ where
     })
 }
 
+/// `Domain` equality ignores a leading dot, yet no backend accepts one in a
+/// query name: refuse it before it can share the bare name's lookup.
+pub(crate) fn leading_dot_refusal(domain: &Domain) -> Option<BoxError> {
+    domain
+        .strip_leading_dot()
+        .is_some()
+        .then(|| BoxError::from_static_str("dns query name starts with a dot"))
+}
+
 /// Run a streaming `lookup` once for all concurrent callers of `key`.
 pub(crate) fn coalesced_stream<K, T, S>(
     in_flight: InFlight<K>,
@@ -399,10 +409,7 @@ where
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use rama_core::{
-        error::BoxErrorExt as _,
-        futures::{future::join_all, stream},
-    };
+    use rama_core::futures::{future::join_all, stream};
     use tokio::sync::Notify;
 
     use super::*;

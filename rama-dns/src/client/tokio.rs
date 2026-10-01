@@ -6,7 +6,7 @@ use std::{
 
 use rama_core::{
     error::{BoxError, ErrorExt as _},
-    futures::{Stream, StreamExt as _, async_stream::stream_fn, stream},
+    futures::{Stream, StreamExt as _, async_stream::stream_fn, future::Either, stream},
     telemetry::tracing,
 };
 use rama_net::address::Domain;
@@ -16,7 +16,7 @@ use rama_utils::{
 };
 
 use super::{
-    in_flight::{InFlight, coalesced_stream},
+    in_flight::{InFlight, coalesced_stream, leading_dot_refusal},
     limit::{DnsTimeoutError, LookupLimit, deadline_after},
     resolver::{
         DnsAddressResolver, DnsCnameResolver, DnsResolver, DnsServiceBindingResolver,
@@ -92,11 +92,17 @@ impl TokioDnsResolver {
         &self,
         domain: Domain,
     ) -> impl Stream<Item = Result<IpAddr, BoxError>> + Send {
+        if let Some(err) = leading_dot_refusal(&domain) {
+            return Either::Left(stream::once(std::future::ready(Err(err))));
+        }
         let (timeout, limit) = (self.timeout, self.limit.clone());
         let key = (domain.clone(), domain.is_fqdn());
-        coalesced_stream(self.in_flight.clone(), key, timeout, move || {
-            lookup_host_stream(domain, timeout, limit)
-        })
+        Either::Right(coalesced_stream(
+            self.in_flight.clone(),
+            key,
+            timeout,
+            move || lookup_host_stream(domain, timeout, limit),
+        ))
     }
 }
 
@@ -294,6 +300,24 @@ mod tests {
         for lookup in lookups {
             lookup.await.expect("lookup task");
         }
+    }
+
+    #[tokio::test]
+    async fn leading_dot_name_is_refused_before_sharing() {
+        let resolver = TokioDnsResolver::new();
+        let (bare, dotted) = tokio::join!(
+            resolver
+                .lookup_ipv4(Domain::from_static("localhost"))
+                .collect::<Vec<_>>(),
+            resolver
+                .lookup_ipv4(Domain::from_static(".localhost"))
+                .collect::<Vec<_>>(),
+        );
+        assert!(bare.iter().any(Result::is_ok), "{bare:?}");
+        assert!(
+            matches!(dotted.as_slice(), [Err(err)] if err.to_string().contains("starts with a dot")),
+            "{dotted:?}"
+        );
     }
 
     #[test]

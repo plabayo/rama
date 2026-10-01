@@ -40,7 +40,7 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 use rama_core::error::BoxError;
-use rama_core::futures::{Stream, StreamExt as _, async_stream::stream_fn};
+use rama_core::futures::{Stream, StreamExt as _, async_stream::stream_fn, future::Either, stream};
 use rama_core::telemetry::tracing;
 use rama_net::address::Domain;
 use rama_utils::macros::generate_set_and_with;
@@ -49,7 +49,7 @@ use tokio::io::unix::AsyncFd;
 use tokio::time::Instant;
 
 use super::{
-    in_flight::{Abandoned, InFlight, coalesced_stream},
+    in_flight::{Abandoned, InFlight, coalesced_stream, leading_dot_refusal},
     limit::{DEFAULT_MAX_LOOKUPS, DnsTimeoutError, LookupLimit, deadline_after},
     resolver::{
         DnsAddressResolver, DnsCnameResolver, DnsResolver, DnsServiceBindingResolver,
@@ -68,7 +68,7 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 pub struct AppleDnsResolver {
     timeout: Duration,
     limit: LookupLimit,
-    in_flight: InFlight<(Domain, u16)>,
+    in_flight: InFlight<(Domain, bool, u16)>,
 }
 
 impl Default for AppleDnsResolver {
@@ -127,13 +127,18 @@ impl AppleDnsResolver {
         T: fmt::Debug + Clone + Send + Sync + 'static,
         P: Fn(&[u8], &mut dyn FnMut(T)) -> Result<(), BoxError> + Send + Sync + 'static,
     {
+        if let Some(err) = leading_dot_refusal(&domain) {
+            return Either::Left(stream::once(std::future::ready(Err(err))));
+        }
         let (timeout, limit) = (self.timeout, self.limit.clone());
-        coalesced_stream(
+        // a rooted name skips the search domains, so it may resolve differently
+        let key = (domain.clone(), domain.is_fqdn(), rrtype);
+        Either::Right(coalesced_stream(
             self.in_flight.clone(),
-            (domain.clone(), rrtype),
+            key,
             timeout,
             move || limited_query_stream(domain, timeout, limit, rrtype, parser),
-        )
+        ))
     }
 }
 
@@ -918,6 +923,48 @@ mod tests {
             items.as_slice(),
             [Err(err)] if error_chain(err.as_ref()).any(|cause| cause.is::<DnsTimeoutError>())
         ));
+    }
+
+    #[tokio::test]
+    async fn leading_dot_name_is_refused_before_sharing() {
+        let resolver = AppleDnsResolver::new();
+        let (bare, dotted) = tokio::join!(
+            resolver
+                .lookup_ipv4(Domain::from_static("localhost"))
+                .collect::<Vec<_>>(),
+            resolver
+                .lookup_ipv4(Domain::from_static(".localhost"))
+                .collect::<Vec<_>>(),
+        );
+        assert!(bare.iter().any(Result::is_ok), "{bare:?}");
+        assert!(
+            matches!(dotted.as_slice(), [Err(err)] if err.to_string().contains("starts with a dot")),
+            "{dotted:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn rooted_and_relative_names_do_not_share() {
+        let resolver = AppleDnsResolver::new().with_timeout(Duration::from_millis(500));
+        // an mDNS name nobody answers keeps both runs in flight
+        let lookups = [
+            "unanswered.rama-dns-test.local",
+            "unanswered.rama-dns-test.local.",
+        ]
+        .map(|name| {
+            resolver
+                .lookup_ipv4(name.try_into().expect("valid domain"))
+                .collect::<Vec<_>>()
+        });
+        let both_running = async {
+            let deadline = Instant::now() + Duration::from_millis(400);
+            while resolver.in_flight.running() != 2 && Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            resolver.in_flight.running()
+        };
+        let (_, running) = tokio::join!(join_all(lookups), both_running);
+        assert_eq!(running, 2);
     }
 
     #[tokio::test]
