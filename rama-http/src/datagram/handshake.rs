@@ -222,7 +222,8 @@ fn single_token(headers: &HeaderMap) -> Option<Protocol> {
     if values.next().is_some() {
         return None;
     }
-    let token = std::str::from_utf8(value.as_bytes()).ok()?.trim();
+    // Only SP and HTAB are optional whitespace (RFC 9110 §5.6.3), never Unicode spaces.
+    let token = std::str::from_utf8(value.as_bytes().trim_ascii()).ok()?;
     Protocol::try_from(token).ok()
 }
 
@@ -458,6 +459,27 @@ mod tests {
             .insert(header::UPGRADE, HeaderValue::from_static("CONNECT-UDP"));
         validate_capsule_response(Version::HTTP_11, &TOKEN, &shouted, ViolationPolicy::Ignore)
             .unwrap();
+        // Optional whitespace is SP and HTAB only.
+        for (value, matches) in [
+            (&b" connect-udp\t"[..], true),
+            (b"\xc2\xa0connect-udp\xc2\xa0", false),
+        ] {
+            let mut spaced = response(Version::HTTP_11);
+            spaced
+                .headers_mut()
+                .insert(header::UPGRADE, HeaderValue::from_bytes(value).unwrap());
+            assert_eq!(
+                validate_capsule_response(
+                    Version::HTTP_11,
+                    &TOKEN,
+                    &spaced,
+                    ViolationPolicy::Ignore
+                )
+                .is_ok(),
+                matches,
+                "{value:?}"
+            );
+        }
     }
 
     #[test]

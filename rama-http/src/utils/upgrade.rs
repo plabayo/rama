@@ -22,7 +22,8 @@ pub fn request_connect_protocol<Body>(request: &Request<Body>) -> Option<Protoco
         return None;
     }
     let upgrade = request.headers().typed_get::<Upgrade>()?;
-    let token = std::str::from_utf8(upgrade.as_bytes()).ok()?.trim();
+    // Only SP and HTAB are optional whitespace (RFC 9110 §5.6.3), never Unicode spaces.
+    let token = std::str::from_utf8(upgrade.as_bytes().trim_ascii()).ok()?;
     // A non-token upgrade value cannot be a `:protocol`; treat it as a mere advertisement.
     Protocol::try_from(token).ok()
 }
@@ -35,18 +36,21 @@ pub(crate) fn is_plain_connect<Body>(request: &Request<Body>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rama_http_types::header;
+    use rama_http_types::{HeaderValue, header};
 
     #[test]
     fn distinguishes_upgrade_requests_from_advertisements() {
         for (connection, upgrade, expected) in [
-            (None, "websocket", None),
-            (Some("keep-alive"), "websocket", None),
-            (Some("keep-alive, Upgrade"), "websocket", Some("websocket")),
-            (Some("upgrade"), "websocket, h2c", None),
-            (Some("upgrade"), "custom-protocol", Some("custom-protocol")),
+            (None, &b"websocket"[..], None),
+            (Some("keep-alive"), b"websocket", None),
+            (Some("keep-alive, Upgrade"), b"websocket", Some("websocket")),
+            (Some("upgrade"), b"websocket, h2c", None),
+            (Some("upgrade"), b"custom-protocol", Some("custom-protocol")),
+            (Some("upgrade"), b" websocket\t", Some("websocket")),
+            (Some("upgrade"), b"\xc2\xa0websocket\xc2\xa0", None),
         ] {
-            let mut request = Request::builder().header(header::UPGRADE, upgrade);
+            let mut request = Request::builder()
+                .header(header::UPGRADE, HeaderValue::from_bytes(upgrade).unwrap());
             if let Some(connection) = connection {
                 request = request.header(header::CONNECTION, connection);
             }
