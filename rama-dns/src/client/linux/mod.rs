@@ -28,6 +28,8 @@ use std::{
     time::Duration,
 };
 
+use tokio::time::Instant;
+
 use rama_core::{
     error::BoxError,
     futures::{Stream, StreamExt as _, async_stream::stream_fn, future::Either, stream},
@@ -784,7 +786,7 @@ fn lookup_ipv4_uncached_stream(
         let domain = domain.clone();
         async move { resolved.lookup_ipv4(&domain, timeout).await }
     });
-    resolved_first_stream(varlink, move || {
+    resolved_first_stream(varlink, timeout, move |timeout| {
         native_lookup_ipv4_stream(domain, timeout, native)
     })
 }
@@ -799,7 +801,7 @@ fn lookup_ipv6_uncached_stream(
         let domain = domain.clone();
         async move { resolved.lookup_ipv6(&domain, timeout).await }
     });
-    resolved_first_stream(varlink, move || {
+    resolved_first_stream(varlink, timeout, move |timeout| {
         native_lookup_ipv6_stream(domain, timeout, native)
     })
 }
@@ -814,7 +816,7 @@ fn lookup_txt_uncached_stream(
         let domain = domain.clone();
         async move { resolved.lookup_txt(&domain, timeout).await }
     });
-    resolved_first_stream(varlink, move || {
+    resolved_first_stream(varlink, timeout, move |timeout| {
         native_lookup_txt_stream(domain, timeout, native)
     })
 }
@@ -829,7 +831,7 @@ fn lookup_cname_uncached_stream(
         let domain = domain.clone();
         async move { resolved.lookup_cname(&domain, timeout).await }
     });
-    resolved_first_stream(varlink, move || {
+    resolved_first_stream(varlink, timeout, move |timeout| {
         native_lookup_cname_stream(domain, timeout, native)
     })
 }
@@ -844,7 +846,7 @@ fn lookup_svcb_uncached_stream(
         let domain = domain.clone();
         async move { resolved.lookup_svcb(&domain, timeout).await }
     });
-    resolved_first_stream(varlink, move || {
+    resolved_first_stream(varlink, timeout, move |timeout| {
         native_lookup_svcb_stream(domain, timeout, native)
     })
 }
@@ -859,7 +861,7 @@ fn lookup_https_uncached_stream(
         let domain = domain.clone();
         async move { resolved.lookup_https(&domain, timeout).await }
     });
-    resolved_first_stream(varlink, move || {
+    resolved_first_stream(varlink, timeout, move |timeout| {
         native_lookup_https_stream(domain, timeout, native)
     })
 }
@@ -869,19 +871,23 @@ fn lookup_https_uncached_stream(
 ///
 /// The native fallback deliberately runs with its own full timeout: during
 /// the short window before the breaker trips on a wedged daemon, a slow
-/// success beats failing queries at the configured deadline.
+/// success beats failing queries at the configured deadline. A lookup that
+/// only queued for a varlink slot gets the rest of its budget instead.
 fn resolved_first_stream<T, F, N, S>(
     varlink: Option<F>,
+    timeout: Duration,
     native: N,
 ) -> impl Stream<Item = Result<LookupEvent<T>, BoxError>> + Send
 where
     T: Send + 'static,
     F: Future<Output = ResolvedLookup<T>> + Send + 'static,
-    N: FnOnce() -> S + Send + 'static,
+    N: FnOnce(Duration) -> S + Send + 'static,
     S: Stream<Item = Result<LookupEvent<T>, BoxError>> + Send,
 {
     stream_fn(async move |mut yielder| {
+        let mut budget = timeout;
         if let Some(varlink) = varlink {
+            let started = Instant::now();
             match varlink.await {
                 ResolvedLookup::Records(records) => {
                     for (value, ttl) in records {
@@ -902,9 +908,10 @@ where
                     return;
                 }
                 ResolvedLookup::Unavailable => {}
+                ResolvedLookup::Busy => budget = timeout.saturating_sub(started.elapsed()),
             }
         }
-        let mut native = std::pin::pin!(native());
+        let mut native = std::pin::pin!(native(budget));
         while let Some(item) = native.next().await {
             yielder.yield_item(item).await;
         }
@@ -1153,7 +1160,7 @@ mod tests {
         net::Ipv4Addr,
         sync::{
             Arc,
-            atomic::{AtomicBool, AtomicUsize, Ordering},
+            atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
             mpsc,
         },
         time::Duration,
@@ -1470,6 +1477,7 @@ mod tests {
             Some(std::future::ready(ResolvedLookup::Records(vec![(
                 addr, None,
             )]))),
+            Duration::from_secs(5),
             tracked_native(&native_called),
         );
 
@@ -2074,11 +2082,14 @@ mod tests {
 
     fn tracked_native(
         called: &Arc<AtomicBool>,
-    ) -> impl FnOnce() -> stream::Iter<std::vec::IntoIter<Result<LookupEvent<Ipv4Addr>, BoxError>>>
+    ) -> impl FnOnce(
+        Duration,
+    )
+        -> stream::Iter<std::vec::IntoIter<Result<LookupEvent<Ipv4Addr>, BoxError>>>
     + Send
     + 'static {
         let called = called.clone();
-        move || {
+        move |_budget| {
             called.store(true, Ordering::SeqCst);
             stream::iter(vec![Ok(LookupEvent::Record(
                 Ipv4Addr::new(9, 9, 9, 9),
@@ -2095,6 +2106,7 @@ mod tests {
                 Ipv4Addr::new(1, 2, 3, 4),
                 Some(60),
             )]))),
+            Duration::from_secs(5),
             tracked_native(&native_called),
         )
         .collect()
@@ -2112,6 +2124,7 @@ mod tests {
         let native_called = Arc::new(AtomicBool::new(false));
         let items: Vec<_> = resolved_first_stream(
             Some(std::future::ready(ResolvedLookup::<Ipv4Addr>::Negative)),
+            Duration::from_secs(5),
             tracked_native(&native_called),
         )
         .collect()
@@ -2132,6 +2145,7 @@ mod tests {
             Some(std::future::ready(ResolvedLookup::<Ipv4Addr>::Failed(
                 BoxError::from_static_str("nope"),
             ))),
+            Duration::from_secs(5),
             tracked_native(&native_called),
         )
         .collect()
@@ -2147,6 +2161,7 @@ mod tests {
         let native_called = Arc::new(AtomicBool::new(false));
         let items: Vec<_> = resolved_first_stream(
             Some(std::future::ready(ResolvedLookup::<Ipv4Addr>::Unavailable)),
+            Duration::from_secs(5),
             tracked_native(&native_called),
         )
         .collect()
@@ -2159,11 +2174,36 @@ mod tests {
         assert!(native_called.load(Ordering::SeqCst));
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn native_gets_the_rest_after_queueing_for_varlink() {
+        let budget = Arc::new(AtomicU64::new(0));
+        let seen = budget.clone();
+        let busy = async {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            ResolvedLookup::<Ipv4Addr>::Busy
+        };
+        let items: Vec<_> =
+            resolved_first_stream(Some(busy), Duration::from_secs(5), move |budget| {
+                seen.store(
+                    u64::try_from(budget.as_millis()).unwrap_or(u64::MAX),
+                    Ordering::SeqCst,
+                );
+                stream::empty()
+            })
+            .collect()
+            .await;
+
+        assert!(items.is_empty());
+        // the second spent queueing is no longer the native lookup's
+        assert_eq!(budget.load(Ordering::SeqCst), 4000);
+    }
+
     #[tokio::test]
     async fn disabled_resolved_uses_native() {
         let native_called = Arc::new(AtomicBool::new(false));
         let items: Vec<_> = resolved_first_stream(
             None::<std::future::Ready<ResolvedLookup<Ipv4Addr>>>,
+            Duration::from_secs(5),
             tracked_native(&native_called),
         )
         .collect()

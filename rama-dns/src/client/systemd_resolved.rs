@@ -163,6 +163,9 @@ pub(super) enum ResolvedLookup<T> {
     Failed(BoxError),
     /// resolved is not usable for this lookup; use the native backend.
     Unavailable,
+    /// No varlink slot freed up in time, so the daemon never saw this
+    /// lookup: use the native backend with what is left of its budget.
+    Busy,
 }
 
 enum ParsedRecord<T> {
@@ -586,7 +589,11 @@ impl SystemdResolved {
             "dns::systemd-resolved: transport failure",
         );
         self.report_transport_failure(claim, kind);
-        ResolvedLookup::Unavailable
+        if matches!(kind, FailureKind::Overload) {
+            ResolvedLookup::Busy
+        } else {
+            ResolvedLookup::Unavailable
+        }
     }
 
     /// Claim the daemon for one lookup, first probing an untested daemon or
@@ -596,7 +603,7 @@ impl SystemdResolved {
         let settled = self.probe_settled.notified();
         let mut settled = std::pin::pin!(settled);
         settled.as_mut().enable();
-        match self.claim() {
+        let probing_since = match self.claim() {
             Some(claim) if claim.probe_generation.is_none() => return Some(claim),
             Some(probe) => {
                 let recovery = self.recovering();
@@ -604,20 +611,32 @@ impl SystemdResolved {
                 if recovery {
                     return None;
                 }
+                Instant::now()
             }
             None => {
                 let phase = self.state.lock().phase;
                 match phase {
-                    Phase::Probing { recovery: true, .. } => return None,
-                    Phase::Probing { .. } => {}
+                    Phase::Probing {
+                        recovery: false,
+                        since,
+                        ..
+                    } => since,
+                    Phase::Probing { .. } => return None,
                     // the probe may have settled since our claim attempt
                     _ => return self.claim_without_probe(budget),
                 }
             }
+        };
+        // bounded from the probe's start: a silent daemon delays a burst once
+        let wait = self
+            .config
+            .connect_timeout
+            .saturating_sub(probing_since.elapsed())
+            .min(budget);
+        if wait.is_zero() {
+            return None;
         }
-        tokio::time::timeout(budget.min(self.config.connect_timeout), settled)
-            .await
-            .ok()?;
+        tokio::time::timeout(wait, settled).await.ok()?;
         self.claim_without_probe(budget)
     }
 
@@ -1421,6 +1440,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_silent_first_probe_delays_lookups_only_once() {
+        let path = test_socket_path();
+        let resolved = resolver(path.clone());
+        // a socket that accepts but never answers GetInfo
+        let _server = FakeResolved::spawn_with_probe(path, Behavior::Hang, vec![Behavior::Hang]);
+
+        let first = Instant::now();
+        let lookup = resolved
+            .lookup_ipv4(&domain(), Duration::from_secs(5))
+            .await;
+        assert!(matches!(lookup, ResolvedLookup::Unavailable));
+        // test_config's 250ms connect timeout, counted from the probe's start
+        assert!(
+            first.elapsed() < Duration::from_millis(400),
+            "{:?}",
+            first.elapsed()
+        );
+
+        // the probe is still running, but its wait is used up
+        let later = Instant::now();
+        let lookup = resolved
+            .lookup_ipv4(&domain(), Duration::from_secs(5))
+            .await;
+        assert!(matches!(lookup, ResolvedLookup::Unavailable));
+        assert!(
+            later.elapsed() < Duration::from_millis(50),
+            "{:?}",
+            later.elapsed()
+        );
+    }
+
+    #[tokio::test]
     async fn lookups_do_not_wait_for_a_silent_reprobe() {
         let path = test_socket_path();
         let mut config = test_config(path.clone());
@@ -1486,7 +1537,7 @@ mod tests {
             queued = queued => (queued, ()),
             _ = hung => panic!("the hung call ends first"),
         };
-        assert!(matches!(queued, ResolvedLookup::Unavailable));
+        assert!(matches!(queued, ResolvedLookup::Busy));
         // test_config's connect timeout, not the 5s lookup budget
         assert!(waited < Duration::from_secs(1), "{waited:?}");
     }
@@ -2611,7 +2662,7 @@ mod tests {
             resolved
                 .lookup_ipv4(&domain(), Duration::from_millis(100))
                 .await,
-            ResolvedLookup::Unavailable,
+            ResolvedLookup::Busy,
         ));
         assert_available(&resolved);
         assert_eq!(resolved.state.lock().failures, 0, "overload must not count");
