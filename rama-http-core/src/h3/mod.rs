@@ -79,7 +79,7 @@ pub use priority::PriorityHandle;
 mod upgrade;
 
 mod datagram;
-pub use datagram::{DatagramConfig, DatagramDrops, DatagramLimits};
+pub use datagram::{DatagramConfig, DatagramDrops, DatagramLimits, MIN_DATAGRAM_CHARGE};
 
 pub mod push;
 

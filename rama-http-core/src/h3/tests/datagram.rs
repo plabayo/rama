@@ -2,7 +2,7 @@
 
 use super::{LIMIT, Pair};
 use crate::h3::{
-    DatagramConfig, DatagramLimits, Error as H3Error, client,
+    DatagramConfig, DatagramLimits, Error as H3Error, MIN_DATAGRAM_CHARGE, client,
     connection::{Config, Shared},
     qpack::{Encoder, EncoderConfig},
     server::{self, Connection as ServerConnection},
@@ -700,11 +700,12 @@ async fn servers_declare_semantics_on_their_response() {
                 };
                 let (mut client, mut server) =
                     start(&pair, server_config(datagrams(limits, policy))).await;
-                let arrived = |server: &ServerConnection, count: u64, bytes: usize| {
+                // One datagram is buffered, charged as its packet.
+                let arrived = |server: &ServerConnection, count: u64| {
                     if queue_len == 0 {
                         server.datagram_drops().queue_full == count
                     } else {
-                        server.shared().datagram_demux().buffered() == bytes
+                        server.shared().datagram_demux().buffered() == MIN_DATAGRAM_CHARGE
                     }
                 };
                 // Declared by the client only; the slow server answers without declaring.
@@ -715,7 +716,7 @@ async fn servers_declare_semantics_on_their_response() {
                         pair.client
                             .send_datagram(raw_datagram(0, b"early"))
                             .unwrap();
-                        wait_drops(&server, |_| arrived(&server, 1, 5)).await;
+                        wait_drops(&server, |_| arrived(&server, 1)).await;
                         let upgrade = handle_upgrade(&request);
                         match response.send_response(accepted(false)).await {
                             Ok(()) => upgrade.await.ok(),
@@ -750,7 +751,7 @@ async fn servers_declare_semantics_on_their_response() {
                         let (request, response) =
                             server.accept().await.unwrap().resolve().await.unwrap();
                         pair.client.send_datagram(raw_datagram(4, b"held")).unwrap();
-                        wait_drops(&server, |_| arrived(&server, 2, 4)).await;
+                        wait_drops(&server, |_| arrived(&server, 2)).await;
                         let upgrade = handle_upgrade(&request);
                         response.send_response(accepted(true)).await.unwrap();
                         upgrade.await.unwrap()
@@ -1901,7 +1902,7 @@ async fn local_abort_hooks_end_both_directions_at_once() {
             pair.client
                 .send_datagram(raw_datagram(0, b"queued"))
                 .unwrap();
-            while server.shared().datagram_demux().buffered() != 6 {
+            while server.shared().datagram_demux().buffered() != MIN_DATAGRAM_CHARGE {
                 tokio::time::sleep(Duration::from_millis(1)).await;
             }
             let (code, upstream) = if malformed {

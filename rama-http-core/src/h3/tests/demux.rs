@@ -1,8 +1,8 @@
 //! The datagram demultiplexer's budgets, lifetimes and end-of-receive rules, driven directly.
 
 use crate::h3::datagram::{
-    AbortRequest, DatagramConfig, DatagramLimits, Demux, ReceiveEnd, Semantics,
-    invalid_prefix_error, pending_lifetime,
+    AbortRequest, DatagramConfig, DatagramLimits, Demux, MIN_DATAGRAM_CHARGE as C, ReceiveEnd,
+    Semantics, invalid_prefix_error, pending_lifetime,
 };
 use rama_core::bytes::Bytes;
 use rama_http::datagram::{NativeRecvError, ViolationPolicy};
@@ -77,21 +77,27 @@ fn deliver(
 
 #[test]
 fn payloads_that_exactly_fit_the_budget_are_kept() {
-    let config = config(4, 4, 8);
+    let config = config(4, 4, 8 * C);
     let now = Instant::now();
     let mut demux = Demux::default();
     // Held for a future stream, filling the budget exactly, then adopted.
-    deliver(&mut demux, &config, 4, 8, now);
+    deliver(&mut demux, &config, 4, 8 * C, now);
     register(&mut demux, &config, 4, now);
-    assert!(matches!(poll(&mut demux, 4), Poll::Ready(Ok(Some(payload))) if payload.len() == 8));
+    assert!(
+        matches!(poll(&mut demux, 4), Poll::Ready(Ok(Some(payload))) if payload.len() == 8 * C)
+    );
     // Queued: a sum that fits where a product would not, then one over the budget, for
     // which the oldest makes room.
     register(&mut demux, &config, 8, now);
-    deliver(&mut demux, &config, 8, 2, now);
-    deliver(&mut demux, &config, 8, 5, now);
-    deliver(&mut demux, &config, 8, 2, now);
-    assert!(matches!(poll(&mut demux, 8), Poll::Ready(Ok(Some(payload))) if payload.len() == 5));
-    assert!(matches!(poll(&mut demux, 8), Poll::Ready(Ok(Some(payload))) if payload.len() == 2));
+    deliver(&mut demux, &config, 8, 2 * C, now);
+    deliver(&mut demux, &config, 8, 5 * C, now);
+    deliver(&mut demux, &config, 8, 2 * C, now);
+    assert!(
+        matches!(poll(&mut demux, 8), Poll::Ready(Ok(Some(payload))) if payload.len() == 5 * C)
+    );
+    assert!(
+        matches!(poll(&mut demux, 8), Poll::Ready(Ok(Some(payload))) if payload.len() == 2 * C)
+    );
     assert!(poll(&mut demux, 8).is_pending());
     assert_eq!(demux.drops().over_budget, 1);
     // The request's own count, reported through its native channel.
@@ -100,15 +106,17 @@ fn payloads_that_exactly_fit_the_budget_are_kept() {
 
 #[test]
 fn held_datagrams_crowding_the_budget_drop_the_payload_not_the_queues() {
-    let config = config(4, 4, 10);
+    let config = config(4, 4, 10 * C);
     let now = Instant::now();
     let mut demux = Demux::default();
     register(&mut demux, &config, 0, now);
-    deliver(&mut demux, &config, 0, 4, now);
+    deliver(&mut demux, &config, 0, 4 * C, now);
     // Held for a stream not open yet, it leaves no room that evicting queues could make.
-    deliver(&mut demux, &config, 8, 6, now);
-    deliver(&mut demux, &config, 0, 5, now);
-    assert!(matches!(poll(&mut demux, 0), Poll::Ready(Ok(Some(payload))) if payload.len() == 4));
+    deliver(&mut demux, &config, 8, 6 * C, now);
+    deliver(&mut demux, &config, 0, 5 * C, now);
+    assert!(
+        matches!(poll(&mut demux, 0), Poll::Ready(Ok(Some(payload))) if payload.len() == 4 * C)
+    );
     assert!(poll(&mut demux, 0).is_pending());
     assert_eq!(demux.drops().over_budget, 1);
     assert_eq!(demux.slot_dropped(0), 1);
@@ -116,17 +124,17 @@ fn held_datagrams_crowding_the_budget_drop_the_payload_not_the_queues() {
 
 #[test]
 fn a_payload_that_can_never_fit_leaves_a_full_queue_alone() {
-    let config = config(4, 4, 64);
+    let config = config(4, 4, 64 * C);
     let now = Instant::now();
     let mut demux = Demux::default();
     register(&mut demux, &config, 8, now);
     for _ in 0..4 {
-        deliver(&mut demux, &config, 8, 8, now);
+        deliver(&mut demux, &config, 8, 8 * C, now);
     }
-    deliver(&mut demux, &config, 8, 65, now);
+    deliver(&mut demux, &config, 8, 65 * C, now);
     for _ in 0..4 {
         assert!(
-            matches!(poll(&mut demux, 8), Poll::Ready(Ok(Some(payload))) if payload.len() == 8)
+            matches!(poll(&mut demux, 8), Poll::Ready(Ok(Some(payload))) if payload.len() == 8 * C)
         );
     }
     assert!(poll(&mut demux, 8).is_pending());
@@ -135,29 +143,53 @@ fn a_payload_that_can_never_fit_leaves_a_full_queue_alone() {
     assert_eq!(demux.slot_dropped(8), 1);
 }
 
+/// A datagram keeps its whole packet alive, so even an empty one costs a packet's charge.
 #[test]
-fn making_room_keeps_empty_datagrams() {
-    let config = config(4, 4, 4);
+fn small_datagrams_are_charged_a_packet() {
+    let config = config(32, 4, 3 * C);
     let now = Instant::now();
     let mut demux = Demux::default();
     register(&mut demux, &config, 0, now);
-    deliver(&mut demux, &config, 0, 0, now);
-    deliver(&mut demux, &config, 0, 3, now);
-    deliver(&mut demux, &config, 0, 3, now);
-    assert!(matches!(poll(&mut demux, 0), Poll::Ready(Ok(Some(payload))) if payload.is_empty()));
-    assert!(matches!(poll(&mut demux, 0), Poll::Ready(Ok(Some(payload))) if payload.len() == 3));
+    for len in [0, 1, 0, 1] {
+        deliver(&mut demux, &config, 0, len, now);
+    }
+    assert_eq!(demux.buffered(), 3 * C);
+    for len in [1, 0, 1] {
+        assert!(
+            matches!(poll(&mut demux, 0), Poll::Ready(Ok(Some(payload))) if payload.len() == len)
+        );
+    }
     assert!(poll(&mut demux, 0).is_pending());
     assert_eq!(demux.drops().over_budget, 1);
 }
 
+/// A held datagram that would not fit even in its predecessor's place costs nobody else theirs.
+#[test]
+fn a_held_datagram_that_cannot_fit_keeps_the_oldest() {
+    let config = config(4, 2, 3 * C);
+    let now = Instant::now();
+    let mut demux = Demux::default();
+    deliver(&mut demux, &config, 4, C, now);
+    deliver(&mut demux, &config, 4, C, now);
+    deliver(&mut demux, &config, 8, 3 * C, now);
+    assert_eq!(demux.drops().over_budget, 1);
+    assert_eq!(demux.drops().expired, 0);
+    register(&mut demux, &config, 4, now);
+    for _ in 0..2 {
+        assert!(
+            matches!(poll(&mut demux, 4), Poll::Ready(Ok(Some(payload))) if payload.len() == C)
+        );
+    }
+}
+
 #[test]
 fn a_request_without_queue_room_counts_its_drops() {
-    let config = config(0, 4, 64);
+    let config = config(0, 4, 64 * C);
     let now = Instant::now();
     let mut demux = Demux::default();
     register(&mut demux, &config, 0, now);
-    deliver(&mut demux, &config, 0, 3, now);
-    deliver(&mut demux, &config, 0, 3, now);
+    deliver(&mut demux, &config, 0, 3 * C, now);
+    deliver(&mut demux, &config, 0, 3 * C, now);
     assert!(poll(&mut demux, 0).is_pending());
     assert_eq!(demux.drops().queue_full, 2);
     assert_eq!(demux.slot_dropped(0), 2);
@@ -165,10 +197,10 @@ fn a_request_without_queue_room_counts_its_drops() {
 
 #[test]
 fn held_datagrams_expire_after_their_lifetime() {
-    let config = config(4, 4, 64);
+    let config = config(4, 4, 64 * C);
     let now = Instant::now();
     let mut demux = Demux::default();
-    deliver(&mut demux, &config, 4, 3, now);
+    deliver(&mut demux, &config, 4, 3 * C, now);
     register(&mut demux, &config, 4, now + LIFETIME * 2);
     assert!(poll(&mut demux, 4).is_pending());
     assert_eq!(demux.drops().expired, 1);
@@ -188,11 +220,11 @@ fn pending_datagrams_wait_a_few_round_trips_with_a_floor() {
 
 #[test]
 fn an_adopted_violation_aborts_its_request() {
-    let config = config(4, 4, 64);
+    let config = config(4, 4, 64 * C);
     let now = Instant::now();
     let mut demux: Demux<Aborts> = Demux::default();
-    deliver(&mut demux, &config, 4, 3, now);
-    deliver(&mut demux, &config, 4, 3, now);
+    deliver(&mut demux, &config, 4, 3 * C, now);
+    deliver(&mut demux, &config, 4, 3 * C, now);
     let aborts = Aborts::default();
     demux
         .register(
@@ -211,7 +243,7 @@ fn an_adopted_violation_aborts_its_request() {
 
 #[test]
 fn the_first_remote_end_stays_and_local_ends_override_it() {
-    let config = config(4, 4, 64);
+    let config = config(4, 4, 64 * C);
     let now = Instant::now();
     let cases = [
         // A reset after the peer's FIN keeps the clean end.
@@ -289,7 +321,7 @@ fn bursts_and_churn_leave_bounded_storage() {
 /// Stalled queues make room for a healthy one instead of starving it of the budget.
 #[test]
 fn stalled_queues_make_room_for_a_healthy_one() {
-    let config = config(4, 4, 64);
+    let config = config(4, 4, 64 * C);
     let now = Instant::now();
     let mut demux = Demux::default();
     for stream in [0, 4, 8] {
@@ -298,30 +330,30 @@ fn stalled_queues_make_room_for_a_healthy_one() {
     // Two consumers that never read fill the budget exactly.
     for stream in [0, 4] {
         for _ in 0..4 {
-            deliver(&mut demux, &config, stream, 8, now);
+            deliver(&mut demux, &config, stream, 8 * C, now);
         }
     }
-    assert_eq!(demux.buffered(), 64);
+    assert_eq!(demux.buffered(), 64 * C);
     for _ in 0..100 {
-        deliver(&mut demux, &config, 8, 8, now);
+        deliver(&mut demux, &config, 8, 8 * C, now);
         assert!(
-            matches!(poll(&mut demux, 8), Poll::Ready(Ok(Some(payload))) if payload.len() == 8)
+            matches!(poll(&mut demux, 8), Poll::Ready(Ok(Some(payload))) if payload.len() == 8 * C)
         );
     }
     assert_eq!(demux.slot_dropped(8), 0);
     assert_eq!(demux.slot_dropped(0) + demux.slot_dropped(4), 1);
     assert_eq!(demux.drops().over_budget, 1);
     // A payload that can never fit is dropped without evicting anyone.
-    deliver(&mut demux, &config, 8, 65, now);
+    deliver(&mut demux, &config, 8, 65 * C, now);
     assert_eq!(demux.slot_dropped(8), 1);
     assert_eq!(demux.slot_dropped(0) + demux.slot_dropped(4), 1);
-    assert!(demux.buffered() <= 64);
+    assert!(demux.buffered() <= 64 * C);
 }
 
 /// A held datagram is adopted only within its own lifetime, whatever the queue order.
 #[test]
 fn held_datagrams_expire_by_their_own_lifetime() {
-    let config = config(4, 4, 64);
+    let config = config(4, 4, 64 * C);
     let start = Instant::now();
     let mut demux = Demux::<Aborts>::default();
     demux
