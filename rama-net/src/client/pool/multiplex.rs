@@ -799,7 +799,7 @@ where
     ) -> Result<Self::Connection, BoxError> {
         // The establishing request owns the first reservation before concurrent
         // checkouts can see this connection in storage.
-        let admission = match conn.extensions().get_ref::<ConnectionAdmission>() {
+        let admission = match conn.extensions().self_get_ref::<ConnectionAdmission>() {
             Some(provider) => Some(provider.acquire(input).await?),
             None => None,
         };
@@ -810,7 +810,10 @@ where
                 .is_none_or(ConnectionReuse::is_reusable);
         let conn = Arc::new(StoredConnection {
             max_concurrency: conn.extensions().get_arc::<MaxConcurrency>(),
-            admission: conn.extensions().get_ref::<ConnectionAdmission>().cloned(),
+            admission: conn
+                .extensions()
+                .self_get_ref::<ConnectionAdmission>()
+                .cloned(),
             conn,
             id,
             active: AtomicUsize::new(1),
@@ -1300,6 +1303,28 @@ mod tests {
             ),
             "idle for 5ms of a 30ms timeout"
         );
+    }
+
+    /// A connection forked from another one's metadata, a tunnel through it say, is admitted
+    /// by its own policy only, never the outer connection's.
+    #[tokio::test]
+    async fn admission_is_the_connections_own_not_an_ancestors() {
+        let pool = MultiplexPool::try_new(32, 1).unwrap();
+        let permit = new_slot(&pool).await;
+        let (outer, state) = admission_connection(&pool, 0);
+        let inner = Conn {
+            serial: 2,
+            extensions: outer.extensions.fork(),
+        };
+        let input = Extensions::new();
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            pool.create(TestId(0), inner, permit, &input),
+        )
+        .await
+        .expect("the outer connection's admission does not apply")
+        .unwrap();
+        assert_eq!(state.reserved.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
