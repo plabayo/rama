@@ -1944,13 +1944,19 @@ mod tests {
         caller.abort();
         _ = caller.await;
 
+        // the fake's cancel returns once the callback finished, or gave up on it
         tokio::time::timeout(Duration::from_secs(5), async {
-            while !fake.cancel_called.load(Ordering::SeqCst) {
+            while fake.callback_threads.lock().is_empty() {
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
         })
         .await
         .expect("the abandoned shared query was not cancelled");
+        assert!(fake.cancel_called.load(Ordering::SeqCst));
+        assert!(
+            fake.callback_completed_during_cancel.load(Ordering::SeqCst),
+            "completion callback was blocked during cancellation",
+        );
         fake.join_callback_threads();
     }
 
@@ -2042,26 +2048,37 @@ mod tests {
         );
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn sibling_stream_drop_cancels_in_flight_query_without_hanging() {
+    #[test]
+    fn sibling_stream_drop_cancels_in_flight_query_without_hanging() {
         // dropping a stream with a still-pending query must not deadlock with the completion callback
-        let resolver = WindowsDnsResolver::new().with_timeout(Duration::from_secs(2));
+        let (done, finished) = std::sync::mpsc::channel();
+        // its own thread and runtime: a deadlock blocks them, not this watchdog
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .expect("runtime");
+            runtime.block_on(async {
+                let resolver = WindowsDnsResolver::new().with_timeout(Duration::from_secs(2));
+                for i in 0..64 {
+                    // unique names bypass the OS cache so both queries stay async
+                    let domain: Domain = format!("cancel-race-{i}.example.com").try_into().unwrap();
+                    let mut lookup_v4 = pin!(resolver.lookup_ipv4(domain.clone()));
+                    let mut lookup_v6 = pin!(resolver.lookup_ipv6(domain));
+                    tokio::select! {
+                        _ = lookup_v4.next() => {}
+                        _ = lookup_v6.next() => {}
+                    }
+                }
+            });
+            _ = done.send(());
+        });
 
         // 180s > worst case of 64 iterations each hitting the 2s lookup timeout
-        tokio::time::timeout(Duration::from_secs(180), async {
-            for i in 0..64 {
-                // unique names bypass the OS cache so both queries stay async
-                let domain: Domain = format!("cancel-race-{i}.example.com").try_into().unwrap();
-                let mut lookup_v4 = pin!(resolver.lookup_ipv4(domain.clone()));
-                let mut lookup_v6 = pin!(resolver.lookup_ipv6(domain));
-                tokio::select! {
-                    _ = lookup_v4.next() => {}
-                    _ = lookup_v6.next() => {}
-                }
-            }
-        })
-        .await
-        .expect("in-flight query cancellation deadlocked");
+        finished
+            .recv_timeout(Duration::from_secs(180))
+            .expect("in-flight query cancellation deadlocked");
     }
 
     #[tokio::test]
