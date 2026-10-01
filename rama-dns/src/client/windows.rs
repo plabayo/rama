@@ -96,7 +96,7 @@ const _: () = assert!(std::mem::size_of::<DnsBackend>() == 0);
 /// Hickory when exact TXT octets are required on Windows.
 pub struct WindowsDnsResolver {
     timeout: Duration,
-    in_flight: InFlight<(Domain, bool, u16)>,
+    in_flight: InFlight<(Domain, u16)>,
 }
 
 impl Default for WindowsDnsResolver {
@@ -144,8 +144,8 @@ impl WindowsDnsResolver {
             return Either::Left(stream::once(std::future::ready(Err(err))));
         }
         let timeout = self.timeout;
-        // DnsQueryEx appends the suffix search list to relative names only
-        let key = (domain.clone(), domain.is_fqdn(), rrtype);
+        // the name goes out without its root dot: `x` and `x.` are one query
+        let key = (domain.clone(), rrtype);
         Either::Right(coalesced_stream(
             self.in_flight.clone(),
             key,
@@ -1855,10 +1855,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rooted_and_relative_names_do_not_share() {
+    async fn rooted_and_relative_names_share_one_query() {
         let resolver = WindowsDnsResolver::new();
         let gate = Arc::new(Notify::new());
-        // DnsQueryEx walks the suffix search list for a relative name only
+        // the root dot is dropped before DnsQueryEx: both ask the same thing
         let relative = resolver
             .coalesced(
                 Domain::from_static("intranet"),
@@ -1880,7 +1880,7 @@ mod tests {
         };
         let (relative, rooted, running) = tokio::join!(relative, rooted, both_running);
 
-        assert_eq!(running, 2);
+        assert_eq!(running, 1);
         assert!(matches!(relative.as_slice(), [Ok(_)]), "{relative:?}");
         assert!(matches!(rooted.as_slice(), [Ok(_)]), "{rooted:?}");
     }

@@ -74,7 +74,7 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 pub struct AppleDnsResolver {
     timeout: Duration,
     limit: LookupLimit,
-    in_flight: InFlight<(Domain, bool, u16)>,
+    in_flight: InFlight<(Domain, u16)>,
     connection: Arc<SharedConnection>,
 }
 
@@ -167,8 +167,8 @@ impl AppleDnsResolver {
         }
         let (timeout, limit) = (self.timeout, self.limit.clone());
         let connection = self.connection.clone();
-        // a rooted name skips the search domains, so it may resolve differently
-        let key = (domain.clone(), domain.is_fqdn(), rrtype);
+        // the name goes out without its root dot: `x` and `x.` are one query
+        let key = (domain.clone(), rrtype);
         Either::Right(coalesced_stream(
             self.in_flight.clone(),
             key,
@@ -1158,9 +1158,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rooted_and_relative_names_do_not_share() {
+    async fn rooted_and_relative_names_share_one_query() {
         let resolver = AppleDnsResolver::new().with_timeout(Duration::from_millis(500));
-        // an mDNS name nobody answers keeps both runs in flight
+        // the root dot is dropped before the query: both ask the same thing
         let lookups = [
             "unanswered.rama-dns-test.local",
             "unanswered.rama-dns-test.local.",
@@ -1170,15 +1170,10 @@ mod tests {
                 .lookup_ipv4(name.try_into().expect("valid domain"))
                 .collect::<Vec<_>>()
         });
-        let both_running = async {
-            let deadline = Instant::now() + Duration::from_millis(400);
-            while resolver.in_flight.running() != 2 && Instant::now() < deadline {
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
-            resolver.in_flight.running()
-        };
-        let (_, running) = tokio::join!(join_all(lookups), both_running);
-        assert_eq!(running, 2);
+        // both lookups have joined by the time this is first polled
+        let running = async { resolver.in_flight.running() };
+        let (_, running) = tokio::join!(join_all(lookups), running);
+        assert_eq!(running, 1);
     }
 
     /// An mDNS name nobody answers, so its query stays open.
