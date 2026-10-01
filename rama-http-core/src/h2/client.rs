@@ -1882,11 +1882,11 @@ fn host_as_authority(
     }
     // RFC 9113 §8.5: an ordinary CONNECT names a host and port, whichever field supplied them.
     if ordinary_connect
-        && !pseudo
+        && pseudo
             .authority
             .as_deref()
             .and_then(|authority| AuthorityRef::try_from(authority).ok())
-            .is_some_and(|authority| authority.port_u16().is_some())
+            .is_none_or(|authority| authority.port_u16().is_none())
     {
         return Err(UserError::MalformedHeaders);
     }
