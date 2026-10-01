@@ -3,6 +3,7 @@ use std::{
     fmt,
     hash::Hash,
     mem::take,
+    num::NonZero,
     panic::{AssertUnwindSafe, catch_unwind},
     pin::{Pin, pin},
     sync::{
@@ -28,7 +29,37 @@ use tokio::{task::AbortHandle, time::error::Elapsed};
 
 use super::limit::DnsTimeoutError;
 
-type Flights<K> = Arc<Mutex<HashMap<(K, TypeId), Arc<dyn Any + Send + Sync>>>>;
+type Map<K> = HashMap<(K, TypeId), Arc<dyn Any + Send + Sync>>;
+type Flights<K> = Arc<Shards<K>>;
+
+/// The runs by key, spread over locks so unrelated keys rarely contend.
+struct Shards<K> {
+    hasher: ahash::RandomState,
+    /// A power of two: contention comes from threads, not from keys.
+    maps: Box<[Mutex<Map<K>>]>,
+}
+
+impl<K> Shards<K> {
+    fn new() -> Self {
+        let threads = std::thread::available_parallelism().map_or(4, NonZero::get);
+        let shards = (threads * 4).next_power_of_two().clamp(8, 1024);
+        Self {
+            hasher: ahash::RandomState::new(),
+            maps: (0..shards).map(|_| Mutex::default()).collect(),
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.maps.iter().map(|map| map.lock().len()).sum()
+    }
+}
+
+impl<K: Hash> Shards<K> {
+    fn shard(&self, slot: &(K, TypeId)) -> usize {
+        // the mask keeps it below the shard count, so the cast cannot truncate
+        (self.hasher.hash_one(slot) & (self.maps.len() as u64 - 1)) as usize
+    }
+}
 
 /// What happens to a run once every caller stopped waiting for it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -68,7 +99,7 @@ impl<K> Clone for InFlight<K> {
 impl<K> fmt::Debug for InFlight<K> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("InFlight")
-            .field("running", &self.flights.lock().len())
+            .field("running", &self.flights.len())
             .finish()
     }
 }
@@ -77,11 +108,15 @@ impl<K> fmt::Debug for InFlight<K> {
 impl<K> InFlight<K> {
     /// Keys with a run in progress.
     pub(crate) fn running(&self) -> usize {
-        self.flights.lock().len()
+        self.flights.len()
     }
 
     fn capacity(&self) -> usize {
-        self.flights.lock().capacity()
+        self.flights
+            .maps
+            .iter()
+            .map(|map| map.lock().capacity())
+            .sum()
     }
 
     pub(crate) fn shares_with(&self, other: &Self) -> bool {
@@ -197,7 +232,7 @@ enum Joined<V> {
 impl<K> InFlight<K> {
     pub(crate) fn new(abandoned: Abandoned) -> Self {
         Self {
-            flights: Arc::default(),
+            flights: Arc::new(Shards::new()),
             abandoned,
         }
     }
@@ -220,11 +255,12 @@ impl<K: Hash + Eq + Clone + Send + Sync + 'static> InFlight<K> {
         F: Future<Output = V> + Send + 'static,
     {
         let slot = (key, TypeId::of::<V>());
+        let shard = self.flights.shard(&slot);
         let wait = max_duration.saturating_add(max_duration / 4);
         let shared = async {
             let mut lookup = Some(lookup);
             loop {
-                match self.join::<V>(&slot) {
+                match self.join::<V>(&slot, shard) {
                     Joined::Running(waiting) => {
                         if let Some(answer) = waiting.flight.answer().await {
                             return answer;
@@ -238,7 +274,7 @@ impl<K: Hash + Eq + Clone + Send + Sync + 'static> InFlight<K> {
                                 "dns lookup ended without an answer",
                             ));
                         };
-                        self.start(slot, max_duration, &waiting.flight, lookup);
+                        self.start(slot, shard, max_duration, &waiting.flight, lookup);
                         return waiting.flight.answer().await.unwrap_or_else(|| {
                             Err(ArcError::from_static_str(
                                 "dns lookup ended without an answer",
@@ -253,13 +289,14 @@ impl<K: Hash + Eq + Clone + Send + Sync + 'static> InFlight<K> {
             .unwrap_or_else(|_elapsed| Err(ArcError::new(DnsTimeoutError::new(max_duration))))
     }
 
-    fn join<V: Send + Sync + 'static>(&self, slot: &(K, TypeId)) -> Joined<V> {
-        if let Some(waiting) = self.join_running(&self.flights.lock(), slot) {
+    fn join<V: Send + Sync + 'static>(&self, slot: &(K, TypeId), shard: usize) -> Joined<V> {
+        let map = &self.flights.maps[shard];
+        if let Some(waiting) = self.join_running(&map.lock(), slot) {
             return Joined::Running(waiting);
         }
         // allocated outside the lock; a racing starter may still win the slot
         let flight = Arc::new(Flight::new());
-        let mut flights = self.flights.lock();
+        let mut flights = map.lock();
         if let Some(waiting) = self.join_running(&flights, slot) {
             return Joined::Running(waiting);
         }
@@ -269,7 +306,7 @@ impl<K: Hash + Eq + Clone + Send + Sync + 'static> InFlight<K> {
 
     fn join_running<V: Send + Sync + 'static>(
         &self,
-        flights: &HashMap<(K, TypeId), Arc<dyn Any + Send + Sync>>,
+        flights: &Map<K>,
         slot: &(K, TypeId),
     ) -> Option<Waiting<V>> {
         let flight = flights.get(slot)?.clone().downcast::<Flight<V>>().ok()?;
@@ -288,6 +325,7 @@ impl<K: Hash + Eq + Clone + Send + Sync + 'static> InFlight<K> {
     fn start<V, F>(
         &self,
         slot: (K, TypeId),
+        shard: usize,
         max_duration: Duration,
         flight: &Arc<Flight<V>>,
         lookup: impl FnOnce() -> F,
@@ -299,6 +337,7 @@ impl<K: Hash + Eq + Clone + Send + Sync + 'static> InFlight<K> {
         let release = Release {
             flights: self.flights.clone(),
             slot,
+            shard,
             flight: Some(flight.clone()),
         };
         let span = tracing::debug_span!("dns lookup");
@@ -338,6 +377,7 @@ fn answer_of<V>(answer: Result<V, Elapsed>, max_duration: Duration) -> Result<Ar
 struct Release<K: Hash + Eq, V> {
     flights: Flights<K>,
     slot: (K, TypeId),
+    shard: usize,
     flight: Option<Arc<Flight<V>>>,
 }
 
@@ -354,7 +394,7 @@ impl<K: Hash + Eq, V> Release<K, V> {
 impl<K: Hash + Eq, V> Drop for Release<K, V> {
     fn drop(&mut self) {
         {
-            let mut flights = self.flights.lock();
+            let mut flights = self.flights.maps[self.shard].lock();
             flights.remove(&self.slot);
             // don't keep a burst's peak capacity once it has drained
             if flights.is_empty() && flights.capacity() > RETAINED_CAPACITY {
@@ -368,7 +408,8 @@ impl<K: Hash + Eq, V> Drop for Release<K, V> {
     }
 }
 
-const RETAINED_CAPACITY: usize = 16;
+/// Per shard: small, as a burst spreads over every shard.
+const RETAINED_CAPACITY: usize = 4;
 
 /// What a shared lookup produced: its records, then the error that ended it.
 pub(crate) struct Outcome<T> {
@@ -591,8 +632,9 @@ mod tests {
         let gate = Arc::new(Notify::new());
 
         let (starts_ref, gate_ref) = (&starts, &gate);
+        // enough keys for every shard to outgrow what it keeps
         let callers = join_all(
-            (0..1000)
+            (0..10_000)
                 .map(|key| in_flight.run(key, TIMEOUT, move || gated(starts_ref, gate_ref, key))),
         );
         let (results, ()) = tokio::join!(callers, open(&gate));
@@ -600,7 +642,7 @@ mod tests {
         assert!(results.iter().all(Result::is_ok));
         assert_eq!(in_flight.running(), 0);
         assert!(
-            in_flight.capacity() <= 2 * RETAINED_CAPACITY,
+            in_flight.capacity() <= in_flight.flights.maps.len() * 2 * RETAINED_CAPACITY,
             "{}",
             in_flight.capacity()
         );
