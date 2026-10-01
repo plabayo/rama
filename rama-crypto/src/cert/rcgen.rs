@@ -6,9 +6,9 @@ use super::{
     SelfSignedCaConfig, validate_certificate_lifetime, validate_leaf_request,
 };
 use crate::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+use jiff::{SignedDuration, Timestamp};
 use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext};
 use rcgen::PublicKeyData as _;
-use time::{OffsetDateTime, SignedDuration};
 
 pub(super) fn validate_certificate_authority_key(
     certificate: &CertificateDer<'_>,
@@ -91,26 +91,21 @@ fn generate_key(kind: CertificateKeyKind) -> Result<rcgen::KeyPair, BoxError> {
 }
 
 fn duration(value: std::time::Duration) -> Result<SignedDuration, BoxError> {
-    let seconds =
-        i64::try_from(value.as_secs()).context("certificate duration exceeds i64 seconds")?;
-    Ok(SignedDuration::seconds(seconds)
-        + SignedDuration::nanoseconds(i64::from(value.subsec_nanos())))
+    SignedDuration::try_from(value).context("certificate duration exceeds i64 seconds")
 }
 
-fn validity_bounds(
-    validity: CertificateValidity,
-) -> Result<(OffsetDateTime, OffsetDateTime), BoxError> {
+fn validity_bounds(validity: CertificateValidity) -> Result<(Timestamp, Timestamp), BoxError> {
     validate_certificate_lifetime(validity.lifetime)?;
-    let now = OffsetDateTime::now_utc();
+    let now = Timestamp::now();
     let lifetime = duration(validity.lifetime)?;
-    // Match BoringSSL: backdating before the Unix epoch clamps to the epoch.
+    // Out-of-range backdating falls back to the Unix epoch.
     let not_before = duration(validity.not_before_skew)
         .ok()
-        .and_then(|skew| now.checked_sub(skew))
-        .unwrap_or(OffsetDateTime::UNIX_EPOCH);
+        .and_then(|skew| now.checked_sub(skew).ok())
+        .unwrap_or(Timestamp::UNIX_EPOCH);
     let not_after = not_before
         .checked_add(lifetime)
-        .ok_or_else(|| BoxError::from_static_str("certificate validity exceeds timestamp range"))?;
+        .context("certificate validity exceeds timestamp range")?;
     Ok((not_before, not_after))
 }
 
@@ -168,8 +163,8 @@ fn leaf_params(
         LeafCertUsage::ClientAuth => rcgen::ExtendedKeyUsagePurpose::ClientAuth,
     }];
     let (not_before, not_after) = validity_bounds(request.config.validity)?;
-    params.not_before = not_before;
-    params.not_after = not_after;
+    params.not_before = crate::asn1::datetime(not_before)?;
+    params.not_after = crate::asn1::datetime(not_after)?;
     Ok(params)
 }
 
@@ -189,8 +184,8 @@ fn ca_params(config: &SelfSignedCaConfig) -> Result<rcgen::CertificateParams, Bo
         rcgen::KeyUsagePurpose::CrlSign,
     ];
     let (not_before, not_after) = validity_bounds(config.validity)?;
-    params.not_before = not_before;
-    params.not_after = not_after;
+    params.not_before = crate::asn1::datetime(not_before)?;
+    params.not_after = crate::asn1::datetime(not_after)?;
     Ok(params)
 }
 
@@ -213,17 +208,23 @@ fn constrain_validity_to_ca(
 ) -> Result<(), BoxError> {
     let (_, cert) = x509_parser::parse_x509_certificate(ca.as_ref())
         .context("certificate authority: parse validity")?;
-    let ca_not_before = OffsetDateTime::from_unix_timestamp(cert.validity().not_before.timestamp())
+    let ca_not_before = Timestamp::from_second(cert.validity().not_before.timestamp())
         .context("certificate authority: parse notBefore")?;
-    let ca_not_after = OffsetDateTime::from_unix_timestamp(cert.validity().not_after.timestamp())
+    let ca_not_after = Timestamp::from_second(cert.validity().not_after.timestamp())
         .context("certificate authority: parse notAfter")?;
-    params.not_before = params.not_before.max(ca_not_before);
-    params.not_after = params.not_after.min(ca_not_after);
-    if params.not_before >= params.not_after {
+    let not_before = Timestamp::from_nanosecond(params.not_before.unix_timestamp_nanos())
+        .context("certificate leaf: parse notBefore")?
+        .max(ca_not_before);
+    let not_after = Timestamp::from_nanosecond(params.not_after.unix_timestamp_nanos())
+        .context("certificate leaf: parse notAfter")?
+        .min(ca_not_after);
+    if not_before >= not_after {
         return Err(BoxError::from_static_str(
             "certificate authority validity cannot contain requested leaf validity",
         ));
     }
+    params.not_before = crate::asn1::datetime(not_before)?;
+    params.not_after = crate::asn1::datetime(not_after)?;
     Ok(())
 }
 
@@ -318,26 +319,30 @@ mod tests {
     fn duration_converts_seconds_and_nanoseconds() {
         assert_eq!(
             duration(std::time::Duration::from_millis(1_500)).unwrap(),
-            SignedDuration::milliseconds(1_500)
+            SignedDuration::from_millis(1_500)
         );
         assert_eq!(
             duration(std::time::Duration::from_nanos(1)).unwrap(),
-            SignedDuration::nanoseconds(1)
+            SignedDuration::from_nanos(1)
         );
+        assert!(duration(std::time::Duration::MAX).is_err());
     }
 
     #[test]
     fn validity_bounds_backdate_the_start() {
-        let before = OffsetDateTime::now_utc();
+        let before = Timestamp::now();
         let (not_before, not_after) = validity_bounds(CertificateValidity::new(
             std::time::Duration::from_millis(1_500),
             std::time::Duration::from_secs(2),
         ))
         .unwrap();
-        let after = OffsetDateTime::now_utc();
+        let after = Timestamp::now();
 
-        assert_eq!(not_after - not_before, SignedDuration::milliseconds(1_500));
-        assert!(not_before >= before - SignedDuration::seconds(2));
-        assert!(not_before <= after - SignedDuration::seconds(2));
+        assert_eq!(
+            not_after.duration_since(not_before),
+            SignedDuration::from_millis(1_500)
+        );
+        assert!(not_before >= before - SignedDuration::from_secs(2));
+        assert!(not_before <= after - SignedDuration::from_secs(2));
     }
 }

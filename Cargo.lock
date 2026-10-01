@@ -4133,6 +4133,7 @@ dependencies = [
  "aws-lc-rs",
  "base64 0.23.1",
  "hmac",
+ "jiff",
  "openssl-probe",
  "parking_lot",
  "rama-boring",

@@ -123,8 +123,8 @@ pub struct OcspCertId<'a> {
 /// which algorithm it used. `produced_at` sets `producedAt`/`thisUpdate`;
 /// `nextUpdate` = `produced_at + validity`.
 ///
-/// The public surface takes only `std` time types — `time::OffsetDateTime` is
-/// an internal detail of the DER `GeneralizedTime` encoding.
+/// Timestamps use `std` time types and must be at or after the Unix epoch,
+/// within `jiff::Timestamp`'s range.
 /// `nonce`, when set, is echoed verbatim as the `id-pkix-ocsp-nonce`
 /// `responseExtensions` value (the bytes a request's matching `extnValue`
 /// carried); pass the value [`parse_ocsp_request`] returned.
@@ -341,15 +341,10 @@ pub fn parse_ocsp_request(der: &[u8]) -> Result<OcspRequestInfo, BoxError> {
     .map_err(|e| BoxError::from(format!("ocsp: parse request: {e}")))
 }
 
-/// Convert a `SystemTime` to a DER `GeneralizedTime`. `time::OffsetDateTime` is
-/// used only here (internal); it never appears in the public API.
 fn generalized_time(t: SystemTime) -> Result<GeneralizedTime, BoxError> {
-    let secs = t
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .context("ocsp: timestamp before unix epoch")?
-        .as_secs();
-    let odt = time::OffsetDateTime::from_unix_timestamp(secs as i64)
-        .map_err(|e| BoxError::from(format!("ocsp: invalid timestamp: {e}")))?;
+    let odt = crate::asn1::timestamp(t)
+        .and_then(crate::asn1::datetime)
+        .context("ocsp")?;
     Ok(GeneralizedTime::from_datetime(odt))
 }
 
