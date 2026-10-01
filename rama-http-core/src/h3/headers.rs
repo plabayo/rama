@@ -190,8 +190,9 @@ pub(crate) fn request_head(
         .map(std::str::from_utf8)
         .transpose()
         .map_err(|_error| malformed("invalid authority"))?;
+    // The URI grammar's reg-name, raw UTF-8 included, as on HTTP/1 and HTTP/2.
     if let Some(authority) = authority {
-        AuthorityRef::try_from(authority).map_err(|_error| malformed("invalid authority"))?;
+        Authority::try_from(authority).map_err(|_error| malformed("invalid authority"))?;
     }
     let mut asterisk_scheme = None;
     let uri = if method == Method::CONNECT && protocol.is_none() {
@@ -1405,6 +1406,35 @@ mod tests {
             ]);
             assert_eq!(request(head).is_ok(), allowed, "h3 {method}");
         }
+    }
+
+    /// A raw UTF-8 host is a reg-name the URI grammar accepts, on H2 as on H3, and is sent on.
+    #[test]
+    fn raw_utf8_authorities_are_received_alike_on_h2_and_h3() {
+        let h3 = request(fields(&[
+            (":method", "GET"),
+            (":scheme", "https"),
+            (":authority", "bücher.example"),
+            (":path", "/"),
+        ]))
+        .unwrap();
+        let pseudo = frame::Pseudo {
+            method: Some(Method::GET),
+            scheme: Some(hpack::BytesStr::try_from(Bytes::from_static(b"https")).unwrap()),
+            authority: Some(hpack::BytesStr::try_from(Bytes::from("bücher.example")).unwrap()),
+            path: Some(hpack::BytesStr::try_from(Bytes::from_static(b"/")).unwrap()),
+            ..Default::default()
+        };
+        let h2 = crate::h2::server::test_util::receive(pseudo, HeaderMap::new()).unwrap();
+        assert_eq!(h3.uri(), h2.uri());
+        let sent = decode(encode_request(&shared(), 0, &h3).unwrap());
+        let authority = sent
+            .iter()
+            .find(|field| field.name == ":authority")
+            .unwrap();
+        // On the wire as its IDNA form, which reads back as the same target.
+        assert_eq!(&authority.value[..], b"xn--bcher-kva.example");
+        assert_eq!(request(sent).unwrap().uri(), h3.uri());
     }
 
     /// A plain CONNECT names a host and port on every version, received or sent: there is no
