@@ -215,6 +215,8 @@ pub(crate) struct Shared {
     datagrams: DatagramDemux,
     local_datagrams: AtomicBool,
     peer_datagrams: AtomicBool,
+    // Our initial SETTINGS reached the QUIC control stream.
+    settings_sent: AtomicBool,
     pub(crate) schedule: super::priority::Schedule,
 }
 
@@ -242,9 +244,10 @@ impl Shared {
         Ok(shared)
     }
 
-    /// Datagrams are enabled and QUIC DATAGRAM can carry them.
+    /// Datagrams are enabled and this endpoint receives QUIC DATAGRAM frames, whatever the
+    /// peer supports: what `SETTINGS_H3_DATAGRAM` advertises (RFC 9297 §2.1.1).
     fn local_datagrams_supported(&self, connection: &QuicConnection) -> bool {
-        self.config.datagrams.is_some() && connection.max_datagram_size().is_some()
+        self.config.datagrams.is_some() && connection.datagram_receive_enabled()
     }
 
     pub(crate) fn new(
@@ -284,6 +287,7 @@ impl Shared {
             datagrams: Mutex::default(),
             local_datagrams: AtomicBool::new(false),
             peer_datagrams: AtomicBool::new(false),
+            settings_sent: AtomicBool::new(false),
         }))
     }
 
@@ -505,7 +509,9 @@ impl Shared {
     /// Whether native HTTP/3 datagrams may be sent: `SETTINGS_H3_DATAGRAM` was both sent
     /// and received with value 1 (RFC 9297 §2.1.1).
     pub(crate) fn native_datagrams(&self) -> bool {
-        self.local_datagrams.load(Ordering::Acquire) && self.peer_datagrams.load(Ordering::Acquire)
+        self.local_datagrams.load(Ordering::Acquire)
+            && self.settings_sent.load(Ordering::Acquire)
+            && self.peer_datagrams.load(Ordering::Acquire)
     }
 
     /// Register a request stream with the datagram demux, before any of its bytes are sent
@@ -1245,6 +1251,8 @@ impl Driver {
                         Error::connection(Code::H3_CLOSED_CRITICAL_STREAM, "control stream stopped")
                     })?;
                 }
+                // QUIC holds our SETTINGS now: native datagrams may follow them.
+                self.shared.settings_sent.store(true, Ordering::Release);
                 loop {
                     let next = {
                         let mut state = self.shared.state.lock();

@@ -522,6 +522,96 @@ async fn datagrams_before_the_peers_settings_are_received_and_sending_waits_for_
     .unwrap();
 }
 
+/// The settings of the server's first SETTINGS frame, read off its control stream.
+async fn server_settings(pair: &Pair) -> Vec<(u64, u64)> {
+    let mut control = loop {
+        let mut stream = pair.client.accept_uni().await.unwrap();
+        let mut ty = [0];
+        stream.read_exact(&mut ty).await.unwrap();
+        if ty == [0x00] {
+            break stream;
+        }
+    };
+    let mut bytes = BytesMut::new();
+    loop {
+        let chunk = control.read_chunk(1024, true).await.unwrap().unwrap();
+        bytes.extend_from_slice(&chunk.bytes);
+        let mut frame = &bytes[..];
+        let (Ok(ty), Ok(len)) = (VarInt::decode(&mut frame), VarInt::decode(&mut frame)) else {
+            continue;
+        };
+        let Ok(len) = usize::try_from(len.into_inner()) else {
+            continue;
+        };
+        if frame.len() < len {
+            continue;
+        }
+        assert_eq!(ty.into_inner(), 0x04, "SETTINGS comes first");
+        let mut payload = &frame[..len];
+        let mut settings = Vec::new();
+        while payload.has_remaining() {
+            let id = VarInt::decode(&mut payload).unwrap().into_inner();
+            let value = VarInt::decode(&mut payload).unwrap().into_inner();
+            settings.push((id, value));
+        }
+        return settings;
+    }
+}
+
+/// `SETTINGS_H3_DATAGRAM` follows this endpoint's own QUIC DATAGRAM support, whatever the
+/// peer's (RFC 9297 §2.1.1): a peer that receives none may still send them.
+#[tokio::test]
+async fn datagram_settings_follow_this_endpoints_own_transport_support() {
+    tokio::time::timeout(LIMIT, async {
+        let mut client_transport = TransportConfig::default();
+        client_transport.unset_datagram_receive_buffer_size();
+        let pair = Pair::in_memory(Some(client_transport), None).await;
+        let (_server, driver) =
+            server::handshake(pair.server.clone(), server_config(Some(Default::default())))
+                .unwrap();
+        spawn(driver.run());
+        assert!(server_settings(&pair).await.contains(&(0x33, 1)));
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+/// Native datagrams wait for this endpoint's own SETTINGS too (RFC 9297 §2.1.1): with the
+/// client's control stream blocked, it keeps sending capsules after the server's arrived.
+#[tokio::test]
+async fn native_datagrams_wait_for_this_endpoints_settings() {
+    tokio::time::timeout(LIMIT, async {
+        // No data credit on unidirectional streams: the client's SETTINGS cannot leave.
+        let mut server_transport = TransportConfig::default();
+        server_transport.set_stream_receive_window_uni(0u32.into());
+        let pair = Pair::in_memory(None, Some(server_transport)).await;
+        let (mut client, mut server) = start(&pair, server_config(Some(Default::default()))).await;
+        let (mut client_session, _server_session) = sessions(&mut client, &mut server).await;
+        for _ in 0..20 {
+            assert_eq!(
+                client_session
+                    .native()
+                    .unwrap()
+                    .channel()
+                    .max_payload_size(),
+                None
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(
+            client_session
+                .send_datagram(Bytes::from_static(b"capsule"))
+                .await
+                .unwrap(),
+            DatagramTransport::Capsule
+        );
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
 #[tokio::test]
 async fn datagrams_this_endpoint_never_advertised_are_counted_and_dropped() {
     tokio::time::timeout(LIMIT, async {
