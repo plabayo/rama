@@ -1123,6 +1123,49 @@ mod tests {
             .expect("the retired stream wakes waiters");
     }
 
+    /// RFC 8441 §4: a `:protocol` on another method fails locally, as on HTTP/3, even with the
+    /// server's setting, and leaves the connection usable.
+    #[tokio::test]
+    async fn protocol_on_other_methods_fails_locally() {
+        let (client_io, server_io) = tokio::io::duplex(65536);
+        let served = Arc::new(AtomicUsize::new(0));
+        let service = {
+            let served = served.clone();
+            service_fn(move |_request: Request| {
+                served.fetch_add(1, Ordering::Relaxed);
+                std::future::ready(Ok::<_, Infallible>(Response::new(Body::empty())))
+            })
+        };
+        let (mut sender, connection) = crate::client::conn::http2::handshake::<_, Body>(
+            Executor::default(),
+            ServiceInput::new(client_io),
+        )
+        .await
+        .unwrap();
+        tokio::spawn(connection);
+        let mut builder = server::conn::http2::Builder::new(Executor::default());
+        builder.set_enable_connect_protocol();
+        tokio::spawn(
+            builder.serve_connection(ServiceInput::new(server_io), RamaHttpService::new(service)),
+        );
+        let request = Request::builder()
+            .uri("https://example.com/chat")
+            .body(Body::empty())
+            .unwrap();
+        request.extensions().insert(Protocol::WEBSOCKET);
+        let error = sender.send_request(request).await.unwrap_err();
+        let h2 = Error::source(&error)
+            .and_then(|source| source.downcast_ref::<H2Error>())
+            .expect("h2 error");
+        assert_eq!(h2.to_string(), "user error: malformed headers");
+        let request = Request::builder()
+            .uri("https://example.com/")
+            .body(Body::empty())
+            .unwrap();
+        sender.send_request(request).await.unwrap();
+        assert_eq!(served.load(Ordering::Relaxed), 1);
+    }
+
     /// RFC 8441 §3: `:protocol` is only sent after the server enabled it, even when the
     /// request is issued before the server's SETTINGS arrive.
     #[tokio::test]

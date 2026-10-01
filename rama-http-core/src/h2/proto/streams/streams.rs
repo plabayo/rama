@@ -396,6 +396,10 @@ where
 
         me.actions.ensure_no_conn_error()?;
         me.actions.send.ensure_next_stream_id()?;
+        // RFC 8441 §4: `:protocol` only extends CONNECT, as on HTTP/3.
+        if protocol.is_some() && request.method() != Method::CONNECT {
+            return Err(UserError::MalformedHeaders.into());
+        }
         if protocol.is_some() && !me.actions.send.is_extended_connect_protocol_enabled() {
             return Err(UserError::ExtendedConnectNotEnabled.into());
         }
