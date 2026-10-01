@@ -1874,7 +1874,11 @@ fn host_as_authority(
                 }
             }
         }
-        OutgoingHost::Unusable => drop_host = pseudo.authority.is_some(),
+        // Without `:authority` it would be the only one, and it cannot be.
+        OutgoingHost::Unusable if pseudo.authority.is_none() => {
+            return Err(UserError::MalformedHeaders);
+        }
+        OutgoingHost::Unusable => drop_host = true,
         OutgoingHost::Absent => {}
     }
     if drop_host {

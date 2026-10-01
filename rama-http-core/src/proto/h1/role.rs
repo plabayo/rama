@@ -22,7 +22,10 @@ use crate::headers;
 use crate::proto::h1::{
     Encode, Encoder, Http1Transaction, ParseContext, ParseResult, ParsedMessage,
 };
-use crate::proto::{BodyLength, MessageHead, RequestLine, target::normalize_received};
+use crate::proto::{
+    BodyLength, MessageHead, RequestLine,
+    target::{normalize_received, repair_outgoing_h1_host},
+};
 
 use super::EncodeHead;
 
@@ -1122,6 +1125,9 @@ impl Http1Transaction for Client {
         // RFC 9112 §3.2.3: a CONNECT target is `host:port`.
         if msg.head.subject.0 == Method::CONNECT && msg.head.subject.1.port_u16().is_none() {
             return Err(crate::Error::new_user_target());
+        }
+        if !repair_outgoing_h1_host(&msg.head.subject.1, &mut msg.head.headers) {
+            return Err(crate::Error::new_user_header());
         }
 
         let body = Self::set_length(&mut msg.head, msg.body);

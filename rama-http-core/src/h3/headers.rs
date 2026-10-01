@@ -1163,8 +1163,8 @@ mod tests {
         }
     }
 
-    /// An unusable Host never reaches the wire next to a URI authority, on H2 or H3; without one,
-    /// H3 refuses it.
+    /// An unusable Host never reaches the wire next to a URI authority, on any version; without
+    /// one, every version refuses it.
     #[test]
     fn unusable_hosts_are_dropped_next_to_the_uri_authority() {
         let request = |uri: &str, hosts: &[&'static str]| {
@@ -1214,8 +1214,32 @@ mod tests {
                 "h2 {hosts:?}"
             );
             assert!(frame.fields().get(header::HOST).is_none(), "h2 {hosts:?}");
-            // Without a URI authority the Host is all there is: H3 cannot send it.
-            encode_request(&shared(), 0, &request("custom:/p", hosts)).unwrap_err();
+            let sent = request("https://good.example/", hosts);
+            let h1 =
+                h1::send_with(Method::GET, sent.uri().clone(), sent.headers().clone()).unwrap();
+            assert!(
+                h1.starts_with("GET / HTTP/1.1\r\nhost: good.example\r\n"),
+                "h1 {hosts:?}: {h1}"
+            );
+            // Without a URI authority the Host is all there is, and no version can send it.
+            for uri in ["custom:/p", "/p"] {
+                encode_request(&shared(), 0, &request(uri, hosts)).unwrap_err();
+                let sent = request(uri, hosts);
+                assert!(
+                    h1::send_with(Method::GET, sent.uri().clone(), sent.headers().clone())
+                        .is_none(),
+                    "h1 {uri} {hosts:?}"
+                );
+                crate::h2::client::Peer::convert_send_message(
+                    StreamId::from(1),
+                    request(uri, hosts),
+                    None,
+                    true,
+                    None,
+                    None,
+                )
+                .unwrap_err();
+            }
         }
     }
 

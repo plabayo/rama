@@ -119,6 +119,28 @@ pub(crate) fn outgoing_host(headers: &HeaderMap) -> OutgoingHost<'_> {
     }
 }
 
+/// The HTTP/1 form of the H2/H3 rule that one authority reaches the wire: an unusable
+/// `Host` gives way to the URI authority. `false` when there is none to send instead.
+pub(crate) fn repair_outgoing_h1_host(uri: &Uri, headers: &mut HeaderMap) -> bool {
+    if !matches!(outgoing_host(headers), OutgoingHost::Unusable) {
+        return true;
+    }
+    let sensitive = headers
+        .get_all(header::HOST)
+        .iter()
+        .any(HeaderValue::is_sensitive);
+    match uri
+        .authority()
+        .and_then(|authority| host_value(authority, sensitive))
+    {
+        Some(host) => {
+            set_host(headers, host);
+            true
+        }
+        None => false,
+    }
+}
+
 /// Whether an outgoing `:authority` takes the `Host` bytes: a `Host` naming another host or port
 /// is the wire authority (as with curl), and a matching one is sent exactly (RFC 9114 §4.3.1)
 /// unless the URI adds userinfo, which `Host` cannot carry.

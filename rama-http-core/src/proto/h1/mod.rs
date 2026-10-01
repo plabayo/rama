@@ -154,6 +154,11 @@ pub(crate) mod test_util {
 
     /// The request head an HTTP/1 client writes, or `None` when it refuses to.
     pub(crate) fn send(method: Method, uri: Uri) -> Option<String> {
+        send_with(method, uri, HeaderMap::new())
+    }
+
+    /// [`send`] with the request's own header fields.
+    pub(crate) fn send_with(method: Method, uri: Uri, headers: HeaderMap) -> Option<String> {
         let mut extensions = Extensions::default();
         let mut dst = Vec::new();
         ClientTransaction::encode(
@@ -161,7 +166,7 @@ pub(crate) mod test_util {
                 head: EncodeHead {
                     version: Version::HTTP_11,
                     subject: RequestLine(method, uri),
-                    headers: HeaderMap::new(),
+                    headers,
                     extensions: &mut extensions,
                 },
                 body: None,
