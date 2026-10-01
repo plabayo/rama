@@ -157,8 +157,9 @@ where
                 .await;
             return;
         };
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        let mut records = std::pin::pin!(query_record_stream(domain, remaining, rrtype, parser));
+        let mut records = std::pin::pin!(query_record_stream(
+            domain, deadline, timeout, rrtype, parser
+        ));
         while let Some(record) = records.next().await {
             yielder.yield_item(record).await;
         }
@@ -225,8 +226,10 @@ impl DnsServiceBindingResolver for AppleDnsResolver {
 
 impl DnsResolver for AppleDnsResolver {}
 
+/// `timeout` is the caller's whole budget, reported on expiry of `deadline`.
 fn query_record_stream<T, P>(
     domain: Domain,
+    deadline: Instant,
     timeout: Duration,
     rrtype: u16,
     parser: P,
@@ -330,8 +333,6 @@ where
                 return;
             }
         };
-
-        let deadline = Instant::now() + timeout;
 
         loop {
             for item in drain_completed_batch(&state) {
@@ -917,6 +918,36 @@ mod tests {
             items.as_slice(),
             [Err(err)] if error_chain(err.as_ref()).any(|cause| cause.is::<DnsTimeoutError>())
         ));
+    }
+
+    #[tokio::test]
+    async fn queued_lookup_reports_its_whole_budget() {
+        let resolver = AppleDnsResolver::new()
+            .with_max_concurrency(1)
+            .with_timeout(Duration::from_millis(300));
+        let slot = resolver
+            .limit
+            .acquire(deadline_after(Duration::from_secs(5)))
+            .await
+            .expect("the only slot");
+        let release = async {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            drop(slot);
+        };
+        // an mDNS name nobody answers, so the query itself runs out the budget
+        let lookup = resolver
+            .lookup_ipv4(Domain::from_static("unanswered.rama-dns-test.local"))
+            .collect::<Vec<_>>();
+        let (items, ()) = tokio::join!(lookup, release);
+
+        let timeout = items
+            .iter()
+            .find_map(|item| item.as_ref().err())
+            .and_then(|err| {
+                error_chain(err.as_ref()).find_map(|cause| cause.downcast_ref::<DnsTimeoutError>())
+            })
+            .map(DnsTimeoutError::timeout);
+        assert_eq!(timeout, Some(Duration::from_millis(300)), "{items:?}");
     }
 
     #[test]
