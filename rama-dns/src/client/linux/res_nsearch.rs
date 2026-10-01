@@ -325,15 +325,43 @@ fn clear_errno() {
     unsafe { *errno = 0 };
 }
 
-/// Shorten libc's wait per try so its retransmits land inside `budget`.
+/// Shorten libc's retransmits so one name's tries land inside `budget`: by
+/// default one lost datagram would use up the whole default budget.
 ///
-/// glibc waits `retrans` seconds (5 by default) per nameserver per try, so a
-/// single lost datagram otherwise uses up the whole default budget.
+/// Fewer tries are made only when even a second per send does not fit. A
+/// late answer still counts during a retransmit, so the first name keeps the
+/// whole budget; a relative name that times out may then also try its first
+/// search domain past it, which only holds the thread longer.
 fn fit_retransmits(state: &mut ffi::ResState, budget: Duration) {
-    let waits = state.retry.max(1).saturating_mul(state.nscount.max(1));
-    let budget_secs = c_int::try_from(budget.as_secs()).unwrap_or(c_int::MAX);
-    state.retrans = state.retrans.min((budget_secs / waits).max(1));
+    let budget = c_int::try_from(budget.as_secs())
+        .unwrap_or(c_int::MAX)
+        .max(1);
+    let nscount = state.nscount.clamp(1, MAX_NAMESERVERS);
+    let total = |retrans, retry: c_int| retry.max(1).saturating_mul(try_secs(retrans, nscount));
+
+    let mut retrans = state.retrans.max(1);
+    while retrans > 1 && total(retrans, state.retry) > budget {
+        retrans -= 1;
+    }
+    state.retrans = retrans;
+    if total(retrans, state.retry) > budget {
+        state.retry = (budget / try_secs(retrans, nscount)).max(1);
+    }
 }
+
+/// Seconds one try waits on all nameservers, as glibc's `send_dg` computes it.
+fn try_secs(retrans: c_int, nscount: c_int) -> c_int {
+    (0..nscount)
+        .map(|ns| {
+            let secs = retrans.saturating_mul(1 << ns);
+            let secs = if ns > 0 { secs / nscount } else { secs };
+            secs.max(1)
+        })
+        .fold(0, c_int::saturating_add)
+}
+
+/// `MAXNS` in `<resolv.h>`.
+const MAX_NAMESERVERS: c_int = 3;
 
 fn response_buffer_limit(configured: usize) -> Result<usize, BoxError> {
     if configured < DNS_HEADER_SIZE {
@@ -702,7 +730,7 @@ mod response_buffer_tests {
 
     use super::{
         DNS_HEADER_SIZE, clear_errno, ffi, fit_retransmits, grow_response_buffer,
-        response_buffer_limit, timed_out,
+        response_buffer_limit, timed_out, try_secs,
     };
 
     #[test]
@@ -728,27 +756,45 @@ mod response_buffer_tests {
         assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(0));
     }
 
+    /// `(retrans, retry)` after fitting, and the seconds one name may then wait.
+    fn fitted(
+        retrans: libc::c_int,
+        retry: libc::c_int,
+        nscount: libc::c_int,
+        budget_secs: u64,
+    ) -> (libc::c_int, libc::c_int, libc::c_int) {
+        // SAFETY: `__res_state` is plain old data; zeroed is a valid value.
+        let mut state: ffi::ResState = unsafe { mem::zeroed() };
+        state.retrans = retrans;
+        state.retry = retry;
+        state.nscount = nscount;
+        fit_retransmits(&mut state, Duration::from_secs(budget_secs));
+        let waited = state.retry.max(1) * try_secs(state.retrans, nscount.clamp(1, 3));
+        (state.retrans, state.retry, waited)
+    }
+
     #[test]
     fn retransmits_fit_the_lookup_budget() {
-        let fitted = |retrans, retry, nscount, budget_secs| {
-            // SAFETY: `__res_state` is plain old data; zeroed is a valid value.
-            let mut state: ffi::ResState = unsafe { mem::zeroed() };
-            state.retrans = retrans;
-            state.retry = retry;
-            state.nscount = nscount;
-            fit_retransmits(&mut state, Duration::from_secs(budget_secs));
-            state.retrans
-        };
-
         // glibc defaults against one stub: retransmit after 2s, not at 5s
-        assert_eq!(fitted(5, 2, 1, 5), 2);
-        assert_eq!(fitted(5, 2, 3, 5), 1);
-        // glibc waits at least a second per try
-        assert_eq!(fitted(5, 2, 1, 1), 1);
+        assert_eq!(fitted(5, 2, 1, 5), (2, 2, 4));
+        // glibc waits at least a second per send, so drop a try instead
+        assert_eq!(fitted(5, 2, 3, 5), (1, 1, 3));
+        assert_eq!(fitted(5, 2, 1, 1), (1, 1, 1));
+        // a hostile `options timeout:30 attempts:5` with three nameservers
+        assert_eq!(fitted(30, 5, 3, 5), (1, 1, 3));
         // a shorter configured wait is kept, a fitting one is never lengthened
-        assert_eq!(fitted(1, 2, 1, 5), 1);
-        assert_eq!(fitted(5, 2, 1, 30), 5);
-        assert_eq!(fitted(5, 0, 0, 5), 5);
+        assert_eq!(fitted(1, 2, 1, 5), (1, 2, 2));
+        assert_eq!(fitted(5, 2, 1, 30), (5, 2, 10));
+        assert_eq!(fitted(5, 0, 0, 5), (5, 0, 5));
+    }
+
+    #[test]
+    fn libc_waits_per_try_as_send_dg_computes_it() {
+        assert_eq!(try_secs(5, 1), 5);
+        // 5, then (5 << 1) / 3, then (5 << 2) / 3
+        assert_eq!(try_secs(5, 3), 5 + 3 + 6);
+        // never under a second per nameserver
+        assert_eq!(try_secs(1, 3), 3);
     }
 
     #[test]
