@@ -113,7 +113,7 @@ impl TokioDnsResolver {
     }
 
     generate_set_and_with! {
-        /// The window of [`Self::burst_limit`] (default 50ms).
+        /// The window of [`Self::burst_limit`] (default 20ms).
         pub fn burst_window(mut self, window: Duration) -> Self {
             self.limit = self.limit.with(|limits| limits.burst_window = window);
             self

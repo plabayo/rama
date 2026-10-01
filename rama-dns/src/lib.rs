@@ -44,7 +44,7 @@
 //! there — as with [`client::TokioDnsResolver`] (via `getaddrinfo`) — each
 //! lookup occupies a tokio blocking-pool thread for the duration of the libc
 //! call. Those resolvers bound how many such calls run at once (384 by
-//! default) and how many queries a burst may leave unanswered (128 per 50ms,
+//! default) and how many queries a burst may leave unanswered (128 per 20ms,
 //! 64 for `TokioDnsResolver`, which asks for A and AAAA per call), so a burst
 //! of distinct names neither floods the pool nor overflows a local stub
 //! resolver, while slow upstream answers do not hold new lookups back. Under

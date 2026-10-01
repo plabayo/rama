@@ -33,11 +33,11 @@ impl Limits {
     /// For lookups that send one query each. 384 calls leave a quarter of
     /// tokio's 512 blocking threads to the rest; 128 queries are half of the
     /// ~256 datagrams a stub's default receive buffer holds, and a busy stub
-    /// reads a full buffer well within 50ms.
+    /// reads a full buffer well within 20ms.
     pub(crate) const ONE_QUERY: Self = Self {
         max_concurrency: 384,
         burst_limit: 128,
-        burst_window: Duration::from_millis(50),
+        burst_window: Duration::from_millis(20),
     };
 
     /// For `getaddrinfo` calls that ask for A and AAAA at once.

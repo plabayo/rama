@@ -199,7 +199,7 @@ impl LinuxDnsResolverBuilder {
     }
 
     generate_set_and_with! {
-        /// The window of [`Self::native_burst_limit`] (default 50ms).
+        /// The window of [`Self::native_burst_limit`] (default 20ms).
         pub fn native_burst_window(mut self, window: Duration) -> Self {
             self.native_limits.burst_window = window;
             self
@@ -1500,20 +1500,20 @@ mod tests {
         assert_eq!(resolver.response_buffer_size(), usize::from(u16::MAX));
         assert_eq!(resolver.native_max_concurrency(), 384);
         assert_eq!(resolver.native_burst_limit(), 128);
-        assert_eq!(resolver.native_burst_window(), Duration::from_millis(50));
+        assert_eq!(resolver.native_burst_window(), Duration::from_millis(20));
         assert!(!resolver.systemd_resolved_enabled());
 
         let resolver = super::LinuxDnsResolver::builder()
             .with_response_buffer_size(4096)
             .with_native_max_concurrency(8)
             .with_native_burst_limit(4)
-            .with_native_burst_window(Duration::from_millis(20))
+            .with_native_burst_window(Duration::from_millis(30))
             .with_systemd_resolved(true)
             .build();
         assert_eq!(resolver.response_buffer_size(), 4096);
         assert_eq!(resolver.native_max_concurrency(), 8);
         assert_eq!(resolver.native_burst_limit(), 4);
-        assert_eq!(resolver.native_burst_window(), Duration::from_millis(20));
+        assert_eq!(resolver.native_burst_window(), Duration::from_millis(30));
         assert!(resolver.systemd_resolved_enabled());
 
         // one setter keeps the other bounds
