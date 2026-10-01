@@ -333,7 +333,8 @@ fn clear_errno() {
 /// whole budget; a relative name that times out may then also try its first
 /// search domain past it, which only holds the thread longer.
 fn fit_retransmits(state: &mut ffi::ResState, budget: Duration) {
-    let budget = c_int::try_from(budget.as_secs())
+    // the budget arrives a little short of the timeout: keep its last second
+    let budget = c_int::try_from(budget.saturating_add(Duration::from_millis(500)).as_secs())
         .unwrap_or(c_int::MAX)
         .max(1);
     let nscount = state.nscount.clamp(1, MAX_NAMESERVERS);
@@ -761,31 +762,35 @@ mod response_buffer_tests {
         retrans: libc::c_int,
         retry: libc::c_int,
         nscount: libc::c_int,
-        budget_secs: u64,
+        budget: Duration,
     ) -> (libc::c_int, libc::c_int, libc::c_int) {
         // SAFETY: `__res_state` is plain old data; zeroed is a valid value.
         let mut state: ffi::ResState = unsafe { mem::zeroed() };
         state.retrans = retrans;
         state.retry = retry;
         state.nscount = nscount;
-        fit_retransmits(&mut state, Duration::from_secs(budget_secs));
+        fit_retransmits(&mut state, budget);
         let waited = state.retry.max(1) * try_secs(state.retrans, nscount.clamp(1, 3));
         (state.retrans, state.retry, waited)
     }
 
     #[test]
     fn retransmits_fit_the_lookup_budget() {
+        let secs = Duration::from_secs;
         // glibc defaults against one stub: retransmit after 2s, not at 5s
-        assert_eq!(fitted(5, 2, 1, 5), (2, 2, 4));
+        assert_eq!(fitted(5, 2, 1, secs(5)), (2, 2, 4));
         // glibc waits at least a second per send, so drop a try instead
-        assert_eq!(fitted(5, 2, 3, 5), (1, 1, 3));
-        assert_eq!(fitted(5, 2, 1, 1), (1, 1, 1));
+        assert_eq!(fitted(5, 2, 3, secs(5)), (1, 1, 3));
+        assert_eq!(fitted(5, 2, 1, secs(1)), (1, 1, 1));
         // a hostile `options timeout:30 attempts:5` with three nameservers
-        assert_eq!(fitted(30, 5, 3, 5), (1, 1, 3));
+        assert_eq!(fitted(30, 5, 3, secs(5)), (1, 1, 3));
         // a shorter configured wait is kept, a fitting one is never lengthened
-        assert_eq!(fitted(1, 2, 1, 5), (1, 2, 2));
-        assert_eq!(fitted(5, 2, 1, 30), (5, 2, 10));
-        assert_eq!(fitted(5, 0, 0, 5), (5, 0, 5));
+        assert_eq!(fitted(1, 2, 1, secs(5)), (1, 2, 2));
+        assert_eq!(fitted(5, 2, 1, secs(30)), (5, 2, 10));
+        assert_eq!(fitted(5, 0, 0, secs(5)), (5, 0, 5));
+        // the budget a 2s or 5s timeout leaves once the call starts
+        assert_eq!(fitted(5, 2, 1, Duration::from_millis(1990)), (1, 2, 2));
+        assert_eq!(fitted(1, 5, 1, Duration::from_millis(4980)), (1, 5, 5));
     }
 
     #[test]
