@@ -2,7 +2,7 @@
 
 use parking_lot::Mutex;
 use rama::{
-    error::BoxError,
+    error::{BoxError, BoxErrorExt as _},
     futures::{SinkExt as _, StreamExt as _},
     http::ws::{
         Message, ProtocolError, WebSocketIo,
@@ -10,18 +10,29 @@ use rama::{
         protocol::{CloseFrame, frame::coding::CloseCode},
     },
 };
-use std::io::{self, BufRead as _};
-use tokio::{io::AsyncWriteExt as _, sync::mpsc};
+use std::{
+    io::{self, BufRead as _},
+    time::Duration,
+};
+use tokio::{
+    io::AsyncWriteExt as _,
+    sync::mpsc,
+    time::{Instant, sleep},
+};
 
 /// Lines buffered between stdin and the socket.
 const PENDING_LINES: usize = 16;
+
+/// How long a peer has to complete the close handshake once our Close went out.
+const CLOSE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Send each stdin line as a text message and print every received message.
 ///
 /// Both directions run concurrently, so a send waiting on flow control never stops
 /// receiving. End of input starts the close handshake; the command ends once the peer's
-/// close completed and the stream ended, whatever state stdin is in. Unreadable input
-/// closes with an error status and fails the command.
+/// close completed and the stream ended, whatever state stdin is in, or fails when the
+/// peer leaves it unanswered. Unreadable input closes with an error status and fails the
+/// command.
 pub(super) async fn run<S: WebSocketIo>(socket: ClientWebSocket<S>) -> Result<(), BoxError> {
     // A blocking stdin read cannot be cancelled: keep it off the runtime, so a pending
     // read never delays the exit.
@@ -83,12 +94,14 @@ async fn pump<S: WebSocketIo>(
         Ok::<_, BoxError>(())
     };
 
-    tokio::pin!(send, receive);
+    let closing = sleep(CLOSE_TIMEOUT);
+    tokio::pin!(send, receive, closing);
     let mut sending = true;
     loop {
         tokio::select! {
             result = &mut send, if sending => {
                 sending = false;
+                closing.as_mut().reset(Instant::now() + CLOSE_TIMEOUT);
                 match result {
                     // The peer started closing first: nothing more may be sent.
                     Ok(()) | Err(ProtocolError::SendAfterClosing) => (),
@@ -99,6 +112,11 @@ async fn pump<S: WebSocketIo>(
             result = &mut receive => {
                 result?;
                 return input_error.lock().take().map_or(Ok(()), |error| Err(error.into()));
+            }
+            () = &mut closing, if !sending => {
+                return Err(BoxError::from_static_str(
+                    "the peer did not complete the WebSocket close handshake",
+                ));
             }
         }
     }
@@ -186,6 +204,28 @@ mod tests {
             wire.shutdowns += 1;
             Poll::Ready(Ok(()))
         }
+    }
+
+    /// A peer that never answers our Close cannot hold the command forever.
+    #[tokio::test(start_paused = true)]
+    async fn an_unanswered_close_ends_the_command_with_an_error() {
+        let (client, _silent_peer) = tokio::io::duplex(1024);
+        let socket =
+            AsyncWebSocket::from_raw_socket(ServiceInput::new(client), Role::Client, None).await;
+        let (response, _) = Response::new(Body::empty()).into_parts();
+        let socket = ClientWebSocket {
+            socket,
+            response,
+            accepted_protocol: None,
+        };
+        let (lines_tx, lines) = mpsc::channel(1);
+        drop(lines_tx);
+        let started = Instant::now();
+        let result = tokio::time::timeout(CLOSE_TIMEOUT * 2, pump(socket, lines))
+            .await
+            .expect("bounded by the close timeout");
+        assert!(result.is_err());
+        assert!(started.elapsed() >= CLOSE_TIMEOUT);
     }
 
     #[tokio::test]
