@@ -11,11 +11,12 @@ use super::{
     quic::RecvStream,
     stream::{Phase, Reader},
 };
+use crate::proto::target::{OutgoingHost, outgoing_host};
 use ahash::{HashMap, HashSet};
 use rama_core::{bytes::Bytes, extensions::ExtensionsRef as _};
 use rama_http::datagram::ViolationPolicy;
 use rama_http_types::{
-    Method, header,
+    Method,
     proto::{
         ext::Protocol,
         h3::{Code, StreamType},
@@ -564,16 +565,20 @@ pub fn request_head(input: &[u8]) -> usize {
         let Ok(shared) = Shared::new(Config::default(), Role::Client, Default::default()) else {
             return accepted;
         };
-        // An http(s) target without authority or Host is received, but cannot be sent on.
-        // An asterisk URI keeps its scheme in an extension, as the encoder reads it.
+        // Without a URI authority, an http(s) target without Host, or a Host unusable as the
+        // only authority, is received but cannot be sent on. An asterisk URI keeps its scheme
+        // in an extension, as the encoder reads it.
         let http_scheme = request
             .uri()
             .scheme()
             .or_else(|| request.extensions().get_ref::<rama_net::Protocol>())
             .is_some_and(rama_net::Protocol::is_http);
-        let unroutable = http_scheme
-            && request.uri().authority().is_none()
-            && !request.headers().contains_key(header::HOST);
+        let unroutable = request.uri().authority().is_none()
+            && match outgoing_host(request.headers()) {
+                OutgoingHost::Absent => http_scheme,
+                OutgoingHost::Unusable => true,
+                OutgoingHost::Usable(..) => false,
+            };
         let encoded = encode_request(&shared, 0, &request);
         assert_eq!(encoded.is_err(), unroutable, "an accepted head re-encodes");
         let Ok(encoded) = encoded else {
@@ -751,6 +756,11 @@ mod tests {
                     (authority, "-"),
                     (host, "-:"),
                 ],
+                2,
+            ),
+            // Accepted like H1/H2, but a Host unusable as the only authority is not sent on.
+            (
+                &[(path, ""), (method, "~"), (scheme, "-"), (host, "bad host")],
                 2,
             ),
             // Bare asterisk targets keep their scheme in an extension.
