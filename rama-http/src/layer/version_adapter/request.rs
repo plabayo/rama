@@ -1,6 +1,6 @@
 use crate::{
     layer::remove_header::{coalesce_cookie_headers, remove_illegal_h2_request_headers},
-    utils::request_connect_protocol,
+    utils::{is_plain_connect, request_connect_protocol},
 };
 use rama_core::{
     Layer, Service,
@@ -312,10 +312,13 @@ pub fn ensure_h1_host_header<Body>(request: &mut Request<Body>) -> Result<(), Bo
     let authority = request
         .authority()
         .context("ensure h1 Host header: request has no resolvable authority")?;
-    let protocol = request.protocol().cloned();
     // Strip the default port (browsers do this, and some reverse proxies 404 on a
-    // non-exact authority match).
-    let authority = authority.without_default_port_for(protocol.as_ref());
+    // non-exact authority match), except from a plain CONNECT, which names its port.
+    let authority = if is_plain_connect(request) {
+        authority
+    } else {
+        authority.without_default_port_for(request.protocol())
+    };
     tracing::trace!("adding Host header {authority} derived from request authority");
     request.headers_mut().typed_insert(Host::from(authority));
     Ok(())
@@ -509,6 +512,28 @@ mod tests {
         // HTTP/1 carries the authority in the Host header, derived from the URI
         assert_eq!(req.version(), Version::HTTP_11);
         assert_eq!(req.headers().get(HOST).unwrap(), "example.com");
+    }
+
+    #[test]
+    fn plain_connect_keeps_its_port_in_a_derived_host() {
+        for (method, uri, host) in [
+            (
+                Method::CONNECT,
+                "https://example.com:443",
+                "example.com:443",
+            ),
+            (Method::CONNECT, "http://example.com:80", "example.com:80"),
+            (Method::GET, "https://example.com:443/", "example.com"),
+        ] {
+            let mut req = Request::builder()
+                .version(Version::HTTP_2)
+                .method(method)
+                .uri(uri)
+                .body(())
+                .unwrap();
+            adapt_request_version(&mut req, Version::HTTP_11).unwrap();
+            assert_eq!(req.headers()[HOST], host, "{uri}");
+        }
     }
 
     #[test]

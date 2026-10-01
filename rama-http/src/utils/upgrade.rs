@@ -27,6 +27,11 @@ pub fn request_connect_protocol<Body>(request: &Request<Body>) -> Option<Protoco
     Protocol::try_from(token).ok()
 }
 
+/// A `CONNECT` without a [`Protocol`]: its target is a `host:port` authority (RFC 9110 §9.3.6).
+pub(crate) fn is_plain_connect<Body>(request: &Request<Body>) -> bool {
+    request.method() == Method::CONNECT && !request.extensions().contains::<Protocol>()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

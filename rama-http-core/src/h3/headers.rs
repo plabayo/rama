@@ -1635,6 +1635,45 @@ mod tests {
         service.serve(request).await.unwrap();
     }
 
+    /// A generated Host keeps a plain CONNECT's port, default or not, so H2 and H3 send it.
+    #[tokio::test]
+    async fn required_host_headers_keep_a_plain_connect_port() {
+        for (uri, authority) in [
+            ("http://example.com:80", "example.com:80"),
+            ("https://example.com:443", "example.com:443"),
+            ("http://example.com:8080", "example.com:8080"),
+        ] {
+            let service = AddRequiredRequestHeaders::new(service_fn(
+                move |request: Request<()>| async move {
+                    assert_eq!(request.headers()[header::HOST], authority);
+                    let fields = decode(encode_request(&shared(), 0, &request)?);
+                    let h3 = fields
+                        .iter()
+                        .find(|field| field.name == ":authority")
+                        .unwrap();
+                    assert_eq!(&h3.value[..], authority.as_bytes());
+                    let (frame, _) = crate::h2::client::Peer::convert_send_message(
+                        StreamId::from(1),
+                        request,
+                        None,
+                        true,
+                        None,
+                        None,
+                    )
+                    .unwrap();
+                    assert_eq!(frame.pseudo().authority.as_deref(), Some(authority));
+                    Ok::<_, Error>(Response::new(()))
+                },
+            ));
+            let request = Request::builder()
+                .method(Method::CONNECT)
+                .uri(uri)
+                .body(())
+                .unwrap();
+            service.serve(request).await.unwrap();
+        }
+    }
+
     /// A decoded Host, userinfo removed, re-encodes to the same request.
     #[test]
     fn decoded_hosts_reencode_and_never_carry_userinfo() {

@@ -7,6 +7,7 @@ use crate::{
     HeaderValue, Request, Response,
     header::{self, HOST, RAMA_ID_HEADER_VALUE, USER_AGENT},
     headers::HeaderMapExt,
+    utils::is_plain_connect,
 };
 use rama_core::{
     Layer, Service,
@@ -147,8 +148,12 @@ where
             let authority = req
                 .authority()
                 .context("AddRequiredRequestHeaders: resolve authority")?;
-            let protocol = req.protocol();
-            let authority = authority.without_default_port_for(protocol);
+            // A plain CONNECT names its port; anything else drops a default one.
+            let authority = if is_plain_connect(&req) {
+                authority
+            } else {
+                authority.without_default_port_for(req.protocol())
+            };
             tracing::trace!(
                 server.address = %authority,
                 "add missing authority as host header",
