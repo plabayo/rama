@@ -551,6 +551,12 @@ impl Shared {
         }
     }
 
+    pub(crate) fn refuse_datagrams(&self, stream: u64) {
+        if self.config.datagrams.is_some() {
+            self.datagrams.lock().refuse(stream);
+        }
+    }
+
     pub(crate) fn unregister_datagrams(&self, stream: u64) {
         let waker = self.datagrams.lock().unregister(stream);
         if let Some(waker) = waker {

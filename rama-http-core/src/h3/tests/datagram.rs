@@ -811,6 +811,44 @@ async fn refused_extended_connects_lose_their_client_declaration() {
     }
 }
 
+/// Even under `Reject`, a refused Extended CONNECT is answered after optimistic datagrams:
+/// they were sent for a request with datagram semantics (RFC 9297 §2.1).
+#[tokio::test]
+async fn refusals_are_answered_after_optimistic_datagrams() {
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::in_memory(None, None).await;
+        let (mut client, mut server) = start(
+            &pair,
+            server_config(datagrams(
+                DatagramLimits::default(),
+                ViolationPolicy::Reject,
+            )),
+        )
+        .await;
+        let serve = async {
+            let (_request, response) = server.accept().await.unwrap().resolve().await.unwrap();
+            pair.client
+                .send_datagram(raw_datagram(0, b"early"))
+                .unwrap();
+            while server.shared().datagram_demux().buffered() != MIN_DATAGRAM_CHARGE {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+            let mut refused = Response::new(Body::from("refused"));
+            *refused.status_mut() = StatusCode::FORBIDDEN;
+            response.send_response(refused).await.unwrap();
+        };
+        let (response, ()) = tokio::join!(client.send_request(connect(TOKEN, true)), serve);
+        let response = response.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(&body[..], b"refused");
+        assert_eq!(server.datagram_drops().no_semantics, 1);
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
 /// A raw server stream answering one Extended CONNECT with `200`.
 async fn raw_accept(pair: &Pair) -> (rama_quic::SendStream, rama_quic::RecvStream) {
     let (mut send, mut recv) = pair.server.accept_bi().await.unwrap();

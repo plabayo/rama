@@ -334,6 +334,22 @@ impl<A: AbortRequest> Demux<A> {
         reject(slot, config.violations)
     }
 
+    /// A refused Extended CONNECT: datagrams held while it was pending were sent for a request
+    /// with datagram semantics, so they are dropped rather than violations; later ones are.
+    pub(crate) fn refuse(&mut self, stream: u64) {
+        let Some(slot) = self
+            .slots
+            .get_mut(&stream)
+            .filter(|slot| slot.semantics == Semantics::Provisional)
+        else {
+            return;
+        };
+        slot.semantics = Semantics::None;
+        self.drops.no_semantics += slot.queue.len() as u64;
+        slot.queue.clear();
+        self.buffered -= std::mem::take(&mut slot.bytes);
+    }
+
     /// Release a stream and anything still buffered for it.
     pub(crate) fn unregister(&mut self, stream: u64) -> Option<Waker> {
         let slot = self.slots.remove(&stream)?;
@@ -676,6 +692,10 @@ impl Registration {
 
     pub(crate) fn decide(&self, claimed: bool) {
         self.shared.decide_datagrams(self.stream, claimed);
+    }
+
+    pub(crate) fn refuse(&self) {
+        self.shared.refuse_datagrams(self.stream);
     }
 
     pub(crate) fn receive_ended(&self, end: ReceiveEnd) {

@@ -423,7 +423,7 @@ impl SendResponse {
         if let Some((mut reader, _pending, _)) = self.connect.take() {
             reader.cancel_code = Code::H3_NO_ERROR;
             if let Some(datagrams) = &reader.datagrams {
-                datagrams.decide(false);
+                datagrams.refuse();
                 if datagrams.violated() {
                     return Err(no_semantics());
                 }
