@@ -7,7 +7,7 @@ use std::{
     pin::{Pin, pin},
     sync::{
         Arc, OnceLock,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicUsize, Ordering},
     },
     task::{Context, Poll, Waker, ready},
     time::Duration,
@@ -23,7 +23,8 @@ use rama_core::{
     telemetry::tracing::{self, Instrument as _},
 };
 use rama_net::address::Domain;
-use tokio::{sync::Notify, task::AbortHandle, time::error::Elapsed};
+use rama_utils::collections::smallvec::SmallVec;
+use tokio::{task::AbortHandle, time::error::Elapsed};
 
 use super::limit::DnsTimeoutError;
 
@@ -91,9 +92,9 @@ impl<K> InFlight<K> {
 /// One run and everyone waiting on it, in a single allocation.
 struct Flight<V> {
     answer: OnceLock<Result<Arc<V>, ArcError>>,
-    /// Set once the run ended, with or without an answer.
-    ended: AtomicBool,
-    done: Notify,
+    /// Callers waiting for the answer; `None` once the run ended, with or
+    /// without one.
+    wakers: Mutex<Option<SmallVec<[Option<Waker>; 2]>>>,
     waiters: AtomicUsize,
     abort: OnceLock<AbortHandle>,
 }
@@ -102,8 +103,7 @@ impl<V> Flight<V> {
     fn new() -> Self {
         Self {
             answer: OnceLock::new(),
-            ended: AtomicBool::new(false),
-            done: Notify::new(),
+            wakers: Mutex::new(Some(SmallVec::new())),
             waiters: AtomicUsize::new(1),
             abort: OnceLock::new(),
         }
@@ -111,14 +111,10 @@ impl<V> Flight<V> {
 
     /// The run's answer; `None` when it ended without one (its runtime shut
     /// down, or it panicked).
-    async fn answer(&self) -> Option<Result<Arc<V>, ArcError>> {
-        loop {
-            let mut done = pin!(self.done.notified());
-            done.as_mut().enable();
-            if self.ended.load(Ordering::Acquire) {
-                return self.answer.get().cloned();
-            }
-            done.await;
+    fn answer(&self) -> Answer<'_, V> {
+        Answer {
+            flight: self,
+            waker: None,
         }
     }
 
@@ -126,8 +122,53 @@ impl<V> Flight<V> {
         if let Some(answer) = answer {
             _ = self.answer.set(answer);
         }
-        self.ended.store(true, Ordering::Release);
-        self.done.notify_waiters();
+        // wake outside the lock, all at once
+        let wakers = self.wakers.lock().take();
+        for waker in wakers.into_iter().flatten().flatten() {
+            waker.wake();
+        }
+    }
+}
+
+/// The future of [`Flight::answer`].
+struct Answer<'a, V> {
+    flight: &'a Flight<V>,
+    /// This caller's place among the flight's wakers.
+    waker: Option<usize>,
+}
+
+impl<V> Future for Answer<'_, V> {
+    type Output = Option<Result<Arc<V>, ArcError>>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let flight = self.flight;
+        let mut wakers = flight.wakers.lock();
+        let Some(wakers) = wakers.as_mut() else {
+            return Poll::Ready(flight.answer.get().cloned());
+        };
+        if let Some(index) = self.waker {
+            let waker = &mut wakers[index];
+            if !waker
+                .as_ref()
+                .is_some_and(|waker| waker.will_wake(cx.waker()))
+            {
+                *waker = Some(cx.waker().clone());
+            }
+        } else {
+            wakers.push(Some(cx.waker().clone()));
+            self.waker = Some(wakers.len() - 1);
+        }
+        Poll::Pending
+    }
+}
+
+impl<V> Drop for Answer<'_, V> {
+    fn drop(&mut self) {
+        if let Some(index) = self.waker
+            && let Some(wakers) = self.flight.wakers.lock().as_mut()
+        {
+            wakers[index] = None;
+        }
     }
 }
 
@@ -450,6 +491,7 @@ mod tests {
 
     use super::*;
     use rama_core::futures::{FutureExt as _, future::join_all, stream};
+    use tokio::sync::Notify;
 
     const TIMEOUT: Duration = Duration::from_secs(5);
 
