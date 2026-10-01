@@ -212,6 +212,10 @@ impl Http1Transaction for Server {
                 uri
             };
             let form = if uri_bytes.as_ref() == b"*" {
+                // RFC 9112 §3.2.4: asterisk-form is only for a server-wide OPTIONS.
+                if method != Method::OPTIONS {
+                    return Err(Parse::Uri);
+                }
                 RequestTargetForm::Asterisk
             } else if method == Method::CONNECT {
                 RequestTargetForm::Authority

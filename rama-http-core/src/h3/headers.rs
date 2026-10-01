@@ -1351,6 +1351,38 @@ mod tests {
         crate::h2::server::test_util::receive(pseudo, HeaderMap::new()).unwrap_err();
     }
 
+    /// An asterisk target is a server-wide OPTIONS on every version; another method with it
+    /// is refused, not read as `/`.
+    #[test]
+    fn an_asterisk_target_needs_options_on_every_version() {
+        let text = |value: &'static str| {
+            hpack::BytesStr::try_from(Bytes::from_static(value.as_bytes())).unwrap()
+        };
+        for (method, allowed) in [("OPTIONS", true), ("GET", false), ("POST", false)] {
+            let raw = format!("{method} * HTTP/1.1\r\nHost: example.com\r\n\r\n");
+            assert_eq!(!h1::refuses(&raw), allowed, "h1 {method}");
+            let pseudo = frame::Pseudo {
+                method: Some(Method::from_bytes(method.as_bytes()).unwrap()),
+                scheme: Some(text("https")),
+                authority: Some(text("example.com")),
+                path: Some(text("*")),
+                ..Default::default()
+            };
+            assert_eq!(
+                crate::h2::server::test_util::receive(pseudo, HeaderMap::new()).is_ok(),
+                allowed,
+                "h2 {method}"
+            );
+            let head = fields(&[
+                (":method", method),
+                (":scheme", "https"),
+                (":authority", "example.com"),
+                (":path", "*"),
+            ]);
+            assert_eq!(request(head).is_ok(), allowed, "h3 {method}");
+        }
+    }
+
     /// A plain CONNECT names a host and port on every version, received or sent: there is no
     /// default port to guess. Userinfo is accepted on receipt and never sent.
     #[test]

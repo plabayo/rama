@@ -1802,8 +1802,10 @@ impl proto::Peer for Peer {
         b = b.version(Version::HTTP_2);
 
         let is_connect;
+        let is_options;
         if let Some(method) = pseudo.method {
             is_connect = method == Method::CONNECT;
+            is_options = method == Method::OPTIONS;
             b = b.method(method);
         } else {
             malformed!("malformed headers: missing method");
@@ -1891,6 +1893,8 @@ impl proto::Peer for Peer {
         };
 
         let uri = match path.as_deref() {
+            // RFC 9113 §8.3.1: `*` is only for a server-wide OPTIONS.
+            Some("*") if !is_options => malformed!("malformed headers: `*` path without OPTIONS"),
             // OPTIONS-`*`: the wire `*` denotes "no path"; rebuild the
             // scheme/authority context from the typed components (a bare `*`
             // when there is none).
