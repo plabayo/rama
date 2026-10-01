@@ -36,6 +36,41 @@ use std::{
 };
 use tokio::sync::{Barrier, oneshot};
 
+/// An empty body never announces a length it cannot deliver, as on HTTP/1 and HTTP/2.
+#[tokio::test(start_paused = true)]
+async fn an_empty_request_body_drops_a_positive_content_length() {
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::in_memory(None, None).await;
+        let (mut client, client_driver) =
+            client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
+                .unwrap();
+        let (mut server, server_driver) =
+            server::handshake(pair.server.clone(), Config::default()).unwrap();
+        spawn(client_driver.run());
+        spawn(server_driver.run());
+        let serve = spawn(async move {
+            let (request, response) = server.accept().await.unwrap().resolve().await.unwrap();
+            assert!(!request.headers().contains_key("content-length"));
+            response
+                .send_response(Response::new(Body::empty()))
+                .await
+                .unwrap();
+        });
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("https://localhost/")
+            .header("content-length", "5")
+            .body(Body::empty())
+            .unwrap();
+        let response = client.send_request(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        serve.await.unwrap();
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
 #[tokio::test(start_paused = true)]
 async fn memory_goaway_prevents_new_headers_when_stream_credit_arrives_concurrently() {
     // RFC 9114 section 5.2 permits a first GOAWAY at the maximum request ID.

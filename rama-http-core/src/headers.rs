@@ -144,6 +144,14 @@ pub(super) fn method_has_defined_payload_semantics(method: &Method) -> bool {
     )
 }
 
+/// A body known to be empty cannot deliver a positive (or unreadable) length, which would
+/// stall or fail the peer reading it.
+pub(super) fn drop_undeliverable_content_length(headers: &mut HeaderMap) {
+    if content_length_parse_all(headers).is_none_or(|len| len != 0) {
+        headers.remove(CONTENT_LENGTH);
+    }
+}
+
 pub(super) fn set_content_length_if_missing(headers: &mut HeaderMap, len: u64) {
     headers
         .entry(CONTENT_LENGTH)

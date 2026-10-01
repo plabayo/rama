@@ -52,8 +52,9 @@ impl fmt::Debug for ConnectionAdmissionLease {
 ///
 /// Unlike a concurrency limit, this reserves actual availability. A protocol can
 /// consume its typed reservation when it starts the request. Implementations
-/// must be nonblocking and must not reenter the pool. The pool calls providers
-/// outside its storage and admission locks.
+/// must be nonblocking and must not reenter the pool. The pool calls
+/// [`Self::try_acquire`] outside its storage and admission locks; [`Self::watch`]
+/// and [`Self::in_use`] may run under them, so they only read state and subscribe.
 pub trait ConnectionAdmissionPolicy: fmt::Debug + Send + Sync + 'static {
     /// Reserve one request's resources, or return `None` when currently exhausted.
     ///

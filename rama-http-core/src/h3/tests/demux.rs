@@ -115,6 +115,27 @@ fn held_datagrams_crowding_the_budget_drop_the_payload_not_the_queues() {
 }
 
 #[test]
+fn a_payload_that_can_never_fit_leaves_a_full_queue_alone() {
+    let config = config(4, 4, 64);
+    let now = Instant::now();
+    let mut demux = Demux::default();
+    register(&mut demux, &config, 8, now);
+    for _ in 0..4 {
+        deliver(&mut demux, &config, 8, 8, now);
+    }
+    deliver(&mut demux, &config, 8, 65, now);
+    for _ in 0..4 {
+        assert!(
+            matches!(poll(&mut demux, 8), Poll::Ready(Ok(Some(payload))) if payload.len() == 8)
+        );
+    }
+    assert!(poll(&mut demux, 8).is_pending());
+    assert_eq!(demux.drops().over_budget, 1);
+    assert_eq!(demux.drops().queue_full, 0);
+    assert_eq!(demux.slot_dropped(8), 1);
+}
+
+#[test]
 fn making_room_keeps_empty_datagrams() {
     let config = config(4, 4, 4);
     let now = Instant::now();

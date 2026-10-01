@@ -1104,6 +1104,29 @@ async fn native_receive_failures_end_receiving() {
 }
 
 #[tokio::test]
+async fn a_native_close_mid_capsule_still_aborts_on_drop() {
+    let native = FakeNative::default();
+    native.0.lock().max = Some(8);
+    let (a, _b) = tokio::io::duplex(256);
+    let (io, aborted) = hooked(a);
+    io.extensions().insert(NativeDatagrams::new(native.clone()));
+    let mut session = HttpDatagramSession::with_config(io, config());
+    session.start_capsule(header(0x4242, 10)).await.unwrap();
+    session
+        .send_capsule_data(Bytes::from_static(b"part"))
+        .await
+        .unwrap();
+    native.0.lock().next_error = Some(NativeSendError::Closed);
+    assert!(matches!(
+        session.send_datagram(Bytes::from_static(b"closed")).await,
+        Err(SessionError::Native(NativeSendError::Closed))
+    ));
+    // The stream itself still works: a clean end would cut the capsule short.
+    drop(session);
+    assert_eq!(aborted.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
 async fn native_closed_is_terminal_for_sending() {
     let native = FakeNative::default();
     native.0.lock().max = Some(8);

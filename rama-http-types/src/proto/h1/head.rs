@@ -327,6 +327,10 @@ pub fn encode_request_target(
     output: &mut BytesMut,
 ) -> Result<(), HeadError> {
     let result = if *method == Method::CONNECT {
+        // RFC 9112 §3.2.3: a CONNECT target is `host:port`.
+        if uri.port_u16().is_none() {
+            return Err(HeadError::new(HeadErrorKind::InvalidTarget));
+        }
         uri.write_http_authority_form(output)
     } else if uri.is_asterisk() && *method == Method::OPTIONS {
         output.extend_from_slice(b"*");
@@ -606,6 +610,12 @@ mod tests {
             encode_request(&connect)
                 .unwrap()
                 .starts_with(b"CONNECT example.test:443 HTTP/1.1\r\n")
+        );
+        // RFC 9112 §3.2.3: there is no default port to send.
+        *connect.uri_mut() = Uri::parse_authority_form("example.test").unwrap();
+        assert_eq!(
+            encode_request(&connect).unwrap_err().kind(),
+            HeadErrorKind::InvalidTarget,
         );
 
         let mut wrong_asterisk = Request::new(());

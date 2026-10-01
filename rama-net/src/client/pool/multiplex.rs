@@ -87,7 +87,15 @@ impl<C, ID> StoredConnection<C, ID> {
     /// A connection is idle when none of its handouts are in flight and no work
     /// they outlived still occupies it.
     fn is_idle(&self) -> bool {
-        self.active.load(Ordering::Relaxed) == 0 && !self.in_use_unleased()
+        if self.active.load(Ordering::Relaxed) != 0 {
+            return false;
+        }
+        if self.in_use_unleased() {
+            // Such work is activity: the idle clock starts once it ends.
+            self.last_idle.set_now();
+            return false;
+        }
+        true
     }
 
     /// Work outlived its handouts, such as an upgraded tunnel.
@@ -191,11 +199,16 @@ impl<C, ID> Drop for MultiplexedConnection<C, ID> {
         self.admission.take();
         let prev = self.inner.active.fetch_sub(1, Ordering::Release);
         if prev == 1 {
-            // last in-flight stream released: the connection just went idle
             self.inner.last_idle.set_now();
-            // An idle connection is globally evictable, so a waiter for any
-            // ID can make progress by claiming its pool slot.
-            self.inner.notify.notify_one();
+            if self.inner.in_use_unleased() {
+                // Evictable only once that work ends: every waiter subscribes to it,
+                // so none depends on another one staying to pass the news on.
+                self.inner.notify.notify_waiters();
+            } else {
+                // An idle connection is globally evictable, so a waiter for any
+                // ID can make progress by claiming its pool slot.
+                self.inner.notify.notify_one();
+            }
         }
         // One released handout creates one unit of capacity for this exact
         // connection ID. Wake one compatible waiter without broadcasting to
@@ -386,8 +399,8 @@ where
     /// handed out).
     fn is_eligible(&self, conn: &StoredConnection<C, ID>) -> bool {
         if let Some(idle_timeout) = self.idle_timeout
-            && conn.is_idle()
             && conn.last_idle.elapsed() >= idle_timeout
+            && conn.is_idle()
         {
             trace!(id = ?conn.id, "multiplex pool: dropping idle connection");
             return false;
@@ -457,7 +470,7 @@ where
             for (id, bucket) in &storage.by_id {
                 for (pos, conn) in bucket.iter().enumerate() {
                     let last_idle = conn.last_idle.as_nanos();
-                    if !conn.is_idle() || last_idle >= oldest {
+                    if last_idle >= oldest || !conn.is_idle() {
                         continue;
                     }
                     let slot = conn.pool_slot.lock();
@@ -1173,6 +1186,36 @@ mod tests {
         assert!(pool.storage.lock().by_id.is_empty());
     }
 
+    #[tokio::test]
+    async fn every_waiter_learns_of_work_outliving_the_last_handout() {
+        let pool = MultiplexPool::try_new(32, 1).unwrap();
+        let permit = new_slot(&pool).await;
+        let (conn, state) = admission_connection(&pool, 4);
+        let input = Extensions::new();
+        let first = pool.create(TestId(0), conn, permit, &input).await.unwrap();
+        // Both wait while the connection is leased, so neither watches its work yet.
+        let mut leaving = tokio_test::task::spawn(pool.get_conn(&TestId(1), &EMPTY_INPUT));
+        let mut staying = tokio_test::task::spawn(pool.get_conn(&TestId(2), &EMPTY_INPUT));
+        assert!(leaving.poll().is_pending());
+        assert!(staying.poll().is_pending());
+
+        state.set_in_use(true);
+        drop(first);
+        assert!(leaving.is_woken() && staying.is_woken());
+        assert!(leaving.poll().is_pending());
+        assert!(staying.poll().is_pending());
+        drop(leaving);
+
+        state.set_in_use(false);
+        assert!(
+            staying.is_woken(),
+            "a waiter that left took the news with it"
+        );
+        let Poll::Ready(Ok(ConnectionResult::CreatePermit(_))) = staying.poll() else {
+            panic!("the now idle connection must be evicted for the remaining waiter")
+        };
+    }
+
     #[tokio::test(start_paused = true)]
     async fn work_outliving_its_handouts_keeps_a_connection_from_expiring() {
         let pool = MultiplexPool::try_new(32, 1)
@@ -1198,6 +1241,33 @@ mod tests {
             pool.get_conn(&TestId(0), &EMPTY_INPUT).await,
             Ok(ConnectionResult::CreatePermit(_))
         ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_idle_clock_restarts_when_the_pool_sees_outliving_work() {
+        let pool = MultiplexPool::try_new(32, 1)
+            .unwrap()
+            .with_idle_timeout(Duration::from_millis(30));
+        let permit = new_slot(&pool).await;
+        let (conn, state) = admission_connection(&pool, 4);
+        let input = Extensions::new();
+        let first = pool.create(TestId(0), conn, permit, &input).await.unwrap();
+        state.set_in_use(true);
+        drop(first);
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        // A full pool sweeps every connection for another destination's request.
+        let mut other = tokio_test::task::spawn(pool.get_conn(&TestId(1), &EMPTY_INPUT));
+        assert!(other.poll().is_pending());
+        drop(other);
+
+        state.set_in_use(false);
+        assert!(
+            matches!(
+                pool.get_conn(&TestId(0), &EMPTY_INPUT).await,
+                Ok(ConnectionResult::Connection(_))
+            ),
+            "work that just ended does not count as idle time"
+        );
     }
 
     #[tokio::test]

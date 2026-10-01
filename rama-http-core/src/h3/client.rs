@@ -9,6 +9,7 @@ use super::{
     quic::Writer,
     stream::{Phase, Reader},
 };
+use crate::headers::drop_undeliverable_content_length;
 use parking_lot::Mutex;
 use rama_core::{
     error::BoxError,
@@ -342,11 +343,14 @@ impl ConnectionAdmissionPolicy for RequestAdmission {
         })
     }
 
-    // Requests, their bodies and upgraded tunnels hold a permit until they end.
+    // Requests, their bodies and upgraded tunnels hold a permit until they end. A draining
+    // or failed connection admits nothing more, so it is left for the pool to retire.
     fn in_use(&self) -> bool {
-        self.lifetime
-            .upgrade()
-            .is_some_and(|lifetime| lifetime.admission.available_permits() < lifetime.max_requests)
+        self.lifetime.upgrade().is_some_and(|lifetime| {
+            lifetime.admission.available_permits() < lifetime.max_requests
+                && lifetime.shared.rejection(None).is_none()
+                && lifetime.shared.error().is_none()
+        })
     }
 }
 
@@ -363,7 +367,7 @@ where
     /// A successful (2xx) response exposes the tunnel through the upgrade API.
     pub async fn send_request(
         &mut self,
-        request: Request<B>,
+        mut request: Request<B>,
     ) -> Result<Response<crate::body::Incoming>, Error> {
         self.ready().await?;
         if request.extensions().contains::<Protocol>() {
@@ -457,6 +461,9 @@ where
                 Code::H3_MESSAGE_ERROR,
                 "CONNECT requires the upgrade API for tunnel data",
             ));
+        }
+        if request.body().is_end_stream() {
+            drop_undeliverable_content_length(request.headers_mut());
         }
         let encoded = headers::encode_request(&self.shared, id, &request)?;
         writer.queue(FrameType::HEADERS, encoded)?;

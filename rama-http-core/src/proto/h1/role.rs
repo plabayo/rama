@@ -1247,10 +1247,7 @@ impl Client {
     fn set_length(head: &mut EncodeHead<'_, RequestLine>, body: Option<BodyLength>) -> Encoder {
         let Some(body) = body else {
             head.headers.remove(header::TRANSFER_ENCODING);
-            // A length the empty body cannot deliver would stall the peer reading it.
-            if headers::content_length_parse_all(&head.headers).is_none_or(|len| len != 0) {
-                head.headers.remove(header::CONTENT_LENGTH);
-            }
+            headers::drop_undeliverable_content_length(&mut head.headers);
             return Encoder::length(0);
         };
 

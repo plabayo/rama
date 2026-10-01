@@ -885,6 +885,9 @@ where
 
                     let is_connect = req.method() == Method::CONNECT;
                     let eos = body.is_end_stream();
+                    if eos {
+                        headers::drop_undeliverable_content_length(req.headers_mut());
+                    }
 
                     if is_connect
                         && headers::content_length_parse_all(req.headers())

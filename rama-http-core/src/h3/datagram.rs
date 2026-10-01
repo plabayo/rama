@@ -479,6 +479,20 @@ impl<A: AbortRequest> Demux<A> {
             self.drops.queue_full += 1;
             return Action::default();
         }
+        if self.buffered + payload.len() > limits.max_buffered_bytes {
+            // Held datagrams cannot make room: when they alone crowd the payload out, or it
+            // can never fit, drop it before any queued datagram is given up for it.
+            let held: usize = self
+                .pending
+                .iter()
+                .map(|pending| pending.payload.len())
+                .sum();
+            if held + payload.len() > limits.max_buffered_bytes {
+                slot.dropped += 1;
+                self.drops.over_budget += 1;
+                return Action::default();
+            }
+        }
         if slot.queue.len() >= limits.queue_len
             && let Some(oldest) = slot.queue.pop_front()
         {
@@ -486,22 +500,6 @@ impl<A: AbortRequest> Demux<A> {
             self.buffered -= oldest.len();
             slot.dropped += 1;
             self.drops.queue_full += 1;
-        }
-        if self.buffered + payload.len() > limits.max_buffered_bytes {
-            // Held datagrams cannot make room: when they alone crowd the payload out, or it
-            // can never fit, drop it rather than drain every queue for nothing.
-            let held: usize = self
-                .pending
-                .iter()
-                .map(|pending| pending.payload.len())
-                .sum();
-            if held + payload.len() > limits.max_buffered_bytes {
-                if let Some(slot) = self.slots.get_mut(&stream) {
-                    slot.dropped += 1;
-                }
-                self.drops.over_budget += 1;
-                return Action::default();
-            }
         }
         while self.buffered + payload.len() > limits.max_buffered_bytes {
             let Some(largest) = self

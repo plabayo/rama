@@ -617,6 +617,8 @@ impl<T: AsyncWrite> SessionSender<T> {
 
     fn failed(&mut self, error: io::Error) -> SessionError {
         self.stop(SendState::Failed(error.kind()));
+        // The stream failed under a partial capsule, so dropping must not blame the peer.
+        self.on_wire = false;
         SessionError::Io(error)
     }
 
@@ -624,8 +626,6 @@ impl<T: AsyncWrite> SessionSender<T> {
     fn stop(&mut self, state: SendState) {
         self.state = state;
         self.pending = [Bytes::new(), Bytes::new()];
-        // A partial capsule can no longer be finished, so dropping must not blame the peer.
-        self.on_wire = false;
     }
 }
 

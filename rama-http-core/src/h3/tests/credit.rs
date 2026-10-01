@@ -302,11 +302,14 @@ async fn draining_connection_wakes_admission_waiters_without_stream_credit() {
         let server_driver = spawn(driver.run());
         let admission = sender.connection_admission();
         let first = admission.try_acquire(&Extensions::new()).unwrap().unwrap();
+        assert!(admission.in_use());
         let changed = admission.watch();
         assert!(admission.try_acquire(&Extensions::new()).unwrap().is_none());
         server.shutdown().unwrap();
         changed.await;
         admission.try_acquire(&Extensions::new()).unwrap_err();
+        // Its work goes on, but a draining connection is left for the pool to retire.
+        assert!(!admission.in_use());
         drop(first);
         pair.close().await;
         _ = client_driver.await;

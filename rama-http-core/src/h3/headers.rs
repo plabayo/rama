@@ -434,7 +434,6 @@ pub(crate) fn encode_request<B>(
 
     let authority_len = target.len();
     if !connect
-        && http_scheme
         && request.method() == Method::OPTIONS
         && request.uri().is_path_empty()
         && request.uri().query().is_none()
@@ -1252,31 +1251,36 @@ mod tests {
         encode_request(&shared(), 0, &received).unwrap_err();
     }
 
-    /// An OPTIONS request without a path is `*` on H1, H2 and H3 (RFC 9112 §3.2.4).
+    /// An OPTIONS request without a path is `*` on H1, H2 and H3 (RFC 9112 §3.2.4), for every
+    /// scheme, so a received `*` is relayed as `*`.
     #[test]
     fn options_without_a_path_is_sent_as_asterisk() {
-        let pseudo = frame::Pseudo {
-            method: Some(Method::OPTIONS),
-            scheme: Some(hpack::BytesStr::try_from(Bytes::from_static(b"https")).unwrap()),
-            authority: Some(
-                hpack::BytesStr::try_from(Bytes::from_static(b"real.example")).unwrap(),
-            ),
-            path: Some(hpack::BytesStr::try_from(Bytes::from_static(b"*")).unwrap()),
-            ..Default::default()
-        };
-        let received = crate::h2::server::test_util::receive(pseudo, HeaderMap::new()).unwrap();
-        let sent = decode(encode_request(&shared(), 0, &received).unwrap());
-        let path = sent.iter().find(|field| field.name == ":path").unwrap();
-        assert_eq!(path.value, &b"*"[..]);
-        let mut h1 = BytesMut::new();
-        rama_http_types::proto::h1::head::encode_request_target(
-            &Method::OPTIONS,
-            received.uri(),
-            received.extensions(),
-            &mut h1,
-        )
-        .unwrap();
-        assert_eq!(&h1[..], b"*");
+        for scheme in [&b"https"[..], b"foo"] {
+            let pseudo = frame::Pseudo {
+                method: Some(Method::OPTIONS),
+                scheme: Some(hpack::BytesStr::try_from(Bytes::copy_from_slice(scheme)).unwrap()),
+                authority: Some(
+                    hpack::BytesStr::try_from(Bytes::from_static(b"real.example")).unwrap(),
+                ),
+                path: Some(hpack::BytesStr::try_from(Bytes::from_static(b"*")).unwrap()),
+                ..Default::default()
+            };
+            let received = crate::h2::server::test_util::receive(pseudo, HeaderMap::new()).unwrap();
+            let sent = decode(encode_request(&shared(), 0, &received).unwrap());
+            let path = sent.iter().find(|field| field.name == ":path").unwrap();
+            assert_eq!(path.value, &b"*"[..], "{scheme:?}");
+            let h2 = frame::Pseudo::request(Method::OPTIONS, received.uri(), None);
+            assert_eq!(h2.path.as_deref(), Some("*"), "{scheme:?}");
+            let mut h1 = BytesMut::new();
+            rama_http_types::proto::h1::head::encode_request_target(
+                &Method::OPTIONS,
+                received.uri(),
+                received.extensions(),
+                &mut h1,
+            )
+            .unwrap();
+            assert_eq!(&h1[..], b"*", "{scheme:?}");
+        }
         // A path or query is kept as is.
         for (uri, h1_target) in [
             ("https://real.example/", "/"),

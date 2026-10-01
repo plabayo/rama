@@ -801,6 +801,7 @@ mod tests {
     use rama_http_types::{
         Body, Method, Request, Response,
         body::util::{BodyExt as _, Empty},
+        header::CONTENT_LENGTH,
         proto::ext::Protocol,
     };
     use std::{
@@ -881,6 +882,31 @@ mod tests {
         let response = sender.send_request(warmup).await.unwrap();
         drop(response.into_body().collect().await.unwrap());
         (sender, task)
+    }
+
+    /// An empty body never announces a length it cannot deliver; the peer would reject it.
+    #[tokio::test]
+    async fn an_empty_body_drops_a_positive_content_length() {
+        let service = service_fn(|request: Request| {
+            let answer = if request.headers().contains_key(CONTENT_LENGTH) {
+                "length"
+            } else {
+                "none"
+            };
+            std::future::ready(Ok::<_, Infallible>(Response::new(Body::from(answer))))
+        });
+        let (mut sender, _task) = one_stream_connection(65_535, service).await;
+        for method in [Method::POST, Method::GET] {
+            let request = Request::builder()
+                .method(method)
+                .uri("https://example.com/")
+                .header(CONTENT_LENGTH, "5")
+                .body(Body::empty())
+                .unwrap();
+            let response = sender.send_request(request).await.unwrap();
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            assert_eq!(body, "none");
+        }
     }
 
     fn answer_at_once()
