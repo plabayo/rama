@@ -3,7 +3,7 @@ use rama_core::telemetry::tracing;
 use rama_utils::reactive::{Changed, Reactive};
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+    atomic::{AtomicUsize, Ordering},
 };
 
 /// Locally initiated streams from creation until they close, including sends still buffered
@@ -11,16 +11,14 @@ use std::sync::{
 #[derive(Debug)]
 pub(crate) struct LocalStreams {
     live: AtomicUsize,
-    changed: Reactive<usize>,
-    ended: AtomicBool,
+    retired: Reactive<usize>,
 }
 
 impl LocalStreams {
     fn new() -> Self {
         Self {
             live: AtomicUsize::new(0),
-            changed: Reactive::new(0),
-            ended: AtomicBool::new(false),
+            retired: Reactive::new(0),
         }
     }
 
@@ -28,14 +26,9 @@ impl LocalStreams {
         self.live.load(Ordering::Acquire)
     }
 
-    /// The connection's streams are gone: it opens no more.
-    pub(crate) fn is_ended(&self) -> bool {
-        self.ended.load(Ordering::Acquire)
-    }
-
-    /// Subscribe to retirements and the connection's end.
+    /// Subscribe to retirements.
     pub(crate) fn watch(&self) -> Changed<usize> {
-        self.changed.watch()
+        self.retired.watch()
     }
 
     fn opened(&self) {
@@ -44,16 +37,7 @@ impl LocalStreams {
 
     fn retired(&self) {
         self.live.fetch_sub(1, Ordering::AcqRel);
-        self.bump();
-    }
-
-    fn end(&self) {
-        self.ended.store(true, Ordering::Release);
-        self.bump();
-    }
-
-    fn bump(&self) {
-        self.changed.set(self.changed.get().wrapping_add(1));
+        self.retired.set(self.retired.get().wrapping_add(1));
     }
 }
 
@@ -353,14 +337,16 @@ impl Counts {
                 }
             }
 
-            if !stream.state.is_scheduled_reset() && stream.is_counted {
-                tracing::trace!("dec_num_streams; stream={:?}", stream.id);
-                // Decrement the number of active streams.
-                self.dec_num_streams(&mut stream);
-            }
-
-            if std::mem::take(&mut stream.is_live_local) {
-                self.local_streams.retired();
+            if !stream.state.is_scheduled_reset() {
+                if stream.is_counted {
+                    tracing::trace!("dec_num_streams; stream={:?}", stream.id);
+                    // Decrement the number of active streams.
+                    self.dec_num_streams(&mut stream);
+                }
+                // Retired with h2's own count: a scheduled reset still occupies the stream.
+                if std::mem::take(&mut stream.is_live_local) {
+                    self.local_streams.retired();
+                }
             }
         }
 
@@ -405,8 +391,6 @@ impl Counts {
 impl Drop for Counts {
     fn drop(&mut self) {
         use std::thread;
-
-        self.local_streams.end();
 
         if !thread::panicking() {
             debug_assert!(!self.has_streams());

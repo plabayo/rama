@@ -203,10 +203,9 @@ where
         .handshake::<_, SendBuf<B::Data>>(io)
         .await
         .map_err(crate::Error::new_h2)?;
-    // The connection keeps the peer's live stream limit here, following its SETTINGS.
+    // The connection keeps the peer's live stream limit at this level, following its SETTINGS.
     let max = extensions
-        .get_arc::<MaxConcurrency>()
-        .unwrap_or_else(|| Arc::new(MaxConcurrency::new(h2_tx.current_max_send_streams())));
+        .self_get_arc_or_insert(|| Arc::new(MaxConcurrency::new(h2_tx.current_max_send_streams())));
     let admission = AdmissionOwner::new(h2_tx.local_streams(), max);
 
     // An mpsc channel is used entirely to detect when the

@@ -119,6 +119,61 @@ async fn custom_token_round_trip_exposes_tunnel_after_success() {
 }
 
 #[tokio::test]
+async fn an_upgraded_tunnel_keeps_the_connection_in_use_until_it_ends() {
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::in_memory(None, None).await;
+        let (mut client, client_driver) =
+            client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
+                .unwrap();
+        let (mut server, server_driver) =
+            server::handshake(pair.server.clone(), extended_connect_server()).unwrap();
+        spawn(client_driver.run());
+        spawn(server_driver.run());
+        let serve = spawn(async move {
+            let (request, response) = server.accept().await.unwrap().resolve().await.unwrap();
+            let upgrade = handle_upgrade(&request);
+            response
+                .send_response(Response::new(Body::empty()))
+                .await
+                .unwrap();
+            let mut tunnel = upgrade.await.unwrap();
+            let mut rest = Vec::new();
+            tunnel.read_to_end(&mut rest).await.unwrap();
+            tunnel.shutdown().await.unwrap();
+        });
+        let admission = client.connection_admission();
+        assert!(!admission.in_use());
+        let response = client
+            .send_request(extended_connect(
+                "https://localhost/chat",
+                Protocol::from_static("x-custom.v1"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let mut tunnel = handle_upgrade(&response).await.unwrap();
+        drop(response);
+        assert!(admission.in_use(), "the tunnel outlives its response");
+
+        tunnel.shutdown().await.unwrap();
+        let mut rest = Vec::new();
+        tunnel.read_to_end(&mut rest).await.unwrap();
+        drop(tunnel);
+        loop {
+            let changed = admission.watch();
+            if !admission.in_use() {
+                break;
+            }
+            changed.await;
+        }
+        serve.await.unwrap();
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
 async fn refused_without_server_setting_and_opens_no_stream() {
     tokio::time::timeout(LIMIT, async {
         let pair = Pair::in_memory(None, None).await;

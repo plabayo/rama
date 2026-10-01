@@ -1593,6 +1593,7 @@ mod tests {
     use httparse::ParserConfig;
     use rama_core::bytes::BytesMut;
     use rama_core::extensions::Extension;
+    use rama_http_types::header::HeaderValue;
 
     use super::*;
 
@@ -2831,8 +2832,6 @@ mod tests {
     /// An empty request body never carries a positive Content-Length.
     #[test]
     fn empty_request_bodies_drop_a_positive_content_length() {
-        use rama_http_types::header::HeaderValue;
-
         for (length, expected) in [
             ("5", "GET / HTTP/1.1\r\n\r\n"),
             ("0", "GET / HTTP/1.1\r\ncontent-length: 0\r\n\r\n"),

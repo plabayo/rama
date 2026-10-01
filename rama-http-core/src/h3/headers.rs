@@ -545,7 +545,7 @@ pub(crate) fn encode_response<B>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::h3::qpack::ErrorScope;
+    use crate::{h3::qpack::ErrorScope, proto::h1::test_util as h1};
     use rama_core::{Service as _, bytes::BufMut, service::service_fn};
     use rama_http::layer::required_header::AddRequiredRequestHeaders;
     use rama_http_types::proto::h2::{
@@ -1298,8 +1298,6 @@ mod tests {
     /// default port to guess. Userinfo is accepted on receipt and never sent.
     #[test]
     fn ordinary_connect_names_a_port_on_every_version() {
-        use crate::proto::h1::test_util as h1;
-
         for (authority, routed) in [
             ("example.com", None),
             ("example.com:", None),
@@ -1974,7 +1972,7 @@ mod tests {
     fn received(target: &Target) -> Vec<(&'static str, Request<()>)> {
         let mut received = Vec::new();
         if let Some(raw) = target.h1 {
-            let (uri, headers) = crate::proto::h1::test_util::receive(raw);
+            let (uri, headers) = h1::receive(raw);
             let mut request = Request::new(());
             *request.method_mut() = Method::from_bytes(target.method.as_bytes()).unwrap();
             *request.uri_mut() = uri;

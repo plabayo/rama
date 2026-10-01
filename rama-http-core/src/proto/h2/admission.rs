@@ -3,7 +3,8 @@
 //! The connection's h2 layer counts every local stream from creation until it really closes,
 //! sends buffered behind flow control included (RFC 9113 §5.1.2), whoever sent the request. A
 //! pool checkout reserves a stream on top of that count until its request is handed to h2,
-//! which then counts it. A connection admits while both together stay below the peer's limit.
+//! which then counts it. A connection admits while both together stay below the peer's limit;
+//! concurrent checkouts can overshoot it by one, which h2 then queues until a stream frees.
 
 use crate::h2::LocalStreams;
 use rama_core::{
@@ -136,9 +137,6 @@ impl ConnectionAdmissionPolicy for AdmissionPolicy {
             .0
             .upgrade()
             .ok_or_else(|| unavailable("HTTP/2 connection released"))?;
-        if state.streams.is_ended() {
-            return Err(unavailable("HTTP/2 connection closed"));
-        }
         let max = state.max.get();
         if state
             .reserved
@@ -161,8 +159,8 @@ impl ConnectionAdmissionPolicy for AdmissionPolicy {
         let Some(state) = self.0.upgrade() else {
             return Box::pin(async {});
         };
-        // Subscribe before the pool looks again, so no release, retirement or limit change is
-        // missed.
+        // Subscribe before the pool looks again, so no release, retirement, limit change or
+        // end of the connection (the release signal's owner drops) is missed.
         let mut released = state.released.watch();
         let mut retired = state.streams.watch();
         let mut limit = state.max.watch();
@@ -172,6 +170,12 @@ impl ConnectionAdmissionPolicy for AdmissionPolicy {
                 _ = retired.changed() => (),
                 _ = limit.changed() => (),
             }
+        })
+    }
+
+    fn in_use(&self) -> bool {
+        self.0.upgrade().is_some_and(|state| {
+            state.streams.live() > 0 || state.reserved.load(Ordering::Acquire) > 0
         })
     }
 }

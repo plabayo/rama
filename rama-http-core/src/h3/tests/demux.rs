@@ -99,6 +99,37 @@ fn payloads_that_exactly_fit_the_budget_are_kept() {
 }
 
 #[test]
+fn held_datagrams_crowding_the_budget_drop_the_payload_not_the_queues() {
+    let config = config(4, 4, 10);
+    let now = Instant::now();
+    let mut demux = Demux::default();
+    register(&mut demux, &config, 0, now);
+    deliver(&mut demux, &config, 0, 4, now);
+    // Held for a stream not open yet, it leaves no room that evicting queues could make.
+    deliver(&mut demux, &config, 8, 6, now);
+    deliver(&mut demux, &config, 0, 5, now);
+    assert!(matches!(poll(&mut demux, 0), Poll::Ready(Ok(Some(payload))) if payload.len() == 4));
+    assert!(poll(&mut demux, 0).is_pending());
+    assert_eq!(demux.drops().over_budget, 1);
+    assert_eq!(demux.slot_dropped(0), 1);
+}
+
+#[test]
+fn making_room_keeps_empty_datagrams() {
+    let config = config(4, 4, 4);
+    let now = Instant::now();
+    let mut demux = Demux::default();
+    register(&mut demux, &config, 0, now);
+    deliver(&mut demux, &config, 0, 0, now);
+    deliver(&mut demux, &config, 0, 3, now);
+    deliver(&mut demux, &config, 0, 3, now);
+    assert!(matches!(poll(&mut demux, 0), Poll::Ready(Ok(Some(payload))) if payload.is_empty()));
+    assert!(matches!(poll(&mut demux, 0), Poll::Ready(Ok(Some(payload))) if payload.len() == 3));
+    assert!(poll(&mut demux, 0).is_pending());
+    assert_eq!(demux.drops().over_budget, 1);
+}
+
+#[test]
 fn a_request_without_queue_room_counts_its_drops() {
     let config = config(0, 4, 64);
     let now = Instant::now();

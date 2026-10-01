@@ -10,7 +10,7 @@ use rama::{
     http::{
         Body, Method, Request, StatusCode, Version,
         body::util::BodyExt as _,
-        client::EasyHttpConnectorBuilder,
+        client::{EasyHttpConnectorBuilder, HttpPooledConnectorConfig},
         conn::TargetHttpVersion,
         header::SEC_WEBSOCKET_VERSION,
         io::upgrade::handle_upgrade,
@@ -112,7 +112,8 @@ impl Drop for OneStreamServer {
     }
 }
 
-/// A pooled HTTPS client trusting the test credentials.
+/// A pooled HTTPS client trusting the test credentials, capped at two connections so a
+/// request that finds both busy waits for a stream to retire instead of dialing a third.
 macro_rules! client {
     ($tls:expr) => {{
         let tls = $tls;
@@ -127,7 +128,11 @@ macro_rules! client {
         let builder = builder.with_tls_support_using_rustls(tls);
         builder
             .with_default_http_connector(Executor::new())
-            .with_default_connection_pool()
+            .try_with_connection_pool(HttpPooledConnectorConfig {
+                max_total: 2,
+                ..Default::default()
+            })
+            .unwrap()
             .build_client()
     }};
 }
@@ -177,11 +182,34 @@ async fn an_upgraded_tunnel_keeps_its_stream_slot_after_its_response() {
     ordinary!(client, server.url("/"));
     assert_eq!(server.accepted(), 2, "the busy connection was not used");
 
-    // Once the tunnel ends its slot is free again: no third connection.
+    // Keep the second connection busy with an upload that never ends, so only the tunnel's
+    // connection can serve what follows once the tunnel ends.
+    let upload = stream::once(async { Ok::<_, Infallible>(Bytes::from_static(b"part")) })
+        .chain(stream::pending());
+    let response = timeout(
+        TEST_TIMEOUT,
+        client
+            .post(server.url("/upload"))
+            .version(Version::HTTP_2)
+            .extension(TargetHttpVersion(Version::HTTP_2))
+            .body(Body::from_stream(upload))
+            .send(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    drop(response.into_body().collect().await.unwrap());
+    assert_eq!(
+        server.accepted(),
+        2,
+        "the upload took the second connection"
+    );
+
+    // Both connections are busy; the next request is served only once the tunnel's stream
+    // retires and its connection admits again.
     drop(tunnel);
-    for _ in 0..3 {
-        ordinary!(client, server.url("/"));
-    }
+    ordinary!(client, server.url("/"));
     assert_eq!(server.accepted(), 2);
 }
 

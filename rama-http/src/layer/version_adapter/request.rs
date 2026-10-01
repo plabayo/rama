@@ -1,30 +1,26 @@
-use crate::utils::request_connect_protocol;
-use rama_core::Layer;
-use rama_core::Service;
-use rama_core::error::BoxError;
-use rama_core::error::ErrorContext;
-use rama_core::extensions::ExtensionsRef;
-use rama_core::telemetry::tracing;
-use rama_http_headers::Connection;
-use rama_http_headers::HeaderMapExt;
-use rama_http_headers::Host;
-use rama_http_headers::SecWebSocketKey;
-use rama_http_headers::SecWebSocketVersion;
-use rama_http_headers::Upgrade;
-use rama_http_types::HeaderMap;
-use rama_http_types::Method;
-use rama_http_types::Request;
-use rama_http_types::Version;
-use rama_http_types::conn::TargetHttpVersion;
-use rama_http_types::header::{CONTENT_LENGTH, HOST, TRANSFER_ENCODING};
-use rama_http_types::header::{SEC_WEBSOCKET_KEY, SEC_WEBSOCKET_VERSION};
-use rama_http_types::proto::ext::Protocol;
-use rama_net::client::{
-    ConnectionError, ConnectionErrorKind, ConnectorService, EstablishedClientConnection,
+use crate::{
+    layer::remove_header::{coalesce_cookie_headers, remove_illegal_h2_request_headers},
+    utils::request_connect_protocol,
 };
-use rama_net::{AuthorityInputExt, Protocol as Scheme, ProtocolInputExt};
-
-use crate::layer::remove_header::{coalesce_cookie_headers, remove_illegal_h2_request_headers};
+use rama_core::{
+    Layer, Service,
+    error::{BoxError, BoxErrorExt as _, ErrorContext, ErrorExt as _},
+    extensions::ExtensionsRef,
+    telemetry::tracing,
+};
+use rama_http_headers::{
+    Connection, HeaderMapExt, Host, SecWebSocketKey, SecWebSocketVersion, Upgrade,
+};
+use rama_http_types::{
+    HeaderMap, Method, Request, Version,
+    conn::TargetHttpVersion,
+    header::{CONTENT_LENGTH, HOST, SEC_WEBSOCKET_KEY, SEC_WEBSOCKET_VERSION, TRANSFER_ENCODING},
+    proto::ext::Protocol,
+};
+use rama_net::{
+    AuthorityInputExt, Protocol as Scheme, ProtocolInputExt,
+    client::{ConnectionError, ConnectionErrorKind, ConnectorService, EstablishedClientConnection},
+};
 use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
 
 #[derive(Clone, Debug)]
@@ -248,10 +244,10 @@ fn translate_request_upgrade<Body>(request: &mut Request<Body>) -> Result<(), Bo
                 .insert(Protocol::from_static("websocket"));
         }
         Some(protocol) => {
-            return Err(BoxError::from(format!(
-                "cannot translate HTTP/1 `Upgrade: {}` into an HTTP/2+ Extended CONNECT: only websocket is supported",
-                protocol.as_str(),
-            )));
+            return Err(BoxError::from_static_str(
+                "cannot translate an HTTP/1 upgrade into an HTTP/2+ Extended CONNECT: only websocket is supported",
+            )
+            .context_str_field("protocol", protocol.as_str()));
         }
         None => {}
     }
@@ -288,10 +284,10 @@ fn translate_request_downgrade<Body>(request: &mut Request<Body>) -> Result<(), 
             // for HTTP/1 and `Extensions` has no removal API, so we leave it in place.
         }
         Some(protocol) => {
-            return Err(BoxError::from(format!(
-                "cannot translate an HTTP/2+ Extended CONNECT `:protocol: {}` request to HTTP/1: only websocket is supported",
-                protocol.as_str(),
-            )));
+            return Err(BoxError::from_static_str(
+                "cannot translate an HTTP/2+ Extended CONNECT request to HTTP/1: only websocket is supported",
+            )
+            .context_str_field("protocol", protocol.as_str()));
         }
         None => {}
     }
@@ -456,6 +452,7 @@ mod tests {
                 .method(Method::CONNECT)
                 .uri("https://example.com/chat")
                 .header(CONTENT_LENGTH, "5")
+                .header(TRANSFER_ENCODING, "chunked")
                 .header(SEC_WEBSOCKET_VERSION, "13")
                 .body(())
                 .unwrap();

@@ -339,10 +339,17 @@ pub fn encode_request_target(
             .get_ref::<EstablishedProxyRoute>()
             .is_some_and(EstablishedProxyRoute::is_http_forward);
         let is_insecure = !crate::protocol_from_uri_or_extensions(extensions, uri).is_secure();
+        // RFC 9112 §3.2.4: an OPTIONS request without a path stays path-less up to the last
+        // hop, which sends it as `*`.
+        let server_wide =
+            *method == Method::OPTIONS && uri.is_path_empty() && uri.query().is_none();
         if via_http_proxy && is_insecure {
-            uri.write_http_absolute_form(output)
-        } else if *method == Method::OPTIONS && uri.is_path_empty() && uri.query().is_none() {
-            // RFC 9112 §3.2.4: the last hop sends an OPTIONS request without a path as `*`.
+            let result = uri.write_http_absolute_form(output);
+            if result.is_ok() && server_wide && output.ends_with(b"/") {
+                output.truncate(output.len() - 1);
+            }
+            result
+        } else if server_wide {
             output.extend_from_slice(b"*");
             Ok(())
         } else {
@@ -623,6 +630,40 @@ mod tests {
             ),
         ] {
             let request = Request::builder().uri(uri).body(()).unwrap();
+            request
+                .extensions()
+                .insert(EstablishedProxyRoute::Forward(proxy.clone()));
+            let encoded = encode_request(&request).unwrap();
+            assert!(encoded.starts_with(target.as_bytes()), "{uri}: {encoded:?}");
+        }
+    }
+
+    #[test]
+    fn forward_proxy_targets_keep_a_server_wide_options_path_less() {
+        let proxy: ProxyAddress = "http://proxy.example:8080".parse().unwrap();
+        for (method, uri, target) in [
+            (
+                Method::OPTIONS,
+                "http://origin.example:8001",
+                "OPTIONS http://origin.example:8001 HTTP/1.1\r\n",
+            ),
+            (
+                Method::OPTIONS,
+                "http://origin.example/",
+                "OPTIONS http://origin.example/ HTTP/1.1\r\n",
+            ),
+            (
+                Method::OPTIONS,
+                "http://origin.example?q",
+                "OPTIONS http://origin.example/?q HTTP/1.1\r\n",
+            ),
+            (
+                Method::GET,
+                "http://origin.example",
+                "GET http://origin.example/ HTTP/1.1\r\n",
+            ),
+        ] {
+            let request = Request::builder().method(method).uri(uri).body(()).unwrap();
             request
                 .extensions()
                 .insert(EstablishedProxyRoute::Forward(proxy.clone()));

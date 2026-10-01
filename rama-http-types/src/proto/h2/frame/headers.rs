@@ -688,12 +688,13 @@ impl Pseudo {
             uri.write_h2_path(&mut path_buf);
             let path = bytes_str_from(path_buf);
 
-            // RFC 9113 §8.3.1: an OPTIONS request whose target has no path
-            // component is the "OPTIONS *" form and MUST carry `:path = *`.
+            // RFC 9113 §8.3.1: an OPTIONS request for an http(s) target without
+            // a path is the "OPTIONS *" form and MUST carry `:path = *`.
             // The origin-form writer normalises an absent path to `/`, so the
             // absent path is detected via the typed accessor instead.
             let path = if method == Method::OPTIONS
                 && !uri.is_asterisk()
+                && uri.scheme().is_none_or(|scheme| scheme.is_http())
                 && uri.is_path_empty()
                 && uri.query().is_none()
             {
@@ -1397,6 +1398,18 @@ mod test {
                 ..Default::default()
             }
         );
+    }
+
+    #[test]
+    fn options_without_a_path_is_asterisk_only_for_http_targets() {
+        for (uri, path) in [
+            ("https://example.com", "*"),
+            ("http://example.com:8080", "*"),
+            ("foo://example.com", "/"),
+        ] {
+            let pseudo = Pseudo::request(Method::OPTIONS, &Uri::parse(uri).unwrap(), None);
+            assert_eq!(pseudo.path.as_deref(), Some(path), "{uri}");
+        }
     }
 
     #[test]

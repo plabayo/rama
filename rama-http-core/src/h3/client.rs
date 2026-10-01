@@ -59,6 +59,7 @@ pub(crate) struct ConnectionLifetime {
     connection: QuicConnection,
     shared: Arc<Shared>,
     admission: Arc<Semaphore>,
+    max_requests: usize,
     admission_changed: Reactive<usize>,
 }
 
@@ -105,7 +106,8 @@ pub fn handshake<B>(
         ));
     }
     config.settings()?;
-    let admission = Arc::new(Semaphore::new(config.max_requests));
+    let max_requests = config.max_requests;
+    let admission = Arc::new(Semaphore::new(max_requests));
     let shared = Shared::from_connection(config, Role::Client, &connection)?;
     let driver = Driver::new(connection.clone(), shared.clone(), Role::Client);
     Ok((
@@ -114,6 +116,7 @@ pub fn handshake<B>(
                 connection: connection.clone(),
                 shared: shared.clone(),
                 admission,
+                max_requests,
                 admission_changed: Reactive::new(0),
             }),
             connection,
@@ -337,6 +340,13 @@ impl ConnectionAdmissionPolicy for RequestAdmission {
                 _ = lifetime.shared.rejected(None) => (),
             }
         })
+    }
+
+    // Requests, their bodies and upgraded tunnels hold a permit until they end.
+    fn in_use(&self) -> bool {
+        self.lifetime
+            .upgrade()
+            .is_some_and(|lifetime| lifetime.admission.available_permits() < lifetime.max_requests)
     }
 }
 

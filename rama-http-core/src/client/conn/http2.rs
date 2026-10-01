@@ -132,9 +132,10 @@ impl<B> SendRequest<B> {
 
     /// Publish exact request admission for a multiplexing connection pool.
     ///
-    /// A checkout reserves one of the peer's concurrent streams. The request takes it into its
-    /// stream, which holds it until the stream ends, including an upgraded tunnel that outlives
-    /// its response. The policy holds the connection weakly.
+    /// A checkout reserves one of the peer's concurrent streams until its request reaches the
+    /// connection; the connection then counts the stream itself until it closes, including an
+    /// upgraded tunnel or an upload that outlives its response. The policy holds the connection
+    /// weakly.
     #[must_use]
     pub fn connection_admission(&self) -> ConnectionAdmission {
         self.admission.clone()
@@ -847,8 +848,6 @@ mod tests {
         assert!(send <= 64, "{send}");
     }
 
-    /// RFC 8441 §3: `:protocol` is only sent after the server enabled it, even when the
-    /// request is issued before the server's SETTINGS arrive.
     /// A connection to a server allowing one concurrent stream, once its SETTINGS have arrived.
     async fn one_stream_connection<S>(
         stream_window: u32,
@@ -935,8 +934,8 @@ mod tests {
         .unwrap();
     }
 
-    /// A stream counts until h2 retires it, not until its response or its body pipe ends: an
-    /// upload still buffered behind flow control keeps its slot (RFC 9113 §5.1.2).
+    /// A stream counts until h2 retires it: an upload still buffered behind flow control keeps
+    /// its slot after its response (RFC 9113 §5.1.2).
     #[tokio::test]
     async fn an_upload_buffered_behind_flow_control_keeps_its_slot() {
         // The server answers at once and never reads the upload.
@@ -1054,22 +1053,8 @@ mod tests {
         assert!(admits(&sender));
     }
 
-    /// Once the connection task ends, nothing more is admitted.
-    #[tokio::test]
-    async fn ended_connections_admit_nothing() {
-        let (client_io, _server_io) = tokio::io::duplex(1024);
-        let (sender, connection) = crate::client::conn::http2::handshake::<_, Body>(
-            Executor::default(),
-            ServiceInput::new(client_io),
-        )
-        .await
-        .unwrap();
-        let admission = sender.connection_admission();
-        assert!(admission.try_acquire(&Extensions::new()).unwrap().is_some());
-        drop(connection);
-        admission.try_acquire(&Extensions::new()).unwrap_err();
-    }
-
+    /// RFC 8441 §3: `:protocol` is only sent after the server enabled it, even when the
+    /// request is issued before the server's SETTINGS arrive.
     #[tokio::test]
     async fn extended_connect_waits_for_and_requires_server_setting() {
         for enabled in [false, true] {

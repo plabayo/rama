@@ -487,25 +487,42 @@ impl<A: AbortRequest> Demux<A> {
             slot.dropped += 1;
             self.drops.queue_full += 1;
         }
+        if self.buffered + payload.len() > limits.max_buffered_bytes {
+            // Held datagrams cannot make room: when they alone crowd the payload out, or it
+            // can never fit, drop it rather than drain every queue for nothing.
+            let held: usize = self
+                .pending
+                .iter()
+                .map(|pending| pending.payload.len())
+                .sum();
+            if held + payload.len() > limits.max_buffered_bytes {
+                if let Some(slot) = self.slots.get_mut(&stream) {
+                    slot.dropped += 1;
+                }
+                self.drops.over_budget += 1;
+                return Action::default();
+            }
+        }
         while self.buffered + payload.len() > limits.max_buffered_bytes {
-            let largest = (payload.len() <= limits.max_buffered_bytes)
-                .then(|| {
-                    self.slots
-                        .iter_mut()
-                        .filter(|(_, slot)| slot.bytes > 0)
-                        .max_by_key(|(_, slot)| slot.bytes)
-                        .map(|(_, slot)| slot)
-                })
-                .flatten();
-            let Some(largest) = largest else {
-                // Only held datagrams fill the budget, or the payload can never fit.
+            let Some(largest) = self
+                .slots
+                .values_mut()
+                .filter(|slot| slot.bytes > 0)
+                .max_by_key(|slot| slot.bytes)
+            else {
                 if let Some(slot) = self.slots.get_mut(&stream) {
                     slot.dropped += 1;
                 }
                 self.drops.over_budget += 1;
                 return Action::default();
             };
-            if let Some(oldest) = largest.queue.pop_front() {
+            // Empty datagrams free nothing, so they are kept.
+            if let Some(oldest) = largest
+                .queue
+                .iter()
+                .position(|datagram| !datagram.is_empty())
+                .and_then(|at| largest.queue.remove(at))
+            {
                 largest.bytes -= oldest.len();
                 self.buffered -= oldest.len();
                 largest.dropped += 1;
