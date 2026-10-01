@@ -23,6 +23,11 @@ use rama_http::{
     Body, HeaderMap, HeaderName, HeaderValue, Method, Request, Response, Version,
     io::upgrade::{Upgraded, handle_upgrade},
     layer::{
+        har::{
+            layer::HARExportLayer,
+            recorder::{FileRecorder, Recorder as _},
+            spec::{HttpVersion, LogFile, WebSocketMessageType},
+        },
         upgrade::mitm::HttpUpgradeMitmRelayLayer,
         version_adapter::{ResponseVersionAdapter, adapt_request_version},
     },
@@ -54,6 +59,7 @@ use rama_ws::{
         },
         server::WebSocketAcceptor,
     },
+    layer::har::HARWebSocketLayer,
 };
 use std::{convert::Infallible, num::NonZeroUsize, sync::Arc, time::Duration};
 use tokio::{
@@ -552,5 +558,104 @@ async fn relays_bridge_every_http_version_pair_over_real_engines() {
         for closer in [Closer::Client, Closer::Origin] {
             assert_relay(ingress, egress, closer).await;
         }
+    }
+}
+
+/// A HAR recording of a relayed WebSocket keeps the exchange's HTTP version and its relayed
+/// messages, HTTP/3 (RFC 9220) included.
+#[tokio::test]
+async fn har_records_relayed_websockets_on_every_version() {
+    for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
+        let dir = rama_utils::fs::tempdir().expect("tempdir");
+        let label = match version {
+            Version::HTTP_3 => "h3",
+            Version::HTTP_2 => "h2",
+            _ => "h1",
+        };
+        let recorder = FileRecorder::new(dir.path().to_owned(), format!("relay-{label}"));
+        let upstream = Hop::start(
+            version,
+            ConsumeErrLayer::trace_as_debug()
+                .into_layer(WebSocketAcceptor::new().into_echo_service()),
+        )
+        .await;
+        let egress_client = upstream.client.clone();
+        let forward = service_fn(move |mut request: Request| {
+            let client = egress_client.clone();
+            async move {
+                adapt_request_version(&mut request, version)?;
+                client.serve(request).await
+            }
+        });
+        let relay = WebSocketRelayIoLayer::new().into_layer(
+            HARWebSocketLayer::new()
+                .into_layer(WebSocketRelayService::new(service_fn(tag_relay_message))),
+        );
+        let proxy = HttpUpgradeMitmRelayLayer::new(
+            Executor::default(),
+            HttpWebSocketRelayServiceRequestMatcher::new(relay),
+        )
+        .into_layer(
+            HARExportLayer::new(recorder.clone(), true)
+                .into_layer(ResponseVersionAdapter::new(forward)),
+        );
+        let proxy = ArcLayer::new().into_layer(ConsumeErrLayer::trace_as_debug().into_layer(proxy));
+        let downstream = Hop::start(version, proxy).await;
+
+        let builder = match version {
+            Version::HTTP_3 => downstream.client.websocket_h3(URI),
+            Version::HTTP_2 => downstream.client.websocket_h2(URI),
+            _ => downstream.client.websocket(URI),
+        };
+        let mut socket = timeout(LIMIT, builder.handshake(Extensions::new()))
+            .await
+            .expect("handshake in time")
+            .expect("handshake");
+        socket
+            .send_message(Message::text("hello"))
+            .await
+            .expect("send through the relay");
+        assert_eq!(
+            socket.recv_message().await.expect("relayed echo"),
+            Message::text("relayed-HELLO"),
+            "{version:?}"
+        );
+        drop(socket);
+
+        timeout(LIMIT, recorder.stop_record())
+            .await
+            .expect("finalize HAR recording");
+        let files = std::fs::read_dir(dir.path())
+            .expect("read recording dir")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("directory entries");
+        assert_eq!(
+            files.len(),
+            1,
+            "{version:?}: temporary HAR artifacts are removed"
+        );
+        let log: LogFile = serde_json::from_slice(&std::fs::read(files[0].path()).expect("HAR"))
+            .expect("parse HAR");
+        let entry = &log.log.entries[0];
+        assert_eq!(entry.request.http_version, HttpVersion::from(version));
+        assert_eq!(entry.response.http_version, HttpVersion::from(version));
+        let messages = entry
+            .web_socket_messages
+            .as_deref()
+            .expect("WebSocket messages")
+            .iter()
+            .filter(|message| message.r#type != WebSocketMessageType::Error)
+            .map(|message| (message.r#type, message.data.as_str().to_owned()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            messages,
+            [
+                (WebSocketMessageType::Send, "HELLO".to_owned()),
+                (WebSocketMessageType::Receive, "relayed-HELLO".to_owned()),
+            ],
+            "{version:?}"
+        );
+        downstream.close().await;
+        upstream.close().await;
     }
 }

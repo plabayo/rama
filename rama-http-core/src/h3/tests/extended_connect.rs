@@ -8,9 +8,9 @@ use crate::h3::{
     server,
 };
 use rama_core::{
-    bytes::BytesMut,
+    bytes::{Bytes, BytesMut},
     extensions::ExtensionsRef as _,
-    futures::FutureExt as _,
+    futures::{FutureExt as _, stream},
     rt::{Executor, spawn},
 };
 use rama_http::{
@@ -22,7 +22,7 @@ use rama_http::{
 };
 use rama_http_types::{
     Body, Method, Request, Response, StatusCode, Version,
-    body::util::BodyExt as _,
+    body::{StreamingBody as _, util::BodyExt as _},
     header,
     proto::{
         ext::Protocol,
@@ -30,9 +30,12 @@ use rama_http_types::{
     },
 };
 use rama_net::uri::Uri;
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
+use std::{
+    convert::Infallible,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
@@ -167,6 +170,56 @@ async fn an_upgraded_tunnel_keeps_the_connection_in_use_until_it_ends() {
             changed.await;
         }
         serve.await.unwrap();
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+/// As on HTTP/2, a CONNECT body is never sent: one that announces nothing, such as an empty
+/// body being recorded, still opens the tunnel, and one that announces content is refused.
+#[tokio::test]
+async fn connect_sends_no_body_and_refuses_one_announcing_content() {
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::in_memory(None, None).await;
+        let (mut client, client_driver) =
+            client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
+                .unwrap();
+        let (mut server, server_driver) =
+            server::handshake(pair.server.clone(), extended_connect_server()).unwrap();
+        spawn(client_driver.run());
+        spawn(server_driver.run());
+        spawn(async move {
+            while let Ok(stream) = server.accept().await {
+                if let Ok((request, response)) = stream.resolve().await {
+                    let upgrade = handle_upgrade(&request);
+                    _ = response.send_response(Response::new(Body::empty())).await;
+                    if let Ok(mut tunnel) = upgrade.await {
+                        let mut rest = Vec::new();
+                        _ = tunnel.read_to_end(&mut rest).await;
+                    }
+                }
+            }
+        });
+
+        let mut request = extended_connect(
+            "https://localhost/chat",
+            Protocol::from_static("x-custom.v1"),
+        );
+        *request.body_mut() = Body::from_stream(stream::empty::<Result<Bytes, Infallible>>());
+        assert!(!request.body().is_end_stream());
+        let response = client.send_request(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let mut tunnel = handle_upgrade(&response).await.unwrap();
+        tunnel.shutdown().await.unwrap();
+
+        let mut request = extended_connect(
+            "https://localhost/chat",
+            Protocol::from_static("x-custom.v1"),
+        );
+        *request.body_mut() = Body::from("tunnel data");
+        let error = client.send_request(request).await.unwrap_err();
+        assert_eq!(error.code(), Code::H3_MESSAGE_ERROR);
         pair.close().await;
     })
     .await

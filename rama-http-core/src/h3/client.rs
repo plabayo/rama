@@ -9,7 +9,7 @@ use super::{
     quic::Writer,
     stream::{Phase, Reader},
 };
-use crate::headers::drop_undeliverable_content_length;
+use crate::headers::{content_length_parse_all, drop_undeliverable_content_length};
 use parking_lot::Mutex;
 use rama_core::{
     error::BoxError,
@@ -456,13 +456,18 @@ where
             .filter(|_| claimed)
             .map(|(registration, send)| Association::new(registration, send));
         let informational = request.extensions().get_ref::<OnInformational>().cloned();
-        if method == Method::CONNECT && !request.body().is_end_stream() {
+        // Tunnel data goes through the upgrade API, as on HTTP/2: only a body that announces
+        // content is refused; any other, such as an empty one being recorded, is not sent.
+        if method == Method::CONNECT
+            && (content_length_parse_all(request.headers()).is_some_and(|len| len != 0)
+                || request.body().size_hint().lower() > 0)
+        {
             return Err(Error::stream(
                 Code::H3_MESSAGE_ERROR,
                 "CONNECT requires the upgrade API for tunnel data",
             ));
         }
-        if request.body().is_end_stream() {
+        if method == Method::CONNECT || request.body().is_end_stream() {
             drop_undeliverable_content_length(request.headers_mut());
         }
         let encoded = headers::encode_request(&self.shared, id, &request)?;
