@@ -246,11 +246,18 @@ fn lookup_record_packet(
     let state = ResStateGuard(&mut state);
     #[cfg(test)]
     stub_tests::use_stub(state.0, domain.as_str());
-    // a truncated answer is asked again over TCP here, unlike libc within the deadline
+    // TCP is asked here, unlike by libc within the deadline: for a truncated
+    // answer, and for every name with `use-vc`
+    let tries = walk::Tries {
+        retrans: state.0.retrans,
+        retry: state.0.retry,
+        nscount: state.0.nscount,
+        tcp: state.0.options & ffi::RES_USEVC != 0,
+    };
     state.0.options |= ffi::RES_IGNTC;
-    let tries = (state.0.retrans, state.0.retry);
 
-    let walk = Walk::new(state.0, domain.as_str(), walk::hostalias(domain.as_str()))?;
+    let alias = walk::hostalias(domain.as_str());
+    let walk = Walk::new(state.0, domain.as_str(), alias, walk::full_search_list)?;
     let mut outcomes = walk.outcomes();
     loop {
         let at = walk.run(&mut outcomes, deadline, |name, budget| {
@@ -298,6 +305,10 @@ fn clear_errno() {
 /// Fewer tries are made only when even a second per send does not fit.
 fn fit_retransmits(state: &mut ffi::ResState, budget: Duration) {
     let budget = whole_secs(budget).max(1);
+    // libc waits a second per nameserver at least: ask fewer if all do not fit
+    if state.nscount > budget {
+        state.nscount = budget;
+    }
     let nscount = state.nscount.clamp(1, MAX_NAMESERVERS);
     let total = |retrans, retry: c_int| retry.max(1).saturating_mul(try_secs(retrans, nscount));
 
@@ -643,6 +654,8 @@ mod ffi {
     pub(super) const RES_DNSRCH: libc::c_ulong = 0x200;
     /// Take a truncated answer as is, rather than asking again over TCP.
     pub(super) const RES_IGNTC: libc::c_ulong = 0x20;
+    /// Ask over TCP only (`use-vc`).
+    pub(super) const RES_USEVC: libc::c_ulong = 0x08;
     /// Do not ask a name without dots as is once it was searched.
     pub(super) const RES_NOTLDQUERY: libc::c_ulong = 0x0100_0000;
 
@@ -737,8 +750,29 @@ mod stub_tests {
     struct Stub {
         name: &'static str,
         port: u16,
+        options: Options,
+    }
+
+    /// How a lookup sees its stub.
+    #[derive(Clone, Copy)]
+    struct Options {
         search: Option<&'static CStr>,
         sends: libc::c_int,
+        /// `use-vc`: TCP only.
+        tcp_only: bool,
+        /// A nameserver that never answers comes first.
+        dead_first: Option<u16>,
+    }
+
+    impl Options {
+        fn new(search: Option<&'static CStr>, sends: libc::c_int) -> Self {
+            Self {
+                search,
+                sends,
+                tcp_only: false,
+                dead_first: None,
+            }
+        }
     }
 
     static STUBS: Mutex<Vec<Stub>> = Mutex::new(Vec::new());
@@ -749,24 +783,45 @@ mod stub_tests {
         let Some(stub) = stubs.iter().find(|stub| stub.name == name) else {
             return;
         };
+        let options = stub.options;
         // a second per send
         state.retrans = 1;
-        state.retry = stub.sends;
-        state.nscount = 1;
-        let nameserver = &mut state.nsaddr_list[0];
-        nameserver.sin_family = libc::AF_INET as _;
-        nameserver.sin_port = stub.port.to_be();
-        nameserver.sin_addr.s_addr = u32::from(Ipv4Addr::LOCALHOST).to_be();
-        // an IPv6 nameserver from resolv.conf would take precedence
-        // SAFETY: `res_ninit` initialized `_ext`, the variant glibc uses
-        unsafe { state._u._ext.nsaddrs[0] = ptr::null_mut() };
+        state.retry = options.sends;
+        state.nscount = 0;
+        for port in [options.dead_first, Some(stub.port)].into_iter().flatten() {
+            let ns = usize::try_from(state.nscount).expect("a nameserver index");
+            let nameserver = &mut state.nsaddr_list[ns];
+            nameserver.sin_family = libc::AF_INET as _;
+            nameserver.sin_port = port.to_be();
+            nameserver.sin_addr.s_addr = u32::from(Ipv4Addr::LOCALHOST).to_be();
+            // an IPv6 nameserver from resolv.conf would take precedence
+            // SAFETY: `res_ninit` initialized `_ext`, the variant glibc uses
+            unsafe { state._u._ext.nsaddrs[ns] = ptr::null_mut() };
+            state.nscount += 1;
+        }
         state.dnsrch = [ptr::null_mut(); 7];
-        if let Some(search) = stub.search {
+        if let Some(search) = options.search {
             state.dnsrch[0] = search.as_ptr().cast_mut();
         }
         state.set_ndots(1);
         // no OPT record after the question, which the stub matches on
         state.options &= !RES_USE_EDNS0;
+        if options.tcp_only {
+            state.options |= ffi::RES_USEVC;
+        }
+    }
+
+    /// A nameserver that takes queries, over UDP and TCP, and never answers.
+    fn dead_nameserver() -> u16 {
+        static DEAD: Mutex<Vec<(UdpSocket, TcpListener)>> = Mutex::new(Vec::new());
+        loop {
+            let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind dead stub");
+            let port = socket.local_addr().expect("dead stub addr").port();
+            if let Ok(listener) = TcpListener::bind((Ipv4Addr::LOCALHOST, port)) {
+                DEAD.lock().push((socket, listener));
+                return port;
+            }
+        }
     }
 
     /// `RES_USE_EDNS0` in glibc's <resolv.h>.
@@ -792,6 +847,10 @@ mod stub_tests {
     enum Tcp {
         /// [`TXT_RECORDS`] TXT records, too many for a datagram.
         Txt,
+        /// The same, a few bytes at a time.
+        Trickle,
+        /// One byte of the answer, then nothing.
+        Stall,
         /// Takes the query, never answers.
         Silence,
         /// Not listening at all.
@@ -830,6 +889,10 @@ mod stub_tests {
         sends: libc::c_int,
         reply: Reply,
     ) -> Arc<Seen> {
+        serve_with(name, reply, Options::new(search, sends))
+    }
+
+    fn serve_with(name: &'static str, reply: Reply, options: Options) -> Arc<Seen> {
         // TCP on the same port, unless it is to refuse
         let (socket, listener) = loop {
             let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind stub");
@@ -845,8 +908,7 @@ mod stub_tests {
         STUBS.lock().push(Stub {
             name,
             port,
-            search,
-            sends,
+            options,
         });
         let stub = Arc::new(Seen::default());
         if let (Some(listener), Reply::Truncated(tcp)) = (listener, reply) {
@@ -917,8 +979,22 @@ mod stub_tests {
             response.extend_from_slice(&[b'x'; 200]);
         }
         let len = u16::try_from(response.len()).expect("small answer");
-        _ = stream.write_all(&len.to_be_bytes());
-        _ = stream.write_all(&response);
+        let framed = [len.to_be_bytes().as_slice(), &response].concat();
+        match tcp {
+            Tcp::Trickle => {
+                for piece in framed.chunks(500) {
+                    _ = stream.write_all(&piece[..1]);
+                    thread::sleep(Duration::from_millis(20));
+                    _ = stream.write_all(&piece[1..]);
+                    thread::sleep(Duration::from_millis(20));
+                }
+            }
+            Tcp::Stall => {
+                _ = stream.write_all(&framed[..1]);
+                _ = stream.read(&mut [0; 1]);
+            }
+            _ => _ = stream.write_all(&framed),
+        }
     }
 
     fn header_only(query: &[u8], rcode: u8) -> Vec<u8> {
@@ -979,6 +1055,77 @@ mod stub_tests {
         assert!(err.downcast_ref::<DnsTimeoutError>().is_some(), "{err}");
         assert!(started.elapsed() < Duration::from_millis(1900));
         assert_eq!(stub.tcp_queries(), 1);
+    }
+
+    #[test]
+    fn a_tcp_answer_in_pieces_is_read_whole() {
+        _ = serve("drip.stub.test", None, 1, Reply::Truncated(Tcp::Trickle));
+        let packet = lookup_type("drip.stub.test", ffi::NS_T_TXT, Duration::from_secs(2))
+            .expect("the TCP answer")
+            .expect("its response");
+        let mut texts = 0;
+        parse_txt_response(&packet, &mut |_, _| texts += 1).expect("TXT records");
+        assert_eq!(texts, TXT_RECORDS);
+    }
+
+    /// `lookup`, on a thread of its own, unless it hangs.
+    fn lookup_or_hang(name: &'static str, budget: Duration) -> rama_core::error::BoxError {
+        let (done, ended) = mpsc::channel();
+        thread::spawn(move || _ = done.send(lookup(name, budget)));
+        ended
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the lookup hangs")
+            .expect_err("no answer")
+    }
+
+    #[test]
+    fn a_stalled_tcp_answer_ends_with_the_budget() {
+        _ = serve("stall.stub.test", None, 1, Reply::Truncated(Tcp::Stall));
+        let started = Instant::now();
+        let err = lookup_or_hang("stall.stub.test", Duration::from_millis(1400));
+        assert!(err.downcast_ref::<DnsTimeoutError>().is_some(), "{err}");
+        assert!(started.elapsed() < Duration::from_millis(1900));
+    }
+
+    #[test]
+    fn a_tcp_retry_moves_on_to_the_next_nameserver() {
+        let options = Options {
+            dead_first: Some(dead_nameserver()),
+            ..Options::new(None, 1)
+        };
+        let stub = serve_with("next.stub.test", Reply::Truncated(Tcp::Txt), options);
+        let started = Instant::now();
+        let packet = lookup_type("next.stub.test", ffi::NS_T_TXT, Duration::from_secs(3))
+            .expect("the second nameserver's TCP answer")
+            .expect("its response");
+        let mut texts = 0;
+        parse_txt_response(&packet, &mut |_, _| texts += 1).expect("TXT records");
+        assert_eq!(texts, TXT_RECORDS);
+        assert_eq!(stub.tcp_queries(), 1);
+        assert!(started.elapsed() < Duration::from_millis(3500));
+    }
+
+    #[test]
+    fn use_vc_asks_over_tcp_only() {
+        let options = Options {
+            tcp_only: true,
+            ..Options::new(None, 1)
+        };
+        let stub = serve_with("vc.stub.test", Reply::Truncated(Tcp::Txt), options);
+        let packet = lookup_type("vc.stub.test", ffi::NS_T_TXT, Duration::from_secs(2))
+            .expect("the TCP answer")
+            .expect("its response");
+        let mut texts = 0;
+        parse_txt_response(&packet, &mut |_, _| texts += 1).expect("TXT records");
+        assert_eq!(texts, TXT_RECORDS);
+        assert_eq!((stub.queries(), stub.tcp_queries()), (0, 1));
+
+        // and ends with the budget, where libc's own TCP would not
+        _ = serve_with("vc-hush.stub.test", Reply::Truncated(Tcp::Silence), options);
+        let started = Instant::now();
+        let err = lookup_or_hang("vc-hush.stub.test", Duration::from_millis(1400));
+        assert!(err.downcast_ref::<DnsTimeoutError>().is_some(), "{err}");
+        assert!(started.elapsed() < Duration::from_millis(1900));
     }
 
     #[test]
@@ -1147,7 +1294,7 @@ mod response_buffer_tests {
         state.retry = retry;
         state.nscount = nscount;
         fit_retransmits(&mut state, budget);
-        let waited = state.retry.max(1) * try_secs(state.retrans, nscount.clamp(1, 3));
+        let waited = state.retry.max(1) * try_secs(state.retrans, state.nscount.clamp(1, 3));
         (state.retrans, state.retry, waited)
     }
 
@@ -1159,6 +1306,8 @@ mod response_buffer_tests {
         // glibc waits at least a second per send, so drop a try instead
         assert_eq!(fitted(5, 2, 3, secs(5)), (1, 1, 3));
         assert_eq!(fitted(5, 2, 1, secs(1)), (1, 1, 1));
+        // three nameservers do not fit two seconds: ask the first two
+        assert_eq!(fitted(5, 2, 3, secs(2)), (1, 1, 2));
         // a hostile `options timeout:30 attempts:5` with three nameservers
         assert_eq!(fitted(30, 5, 3, secs(5)), (1, 1, 3));
         // a shorter configured wait is kept, a fitting one is never lengthened

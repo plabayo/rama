@@ -4,15 +4,19 @@
 
 use std::{
     env,
-    ffi::{CStr, CString},
+    ffi::{CStr, CString, OsString},
     fs,
-    io::{self, Read as _, Write as _},
+    io::{self, BufRead, Read as _, Write as _},
     net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6, TcpStream},
+    os::unix::{ffi::OsStrExt as _, fs::MetadataExt as _},
+    path::{Path, PathBuf},
     ptr,
-    time::{Duration, Instant},
+    sync::Arc,
+    time::{Duration, Instant, SystemTime},
 };
 
 use libc::c_int;
+use parking_lot::Mutex;
 use rama_core::error::BoxError;
 use rama_net::address::Domain;
 
@@ -90,11 +94,12 @@ impl Asked {
 
 impl Walk {
     /// The names `__res_context_search` asks for `name`, with `alias` its
-    /// HOSTALIASES entry, if any.
+    /// HOSTALIASES entry, if any, and `full_search` the whole search list.
     pub(super) fn new(
         state: &ffi::ResState,
         name: &str,
         alias: Option<CString>,
+        full_search: impl FnOnce() -> Arc<[Box<[u8]>]>,
     ) -> Result<Self, BoxError> {
         let dots = name.bytes().filter(|&byte| byte == b'.').count();
         let mut walk = Self {
@@ -124,19 +129,20 @@ impl Walk {
             ffi::RES_DNSRCH
         };
         if state.options & flag != 0 {
-            // without DNSRCH only the default domain is asked
-            let domains = if state.options & ffi::RES_DNSRCH != 0 {
-                state.dnsrch.len()
-            } else {
-                1
-            };
-            for &domain in state.dnsrch.iter().take(domains) {
-                if domain.is_null() {
-                    break;
-                }
+            let kept: Vec<&[u8]> = state
+                .dnsrch
+                .iter()
+                .take_while(|domain| !domain.is_null())
                 // SAFETY: `res_ninit` points each set entry at a NUL-terminated
                 // domain living as long as `state`, and nulls the rest
-                let domain = unsafe { CStr::from_ptr(domain) }.to_bytes();
+                .map(|&domain| unsafe { CStr::from_ptr(domain) }.to_bytes())
+                .collect();
+            let mut domains = search_domains(&kept, full_search);
+            // without DNSRCH only the default domain is asked
+            if state.options & ffi::RES_DNSRCH == 0 {
+                domains.truncate(1);
+            }
+            for domain in &domains {
                 let domain = domain.strip_prefix(b".").unwrap_or(domain);
                 let searched = [name.as_bytes(), b".", domain].concat();
                 let searched = CString::new(searched).map_err(|_e| {
@@ -196,6 +202,11 @@ impl Walk {
             let share = self.sharing(i, outcomes);
             let asked = outcomes[at].get_or_insert_with(|| {
                 let left = deadline.saturating_duration_since(Instant::now());
+                // libc waits a second at least: with under half of one left,
+                // the name would only be answered after the deadline
+                if left < Duration::from_millis(500) {
+                    return Asked::Timeout;
+                }
                 ask(&self.steps[at].name, left / share)
             });
             last = at;
@@ -252,21 +263,134 @@ fn trim_root(name: &[u8]) -> &[u8] {
     name.strip_suffix(b".").unwrap_or(name)
 }
 
+/// `MAXDNSRCH`, and the size of `defdname`: what `res_ninit` copies of the
+/// search list into `dnsrch`.
+const KEPT_SEARCH_DOMAINS: usize = 6;
+const KEPT_SEARCH_BYTES: usize = 256;
+/// The longest name in presentation form.
+const MAX_DOMAIN_LEN: usize = 253;
+
+/// The search list glibc walks: `res_ninit` keeps at most six domains, in
+/// 256 bytes, so a longer list is read again whole, as glibc read it.
+fn search_domains(kept: &[&[u8]], full: impl FnOnce() -> Arc<[Box<[u8]>]>) -> Vec<Box<[u8]>> {
+    let used: usize = kept.iter().map(|domain| domain.len() + 1).sum();
+    // room for six domains of any length, NULs included: nothing was cut
+    let cut = kept.len() == KEPT_SEARCH_DOMAINS
+        || KEPT_SEARCH_BYTES.saturating_sub(used) < MAX_DOMAIN_LEN + 1;
+    if cut {
+        let full = full();
+        if full.len() > kept.len() && full.iter().zip(kept).all(|(full, kept)| **full == **kept) {
+            return full.to_vec();
+        }
+    }
+    kept.iter().map(|&domain| Box::from(domain)).collect()
+}
+
+/// `_PATH_RESCONF`.
+const RESOLV_CONF: &str = "/etc/resolv.conf";
+
+#[derive(PartialEq, Eq)]
+struct SearchSource {
+    conf: PathBuf,
+    localdomain: Option<OsString>,
+    metadata: Option<(Option<SystemTime>, u64, u64)>,
+}
+
+/// glibc's whole search list, read again only once `LOCALDOMAIN` or
+/// resolv.conf changed.
+pub(super) fn full_search_list() -> Arc<[Box<[u8]>]> {
+    search_list_in(Path::new(RESOLV_CONF), env::var_os("LOCALDOMAIN"))
+}
+
+fn search_list_in(conf: &Path, localdomain: Option<OsString>) -> Arc<[Box<[u8]>]> {
+    static READ: Mutex<Option<(SearchSource, Arc<[Box<[u8]>]>)>> = Mutex::new(None);
+    let source = SearchSource {
+        conf: conf.to_owned(),
+        localdomain,
+        metadata: fs::metadata(conf)
+            .ok()
+            .map(|meta| (meta.modified().ok(), meta.len(), meta.ino())),
+    };
+    let mut read = READ.lock();
+    if let Some((was, list)) = read.as_ref()
+        && *was == source
+    {
+        return list.clone();
+    }
+    let text = match source.localdomain {
+        Some(_) => Vec::new(),
+        None => fs::read(conf).unwrap_or_default(),
+    };
+    let localdomain = source.localdomain.as_ref().map(|value| value.as_bytes());
+    let list: Arc<[Box<[u8]>]> = parse_search_list(localdomain, &text).into();
+    *read = Some((source, list.clone()));
+    list
+}
+
+/// The search list of glibc's `res_vinit_1`: `LOCALDOMAIN`, else the last
+/// `domain` or `search` line of resolv.conf.
+fn parse_search_list(localdomain: Option<&[u8]>, conf: &[u8]) -> Vec<Box<[u8]>> {
+    let words = |line: &[u8]| -> Vec<Box<[u8]>> {
+        line.split(|&byte| matches!(byte, b' ' | b'\t'))
+            .filter(|word| !word.is_empty())
+            .map(Box::from)
+            .collect()
+    };
+    if let Some(localdomain) = localdomain {
+        let line = localdomain
+            .split(|&byte| byte == b'\n')
+            .next()
+            .unwrap_or_default();
+        return words(line);
+    }
+    let mut list = Vec::new();
+    for line in conf.split(|&byte| byte == b'\n') {
+        if let Some(rest) = keyword(line, b"domain") {
+            if let Some(domain) = words(rest).into_iter().next() {
+                list = vec![domain];
+            }
+        } else if let Some(rest) = keyword(line, b"search") {
+            let domains = words(rest);
+            if !domains.is_empty() {
+                list = domains;
+            }
+        }
+    }
+    list
+}
+
+/// What follows `name` in `line`, glibc's `MATCH`: the keyword, then a blank.
+fn keyword<'a>(line: &'a [u8], name: &[u8]) -> Option<&'a [u8]> {
+    let rest = line.strip_prefix(name)?;
+    matches!(rest.first(), Some(b' ' | b'\t')).then_some(rest)
+}
+
 /// The HOSTALIASES entry of a name without dots, which glibc asks instead.
 pub(super) fn hostalias(name: &str) -> Option<CString> {
     if name.contains('.') {
         return None;
     }
-    let aliases = fs::read(env::var_os("HOSTALIASES")?).ok()?;
-    alias_in(&aliases, name)
+    let aliases = fs::File::open(env::var_os("HOSTALIASES")?).ok()?;
+    alias_in(io::BufReader::new(aliases), name)
 }
 
 /// `name`'s alias in a HOSTALIASES file, read as glibc's
-/// `__res_context_hostalias` reads it.
-fn alias_in(aliases: &[u8], name: &str) -> Option<CString> {
+/// `__res_context_hostalias` reads it, a `fgets` line at a time.
+fn alias_in(mut aliases: impl BufRead, name: &str) -> Option<CString> {
     // C's `isspace`
     let space = |byte: &u8| matches!(byte, b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r');
-    for line in aliases.split_inclusive(|&byte| byte == b'\n') {
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        // `fgets` into `BUFSIZ`: a line, or the next part of a longer one
+        let read = aliases
+            .by_ref()
+            .take(8191)
+            .read_until(b'\n', &mut line)
+            .ok()?;
+        if read == 0 {
+            return None;
+        }
         // a line without whitespace ends the file
         let end = line.iter().position(space)?;
         if !trim_root(&line[..end]).eq_ignore_ascii_case(trim_root(name.as_bytes())) {
@@ -277,21 +401,40 @@ fn alias_in(aliases: &[u8], name: &str) -> Option<CString> {
         let len = alias.iter().position(space).unwrap_or(alias.len());
         return CString::new(&alias[..len]).ok();
     }
-    None
 }
 
-/// Asks `name` once, retransmitting within `budget` from libc's configured
-/// `tries`; a truncated answer is asked again over TCP.
+/// How resolv.conf has libc ask: retransmits, and the nameservers to ask.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Tries {
+    pub(super) retrans: c_int,
+    pub(super) retry: c_int,
+    pub(super) nscount: c_int,
+    /// `use-vc`: TCP only.
+    pub(super) tcp: bool,
+}
+
+/// Asks `name` once, retransmitting within `budget` as `tries` allow; a
+/// truncated answer is asked again over TCP.
 pub(super) fn ask(
     state: &mut ffi::ResState,
-    tries: (c_int, c_int),
+    tries: Tries,
     name: &CStr,
     rrtype: c_int,
     max_response_size: usize,
     budget: Duration,
 ) -> Asked {
     let deadline = Instant::now() + budget;
-    (state.retrans, state.retry) = tries;
+    if tries.tcp {
+        return ask_over_tcp(
+            state,
+            tries.nscount,
+            name,
+            rrtype,
+            deadline,
+            max_response_size,
+        );
+    }
+    (state.retrans, state.retry, state.nscount) = (tries.retrans, tries.retry, tries.nscount);
     fit_retransmits(state, budget);
 
     let mut buffer = vec![0_u8; INITIAL_RESPONSE_BUFFER_SIZE.min(max_response_size)];
@@ -318,7 +461,14 @@ pub(super) fn ask(
             .ok()
             .filter(MessageHeader::is_response);
         if header.is_some_and(|header| header.is_truncated()) {
-            return ask_over_tcp(state, name, rrtype, deadline, max_response_size);
+            return ask_over_tcp(
+                state,
+                tries.nscount,
+                name,
+                rrtype,
+                deadline,
+                max_response_size,
+            );
         }
         if let Ok(len) = usize::try_from(len) {
             return match grow_response_buffer(&mut buffer, len, max_response_size) {
@@ -346,8 +496,8 @@ fn failed(h_errno: c_int, response: Vec<u8>, errno: Option<c_int>, waited: Durat
         .filter(MessageHeader::is_response)
         .map(|header| header.response_code());
     match h_errno {
-        ffi::HOST_NOT_FOUND => Asked::NxDomain(response),
-        0 | ffi::NO_DATA => Asked::NoData(response),
+        ffi::HOST_NOT_FOUND => Asked::NxDomain(trimmed(response)),
+        0 | ffi::NO_DATA => Asked::NoData(trimmed(response)),
         ffi::TRY_AGAIN => match code {
             Some(
                 code @ (ResponseCode::ServFail | ResponseCode::NotImp | ResponseCode::Refused),
@@ -358,6 +508,34 @@ fn failed(h_errno: c_int, response: Vec<u8>, errno: Option<c_int>, waited: Durat
         },
         _ => Asked::Failed(failure(h_errno, errno)),
     }
+}
+
+/// A negative answer without the rest of its receive buffer, which a walk
+/// keeps per name until it ends.
+fn trimmed(mut response: Vec<u8>) -> Vec<u8> {
+    if let Some(len) = message_len(&response) {
+        response.truncate(len);
+        response.shrink_to_fit();
+    }
+    response
+}
+
+/// Where the DNS message at the start of `packet` ends, by its counts.
+fn message_len(packet: &[u8]) -> Option<usize> {
+    let header = MessageHeader::parse(packet).ok()?;
+    let mut end = DNS_HEADER_SIZE;
+    for _ in 0..header.question_count() {
+        end += Name::from_message(packet, end).ok()?.1 + 4;
+    }
+    let records = u32::from(header.answer_count())
+        + u32::from(header.authority_count())
+        + u32::from(header.additional_count());
+    for _ in 0..records {
+        end += Name::from_message(packet, end).ok()?.1;
+        let rdlen = packet.get(end + 8..end + 10)?;
+        end += 10 + usize::from(u16::from_be_bytes([rdlen[0], rdlen[1]]));
+    }
+    (end <= packet.len()).then_some(end)
 }
 
 fn failure(h_errno: c_int, errno: Option<c_int>) -> BoxError {
@@ -379,9 +557,12 @@ pub(super) fn another_try(state: &ffi::ResState, deadline: Instant, names: usize
 }
 
 /// Asks `name` over TCP, as a truncated answer requires (RFC 7766), within
-/// `deadline`: libc's own TCP retry waits without one.
+/// `deadline`: libc's own TCP retry waits without one. Each of the first
+/// `nscount` nameservers gets its share of the time left, so one that does
+/// not answer leaves time for the next.
 fn ask_over_tcp(
     state: &ffi::ResState,
+    nscount: c_int,
     name: &CStr,
     rrtype: c_int,
     deadline: Instant,
@@ -391,9 +572,17 @@ fn ask_over_tcp(
         Ok(query) => query,
         Err(err) => return Asked::Failed(err),
     };
+    let servers: Vec<_> = nameservers(state, nscount).collect();
     let mut asked = Asked::Unreachable;
-    for server in nameservers(state) {
-        asked = match exchange(server, &query.wire, deadline, max_response_size) {
+    for (i, &server) in servers.iter().enumerate() {
+        let left = deadline.saturating_duration_since(Instant::now());
+        let remaining = u32::try_from(servers.len() - i).unwrap_or(u32::MAX);
+        let outcome = match exchange(
+            server,
+            &query.wire,
+            Instant::now() + left / remaining,
+            max_response_size,
+        ) {
             Ok(response) => query.outcome(response),
             Err(err)
                 if matches!(
@@ -401,17 +590,33 @@ fn ask_over_tcp(
                     io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
                 ) =>
             {
-                return Asked::Timeout;
+                Asked::Timeout
             }
             Err(err) if err.kind() == io::ErrorKind::ConnectionRefused => Asked::Unreachable,
             Err(err) => Asked::Failed(err.into()),
         };
+        if matches!(
+            outcome,
+            Asked::Answer(_) | Asked::NxDomain(_) | Asked::NoData(_)
+        ) {
+            return outcome;
+        }
         // like libc, a failing server hands the query to the next one
-        if !matches!(asked, Asked::ServerFailure(_) | Asked::Unreachable) {
-            break;
+        if telling(&outcome) > telling(&asked) {
+            asked = outcome;
         }
     }
     asked
+}
+
+/// How much a failure says, to report the most telling of several servers'.
+fn telling(asked: &Asked) -> u8 {
+    match asked {
+        Asked::ServerFailure(_) => 3,
+        Asked::Timeout => 2,
+        Asked::Failed(_) => 1,
+        _ => 0,
+    }
 }
 
 /// A query in TCP framing: its length, then the message.
@@ -478,10 +683,11 @@ impl TcpQuery {
     }
 }
 
-/// The nameservers `res_ninit` read, as glibc's `__res_get_nsaddr` picks
-/// them: once used, `_ext` holds a copy of each, also of an IPv4 one.
-fn nameservers(state: &ffi::ResState) -> impl Iterator<Item = SocketAddr> + '_ {
-    let count = usize::try_from(state.nscount.clamp(0, MAX_NAMESERVERS)).unwrap_or(0);
+/// The first `nscount` nameservers `res_ninit` read, as glibc's
+/// `__res_get_nsaddr` picks them: once used, `_ext` holds a copy of each,
+/// also of an IPv4 one.
+fn nameservers(state: &ffi::ResState, nscount: c_int) -> impl Iterator<Item = SocketAddr> + '_ {
+    let count = usize::try_from(nscount.clamp(0, MAX_NAMESERVERS)).unwrap_or(0);
     (0..count).filter_map(|ns| {
         // SAFETY: `res_ninit` initialized `_ext`, the variant glibc uses
         let copy = unsafe { state._u._ext.nsaddrs[ns] };
@@ -606,8 +812,13 @@ mod tests {
             .collect()
     }
 
+    /// No search list beyond what glibc kept.
+    fn kept_only() -> Arc<[Box<[u8]>]> {
+        Arc::new([])
+    }
+
     fn walk(name: &str, search: &[&CStr], ndots: u32, options: libc::c_ulong) -> Vec<String> {
-        names(&Walk::new(&state(search, ndots, options), name, None).unwrap())
+        names(&Walk::new(&state(search, ndots, options), name, None, kept_only).unwrap())
     }
 
     #[test]
@@ -673,7 +884,13 @@ mod tests {
         assert_eq!(walk("intranet", &[CORP], 1, 0), ["last:intranet"]);
         // a HOSTALIASES alias is asked alone
         let state = state(&[CORP], 1, SEARCH);
-        let aliased = Walk::new(&state, "intranet", Some(c"real.example".to_owned())).unwrap();
+        let aliased = Walk::new(
+            &state,
+            "intranet",
+            Some(c"real.example".to_owned()),
+            kept_only,
+        )
+        .unwrap();
         assert_eq!(names(&aliased), ["first:real.example"]);
         assert!(aliased.alone);
     }
@@ -694,7 +911,112 @@ mod tests {
     }
 
     fn walk_of(name: &str, search: &[&CStr], ndots: u32, options: libc::c_ulong) -> Walk {
-        Walk::new(&state(search, ndots, options), name, None).unwrap()
+        Walk::new(&state(search, ndots, options), name, None, kept_only).unwrap()
+    }
+
+    #[test]
+    fn a_long_search_list_is_read_whole() {
+        let kept = [
+            c"s1.test", c"s2.test", c"s3.test", c"s4.test", c"s5.test", c"s6.test",
+        ];
+        let six = state(&kept, 1, SEARCH);
+        let full: Arc<[Box<[u8]>]> = (1..=8)
+            .map(|i| format!("s{i}.test").into_bytes().into_boxed_slice())
+            .collect();
+        let walk = Walk::new(&six, "intranet", None, || full.clone()).unwrap();
+        // eight domains, then the name as is
+        assert_eq!(walk.steps.len(), 9);
+        assert_eq!(walk.steps[7].name.to_bytes(), b"intranet.s8.test");
+
+        // a list that does not extend what glibc kept is not the one it read
+        let other: Arc<[Box<[u8]>]> = Arc::new([Box::from(&b"other.test"[..])]);
+        let walk = Walk::new(&six, "intranet", None, || other).unwrap();
+        assert_eq!(walk.steps.len(), 7);
+
+        // `search .` leaves room for any other domain: nothing was cut
+        let root = state(&[ROOT], 1, SEARCH);
+        let walk = Walk::new(&root, "intranet", None, || panic!("read again")).unwrap();
+        assert_eq!(walk.steps.len(), 2);
+    }
+
+    #[test]
+    fn search_lists_read_as_glibc_reads_them() {
+        let read = |localdomain: Option<&[u8]>, conf: &[u8]| -> Vec<String> {
+            parse_search_list(localdomain, conf)
+                .iter()
+                .map(|domain| String::from_utf8(domain.to_vec()).unwrap())
+                .collect()
+        };
+        let conf: &[u8] = b"# search not.test\nnameserver 127.0.0.53\nsearch a.test b.test\ndomain only.test\nsearch\tc.test  d.test\n";
+        // the last `domain` or `search` line wins
+        assert_eq!(read(None, conf), ["c.test", "d.test"]);
+        assert_eq!(
+            read(None, b"search a.test\ndomain only.test extra\n"),
+            ["only.test"]
+        );
+        // an empty line changes nothing, a keyword needs a blank after it
+        assert_eq!(
+            read(None, b"search a.test\nsearch \nsearching x\nsearch\n"),
+            ["a.test"]
+        );
+        assert!(read(None, b"nameserver ::1\n").is_empty());
+        // LOCALDOMAIN overrides the file
+        assert_eq!(
+            read(Some(b"env.test\tother.test\nignored"), conf),
+            ["env.test", "other.test"]
+        );
+    }
+
+    #[test]
+    fn the_search_list_is_read_again_once_it_changed() {
+        let conf = env::temp_dir().join(format!("rama-dns-resolv-{}.conf", std::process::id()));
+        let domains = (1..=8)
+            .map(|i| format!("s{i}.test"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        fs::write(&conf, format!("nameserver 127.0.0.1\nsearch {domains}\n")).unwrap();
+        assert_eq!(search_list_in(&conf, None).len(), 8);
+
+        fs::write(&conf, "search a.test b.test\n").unwrap();
+        let read = search_list_in(&conf, None);
+        assert_eq!(
+            read.iter().map(|domain| &domain[..]).collect::<Vec<_>>(),
+            [b"a.test", b"b.test"]
+        );
+        // LOCALDOMAIN wins over the file
+        let read = search_list_in(&conf, Some(OsString::from("env.test")));
+        assert_eq!(
+            read.iter().map(|domain| &domain[..]).collect::<Vec<_>>(),
+            [b"env.test"]
+        );
+        fs::remove_file(&conf).unwrap();
+        assert!(search_list_in(&conf, None).is_empty());
+    }
+
+    #[test]
+    fn no_name_is_asked_past_the_deadline() {
+        let walk = walk_of("intranet", &[CORP], 1, SEARCH);
+        let mut outcomes = walk.outcomes();
+        let at = walk.run(&mut outcomes, Instant::now(), |_, _| panic!("asked late"));
+        assert!(matches!(outcomes[at], Some(Asked::Timeout)));
+    }
+
+    #[test]
+    fn negative_answers_keep_only_their_message() {
+        // NXDOMAIN for `a.test`, with a SOA in its authority section
+        let mut packet = vec![0x12, 0x34, 0x81, 0x83, 0, 1, 0, 0, 0, 1, 0, 0];
+        packet.extend_from_slice(b"\x01a\x04test\x00\x00\x01\x00\x01");
+        packet.extend_from_slice(&[0xc0, 0x0c, 0, 6, 0, 1, 0, 0, 0, 60, 0, 24]);
+        packet.extend_from_slice(&[0xc0, 0x0e, 0xc0, 0x0e, 0, 0, 0, 1]);
+        packet.extend_from_slice(&[0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1]);
+        let len = packet.len();
+        assert_eq!(message_len(&packet), Some(len));
+        // the rest of a receive buffer goes
+        let mut buffer = packet.clone();
+        buffer.resize(16 * 1024, 0);
+        assert_eq!(trimmed(buffer), packet);
+        // a cut message keeps its buffer for the parser to judge
+        assert_eq!(message_len(&packet[..len - 1]), None);
     }
 
     #[test]
@@ -833,18 +1155,21 @@ mod tests {
 
     #[test]
     fn aliases_read_as_glibc_reads_them() {
-        let aliases =
+        let aliases: &[u8] =
             b"other  elsewhere.example\nINTRANET\treal.example extra\nlast first.example\n";
         let alias = |name| alias_in(aliases, name).map(|alias| alias.into_string().unwrap());
         assert_eq!(alias("intranet").as_deref(), Some("real.example"));
         assert_eq!(alias("other").as_deref(), Some("elsewhere.example"));
         assert_eq!(alias("missing"), None);
         // a name with nothing after it, or a line without whitespace, ends the file
+        let cut: &[u8] = b"intranet \nintranet real.example\n";
+        assert_eq!(alias_in(cut, "intranet"), None);
+        assert_eq!(alias_in(&b"nowhitespace"[..], "intranet"), None);
+        // like `fgets`, an endless file ends at its first part without whitespace
         assert_eq!(
-            alias_in(b"intranet \nintranet real.example\n", "intranet"),
+            alias_in(io::BufReader::new(io::repeat(0)), "intranet"),
             None
         );
-        assert_eq!(alias_in(b"nowhitespace", "intranet"), None);
         assert_eq!(hostalias("api.example"), None);
     }
 
