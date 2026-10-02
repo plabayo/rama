@@ -457,7 +457,7 @@ impl<A: AbortRequest> Demux<A> {
     }
 
     /// The byte accounting matches what is held, within the configured bounds.
-    #[cfg(feature = "fuzz-utils")]
+    #[cfg(any(test, feature = "fuzz-utils"))]
     pub(crate) fn assert_consistent(&self, limits: &DatagramLimits) {
         let queued: usize = self
             .slots

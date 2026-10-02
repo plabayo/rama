@@ -104,6 +104,55 @@ fn payloads_that_exactly_fit_the_budget_are_kept() {
     assert_eq!(demux.slot_dropped(8), 1);
 }
 
+/// Held datagrams and a payload that together fill the budget exactly: queued datagrams make
+/// the room, the payload stays.
+#[test]
+fn held_datagrams_and_a_payload_that_exactly_fill_the_budget_keep_it() {
+    let config = config(4, 4, 10 * C);
+    let now = Instant::now();
+    let mut demux = Demux::default();
+    register(&mut demux, &config, 0, now);
+    deliver(&mut demux, &config, 0, 2 * C, now);
+    deliver(&mut demux, &config, 8, 6 * C, now);
+    deliver(&mut demux, &config, 0, 4 * C, now);
+    assert_eq!(demux.slot_dropped(0), 1);
+    assert!(
+        matches!(poll(&mut demux, 0), Poll::Ready(Ok(Some(payload))) if payload.len() == 4 * C)
+    );
+    demux.assert_consistent(&config.limits);
+}
+
+/// A full hold gives way for a datagram that fits once the oldest held one has left.
+#[test]
+fn a_held_datagram_that_fits_in_the_oldest_place_replaces_it() {
+    let config = config(4, 1, 3 * C);
+    let now = Instant::now();
+    let mut demux = Demux::default();
+    deliver(&mut demux, &config, 4, 2 * C, now);
+    deliver(&mut demux, &config, 8, 2 * C, now);
+    assert_eq!(demux.drops().over_budget, 0);
+    assert_eq!(demux.drops().expired, 1);
+    assert_eq!((demux.pending_len(), demux.buffered()), (1, 2 * C));
+    register(&mut demux, &config, 8, now);
+    assert!(
+        matches!(poll(&mut demux, 8), Poll::Ready(Ok(Some(payload))) if payload.len() == 2 * C)
+    );
+    demux.assert_consistent(&config.limits);
+}
+
+/// Adoption agrees with expiry: at exactly its lifetime a held datagram has expired.
+#[test]
+fn a_held_datagram_at_exactly_its_lifetime_has_expired() {
+    let config = config(4, 4, 64 * C);
+    let now = Instant::now();
+    let mut demux = Demux::default();
+    deliver(&mut demux, &config, 4, C, now);
+    register(&mut demux, &config, 4, now + LIFETIME);
+    assert!(poll(&mut demux, 4).is_pending());
+    assert_eq!(demux.drops().expired, 1);
+    demux.assert_consistent(&config.limits);
+}
+
 #[test]
 fn held_datagrams_crowding_the_budget_drop_the_payload_not_the_queues() {
     let config = config(4, 4, 10 * C);
@@ -349,6 +398,7 @@ fn stalled_queues_make_room_for_a_healthy_one() {
         }
     }
     assert_eq!(demux.buffered(), 64 * C);
+    demux.assert_consistent(&config.limits);
     for _ in 0..100 {
         deliver(&mut demux, &config, 8, 8 * C, now);
         assert!(
@@ -358,6 +408,8 @@ fn stalled_queues_make_room_for_a_healthy_one() {
     assert_eq!(demux.slot_dropped(8), 0);
     assert_eq!(demux.slot_dropped(0) + demux.slot_dropped(4), 1);
     assert_eq!(demux.drops().over_budget, 1);
+    // The evicted queue's own accounting follows its datagram out.
+    demux.assert_consistent(&config.limits);
     // A payload that can never fit is dropped without evicting anyone.
     deliver(&mut demux, &config, 8, 65 * C, now);
     assert_eq!(demux.slot_dropped(8), 1);

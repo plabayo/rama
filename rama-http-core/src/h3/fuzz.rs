@@ -444,6 +444,11 @@ pub fn datagram_demux(input: &[u8]) -> (DatagramDrops, u64) {
                     now,
                 )
             }
+            // A refused response ends what a provisional claim had queued.
+            2 if op & 16 != 0 => {
+                demux.refuse(stream);
+                Default::default()
+            }
             2 => demux.decide(&config, stream, op & 8 != 0),
             3 => {
                 released += demux.queued(stream) as u64;
@@ -474,7 +479,8 @@ pub fn datagram_demux(input: &[u8]) -> (DatagramDrops, u64) {
                 }
                 Default::default()
             }
-            6 => {
+            // Rare: a closed connection drops everything after it, ending the run's coverage.
+            6 if arg % 32 == 0 => {
                 ended.extend(registered.iter().copied());
                 _ = demux.close();
                 Default::default()
