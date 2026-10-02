@@ -1,7 +1,7 @@
 //! Resolve the client IP of a request or connection from its extensions.
 //!
 //! [`client_ip`] is the reusable resolver: it prefers the proxy-supplied
-//! [`Forwarded`] client IP (populated by forwarded-header / PROXY-protocol
+//! [`Forwarded`](crate::forwarded::Forwarded) client IP (populated by forwarded-header / PROXY-protocol
 //! parsing) and falls back to the transport [`SocketInfo`] peer address.
 //!
 //! [`ClientIp`] is method sugar (`x.client_ip()`). It is intentionally a
@@ -12,21 +12,19 @@
 
 use core::net::IpAddr;
 
-use crate::forwarded::Forwarded;
+use crate::forwarded::ForwardedClientExt as _;
 
 use rama_core::extensions::ExtensionsRef;
 
 #[cfg(feature = "std")]
 use crate::stream::SocketInfo;
 
-/// Best-effort client IP read from `ext`'s extensions: the [`Forwarded`]
+/// Best-effort client IP read from `ext`'s extensions: the [`Forwarded`](crate::forwarded::Forwarded)
 /// client IP when present, otherwise the [`SocketInfo`] peer IP, otherwise
 /// `None`.
 pub fn client_ip(ext: &impl ExtensionsRef) -> Option<IpAddr> {
     let extensions = ext.extensions();
-    let forwarded = extensions
-        .get_ref::<Forwarded>()
-        .and_then(Forwarded::client_ip);
+    let forwarded = extensions.forwarded_client_ip();
     #[cfg(feature = "std")]
     {
         forwarded.or_else(|| {
@@ -63,7 +61,7 @@ mod tests {
     #[cfg(feature = "std")]
     use crate::address::SocketAddress;
     #[cfg(feature = "std")]
-    use crate::forwarded::{ForwardedElement, NodeId};
+    use crate::forwarded::{Forwarded, ForwardedElement, NodeId};
     #[cfg(feature = "std")]
     use crate::stream::SocketInfo;
 

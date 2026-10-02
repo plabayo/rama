@@ -106,6 +106,12 @@ impl NodeId {
         }
     }
 
+    /// The [`SocketAddress`] when both an IP and a numeric port are defined.
+    #[must_use]
+    pub fn socket_address(&self) -> Option<crate::address::SocketAddress> {
+        Some((self.ip()?, self.port()?).into())
+    }
+
     /// Return true if this [`NodeId`] has a any kind of port defined,
     /// even if obfuscated.
     #[must_use]

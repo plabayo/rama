@@ -5,7 +5,7 @@ use crate::protocol::{v1, v2};
 use rama_core::{Layer, Service, bytes::Bytes, error::BoxError, extensions::ExtensionsRef, io::Io};
 use rama_net::{
     client::{ConnectionError, ConnectionErrorKind, ConnectorService, EstablishedClientConnection},
-    forwarded::Forwarded,
+    forwarded::{Forwarded, ForwardedClientExt as _},
     stream::{Socket, SocketInfo},
 };
 use tokio::io::AsyncWriteExt;
@@ -280,7 +280,8 @@ where
         let src = input
             .extensions()
             .clone_to_if_absent::<Forwarded>(conn.extensions())
-            .and_then(|f| f.client_socket_addr())
+            // The client element follows the input's selection policy.
+            .and_then(|_| input.forwarded_client_socket_addr())
             .or_else(|| {
                 input
                     .extensions()
@@ -342,7 +343,8 @@ where
             input
                 .extensions()
                 .clone_to_if_absent::<Forwarded>(conn.extensions())
-                .and_then(|f| f.client_socket_addr())
+                // The client element follows the input's selection policy.
+                .and_then(|_| input.forwarded_client_socket_addr())
                 .or_else(|| {
                     input
                         .extensions()

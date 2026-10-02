@@ -29,7 +29,7 @@ use rama_core::extensions::Extension;
 use rama_core::extensions::{Extensions, ExtensionsRef};
 use rama_core::telemetry::tracing;
 use rama_net::address::{Domain, Host, HostWithOptPort};
-use rama_net::forwarded::Forwarded;
+use rama_net::forwarded::ForwardedClientExt as _;
 use rama_net::transport::TransportProtocol;
 use rama_net::{
     AuthorityInputExt, HttpVersionInputExt, PathInputExt, ProtocolInputExt,
@@ -92,8 +92,7 @@ fn target_authority_from_http_parts(parts: &impl HttpRequestParts) -> Option<Hos
 pub(crate) fn authority_from_http_parts(parts: &impl HttpRequestParts) -> Option<HostWithOptPort> {
     parts
         .extensions()
-        .get_ref::<Forwarded>()
-        .and_then(Forwarded::client_host)
+        .forwarded_client_host()
         .map(|forwarded| {
             tracing::trace!("request authority: {} from forwarded info", forwarded.0);
             forwarded.0.clone()
@@ -106,15 +105,13 @@ pub(crate) fn authority_from_http_parts(parts: &impl HttpRequestParts) -> Option
 pub(crate) fn http_version_from_http_parts(parts: &impl HttpRequestParts) -> Version {
     parts
         .extensions()
-        .get_ref::<Forwarded>()
-        .and_then(|f| {
-            f.client_version().map(|v| match v {
-                rama_net::forwarded::ForwardedVersion::HTTP_09 => Version::HTTP_09,
-                rama_net::forwarded::ForwardedVersion::HTTP_10 => Version::HTTP_10,
-                rama_net::forwarded::ForwardedVersion::HTTP_11 => Version::HTTP_11,
-                rama_net::forwarded::ForwardedVersion::HTTP_2 => Version::HTTP_2,
-                rama_net::forwarded::ForwardedVersion::HTTP_3 => Version::HTTP_3,
-            })
+        .forwarded_client_version()
+        .map(|v| match v {
+            rama_net::forwarded::ForwardedVersion::HTTP_09 => Version::HTTP_09,
+            rama_net::forwarded::ForwardedVersion::HTTP_10 => Version::HTTP_10,
+            rama_net::forwarded::ForwardedVersion::HTTP_11 => Version::HTTP_11,
+            rama_net::forwarded::ForwardedVersion::HTTP_2 => Version::HTTP_2,
+            rama_net::forwarded::ForwardedVersion::HTTP_3 => Version::HTTP_3,
         })
         .unwrap_or_else(|| parts.version())
 }
@@ -141,8 +138,7 @@ pub(crate) fn target_protocol_from_uri_or_extensions<'a>(
 
 /// What the end client used: a [`Forwarded`] proto, then the request's own protocol.
 fn protocol_from_uri_or_extensions<'a>(ext: &'a Extensions, uri: &'a Uri) -> &'a Protocol {
-    ext.get_ref::<Forwarded>()
-        .and_then(Forwarded::client_proto)
+    ext.forwarded_client_proto()
         .map(|proto| {
             tracing::trace!(url.full = %uri, "request protocol from forwarded client proto");
             if proto.is_secure() {
@@ -650,9 +646,9 @@ mod tests {
                 vec!["host=\"[2001:db8:cafe::17]:4711\""],
                 "[2001:db8:cafe::17]:4711",
             ),
-            // multiple values in one header
-            (vec!["host=192.0.2.60, host=127.0.0.1"], "192.0.2.60"),
-            // multiple header values
+            // multiple values: the rightmost element, by the default selection policy
+            (vec!["host=192.0.2.60, host=127.0.0.1"], "127.0.0.1"),
+            // multiple header lines: this test parses only the first
             (vec!["host=192.0.2.60", "host=127.0.0.1"], "192.0.2.60"),
         ] {
             let mut req_builder = Request::builder();

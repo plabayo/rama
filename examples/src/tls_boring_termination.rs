@@ -43,7 +43,8 @@ use rama::{
     http::{Request, Response, server::HttpServer},
     layer::{ConsumeErrLayer, GetInputExtensionRefLayer},
     net::{
-        address::HostWithPort, forwarded::Forwarded, proxy::IoForwardService, stream::SocketInfo,
+        address::HostWithPort, forwarded::ForwardedClientExt as _, proxy::IoForwardService,
+        stream::SocketInfo,
     },
     proxy::haproxy::{
         client::HaProxyLayer as HaProxyClientLayer, server::HaProxyLayer as HaProxyServerLayer,
@@ -130,12 +131,7 @@ async fn main() {
 
 async fn http_service(req: Request) -> Result<Response, Infallible> {
     // REMARK: builds on the assumption that we are using the haproxy protocol
-    let client_addr = req
-        .extensions()
-        .get_ref::<Forwarded>()
-        .unwrap()
-        .client_socket_addr()
-        .unwrap();
+    let client_addr = req.forwarded_client_socket_addr().unwrap();
     // REMARK: builds on the assumption that rama's TCP service sets this for you :)
     let proxy_addr = req
         .extensions()

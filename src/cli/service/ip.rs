@@ -35,8 +35,6 @@ use crate::{
         limit::policy::{ConcurrentPolicy, RateLimitReached, RatePolicy},
     },
     net::address::ip::geo::{GeoLocation, IpGeoDb, IpGeoInfo},
-    net::forwarded::Forwarded,
-    net::stream::SocketInfo,
     net::stream::layer::{ThrottleLayer, ThrottleMode},
     proxy::haproxy::server::HaProxyLayer,
     rt::Executor,
@@ -227,15 +225,7 @@ impl Service<Request> for HttpIpService {
     type Error = Infallible;
 
     async fn serve(&self, req: Request) -> Result<Self::Output, Self::Error> {
-        let peer_ip = req
-            .extensions()
-            .get_ref::<Forwarded>()
-            .and_then(|f| f.client_ip())
-            .or_else(|| {
-                req.extensions()
-                    .get_ref::<SocketInfo>()
-                    .map(|s| s.peer_addr().ip_addr)
-            });
+        let peer_ip = crate::net::client_ip::client_ip(&req);
 
         Ok(match peer_ip {
             Some(ip) => match HttpBodyContentFormat::derive_from_req(&req) {
@@ -322,16 +312,7 @@ where
 
     async fn serve(&self, stream: Input) -> Result<Self::Output, Self::Error> {
         tracing::info!("connection received");
-        let peer_ip = stream
-            .extensions()
-            .get_ref::<Forwarded>()
-            .and_then(|f| f.client_ip())
-            .or_else(|| {
-                stream
-                    .extensions()
-                    .get_ref::<SocketInfo>()
-                    .map(|s| s.peer_addr().ip_addr)
-            });
+        let peer_ip = crate::net::client_ip::client_ip(&stream);
         let Some(peer_ip) = peer_ip else {
             tracing::error!("missing peer information");
             return Ok(());
