@@ -129,7 +129,7 @@ struct Flight<V> {
     answer: OnceLock<Result<Arc<V>, ArcError>>,
     /// Callers waiting for the answer; `None` once the run ended, with or
     /// without one.
-    wakers: Mutex<Option<SmallVec<[Option<Waker>; 2]>>>,
+    wakers: Mutex<Option<Wakers>>,
     waiters: AtomicUsize,
     abort: OnceLock<AbortHandle>,
 }
@@ -138,7 +138,7 @@ impl<V> Flight<V> {
     fn new() -> Self {
         Self {
             answer: OnceLock::new(),
-            wakers: Mutex::new(Some(SmallVec::new())),
+            wakers: Mutex::new(Some(Wakers::default())),
             waiters: AtomicUsize::new(1),
             abort: OnceLock::new(),
         }
@@ -159,8 +159,34 @@ impl<V> Flight<V> {
         }
         // wake outside the lock, all at once
         let wakers = self.wakers.lock().take();
-        for waker in wakers.into_iter().flatten().flatten() {
+        for waker in wakers.into_iter().flat_map(|wakers| wakers.slots).flatten() {
             waker.wake();
+        }
+    }
+}
+
+/// The wakers of a run's callers; a caller that leaves frees its slot for
+/// the next one, so they take as much room as callers wait at once.
+#[derive(Default)]
+struct Wakers {
+    slots: SmallVec<[Option<Waker>; 4]>,
+    free: SmallVec<[usize; 4]>,
+}
+
+impl Wakers {
+    fn insert(&mut self, waker: Waker) -> usize {
+        if let Some(index) = self.free.pop() {
+            self.slots[index] = Some(waker);
+            index
+        } else {
+            self.slots.push(Some(waker));
+            self.slots.len() - 1
+        }
+    }
+
+    fn remove(&mut self, index: usize) {
+        if self.slots[index].take().is_some() {
+            self.free.push(index);
         }
     }
 }
@@ -182,7 +208,7 @@ impl<V> Future for Answer<'_, V> {
             return Poll::Ready(flight.answer.get().cloned());
         };
         if let Some(index) = self.waker {
-            let waker = &mut wakers[index];
+            let waker = &mut wakers.slots[index];
             if !waker
                 .as_ref()
                 .is_some_and(|waker| waker.will_wake(cx.waker()))
@@ -190,8 +216,7 @@ impl<V> Future for Answer<'_, V> {
                 *waker = Some(cx.waker().clone());
             }
         } else {
-            wakers.push(Some(cx.waker().clone()));
-            self.waker = Some(wakers.len() - 1);
+            self.waker = Some(wakers.insert(cx.waker().clone()));
         }
         Poll::Pending
     }
@@ -202,7 +227,7 @@ impl<V> Drop for Answer<'_, V> {
         if let Some(index) = self.waker
             && let Some(wakers) = self.flight.wakers.lock().as_mut()
         {
-            wakers[index] = None;
+            wakers.remove(index);
         }
     }
 }
@@ -646,6 +671,33 @@ mod tests {
             "{}",
             in_flight.capacity()
         );
+    }
+
+    #[tokio::test]
+    async fn callers_that_leave_free_their_waker_slots() {
+        let in_flight = InFlight::<&str>::default();
+        let mut staying = pin!(in_flight.run("key", TIMEOUT, std::future::pending::<usize>));
+        assert!(staying.as_mut().now_or_never().is_none());
+
+        // many callers join the same pending run and give up again
+        for _ in 0..10_000 {
+            let mut leaving = pin!(in_flight.run("key", TIMEOUT, std::future::pending::<usize>));
+            assert!(leaving.as_mut().now_or_never().is_none());
+        }
+
+        let flights = in_flight.flights.maps.iter().find_map(|map| {
+            map.lock()
+                .get(&("key", TypeId::of::<usize>()))
+                .cloned()
+                .and_then(|flight| flight.downcast::<Flight<usize>>().ok())
+        });
+        let flight = flights.expect("the pending run");
+        let slots = flight
+            .wakers
+            .lock()
+            .as_ref()
+            .map(|wakers| wakers.slots.len());
+        assert!(slots.is_some_and(|slots| slots <= 2), "{slots:?}");
     }
 
     #[tokio::test]
