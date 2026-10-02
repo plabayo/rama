@@ -95,6 +95,9 @@ const _: () = assert!(std::mem::size_of::<DnsBackend>() == 0);
 /// string and record boundaries but cannot guarantee the original arbitrary
 /// wire octets are binary-transparent. Use a wire-native resolver such as
 /// Hickory when exact TXT octets are required on Windows.
+///
+/// Lookups are unbounded by default: the DNS Client service queues them
+/// itself. Limits set here hold for this resolver and its clones only.
 pub struct WindowsDnsResolver {
     timeout: Duration,
     limit: LookupLimit,
@@ -105,7 +108,7 @@ impl Default for WindowsDnsResolver {
     fn default() -> Self {
         Self {
             timeout: DEFAULT_TIMEOUT,
-            limit: LookupLimit::new(Limits::ONE_QUERY),
+            limit: LookupLimit::new(Limits::UNBOUNDED),
             in_flight: InFlight::new(Abandoned::Cancel),
         }
     }
@@ -133,30 +136,32 @@ impl WindowsDnsResolver {
     }
 
     #[must_use]
-    pub fn max_concurrency(&self) -> usize {
+    pub fn max_concurrency(&self) -> Option<usize> {
         self.limit.limits().max_concurrency
     }
 
     generate_set_and_with! {
-        /// Maximum concurrent `DnsQueryEx` queries (default 384). Each holds a
-        /// request in the machine-wide DNS Client service, whose thread pool
-        /// otherwise grows with a burst.
-        pub fn max_concurrency(mut self, max: usize) -> Self {
+        /// Maximum concurrent `DnsQueryEx` queries (default unbounded). Each
+        /// holds a request in the machine-wide DNS Client service, whose
+        /// thread pool grows with a burst; queries held back here time out
+        /// instead once the burst outlasts the timeout.
+        pub fn max_concurrency(mut self, max: Option<usize>) -> Self {
             self.limit = self.limit.with(|limits| limits.max_concurrency = max);
             self
         }
     }
 
     #[must_use]
-    pub fn burst_limit(&self) -> usize {
+    pub fn burst_limit(&self) -> Option<usize> {
         self.limit.limits().burst_limit
     }
 
     generate_set_and_with! {
         /// Maximum queries started within one [burst window](Self::burst_window)
-        /// and still unanswered (default 128); an answer frees its place at
-        /// once, a query waiting on a slow upstream once the window has passed.
-        pub fn burst_limit(mut self, max: usize) -> Self {
+        /// and still unanswered (default unbounded); an answer frees its place
+        /// at once, a query waiting on a slow upstream once the window has
+        /// passed.
+        pub fn burst_limit(mut self, max: Option<usize>) -> Self {
             self.limit = self.limit.with(|limits| limits.burst_limit = max);
             self
         }
@@ -168,7 +173,8 @@ impl WindowsDnsResolver {
     }
 
     generate_set_and_with! {
-        /// The window of [`Self::burst_limit`] (default 20ms).
+        /// The window of [`Self::burst_limit`] (default 20ms). Windows' default
+        /// 15.6ms timer tick stretches a 20ms window to about 31ms.
         pub fn burst_window(mut self, window: Duration) -> Self {
             self.limit = self.limit.with(|limits| limits.burst_window = window);
             self
@@ -1386,8 +1392,8 @@ mod ffi {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rama_core::futures::{StreamExt, stream::BoxStream};
-    use std::pin::pin;
+    use rama_core::futures::{StreamExt, future::join_all, stream::BoxStream};
+    use std::{pin::pin, sync::atomic::AtomicUsize};
 
     use crate::wire::SvcParam;
 
@@ -1958,6 +1964,45 @@ mod tests {
         assert_eq!(running, 1);
         assert!(matches!(relative.as_slice(), [Ok(_)]), "{relative:?}");
         assert!(matches!(rooted.as_slice(), [Ok(_)]), "{rooted:?}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_burst_is_not_held_back_by_default() {
+        let resolver = WindowsDnsResolver::new();
+        assert_eq!(resolver.max_concurrency(), None);
+        assert_eq!(resolver.burst_limit(), None);
+        let gate = Arc::new(Notify::new());
+        let started = Arc::new(AtomicUsize::new(0));
+        let lookups = (0..1024).map(|i| {
+            let (gate, started) = (gate.clone(), started.clone());
+            let domain = Domain::try_from(format!("n{i}.burst.test")).expect("domain");
+            resolver
+                .coalesced(domain, ffi::DNS_TYPE_A, move |domain, timeout| {
+                    started.fetch_add(1, Ordering::Relaxed);
+                    gated_lookup(&gate)(domain, timeout)
+                })
+                .collect::<Vec<_>>()
+        });
+        let all_started = async {
+            for _ in 0..16 {
+                tokio::task::yield_now().await;
+            }
+            let all_started = started.load(Ordering::Relaxed);
+            gate.notify_waiters();
+            all_started
+        };
+        let (answers, all_started) = tokio::join!(join_all(lookups), all_started);
+
+        assert_eq!(all_started, 1024);
+        assert!(
+            answers
+                .iter()
+                .all(|items| matches!(items.as_slice(), [Ok(_)]))
+        );
+
+        let bounded = resolver.with_burst_limit(128);
+        assert_eq!(bounded.burst_limit(), Some(128));
+        assert_eq!(bounded.without_burst_limit().burst_limit(), None);
     }
 
     #[tokio::test]

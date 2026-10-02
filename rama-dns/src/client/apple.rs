@@ -75,10 +75,7 @@ impl Default for AppleDnsResolver {
     fn default() -> Self {
         Self {
             timeout: DEFAULT_TIMEOUT,
-            limit: LookupLimit::new(Limits {
-                max_concurrency: 64,
-                ..Limits::ONE_QUERY
-            }),
+            limit: LookupLimit::new(Limits::ONE_QUERY.with_apple_descriptors()),
             in_flight: InFlight::new(Abandoned::Cancel),
         }
     }
@@ -106,7 +103,7 @@ impl AppleDnsResolver {
     }
 
     #[must_use]
-    pub fn max_concurrency(&self) -> usize {
+    pub fn max_concurrency(&self) -> Option<usize> {
         self.limit.limits().max_concurrency
     }
 
@@ -114,14 +111,14 @@ impl AppleDnsResolver {
         /// Maximum concurrent DNS-SD queries (default 64). Each holds its own
         /// mDNSResponder connection and file descriptor (launchd's default
         /// soft limit is 256); an unbounded burst of distinct names times out.
-        pub fn max_concurrency(mut self, max: usize) -> Self {
+        pub fn max_concurrency(mut self, max: Option<usize>) -> Self {
             self.limit = self.limit.with(|limits| limits.max_concurrency = max);
             self
         }
     }
 
     #[must_use]
-    pub fn burst_limit(&self) -> usize {
+    pub fn burst_limit(&self) -> Option<usize> {
         self.limit.limits().burst_limit
     }
 
@@ -129,7 +126,7 @@ impl AppleDnsResolver {
         /// Maximum queries started within one [burst window](Self::burst_window)
         /// and still unanswered (default 128); an answer frees its place at
         /// once, a query waiting on a slow upstream once the window has passed.
-        pub fn burst_limit(mut self, max: usize) -> Self {
+        pub fn burst_limit(mut self, max: Option<usize>) -> Self {
             self.limit = self.limit.with(|limits| limits.burst_limit = max);
             self
         }
@@ -954,7 +951,7 @@ mod tests {
         let resolver = AppleDnsResolver::new()
             .with_max_concurrency(1)
             .with_timeout(Duration::from_millis(100));
-        assert_eq!(resolver.max_concurrency(), 1);
+        assert_eq!(resolver.max_concurrency(), Some(1));
         let _busy = resolver
             .limit
             .acquire(deadline_after(Duration::from_secs(5)))

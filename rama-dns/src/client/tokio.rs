@@ -42,12 +42,17 @@ pub struct TokioDnsResolver {
     in_flight: InFlight<(Domain, bool)>,
 }
 
+/// Each call asks for A and AAAA at once.
+#[cfg(not(target_vendor = "apple"))]
+const LIMITS: Limits = Limits::TWO_QUERIES;
+#[cfg(target_vendor = "apple")]
+const LIMITS: Limits = Limits::TWO_QUERIES.with_apple_descriptors();
+
 impl Default for TokioDnsResolver {
     fn default() -> Self {
         Self {
             timeout: DEFAULT_TIMEOUT,
-            // each call asks for A and AAAA at once
-            limit: LookupLimit::new(Limits::TWO_QUERIES),
+            limit: LookupLimit::new(LIMITS),
             in_flight: InFlight::default(),
         }
     }
@@ -75,22 +80,23 @@ impl TokioDnsResolver {
     }
 
     #[must_use]
-    pub fn max_concurrency(&self) -> usize {
+    pub fn max_concurrency(&self) -> Option<usize> {
         self.limit.limits().max_concurrency
     }
 
     generate_set_and_with! {
-        /// Maximum concurrent `getaddrinfo` calls (default 384). Each holds a
-        /// blocking-pool thread until libc returns, which a timeout cannot
-        /// cancel.
-        pub fn max_concurrency(mut self, max: usize) -> Self {
+        /// Maximum concurrent `getaddrinfo` calls (default 384, 64 on Apple
+        /// platforms). Each holds a blocking-pool thread until libc returns,
+        /// which a timeout cannot cancel, and on Apple platforms an
+        /// mDNSResponder connection of launchd's default 256 descriptors.
+        pub fn max_concurrency(mut self, max: Option<usize>) -> Self {
             self.limit = self.limit.with(|limits| limits.max_concurrency = max);
             self
         }
     }
 
     #[must_use]
-    pub fn burst_limit(&self) -> usize {
+    pub fn burst_limit(&self) -> Option<usize> {
         self.limit.limits().burst_limit
     }
 
@@ -101,7 +107,7 @@ impl TokioDnsResolver {
         /// systemd-resolved drops queries that arrive faster than it reads
         /// them; an answer frees its place at once, a query waiting on a slow
         /// upstream once the window has passed.
-        pub fn burst_limit(mut self, max: usize) -> Self {
+        pub fn burst_limit(mut self, max: Option<usize>) -> Self {
             self.limit = self.limit.with(|limits| limits.burst_limit = max);
             self
         }
@@ -300,6 +306,20 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn default_bounds_fit_the_platform() {
+        let resolver = TokioDnsResolver::new();
+        // getaddrinfo holds an mDNSResponder descriptor per call on Apple
+        let max = if cfg!(target_vendor = "apple") {
+            64
+        } else {
+            384
+        };
+        assert_eq!(resolver.max_concurrency(), Some(max));
+        assert_eq!(resolver.burst_limit(), Some(64));
+        assert_eq!(resolver.without_max_concurrency().max_concurrency(), None);
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn rooted_and_relative_names_do_not_share() {
         // both time out waiting for the busy slot, so no query leaves the host
@@ -394,7 +414,7 @@ mod tests {
             );
             assert!(!v4.is_empty() || !v6.is_empty(), "localhost resolves");
         }
-        assert_eq!(resolver.max_concurrency(), 2);
+        assert_eq!(resolver.max_concurrency(), Some(2));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

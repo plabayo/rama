@@ -180,7 +180,7 @@ impl LinuxDnsResolverBuilder {
         /// Maximum concurrent native (libc) lookups (default 384). Each holds
         /// a blocking-pool thread until libc returns, which a timeout cannot
         /// cancel.
-        pub fn native_max_concurrency(mut self, max: usize) -> Self {
+        pub fn native_max_concurrency(mut self, max: Option<usize>) -> Self {
             self.native_limits.max_concurrency = max;
             self
         }
@@ -192,7 +192,7 @@ impl LinuxDnsResolverBuilder {
         /// (default 128). A local stub such as systemd-resolved drops queries
         /// that arrive faster than it reads them; an answer frees its place at
         /// once, a query waiting on a slow upstream once the window has passed.
-        pub fn native_burst_limit(mut self, max: usize) -> Self {
+        pub fn native_burst_limit(mut self, max: Option<usize>) -> Self {
             self.native_limits.burst_limit = max;
             self
         }
@@ -398,12 +398,12 @@ impl LinuxDnsResolver {
     }
 
     #[must_use]
-    pub fn native_max_concurrency(&self) -> usize {
+    pub fn native_max_concurrency(&self) -> Option<usize> {
         self.native.limit.limits().max_concurrency
     }
 
     #[must_use]
-    pub fn native_burst_limit(&self) -> usize {
+    pub fn native_burst_limit(&self) -> Option<usize> {
         self.native.limit.limits().burst_limit
     }
 
@@ -435,7 +435,7 @@ impl LinuxDnsResolver {
         ///
         /// See [`LinuxDnsResolverBuilder::native_max_concurrency`]. Clones
         /// made before this call keep their own bounds.
-        pub fn native_max_concurrency(mut self, max: usize) -> Self {
+        pub fn native_max_concurrency(mut self, max: Option<usize>) -> Self {
             self.native.limit = self.native.limit.with(|limits| limits.max_concurrency = max);
             self
         }
@@ -444,7 +444,7 @@ impl LinuxDnsResolver {
     generate_set_and_with! {
         /// See [`LinuxDnsResolverBuilder::native_burst_limit`]. Clones made
         /// before this call keep their own bounds.
-        pub fn native_burst_limit(mut self, max: usize) -> Self {
+        pub fn native_burst_limit(mut self, max: Option<usize>) -> Self {
             self.native.limit = self.native.limit.with(|limits| limits.burst_limit = max);
             self
         }
@@ -1498,8 +1498,8 @@ mod tests {
             .build();
         assert_eq!(resolver.timeout(), Duration::from_secs(9));
         assert_eq!(resolver.response_buffer_size(), usize::from(u16::MAX));
-        assert_eq!(resolver.native_max_concurrency(), 384);
-        assert_eq!(resolver.native_burst_limit(), 128);
+        assert_eq!(resolver.native_max_concurrency(), Some(384));
+        assert_eq!(resolver.native_burst_limit(), Some(128));
         assert_eq!(resolver.native_burst_window(), Duration::from_millis(20));
         assert!(!resolver.systemd_resolved_enabled());
 
@@ -1511,18 +1511,21 @@ mod tests {
             .with_systemd_resolved(true)
             .build();
         assert_eq!(resolver.response_buffer_size(), 4096);
-        assert_eq!(resolver.native_max_concurrency(), 8);
-        assert_eq!(resolver.native_burst_limit(), 4);
+        assert_eq!(resolver.native_max_concurrency(), Some(8));
+        assert_eq!(resolver.native_burst_limit(), Some(4));
         assert_eq!(resolver.native_burst_window(), Duration::from_millis(30));
         assert!(resolver.systemd_resolved_enabled());
 
         // one setter keeps the other bounds
         let resolver = resolver.with_native_max_concurrency(3);
-        assert_eq!(resolver.native_max_concurrency(), 3);
-        assert_eq!(resolver.native_burst_limit(), 4);
+        assert_eq!(resolver.native_max_concurrency(), Some(3));
+        assert_eq!(resolver.native_burst_limit(), Some(4));
         let resolver = resolver.with_native_burst_limit(2);
-        assert_eq!(resolver.native_burst_limit(), 2);
-        assert_eq!(resolver.native_max_concurrency(), 3);
+        assert_eq!(resolver.native_burst_limit(), Some(2));
+        assert_eq!(resolver.native_max_concurrency(), Some(3));
+        let resolver = resolver.without_native_burst_limit();
+        assert_eq!(resolver.native_burst_limit(), None);
+        assert_eq!(resolver.native_max_concurrency(), Some(3));
     }
 
     #[cfg(not(any(
@@ -2032,7 +2035,7 @@ mod tests {
         let native = NativeConfig {
             response_buffer_size: 4096,
             limit: LookupLimit::new(Limits {
-                max_concurrency: 1,
+                max_concurrency: Some(1),
                 ..Limits::ONE_QUERY
             }),
         };

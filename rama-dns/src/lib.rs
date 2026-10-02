@@ -33,8 +33,10 @@
 //! On Apple platforms (`AppleDnsResolver`, via `DNSServiceQueryRecord`) and
 //! Windows (`WindowsDnsResolver`, via `DnsQueryEx` with a completion callback
 //! on the system thread pool), the native resolvers are asynchronous: no
-//! tokio blocking-pool traffic. They are still bounded like the others below,
-//! as mDNSResponder and the DNS Client service serve the whole machine.
+//! tokio blocking-pool traffic. `AppleDnsResolver` is still bounded like the
+//! others below, at 64 lookups at once as each holds a file descriptor;
+//! `WindowsDnsResolver` is unbounded by default, as the DNS Client service
+//! queues lookups itself, and takes the same bounds on request.
 //!
 //! On Linux hosts whose NSS configuration selects `nss-resolve`,
 //! `LinuxDnsResolver` first tries systemd-resolved's varlink socket, which is
@@ -44,10 +46,11 @@
 //! there — as with [`client::TokioDnsResolver`] (via `getaddrinfo`) — each
 //! lookup occupies a tokio blocking-pool thread for the duration of the libc
 //! call. Those resolvers bound how many such calls run at once (384 by
-//! default) and how many queries a burst may leave unanswered (128 per 20ms,
-//! 64 for `TokioDnsResolver`, which asks for A and AAAA per call), so a burst
-//! of distinct names neither floods the pool nor overflows a local stub
-//! resolver, while slow upstream answers do not hold new lookups back. Under
+//! default, 64 on Apple platforms) and how many queries a burst may leave
+//! unanswered (128 per 20ms, 64 for `TokioDnsResolver`, which asks for A and
+//! AAAA per call), so a burst of distinct names neither floods the pool nor
+//! overflows a local stub resolver, while slow upstream answers do not hold
+//! new lookups back. Bounds hold per resolver and its clones. Under
 //! sustained high-concurrency DNS load
 //! (typical for forward proxies) prefer the pure-Rust
 //! `client::HickoryDnsResolver` (gated behind the `hickory` feature), which

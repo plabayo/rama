@@ -18,15 +18,15 @@ use tokio::{
     time::Instant,
 };
 
-/// Bounds on one resolver's lookups.
+/// Bounds on one resolver's lookups; `None` leaves that bound off.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Limits {
     /// Lookups running at once: each blocking call holds a thread.
-    pub(crate) max_concurrency: usize,
+    pub(crate) max_concurrency: Option<usize>,
     /// Queries sent within the last `burst_window` and still unanswered: a
     /// local stub such as systemd-resolved drops what arrives faster than it
     /// reads, whereas a query waiting on a slow upstream has long been read.
-    pub(crate) burst_limit: usize,
+    pub(crate) burst_limit: Option<usize>,
     pub(crate) burst_window: Duration,
 }
 
@@ -36,36 +36,60 @@ impl Limits {
     /// ~256 datagrams a stub's default receive buffer holds, and a busy stub
     /// reads a full buffer well within 20ms.
     pub(crate) const ONE_QUERY: Self = Self {
-        max_concurrency: 384,
-        burst_limit: 128,
+        max_concurrency: Some(384),
+        burst_limit: Some(128),
         burst_window: Duration::from_millis(20),
     };
 
     /// For `getaddrinfo` calls that ask for A and AAAA at once.
     pub(crate) const TWO_QUERIES: Self = Self {
-        burst_limit: 64,
+        burst_limit: Some(64),
         ..Self::ONE_QUERY
     };
+
+    /// For lookups a system service queues itself.
+    #[cfg(any(windows, test))]
+    pub(crate) const UNBOUNDED: Self = Self {
+        max_concurrency: None,
+        burst_limit: None,
+        ..Self::ONE_QUERY
+    };
+
+    /// Each lookup holds an mDNSResponder connection and its descriptor, of
+    /// launchd's default soft limit of 256.
+    #[cfg(target_vendor = "apple")]
+    pub(crate) const fn with_apple_descriptors(self) -> Self {
+        Self {
+            max_concurrency: Some(64),
+            ..self
+        }
+    }
 }
 
 /// Bounds one resolver's lookups by [`Limits`].
 #[derive(Debug, Clone)]
 pub(crate) struct LookupLimit {
-    calls: Arc<Semaphore>,
-    burst: Arc<Burst>,
+    calls: Option<Arc<Semaphore>>,
+    burst: Option<Arc<Burst>>,
     limits: Limits,
 }
 
 impl LookupLimit {
     pub(crate) fn new(limits: Limits) -> Self {
         let limits = Limits {
-            max_concurrency: limits.max_concurrency.clamp(1, Semaphore::MAX_PERMITS),
-            burst_limit: limits.burst_limit.max(1),
+            max_concurrency: limits
+                .max_concurrency
+                .map(|max| max.clamp(1, Semaphore::MAX_PERMITS)),
+            burst_limit: limits.burst_limit.map(|max| max.max(1)),
             burst_window: limits.burst_window,
         };
         Self {
-            calls: Arc::new(Semaphore::new(limits.max_concurrency)),
-            burst: Arc::new(Burst::new(limits.burst_limit, limits.burst_window)),
+            calls: limits
+                .max_concurrency
+                .map(|max| Arc::new(Semaphore::new(max))),
+            burst: limits
+                .burst_limit
+                .map(|max| Arc::new(Burst::new(max, limits.burst_window))),
             limits,
         }
     }
@@ -83,20 +107,33 @@ impl LookupLimit {
 
     /// A slot for one lookup, or `None` when none frees up before `deadline`.
     pub(crate) async fn acquire(&self, deadline: Instant) -> Option<Slot> {
-        let call = if let Ok(call) = self.calls.clone().try_acquire_owned() {
-            call
-        } else {
-            tracing::debug!(
-                max = self.limits.max_concurrency,
-                "dns: all lookup slots taken; waiting"
-            );
-            tokio::time::timeout_at(deadline, self.calls.clone().acquire_owned())
-                .await
-                .ok()?
-                .ok()?
+        let call = match &self.calls {
+            Some(calls) => Some(self.call(calls, deadline).await?),
+            None => None,
         };
-        let burst = self.burst.acquire(deadline).await?;
+        let burst = match &self.burst {
+            Some(burst) => Some(burst.acquire(deadline).await?),
+            None => None,
+        };
         Some(Slot { _call: call, burst })
+    }
+
+    async fn call(
+        &self,
+        calls: &Arc<Semaphore>,
+        deadline: Instant,
+    ) -> Option<OwnedSemaphorePermit> {
+        if let Ok(call) = calls.clone().try_acquire_owned() {
+            return Some(call);
+        }
+        tracing::debug!(
+            max = self.limits.max_concurrency,
+            "dns: all lookup slots taken; waiting"
+        );
+        tokio::time::timeout_at(deadline, calls.clone().acquire_owned())
+            .await
+            .ok()?
+            .ok()
     }
 
     /// Run a blocking `lookup` once a slot is free, or `None` when none frees
@@ -170,15 +207,17 @@ impl<T: Send + 'static> Drop for Blocking<T> {
 /// until it is answered or a burst window old.
 #[derive(Debug)]
 pub(crate) struct Slot {
-    _call: OwnedSemaphorePermit,
-    burst: BurstSlot,
+    _call: Option<OwnedSemaphorePermit>,
+    burst: Option<BurstSlot>,
 }
 
 impl Slot {
     /// The lookup's query is done, so its burst place frees up now; a
     /// lookup dropped before this keeps it until the window has passed.
     pub(crate) fn answered(&mut self) {
-        self.burst.answered = true;
+        if let Some(burst) = &mut self.burst {
+            burst.answered = true;
+        }
     }
 }
 
@@ -366,22 +405,33 @@ mod tests {
         slot.answered();
     }
 
-    /// At most `max` calls, with a burst limit that never gets in the way.
+    /// At most `max` calls, with no burst limit.
     fn calls(max: usize) -> LookupLimit {
         LookupLimit::new(Limits {
-            max_concurrency: max,
-            burst_limit: usize::MAX,
-            ..Limits::ONE_QUERY
+            max_concurrency: Some(max),
+            ..Limits::UNBOUNDED
         })
     }
 
-    /// Plenty of calls, at most `max` unanswered per `window`.
+    /// Any number of calls, at most `max` unanswered per `window`.
     fn burst(max: usize, window: Duration) -> LookupLimit {
         LookupLimit::new(Limits {
-            max_concurrency: 1024,
-            burst_limit: max,
+            max_concurrency: None,
+            burst_limit: Some(max),
             burst_window: window,
         })
+    }
+
+    /// The unanswered queries `lookups` still counts.
+    fn young(lookups: &LookupLimit) -> usize {
+        lookups
+            .burst
+            .as_ref()
+            .expect("a burst limit")
+            .state
+            .lock()
+            .young
+            .len()
     }
 
     #[tokio::test(start_paused = true)]
@@ -425,8 +475,8 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn an_aged_query_keeps_its_call_slot() {
         let lookups = LookupLimit::new(Limits {
-            max_concurrency: 2,
-            burst_limit: 1,
+            max_concurrency: Some(2),
+            burst_limit: Some(1),
             burst_window: Duration::from_millis(10),
         });
         let _slow = lookups.acquire(deadline_in(5)).await.expect("slot");
@@ -453,8 +503,8 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn only_unanswered_queries_are_kept() {
         let lookups = LookupLimit::new(Limits {
-            max_concurrency: 2,
-            burst_limit: 2,
+            max_concurrency: Some(2),
+            burst_limit: Some(2),
             burst_window: Duration::from_hours(1),
         });
         // one query stays unanswered while many others come and go
@@ -462,23 +512,23 @@ mod tests {
         for _ in 0..10_000 {
             answer(lookups.acquire(deadline_in(5)).await.expect("slot"));
         }
-        assert_eq!(lookups.burst.state.lock().young.len(), 1);
+        assert_eq!(young(&lookups), 1);
         answer(held);
-        assert!(lookups.burst.state.lock().young.is_empty());
+        assert_eq!(young(&lookups), 0);
 
         // an unanswered query is forgotten once it ages
         let aging = lookups.acquire(deadline_in(5)).await.expect("slot");
         tokio::time::sleep(Duration::from_hours(1)).await;
         answer(lookups.acquire(deadline_in(5)).await.expect("slot"));
-        assert!(lookups.burst.state.lock().young.is_empty());
+        assert_eq!(young(&lookups), 0);
         drop(aging);
     }
 
     #[tokio::test(start_paused = true)]
     async fn queued_callers_get_places_in_order() {
         let lookups = LookupLimit::new(Limits {
-            max_concurrency: 8,
-            burst_limit: 1,
+            max_concurrency: Some(8),
+            burst_limit: Some(1),
             burst_window: Duration::from_secs(60),
         });
         let held = lookups.acquire(deadline_in(5)).await.expect("slot");
@@ -630,14 +680,30 @@ mod tests {
     #[test]
     fn bounds_are_clamped() {
         let none = LookupLimit::new(Limits {
-            max_concurrency: 0,
-            burst_limit: 0,
+            max_concurrency: Some(0),
+            burst_limit: Some(0),
             ..Limits::ONE_QUERY
         });
-        assert_eq!(none.limits().max_concurrency, 1);
-        assert_eq!(none.limits().burst_limit, 1);
-        let all = none.with(|limits| limits.max_concurrency = usize::MAX);
-        assert_eq!(all.limits().max_concurrency, Semaphore::MAX_PERMITS);
-        assert_eq!(all.limits().burst_limit, 1);
+        assert_eq!(none.limits().max_concurrency, Some(1));
+        assert_eq!(none.limits().burst_limit, Some(1));
+        let all = none.with(|limits| limits.max_concurrency = Some(usize::MAX));
+        assert_eq!(all.limits().max_concurrency, Some(Semaphore::MAX_PERMITS));
+        assert_eq!(all.limits().burst_limit, Some(1));
+        let unbounded = all.with(|limits| limits.max_concurrency = None);
+        assert_eq!(unbounded.limits().max_concurrency, None);
+        assert_eq!(unbounded.limits().burst_limit, Some(1));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn unbounded_lookups_never_wait() {
+        let lookups = LookupLimit::new(Limits::UNBOUNDED);
+        let started = Instant::now();
+        let mut held = Vec::new();
+        for _ in 0..10_000 {
+            let slot = lookups.acquire(Instant::now()).now_or_never();
+            held.push(slot.flatten().expect("a slot at once"));
+        }
+        assert_eq!(started.elapsed(), Duration::ZERO);
+        assert!(lookups.calls.is_none() && lookups.burst.is_none());
     }
 }
