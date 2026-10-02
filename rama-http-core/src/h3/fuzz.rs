@@ -758,6 +758,17 @@ mod tests {
                 ],
                 2,
             ),
+            // An authority without a host is refused, whatever its scheme.
+            (
+                &[
+                    (path, ""),
+                    (method, "v"),
+                    (scheme, "-"),
+                    (authority, "@"),
+                    (host, "ee.e-ehhhhhhhhhh"),
+                ],
+                0,
+            ),
             // A path-less OPTIONS of another scheme is the server-wide `*`, on every version.
             (
                 &[

@@ -5,8 +5,8 @@ use super::{
     qpack::{EncodeField, FieldPair},
 };
 use crate::proto::target::{
-    OutgoingHost, host_is_wire_authority, normalize_received, outgoing_host, reconcile_host,
-    several_hosts,
+    OutgoingHost, host_is_wire_authority, normalize_received, outgoing_host, received_authority,
+    reconcile_host, several_hosts,
 };
 use rama_core::{
     bytes::{Bytes, BytesMut},
@@ -19,11 +19,7 @@ use rama_http_types::proto::{
 use rama_http_types::{
     HeaderMap, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Version, header,
 };
-use rama_net::{
-    Protocol,
-    address::{Authority, AuthorityRef},
-    uri::Uri,
-};
+use rama_net::{Protocol, address::AuthorityRef, uri::Uri};
 
 #[derive(Default)]
 struct Fields {
@@ -197,7 +193,7 @@ pub(crate) fn request_head(
         .map_err(|_error| malformed("invalid authority"))?;
     // The URI grammar's reg-name, raw UTF-8 included, as on HTTP/1 and HTTP/2.
     if let Some(authority) = authority {
-        Authority::try_from(authority).map_err(|_error| malformed("invalid authority"))?;
+        received_authority(authority).ok_or(malformed("invalid authority"))?;
     }
     let mut asterisk_scheme = None;
     let uri = if method == Method::CONNECT && protocol.is_none() {
@@ -249,8 +245,7 @@ pub(crate) fn request_head(
         if path != "*" {
             if let Some(authority) = authority {
                 uri.set_authority(
-                    Authority::try_from(authority)
-                        .map_err(|_error| malformed("invalid authority"))?,
+                    received_authority(authority).ok_or(malformed("invalid authority"))?,
                 );
             }
             uri.set_scheme(scheme);
@@ -1458,6 +1453,28 @@ mod tests {
         // On the wire as its IDNA form, which reads back as the same target.
         assert_eq!(&authority.value[..], b"xn--bcher-kva.example");
         assert_eq!(request(sent).unwrap().uri(), h3.uri());
+
+        // An authority without a host names nothing a Host could carry, on either version.
+        for authority in ["@", "user@", ""] {
+            for scheme in ["https", "custom"] {
+                request(fields(&[
+                    (":method", "GET"),
+                    (":scheme", scheme),
+                    (":authority", authority),
+                    (":path", "/"),
+                ]))
+                .unwrap_err();
+                let pseudo = frame::Pseudo {
+                    method: Some(Method::GET),
+                    scheme: Some(hpack::BytesStr::try_from(Bytes::from(scheme)).unwrap()),
+                    authority: Some(hpack::BytesStr::try_from(Bytes::from(authority)).unwrap()),
+                    path: Some(hpack::BytesStr::try_from(Bytes::from_static(b"/")).unwrap()),
+                    ..Default::default()
+                };
+                crate::h2::server::test_util::receive(pseudo, HeaderMap::new())
+                    .expect_err(authority);
+            }
+        }
     }
 
     /// A plain CONNECT names a host and port on every version, received or sent: there is no

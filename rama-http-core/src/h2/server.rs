@@ -121,7 +121,7 @@
 use crate::h2::codec::{Codec, UserError};
 use crate::h2::proto::{self, Config, Error, Prioritized};
 use crate::h2::{FlowControl, PingPong, RecvStream, SendStream};
-use crate::proto::target::{normalize_received, several_hosts};
+use crate::proto::target::{normalize_received, received_authority, several_hosts};
 
 use rama_core::bytes::{Buf, Bytes};
 use rama_core::extensions::{Extensions, ExtensionsRef};
@@ -1834,14 +1834,10 @@ impl proto::Peer for Peer {
         // A request translated from HTTP/1 must not include the :authority
         // header.
         let authority = if let Some(authority) = pseudo.authority {
-            match rama_net::address::Authority::try_from(&*authority) {
-                Ok(authority) => Some(authority),
-                Err(why) => malformed!(
-                    "malformed headers: malformed authority ({:?}): {}",
-                    authority,
-                    why,
-                ),
-            }
+            let Some(received) = received_authority(&authority) else {
+                malformed!("malformed headers: malformed authority ({:?})", authority);
+            };
+            Some(received)
         } else {
             None
         };

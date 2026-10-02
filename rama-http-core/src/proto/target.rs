@@ -4,7 +4,19 @@ use rama_http_types::{
     HeaderMap, HeaderValue,
     header::{self, Entry},
 };
-use rama_net::{Protocol, address::AuthorityRef, uri::Uri};
+use rama_net::{
+    Protocol,
+    address::{Authority, AuthorityRef},
+    uri::Uri,
+};
+
+/// A received `:authority`: the URI grammar's reg-name, raw UTF-8 included, but never an empty
+/// host, which no `Host` could name.
+pub(crate) fn received_authority(value: &str) -> Option<Authority> {
+    Authority::try_from(value)
+        .ok()
+        .filter(|authority| !authority.address.host.is_empty())
+}
 
 /// Several `Host` lines leave the routed authority ambiguous, so a decoder refuses them before
 /// normalizing (RFC 9112 §3.2: a request smuggling and cache poisoning vector).
