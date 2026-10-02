@@ -421,9 +421,9 @@ impl<K: Hash + Eq, V> Drop for Release<K, V> {
         {
             let mut flights = self.flights.maps[self.shard].lock();
             flights.remove(&self.slot);
-            // don't keep a burst's peak capacity once it has drained
+            // a burst spreads over every shard: free what it grew once drained
             if flights.is_empty() && flights.capacity() > RETAINED_CAPACITY {
-                flights.shrink_to(RETAINED_CAPACITY);
+                flights.shrink_to(0);
             }
         }
         // ended without an answer
@@ -433,8 +433,8 @@ impl<K: Hash + Eq, V> Drop for Release<K, V> {
     }
 }
 
-/// Per shard: small, as a burst spreads over every shard.
-const RETAINED_CAPACITY: usize = 4;
+/// Per shard: the smallest table, kept for steady light traffic.
+const RETAINED_CAPACITY: usize = 3;
 
 /// What a shared lookup produced: its records, then the error that ended it.
 pub(crate) struct Outcome<T> {
@@ -667,10 +667,23 @@ mod tests {
         assert!(results.iter().all(Result::is_ok));
         assert_eq!(in_flight.running(), 0);
         assert!(
-            in_flight.capacity() <= in_flight.flights.maps.len() * 2 * RETAINED_CAPACITY,
+            in_flight.capacity() <= in_flight.flights.maps.len() * RETAINED_CAPACITY,
             "{}",
             in_flight.capacity()
         );
+    }
+
+    #[tokio::test]
+    async fn steady_lookups_keep_their_small_table() {
+        let in_flight = InFlight::default();
+        for key in 0..100 {
+            let value = in_flight.run(key, TIMEOUT, move || async move { key });
+            assert!(matches!(value.await, Ok(v) if *v == key));
+        }
+        // one lookup at a time never outgrows a shard's smallest table
+        let tables = in_flight.capacity() / RETAINED_CAPACITY;
+        assert!(tables > 0 && tables <= in_flight.flights.maps.len());
+        assert_eq!(in_flight.capacity() % RETAINED_CAPACITY, 0);
     }
 
     #[tokio::test]
