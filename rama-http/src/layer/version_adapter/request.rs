@@ -5,7 +5,7 @@ use crate::{
 use rama_core::{
     Layer, Service,
     error::{BoxError, BoxErrorExt as _, ErrorContext, ErrorExt as _},
-    extensions::ExtensionsRef,
+    extensions::{Extension, ExtensionsRef},
     telemetry::tracing,
 };
 use rama_http_headers::{
@@ -218,6 +218,13 @@ pub fn ensure_valid_h2_or_h3_request<Body>(request: &mut Request<Body>) -> Resul
     Ok(())
 }
 
+/// The `Sec-WebSocket-Key` an Extended CONNECT WebSocket gets if it is sent on as HTTP/1,
+/// chosen by [`ResponseVersionAdapter`](super::ResponseVersionAdapter) so it can check the
+/// origin's `Sec-WebSocket-Accept` (RFC 6455 §4.1).
+#[derive(Clone, Debug, Extension)]
+#[extension(tags(http))]
+pub(crate) struct DowngradeWebSocketKey(pub(crate) SecWebSocketKey);
+
 /// Whether a [`Protocol`] is the WebSocket Extended CONNECT / `Upgrade` protocol.
 pub(crate) fn is_websocket_protocol(protocol: &Protocol) -> bool {
     protocol.as_str().eq_ignore_ascii_case("websocket")
@@ -266,6 +273,11 @@ fn translate_request_downgrade<Body>(request: &mut Request<Body>) -> Result<(), 
             // `CONNECT` + `:protocol: websocket` -> `GET` + `Upgrade: websocket`.
             tracing::trace!("translating h2/h3 extended CONNECT websocket into h1 upgrade");
             *request.method_mut() = Method::GET;
+            // The key the response adapter checks the origin's accept against, else a fresh one.
+            let key = request
+                .extensions()
+                .get_ref::<DowngradeWebSocketKey>()
+                .map(|key| key.0.clone());
 
             let headers = request.headers_mut();
             // An HTTP/1 upgrade request has no body: the tunnel follows the 101.
@@ -273,7 +285,7 @@ fn translate_request_downgrade<Body>(request: &mut Request<Body>) -> Result<(), 
             headers.typed_insert(Upgrade::websocket());
             headers.typed_insert(Connection::upgrade());
             if !headers.contains_key(SEC_WEBSOCKET_KEY) {
-                headers.typed_insert(SecWebSocketKey::random());
+                headers.typed_insert(key.unwrap_or_else(SecWebSocketKey::random));
             }
             if !headers.contains_key(SEC_WEBSOCKET_VERSION) {
                 headers.typed_insert(SecWebSocketVersion::V13);
