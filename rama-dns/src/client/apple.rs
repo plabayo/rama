@@ -306,6 +306,7 @@ where
             queue: Mutex::new(VecDeque::new()),
             done: AtomicBool::new(false),
             more_coming: AtomicBool::new(false),
+            rrtype,
             parser,
         });
 
@@ -319,7 +320,7 @@ where
             let err = unsafe {
                 ffi::DNSServiceQueryRecord(
                     &mut raw_service_ref,
-                    0,
+                    ffi::K_DNS_SERVICE_FLAGS_RETURN_INTERMEDIATES,
                     0,
                     name.as_ptr(),
                     rrtype,
@@ -534,6 +535,17 @@ unsafe extern "C" fn query_record_callback<T, P>(
         return;
     }
 
+    let more_coming = (flags & ffi::K_DNS_SERVICE_FLAGS_MORE_COMING) != 0;
+    let answer = error_code == ffi::K_DNS_SERVICE_ERR_NO_ERROR || is_empty_result_error(error_code);
+    if answer && rrtype != state.rrtype {
+        // a CNAME followed on the way, or its absence
+        state.more_coming.store(more_coming, Ordering::SeqCst);
+        if !more_coming && !state.queue.lock().is_empty() {
+            state.done.store(true, Ordering::SeqCst);
+        }
+        return;
+    }
+
     if error_code != ffi::K_DNS_SERVICE_ERR_NO_ERROR {
         if is_empty_result_error(error_code) {
             finish_empty(state, "query callback", error_code);
@@ -585,7 +597,6 @@ unsafe extern "C" fn query_record_callback<T, P>(
         }
     }
 
-    let more_coming = (flags & ffi::K_DNS_SERVICE_FLAGS_MORE_COMING) != 0;
     state.more_coming.store(more_coming, Ordering::SeqCst);
     if !more_coming {
         state.done.store(true, Ordering::SeqCst);
@@ -597,6 +608,7 @@ struct QueryState<T, P> {
     queue: Mutex<VecDeque<Result<T, BoxError>>>,
     done: AtomicBool,
     more_coming: AtomicBool,
+    rrtype: u16,
     parser: P,
 }
 
@@ -723,6 +735,9 @@ mod ffi {
     // available right now at this instant. If more answers become available
     // in the future they will be delivered as usual.
     pub(super) const K_DNS_SERVICE_FLAGS_MORE_COMING: DNSServiceFlags = 0x1;
+    // Also deliver the CNAMEs followed and negative answers
+    // (kDNSServiceErr_NoSuchRecord), which are dropped otherwise.
+    pub(super) const K_DNS_SERVICE_FLAGS_RETURN_INTERMEDIATES: DNSServiceFlags = 0x1000;
 
     pub(super) const K_DNS_SERVICE_ERR_NO_ERROR: DNSServiceErrorType = 0;
     pub(super) const K_DNS_SERVICE_ERR_NO_SUCH_NAME: DNSServiceErrorType = -65538;
@@ -1177,6 +1192,7 @@ mod tests {
             queue: Mutex::new(VecDeque::new()),
             done: AtomicBool::new(false),
             more_coming: AtomicBool::new(false),
+            rrtype: RecordType::SVCB.into(),
             parser: parse_service_binding,
         };
         let fullname = CString::new("example.com.").expect("valid C string");
@@ -1254,6 +1270,105 @@ mod tests {
         assert!(!state.more_coming.load(Ordering::SeqCst));
     }
 
+    type AParser = fn(&[u8], &mut dyn FnMut(Ipv4Addr)) -> Result<(), BoxError>;
+
+    fn a_query() -> QueryState<Ipv4Addr, AParser> {
+        QueryState {
+            queue: Mutex::new(VecDeque::new()),
+            done: AtomicBool::new(false),
+            more_coming: AtomicBool::new(false),
+            rrtype: ffi::K_DNS_SERVICE_TYPE_A,
+            parser: parse_a,
+        }
+    }
+
+    /// One callback for `state`, as `DNSServiceProcessResult` dispatches it.
+    fn callback(
+        state: &mut QueryState<Ipv4Addr, AParser>,
+        flags: ffi::DNSServiceFlags,
+        error: ffi::DNSServiceErrorType,
+        rrtype: u16,
+        rdata: &[u8],
+    ) {
+        // SAFETY: every pointer stays live for this synchronous call
+        unsafe {
+            query_record_callback::<Ipv4Addr, AParser>(
+                ptr::null_mut(),
+                flags,
+                0,
+                error,
+                c"example.com.".as_ptr(),
+                rrtype,
+                ffi::K_DNS_SERVICE_CLASS_IN,
+                rdata.len() as u16,
+                rdata.as_ptr().cast(),
+                60,
+                ptr::from_mut(state).cast(),
+            );
+        }
+    }
+
+    #[test]
+    fn cnames_followed_on_the_way_are_skipped() {
+        const CNAME: u16 = 5;
+        let (a, ok, more) = (
+            ffi::K_DNS_SERVICE_TYPE_A,
+            ffi::K_DNS_SERVICE_ERR_NO_ERROR,
+            ffi::K_DNS_SERVICE_FLAGS_MORE_COMING,
+        );
+        let target = [3, b'w', b'w', b'w', 0];
+        let loopback = [127, 0, 0, 1];
+
+        // a batch of just the CNAME: its target's answers are still to come
+        let mut state = a_query();
+        callback(&mut state, 0, ok, CNAME, &target);
+        assert!(!state.done.load(Ordering::SeqCst));
+        callback(&mut state, 0, ok, a, &loopback);
+        assert!(state.done.load(Ordering::SeqCst));
+        assert!(
+            matches!(drain_completed_batch(&state).as_slice(), [Ok(addr)] if addr.is_loopback())
+        );
+
+        // a CNAME closing the batch closes its answers too
+        let mut state = a_query();
+        callback(&mut state, more, ok, a, &loopback);
+        callback(&mut state, 0, ok, CNAME, &target);
+        assert!(state.done.load(Ordering::SeqCst));
+        assert_eq!(drain_completed_batch(&state).len(), 1);
+
+        // no CNAME does not mean no address
+        let mut state = a_query();
+        callback(
+            &mut state,
+            0,
+            ffi::K_DNS_SERVICE_ERR_NO_SUCH_RECORD,
+            CNAME,
+            &[],
+        );
+        assert!(!state.done.load(Ordering::SeqCst));
+        callback(&mut state, 0, ffi::K_DNS_SERVICE_ERR_NO_SUCH_RECORD, a, &[]);
+        assert!(state.done.load(Ordering::SeqCst));
+        assert!(drain_completed_batch(&state).is_empty());
+    }
+
+    #[tokio::test]
+    async fn local_negative_answers_end_the_lookup_at_once() {
+        // mDNSResponder answers for localhost itself
+        let resolver = AppleDnsResolver::new().with_timeout(Duration::from_secs(3));
+        let started = Instant::now();
+        let cnames: Vec<_> = resolver
+            .lookup_cname(Domain::from_static("localhost"))
+            .collect()
+            .await;
+        let https: Vec<_> = resolver
+            .lookup_https(Domain::from_static("localhost"))
+            .collect()
+            .await;
+        assert!(cnames.is_empty(), "{cnames:?}");
+        assert!(https.is_empty(), "{https:?}");
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
     #[test]
     fn terminal_callback_outcomes_discard_pending_records() {
         type Parser = fn(&[u8], &mut dyn FnMut(ServiceBinding)) -> Result<(), BoxError>;
@@ -1266,6 +1381,7 @@ mod tests {
             queue: Mutex::new(VecDeque::from([Ok(pending())])),
             done: AtomicBool::new(false),
             more_coming: AtomicBool::new(true),
+            rrtype: RecordType::SVCB.into(),
             parser: parse_service_binding,
         };
         queue_error(&state, AppleDnsResolverError::message("callback failed"));
@@ -1285,6 +1401,7 @@ mod tests {
             queue: Mutex::new(VecDeque::from([Ok(pending())])),
             done: AtomicBool::new(false),
             more_coming: AtomicBool::new(true),
+            rrtype: RecordType::SVCB.into(),
             parser: parse_service_binding,
         };
         finish_empty(&state, "test", ffi::K_DNS_SERVICE_ERR_NO_SUCH_RECORD);
