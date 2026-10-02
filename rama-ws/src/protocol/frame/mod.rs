@@ -323,6 +323,7 @@ impl FrameCodec {
 #[cfg(test)]
 mod tests {
     use crate::protocol::error::ProtocolError;
+    use std::assert_matches;
 
     use super::{Frame, FrameSocket};
 
@@ -387,13 +388,13 @@ mod tests {
     fn size_limit_hit() {
         let raw = Cursor::new(vec![0x82, 0x07, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07]);
         let mut sock = FrameSocket::new(raw);
-        assert!(matches!(
+        assert_matches!(
             sock.read(Some(5)),
             Err(ProtocolError::MessageTooLong {
                 size: 7,
                 max_size: 5
-            })
-        ));
+            }),
+        );
     }
 
     #[test]
@@ -405,12 +406,12 @@ mod tests {
             0x82, 0x7f, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x05,
         ]);
         let mut sock = FrameSocket::new(raw);
-        assert!(matches!(
+        assert_matches!(
             sock.read(None),
             Err(ProtocolError::MessageTooLong {
                 size: 5,
                 max_size: usize::MAX
-            })
-        ));
+            }),
+        );
     }
 }

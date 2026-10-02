@@ -713,6 +713,7 @@ fn is_value_delimiter(b: u8) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::borrow::Cow;
 
     use super::*;
@@ -878,13 +879,11 @@ mod tests {
         }
 
         let err = tokenize_raw(br#"{"a":1,}"#).unwrap_err();
-        assert!(
-            matches!(
-                err.kind(),
-                JsonErrorKind::UnexpectedToken("object key" | "}")
-            ),
+        assert_matches!(
+            err.kind(),
+            JsonErrorKind::UnexpectedToken("object key" | "}"),
             "input {:?}",
-            br#"{"a":1,}"#
+            br#"{"a":1,}"#,
         );
     }
 

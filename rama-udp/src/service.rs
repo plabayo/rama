@@ -313,6 +313,7 @@ impl Service<SocketAddress> for UdpSocketFactory {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn config_builders_preserve_options_and_deduplicate_requirements() {
@@ -337,10 +338,10 @@ mod tests {
         );
         assert!(config.receive_original_destination);
 
-        assert!(matches!(
+        assert_matches!(
             config.validate_capabilities(crate::DatagramCapabilities::portable()),
-            Err(DatagramError::Unsupported(DatagramFeature::SendEcn))
-        ));
+            Err(DatagramError::Unsupported(DatagramFeature::SendEcn)),
+        );
         let capabilities = crate::DatagramCapabilities {
             send_ecn: true,
             receive_original_destination: true,

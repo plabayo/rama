@@ -1,5 +1,6 @@
 use super::*;
 use rama_quic_proto::{ConnectionId, Side, TransportError, TransportErrorCode, packet::SpaceId};
+use std::assert_matches;
 
 struct FailingClient(bool);
 impl crypto::ClientConfig for FailingClient {
@@ -168,11 +169,12 @@ fn failed_server_session_releases_reserved_and_preferred_cids() {
             assert_eq!(source.kind(), std::io::ErrorKind::PermissionDenied);
             assert_eq!(pair.server.known_cids(), 0);
             assert_eq!(pair.server.open_connections(), 0);
-            assert!(
-                matches!(pair.client_conn_mut(client).poll(), Some(Event::ConnectionLost {
-            reason: ConnectionError::ConnectionClosed(error),
-        }) if error.error_code == TransportErrorCode::INTERNAL_ERROR)
-            );
+            assert_matches!(
+                    pair.client_conn_mut(client).poll(),
+                    Some(Event::ConnectionLost {
+                reason: ConnectionError::ConnectionClosed(error),
+            }) if error.error_code == TransportErrorCode::INTERNAL_ERROR,
+                );
         }
     }
 }

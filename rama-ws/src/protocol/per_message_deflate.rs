@@ -357,6 +357,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn any_window_bits_are_accepted() {
@@ -397,13 +398,13 @@ mod tests {
         assert!(compressed.len() < payload.len());
 
         let mut decoder = DeflateDecoder::new(15, false);
-        assert!(matches!(
+        assert_matches!(
             decoder.decode(&compressed, Some(128)),
             Err(ProtocolError::MessageTooLong {
                 size: 129,
                 max_size: 128
-            })
-        ));
+            }),
+        );
     }
 
     #[test]
@@ -448,9 +449,9 @@ mod tests {
         );
 
         let mut decoder = DeflateDecoder::new(15, false);
-        assert!(matches!(
+        assert_matches!(
             decoder.decode(&compressed, Some(payload.len() - 1)),
             Err(ProtocolError::MessageTooLong { max_size, .. }) if max_size == payload.len() - 1,
-        ));
+        );
     }
 }

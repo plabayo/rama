@@ -791,6 +791,7 @@ impl Iterator for Parser<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     #[::tracing_test::traced_test]
@@ -894,7 +895,7 @@ mod tests {
         for prefix in ["max-snippet: ", "unavailable_after: ", "bot: max-snippet: "] {
             let input = format!("{prefix}{}", "a,".repeat(4000));
             let results = robots_tag_parse_iter(input.as_bytes()).collect::<Vec<_>>();
-            assert!(matches!(results.as_slice(), [Err(_)]), "{prefix}");
+            assert_matches!(results.as_slice(), [Err(_)], "{prefix}");
         }
     }
 
@@ -971,6 +972,6 @@ mod tests {
 
         let rejected = date(17);
         let results = robots_tag_parse_iter(rejected.as_bytes()).collect::<Vec<_>>();
-        assert!(matches!(results.as_slice(), [Err(_)]), "{results:?}");
+        assert_matches!(results.as_slice(), [Err(_)], "{results:?}");
     }
 }

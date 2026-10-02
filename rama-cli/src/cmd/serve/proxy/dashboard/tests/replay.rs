@@ -8,6 +8,7 @@ use rama::{
     service::service_fn,
     tcp::server::TcpListener,
 };
+use std::assert_matches;
 
 use super::*;
 use crate::cmd::serve::proxy::capture::{CaptureHttpLayer, ConnectionId};
@@ -714,10 +715,7 @@ fn websocket_send_signals_reject_unknown_variants() {
         signals.websocket_direction,
         Some(WebSocketRelayDirection::Egress)
     );
-    assert!(matches!(
-        signals.websocket_kind,
-        Some(WebSocketSendKind::Binary)
-    ));
+    assert_matches!(signals.websocket_kind, Some(WebSocketSendKind::Binary));
 }
 
 #[tokio::test]

@@ -697,6 +697,7 @@ mod tests {
 #[cfg(test)]
 mod client_response_tests {
     use super::*;
+    use std::assert_matches;
     use std::collections::VecDeque;
     use std::convert::Infallible;
 
@@ -894,10 +895,7 @@ mod client_response_tests {
         };
         assert_eq!(last.into_trailers().unwrap(), trailers());
         assert!(body.is_end_stream());
-        assert!(matches!(
-            Pin::new(&mut body).poll_frame(&mut cx),
-            Poll::Ready(None)
-        ));
+        assert_matches!(Pin::new(&mut body).poll_frame(&mut cx), Poll::Ready(None));
     }
 
     #[tokio::test]
@@ -971,10 +969,10 @@ mod client_response_tests {
         let mut body = GrpcWebCall::client_response(Frames(VecDeque::from([Frame::data(
             Bytes::from_static(b"\x80\0\0\0\x07bad\r\n\r\n"),
         )])));
-        assert!(matches!(
+        assert_matches!(
             Pin::new(&mut body).poll_frame(&mut Context::from_waker(std::task::Waker::noop())),
-            Poll::Ready(Some(Err(_)))
-        ));
+            Poll::Ready(Some(Err(_))),
+        );
     }
 
     #[test]

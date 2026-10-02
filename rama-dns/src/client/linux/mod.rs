@@ -629,6 +629,7 @@ impl DnsResolver for LinuxDnsResolver {}
 /// is safe to cache as a negative entry, and only with a SOA-derived TTL —
 /// systemd-resolved negatives carry none (the daemon does its own RFC 2308
 /// negative caching), so they end up uncached here.
+#[derive(Debug)]
 pub(super) enum LookupEvent<T> {
     /// `None` means the backend could not expose a TTL; `Some(0)` is a real
     /// wire TTL and must prevent the record from being retained in the cache.
@@ -1172,6 +1173,7 @@ mod tests {
     use rama_net::address::Domain;
     use serde_json::json;
     use std::{
+        assert_matches,
         net::Ipv4Addr,
         sync::{
             Arc,
@@ -1351,7 +1353,7 @@ mod tests {
 
         let mut stream = Box::pin(cached_ipv4_stream(domain.clone(), cache.clone(), backend));
         let first = stream.next().await;
-        assert!(matches!(first, Some(Ok(addr)) if addr == addrs[0]));
+        assert_matches!(first, Some(Ok(addr)) if addr == addrs[0]);
         drop(stream);
 
         assert_eq!(
@@ -1443,22 +1445,24 @@ mod tests {
         let items: Vec<_> = cached_ipv4_stream(test_domain(), test_cache(), fallback)
             .collect()
             .await;
-        assert!(
-            matches!(items.as_slice(), [Err(err)] if err
+        assert_matches!(
+            items.as_slice(),
+            [Err(err)] if err
                 .downcast_ref::<DnsTimeoutError>()
-                .is_some_and(|err| err.timeout() == Duration::from_secs(5))),
-            "{items:?}"
+                .is_some_and(|err| err.timeout() == Duration::from_secs(5)),
+            "{items:?}",
         );
 
         // callers that stop waiting on a lookup with two attempts' budget
         let items: Vec<_> = cached_ipv4_stream(test_domain(), test_cache(), stream::pending())
             .collect()
             .await;
-        assert!(
-            matches!(items.as_slice(), [Err(err)] if err
+        assert_matches!(
+            items.as_slice(),
+            [Err(err)] if err
                 .downcast_ref::<DnsTimeoutError>()
-                .is_some_and(|err| err.timeout() == Duration::from_secs(5))),
-            "{items:?}"
+                .is_some_and(|err| err.timeout() == Duration::from_secs(5)),
+            "{items:?}",
         );
     }
 
@@ -1477,8 +1481,8 @@ mod tests {
             .await;
 
         assert_eq!(items.len(), 2);
-        assert!(matches!(items[0], Ok(got) if got == addr));
-        assert!(matches!(items[1], Err(ref err) if err.to_string() == "boom"));
+        assert_matches!(items[0], Ok(got) if got == addr);
+        assert_matches!(items[1], Err(ref err) if err.to_string() == "boom");
         assert!(
             cached_ipv4(&cache, &domain).is_none(),
             "a failed lookup must not be cached",
@@ -1696,7 +1700,7 @@ mod tests {
 
             assert_eq!(lookups.load(Ordering::SeqCst), 1, "wire ttl {wire_ttl}");
             for items in results {
-                assert!(matches!(items.as_slice(), [Ok(got)] if *got == addr));
+                assert_matches!(items.as_slice(), [Ok(got)] if *got == addr);
             }
             assert_eq!(cached_ipv4(&cache, &test_domain()).is_some(), wire_ttl > 0);
         }
@@ -1765,10 +1769,10 @@ mod tests {
 
         assert_eq!(lookups.load(Ordering::SeqCst), 1);
         for items in results {
-            assert!(matches!(
+            assert_matches!(
                 items.as_slice(),
-                [Err(err)] if err.to_string() == "upstream unreachable"
-            ));
+                [Err(err)] if err.to_string() == "upstream unreachable",
+            );
         }
 
         // the next lookup runs again and can succeed
@@ -1783,7 +1787,7 @@ mod tests {
         .collect::<Vec<_>>();
         let (items, ()) = tokio::join!(retry, open_gate_later(&gate));
         assert_eq!(lookups.load(Ordering::SeqCst), 2);
-        assert!(matches!(items.as_slice(), [Ok(_)]));
+        assert_matches!(items.as_slice(), [Ok(_)]);
     }
 
     #[tokio::test(start_paused = true)]
@@ -1810,9 +1814,10 @@ mod tests {
         .collect()
         .await;
 
-        assert!(
-            matches!(items.as_slice(), [Ok(got)] if *got == addr),
-            "{items:?}"
+        assert_matches!(
+            items.as_slice(),
+            [Ok(got)] if *got == addr,
+            "{items:?}",
         );
     }
 
@@ -1837,10 +1842,11 @@ mod tests {
         let (results, ()) = tokio::join!(callers, open_gate_later(&gate));
 
         assert_eq!(lookups.load(Ordering::SeqCst), 1);
-        assert!(matches!(results[0].as_slice(), [Ok(_)]), "{results:?}");
-        assert!(
-            matches!(results[1].as_slice(), [Err(err)] if err.to_string().contains("starts with a dot")),
-            "{results:?}"
+        assert_matches!(results[0].as_slice(), [Ok(_)], "{results:?}");
+        assert_matches!(
+            results[1].as_slice(),
+            [Err(err)] if err.to_string().contains("starts with a dot"),
+            "{results:?}",
         );
     }
 
@@ -1908,7 +1914,7 @@ mod tests {
 
         let follower = new_caller().collect::<Vec<_>>();
         let (items, ()) = tokio::join!(follower, open_gate_later(&gate));
-        assert!(matches!(items.as_slice(), [Ok(got)] if *got == addr));
+        assert_matches!(items.as_slice(), [Ok(got)] if *got == addr);
         assert_eq!(
             lookups.load(Ordering::SeqCst),
             1,
@@ -1993,10 +1999,10 @@ mod tests {
 
         assert_eq!(lookups.load(Ordering::SeqCst), 1);
         assert!(results.iter().all(Vec::is_empty));
-        assert!(matches!(
+        assert_matches!(
             cache.get_ipv4(&test_domain()),
-            Some(cache::CacheLookup::Negative)
-        ));
+            Some(cache::CacheLookup::Negative),
+        );
     }
 
     /// A varlink stub that answers every ResolveHostname call after `delay`.
@@ -2103,10 +2109,10 @@ mod tests {
                 .collect()
                 .await;
         assert!(started.elapsed() < Duration::from_secs(2));
-        assert!(matches!(
+        assert_matches!(
             items.as_slice(),
-            [Err(err)] if error_chain(err.as_ref()).any(|cause| cause.is::<DnsTimeoutError>())
-        ));
+            [Err(err)] if error_chain(err.as_ref()).any(|cause| cause.is::<DnsTimeoutError>()),
+        );
 
         drop(release);
         busy.await.expect("busy lookup ends");
@@ -2165,8 +2171,9 @@ mod tests {
         .await;
 
         assert_eq!(items.len(), 1);
-        assert!(
-            matches!(items[0], Ok(LookupEvent::Record(addr, Some(60))) if addr == Ipv4Addr::new(1, 2, 3, 4)),
+        assert_matches!(
+            items[0],
+            Ok(LookupEvent::Record(addr, Some(60))) if addr == Ipv4Addr::new(1, 2, 3, 4),
         );
         assert!(!native_called.load(Ordering::SeqCst));
     }
@@ -2183,10 +2190,10 @@ mod tests {
         .await;
 
         assert_eq!(items.len(), 1);
-        assert!(matches!(
+        assert_matches!(
             items[0],
             Ok(LookupEvent::AuthoritativeNegative { soa_ttl: None }),
-        ));
+        );
         assert!(!native_called.load(Ordering::SeqCst));
     }
 
@@ -2204,7 +2211,7 @@ mod tests {
         .await;
 
         assert_eq!(items.len(), 1);
-        assert!(matches!(items[0], Err(ref err) if err.to_string() == "nope"));
+        assert_matches!(items[0], Err(ref err) if err.to_string() == "nope");
         assert!(!native_called.load(Ordering::SeqCst));
     }
 
@@ -2220,8 +2227,9 @@ mod tests {
         .await;
 
         assert_eq!(items.len(), 1);
-        assert!(
-            matches!(items[0], Ok(LookupEvent::Record(addr, Some(30))) if addr == Ipv4Addr::new(9, 9, 9, 9)),
+        assert_matches!(
+            items[0],
+            Ok(LookupEvent::Record(addr, Some(30))) if addr == Ipv4Addr::new(9, 9, 9, 9),
         );
         assert!(native_called.load(Ordering::SeqCst));
     }

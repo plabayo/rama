@@ -15,6 +15,7 @@
 use super::{parse_graceful, parse_strict};
 use crate::address::{Domain, Host, UninterpretedHost};
 use crate::uri::{ParseError, Uri};
+use std::assert_matches;
 
 /// Extract a borrowed view of the [`UninterpretedHost`] inside a
 /// parsed URI, panicking if the host isn't `Uninterpreted`.
@@ -94,16 +95,14 @@ fn pct_decoded_control_byte_rejected_as_smuggling_vector() {
     // `%00` decodes to NUL — even though the wire bytes are printable,
     // the decoded byte is a smuggling vector.
     let err = parse_graceful("http://exa%00ple.com/").unwrap_err();
-    assert!(
-        matches!(err, ParseError::ControlCharInUri { byte: 0x00, .. }),
-        "got {err:?}"
+    assert_matches!(
+        err,
+        ParseError::ControlCharInUri { byte: 0x00, .. },
+        "got {err:?}",
     );
     // `%0D` carriage return — same.
     let err = parse_graceful("http://exa%0Dple.com/").unwrap_err();
-    assert!(matches!(
-        err,
-        ParseError::ControlCharInUri { byte: 0x0D, .. }
-    ));
+    assert_matches!(err, ParseError::ControlCharInUri { byte: 0x0D, .. });
     // `%09` tab — same.
     parse_graceful("http://exa%09ple.com/").unwrap_err();
 }
@@ -179,7 +178,7 @@ fn ipv6_still_parses_as_typed_address_not_uninterpreted() {
     // Bracketed IPv6 stays as the typed `Host::Address`.
     let uri = parse_strict("http://[::1]/").unwrap();
     let owned = uri.host().unwrap().into_owned();
-    assert!(matches!(owned, Host::Address(_)));
+    assert_matches!(owned, Host::Address(_));
     assert!(!matches!(owned, Host::Uninterpreted(_)));
 }
 
@@ -205,7 +204,7 @@ fn graceful_raw_utf8_host_preserved() {
 fn strict_rejects_raw_utf8_host() {
     // RFC 3986 strict grammar is ASCII only.
     let r = parse_strict("https://münchen.de/");
-    assert!(matches!(r, Err(ParseError::StrictViolation)));
+    assert_matches!(r, Err(ParseError::StrictViolation));
 }
 
 #[test]

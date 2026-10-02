@@ -585,6 +585,7 @@ pub fn sanitize_hop_by_hop_response_headers<B>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     fn values<'a>(headers: &'a HeaderMap, name: &HeaderName) -> Vec<&'a [u8]> {
         headers
@@ -670,15 +671,15 @@ mod tests {
     #[test]
     fn uncommon_upgrade_protocol_keeps_exact_version() {
         let protocol = UpgradeProtocol::parse(b"IRC/6.9").unwrap();
-        assert!(matches!(
+        assert_matches!(
             protocol,
-            UpgradeProtocol::Other { wire, name_length: 3 } if &*wire == b"IRC/6.9"
-        ));
-        assert!(matches!(
+            UpgradeProtocol::Other { wire, name_length: 3 } if &*wire == b"IRC/6.9",
+        );
+        assert_matches!(
             UpgradeProtocol::parse(b"TLS/6.9"),
             Some(UpgradeProtocol::Tls(UpgradeProtocolVersion::Other(version)))
-                if &*version == b"6.9"
-        ));
+                if &*version == b"6.9",
+        );
     }
 
     #[test]

@@ -4,6 +4,7 @@ use super::lifecycle::{configs, exchange, handshake};
 use crate::driver::endpoint::*;
 use rama_net::socket::{SocketOptions, core as socket};
 use rama_udp::{DatagramError, DatagramFeature, DatagramSocket as _, UdpSocketConfig};
+use std::assert_matches;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 
 fn localhost_v4() -> SocketAddr {
@@ -163,9 +164,10 @@ async fn a_required_feature_is_refused_only_when_the_socket_lacks_it() {
         }
         Ok(_) => {
             let error = bound.expect_err("the feature is not available on this socket");
-            assert!(
-                matches!(error, DatagramError::Unsupported(refused) if refused == feature),
-                "the refusal names the feature: {error:?}"
+            assert_matches!(
+                error,
+                DatagramError::Unsupported(refused) if refused == feature,
+                "the refusal names the feature: {error:?}",
             );
         }
         Err(setup) => panic!(
@@ -214,9 +216,10 @@ async fn an_occupied_address_fails_once_and_changes_nothing() {
         .bind_address_with_socket_config(occupied, UdpSocketConfig::default())
         .await
         .expect_err("the address is taken");
-    assert!(
-        matches!(&error, DatagramError::Io(error) if error.kind() == io::ErrorKind::AddrInUse),
-        "the platform's own error, not a retry's: {error:?}"
+    assert_matches!(
+        &error,
+        DatagramError::Io(error) if error.kind() == io::ErrorKind::AddrInUse,
+        "the platform's own error, not a retry's: {error:?}",
     );
 
     let client = Endpoint::bind_client(rama_core::rt::Executor::new(), localhost_v4())
@@ -238,9 +241,10 @@ async fn an_occupied_address_fails_once_and_changes_nothing() {
         .rebind(occupied, UdpSocketConfig::default())
         .await
         .expect_err("the rebind cannot take that address either");
-    assert!(
-        matches!(&error, DatagramError::Io(error) if error.kind() == io::ErrorKind::AddrInUse),
-        "the same error: {error:?}"
+    assert_matches!(
+        &error,
+        DatagramError::Io(error) if error.kind() == io::ErrorKind::AddrInUse,
+        "the same error: {error:?}",
     );
     assert_eq!(
         client.local_addr().unwrap(),
@@ -306,15 +310,16 @@ fn registering_a_socket_outside_a_runtime_is_refused() {
     let error = Endpoint::build(rama_core::rt::Executor::new())
         .with_std_socket(socket)
         .expect_err("there is no runtime to register the socket with");
-    assert!(matches!(error, DatagramError::Io(ref error) if error.kind() == io::ErrorKind::Other));
+    assert_matches!(error, DatagramError::Io(ref error) if error.kind() == io::ErrorKind::Other);
 
     let socket = std::net::UdpSocket::bind(localhost_v4()).unwrap();
     let error = UdpSocketConfig::default()
         .wrap_std(socket)
         .expect_err("the shared wrapping registers the socket too");
-    assert!(
-        matches!(&error, DatagramError::Io(error) if error.kind() == io::ErrorKind::Other),
-        "the error carries its cause: {error:?}"
+    assert_matches!(
+        &error,
+        DatagramError::Io(error) if error.kind() == io::ErrorKind::Other,
+        "the error carries its cause: {error:?}",
     );
 
     let mut binding = std::pin::pin!(

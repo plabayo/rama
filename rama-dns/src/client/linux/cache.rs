@@ -198,6 +198,7 @@ fn is_cacheable(ttl: Option<Duration>) -> bool {
     ttl.is_none_or(|ttl| !ttl.is_zero())
 }
 
+#[derive(Debug)]
 pub(super) enum CacheLookup<T> {
     Positive(Arc<[T]>),
     Negative,

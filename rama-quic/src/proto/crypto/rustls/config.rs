@@ -105,6 +105,7 @@ mod tests {
     use rama_quic_proto::{Side, transport_parameters::TransportParameters};
     use rama_tls::server::{GeneratedServerAuthConfig, ServerAuthData};
     use rama_tls_rustls::{client::RustlsClientConfigExt, server::RustlsServerConfigExt};
+    use std::assert_matches;
 
     fn configs() -> (TlsClientConfig, TlsServerConfig) {
         let auth = ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).unwrap();
@@ -199,7 +200,7 @@ mod tests {
         let error = QuicClientConfig::from_rama(&client, configured_provider(), options)
             .err()
             .unwrap();
-        assert!(matches!(error, TlsConfigError::InvalidConfiguration(_)));
+        assert_matches!(error, TlsConfigError::InvalidConfiguration(_));
         assert!(
             std::error::Error::source(&error)
                 .unwrap()
@@ -254,10 +255,10 @@ mod tests {
             Err(TlsConfigError::NoInitialCipherSuite(_))
         ));
         for protocols in [vec![vec![]], vec![vec![0; 256]], vec![vec![0; 255]; 256]] {
-            assert!(matches!(
+            assert_matches!(
                 validate_alpn(&protocols, AlpnPolicy::OutOfBandAgreement),
-                Err(TlsConfigError::InvalidAlpn)
-            ));
+                Err(TlsConfigError::InvalidAlpn),
+            );
         }
         validate_alpn(&vec![vec![0; 255]; 255], AlpnPolicy::Require).unwrap();
     }
@@ -485,7 +486,7 @@ mod tests {
                 let error = established.await.unwrap_err();
                 (connection, error)
             });
-            assert!(matches!(error, crate::ConnectionError::TransportError(_)));
+            assert_matches!(error, crate::ConnectionError::TransportError(_));
             assert!(
                 std::error::Error::source(&error)
                     .unwrap()

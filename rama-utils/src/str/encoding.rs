@@ -32,18 +32,19 @@ pub fn decode_utf8_or_latin1_owned(bytes: Vec<u8>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn valid_utf8_is_borrowed() {
         let bytes = "café".as_bytes();
         let decoded = decode_utf8_or_latin1(bytes);
-        assert!(matches!(decoded, Cow::Borrowed("café")));
+        assert_matches!(decoded, Cow::Borrowed("café"));
     }
 
     #[test]
     fn invalid_utf8_decodes_the_complete_input_as_latin1() {
         let decoded = decode_utf8_or_latin1(b"caf\xe9");
-        assert!(matches!(decoded, Cow::Owned(ref text) if text == "café"));
+        assert_matches!(decoded, Cow::Owned(ref text) if text == "café");
 
         assert_eq!(decode_utf8_or_latin1(b"\xc3("), "Ã(");
     }

@@ -167,6 +167,7 @@ impl<T> DatagramSocketExt for T where T: DatagramSocket + ?Sized {}
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::{io, task::Waker};
 
     use super::*;
@@ -229,31 +230,31 @@ mod tests {
         let mut context = Context::from_waker(Waker::noop());
 
         let mut sender = CountingSender { remaining: 2 };
-        assert!(matches!(
+        assert_matches!(
             sender.poll_send_batch(&mut context, &datagrams),
-            Poll::Ready(Ok(2))
-        ));
+            Poll::Ready(Ok(2)),
+        );
 
         let mut sender = CountingSender { remaining: 0 };
-        assert!(matches!(
+        assert_matches!(
             sender.poll_send_batch(&mut context, &datagrams),
-            Poll::Pending
-        ));
-        assert!(matches!(
+            Poll::Pending,
+        );
+        assert_matches!(
             sender.poll_send_batch(&mut context, &[]),
-            Poll::Ready(Ok(0))
-        ));
+            Poll::Ready(Ok(0)),
+        );
 
         let mut sender = FailingSender { remaining: 0 };
-        assert!(matches!(
+        assert_matches!(
             sender.poll_send_batch(&mut context, &datagrams),
-            Poll::Ready(Err(DatagramError::Io(_)))
-        ));
+            Poll::Ready(Err(DatagramError::Io(_))),
+        );
 
         let mut sender = FailingSender { remaining: 1 };
-        assert!(matches!(
+        assert_matches!(
             sender.poll_send_batch(&mut context, &datagrams),
-            Poll::Ready(Ok(1))
-        ));
+            Poll::Ready(Ok(1)),
+        );
     }
 }

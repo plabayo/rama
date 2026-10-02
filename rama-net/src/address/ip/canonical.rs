@@ -105,6 +105,7 @@ impl IntoCanonicalIpAddr for Authority {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn ipv4_loopback_is_unchanged() {
@@ -183,7 +184,7 @@ mod tests {
             .host()
             .unwrap()
             .into_owned();
-        assert!(matches!(host, Host::Uninterpreted(_)), "fixture sanity");
+        assert_matches!(host, Host::Uninterpreted(_), "fixture sanity");
         let canonical = host.into_canonical_ip_addr();
         assert_eq!(
             canonical,
@@ -199,7 +200,7 @@ mod tests {
             .host()
             .unwrap()
             .into_owned();
-        assert!(matches!(host, Host::Uninterpreted(_)));
+        assert_matches!(host, Host::Uninterpreted(_));
         let canonical = host.into_canonical_ip_addr();
         assert_eq!(
             canonical,
@@ -215,7 +216,7 @@ mod tests {
             .host()
             .unwrap()
             .into_owned();
-        assert!(matches!(host, Host::Uninterpreted(_)));
+        assert_matches!(host, Host::Uninterpreted(_));
         let canonical = host.clone().into_canonical_ip_addr();
         assert_eq!(canonical, host);
     }
@@ -229,7 +230,7 @@ mod tests {
             .host()
             .unwrap()
             .into_owned();
-        assert!(matches!(host, Host::Uninterpreted(_)));
+        assert_matches!(host, Host::Uninterpreted(_));
         let canonical = host.clone().into_canonical_ip_addr();
         assert_eq!(canonical, host);
     }

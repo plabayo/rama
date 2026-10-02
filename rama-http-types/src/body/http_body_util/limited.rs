@@ -114,6 +114,7 @@ mod tests {
     use super::*;
     use crate::body::http_body_util::{BodyExt, Full, StreamBody};
     use bytes::Bytes;
+    use std::assert_matches;
     use std::convert::Infallible;
 
     #[tokio::test]
@@ -145,7 +146,7 @@ mod tests {
         assert_eq!(body.size_hint().upper(), hint.upper());
 
         let error = body.frame().await.unwrap().unwrap_err();
-        assert!(matches!(error.downcast_ref(), Some(LengthLimitError)));
+        assert_matches!(error.downcast_ref(), Some(LengthLimitError));
     }
 
     fn body_from_iter<I>(into_iter: I) -> impl Body<Data = Bytes, Error = Infallible>
@@ -179,7 +180,7 @@ mod tests {
         assert_eq!(body.size_hint().upper(), hint.upper());
 
         let error = body.frame().await.unwrap().unwrap_err();
-        assert!(matches!(error.downcast_ref(), Some(LengthLimitError)));
+        assert_matches!(error.downcast_ref(), Some(LengthLimitError));
     }
 
     #[tokio::test]
@@ -193,7 +194,7 @@ mod tests {
         assert_eq!(body.size_hint().upper(), hint.upper());
 
         let error = body.frame().await.unwrap().unwrap_err();
-        assert!(matches!(error.downcast_ref(), Some(LengthLimitError)));
+        assert_matches!(error.downcast_ref(), Some(LengthLimitError));
     }
 
     #[tokio::test]
@@ -269,6 +270,6 @@ mod tests {
     async fn read_for_body_returning_error_propagates_error() {
         let body = &mut Limited::new(ErrorBody, 8);
         let error = body.frame().await.unwrap().unwrap_err();
-        assert!(matches!(error.downcast_ref(), Some(ErrorBodyError)));
+        assert_matches!(error.downcast_ref(), Some(ErrorBodyError));
     }
 }

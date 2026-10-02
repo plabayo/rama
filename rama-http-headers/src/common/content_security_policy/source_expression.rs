@@ -221,6 +221,7 @@ impl FromStr for SourceExpression {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn keywords_round_trip() {
@@ -240,7 +241,7 @@ mod tests {
     #[test]
     fn scheme_uses_typed_protocol() {
         let parsed = SourceExpression::from_str("data:").unwrap();
-        assert!(matches!(parsed, SourceExpression::Scheme(ref p) if p.as_str() == "data"));
+        assert_matches!(parsed, SourceExpression::Scheme(ref p) if p.as_str() == "data");
         assert_eq!(parsed.to_string(), "data:");
 
         let https = SourceExpression::scheme(Protocol::HTTPS);
@@ -274,13 +275,13 @@ mod tests {
             "'nonce-abc'"
         );
         let h = SourceExpression::from_str("'sha384-xyz'").unwrap();
-        assert!(matches!(
+        assert_matches!(
             h,
             SourceExpression::Hash {
                 algorithm: HashAlgorithm::Sha384,
                 ..
-            }
-        ));
+            },
+        );
         assert_eq!(h.to_string(), "'sha384-xyz'");
     }
 

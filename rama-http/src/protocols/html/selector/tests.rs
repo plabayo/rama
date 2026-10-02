@@ -9,6 +9,7 @@
 
 use super::ast::NthType;
 use super::{Compound, Dom, NodeId, Selector, SelectorError};
+use std::assert_matches;
 
 fn sel(s: &str) -> Selector {
     s.parse()
@@ -120,7 +121,7 @@ fn nth_of(s: &str) -> (i32, i32) {
         .first()
         .copied()
         .unwrap_or_else(|| panic!("`{s}` should contain an :nth value"));
-    assert!(matches!(nth.ty, NthType::Child));
+    assert_matches!(nth.ty, NthType::Child);
     (nth.a, nth.b)
 }
 

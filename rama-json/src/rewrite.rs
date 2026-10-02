@@ -791,6 +791,7 @@ pub fn rewrite_bytes(input: &[u8], handlers: JsonHandlers<'_>) -> Result<Vec<u8>
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::borrow::Cow;
 
     use super::*;
@@ -856,7 +857,7 @@ mod tests {
                 .on(user_name_path(), |value| {
                     let decoded = value.as_str().unwrap();
                     assert_eq!(decoded, "Alice");
-                    assert!(matches!(decoded, Cow::Borrowed("Alice")));
+                    assert_matches!(decoded, Cow::Borrowed("Alice"));
                     value.replace("Bob")
                 })
                 .on(member_path("count"), |value| {
@@ -1114,10 +1115,10 @@ mod tests {
             }),
         )
         .unwrap_err();
-        assert!(matches!(
+        assert_matches!(
             err.kind(),
-            JsonErrorKind::UnexpectedToken("remove root value")
-        ));
+            JsonErrorKind::UnexpectedToken("remove root value"),
+        );
     }
 
     #[test]
@@ -1129,10 +1130,10 @@ mod tests {
             }),
         )
         .unwrap_err();
-        assert!(matches!(
+        assert_matches!(
             err.kind(),
-            JsonErrorKind::UnexpectedByte(_) | JsonErrorKind::InvalidNumber
-        ));
+            JsonErrorKind::UnexpectedByte(_) | JsonErrorKind::InvalidNumber,
+        );
     }
 
     #[test]

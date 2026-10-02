@@ -287,6 +287,7 @@ where
 mod tests {
     use super::*;
     use rama_utils::octets::kib;
+    use std::assert_matches;
 
     fn roundtrip_pairs(pairs: &[(&[u8], &[u8])]) {
         let refs: Vec<NvPairRef<'_>> = pairs.iter().map(|(n, v)| NvPairRef::new(n, v)).collect();
@@ -333,10 +334,10 @@ mod tests {
         try_encode_length(&mut buf, MAX_NV_LENGTH).unwrap();
 
         let mut buf = BytesMut::new();
-        assert!(matches!(
+        assert_matches!(
             try_encode_length(&mut buf, MAX_NV_LENGTH + 1),
-            Err(ProtocolError::ContentTooLarge(_))
-        ));
+            Err(ProtocolError::ContentTooLarge(_)),
+        );
     }
 
     #[test]
@@ -356,12 +357,12 @@ mod tests {
         // truncated as a previous infallible `encode_length` once did.
         let mut buf = BytesMut::new();
         let err = try_encode_length(&mut buf, MAX_NV_LENGTH + 1).unwrap_err();
-        assert!(matches!(err, ProtocolError::ContentTooLarge(_)));
+        assert_matches!(err, ProtocolError::ContentTooLarge(_));
         assert!(buf.is_empty(), "rejected encode must not emit bytes");
 
         let mut buf = BytesMut::new();
         let err = try_encode_length(&mut buf, u32::MAX).unwrap_err();
-        assert!(matches!(err, ProtocolError::ContentTooLarge(_)));
+        assert_matches!(err, ProtocolError::ContentTooLarge(_));
         assert!(buf.is_empty());
     }
 

@@ -520,13 +520,13 @@ impl fmt::Display for Fmt<'_> {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 enum KnownDirective {
     Known(Directive),
     Unknown,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 enum Directive {
     NoCache,
     NoStore,
@@ -672,6 +672,7 @@ fn unquote(value: &str) -> &str {
 mod tests {
     use super::*;
     use crate::common::{test_decode, test_encode};
+    use std::assert_matches;
 
     #[test]
     fn test_parse_multiple_headers() {
@@ -892,18 +893,13 @@ mod tests {
             assert!(test_decode::<CacheControl>(&[value]).is_some(), "{value}");
         }
         for value in ["max-agé=5", "é=5", "é=", "=é", "no-store=1"] {
-            assert!(
-                matches!(value.parse(), Ok(KnownDirective::Unknown)),
-                "{value}"
-            );
+            assert_matches!(value.parse(), Ok(KnownDirective::Unknown), "{value}");
         }
         for value in ["max-age=é", "max-age=\"é\"", "max-age=5é"] {
-            assert!(
-                matches!(
-                    value.parse(),
-                    Ok(KnownDirective::Known(Directive::MaxAge(0)))
-                ),
-                "{value}"
+            assert_matches!(
+                value.parse(),
+                Ok(KnownDirective::Known(Directive::MaxAge(0))),
+                "{value}",
             );
         }
     }

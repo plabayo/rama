@@ -1,6 +1,7 @@
 //! Tests specifically for tokens
 
 use parking_lot::Mutex;
+use std::assert_matches;
 
 use super::*;
 
@@ -540,10 +541,10 @@ fn new_token_with_failing_key(failure: ProviderFailure) {
     let s = pair.client_streams(client_ch).open(Dir::Bi).unwrap();
     pair.client_send(client_ch, s).write(b"ping").unwrap();
     pair.drive();
-    assert!(matches!(
+    assert_matches!(
         pair.server_conn_mut(server_ch).poll(),
-        Some(Event::Stream(StreamEvent::Opened { dir: Dir::Bi }))
-    ));
+        Some(Event::Stream(StreamEvent::Opened { dir: Dir::Bi })),
+    );
 }
 
 /// The null log refuses every validation token in the real admission path: a client that
@@ -637,12 +638,12 @@ fn retry_token_lifetime_beyond_the_clock_rejects_the_token() {
     pair.drive_server();
     pair.drive_client();
     pair.drive();
-    assert!(matches!(
+    assert_matches!(
         pair.client_conn_mut(client_ch).poll(),
         Some(Event::ConnectionLost {
             reason: ConnectionError::ConnectionClosed(err),
-        }) if err.error_code == TransportErrorCode::INVALID_TOKEN
-    ));
+        }) if err.error_code == TransportErrorCode::INVALID_TOKEN,
+    );
     assert_eq!(pair.server.known_connections(), 0);
 }
 

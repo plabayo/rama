@@ -15,6 +15,7 @@ use rama::{
     },
     utils::octets,
 };
+use std::assert_matches;
 use std::{
     task::{Context, Poll, Waker},
     time::Duration,
@@ -56,7 +57,7 @@ fn generic_batch(bencher: divan::Bencher, count: usize) {
     let mut sender = ReadySender::default();
     let mut cx = Context::from_waker(Waker::noop());
     bencher.counter(ItemsCount::new(count)).bench_local(|| {
-        assert!(matches!(sender.poll_send_batch(&mut cx, black_box(&datagrams)), Poll::Ready(Ok(n)) if n == count));
+        assert_matches!(sender.poll_send_batch(&mut cx, black_box(&datagrams)), Poll::Ready(Ok(n)) if n == count);
         black_box(sender.bytes);
     });
 }

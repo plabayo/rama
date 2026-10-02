@@ -475,6 +475,7 @@ mod tests {
         qpack::{Encoder, EncoderConfig},
     };
     use rama_core::futures::FutureExt as _;
+    use std::assert_matches;
 
     fn shared() -> Arc<Shared> {
         let shared = Shared::new(
@@ -633,12 +634,12 @@ mod tests {
             .unwrap();
         assert!(encoder.insert_count() > 0);
         let mut decode = Box::pin(shared.decode_for_stream(3, Some(0), encoded));
-        assert!(matches!(
+        assert_matches!(
             decode
                 .as_mut()
                 .poll(&mut Context::from_waker(Waker::noop())),
-            Poll::Pending
-        ));
+            Poll::Pending,
+        );
         shared.cancel_push(0, false).unwrap();
         assert_eq!(decode.await.unwrap_err().code(), Code::H3_REQUEST_CANCELLED);
     }

@@ -186,6 +186,7 @@ impl Debug for DebugFn {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::{convert::Infallible, sync::OnceLock};
 
     use super::*;
@@ -338,10 +339,10 @@ mod tests {
         let _layer = CsrfLayer::new()
             .add_trusted_origin("https://example.com")
             .unwrap();
-        assert!(matches!(
+        assert_matches!(
             CsrfLayer::new().add_trusted_origin("not a valid url"),
-            Err(ConfigError::InvalidOrigin { .. })
-        ));
+            Err(ConfigError::InvalidOrigin { .. }),
+        );
     }
 
     #[test]

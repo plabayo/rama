@@ -149,6 +149,7 @@ pub(super) struct SystemdResolved {
     probe_settled: Notify,
 }
 
+#[derive(Debug)]
 pub(super) enum ResolvedLookup<T> {
     /// Records with their DNS or configured cache TTL in seconds.
     ///
@@ -1004,6 +1005,7 @@ impl std::error::Error for SystemdResolvedError {}
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::assert_matches;
     use std::sync::atomic::AtomicUsize;
     use tokio::net::UnixListener;
 
@@ -1181,18 +1183,18 @@ mod tests {
     }
 
     fn assert_available(resolved: &SystemdResolved) {
-        assert!(matches!(phase(resolved), Phase::Available));
+        assert_matches!(phase(resolved), Phase::Available);
     }
 
     /// A live daemon that misbehaved on `failures` lookups in a row.
     fn assert_failures(resolved: &SystemdResolved, failures: u32) {
         let state = resolved.state.lock();
-        assert!(matches!(state.phase, Phase::Available));
+        assert_matches!(state.phase, Phase::Available);
         assert_eq!(state.failures, failures);
     }
 
     fn assert_unavailable(resolved: &SystemdResolved) {
-        assert!(matches!(phase(resolved), Phase::Unavailable { .. }));
+        assert_matches!(phase(resolved), Phase::Unavailable { .. });
     }
 
     fn hostname_reply(addresses: &serde_json::Value) -> serde_json::Value {
@@ -1291,18 +1293,18 @@ mod tests {
     async fn no_such_record_is_negative_and_keeps_backend_available() {
         let server = FakeResolved::spawn(vec![Behavior::Reply(error_reply(ERROR_NO_SUCH_RR))]);
         let resolved = resolver(server.path.clone());
-        assert!(matches!(
+        assert_matches!(
             resolved
                 .lookup_ipv4(&domain(), Duration::from_secs(2))
                 .await,
             ResolvedLookup::Negative,
-        ));
-        assert!(matches!(
+        );
+        assert_matches!(
             resolved
                 .lookup_ipv4(&domain(), Duration::from_secs(2))
                 .await,
             ResolvedLookup::Negative,
-        ));
+        );
         assert_eq!(
             server.connections(),
             2,
@@ -1316,12 +1318,12 @@ mod tests {
         let server =
             FakeResolved::spawn(vec![Behavior::Reply(dns_error_reply(DNS_RCODE_NXDOMAIN))]);
         let resolved = resolver(server.path.clone());
-        assert!(matches!(
+        assert_matches!(
             resolved
                 .lookup_ipv4(&domain(), Duration::from_secs(2))
                 .await,
             ResolvedLookup::Negative,
-        ));
+        );
         assert_available(&resolved);
     }
 
@@ -1329,12 +1331,12 @@ mod tests {
     async fn other_dns_errors_are_not_negative() {
         let server = FakeResolved::spawn(vec![Behavior::Reply(dns_error_reply(2))]);
         let resolved = resolver(server.path.clone());
-        assert!(matches!(
+        assert_matches!(
             resolved
                 .lookup_ipv4(&domain(), Duration::from_secs(2))
                 .await,
             ResolvedLookup::Failed(_),
-        ));
+        );
         assert_available(&resolved);
     }
 
@@ -1347,12 +1349,12 @@ mod tests {
             Behavior::Reply(error_reply("io.systemd.Resolve.QueryTimedOut")),
         ]);
         let resolved = resolver(server.path.clone());
-        assert!(matches!(
+        assert_matches!(
             resolved
                 .lookup_ipv4(&domain(), Duration::from_secs(2))
                 .await,
             ResolvedLookup::Records(_),
-        ));
+        );
         match resolved
             .lookup_ipv4(&domain(), Duration::from_secs(2))
             .await
@@ -1370,23 +1372,23 @@ mod tests {
     async fn missing_socket_flips_unavailable_and_skips_daemon() {
         let path = test_socket_path();
         let resolved = resolver(path.clone());
-        assert!(matches!(
+        assert_matches!(
             resolved
                 .lookup_ipv4(&domain(), Duration::from_secs(1))
                 .await,
             ResolvedLookup::Unavailable,
-        ));
+        );
         assert_unavailable(&resolved);
 
         // a daemon appearing now is not contacted before the re-probe interval
         let server =
             FakeResolved::spawn_at(path, vec![Behavior::Reply(hostname_reply(&json!([])))]);
-        assert!(matches!(
+        assert_matches!(
             resolved
                 .lookup_ipv4(&domain(), Duration::from_secs(1))
                 .await,
             ResolvedLookup::Unavailable,
-        ));
+        );
         assert_eq!(server.connections(), 0);
     }
 
@@ -1397,12 +1399,12 @@ mod tests {
         config.reprobe_interval = Duration::from_millis(50);
         let resolved = Arc::new(SystemdResolved::new(config));
 
-        assert!(matches!(
+        assert_matches!(
             resolved
                 .lookup_ipv4(&domain(), Duration::from_secs(1))
                 .await,
             ResolvedLookup::Unavailable,
-        ));
+        );
 
         let server = FakeResolved::spawn_at(
             path,
@@ -1412,19 +1414,19 @@ mod tests {
         );
         tokio::time::sleep(Duration::from_millis(80)).await;
         // the re-probe runs on its own; meanwhile lookups stay native
-        assert!(matches!(
+        assert_matches!(
             resolved
                 .lookup_ipv4(&domain(), Duration::from_secs(1))
                 .await,
             ResolvedLookup::Unavailable,
-        ));
+        );
         wait_until_available(&resolved).await;
-        assert!(matches!(
+        assert_matches!(
             resolved
                 .lookup_ipv4(&domain(), Duration::from_secs(1))
                 .await,
             ResolvedLookup::Records(_),
-        ));
+        );
         assert_eq!(server.connections(), 1);
         assert_eq!(server.probes(), 1);
     }
@@ -1452,7 +1454,7 @@ mod tests {
         let lookup = resolved
             .lookup_ipv4(&domain(), Duration::from_secs(5))
             .await;
-        assert!(matches!(lookup, ResolvedLookup::Unavailable));
+        assert_matches!(lookup, ResolvedLookup::Unavailable);
         // the 1s connect timeout, not the 5s budget
         assert!(
             first.elapsed() < Duration::from_secs(3),
@@ -1465,7 +1467,7 @@ mod tests {
         let lookup = resolved
             .lookup_ipv4(&domain(), Duration::from_secs(5))
             .await;
-        assert!(matches!(lookup, ResolvedLookup::Unavailable));
+        assert_matches!(lookup, ResolvedLookup::Unavailable);
         assert!(
             later.elapsed() < Duration::from_millis(500),
             "{:?}",
@@ -1480,12 +1482,12 @@ mod tests {
         config.reprobe_interval = Duration::from_millis(50);
         config.connect_timeout = Duration::from_secs(1);
         let resolved = Arc::new(SystemdResolved::new(config));
-        assert!(matches!(
+        assert_matches!(
             resolved
                 .lookup_ipv4(&domain(), Duration::from_secs(1))
                 .await,
             ResolvedLookup::Unavailable,
-        ));
+        );
 
         // a socket that accepts but never answers GetInfo
         let server = FakeResolved::spawn_with_probe(path, Behavior::Hang, vec![Behavior::Hang]);
@@ -1495,7 +1497,7 @@ mod tests {
             let lookup = resolved
                 .lookup_ipv4(&domain(), Duration::from_secs(1))
                 .await;
-            assert!(matches!(lookup, ResolvedLookup::Unavailable));
+            assert_matches!(lookup, ResolvedLookup::Unavailable);
             // well under the 1s a wait for the reprobe would take
             assert!(
                 started.elapsed() < Duration::from_millis(500),
@@ -1522,12 +1524,12 @@ mod tests {
         let resolved = Arc::new(SystemdResolved::new(config));
         let good = hostname_reply(&json!([{ "family": 2, "address": [1, 2, 3, 4] }]));
         let _server = FakeResolved::spawn_at(path, vec![Behavior::Reply(good), Behavior::Hang]);
-        assert!(matches!(
+        assert_matches!(
             resolved
                 .lookup_ipv4(&domain(), Duration::from_secs(5))
                 .await,
             ResolvedLookup::Records(_),
-        ));
+        );
 
         let domain = domain();
         let hung = resolved.lookup_ipv4(&domain, Duration::from_secs(5));
@@ -1541,7 +1543,7 @@ mod tests {
             queued = queued => (queued, ()),
             _ = hung => panic!("the hung call ends first"),
         };
-        assert!(matches!(queued, ResolvedLookup::Busy));
+        assert_matches!(queued, ResolvedLookup::Busy);
         // test_config's connect timeout, not the 5s lookup budget
         assert!(waited < Duration::from_secs(1), "{waited:?}");
     }
@@ -1556,12 +1558,12 @@ mod tests {
             ])))],
         );
         let resolved = resolver(server.path.clone());
-        assert!(matches!(
+        assert_matches!(
             resolved
                 .lookup_ipv4(&domain(), Duration::from_secs(1))
                 .await,
             ResolvedLookup::Records(_),
-        ));
+        );
         assert_available(&resolved);
     }
 
@@ -1590,12 +1592,12 @@ mod tests {
             resolved.lookup_ipv4(&name, Duration::from_secs(2)),
             resolved.lookup_ipv4(&name, Duration::from_secs(2)),
         );
-        assert!(matches!(first, ResolvedLookup::Records(_)));
-        assert!(matches!(second, ResolvedLookup::Records(_)));
-        assert!(matches!(
+        assert_matches!(first, ResolvedLookup::Records(_));
+        assert_matches!(second, ResolvedLookup::Records(_));
+        assert_matches!(
             prober.await.expect("probe task"),
             ResolvedLookup::Records(_),
-        ));
+        );
         assert_eq!(server.probes(), 1, "one probe for all of them");
         assert_eq!(server.connections(), 3, "every lookup queried after it");
         assert_available(&resolved);
@@ -1617,8 +1619,8 @@ mod tests {
             resolved.lookup_ipv4(&name, Duration::from_secs(2)),
             resolved.lookup_ipv6(&name, Duration::from_secs(2)),
         );
-        assert!(matches!(first, ResolvedLookup::Unavailable));
-        assert!(matches!(second, ResolvedLookup::Unavailable));
+        assert_matches!(first, ResolvedLookup::Unavailable);
+        assert_matches!(second, ResolvedLookup::Unavailable);
         assert!(
             started.elapsed() < Duration::from_millis(500),
             "the wait is capped by the connect timeout",
@@ -1663,20 +1665,20 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(20)).await;
 
         let started = Instant::now();
-        assert!(matches!(
+        assert_matches!(
             resolved
                 .lookup_ipv6(&domain(), Duration::from_secs(3))
                 .await,
             ResolvedLookup::Unavailable,
-        ));
+        );
         assert!(
             started.elapsed() < Duration::from_secs(1),
             "a failed probe wakes its waiters",
         );
-        assert!(matches!(
+        assert_matches!(
             prober.await.expect("probe task"),
             ResolvedLookup::Unavailable,
-        ));
+        );
         assert_eq!(server.connections(), 0, "waiters skip the failed daemon");
         assert_unavailable(&resolved);
     }
@@ -1703,21 +1705,21 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(20)).await;
 
         let started = Instant::now();
-        assert!(matches!(
+        assert_matches!(
             resolved
                 .lookup_ipv6(&domain(), Duration::from_millis(100))
                 .await,
             ResolvedLookup::Unavailable,
-        ));
+        );
         let waited = started.elapsed();
         assert!(
             waited >= Duration::from_millis(90) && waited < Duration::from_millis(450),
             "waited {waited:?}",
         );
-        assert!(matches!(
+        assert_matches!(
             prober.await.expect("probe task"),
             ResolvedLookup::Records(_),
-        ));
+        );
         assert_eq!(server.connections(), 1, "only the patient lookup queried");
     }
 
@@ -1742,16 +1744,16 @@ mod tests {
         };
         tokio::time::sleep(Duration::from_millis(20)).await;
 
-        assert!(matches!(
+        assert_matches!(
             resolved
                 .lookup_ipv4(&domain(), Duration::from_millis(600))
                 .await,
             ResolvedLookup::Unavailable,
-        ));
-        assert!(matches!(
+        );
+        assert_matches!(
             prober.await.expect("probe task"),
             ResolvedLookup::Records(_),
-        ));
+        );
         assert_eq!(server.connections(), 2, "both queried after the probe");
     }
 
@@ -1766,36 +1768,37 @@ mod tests {
         ]);
         let resolved = resolver(server.path.clone());
 
-        assert!(matches!(
+        assert_matches!(
             resolved
                 .lookup_ipv4(&domain(), Duration::from_secs(1))
                 .await,
             ResolvedLookup::Records(_),
-        ));
-        assert!(matches!(
+        );
+        assert_matches!(
             resolved
                 .lookup_ipv4(&domain(), Duration::from_secs(1))
                 .await,
             ResolvedLookup::Unavailable,
-        ));
-        assert!(
-            matches!(phase(&resolved), Phase::Available),
+        );
+        assert_matches!(
+            phase(&resolved),
+            Phase::Available,
             "one failure below the threshold must not trip the breaker",
         );
-        assert!(matches!(
+        assert_matches!(
             resolved
                 .lookup_ipv4(&domain(), Duration::from_secs(1))
                 .await,
             ResolvedLookup::Unavailable,
-        ));
+        );
         assert_unavailable(&resolved);
 
-        assert!(matches!(
+        assert_matches!(
             resolved
                 .lookup_ipv4(&domain(), Duration::from_secs(1))
                 .await,
             ResolvedLookup::Unavailable,
-        ));
+        );
         assert_eq!(
             server.connections(),
             3,
@@ -1816,20 +1819,20 @@ mod tests {
                 &json!([{ "family": 2, "address": [1, 2, 3, 4] }]),
             ))],
         );
-        assert!(matches!(
+        assert_matches!(
             resolved
                 .lookup_ipv4(&domain(), Duration::from_secs(1))
                 .await,
             ResolvedLookup::Records(_),
-        ));
+        );
 
         drop(server); // socket file removed: connect now fails hard
-        assert!(matches!(
+        assert_matches!(
             resolved
                 .lookup_ipv4(&domain(), Duration::from_secs(1))
                 .await,
             ResolvedLookup::Unavailable,
-        ));
+        );
         assert_unavailable(&resolved);
     }
 
@@ -1974,10 +1977,10 @@ mod tests {
         }))]);
         let resolved = resolver(server.path.clone());
 
-        assert!(matches!(
+        assert_matches!(
             resolved.lookup_txt(&domain(), Duration::from_secs(2)).await,
             ResolvedLookup::Unavailable,
-        ));
+        );
         assert_available(&resolved);
     }
 
@@ -1991,32 +1994,32 @@ mod tests {
         ]);
         let resolved = resolver(server.path.clone());
 
-        assert!(matches!(
+        assert_matches!(
             resolved.lookup_txt(&domain(), Duration::from_secs(1)).await,
             ResolvedLookup::Unavailable,
-        ));
+        );
         assert_available(&resolved);
 
         // Sticky for every ResolveRecord-backed family: no further daemon roundtrip.
-        assert!(matches!(
+        assert_matches!(
             resolved.lookup_txt(&domain(), Duration::from_secs(1)).await,
             ResolvedLookup::Unavailable,
-        ));
-        assert!(matches!(
+        );
+        assert_matches!(
             resolved
                 .lookup_https(&domain(), Duration::from_secs(1))
                 .await,
             ResolvedLookup::Unavailable,
-        ));
+        );
         assert_eq!(server.connections(), 1);
 
         // address lookups keep flowing
-        assert!(matches!(
+        assert_matches!(
             resolved
                 .lookup_ipv4(&domain(), Duration::from_secs(1))
                 .await,
             ResolvedLookup::Records(_),
-        ));
+        );
         assert_eq!(server.connections(), 2);
     }
 
@@ -2029,12 +2032,12 @@ mod tests {
         );
         let resolved = resolver(server.path.clone());
         let started = Instant::now();
-        assert!(matches!(
+        assert_matches!(
             resolved
                 .lookup_ipv4(&domain(), Duration::from_millis(100))
                 .await,
             ResolvedLookup::Unavailable,
-        ));
+        );
         assert!(started.elapsed() < Duration::from_secs(1));
         // the probe itself gives up after the connect timeout
         tokio::time::sleep(Duration::from_millis(300)).await;
@@ -2046,12 +2049,12 @@ mod tests {
     async fn hung_lookup_on_a_live_daemon_feeds_the_breaker() {
         let server = FakeResolved::spawn(vec![Behavior::Hang]);
         let resolved = resolver(server.path.clone());
-        assert!(matches!(
+        assert_matches!(
             resolved
                 .lookup_ipv4(&domain(), Duration::from_millis(600))
                 .await,
             ResolvedLookup::Unavailable,
-        ));
+        );
         assert_failures(&resolved, 1);
     }
 
@@ -2061,12 +2064,12 @@ mod tests {
         let server =
             FakeResolved::spawn_with_probe(test_socket_path(), garbage.clone(), vec![garbage]);
         let resolved = resolver(server.path.clone());
-        assert!(matches!(
+        assert_matches!(
             resolved
                 .lookup_ipv4(&domain(), Duration::from_secs(1))
                 .await,
             ResolvedLookup::Unavailable,
-        ));
+        );
         assert_unavailable(&resolved);
     }
 
@@ -2076,12 +2079,12 @@ mod tests {
             &json!([{ "family": 2, "address": [1, 2, 3, 4] }]),
         ))]);
         let resolved = resolver(server.path.clone());
-        assert!(matches!(
+        assert_matches!(
             resolved
                 .lookup_ipv4(&domain(), Duration::from_secs(2))
                 .await,
             ResolvedLookup::Records(_),
-        ));
+        );
     }
 
     #[tokio::test]
@@ -2101,20 +2104,20 @@ mod tests {
             ],
         );
 
-        assert!(matches!(
+        assert_matches!(
             resolved
                 .lookup_ipv4(&domain(), Duration::from_secs(2))
                 .await,
             ResolvedLookup::Records(_),
-        ));
+        );
 
         let domain = domain();
         let (a, b) = tokio::join!(
             resolved.lookup_ipv4(&domain, Duration::from_secs(2)),
             resolved.lookup_ipv4(&domain, Duration::from_secs(2)),
         );
-        assert!(matches!(a, ResolvedLookup::Records(_)));
-        assert!(matches!(b, ResolvedLookup::Records(_)));
+        assert_matches!(a, ResolvedLookup::Records(_));
+        assert_matches!(b, ResolvedLookup::Records(_));
         assert!(
             server.concurrent_peak.load(Ordering::SeqCst) <= 1,
             "semaphore must serialize daemon connections",
@@ -2192,7 +2195,7 @@ mod tests {
             claim_is_current(&resolved.state.lock(), replacement),
             "an old failure must not mark a recovered daemon unavailable",
         );
-        assert!(matches!(
+        assert_matches!(
             resolved.classify_reply_error::<Bytes>(
                 original,
                 ERROR_METHOD_NOT_FOUND,
@@ -2200,7 +2203,7 @@ mod tests {
                 true,
             ),
             ResolvedLookup::Unavailable,
-        ));
+        );
         assert!(
             resolved.record_supported.load(Ordering::Acquire),
             "a superseded probe must not pin capabilities on its replacement",
@@ -2303,13 +2306,13 @@ mod tests {
             300,
             &[0xc0, 0x0c],
         ));
-        assert!(matches!(parse_cname_rr(&raw), RrParse::Malformed(_)));
+        assert_matches!(parse_cname_rr(&raw), RrParse::Malformed(_));
     }
 
     #[test]
     fn parse_txt_rr_skips_other_types() {
         let raw = build_rr(&["example", "com"], 5, 300, &[0]);
-        assert!(matches!(parse_txt_rr(&Bytes::from(raw)), RrParse::Other));
+        assert_matches!(parse_txt_rr(&Bytes::from(raw)), RrParse::Other);
     }
 
     #[test]
@@ -2320,22 +2323,22 @@ mod tests {
         };
         assert_eq!(error.to_string(), "DNS resource-record header is truncated",);
         // compression pointer in the owner name
-        assert!(matches!(
+        assert_matches!(
             parse_txt_rr(&Bytes::from_static(&[0xC0, 0x0C, 0, 16])),
-            RrParse::Malformed(_)
-        ));
+            RrParse::Malformed(_),
+        );
         // rdata segment length pointing past the buffer
         let mut raw = build_rr(&["example", "com"], RecordType::TXT.into(), 60, &[200]);
-        assert!(matches!(
+        assert_matches!(
             parse_txt_rr(&Bytes::from(raw.clone())),
-            RrParse::Malformed(_)
-        ));
+            RrParse::Malformed(_),
+        );
         // TXT rdata must carry at least one character-string
         raw = build_rr(&["example", "com"], RecordType::TXT.into(), 60, &[]);
-        assert!(matches!(
+        assert_matches!(
             parse_txt_rr(&Bytes::from(raw.clone())),
-            RrParse::Malformed(_)
-        ));
+            RrParse::Malformed(_),
+        );
         // rdlen pointing past the buffer
         raw = build_rr(
             &["example", "com"],
@@ -2344,10 +2347,10 @@ mod tests {
             &txt_rdata(&[b"ok"]),
         );
         raw.truncate(raw.len() - 1);
-        assert!(matches!(
+        assert_matches!(
             parse_txt_rr(&Bytes::from(raw.clone())),
-            RrParse::Malformed(_)
-        ));
+            RrParse::Malformed(_),
+        );
         // bytes after the declared rdata are not part of a standalone RR
         raw = build_rr(
             &["example", "com"],
@@ -2356,10 +2359,7 @@ mod tests {
             &txt_rdata(&[b"ok"]),
         );
         raw.push(0);
-        assert!(matches!(
-            parse_txt_rr(&Bytes::from(raw)),
-            RrParse::Malformed(_)
-        ));
+        assert_matches!(parse_txt_rr(&Bytes::from(raw)), RrParse::Malformed(_));
     }
 
     #[test]
@@ -2386,10 +2386,10 @@ mod tests {
             }
             _ => panic!("expected service binding"),
         }
-        assert!(matches!(
+        assert_matches!(
             parse_service_binding_rr(&raw, RecordType::HTTPS),
             RrParse::Other,
-        ));
+        );
 
         let malformed = Bytes::from(build_rr(
             &["example", "com"],
@@ -2397,10 +2397,10 @@ mod tests {
             300,
             &[0, 1],
         ));
-        assert!(matches!(
+        assert_matches!(
             parse_service_binding_rr(&malformed, RecordType::SVCB),
             RrParse::Malformed(_),
-        ));
+        );
     }
 
     #[test]
@@ -2446,10 +2446,10 @@ mod tests {
     async fn relative_txt_negative_falls_back_without_authority() {
         let server = FakeResolved::spawn(vec![Behavior::Reply(error_reply(ERROR_NO_SUCH_RR))]);
         let resolved = resolver(server.path.clone());
-        assert!(matches!(
+        assert_matches!(
             resolved.lookup_txt(&domain(), Duration::from_secs(1)).await,
             ResolvedLookup::Unavailable,
-        ));
+        );
         assert_eq!(server.connections(), 1, "the daemon is still asked first");
         assert_available(&resolved);
     }
@@ -2459,10 +2459,10 @@ mod tests {
         let server = FakeResolved::spawn(vec![Behavior::Reply(error_reply(ERROR_NO_SUCH_RR))]);
         let resolved = resolver(server.path.clone());
         let rooted: Domain = "example.com.".try_into().expect("valid domain");
-        assert!(matches!(
+        assert_matches!(
             resolved.lookup_txt(&rooted, Duration::from_secs(1)).await,
             ResolvedLookup::Negative,
-        ));
+        );
         assert_available(&resolved);
     }
 
@@ -2471,10 +2471,10 @@ mod tests {
         let server =
             FakeResolved::spawn(vec![Behavior::Reply(dns_error_reply(DNS_RCODE_NXDOMAIN))]);
         let resolved = resolver(server.path.clone());
-        assert!(matches!(
+        assert_matches!(
             resolved.lookup_txt(&domain(), Duration::from_secs(1)).await,
             ResolvedLookup::Unavailable,
-        ));
+        );
         assert_eq!(server.connections(), 1, "the daemon is still asked first");
         assert_available(&resolved);
     }
@@ -2484,10 +2484,10 @@ mod tests {
         let server = FakeResolved::spawn(vec![Behavior::Reply(error_reply(ERROR_NO_SUCH_RR))]);
         let resolved = resolver(server.path.clone());
         let rooted: Domain = "printer.".try_into().expect("valid domain");
-        assert!(matches!(
+        assert_matches!(
             resolved.lookup_txt(&rooted, Duration::from_secs(1)).await,
             ResolvedLookup::Negative,
-        ));
+        );
         assert_eq!(server.connections(), 1);
         assert_eq!(wire_name(&rooted), "printer.");
         assert_available(&resolved);
@@ -2498,10 +2498,10 @@ mod tests {
         let server = FakeResolved::spawn(vec![Behavior::Reply(error_reply(ERROR_NO_SUCH_RR))]);
         let resolved = resolver(server.path.clone());
         let single: Domain = "printer".try_into().expect("valid domain");
-        assert!(matches!(
+        assert_matches!(
             resolved.lookup_txt(&single, Duration::from_secs(1)).await,
             ResolvedLookup::Unavailable,
-        ));
+        );
         assert_eq!(
             server.connections(),
             0,
@@ -2513,12 +2513,12 @@ mod tests {
     async fn missing_addresses_field_is_transport_failure() {
         let server = FakeResolved::spawn(vec![Behavior::Reply(json!({ "parameters": {} }))]);
         let resolved = resolver(server.path.clone());
-        assert!(matches!(
+        assert_matches!(
             resolved
                 .lookup_ipv4(&domain(), Duration::from_secs(1))
                 .await,
             ResolvedLookup::Unavailable,
-        ));
+        );
         assert_failures(&resolved, 1);
     }
 
@@ -2528,12 +2528,12 @@ mod tests {
             { "family": 2, "address": [1, 2, 3, 4, 5] },
         ])))]);
         let resolved = resolver(server.path.clone());
-        assert!(matches!(
+        assert_matches!(
             resolved
                 .lookup_ipv4(&domain(), Duration::from_secs(1))
                 .await,
             ResolvedLookup::Unavailable,
-        ));
+        );
         assert_failures(&resolved, 1);
     }
 
@@ -2544,19 +2544,19 @@ mod tests {
             Behavior::Reply(json!({ "parameters": { "rrs": [], "flags": 0 } })),
         ]);
         let resolved = resolver(server.path.clone());
-        assert!(matches!(
+        assert_matches!(
             resolved
                 .lookup_ipv4(&domain(), Duration::from_secs(1))
                 .await,
             ResolvedLookup::Unavailable,
-        ));
+        );
         assert_failures(&resolved, 1);
 
         let resolved = resolver(server.path.clone());
-        assert!(matches!(
+        assert_matches!(
             resolved.lookup_txt(&domain(), Duration::from_secs(1)).await,
             ResolvedLookup::Unavailable,
-        ));
+        );
         assert_failures(&resolved, 1);
     }
 
@@ -2585,12 +2585,12 @@ mod tests {
             MAX_REPLY_SIZE + 1,
         ))]);
         let resolved = resolver(server.path.clone());
-        assert!(matches!(
+        assert_matches!(
             resolved
                 .lookup_ipv4(&domain(), Duration::from_secs(2))
                 .await,
             ResolvedLookup::Unavailable,
-        ));
+        );
         assert_failures(&resolved, 1);
     }
 
@@ -2600,12 +2600,12 @@ mod tests {
             MAX_REPLY_SIZE,
         ))]);
         let resolved = resolver(server.path.clone());
-        assert!(matches!(
+        assert_matches!(
             resolved
                 .lookup_ipv4(&domain(), Duration::from_secs(2))
                 .await,
             ResolvedLookup::Records(_),
-        ));
+        );
     }
 
     #[tokio::test]
@@ -2645,12 +2645,12 @@ mod tests {
             ],
         );
 
-        assert!(matches!(
+        assert_matches!(
             resolved
                 .lookup_ipv4(&domain(), Duration::from_secs(2))
                 .await,
             ResolvedLookup::Records(_),
-        ));
+        );
 
         // occupy the single permit, then let another lookup expire in the queue
         let slow = {
@@ -2662,19 +2662,16 @@ mod tests {
             })
         };
         tokio::time::sleep(Duration::from_millis(50)).await;
-        assert!(matches!(
+        assert_matches!(
             resolved
                 .lookup_ipv4(&domain(), Duration::from_millis(100))
                 .await,
             ResolvedLookup::Busy,
-        ));
+        );
         assert_available(&resolved);
         assert_eq!(resolved.state.lock().failures, 0, "overload must not count");
 
-        assert!(matches!(
-            slow.await.expect("slow lookup"),
-            ResolvedLookup::Records(_),
-        ));
+        assert_matches!(slow.await.expect("slow lookup"), ResolvedLookup::Records(_));
         assert_eq!(server.connections(), 2);
     }
 }

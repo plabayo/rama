@@ -410,6 +410,7 @@ mod udp_peer_scope_id_roundtrip {
     //! interfaces — which is exactly the class of bug we keep
     //! shipping if we don't pin it.
     use super::*;
+    use std::assert_matches;
     use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 
     /// `addr → UdpPeerScratch → UdpPeerView → SocketAddr` must be
@@ -444,7 +445,7 @@ mod udp_peer_scope_id_roundtrip {
         assert_eq!(view.scope_id, 0);
         let got = unsafe { view.into_socket_addr() }.unwrap();
         assert_eq!(got, original);
-        assert!(matches!(got, SocketAddr::V4(_)));
+        assert_matches!(got, SocketAddr::V4(_));
     }
 
     /// IPv6 unicast without a scope id round-trips with

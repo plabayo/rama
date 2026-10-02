@@ -313,6 +313,7 @@ impl Drop for OwnedXpcObject {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::collections::BTreeMap;
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 
@@ -369,7 +370,7 @@ mod tests {
         }
         // NaN is not equal to itself, so check the type tag separately.
         let nan = rt(XpcMessage::Double(f64::NAN));
-        assert!(matches!(nan, XpcMessage::Double(v) if v.is_nan()));
+        assert_matches!(nan, XpcMessage::Double(v) if v.is_nan());
     }
 
     // ── string ───────────────────────────────────────────────────────────────

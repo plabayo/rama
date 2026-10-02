@@ -9,6 +9,7 @@ use super::{DropObserver, TestSocket, probe_socket};
 use crate::driver::connection::{MAX_TRANSMIT_SEGMENTS, Outcome, RETAINED_DESCRIPTORS};
 use crate::driver::endpoint::*;
 use rama_udp::UdpSocketConfig;
+use std::assert_matches;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::sync::atomic::Ordering;
 
@@ -252,10 +253,11 @@ async fn a_wildcard_preferred_address_is_refused() {
     )
     .await
     .expect_err("a wildcard cannot be advertised");
-    assert!(
-        matches!(&error, rama_udp::DatagramError::Io(error)
-            if error.kind() == io::ErrorKind::InvalidInput),
-        "refused as an invalid configuration: {error:?}"
+    assert_matches!(
+        &error,
+        rama_udp::DatagramError::Io(error)
+            if error.kind() == io::ErrorKind::InvalidInput,
+        "refused as an invalid configuration: {error:?}",
     );
 }
 

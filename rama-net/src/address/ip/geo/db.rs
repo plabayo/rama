@@ -329,6 +329,7 @@ pub struct IpGeoInfo {
 #[cfg(test)]
 mod tests {
     use core::net::IpAddr;
+    use std::assert_matches;
 
     use super::*;
     use crate::address::ip::geo::AsOrg;
@@ -433,18 +434,18 @@ mod tests {
     #[test]
     fn parse_spec_validation() {
         // empty / malformed values are rejected, missing files surface a Source error
-        assert!(matches!(
+        assert_matches!(
             IpGeoDb::parse_spec("   "),
-            Err(GeoIpError::InvalidConfig(_))
-        ));
-        assert!(matches!(
+            Err(GeoIpError::InvalidConfig(_)),
+        );
+        assert_matches!(
             IpGeoDb::parse_spec("label=a.mmdb+"),
-            Err(GeoIpError::InvalidConfig(_))
-        ));
-        assert!(matches!(
+            Err(GeoIpError::InvalidConfig(_)),
+        );
+        assert_matches!(
             IpGeoDb::parse_spec("label=/nonexistent/does-not-exist.mmdb"),
-            Err(GeoIpError::Source { .. })
-        ));
+            Err(GeoIpError::Source { .. }),
+        );
     }
 
     #[test]

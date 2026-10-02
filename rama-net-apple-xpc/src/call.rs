@@ -110,6 +110,7 @@ impl TryFrom<XpcMessage> for XpcCall {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn round_trip_empty_arguments() {
@@ -147,10 +148,7 @@ mod tests {
     #[test]
     fn error_on_non_dictionary() {
         let err = XpcCall::try_from(XpcMessage::Null).unwrap_err();
-        assert!(
-            matches!(err, XpcError::InvalidMessage(_)),
-            "unexpected error: {err}"
-        );
+        assert_matches!(err, XpcError::InvalidMessage(_), "unexpected error: {err}");
     }
 
     #[test]
@@ -158,7 +156,7 @@ mod tests {
         let mut map = std::collections::BTreeMap::new();
         map.insert(ARGUMENTS_KEY.to_owned(), XpcMessage::Array(vec![]));
         let err = XpcCall::try_from(XpcMessage::Dictionary(map)).unwrap_err();
-        assert!(matches!(err, XpcError::InvalidMessage(_)));
+        assert_matches!(err, XpcError::InvalidMessage(_));
     }
 
     #[test]
@@ -166,7 +164,7 @@ mod tests {
         let mut map = std::collections::BTreeMap::new();
         map.insert(SELECTOR_KEY.to_owned(), XpcMessage::String("sel".into()));
         let err = XpcCall::try_from(XpcMessage::Dictionary(map)).unwrap_err();
-        assert!(matches!(err, XpcError::InvalidMessage(_)));
+        assert_matches!(err, XpcError::InvalidMessage(_));
     }
 
     #[test]
@@ -175,7 +173,7 @@ mod tests {
         map.insert(SELECTOR_KEY.to_owned(), XpcMessage::Int64(0));
         map.insert(ARGUMENTS_KEY.to_owned(), XpcMessage::Array(vec![]));
         let err = XpcCall::try_from(XpcMessage::Dictionary(map)).unwrap_err();
-        assert!(matches!(err, XpcError::InvalidMessage(_)));
+        assert_matches!(err, XpcError::InvalidMessage(_));
     }
 
     #[test]
@@ -184,6 +182,6 @@ mod tests {
         map.insert(SELECTOR_KEY.to_owned(), XpcMessage::String("sel".into()));
         map.insert(ARGUMENTS_KEY.to_owned(), XpcMessage::Null);
         let err = XpcCall::try_from(XpcMessage::Dictionary(map)).unwrap_err();
-        assert!(matches!(err, XpcError::InvalidMessage(_)));
+        assert_matches!(err, XpcError::InvalidMessage(_));
     }
 }

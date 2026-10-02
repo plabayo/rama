@@ -3,6 +3,7 @@
 
 use super::{assert_origin_form, parse_graceful, parse_strict};
 use crate::uri::{Component, ParseError, UriInner};
+use std::assert_matches;
 
 // ----------------------------------------------------------------------
 // Asterisk-form (HTTP-only, RFC 9112 §3.2.4)
@@ -11,23 +12,20 @@ use crate::uri::{Component, ParseError, UriInner};
 #[test]
 fn asterisk_only_graceful() {
     let u = parse_graceful("*").unwrap();
-    assert!(matches!(u.inner, UriInner::Asterisk));
+    assert_matches!(u.inner, UriInner::Asterisk);
 }
 
 #[test]
 fn asterisk_only_strict() {
     let u = parse_strict("*").unwrap();
-    assert!(matches!(u.inner, UriInner::Asterisk));
+    assert_matches!(u.inner, UriInner::Asterisk);
 }
 
 #[test]
 fn asterisk_only_matches_exactly() {
     // `*foo` is NOT asterisk-form — should NOT match.
     let r = parse_graceful("*foo");
-    assert!(matches!(
-        r,
-        Err(ParseError::InvalidComponent(Component::Scheme))
-    ));
+    assert_matches!(r, Err(ParseError::InvalidComponent(Component::Scheme)));
 }
 
 // ----------------------------------------------------------------------

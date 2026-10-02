@@ -6,6 +6,7 @@
 
 use super::{assert_origin_form, parse_graceful, parse_strict};
 use crate::uri::ParseError;
+use std::assert_matches;
 
 // ----------------------------------------------------------------------
 // Graceful accepts where strict rejects (per-component byte set)
@@ -17,9 +18,10 @@ fn graceful_accepts_unreserved_extras_in_path() {
     for s in ["/path{x}", "/p|q", "/p^q", "/p<x>"] {
         let u = parse_graceful(s).unwrap();
         assert_origin_form(&u, s, None, None);
-        assert!(
-            matches!(parse_strict(s), Err(ParseError::StrictViolation)),
-            "strict should reject {s:?}"
+        assert_matches!(
+            parse_strict(s),
+            Err(ParseError::StrictViolation),
+            "strict should reject {s:?}",
         );
     }
 }
@@ -28,9 +30,10 @@ fn graceful_accepts_unreserved_extras_in_path() {
 fn graceful_accepts_extras_in_query_and_fragment() {
     for s in ["/p?key={val}", "/p?ab|cd", "/p#frag^x", "/p#tag<x>"] {
         assert!(parse_graceful(s).is_ok(), "graceful should accept {s:?}");
-        assert!(
-            matches!(parse_strict(s), Err(ParseError::StrictViolation)),
-            "strict should reject {s:?}"
+        assert_matches!(
+            parse_strict(s),
+            Err(ParseError::StrictViolation),
+            "strict should reject {s:?}",
         );
     }
 }
@@ -41,10 +44,10 @@ fn graceful_accepts_high_byte_in_path() {
     // curl behaviour on the wire), strict rejects (outside pchar).
     let s: &[u8] = b"/p\xc3\xa9foo"; // UTF-8 "/péfoo"
     crate::uri::Uri::parse(s).unwrap();
-    assert!(matches!(
+    assert_matches!(
         crate::uri::Uri::parse_strict(s),
-        Err(ParseError::StrictViolation)
-    ));
+        Err(ParseError::StrictViolation),
+    );
 }
 
 // ----------------------------------------------------------------------
@@ -95,9 +98,10 @@ fn strict_rejects_non_pchar_in_absolute_path() {
         "http://example.com/p^q",
         "http://example.com/p<q>",
     ] {
-        assert!(
-            matches!(parse_strict(s), Err(ParseError::StrictViolation)),
-            "strict must reject {s:?}"
+        assert_matches!(
+            parse_strict(s),
+            Err(ParseError::StrictViolation),
+            "strict must reject {s:?}",
         );
     }
 }
@@ -105,34 +109,32 @@ fn strict_rejects_non_pchar_in_absolute_path() {
 #[test]
 fn strict_rejects_non_pchar_in_query_and_fragment() {
     for s in ["http://example.com/?p{x}", "http://example.com/#frag|x"] {
-        assert!(matches!(parse_strict(s), Err(ParseError::StrictViolation)));
+        assert_matches!(parse_strict(s), Err(ParseError::StrictViolation));
     }
 }
 
 #[test]
 fn strict_rejects_bad_percent_encoding_in_path() {
     for s in ["/foo%", "/foo%a", "/foo%zz", "/foo%g0"] {
-        assert!(
-            matches!(
-                parse_strict(s),
-                Err(ParseError::InvalidPercentEncoding { .. })
-            ),
+        assert_matches!(
+            parse_strict(s),
+            Err(ParseError::InvalidPercentEncoding { .. }),
             "got {:?} for {s:?}",
-            parse_strict(s)
+            parse_strict(s),
         );
     }
 }
 
 #[test]
 fn strict_rejects_bad_percent_encoding_in_query_and_fragment() {
-    assert!(matches!(
+    assert_matches!(
         parse_strict("/p?bad%"),
-        Err(ParseError::InvalidPercentEncoding { .. })
-    ));
-    assert!(matches!(
+        Err(ParseError::InvalidPercentEncoding { .. }),
+    );
+    assert_matches!(
         parse_strict("/p#bad%"),
-        Err(ParseError::InvalidPercentEncoding { .. })
-    ));
+        Err(ParseError::InvalidPercentEncoding { .. }),
+    );
 }
 
 // ----------------------------------------------------------------------
@@ -194,10 +196,10 @@ fn strict_rejects_at_in_userinfo() {
     // parity); strict rejects with StrictViolation.
     let graceful = parse_graceful("http://user@info@example.com/").unwrap();
     assert!(!graceful.is_asterisk()); // smoke: parses
-    assert!(matches!(
+    assert_matches!(
         parse_strict("http://user@info@example.com/"),
-        Err(ParseError::StrictViolation)
-    ));
+        Err(ParseError::StrictViolation),
+    );
 }
 
 #[test]
@@ -210,9 +212,10 @@ fn strict_rejects_non_userinfo_byte_classes() {
         "http://us<er>@example.com/",
     ] {
         assert!(parse_graceful(s).is_ok(), "graceful should accept {s:?}");
-        assert!(
-            matches!(parse_strict(s), Err(ParseError::StrictViolation)),
-            "strict should reject {s:?}"
+        assert_matches!(
+            parse_strict(s),
+            Err(ParseError::StrictViolation),
+            "strict should reject {s:?}",
         );
     }
 }
@@ -225,13 +228,11 @@ fn strict_rejects_bad_pct_in_userinfo() {
         "http://user%z@example.com/",
         "http://user%zz@example.com/",
     ] {
-        assert!(
-            matches!(
-                parse_strict(s),
-                Err(ParseError::InvalidPercentEncoding { .. })
-            ),
+        assert_matches!(
+            parse_strict(s),
+            Err(ParseError::InvalidPercentEncoding { .. }),
             "got {:?} for {s:?}",
-            parse_strict(s)
+            parse_strict(s),
         );
     }
 }
@@ -246,13 +247,11 @@ fn strict_reference_rejects_colon_in_first_path_segment() {
     use crate::uri::Uri;
 
     for s in ["1a:b", "a%62:c"] {
-        assert!(
-            matches!(
-                Uri::parse_reference_strict(s),
-                Err(ParseError::StrictViolation)
-            ),
+        assert_matches!(
+            Uri::parse_reference_strict(s),
+            Err(ParseError::StrictViolation),
             "strict reference must reject {s:?}, got {:?}",
-            Uri::parse_reference_strict(s)
+            Uri::parse_reference_strict(s),
         );
         // Graceful accepts (parses as scheme=foo, opaque-path=bar shape
         // where the colon is the scheme separator).

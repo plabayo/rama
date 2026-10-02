@@ -352,6 +352,7 @@ impl Drop for FfiBridgeStream {
 mod tests {
     use super::*;
     use crate::tproxy::engine::DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT;
+    use std::assert_matches;
     use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize};
     use std::task::{Context, Wake, Waker};
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -445,10 +446,10 @@ mod tests {
             assert_eq!(s.read(&mut [0; 1]).await.unwrap(), 0);
             assert_eq!(signals.terminal_error_code(), 0);
             let first_reason = *s.close_reason.lock();
-            assert!(matches!(
+            assert_matches!(
                 first_reason,
-                Some(BridgeCloseReason::PeerEofLeft | BridgeCloseReason::PeerEofRight)
-            ));
+                Some(BridgeCloseReason::PeerEofLeft | BridgeCloseReason::PeerEofRight),
+            );
             let (_w, waker) = count_waker();
             let mut cx = Context::from_waker(&waker);
             {
@@ -679,10 +680,10 @@ mod tests {
         assert!(Pin::new(&mut s).poll_write(&mut cx, b"abcdef").is_pending());
         signals.drain(BridgeDirection::Ingress).wake();
         code.store(TcpDeliverStatus::Accepted as u8, Ordering::SeqCst);
-        assert!(matches!(
+        assert_matches!(
             Pin::new(&mut s).poll_write(&mut cx, b"abcdef"),
-            Poll::Ready(Ok(LIMIT))
-        ));
+            Poll::Ready(Ok(LIMIT)),
+        );
 
         assert_eq!(&*observed.lock(), &[b"abc".to_vec(), b"abc".to_vec()]);
     }
@@ -734,7 +735,7 @@ mod tests {
         // Capacity freed → retry is accepted.
         code.store(TcpDeliverStatus::Accepted as u8, Ordering::SeqCst);
         let p = Pin::new(&mut s).poll_write(&mut cx, b"abc");
-        assert!(matches!(p, Poll::Ready(Ok(3))));
+        assert_matches!(p, Poll::Ready(Ok(3)));
     }
 
     #[tokio::test(start_paused = true)]
@@ -888,10 +889,10 @@ mod tests {
                 assert!(Pin::new(&mut s).poll_write(&mut cx, b"body").is_pending());
                 assert_eq!(closed.load(Ordering::SeqCst), 0);
                 tokio::time::advance(Duration::from_millis(1001)).await;
-                assert!(matches!(
+                assert_matches!(
                     Pin::new(&mut s).poll_write(&mut cx, b"body"),
-                    Poll::Ready(Err(e)) if e.kind() == io::ErrorKind::TimedOut
-                ));
+                    Poll::Ready(Err(e)) if e.kind() == io::ErrorKind::TimedOut,
+                );
                 assert_eq!(*reason.lock(), Some(BridgeCloseReason::PausedTimeout));
                 assert_eq!(signals.terminal_error_code(), libc::ETIMEDOUT);
                 assert_eq!(closed.load(Ordering::SeqCst), 1);
@@ -1215,10 +1216,10 @@ mod tests {
         let mut cx = Context::from_waker(&waker);
         assert!(Pin::new(&mut s).poll_write(&mut cx, b"abc").is_pending());
         tokio::time::advance(Duration::from_millis(60)).await;
-        assert!(matches!(
+        assert_matches!(
             Pin::new(&mut s).poll_write(&mut cx, b"abc"),
-            Poll::Ready(Err(_))
-        ));
+            Poll::Ready(Err(_)),
+        );
         assert_eq!(*cell.lock(), Some(BridgeCloseReason::PausedTimeout));
         assert_eq!(*flow_cell.lock(), Some(BridgeCloseReason::PausedTimeout));
     }

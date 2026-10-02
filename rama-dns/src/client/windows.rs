@@ -1447,6 +1447,7 @@ mod tests {
         futures::{StreamExt, future::join_all, stream::BoxStream},
     };
     use std::{
+        assert_matches,
         pin::pin,
         sync::atomic::AtomicUsize,
         time::{SystemTime, UNIX_EPOCH},
@@ -1885,10 +1886,10 @@ mod tests {
         .expect("valid flexible-tail HTTPS RDATA");
 
         assert_eq!(out.len(), 1);
-        assert!(matches!(
+        assert_matches!(
             &out[0].params()[0],
-            SvcParam::Unknown { value, .. } if value.as_ref() == opaque
-        ));
+            SvcParam::Unknown { value, .. } if value.as_ref() == opaque,
+        );
     }
 
     #[test]
@@ -2032,8 +2033,8 @@ mod tests {
         let (relative, rooted, running) = tokio::join!(relative, rooted, both_running);
 
         assert_eq!(running, 1);
-        assert!(matches!(relative.as_slice(), [Ok(_)]), "{relative:?}");
-        assert!(matches!(rooted.as_slice(), [Ok(_)]), "{rooted:?}");
+        assert_matches!(relative.as_slice(), [Ok(_)], "{relative:?}");
+        assert_matches!(rooted.as_slice(), [Ok(_)], "{rooted:?}");
     }
 
     #[test]
@@ -2150,9 +2151,10 @@ mod tests {
             )
             .collect()
             .await;
-        assert!(
-            matches!(items.as_slice(), [Err(err)] if err.downcast_ref::<DnsTimeoutError>().is_some()),
-            "{items:?}"
+        assert_matches!(
+            items.as_slice(),
+            [Err(err)] if err.downcast_ref::<DnsTimeoutError>().is_some(),
+            "{items:?}",
         );
     }
 
@@ -2182,10 +2184,11 @@ mod tests {
         let (bare, dotted, running) = tokio::join!(bare, dotted, open);
 
         assert_eq!(running, 1);
-        assert!(matches!(bare.as_slice(), [Ok(_)]), "{bare:?}");
-        assert!(
-            matches!(dotted.as_slice(), [Err(err)] if err.to_string().contains("starts with a dot")),
-            "{dotted:?}"
+        assert_matches!(bare.as_slice(), [Ok(_)], "{bare:?}");
+        assert_matches!(
+            dotted.as_slice(),
+            [Err(err)] if err.to_string().contains("starts with a dot"),
+            "{dotted:?}",
         );
     }
 
@@ -2311,10 +2314,11 @@ mod tests {
             .await
             .expect("stream did not finish after the cancel callback")
             .expect("consumer task panicked");
-        assert!(
-            matches!(items.as_slice(), [Err(err)] if err
+        assert_matches!(
+            items.as_slice(),
+            [Err(err)] if err
                 .downcast_ref::<DnsTimeoutError>()
-                .is_some_and(|err| err.timeout() == Duration::from_secs(5))),
+                .is_some_and(|err| err.timeout() == Duration::from_secs(5)),
             "expected a single timeout error reporting the whole budget, got: {items:?}",
         );
 

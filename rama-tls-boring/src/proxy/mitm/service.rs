@@ -302,6 +302,7 @@ mod tests {
         },
         server::{GeneratedServerAuthConfig, SelfSignedCaConfig, ServerAuthData, TlsServerConfig},
     };
+    use std::assert_matches;
     use std::sync::Arc;
 
     use crate::{
@@ -374,10 +375,10 @@ mod tests {
 
         let data = TlsConnectorData::try_from(&config).expect("build verified connector data");
         assert_eq!(data.server_verify_mode, ServerVerifyMode::Auto);
-        assert!(matches!(
+        assert_matches!(
             config.as_extensions().get_ref::<TlsServerVerify>(),
-            Some(TlsServerVerify(ServerVerifyMode::Auto))
-        ));
+            Some(TlsServerVerify(ServerVerifyMode::Auto)),
+        );
         let trust = config
             .as_extensions()
             .get_ref::<TlsServerTrust>()
@@ -425,10 +426,10 @@ mod tests {
 
         let data = TlsConnectorData::try_from(&config).expect("build insecure connector data");
         assert_eq!(data.server_verify_mode, ServerVerifyMode::Disable);
-        assert!(matches!(
+        assert_matches!(
             config.as_extensions().get_ref::<TlsServerVerify>(),
-            Some(TlsServerVerify(ServerVerifyMode::Disable))
-        ));
+            Some(TlsServerVerify(ServerVerifyMode::Disable)),
+        );
     }
 
     async fn connect_to_private_ca_with_server_name<F>(server_name: Host, make_policy: F) -> bool
@@ -792,10 +793,10 @@ mod tests {
                 .map(|alpn| alpn.0.as_slice()),
             Some([ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11].as_slice())
         );
-        assert!(matches!(
+        assert_matches!(
             mirrored.as_extensions().get_ref::<TlsKeyLog>(),
-            Some(TlsKeyLog(KeyLogIntent::Disabled))
-        ));
+            Some(TlsKeyLog(KeyLogIntent::Disabled)),
+        );
     }
 
     #[cfg(feature = "http")]

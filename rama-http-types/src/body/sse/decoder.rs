@@ -735,6 +735,7 @@ enum Status {
 ///
 /// ```
 /// use rama_http_types::sse::EventDecoder;
+/// use std::assert_matches;
 ///
 /// # fn main() -> Result<(), rama_core::error::BoxError> {
 /// let mut decoder = EventDecoder::<String>::new();
@@ -743,7 +744,7 @@ enum Status {
 ///     decoder.push(chunk)?;
 ///     for event in decoder.events() {
 ///         let event = event?;
-///         assert!(matches!(event.data(), Some(data) if data == "hello" || data == "world"));
+///         assert_matches!(event.data(), Some(data) if data == "hello" || data == "world");
 ///     }
 /// }
 /// decoder.finish()?;

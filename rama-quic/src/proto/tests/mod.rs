@@ -5,6 +5,7 @@ use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer};
 use rama_utils::octets;
 use rand::Rng;
 use rustc_hash::FxHashMap;
+use std::assert_matches;
 use std::{
     convert::TryInto,
     mem,
@@ -389,10 +390,10 @@ fn stateless_reset_with_a_foreign_key_is_ignored() {
         .write(b"still alive")
         .unwrap();
     pair.drive();
-    assert!(matches!(
+    assert_matches!(
         pair.server_conn_mut(server_ch).poll(),
-        Some(Event::Stream(StreamEvent::Opened { dir: Dir::Bi }))
-    ));
+        Some(Event::Stream(StreamEvent::Opened { dir: Dir::Bi })),
+    );
 
     // Control: the same packet shape with the genuine token is a reset.
     pair.client.inbound.push_back(Inbound::plain(
@@ -4644,12 +4645,12 @@ fn reject_manually() {
     pair.server.assert_no_accept();
     let client = pair.client.connections.get_mut(&client_ch).unwrap();
     assert!(client.is_closed());
-    assert!(matches!(
+    assert_matches!(
         client.poll(),
         Some(Event::ConnectionLost {
             reason: ConnectionError::ConnectionClosed(close)
-        }) if close.error_code == TransportErrorCode::CONNECTION_REFUSED
-    ));
+        }) if close.error_code == TransportErrorCode::CONNECTION_REFUSED,
+    );
 }
 
 #[test]
@@ -4677,12 +4678,12 @@ fn validate_then_reject_manually() {
     pair.server.assert_no_accept();
     let client = pair.client.connections.get_mut(&client_ch).unwrap();
     assert!(client.is_closed());
-    assert!(matches!(
+    assert_matches!(
         client.poll(),
         Some(Event::ConnectionLost {
             reason: ConnectionError::ConnectionClosed(close)
-        }) if close.error_code == TransportErrorCode::CONNECTION_REFUSED
-    ));
+        }) if close.error_code == TransportErrorCode::CONNECTION_REFUSED,
+    );
     pair.drive();
     match pair.client_conn_mut(client_ch).poll() {
         None => {}
@@ -5495,10 +5496,10 @@ fn waiting_datagram_sends_respect_total_buffer_budget() {
                 .send(Bytes::new(), false)
                 .unwrap();
         }
-        assert!(matches!(
+        assert_matches!(
             pair.client_datagrams(client_ch).send(Bytes::new(), false),
-            Err(SendDatagramError::Blocked(_))
-        ));
+            Err(SendDatagramError::Blocked(_)),
+        );
     }
 }
 
@@ -5523,19 +5524,19 @@ fn tiny_waiting_datagrams_fill_exact_capacity() {
         .unwrap();
     assert_eq!(pair.client_datagrams(client_ch).send_buffer_space(), 1);
     // Two bytes no longer fit, one still does
-    assert!(matches!(
+    assert_matches!(
         pair.client_datagrams(client_ch)
             .send(vec![2u8; 2].into(), false),
-        Err(SendDatagramError::Blocked(_))
-    ));
+        Err(SendDatagramError::Blocked(_)),
+    );
     pair.client_datagrams(client_ch)
         .send(vec![2u8].into(), false)
         .unwrap();
     assert_eq!(pair.client_datagrams(client_ch).send_buffer_space(), 0);
-    assert!(matches!(
+    assert_matches!(
         pair.client_datagrams(client_ch).send(Bytes::new(), false),
-        Err(SendDatagramError::Blocked(_))
-    ));
+        Err(SendDatagramError::Blocked(_)),
+    );
 }
 
 /// A large persistent-congestion threshold still permits recovery of lost packets.
@@ -6955,9 +6956,10 @@ fn a_client_moves_to_the_servers_preferred_address_once_it_answers() {
             Ok(Some(chunk)) if chunk.offset == 0 && chunk.bytes == UP => {}
             other => panic!("upstream bytes: {other:?}"),
         }
-        assert!(
-            matches!(chunks.next(usize::MAX), Ok(None)),
-            "upstream did not end where the sender finished it"
+        assert_matches!(
+            chunks.next(usize::MAX),
+            Ok(None),
+            "upstream did not end where the sender finished it",
         );
         let _transmit = chunks.finalize();
     }
@@ -6968,9 +6970,10 @@ fn a_client_moves_to_the_servers_preferred_address_once_it_answers() {
             Ok(Some(chunk)) if chunk.offset == 0 && chunk.bytes == DOWN => {}
             other => panic!("downstream bytes: {other:?}"),
         }
-        assert!(
-            matches!(chunks.next(usize::MAX), Ok(None)),
-            "downstream did not end where the sender finished it"
+        assert_matches!(
+            chunks.next(usize::MAX),
+            Ok(None),
+            "downstream did not end where the sender finished it",
         );
         let _transmit = chunks.finalize();
     }
@@ -7772,7 +7775,7 @@ fn two_connections_on_one_endpoint_keep_their_own_arrivals_and_deadlines() {
             Ok(Some(chunk)) if chunk.offset == 0 && chunk.bytes == expected => {}
             other => panic!("connection {ch:?} received {other:?}"),
         }
-        assert!(matches!(chunks.next(usize::MAX), Ok(None)));
+        assert_matches!(chunks.next(usize::MAX), Ok(None));
         let _transmit = chunks.finalize();
     }
     assert!(!pair.server_conn_mut(server_a).is_closed());
@@ -7810,7 +7813,7 @@ fn two_connections_on_one_endpoint_keep_their_own_arrivals_and_deadlines() {
         Ok(Some(chunk)) if chunk.offset == 0 && chunk.bytes == AFTER => {}
         other => panic!("the survivor received {other:?}"),
     }
-    assert!(matches!(chunks.next(usize::MAX), Ok(None)));
+    assert_matches!(chunks.next(usize::MAX), Ok(None));
     let _transmit = chunks.finalize();
 }
 
@@ -8175,7 +8178,7 @@ fn exchange_uni(
         Ok(Some(chunk)) if chunk.offset == 0 && chunk.bytes == payload => {}
         other => panic!("the server received {other:?}"),
     }
-    assert!(matches!(chunks.next(usize::MAX), Ok(None)), "and its end");
+    assert_matches!(chunks.next(usize::MAX), Ok(None), "and its end");
     let _transmit = chunks.finalize();
 }
 
@@ -8197,7 +8200,7 @@ fn exchange_uni_back(
         Ok(Some(chunk)) if chunk.offset == 0 && chunk.bytes == payload => {}
         other => panic!("the client received {other:?}"),
     }
-    assert!(matches!(chunks.next(usize::MAX), Ok(None)), "and its end");
+    assert_matches!(chunks.next(usize::MAX), Ok(None), "and its end");
     let _transmit = chunks.finalize();
 }
 
@@ -8232,10 +8235,10 @@ fn a_reset_token_counts_only_once_its_connection_id_is_used() {
     let s = pair.client_streams(client_ch).open(Dir::Uni).unwrap();
     pair.client_send(client_ch, s).write(b"alive").unwrap();
     pair.drive();
-    assert!(matches!(
+    assert_matches!(
         pair.server_conn_mut(server_ch).poll(),
-        Some(Event::Stream(StreamEvent::Opened { dir: Dir::Uni }))
-    ));
+        Some(Event::Stream(StreamEvent::Opened { dir: Dir::Uni })),
+    );
 
     // Used: the client moves and starts sending with that very ID.
     pair.client.addr = SocketAddr::new(
@@ -8334,10 +8337,10 @@ fn a_reset_for_the_previous_paths_connection_id_counts_until_that_id_is_retired(
     let s = pair.server_streams(server_ch).open(Dir::Uni).unwrap();
     pair.server_send(server_ch, s).write(b"alive").unwrap();
     pair.drive();
-    assert!(matches!(
+    assert_matches!(
         pair.client_conn_mut(client_ch).poll(),
-        Some(Event::Stream(StreamEvent::Opened { dir: Dir::Uni }))
-    ));
+        Some(Event::Stream(StreamEvent::Opened { dir: Dir::Uni })),
+    );
     let current = pair.server_conn_mut(server_ch).active_rem_cid();
     pair.server.inbound.push_back(Inbound::plain(
         pair.time,
@@ -8430,10 +8433,10 @@ fn a_deferred_peer_move_is_dropped_when_the_peer_is_back_on_the_current_path() {
     let s = pair.server_streams(server_ch).open(Dir::Uni).unwrap();
     pair.server_send(server_ch, s).write(b"recovered").unwrap();
     settle_checking_server_destinations(&mut pair, &[current]);
-    assert!(matches!(
+    assert_matches!(
         pair.client_conn_mut(client_ch).poll(),
-        Some(Event::Stream(StreamEvent::Opened { dir: Dir::Uni }))
-    ));
+        Some(Event::Stream(StreamEvent::Opened { dir: Dir::Uni })),
+    );
 }
 
 /// The destination connection IDs the server has sent, per address it sent them to.
@@ -8983,10 +8986,10 @@ fn a_failed_peer_migration_returns_to_the_previous_path_with_its_connection_id()
     let s = pair.server_streams(server_ch).open(Dir::Uni).unwrap();
     pair.server_send(server_ch, s).write(b"back").unwrap();
     settle_checking_server_destinations(&mut pair, &[real]);
-    assert!(matches!(
+    assert_matches!(
         pair.client_conn_mut(client_ch).poll(),
-        Some(Event::Stream(StreamEvent::Opened { dir: Dir::Uni }))
-    ));
+        Some(Event::Stream(StreamEvent::Opened { dir: Dir::Uni })),
+    );
     assert!(
         pair.server_conn_mut(server_ch).unused_rem_cids().len() > spares_before,
         "the retired identifier was replaced"
@@ -9044,10 +9047,10 @@ fn a_failed_nat_rebinding_returns_to_the_previous_path_keeping_the_connection_id
     let s = pair.server_streams(server_ch).open(Dir::Uni).unwrap();
     pair.server_send(server_ch, s).write(b"back").unwrap();
     settle_checking_server_destinations(&mut pair, &[real]);
-    assert!(matches!(
+    assert_matches!(
         pair.client_conn_mut(client_ch).poll(),
-        Some(Event::Stream(StreamEvent::Opened { dir: Dir::Uni }))
-    ));
+        Some(Event::Stream(StreamEvent::Opened { dir: Dir::Uni })),
+    );
 }
 
 /// Deliberate client migrations (fresh client DCID each time) make the server take a fresh

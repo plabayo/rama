@@ -161,13 +161,14 @@ impl<'de> Deserialize<'de> for StreamId {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn parse_returns_short_buffer_when_too_small() {
-        assert!(matches!(
+        assert_matches!(
             StreamId::parse(&[0, 0, 0]),
             Err(Error::ShortBuffer { needed: 4, got: 3 }),
-        ));
+        );
     }
 
     #[test]
@@ -186,10 +187,10 @@ mod tests {
 
     #[test]
     fn checked_errors_when_high_bit_set() {
-        assert!(matches!(
+        assert_matches!(
             StreamId::checked(STREAM_ID_MASK | 1),
             Err(Error::ReservedStreamIdBit),
-        ));
+        );
         assert_eq!(u32::from(StreamId::checked(42).unwrap()), 42);
     }
 }

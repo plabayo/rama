@@ -689,6 +689,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[tokio::test]
     async fn no_op_handle_resolves_ok() {
@@ -810,8 +811,8 @@ mod tests {
         let h2 = handle.clone();
         let r1 = handle.into_passthrough().await;
         let r2 = h2.into_passthrough().await;
-        assert!(matches!(r1, Err(PromoteError::NoCallbackRegistered)));
-        assert!(matches!(r2, Err(PromoteError::NoCallbackRegistered)));
+        assert_matches!(r1, Err(PromoteError::NoCallbackRegistered));
+        assert_matches!(r2, Err(PromoteError::NoCallbackRegistered));
     }
 
     /// Round-3 audit: a panicking fire body MUST NOT leave waiters
@@ -828,8 +829,9 @@ mod tests {
         let r = tokio::time::timeout(std::time::Duration::from_secs(2), handle.into_passthrough())
             .await
             .expect("waiter must not hang on panicking fire body");
-        assert!(
-            matches!(r, Err(PromoteError::CallbackPanicked)),
+        assert_matches!(
+            r,
+            Err(PromoteError::CallbackPanicked),
             "expected CallbackPanicked, got {r:?}",
         );
     }
@@ -885,7 +887,7 @@ mod tests {
         let r = tokio::time::timeout(std::time::Duration::from_secs(2), handle.into_passthrough())
             .await
             .expect("shutdown-first must short-circuit");
-        assert!(matches!(r, Err(PromoteError::EngineShuttingDown)));
+        assert_matches!(r, Err(PromoteError::EngineShuttingDown));
         assert_eq!(
             fires.load(Ordering::SeqCst),
             0,
@@ -920,6 +922,6 @@ mod tests {
             .await
             .expect("parked waiter must be woken by shutdown")
             .expect("task panicked");
-        assert!(matches!(r, Err(PromoteError::EngineShuttingDown)));
+        assert_matches!(r, Err(PromoteError::EngineShuttingDown));
     }
 }

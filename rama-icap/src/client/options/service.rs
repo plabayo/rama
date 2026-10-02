@@ -359,6 +359,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     use core::convert::Infallible;
 
@@ -437,7 +438,7 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(matches!(error, OptionsRequestError::Method));
+        assert_matches!(error, OptionsRequestError::Method);
         assert_eq!(
             error.to_string(),
             "OPTIONS discovery requires an OPTIONS request"

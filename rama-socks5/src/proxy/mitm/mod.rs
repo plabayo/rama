@@ -295,6 +295,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "dns")]
+    use std::assert_matches;
 
     #[cfg(feature = "dns")]
     use parking_lot::Mutex;
@@ -361,8 +363,9 @@ mod tests {
             relay.handshake(&mut ingress_stream, new_socks_proxy_address(1080)),
         )
         .await;
-        assert!(
-            matches!(outcome, Ok(Err(_)) | Err(_)),
+        assert_matches!(
+            outcome,
+            Ok(Err(_)) | Err(_),
             "connect should not succeed in in-memory connector test",
         );
 

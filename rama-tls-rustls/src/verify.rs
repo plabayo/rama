@@ -183,6 +183,7 @@ impl ServerCertVerifier for NoServerCertVerifier {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[derive(Debug)]
@@ -275,12 +276,12 @@ mod tests {
             UnixTime::since_unix_epoch(std::time::Duration::ZERO),
         );
 
-        assert!(matches!(
+        assert_matches!(
             result,
             Err(rustls::Error::InvalidCertificate(
                 CertificateError::ApplicationVerificationFailure
-            ))
-        ));
+            )),
+        );
         assert_eq!(child.0.load(Ordering::Relaxed), 0);
     }
 

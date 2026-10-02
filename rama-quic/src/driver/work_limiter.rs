@@ -154,6 +154,7 @@ const SAMPLING_INTERVAL: u16 = 256;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
     use std::cell::RefCell;
 
     #[test]
@@ -239,7 +240,7 @@ mod tests {
         // Cycles without work neither advance the cadence nor produce an estimate.
         for _ in 0..3 {
             let cycle = limiter.start_cycle(get_time);
-            assert!(matches!(cycle.kind, CycleKind::Measure { .. }));
+            assert_matches!(cycle.kind, CycleKind::Measure { .. });
             advance_time(Duration::from_secs(1));
             limiter.finish_cycle(cycle, get_time);
             assert_eq!(limiter.allowed, 0);
@@ -252,10 +253,7 @@ mod tests {
         limiter.finish_cycle(cycle, get_time);
         assert_eq!(limiter.allowed, 20, "10 ms per cycle at 0.5 ms per item");
         let cycle = limiter.start_cycle(get_time);
-        assert!(matches!(
-            cycle.kind,
-            CycleKind::HistoricData { allowed: 20 }
-        ));
+        assert_matches!(cycle.kind, CycleKind::HistoricData { allowed: 20 });
     }
 
     #[test]

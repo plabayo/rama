@@ -1026,6 +1026,7 @@ fn proxy_address(proxy_kind: ProxyKind, proxy_addr: std::net::SocketAddr) -> Opt
 #[cfg(test)]
 mod udp_callback_tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn demand_callback_preserves_probe_id() {
@@ -1036,13 +1037,13 @@ mod udp_callback_tests {
             on_udp_client_read_demand(ptr::from_ref(&context).cast_mut().cast(), 0xfeed_beef);
         }
 
-        assert!(matches!(
+        assert_matches!(
             events.try_recv().expect("demand callback event"),
             UdpCallbackEvent::ClientReadDemand {
                 probe_id: 0xfeed_beef,
                 ..
-            }
-        ));
+            },
+        );
     }
 
     #[test]

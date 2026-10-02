@@ -5,6 +5,7 @@ use rama_quic_proto::{
     ConnectionId, Dir, TransportError, TransportErrorCode, VarInt,
     packet::{FixedLengthConnectionIdParser, PartialDecode},
 };
+use std::assert_matches;
 
 fn traced_client(pair: &Pair, capture: &Capture) -> ClientConfig {
     let mut config = client_config_with_deterministic_pns();
@@ -243,13 +244,13 @@ fn invalid_first_accepted_initial_logs_drop_without_plaintext_length() {
         BytesMut::from(packet.as_slice()),
     ));
     pair.drive_server();
-    assert!(matches!(
+    assert_matches!(
         pair.server.assert_accept_error(),
         ConnectionError::TransportError(TransportError {
             code: TransportErrorCode::PROTOCOL_VIOLATION,
             ..
-        })
-    ));
+        }),
+    );
     let drops = capture.events("quic:packet_dropped");
     assert_eq!(drops.len(), 1);
     assert_eq!(drops[0]["data"]["trigger"], "invalid");

@@ -532,6 +532,7 @@ impl TryFrom<UninterpretedHost> for Ipv6Addr {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     fn reg(bytes: &'static [u8]) -> UninterpretedHost {
         UninterpretedHost::from_validated_bytes(Bytes::from_static(bytes), false)
@@ -546,14 +547,14 @@ mod tests {
     #[test]
     fn as_unicode_borrows_when_no_pct() {
         let h = reg(b"example.com");
-        assert!(matches!(h.as_unicode(), Cow::Borrowed(_)));
+        assert_matches!(h.as_unicode(), Cow::Borrowed(_));
         assert_eq!(&*h.as_unicode(), "example.com");
     }
 
     #[test]
     fn as_unicode_decodes_pct_to_ascii() {
         let h = reg(b"exa%6Dple.com");
-        assert!(matches!(h.as_unicode(), Cow::Owned(_)));
+        assert_matches!(h.as_unicode(), Cow::Owned(_));
         assert_eq!(&*h.as_unicode(), "example.com");
     }
 
@@ -845,7 +846,7 @@ mod tests {
     fn ref_as_unicode_decodes_pct() {
         let h = reg(b"exa%6Dple.com");
         let r: UninterpretedHostRef<'_> = (&h).into();
-        assert!(matches!(r.as_unicode(), Cow::Owned(_)));
+        assert_matches!(r.as_unicode(), Cow::Owned(_));
         assert_eq!(&*r.as_unicode(), "example.com");
     }
 

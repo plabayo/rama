@@ -159,6 +159,7 @@ mod tests {
     };
     use rama_net::uri::Uri;
     use rama_tls::server::{CertificateKeyKind, CertificateSubject, SelfSignedCaConfig};
+    use std::assert_matches;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use tokio::io::duplex;
     use x509_ocsp::{BasicOcspResponse, CertStatus, OcspResponse, OcspResponseStatus};
@@ -226,10 +227,7 @@ mod tests {
             "one SingleResponse"
         );
         let single = &basic.tbs_response_data.responses[0];
-        assert!(
-            matches!(single.cert_status, CertStatus::Good(_)),
-            "certStatus good"
-        );
+        assert_matches!(single.cert_status, CertStatus::Good(_), "certStatus good");
 
         // nextUpdate must track the leaf's notAfter, else a long-lived cache
         // serves an expired staple for a still-valid leaf (the original bug).

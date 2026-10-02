@@ -8,6 +8,7 @@
 //! tie-break.
 
 use crate::uri::{ParseError, Uri};
+use std::assert_matches;
 
 #[test]
 fn host_port_pair() {
@@ -65,10 +66,7 @@ fn path_query_fragment_delimiters_rejected() {
 
 #[test]
 fn empty_input_rejected() {
-    assert!(matches!(
-        Uri::parse_authority_form(""),
-        Err(ParseError::Empty)
-    ));
+    assert_matches!(Uri::parse_authority_form(""), Err(ParseError::Empty));
 }
 
 #[test]
@@ -91,7 +89,7 @@ fn empty_port_rejected_in_strict_authority_form() {
     // RFC 9112 §3.2.3 requires `host ":" port` — strict mode rejects
     // the bare-host form an empty port produces.
     let r = Uri::parse_authority_form_strict("example.com:");
-    assert!(matches!(r, Err(crate::uri::ParseError::StrictViolation)));
+    assert_matches!(r, Err(crate::uri::ParseError::StrictViolation));
 }
 
 #[cfg(feature = "idna")]
@@ -156,9 +154,10 @@ fn strict_rejects_userinfo() {
     // RFC 9112 §3.2.3: "The request-target consists of the host and port
     // number of the tunnel destination" — no userinfo permitted.
     let err = Uri::parse_authority_form_strict("user:pass@example.com:443").unwrap_err();
-    assert!(
-        matches!(err, ParseError::StrictViolation),
-        "expected StrictViolation, got {err:?}"
+    assert_matches!(
+        err,
+        ParseError::StrictViolation,
+        "expected StrictViolation, got {err:?}",
     );
     // Userinfo on its own (no password) is also out.
     Uri::parse_authority_form_strict("user@example.com:443").unwrap_err();
@@ -168,9 +167,10 @@ fn strict_rejects_userinfo() {
 fn strict_rejects_bare_host_without_port() {
     // §3.2.3 mandates a port. Graceful accepts; strict does not.
     let err = Uri::parse_authority_form_strict("example.com").unwrap_err();
-    assert!(
-        matches!(err, ParseError::StrictViolation),
-        "expected StrictViolation, got {err:?}"
+    assert_matches!(
+        err,
+        ParseError::StrictViolation,
+        "expected StrictViolation, got {err:?}",
     );
     // IPv6 bracketed without port also rejected.
     Uri::parse_authority_form_strict("[2001:db8::1]").unwrap_err();

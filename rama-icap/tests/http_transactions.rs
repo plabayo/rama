@@ -1,6 +1,7 @@
 #![cfg(feature = "http")]
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
+use std::assert_matches;
 use std::{
     convert::Infallible,
     sync::{
@@ -1078,10 +1079,7 @@ async fn typed_client_rejects_non_error_reqmod_response() {
         .unwrap();
         let mut connection = ClientConnection::new(ServiceInput::new(client_io));
         let error = connection.send_http(request).await.unwrap_err();
-        assert!(matches!(
-            error.kind(),
-            rama_icap::http::ErrorKind::InvalidSequence(_)
-        ));
+        assert_matches!(error.kind(), rama_icap::http::ErrorKind::InvalidSequence(_));
         assert!(!connection.is_reusable());
     };
 

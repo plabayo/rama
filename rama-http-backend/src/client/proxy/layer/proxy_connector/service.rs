@@ -771,6 +771,7 @@ mod tests {
         test_utils::client::{MockConnectorService, MockSocket},
     };
     use rama_tcp::client::service::TcpConnector;
+    use std::assert_matches;
     use std::{
         convert::Infallible,
         net::{IpAddr, SocketAddr},
@@ -1388,10 +1389,7 @@ mod tests {
                 .serve(request)
                 .await
                 .expect("plaintext non-HTTP application uses CONNECT");
-            assert!(matches!(
-                established.conn.inner,
-                Connection::UpgradedProxy { .. }
-            ));
+            assert_matches!(established.conn.inner, Connection::UpgradedProxy { .. });
         }
     }
 
@@ -1724,7 +1722,7 @@ mod tests {
             }));
 
             let established = connector.serve(input).await.unwrap();
-            assert!(matches!(established.conn.inner, Connection::Proxied { .. }));
+            assert_matches!(established.conn.inner, Connection::Proxied { .. });
             assert_eq!(
                 rama_net::ConnectorTransportProtocolInputExt::connector_transport_protocol(
                     &established.input,
@@ -1918,7 +1916,7 @@ mod tests {
             }));
 
             let established = connector.serve(input).await.unwrap();
-            assert!(matches!(established.conn.inner, Connection::Proxied { .. }));
+            assert_matches!(established.conn.inner, Connection::Proxied { .. });
             assert_eq!(
                 established
                     .conn

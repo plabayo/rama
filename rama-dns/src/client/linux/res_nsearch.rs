@@ -731,6 +731,7 @@ mod ffi {
 
 #[cfg(test)]
 mod stub_tests {
+    use std::assert_matches;
     use std::{
         ffi::CStr,
         io::{Read as _, Write as _},
@@ -1254,15 +1255,16 @@ mod stub_tests {
             lookup_ipv4_stream(Domain::from_static("caller.stub.test"), timeout, native)
                 .collect()
                 .await;
-        assert!(
-            matches!(items.as_slice(), [Err(err)] if err
+        assert_matches!(
+            items.as_slice(),
+            [Err(err)] if err
                 .downcast_ref::<DnsTimeoutError>()
-                .is_some_and(|err| err.timeout() == timeout)),
+                .is_some_and(|err| err.timeout() == timeout),
             "{:?}",
             items
                 .iter()
                 .map(|item| item.as_ref().err().map(ToString::to_string))
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>(),
         );
     }
 }

@@ -566,6 +566,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
@@ -693,7 +694,7 @@ mod tests {
         let in_flight = InFlight::default();
         for key in 0..100 {
             let value = in_flight.run(key, TIMEOUT, move || async move { key });
-            assert!(matches!(value.await, Ok(v) if *v == key));
+            assert_matches!(value.await, Ok(v) if *v == key);
         }
         // one lookup at a time never outgrows a shard's smallest table
         let tables = in_flight.capacity() / RETAINED_CAPACITY;
@@ -951,9 +952,10 @@ mod tests {
         });
 
         for items in join_all(callers).await {
-            assert!(
-                matches!(items.as_slice(), [Err(err)] if err.downcast_ref::<DnsTimeoutError>().is_some()),
-                "{items:?}"
+            assert_matches!(
+                items.as_slice(),
+                [Err(err)] if err.downcast_ref::<DnsTimeoutError>().is_some(),
+                "{items:?}",
             );
         }
     }
@@ -1110,10 +1112,10 @@ mod tests {
         let results = join_all(callers).await;
 
         for items in results {
-            assert!(matches!(
+            assert_matches!(
                 items.as_slice(),
-                [Ok(1), Ok(2), Err(err)] if err.to_string() == "boom"
-            ));
+                [Ok(1), Ok(2), Err(err)] if err.to_string() == "boom",
+            );
         }
         assert_eq!(starts.load(Ordering::SeqCst), 1);
     }

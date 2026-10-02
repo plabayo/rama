@@ -4,6 +4,7 @@ use super::*;
 use crate::driver::sockets::RESPONSE_WORK_LIMIT;
 use crate::driver::udp::SEND_WORK_LIMIT;
 use rama_udp::{DatagramCapabilities, DatagramError, DatagramSender, DatagramSocket, SendDatagram};
+use std::assert_matches;
 use std::collections::VecDeque;
 use std::{num::NonZeroUsize, task::Wake};
 
@@ -853,10 +854,10 @@ async fn socket_class_response_failures_are_fatal_on_the_active_socket_and_isola
         .lock()
         .respond_active(one_byte_response(), b"x");
     let mut driver = std::pin::pin!(EndpointDriver(active.inner.0.clone()));
-    assert!(matches!(
+    assert_matches!(
         driver.as_mut().poll(&mut cx),
-        Poll::Ready(Err(error)) if error.kind() == io::ErrorKind::NotConnected
-    ));
+        Poll::Ready(Err(error)) if error.kind() == io::ErrorKind::NotConnected,
+    );
 
     let endpoint = test_endpoint(TestSocket {
         send_failure: Some(io::ErrorKind::NotConnected),
@@ -1122,10 +1123,10 @@ async fn connection_reset_noise_is_work_under_the_shared_allowance() {
             "pass {pass}: the spent allowance requests a continuation"
         );
     }
-    assert!(matches!(
+    assert_matches!(
         driver.as_mut().poll(&mut cx),
-        Poll::Ready(Err(error)) if error.kind() == io::ErrorKind::PermissionDenied
-    ));
+        Poll::Ready(Err(error)) if error.kind() == io::ErrorKind::PermissionDenied,
+    );
     assert_eq!(endpoint.stats().ignored_receive_errors, 100);
 }
 
@@ -1690,9 +1691,10 @@ async fn a_failing_retiring_socket_is_isolated_and_the_active_socket_keeps_servi
         ..TestSocket::default()
     });
     let mut fatal_driver = std::pin::pin!(EndpointDriver(fatal.inner.0.clone()));
-    assert!(
-        matches!(fatal_driver.as_mut().poll(&mut cx), Poll::Ready(Err(_))),
-        "a failing active socket ends the endpoint driver"
+    assert_matches!(
+        fatal_driver.as_mut().poll(&mut cx),
+        Poll::Ready(Err(_)),
+        "a failing active socket ends the endpoint driver",
     );
     // Rebind first, so the old socket is retiring when its receive fails.
     let new_captured = Captured::default();

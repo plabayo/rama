@@ -725,6 +725,7 @@ mod regression_tests {
     use super::*;
     use crate::h3::qpack::ErrorScope;
     use rama_http_types::proto::h3::Code;
+    use std::assert_matches;
 
     fn section(ric: u64, base: u64, line: &FieldLine) -> Bytes {
         let mut bytes = BytesMut::new();
@@ -835,10 +836,10 @@ mod regression_tests {
         .encode(&mut instruction);
         // The length prefix is sufficient to reject this impossible insertion;
         // no full literal or half-megabyte staging allocation is needed.
-        assert!(matches!(
+        assert_matches!(
             decoder.feed_encoder_stream(&instruction[..8]),
-            Err(QpackError::EncoderStreamError(_))
-        ));
+            Err(QpackError::EncoderStreamError(_)),
+        );
         assert!(decoder.encoder_stream.capacity() < kib(1));
     }
 
@@ -920,12 +921,12 @@ mod regression_tests {
                 },
             ),
         ] {
-            assert!(matches!(
+            assert_matches!(
                 decoder.decode_field_section(0, section(0, base, &line)),
                 Err(QpackError::DecompressionFailed(
                     "dynamic reference exceeds required insert count"
-                ))
-            ));
+                )),
+            );
         }
     }
 
@@ -1027,10 +1028,7 @@ mod regression_tests {
         decoder.decode_field_section(4, bytes).unwrap();
         decoder.feed_encoder_stream(&insertion()).unwrap();
         let resumed = decoder.resume_blocked();
-        assert!(matches!(
-            resumed[0].1,
-            Err(QpackError::DecompressionFailed(_))
-        ));
+        assert_matches!(resumed[0].1, Err(QpackError::DecompressionFailed(_)));
         assert_eq!(decoder.blocked_bytes, 0);
         assert_eq!(decoder.blocked_stream_count(), 0);
     }

@@ -1,3 +1,4 @@
+use std::assert_matches;
 use std::{
     io::{self, Cursor, Read, Write},
     mem,
@@ -80,7 +81,7 @@ fn read_usage_auto_pong_flush() {
 
     // Receiving a ping should auto scheduled a pong on next read or write (but not written yet).
     let msg = ws.read().unwrap();
-    assert!(matches!(msg, Message::Ping(_)), "Unexpected msg {msg:?}");
+    assert_matches!(msg, Message::Ping(_), "Unexpected msg {msg:?}");
     assert_eq!(ws.get_ref().read_calls, 1);
     assert!(
         ws.get_ref().written_data.is_empty(),
@@ -96,9 +97,10 @@ fn read_usage_auto_pong_flush() {
     // Next read fails as there is nothing else to read.
     // This read call should have tried to write & flush a pong response, with the flush WouldBlock-ing
     let next = ws.read().unwrap_err();
-    assert!(
-        matches!(next, ProtocolError::Io(ref err) if err.kind() == io::ErrorKind::WouldBlock),
-        "Unexpected read err {next:?}"
+    assert_matches!(
+        next,
+        ProtocolError::Io(ref err) if err.kind() == io::ErrorKind::WouldBlock,
+        "Unexpected read err {next:?}",
     );
     assert_eq!(ws.get_ref().read_calls, 2);
     assert!(
@@ -124,9 +126,10 @@ fn read_usage_auto_pong_flush() {
     // Next read fails as before.
     // This read call should try to flush the pong again, which again WouldBlock
     let next = ws.read().unwrap_err();
-    assert!(
-        matches!(next, ProtocolError::Io(ref err) if err.kind() == io::ErrorKind::WouldBlock),
-        "Unexpected read err {next:?}"
+    assert_matches!(
+        next,
+        ProtocolError::Io(ref err) if err.kind() == io::ErrorKind::WouldBlock,
+        "Unexpected read err {next:?}",
     );
     assert_eq!(ws.get_ref().read_calls, 3);
     assert_eq!(ws.get_ref().write_calls, 1);
@@ -140,9 +143,10 @@ fn read_usage_auto_pong_flush() {
     // Next read fails as before.
     // This read call should try to flush the pong again, 3rd flush attempt is the charm
     let next = ws.read().unwrap_err();
-    assert!(
-        matches!(next, ProtocolError::Io(ref err) if err.kind() == io::ErrorKind::WouldBlock),
-        "Unexpected read err {next:?}"
+    assert_matches!(
+        next,
+        ProtocolError::Io(ref err) if err.kind() == io::ErrorKind::WouldBlock,
+        "Unexpected read err {next:?}",
     );
     assert_eq!(ws.get_ref().read_calls, 4);
     assert_eq!(ws.get_ref().write_calls, 1);

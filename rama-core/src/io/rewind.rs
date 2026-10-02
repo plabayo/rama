@@ -178,6 +178,7 @@ where
 mod tests {
     use super::*;
     use crate::io::test_util::{ScriptReader, Step, poll_read_once};
+    use std::assert_matches;
 
     use tokio::io::AsyncReadExt;
 
@@ -433,10 +434,7 @@ mod tests {
     #[test]
     fn zero_capacity_read_without_buffer_skips_inner() {
         let mut stream = Rewind::new(ScriptReader::new([Step::Pending]));
-        assert!(matches!(
-            poll_read_once(&mut stream, &mut []),
-            Poll::Ready(Ok(0))
-        ));
+        assert_matches!(poll_read_once(&mut stream, &mut []), Poll::Ready(Ok(0)));
     }
 
     #[tokio::test]

@@ -971,6 +971,7 @@ mod ffi {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::{io::Write as _, os::unix::net::UnixStream};
 
     use rama_core::{error::error_chain, futures::future::join_all};
@@ -1038,10 +1039,10 @@ mod tests {
             .collect()
             .await;
         assert!(started.elapsed() < Duration::from_secs(1));
-        assert!(matches!(
+        assert_matches!(
             items.as_slice(),
-            [Err(err)] if error_chain(err.as_ref()).any(|cause| cause.is::<DnsTimeoutError>())
-        ));
+            [Err(err)] if error_chain(err.as_ref()).any(|cause| cause.is::<DnsTimeoutError>()),
+        );
     }
 
     #[tokio::test]
@@ -1056,9 +1057,10 @@ mod tests {
                 .collect::<Vec<_>>(),
         );
         assert!(bare.iter().any(Result::is_ok), "{bare:?}");
-        assert!(
-            matches!(dotted.as_slice(), [Err(err)] if err.to_string().contains("starts with a dot")),
-            "{dotted:?}"
+        assert_matches!(
+            dotted.as_slice(),
+            [Err(err)] if err.to_string().contains("starts with a dot"),
+            "{dotted:?}",
         );
     }
 
@@ -1361,8 +1363,9 @@ mod tests {
         assert!(!state.done.load(Ordering::SeqCst));
         callback(&mut state, 0, ok, a, &loopback);
         assert!(state.done.load(Ordering::SeqCst));
-        assert!(
-            matches!(drain_completed_batch(&state).as_slice(), [Ok(addr)] if addr.is_loopback())
+        assert_matches!(
+            drain_completed_batch(&state).as_slice(),
+            [Ok(addr)] if addr.is_loopback(),
         );
 
         // a CNAME closing the batch closes its answers too

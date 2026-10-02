@@ -6,6 +6,7 @@
 
 use super::parse_graceful;
 use crate::uri::{ResolveError, Uri};
+use std::assert_matches;
 
 /// Standard §5.4 base URI used by both example tables.
 const BASE: &str = "http://a/b/c/d;p?q";
@@ -156,10 +157,10 @@ fn strict_allows_exact_root_traversal() {
     // One more `..` would error.
     let base: Uri = parse_graceful(BASE).unwrap();
     let reference: Uri = Uri::parse_reference("../../..").unwrap();
-    assert!(matches!(
+    assert_matches!(
         base.resolve_strict(&reference),
         Err(ResolveError::DotSegmentTraversalPastRoot),
-    ));
+    );
 }
 
 // ----------------------------------------------------------------------

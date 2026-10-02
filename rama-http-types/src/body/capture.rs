@@ -576,6 +576,7 @@ impl std::fmt::Display for CaptureOutcome {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::{
         convert::Infallible,
         io,
@@ -629,21 +630,21 @@ mod tests {
     async fn channel_sinks_report_abort_when_capacity_is_available() {
         let (bounded, mut bounded_events) = tokio::sync::mpsc::channel(1);
         bounded.aborted();
-        assert!(matches!(
+        assert_matches!(
             tokio::time::timeout(std::time::Duration::from_secs(1), bounded_events.recv())
                 .await
                 .expect("bounded abort should arrive promptly"),
-            Some(BodyCaptureEvent::End(CaptureOutcome::Aborted))
-        ));
+            Some(BodyCaptureEvent::End(CaptureOutcome::Aborted)),
+        );
 
         let (unbounded, mut unbounded_events) = tokio::sync::mpsc::unbounded_channel();
         unbounded.aborted();
-        assert!(matches!(
+        assert_matches!(
             tokio::time::timeout(std::time::Duration::from_secs(1), unbounded_events.recv())
                 .await
                 .expect("unbounded abort should arrive promptly"),
-            Some(BodyCaptureEvent::End(CaptureOutcome::Aborted))
-        ));
+            Some(BodyCaptureEvent::End(CaptureOutcome::Aborted)),
+        );
     }
 
     #[tokio::test]
@@ -659,10 +660,7 @@ mod tests {
         bounded.aborted();
         drop(bounded);
 
-        assert!(matches!(
-            events.recv().await,
-            Some(BodyCaptureEvent::Frame(_))
-        ));
+        assert_matches!(events.recv().await, Some(BodyCaptureEvent::Frame(_)));
         assert!(events.recv().await.is_none());
     }
 
@@ -835,10 +833,7 @@ mod tests {
             .await
             .expect_err("the sink future should remain pending");
         drop(frame);
-        assert!(matches!(
-            captured.recv().await,
-            Some(BodyCaptureEvent::Frame(_))
-        ));
+        assert_matches!(captured.recv().await, Some(BodyCaptureEvent::Frame(_)));
         drop(body);
         assert_eq!(aborts.load(Ordering::Relaxed), 1);
     }

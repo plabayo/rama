@@ -1188,6 +1188,7 @@ mod tests {
         codec::{Header, HeaderFolding, RequestLine, ResponseLine},
         proto::{Method, StatusCode},
     };
+    use std::assert_matches;
 
     #[test]
     fn request_derives_offsets_without_copying_http_heads() {
@@ -1250,10 +1251,10 @@ mod tests {
             Some(EncapsulatedParts::null()),
         )
         .unwrap();
-        assert!(matches!(
+        assert_matches!(
             request.try_with_original_body_len(0),
-            Err(BuildError::InvalidBodyLength)
-        ));
+            Err(BuildError::InvalidBodyLength),
+        );
     }
 
     #[test]
@@ -1420,7 +1421,7 @@ mod tests {
         );
         let parts = EncapsulatedParts::new(None, None, EncapsulatedKind::ResponseBody).unwrap();
         let mut slots = [HeaderSlot::EMPTY; 8];
-        assert!(matches!(
+        assert_matches!(
             Response::from_head_bytes(
                 MethodKind::Respmod,
                 wire.clone(),
@@ -1428,8 +1429,8 @@ mod tests {
                 HeadParserConfig::new(),
                 Some(parts.clone()),
             ),
-            Err(ParseError::InvalidComposition)
-        ));
+            Err(ParseError::InvalidComposition),
+        );
         let response = Response::from_head_bytes(
             MethodKind::Respmod,
             wire,
@@ -1534,7 +1535,7 @@ mod tests {
             ],
             Some(EncapsulatedParts::null()),
         );
-        assert!(matches!(reserved, Err(BuildError::ReservedHeader)));
+        assert_matches!(reserved, Err(BuildError::ReservedHeader));
 
         for (method, status, parts) in [
             (
@@ -1558,7 +1559,7 @@ mod tests {
                 EncapsulatedParts::null(),
             ),
         ] {
-            assert!(matches!(
+            assert_matches!(
                 Response::new_with_icap_trailer_names(
                     method,
                     ResponseLine::new(status, b"status").unwrap(),
@@ -1566,8 +1567,8 @@ mod tests {
                     parts,
                     names.clone(),
                 ),
-                Err(BuildError::InvalidTrailerPromise)
-            ));
+                Err(BuildError::InvalidTrailerPromise),
+            );
         }
     }
 

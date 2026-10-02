@@ -879,6 +879,7 @@ mod tests {
         EstablishedClientConnection,
     };
     use rama_core::{ServiceInput, service::service_fn};
+    use std::assert_matches;
     use std::{
         convert::Infallible,
         sync::{LazyLock, Weak, atomic::AtomicBool},
@@ -1339,10 +1340,10 @@ mod tests {
         drop(first);
         assert_eq!(state.reserved.load(Ordering::SeqCst), 0);
         state.set_limit(0);
-        assert!(matches!(
+        assert_matches!(
             pool.get_conn(&TestId(0), &EMPTY_INPUT).await.unwrap(),
-            ConnectionResult::CreatePermit(_)
-        ));
+            ConnectionResult::CreatePermit(_),
+        );
     }
 
     #[derive(Default)]
@@ -1491,10 +1492,10 @@ mod tests {
         // must recheck the established policy before selecting spare capacity.
         drop(permit);
         assert!(waiter.is_woken());
-        assert!(matches!(
+        assert_matches!(
             waiter.poll(),
-            Poll::Ready(Ok(ConnectionResult::CreatePermit(_)))
-        ));
+            Poll::Ready(Ok(ConnectionResult::CreatePermit(_))),
+        );
     }
 
     #[tokio::test]
@@ -1547,12 +1548,10 @@ mod tests {
                     drop(reserved);
                     assert!(waiter.is_woken());
                 }
-                assert!(
-                    matches!(
-                        waiter.poll(),
-                        Poll::Ready(Ok(ConnectionResult::CreatePermit(_)))
-                    ),
-                    "a close reported during policy evaluation must not yield a broken connection"
+                assert_matches!(
+                    waiter.poll(),
+                    Poll::Ready(Ok(ConnectionResult::CreatePermit(_))),
+                    "a close reported during policy evaluation must not yield a broken connection",
                 );
             }
         }
@@ -1602,9 +1601,10 @@ mod tests {
                 }));
             drop(held);
             let result = pool.get_conn(&TestId(0), &EMPTY_INPUT).await.unwrap();
-            assert!(
-                matches!(result, ConnectionResult::CreatePermit(_)),
-                "a retired snapshot must not bypass health or pool capacity (evict={evict})"
+            assert_matches!(
+                result,
+                ConnectionResult::CreatePermit(_),
+                "a retired snapshot must not bypass health or pool capacity (evict={evict})",
             );
             drop(result);
             assert_eq!(pool.total_slots.available_permits(), 1);

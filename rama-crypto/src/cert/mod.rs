@@ -563,6 +563,7 @@ mod spki_tests {
 
 #[cfg(all(test, any(feature = "boring", feature = "aws-lc", feature = "ring")))]
 mod tests {
+    use std::assert_matches;
     use x509_parser::prelude::*;
 
     use super::*;
@@ -831,13 +832,13 @@ mod tests {
     fn generated_ca_for_sets_only_the_requested_identity() {
         let identity = CertificateIdentity::Ip(std::net::Ipv6Addr::LOCALHOST.into());
         let config = GeneratedServerAuthConfig::generated_ca_for(identity.clone());
-        assert!(matches!(
+        assert_matches!(
             config,
             GeneratedServerAuthConfig::GeneratedCa {
                 leaf: LeafCertRequest { identities, .. },
                 ..
-            } if identities == [identity]
-        ));
+            } if identities == [identity],
+        );
     }
 
     #[test]

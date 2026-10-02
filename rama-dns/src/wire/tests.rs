@@ -1,3 +1,4 @@
+use std::assert_matches;
 use std::{
     borrow::Cow,
     error::Error as _,
@@ -1653,11 +1654,8 @@ fn wire_enums_expose_their_mnemonic_without_debug_coupling() {
     assert_eq!(RecordType::HTTPS.variant_name(), "HTTPS");
     assert_eq!(RecordType::NSAP_PTR.variant_name(), "NSAP_PTR");
     assert_eq!(RecordType::Unknown(65280).variant_name(), "65280");
-    assert!(matches!(RecordType::A.variant_name(), Cow::Borrowed("A")));
-    assert!(matches!(
-        RecordType::Unknown(65280).variant_name(),
-        Cow::Owned(_)
-    ));
+    assert_matches!(RecordType::A.variant_name(), Cow::Borrowed("A"));
+    assert_matches!(RecordType::Unknown(65280).variant_name(), Cow::Owned(_));
 
     assert_eq!(ResponseCode::NoError.variant_name(), "NoError");
     assert_eq!(ResponseCode::NXDomain.variant_name(), "NXDomain");

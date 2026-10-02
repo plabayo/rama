@@ -279,6 +279,7 @@ mod tests {
         address::Host,
         client::{ProxyRoute, proxy::system::SystemProxyDecision},
     };
+    use std::assert_matches;
 
     use super::*;
 
@@ -372,14 +373,14 @@ mod tests {
         let config = parse_settings(&settings, SystemProxyInvalidBypassRulePolicy::Ignore).unwrap();
 
         assert!(config.bypass_before_pac);
-        assert!(matches!(
+        assert_matches!(
             config.decision(&"http://internal.example/".parse().unwrap()),
-            SystemProxyDecision::Route(ProxyRoute::Direct)
-        ));
-        assert!(matches!(
+            SystemProxyDecision::Route(ProxyRoute::Direct),
+        );
+        assert_matches!(
             config.decision(&"http://external.example/".parse().unwrap()),
-            SystemProxyDecision::Pac(_)
-        ));
+            SystemProxyDecision::Pac(_),
+        );
     }
 
     #[test]

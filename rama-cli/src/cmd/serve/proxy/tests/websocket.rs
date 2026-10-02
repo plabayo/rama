@@ -1,4 +1,5 @@
 use rama::http::Method;
+use std::assert_matches;
 
 use super::*;
 
@@ -179,10 +180,10 @@ async fn websocket_inspector_records_and_relays_messages() {
     .await
     .unwrap();
 
-    assert!(matches!(
+    assert_matches!(
         output.messages.as_slice(),
-        [WebSocketRelayMessage::Text(message)] if message.as_str() == "websocket-payload"
-    ));
+        [WebSocketRelayMessage::Text(message)] if message.as_str() == "websocket-payload",
+    );
     let extensions = rama::extensions::Extensions::new();
     extensions.insert(HttpExchangeId(1));
     let ping = inspect_websocket_event(
@@ -213,10 +214,10 @@ async fn websocket_inspector_records_and_relays_messages() {
     assert_eq!(details.summary.response_bytes, 9);
     assert!(details.summary.request_truncated);
     assert!(details.summary.response_truncated);
-    assert!(matches!(
+    assert_matches!(
         store.replay_websocket_message(1, 0).await,
-        Err(capture::WebSocketReplayError::MessageNotFound)
-    ));
+        Err(capture::WebSocketReplayError::MessageNotFound),
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -633,10 +634,10 @@ async fn websocket_inspector_replays_live_text_and_binary_in_original_direction(
             ),
         )
         .await;
-    assert!(matches!(
+    assert_matches!(
         store.replay_websocket_message(1, 6).await,
-        Err(capture::WebSocketReplayError::ControlFrame)
-    ));
+        Err(capture::WebSocketReplayError::ControlFrame),
+    );
     let details = store.websocket_details(1, 0, 100).await.unwrap();
     assert!(details.replay_active);
     assert_eq!(
@@ -671,10 +672,10 @@ async fn websocket_inspector_replays_live_text_and_binary_in_original_direction(
     drop(peer_ingress);
     drop(peer_egress);
     relay.await.unwrap().unwrap();
-    assert!(matches!(
+    assert_matches!(
         store.replay_websocket_message(1, 0).await,
-        Err(capture::WebSocketReplayError::ConnectionClosed)
-    ));
+        Err(capture::WebSocketReplayError::ConnectionClosed),
+    );
     assert!(
         !store
             .websocket_details(1, 0, 100)

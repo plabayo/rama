@@ -93,6 +93,7 @@ mod tests {
         body::util::{BodyExt as _, CollectErrorKind, LengthLimitError},
         request,
     };
+    use std::assert_matches;
     use tokio::io::DuplexStream;
 
     fn streaming_body() -> Body {
@@ -215,11 +216,11 @@ mod tests {
             let status = match request.into_body().collect().await {
                 Ok(_) => StatusCode::OK,
                 Err(error) => {
-                    assert!(matches!(
+                    assert_matches!(
                         error.kind(),
                         CollectErrorKind::Stream(error)
-                            if error.downcast_ref::<LengthLimitError>().is_some()
-                    ));
+                            if error.downcast_ref::<LengthLimitError>().is_some(),
+                    );
                     StatusCode::PAYLOAD_TOO_LARGE
                 }
             };

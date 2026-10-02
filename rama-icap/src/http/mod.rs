@@ -2563,6 +2563,7 @@ pub enum ErrorKind {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::{
         convert::Infallible,
         sync::{
@@ -2694,10 +2695,10 @@ mod tests {
         ]));
         let mut body = OutgoingBody::from_http(body);
 
-        assert!(matches!(
+        assert_matches!(
             body.next().await.unwrap().unwrap(),
-            crate::server::BodyFrame::Data(data) if data == "adapted"
-        ));
+            crate::server::BodyFrame::Data(data) if data == "adapted",
+        );
         let crate::server::BodyFrame::Trailers(trailers) = body.next().await.unwrap().unwrap()
         else {
             panic!("expected trailers");
@@ -2995,7 +2996,7 @@ mod tests {
                 &[],
             )
             .unwrap_err();
-            assert!(matches!(error.kind(), ErrorKind::InvalidSequence(_)));
+            assert_matches!(error.kind(), ErrorKind::InvalidSequence(_));
         }
     }
 
@@ -3414,10 +3415,10 @@ mod tests {
         let parsed = Encapsulated::parse(response.response().encapsulated().unwrap()).unwrap();
         assert_eq!(parsed.request().unwrap().method(), "POST");
         assert_eq!(parsed.request().unwrap().headers()["x-original"], "yes");
-        assert!(matches!(
+        assert_matches!(
             response.body_mut().next().await.unwrap().unwrap(),
-            crate::server::BodyFrame::Data(data) if data == "request body"
-        ));
+            crate::server::BodyFrame::Data(data) if data == "request body",
+        );
         let crate::server::BodyFrame::Trailers(trailers) =
             response.body_mut().next().await.unwrap().unwrap()
         else {

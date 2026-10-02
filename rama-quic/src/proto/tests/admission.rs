@@ -1,4 +1,5 @@
 use super::*;
+use std::assert_matches;
 
 const LIMIT: Duration = Duration::from_millis(100);
 
@@ -46,13 +47,13 @@ fn expired_handles_cannot_remove_a_reused_admission_slot() {
             Action::Ignore => pair.server.ignore(stale),
             Action::Accept => {
                 let mut buf = Vec::new();
-                assert!(matches!(
+                assert_matches!(
                     pair.server.accept(stale, pair.time, &mut buf, None),
                     Err(AcceptError {
                         cause: ConnectionError::TimedOut,
                         ..
-                    })
-                ));
+                    }),
+                );
             }
             Action::Retry => {
                 let stale = Endpoint::retry(&mut pair.server, stale, &mut Vec::new())
@@ -71,14 +72,12 @@ fn expired_handles_cannot_remove_a_reused_admission_slot() {
         assert!(pair.server.poll_incoming_timeout().is_none());
         pair.drive();
         let event = pair.client_conn_mut(client).poll();
-        assert!(
-            matches!(event, Some(Event::HandshakeDataReady)),
-            "action {action:?}: {event:?}"
+        assert_matches!(
+            event,
+            Some(Event::HandshakeDataReady),
+            "action {action:?}: {event:?}",
         );
-        assert!(matches!(
-            pair.client_conn_mut(client).poll(),
-            Some(Event::Connected)
-        ));
+        assert_matches!(pair.client_conn_mut(client).poll(), Some(Event::Connected));
     }
 }
 
@@ -116,13 +115,13 @@ fn acceptance_does_not_restart_the_handshake_deadline() {
     let server = pair.server.try_accept(incoming, pair.time).unwrap();
     pair.server_conn_mut(server).handle_timeout(started + LIMIT);
     let conn = pair.server_conn_mut(server);
-    assert!(matches!(conn.poll(), Some(Event::HandshakeDataReady)));
-    assert!(matches!(
+    assert_matches!(conn.poll(), Some(Event::HandshakeDataReady));
+    assert_matches!(
         conn.poll(),
         Some(Event::ConnectionLost {
             reason: ConnectionError::TimedOut
-        })
-    ));
+        }),
+    );
 }
 
 #[test]
@@ -130,14 +129,14 @@ fn removing_server_config_while_holding_incoming_does_not_panic() {
     let mut pair = pair();
     let (_, incoming) = incoming(&mut pair);
     pair.server.set_server_config(None);
-    assert!(matches!(
+    assert_matches!(
         pair.server
             .accept(incoming, pair.time, &mut Vec::new(), None),
         Err(AcceptError {
             cause: ConnectionError::LocallyClosed,
             ..
-        })
-    ));
+        }),
+    );
     assert_eq!(pair.server.pending_incoming(), 0);
     assert!(pair.server.poll_incoming_timeout().is_none());
 }

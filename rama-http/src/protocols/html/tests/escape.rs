@@ -1,6 +1,7 @@
 //! `escape` / `escape_into` are public helpers — exercise them so that
 //! the publicly documented surface keeps working.
 
+use std::assert_matches;
 use std::borrow::Cow;
 
 use crate::protocols::html::{IntoHtml, decode_entities, end, escape, escape_into, marker, start};
@@ -15,7 +16,7 @@ fn decode_entities_named_and_numeric() {
 
 #[test]
 fn decode_entities_borrows_and_leaves_unknown() {
-    assert!(matches!(decode_entities("no entities"), Cow::Borrowed(_)));
+    assert_matches!(decode_entities("no entities"), Cow::Borrowed(_));
     // Unknown names and out-of-range numerics stay verbatim.
     assert_eq!(
         decode_entities("a &bogus; b &#xffffffff; c"),
@@ -26,7 +27,7 @@ fn decode_entities_borrows_and_leaves_unknown() {
 #[test]
 fn escape_returns_owned_when_needed() {
     assert_eq!(escape("a<b&c"), "a&lt;b&amp;c");
-    assert!(matches!(escape("a<b&c"), Cow::Owned(_)));
+    assert_matches!(escape("a<b&c"), Cow::Owned(_));
 }
 
 #[test]

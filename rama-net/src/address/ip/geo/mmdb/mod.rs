@@ -437,6 +437,7 @@ mod tests {
     use crate::address::ip::geo::{AsOrg, Coordinates, GeoLocation, Subdivision};
     #[cfg(feature = "std")]
     use crate::asn::LossyAsn;
+    use std::assert_matches;
 
     #[cfg(feature = "std")]
     use rama_core::geo::{Continent, Country, Locale};
@@ -750,10 +751,10 @@ mod tests {
 
     #[test]
     fn malformed_inputs_error_not_panic() {
-        assert!(matches!(
+        assert_matches!(
             MmdbReader::from_bytes(vec![0u8; 32]),
-            Err(GeoIpError::MissingMetadataMarker)
-        ));
+            Err(GeoIpError::MissingMetadataMarker),
+        );
         MmdbReader::from_bytes(Vec::new()).unwrap_err();
         // marker present but no valid metadata map after it
         let mut junk = b"\xab\xcd\xefMaxMind.com".to_vec();
@@ -858,21 +859,21 @@ mod tests {
         };
         // a zero-length prefix is rejected
         let mut b = MmdbBuilder::new(IpVersion::V4, "T");
-        assert!(matches!(
+        assert_matches!(
             b.insert(net("0.0.0.0/0"), &loc),
-            Err(MmdbWriteError::ZeroPrefix)
-        ));
+            Err(MmdbWriteError::ZeroPrefix),
+        );
         // an IPv6 network in an IPv4 database is a family mismatch
-        assert!(matches!(
+        assert_matches!(
             b.insert(net("2001:db8::/32"), &loc),
-            Err(MmdbWriteError::FamilyMismatch)
-        ));
+            Err(MmdbWriteError::FamilyMismatch),
+        );
         // a network nested inside an already-inserted one overlaps
         b.insert(net("1.2.3.0/24"), &loc).unwrap();
-        assert!(matches!(
+        assert_matches!(
             b.insert(net("1.2.3.0/25"), &loc),
-            Err(MmdbWriteError::OverlappingNetwork)
-        ));
+            Err(MmdbWriteError::OverlappingNetwork),
+        );
     }
 
     #[cfg(feature = "std")]
@@ -890,15 +891,15 @@ mod tests {
         // be rejected (not silently clobber the existing subtree)
         let mut b = MmdbBuilder::new(IpVersion::V4, "T");
         b.insert(net("1.2.3.0/24"), &be).unwrap();
-        assert!(matches!(
+        assert_matches!(
             b.insert(net("1.2.0.0/16"), &us),
-            Err(MmdbWriteError::OverlappingNetwork)
-        ));
+            Err(MmdbWriteError::OverlappingNetwork),
+        );
         // an exact duplicate is an overlap too (no silent last-wins)
-        assert!(matches!(
+        assert_matches!(
             b.insert(net("1.2.3.0/24"), &us),
-            Err(MmdbWriteError::OverlappingNetwork)
-        ));
+            Err(MmdbWriteError::OverlappingNetwork),
+        );
         // the original /24 entry survives the rejected inserts intact
         let reader = MmdbReader::from_bytes(b.build().unwrap()).unwrap();
         let got = reader.lookup("1.2.3.4".parse().unwrap()).unwrap();

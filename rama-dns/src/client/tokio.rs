@@ -307,6 +307,7 @@ static_str_error! {
 #[cfg(test)]
 mod tests {
     use rama_core::{error::error_chain, futures::future::join_all};
+    use std::assert_matches;
 
     use super::*;
     use crate::client::in_flight::Abandoned;
@@ -381,9 +382,10 @@ mod tests {
                 .collect::<Vec<_>>(),
         );
         assert!(bare.iter().any(Result::is_ok), "{bare:?}");
-        assert!(
-            matches!(dotted.as_slice(), [Err(err)] if err.to_string().contains("starts with a dot")),
-            "{dotted:?}"
+        assert_matches!(
+            dotted.as_slice(),
+            [Err(err)] if err.to_string().contains("starts with a dot"),
+            "{dotted:?}",
         );
     }
 
@@ -450,10 +452,10 @@ mod tests {
             .collect()
             .await;
         assert!(started.elapsed() < Duration::from_secs(2));
-        assert!(matches!(
+        assert_matches!(
             items.as_slice(),
-            [Err(err)] if error_chain(err.as_ref()).any(|cause| cause.is::<DnsTimeoutError>())
-        ));
+            [Err(err)] if error_chain(err.as_ref()).any(|cause| cause.is::<DnsTimeoutError>()),
+        );
 
         drop(release);
         busy.await.expect("busy lookup ends");

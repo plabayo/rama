@@ -788,6 +788,7 @@ fn read_full(stream: &mut TcpStream, buffer: &mut [u8], deadline: Instant) -> io
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::mem;
 
     use super::*;
@@ -1022,7 +1023,7 @@ mod tests {
         let walk = walk_of("intranet", &[CORP], 1, SEARCH);
         let mut outcomes = walk.outcomes();
         let at = walk.run(&mut outcomes, Instant::now(), |_, _| panic!("asked late"));
-        assert!(matches!(outcomes[at], Some(Asked::Timeout)));
+        assert_matches!(outcomes[at], Some(Asked::Timeout));
     }
 
     #[test]
@@ -1051,9 +1052,10 @@ mod tests {
             _ => Asked::NxDomain(Vec::new()),
         });
         assert_eq!(asked.len(), 2);
-        assert!(
-            matches!(decided, Asked::ServerFailure(ResponseCode::ServFail)),
-            "{decided:?}"
+        assert_matches!(
+            decided,
+            Asked::ServerFailure(ResponseCode::ServFail),
+            "{decided:?}",
         );
     }
 
@@ -1073,7 +1075,7 @@ mod tests {
                 ("api.example.corp.test".to_owned(), 10)
             ]
         );
-        assert!(matches!(decided, Asked::Timeout), "{decided:?}");
+        assert_matches!(decided, Asked::Timeout, "{decided:?}");
 
         // as is last: the last name asked decides
         let walk = walk_of("intranet", &[CORP], 1, SEARCH);
@@ -1081,7 +1083,7 @@ mod tests {
             "intranet" => Asked::Timeout,
             _ => Asked::NxDomain(Vec::new()),
         });
-        assert!(matches!(decided, Asked::Timeout), "{decided:?}");
+        assert_matches!(decided, Asked::Timeout, "{decided:?}");
     }
 
     #[test]
@@ -1093,9 +1095,10 @@ mod tests {
             _ => Asked::NxDomain(Vec::new()),
         });
         assert_eq!(asked.len(), 3);
-        assert!(
-            matches!(decided, Asked::ServerFailure(ResponseCode::ServFail)),
-            "{decided:?}"
+        assert_matches!(
+            decided,
+            Asked::ServerFailure(ResponseCode::ServFail),
+            "{decided:?}",
         );
 
         // REFUSED ends the search list, the name as is still goes out
@@ -1111,7 +1114,7 @@ mod tests {
             "intranet.other.test" => Asked::NoData(Vec::new()),
             _ => Asked::NxDomain(Vec::new()),
         });
-        assert!(matches!(decided, Asked::NoData(_)), "{decided:?}");
+        assert_matches!(decided, Asked::NoData(_), "{decided:?}");
 
         // an answer ends the walk
         let (asked, decided) = run(&walk, |name| match name {
@@ -1119,12 +1122,12 @@ mod tests {
             _ => Asked::NxDomain(Vec::new()),
         });
         assert_eq!(asked.len(), 2);
-        assert!(matches!(decided, Asked::Answer(_)), "{decided:?}");
+        assert_matches!(decided, Asked::Answer(_), "{decided:?}");
 
         // no nameserver at all ends it too
         let (asked, decided) = run(&walk, |_| Asked::Unreachable);
         assert_eq!(asked.len(), 1);
-        assert!(matches!(decided, Asked::Unreachable), "{decided:?}");
+        assert_matches!(decided, Asked::Unreachable, "{decided:?}");
     }
 
     #[test]
@@ -1132,7 +1135,7 @@ mod tests {
         let walk = walk_of("intranet", &[ROOT], 1, SEARCH);
         let (asked, decided) = run(&walk, |_| Asked::NxDomain(Vec::new()));
         assert_eq!(asked.len(), 1, "{asked:?}");
-        assert!(matches!(decided, Asked::NxDomain(_)), "{decided:?}");
+        assert_matches!(decided, Asked::NxDomain(_), "{decided:?}");
 
         let walk = walk_of("intranet", &[CORP], 1, SEARCH | ffi::RES_NOTLDQUERY);
         let (asked, _) = run(&walk, |_| Asked::NxDomain(Vec::new()));
@@ -1145,7 +1148,7 @@ mod tests {
         let walk = walk_of("api.example", &[ROOT], 1, SEARCH);
         let (asked, decided) = run(&walk, |_| Asked::NxDomain(Vec::new()));
         assert_eq!(asked, [("api.example".to_owned(), 10)]);
-        assert!(matches!(decided, Asked::NxDomain(_)), "{decided:?}");
+        assert_matches!(decided, Asked::NxDomain(_), "{decided:?}");
     }
 
     #[test]
@@ -1157,7 +1160,7 @@ mod tests {
             b"api.example" => Asked::Timeout,
             _ => Asked::NxDomain(Vec::new()),
         });
-        assert!(matches!(outcomes[first], Some(Asked::Timeout)));
+        assert_matches!(outcomes[first], Some(Asked::Timeout));
 
         for outcome in &mut outcomes {
             if matches!(outcome, Some(Asked::Timeout)) {
@@ -1174,7 +1177,7 @@ mod tests {
         });
         // the search name already answered: as is gets all the time left
         assert_eq!(asked, [("api.example".to_owned(), 10)]);
-        assert!(matches!(outcomes[again], Some(Asked::Answer(_))));
+        assert_matches!(outcomes[again], Some(Asked::Answer(_)));
     }
 
     #[test]
@@ -1205,31 +1208,19 @@ mod tests {
         let fail =
             |h_errno, response: &[u8], errno| failed(h_errno, response.to_vec(), errno, waited);
         let timeout = Some(libc::ETIMEDOUT);
-        assert!(matches!(
-            fail(ffi::TRY_AGAIN, &silence, timeout),
-            Asked::Timeout
-        ));
-        assert!(matches!(
+        assert_matches!(fail(ffi::TRY_AGAIN, &silence, timeout), Asked::Timeout);
+        assert_matches!(
             fail(ffi::HOST_NOT_FOUND, &silence, None),
-            Asked::NxDomain(_)
-        ));
-        assert!(matches!(
-            fail(ffi::NO_DATA, &silence, None),
-            Asked::NoData(_)
-        ));
-        assert!(matches!(
-            fail(ffi::NO_RECOVERY, &silence, None),
-            Asked::Failed(_)
-        ));
+            Asked::NxDomain(_),
+        );
+        assert_matches!(fail(ffi::NO_DATA, &silence, None), Asked::NoData(_));
+        assert_matches!(fail(ffi::NO_RECOVERY, &silence, None), Asked::Failed(_));
         // no nameserver took the query
         let refused = Some(libc::ECONNREFUSED);
-        assert!(matches!(
-            fail(ffi::TRY_AGAIN, &silence, refused),
-            Asked::Unreachable
-        ));
+        assert_matches!(fail(ffi::TRY_AGAIN, &silence, refused), Asked::Unreachable);
         // a reply rejected at once is no silence
         let at_once = failed(ffi::TRY_AGAIN, silence.clone(), timeout, Duration::ZERO);
-        assert!(matches!(at_once, Asked::Failed(_)));
+        assert_matches!(at_once, Asked::Failed(_));
         // a SERVFAIL, NOTIMP or REFUSED answer reads as a timeout to libc
         let mut answer = silence;
         for (rcode, code) in [
@@ -1239,9 +1230,10 @@ mod tests {
         ] {
             answer[2..4].copy_from_slice(&[0x81, rcode]);
             let asked = fail(ffi::TRY_AGAIN, &answer, timeout);
-            assert!(
-                matches!(asked, Asked::ServerFailure(got) if got == code),
-                "{asked:?}"
+            assert_matches!(
+                asked,
+                Asked::ServerFailure(got) if got == code,
+                "{asked:?}",
             );
         }
     }
@@ -1280,8 +1272,8 @@ mod tests {
         // an answer to another query does not count
         let mut response = message.to_vec();
         response[2] |= 0x80;
-        assert!(matches!(query.outcome(response.clone()), Asked::NoData(_)));
+        assert_matches!(query.outcome(response.clone()), Asked::NoData(_));
         response[0] ^= 0xff;
-        assert!(matches!(query.outcome(response), Asked::Failed(_)));
+        assert_matches!(query.outcome(response), Asked::Failed(_));
     }
 }

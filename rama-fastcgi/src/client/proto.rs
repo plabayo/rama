@@ -365,6 +365,7 @@ mod tests {
     use super::*;
     use crate::proto::params::NvPair;
     use rama_utils::octets::kib;
+    use std::assert_matches;
 
     /// Simulate a FastCGI backend on the server side of a duplex stream:
     /// drain the client's request records, then write a canned response
@@ -488,9 +489,10 @@ mod tests {
             .await
             .unwrap_err();
         // Cap exceeded surfaces as Protocol error.
-        assert!(
-            matches!(err.kind, ClientErrorKind::Protocol),
-            "expected Protocol error, got {err:?}"
+        assert_matches!(
+            err.kind,
+            ClientErrorKind::Protocol,
+            "expected Protocol error, got {err:?}",
         );
         let _join = backend.await;
     }
