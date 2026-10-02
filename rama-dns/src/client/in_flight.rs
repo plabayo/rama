@@ -25,11 +25,18 @@ use rama_core::{
 };
 use rama_net::address::Domain;
 use rama_utils::collections::smallvec::SmallVec;
-use tokio::{task::AbortHandle, time::error::Elapsed};
+use tokio::{
+    runtime::{self, Handle},
+    task::AbortHandle,
+    time::error::Elapsed,
+};
 
 use super::limit::DnsTimeoutError;
 
-type Map<K> = HashMap<(K, TypeId), Arc<dyn Any + Send + Sync>>;
+/// A run lives on the runtime that started it, which only that runtime's
+/// callers can count on to drive it.
+type Slot<K> = (K, TypeId, Option<runtime::Id>);
+type Map<K> = HashMap<Slot<K>, Arc<dyn Any + Send + Sync>>;
 type Flights<K> = Arc<Shards<K>>;
 
 /// The runs by key, spread over locks so unrelated keys rarely contend.
@@ -55,7 +62,7 @@ impl<K> Shards<K> {
 }
 
 impl<K: Hash> Shards<K> {
-    fn shard(&self, slot: &(K, TypeId)) -> usize {
+    fn shard(&self, slot: &Slot<K>) -> usize {
         // the mask keeps it below the shard count, so the cast cannot truncate
         (self.hasher.hash_one(slot) & (self.maps.len() as u64 - 1)) as usize
     }
@@ -279,7 +286,8 @@ impl<K: Hash + Eq + Clone + Send + Sync + 'static> InFlight<K> {
         V: Send + Sync + 'static,
         F: Future<Output = V> + Send + 'static,
     {
-        let slot = (key, TypeId::of::<V>());
+        let runtime = Handle::try_current().ok().map(|runtime| runtime.id());
+        let slot = (key, TypeId::of::<V>(), runtime);
         let shard = self.flights.shard(&slot);
         let wait = max_duration.saturating_add(max_duration / 4);
         let shared = async {
@@ -314,7 +322,7 @@ impl<K: Hash + Eq + Clone + Send + Sync + 'static> InFlight<K> {
             .unwrap_or_else(|_elapsed| Err(ArcError::new(DnsTimeoutError::new(max_duration))))
     }
 
-    fn join<V: Send + Sync + 'static>(&self, slot: &(K, TypeId), shard: usize) -> Joined<V> {
+    fn join<V: Send + Sync + 'static>(&self, slot: &Slot<K>, shard: usize) -> Joined<V> {
         let map = &self.flights.maps[shard];
         if let Some(waiting) = self.join_running(&map.lock(), slot) {
             return Joined::Running(waiting);
@@ -332,7 +340,7 @@ impl<K: Hash + Eq + Clone + Send + Sync + 'static> InFlight<K> {
     fn join_running<V: Send + Sync + 'static>(
         &self,
         flights: &Map<K>,
-        slot: &(K, TypeId),
+        slot: &Slot<K>,
     ) -> Option<Waiting<V>> {
         let flight = flights.get(slot)?.clone().downcast::<Flight<V>>().ok()?;
         // counted under the lock, so a leaving waiter never misses us
@@ -349,7 +357,7 @@ impl<K: Hash + Eq + Clone + Send + Sync + 'static> InFlight<K> {
 
     fn start<V, F>(
         &self,
-        slot: (K, TypeId),
+        slot: Slot<K>,
         shard: usize,
         max_duration: Duration,
         flight: &Arc<Flight<V>>,
@@ -401,7 +409,7 @@ fn answer_of<V>(answer: Result<V, Elapsed>, max_duration: Duration) -> Result<Ar
 /// learn the outcome.
 struct Release<K: Hash + Eq, V> {
     flights: Flights<K>,
-    slot: (K, TypeId),
+    slot: Slot<K>,
     shard: usize,
     flight: Option<Arc<Flight<V>>>,
 }
@@ -700,7 +708,7 @@ mod tests {
 
         let flights = in_flight.flights.maps.iter().find_map(|map| {
             map.lock()
-                .get(&("key", TypeId::of::<usize>()))
+                .get(&("key", TypeId::of::<usize>(), Some(Handle::current().id())))
                 .cloned()
                 .and_then(|flight| flight.downcast::<Flight<usize>>().ok())
         });
@@ -1043,38 +1051,34 @@ mod tests {
         assert_eq!(left, 0, "a run that never started frees its key");
     }
 
-    #[tokio::test]
-    async fn joiner_takes_over_a_run_that_died_with_its_runtime() {
-        let in_flight = InFlight::<&str>::default();
-        let other = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(1)
-            .enable_all()
-            .build()
-            .unwrap();
+    #[test]
+    fn runs_are_shared_only_within_their_runtime() {
+        let in_flight = InFlight::<&str>::new(Abandoned::Finish);
+        let runtime = || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+        };
+        let (idle, busy) = (runtime(), runtime());
 
-        let starter = in_flight.clone();
-        other.spawn(async move {
-            starter
-                .run("key", TIMEOUT, std::future::pending::<usize>)
+        // its caller gives up, leaving the run on a runtime nothing drives
+        idle.block_on(async {
+            let pending = in_flight.run("key", TIMEOUT, std::future::pending::<usize>);
+            tokio::time::timeout(Duration::from_millis(10), pending)
                 .await
+                .expect_err("the run stays pending");
         });
-        while in_flight.running() == 0 {
-            tokio::task::yield_now().await;
-        }
+        assert_eq!(in_flight.running(), 1);
 
-        let mut joiner =
-            std::pin::pin!(in_flight.run("key", TIMEOUT, || std::future::ready(9_usize)));
-        assert!(
-            joiner.as_mut().now_or_never().is_none(),
-            "joined, still pending"
-        );
-        other.shutdown_background();
+        let answer = busy.block_on(async {
+            let lookup = in_flight.run("key", TIMEOUT, || std::future::ready(9_usize));
+            tokio::time::timeout(Duration::from_secs(1), lookup).await
+        });
+        assert_eq!(*answer.expect("not stuck behind the idle run").unwrap(), 9);
 
-        assert_eq!(
-            *joiner.await.unwrap(),
-            9,
-            "the joiner took over with its own lookup"
-        );
+        // the idle run goes with its runtime
+        drop(idle);
         assert_eq!(in_flight.running(), 0);
     }
 
