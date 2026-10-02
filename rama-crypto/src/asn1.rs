@@ -25,7 +25,7 @@ mod tests {
             datetime(epoch + Duration::from_nanos(999_999_999)).unwrap(),
             OffsetDateTime::UNIX_EPOCH
         );
-        assert!(datetime(epoch - Duration::from_secs(1)).is_err());
+        datetime(epoch - Duration::from_secs(1)).unwrap_err();
 
         let beyond_range = time::Date::MAX
             .midnight()
@@ -35,7 +35,7 @@ mod tests {
             + 86_400;
         for secs in [beyond_range, i64::MAX.unsigned_abs() + 1, u64::MAX] {
             if let Some(t) = epoch.checked_add(Duration::from_secs(secs)) {
-                assert!(datetime(t).is_err());
+                datetime(t).unwrap_err();
             }
         }
     }

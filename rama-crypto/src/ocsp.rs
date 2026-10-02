@@ -338,7 +338,7 @@ pub fn parse_ocsp_request(der: &[u8]) -> Result<OcspRequestInfo, BoxError> {
             Ok(info)
         })
     })
-    .map_err(|e| BoxError::from(format!("ocsp: parse request: {e}")))
+    .context("ocsp: parse request")
 }
 
 fn generalized_time(t: SystemTime) -> Result<GeneralizedTime, BoxError> {
@@ -349,6 +349,13 @@ fn generalized_time(t: SystemTime) -> Result<GeneralizedTime, BoxError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// RFC 5280 "no well-defined expiration date" stays encodable.
+    #[test]
+    fn generalized_time_max_date() {
+        let t = SystemTime::UNIX_EPOCH + Duration::from_secs(253_402_300_799);
+        assert_eq!(generalized_time(t).unwrap().to_bytes(), b"99991231235959Z");
+    }
 
     /// The builder emits a well-formed `OCSPResponse`: `successful` status,
     /// `id-pkix-ocsp-basic` responseBytes wrapping a 3-element
