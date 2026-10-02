@@ -1393,7 +1393,11 @@ mod ffi {
 mod tests {
     use super::*;
     use rama_core::futures::{StreamExt, future::join_all, stream::BoxStream};
-    use std::{pin::pin, sync::atomic::AtomicUsize};
+    use std::{
+        pin::pin,
+        sync::atomic::AtomicUsize,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     use crate::wire::SvcParam;
 
@@ -1920,6 +1924,17 @@ mod tests {
         );
     }
 
+    /// A name no earlier run asked, so the DNS Client cache cannot answer it.
+    fn uncached(label: &str) -> Domain {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        format!("{label}-{nonce:x}.example.com")
+            .try_into()
+            .expect("domain")
+    }
+
     /// A lookup that answers `127.0.0.1` once `gate` opens.
     fn gated_lookup(
         gate: &Arc<Notify>,
@@ -2208,8 +2223,8 @@ mod tests {
             runtime.block_on(async {
                 let resolver = WindowsDnsResolver::new().with_timeout(Duration::from_secs(2));
                 for i in 0..64 {
-                    // unique names bypass the OS cache so both queries stay async
-                    let domain: Domain = format!("cancel-race-{i}.example.com").try_into().unwrap();
+                    // uncached names keep both queries async, also on a re-run
+                    let domain = uncached(&format!("cancel-race-{i}"));
                     let mut lookup_v4 = pin!(resolver.lookup_ipv4(domain.clone()));
                     let mut lookup_v6 = pin!(resolver.lookup_ipv6(domain));
                     tokio::select! {
@@ -2233,7 +2248,7 @@ mod tests {
     async fn short_timeout_lookup_completes() {
         let resolver = WindowsDnsResolver::new().with_timeout(Duration::from_millis(1));
         let completed = tokio::time::timeout(Duration::from_secs(30), async {
-            let mut stream = pin!(resolver.lookup_ipv4(Domain::example()));
+            let mut stream = pin!(resolver.lookup_ipv4(uncached("short-timeout")));
             while stream.next().await.is_some() {}
         })
         .await;
