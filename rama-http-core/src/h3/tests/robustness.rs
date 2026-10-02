@@ -23,6 +23,7 @@ use rama_net::uri::Uri;
 use rama_quic::TransportConfig;
 use rama_quic_proto::{Dir, MAX_STREAM_COUNT, Side, StreamId, VarInt, coding::Codec};
 use rama_utils::octets::kib;
+use std::assert_matches;
 use std::{
     convert::Infallible,
     error::Error as _,
@@ -357,8 +358,11 @@ async fn check_malformed_request_streams_leave_connection_and_admission_usable(i
             assert_eq!(error.scope(), ErrorScope::Stream);
             assert!(pair.server.close_reason().is_none());
             let error = recv.read_chunk(1024, true).await.unwrap_err();
-            assert!(matches!(error, rama_quic::ReadError::Reset(code)
-                if code.into_inner() == Code::H3_MESSAGE_ERROR.value()));
+            assert_matches!(
+                error,
+                rama_quic::ReadError::Reset(code)
+                    if code.into_inner() == Code::H3_MESSAGE_ERROR.value(),
+            );
         }
         let serve = spawn(async move {
             let (request, response) = server.accept().await.unwrap().resolve().await.unwrap();
@@ -1061,8 +1065,10 @@ async fn memory_malformed_request_body_and_trailers_abort_both_directions() {
             let (request, response) = server.accept().await.unwrap().resolve().await.unwrap();
             request.into_body().collect().await.unwrap_err();
             assert_eq!(stopped.await.unwrap().unwrap().into_inner(), Code::H3_MESSAGE_ERROR.value());
-            assert!(matches!(recv.read_chunk(1024, true).await.unwrap_err(),
-                rama_quic::ReadError::Reset(code) if code.into_inner() == Code::H3_MESSAGE_ERROR.value()));
+            assert_matches!(
+                recv.read_chunk(1024, true).await.unwrap_err(),
+                rama_quic::ReadError::Reset(code) if code.into_inner() == Code::H3_MESSAGE_ERROR.value(),
+            );
             // The send direction is reset immediately, even while its application
             // response handle remains alive in another task.
             drop(response);
@@ -1262,9 +1268,10 @@ async fn memory_malformed_response_aborts_pending_upload() {
         response.into_body().collect().await.unwrap_err();
         // Both directions must be aborted: the request upload is reset.
         let error = recv.read_chunk(1024, true).await.unwrap_err();
-        assert!(
-            matches!(error, rama_quic::ReadError::Reset(code) if code.into_inner() == Code::H3_MESSAGE_ERROR.value()),
-            "{error:?}"
+        assert_matches!(
+            error,
+            rama_quic::ReadError::Reset(code) if code.into_inner() == Code::H3_MESSAGE_ERROR.value(),
+            "{error:?}",
         );
         assert!(pair.client.close_reason().is_none(), "{:?} / server {:?}", pair.client.close_reason(), pair.server.close_reason());
         pair.client
@@ -1414,7 +1421,7 @@ async fn memory_server_rejects_unresolved_and_post_shutdown_requests() {
             send.write_all(&[FrameType::HEADERS.value() as u8]).await.unwrap();
             if !shutdown { drop(server.accept().await.unwrap()); }
             assert_eq!(send.stopped().await.unwrap().unwrap().into_inner(), Code::H3_REQUEST_REJECTED.value());
-            assert!(matches!(recv.read_chunk(1, true).await.unwrap_err(), rama_quic::ReadError::Reset(code) if code.into_inner() == Code::H3_REQUEST_REJECTED.value()));
+            assert_matches!(recv.read_chunk(1, true).await.unwrap_err(), rama_quic::ReadError::Reset(code) if code.into_inner() == Code::H3_REQUEST_REJECTED.value());
         }
         pair.client.close(Code::H3_NO_ERROR.value() as u32, b"complete");
         driver.await.unwrap().unwrap();
@@ -1836,9 +1843,10 @@ async fn memory_driver_drop_preserves_recorded_protocol_failure() {
         // Abort the owner before run() gets another poll to deliver the error.
         drop(driver);
         let reason = pair.client.closed().await;
-        assert!(
-            matches!(reason, rama_quic::ConnectionError::ApplicationClosed(close)
-            if close.error_code.into_inner() == Code::QPACK_DECOMPRESSION_FAILED.value())
+        assert_matches!(
+            reason,
+            rama_quic::ConnectionError::ApplicationClosed(close)
+            if close.error_code.into_inner() == Code::QPACK_DECOMPRESSION_FAILED.value(),
         );
         pair.close().await;
     })

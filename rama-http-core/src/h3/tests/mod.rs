@@ -24,6 +24,7 @@ use rama_tls::{
     server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
 };
 use rama_udp::test_utils::{MemoryDatagramControl, MemoryDatagramSocket};
+use std::assert_matches;
 use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 
 const LIMIT: Duration = Duration::from_secs(20);
@@ -577,12 +578,12 @@ async fn connect_upgrade_keeps_half_closed_tunnel_alive() {
                     task::{Context, Poll, Waker},
                 };
                 let mut drained = Box::pin(server.drained());
-                assert!(matches!(
+                assert_matches!(
                     drained
                         .as_mut()
                         .poll(&mut Context::from_waker(Waker::noop())),
-                    Poll::Pending
-                ));
+                    Poll::Pending,
+                );
             }
             let mut bytes = Vec::new();
             tunnel.read_to_end(&mut bytes).await.unwrap();

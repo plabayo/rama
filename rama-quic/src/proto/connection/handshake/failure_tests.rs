@@ -7,6 +7,7 @@ use rama_quic_proto::{
     ConnectionId, Side, TransportErrorCode, Version,
     crypto::{HeaderKey, PacketKey},
 };
+use std::assert_matches;
 
 struct FailedKeyUpdate {
     missing: bool,
@@ -78,9 +79,10 @@ fn failed_key_derivation_closes_without_rotating_or_counting_an_update() {
         assert_eq!(connection.spaces[SpaceId::Data].sent_with_keys, sent);
         assert_eq!(connection.stats.key_updates, updates);
         assert!(connection.prev_crypto.is_none());
-        assert!(
-            matches!(connection.ended_because(), Some(ConnectionError::TransportError(error))
-            if error.code == TransportErrorCode::INTERNAL_ERROR)
+        assert_matches!(
+            connection.ended_because(),
+            Some(ConnectionError::TransportError(error))
+            if error.code == TransportErrorCode::INTERNAL_ERROR,
         );
     }
 }
@@ -149,8 +151,9 @@ fn failed_packet_encryption_does_not_emit_or_track_plaintext() {
     assert_eq!(connection.stats.key_updates, updates);
     assert_eq!(connection.stats.path.sent_packets, sent);
     assert_eq!(connection.stats.udp_tx.datagrams, datagrams);
-    assert!(
-        matches!(connection.ended_because(), Some(ConnectionError::TransportError(error))
-        if error.code == TransportErrorCode::INTERNAL_ERROR)
+    assert_matches!(
+        connection.ended_because(),
+        Some(ConnectionError::TransportError(error))
+        if error.code == TransportErrorCode::INTERNAL_ERROR,
     );
 }

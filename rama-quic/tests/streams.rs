@@ -16,6 +16,7 @@
 
 mod runtime;
 
+use std::assert_matches;
 use std::{
     net::{Ipv4Addr, SocketAddr},
     time::Duration,
@@ -158,12 +159,10 @@ async fn a_writer_that_resets_is_reported_to_the_reader() {
         .await
         .expect("the reader is told")
         .expect_err("a reset stream does not complete");
-    assert!(
-        matches!(
-            error,
-            rama_quic::ReadToEndError::Read(ReadError::Reset(code)) if code == VarInt::from(9u32)
-        ),
-        "the reader is told the code the writer gave: {error:?}"
+    assert_matches!(
+        error,
+        rama_quic::ReadToEndError::Read(ReadError::Reset(code)) if code == VarInt::from(9u32),
+        "the reader is told the code the writer gave: {error:?}",
     );
     pair.close().await;
 }
@@ -187,9 +186,10 @@ async fn a_write_to_a_stopped_stream_ends_the_copy() {
         .await
         .expect("the write returned rather than blocking")
         .expect_err("a stopped stream takes nothing more");
-    assert!(
-        matches!(error, WriteError::Stopped(code) if code == VarInt::from(3u32)),
-        "and says the reader stopped it: {error:?}"
+    assert_matches!(
+        error,
+        WriteError::Stopped(code) if code == VarInt::from(3u32),
+        "and says the reader stopped it: {error:?}",
     );
     pair.close().await;
 }

@@ -225,6 +225,7 @@ where
 #[cfg(test)]
 mod tests {
     use core::convert::Infallible;
+    use std::assert_matches;
 
     use rama_core::bytes::BytesMut;
     use rama_http_types::{Body, HeaderValue, header::PROXY_AUTHORIZATION};
@@ -548,12 +549,12 @@ mod tests {
                     .serve(request_with_stale_route(Some(stale_route)))
                     .await;
                 if isolate && is_forward {
-                    assert!(matches!(
+                    assert_matches!(
                         result
                             .unwrap_err()
                             .downcast_ref::<HttpForwardProxyAuthRequired>(),
                         Some(HttpForwardProxyAuthRequired),
-                    ));
+                    );
                 } else {
                     let response = result.unwrap();
                     assert_eq!(response.status(), StatusCode::PROXY_AUTHENTICATION_REQUIRED);

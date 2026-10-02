@@ -883,6 +883,7 @@ pub struct Timings {
 #[cfg(test)]
 mod tests {
     use rama_http_types::body::util::BodyExt as _;
+    use std::assert_matches;
 
     use super::*;
 
@@ -910,7 +911,7 @@ mod tests {
         let entry0 = &log_file.log.entries[0];
         assert_eq!("http://www.igvita.com/", entry0.request.url);
         assert_eq!("GET", entry0.request.method);
-        assert!(matches!(entry0.request.http_version, HttpVersion::Http11));
+        assert_matches!(entry0.request.http_version, HttpVersion::Http11);
         assert_eq!(0, entry0.request.query_string.len());
 
         let entry1 = &log_file.log.entries[1];
@@ -949,7 +950,7 @@ mod tests {
         let req0_back = Request::from_http_request_parts(&req0_parts, &[], false).unwrap();
         assert_eq!(entry0.request.method, req0_back.method);
         assert_eq!(entry0.request.url, req0_back.url);
-        assert!(matches!(req0_back.http_version, HttpVersion::Http11));
+        assert_matches!(req0_back.http_version, HttpVersion::Http11);
         assert_eq!(0, req0_back.body_size);
 
         let ua = req0_back
@@ -1019,7 +1020,7 @@ mod tests {
         let res0_back = Response::from_http_response_parts(&res0_parts, &[], false).unwrap();
         assert_eq!(200, res0_back.status);
         assert_eq!(Some("OK"), res0_back.status_text.as_deref());
-        assert!(matches!(res0_back.http_version, HttpVersion::Http11));
+        assert_matches!(res0_back.http_version, HttpVersion::Http11);
 
         let mime = res0_back.content.mime_type.unwrap();
         assert_eq!("text/html; charset=utf-8", mime.as_ref());

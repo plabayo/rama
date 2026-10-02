@@ -184,6 +184,7 @@ mod tests {
     };
     use parking_lot::Mutex;
     use rama_http::headers::Priority;
+    use std::assert_matches;
     use std::{
         future::Future as _,
         pin::pin,
@@ -318,16 +319,16 @@ mod tests {
         assert!(Pin::new(&mut tunnel).poll_shutdown(&mut cx).is_pending());
         assert_eq!(admission.available_permits(), 0);
         acknowledged.store(true, Ordering::Relaxed);
-        assert!(matches!(
+        assert_matches!(
             Pin::new(&mut tunnel).poll_shutdown(&mut cx),
-            Poll::Ready(Ok(()))
-        ));
+            Poll::Ready(Ok(())),
+        );
         assert_eq!(admission.available_permits(), 1);
         shared.schedule.register(4, Priority::default()).unwrap();
-        assert!(matches!(
+        assert_matches!(
             Pin::new(&mut tunnel).poll_shutdown(&mut cx),
-            Poll::Ready(Ok(()))
-        ));
+            Poll::Ready(Ok(())),
+        );
     }
 
     #[test]
@@ -356,14 +357,14 @@ mod tests {
         {
             let mut write = pin!(active.write(b"progress"));
             assert!(write.as_mut().poll(&mut cx).is_pending());
-            assert!(matches!(write.as_mut().poll(&mut cx), Poll::Ready(Ok(8))));
+            assert_matches!(write.as_mut().poll(&mut cx), Poll::Ready(Ok(8)));
         }
         assert!(Pin::new(&mut active).poll_flush(&mut cx).is_ready());
         assert_eq!(*active_output.lock(), b"\x00\x08progress");
         assert!(abandoned_output.lock().is_empty());
         {
             let mut write = pin!(abandoned.write(b"retry"));
-            assert!(matches!(write.as_mut().poll(&mut cx), Poll::Ready(Ok(5))));
+            assert_matches!(write.as_mut().poll(&mut cx), Poll::Ready(Ok(5)));
         }
         assert!(Pin::new(&mut abandoned).poll_flush(&mut cx).is_ready());
         assert_eq!(*abandoned_output.lock(), b"\x00\x05retry");

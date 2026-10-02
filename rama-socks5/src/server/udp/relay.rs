@@ -545,6 +545,7 @@ impl UdpSocketRelay {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     // Regression for Bug 2: send_to_north(None) was calling BytesMut::resize() after
     // truncate(0), which filled the buffer with N zeros before appending header+data,
@@ -572,9 +573,10 @@ mod tests {
 
         // recv() reads south packet and stores raw payload in south_read_buf
         let state = relay.recv().await.unwrap().unwrap();
-        assert!(
-            matches!(state, UdpRelayState::ReadSouth(addr) if addr == server_socket_addr),
-            "expected ReadSouth from server address"
+        assert_matches!(
+            state,
+            UdpRelayState::ReadSouth(addr) if addr == server_socket_addr,
+            "expected ReadSouth from server address",
         );
 
         // send_to_north(None) should relay [socks5_header][payload] to client, no leading zeros
@@ -641,9 +643,10 @@ mod tests {
             .unwrap()
             .expect("first packet must not be dropped when client_address is 0.0.0.0:0");
 
-        assert!(
-            matches!(state, UdpRelayState::ReadNorth(_)),
-            "RFC 1928 §7: the first packet selects the client UDP source when client_address is 0.0.0.0:0"
+        assert_matches!(
+            state,
+            UdpRelayState::ReadNorth(_),
+            "RFC 1928 §7: the first packet selects the client UDP source when client_address is 0.0.0.0:0",
         );
 
         let second_sender = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
@@ -691,9 +694,10 @@ mod tests {
                 .expect("timed out")
                 .unwrap();
 
-            assert!(
-                matches!(state, Some(UdpRelayState::ReadNorth(_))),
-                "AnySource policy must preserve the historical accept-any-source behavior"
+            assert_matches!(
+                state,
+                Some(UdpRelayState::ReadNorth(_)),
+                "AnySource policy must preserve the historical accept-any-source behavior",
             );
         }
     }

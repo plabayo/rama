@@ -399,6 +399,7 @@ where
 mod tests {
     use super::*;
     use futures::channel::mpsc;
+    use std::assert_matches;
     use std::time::Instant;
 
     #[test]
@@ -592,10 +593,10 @@ mod tests {
             .await
             .expect("bridge did not unwind within 2s")
             .unwrap();
-        assert!(matches!(
+        assert_matches!(
             reason,
-            BridgeCloseReason::PeerEofLeft | BridgeCloseReason::PeerEofRight
-        ));
+            BridgeCloseReason::PeerEofLeft | BridgeCloseReason::PeerEofRight,
+        );
     }
 
     #[tokio::test]
@@ -651,11 +652,9 @@ mod tests {
             .await
             .expect("bridge did not unwind on EOF within 2s")
             .unwrap();
-        assert!(
-            matches!(
-                reason,
-                BridgeCloseReason::PeerEofLeft | BridgeCloseReason::PeerEofRight
-            ),
+        assert_matches!(
+            reason,
+            BridgeCloseReason::PeerEofLeft | BridgeCloseReason::PeerEofRight,
             "expected EOF reason, got {reason}",
         );
     }

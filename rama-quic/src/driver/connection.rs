@@ -3555,6 +3555,7 @@ mod tests {
         DatagramCapabilities, DatagramError, DatagramMetadata, DatagramSender, DatagramSocket,
     };
     use rama_utils::octets;
+    use std::assert_matches;
     use std::{error::Error as _, io::IoSliceMut};
 
     #[derive(Debug, Clone, Copy)]
@@ -3718,7 +3719,7 @@ mod tests {
                 return true;
             };
             let index = self.seen.fetch_add(1, Ordering::Relaxed);
-            assert!(matches!(packet.trigger, DropReason::KeyUnavailable));
+            assert_matches!(packet.trigger, DropReason::KeyUnavailable);
             assert_eq!(packet.raw.unwrap().length, 32 + index, "packet FIFO order");
             // The current event and every unprocessed packet in the queue remain charged.
             // This runs inside handle_event, so it detects release after dequeue but before
@@ -3821,14 +3822,11 @@ mod tests {
                 }
                 let result = fixture.process();
                 if total >= 160 {
-                    assert!(
-                        matches!(result, Ok(true)),
-                        "the allowance requests another poll"
-                    );
+                    assert_matches!(result, Ok(true), "the allowance requests another poll");
                 } else if sender_dropped {
-                    assert!(matches!(result, Err(ConnectionError::TransportError(_))));
+                    assert_matches!(result, Err(ConnectionError::TransportError(_)));
                 } else {
-                    assert!(matches!(result, Ok(false)), "a live drained queue waits");
+                    assert_matches!(result, Ok(false), "a live drained queue waits");
                 }
                 assert_eq!(
                     fixture.observer.seen.load(Ordering::Relaxed),
@@ -3838,9 +3836,9 @@ mod tests {
 
                 let result = fixture.process();
                 if sender_dropped {
-                    assert!(matches!(result, Err(ConnectionError::TransportError(_))));
+                    assert_matches!(result, Err(ConnectionError::TransportError(_)));
                 } else {
-                    assert!(matches!(result, Ok(false)));
+                    assert_matches!(result, Ok(false));
                 }
                 assert_eq!(fixture.observer.seen.load(Ordering::Relaxed), total);
                 fixture.observer.assert_charged(total);
@@ -3933,11 +3931,11 @@ mod tests {
         );
         assert_eq!(connection.driver_stats().oversized_sends, 0);
         connection.close(0u32, b"done");
-        assert!(matches!(
+        assert_matches!(
             tokio::time::timeout(Duration::from_secs(1), connecting)
                 .await
                 .unwrap(),
-            Err(ConnectionError::LocallyClosed)
-        ));
+            Err(ConnectionError::LocallyClosed),
+        );
     }
 }

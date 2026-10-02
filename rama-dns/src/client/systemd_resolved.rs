@@ -888,6 +888,7 @@ impl std::error::Error for SystemdResolvedError {}
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::assert_matches;
     use std::sync::atomic::AtomicUsize;
     use tokio::net::UnixListener;
 
@@ -1034,11 +1035,11 @@ mod tests {
     }
 
     fn assert_available(resolved: &SystemdResolved) {
-        assert!(matches!(phase(resolved), Phase::Available));
+        assert_matches!(phase(resolved), Phase::Available);
     }
 
     fn assert_unavailable(resolved: &SystemdResolved) {
-        assert!(matches!(phase(resolved), Phase::Unavailable { .. }));
+        assert_matches!(phase(resolved), Phase::Unavailable { .. });
     }
 
     fn hostname_reply(addresses: &serde_json::Value) -> serde_json::Value {
@@ -1330,8 +1331,9 @@ mod tests {
                 .await,
             ResolvedLookup::Unavailable,
         ));
-        assert!(
-            matches!(phase(&resolved), Phase::Available),
+        assert_matches!(
+            phase(&resolved),
+            Phase::Available,
             "one failure below the threshold must not trip the breaker",
         );
         assert!(matches!(

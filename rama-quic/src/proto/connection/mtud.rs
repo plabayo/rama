@@ -556,6 +556,8 @@ mod tests {
     use crate::proto::Duration;
     use crate::proto::MAX_UDP_PAYLOAD;
     use rama_quic_proto::packet::SpaceId;
+    #[cfg(debug_assertions)]
+    use std::assert_matches;
 
     fn default_mtud() -> MtuDiscovery {
         let config = MtuDiscoveryConfig::default();
@@ -774,10 +776,7 @@ mod tests {
     fn mtu_discovery_with_peer_max_udp_payload_size_during_search_panics() {
         let mut mtud = default_mtud();
         assert!(mtud.poll_transmit(Instant::now(), 0).is_some());
-        assert!(matches!(
-            mtud.state.as_ref().unwrap().phase,
-            Phase::Searching(_)
-        ));
+        assert_matches!(mtud.state.as_ref().unwrap().phase, Phase::Searching(_));
         mtud.on_peer_max_udp_payload_size_received(1300);
     }
 

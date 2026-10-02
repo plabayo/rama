@@ -4,6 +4,7 @@
 //! Every category here has a public CVE precedent if mis-handled.
 
 use core::net::{IpAddr, Ipv4Addr};
+use std::assert_matches;
 
 use super::{assert_origin_form, lazy, parse_graceful, parse_strict, userinfo_str};
 use crate::address::Host;
@@ -28,13 +29,15 @@ fn crlf_anywhere_rejected() {
         "http://example.com\n/",
         "http://example.com/\r",
     ] {
-        assert!(
-            matches!(parse_graceful(s), Err(ParseError::ControlCharInUri { .. })),
-            "graceful must reject {s:?}"
+        assert_matches!(
+            parse_graceful(s),
+            Err(ParseError::ControlCharInUri { .. }),
+            "graceful must reject {s:?}",
         );
-        assert!(
-            matches!(parse_strict(s), Err(ParseError::ControlCharInUri { .. })),
-            "strict must reject {s:?}"
+        assert_matches!(
+            parse_strict(s),
+            Err(ParseError::ControlCharInUri { .. }),
+            "strict must reject {s:?}",
         );
     }
 }
@@ -42,10 +45,10 @@ fn crlf_anywhere_rejected() {
 #[test]
 fn nul_byte_rejected() {
     for s in ["/\0foo", "/foo\0", "/foo?\0", "/foo#\0", "http://\0/"] {
-        assert!(matches!(
+        assert_matches!(
             parse_graceful(s),
-            Err(ParseError::ControlCharInUri { byte: 0, .. })
-        ));
+            Err(ParseError::ControlCharInUri { byte: 0, .. }),
+        );
     }
 }
 
@@ -58,20 +61,20 @@ fn tab_rejected() {
         "http://example\t.com/",
         "http://example.com/foo\tbar",
     ] {
-        assert!(matches!(
+        assert_matches!(
             parse_graceful(s),
-            Err(ParseError::ControlCharInUri { byte: b'\t', .. })
-        ));
+            Err(ParseError::ControlCharInUri { byte: b'\t', .. }),
+        );
     }
 }
 
 #[test]
 fn del_byte_rejected() {
     for s in ["/foo\x7Fbar", "http://example.com/\x7F"] {
-        assert!(matches!(
+        assert_matches!(
             parse_graceful(s),
-            Err(ParseError::ControlCharInUri { byte: 0x7F, .. })
-        ));
+            Err(ParseError::ControlCharInUri { byte: 0x7F, .. }),
+        );
     }
 }
 
@@ -86,10 +89,7 @@ fn backslash_not_folded_to_slash() {
     // accepts the literal backslash; strict rejects.
     let u = parse_graceful("/path\\foo").unwrap();
     assert_origin_form(&u, "/path\\foo", None, None);
-    assert!(matches!(
-        parse_strict("/path\\foo"),
-        Err(ParseError::StrictViolation)
-    ));
+    assert_matches!(parse_strict("/path\\foo"), Err(ParseError::StrictViolation));
 }
 
 #[test]
@@ -97,10 +97,10 @@ fn backslash_authority_spoof_rejected_in_both_modes() {
     // Classic browser-spoof input: `https://example.com\evil.com/`.
     // WHATWG-URL rewrites `\` → `/` and parses host as `evil.com`;
     // rama rejects — `\` isn't in the host byte set.
-    assert!(matches!(
+    assert_matches!(
         parse_graceful("https://example.com\\evil.com/"),
-        Err(ParseError::InvalidComponent(Component::Host))
-    ));
+        Err(ParseError::InvalidComponent(Component::Host)),
+    );
     parse_strict("https://example.com\\evil.com/").unwrap_err();
 }
 
@@ -113,7 +113,7 @@ fn backslash_authority_spoof_rejected_in_both_modes() {
 fn alt_ipv4_octal_not_treated_as_ipv4() {
     let u = parse_graceful("http://0177.0.0.1/").unwrap();
     let auth = lazy(&u).authority.as_ref().unwrap();
-    assert!(matches!(auth.host, Host::Name(_)));
+    assert_matches!(auth.host, Host::Name(_));
     assert_ne!(
         auth.host,
         Host::Address(IpAddr::V4(Ipv4Addr::LOCALHOST)),
@@ -125,7 +125,7 @@ fn alt_ipv4_octal_not_treated_as_ipv4() {
 fn alt_ipv4_hex_not_treated_as_ipv4() {
     let u = parse_graceful("http://0x7f.0.0.1/").unwrap();
     let auth = lazy(&u).authority.as_ref().unwrap();
-    assert!(matches!(auth.host, Host::Name(_)));
+    assert_matches!(auth.host, Host::Name(_));
     assert_ne!(auth.host, Host::Address(IpAddr::V4(Ipv4Addr::LOCALHOST)));
 }
 
@@ -133,7 +133,7 @@ fn alt_ipv4_hex_not_treated_as_ipv4() {
 fn alt_ipv4_single_int_not_treated_as_ipv4() {
     let u = parse_graceful("http://2130706433/").unwrap();
     let auth = lazy(&u).authority.as_ref().unwrap();
-    assert!(matches!(auth.host, Host::Name(_)));
+    assert_matches!(auth.host, Host::Name(_));
     assert_ne!(auth.host, Host::Address(IpAddr::V4(Ipv4Addr::LOCALHOST)));
 }
 
@@ -154,10 +154,7 @@ fn percent_2f_not_decoded_in_path() {
 #[test]
 fn overlong_input_rejected() {
     let big = "/".to_owned() + &"a".repeat(MAX_URI_LEN);
-    assert!(matches!(
-        parse_graceful(&big),
-        Err(ParseError::TooLong { .. })
-    ));
+    assert_matches!(parse_graceful(&big), Err(ParseError::TooLong { .. }));
 }
 
 #[test]
@@ -189,12 +186,12 @@ fn public_uri_max_len_matches_internal_cap() {
 #[test]
 fn unbracketed_ipv6_in_authority_rejected() {
     let r = parse_graceful("http://2001:db8::1/");
-    assert!(matches!(
+    assert_matches!(
         r,
         Err(ParseError::InvalidComponent(
             Component::Port | Component::Host
-        ))
-    ));
+        )),
+    );
 }
 
 #[test]
@@ -202,7 +199,7 @@ fn ipv6_zone_id_rejected() {
     // RFC 9844 `%25en0` zone-identifier wire encoding. We reject pending
     // first-class `Ipv6+zone` host support.
     let r = parse_graceful("https://[fe80::1%25en0]/");
-    assert!(matches!(r, Err(ParseError::IPv6ZoneNotSupported)));
+    assert_matches!(r, Err(ParseError::IPv6ZoneNotSupported));
 }
 
 #[test]
@@ -294,19 +291,13 @@ fn port_65535_accepted() {
 #[test]
 fn port_65536_overflow_rejected() {
     let r = parse_graceful("http://example.com:65536/");
-    assert!(matches!(
-        r,
-        Err(ParseError::InvalidComponent(Component::Port))
-    ));
+    assert_matches!(r, Err(ParseError::InvalidComponent(Component::Port)));
 }
 
 #[test]
 fn port_negative_rejected() {
     let r = parse_graceful("http://example.com:-80/");
-    assert!(matches!(
-        r,
-        Err(ParseError::InvalidComponent(Component::Port))
-    ));
+    assert_matches!(r, Err(ParseError::InvalidComponent(Component::Port)));
 }
 
 // ----------------------------------------------------------------------
@@ -331,7 +322,7 @@ fn empty_authority_accepted_as_empty_uninterpreted_host() {
     // `http://` — empty authority with no path.
     let u = parse_graceful("http://").unwrap();
     let auth = lazy(&u).authority.as_ref().unwrap();
-    assert!(matches!(&auth.host, Host::Uninterpreted(h) if h.as_str().is_empty()));
+    assert_matches!(&auth.host, Host::Uninterpreted(h) if h.as_str().is_empty());
 }
 
 #[test]

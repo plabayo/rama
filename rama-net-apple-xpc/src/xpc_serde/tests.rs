@@ -1,5 +1,6 @@
 use super::*;
 use serde::{Deserialize, Serialize};
+use std::assert_matches;
 use std::{collections::BTreeMap, fmt};
 
 fn round_trip<T>(value: &T) -> T
@@ -53,7 +54,7 @@ fn struct_round_trip() {
 
     // Verify the XpcMessage shape is a Dictionary
     let msg = to_xpc_message(&s).unwrap();
-    assert!(matches!(msg, XpcMessage::Dictionary(_)));
+    assert_matches!(msg, XpcMessage::Dictionary(_));
 }
 
 #[test]
@@ -119,8 +120,9 @@ fn xpc_uuid_round_trips_as_uuid_variant() {
     let uuid = XpcUuid(bytes);
 
     let msg = to_xpc_message(&uuid).expect("serialize");
-    assert!(
-        matches!(msg, XpcMessage::Uuid(b) if b == bytes),
+    assert_matches!(
+        msg,
+        XpcMessage::Uuid(b) if b == bytes,
         "XpcUuid must serialize as XpcMessage::Uuid, got {msg:?}",
     );
 
@@ -163,7 +165,7 @@ fn xpc_uuid_nested_in_struct_round_trips() {
     let msg = to_xpc_message(&v).expect("serialize");
     // The outer dictionary holds an XpcMessage::Uuid for the `id` field.
     if let XpcMessage::Dictionary(ref map) = msg {
-        assert!(matches!(map.get("id"), Some(XpcMessage::Uuid(_))));
+        assert_matches!(map.get("id"), Some(XpcMessage::Uuid(_)));
     } else {
         panic!("expected Dictionary, got {msg:?}");
     }
@@ -185,7 +187,7 @@ fn xpc_data_round_trips_as_data_variant() {
     let data = XpcData::new([0, 1, 2, 255]);
 
     let msg = to_xpc_message(&data).expect("serialize");
-    assert!(matches!(msg, XpcMessage::Data(ref bytes) if bytes == data.as_bytes()));
+    assert_matches!(msg, XpcMessage::Data(ref bytes) if bytes == data.as_bytes());
 
     let back: XpcData = from_xpc_message(msg).expect("deserialize");
     assert_eq!(back, data);
@@ -202,7 +204,7 @@ fn xpc_date_round_trips_as_date_variant() {
     let date = XpcDate::from_unix_nanos(1_782_490_123_456_789_000);
 
     let msg = to_xpc_message(&date).expect("serialize");
-    assert!(matches!(msg, XpcMessage::Date(value) if value == date.unix_nanos()));
+    assert_matches!(msg, XpcMessage::Date(value) if value == date.unix_nanos());
 
     let back: XpcDate = from_xpc_message(msg).expect("deserialize");
     assert_eq!(back, date);
@@ -233,9 +235,9 @@ fn native_xpc_values_round_trip_in_struct() {
     let XpcMessage::Dictionary(ref fields) = message else {
         panic!("expected Dictionary, got {message:?}");
     };
-    assert!(matches!(fields.get("data"), Some(XpcMessage::Data(_))));
-    assert!(matches!(fields.get("date"), Some(XpcMessage::Date(-1))));
-    assert!(matches!(fields.get("uuid"), Some(XpcMessage::Uuid(_))));
+    assert_matches!(fields.get("data"), Some(XpcMessage::Data(_)));
+    assert_matches!(fields.get("date"), Some(XpcMessage::Date(-1)));
+    assert_matches!(fields.get("uuid"), Some(XpcMessage::Uuid(_)));
 
     let back: NativeValues = from_xpc_message(message).expect("deserialize");
     assert_eq!(back, value);

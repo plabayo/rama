@@ -44,6 +44,7 @@ use rama_net_apple_networkextension::{
     },
     transparent_proxy_ffi,
 };
+use std::assert_matches;
 
 use parking_lot::Mutex;
 use rama_core::{
@@ -392,12 +393,10 @@ fn run_round_trip(ack: (RamaPromoteConfirmStatus, Option<&str>)) -> (ServiceResu
     };
     let status = unsafe { rama_transparent_proxy_tcp_session_on_client_bytes(session, bytes_view) };
     // Keep delivery-status coverage alongside the ACK propagation assertions.
-    assert!(
-        matches!(
-            status,
-            RamaTcpDeliverStatus::Accepted | RamaTcpDeliverStatus::Closed
-        ),
-        "unexpected client-byte status: {status:?}"
+    assert_matches!(
+        status,
+        RamaTcpDeliverStatus::Accepted | RamaTcpDeliverStatus::Closed,
+        "unexpected client-byte status: {status:?}",
     );
 
     // Handle the queued request only after earlier session entries return.

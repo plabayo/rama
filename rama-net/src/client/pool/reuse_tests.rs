@@ -4,6 +4,7 @@ use super::{
 };
 use rama_core::ServiceInput;
 use rama_core::extensions::{Extension, Extensions, ExtensionsRef};
+use std::assert_matches;
 use std::{
     sync::{
         Arc,
@@ -266,10 +267,10 @@ async fn exclusive_only_evaluates_the_first_compatible_policy() {
         );
     }
     drop(held);
-    assert!(matches!(
+    assert_matches!(
         pool.get_conn(&Route, &input).await.unwrap(),
-        ConnectionResult::Connection(_)
-    ));
+        ConnectionResult::Connection(_),
+    );
     assert_eq!(
         calls.load(Ordering::Relaxed),
         1,

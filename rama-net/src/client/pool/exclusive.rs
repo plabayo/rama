@@ -796,6 +796,7 @@ mod tests {
     use rama_core::ServiceInput;
     use rama_core::extensions::ExtensionsRef;
     use rama_core::{Service, extensions::Extensions};
+    use std::assert_matches;
     use std::sync::atomic::AtomicBool;
     use std::{
         convert::Infallible,
@@ -960,10 +961,10 @@ mod tests {
                 .await
                 .unwrap(),
         );
-        assert!(matches!(
+        assert_matches!(
             pool.get_conn(&0, &input).await.unwrap(),
-            ConnectionResult::Connection(_)
-        ));
+            ConnectionResult::Connection(_),
+        );
     }
 
     #[tokio::test]

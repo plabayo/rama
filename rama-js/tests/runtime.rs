@@ -1,3 +1,4 @@
+use std::assert_matches;
 use std::net::IpAddr;
 
 use rama_js::{
@@ -1850,8 +1851,9 @@ fn a_faked_array_length_never_becomes_a_size() {
         let value = runtime.eval(&src).unwrap_or_else(|err| {
             panic!("length {length}: {err}");
         });
-        assert!(
-            matches!(value, JsValue::Object(_)),
+        assert_matches!(
+            value,
+            JsValue::Object(_),
             "length {length} was snapshotted as {value:?}, not as a plain object",
         );
     }

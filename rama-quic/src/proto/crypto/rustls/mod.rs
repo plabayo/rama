@@ -925,6 +925,7 @@ fn session_error(error: rustls::Error) -> TransportError {
 mod tests {
     use super::*;
     use rama_tls_rustls::dep::rustls::pki_types::DnsName;
+    use std::assert_matches;
 
     #[test]
     fn handshake_error_without_alert_preserves_its_source() {
@@ -954,10 +955,10 @@ mod tests {
             .source()
             .and_then(|source| source.downcast_ref::<rustls::Error>())
             .expect("the original rustls error remains in the source chain");
-        assert!(matches!(
+        assert_matches!(
             source,
-            rustls::Error::InvalidMessage(rustls::InvalidMessage::HandshakePayloadTooLarge)
-        ));
+            rustls::Error::InvalidMessage(rustls::InvalidMessage::HandshakePayloadTooLarge),
+        );
         assert_eq!(error.reason(), format!("TLS error: {source}"));
     }
 

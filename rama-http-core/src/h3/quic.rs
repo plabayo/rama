@@ -257,6 +257,7 @@ impl<S: SendStream> Drop for Writer<S> {
 mod tests {
     use super::*;
     use parking_lot::Mutex;
+    use std::assert_matches;
     use std::sync::Arc;
 
     #[derive(Default)]
@@ -376,7 +377,7 @@ mod tests {
         let state = Arc::new(Mutex::new(State::default()));
         let mut writer = Writer::new(Fake(state.clone()));
         let mut cx = Context::from_waker(std::task::Waker::noop());
-        assert!(matches!(writer.poll_finish(&mut cx), Poll::Ready(Ok(()))));
+        assert_matches!(writer.poll_finish(&mut cx), Poll::Ready(Ok(())));
         assert!(state.lock().finished);
         drop(writer);
         assert_eq!(state.lock().reset, Some(Code::H3_REQUEST_CANCELLED));

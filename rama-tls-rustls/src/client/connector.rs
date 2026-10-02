@@ -708,6 +708,7 @@ pub struct ConnectorKindTunnel {
 mod tests {
     use super::*;
     use rama_net::client::pool::ConnectionReuse;
+    use std::assert_matches;
 
     use rama_core::{ServiceInput, service::service_fn};
     use rama_net::{
@@ -1108,14 +1109,11 @@ mod tests {
             config.versions.map(|versions| versions.0.as_slice()),
             Some([ProtocolVersion::TLSv1_3].as_slice())
         );
-        assert!(matches!(
-            config.keylog,
-            Some(TlsKeyLog(KeyLogIntent::Disabled))
-        ));
-        assert!(matches!(
+        assert_matches!(config.keylog, Some(TlsKeyLog(KeyLogIntent::Disabled)));
+        assert_matches!(
             config.client_auth,
-            Some(TlsClientAuth(ClientAuth::SelfSigned))
-        ));
+            Some(TlsClientAuth(ClientAuth::SelfSigned)),
+        );
         assert_eq!(config.store_chain.map(|store| store.0), Some(true));
         assert_eq!(
             config

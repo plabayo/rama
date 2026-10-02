@@ -1,4 +1,5 @@
 use super::*;
+use std::assert_matches;
 
 use std::time::Duration;
 
@@ -163,11 +164,9 @@ fn har_bodies_and_timings_are_shown_or_marked_unavailable() {
     assert_eq!(field(timings, "connect"), Section::UNAVAILABLE);
     assert_eq!(field(timings, "wait"), "40 ms");
     assert_eq!(text(section(login, "request body")), r#"{"user":"rama"}"#);
-    assert!(
-        matches!(
-            section(login, "response body"),
-            SectionBody::Unavailable(reason) if reason.contains("not captured"),
-        ),
+    assert_matches!(
+        section(login, "response body"),
+        SectionBody::Unavailable(reason) if reason.contains("not captured"),
         "an empty response body must stay visibly unavailable",
     );
     assert_eq!(login.level, Level::Warning);
@@ -304,10 +303,11 @@ fn a_rama_recorded_qlog_trace_opens_with_its_connection_group() {
     assert_eq!(started.badge.as_deref(), Some("quic"));
     assert_eq!(started.level, Level::Success);
     assert_eq!(started.start, Duration::ZERO);
-    assert!(
-        matches!(section(started, "data"), SectionBody::Fields(fields) if fields
+    assert_matches!(
+        section(started, "data"),
+        SectionBody::Fields(fields) if fields
             .iter()
-            .any(|field| field.name.starts_with("remote."))),
+            .any(|field| field.name.starts_with("remote.")),
         "nested event data is flattened into fields",
     );
 }

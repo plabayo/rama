@@ -431,6 +431,7 @@ impl_serde_str!(display NodeId);
 mod tests {
     use super::*;
     use crate::forwarded::ForwardedElement;
+    use std::assert_matches;
 
     #[test]
     fn test_parse_node_id_valid() {
@@ -632,7 +633,7 @@ mod tests {
     #[test]
     fn node_port_requires_digits() {
         "+80".parse::<NodePort>().unwrap_err();
-        assert!(matches!("80".parse::<NodePort>(), Ok(NodePort::Num(80))));
+        assert_matches!("80".parse::<NodePort>(), Ok(NodePort::Num(80)));
         for input in [r#"for="1.2.3.4:+80""#, r#"for="[::1]:+80""#] {
             if let Ok(el) = input.parse::<ForwardedElement>() {
                 assert_eq!(el.forwarded_for().and_then(NodeId::port), None, "{input}");

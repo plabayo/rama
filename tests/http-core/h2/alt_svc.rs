@@ -18,6 +18,7 @@ use rama_core::{
     extensions::{Extensions, ExtensionsRef},
     futures::StreamExt,
 };
+use std::assert_matches;
 use std::sync::Arc;
 
 struct ResponseService<S> {
@@ -86,7 +87,7 @@ async fn altsvc_resolves_request_origins_and_ignores_unknown_streams() {
         connection.drive(async { response.await.unwrap() }).await;
         let events = observer.0.lock();
         assert_eq!(events.len(), 2);
-        assert!(matches!(events[0].origin, AltSvcOrigin::Explicit(_)));
+        assert_matches!(events[0].origin, AltSvcOrigin::Explicit(_));
         let AltSvcOrigin::Request(origin) = &events[1].origin else {
             panic!("expected the request's origin");
         };

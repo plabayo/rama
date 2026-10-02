@@ -298,6 +298,7 @@ const fn is_web_port(port: u16) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn web_traffic_uses_reserved_headroom() {
@@ -316,10 +317,10 @@ mod tests {
             .try_reserve(25, Some("com.example.app"), Some(&host))
             .unwrap_or_else(|err| panic!("unexpected non-web reject: {err:?}"));
 
-        assert!(matches!(
+        assert_matches!(
             limiter.try_reserve(53, Some("com.example.app"), Some(&host)),
-            Err(RejectReason::NonWeb)
-        ));
+            Err(RejectReason::NonWeb),
+        );
 
         let _web_1 = limiter
             .try_reserve(443, Some("com.example.app"), Some(&host))
@@ -346,10 +347,10 @@ mod tests {
             .try_reserve(443, Some("com.example.app"), Some(&host))
             .unwrap_or_else(|err| panic!("unexpected app-host reject: {err:?}"));
 
-        assert!(matches!(
+        assert_matches!(
             limiter.try_reserve(443, Some("com.example.app"), Some(&host)),
-            Err(RejectReason::AppHost)
-        ));
+            Err(RejectReason::AppHost),
+        );
 
         let _other_app = limiter
             .try_reserve(443, Some("com.example.other"), Some(&host))
@@ -375,9 +376,9 @@ mod tests {
             .try_reserve(443, None, None)
             .unwrap_or_else(|err| panic!("unexpected reject without scoped key: {err:?}"));
 
-        assert!(matches!(
+        assert_matches!(
             limiter.try_reserve(443, None, None),
-            Err(RejectReason::Global)
-        ));
+            Err(RejectReason::Global),
+        );
     }
 }

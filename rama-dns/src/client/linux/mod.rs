@@ -987,6 +987,7 @@ mod tests {
         futures::{Stream, StreamExt as _, stream},
     };
     use rama_net::address::Domain;
+    use std::assert_matches;
     use std::{
         net::Ipv4Addr,
         sync::{
@@ -1154,7 +1155,7 @@ mod tests {
 
         let mut stream = Box::pin(cached_ipv4_stream(domain.clone(), cache.clone(), backend));
         let first = stream.next().await;
-        assert!(matches!(first, Some(Ok(addr)) if addr == addrs[0]));
+        assert_matches!(first, Some(Ok(addr)) if addr == addrs[0]);
         drop(stream);
 
         assert_eq!(
@@ -1254,8 +1255,8 @@ mod tests {
             .await;
 
         assert_eq!(items.len(), 2);
-        assert!(matches!(items[0], Ok(got) if got == addr));
-        assert!(matches!(items[1], Err(ref err) if err.to_string() == "boom"));
+        assert_matches!(items[0], Ok(got) if got == addr);
+        assert_matches!(items[1], Err(ref err) if err.to_string() == "boom");
         assert!(
             cached_ipv4(&cache, &domain).is_none(),
             "a failed lookup must not be cached",

@@ -245,6 +245,7 @@ mod tests {
     )]
 
     use crate::sse::{JsonEventData, test_event as event};
+    use std::assert_matches;
 
     use super::*;
     use rama_core::futures::prelude::*;
@@ -290,18 +291,15 @@ mod tests {
         let waker = Waker::from(Arc::clone(&wake_count));
         let mut cx = Context::from_waker(&waker);
 
-        assert!(matches!(stream.as_mut().poll_next(&mut cx), Poll::Pending));
+        assert_matches!(stream.as_mut().poll_next(&mut cx), Poll::Pending);
         assert_eq!(1, wake_count.0.load(Ordering::Relaxed));
         assert_eq!(POLL_BYTES_SOFT_CAP, stream.overflow.len());
 
-        assert!(matches!(stream.as_mut().poll_next(&mut cx), Poll::Pending));
+        assert_matches!(stream.as_mut().poll_next(&mut cx), Poll::Pending);
         assert_eq!(2, wake_count.0.load(Ordering::Relaxed));
         assert!(stream.overflow.is_empty());
 
-        assert!(matches!(
-            stream.as_mut().poll_next(&mut cx),
-            Poll::Ready(None)
-        ));
+        assert_matches!(stream.as_mut().poll_next(&mut cx), Poll::Ready(None));
     }
 
     #[test]
@@ -315,7 +313,7 @@ mod tests {
         let waker = Waker::from(Arc::clone(&wake_count));
         let mut cx = Context::from_waker(&waker);
 
-        assert!(matches!(stream.as_mut().poll_next(&mut cx), Poll::Pending));
+        assert_matches!(stream.as_mut().poll_next(&mut cx), Poll::Pending);
         assert_eq!(
             POLL_UPSTREAM_ITEMS_SOFT_CAP,
             upstream_polls.load(Ordering::Relaxed)

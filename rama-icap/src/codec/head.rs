@@ -2414,6 +2414,7 @@ impl<'a> Output<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     fn request_result(src: &[u8]) -> Result<ParseStatus<()>, ParseError> {
         let mut headers = [HeaderSlot::EMPTY; DEFAULT_MAX_HEADERS];
@@ -3110,10 +3111,10 @@ mod tests {
             Encapsulated: null-body=0\r\n\r\n";
         let config = HeadParserConfig::new().with_header_folding(HeaderFolding::Allow);
         let mut storage = [HeaderSlot::EMPTY; 8];
-        assert!(matches!(
+        assert_matches!(
             parse_response_head_with_config(MethodKind::Options, valid, &mut storage, config),
-            Ok(ParseStatus::Complete(_, _))
-        ));
+            Ok(ParseStatus::Complete(_, _)),
+        );
 
         for value in [
             b"OPTIONS".as_slice(),
@@ -3161,14 +3162,14 @@ mod tests {
                 ISTag: \"CI0001-NgJDaXzq7eNcJYIO4MFnugAA\"\r\n\r\n"
         );
         let mut strict_storage = [HeaderSlot::EMPTY; 4];
-        assert!(matches!(
+        assert_matches!(
             parse_response_head(
                 MethodKind::Respmod,
                 &encoded[..written],
                 &mut strict_storage,
             ),
-            Ok(ParseStatus::Complete(_, _))
-        ));
+            Ok(ParseStatus::Complete(_, _)),
+        );
 
         for value in [
             b"".as_slice(),
@@ -3248,15 +3249,15 @@ mod tests {
         let config =
             HeadParserConfig::new().with_interim_service_tag(InterimServiceTag::AllowMissing);
         let mut storage = [HeaderSlot::EMPTY; 1];
-        assert!(matches!(
+        assert_matches!(
             parse_response_head_with_config(
                 MethodKind::Respmod,
                 b"ICAP/1.0 100 Continue\r\n\r\n",
                 &mut storage,
                 config,
             ),
-            Ok(ParseStatus::Complete(_, _))
-        ));
+            Ok(ParseStatus::Complete(_, _)),
+        );
         assert_eq!(
             parse_response_head_with_config(
                 MethodKind::Respmod,
@@ -3368,14 +3369,14 @@ mod tests {
         let written =
             encode_parsed_response_head(MethodKind::Options, &head, &mut encoded).unwrap();
         let mut strict_storage = [HeaderSlot::EMPTY; 8];
-        assert!(matches!(
+        assert_matches!(
             parse_response_head(
                 MethodKind::Options,
                 &encoded[..written],
                 &mut strict_storage,
             ),
-            Ok(ParseStatus::Complete(_, _))
-        ));
+            Ok(ParseStatus::Complete(_, _)),
+        );
     }
 
     #[test]
@@ -3408,22 +3409,22 @@ mod tests {
             HeadScanner::new().scan(b"abcd", short),
             Err(ParseError::HeadTooLarge)
         );
-        assert!(matches!(
+        assert_matches!(
             HeadScanner::new().scan(b"abc", short),
-            Ok(ScanStatus::Partial(_))
-        ));
+            Ok(ScanStatus::Partial(_)),
+        );
         let ScanStatus::Partial(scanner) = HeadScanner::new()
             .scan(b"abc", HeadParserConfig::new().with_max_bytes(3))
             .unwrap()
         else {
             panic!("partial head expected");
         };
-        assert!(matches!(
+        assert_matches!(
             scanner
                 .clone()
                 .scan(b"", HeadParserConfig::new().with_max_bytes(3)),
-            Ok(ScanStatus::Partial(_))
-        ));
+            Ok(ScanStatus::Partial(_)),
+        );
         let lowered = HeadParserConfig::new().with_max_bytes(2);
         assert_eq!(
             scanner.clone().scan(b"", lowered),
@@ -3545,12 +3546,12 @@ mod tests {
         else {
             panic!("partial trailers expected");
         };
-        assert!(matches!(
+        assert_matches!(
             scanner
                 .clone()
                 .scan(b"", HeadParserConfig::new().with_max_bytes(6)),
-            Ok(ScanStatus::Partial(_))
-        ));
+            Ok(ScanStatus::Partial(_)),
+        );
         let lowered = HeadParserConfig::new().with_max_bytes(4);
         assert_eq!(
             scanner.clone().scan(b"", lowered),
@@ -3561,15 +3562,15 @@ mod tests {
         let partial = b"X-Test: value\r\n";
         let mut partial_storage = [HeaderSlot::EMPTY; 1];
         let exact = HeadParserConfig::new().with_max_bytes(partial.len());
-        assert!(matches!(
+        assert_matches!(
             parse_trailers_with_config(partial, &mut partial_storage, exact,),
-            Ok(ParseStatus::Partial)
-        ));
+            Ok(ParseStatus::Partial),
+        );
         let larger = HeadParserConfig::new().with_max_bytes(partial.len() + 1);
-        assert!(matches!(
+        assert_matches!(
             parse_trailers_with_config(partial, &mut partial_storage, larger,),
-            Ok(ParseStatus::Partial)
-        ));
+            Ok(ParseStatus::Partial),
+        );
         let smaller = HeadParserConfig::new().with_max_bytes(partial.len() - 1);
         assert_eq!(
             parse_trailers_with_config(partial, &mut partial_storage, smaller,),
@@ -3606,10 +3607,10 @@ mod tests {
         let mut input =
             b"OPTIONS icap://icap.test/ ICAP/1.0\r\nHost: icap.test\r\nX: one\r\n".to_vec();
         let mut headers = [HeaderSlot::EMPTY; 4];
-        assert!(matches!(
+        assert_matches!(
             parse_request_head(&input, &mut headers),
-            Ok(ParseStatus::Partial)
-        ));
+            Ok(ParseStatus::Partial),
+        );
 
         input.extend_from_slice(b"\r\n");
         {

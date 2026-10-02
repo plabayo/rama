@@ -969,6 +969,7 @@ mod ffi {
 mod tests {
     use super::*;
     use crate::telemetry::tracing::{self, subscriber::layer::SubscriberExt as _};
+    use std::assert_matches;
     use std::sync::RwLock;
 
     struct FormattingCapture {
@@ -1044,14 +1045,14 @@ mod tests {
 
     #[test]
     fn invalid_subsystem_and_category_are_errors() {
-        assert!(matches!(
+        assert_matches!(
             OsLogLayer::new("bad\0subsystem", "category"),
-            Err(OsLogError::InvalidSubsystem(_))
-        ));
-        assert!(matches!(
+            Err(OsLogError::InvalidSubsystem(_)),
+        );
+        assert_matches!(
             OsLogLayer::new("com.example", "bad\0category"),
-            Err(OsLogError::InvalidCategory(_))
-        ));
+            Err(OsLogError::InvalidCategory(_)),
+        );
     }
 
     #[test]

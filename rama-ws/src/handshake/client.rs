@@ -1558,6 +1558,7 @@ mod tests {
     use super::*;
     use rama_core::{ServiceInput, bytes::Bytes, service::service_fn};
     use rama_http::HeaderMap;
+    use std::assert_matches;
     #[cfg(feature = "compression")]
     use std::io::Cursor;
     use std::sync::{
@@ -1837,12 +1838,12 @@ mod tests {
             .expect("successful CONNECT response");
 
         *response.status_mut() = StatusCode::BAD_REQUEST;
-        assert!(matches!(
+        assert_matches!(
             validate_http_server_response(&response, None, None, None),
             Err(ResponseValidateError::UnexpectedStatusCode(
                 StatusCode::BAD_REQUEST
-            ))
-        ));
+            )),
+        );
     }
 
     /// Validate an (h2) server handshake response carrying `server_raw` against
@@ -1867,12 +1868,10 @@ mod tests {
             "permessage-deflate; client_max_window_bits=8",
             "permessage-deflate; client_max_window_bits",
         );
-        assert!(
-            matches!(
-                result,
-                Err(ResponseValidateError::ExtensionMismatch(Some(_)))
-            ),
-            "{result:?}"
+        assert_matches!(
+            result,
+            Err(ResponseValidateError::ExtensionMismatch(Some(_))),
+            "{result:?}",
         );
     }
 
@@ -1891,9 +1890,10 @@ mod tests {
                 None,
                 offered_pmd("permessage-deflate; client_max_window_bits"),
             );
-            assert!(
-                matches!(result, Err(ResponseValidateError::ExtensionMismatch(None))),
-                "{server_raw:?}: {result:?}"
+            assert_matches!(
+                result,
+                Err(ResponseValidateError::ExtensionMismatch(None)),
+                "{server_raw:?}: {result:?}",
             );
         }
     }
@@ -1917,13 +1917,13 @@ mod tests {
 
     #[test]
     fn explicit_client_max_window_bits_rejects_larger_server_choice() {
-        assert!(matches!(
+        assert_matches!(
             validate_pmd(
                 "permessage-deflate; client_max_window_bits=15",
                 "permessage-deflate; client_max_window_bits=10",
             ),
             Err(ResponseValidateError::ExtensionMismatch(_)),
-        ));
+        );
     }
 
     #[test]

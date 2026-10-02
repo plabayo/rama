@@ -112,6 +112,7 @@ async fn lookup_ipv6(
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::{
         convert::Infallible,
         net::{IpAddr, Ipv4Addr, Ipv6Addr},
@@ -150,7 +151,7 @@ mod tests {
             .await
             .expect("dual resolver should return an address");
 
-        assert!(matches!(ip, IpAddr::V6(_)));
+        assert_matches!(ip, IpAddr::V6(_));
     }
 
     /// Resolver that only answers for one family and fails the test if the
@@ -207,7 +208,7 @@ mod tests {
         .await
         .expect("dual resolver should return an address");
 
-        assert!(matches!(ip, IpAddr::V4(_)));
+        assert_matches!(ip, IpAddr::V4(_));
     }
 
     /// Answers for one family only, so the race has to keep waiting after the
@@ -247,7 +248,7 @@ mod tests {
         .await
         .expect("the answering family decides the race");
 
-        assert!(matches!(ip, IpAddr::V6(_)));
+        assert_matches!(ip, IpAddr::V6(_));
     }
 
     struct NeitherFamilyResolver;

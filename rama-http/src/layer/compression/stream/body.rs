@@ -422,6 +422,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
     use std::collections::VecDeque;
 
     /// A test body that yields predefined frames.
@@ -533,14 +534,12 @@ mod tests {
                             if body.is_end_stream() {
                                 // A transport may stop polling immediately on this hint.
                                 assert_eq!(received_trailers.is_some(), with_trailers);
-                                assert!(
-                                    matches!(
-                                        Pin::new(&mut body).poll_frame(&mut Context::from_waker(
-                                            std::task::Waker::noop(),
-                                        )),
-                                        Poll::Ready(None)
-                                    ),
-                                    "{encoding}: frames remain after the EOS hint"
+                                assert_matches!(
+                                    Pin::new(&mut body).poll_frame(&mut Context::from_waker(
+                                        std::task::Waker::noop(),
+                                    )),
+                                    Poll::Ready(None),
+                                    "{encoding}: frames remain after the EOS hint",
                                 );
                                 break;
                             }

@@ -5,6 +5,7 @@
 
 use super::{lazy, parse_graceful, path_str, range_str, userinfo_str};
 use crate::address::{Domain, Host};
+use std::assert_matches;
 
 // ----------------------------------------------------------------------
 // Opaque-path schemes (no `//authority`, `urn:foo`-style)
@@ -227,7 +228,7 @@ fn ldap_ipv6_with_query() {
     let u = parse_graceful("ldap://[2001:db8::7]/c=GB?objectClass?one").unwrap();
     let l = lazy(&u);
     let auth = l.authority.as_ref().unwrap();
-    assert!(matches!(auth.host, Host::Address(_)));
+    assert_matches!(auth.host, Host::Address(_));
     assert_eq!(path_str(l), "/c=GB");
     assert_eq!(range_str(l, l.query), Some("objectClass?one"));
 }

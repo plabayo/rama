@@ -235,6 +235,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::{
         convert::Infallible,
         sync::{
@@ -319,7 +320,7 @@ mod tests {
             .unwrap();
 
         let (head, mut request_events) = recv(&mut captured).await;
-        assert!(matches!(head, CapturedHead::Request(ref parts) if parts.method == "POST"));
+        assert_matches!(head, CapturedHead::Request(ref parts) if parts.method == "POST");
         let mut request_bytes = Vec::new();
         loop {
             let event = recv(&mut request_events).await;
@@ -338,8 +339,9 @@ mod tests {
         assert_eq!(request_bytes, b"request body");
 
         let (head, mut response_events) = recv(&mut captured).await;
-        assert!(
-            matches!(head, CapturedHead::Response(ref parts) if parts.status == StatusCode::CREATED)
+        assert_matches!(
+            head,
+            CapturedHead::Response(ref parts) if parts.status == StatusCode::CREATED,
         );
         response_events.try_recv().unwrap_err();
 
@@ -354,10 +356,10 @@ mod tests {
             frame.into_data().unwrap(),
             Bytes::from_static(b"response body")
         );
-        assert!(matches!(
+        assert_matches!(
             recv(&mut response_events).await,
-            BodyCaptureEvent::End(CaptureOutcome::Complete)
-        ));
+            BodyCaptureEvent::End(CaptureOutcome::Complete),
+        );
     }
 
     #[tokio::test]

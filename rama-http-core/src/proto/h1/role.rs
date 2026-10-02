@@ -1577,6 +1577,7 @@ mod tests {
     use httparse::ParserConfig;
     use rama_core::bytes::BytesMut;
     use rama_core::extensions::Extension;
+    use std::assert_matches;
 
     use super::*;
 
@@ -3080,10 +3081,10 @@ mod tests {
                             &mut wire,
                         )
                         .unwrap_err();
-                        assert!(matches!(
+                        assert_matches!(
                             error.kind(),
-                            crate::error::Kind::User(crate::error::User::UnexpectedHeader)
-                        ));
+                            crate::error::Kind::User(crate::error::User::UnexpectedHeader),
+                        );
                         assert_eq!(wire, b"previous response");
                     }
                 }
@@ -3115,10 +3116,10 @@ mod tests {
                 }
                 let error =
                     encode_close_delimited_test_response(head, body, Method::GET).unwrap_err();
-                assert!(matches!(
+                assert_matches!(
                     error.kind(),
-                    crate::error::Kind::User(crate::error::User::UnexpectedHeader)
-                ));
+                    crate::error::Kind::User(crate::error::User::UnexpectedHeader),
+                );
             }
         }
     }

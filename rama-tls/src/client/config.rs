@@ -742,6 +742,7 @@ mod tests {
     use super::*;
     use rama_core::extensions::Extensions;
     use rama_utils::collections::smallvec::smallvec;
+    use std::assert_matches;
 
     #[test]
     fn request_override_parents_survive_tls_configuration_clone() {
@@ -881,7 +882,7 @@ mod tests {
         let pin: TlsServerCertPin = "sha256/xg6kqyS+uaJikboVvZPxNOYXMD3XPakJAakHSfGau/M="
             .parse()
             .unwrap();
-        assert!(matches!(pin, TlsServerCertPin::SpkiSha256(_)));
+        assert_matches!(pin, TlsServerCertPin::SpkiSha256(_));
         assert_eq!(
             pin.to_string(),
             "sha256/xg6kqyS+uaJikboVvZPxNOYXMD3XPakJAakHSfGau/M="

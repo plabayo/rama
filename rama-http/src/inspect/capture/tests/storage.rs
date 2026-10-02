@@ -1,4 +1,5 @@
 use rama_core::futures::FutureExt as _;
+use std::assert_matches;
 
 use super::*;
 
@@ -397,10 +398,7 @@ async fn cancelled_append_is_not_published_in_capture_indexes() {
             .expect("reading committed metadata waited for the blocked writer")
             .unwrap();
     assert_eq!(details.records.len(), 1);
-    assert!(matches!(
-        details.records[0],
-        StoredRecord::RequestHead { .. }
-    ));
+    assert_matches!(details.records[0], StoredRecord::RequestHead { .. });
 
     // A second append must wait for that writer, then make progress when the
     // cancelled operation releases it. Its reservation must survive the wait.

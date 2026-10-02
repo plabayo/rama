@@ -5,6 +5,7 @@
 
 use divan::counter::ItemsCount;
 use rama::graceful::{Shutdown, ShutdownGuard};
+use std::assert_matches;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{
@@ -37,7 +38,7 @@ fn first_waiter_registration(bencher: divan::Bencher, waiter_count: usize) {
         .bench_local_values(|mut futures| {
             let mut cx = Context::from_waker(Waker::noop());
             for future in &mut futures {
-                assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
+                assert_matches!(future.as_mut().poll(&mut cx), Poll::Pending);
             }
         });
 }
@@ -66,7 +67,7 @@ fn cancellation_and_completion(bencher: divan::Bencher, waiter_count: usize) {
             let mut futures = make_waiter_futures(&shutdown, waiter_count);
             let mut cx = Context::from_waker(Waker::noop());
             for future in &mut futures {
-                assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
+                assert_matches!(future.as_mut().poll(&mut cx), Poll::Pending);
             }
             (trigger, futures)
         })
@@ -90,14 +91,14 @@ fn steady_state_registered_waiters(bencher: divan::Bencher, waiter_count: usize)
     let mut futures = make_waiter_futures(&shutdown, waiter_count);
     let mut cx = Context::from_waker(Waker::noop());
     for future in &mut futures {
-        assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
+        assert_matches!(future.as_mut().poll(&mut cx), Poll::Pending);
     }
 
     bencher
         .counter(ItemsCount::new(waiter_count))
         .bench_local(|| {
             for future in &mut futures {
-                assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
+                assert_matches!(future.as_mut().poll(&mut cx), Poll::Pending);
             }
         });
 }
@@ -121,7 +122,7 @@ fn contended_steady_state_registered_waiters(bencher: divan::Bencher, thread_cou
             let mut cx = Context::from_waker(Waker::noop());
             move || {
                 for future in &mut futures {
-                    assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
+                    assert_matches!(future.as_mut().poll(&mut cx), Poll::Pending);
                 }
             }
         }

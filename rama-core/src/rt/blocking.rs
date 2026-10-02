@@ -902,6 +902,8 @@ where
 mod tests {
     use super::*;
     use crate::service::service_fn;
+    #[cfg(feature = "dial9")]
+    use std::assert_matches;
     use std::io::{Read as _, Write as _};
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -1109,16 +1111,10 @@ mod tests {
     #[test]
     fn default_builder_defers_dial9_environment_resolution() {
         let builder = Runtime::builder();
-        assert!(matches!(
-            builder.dial9_recorder,
-            RuntimeDial9Recorder::FromEnv
-        ));
+        assert_matches!(builder.dial9_recorder, RuntimeDial9Recorder::FromEnv);
 
         let builder = builder.without_dial9_recorder();
-        assert!(matches!(
-            builder.dial9_recorder,
-            RuntimeDial9Recorder::Disabled
-        ));
+        assert_matches!(builder.dial9_recorder, RuntimeDial9Recorder::Disabled);
     }
 
     #[cfg(feature = "dial9")]
@@ -1222,10 +1218,10 @@ mod tests {
             Ok::<_, core::convert::Infallible>(::dial9::Dial9Handle::current().is_enabled())
         }));
 
-        assert!(matches!(
+        assert_matches!(
             runtime.flavor(),
-            RuntimeFlavor::MultiThread { worker_threads } if worker_threads > 0
-        ));
+            RuntimeFlavor::MultiThread { worker_threads } if worker_threads > 0,
+        );
         assert!(*service.serve(()).unwrap());
         drop(service);
         drop(runtime);

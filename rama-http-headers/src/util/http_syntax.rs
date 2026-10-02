@@ -265,6 +265,7 @@ mod tests {
     use super::*;
     use crate::util::for_each_small_input;
     use rama_utils::bytes::trim_ows;
+    use std::assert_matches;
 
     #[test]
     fn list_members_preserve_quotes_and_empty_elements() {
@@ -286,7 +287,7 @@ mod tests {
     fn quoted_string_borrows_or_unescapes_as_needed() {
         let mut cursor = 0;
         let plain = scan_quoted_string(br#""plain""#, &mut cursor).unwrap();
-        assert!(matches!(plain.decode(), Cow::Borrowed(b"plain")));
+        assert_matches!(plain.decode(), Cow::Borrowed(b"plain"));
 
         let mut cursor = 0;
         let escaped = scan_quoted_string(br#""a\"b\\c""#, &mut cursor).unwrap();

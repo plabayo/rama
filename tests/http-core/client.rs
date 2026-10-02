@@ -1598,6 +1598,7 @@ test! {
 }
 
 mod conn {
+    use std::assert_matches;
     use std::convert::Infallible;
     use std::io::{self, Read, Write};
     use std::net::{SocketAddr, TcpListener};
@@ -2147,7 +2148,7 @@ mod conn {
         assert!(!io.shutdown_called, "upgrade shouldn't shutdown AsyncWrite");
         rt.block_on(poll_fn(|ctx| {
             let ready = client.poll_ready(ctx);
-            assert!(matches!(ready, Poll::Ready(Err(_))));
+            assert_matches!(ready, Poll::Ready(Err(_)));
             ready
         }))
         .unwrap_err();
@@ -2235,7 +2236,7 @@ mod conn {
 
         rt.block_on(poll_fn(|ctx| {
             let ready = client.poll_ready(ctx);
-            assert!(matches!(ready, Poll::Ready(Err(_))));
+            assert_matches!(ready, Poll::Ready(Err(_)));
             ready
         }))
         .unwrap_err();

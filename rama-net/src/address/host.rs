@@ -966,6 +966,7 @@ impl_serde_str!(display Host);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn empty_check_never_formats_the_host() {
@@ -1005,19 +1006,19 @@ mod tests {
             rama_core::bytes::Bytes::from_static(b"EXA%6Dple.Com"),
             false,
         ));
-        assert!(matches!(
+        assert_matches!(
             encoded.canonicalize(),
-            Host::Name(domain) if domain.as_str() == "example.com"
-        ));
+            Host::Name(domain) if domain.as_str() == "example.com",
+        );
 
         let opaque = Host::Uninterpreted(UninterpretedHost::from_validated_bytes(
             rama_core::bytes::Bytes::from_static(b"TAG%21,VALUE"),
             false,
         ));
-        assert!(matches!(
+        assert_matches!(
             opaque.canonicalize(),
-            Host::Uninterpreted(host) if host.as_str() == "tag%21,value"
-        ));
+            Host::Uninterpreted(host) if host.as_str() == "tag%21,value",
+        );
     }
 
     #[derive(Debug, Clone, Copy)]
@@ -1630,14 +1631,14 @@ mod tests {
         ];
         v.sort();
         // First two slots: Domain-class (alphabetical by Domain ord).
-        assert!(matches!(&v[0], Host::Name(d) if d.as_str() == "aaaa.example"));
+        assert_matches!(&v[0], Host::Name(d) if d.as_str() == "aaaa.example");
         // The pct-encoded reg-name canonicalises to a Domain so it
         // sorts in the Domain group too.
-        assert!(matches!(&v[1], Host::Uninterpreted(_)));
+        assert_matches!(&v[1], Host::Uninterpreted(_));
         // Then Address-class.
-        assert!(matches!(&v[2], Host::Address(_)));
+        assert_matches!(&v[2], Host::Address(_));
         // Then Opaque-class.
-        assert!(matches!(&v[3], Host::Uninterpreted(u) if u.as_str() == "tag,with,commas"));
+        assert_matches!(&v[3], Host::Uninterpreted(u) if u.as_str() == "tag,with,commas");
     }
 
     // ---- Eq transitivity across the UTS#46 / pct-encoding boundary ---------
@@ -1705,9 +1706,10 @@ mod tests {
         // path so a future refactor can't silently start cloning.
         let h = Host::Name(Domain::from_static("example.com"));
         let cow = h.try_as_domain().unwrap();
-        assert!(
-            matches!(cow, crate::std::borrow::Cow::Borrowed(_)),
-            "expected Cow::Borrowed for the Name variant"
+        assert_matches!(
+            cow,
+            crate::std::borrow::Cow::Borrowed(_),
+            "expected Cow::Borrowed for the Name variant",
         );
         assert_eq!(cow.as_str(), "example.com");
     }
@@ -1724,7 +1726,7 @@ mod tests {
     fn try_as_domain_uninterpreted_pct_decodes() {
         let h = reg_host(b"exa%6Dple.com");
         let cow = h.try_as_domain().unwrap();
-        assert!(matches!(cow, crate::std::borrow::Cow::Owned(_)));
+        assert_matches!(cow, crate::std::borrow::Cow::Owned(_));
         assert_eq!(cow.as_str(), "example.com");
     }
 
@@ -1841,28 +1843,28 @@ mod tests {
         // `exa%6Dple.com` is not a typed Domain (the validator rejects
         // `%`) and not an IP. Must round-trip as `Host::Uninterpreted`.
         let h: Host = "exa%6Dple.com".parse().unwrap();
-        assert!(matches!(h, Host::Uninterpreted(_)));
+        assert_matches!(h, Host::Uninterpreted(_));
         assert_eq!(h.to_string(), "exa%6Dple.com");
     }
 
     #[test]
     fn host_try_from_recovers_uninterpreted_subdelim() {
         let h: Host = "tag,with,commas".parse().unwrap();
-        assert!(matches!(h, Host::Uninterpreted(_)));
+        assert_matches!(h, Host::Uninterpreted(_));
         assert_eq!(h.to_string(), "tag,with,commas");
     }
 
     #[test]
     fn host_try_from_recovers_bracketed_ipvfuture() {
         let h: Host = "[v1.fe80::a]".parse().unwrap();
-        assert!(matches!(h, Host::Uninterpreted(_)));
+        assert_matches!(h, Host::Uninterpreted(_));
         assert_eq!(h.to_string(), "[v1.fe80::a]");
     }
 
     #[test]
     fn host_try_from_recovers_bracketed_ipv6() {
         let h: Host = "[::1]".parse().unwrap();
-        assert!(matches!(h, Host::Address(IpAddr::V6(_))));
+        assert_matches!(h, Host::Address(IpAddr::V6(_)));
     }
 
     #[test]

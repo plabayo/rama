@@ -323,6 +323,7 @@ impl HeaderEncode for ContentSecurityPolicy {
 mod tests {
     use super::*;
     use crate::common::{test_decode, test_encode};
+    use std::assert_matches;
 
     use rama_net::Protocol;
     use rama_net::address::Domain;
@@ -374,8 +375,9 @@ mod tests {
             ContentSecurityPolicy::empty().with("experimental-thing", SourceList::self_origin());
         assert_eq!(csp.to_string(), "experimental-thing 'self'");
         let d = csp.directives().next().unwrap();
-        assert!(
-            matches!(d.name, DirectiveName::Unknown(ref s) if s.as_ref() == "experimental-thing")
+        assert_matches!(
+            d.name,
+            DirectiveName::Unknown(ref s) if s.as_ref() == "experimental-thing",
         );
     }
 

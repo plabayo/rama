@@ -1274,6 +1274,7 @@ mod ffi {
 mod tests {
     use super::*;
     use rama_core::futures::StreamExt;
+    use std::assert_matches;
     use std::pin::pin;
 
     use crate::wire::SvcParam;
@@ -1709,10 +1710,10 @@ mod tests {
         .expect("valid flexible-tail HTTPS RDATA");
 
         assert_eq!(out.len(), 1);
-        assert!(matches!(
+        assert_matches!(
             &out[0].params()[0],
-            SvcParam::Unknown { value, .. } if value.as_ref() == opaque
-        ));
+            SvcParam::Unknown { value, .. } if value.as_ref() == opaque,
+        );
     }
 
     #[test]

@@ -1188,6 +1188,7 @@ mod tests {
     use rama_core::bytes::Bytes;
     use rama_quic_proto::TransportErrorCode;
     use rama_utils::octets;
+    use std::assert_matches;
 
     fn make(side: Side) -> StreamsState {
         StreamsState::new(
@@ -1395,7 +1396,7 @@ mod tests {
         assert!(state.poll().is_none());
         assert!(state.poll().is_none());
         state.received_max_data(101u32.into());
-        assert!(matches!(state.poll(), Some(StreamEvent::Writable { id: actual }) if actual == id));
+        assert_matches!(state.poll(), Some(StreamEvent::Writable { id: actual }) if actual == id);
         assert_eq!(
             write(&mut state, &mut pending, &mut chunks).unwrap().bytes,
             1
@@ -1407,7 +1408,7 @@ mod tests {
         // A reduced local send window lowers the reserve threshold after ACKs.
         state.set_send_window(16);
         state.buffered_data = 0;
-        assert!(matches!(state.poll(), Some(StreamEvent::Writable { id: actual }) if actual == id));
+        assert_matches!(state.poll(), Some(StreamEvent::Writable { id: actual }) if actual == id);
         // A critical stream can still consume the reserved credit.
         let critical = (Streams {
             state: &mut state,
@@ -1500,8 +1501,9 @@ mod tests {
             ..TransportParameters::default()
         });
         for dir in Dir::iter() {
-            assert!(
-                matches!(state.poll(), Some(StreamEvent::Available { dir: actual }) if actual == dir)
+            assert_matches!(
+                state.poll(),
+                Some(StreamEvent::Available { dir: actual }) if actual == dir,
             );
             assert!(
                 (Streams {

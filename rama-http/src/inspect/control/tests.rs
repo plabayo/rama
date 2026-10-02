@@ -1,5 +1,6 @@
 use rama_net::client::ConnectorTarget;
 use rama_utils::str::NonEmptyStr;
+use std::assert_matches;
 
 use super::*;
 use crate::body::util::BodyExt as _;
@@ -74,10 +75,10 @@ fn rule(action: Action, matcher: Matcher) -> Rule {
 async fn default_is_automatic_but_enabled_intercepts_future_protocols() {
     let control = Control::new(InspectionState::default());
     let connection = ControlConnection::new(1);
-    assert!(matches!(
+    assert_matches!(
         control.decide(&connection, request()).await.0,
-        Decision::Forward { .. }
-    ));
+        Decision::Forward { .. },
+    );
     control
         .configure(
             0,
@@ -100,7 +101,7 @@ async fn default_is_automatic_but_enabled_intercepts_future_protocols() {
     let id = pending(&control, 1).await[0];
     assert!(!task.is_finished());
     control.resolve(id, Decision::forward()).unwrap();
-    assert!(matches!(task.await.unwrap().0, Decision::Forward { .. }));
+    assert_matches!(task.await.unwrap().0, Decision::Forward { .. });
 }
 
 #[tokio::test]
@@ -114,15 +115,15 @@ async fn queue_is_ordered_and_decisions_are_single_use() {
     assert_eq!(ids[0], first_id);
     assert!(ids[1] > ids[0]);
     control.resolve(ids[1], Decision::Block).unwrap();
-    assert!(matches!(
+    assert_matches!(
         second.await.unwrap().0,
         Decision::Respond {
             response: ResponseSpec {
                 status: StatusCode::FORBIDDEN,
                 ..
             }
-        }
-    ));
+        },
+    );
     assert!(control.resolve(ids[1], Decision::forward()).is_err());
     assert!(!first.is_finished());
     control.resolve(first_id, Decision::forward()).unwrap();
@@ -155,22 +156,19 @@ async fn connection_release_edits_current_and_releases_both_directions() {
             },
         )
         .unwrap();
-    assert!(matches!(
+    assert_matches!(
         a.await.unwrap().0,
         Decision::Forward {
             headers: Some(_),
             ..
-        }
-    ));
-    assert!(matches!(
-        b.await.unwrap().0,
-        Decision::Forward { headers: None, .. }
-    ));
+        },
+    );
+    assert_matches!(b.await.unwrap().0, Decision::Forward { headers: None, .. });
     assert!(control.snapshot().pending.is_empty());
-    assert!(matches!(
+    assert_matches!(
         control.decide(&connection, request()).await.0,
-        Decision::Forward { .. }
-    ));
+        Decision::Forward { .. },
+    );
     control.resume_connection(1);
     let task = spawn(&control, &connection, request());
     let id = pending(&control, 1).await[0];
@@ -202,11 +200,11 @@ async fn block_rules_precede_connection_bypass_and_protocol_rules_are_generic() 
             },
         )
         .unwrap();
-    assert!(matches!(
+    assert_matches!(
         control.decide(&connection, request()).await.0,
-        Decision::Respond { .. }
-    ));
-    assert!(matches!(
+        Decision::Respond { .. },
+    );
+    assert_matches!(
         control
             .decide(
                 &connection,
@@ -217,8 +215,8 @@ async fn block_rules_precede_connection_bypass_and_protocol_rules_are_generic() 
             )
             .await
             .0,
-        Decision::Forward { .. }
-    ));
+        Decision::Forward { .. },
+    );
     control
         .configure(
             2,
@@ -236,7 +234,7 @@ async fn block_rules_precede_connection_bypass_and_protocol_rules_are_generic() 
         )
         .unwrap();
     connection.0.automatic.store(false, Ordering::Release);
-    assert!(matches!(
+    assert_matches!(
         control
             .decide(
                 &connection,
@@ -247,8 +245,8 @@ async fn block_rules_precede_connection_bypass_and_protocol_rules_are_generic() 
             )
             .await
             .0,
-        Decision::Forward { .. }
-    ));
+        Decision::Forward { .. },
+    );
 }
 
 #[tokio::test]
@@ -268,27 +266,27 @@ async fn cancellation_overflow_and_timeout_never_release_traffic() {
     let connection = ControlConnection::new(1);
     let task = spawn(&control, &connection, request());
     pending(&control, 1).await;
-    assert!(matches!(
+    assert_matches!(
         control.decide(&connection, request()).await.0,
         Decision::Respond {
             response: ResponseSpec {
                 status: StatusCode::SERVICE_UNAVAILABLE,
                 ..
             }
-        }
-    ));
+        },
+    );
     task.abort();
     _ = task.await;
     pending(&control, 0).await;
-    assert!(matches!(
+    assert_matches!(
         control.decide(&connection, request()).await.0,
         Decision::Respond {
             response: ResponseSpec {
                 status: StatusCode::GATEWAY_TIMEOUT,
                 ..
             }
-        }
-    ));
+        },
+    );
     assert!(control.snapshot().pending.is_empty());
 }
 
@@ -301,10 +299,10 @@ async fn turning_off_preserves_pending_and_forward_all_drains_them() {
     control.configure(1, Config::default()).unwrap();
     assert_eq!(control.snapshot().pending.len(), 1);
     assert!(!task.is_finished());
-    assert!(matches!(
+    assert_matches!(
         control.decide(&connection, request()).await.0,
-        Decision::Forward { .. }
-    ));
+        Decision::Forward { .. },
+    );
     control.stop_and_forward();
     task.await.unwrap();
     assert!(control.snapshot().pending.is_empty());
@@ -634,7 +632,7 @@ async fn apply_rule_resolves_only_matching_queued_messages() {
         )
         .unwrap();
     control.apply_rule(0, 2).unwrap();
-    assert!(matches!(a.await.unwrap().0, Decision::Respond { .. }));
+    assert_matches!(a.await.unwrap().0, Decision::Respond { .. });
     assert!(!b.is_finished());
     let id = pending(&control, 1).await[0];
     control.resolve(id, Decision::forward()).unwrap();
@@ -762,15 +760,15 @@ async fn oversized_items_fail_closed_without_retaining_queue_memory() {
         )
         .await
         .0;
-    assert!(matches!(
+    assert_matches!(
         result,
         Decision::Respond {
             response: ResponseSpec {
                 status: StatusCode::PAYLOAD_TOO_LARGE,
                 ..
             }
-        }
-    ));
+        },
+    );
     let result = control
         .decide(
             &connection,
@@ -784,8 +782,9 @@ async fn oversized_items_fail_closed_without_retaining_queue_memory() {
         )
         .await
         .0;
-    assert!(
-        matches!(result, Decision::Close { code: 1009, reason } if reason.contains("editor limit"))
+    assert_matches!(
+        result,
+        Decision::Close { code: 1009, reason } if reason.contains("editor limit"),
     );
     assert!(control.snapshot().pending.is_empty());
 }
@@ -856,15 +855,15 @@ async fn manual_block_uses_the_current_default_and_stale_rule_application_is_rej
     control.apply_rule(0, 1).unwrap_err();
     assert!(!task.is_finished());
     control.resolve(id, Decision::Block).unwrap();
-    assert!(matches!(
+    assert_matches!(
         task.await.unwrap().0,
         Decision::Respond {
             response: ResponseSpec {
                 status: StatusCode::UNAVAILABLE_FOR_LEGAL_REASONS,
                 ..
             }
-        }
-    ));
+        },
+    );
 }
 
 #[tokio::test]
@@ -878,7 +877,7 @@ async fn pause_bypasses_rules_and_holds_without_waiting_for_pending_approval() {
         .await
         .unwrap();
     control.stop_and_forward();
-    assert!(matches!(task.await.unwrap().0, Decision::Forward { .. }));
+    assert_matches!(task.await.unwrap().0, Decision::Forward { .. });
     assert!(control.snapshot().pending.is_empty());
     let mut config = control.snapshot().config;
     config.enabled = true;
@@ -898,16 +897,16 @@ async fn pause_bypasses_rules_and_holds_without_waiting_for_pending_approval() {
         .configure(control.snapshot().revision, config)
         .unwrap();
     assert!(!control.is_active());
-    assert!(matches!(
+    assert_matches!(
         control.decide(&connection, request()).await.0,
-        Decision::Forward { .. }
-    ));
+        Decision::Forward { .. },
+    );
     recording.resume().await;
     assert!(control.is_active());
-    assert!(matches!(
+    assert_matches!(
         control.decide(&connection, request()).await.0,
-        Decision::Respond { .. }
-    ));
+        Decision::Respond { .. },
+    );
     assert!(!control.snapshot().config.enabled);
 }
 

@@ -794,6 +794,7 @@ mod tests {
     use super::*;
     use ahash::HashMap;
     use serde::Deserialize;
+    use std::assert_matches;
 
     #[derive(Debug, Deserialize, Eq, PartialEq)]
     enum MyEnum {
@@ -867,13 +868,13 @@ mod tests {
         let error_kind = i32::deserialize(PathDeserializer::new(&uri_params))
             .unwrap_err()
             .kind;
-        assert!(matches!(
+        assert_matches!(
             error_kind,
             ErrorKind::WrongNumberOfParameters {
                 expected: 1,
                 got: 2
-            }
-        ));
+            },
+        );
     }
 
     #[test]

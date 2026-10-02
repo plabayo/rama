@@ -3,6 +3,7 @@ use rama_json::path::JsonPath;
 use rama_json::{JsonError, JsonErrorKind};
 use rama_utils::octets::mib;
 use serde_json::{Value, json};
+use std::assert_matches;
 
 const BOOKSTORE: &[u8] = br#"{
   "store": {
@@ -139,10 +140,10 @@ fn rfc9535_filter_examples_are_rejected_explicitly() {
     let err = "$.store.book[?(@.price < 10)]"
         .parse::<JsonPath>()
         .unwrap_err();
-    assert!(matches!(
+    assert_matches!(
         err.kind(),
-        JsonErrorKind::UnsupportedJsonPath("filter selectors")
-    ));
+        JsonErrorKind::UnsupportedJsonPath("filter selectors"),
+    );
 }
 
 fn select_values(selector: &str) -> Result<Value, JsonError> {

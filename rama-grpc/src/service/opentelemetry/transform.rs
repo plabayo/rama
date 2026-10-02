@@ -718,6 +718,7 @@ mod tests {
             metrics::Temporality,
         },
     };
+    use std::assert_matches;
 
     fn create_test_log_data(
         instrumentation_name: &str,
@@ -747,10 +748,10 @@ mod tests {
             .expect("supported attribute should be converted");
 
         assert_eq!(attr.key, "answer");
-        assert!(matches!(
+        assert_matches!(
             attr.value.and_then(|v| v.value),
-            Some(proto::any_value::Value::IntValue(42))
-        ));
+            Some(proto::any_value::Value::IntValue(42)),
+        );
     }
 
     #[test]

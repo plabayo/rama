@@ -614,6 +614,7 @@ mod tests {
     use super::*;
     use crate::{HeaderDecode, HeaderEncode};
     use rama_net::uri::Uri;
+    use std::assert_matches;
 
     fn decode(values: &[&str]) -> Option<AltSvc> {
         let values: Vec<_> = values
@@ -873,7 +874,7 @@ mod tests {
                 r#"h3="[v1.fe80::a]:443""#,
             ),
         ] {
-            assert!(matches!(host.view(), HostRef::Uninterpreted(_)));
+            assert_matches!(host.view(), HostRef::Uninterpreted(_));
             let value = AltSvc::new(
                 AlternativeService::new(ApplicationProtocol::HTTP_3, 443)
                     .unwrap()
@@ -885,8 +886,9 @@ mod tests {
         }
 
         let non_ascii_reg_name = Host::try_from("münchen!").unwrap();
-        assert!(
-            matches!(non_ascii_reg_name.view(), HostRef::Uninterpreted(host) if !host.is_bracketed())
+        assert_matches!(
+            non_ascii_reg_name.view(),
+            HostRef::Uninterpreted(host) if !host.is_bracketed(),
         );
         AlternativeService::new(ApplicationProtocol::HTTP_3, 443)
             .unwrap()

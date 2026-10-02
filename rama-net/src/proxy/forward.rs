@@ -752,6 +752,7 @@ fn emit_close_event(outcome: &IoForwardOutcome) {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::time::Duration;
 
     use super::*;
@@ -1202,11 +1203,9 @@ mod tests {
         drop(b_user);
         let outcome = task.await.unwrap();
 
-        assert!(
-            matches!(
-                outcome.reason(),
-                BridgeCloseReason::PeerEofLeft | BridgeCloseReason::PeerEofRight
-            ),
+        assert_matches!(
+            outcome.reason(),
+            BridgeCloseReason::PeerEofLeft | BridgeCloseReason::PeerEofRight,
             "unexpected reason: {:?}",
             outcome.reason(),
         );
@@ -1418,11 +1417,9 @@ mod tests {
             .expect_err("genuine (non-connection) error must surface as Err");
 
         assert!(err.fatal_error().is_some());
-        assert!(
-            matches!(
-                err.outcome().reason(),
-                BridgeCloseReason::ReadErrorLeft | BridgeCloseReason::WriteErrorRight
-            ),
+        assert_matches!(
+            err.outcome().reason(),
+            BridgeCloseReason::ReadErrorLeft | BridgeCloseReason::WriteErrorRight,
             "unexpected reason: {:?}",
             err.reason(),
         );

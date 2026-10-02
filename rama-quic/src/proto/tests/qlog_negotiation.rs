@@ -1,6 +1,7 @@
 use super::qlog::Capture;
 use super::*;
 use rama_quic_proto::VarInt;
+use std::assert_matches;
 
 fn trace_config(capture: &Capture, now: Instant) -> Arc<TransportConfig> {
     let mut transport = TransportConfig::default();
@@ -224,12 +225,12 @@ fn qlog_negotiation_incompatible_versions_record_the_offer_and_close_cause() {
         panic!("Version Negotiation must reach the pending connection");
     };
     connection.handle_event(event);
-    assert!(matches!(
+    assert_matches!(
         connection.poll(),
         Some(Event::ConnectionLost {
             reason: ConnectionError::VersionMismatch { .. },
-        })
-    ));
+        }),
+    );
     let versions = capture.events("quic:version_information");
     assert_eq!(versions.len(), 2);
     assert_eq!(versions[1]["time"], 15.0);

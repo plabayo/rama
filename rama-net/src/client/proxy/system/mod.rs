@@ -1536,6 +1536,7 @@ pub(super) fn proxy_address(
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::convert::Infallible;
 
     use parking_lot::Mutex;
@@ -1983,10 +1984,10 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(matches!(
+        assert_matches!(
             seen.lock()[0].as_ref().unwrap().as_slice(),
-            [ProxyRoute::Proxy(_)]
-        ));
+            [ProxyRoute::Proxy(_)],
+        );
     }
 
     #[tokio::test]
@@ -2423,26 +2424,11 @@ mod tests {
             .unwrap();
 
         let seen = seen.lock();
-        assert!(matches!(
-            seen[0].as_ref().unwrap().as_slice(),
-            [ProxyRoute::Direct]
-        ));
-        assert!(matches!(
-            seen[1].as_ref().unwrap().as_slice(),
-            [ProxyRoute::Proxy(_)]
-        ));
-        assert!(matches!(
-            seen[2].as_ref().unwrap().as_slice(),
-            [ProxyRoute::Direct]
-        ));
-        assert!(matches!(
-            seen[3].as_ref().unwrap().as_slice(),
-            [ProxyRoute::Proxy(_)]
-        ));
-        assert!(matches!(
-            seen[4].as_ref().unwrap().as_slice(),
-            [ProxyRoute::Direct]
-        ));
+        assert_matches!(seen[0].as_ref().unwrap().as_slice(), [ProxyRoute::Direct]);
+        assert_matches!(seen[1].as_ref().unwrap().as_slice(), [ProxyRoute::Proxy(_)]);
+        assert_matches!(seen[2].as_ref().unwrap().as_slice(), [ProxyRoute::Direct]);
+        assert_matches!(seen[3].as_ref().unwrap().as_slice(), [ProxyRoute::Proxy(_)]);
+        assert_matches!(seen[4].as_ref().unwrap().as_slice(), [ProxyRoute::Direct]);
     }
 
     #[tokio::test]
@@ -2467,18 +2453,9 @@ mod tests {
             .unwrap();
 
         let seen = seen.lock();
-        assert!(matches!(
-            seen[0].as_ref().unwrap().as_slice(),
-            [ProxyRoute::Direct]
-        ));
-        assert!(matches!(
-            seen[1].as_ref().unwrap().as_slice(),
-            [ProxyRoute::Proxy(_)]
-        ));
-        assert!(matches!(
-            seen[2].as_ref().unwrap().as_slice(),
-            [ProxyRoute::Proxy(_)]
-        ));
+        assert_matches!(seen[0].as_ref().unwrap().as_slice(), [ProxyRoute::Direct]);
+        assert_matches!(seen[1].as_ref().unwrap().as_slice(), [ProxyRoute::Proxy(_)]);
+        assert_matches!(seen[2].as_ref().unwrap().as_slice(), [ProxyRoute::Proxy(_)]);
     }
 
     #[tokio::test]
@@ -2500,14 +2477,8 @@ mod tests {
             .unwrap();
 
         let seen = seen.lock();
-        assert!(matches!(
-            seen[0].as_ref().unwrap().as_slice(),
-            [ProxyRoute::Proxy(_)]
-        ));
-        assert!(matches!(
-            seen[1].as_ref().unwrap().as_slice(),
-            [ProxyRoute::Direct]
-        ));
+        assert_matches!(seen[0].as_ref().unwrap().as_slice(), [ProxyRoute::Proxy(_)]);
+        assert_matches!(seen[1].as_ref().unwrap().as_slice(), [ProxyRoute::Direct]);
     }
 
     #[tokio::test]
@@ -2531,15 +2502,9 @@ mod tests {
 
         let seen = seen.lock();
         for routes in &seen[..4] {
-            assert!(matches!(
-                routes.as_ref().unwrap().as_slice(),
-                [ProxyRoute::Direct]
-            ));
+            assert_matches!(routes.as_ref().unwrap().as_slice(), [ProxyRoute::Direct]);
         }
-        assert!(matches!(
-            seen[4].as_ref().unwrap().as_slice(),
-            [ProxyRoute::Proxy(_)]
-        ));
+        assert_matches!(seen[4].as_ref().unwrap().as_slice(), [ProxyRoute::Proxy(_)]);
     }
 
     #[tokio::test]
