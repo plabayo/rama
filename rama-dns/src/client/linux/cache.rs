@@ -325,6 +325,8 @@ impl Expiry<CacheKey, CacheEntry> for EntryExpiry {
 
 #[cfg(test)]
 mod tests {
+    use std::net::Ipv4Addr;
+
     use super::*;
 
     #[test]
@@ -333,5 +335,19 @@ mod tests {
         assert!(is_cacheable(Some(Duration::from_secs(1))));
         // no TTL: the configured default applies
         assert!(is_cacheable(None));
+    }
+
+    #[test]
+    fn zero_ttl_answers_take_no_cache_entry() {
+        let cache = LinuxDnsCache::new(64, Duration::from_mins(1), Duration::from_mins(1));
+        let domain = Domain::from_static("example.com");
+        cache.insert_ipv4(
+            domain.clone(),
+            vec![Ipv4Addr::LOCALHOST],
+            Some(Duration::ZERO),
+        );
+        cache.insert_negative(domain, RecordKind::Ipv6, Duration::ZERO);
+        cache.entries.run_pending_tasks();
+        assert_eq!(cache.entries.entry_count(), 0);
     }
 }

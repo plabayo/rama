@@ -2033,6 +2033,23 @@ mod tests {
         assert!(matches!(rooted.as_slice(), [Ok(_)]), "{rooted:?}");
     }
 
+    #[test]
+    fn only_resolvers_with_the_same_timeout_share_lookups() {
+        let resolver = WindowsDnsResolver::new();
+        assert!(resolver.clone().in_flight.shares_with(&resolver.in_flight));
+        let hasty = resolver.clone().with_timeout(Duration::from_millis(100));
+        assert!(!hasty.in_flight.shares_with(&resolver.in_flight));
+    }
+
+    #[test]
+    fn abandoned_lookups_are_cancelled() {
+        // each holds a DNS Client service request nobody waits on anymore
+        let resolver = WindowsDnsResolver::new();
+        assert_eq!(resolver.in_flight.abandoned(), Abandoned::Cancel);
+        let resolver = resolver.with_timeout(Duration::from_secs(1));
+        assert_eq!(resolver.in_flight.abandoned(), Abandoned::Cancel);
+    }
+
     #[tokio::test(start_paused = true)]
     async fn a_burst_is_not_held_back_by_default() {
         let resolver = WindowsDnsResolver::new();

@@ -1528,6 +1528,14 @@ mod tests {
     }
 
     #[test]
+    fn abandoned_lookups_finish_to_fill_the_cache() {
+        let resolver = super::LinuxDnsResolver::builder()
+            .with_systemd_resolved(false)
+            .build();
+        assert_eq!(resolver.in_flight.abandoned(), in_flight::Abandoned::Finish);
+    }
+
+    #[test]
     fn builder_settings_propagate() {
         let resolver = super::LinuxDnsResolver::builder()
             .with_timeout(Duration::from_secs(9))

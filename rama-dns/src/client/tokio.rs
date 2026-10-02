@@ -305,6 +305,14 @@ mod tests {
     use rama_core::{error::error_chain, futures::future::join_all};
 
     use super::*;
+    use crate::client::in_flight::Abandoned;
+
+    #[test]
+    fn abandoned_lookups_finish() {
+        // a blocking getaddrinfo cannot be called off
+        let resolver = TokioDnsResolver::new();
+        assert_eq!(resolver.in_flight.abandoned(), Abandoned::Finish);
+    }
 
     #[test]
     fn default_bounds_fit_the_platform() {

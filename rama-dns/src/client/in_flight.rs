@@ -129,6 +129,10 @@ impl<K> InFlight<K> {
     pub(crate) fn shares_with(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.flights, &other.flights)
     }
+
+    pub(crate) fn abandoned(&self) -> Abandoned {
+        self.abandoned
+    }
 }
 
 /// One run and everyone waiting on it, in a single allocation.
@@ -674,8 +678,10 @@ mod tests {
 
         assert!(results.iter().all(Result::is_ok));
         assert_eq!(in_flight.running(), 0);
+        // a shard keeps a table only if it never outgrew it, and 10k keys
+        // leave few of them that small
         assert!(
-            in_flight.capacity() <= in_flight.flights.maps.len() * RETAINED_CAPACITY,
+            in_flight.capacity() <= in_flight.flights.maps.len() * RETAINED_CAPACITY / 2,
             "{}",
             in_flight.capacity()
         );

@@ -1102,6 +1102,23 @@ mod tests {
     }
 
     #[test]
+    fn abandoned_lookups_are_cancelled() {
+        // each holds an mDNSResponder connection nobody waits on anymore
+        let resolver = AppleDnsResolver::new();
+        assert_eq!(resolver.in_flight.abandoned(), Abandoned::Cancel);
+        let resolver = resolver.with_timeout(Duration::from_secs(1));
+        assert_eq!(resolver.in_flight.abandoned(), Abandoned::Cancel);
+    }
+
+    #[test]
+    fn default_bounds_fit_mdnsresponder() {
+        let resolver = AppleDnsResolver::new();
+        assert_eq!(resolver.max_concurrency(), Some(64));
+        assert_eq!(resolver.burst_limit(), Some(128));
+        assert_eq!(resolver.burst_window(), Duration::from_millis(20));
+    }
+
+    #[test]
     fn apple_resolver_defaults_to_five_second_timeout() {
         assert_eq!(AppleDnsResolver::new().timeout(), Duration::from_secs(5));
     }
