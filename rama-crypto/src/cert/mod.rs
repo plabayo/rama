@@ -811,7 +811,12 @@ mod tests {
 
     #[test]
     fn certificate_authority_clamps_out_of_range_skew_to_epoch() {
-        for skew in [Duration::from_hours(20_000 * 365 * 24), Duration::MAX] {
+        for skew in [
+            Duration::from_hours(100 * 365 * 24),
+            Duration::from_hours(3_000 * 365 * 24),
+            Duration::from_hours(20_000 * 365 * 24),
+            Duration::MAX,
+        ] {
             let ca = CertificateAuthorityData::generate(SelfSignedCaConfig {
                 validity: CertificateValidity::new(Duration::from_hours(24), skew),
                 ..Default::default()

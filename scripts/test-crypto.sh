@@ -11,10 +11,10 @@ if [ "$#" -gt 0 ]; then
 fi
 
 case "$backend" in
-    all) backends=(rustcrypto ring aws-lc boring) ;;
-    rustcrypto|ring|aws-lc|boring) backends=("$backend") ;;
+    all) backends=(rustcrypto ring aws-lc boring large-dates) ;;
+    rustcrypto|ring|aws-lc|boring|large-dates) backends=("$backend") ;;
     *)
-        echo "usage: $0 [all|rustcrypto|ring|aws-lc|boring] [nextest arguments...]" >&2
+        echo "usage: $0 [all|rustcrypto|ring|aws-lc|boring|large-dates] [nextest arguments...]" >&2
         exit 2
         ;;
 esac
@@ -34,6 +34,10 @@ for backend in "${backends[@]}"; do
         boring)
             cargo_args+=(-p rama-tls -p rama-tls-boring)
             cargo_args+=(--features "rama-crypto/boring,rama-crypto/inspect,rama-crypto/native-certs,rama-tls/http,rama-tls/inspect,rama-tls-boring/http,rama-tls-boring/compression,rama-tls-boring/ua")
+            ;;
+        large-dates)
+            # A dependent can unify time/large-dates; ASN.1 years past 9999 must error, not panic.
+            cargo_args+=(--features "ring,time/large-dates")
             ;;
     esac
 

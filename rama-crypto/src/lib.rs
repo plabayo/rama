@@ -24,6 +24,8 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(test, allow(clippy::float_cmp))]
 
+mod asn1;
+
 pub mod cert;
 
 #[cfg(feature = "aws-lc")]
