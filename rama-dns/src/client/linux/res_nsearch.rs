@@ -249,7 +249,7 @@ fn lookup_record_packet(
         Walk::Rooted => (dns_name_from_domain(&format!("{domain}."))?, 1),
     };
     // every name a timeout reaches waits out its own retransmits
-    fit_retransmits(state.0, budget / names);
+    fit_retransmits(state.0, budget, names);
 
     let mut buffer = vec![0_u8; INITIAL_RESPONSE_BUFFER_SIZE.min(max_response_size)];
 
@@ -296,7 +296,7 @@ fn lookup_record_packet(
             if timed_out(h_errno, &buffer, called.elapsed()) {
                 // a caching stub may hold the late answer by now
                 if let Some(left) = another_walk(state.0, deadline, names) {
-                    fit_retransmits(state.0, left);
+                    fit_retransmits(state.0, left, names);
                     continue;
                 }
                 return Err(DnsTimeoutError::new(timeout).into());
@@ -326,7 +326,8 @@ fn lookup_record_packet(
 /// `TRY_AGAIN` also for a SERVFAIL, NOTIMP or REFUSED answer, whose rcode
 /// stays in `response`, and for a failure it meets at once; only silence
 /// keeps libc waiting a second at least. `errno` cannot tell: a later name's
-/// answer clears the `ETIMEDOUT` of an earlier one.
+/// answer clears the `ETIMEDOUT` of an earlier one, as it resets the rcode of
+/// a SERVFAIL slow enough to pass for silence.
 fn timed_out(h_errno: c_int, response: &[u8], waited: Duration) -> bool {
     // another name of the walk may have left its NOERROR or NXDOMAIN here
     let error_answer = response
@@ -335,13 +336,13 @@ fn timed_out(h_errno: c_int, response: &[u8], waited: Duration) -> bool {
     h_errno == ffi::TRY_AGAIN && !error_answer && waited >= Duration::from_millis(900)
 }
 
-/// The budget per name of another walk before `deadline`, if one still fits:
-/// libc waits at least a second per nameserver. Like the budget itself, it
-/// rounds to the nearest second, so a walk may end half a second late.
-fn another_walk(state: &ffi::ResState, deadline: Instant, names: u32) -> Option<Duration> {
-    let left = deadline.saturating_duration_since(Instant::now()) / names;
+/// What is left of `deadline` for another walk, if one still fits: libc waits
+/// at least a second per nameserver. Like the budget itself, it rounds to the
+/// nearest second, so a walk may end half a second late.
+fn another_walk(state: &ffi::ResState, deadline: Instant, names: c_int) -> Option<Duration> {
+    let left = deadline.saturating_duration_since(Instant::now());
     let shortest = try_secs(1, state.nscount.clamp(1, MAX_NAMESERVERS));
-    (whole_secs(left) >= shortest).then_some(left)
+    (whole_secs(left) / names >= shortest).then_some(left)
 }
 
 /// libc leaves `errno` alone on success, so a value from an earlier call on
@@ -395,12 +396,12 @@ fn search_walk(state: &ffi::ResState, name: &str) -> Walk {
     }
 }
 
-/// Shorten libc's retransmits so one name's tries land inside `budget`: by
-/// default one lost datagram would use up the whole default budget.
+/// Shorten libc's retransmits so the tries of each of `names` land inside
+/// `budget`: by default one lost datagram would use up the whole budget.
 ///
 /// Fewer tries are made only when even a second per send does not fit.
-fn fit_retransmits(state: &mut ffi::ResState, budget: Duration) {
-    let budget = whole_secs(budget).max(1);
+fn fit_retransmits(state: &mut ffi::ResState, budget: Duration, names: c_int) {
+    let budget = (whole_secs(budget) / names.max(1)).max(1);
     let nscount = state.nscount.clamp(1, MAX_NAMESERVERS);
     let total = |retrans, retry: c_int| retry.max(1).saturating_mul(try_secs(retrans, nscount));
 
@@ -907,7 +908,12 @@ mod stub_tests {
             state.dnsrch[0] = search.as_ptr().cast_mut();
         }
         state.set_ndots(1);
+        // no OPT record after the question, which the stub matches on
+        state.options &= !RES_USE_EDNS0;
     }
+
+    /// `RES_USE_EDNS0` in glibc's <resolv.h>.
+    const RES_USE_EDNS0: libc::c_ulong = 0x0010_0000;
 
     #[derive(Clone, Copy)]
     enum Reply {
@@ -921,14 +927,31 @@ mod stub_tests {
         Undersized,
     }
 
+    /// What a stub saw and did.
+    #[derive(Default)]
+    struct Seen {
+        queries: AtomicUsize,
+        replies: AtomicUsize,
+    }
+
+    impl Seen {
+        fn queries(&self) -> usize {
+            self.queries.load(Ordering::SeqCst)
+        }
+
+        fn replies(&self) -> usize {
+            self.replies.load(Ordering::SeqCst)
+        }
+    }
+
     /// Serves `name` from a loopback stub, which libc asks up to `sends`
-    /// times per name; returns how many queries it saw.
+    /// times per name.
     fn serve(
         name: &'static str,
         search: Option<&'static CStr>,
         sends: libc::c_int,
         reply: Reply,
-    ) -> Arc<AtomicUsize> {
+    ) -> Arc<Seen> {
         let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind stub");
         let port = socket.local_addr().expect("stub addr").port();
         STUBS.lock().push(Stub {
@@ -937,12 +960,12 @@ mod stub_tests {
             search,
             sends,
         });
-        let queries = Arc::new(AtomicUsize::new(0));
-        let seen = queries.clone();
+        let stub = Arc::new(Seen::default());
+        let seen = stub.clone();
         thread::spawn(move || {
             let mut packet = [0; 512];
             while let Ok((len, peer)) = socket.recv_from(&mut packet) {
-                let nth = seen.fetch_add(1, Ordering::SeqCst);
+                let nth = seen.queries.fetch_add(1, Ordering::SeqCst);
                 let query = &packet[..len];
                 let response = match reply {
                     Reply::SecondTime if nth == 0 => continue,
@@ -954,10 +977,11 @@ mod stub_tests {
                     Reply::SecondTime => with_loopback_answer(query),
                     Reply::Undersized => query[..2].to_vec(),
                 };
+                seen.replies.fetch_add(1, Ordering::SeqCst);
                 _ = socket.send_to(&response, peer);
             }
         });
-        queries
+        stub
     }
 
     /// The end of an A question for a name under `corp.test`.
@@ -988,12 +1012,12 @@ mod stub_tests {
     #[test]
     fn a_servfail_is_an_answer_not_a_timeout() {
         for (name, rcode) in [("servfail.stub.test", 2), ("refused.stub.test", 5)] {
-            let queries = serve(name, None, 1, Reply::Rcode(rcode));
+            let stub = serve(name, None, 1, Reply::Rcode(rcode));
             let started = Instant::now();
             let err = lookup(name, Duration::from_millis(4990)).expect_err("an error answer");
             assert!(err.downcast_ref::<DnsTimeoutError>().is_none(), "{err}");
             assert!(started.elapsed() < Duration::from_secs(1));
-            assert!(queries.load(Ordering::SeqCst) <= 4, "{queries:?}");
+            assert!(stub.queries() <= 4, "{}", stub.queries());
         }
     }
 
@@ -1002,72 +1026,73 @@ mod stub_tests {
         // a single label asks `corp.test` first, a dotted name asks it last;
         // under `corp.test` comes NXDOMAIN, the name as is gets silence
         for name in ["stalehdr", "stalehdr.stub"] {
-            let queries = serve(name, Some(c"corp.test"), 1, Reply::SearchOnly);
+            let stub = serve(name, Some(c"corp.test"), 1, Reply::SearchOnly);
             let started = Instant::now();
             let err = lookup(name, Duration::from_millis(2400)).expect_err("silence");
             assert!(
                 err.downcast_ref::<DnsTimeoutError>().is_some(),
                 "{name}: {err}"
             );
-            assert!(queries.load(Ordering::SeqCst) >= 2, "{name}: {queries:?}");
+            assert!(stub.queries() >= 2, "{name}: {}", stub.queries());
+            assert!(stub.replies() >= 1, "{name}: no NXDOMAIN under `corp.test`");
             assert!(started.elapsed() < Duration::from_millis(2900), "{name}");
         }
     }
 
     #[test]
     fn a_reply_rejected_at_once_is_not_asked_again() {
-        let queries = serve("undersized.stub.test", None, 1, Reply::Undersized);
+        let stub = serve("undersized.stub.test", None, 1, Reply::Undersized);
         let started = Instant::now();
         let err = lookup("undersized.stub.test", Duration::from_millis(2400))
             .expect_err("an unusable reply");
         assert!(err.downcast_ref::<DnsTimeoutError>().is_none(), "{err}");
-        assert!(queries.load(Ordering::SeqCst) <= 4, "{queries:?}");
+        assert!(stub.queries() <= 4, "{}", stub.queries());
         assert!(started.elapsed() < Duration::from_secs(1));
     }
 
     #[test]
     fn a_timed_out_query_is_asked_again_within_the_budget() {
-        let queries = serve("again.stub.test", None, 1, Reply::SecondTime);
+        let stub = serve("again.stub.test", None, 1, Reply::SecondTime);
         let started = Instant::now();
         let packet = lookup("again.stub.test", Duration::from_millis(2400))
             .expect("answered the second time")
             .expect("a response");
         assert_eq!(packet[7], 1, "one answer");
-        assert_eq!(queries.load(Ordering::SeqCst), 2);
+        assert_eq!(stub.queries(), 2);
         assert!(started.elapsed() < Duration::from_millis(2400));
     }
 
     #[test]
     fn a_silent_stub_times_out_within_the_budget() {
-        let queries = serve("silent.stub.test", None, 1, Reply::Silence);
+        let stub = serve("silent.stub.test", None, 1, Reply::Silence);
         let started = Instant::now();
         let err = lookup("silent.stub.test", Duration::from_millis(1400)).expect_err("silence");
         assert!(err.downcast_ref::<DnsTimeoutError>().is_some(), "{err}");
         // another 1s walk no longer fits in what is left
-        assert_eq!(queries.load(Ordering::SeqCst), 1);
+        assert_eq!(stub.queries(), 1);
         assert!(started.elapsed() < Duration::from_millis(1900));
     }
 
     #[test]
     fn two_names_share_the_budget() {
-        let queries = serve("split.stub.test", Some(c"corp.test"), 2, Reply::Silence);
+        let stub = serve("split.stub.test", Some(c"corp.test"), 2, Reply::Silence);
         let started = Instant::now();
         let err = lookup("split.stub.test", Duration::from_millis(2400)).expect_err("silence");
         assert!(err.downcast_ref::<DnsTimeoutError>().is_some(), "{err}");
         // as is, then with `corp.test`: one send of a second each, not two
-        assert_eq!(queries.load(Ordering::SeqCst), 2);
+        assert_eq!(stub.queries(), 2);
         assert!(started.elapsed() < Duration::from_millis(2900));
     }
 
     #[test]
     fn only_the_root_to_search_asks_once() {
-        let queries = serve("rooted.stub.test", Some(c"."), 1, Reply::Rcode(3));
+        let stub = serve("rooted.stub.test", Some(c"."), 1, Reply::Rcode(3));
         let packet = lookup("rooted.stub.test", Duration::from_secs(2))
             .expect("a negative answer")
             .expect("its response");
         assert_eq!(packet[3] & 0x0f, 3, "NXDOMAIN");
         // as is and then rooted would be the same query twice
-        assert_eq!(queries.load(Ordering::SeqCst), 1);
+        assert_eq!(stub.queries(), 1);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1136,10 +1161,28 @@ mod response_buffer_tests {
         state.nscount = 1;
         assert!(another_walk(&state, after(400), 1).is_none());
         assert!(another_walk(&state, after(700), 1).is_some());
-        assert!(another_walk(&state, after(1200), 2).is_some());
+        // a second for each of two names
+        assert!(another_walk(&state, after(1200), 2).is_none());
+        assert!(another_walk(&state, after(1700), 2).is_some());
         state.nscount = 3;
         assert!(another_walk(&state, after(2300), 1).is_none());
         assert!(another_walk(&state, after(2700), 1).is_some());
+    }
+
+    #[test]
+    fn names_split_the_rounded_budget() {
+        // SAFETY: `__res_state` is plain old data; zeroed is a valid value.
+        let mut state: ffi::ResState = unsafe { mem::zeroed() };
+        state.nscount = 1;
+        let mut fit = |budget, names| {
+            (state.retrans, state.retry) = (5, 2);
+            fit_retransmits(&mut state, Duration::from_millis(budget), names);
+            state.retry * try_secs(state.retrans, 1)
+        };
+        // two names of a 3.2s budget get a second each, not two
+        assert_eq!(fit(3200, 2), 1);
+        assert_eq!(fit(4980, 2), 2);
+        assert_eq!(fit(4980, 1), 4);
     }
 
     #[test]
@@ -1167,7 +1210,7 @@ mod response_buffer_tests {
         state.retrans = retrans;
         state.retry = retry;
         state.nscount = nscount;
-        fit_retransmits(&mut state, budget);
+        fit_retransmits(&mut state, budget, 1);
         let waited = state.retry.max(1) * try_secs(state.retrans, nscount.clamp(1, 3));
         (state.retrans, state.retry, waited)
     }
