@@ -221,10 +221,15 @@ impl<S: SendStream> Writer<S> {
         Ok(())
     }
 
+    /// Nothing queued is waiting for [`Self::poll_flush`].
+    pub(crate) fn is_flushed(&self) -> bool {
+        self.chunks.iter().all(Bytes::is_empty)
+    }
+
     pub(crate) fn poll_flush(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
         // Bound work even if a fake/transport accepts only one byte per call.
         for _ in 0..super::cooperative::OPERATIONS_PER_QUANTUM {
-            if self.chunks.iter().all(Bytes::is_empty) {
+            if self.is_flushed() {
                 return Poll::Ready(Ok(()));
             }
             ready!(self.stream.poll_chunks(cx, &mut self.chunks))?;

@@ -878,6 +878,71 @@ async fn connect_upstream_failure_resets_with_connect_error() {
     .unwrap();
 }
 
+/// As on TCP and HTTP/2, a write followed by a read needs no flush: the tunnel sends what a
+/// write queued without waiting for the next write.
+#[tokio::test]
+async fn tunnel_writes_are_sent_without_an_explicit_flush() {
+    use rama_http::io::upgrade::handle_upgrade;
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::new(None, None).await;
+        let (mut client, client_driver) =
+            client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
+                .unwrap();
+        let (mut server, server_driver) =
+            server::handshake(pair.server.clone(), Config::default()).unwrap();
+        let client_driver = spawn(client_driver.run());
+        let server_driver = spawn(server_driver.run());
+        let (received_tx, received) = tokio::sync::oneshot::channel();
+        let serve = spawn(async move {
+            let (request, response) = server.accept().await.unwrap().resolve().await.unwrap();
+            let upgrade = handle_upgrade(request);
+            response
+                .send_response(Response::new(Body::empty()))
+                .await
+                .unwrap();
+            let mut tunnel = upgrade.await.unwrap();
+            let mut ping = [0; 4];
+            tunnel.read_exact(&mut ping).await.unwrap();
+            assert_eq!(&ping, b"ping");
+            received_tx.send(()).unwrap();
+            tunnel.write_all(b"pong").await.unwrap();
+            // Wait for the client's end before ending in turn.
+            assert_eq!(tunnel.read(&mut ping).await.unwrap(), 0);
+            tunnel.shutdown().await.unwrap();
+        });
+        let response = client
+            .send_request(
+                Request::builder()
+                    .method("CONNECT")
+                    .uri(
+                        rama_net::uri::Uri::parse_http_request_target("localhost:443", true)
+                            .unwrap(),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut tunnel = handle_upgrade(response).await.unwrap();
+        tunnel.write_all(b"ping").await.unwrap();
+        // Not polled again until the server saw the write: only the write itself can send it.
+        received.await.unwrap();
+        let mut pong = [0; 4];
+        tunnel.read_exact(&mut pong).await.unwrap();
+        assert_eq!(&pong, b"pong");
+        tunnel.shutdown().await.unwrap();
+        serve.await.unwrap();
+        drop(tunnel);
+        pair.client.close(0u32, b"done");
+        _ = client_driver.await;
+        _ = server_driver.await;
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
 #[tokio::test]
 async fn saturated_admission_observes_connection_close() {
     tokio::time::timeout(LIMIT, async {

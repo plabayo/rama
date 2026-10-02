@@ -145,6 +145,15 @@ impl<R: RecvStream, S: SendStream> Tunnel<R, S> {
         shared.schedule.release(id);
         result
     }
+
+    /// Send what a write queued without waiting for it, as TCP and HTTP/2 do: a caller that
+    /// writes and then reads must not stall on a flush it never asked for. Errors return with
+    /// the next write or flush.
+    fn flush_queued(&mut self, cx: &mut Context<'_>) {
+        if !self.send_closed && !self.writer.is_flushed() {
+            _ = self.flush(cx);
+        }
+    }
 }
 
 impl<R: RecvStream, S: SendStream> ExtensionsRef for Tunnel<R, S> {
@@ -163,6 +172,7 @@ impl<R: RecvStream + Unpin, S: SendStream + Unpin> AsyncRead for Tunnel<R, S> {
         if dst.remaining() == 0 {
             return Poll::Ready(Ok(()));
         }
+        self.flush_queued(cx);
         for _ in 0..super::cooperative::OPERATIONS_PER_QUANTUM {
             if !self.buffer.is_empty() {
                 let count = dst.remaining().min(self.buffer.len());
@@ -206,6 +216,7 @@ impl<R: RecvStream + Unpin, S: SendStream + Unpin> AsyncWrite for Tunnel<R, S> {
             self.writer
                 .queue(FrameType::DATA, Bytes::copy_from_slice(&src[..count]))
                 .map_err(io::Error::other)?;
+            self.flush_queued(cx);
         }
         // Ownership has transferred: report acceptance before any subsequent Pending.
         Poll::Ready(Ok(count))
@@ -326,6 +337,84 @@ mod tests {
         fn priority(&mut self, _: i32) -> Result<(), Error> {
             Ok(())
         }
+    }
+
+    fn tunnel_over<R: RecvStream, S: SendStream>(
+        recv: R,
+        send: S,
+        shared: Arc<Shared>,
+        id: u64,
+    ) -> Tunnel<R, S> {
+        let mut reader = Reader::new(recv, shared, id);
+        reader.phase = Phase::Tunnel;
+        Tunnel {
+            reader,
+            writer: Writer::new(send),
+            buffer: Bytes::new(),
+            extensions: Extensions::new(),
+            permit: None,
+            shutdown: None,
+            send_closed: false,
+            acknowledged: None,
+            priority_lease: None,
+            association: None,
+            aborted: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    /// A send stream that is not ready on its first poll, then takes everything.
+    struct SlowSend(Arc<Mutex<Vec<u8>>>, bool);
+
+    impl SendStream for SlowSend {
+        fn acknowledged(&self) -> impl Future<Output = Result<(), Error>> + Send + Sync + 'static {
+            std::future::ready(Ok(()))
+        }
+
+        fn poll_chunks(
+            &mut self,
+            cx: &mut Context<'_>,
+            chunks: &mut [Bytes],
+        ) -> Poll<Result<(), Error>> {
+            if !std::mem::replace(&mut self.1, true) {
+                cx.waker().wake_by_ref();
+                return Poll::Pending;
+            }
+            let mut written = self.0.lock();
+            for chunk in chunks {
+                written.extend_from_slice(chunk);
+                *chunk = Bytes::new();
+            }
+            Poll::Ready(Ok(()))
+        }
+
+        fn finish(&mut self) -> Result<(), Error> {
+            Ok(())
+        }
+        fn reset(&mut self, _: Code) {}
+        fn priority(&mut self, _: i32) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+
+    /// A write the transport could not take at once is sent by a later read, without a flush.
+    #[test]
+    fn a_read_sends_what_an_earlier_write_could_not() {
+        let shared = Shared::new(Config::default(), Role::Client, Extensions::new()).unwrap();
+        shared.schedule.register(0, Priority::default()).unwrap();
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let mut tunnel = tunnel_over(IdleRecv, SlowSend(output.clone(), false), shared, 0);
+        let mut cx = Context::from_waker(Waker::noop());
+        let Poll::Ready(Ok(4)) = Pin::new(&mut tunnel).poll_write(&mut cx, b"ping") else {
+            panic!("the write is queued");
+        };
+        assert!(output.lock().is_empty());
+        let mut buf = [0; 4];
+        assert!(
+            Pin::new(&mut tunnel)
+                .poll_read(&mut cx, &mut ReadBuf::new(&mut buf))
+                .is_pending()
+        );
+        assert!(output.lock().ends_with(b"ping"));
     }
 
     fn tunnel(
