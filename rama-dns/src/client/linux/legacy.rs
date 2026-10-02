@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::ffi::CStr;
 use std::{
     mem::size_of,
@@ -7,44 +6,60 @@ use std::{
     time::Duration,
 };
 
+use ahash::{HashSet, HashSetExt as _};
 use libc::{AF_INET, AF_INET6, SOCK_STREAM, addrinfo};
 use rama_core::{
     error::BoxError,
     futures::{Stream, async_stream::stream_fn},
-    stream::{StreamExt, wrappers::ReceiverStream},
     telemetry::tracing,
 };
 use rama_net::address::Domain;
 use tokio::sync::mpsc;
 
-use super::{LinuxDnsResolverError, LookupEvent, dns_name_from_domain};
+use super::{LinuxDnsResolverError, LookupEvent, NativeConfig, dns_name_from_domain};
+use crate::client::limit::{DnsTimeoutError, deadline_after};
 
 pub(super) fn lookup_ipv4_stream(
     domain: Domain,
     timeout: Duration,
+    native: NativeConfig,
 ) -> impl Stream<Item = Result<LookupEvent<Ipv4Addr>, BoxError>> + Send {
-    lookup_address_stream(domain, timeout, AF_INET, lookup_ipv4_impl)
+    lookup_address_stream(
+        domain,
+        timeout,
+        native,
+        AF_INET,
+        lookup_addresses_impl::<Ipv4Addr>,
+    )
 }
 
 pub(super) fn lookup_ipv6_stream(
     domain: Domain,
     timeout: Duration,
+    native: NativeConfig,
 ) -> impl Stream<Item = Result<LookupEvent<Ipv6Addr>, BoxError>> + Send {
-    lookup_address_stream(domain, timeout, AF_INET6, lookup_ipv6_impl)
+    lookup_address_stream(
+        domain,
+        timeout,
+        native,
+        AF_INET6,
+        lookup_addresses_impl::<Ipv6Addr>,
+    )
 }
 
 fn lookup_address_stream<T, F>(
     domain: Domain,
     timeout: Duration,
+    native: NativeConfig,
     family: libc::c_int,
     lookup: F,
 ) -> impl Stream<Item = Result<LookupEvent<T>, BoxError>> + Send
 where
     T: Send + 'static + std::fmt::Debug,
     F: FnOnce(
-            Domain,
+            &Domain,
             libc::c_int,
-            mpsc::Sender<Result<LookupEvent<T>, BoxError>>,
+            &mpsc::Sender<Result<LookupEvent<T>, BoxError>>,
         ) -> Result<(), BoxError>
         + Send
         + 'static,
@@ -52,14 +67,26 @@ where
     stream_fn(async move |mut yielder| {
         tracing::debug!(?timeout, %domain, family, "dns::linux: getaddrinfo query");
 
-        let (tx, rx) = mpsc::channel(8);
-        let join = tokio::task::spawn_blocking(move || lookup(domain, family, tx));
+        let deadline = deadline_after(timeout);
+        let (tx, mut rx) = mpsc::channel(8);
+        let task = native.limit.spawn_blocking(deadline, move |budget| {
+            if budget.is_zero() {
+                return Err(DnsTimeoutError::new(timeout).into());
+            }
+            lookup(&domain, family, &tx)
+        });
+        let Some(join) = task.await else {
+            tracing::debug!("linux::getaddrinfo: no native lookup slot before the deadline");
+            yielder
+                .yield_item(Err(DnsTimeoutError::new(timeout).into()))
+                .await;
+            return;
+        };
 
-        let mut stream = std::pin::pin!(ReceiverStream::new(rx).timeout(timeout));
-
-        while let Some(result) = stream.next().await {
-            match result {
-                Ok(item) => yielder.yield_item(item).await,
+        loop {
+            match tokio::time::timeout_at(deadline, rx.recv()).await {
+                Ok(Some(item)) => yielder.yield_item(item).await,
+                Ok(None) => break,
                 Err(err) => {
                     tracing::debug!(
                         %err,
@@ -69,7 +96,7 @@ where
                     // waiting for the worker result; it does not cancel the underlying OS
                     // resolver call once it has started.
                     yielder
-                        .yield_item(Err(LinuxDnsResolverError::timeout(timeout).into()))
+                        .yield_item(Err(DnsTimeoutError::new(timeout).into()))
                         .await;
                     return;
                 }
@@ -93,26 +120,10 @@ where
     })
 }
 
-fn lookup_ipv4_impl(
-    domain: Domain,
-    family: libc::c_int,
-    tx: mpsc::Sender<Result<LookupEvent<Ipv4Addr>, BoxError>>,
-) -> Result<(), BoxError> {
-    lookup_addresses_impl::<Ipv4Addr>(domain, family, tx)
-}
-
-fn lookup_ipv6_impl(
-    domain: Domain,
-    family: libc::c_int,
-    tx: mpsc::Sender<Result<LookupEvent<Ipv6Addr>, BoxError>>,
-) -> Result<(), BoxError> {
-    lookup_addresses_impl::<Ipv6Addr>(domain, family, tx)
-}
-
 fn lookup_addresses_impl<T>(
-    domain: Domain,
+    domain: &Domain,
     family: libc::c_int,
-    tx: mpsc::Sender<Result<LookupEvent<T>, BoxError>>,
+    tx: &mpsc::Sender<Result<LookupEvent<T>, BoxError>>,
 ) -> Result<(), BoxError>
 where
     T: FromSockAddr,
@@ -133,7 +144,10 @@ where
     let mut result: *mut addrinfo = ptr::null_mut();
     let status = unsafe { libc::getaddrinfo(name.as_ptr(), ptr::null(), &hints, &mut result) };
     if status != 0 {
-        let message = unsafe { CStr::from_ptr(libc::gai_strerror(status)) }
+        // SAFETY: `gai_strerror` takes any status code.
+        let message = unsafe { libc::gai_strerror(status) };
+        // SAFETY: it returns a static NUL-terminated message.
+        let message = unsafe { CStr::from_ptr(message) }
             .to_string_lossy()
             .into_owned();
         return Err(
@@ -184,11 +198,11 @@ trait FromSockAddr: Sized {
 }
 
 impl FromSockAddr for Ipv4Addr {
-    type Key = Ipv4Addr;
+    type Key = Self;
 
     unsafe fn from_sockaddr(addr: *const libc::sockaddr) -> Self {
         let addr = unsafe { &*addr.cast::<libc::sockaddr_in>() };
-        Ipv4Addr::from(addr.sin_addr.s_addr.to_ne_bytes())
+        Self::from(addr.sin_addr.s_addr.to_ne_bytes())
     }
 
     fn sockaddr_len() -> usize {
@@ -201,11 +215,11 @@ impl FromSockAddr for Ipv4Addr {
 }
 
 impl FromSockAddr for Ipv6Addr {
-    type Key = Ipv6Addr;
+    type Key = Self;
 
     unsafe fn from_sockaddr(addr: *const libc::sockaddr) -> Self {
         let addr = unsafe { &*addr.cast::<libc::sockaddr_in6>() };
-        Ipv6Addr::from(addr.sin6_addr.s6_addr)
+        Self::from(addr.sin6_addr.s6_addr)
     }
 
     fn sockaddr_len() -> usize {

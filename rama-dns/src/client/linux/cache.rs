@@ -155,6 +155,9 @@ impl LinuxDnsCache {
     /// stored TTL is still clamped by the configured `negative_ttl` ceiling
     /// in [`EntryExpiry`].
     pub(super) fn insert_negative(&self, domain: Domain, kind: RecordKind, ttl: Duration) {
+        if !is_cacheable(Some(ttl)) {
+            return;
+        }
         self.entries.insert(
             CacheKey::new(domain, kind),
             CacheEntry {
@@ -176,6 +179,9 @@ impl LinuxDnsCache {
     }
 
     fn insert(&self, domain: Domain, kind: RecordKind, value: CacheValue, ttl: Option<Duration>) {
+        if !is_cacheable(ttl) {
+            return;
+        }
         self.entries.insert(
             CacheKey::new(domain, kind),
             CacheEntry {
@@ -186,38 +192,62 @@ impl LinuxDnsCache {
     }
 }
 
+/// A zero TTL means "do not cache": storing it would only hold memory until
+/// the cache's next housekeeping evicts it.
+fn is_cacheable(ttl: Option<Duration>) -> bool {
+    ttl.is_none_or(|ttl| !ttl.is_zero())
+}
+
 pub(super) enum CacheLookup<T> {
     Positive(Arc<[T]>),
     Negative,
 }
 
+/// `Domain` equality ignores a trailing dot, but a rooted name skips the
+/// resolv.conf search list, so it can resolve differently.
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
-struct CacheKey {
+pub(super) struct CacheKey {
     domain: Domain,
+    rooted: bool,
     kind: RecordKind,
 }
 
 impl CacheKey {
-    fn new(domain: Domain, kind: RecordKind) -> Self {
-        Self { domain, kind }
+    pub(super) fn new(domain: Domain, kind: RecordKind) -> Self {
+        let rooted = domain.is_fqdn();
+        Self {
+            domain,
+            rooted,
+            kind,
+        }
     }
 }
 
 struct CacheLookupKey<'a> {
     domain: &'a Domain,
+    rooted: bool,
     kind: RecordKind,
 }
 
 impl<'a> CacheLookupKey<'a> {
     fn new(domain: &'a Domain, kind: RecordKind) -> Self {
-        Self { domain, kind }
+        Self {
+            domain,
+            rooted: domain.is_fqdn(),
+            kind,
+        }
     }
 }
 
 impl Hash for CacheLookupKey<'_> {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        let Self { domain, kind } = self;
+        let Self {
+            domain,
+            rooted,
+            kind,
+        } = self;
         domain.hash(state);
+        rooted.hash(state);
         kind.hash(state);
     }
 }
@@ -226,14 +256,16 @@ impl Equivalent<CacheKey> for CacheLookupKey<'_> {
     fn equivalent(&self, key: &CacheKey) -> bool {
         let Self {
             domain: lookup_domain,
+            rooted: lookup_rooted,
             kind: lookup_kind,
         } = self;
         let CacheKey {
             domain: key_domain,
+            rooted: key_rooted,
             kind: key_kind,
         } = key;
 
-        lookup_kind == key_kind && *lookup_domain == key_domain
+        lookup_kind == key_kind && lookup_rooted == key_rooted && *lookup_domain == key_domain
     }
 }
 
@@ -288,5 +320,34 @@ impl Expiry<CacheKey, CacheEntry> for EntryExpiry {
             .explicit_ttl
             .map_or(bound, |explicit| explicit.min(bound));
         Some(chosen)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::Ipv4Addr;
+
+    use super::*;
+
+    #[test]
+    fn zero_ttl_answers_are_not_stored() {
+        assert!(!is_cacheable(Some(Duration::ZERO)));
+        assert!(is_cacheable(Some(Duration::from_secs(1))));
+        // no TTL: the configured default applies
+        assert!(is_cacheable(None));
+    }
+
+    #[test]
+    fn zero_ttl_answers_take_no_cache_entry() {
+        let cache = LinuxDnsCache::new(64, Duration::from_mins(1), Duration::from_mins(1));
+        let domain = Domain::from_static("example.com");
+        cache.insert_ipv4(
+            domain.clone(),
+            vec![Ipv4Addr::LOCALHOST],
+            Some(Duration::ZERO),
+        );
+        cache.insert_negative(domain, RecordKind::Ipv6, Duration::ZERO);
+        cache.entries.run_pending_tasks();
+        assert_eq!(cache.entries.entry_count(), 0);
     }
 }

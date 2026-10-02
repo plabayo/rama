@@ -1,5 +1,11 @@
 pub mod resolver;
 
+mod in_flight;
+
+mod limit;
+#[doc(inline)]
+pub use self::limit::DnsTimeoutError;
+
 mod connector;
 #[doc(inline)]
 pub use connector::{DnsConnector, DnsConnectorLayer};
