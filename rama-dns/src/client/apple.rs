@@ -32,6 +32,7 @@
 use std::collections::VecDeque;
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
 use std::fmt;
+use std::io;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::os::fd::{AsRawFd, RawFd};
 use std::ptr;
@@ -433,7 +434,17 @@ fn has_data(fd: c_int) -> bool {
         revents: 0,
     };
     // SAFETY: one valid `pollfd`, and a zero timeout never waits
-    unsafe { libc::poll(&mut poll, 1, 0) > 0 }
+    ready(|| unsafe { libc::poll(&mut poll, 1, 0) })
+}
+
+/// Whether `poll` saw its descriptor ready; a signal does not make it empty.
+fn ready(mut poll: impl FnMut() -> c_int) -> bool {
+    loop {
+        match poll() {
+            -1 if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted => {}
+            ready => return ready > 0,
+        }
+    }
 }
 
 fn dns_name_from_domain(domain: &str) -> Result<CString, BoxError> {
@@ -926,9 +937,38 @@ mod ffi {
 
 #[cfg(test)]
 mod tests {
+    use std::{io::Write as _, os::unix::net::UnixStream};
+
     use rama_core::{error::error_chain, futures::future::join_all};
 
     use super::*;
+
+    #[test]
+    fn an_interrupted_poll_is_asked_again() {
+        let mut polls = 0;
+        let readable = ready(|| {
+            polls += 1;
+            if polls > 1 {
+                return 1;
+            }
+            // SAFETY: returns this thread's errno slot, valid for its lifetime
+            let errno = unsafe { libc::__error() };
+            // SAFETY: the slot is this thread's own and writable
+            unsafe { *errno = libc::EINTR };
+            -1
+        });
+        assert!(readable);
+        assert_eq!(polls, 2);
+        assert!(!ready(|| 0));
+    }
+
+    #[test]
+    fn readiness_follows_the_socket() {
+        let (ours, theirs) = UnixStream::pair().expect("socket pair");
+        assert!(!has_data(ours.as_raw_fd()));
+        (&theirs).write_all(b"x").expect("write");
+        assert!(has_data(ours.as_raw_fd()));
+    }
 
     #[tokio::test]
     async fn burst_of_lookups_for_one_name_all_resolve() {
