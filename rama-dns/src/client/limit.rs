@@ -245,11 +245,11 @@ struct BurstState {
 }
 
 impl BurstState {
-    /// Forget aged queries, returning when the oldest one left ages.
+    /// Forget aged queries, returning when the oldest one left ages, if ever.
     fn expire(&mut self, now: Instant, window: Duration) -> Option<Instant> {
         while let Some(&(_, started)) = self.young.front() {
             if now.saturating_duration_since(started) < window {
-                return Some(started + window);
+                return started.checked_add(window);
             }
             self.young.pop_front();
         }
@@ -470,6 +470,19 @@ mod tests {
         drop(lookups.acquire(deadline_in(5)).await.expect("slot"));
         let _next = lookups.acquire(deadline_in(5)).await.expect("slot");
         assert_eq!(started.elapsed(), Duration::from_millis(10));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_window_past_any_deadline_never_ages() {
+        let lookups = burst(1, Duration::MAX);
+        let held = lookups.acquire(deadline_in(5)).await.expect("slot");
+        // only an answer frees the place
+        let starved = lookups
+            .acquire(Instant::now() + Duration::from_millis(50))
+            .await;
+        assert!(starved.is_none());
+        answer(held);
+        assert!(lookups.acquire(deadline_in(5)).await.is_some());
     }
 
     #[tokio::test(start_paused = true)]
