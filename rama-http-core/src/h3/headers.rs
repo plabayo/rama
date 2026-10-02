@@ -6,6 +6,7 @@ use super::{
 };
 use crate::proto::target::{
     OutgoingHost, host_is_wire_authority, normalize_received, outgoing_host, reconcile_host,
+    several_hosts,
 };
 use rama_core::{
     bytes::{Bytes, BytesMut},
@@ -167,6 +168,10 @@ pub(crate) fn request_head(
             ext::Protocol::try_from_bytes(value).map_err(|_error| malformed("invalid :protocol"))
         })
         .transpose()?;
+    // Several Host lines leave the routed authority ambiguous.
+    if several_hosts(&fields.headers) {
+        return Err(malformed("several Host lines"));
+    }
     // Only a parseable first Host stands in for a missing :authority; any other Host is
     // reconciled with the request authority once the request is built.
     let host = fields.headers.get(header::HOST).filter(|host| {
@@ -1150,17 +1155,37 @@ mod tests {
         }
     }
 
-    /// Several Host lines collapse onto the routed authority: `:authority`, else the first Host.
+    /// Several Host lines are refused on every version (RFC 9112 §3.2), equal or not, with or
+    /// without `:authority`: which one routes would be a guess another hop may make differently.
     #[test]
-    fn several_hosts_collapse_onto_the_routed_authority() {
-        for (authority, expected) in [(Some("example.com"), "example.com"), (None, "a.example")] {
-            let mut head = vec![(":method", "GET"), (":scheme", "https"), (":path", "/")];
-            head.extend(authority.map(|authority| (":authority", authority)));
-            head.extend([("host", "user@a.example"), ("host", "b.example")]);
-            let received = request(fields(&head)).unwrap();
-            let hosts: Vec<_> = received.headers().get_all(header::HOST).iter().collect();
-            assert_eq!(hosts, [expected], "{authority:?}");
-            assert_eq!(received.uri().to_string(), format!("https://{expected}/"));
+    fn several_hosts_are_refused_on_every_version() {
+        let text = |value: &'static str| {
+            hpack::BytesStr::try_from(Bytes::from_static(value.as_bytes())).unwrap()
+        };
+        for hosts in [["a.example", "b.example"], ["a.example", "a.example"]] {
+            let raw = format!(
+                "GET / HTTP/1.1\r\nHost: {}\r\nHost: {}\r\n\r\n",
+                hosts[0], hosts[1]
+            );
+            assert!(h1::refuses(&raw), "h1 {hosts:?}");
+            for authority in [Some("example.com"), None] {
+                let mut head = vec![(":method", "GET"), (":scheme", "https"), (":path", "/")];
+                head.extend(authority.map(|authority| (":authority", authority)));
+                head.extend(hosts.map(|host| ("host", host)));
+                request(fields(&head)).unwrap_err();
+                let mut headers = HeaderMap::new();
+                for host in hosts {
+                    headers.append(header::HOST, HeaderValue::from_static(host));
+                }
+                let pseudo = frame::Pseudo {
+                    method: Some(Method::GET),
+                    scheme: Some(text("https")),
+                    authority: authority.map(text),
+                    path: Some(text("/")),
+                    ..Default::default()
+                };
+                crate::h2::server::test_util::receive(pseudo, headers).unwrap_err();
+            }
         }
     }
 
@@ -1252,8 +1277,6 @@ mod tests {
             &[""][..],
             &["a@b@evil.example"][..],
             &["example.com:99999"][..],
-            &["bad host", "example.com"][..],
-            &["example.com", "bad host"][..],
         ] {
             let mut head = vec![
                 (":method", "GET"),
@@ -1624,7 +1647,6 @@ mod tests {
                 ("real.example", &[][..]),
                 ("real.example", &["real.example"][..]),
                 ("real.example", &["other.example"][..]),
-                ("real.example", &["other.example", "third.example"][..]),
                 ("user@real.example", &["other.example"][..]),
             ] {
                 let mut head = vec![

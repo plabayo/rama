@@ -6,9 +6,15 @@ use rama_http_types::{
 };
 use rama_net::{Protocol, address::AuthorityRef, uri::Uri};
 
-/// Reconciles a received target's `Host` with its request-target authority, so services and
-/// later hops see one: HTTP-family userinfo is dropped, and `Host` names the URI authority (as
-/// RFC 9112 §3.2.2 requires of HTTP/1 proxies), else collapses onto its first line.
+/// Several `Host` lines leave the routed authority ambiguous, so a decoder refuses them before
+/// normalizing (RFC 9112 §3.2: a request smuggling and cache poisoning vector).
+pub(crate) fn several_hosts(headers: &HeaderMap) -> bool {
+    headers.get_all(header::HOST).iter().nth(1).is_some()
+}
+
+/// Reconciles a received target's single `Host` with its request-target authority, so services
+/// and later hops see one: HTTP-family userinfo is dropped, and `Host` names the URI authority
+/// (as RFC 9112 §3.2.2 requires of HTTP/1 proxies). Decoders refuse several `Host` lines first.
 /// `authority_sensitive` is the never-index flag of the pseudo-header the URI authority came from.
 pub(crate) fn normalize_received(
     uri: &mut Uri,
@@ -56,21 +62,9 @@ fn replacement_host(
     // A Host derived from the authority keeps both never-index restrictions.
     let derived_sensitive = host_sensitive || authority_sensitive;
     let mut hosts = values.iter();
+    // Several lines never get here: decoders refuse them.
     let (Some(host), None) = (hosts.next(), hosts.next()) else {
-        // Several Host lines collapse onto the authority, else onto the first line.
-        let first = values.iter().next()?;
-        return match authority {
-            Some(authority) => host_value(authority, derived_sensitive),
-            None => {
-                if let Ok(parsed) = AuthorityRef::try_from(first.as_bytes()) {
-                    host_value(parsed, host_sensitive)
-                } else {
-                    let mut value = first.clone();
-                    value.set_sensitive(host_sensitive);
-                    Some(value)
-                }
-            }
-        };
+        return None;
     };
     let parsed = AuthorityRef::try_from(host.as_bytes()).ok();
     match (authority, parsed) {
@@ -231,12 +225,6 @@ mod tests {
                 &["example.com"],
             ),
             (
-                "https://example.com/",
-                &["a.example", "b.example"],
-                "https://example.com/",
-                &["example.com"],
-            ),
-            (
                 "https://[::1]:8443/",
                 &["other"],
                 "https://[::1]:8443/",
@@ -245,8 +233,6 @@ mod tests {
             // Without a URI authority, Host only loses userinfo.
             ("/", &["user@example.com:8080"], "/", &["example.com:8080"]),
             ("/", &["example.com"], "/", &["example.com"]),
-            ("/", &["user@a.example", "b.example"], "/", &["a.example"]),
-            ("/", &["bad host", "b.example"], "/", &["bad host"]),
         ] {
             let (uri_out, hosts_out) = normalized(uri, hosts);
             assert_eq!(uri_out, expected_uri, "{uri} {hosts:?}");
@@ -310,33 +296,25 @@ mod tests {
             run(https, vec![host("public.example", true)], false),
             ("private.example".to_owned(), true)
         );
-        assert_eq!(
-            run(
-                https,
-                vec![host("a.example", false), host("b.example", true)],
-                false
-            ),
-            ("private.example".to_owned(), true)
-        );
         // A matching Host is not derived: it keeps its own flag.
         assert_eq!(
             run(https, vec![host("private.example", false)], true),
             ("private.example".to_owned(), false)
         );
-        // Without a URI authority the first line survives with every line's restriction.
-        for first in ["bad host", "user@a.example"] {
-            let (value, sensitive) =
-                run("/", vec![host(first, false), host("bad host", true)], false);
-            assert!(sensitive, "{first} -> {value}");
-        }
+        // Without a URI authority, a Host losing its userinfo keeps its restriction.
         assert_eq!(
-            run(
-                "/",
-                vec![host("bad host", false), host("b.example", false)],
-                false
-            ),
-            ("bad host".to_owned(), false)
+            run("/", vec![host("user@a.example", true)], false),
+            ("a.example".to_owned(), true)
         );
+    }
+
+    #[test]
+    fn several_host_lines_are_detected() {
+        let mut headers = HeaderMap::new();
+        headers.append(header::HOST, HeaderValue::from_static("a.example"));
+        assert!(!several_hosts(&headers));
+        headers.append(header::HOST, HeaderValue::from_static("a.example"));
+        assert!(several_hosts(&headers));
     }
 
     #[test]

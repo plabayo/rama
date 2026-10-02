@@ -121,7 +121,7 @@
 use crate::h2::codec::{Codec, UserError};
 use crate::h2::proto::{self, Config, Error, Prioritized};
 use crate::h2::{FlowControl, PingPong, RecvStream, SendStream};
-use crate::proto::target::normalize_received;
+use crate::proto::target::{normalize_received, several_hosts};
 
 use rama_core::bytes::{Buf, Bytes};
 use rama_core::extensions::{Extensions, ExtensionsRef};
@@ -1982,6 +1982,10 @@ impl proto::Peer for Peer {
 
         request.extensions().insert(HeaderByteLength(header_size));
 
+        // Several Host lines leave the routed authority ambiguous.
+        if several_hosts(&fields) {
+            malformed!("malformed headers: several Host lines");
+        }
         *request.headers_mut() = fields;
         let mut uri = std::mem::take(request.uri_mut());
         normalize_received(&mut uri, request.headers_mut(), authority_sensitive);

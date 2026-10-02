@@ -17,14 +17,14 @@ use rama_utils::collections::smallvec::{SmallVec, smallvec, smallvec_inline};
 
 use crate::body::DecodedLength;
 use crate::common::date;
-use crate::error::Parse;
+use crate::error::{Header as HeaderError, Parse};
 use crate::headers;
 use crate::proto::h1::{
     Encode, Encoder, Http1Transaction, ParseContext, ParseResult, ParsedMessage,
 };
 use crate::proto::{
     BodyLength, MessageHead, RequestLine,
-    target::{normalize_received, repair_outgoing_h1_host},
+    target::{normalize_received, repair_outgoing_h1_host, several_hosts},
 };
 
 use super::EncodeHead;
@@ -347,6 +347,11 @@ impl Http1Transaction for Server {
             return Err(Parse::transfer_encoding_invalid());
         }
 
+        // RFC 9112 §3.2: a server MUST answer several Host lines with 400.
+        if several_hosts(&headers) {
+            debug!("request with several Host lines, bad request");
+            return Err(Parse::Header(HeaderError::Token));
+        }
         normalize_received(&mut subject.1, &mut headers, false);
 
         // RFC 9112 §6.1: TE + CL together is a request smuggling vector,
@@ -1853,18 +1858,6 @@ mod tests {
                 "ramaproxy.org",
             ),
             ("/x", "user@ramaproxy.org", "", "ramaproxy.org"),
-            (
-                "/x",
-                "ramaproxy.org",
-                "HOST: other.example\r\n",
-                "ramaproxy.org",
-            ),
-            (
-                "http://ramaproxy.org/x",
-                "a.example",
-                "Host: b.example\r\n",
-                "ramaproxy.org",
-            ),
         ] {
             let raw = format!(
                 "GET {target} HTTP/1.1\r\nX-First: a\r\nhOsT: {host}\r\nX-Middle: b\r\n\
