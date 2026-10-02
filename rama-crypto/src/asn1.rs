@@ -27,16 +27,18 @@ mod tests {
         );
         datetime(epoch - Duration::from_secs(1)).unwrap_err();
 
+        let max_asn1 = epoch + Duration::from_secs(253_402_300_799);
+        assert_eq!(datetime(max_asn1).unwrap().year(), 9999);
+
+        // Not every platform's SystemTime reaches past time's own range.
         let beyond_range = time::Date::MAX
             .midnight()
             .assume_utc()
             .unix_timestamp()
             .unsigned_abs()
             + 86_400;
-        for secs in [beyond_range, i64::MAX.unsigned_abs() + 1, u64::MAX] {
-            if let Some(t) = epoch.checked_add(Duration::from_secs(secs)) {
-                datetime(t).unwrap_err();
-            }
+        if let Some(t) = epoch.checked_add(Duration::from_secs(beyond_range)) {
+            datetime(t).unwrap_err();
         }
     }
 }

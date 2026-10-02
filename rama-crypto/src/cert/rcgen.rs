@@ -1,5 +1,7 @@
 //! rcgen-backed certificate generation (feature `aws-lc` / `ring`).
 
+use std::time::SystemTime;
+
 use super::{
     CertificateAuthorityData, CertificateIdentity, CertificateKeyKind, CertificateSubject,
     CertificateValidity, GeneratedServerAuthConfig, LeafCertRequest, LeafCertUsage,
@@ -99,18 +101,27 @@ fn duration(value: std::time::Duration) -> Result<SignedDuration, BoxError> {
 
 fn validity_bounds(
     validity: CertificateValidity,
+    now: SystemTime,
 ) -> Result<(OffsetDateTime, OffsetDateTime), BoxError> {
     validate_certificate_lifetime(validity.lifetime)?;
-    let now = OffsetDateTime::now_utc();
+    let now = crate::asn1::datetime(now).context("read system time for certificate validity")?;
     let lifetime = duration(validity.lifetime)?;
     // Match BoringSSL: backdating before the Unix epoch clamps to the epoch.
     let not_before = duration(validity.not_before_skew)
         .ok()
         .and_then(|skew| now.checked_sub(skew))
-        .unwrap_or(OffsetDateTime::UNIX_EPOCH);
+        .map_or(OffsetDateTime::UNIX_EPOCH, |t| {
+            t.max(OffsetDateTime::UNIX_EPOCH)
+        });
     let not_after = not_before
         .checked_add(lifetime)
         .ok_or_else(|| BoxError::from_static_str("certificate validity exceeds timestamp range"))?;
+    // rcgen panics encoding years past 9999, which `time/large-dates` allows.
+    if not_after.year() > 9999 {
+        return Err(BoxError::from_static_str(
+            "certificate validity past ASN.1 year 9999",
+        ));
+    }
     Ok((not_before, not_after))
 }
 
@@ -167,7 +178,7 @@ fn leaf_params(
         LeafCertUsage::ServerAuth => rcgen::ExtendedKeyUsagePurpose::ServerAuth,
         LeafCertUsage::ClientAuth => rcgen::ExtendedKeyUsagePurpose::ClientAuth,
     }];
-    let (not_before, not_after) = validity_bounds(request.config.validity)?;
+    let (not_before, not_after) = validity_bounds(request.config.validity, SystemTime::now())?;
     params.not_before = not_before;
     params.not_after = not_after;
     Ok(params)
@@ -188,7 +199,7 @@ fn ca_params(config: &SelfSignedCaConfig) -> Result<rcgen::CertificateParams, Bo
         rcgen::KeyUsagePurpose::KeyCertSign,
         rcgen::KeyUsagePurpose::CrlSign,
     ];
-    let (not_before, not_after) = validity_bounds(config.validity)?;
+    let (not_before, not_after) = validity_bounds(config.validity, SystemTime::now())?;
     params.not_before = not_before;
     params.not_after = not_after;
     Ok(params)
@@ -326,18 +337,51 @@ mod tests {
         );
     }
 
+    fn at(secs: u64) -> SystemTime {
+        SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs)
+    }
+
     #[test]
     fn validity_bounds_backdate_the_start() {
-        let before = OffsetDateTime::now_utc();
-        let (not_before, not_after) = validity_bounds(CertificateValidity::new(
-            std::time::Duration::from_millis(1_500),
-            std::time::Duration::from_secs(2),
-        ))
+        let (not_before, not_after) = validity_bounds(
+            CertificateValidity::new(
+                std::time::Duration::from_millis(1_500),
+                std::time::Duration::from_secs(2),
+            ),
+            at(1_800_000_000),
+        )
         .unwrap();
-        let after = OffsetDateTime::now_utc();
 
+        assert_eq!(
+            not_before,
+            OffsetDateTime::from_unix_timestamp(1_799_999_998).unwrap()
+        );
         assert_eq!(not_after - not_before, SignedDuration::milliseconds(1_500));
-        assert!(not_before >= before - SignedDuration::seconds(2));
-        assert!(not_before <= after - SignedDuration::seconds(2));
+    }
+
+    #[test]
+    fn validity_bounds_reject_years_past_9999() {
+        validity_bounds(
+            CertificateValidity::new(
+                std::time::Duration::from_hours(8_000 * 365 * 24),
+                std::time::Duration::ZERO,
+            ),
+            at(1_800_000_000),
+        )
+        .unwrap_err();
+    }
+
+    #[test]
+    fn validity_bounds_reject_an_unrepresentable_clock() {
+        let validity = CertificateValidity::new(
+            std::time::Duration::from_hours(24),
+            std::time::Duration::ZERO,
+        );
+        validity_bounds(validity, at(253_402_300_800)).unwrap_err();
+        validity_bounds(
+            validity,
+            SystemTime::UNIX_EPOCH - std::time::Duration::from_secs(1),
+        )
+        .unwrap_err();
     }
 }

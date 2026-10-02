@@ -17,7 +17,7 @@
 
 use std::time::{Duration, SystemTime};
 
-use rama_core::error::{BoxError, ErrorContext};
+use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext};
 use yasna::{
     Tag,
     models::{GeneralizedTime, ObjectIdentifier},
@@ -147,7 +147,7 @@ pub fn build_ocsp_response(
     let produced = generalized_time(produced_at)?;
     let next_at = produced_at
         .checked_add(validity)
-        .ok_or_else(|| BoxError::from("ocsp: nextUpdate overflow"))?;
+        .ok_or_else(|| BoxError::from_static_str("ocsp: nextUpdate overflow"))?;
     let next_update = generalized_time(next_at)?;
 
     // tbsResponseData (ResponseData) — exactly the bytes that get signed.
@@ -343,7 +343,8 @@ pub fn parse_ocsp_request(der: &[u8]) -> Result<OcspRequestInfo, BoxError> {
 
 fn generalized_time(t: SystemTime) -> Result<GeneralizedTime, BoxError> {
     let odt = crate::asn1::datetime(t).context("ocsp")?;
-    Ok(GeneralizedTime::from_datetime(odt))
+    GeneralizedTime::from_datetime_opt(odt)
+        .ok_or_else(|| BoxError::from_static_str("ocsp: timestamp past ASN.1 year 9999"))
 }
 
 #[cfg(test)]
@@ -355,6 +356,32 @@ mod tests {
     fn generalized_time_max_date() {
         let t = SystemTime::UNIX_EPOCH + Duration::from_secs(253_402_300_799);
         assert_eq!(generalized_time(t).unwrap().to_bytes(), b"99991231235959Z");
+        generalized_time(t + Duration::from_secs(1)).unwrap_err();
+    }
+
+    #[test]
+    fn next_update_past_year_9999_errors_before_signing() {
+        let cert = OcspCertId {
+            issuer_name_der: &yasna::construct_der(|w| w.write_sequence(|_| {})),
+            hash_algorithm_der: &sha1_hash_algorithm_der(),
+            issuer_name_hash: &[0xAA; 20],
+            issuer_key_hash: &[0xBB; 20],
+            serial: &[0x12, 0x34, 0x56],
+        };
+        let mut signed = false;
+        build_ocsp_response(
+            &cert,
+            OcspCertStatus::Good,
+            SystemTime::UNIX_EPOCH + Duration::from_secs(253_402_300_799),
+            Duration::from_secs(1),
+            None,
+            |_| {
+                signed = true;
+                Ok((OcspSignatureAlgorithm::EcdsaSha256, vec![0x00]))
+            },
+        )
+        .unwrap_err();
+        assert!(!signed);
     }
 
     /// The builder emits a well-formed `OCSPResponse`: `successful` status,
@@ -480,6 +507,18 @@ mod tests {
 
     fn contains(haystack: &[u8], needle: &[u8]) -> bool {
         haystack.windows(needle.len()).any(|w| w == needle)
+    }
+
+    #[test]
+    fn invalid_request_preserves_parse_error() {
+        let err = parse_ocsp_request(&[]).unwrap_err();
+        assert!(err.to_string().contains("ocsp: parse request"));
+        assert!(
+            err.source()
+                .unwrap()
+                .downcast_ref::<yasna::ASN1Error>()
+                .is_some()
+        );
     }
 
     #[test]
