@@ -244,7 +244,7 @@ test *ARGS:
     cargo nextest run --all-features --workspace {{ARGS}}
     bash scripts/test-crypto.sh all {{ARGS}}
 
-# Run crypto and TLS tests with each backend isolated (or choose rustcrypto/ring/aws-lc/boring).
+# Run crypto and TLS tests with each backend isolated (or choose rustcrypto/ring/aws-lc/boring/large-dates).
 test-crypto BACKEND="all" *ARGS:
     @just _ensure-installed cargo-nextest cargo-nextest
     bash scripts/test-crypto.sh {{BACKEND}} {{ARGS}}

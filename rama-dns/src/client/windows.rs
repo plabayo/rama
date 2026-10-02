@@ -5,6 +5,7 @@ use std::{
     ffi::c_void,
     fmt,
     net::{Ipv4Addr, Ipv6Addr},
+    pin::pin,
     ptr,
     sync::{
         Arc,
@@ -15,7 +16,7 @@ use std::{
 
 use rama_core::{
     error::BoxError,
-    futures::{Stream, async_stream::stream_fn},
+    futures::{Stream, StreamExt as _, async_stream::stream_fn, future::Either, stream},
     telemetry::tracing,
 };
 use rama_net::address::Domain;
@@ -30,8 +31,13 @@ use windows_sys::core::PCWSTR;
 #[cfg(test)]
 use std::sync::atomic::AtomicU16;
 
-use super::resolver::{
-    DnsAddressResolver, DnsCnameResolver, DnsResolver, DnsServiceBindingResolver, DnsTxtResolver,
+use super::{
+    in_flight::{Abandoned, InFlight, coalesced_stream, leading_dot_refusal},
+    limit::{DnsTimeoutError, Limits, LookupLimit, deadline_after},
+    resolver::{
+        DnsAddressResolver, DnsCnameResolver, DnsResolver, DnsServiceBindingResolver,
+        DnsTxtResolver,
+    },
 };
 use crate::wire::{Name, RecordType, ServiceBinding, Txt};
 
@@ -89,14 +95,21 @@ const _: () = assert!(std::mem::size_of::<DnsBackend>() == 0);
 /// string and record boundaries but cannot guarantee the original arbitrary
 /// wire octets are binary-transparent. Use a wire-native resolver such as
 /// Hickory when exact TXT octets are required on Windows.
+///
+/// Concurrent lookups of one name and record type share one query. Lookups
+/// are unbounded by default: the DNS Client service queues them itself.
 pub struct WindowsDnsResolver {
     timeout: Duration,
+    limit: LookupLimit,
+    in_flight: InFlight<(Domain, u16)>,
 }
 
 impl Default for WindowsDnsResolver {
     fn default() -> Self {
         Self {
             timeout: DEFAULT_TIMEOUT,
+            limit: LookupLimit::new(Limits::UNBOUNDED),
+            in_flight: InFlight::new(Abandoned::Cancel),
         }
     }
 }
@@ -113,11 +126,121 @@ impl WindowsDnsResolver {
     }
 
     generate_set_and_with! {
+        /// The budget of one lookup, including any wait for a free slot
+        /// (default 5s). Clones made before this call no longer share
+        /// lookups with this resolver.
         pub fn timeout(mut self, timeout: Duration) -> Self {
             self.timeout = timeout;
+            self.in_flight = InFlight::new(Abandoned::Cancel);
             self
         }
     }
+
+    #[must_use]
+    pub fn max_concurrency(&self) -> Option<usize> {
+        self.limit.limits().max_concurrency
+    }
+
+    generate_set_and_with! {
+        /// Maximum concurrent `DnsQueryEx` queries (default unbounded: the
+        /// DNS Client service queues them itself; at least 1). Lookups past
+        /// the bound wait for a slot within their timeout. Clones made before
+        /// this call keep their own bounds.
+        pub fn max_concurrency(mut self, max: Option<usize>) -> Self {
+            self.limit = self.limit.with(|limits| limits.max_concurrency = max);
+            self
+        }
+    }
+
+    #[must_use]
+    pub fn burst_limit(&self) -> Option<usize> {
+        self.limit.limits().burst_limit
+    }
+
+    generate_set_and_with! {
+        /// Maximum queries started within one [burst window](Self::burst_window)
+        /// and still unanswered (default unbounded, at least 1); an answer
+        /// frees its place at once, a query waiting on a slow upstream once
+        /// the window has passed. Clones made before this call keep their own
+        /// bounds.
+        pub fn burst_limit(mut self, max: Option<usize>) -> Self {
+            self.limit = self.limit.with(|limits| limits.burst_limit = max);
+            self
+        }
+    }
+
+    #[must_use]
+    pub fn burst_window(&self) -> Duration {
+        self.limit.limits().burst_window
+    }
+
+    generate_set_and_with! {
+        /// The window of [`Self::burst_limit`] (default 20ms). Windows' default
+        /// 15.6ms timer tick stretches a 20ms window to about 31ms. Clones
+        /// made before this call keep their own bounds.
+        pub fn burst_window(mut self, window: Duration) -> Self {
+            self.limit = self.limit.with(|limits| limits.burst_window = window);
+            self
+        }
+    }
+
+    /// Concurrent lookups of one name and record type share one query.
+    fn coalesced<T, S>(
+        &self,
+        domain: Domain,
+        rrtype: u16,
+        lookup: impl FnOnce(Domain, Instant, Duration) -> S + Send + 'static,
+    ) -> impl Stream<Item = Result<T, BoxError>> + Send + '_
+    where
+        T: Clone + Send + Sync + 'static,
+        S: Stream<Item = Result<T, BoxError>> + Send + 'static,
+    {
+        if let Some(err) = leading_dot_refusal(&domain) {
+            return Either::Left(stream::once(std::future::ready(Err(err))));
+        }
+        let (timeout, limit) = (self.timeout, self.limit.clone());
+        // the name goes out without its root dot: `x` and `x.` are one query
+        let key = (domain.clone(), rrtype);
+        Either::Right(coalesced_stream(
+            self.in_flight.clone(),
+            key,
+            timeout,
+            move || {
+                limited_stream(limit, timeout, move |deadline| {
+                    lookup(domain, deadline, timeout)
+                })
+            },
+        ))
+    }
+}
+
+/// `lookup` once `limit` has a slot for it, holding the slot until it ends.
+///
+/// `lookup` gets the deadline `timeout` sets for the whole lookup.
+fn limited_stream<T, S>(
+    limit: LookupLimit,
+    timeout: Duration,
+    lookup: impl FnOnce(Instant) -> S + Send + 'static,
+) -> impl Stream<Item = Result<T, BoxError>> + Send
+where
+    T: Send + 'static,
+    S: Stream<Item = Result<T, BoxError>> + Send,
+{
+    stream_fn(async move |mut yielder| {
+        let deadline = deadline_after(timeout);
+        let Some(mut slot) = limit.acquire(deadline).await else {
+            yielder
+                .yield_item(Err(DnsTimeoutError::new(timeout).into()))
+                .await;
+            return;
+        };
+        let mut items = pin!(lookup(deadline));
+        while let Some(item) = items.next().await {
+            slot.saw(&item);
+            yielder.yield_item(item).await;
+        }
+        slot.answered();
+    })
 }
 
 impl DnsAddressResolver for WindowsDnsResolver {
@@ -127,14 +250,24 @@ impl DnsAddressResolver for WindowsDnsResolver {
         &self,
         domain: Domain,
     ) -> impl Stream<Item = Result<Ipv4Addr, Self::Error>> + Send + '_ {
-        query_record_stream(domain, self.timeout, ffi::DNS_TYPE_A, parse_a_records)
+        self.coalesced(domain, ffi::DNS_TYPE_A, |domain, deadline, timeout| {
+            query_record_stream(domain, deadline, timeout, ffi::DNS_TYPE_A, parse_a_records)
+        })
     }
 
     fn lookup_ipv6(
         &self,
         domain: Domain,
     ) -> impl Stream<Item = Result<Ipv6Addr, Self::Error>> + Send + '_ {
-        query_record_stream(domain, self.timeout, ffi::DNS_TYPE_AAAA, parse_aaaa_records)
+        self.coalesced(domain, ffi::DNS_TYPE_AAAA, |domain, deadline, timeout| {
+            query_record_stream(
+                domain,
+                deadline,
+                timeout,
+                ffi::DNS_TYPE_AAAA,
+                parse_aaaa_records,
+            )
+        })
     }
 }
 
@@ -145,7 +278,15 @@ impl DnsTxtResolver for WindowsDnsResolver {
         &self,
         domain: Domain,
     ) -> impl Stream<Item = Result<Txt, Self::Error>> + Send + '_ {
-        query_record_stream(domain, self.timeout, ffi::DNS_TYPE_TEXT, parse_txt_records)
+        self.coalesced(domain, ffi::DNS_TYPE_TEXT, |domain, deadline, timeout| {
+            query_record_stream(
+                domain,
+                deadline,
+                timeout,
+                ffi::DNS_TYPE_TEXT,
+                parse_txt_records,
+            )
+        })
     }
 }
 
@@ -156,12 +297,15 @@ impl DnsCnameResolver for WindowsDnsResolver {
         &self,
         domain: Domain,
     ) -> impl Stream<Item = Result<Name, Self::Error>> + Send + '_ {
-        query_record_stream(
-            domain,
-            self.timeout,
-            ffi::DNS_TYPE_CNAME,
-            parse_cname_records,
-        )
+        self.coalesced(domain, ffi::DNS_TYPE_CNAME, |domain, deadline, timeout| {
+            query_record_stream(
+                domain,
+                deadline,
+                timeout,
+                ffi::DNS_TYPE_CNAME,
+                parse_cname_records,
+            )
+        })
     }
 }
 
@@ -172,14 +316,26 @@ impl DnsServiceBindingResolver for WindowsDnsResolver {
         &self,
         domain: Domain,
     ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
-        query_service_binding_stream(domain, self.timeout, RecordType::SVCB)
+        self.coalesced(
+            domain,
+            RecordType::SVCB.into(),
+            |domain, deadline, timeout| {
+                query_service_binding_stream(domain, deadline, timeout, RecordType::SVCB)
+            },
+        )
     }
 
     fn lookup_https(
         &self,
         domain: Domain,
     ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
-        query_service_binding_stream(domain, self.timeout, RecordType::HTTPS)
+        self.coalesced(
+            domain,
+            RecordType::HTTPS.into(),
+            |domain, deadline, timeout| {
+                query_service_binding_stream(domain, deadline, timeout, RecordType::HTTPS)
+            },
+        )
     }
 }
 
@@ -187,20 +343,29 @@ impl DnsResolver for WindowsDnsResolver {}
 
 fn query_service_binding_stream(
     domain: Domain,
+    deadline: Instant,
     timeout: Duration,
     record_type: RecordType,
 ) -> impl Stream<Item = Result<ServiceBinding, BoxError>> + Send {
-    query_service_binding_stream_with_backend(domain, timeout, record_type, DnsBackend::System)
+    query_service_binding_stream_with_backend(
+        domain,
+        deadline,
+        timeout,
+        record_type,
+        DnsBackend::System,
+    )
 }
 
 fn query_service_binding_stream_with_backend(
     domain: Domain,
+    deadline: Instant,
     timeout: Duration,
     record_type: RecordType,
     backend: DnsBackend,
 ) -> impl Stream<Item = Result<ServiceBinding, BoxError>> + Send {
     query_record_stream_with_backend(
         domain,
+        deadline,
         timeout,
         record_type.into(),
         move |records, emit| parse_service_binding_records(records, record_type, emit),
@@ -210,6 +375,7 @@ fn query_service_binding_stream_with_backend(
 
 fn query_record_stream<T, P>(
     domain: Domain,
+    deadline: Instant,
     timeout: Duration,
     rrtype: u16,
     parser: P,
@@ -218,11 +384,20 @@ where
     T: fmt::Debug + Send + 'static,
     P: Fn(*mut ffi::DnsRecord, &mut dyn FnMut(T)) -> Result<(), BoxError> + Send + Sync + 'static,
 {
-    query_record_stream_with_backend(domain, timeout, rrtype, parser, DnsBackend::System)
+    query_record_stream_with_backend(
+        domain,
+        deadline,
+        timeout,
+        rrtype,
+        parser,
+        DnsBackend::System,
+    )
 }
 
+/// `timeout` is the caller's whole budget, reported on expiry of `deadline`.
 fn query_record_stream_with_backend<T, P>(
     domain: Domain,
+    deadline: Instant,
     timeout: Duration,
     rrtype: u16,
     parser: P,
@@ -264,8 +439,6 @@ where
             yielder.yield_item(Err(err)).await;
             return;
         }
-
-        let deadline = Instant::now() + timeout;
 
         loop {
             #[cfg(test)]
@@ -391,7 +564,7 @@ fn handle_query_result<T, P>(
         state
             .queue
             .lock()
-            .push_back(Err(WindowsDnsResolverError::timeout(state.timeout).into()));
+            .push_back(Err(DnsTimeoutError::new(state.timeout).into()));
         cleanup_result(result);
         mark_done(state);
         return;
@@ -919,10 +1092,6 @@ impl WindowsDnsResolverError {
         Self(message.into())
     }
 
-    fn timeout(timeout: Duration) -> Self {
-        Self::message(format!("windows dns query timed out after {timeout:?}"))
-    }
-
     fn dns_status(operation: &str, status: u32) -> Self {
         Self::message(format!("{operation} failed with DNS status {status}"))
     }
@@ -1273,9 +1442,16 @@ mod ffi {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rama_core::futures::StreamExt;
-    use std::assert_matches;
-    use std::pin::pin;
+    use rama_core::{
+        error::BoxErrorExt as _,
+        futures::{StreamExt, future::join_all, stream::BoxStream},
+    };
+    use std::{
+        assert_matches,
+        pin::pin,
+        sync::atomic::AtomicUsize,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     use crate::wire::SvcParam;
 
@@ -1746,6 +1922,7 @@ mod tests {
             let fake = Arc::new(FakeDnsBackend::new());
             let stream = query_service_binding_stream_with_backend(
                 Domain::example(),
+                deadline_after(Duration::from_secs(30)),
                 Duration::from_secs(30),
                 record_type,
                 DnsBackend::Fake(fake.clone()),
@@ -1802,11 +1979,268 @@ mod tests {
         );
     }
 
+    /// A name no earlier run asked, so the DNS Client cache cannot answer it.
+    fn uncached(label: &str) -> Domain {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        format!("{label}-{nonce:x}.example.com")
+            .try_into()
+            .expect("domain")
+    }
+
+    /// A lookup that answers `127.0.0.1` once `gate` opens.
+    fn gated_lookup(
+        gate: &Arc<Notify>,
+    ) -> impl FnOnce(Domain, Instant, Duration) -> BoxStream<'static, Result<Ipv4Addr, BoxError>>
+    + Send
+    + 'static {
+        let gate = gate.clone();
+        move |_domain, _deadline, _timeout| {
+            stream::once(async move {
+                gate.notified().await;
+                Ok(Ipv4Addr::LOCALHOST)
+            })
+            .boxed()
+        }
+    }
+
+    #[tokio::test]
+    async fn rooted_and_relative_names_share_one_query() {
+        let resolver = WindowsDnsResolver::new();
+        let gate = Arc::new(Notify::new());
+        // the root dot is dropped before DnsQueryEx: both ask the same thing
+        let relative = resolver
+            .coalesced(
+                Domain::from_static("intranet"),
+                ffi::DNS_TYPE_A,
+                gated_lookup(&gate),
+            )
+            .collect::<Vec<_>>();
+        let rooted = resolver
+            .coalesced(
+                Domain::from_static("intranet."),
+                ffi::DNS_TYPE_A,
+                gated_lookup(&gate),
+            )
+            .collect::<Vec<_>>();
+        let both_running = async {
+            let running = resolver.in_flight.running();
+            gate.notify_waiters();
+            running
+        };
+        let (relative, rooted, running) = tokio::join!(relative, rooted, both_running);
+
+        assert_eq!(running, 1);
+        assert_matches!(relative.as_slice(), [Ok(_)], "{relative:?}");
+        assert_matches!(rooted.as_slice(), [Ok(_)], "{rooted:?}");
+    }
+
+    #[test]
+    fn only_resolvers_with_the_same_timeout_share_lookups() {
+        let resolver = WindowsDnsResolver::new();
+        assert!(resolver.clone().in_flight.shares_with(&resolver.in_flight));
+        let hasty = resolver.clone().with_timeout(Duration::from_millis(100));
+        assert!(!hasty.in_flight.shares_with(&resolver.in_flight));
+    }
+
+    #[test]
+    fn abandoned_lookups_are_cancelled() {
+        // each holds a DNS Client service request nobody waits on anymore
+        let resolver = WindowsDnsResolver::new();
+        assert_eq!(resolver.in_flight.abandoned(), Abandoned::Cancel);
+        let resolver = resolver.with_timeout(Duration::from_secs(1));
+        assert_eq!(resolver.in_flight.abandoned(), Abandoned::Cancel);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_burst_is_not_held_back_by_default() {
+        let resolver = WindowsDnsResolver::new();
+        assert_eq!(resolver.max_concurrency(), None);
+        assert_eq!(resolver.burst_limit(), None);
+        let gate = Arc::new(Notify::new());
+        let started = Arc::new(AtomicUsize::new(0));
+        let lookups = (0..1024).map(|i| {
+            let (gate, started) = (gate.clone(), started.clone());
+            let domain = Domain::try_from(format!("n{i}.burst.test")).expect("domain");
+            resolver
+                .coalesced(domain, ffi::DNS_TYPE_A, move |domain, deadline, timeout| {
+                    started.fetch_add(1, Ordering::Relaxed);
+                    gated_lookup(&gate)(domain, deadline, timeout)
+                })
+                .collect::<Vec<_>>()
+        });
+        let all_started = async {
+            for _ in 0..16 {
+                tokio::task::yield_now().await;
+            }
+            let all_started = started.load(Ordering::Relaxed);
+            gate.notify_waiters();
+            all_started
+        };
+        let (answers, all_started) = tokio::join!(join_all(lookups), all_started);
+
+        assert_eq!(all_started, 1024);
+        assert!(
+            answers
+                .iter()
+                .all(|items| matches!(items.as_slice(), [Ok(_)]))
+        );
+
+        let bounded = resolver.with_burst_limit(128);
+        assert_eq!(bounded.burst_limit(), Some(128));
+        assert_eq!(bounded.without_burst_limit().burst_limit(), None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn answers_free_their_burst_place() {
+        let resolver = WindowsDnsResolver::new()
+            .with_burst_limit(1)
+            .with_burst_window(Duration::from_mins(1));
+        let started = Instant::now();
+        // records, an error answer, then records again: none waits for the window
+        for (i, answer) in [
+            Ok(Ipv4Addr::LOCALHOST),
+            Err("SERVFAIL"),
+            Ok(Ipv4Addr::LOCALHOST),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let domain = Domain::try_from(format!("n{i}.burst.test")).expect("domain");
+            let items: Vec<_> = resolver
+                .coalesced(
+                    domain,
+                    ffi::DNS_TYPE_A,
+                    move |_domain, _deadline, _timeout| {
+                        stream::once(std::future::ready(
+                            answer.map_err(BoxError::from_static_str),
+                        ))
+                    },
+                )
+                .collect()
+                .await;
+            assert!(
+                !items
+                    .iter()
+                    .any(|item| item.as_ref().is_err_and(|err| err.is::<DnsTimeoutError>())),
+                "{items:?}"
+            );
+        }
+        assert_eq!(started.elapsed(), Duration::ZERO);
+    }
+
+    #[tokio::test]
+    async fn lookup_waiting_for_a_busy_slot_times_out() {
+        let resolver = WindowsDnsResolver::new()
+            .with_max_concurrency(1)
+            .with_timeout(Duration::from_millis(100));
+        let _busy = resolver
+            .limit
+            .acquire(deadline_after(Duration::from_secs(5)))
+            .await
+            .expect("the only slot");
+        let gate = Arc::new(Notify::new());
+
+        let items: Vec<_> = resolver
+            .coalesced(
+                Domain::from_static("intranet"),
+                ffi::DNS_TYPE_A,
+                gated_lookup(&gate),
+            )
+            .collect()
+            .await;
+        assert_matches!(
+            items.as_slice(),
+            [Err(err)] if err.downcast_ref::<DnsTimeoutError>().is_some(),
+            "{items:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn leading_dot_name_is_refused_before_sharing() {
+        let resolver = WindowsDnsResolver::new();
+        let gate = Arc::new(Notify::new());
+        let bare = resolver
+            .coalesced(
+                Domain::from_static("intranet"),
+                ffi::DNS_TYPE_A,
+                gated_lookup(&gate),
+            )
+            .collect::<Vec<_>>();
+        let dotted = resolver
+            .coalesced(
+                Domain::from_static(".intranet"),
+                ffi::DNS_TYPE_A,
+                gated_lookup(&gate),
+            )
+            .collect::<Vec<_>>();
+        let open = async {
+            let running = resolver.in_flight.running();
+            gate.notify_waiters();
+            running
+        };
+        let (bare, dotted, running) = tokio::join!(bare, dotted, open);
+
+        assert_eq!(running, 1);
+        assert_matches!(bare.as_slice(), [Ok(_)], "{bare:?}");
+        assert_matches!(
+            dotted.as_slice(),
+            [Err(err)] if err.to_string().contains("starts with a dot"),
+            "{dotted:?}",
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn abandoned_shared_query_is_cancelled() {
+        let fake = Arc::new(FakeDnsBackend::new());
+        let backend = fake.clone();
+        let stream = coalesced_stream(
+            InFlight::new(Abandoned::Cancel),
+            (Domain::example(), ffi::DNS_TYPE_A),
+            Duration::from_secs(30),
+            move || {
+                query_record_stream_with_backend(
+                    Domain::example(),
+                    deadline_after(Duration::from_secs(30)),
+                    Duration::from_secs(30),
+                    ffi::DNS_TYPE_A,
+                    parse_a_records,
+                    DnsBackend::Fake(backend),
+                )
+            },
+        );
+        let caller = tokio::spawn(async move { pin!(stream).next().await });
+
+        tokio::time::timeout(Duration::from_secs(5), fake.started.notified())
+            .await
+            .expect("fake DNS query did not start");
+        caller.abort();
+        _ = caller.await;
+
+        // the fake's cancel returns once the callback finished, or gave up on it
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while fake.callback_threads.lock().is_empty() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the abandoned shared query was not cancelled");
+        assert!(fake.cancel_called.load(Ordering::SeqCst));
+        assert!(
+            fake.callback_completed_during_cancel.load(Ordering::SeqCst),
+            "completion callback was blocked during cancellation",
+        );
+        fake.join_callback_threads();
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn dropping_pending_query_does_not_block_completion_callback() {
         let fake = Arc::new(FakeDnsBackend::new());
         let stream = query_record_stream_with_backend(
             Domain::example(),
+            deadline_after(Duration::from_secs(30)),
             Duration::from_secs(30),
             ffi::DNS_TYPE_A,
             parse_a_records,
@@ -1849,9 +2283,11 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn timed_out_query_parks_until_cancel_callback_fires() {
         let fake = Arc::new(FakeDnsBackend::new_deferring_cancel());
+        // a lookup that queued for its slot: little time left of a 5s budget
         let stream = query_record_stream_with_backend(
             Domain::example(),
-            Duration::from_millis(10),
+            deadline_after(Duration::from_millis(10)),
+            Duration::from_secs(5),
             ffi::DNS_TYPE_A,
             parse_a_records,
             DnsBackend::Fake(fake.clone()),
@@ -1878,9 +2314,12 @@ mod tests {
             .await
             .expect("stream did not finish after the cancel callback")
             .expect("consumer task panicked");
-        assert!(
-            items.len() == 1 && items[0].is_err(),
-            "expected a single timeout error, got: {items:?}",
+        assert_matches!(
+            items.as_slice(),
+            [Err(err)] if err
+                .downcast_ref::<DnsTimeoutError>()
+                .is_some_and(|err| err.timeout() == Duration::from_secs(5)),
+            "expected a single timeout error reporting the whole budget, got: {items:?}",
         );
 
         let iterations = fake.wait_loop_iterations.load(Ordering::SeqCst);
@@ -1890,33 +2329,46 @@ mod tests {
         );
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn sibling_stream_drop_cancels_in_flight_query_without_hanging() {
+    #[test]
+    fn sibling_stream_drop_cancels_in_flight_query_without_hanging() {
         // dropping a stream with a still-pending query must not deadlock with the completion callback
-        let resolver = WindowsDnsResolver::new().with_timeout(Duration::from_secs(2));
-
-        // 180s > worst case of 64 iterations each hitting the 2s lookup timeout
-        tokio::time::timeout(Duration::from_secs(180), async {
-            for i in 0..64 {
-                // unique names bypass the OS cache so both queries stay async
-                let domain: Domain = format!("cancel-race-{i}.example.com").try_into().unwrap();
-                let mut lookup_v4 = pin!(resolver.lookup_ipv4(domain.clone()));
-                let mut lookup_v6 = pin!(resolver.lookup_ipv6(domain));
-                tokio::select! {
-                    _ = lookup_v4.next() => {}
-                    _ = lookup_v6.next() => {}
+        let (done, finished) = std::sync::mpsc::channel();
+        // its own thread and runtime: a deadlock blocks them, not this watchdog
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .expect("runtime");
+            runtime.block_on(async {
+                let resolver = WindowsDnsResolver::new().with_timeout(Duration::from_secs(2));
+                for i in 0..64 {
+                    // uncached names keep both queries async, also on a re-run
+                    let domain = uncached(&format!("cancel-race-{i}"));
+                    let mut lookup_v4 = pin!(resolver.lookup_ipv4(domain.clone()));
+                    let mut lookup_v6 = pin!(resolver.lookup_ipv6(domain));
+                    tokio::select! {
+                        _ = lookup_v4.next() => {}
+                        _ = lookup_v6.next() => {}
+                    }
+                    _ = done.send(());
                 }
-            }
-        })
-        .await
-        .expect("in-flight query cancellation deadlocked");
+            });
+        });
+
+        for _ in 0..64 {
+            // one iteration takes at most the 2s lookup timeout and its cancel
+            finished
+                .recv_timeout(Duration::from_secs(15))
+                .expect("in-flight query cancellation deadlocked");
+        }
     }
 
     #[tokio::test]
     async fn short_timeout_lookup_completes() {
         let resolver = WindowsDnsResolver::new().with_timeout(Duration::from_millis(1));
         let completed = tokio::time::timeout(Duration::from_secs(30), async {
-            let mut stream = pin!(resolver.lookup_ipv4(Domain::example()));
+            let mut stream = pin!(resolver.lookup_ipv4(uncached("short-timeout")));
             while stream.next().await.is_some() {}
         })
         .await;

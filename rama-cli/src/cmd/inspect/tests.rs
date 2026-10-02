@@ -419,18 +419,12 @@ fn the_viewer_selects_filters_and_scopes_to_a_connection() {
 #[test]
 fn the_viewer_quits_and_offers_a_copy_for_a_request() {
     let mut state = tui::AppState::new(View::new(har_timeline()));
-    assert!(matches!(
+    assert_matches!(
         state.on_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
         tui::Action::Quit,
-    ));
-    assert!(matches!(
-        state.on_key(key(KeyCode::Char('q'))),
-        tui::Action::Quit
-    ));
-    assert!(matches!(
-        state.on_key(key(KeyCode::Char('c'))),
-        tui::Action::Copy
-    ));
+    );
+    assert_matches!(state.on_key(key(KeyCode::Char('q'))), tui::Action::Quit);
+    assert_matches!(state.on_key(key(KeyCode::Char('c'))), tui::Action::Copy);
 
     state.on_key(key(KeyCode::Char('?')));
     let screen = tui::render_to_string(&mut state, 140, 40);

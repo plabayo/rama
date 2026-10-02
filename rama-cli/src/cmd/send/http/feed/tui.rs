@@ -235,6 +235,7 @@ impl FeedHeader {
 }
 
 /// Outcome of handling a key press.
+#[derive(Debug)]
 enum Action {
     None,
     Redraw,
@@ -1102,6 +1103,7 @@ mod tests {
     use rama::http::Body;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use std::assert_matches;
 
     #[test]
     fn browser_safe_url_accepts_and_normalizes_http_https() {
@@ -1238,7 +1240,7 @@ mod tests {
     async fn rss_detail_shows_body_and_enclosure() {
         let mut state = state_from(feed_from(RSS).await);
         // Enter detail on the first entry.
-        assert!(matches!(state.on_key(key(KeyCode::Enter)), Action::Redraw));
+        assert_matches!(state.on_key(key(KeyCode::Enter)), Action::Redraw);
         assert_eq!(state.screen, Screen::Detail);
 
         let screen = render_to_string(&mut state, 100, 24);
@@ -1283,7 +1285,7 @@ mod tests {
     async fn ctrl_c_quits() {
         let mut state = state_from(feed_from(RSS).await);
         let event = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
-        assert!(matches!(state.on_key(event), Action::Quit));
+        assert_matches!(state.on_key(event), Action::Quit);
     }
 
     #[tokio::test]

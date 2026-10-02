@@ -501,6 +501,7 @@ impl SystemProxyConfig {
     }
 }
 
+#[derive(Debug)]
 enum SystemProxyDecision {
     None,
     Route(ProxyRoute),
@@ -2553,16 +2554,16 @@ mod tests {
             .with_pac_uri(pac_uri.clone())
             .with_bypass(["bypass.example"]);
 
-        assert!(matches!(
+        assert_matches!(
             config.decision(&uri),
-            SystemProxyDecision::Pac(uri) if uri == pac_uri
-        ));
+            SystemProxyDecision::Pac(uri) if uri == pac_uri,
+        );
 
         config.bypass_before_pac = true;
-        assert!(matches!(
+        assert_matches!(
             config.decision(&uri),
-            SystemProxyDecision::Route(ProxyRoute::Direct)
-        ));
+            SystemProxyDecision::Route(ProxyRoute::Direct),
+        );
     }
 
     #[test]

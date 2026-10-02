@@ -740,6 +740,11 @@ required-features = ["net"]
 harness = false
 
 [[bench]]
+name = "dns_resolver"
+required-features = ["dns"]
+harness = false
+
+[[bench]]
 name = "rss_parser"
 required-features = ["rss"]
 harness = false

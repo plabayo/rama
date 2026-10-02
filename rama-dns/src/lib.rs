@@ -30,24 +30,38 @@
 //!
 //! ### Picking a resolver for high-QPS workloads
 //!
-//! On Apple platforms (`AppleDnsResolver`, via `DNSServiceQueryRecord` +
-//! `AsyncFd`) and Windows (`WindowsDnsResolver`, via `DnsQueryEx` with a
-//! completion callback on the system thread pool), the native resolvers
-//! are fully asynchronous and scale naturally — no tokio blocking-pool
-//! traffic.
+//! On Apple platforms (`AppleDnsResolver`, via `DNSServiceQueryRecord`) and
+//! Windows (`WindowsDnsResolver`, via `DnsQueryEx` with a completion callback
+//! on the system thread pool), the native resolvers are asynchronous: no
+//! tokio blocking-pool traffic. `AppleDnsResolver` is still bounded like the
+//! others below, at 64 lookups at once as each holds a file descriptor;
+//! `WindowsDnsResolver` is unbounded by default, as the DNS Client service
+//! queues lookups itself, and takes the same bounds on request.
 //!
 //! On Linux hosts whose NSS configuration selects `nss-resolve`,
 //! `LinuxDnsResolver` first tries systemd-resolved's varlink socket, which is
 //! likewise fully asynchronous. This path can also be enabled or disabled
 //! explicitly through `LinuxDnsResolver::builder()`. Where the daemon is not
-//! selected or available it falls back to `res_nsearch` / `getaddrinfo`, and
+//! selected or available it falls back to glibc's resolver / `getaddrinfo`, and
 //! there — as with [`client::TokioDnsResolver`] (via `getaddrinfo`) — each
 //! lookup occupies a tokio blocking-pool thread for the duration of the libc
-//! call. Under sustained high-concurrency DNS load (typical for forward
-//! proxies) that pool can become a bottleneck. For such workloads prefer the
-//! pure-Rust `client::HickoryDnsResolver` (gated behind the `hickory` feature),
-//! which speaks DNS directly over async UDP/TCP and gives finer control over
-//! caching and upstream selection.
+//! call. Those resolvers bound how many such calls run at once (384 by
+//! default, 64 on Apple platforms) and how many queries a burst may leave
+//! unanswered (128 per 20ms; `TokioDnsResolver` counts 64 calls, as each asks
+//! for A and AAAA), so a burst of distinct names neither floods the pool nor
+//! overflows a local stub resolver; a slow upstream answer frees its burst
+//! place after the window but keeps its call slot. Bounds are shared by a
+//! resolver and the clones made after its last limit setter. Under sustained
+//! high-concurrency DNS load (typical for forward proxies) prefer the
+//! pure-Rust `client::HickoryDnsResolver` (gated behind the `hickory`
+//! feature), which speaks DNS directly over async UDP/TCP and gives finer
+//! control over caching and upstream selection.
+//!
+//! The native resolvers (and hickory, internally) let concurrent lookups of
+//! the same name and record type share one query, so a burst of connections
+//! to one host costs one lookup rather than one per connection. A lookup is
+//! shared within the tokio runtime that started it, between clones with the
+//! same timeout.
 //!
 //! ## Global DNS resolver
 //!

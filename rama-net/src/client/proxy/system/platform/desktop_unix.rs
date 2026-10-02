@@ -798,6 +798,7 @@ fn parse_kde_pac_uri(value: &str) -> Result<Option<Uri>, BoxError> {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::convert::Infallible;
 
     use crate::{
@@ -1195,10 +1196,10 @@ org.gnome.system.proxy.http port 8080\n",
         .unwrap();
         assert!(config.bypass_before_pac);
         assert_eq!(config.bypass().collect::<Vec<_>>(), ["internal.example"]);
-        assert!(matches!(
+        assert_matches!(
             config.decision(&"http://api.internal.example/".parse().unwrap()),
-            SystemProxyDecision::Route(ProxyRoute::Direct)
-        ));
+            SystemProxyDecision::Route(ProxyRoute::Direct),
+        );
     }
 
     #[tokio::test]
