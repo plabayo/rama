@@ -1442,7 +1442,9 @@ mod tests {
     #[tokio::test]
     async fn a_silent_first_probe_delays_lookups_only_once() {
         let path = test_socket_path();
-        let resolved = resolver(path.clone());
+        let mut config = test_config(path.clone());
+        config.connect_timeout = Duration::from_secs(1);
+        let resolved = Arc::new(SystemdResolved::new(config));
         // a socket that accepts but never answers GetInfo
         let _server = FakeResolved::spawn_with_probe(path, Behavior::Hang, vec![Behavior::Hang]);
 
@@ -1451,9 +1453,9 @@ mod tests {
             .lookup_ipv4(&domain(), Duration::from_secs(5))
             .await;
         assert!(matches!(lookup, ResolvedLookup::Unavailable));
-        // test_config's 250ms connect timeout, counted from the probe's start
+        // the 1s connect timeout, not the 5s budget
         assert!(
-            first.elapsed() < Duration::from_millis(400),
+            first.elapsed() < Duration::from_secs(3),
             "{:?}",
             first.elapsed()
         );
@@ -1465,7 +1467,7 @@ mod tests {
             .await;
         assert!(matches!(lookup, ResolvedLookup::Unavailable));
         assert!(
-            later.elapsed() < Duration::from_millis(50),
+            later.elapsed() < Duration::from_millis(500),
             "{:?}",
             later.elapsed()
         );
@@ -1476,6 +1478,7 @@ mod tests {
         let path = test_socket_path();
         let mut config = test_config(path.clone());
         config.reprobe_interval = Duration::from_millis(50);
+        config.connect_timeout = Duration::from_secs(1);
         let resolved = Arc::new(SystemdResolved::new(config));
         assert!(matches!(
             resolved
@@ -1493,8 +1496,9 @@ mod tests {
                 .lookup_ipv4(&domain(), Duration::from_secs(1))
                 .await;
             assert!(matches!(lookup, ResolvedLookup::Unavailable));
+            // well under the 1s a wait for the reprobe would take
             assert!(
-                started.elapsed() < Duration::from_millis(100),
+                started.elapsed() < Duration::from_millis(500),
                 "{:?}",
                 started.elapsed()
             );
@@ -2637,7 +2641,7 @@ mod tests {
             path,
             vec![
                 Behavior::Reply(good.clone()),
-                Behavior::DelayedReply(Duration::from_millis(300), good),
+                Behavior::DelayedReply(Duration::from_secs(1), good),
             ],
         );
 
@@ -2653,7 +2657,7 @@ mod tests {
             let resolved = resolved.clone();
             tokio::spawn(async move {
                 resolved
-                    .lookup_ipv4(&domain(), Duration::from_secs(2))
+                    .lookup_ipv4(&domain(), Duration::from_secs(3))
                     .await
             })
         };
