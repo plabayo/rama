@@ -6,7 +6,7 @@
 use std::{
     mem,
     net::{Ipv4Addr, Ipv6Addr},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use rama_core::{
@@ -232,6 +232,7 @@ fn lookup_record_packet(
     timeout: Duration,
 ) -> Result<Option<Vec<u8>>, BoxError> {
     let max_response_size = response_buffer_limit(response_buffer_size)?;
+    let deadline = Instant::now() + budget;
     let mut state: ffi::ResState = unsafe { mem::zeroed() };
 
     // SAFETY: `state` points to writable resolver context storage.
@@ -288,6 +289,12 @@ fn lookup_record_packet(
                 return Ok(Some(buffer));
             }
             if timed_out(h_errno, std::io::Error::last_os_error().raw_os_error()) {
+                // a caching stub may hold the late answer by now
+                let left = deadline.saturating_duration_since(Instant::now()) / names;
+                if whole_secs(left) > 0 {
+                    fit_retransmits(state.0, left);
+                    continue;
+                }
                 return Err(DnsTimeoutError::new(timeout).into());
             }
             return Err(LinuxDnsResolverError::message(format!(
@@ -383,10 +390,7 @@ fn search_walk(_state: &ffi::ResState, _name: &str) -> Walk {
 ///
 /// Fewer tries are made only when even a second per send does not fit.
 fn fit_retransmits(state: &mut ffi::ResState, budget: Duration) {
-    // the budget arrives a little short of the timeout: keep its last second
-    let budget = c_int::try_from(budget.saturating_add(Duration::from_millis(500)).as_secs())
-        .unwrap_or(c_int::MAX)
-        .max(1);
+    let budget = whole_secs(budget).max(1);
     let nscount = state.nscount.clamp(1, MAX_NAMESERVERS);
     let total = |retrans, retry: c_int| retry.max(1).saturating_mul(try_secs(retrans, nscount));
 
@@ -398,6 +402,13 @@ fn fit_retransmits(state: &mut ffi::ResState, budget: Duration) {
     if total(retrans, state.retry) > budget {
         state.retry = (budget / try_secs(retrans, nscount)).max(1);
     }
+}
+
+/// `budget` to the nearest second, the unit libc waits in: the budget arrives a
+/// little short of the timeout, so its last second is kept.
+fn whole_secs(budget: Duration) -> c_int {
+    c_int::try_from(budget.saturating_add(Duration::from_millis(500)).as_secs())
+        .unwrap_or(c_int::MAX)
 }
 
 /// Seconds one try waits on all nameservers, as glibc's `send_dg` computes it.
@@ -841,7 +852,7 @@ mod response_buffer_tests {
 
     use super::{
         DNS_HEADER_SIZE, clear_errno, ffi, fit_retransmits, grow_response_buffer,
-        response_buffer_limit, timed_out, try_secs,
+        response_buffer_limit, timed_out, try_secs, whole_secs,
     };
 
     #[test]
@@ -901,6 +912,18 @@ mod response_buffer_tests {
         // the budget a 2s or 5s timeout leaves once the call starts
         assert_eq!(fitted(5, 2, 1, Duration::from_millis(1990)), (1, 2, 2));
         assert_eq!(fitted(1, 5, 1, Duration::from_millis(4980)), (1, 5, 5));
+    }
+
+    #[test]
+    fn a_timed_out_walk_is_retried_while_a_second_is_left() {
+        assert_eq!(whole_secs(Duration::from_millis(499)), 0);
+        assert_eq!(whole_secs(Duration::from_millis(500)), 1);
+        // a 5s timeout fits 4s of retransmits, leaving one more try
+        assert_eq!(
+            whole_secs(Duration::from_millis(4980) - Duration::from_secs(4)),
+            1
+        );
+        assert_eq!(whole_secs(Duration::MAX), libc::c_int::MAX);
     }
 
     #[test]
