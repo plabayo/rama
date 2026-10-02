@@ -6,12 +6,11 @@
 //! daemon is unavailable (see [`super::systemd_resolved`]). The builder may
 //! explicitly enable or disable this path regardless of the NSS configuration.
 //!
-//! On targets with `res_nsearch` support, `A` / `AAAA` / `CNAME` / `TXT` /
-//! `SVCB` / `HTTPS` lookups are
-//! backed by the native resolver stub. `res_nsearch` (not `res_nquery`) is
-//! used so the resolver walks the `search` list from `/etc/resolv.conf` and
-//! respects `ndots`, matching the behavior of `getaddrinfo` and hickory's
-//! system resolver.
+//! With glibc, `A` / `AAAA` / `CNAME` / `TXT` / `SVCB` / `HTTPS` lookups are
+//! backed by the native resolver stub. Each name is asked with `res_nquery`
+//! while walking the `search` list from `/etc/resolv.conf` and its `ndots`
+//! as `res_nsearch` would, so every name's own answer and timing count, and
+//! a truncated answer is asked again over TCP within the lookup's timeout.
 //!
 //! On other Linux libc environments, address lookups fall back to
 //! `getaddrinfo`, while non-address lookups return stable unsupported errors
@@ -109,7 +108,7 @@ impl Default for LinuxDnsResolverBuilder {
             negative_cache_ttl: DEFAULT_NEGATIVE_CACHE_TTL,
             cache_capacity: DEFAULT_CACHE_CAPACITY,
             response_buffer_size: DEFAULT_RESPONSE_BUFFER_SIZE,
-            // both `res_nsearch` and musl's per-family `getaddrinfo` send one query a call
+            // glibc lookups ask one name at a time, musl's `getaddrinfo` one family a call
             native_limits: Limits::ONE_QUERY,
             // A running daemon may only be maintained as a secondary DNS
             // view. Use it automatically only when NSS actually selects
@@ -161,7 +160,7 @@ impl LinuxDnsResolverBuilder {
     }
 
     generate_set_and_with! {
-        /// Maximum per-query allocation and positive response size for `res_nsearch`.
+        /// Maximum per-query allocation and positive response size for glibc lookups.
         ///
         /// The initial allocation remains modest and grows on demand. Responses
         /// exceeding this bound are errors when libc reports their required size;
@@ -623,7 +622,7 @@ impl DnsResolver for LinuxDnsResolver {}
 /// Events emitted by uncached lookup streams.
 ///
 /// `AuthoritativeNegative` is only emitted by backends that can distinguish
-/// "the zone says there is no such record" (the `res_nsearch` and
+/// "the zone says there is no such record" (the glibc and
 /// systemd-resolved paths) from "this lookup returned nothing for unrelated
 /// reasons" (the legacy `getaddrinfo` path, where `AI_ADDRCONFIG` can
 /// suppress whole families based on local interface state). Only the former

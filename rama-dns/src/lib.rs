@@ -42,7 +42,7 @@
 //! `LinuxDnsResolver` first tries systemd-resolved's varlink socket, which is
 //! likewise fully asynchronous. This path can also be enabled or disabled
 //! explicitly through `LinuxDnsResolver::builder()`. Where the daemon is not
-//! selected or available it falls back to `res_nsearch` / `getaddrinfo`, and
+//! selected or available it falls back to glibc's resolver / `getaddrinfo`, and
 //! there — as with [`client::TokioDnsResolver`] (via `getaddrinfo`) — each
 //! lookup occupies a tokio blocking-pool thread for the duration of the libc
 //! call. Those resolvers bound how many such calls run at once (384 by
