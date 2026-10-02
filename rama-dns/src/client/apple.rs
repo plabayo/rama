@@ -195,6 +195,7 @@ where
             domain, deadline, timeout, rrtype, parser
         ));
         while let Some(record) = records.next().await {
+            slot.saw(&record);
             yielder.yield_item(record).await;
         }
         slot.answered();
@@ -1349,6 +1350,25 @@ mod tests {
         callback(&mut state, 0, ffi::K_DNS_SERVICE_ERR_NO_SUCH_RECORD, a, &[]);
         assert!(state.done.load(Ordering::SeqCst));
         assert!(drain_completed_batch(&state).is_empty());
+    }
+
+    #[tokio::test]
+    async fn answered_lookups_free_their_burst_place() {
+        let resolver = AppleDnsResolver::new()
+            .with_burst_limit(1)
+            .with_burst_window(Duration::from_mins(1))
+            .with_timeout(Duration::from_secs(2));
+        // a place kept for the window would time the next lookup out
+        for _ in 0..3 {
+            let addrs: Vec<_> = resolver
+                .lookup_ipv4(Domain::from_static("localhost"))
+                .collect()
+                .await;
+            assert!(
+                addrs.iter().all(Result::is_ok) && !addrs.is_empty(),
+                "{addrs:?}"
+            );
+        }
     }
 
     #[tokio::test]

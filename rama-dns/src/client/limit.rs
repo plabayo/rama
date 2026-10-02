@@ -11,6 +11,8 @@ use std::{
 };
 
 use parking_lot::Mutex;
+#[cfg(any(target_vendor = "apple", target_os = "windows", test))]
+use rama_core::error::BoxError;
 use rama_core::telemetry::tracing;
 use tokio::{
     sync::{Notify, OwnedSemaphorePermit, Semaphore},
@@ -155,11 +157,19 @@ impl LookupLimit {
         // budget in tokio time (which tests may pause), queueing in wall time
         let budget = deadline.saturating_duration_since(Instant::now());
         let queued = std::time::Instant::now();
-        let call =
-            tokio::task::spawn_blocking(move || lookup(budget.saturating_sub(queued.elapsed())));
+        let held = Arc::new(Mutex::new(Held {
+            slot: Some(slot),
+            returned: false,
+            left: false,
+        }));
+        let returned = Returned(held.clone());
+        let call = tokio::task::spawn_blocking(move || {
+            let _returned = returned;
+            lookup(budget.saturating_sub(queued.elapsed()))
+        });
         Some(Blocking {
             call: Some(call),
-            slot: Some(slot),
+            held,
         })
     }
 }
@@ -169,7 +179,37 @@ impl LookupLimit {
 #[derive(Debug)]
 pub(crate) struct Blocking<T: Send + 'static> {
     call: Option<JoinHandle<T>>,
+    held: Arc<Mutex<Held>>,
+}
+
+/// A blocking call's slot, until the call returned and its caller saw that
+/// or left: neither a runtime nor the caller has to outlive the call.
+#[derive(Debug)]
+struct Held {
     slot: Option<Slot>,
+    returned: bool,
+    left: bool,
+}
+
+/// Marks its blocking call returned, also when the call unwinds or never ran.
+struct Returned(Arc<Mutex<Held>>);
+
+impl Drop for Returned {
+    fn drop(&mut self) {
+        let slot = {
+            let mut held = self.0.lock();
+            held.returned = true;
+            held.left.then(|| held.slot.take()).flatten()
+        };
+        free(slot);
+    }
+}
+
+/// The call returned: libc is done with its query either way.
+fn free(slot: Option<Slot>) {
+    if let Some(mut slot) = slot {
+        slot.answered();
+    }
 }
 
 impl<T: Send + 'static> Future for Blocking<T> {
@@ -181,25 +221,24 @@ impl<T: Send + 'static> Future for Blocking<T> {
         };
         let answer = ready!(Pin::new(call).poll(cx));
         self.call = None;
-        if let Some(mut slot) = self.slot.take() {
-            // the call returned: libc is done with its query either way
-            slot.answered();
-        }
+        let slot = self.held.lock().slot.take();
+        free(slot);
         Poll::Ready(answer)
     }
 }
 
 impl<T: Send + 'static> Drop for Blocking<T> {
     fn drop(&mut self) {
-        // its caller gave up, the call itself cannot: keep the slot until it returns
-        if let (Some(call), Some(mut slot)) = (self.call.take(), self.slot.take())
-            && let Ok(runtime) = tokio::runtime::Handle::try_current()
-        {
-            runtime.spawn(async move {
-                _ = call.await;
-                slot.answered();
-            });
+        if self.call.is_none() {
+            return;
         }
+        // its caller gave up, the call itself cannot: the call frees the slot
+        let slot = {
+            let mut held = self.held.lock();
+            held.left = true;
+            held.returned.then(|| held.slot.take()).flatten()
+        };
+        free(slot);
     }
 }
 
@@ -217,6 +256,17 @@ impl Slot {
     pub(crate) fn answered(&mut self) {
         if let Some(burst) = &mut self.burst {
             burst.answered = true;
+        }
+    }
+
+    /// The lookup yielded `item`: anything but a timeout is an answer.
+    #[cfg(any(target_vendor = "apple", target_os = "windows", test))]
+    pub(crate) fn saw<T>(&mut self, item: &Result<T, BoxError>) {
+        let timeout = item
+            .as_ref()
+            .is_err_and(|err| err.downcast_ref::<DnsTimeoutError>().is_some());
+        if !timeout {
+            self.answered();
         }
     }
 }
@@ -392,7 +442,10 @@ mod tests {
         mpsc,
     };
 
-    use rama_core::futures::{FutureExt as _, future::join_all};
+    use rama_core::{
+        error::BoxErrorExt as _,
+        futures::{FutureExt as _, future::join_all},
+    };
 
     use super::*;
 
@@ -638,6 +691,118 @@ mod tests {
             .await
             .expect("the slot frees when the call returns");
         freed.await.expect("lookup ran");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_blocking_slot_frees_once_its_caller_saw_the_call_return() {
+        let lookups = calls(1);
+        let done = lookups
+            .spawn_blocking(deadline_in(5), |_budget| ())
+            .await
+            .expect("slot");
+        // the call returns at once, but its caller has not looked yet
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let early = lookups
+            .acquire(Instant::now() + Duration::from_millis(10))
+            .await;
+        assert!(early.is_none(), "its thread may still be on its way back");
+        done.await.expect("lookup ran");
+        assert!(lookups.acquire(deadline_in(5)).await.is_some());
+    }
+
+    #[test]
+    fn a_blocking_slot_outlives_a_caller_dropped_off_runtime() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let lookups = calls(1);
+        let (release, held) = mpsc::channel::<()>();
+        let blocking = runtime
+            .block_on(lookups.spawn_blocking(deadline_in(10), move |_budget| held.recv().ok()))
+            .expect("slot");
+        // no runtime here, while the call still blocks
+        drop(blocking);
+
+        let starved = runtime.block_on(lookups.acquire(Instant::now() + Duration::from_millis(50)));
+        assert!(starved.is_none(), "the running call keeps its slot");
+        drop(release);
+        assert!(
+            runtime.block_on(lookups.acquire(deadline_in(5))).is_some(),
+            "the call frees its slot once it returns"
+        );
+    }
+
+    #[test]
+    fn a_blocking_slot_outlives_its_runtime_shutting_down() {
+        let lookups = calls(1);
+        let (release, held) = mpsc::channel::<()>();
+        let (started_tx, started) = mpsc::channel::<()>();
+        let shutting = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let caller = lookups.clone();
+        shutting.spawn(async move {
+            let call = caller
+                .spawn_blocking(deadline_in(10), move |_budget| {
+                    _ = started_tx.send(());
+                    held.recv().ok()
+                })
+                .await
+                .expect("slot");
+            _ = call.await;
+        });
+        started.recv().expect("the call runs");
+        // drops the waiting caller inside the runtime
+        shutting.shutdown_timeout(Duration::from_millis(10));
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let starved = runtime.block_on(lookups.acquire(Instant::now() + Duration::from_millis(50)));
+        assert!(starved.is_none(), "the running call keeps its slot");
+        drop(release);
+        assert!(runtime.block_on(lookups.acquire(deadline_in(5))).is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_answered_blocking_lookup_frees_its_burst_place_at_once() {
+        let lookups = burst(1, Duration::from_mins(1));
+        lookups
+            .spawn_blocking(deadline_in(5), |_budget| ())
+            .await
+            .expect("slot")
+            .await
+            .expect("lookup ran");
+        let next = lookups
+            .spawn_blocking(Instant::now() + Duration::from_millis(50), |_budget| ())
+            .await;
+        assert!(next.is_some(), "the answered lookup left its place");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_error_answer_frees_its_burst_place_a_timeout_does_not() {
+        let lookups = burst(1, Duration::from_mins(1));
+        let soon = || Instant::now() + Duration::from_millis(50);
+        let mut slot = lookups.acquire(deadline_in(5)).await.expect("slot");
+        slot.saw(&Err::<(), _>(BoxError::from_static_str("SERVFAIL")));
+        drop(slot);
+
+        let mut slot = lookups
+            .acquire(soon())
+            .await
+            .expect("the error answer left its place");
+        slot.saw(&Err::<(), _>(
+            DnsTimeoutError::new(Duration::from_secs(5)).into(),
+        ));
+        drop(slot);
+        assert!(
+            lookups.acquire(soon()).await.is_none(),
+            "a timeout is no answer"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -233,6 +233,7 @@ where
         };
         let mut items = pin!(lookup(deadline));
         while let Some(item) = items.next().await {
+            slot.saw(&item);
             yielder.yield_item(item).await;
         }
         slot.answered();
@@ -1438,7 +1439,10 @@ mod ffi {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rama_core::futures::{StreamExt, future::join_all, stream::BoxStream};
+    use rama_core::{
+        error::BoxErrorExt as _,
+        futures::{StreamExt, future::join_all, stream::BoxStream},
+    };
     use std::{
         pin::pin,
         sync::atomic::AtomicUsize,
@@ -2066,6 +2070,44 @@ mod tests {
         let bounded = resolver.with_burst_limit(128);
         assert_eq!(bounded.burst_limit(), Some(128));
         assert_eq!(bounded.without_burst_limit().burst_limit(), None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn answers_free_their_burst_place() {
+        let resolver = WindowsDnsResolver::new()
+            .with_burst_limit(1)
+            .with_burst_window(Duration::from_mins(1));
+        let started = Instant::now();
+        // records, an error answer, then records again: none waits for the window
+        for (i, answer) in [
+            Ok(Ipv4Addr::LOCALHOST),
+            Err("SERVFAIL"),
+            Ok(Ipv4Addr::LOCALHOST),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let domain = Domain::try_from(format!("n{i}.burst.test")).expect("domain");
+            let items: Vec<_> = resolver
+                .coalesced(
+                    domain,
+                    ffi::DNS_TYPE_A,
+                    move |_domain, _deadline, _timeout| {
+                        stream::once(std::future::ready(
+                            answer.map_err(BoxError::from_static_str),
+                        ))
+                    },
+                )
+                .collect()
+                .await;
+            assert!(
+                !items
+                    .iter()
+                    .any(|item| item.as_ref().is_err_and(|err| err.is::<DnsTimeoutError>())),
+                "{items:?}"
+            );
+        }
+        assert_eq!(started.elapsed(), Duration::ZERO);
     }
 
     #[tokio::test]
