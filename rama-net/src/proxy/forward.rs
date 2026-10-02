@@ -674,7 +674,12 @@ where
                 {
                     notify.notify_one();
                 }
+                // TLS or HTTP/3 writers may hold data until flushed, as tokio's copy knows.
                 if let Err(err) = writer.write_all(&buf[..n]).await {
+                    copy_err = Some(err);
+                    break;
+                }
+                if let Err(err) = writer.flush().await {
                     copy_err = Some(err);
                     break;
                 }
@@ -1344,6 +1349,73 @@ mod tests {
         ) -> std::task::Poll<std::io::Result<()>> {
             std::task::Poll::Ready(Ok(()))
         }
+    }
+
+    /// A writer that holds what it is given until flushed, as TLS or HTTP/3 may.
+    struct HeldUntilFlushed {
+        held: Vec<u8>,
+        flushed: Arc<parking_lot::Mutex<Vec<u8>>>,
+    }
+
+    impl tokio::io::AsyncRead for HeldUntilFlushed {
+        fn poll_read(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            _: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Pending
+        }
+    }
+
+    impl tokio::io::AsyncWrite for HeldUntilFlushed {
+        fn poll_write(
+            mut self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            buf: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            self.held.extend_from_slice(buf);
+            std::task::Poll::Ready(Ok(buf.len()))
+        }
+        fn poll_flush(
+            mut self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            let held = std::mem::take(&mut self.held);
+            self.flushed.lock().extend(held);
+            std::task::Poll::Ready(Ok(()))
+        }
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    /// Relayed data reaches the peer while the source stays open, also through a writer
+    /// that only sends on flush.
+    #[tokio::test]
+    async fn relayed_data_is_flushed_while_the_source_stays_open() {
+        let (mut source, left) = duplex(64);
+        let flushed = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let right = HeldUntilFlushed {
+            held: Vec::new(),
+            flushed: flushed.clone(),
+        };
+        let bridge = tokio::spawn(async move {
+            _ = IoForwardService::default()
+                .serve(BridgeIo(left, right))
+                .await;
+        });
+        source.write_all(b"data").await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while flushed.lock().as_slice() != b"data" {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("the relayed data was never flushed");
+        bridge.abort();
     }
 
     #[tokio::test]
