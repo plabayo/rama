@@ -1,11 +1,12 @@
 use std::{
     collections::VecDeque,
     fmt,
-    pin::pin,
+    pin::{Pin, pin},
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
+    task::{Context, Poll, ready},
     time::Duration,
 };
 
@@ -13,7 +14,7 @@ use parking_lot::Mutex;
 use rama_core::telemetry::tracing;
 use tokio::{
     sync::{Notify, OwnedSemaphorePermit, Semaphore},
-    task::JoinHandle,
+    task::{JoinError, JoinHandle},
     time::Instant,
 };
 
@@ -108,7 +109,7 @@ impl LookupLimit {
         &self,
         deadline: Instant,
         lookup: F,
-    ) -> Option<JoinHandle<T>>
+    ) -> Option<Blocking<T>>
     where
         F: FnOnce(Duration) -> T + Send + 'static,
         T: Send + 'static,
@@ -117,13 +118,51 @@ impl LookupLimit {
         // budget in tokio time (which tests may pause), queueing in wall time
         let budget = deadline.saturating_duration_since(Instant::now());
         let queued = std::time::Instant::now();
-        Some(tokio::task::spawn_blocking(move || {
-            let mut slot = slot;
-            let answer = lookup(budget.saturating_sub(queued.elapsed()));
+        let call =
+            tokio::task::spawn_blocking(move || lookup(budget.saturating_sub(queued.elapsed())));
+        Some(Blocking {
+            call: Some(call),
+            slot: Some(slot),
+        })
+    }
+}
+
+/// A blocking lookup in flight; its slot frees once its thread is done with
+/// it, so the next lookup reuses that thread rather than spawning another.
+#[derive(Debug)]
+pub(crate) struct Blocking<T: Send + 'static> {
+    call: Option<JoinHandle<T>>,
+    slot: Option<Slot>,
+}
+
+impl<T: Send + 'static> Future for Blocking<T> {
+    type Output = Result<T, JoinError>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let Some(call) = self.call.as_mut() else {
+            return Poll::Pending;
+        };
+        let answer = ready!(Pin::new(call).poll(cx));
+        self.call = None;
+        if let Some(mut slot) = self.slot.take() {
             // the call returned: libc is done with its query either way
             slot.answered();
-            answer
-        }))
+        }
+        Poll::Ready(answer)
+    }
+}
+
+impl<T: Send + 'static> Drop for Blocking<T> {
+    fn drop(&mut self) {
+        // its caller gave up, the call itself cannot: keep the slot until it returns
+        if let (Some(call), Some(mut slot)) = (self.call.take(), self.slot.take())
+            && let Ok(runtime) = tokio::runtime::Handle::try_current()
+        {
+            runtime.spawn(async move {
+                _ = call.await;
+                slot.answered();
+            });
+        }
     }
 }
 
@@ -528,7 +567,14 @@ mod tests {
             starved.is_none(),
             "the uncancellable call still holds its slot"
         );
+
+        // once the call returns, its slot is free again
         drop(release);
+        let freed = lookups
+            .spawn_blocking(deadline_in(5), |_budget| ())
+            .await
+            .expect("the slot frees when the call returns");
+        freed.await.expect("lookup ran");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
