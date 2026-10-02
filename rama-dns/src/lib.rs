@@ -59,7 +59,9 @@
 //!
 //! The native resolvers (and hickory, internally) let concurrent lookups of
 //! the same name and record type share one query, so a burst of connections
-//! to one host costs one lookup rather than one per connection.
+//! to one host costs one lookup rather than one per connection. A lookup is
+//! shared within the tokio runtime that started it, between clones with the
+//! same timeout.
 //!
 //! ## Global DNS resolver
 //!
