@@ -241,6 +241,8 @@ fn lookup_record_packet(
     }
     // every later access goes through the guard, so its drop never aliases
     let state = ResStateGuard(&mut state);
+    #[cfg(test)]
+    stub_tests::use_stub(state.0, domain.as_str());
     let (name, names) = match search_walk(state.0, domain.as_str()) {
         Walk::One => (dns_name_from_domain(domain.as_str())?, 1),
         Walk::Two => (dns_name_from_domain(domain.as_str())?, 2),
@@ -253,6 +255,8 @@ fn lookup_record_packet(
 
     loop {
         clear_errno();
+        // a set QR bit after a failure tells an error answer from silence
+        buffer[..DNS_HEADER_SIZE].fill(0);
         // SAFETY:
         // - `state` is initialized by `res_ninit`.
         // - `name` is a valid NUL-terminated DNS name.
@@ -288,17 +292,18 @@ fn lookup_record_packet(
                 // section for RFC 2308-correct negative caching.
                 return Ok(Some(buffer));
             }
-            if timed_out(h_errno, std::io::Error::last_os_error().raw_os_error()) {
+            let errno = std::io::Error::last_os_error().raw_os_error();
+            if timed_out(h_errno, errno, &buffer) {
                 // a caching stub may hold the late answer by now
-                let left = deadline.saturating_duration_since(Instant::now()) / names;
-                if whole_secs(left) > 0 {
+                if let Some(left) = another_walk(state.0, deadline, names) {
                     fit_retransmits(state.0, left);
                     continue;
                 }
                 return Err(DnsTimeoutError::new(timeout).into());
             }
             return Err(LinuxDnsResolverError::message(format!(
-                "res_nsearch failed (h_errno={h_errno})",
+                "res_nsearch failed (h_errno={h_errno}, rcode={})",
+                buffer[3] & 0x0f,
             ))
             .into());
         }
@@ -317,10 +322,19 @@ fn lookup_record_packet(
 }
 
 /// Whether a failed `res_nsearch` ran out of retransmits: libc reports
-/// `TRY_AGAIN` both for that and for a SERVFAIL, but only sets `ETIMEDOUT`
-/// when nameservers were reached and none answered in time.
-const fn timed_out(h_errno: c_int, errno: Option<c_int>) -> bool {
-    h_errno == ffi::TRY_AGAIN && matches!(errno, Some(libc::ETIMEDOUT))
+/// `TRY_AGAIN` with `ETIMEDOUT` also when a server answered SERVFAIL or
+/// REFUSED, but only such an answer leaves a response header in `response`.
+fn timed_out(h_errno: c_int, errno: Option<c_int>, response: &[u8]) -> bool {
+    let answered = response.get(2).is_some_and(|flags| flags & 0x80 != 0);
+    h_errno == ffi::TRY_AGAIN && matches!(errno, Some(libc::ETIMEDOUT)) && !answered
+}
+
+/// The budget per name of another walk before `deadline`, if one still fits:
+/// libc waits at least a second per nameserver.
+fn another_walk(state: &ffi::ResState, deadline: Instant, names: u32) -> Option<Duration> {
+    let left = deadline.saturating_duration_since(Instant::now()) / names;
+    let shortest = try_secs(1, state.nscount.clamp(1, MAX_NAMESERVERS));
+    (whole_secs(left) >= shortest).then_some(left)
 }
 
 /// libc leaves `errno` alone on success, so a value from an earlier call on
@@ -846,6 +860,207 @@ mod search_walk_tests {
     }
 }
 
+/// Points a lookup of a registered name at a loopback DNS stub.
+#[cfg(test)]
+mod stub_tests {
+    use std::{
+        ffi::CStr,
+        net::{Ipv4Addr, UdpSocket},
+        ptr,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        thread,
+        time::{Duration, Instant},
+    };
+
+    use parking_lot::Mutex;
+    use rama_core::futures::StreamExt as _;
+    use rama_net::address::Domain;
+
+    use super::{DnsTimeoutError, NativeConfig, ffi, lookup_ipv4_stream, lookup_record_packet};
+    use crate::client::limit::{Limits, LookupLimit};
+
+    struct Stub {
+        name: &'static str,
+        port: u16,
+        search: Option<&'static CStr>,
+        sends: libc::c_int,
+    }
+
+    static STUBS: Mutex<Vec<Stub>> = Mutex::new(Vec::new());
+
+    /// Called by the lookup itself, right after `res_ninit`.
+    pub(super) fn use_stub(state: &mut ffi::ResState, name: &str) {
+        let stubs = STUBS.lock();
+        let Some(stub) = stubs.iter().find(|stub| stub.name == name) else {
+            return;
+        };
+        // a second per send
+        state.retrans = 1;
+        state.retry = stub.sends;
+        state.nscount = 1;
+        let nameserver = &mut state.nsaddr_list[0];
+        nameserver.sin_family = libc::AF_INET as _;
+        nameserver.sin_port = stub.port.to_be();
+        nameserver.sin_addr.s_addr = u32::from(Ipv4Addr::LOCALHOST).to_be();
+        // an IPv6 nameserver from resolv.conf would take precedence
+        // SAFETY: `res_ninit` initialized `_ext`, the variant glibc uses
+        unsafe { state._u._ext.nsaddrs[0] = ptr::null_mut() };
+        state.dnsrch = [ptr::null_mut(); 7];
+        if let Some(search) = stub.search {
+            state.dnsrch[0] = search.as_ptr().cast_mut();
+        }
+        state.set_ndots(1);
+    }
+
+    #[derive(Clone, Copy)]
+    enum Reply {
+        Silence,
+        Rcode(u8),
+        /// Ignore the first query, answer the rest with 127.0.0.1.
+        SecondTime,
+    }
+
+    /// Serves `name` from a loopback stub, which libc asks up to `sends`
+    /// times per name; returns how many queries it saw.
+    fn serve(
+        name: &'static str,
+        search: Option<&'static CStr>,
+        sends: libc::c_int,
+        reply: Reply,
+    ) -> Arc<AtomicUsize> {
+        let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind stub");
+        let port = socket.local_addr().expect("stub addr").port();
+        STUBS.lock().push(Stub {
+            name,
+            port,
+            search,
+            sends,
+        });
+        let queries = Arc::new(AtomicUsize::new(0));
+        let seen = queries.clone();
+        thread::spawn(move || {
+            let mut packet = [0; 512];
+            while let Ok((len, peer)) = socket.recv_from(&mut packet) {
+                let nth = seen.fetch_add(1, Ordering::SeqCst);
+                let response = match reply {
+                    Reply::Silence => continue,
+                    Reply::SecondTime if nth == 0 => continue,
+                    Reply::Rcode(rcode) => header_only(&packet[..len], rcode),
+                    Reply::SecondTime => with_loopback_answer(&packet[..len]),
+                };
+                _ = socket.send_to(&response, peer);
+            }
+        });
+        queries
+    }
+
+    fn header_only(query: &[u8], rcode: u8) -> Vec<u8> {
+        let mut response = query.to_vec();
+        response[2] = 0x81;
+        response[3] = 0x80 | rcode;
+        response
+    }
+
+    fn with_loopback_answer(query: &[u8]) -> Vec<u8> {
+        let mut response = header_only(query, 0);
+        response[7] = 1;
+        response.extend_from_slice(&[0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 127, 0, 0, 1]);
+        response
+    }
+
+    fn lookup(
+        name: &'static str,
+        budget: Duration,
+    ) -> Result<Option<Vec<u8>>, rama_core::error::BoxError> {
+        let domain = Domain::from_static(name);
+        lookup_record_packet(domain, libc::c_int::from(ffi::NS_T_A), 4096, budget, budget)
+    }
+
+    #[test]
+    fn a_servfail_is_an_answer_not_a_timeout() {
+        for (name, rcode) in [("servfail.stub.test", 2), ("refused.stub.test", 5)] {
+            let queries = serve(name, None, 1, Reply::Rcode(rcode));
+            let started = Instant::now();
+            let err = lookup(name, Duration::from_millis(4990)).expect_err("an error answer");
+            assert!(err.downcast_ref::<DnsTimeoutError>().is_none(), "{err}");
+            assert!(started.elapsed() < Duration::from_secs(1));
+            assert!(queries.load(Ordering::SeqCst) <= 4, "{queries:?}");
+        }
+    }
+
+    #[test]
+    fn a_timed_out_query_is_asked_again_within_the_budget() {
+        let queries = serve("again.stub.test", None, 1, Reply::SecondTime);
+        let started = Instant::now();
+        let packet = lookup("again.stub.test", Duration::from_millis(2400))
+            .expect("answered the second time")
+            .expect("a response");
+        assert_eq!(packet[7], 1, "one answer");
+        assert_eq!(queries.load(Ordering::SeqCst), 2);
+        assert!(started.elapsed() < Duration::from_millis(2400));
+    }
+
+    #[test]
+    fn a_silent_stub_times_out_within_the_budget() {
+        let queries = serve("silent.stub.test", None, 1, Reply::Silence);
+        let started = Instant::now();
+        let err = lookup("silent.stub.test", Duration::from_millis(1400)).expect_err("silence");
+        assert!(err.downcast_ref::<DnsTimeoutError>().is_some(), "{err}");
+        // another 1s walk no longer fits in what is left
+        assert_eq!(queries.load(Ordering::SeqCst), 1);
+        assert!(started.elapsed() < Duration::from_millis(1900));
+    }
+
+    #[test]
+    fn two_names_share_the_budget() {
+        let queries = serve("split.stub.test", Some(c"corp.test"), 2, Reply::Silence);
+        let started = Instant::now();
+        let err = lookup("split.stub.test", Duration::from_millis(2400)).expect_err("silence");
+        assert!(err.downcast_ref::<DnsTimeoutError>().is_some(), "{err}");
+        // as is, then with `corp.test`: one send of a second each, not two
+        assert_eq!(queries.load(Ordering::SeqCst), 2);
+        assert!(started.elapsed() < Duration::from_millis(2900));
+    }
+
+    #[test]
+    fn only_the_root_to_search_asks_once() {
+        let queries = serve("rooted.stub.test", Some(c"."), 1, Reply::Rcode(3));
+        let packet = lookup("rooted.stub.test", Duration::from_secs(2))
+            .expect("a negative answer")
+            .expect("its response");
+        assert_eq!(packet[3] & 0x0f, 3, "NXDOMAIN");
+        // as is and then rooted would be the same query twice
+        assert_eq!(queries.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_native_timeout_reaches_the_caller_as_itself() {
+        _ = serve("caller.stub.test", None, 1, Reply::Silence);
+        let native = NativeConfig {
+            response_buffer_size: 4096,
+            limit: LookupLimit::new(Limits::ONE_QUERY),
+        };
+        let timeout = Duration::from_millis(1400);
+        let items: Vec<_> =
+            lookup_ipv4_stream(Domain::from_static("caller.stub.test"), timeout, native)
+                .collect()
+                .await;
+        assert!(
+            matches!(items.as_slice(), [Err(err)] if err
+                .downcast_ref::<DnsTimeoutError>()
+                .is_some_and(|err| err.timeout() == timeout)),
+            "{:?}",
+            items
+                .iter()
+                .map(|item| item.as_ref().err().map(ToString::to_string))
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
 #[cfg(test)]
 mod response_buffer_tests {
     use std::{mem, time::Duration};
@@ -857,12 +1072,25 @@ mod response_buffer_tests {
 
     #[test]
     fn only_running_out_of_retransmits_is_a_timeout() {
-        assert!(timed_out(ffi::TRY_AGAIN, Some(libc::ETIMEDOUT)));
-        // a SERVFAIL, or no nameserver reachable at all
-        assert!(!timed_out(ffi::TRY_AGAIN, Some(0)));
-        assert!(!timed_out(ffi::TRY_AGAIN, Some(libc::ECONNREFUSED)));
-        assert!(!timed_out(ffi::TRY_AGAIN, None));
-        assert!(!timed_out(ffi::HOST_NOT_FOUND, Some(libc::ETIMEDOUT)));
+        let silence = [0; DNS_HEADER_SIZE];
+        assert!(timed_out(ffi::TRY_AGAIN, Some(libc::ETIMEDOUT), &silence));
+        // no nameserver reachable at all
+        assert!(!timed_out(ffi::TRY_AGAIN, Some(0), &silence));
+        assert!(!timed_out(
+            ffi::TRY_AGAIN,
+            Some(libc::ECONNREFUSED),
+            &silence
+        ));
+        assert!(!timed_out(ffi::TRY_AGAIN, None, &silence));
+        assert!(!timed_out(
+            ffi::HOST_NOT_FOUND,
+            Some(libc::ETIMEDOUT),
+            &silence
+        ));
+        // a SERVFAIL answer reads as a timeout to libc
+        let mut servfail = silence;
+        servfail[2..4].copy_from_slice(&[0x81, 0x82]);
+        assert!(!timed_out(ffi::TRY_AGAIN, Some(libc::ETIMEDOUT), &servfail));
     }
 
     #[test]
@@ -915,7 +1143,7 @@ mod response_buffer_tests {
     }
 
     #[test]
-    fn a_timed_out_walk_is_retried_while_a_second_is_left() {
+    fn whole_secs_rounds_to_the_nearest_second() {
         assert_eq!(whole_secs(Duration::from_millis(499)), 0);
         assert_eq!(whole_secs(Duration::from_millis(500)), 1);
         // a 5s timeout fits 4s of retransmits, leaving one more try
