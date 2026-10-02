@@ -255,8 +255,9 @@ fn lookup_record_packet(
 
     loop {
         clear_errno();
-        // a set QR bit after a failure tells an error answer from silence
+        // a failure's header then shows whether a server answered
         buffer[..DNS_HEADER_SIZE].fill(0);
+        let called = Instant::now();
         // SAFETY:
         // - `state` is initialized by `res_ninit`.
         // - `name` is a valid NUL-terminated DNS name.
@@ -293,7 +294,7 @@ fn lookup_record_packet(
                 return Ok(Some(buffer));
             }
             let errno = std::io::Error::last_os_error().raw_os_error();
-            if timed_out(h_errno, errno, &buffer) {
+            if timed_out(h_errno, errno, &buffer, called.elapsed()) {
                 // a caching stub may hold the late answer by now
                 if let Some(left) = another_walk(state.0, deadline, names) {
                     fit_retransmits(state.0, left);
@@ -321,16 +322,24 @@ fn lookup_record_packet(
     }
 }
 
-/// Whether a failed `res_nsearch` ran out of retransmits: libc reports
-/// `TRY_AGAIN` with `ETIMEDOUT` also when a server answered SERVFAIL or
-/// REFUSED, but only such an answer leaves a response header in `response`.
-fn timed_out(h_errno: c_int, errno: Option<c_int>, response: &[u8]) -> bool {
-    let answered = response.get(2).is_some_and(|flags| flags & 0x80 != 0);
-    h_errno == ffi::TRY_AGAIN && matches!(errno, Some(libc::ETIMEDOUT)) && !answered
+/// Whether a failed `res_nsearch` ran out of retransmits. libc reports
+/// `TRY_AGAIN` with `ETIMEDOUT` also for a SERVFAIL or REFUSED answer, whose
+/// rcode stays in `response`, and for a reply it rejects at once; only
+/// silence keeps libc waiting a second at least.
+fn timed_out(h_errno: c_int, errno: Option<c_int>, response: &[u8], waited: Duration) -> bool {
+    // libc resets the rcode, not the QR bit, before each name it asks
+    let error_answer = response
+        .get(2..4)
+        .is_some_and(|flags| flags[0] & 0x80 != 0 && flags[1] & 0x0f != 0);
+    h_errno == ffi::TRY_AGAIN
+        && matches!(errno, Some(libc::ETIMEDOUT))
+        && !error_answer
+        && waited >= Duration::from_millis(900)
 }
 
 /// The budget per name of another walk before `deadline`, if one still fits:
-/// libc waits at least a second per nameserver.
+/// libc waits at least a second per nameserver. Like the budget itself, it
+/// rounds to the nearest second, so a walk may end half a second late.
 fn another_walk(state: &ffi::ResState, deadline: Instant, names: u32) -> Option<Duration> {
     let left = deadline.saturating_duration_since(Instant::now()) / names;
     let shortest = try_secs(1, state.nscount.clamp(1, MAX_NAMESERVERS));
@@ -908,6 +917,10 @@ mod stub_tests {
         Rcode(u8),
         /// Ignore the first query, answer the rest with 127.0.0.1.
         SecondTime,
+        /// NXDOMAIN for names under `corp.test`, silence for the rest.
+        SearchOnly,
+        /// A reply too short to hold a header.
+        Undersized,
     }
 
     /// Serves `name` from a loopback stub, which libc asks up to `sends`
@@ -932,17 +945,25 @@ mod stub_tests {
             let mut packet = [0; 512];
             while let Ok((len, peer)) = socket.recv_from(&mut packet) {
                 let nth = seen.fetch_add(1, Ordering::SeqCst);
+                let query = &packet[..len];
                 let response = match reply {
-                    Reply::Silence => continue,
                     Reply::SecondTime if nth == 0 => continue,
-                    Reply::Rcode(rcode) => header_only(&packet[..len], rcode),
-                    Reply::SecondTime => with_loopback_answer(&packet[..len]),
+                    Reply::SearchOnly if query.ends_with(SEARCH_DOMAIN_A_QUESTION) => {
+                        header_only(query, 3)
+                    }
+                    Reply::Silence | Reply::SearchOnly => continue,
+                    Reply::Rcode(rcode) => header_only(query, rcode),
+                    Reply::SecondTime => with_loopback_answer(query),
+                    Reply::Undersized => query[..2].to_vec(),
                 };
                 _ = socket.send_to(&response, peer);
             }
         });
         queries
     }
+
+    /// The end of an A question for a name under `corp.test`.
+    const SEARCH_DOMAIN_A_QUESTION: &[u8] = b"\x04corp\x04test\x00\x00\x01\x00\x01";
 
     fn header_only(query: &[u8], rcode: u8) -> Vec<u8> {
         let mut response = query.to_vec();
@@ -976,6 +997,28 @@ mod stub_tests {
             assert!(started.elapsed() < Duration::from_secs(1));
             assert!(queries.load(Ordering::SeqCst) <= 4, "{queries:?}");
         }
+    }
+
+    #[test]
+    fn a_timeout_after_a_search_answer_is_still_a_timeout() {
+        // `stalehdr.corp.test` answers NXDOMAIN, then `stalehdr` gets silence
+        let queries = serve("stalehdr", Some(c"corp.test"), 1, Reply::SearchOnly);
+        let started = Instant::now();
+        let err = lookup("stalehdr", Duration::from_millis(2400)).expect_err("silence");
+        assert!(err.downcast_ref::<DnsTimeoutError>().is_some(), "{err}");
+        assert!(queries.load(Ordering::SeqCst) >= 2, "{queries:?}");
+        assert!(started.elapsed() < Duration::from_millis(2900));
+    }
+
+    #[test]
+    fn a_reply_rejected_at_once_is_not_asked_again() {
+        let queries = serve("undersized.stub.test", None, 1, Reply::Undersized);
+        let started = Instant::now();
+        let err = lookup("undersized.stub.test", Duration::from_millis(2400))
+            .expect_err("an unusable reply");
+        assert!(err.downcast_ref::<DnsTimeoutError>().is_none(), "{err}");
+        assert!(queries.load(Ordering::SeqCst) <= 4, "{queries:?}");
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 
     #[test]
@@ -1050,34 +1093,60 @@ mod stub_tests {
 
 #[cfg(test)]
 mod response_buffer_tests {
-    use std::{mem, time::Duration};
+    use std::{
+        mem,
+        time::{Duration, Instant},
+    };
 
     use super::{
-        DNS_HEADER_SIZE, clear_errno, ffi, fit_retransmits, grow_response_buffer,
+        DNS_HEADER_SIZE, another_walk, clear_errno, ffi, fit_retransmits, grow_response_buffer,
         response_buffer_limit, timed_out, try_secs, whole_secs,
     };
 
     #[test]
     fn only_running_out_of_retransmits_is_a_timeout() {
         let silence = [0; DNS_HEADER_SIZE];
-        assert!(timed_out(ffi::TRY_AGAIN, Some(libc::ETIMEDOUT), &silence));
+        let waited = Duration::from_secs(1);
+        let timeout = |h_errno, errno, response: &[u8]| timed_out(h_errno, errno, response, waited);
+        assert!(timeout(ffi::TRY_AGAIN, Some(libc::ETIMEDOUT), &silence));
         // no nameserver reachable at all
-        assert!(!timed_out(ffi::TRY_AGAIN, Some(0), &silence));
-        assert!(!timed_out(
-            ffi::TRY_AGAIN,
-            Some(libc::ECONNREFUSED),
-            &silence
-        ));
-        assert!(!timed_out(ffi::TRY_AGAIN, None, &silence));
-        assert!(!timed_out(
+        assert!(!timeout(ffi::TRY_AGAIN, Some(0), &silence));
+        assert!(!timeout(ffi::TRY_AGAIN, Some(libc::ECONNREFUSED), &silence));
+        assert!(!timeout(ffi::TRY_AGAIN, None, &silence));
+        assert!(!timeout(
             ffi::HOST_NOT_FOUND,
             Some(libc::ETIMEDOUT),
             &silence
         ));
         // a SERVFAIL answer reads as a timeout to libc
-        let mut servfail = silence;
-        servfail[2..4].copy_from_slice(&[0x81, 0x82]);
-        assert!(!timed_out(ffi::TRY_AGAIN, Some(libc::ETIMEDOUT), &servfail));
+        let mut answer = silence;
+        answer[2..4].copy_from_slice(&[0x81, 0x82]);
+        assert!(!timeout(ffi::TRY_AGAIN, Some(libc::ETIMEDOUT), &answer));
+        // what an earlier name's answer leaves once libc resets the rcode
+        answer[3] = 0x80;
+        assert!(timeout(ffi::TRY_AGAIN, Some(libc::ETIMEDOUT), &answer));
+        // a reply rejected at once is no silence
+        let at_once = timed_out(
+            ffi::TRY_AGAIN,
+            Some(libc::ETIMEDOUT),
+            &silence,
+            Duration::ZERO,
+        );
+        assert!(!at_once);
+    }
+
+    #[test]
+    fn another_walk_needs_a_second_per_nameserver() {
+        // SAFETY: `__res_state` is plain old data; zeroed is a valid value.
+        let mut state: ffi::ResState = unsafe { mem::zeroed() };
+        let after = |millis| Instant::now() + Duration::from_millis(millis);
+        state.nscount = 1;
+        assert!(another_walk(&state, after(400), 1).is_none());
+        assert!(another_walk(&state, after(700), 1).is_some());
+        assert!(another_walk(&state, after(1200), 2).is_some());
+        state.nscount = 3;
+        assert!(another_walk(&state, after(2300), 1).is_none());
+        assert!(another_walk(&state, after(2700), 1).is_some());
     }
 
     #[test]
