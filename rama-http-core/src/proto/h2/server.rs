@@ -15,7 +15,10 @@ use rama_core::telemetry::tracing::{Instrument, debug, trace, trace_root_span, w
 use rama_http::StreamingBody;
 use rama_http::io::upgrade::{self, Pending, Upgraded};
 use rama_http::opentelemetry::version_as_protocol_version;
-use rama_http_types::{Method, Request, Response, header, proto::h2::ext::ResetStream};
+use rama_http_types::{
+    Method, Request, Response, header,
+    proto::{ext::Protocol, h2::ext::ResetStream},
+};
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use super::{PipeToSendStream, SendBuf, ping};
@@ -266,6 +269,7 @@ where
                             respond.send_reset(crate::h2::Reason::INTERNAL_ERROR);
                             return Poll::Ready(Ok(()));
                         }
+                        let extended = parts.extensions.contains::<Protocol>();
                         let (pending, upgrade) = upgrade::pending();
                         parts.extensions.insert(upgrade);
                         (
@@ -274,6 +278,7 @@ where
                                 pending,
                                 ping,
                                 recv_stream: stream,
+                                extended,
                             }),
                         )
                     };
@@ -395,6 +400,7 @@ struct ConnectParts {
     pending: Pending,
     ping: Recorder,
     recv_stream: RecvStream,
+    extended: bool,
 }
 
 impl<F, B> H2Stream<F, B>
@@ -509,6 +515,7 @@ where
                             send_stream,
                             connect_parts.recv_stream,
                             connect_parts.ping,
+                            connect_parts.extended,
                         );
                         connect_parts
                             .pending

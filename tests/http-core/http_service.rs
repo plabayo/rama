@@ -1,5 +1,6 @@
 //! Real TCP/TLS coverage of protocol-independent alternative-service selection.
 
+mod connect_aborts;
 mod deployment;
 mod discovery_outcomes;
 #[cfg(feature = "icap")]

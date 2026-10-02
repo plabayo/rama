@@ -22,8 +22,9 @@ use rama_http::{
     io::upgrade::{self, Upgraded},
 };
 use rama_http_types::{
-    Method, Request, Response, Version, opentelemetry::version_as_protocol_version,
-    proto::h2::frame::SettingOrder,
+    Method, Request, Response, Version,
+    opentelemetry::version_as_protocol_version,
+    proto::{ext::Protocol, h2::frame::SettingOrder},
 };
 use rama_net::{client::pool::ConnectionAdmission, conn::MaxConcurrency};
 use std::sync::Arc;
@@ -506,6 +507,8 @@ where
     B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     is_connect: bool,
+    // Extended CONNECT (RFC 8441): a `:protocol` tunnel.
+    extended: bool,
     eos: bool,
     fut: ResponseFuture,
     body_tx: SendStream<SendBuf<B::Data>>,
@@ -713,6 +716,7 @@ where
                     fut: f.fut,
                     ping: Some(ping),
                     send_stream: Some(send_stream),
+                    extended: f.extended,
                     exec: self.executor.clone(),
                     cancel_tx: Some(cancel_tx),
                     h2_tx: self.h2_tx.clone(),
@@ -741,6 +745,7 @@ pin_project! {
         ping: Option<Recorder>,
         #[pin]
         send_stream: Option<Option<SendStream<SendBuf<<B as StreamingBody>::Data>>>>,
+        extended: bool,
         exec: Executor,
         cancel_tx: Option<oneshot::Sender<()>>,
         // Handle to the underlying h2 connection, kept solely so we can
@@ -807,7 +812,8 @@ where
 
                     let (pending, on_upgrade) = upgrade::pending();
 
-                    let h2_up = super::upgrade::upgraded(send_stream, recv_stream, ping);
+                    let h2_up =
+                        super::upgrade::upgraded(send_stream, recv_stream, ping, *this.extended);
                     let upgraded = Upgraded::new(h2_up, Bytes::new());
                     // Preserve the peer's connection metadata explicitly; sharing
                     // its immutable snapshot cannot retain the handshake message.
@@ -888,6 +894,7 @@ where
                     }
 
                     let is_connect = req.method() == Method::CONNECT;
+                    let extended = is_connect && req.extensions().contains::<Protocol>();
 
                     if is_connect
                         && headers::content_length_parse_all(req.headers())
@@ -921,6 +928,7 @@ where
 
                     let f = FutCtx {
                         is_connect,
+                        extended,
                         eos,
                         fut,
                         body_tx,

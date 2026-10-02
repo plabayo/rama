@@ -11,6 +11,7 @@ use rama_core::{
     bytes::{Buf as _, Bytes, BytesMut},
     extensions::ExtensionsRef as _,
     futures::FutureExt as _,
+    io::AbortIo,
     rt::{Executor, spawn},
 };
 use rama_http::{
@@ -18,7 +19,7 @@ use rama_http::{
         DatagramTransport, HttpDatagramSession, NativeDatagrams, NativeRecvError, NativeSendError,
         NativeSendPolicy, SessionConfig, SessionError, SessionEvent, ViolationPolicy,
     },
-    io::upgrade::{OnMalformedMessage, OnUpstreamError, Upgraded, handle_upgrade},
+    io::upgrade::{OnMalformedMessage, Upgraded, handle_upgrade},
 };
 use rama_http_types::{
     Body, Method, Request, Response, StatusCode,
@@ -923,13 +924,13 @@ async fn local_ends_close_native_sending_for_every_holder() {
                 .extensions()
                 .get_ref::<OnMalformedMessage>()
                 .cloned();
-            let upstream = client_io.extensions().get_ref::<OnUpstreamError>().cloned();
+            let upstream = client_io.extensions().self_get_arc::<AbortIo>();
             let mut session = HttpDatagramSession::new(client_io);
             native_ready(&session).await;
             match end {
                 "fin" => session.close().await.unwrap(),
                 "malformed" => malformed.unwrap().call(),
-                "upstream" => upstream.unwrap().call(),
+                "upstream" => upstream.unwrap().abort(),
                 "drop" => drop(session),
                 _ => pair.client.close(VarInt::from_u32(0), b"gone"),
             }
@@ -1333,7 +1334,7 @@ async fn tunnels_keep_their_hooks_out_of_the_connection_extensions() {
         for shared in [client.shared(), server.shared()] {
             assert!(!shared.transport_extensions.contains::<NativeDatagrams>());
             assert!(!shared.transport_extensions.contains::<OnMalformedMessage>());
-            assert!(!shared.transport_extensions.contains::<OnUpstreamError>());
+            assert!(!shared.transport_extensions.contains::<AbortIo>());
         }
         assert_eq!(
             (stored(client.shared()), stored(server.shared())),
@@ -1951,9 +1952,10 @@ async fn local_abort_hooks_end_both_directions_at_once() {
                 hook.unwrap().call();
                 (Code::H3_MESSAGE_ERROR, false)
             } else {
-                let hook = server_io.extensions().get_ref::<OnUpstreamError>().cloned();
-                hook.unwrap().call();
-                (Code::H3_CONNECT_ERROR, true)
+                let hook = server_io.extensions().self_get_arc::<AbortIo>();
+                hook.unwrap().abort();
+                // RFC 9220 §3: an Extended CONNECT tunnel aborts as H3_REQUEST_CANCELLED.
+                (Code::H3_REQUEST_CANCELLED, true)
             };
             // Native receiving ends without any reliable read, discarding what was queued.
             assert_eq!(server.shared().datagram_demux().buffered(), 0);

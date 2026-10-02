@@ -11,10 +11,11 @@ use super::{
 use rama_core::{
     bytes::Bytes,
     extensions::{Extensions, ExtensionsRef},
+    io::AbortIo,
 };
 use rama_http::{
     datagram::NativeDatagrams,
-    io::upgrade::{OnMalformedMessage, OnUpstreamError, Upgraded},
+    io::upgrade::{OnMalformedMessage, Upgraded},
 };
 use rama_http_types::proto::h3::{Code, FrameType, VarInt};
 use std::{
@@ -31,22 +32,27 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 /// A request's claimed datagram association and the connection carrying its datagrams.
 pub(crate) type Datagrams = (Arc<Association>, rama_quic::Connection);
 
+/// `extended` marks an Extended CONNECT tunnel (RFC 9220), else a CONNECT one (RFC 9114 §4.4).
 pub(crate) fn new(
     mut reader: Reader<rama_quic::RecvStream>,
     writer: Writer<rama_quic::SendStream>,
     permit: Arc<dyn Send + Sync>,
     priority: Option<super::priority::Lease>,
     datagrams: Option<Datagrams>,
+    extended: bool,
 ) -> Upgraded {
     reader.phase = Phase::Tunnel;
     let extensions = reader.shared.transport_extensions.fork();
     // A local abort fails both directions at once, independent of any later I/O poll.
     let aborted = Arc::new(AtomicU64::new(0));
     let registration = reader.datagrams.as_ref().map(Arc::downgrade);
-    for (code, malformed) in [
-        (Code::H3_CONNECT_ERROR, false),
-        (Code::H3_MESSAGE_ERROR, true),
-    ] {
+    // A TCP RST maps to H3_REQUEST_CANCELLED (RFC 9220 §3) or H3_CONNECT_ERROR (RFC 9114 §4.4).
+    let abort_code = if extended {
+        Code::H3_REQUEST_CANCELLED
+    } else {
+        Code::H3_CONNECT_ERROR
+    };
+    for (code, malformed) in [(abort_code, false), (Code::H3_MESSAGE_ERROR, true)] {
         let handle = writer.abort_handle();
         let aborted = aborted.clone();
         let registration = registration.clone();
@@ -60,7 +66,7 @@ pub(crate) fn new(
         if malformed {
             extensions.insert(OnMalformedMessage::new(abort));
         } else {
-            extensions.insert(OnUpstreamError::new(abort));
+            extensions.insert(AbortIo::new(abort));
         }
     }
     let association = datagrams.and_then(|(association, connection)| {
@@ -117,10 +123,19 @@ impl<R: RecvStream, S: SendStream> Tunnel<R, S> {
     fn check_aborted(&self) -> io::Result<()> {
         match self.aborted.load(Ordering::Acquire) {
             0 => Ok(()),
-            code => Err(io::Error::other(Error::stream(
-                Code::new(code),
-                "tunnel aborted locally",
-            ))),
+            code => {
+                let code = Code::new(code);
+                // As on HTTP/2: a malformed data stream is invalid data, other aborts are local.
+                let kind = if code == Code::H3_MESSAGE_ERROR {
+                    io::ErrorKind::InvalidData
+                } else {
+                    io::ErrorKind::ConnectionAborted
+                };
+                Err(io::Error::new(
+                    kind,
+                    Error::stream(code, "tunnel aborted locally"),
+                ))
+            }
         }
     }
 
@@ -179,7 +194,14 @@ impl<R: RecvStream + Unpin, S: SendStream + Unpin> AsyncRead for Tunnel<R, S> {
                 dst.put_slice(&self.buffer.split_to(count));
                 return Poll::Ready(Ok(()));
             }
-            match ready!(self.reader.poll_event(cx)).map_err(io::Error::other)? {
+            let event = match ready!(self.reader.poll_event(cx)) {
+                // A reset without error ends the stream as a FIN would.
+                Err(error) if error.is_peer_reset() && error.code() == Code::H3_NO_ERROR => {
+                    return Poll::Ready(Ok(()));
+                }
+                event => event.map_err(tunnel_io_error)?,
+            };
+            match event {
                 Some(FrameEvent::DataChunk(bytes)) => self.buffer = bytes,
                 Some(FrameEvent::DataHeader { .. }) => (),
                 None => {
@@ -210,12 +232,12 @@ impl<R: RecvStream + Unpin, S: SendStream + Unpin> AsyncWrite for Tunnel<R, S> {
         if self.send_closed {
             return Poll::Ready(Err(io::ErrorKind::BrokenPipe.into()));
         }
-        ready!(self.flush(cx)).map_err(io::Error::other)?;
+        ready!(self.flush(cx)).map_err(tunnel_io_error)?;
         let count = src.len().min(self.reader.shared.config.read_chunk_size);
         if count != 0 {
             self.writer
                 .queue(FrameType::DATA, Bytes::copy_from_slice(&src[..count]))
-                .map_err(io::Error::other)?;
+                .map_err(tunnel_io_error)?;
             self.flush_queued(cx);
         }
         // Ownership has transferred: report acceptance before any subsequent Pending.
@@ -224,12 +246,12 @@ impl<R: RecvStream + Unpin, S: SendStream + Unpin> AsyncWrite for Tunnel<R, S> {
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         self.check_aborted()?;
-        self.flush(cx).map_err(io::Error::other)
+        self.flush(cx).map_err(tunnel_io_error)
     }
 
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         if let Some(result) = self.shutdown {
-            return Poll::Ready(result.map_err(io::Error::other));
+            return Poll::Ready(result.map_err(tunnel_io_error));
         }
         self.check_aborted()?;
         self.send_closed = true;
@@ -237,8 +259,8 @@ impl<R: RecvStream + Unpin, S: SendStream + Unpin> AsyncWrite for Tunnel<R, S> {
         if let Some(association) = &self.association {
             association.close_send();
         }
-        ready!(self.flush(cx)).map_err(io::Error::other)?;
-        ready!(self.writer.poll_finish(cx)).map_err(io::Error::other)?;
+        ready!(self.flush(cx)).map_err(tunnel_io_error)?;
+        ready!(self.writer.poll_finish(cx)).map_err(tunnel_io_error)?;
         let Self {
             writer,
             acknowledged,
@@ -260,8 +282,23 @@ impl<R: RecvStream + Unpin, S: SendStream + Unpin> AsyncWrite for Tunnel<R, S> {
             Err(error) => self.writer.reset(error.code()),
         }
         self.release_finished();
-        Poll::Ready(result.map_err(io::Error::other))
+        Poll::Ready(result.map_err(tunnel_io_error))
     }
+}
+
+/// Peer resets and stops are a `ConnectionReset` carrying their code, so a relay can reflect
+/// them (RFC 9114 §4.4); a stop without error is a `BrokenPipe`, as on HTTP/2.
+fn tunnel_io_error(error: Error) -> io::Error {
+    let kind = if error.is_peer_stop() && error.code() == Code::H3_NO_ERROR {
+        io::ErrorKind::BrokenPipe
+    } else if error.is_peer_stop() || error.is_peer_reset() {
+        io::ErrorKind::ConnectionReset
+    } else if error.is_connection_loss() {
+        io::ErrorKind::ConnectionAborted
+    } else {
+        io::ErrorKind::Other
+    };
+    io::Error::new(kind, error)
 }
 
 #[cfg(test)]
@@ -332,6 +369,42 @@ mod tests {
 
         fn finish(&mut self) -> Result<(), Error> {
             Ok(())
+        }
+        fn reset(&mut self, _: Code) {}
+        fn priority(&mut self, _: i32) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+
+    /// A receive stream the peer reset with an error.
+    struct FailedRecv(Error);
+
+    impl RecvStream for FailedRecv {
+        fn poll_chunk(
+            &mut self,
+            _: &mut Context<'_>,
+            _: usize,
+        ) -> Poll<Result<Option<Bytes>, Error>> {
+            Poll::Ready(Err(self.0))
+        }
+
+        fn stop(&mut self, _: Code) {}
+    }
+
+    /// A send stream the peer stopped with an error.
+    struct FailedSend(Error);
+
+    impl SendStream for FailedSend {
+        fn acknowledged(&self) -> impl Future<Output = Result<(), Error>> + Send + Sync + 'static {
+            std::future::ready(Err(self.0))
+        }
+
+        fn poll_chunks(&mut self, _: &mut Context<'_>, _: &mut [Bytes]) -> Poll<Result<(), Error>> {
+            Poll::Ready(Err(self.0))
+        }
+
+        fn finish(&mut self) -> Result<(), Error> {
+            Err(self.0)
         }
         fn reset(&mut self, _: Code) {}
         fn priority(&mut self, _: i32) -> Result<(), Error> {
@@ -415,6 +488,54 @@ mod tests {
                 .is_pending()
         );
         assert!(output.lock().ends_with(b"ping"));
+    }
+
+    /// A reset or stop without error ends the stream as a FIN would (a `BrokenPipe` for
+    /// writes); any other is a `ConnectionReset` carrying its code, for a relay to reflect.
+    #[test]
+    fn peer_resets_and_stops_map_by_their_code() {
+        let shared = Shared::new(Config::default(), Role::Client, Extensions::new()).unwrap();
+        let mut cx = Context::from_waker(Waker::noop());
+        for code in [
+            Code::H3_NO_ERROR,
+            Code::H3_REQUEST_CANCELLED,
+            Code::H3_CONNECT_ERROR,
+        ] {
+            shared.schedule.register(0, Priority::default()).unwrap();
+            let mut tunnel = tunnel_over(
+                FailedRecv(Error::peer_reset(code)),
+                FailedSend(Error::peer_stopped(code)),
+                shared.clone(),
+                0,
+            );
+            let mut buf = [0; 8];
+            let mut read = ReadBuf::new(&mut buf);
+            let result = Pin::new(&mut tunnel).poll_read(&mut cx, &mut read);
+            if code == Code::H3_NO_ERROR {
+                assert!(matches!(result, Poll::Ready(Ok(()))) && read.filled().is_empty());
+            } else {
+                let Poll::Ready(Err(error)) = result else {
+                    panic!("{code:?}: a reset with error must fail the read");
+                };
+                assert_eq!(error.kind(), io::ErrorKind::ConnectionReset, "{code:?}");
+                let cause = error.get_ref().unwrap().downcast_ref::<Error>().unwrap();
+                assert_eq!(cause.code(), code);
+            }
+            let Poll::Ready(Ok(_)) = Pin::new(&mut tunnel).poll_write(&mut cx, b"data") else {
+                panic!("{code:?}: the first write is only queued");
+            };
+            let Poll::Ready(Err(error)) = Pin::new(&mut tunnel).poll_flush(&mut cx) else {
+                panic!("{code:?}: a stopped stream must fail the flush");
+            };
+            let expected = if code == Code::H3_NO_ERROR {
+                io::ErrorKind::BrokenPipe
+            } else {
+                io::ErrorKind::ConnectionReset
+            };
+            assert_eq!(error.kind(), expected, "{code:?}");
+            drop(tunnel);
+            shared.schedule.release(0);
+        }
     }
 
     fn tunnel(

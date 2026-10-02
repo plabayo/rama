@@ -815,7 +815,8 @@ async fn opt_in_push_delivers_common_body_and_enforces_quota() {
 #[tokio::test]
 async fn connect_upstream_failure_resets_with_connect_error() {
     use rama_core::extensions::ExtensionsRef as _;
-    use rama_http::io::upgrade::{OnUpstreamError, handle_upgrade};
+    use rama_core::io::AbortIo;
+    use rama_http::io::upgrade::handle_upgrade;
     use tokio::io::AsyncReadExt as _;
     tokio::time::timeout(LIMIT, async {
         let pair = Pair::new(None, None).await;
@@ -838,9 +839,9 @@ async fn connect_upstream_failure_resets_with_connect_error() {
             acknowledged.await.unwrap();
             tunnel
                 .extensions()
-                .get_ref::<OnUpstreamError>()
+                .self_get_arc::<AbortIo>()
                 .unwrap()
-                .call();
+                .abort();
             drop(tunnel);
         });
         let response = client

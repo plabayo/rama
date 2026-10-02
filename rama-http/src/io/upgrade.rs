@@ -49,6 +49,7 @@ use rama_core::error::BoxError;
 use rama_core::extensions::Extension;
 use rama_core::extensions::Extensions;
 use rama_core::extensions::ExtensionsRef;
+use rama_core::io::AbortIo;
 use rama_core::io::Io;
 use rama_core::io::rewind::Rewind;
 use rama_core::telemetry::tracing::trace;
@@ -76,28 +77,6 @@ struct OpaqueGuard {
 impl fmt::Debug for OpaqueGuard {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("OpaqueGuard").finish_non_exhaustive()
-    }
-}
-
-/// Notify a CONNECT transport that its upstream I/O failed.
-/// H3 uses this to reset the tunnel with H3_CONNECT_ERROR (RFC 9114 §4.4).
-/// Custom relays should call it before dropping or gracefully closing the tunnel.
-#[derive(Clone, Extension)]
-#[extension(tags(http))]
-pub struct OnUpstreamError(Arc<dyn Fn() + Send + Sync>);
-impl OnUpstreamError {
-    /// Install transport-specific failure handling.
-    pub fn new(callback: impl Fn() + Send + Sync + 'static) -> Self {
-        Self(Arc::new(callback))
-    }
-    /// Notify the transport. Repeated calls are harmless for built-in transports.
-    pub fn call(&self) {
-        (self.0)();
-    }
-}
-impl fmt::Debug for OnUpstreamError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("OnUpstreamError").finish_non_exhaustive()
     }
 }
 
@@ -241,6 +220,10 @@ impl Upgraded {
         extensions.insert(StreamTransformed {
             by: "rama-http::Upgraded",
         });
+        // The upgraded stream aborts as the io it wraps; a fork hides the io's own store.
+        if let Some(abort) = io.extensions().self_get_arc::<AbortIo>() {
+            extensions.insert_arc(abort);
+        }
         Self {
             extensions,
             io: Rewind::new_buffered(Box::new(io), read_buf),

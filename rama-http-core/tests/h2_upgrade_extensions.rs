@@ -280,8 +280,10 @@ async fn h2_dropping_unconsumed_client_upgrade_releases_response_and_stream() {
         1,
         "response owns its queued upgrade cyclically"
     );
+    // The abandoned tunnel is cancelled (h2 resets it), which the server reads as a reset.
     let mut buf = [0; 1];
-    assert_eq!(bounded(server.read(&mut buf)).await.unwrap(), 0);
+    let error = bounded(server.read(&mut buf)).await.unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::ConnectionReset);
     // Cancelling one CONNECT must leave the multiplexed connection usable.
     _ = connect(&mut session).await;
 }

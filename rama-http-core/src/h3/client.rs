@@ -440,11 +440,10 @@ where
         }
         reader.origin = Some(request.uri().clone());
         let method = request.method().clone();
+        let extended = method == Method::CONNECT && request.extensions().contains::<Protocol>();
         // Registered before HEADERS leave, so early replies wait for the session. Only a
         // declared Extended CONNECT has datagram semantics (RFC 9297 §2).
-        let claimed = method == Method::CONNECT
-            && request.extensions().contains::<Protocol>()
-            && request.extensions().contains::<HttpDatagrams>();
+        let claimed = extended && request.extensions().contains::<HttpDatagrams>();
         let semantics = if claimed {
             Semantics::Claimed
         } else {
@@ -508,7 +507,9 @@ where
                     let (pending, upgrade) = http_upgrade::pending();
                     let datagrams =
                         association.map(|association| (association, self.connection.clone()));
-                    pending.fulfill(super::upgrade::new(reader, writer, permit, None, datagrams));
+                    pending.fulfill(super::upgrade::new(
+                        reader, writer, permit, None, datagrams, extended,
+                    ));
                     response.extensions().insert(upgrade);
                     return Ok(response.map(|()| crate::body::Incoming::empty()));
                 }

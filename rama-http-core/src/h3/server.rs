@@ -417,6 +417,7 @@ impl SendResponse {
                 self.priority_lease.permit.clone(),
                 Some(self.priority_lease),
                 datagrams,
+                extended_connect,
             ));
             return Ok(());
         }
