@@ -293,8 +293,7 @@ fn lookup_record_packet(
                 // section for RFC 2308-correct negative caching.
                 return Ok(Some(buffer));
             }
-            let errno = std::io::Error::last_os_error().raw_os_error();
-            if timed_out(h_errno, errno, &buffer, called.elapsed()) {
+            if timed_out(h_errno, &buffer, called.elapsed()) {
                 // a caching stub may hold the late answer by now
                 if let Some(left) = another_walk(state.0, deadline, names) {
                     fit_retransmits(state.0, left);
@@ -303,8 +302,9 @@ fn lookup_record_packet(
                 return Err(DnsTimeoutError::new(timeout).into());
             }
             return Err(LinuxDnsResolverError::message(format!(
-                "res_nsearch failed (h_errno={h_errno}, rcode={})",
+                "res_nsearch failed (h_errno={h_errno}, rcode={}, errno={:?})",
                 buffer[3] & 0x0f,
+                std::io::Error::last_os_error().raw_os_error(),
             ))
             .into());
         }
@@ -323,18 +323,16 @@ fn lookup_record_packet(
 }
 
 /// Whether a failed `res_nsearch` ran out of retransmits. libc reports
-/// `TRY_AGAIN` with `ETIMEDOUT` also for a SERVFAIL or REFUSED answer, whose
-/// rcode stays in `response`, and for a reply it rejects at once; only
-/// silence keeps libc waiting a second at least.
-fn timed_out(h_errno: c_int, errno: Option<c_int>, response: &[u8], waited: Duration) -> bool {
-    // libc resets the rcode, not the QR bit, before each name it asks
+/// `TRY_AGAIN` also for a SERVFAIL, NOTIMP or REFUSED answer, whose rcode
+/// stays in `response`, and for a failure it meets at once; only silence
+/// keeps libc waiting a second at least. `errno` cannot tell: a later name's
+/// answer clears the `ETIMEDOUT` of an earlier one.
+fn timed_out(h_errno: c_int, response: &[u8], waited: Duration) -> bool {
+    // another name of the walk may have left its NOERROR or NXDOMAIN here
     let error_answer = response
         .get(2..4)
-        .is_some_and(|flags| flags[0] & 0x80 != 0 && flags[1] & 0x0f != 0);
-    h_errno == ffi::TRY_AGAIN
-        && matches!(errno, Some(libc::ETIMEDOUT))
-        && !error_answer
-        && waited >= Duration::from_millis(900)
+        .is_some_and(|flags| flags[0] & 0x80 != 0 && matches!(flags[1] & 0x0f, 2 | 4 | 5));
+    h_errno == ffi::TRY_AGAIN && !error_answer && waited >= Duration::from_millis(900)
 }
 
 /// The budget per name of another walk before `deadline`, if one still fits:
@@ -1000,14 +998,20 @@ mod stub_tests {
     }
 
     #[test]
-    fn a_timeout_after_a_search_answer_is_still_a_timeout() {
-        // `stalehdr.corp.test` answers NXDOMAIN, then `stalehdr` gets silence
-        let queries = serve("stalehdr", Some(c"corp.test"), 1, Reply::SearchOnly);
-        let started = Instant::now();
-        let err = lookup("stalehdr", Duration::from_millis(2400)).expect_err("silence");
-        assert!(err.downcast_ref::<DnsTimeoutError>().is_some(), "{err}");
-        assert!(queries.load(Ordering::SeqCst) >= 2, "{queries:?}");
-        assert!(started.elapsed() < Duration::from_millis(2900));
+    fn a_timeout_next_to_a_search_answer_is_still_a_timeout() {
+        // a single label asks `corp.test` first, a dotted name asks it last;
+        // under `corp.test` comes NXDOMAIN, the name as is gets silence
+        for name in ["stalehdr", "stalehdr.stub"] {
+            let queries = serve(name, Some(c"corp.test"), 1, Reply::SearchOnly);
+            let started = Instant::now();
+            let err = lookup(name, Duration::from_millis(2400)).expect_err("silence");
+            assert!(
+                err.downcast_ref::<DnsTimeoutError>().is_some(),
+                "{name}: {err}"
+            );
+            assert!(queries.load(Ordering::SeqCst) >= 2, "{name}: {queries:?}");
+            assert!(started.elapsed() < Duration::from_millis(2900), "{name}");
+        }
     }
 
     #[test]
@@ -1107,32 +1111,21 @@ mod response_buffer_tests {
     fn only_running_out_of_retransmits_is_a_timeout() {
         let silence = [0; DNS_HEADER_SIZE];
         let waited = Duration::from_secs(1);
-        let timeout = |h_errno, errno, response: &[u8]| timed_out(h_errno, errno, response, waited);
-        assert!(timeout(ffi::TRY_AGAIN, Some(libc::ETIMEDOUT), &silence));
-        // no nameserver reachable at all
-        assert!(!timeout(ffi::TRY_AGAIN, Some(0), &silence));
-        assert!(!timeout(ffi::TRY_AGAIN, Some(libc::ECONNREFUSED), &silence));
-        assert!(!timeout(ffi::TRY_AGAIN, None, &silence));
-        assert!(!timeout(
-            ffi::HOST_NOT_FOUND,
-            Some(libc::ETIMEDOUT),
-            &silence
-        ));
-        // a SERVFAIL answer reads as a timeout to libc
+        assert!(timed_out(ffi::TRY_AGAIN, &silence, waited));
+        assert!(!timed_out(ffi::HOST_NOT_FOUND, &silence, waited));
+        // no nameserver reachable, or a reply rejected: libc gives up at once
+        assert!(!timed_out(ffi::TRY_AGAIN, &silence, Duration::ZERO));
+        // a SERVFAIL, NOTIMP or REFUSED answer reads as a timeout to libc
         let mut answer = silence;
-        answer[2..4].copy_from_slice(&[0x81, 0x82]);
-        assert!(!timeout(ffi::TRY_AGAIN, Some(libc::ETIMEDOUT), &answer));
-        // what an earlier name's answer leaves once libc resets the rcode
-        answer[3] = 0x80;
-        assert!(timeout(ffi::TRY_AGAIN, Some(libc::ETIMEDOUT), &answer));
-        // a reply rejected at once is no silence
-        let at_once = timed_out(
-            ffi::TRY_AGAIN,
-            Some(libc::ETIMEDOUT),
-            &silence,
-            Duration::ZERO,
-        );
-        assert!(!at_once);
+        for rcode in [0x82, 0x84, 0x85] {
+            answer[2..4].copy_from_slice(&[0x81, rcode]);
+            assert!(!timed_out(ffi::TRY_AGAIN, &answer, waited), "{rcode:#x}");
+        }
+        // what another name of the walk leaves: libc's reset rcode, or NXDOMAIN
+        for rcode in [0x80, 0x83] {
+            answer[3] = rcode;
+            assert!(timed_out(ffi::TRY_AGAIN, &answer, waited), "{rcode:#x}");
+        }
     }
 
     #[test]
