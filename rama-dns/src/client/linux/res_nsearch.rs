@@ -243,9 +243,11 @@ fn lookup_record_packet(
         return Err(LinuxDnsResolverError::message("res_ninit failed").into());
     }
     // every later access goes through the guard, so its drop never aliases
-    let state = ResStateGuard(&mut state);
+    let nscount = state.nscount;
+    let mut state = ResStateGuard(&mut state, nscount);
     #[cfg(test)]
     stub_tests::use_stub(state.0, domain.as_str());
+    state.1 = state.0.nscount;
     // TCP is asked here, unlike by libc within the deadline: for a truncated
     // answer, and for every name with `use-vc`
     let tries = walk::Tries {
@@ -261,7 +263,10 @@ fn lookup_record_packet(
     let mut outcomes = walk.outcomes();
     loop {
         let at = walk.run(&mut outcomes, deadline, |name, budget| {
-            walk::ask(state.0, tries, name, rrtype, max_response_size, budget)
+            let asked = walk::ask(state.0, tries, name, rrtype, max_response_size, budget);
+            // a short budget asks fewer nameservers, the next name all again
+            state.0.nscount = tries.nscount;
+            asked
         });
         if matches!(outcomes[at], Some(Asked::Timeout)) {
             // a caching stub may hold a late answer by now
@@ -371,10 +376,13 @@ fn grow_response_buffer(
     Ok(true)
 }
 
-struct ResStateGuard<'a>(&'a mut ffi::ResState);
+/// The state and its nameserver count: a lookup may ask fewer nameservers,
+/// but libc frees its copies of only those counted when it closes.
+struct ResStateGuard<'a>(&'a mut ffi::ResState, c_int);
 
 impl Drop for ResStateGuard<'_> {
     fn drop(&mut self) {
+        self.0.nscount = self.1;
         // SAFETY: the state was initialized by `res_ninit` and is closed once.
         unsafe {
             ffi::res_nclose(self.0);
@@ -1264,7 +1272,7 @@ mod response_buffer_tests {
     use std::{mem, time::Duration};
 
     use super::{
-        DNS_HEADER_SIZE, clear_errno, ffi, fit_retransmits, grow_response_buffer,
+        DNS_HEADER_SIZE, ResStateGuard, clear_errno, ffi, fit_retransmits, grow_response_buffer,
         response_buffer_limit, try_secs, whole_secs,
     };
 
@@ -1317,6 +1325,20 @@ mod response_buffer_tests {
         // the budget a 2s or 5s timeout leaves once the call starts
         assert_eq!(fitted(5, 2, 1, Duration::from_millis(1990)), (1, 2, 2));
         assert_eq!(fitted(1, 5, 1, Duration::from_millis(4980)), (1, 5, 5));
+    }
+
+    #[test]
+    fn closing_counts_every_nameserver_again() {
+        // SAFETY: `__res_state` is plain old data; zeroed is a valid value.
+        let mut state: ffi::ResState = unsafe { mem::zeroed() };
+        // SAFETY: `state` points to writable resolver context storage.
+        assert_eq!(unsafe { ffi::res_ninit(&mut state) }, 0);
+        let configured = state.nscount;
+        let guard = ResStateGuard(&mut state, configured);
+        // as a short budget leaves it
+        guard.0.nscount = 0;
+        drop(guard);
+        assert_eq!(state.nscount, configured);
     }
 
     #[test]

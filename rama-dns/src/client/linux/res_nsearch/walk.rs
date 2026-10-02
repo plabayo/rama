@@ -341,10 +341,19 @@ fn parse_search_list(localdomain: Option<&[u8]>, conf: &[u8]) -> Vec<Box<[u8]>> 
             .split(|&byte| byte == b'\n')
             .next()
             .unwrap_or_default();
-        return words(line);
+        // glibc keeps the first word even when empty: the root
+        let first = line
+            .split(|&byte| matches!(byte, b' ' | b'\t'))
+            .next()
+            .unwrap_or_default();
+        let mut list = vec![Box::from(first)];
+        list.extend(words(line).into_iter().skip(usize::from(!first.is_empty())));
+        return list;
     }
     let mut list = Vec::new();
     for line in conf.split(|&byte| byte == b'\n') {
+        // libc's string functions end the line at a NUL
+        let line = until_nul(line);
         if let Some(rest) = keyword(line, b"domain") {
             if let Some(domain) = words(rest).into_iter().next() {
                 list = vec![domain];
@@ -357,6 +366,10 @@ fn parse_search_list(localdomain: Option<&[u8]>, conf: &[u8]) -> Vec<Box<[u8]>> 
         }
     }
     list
+}
+
+fn until_nul(line: &[u8]) -> &[u8] {
+    line.split(|&byte| byte == 0).next().unwrap_or_default()
 }
 
 /// What follows `name` in `line`, glibc's `MATCH`: the keyword, then a blank.
@@ -391,7 +404,8 @@ fn alias_in(mut aliases: impl BufRead, name: &str) -> Option<CString> {
         if read == 0 {
             return None;
         }
-        // a line without whitespace ends the file
+        // a line without whitespace before a NUL ends the file
+        let line = until_nul(&line);
         let end = line.iter().position(space)?;
         if !trim_root(&line[..end]).eq_ignore_ascii_case(trim_root(name.as_bytes())) {
             continue;
@@ -960,6 +974,16 @@ mod tests {
             ["a.test"]
         );
         assert!(read(None, b"nameserver ::1\n").is_empty());
+        // a NUL ends a line, as it ends a C string
+        assert_eq!(
+            read(None, b"search s1.test s2.test\0junk s3.test\n"),
+            ["s1.test", "s2.test"]
+        );
+        // a leading blank in LOCALDOMAIN puts the root first
+        assert_eq!(
+            read(Some(b" s1.test s2.test"), b""),
+            ["", "s1.test", "s2.test"]
+        );
         // LOCALDOMAIN overrides the file
         assert_eq!(
             read(Some(b"env.test\tother.test\nignored"), conf),
@@ -1165,6 +1189,7 @@ mod tests {
         let cut: &[u8] = b"intranet \nintranet real.example\n";
         assert_eq!(alias_in(cut, "intranet"), None);
         assert_eq!(alias_in(&b"nowhitespace"[..], "intranet"), None);
+        assert_eq!(alias_in(&b"junk\0 \nq real.example\n"[..], "q"), None);
         // like `fgets`, an endless file ends at its first part without whitespace
         assert_eq!(
             alias_in(io::BufReader::new(io::repeat(0)), "intranet"),
