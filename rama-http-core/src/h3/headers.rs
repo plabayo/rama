@@ -1450,8 +1450,14 @@ mod tests {
             .iter()
             .find(|field| field.name == ":authority")
             .unwrap();
-        // On the wire as its IDNA form, which reads back as the same target.
-        assert_eq!(&authority.value[..], b"xn--bcher-kva.example");
+        // Sent as its IDNA form when rama-net has `idna`, else as received; both read back as
+        // the same target.
+        assert!(
+            [&b"xn--bcher-kva.example"[..], "bücher.example".as_bytes()]
+                .contains(&&authority.value[..]),
+            "{:?}",
+            authority.value
+        );
         assert_eq!(request(sent).unwrap().uri(), h3.uri());
 
         // An authority without a host names nothing a Host could carry, on either version.
