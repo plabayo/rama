@@ -43,7 +43,7 @@ use rama_utils::{
 
 use super::{
     in_flight::{self, InFlight, Outcome},
-    limit::{Limits, LookupLimit},
+    limit::{DnsTimeoutError, Limits, LookupLimit},
     resolver::{
         DnsAddressResolver, DnsCnameResolver, DnsResolver, DnsServiceBindingResolver,
         DnsTxtResolver,
@@ -703,9 +703,20 @@ where
             .await;
         let mut items = std::pin::pin!(in_flight::outcome_stream(outcome));
         while let Some(item) = items.next().await {
-            yielder.yield_item(item).await;
+            yielder
+                .yield_item(item.map_err(|err| configured_timeout(err, timeout)))
+                .await;
         }
     })
+}
+
+/// A timeout reports the configured budget, whichever attempt ran out of it.
+fn configured_timeout(err: BoxError, timeout: Duration) -> BoxError {
+    if err.downcast_ref::<DnsTimeoutError>().is_some() {
+        DnsTimeoutError::new(timeout).into()
+    } else {
+        err
+    }
 }
 
 /// The uncached half of [`lookup_cached_stream`], shared by coalesced callers.
@@ -1419,6 +1430,32 @@ mod tests {
             .await;
         assert_eq!(values, [records[0].clone()]);
         assert!(zero_ttl_cache.get_txt(&domain).is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn timeouts_report_the_configured_budget() {
+        // a native fallback after `Busy` runs out of what varlink left it
+        let fallback = stream::iter([Err(DnsTimeoutError::new(Duration::from_secs(1)).into())]);
+        let items: Vec<_> = cached_ipv4_stream(test_domain(), test_cache(), fallback)
+            .collect()
+            .await;
+        assert!(
+            matches!(items.as_slice(), [Err(err)] if err
+                .downcast_ref::<DnsTimeoutError>()
+                .is_some_and(|err| err.timeout() == Duration::from_secs(5))),
+            "{items:?}"
+        );
+
+        // callers that stop waiting on a lookup with two attempts' budget
+        let items: Vec<_> = cached_ipv4_stream(test_domain(), test_cache(), stream::pending())
+            .collect()
+            .await;
+        assert!(
+            matches!(items.as_slice(), [Err(err)] if err
+                .downcast_ref::<DnsTimeoutError>()
+                .is_some_and(|err| err.timeout() == Duration::from_secs(5))),
+            "{items:?}"
+        );
     }
 
     #[tokio::test]

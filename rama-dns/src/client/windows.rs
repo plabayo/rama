@@ -186,7 +186,7 @@ impl WindowsDnsResolver {
         &self,
         domain: Domain,
         rrtype: u16,
-        lookup: impl FnOnce(Domain, Duration) -> S + Send + 'static,
+        lookup: impl FnOnce(Domain, Instant, Duration) -> S + Send + 'static,
     ) -> impl Stream<Item = Result<T, BoxError>> + Send + '_
     where
         T: Clone + Send + Sync + 'static,
@@ -202,18 +202,22 @@ impl WindowsDnsResolver {
             self.in_flight.clone(),
             key,
             timeout,
-            move || limited_stream(limit, timeout, move |budget| lookup(domain, budget)),
+            move || {
+                limited_stream(limit, timeout, move |deadline| {
+                    lookup(domain, deadline, timeout)
+                })
+            },
         ))
     }
 }
 
 /// `lookup` once `limit` has a slot for it, holding the slot until it ends.
 ///
-/// `lookup` gets the budget left of `timeout` once the slot is taken.
-pub(crate) fn limited_stream<T, S>(
+/// `lookup` gets the deadline `timeout` sets for the whole lookup.
+fn limited_stream<T, S>(
     limit: LookupLimit,
     timeout: Duration,
-    lookup: impl FnOnce(Duration) -> S + Send + 'static,
+    lookup: impl FnOnce(Instant) -> S + Send + 'static,
 ) -> impl Stream<Item = Result<T, BoxError>> + Send
 where
     T: Send + 'static,
@@ -227,8 +231,7 @@ where
                 .await;
             return;
         };
-        let budget = deadline.saturating_duration_since(Instant::now());
-        let mut items = pin!(lookup(budget));
+        let mut items = pin!(lookup(deadline));
         while let Some(item) = items.next().await {
             yielder.yield_item(item).await;
         }
@@ -243,8 +246,8 @@ impl DnsAddressResolver for WindowsDnsResolver {
         &self,
         domain: Domain,
     ) -> impl Stream<Item = Result<Ipv4Addr, Self::Error>> + Send + '_ {
-        self.coalesced(domain, ffi::DNS_TYPE_A, |domain, timeout| {
-            query_record_stream(domain, timeout, ffi::DNS_TYPE_A, parse_a_records)
+        self.coalesced(domain, ffi::DNS_TYPE_A, |domain, deadline, timeout| {
+            query_record_stream(domain, deadline, timeout, ffi::DNS_TYPE_A, parse_a_records)
         })
     }
 
@@ -252,8 +255,14 @@ impl DnsAddressResolver for WindowsDnsResolver {
         &self,
         domain: Domain,
     ) -> impl Stream<Item = Result<Ipv6Addr, Self::Error>> + Send + '_ {
-        self.coalesced(domain, ffi::DNS_TYPE_AAAA, |domain, timeout| {
-            query_record_stream(domain, timeout, ffi::DNS_TYPE_AAAA, parse_aaaa_records)
+        self.coalesced(domain, ffi::DNS_TYPE_AAAA, |domain, deadline, timeout| {
+            query_record_stream(
+                domain,
+                deadline,
+                timeout,
+                ffi::DNS_TYPE_AAAA,
+                parse_aaaa_records,
+            )
         })
     }
 }
@@ -265,8 +274,14 @@ impl DnsTxtResolver for WindowsDnsResolver {
         &self,
         domain: Domain,
     ) -> impl Stream<Item = Result<Txt, Self::Error>> + Send + '_ {
-        self.coalesced(domain, ffi::DNS_TYPE_TEXT, |domain, timeout| {
-            query_record_stream(domain, timeout, ffi::DNS_TYPE_TEXT, parse_txt_records)
+        self.coalesced(domain, ffi::DNS_TYPE_TEXT, |domain, deadline, timeout| {
+            query_record_stream(
+                domain,
+                deadline,
+                timeout,
+                ffi::DNS_TYPE_TEXT,
+                parse_txt_records,
+            )
         })
     }
 }
@@ -278,8 +293,14 @@ impl DnsCnameResolver for WindowsDnsResolver {
         &self,
         domain: Domain,
     ) -> impl Stream<Item = Result<Name, Self::Error>> + Send + '_ {
-        self.coalesced(domain, ffi::DNS_TYPE_CNAME, |domain, timeout| {
-            query_record_stream(domain, timeout, ffi::DNS_TYPE_CNAME, parse_cname_records)
+        self.coalesced(domain, ffi::DNS_TYPE_CNAME, |domain, deadline, timeout| {
+            query_record_stream(
+                domain,
+                deadline,
+                timeout,
+                ffi::DNS_TYPE_CNAME,
+                parse_cname_records,
+            )
         })
     }
 }
@@ -291,18 +312,26 @@ impl DnsServiceBindingResolver for WindowsDnsResolver {
         &self,
         domain: Domain,
     ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
-        self.coalesced(domain, RecordType::SVCB.into(), |domain, timeout| {
-            query_service_binding_stream(domain, timeout, RecordType::SVCB)
-        })
+        self.coalesced(
+            domain,
+            RecordType::SVCB.into(),
+            |domain, deadline, timeout| {
+                query_service_binding_stream(domain, deadline, timeout, RecordType::SVCB)
+            },
+        )
     }
 
     fn lookup_https(
         &self,
         domain: Domain,
     ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
-        self.coalesced(domain, RecordType::HTTPS.into(), |domain, timeout| {
-            query_service_binding_stream(domain, timeout, RecordType::HTTPS)
-        })
+        self.coalesced(
+            domain,
+            RecordType::HTTPS.into(),
+            |domain, deadline, timeout| {
+                query_service_binding_stream(domain, deadline, timeout, RecordType::HTTPS)
+            },
+        )
     }
 }
 
@@ -310,20 +339,29 @@ impl DnsResolver for WindowsDnsResolver {}
 
 fn query_service_binding_stream(
     domain: Domain,
+    deadline: Instant,
     timeout: Duration,
     record_type: RecordType,
 ) -> impl Stream<Item = Result<ServiceBinding, BoxError>> + Send {
-    query_service_binding_stream_with_backend(domain, timeout, record_type, DnsBackend::System)
+    query_service_binding_stream_with_backend(
+        domain,
+        deadline,
+        timeout,
+        record_type,
+        DnsBackend::System,
+    )
 }
 
 fn query_service_binding_stream_with_backend(
     domain: Domain,
+    deadline: Instant,
     timeout: Duration,
     record_type: RecordType,
     backend: DnsBackend,
 ) -> impl Stream<Item = Result<ServiceBinding, BoxError>> + Send {
     query_record_stream_with_backend(
         domain,
+        deadline,
         timeout,
         record_type.into(),
         move |records, emit| parse_service_binding_records(records, record_type, emit),
@@ -333,6 +371,7 @@ fn query_service_binding_stream_with_backend(
 
 fn query_record_stream<T, P>(
     domain: Domain,
+    deadline: Instant,
     timeout: Duration,
     rrtype: u16,
     parser: P,
@@ -341,11 +380,20 @@ where
     T: fmt::Debug + Send + 'static,
     P: Fn(*mut ffi::DnsRecord, &mut dyn FnMut(T)) -> Result<(), BoxError> + Send + Sync + 'static,
 {
-    query_record_stream_with_backend(domain, timeout, rrtype, parser, DnsBackend::System)
+    query_record_stream_with_backend(
+        domain,
+        deadline,
+        timeout,
+        rrtype,
+        parser,
+        DnsBackend::System,
+    )
 }
 
+/// `timeout` is the caller's whole budget, reported on expiry of `deadline`.
 fn query_record_stream_with_backend<T, P>(
     domain: Domain,
+    deadline: Instant,
     timeout: Duration,
     rrtype: u16,
     parser: P,
@@ -387,8 +435,6 @@ where
             yielder.yield_item(Err(err)).await;
             return;
         }
-
-        let deadline = Instant::now() + timeout;
 
         loop {
             #[cfg(test)]
@@ -1868,6 +1914,7 @@ mod tests {
             let fake = Arc::new(FakeDnsBackend::new());
             let stream = query_service_binding_stream_with_backend(
                 Domain::example(),
+                deadline_after(Duration::from_secs(30)),
                 Duration::from_secs(30),
                 record_type,
                 DnsBackend::Fake(fake.clone()),
@@ -1938,10 +1985,11 @@ mod tests {
     /// A lookup that answers `127.0.0.1` once `gate` opens.
     fn gated_lookup(
         gate: &Arc<Notify>,
-    ) -> impl FnOnce(Domain, Duration) -> BoxStream<'static, Result<Ipv4Addr, BoxError>> + Send + 'static
-    {
+    ) -> impl FnOnce(Domain, Instant, Duration) -> BoxStream<'static, Result<Ipv4Addr, BoxError>>
+    + Send
+    + 'static {
         let gate = gate.clone();
-        move |_domain, _timeout| {
+        move |_domain, _deadline, _timeout| {
             stream::once(async move {
                 gate.notified().await;
                 Ok(Ipv4Addr::LOCALHOST)
@@ -1992,9 +2040,9 @@ mod tests {
             let (gate, started) = (gate.clone(), started.clone());
             let domain = Domain::try_from(format!("n{i}.burst.test")).expect("domain");
             resolver
-                .coalesced(domain, ffi::DNS_TYPE_A, move |domain, timeout| {
+                .coalesced(domain, ffi::DNS_TYPE_A, move |domain, deadline, timeout| {
                     started.fetch_add(1, Ordering::Relaxed);
-                    gated_lookup(&gate)(domain, timeout)
+                    gated_lookup(&gate)(domain, deadline, timeout)
                 })
                 .collect::<Vec<_>>()
         });
@@ -2090,6 +2138,7 @@ mod tests {
             move || {
                 query_record_stream_with_backend(
                     Domain::example(),
+                    deadline_after(Duration::from_secs(30)),
                     Duration::from_secs(30),
                     ffi::DNS_TYPE_A,
                     parse_a_records,
@@ -2126,6 +2175,7 @@ mod tests {
         let fake = Arc::new(FakeDnsBackend::new());
         let stream = query_record_stream_with_backend(
             Domain::example(),
+            deadline_after(Duration::from_secs(30)),
             Duration::from_secs(30),
             ffi::DNS_TYPE_A,
             parse_a_records,
@@ -2168,9 +2218,11 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn timed_out_query_parks_until_cancel_callback_fires() {
         let fake = Arc::new(FakeDnsBackend::new_deferring_cancel());
+        // a lookup that queued for its slot: little time left of a 5s budget
         let stream = query_record_stream_with_backend(
             Domain::example(),
-            Duration::from_millis(10),
+            deadline_after(Duration::from_millis(10)),
+            Duration::from_secs(5),
             ffi::DNS_TYPE_A,
             parse_a_records,
             DnsBackend::Fake(fake.clone()),
@@ -2198,8 +2250,10 @@ mod tests {
             .expect("stream did not finish after the cancel callback")
             .expect("consumer task panicked");
         assert!(
-            items.len() == 1 && items[0].is_err(),
-            "expected a single timeout error, got: {items:?}",
+            matches!(items.as_slice(), [Err(err)] if err
+                .downcast_ref::<DnsTimeoutError>()
+                .is_some_and(|err| err.timeout() == Duration::from_secs(5))),
+            "expected a single timeout error reporting the whole budget, got: {items:?}",
         );
 
         let iterations = fake.wait_loop_iterations.load(Ordering::SeqCst);
