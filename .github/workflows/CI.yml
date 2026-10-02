@@ -1015,6 +1015,8 @@ jobs:
       # the getaddrinfo resolver backend only compiles for musl
       - name: Clippy rama-dns
         run: cargo clippy -p rama-dns --all-targets --target ${{ matrix.target }} -- -D warnings
+      - name: Test rama-dns
+        run: cargo test -p rama-dns --lib --target ${{ matrix.target }}
       - name: Install Zig
         if: contains(matrix.target, 'unknown-linux-musl')
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
