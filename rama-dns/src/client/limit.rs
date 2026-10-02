@@ -95,10 +95,7 @@ impl LookupLimit {
                 .ok()?
         };
         let burst = self.burst.acquire(deadline).await?;
-        Some(Slot {
-            _call: call,
-            _burst: burst,
-        })
+        Some(Slot { _call: call, burst })
     }
 
     /// Run a blocking `lookup` once a slot is free, or `None` when none frees
@@ -121,8 +118,11 @@ impl LookupLimit {
         let budget = deadline.saturating_duration_since(Instant::now());
         let queued = std::time::Instant::now();
         Some(tokio::task::spawn_blocking(move || {
-            let _slot = slot;
-            lookup(budget.saturating_sub(queued.elapsed()))
+            let mut slot = slot;
+            let answer = lookup(budget.saturating_sub(queued.elapsed()));
+            // the call returned: libc is done with its query either way
+            slot.answered();
+            answer
         }))
     }
 }
@@ -132,7 +132,15 @@ impl LookupLimit {
 #[derive(Debug)]
 pub(crate) struct Slot {
     _call: OwnedSemaphorePermit,
-    _burst: BurstSlot,
+    burst: BurstSlot,
+}
+
+impl Slot {
+    /// The lookup's query is done, so its burst place frees up now; a
+    /// lookup dropped before this keeps it until the window has passed.
+    pub(crate) fn answered(&mut self) {
+        self.burst.answered = true;
+    }
 }
 
 /// At most `max` queries started within the last `window` and unanswered.
@@ -226,6 +234,7 @@ impl Burst {
         Ok(BurstSlot {
             burst: self.clone(),
             id,
+            answered: false,
         })
     }
 }
@@ -243,10 +252,15 @@ impl Drop for Queued<'_> {
 struct BurstSlot {
     burst: Arc<Burst>,
     id: u64,
+    answered: bool,
 }
 
 impl Drop for BurstSlot {
     fn drop(&mut self) {
+        // its query may still be in the stub's queue
+        if !self.answered {
+            return;
+        }
         let mut state = self.burst.state.lock();
         // an aged query already gave its place up
         if let Ok(index) = state.young.binary_search_by_key(&self.id, |&(id, _)| id) {
@@ -308,6 +322,11 @@ mod tests {
         Instant::now() + Duration::from_secs(secs)
     }
 
+    /// The lookup holding `slot` got its answer.
+    fn answer(mut slot: Slot) {
+        slot.answered();
+    }
+
     /// At most `max` calls, with a burst limit that never gets in the way.
     fn calls(max: usize) -> LookupLimit {
         LookupLimit::new(Limits {
@@ -346,12 +365,22 @@ mod tests {
         let next = lookups.acquire(deadline_in(5));
         let answer = async {
             tokio::time::sleep(Duration::from_millis(3)).await;
-            drop(answered);
+            answer(answered);
         };
         let (next, ()) = tokio::join!(next, answer);
 
         assert!(next.is_some());
         assert_eq!(started.elapsed(), Duration::from_millis(3));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_abandoned_query_keeps_its_place_for_the_window() {
+        let lookups = burst(1, Duration::from_millis(10));
+        let started = Instant::now();
+        // dropped unanswered: its query may still be in the stub's queue
+        drop(lookups.acquire(deadline_in(5)).await.expect("slot"));
+        let _next = lookups.acquire(deadline_in(5)).await.expect("slot");
+        assert_eq!(started.elapsed(), Duration::from_millis(10));
     }
 
     #[tokio::test(start_paused = true)]
@@ -392,16 +421,16 @@ mod tests {
         // one query stays unanswered while many others come and go
         let held = lookups.acquire(deadline_in(5)).await.expect("slot");
         for _ in 0..10_000 {
-            drop(lookups.acquire(deadline_in(5)).await.expect("slot"));
+            answer(lookups.acquire(deadline_in(5)).await.expect("slot"));
         }
         assert_eq!(lookups.burst.state.lock().young.len(), 1);
-        drop(held);
+        answer(held);
         assert!(lookups.burst.state.lock().young.is_empty());
 
         // an unanswered query is forgotten once it ages
         let aging = lookups.acquire(deadline_in(5)).await.expect("slot");
         tokio::time::sleep(Duration::from_hours(1)).await;
-        drop(lookups.acquire(deadline_in(5)).await.expect("slot"));
+        answer(lookups.acquire(deadline_in(5)).await.expect("slot"));
         assert!(lookups.burst.state.lock().young.is_empty());
         drop(aging);
     }
@@ -417,7 +446,7 @@ mod tests {
         let mut first = pin!(lookups.acquire(deadline_in(5)));
         assert!(first.as_mut().now_or_never().is_none(), "first queues");
 
-        drop(held);
+        answer(held);
         // a newcomer polled before the queued caller does not get its place
         let mut newcomer = pin!(lookups.acquire(deadline_in(5)));
         assert!(
@@ -426,7 +455,7 @@ mod tests {
         );
         let first = first.await.expect("the first in line gets the place");
         assert!(newcomer.as_mut().now_or_never().is_none());
-        drop(first);
+        answer(first);
         assert!(newcomer.await.is_some());
     }
 

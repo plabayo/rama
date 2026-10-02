@@ -215,7 +215,7 @@ where
 {
     stream_fn(async move |mut yielder| {
         let deadline = deadline_after(timeout);
-        let Some(_slot) = limit.acquire(deadline).await else {
+        let Some(mut slot) = limit.acquire(deadline).await else {
             yielder
                 .yield_item(Err(DnsTimeoutError::new(timeout).into()))
                 .await;
@@ -226,6 +226,7 @@ where
         while let Some(item) = items.next().await {
             yielder.yield_item(item).await;
         }
+        slot.answered();
     })
 }
 
