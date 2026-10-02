@@ -421,7 +421,7 @@ where
 {
     let transport = transport.into_http_transport();
     let plaintext_origin = input
-        .protocol()
+        .target_protocol()
         .is_some_and(|protocol| protocol.is_http_based() && !protocol.is_secure());
     // A secure (or unknown) origin needs rules from its own TLS connector;
     // proxy-leg rules alone cannot establish whether origin TLS can be reused.
@@ -533,7 +533,7 @@ where
         StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
 {
     let extensions = io.extensions().clone();
-    let server_host = input.host();
+    let server_host = input.target_authority().map(|authority| authority.host);
     let server_address = server_host
         .as_ref()
         .map(|host| host.to_str())

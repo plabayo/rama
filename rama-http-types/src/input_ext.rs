@@ -1,3 +1,26 @@
+//! Request authority and protocol resolution, centralized for every HTTP version.
+//!
+//! Two views, as for [`HttpVersionInputExt`] and [`TargetHttpVersionInputExt`]:
+//!
+//! - **contextual** ([`AuthorityInputExt::authority`], [`ProtocolInputExt::protocol`]): what the
+//!   end client asked for, for routing, matching, telemetry and URL generation. A
+//!   [`Forwarded`] extension comes first: it exists only when a layer the service chose put
+//!   it there (such as one trusting a proxy's `Forwarded` header). Then the target view.
+//! - **target** ([`AuthorityInputExt::target_authority`], [`ProtocolInputExt::target_protocol`]):
+//!   the request's own target, for where this hop connects, its TLS SNI, proxy selection,
+//!   pooling and the `Host` it sends. It never reads [`Forwarded`], which describes an earlier
+//!   hop: a reverse proxy that rewrote the URI to its backend must connect to the backend.
+//!
+//! The target authority is the URI authority (absolute-form, or `:authority` on HTTP/2 and
+//! HTTP/3), then `Host`, then TLS SNI. The URI authority wins over `Host` (RFC 9112 §3.2.2,
+//! RFC 9113 §8.3.1); a `Host` may differ from SNI on a reused connection (RFC 9113 §9.1.1,
+//! RFC 9114 §3.3), so SNI only names a request that names no authority at all, such as
+//! HTTP/1.0 without `Host` (RFC 9112 §3.3). nginx, Envoy and Go route the same way; a
+//! policy that requires SNI and `Host` to agree answers 421 (RFC 9110 §15.5.20).
+//!
+//! Only explicit ports are reported; [`AuthorityInputExt::authority_with_default_port`] and
+//! the connector target add the protocol's default.
+
 use crate::request::Parts;
 use crate::{HttpRequestParts, Request};
 use crate::{Uri, Version};
@@ -40,62 +63,42 @@ fn try_get_sni_from_secure_transport(_: &SecureTransport) -> Option<Domain> {
     None
 }
 
-/// Resolve the routing authority of `parts`, walking the
-/// uri → TLS SNI → `Forwarded` → `Host`-header fallback chain.
-/// Asterisk targets prefer a valid explicit `Host` header over TLS SNI and `Forwarded`.
-/// `None` when none of them yields a host.
-pub(crate) fn authority_from_http_parts(parts: &impl HttpRequestParts) -> Option<HostWithOptPort> {
+/// The request's own target: URI authority, then `Host`, then TLS SNI.
+fn target_authority_from_http_parts(parts: &impl HttpRequestParts) -> Option<HostWithOptPort> {
     let uri = parts.uri();
-    // An asterisk target has no URI authority. Preserve its explicit HTTP
-    // authority when forwarding instead of substituting ingress SNI/Forwarded.
-    if uri.is_asterisk()
-        && let Some(authority) = parts
-            .headers()
-            .get(crate::header::HOST)
-            .and_then(|value| HostWithOptPort::try_from(value.as_bytes()).ok())
-    {
-        return Some(authority);
+    if let Some(host) = uri.host() {
+        let host: Host = host.into_owned();
+        tracing::trace!(url.full = %uri, "request target: host {host} from the uri");
+        return Some(match uri.port_u16() {
+            Some(port) => (host, port).into(),
+            None => host.into(),
+        });
     }
-
-    let protocol = protocol_from_uri_or_extensions(parts.extensions(), uri);
-    let default_port = uri
-        .port_u16()
-        .unwrap_or_else(|| protocol.default_port().unwrap_or(80));
-
-    uri.host()
-        .map(|h| {
-            let h: Host = h.into_owned();
-            tracing::trace!(url.full = %uri, "request context: detected host {h} from (abs) uri");
-            (h, default_port).into()
-        })
+    parts
+        .headers()
+        .get(crate::header::HOST)
+        .and_then(|host| HostWithOptPort::try_from(host.as_bytes()).ok())
         .or_else(|| {
-            parts
+            let host = parts
                 .extensions()
                 .get_ref()
-                .and_then(try_get_sni_from_secure_transport)
-                .map(|host| {
-                    tracing::trace!(url.full = %uri, "request context: detected host {host} from SNI");
-                    (host, default_port).into()
-                })
+                .and_then(try_get_sni_from_secure_transport)?;
+            tracing::trace!(url.full = %uri, "request target: host {host} from TLS SNI");
+            Some(Host::from(host).into())
         })
-        .or_else(|| {
-            parts.extensions().get_ref::<Forwarded>().and_then(|f| {
-                f.client_host().map(|fauth| {
-                    let HostWithOptPort { host, port } = fauth.0.clone();
-                    let port = port.as_u16().unwrap_or(default_port);
-                    tracing::trace!(url.full = %uri, "request context: detected host {host} from forwarded info");
-                    (host, port).into()
-                })
-            })
+}
+
+/// What the end client asked for: a [`Forwarded`] host, then the request's own target.
+pub(crate) fn authority_from_http_parts(parts: &impl HttpRequestParts) -> Option<HostWithOptPort> {
+    parts
+        .extensions()
+        .get_ref::<Forwarded>()
+        .and_then(Forwarded::client_host)
+        .map(|forwarded| {
+            tracing::trace!("request authority: {} from forwarded info", forwarded.0);
+            forwarded.0.clone()
         })
-        .or_else(|| {
-            parts
-                .headers()
-                .get(crate::header::HOST)
-                .and_then(|host_header_value| {
-                    HostWithOptPort::try_from(host_header_value.as_bytes()).ok()
-                })
-        })
+        .or_else(|| target_authority_from_http_parts(parts))
 }
 
 /// Resolve the HTTP [`Version`] from `parts`: the `Forwarded` client version
@@ -116,45 +119,58 @@ pub(crate) fn http_version_from_http_parts(parts: &impl HttpRequestParts) -> Ver
         .unwrap_or_else(|| parts.version())
 }
 
-/// Resolve the application [`Protocol`] (scheme) of an HTTP request from its
-/// [`Uri`] and [`Extensions`], without needing a full `Request`/`Parts`.
+/// The request's own [`Protocol`]: URI scheme, then a [`Protocol`] extension a server stack
+/// inserted (an HTTPS server on HTTP/1 has no scheme in its targets), then TLS.
 ///
-/// This is the same resolution [`ProtocolInputExt::protocol`] performs: URI scheme,
-/// then an inserted [`Protocol`] extension, then `Forwarded` client-proto, then a TLS
-/// `SecureTransport` marker. Exposed so layers that only hold `(&Extensions, &Uri)`
-/// (e.g. the HTTP/1 encoder) can make the same secure/insecure determination.
-pub(crate) fn protocol_from_uri_or_extensions<'a>(
+/// Exposed so layers holding only `(&Extensions, &Uri)`, such as the HTTP/1 encoder, decide
+/// secure or not as [`ProtocolInputExt::target_protocol`] does.
+pub(crate) fn target_protocol_from_uri_or_extensions<'a>(
     ext: &'a Extensions,
     uri: &'a Uri,
 ) -> &'a Protocol {
-    uri.scheme().or_else(|| {
-        // Can be inserted by a server stack to notify the protocol that's being served.
-        // This is especially useful for marking a HTTPS server as HTTPS,
-        // despite it not showing up anywhere due to a non-default port
-        // and it being http/1
-        ext.get_ref::<Protocol>()
-    }).or_else(|| ext.get_ref::<Forwarded>()
-        .and_then(|f| f.client_proto().map(|p| {
-            tracing::trace!(url.furi = %uri, "request context: detected protocol from forwarded client proto");
-            if p.is_secure() { &Protocol::HTTPS } else { &Protocol::HTTP }
-        })))
-        .unwrap_or_else(||
-    if ext.contains::<SecureTransport>() {
-        &Protocol::HTTPS
-    } else {
-        &Protocol::HTTP
-    })
+    uri.scheme()
+        .or_else(|| ext.get_ref::<Protocol>())
+        .unwrap_or_else(|| {
+            if ext.contains::<SecureTransport>() {
+                &Protocol::HTTPS
+            } else {
+                &Protocol::HTTP
+            }
+        })
+}
+
+/// What the end client used: a [`Forwarded`] proto, then the request's own protocol.
+fn protocol_from_uri_or_extensions<'a>(ext: &'a Extensions, uri: &'a Uri) -> &'a Protocol {
+    ext.get_ref::<Forwarded>()
+        .and_then(Forwarded::client_proto)
+        .map(|proto| {
+            tracing::trace!(url.full = %uri, "request protocol from forwarded client proto");
+            if proto.is_secure() {
+                &Protocol::HTTPS
+            } else {
+                &Protocol::HTTP
+            }
+        })
+        .unwrap_or_else(|| target_protocol_from_uri_or_extensions(ext, uri))
 }
 
 impl<Body> AuthorityInputExt for Request<Body> {
     fn authority(&self) -> Option<HostWithOptPort> {
         authority_from_http_parts(self)
     }
+
+    fn target_authority(&self) -> Option<HostWithOptPort> {
+        target_authority_from_http_parts(self)
+    }
 }
 
 impl AuthorityInputExt for Parts {
     fn authority(&self) -> Option<HostWithOptPort> {
         authority_from_http_parts(self)
+    }
+
+    fn target_authority(&self) -> Option<HostWithOptPort> {
+        target_authority_from_http_parts(self)
     }
 }
 
@@ -165,11 +181,25 @@ impl<Body> ProtocolInputExt for Request<Body> {
             self.uri(),
         ))
     }
+
+    fn target_protocol(&self) -> Option<&Protocol> {
+        Some(target_protocol_from_uri_or_extensions(
+            self.extensions(),
+            self.uri(),
+        ))
+    }
 }
 
 impl ProtocolInputExt for Parts {
     fn protocol(&self) -> Option<&Protocol> {
         Some(protocol_from_uri_or_extensions(
+            self.extensions(),
+            HttpRequestParts::uri(self),
+        ))
+    }
+
+    fn target_protocol(&self) -> Option<&Protocol> {
+        Some(target_protocol_from_uri_or_extensions(
             self.extensions(),
             HttpRequestParts::uri(self),
         ))
@@ -271,98 +301,158 @@ mod tests {
         forwarded::{Forwarded, ForwardedElement, ForwardedVersion, NodeId},
     };
 
-    #[test]
-    fn asterisk_authority_preserves_host_and_optional_port_over_forwarded() {
-        for host in ["target.test", "target.test:8443", "[::1]", "[::1]:9443"] {
-            let request = Request::builder()
-                .method(crate::Method::OPTIONS)
-                .uri("*")
-                .header(crate::header::HOST, host)
-                .extension(Protocol::HTTPS)
-                .extension(Forwarded::try_from(r#"host="ingress.test:8080";proto=http"#).unwrap())
-                .body(())
-                .unwrap();
-            let expected = Some(HostWithOptPort::try_from(host).unwrap());
-            assert_eq!(request.authority(), expected, "Host: {host}");
-            let (parts, ()) = request.into_parts();
-            assert_eq!(parts.authority(), expected, "Host: {host}");
-        }
-    }
-
-    #[test]
-    fn asterisk_authority_falls_back_when_host_is_missing_or_invalid() {
-        for host in [None, Some("invalid host")] {
-            for forwarded in [None, Some(r#"host="ingress.test:8080""#)] {
-                let mut builder = Request::builder().uri("*");
-                if let Some(host) = host {
-                    builder = builder.header(crate::header::HOST, host);
-                }
-                if let Some(forwarded) = forwarded {
-                    builder = builder.extension(Forwarded::try_from(forwarded).unwrap());
-                }
-                let request = builder.body(()).unwrap();
-                let expected =
-                    forwarded.map(|_| HostWithOptPort::try_from("ingress.test:8080").unwrap());
-                assert_eq!(request.authority(), expected);
-                let (parts, ()) = request.into_parts();
-                assert_eq!(parts.authority(), expected);
-            }
-        }
-    }
-
-    #[test]
-    fn ordinary_authority_keeps_uri_then_forwarded_then_host_precedence() {
-        for (uri, expected) in [
-            ("https://uri.test/path", "uri.test:443"),
-            ("/path", "ingress.test:8080"),
-        ] {
-            let request = Request::builder()
-                .uri(uri)
-                .header(crate::header::HOST, "target.test:9443")
-                .extension(Forwarded::try_from(r#"host="ingress.test:8080""#).unwrap())
-                .body(())
-                .unwrap();
-            let expected = Some(HostWithOptPort::try_from(expected).unwrap());
-            assert_eq!(request.authority(), expected);
-            let (parts, ()) = request.into_parts();
-            assert_eq!(parts.authority(), expected);
-        }
-    }
-
     #[cfg(feature = "tls")]
-    #[test]
-    fn asterisk_host_precedes_sni_but_other_targets_keep_sni_precedence() {
+    fn sni(name: &'static str) -> SecureTransport {
         use rama_tls::{
             ProtocolVersion,
             client::{ClientHello, ClientHelloExtension},
         };
+        SecureTransport::with_client_hello(ClientHello::new(
+            ProtocolVersion::TLSv1_3,
+            Vec::new(),
+            Vec::new(),
+            vec![ClientHelloExtension::ServerName(Some(Domain::from_static(
+                name,
+            )))],
+        ))
+    }
 
-        for (uri, host, expected) in [
-            ("*", "target.test", "target.test"),
-            ("*", "target.test:9443", "target.test:9443"),
-            ("*", "invalid host", "sni.test:443"),
-            ("/path", "target.test", "sni.test:443"),
-            ("https://uri.test/path", "target.test", "uri.test:443"),
+    /// The target is the URI authority, then `Host`, then TLS SNI, never `Forwarded`; the
+    /// contextual authority is a `Forwarded` host first, then the target. Ports are explicit.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn authority_views_resolve_in_order_on_every_target_form() {
+        for (uri, host, with_sni, forwarded, target, contextual) in [
+            // The URI authority (absolute-form, or :authority) wins over Host and SNI.
+            (
+                "https://uri.test/path",
+                Some("host.test"),
+                true,
+                false,
+                Some("uri.test"),
+                "uri.test",
+            ),
+            (
+                "https://uri.test:8443/",
+                None,
+                false,
+                false,
+                Some("uri.test:8443"),
+                "uri.test:8443",
+            ),
+            // Host wins over SNI: a reused connection may serve another origin.
+            (
+                "/path",
+                Some("host.test"),
+                true,
+                false,
+                Some("host.test"),
+                "host.test",
+            ),
+            (
+                "/path",
+                Some("host.test:9443"),
+                true,
+                false,
+                Some("host.test:9443"),
+                "host.test:9443",
+            ),
+            // SNI names only a request that names no authority, such as HTTP/1.0 without Host.
+            ("/path", None, true, false, Some("sni.test"), "sni.test"),
+            (
+                "/path",
+                Some("invalid host"),
+                true,
+                false,
+                Some("sni.test"),
+                "sni.test",
+            ),
+            ("/path", None, false, false, None, ""),
+            (
+                "*",
+                Some("host.test:8443"),
+                true,
+                false,
+                Some("host.test:8443"),
+                "host.test:8443",
+            ),
+            // Forwarded comes first in the contextual view only, whatever the target form.
+            (
+                "https://uri.test/path",
+                Some("host.test"),
+                true,
+                true,
+                Some("uri.test"),
+                "ingress.test:8080",
+            ),
+            (
+                "/path",
+                Some("host.test"),
+                true,
+                true,
+                Some("host.test"),
+                "ingress.test:8080",
+            ),
+            (
+                "*",
+                Some("host.test"),
+                false,
+                true,
+                Some("host.test"),
+                "ingress.test:8080",
+            ),
+            ("/path", None, false, true, None, "ingress.test:8080"),
         ] {
-            let request = Request::builder()
-                .uri(uri)
-                .header(crate::header::HOST, host)
-                .extension(SecureTransport::with_client_hello(ClientHello::new(
-                    ProtocolVersion::TLSv1_3,
-                    Vec::new(),
-                    Vec::new(),
-                    vec![ClientHelloExtension::ServerName(Some(Domain::from_static(
-                        "sni.test",
-                    )))],
-                )))
-                .extension(Forwarded::try_from(r#"host="ingress.test:8080""#).unwrap())
-                .body(())
-                .unwrap();
-            let expected = Some(HostWithOptPort::try_from(expected).unwrap());
-            assert_eq!(request.authority(), expected, "URI: {uri}, Host: {host}");
+            let mut builder = Request::builder().uri(uri);
+            if let Some(host) = host {
+                builder = builder.header(crate::header::HOST, host);
+            }
+            let request = builder.body(()).unwrap();
+            if with_sni {
+                request.extensions().insert(sni("sni.test"));
+            }
+            if forwarded {
+                request
+                    .extensions()
+                    .insert(Forwarded::try_from(r#"host="ingress.test:8080";proto=http"#).unwrap());
+            }
+            let target = target.map(|target| HostWithOptPort::try_from(target).unwrap());
+            let contextual =
+                (!contextual.is_empty()).then(|| HostWithOptPort::try_from(contextual).unwrap());
+            let case = format!("{uri} Host={host:?} sni={with_sni} forwarded={forwarded}");
+            assert_eq!(request.target_authority(), target, "{case}");
+            assert_eq!(request.authority(), contextual, "{case}");
             let (parts, ()) = request.into_parts();
-            assert_eq!(parts.authority(), expected, "URI: {uri}, Host: {host}");
+            assert_eq!(parts.target_authority(), target, "{case}");
+            assert_eq!(parts.authority(), contextual, "{case}");
         }
+    }
+
+    /// A reverse proxy that trusted `Forwarded` and rewrote the URI to its backend connects
+    /// to the backend, sends the backend's protocol, and still reports the client's view.
+    #[test]
+    fn a_rewritten_request_connects_to_its_own_target_not_the_forwarded_one() {
+        let request = Request::builder()
+            .uri("http://backend.internal:8080/api")
+            .body(())
+            .unwrap();
+        request
+            .extensions()
+            .insert(Forwarded::try_from(r#"host="public.test";proto=https"#).unwrap());
+        assert_eq!(
+            request.connector_target(),
+            Some("backend.internal:8080".parse().unwrap())
+        );
+        assert_eq!(request.target_protocol(), Some(&Protocol::HTTP));
+        assert_eq!(
+            request.authority(),
+            Some(HostWithOptPort::try_from("public.test").unwrap())
+        );
+        assert_eq!(request.protocol(), Some(&Protocol::HTTPS));
+        assert_eq!(
+            request.authority_with_default_port(None),
+            Some("public.test:443".parse().unwrap())
+        );
     }
 
     #[test]
@@ -553,7 +643,7 @@ mod tests {
             // base
             (
                 vec!["host=192.0.2.60;proto=http;by=203.0.113.43"],
-                "192.0.2.60:80",
+                "192.0.2.60",
             ),
             // ipv6
             (
@@ -561,9 +651,9 @@ mod tests {
                 "[2001:db8:cafe::17]:4711",
             ),
             // multiple values in one header
-            (vec!["host=192.0.2.60, host=127.0.0.1"], "192.0.2.60:80"),
+            (vec!["host=192.0.2.60, host=127.0.0.1"], "192.0.2.60"),
             // multiple header values
-            (vec!["host=192.0.2.60", "host=127.0.0.1"], "192.0.2.60:80"),
+            (vec!["host=192.0.2.60", "host=127.0.0.1"], "192.0.2.60"),
         ] {
             let mut req_builder = Request::builder();
             for header in forwarded_str_vec.clone() {

@@ -476,7 +476,7 @@ impl Service<ConnectRequest> for Http3Connector {
                 ConnectionErrorKind::Unavailable,
             ));
         }
-        if input.protocol().is_none_or(|p| !p.is_secure()) {
+        if input.target_protocol().is_none_or(|p| !p.is_secure()) {
             return Err(invalid("HTTP/3 requires a secure origin"));
         }
         validate_version(&input)?;

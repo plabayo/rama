@@ -406,7 +406,7 @@ where
                     .context_debug_field("protocol", normalized_proxy_info.protocol.clone())
             })?;
 
-        let authority = input.authority().ok_or_else(|| {
+        let authority = input.target_authority().ok_or_else(|| {
             ConnectionError::local(
                 BoxError::from_static_str("socks5 proxy connector: authority missing from input"),
                 ConnectionErrorKind::InvalidInput,

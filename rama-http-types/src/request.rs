@@ -591,9 +591,9 @@ impl<T> Request<T> {
     ///
     /// Where [`uri`](Self::uri) returns the URI exactly as received (often
     /// origin-form `/path` for HTTP/1.1), this fills in the scheme and
-    /// authority from the request's effective protocol and authority (URI →
-    /// TLS SNI → `Forwarded` → `Host` header) — a derivation
-    /// callers can treat as a technical detail.
+    /// authority from the request's contextual protocol and authority (`Forwarded` →
+    /// URI → `Host` header → TLS SNI) — a derivation callers can treat as a technical
+    /// detail.
     #[must_use]
     pub fn request_uri(&self) -> Uri {
         use rama_net::{AuthorityInputExt as _, ProtocolInputExt as _};

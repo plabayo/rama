@@ -105,6 +105,6 @@ mod tests {
 
     #[tokio::test]
     async fn uri_host() {
-        test_authority_from_request("http://example.com", "example.com:80", vec![]).await;
+        test_authority_from_request("http://example.com", "example.com", vec![]).await;
     }
 }

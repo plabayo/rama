@@ -77,7 +77,7 @@ impl CaptureStore {
                     .cloned()
             })
             .flatten();
-        let protocol = parts.protocol().unwrap_or(&Protocol::HTTP);
+        let protocol = parts.target_protocol().unwrap_or(&Protocol::HTTP);
         let mut metadata = CaptureMetadata::default();
         if let Some(connection) = &connection {
             metadata.connection.clone_from(&connection.metadata);

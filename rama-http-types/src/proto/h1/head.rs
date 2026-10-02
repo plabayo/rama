@@ -345,7 +345,8 @@ pub fn encode_request_target(
         let via_http_proxy = established_extensions
             .get_ref::<EstablishedProxyRoute>()
             .is_some_and(EstablishedProxyRoute::is_http_forward);
-        let is_insecure = !crate::protocol_from_uri_or_extensions(extensions, uri).is_secure();
+        let is_insecure =
+            !crate::target_protocol_from_uri_or_extensions(extensions, uri).is_secure();
         if via_http_proxy && is_insecure {
             write_absolute_form(method, uri, output)
         } else if is_server_wide(method, uri) {

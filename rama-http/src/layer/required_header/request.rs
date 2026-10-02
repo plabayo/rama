@@ -146,13 +146,13 @@ where
     async fn serve(&self, mut req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         if self.overwrite || !req.headers().contains_key(HOST) {
             let authority = req
-                .authority()
+                .target_authority()
                 .context("AddRequiredRequestHeaders: resolve authority")?;
             // A plain CONNECT names its port; anything else drops a default one.
             let authority = if is_plain_connect(&req) {
                 authority
             } else {
-                authority.without_default_port_for(req.protocol())
+                authority.without_default_port_for(req.target_protocol())
             };
             tracing::trace!(
                 server.address = %authority,

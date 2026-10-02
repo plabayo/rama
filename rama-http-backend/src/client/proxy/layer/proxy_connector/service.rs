@@ -210,7 +210,7 @@ where
             ));
         }
 
-        let authority = input.authority().ok_or_else(|| {
+        let authority = input.target_authority().ok_or_else(|| {
             ConnectionError::local(
                 BoxError::from_static_str("http proxy connector: authority missing from input"),
                 ConnectionErrorKind::InvalidInput,
@@ -225,7 +225,7 @@ where
                 ConnectionErrorKind::InvalidInput,
             )
         })?;
-        let app_protocol = input.protocol().cloned();
+        let app_protocol = input.target_protocol().cloned();
         let app_is_http = app_protocol.as_ref().is_some_and(Protocol::is_http_based);
         let app_is_plaintext_http = app_protocol
             .as_ref()

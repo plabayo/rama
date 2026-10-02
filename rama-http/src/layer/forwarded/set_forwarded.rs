@@ -326,12 +326,12 @@ where
             forwarded_element.set_forwarded_for(peer_addr);
         }
         let authority = req
-            .authority()
+            .target_authority()
             .ok_or_else(|| BoxError::from_static_str("set forwarded: no authority"))?;
 
         forwarded_element.set_forwarded_host(authority);
 
-        let protocol = req.protocol().unwrap_or(&Protocol::HTTP);
+        let protocol = req.target_protocol().unwrap_or(&Protocol::HTTP);
         if let Ok(forwarded_proto) = protocol.try_into() {
             forwarded_element.set_forwarded_proto(forwarded_proto);
         }
@@ -400,7 +400,7 @@ mod tests {
         async fn svc(request: Request<()>) -> Result<(), Infallible> {
             assert_eq!(
                 request.headers().get("Forwarded").unwrap(),
-                "by=rama;host=\"example.com:80\";proto=http"
+                "by=rama;host=example.com;proto=http"
             );
             Ok(())
         }
@@ -418,7 +418,7 @@ mod tests {
         async fn svc(request: Request<()>) -> Result<(), Infallible> {
             assert_eq!(
                 request.headers().get("Forwarded").unwrap(),
-                "for=12.23.34.45,by=rama;for=\"127.0.0.1:62345\";host=\"www.example.com:443\";proto=https",
+                "for=12.23.34.45,by=rama;for=\"127.0.0.1:62345\";host=www.example.com;proto=https",
             );
             Ok(())
         }
@@ -464,7 +464,7 @@ mod tests {
         async fn svc(request: Request<()>) -> Result<(), Infallible> {
             assert_eq!(
                 request.headers().get("Forwarded").unwrap(),
-                "by=12.23.34.45;for=\"127.0.0.1:62345\";host=\"www.example.com:443\";proto=https",
+                "by=12.23.34.45;for=\"127.0.0.1:62345\";host=www.example.com;proto=https",
             );
             Ok(())
         }
@@ -485,7 +485,7 @@ mod tests {
         async fn svc(request: Request<()>) -> Result<(), Infallible> {
             assert_eq!(
                 request.headers().get("Forwarded").unwrap(),
-                "by=rama;for=\"127.0.0.1:62345\";host=\"www.example.com:443\";proto=https",
+                "by=rama;for=\"127.0.0.1:62345\";host=www.example.com;proto=https",
             );
             Ok(())
         }

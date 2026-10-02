@@ -628,9 +628,9 @@ fn write_curl_command_for_request_parts(
     // from the request context's authority (+ scheme). Requests that already
     // carry an authority (absolute- or authority-form) are rendered as-is.
     if uri.authority().is_none()
-        && let Some(authority) = parts.authority()
+        && let Some(authority) = parts.target_authority()
     {
-        let protocol = parts.protocol();
+        let protocol = parts.target_protocol();
         uri.set_authority(authority.without_default_port_for(protocol).into());
         if uri.scheme().is_none()
             && let Some(protocol) = protocol

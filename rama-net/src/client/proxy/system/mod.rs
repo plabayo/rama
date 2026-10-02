@@ -1253,7 +1253,7 @@ where
             .uri()
             .authority()
             .map(|authority| authority.into_owned().address)
-            .or_else(|| input.authority());
+            .or_else(|| input.target_authority());
         let config = self.layer.config().await?;
         if !config.is_empty() {
             let normalized_uri = if self.layer.pac_enabled {
@@ -1449,7 +1449,7 @@ where
 {
     let uri = input.uri();
     let protocol = request_protocol(input);
-    proxy_request_uri(uri, input.authority(), protocol)
+    proxy_request_uri(uri, input.target_authority(), protocol)
 }
 
 pub(super) fn request_protocol<I>(input: &I) -> Protocol
@@ -1464,7 +1464,7 @@ where
         // opaque and overwhelmingly TLS, so match the HTTP PAC layer and show
         // it as HTTPS regardless of the named port.
         .or_else(|| input.uri().authority().map(|_| Protocol::HTTPS))
-        .or_else(|| input.protocol().cloned())
+        .or_else(|| input.target_protocol().cloned())
         .unwrap_or(Protocol::HTTP)
 }
 

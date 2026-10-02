@@ -435,9 +435,9 @@ where
             .extensions
             .contains::<AltSvcObserverExtension>()
             .then(|| {
-                request.protocol().and_then(|protocol| {
+                request.target_protocol().and_then(|protocol| {
                     let authority = request
-                        .authority()?
+                        .target_authority()?
                         .into_host_with_port(protocol.default_port())?;
                     HttpOrigin::new(protocol.clone(), authority).ok()
                 })

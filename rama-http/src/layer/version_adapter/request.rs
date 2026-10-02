@@ -322,14 +322,14 @@ pub fn ensure_h1_host_header<Body>(request: &mut Request<Body>) -> Result<(), Bo
         return Ok(());
     }
     let authority = request
-        .authority()
+        .target_authority()
         .context("ensure h1 Host header: request has no resolvable authority")?;
     // Strip the default port (browsers do this, and some reverse proxies 404 on a
     // non-exact authority match), except from a plain CONNECT, which names its port.
     let authority = if is_plain_connect(request) {
         authority
     } else {
-        authority.without_default_port_for(request.protocol())
+        authority.without_default_port_for(request.target_protocol())
     };
     tracing::trace!("adding Host header {authority} derived from request authority");
     request.headers_mut().typed_insert(Host::from(authority));
@@ -348,9 +348,9 @@ pub fn ensure_h2_or_h3_uri_authority<Body>(request: &mut Request<Body>) -> Resul
         return Ok(());
     }
     let authority = request
-        .authority()
+        .target_authority()
         .context("ensure h2 URI authority: request has no resolvable authority")?;
-    let protocol = request.protocol().cloned();
+    let protocol = request.target_protocol().cloned();
     let authority = authority.without_default_port_for(protocol.as_ref());
     tracing::trace!("materializing authority {authority} and scheme into request URI");
     let uri = request.uri_mut();

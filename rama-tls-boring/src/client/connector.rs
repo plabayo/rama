@@ -206,16 +206,19 @@ where
     type Error = ConnectionError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
-        self.check_attempt_policy(&input, input.protocol().is_some_and(Protocol::is_secure))?;
+        self.check_attempt_policy(
+            &input,
+            input.target_protocol().is_some_and(Protocol::is_secure),
+        )?;
         let EstablishedClientConnection { input, conn } = self.inner.connect(input).await?;
 
-        let authority = input.authority().ok_or_else(|| {
+        let authority = input.target_authority().ok_or_else(|| {
             ConnectionError::local(
                 BoxError::from_static_str("TlsConnector(auto): authority missing from input"),
                 ConnectionErrorKind::InvalidInput,
             )
         })?;
-        let app_protocol = input.protocol();
+        let app_protocol = input.target_protocol();
 
         if !app_protocol.is_some_and(Protocol::is_secure) {
             self.check_attempt_policy(&input, false)?;
@@ -289,7 +292,7 @@ where
         self.check_attempt_policy(&input, true)?;
         let EstablishedClientConnection { input, conn } = self.inner.connect(input).await?;
 
-        let authority = input.authority().ok_or_else(|| {
+        let authority = input.target_authority().ok_or_else(|| {
             ConnectionError::local(
                 BoxError::from_static_str("TlsConnector(secure): authority missing from input"),
                 ConnectionErrorKind::InvalidInput,
@@ -299,10 +302,10 @@ where
             server.address = %authority.host,
             server.port = authority.port_u16(),
             "TlsConnector(secure): attempt to secure inner connection w/ app protocol: {:?}",
-            input.protocol(),
+            input.target_protocol(),
         );
 
-        let app_protocol = input.protocol();
+        let app_protocol = input.target_protocol();
         let connector_data = self
             .connector_data(input.extensions(), app_protocol, Some(&authority.host))
             .map_err(|error| {
@@ -497,7 +500,7 @@ impl<S, K> TlsConnector<S, K> {
         let authority = effective
             .server_name
             .is_none()
-            .then(|| input.authority())
+            .then(|| input.target_authority())
             .flatten();
         let peer = effective
             .server_name
@@ -1116,6 +1119,73 @@ mod tests {
             .expect("connector data");
 
         assert_eq!(data.server_name, Some(host));
+    }
+
+    /// An input whose forwarded context names another host than its own target.
+    struct ForwardedInput(rama_core::extensions::Extensions);
+
+    impl rama_core::extensions::ExtensionsRef for ForwardedInput {
+        fn extensions(&self) -> &rama_core::extensions::Extensions {
+            &self.0
+        }
+    }
+
+    impl AuthorityInputExt for ForwardedInput {
+        fn authority(&self) -> Option<rama_net::address::HostWithOptPort> {
+            Some(Host::from_static("public.test").into())
+        }
+
+        fn target_authority(&self) -> Option<rama_net::address::HostWithOptPort> {
+            Some(Host::from_static("localhost").into())
+        }
+    }
+
+    impl ProtocolInputExt for ForwardedInput {
+        fn protocol(&self) -> Option<&Protocol> {
+            Some(&Protocol::HTTPS)
+        }
+    }
+
+    /// TLS SNI and server verification follow the input's own target, never its forwarded
+    /// context: the certificate covers only the target.
+    #[tokio::test]
+    async fn sni_names_the_target_not_the_forwarded_authority() {
+        let (cert_chain, private_key) =
+            generate_server_auth(GeneratedServerAuthConfig::default()).expect("server auth");
+        let trust_anchor = cert_chain.last().expect("trust anchor").clone();
+        let server = crate::server::TlsAcceptorLayer::new(
+            TlsServerConfig::new()
+                .with_alpn_http_auto()
+                .with_single_cert(ServerAuthData {
+                    cert_chain,
+                    private_key,
+                    ocsp: None,
+                }),
+        )
+        .into_layer(EchoService::new());
+        let base = TlsClientConfig::new()
+            .try_with_server_trust_anchors([trust_anchor])
+            .expect("trust anchor");
+        let (client_io, server_io) = tokio::io::duplex(64);
+        let server_task =
+            tokio::spawn(async move { server.serve(ServiceInput::new(server_io)).await });
+        let client_io = Arc::new(tokio::sync::Mutex::new(Some(client_io)));
+        let transport = service_fn(move |input: ForwardedInput| {
+            let client_io = client_io.clone();
+            async move {
+                let conn = ServiceInput::new(client_io.lock().await.take().expect("one dial"));
+                Ok::<_, ConnectionError>(EstablishedClientConnection { input, conn })
+            }
+        });
+        let connector = TlsConnector::secure(transport).with_base_config(base);
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            connector.serve(ForwardedInput(rama_core::extensions::Extensions::new())),
+        )
+        .await
+        .expect("handshake timeout")
+        .expect("the handshake names and verifies the target");
+        server_task.abort();
     }
 
     #[tokio::test]

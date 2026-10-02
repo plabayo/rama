@@ -1426,6 +1426,51 @@ mod tests {
         }
     }
 
+    /// A request naming its target only by `Host` resolves to that `Host` on H2 and H3 alike,
+    /// also when the connection's TLS SNI names another origin it coalesces.
+    #[test]
+    fn a_host_only_target_resolves_alike_on_h2_and_h3_whatever_the_sni() {
+        use rama_net::AuthorityInputExt as _;
+        use rama_tls::{
+            ProtocolVersion, SecureTransport,
+            client::{ClientHello, ClientHelloExtension},
+        };
+        let mut host = HeaderMap::new();
+        host.insert(
+            rama_http_types::header::HOST,
+            HeaderValue::from_static("b.example"),
+        );
+        let h3 = request(fields(&[
+            (":method", "GET"),
+            (":scheme", "https"),
+            (":path", "/"),
+            ("host", "b.example"),
+        ]))
+        .unwrap();
+        let pseudo = frame::Pseudo {
+            method: Some(Method::GET),
+            scheme: Some(hpack::BytesStr::try_from(Bytes::from_static(b"https")).unwrap()),
+            path: Some(hpack::BytesStr::try_from(Bytes::from_static(b"/")).unwrap()),
+            ..Default::default()
+        };
+        let h2 = crate::h2::server::test_util::receive(pseudo, host).unwrap();
+        for request in [&h3, &h2] {
+            request
+                .extensions()
+                .insert(SecureTransport::with_client_hello(ClientHello::new(
+                    ProtocolVersion::TLSv1_3,
+                    Vec::new(),
+                    Vec::new(),
+                    vec![ClientHelloExtension::ServerName(Some(
+                        rama_net::address::Domain::from_static("a.example"),
+                    ))],
+                )));
+            let expected = Some(rama_net::address::HostWithOptPort::try_from("b.example").unwrap());
+            assert_eq!(request.target_authority(), expected);
+            assert_eq!(request.authority(), expected);
+        }
+    }
+
     /// A raw UTF-8 host is a reg-name the URI grammar accepts, on H2 as on H3, and is sent on.
     #[test]
     fn raw_utf8_authorities_are_received_alike_on_h2_and_h3() {

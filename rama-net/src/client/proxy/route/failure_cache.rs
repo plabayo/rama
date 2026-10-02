@@ -274,13 +274,13 @@ impl ProxyRouteFailureCache {
         let (destination_protocol, destination) =
             if let Some(target) = input.extensions().get_ref::<ConnectorTarget>() {
                 (
-                    input.protocol(),
+                    input.target_protocol(),
                     FailureDestination::Override(target.0.clone()),
                 )
             } else {
                 match self.config.scope {
                     ProxyRouteFailureCacheScope::PerDestination => (
-                        input.protocol(),
+                        input.target_protocol(),
                         FailureDestination::Origin(input.connector_target()?),
                     ),
                     ProxyRouteFailureCacheScope::PerProxy => (None, FailureDestination::Proxy),

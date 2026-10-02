@@ -134,10 +134,10 @@ impl BypassRules {
     where
         I: AuthorityInputExt + ProtocolInputExt,
     {
-        let Some(authority) = input.authority() else {
+        let Some(authority) = input.target_authority() else {
             return false;
         };
-        let protocol = input.protocol().cloned().unwrap_or_else(|| {
+        let protocol = input.target_protocol().cloned().unwrap_or_else(|| {
             if authority.port_u16() == Some(Protocol::HTTPS_DEFAULT_PORT) {
                 Protocol::HTTPS
             } else {

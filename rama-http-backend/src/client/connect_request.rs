@@ -16,9 +16,9 @@ use rama_net::{
 use rama_utils::macros::define_inner_service_accessors;
 
 fn try_from_http_request<Body>(request: &Request<Body>) -> Result<ConnectRequest, ConnectionError> {
-    let application_protocol = request.protocol().cloned();
+    let application_protocol = request.target_protocol().cloned();
     let authority = request
-        .authority()
+        .target_authority()
         .and_then(|authority| {
             authority.into_host_with_port(
                 application_protocol
