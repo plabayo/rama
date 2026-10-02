@@ -200,7 +200,12 @@ where
             return;
         };
         let mut records = std::pin::pin!(query_record_stream(
-            domain, deadline, timeout, rrtype, parser
+            domain,
+            deadline,
+            timeout,
+            rrtype,
+            ffi::K_DNS_SERVICE_INTERFACE_INDEX_ANY,
+            parser,
         ));
         while let Some(record) = records.next().await {
             slot.saw(&record);
@@ -276,6 +281,7 @@ fn query_record_stream<T, P>(
     deadline: Instant,
     timeout: Duration,
     rrtype: u16,
+    interface: u32,
     parser: P,
 ) -> impl Stream<Item = Result<T, BoxError>> + Send
 where
@@ -330,7 +336,7 @@ where
                 ffi::DNSServiceQueryRecord(
                     &mut raw_service_ref,
                     ffi::K_DNS_SERVICE_FLAGS_RETURN_INTERMEDIATES,
-                    0,
+                    interface,
                     name.as_ptr(),
                     rrtype,
                     ffi::K_DNS_SERVICE_CLASS_IN,
@@ -721,6 +727,10 @@ mod ffi {
 
     // Internet
     pub(super) const K_DNS_SERVICE_CLASS_IN: u16 = 1;
+    pub(super) const K_DNS_SERVICE_INTERFACE_INDEX_ANY: u32 = 0;
+    /// Only records registered on this host, so nothing goes out.
+    #[cfg(test)]
+    pub(super) const K_DNS_SERVICE_INTERFACE_INDEX_LOCAL_ONLY: u32 = u32::MAX;
 
     // Host address.
     pub(super) const K_DNS_SERVICE_TYPE_A: u16 = 1;
@@ -1394,6 +1404,25 @@ mod tests {
                 "{addrs:?}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn negative_answers_end_the_lookup_at_once() {
+        // asked of this host's own records: nothing leaves it
+        let timeout = Duration::from_secs(2);
+        let started = Instant::now();
+        let records: Vec<_> = query_record_stream(
+            Domain::from_static("absent.rama-dns.test"),
+            deadline_after(timeout),
+            timeout,
+            ffi::K_DNS_SERVICE_TYPE_AAAA,
+            ffi::K_DNS_SERVICE_INTERFACE_INDEX_LOCAL_ONLY,
+            parse_aaaa,
+        )
+        .collect()
+        .await;
+        assert!(records.is_empty(), "{records:?}");
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 
     #[tokio::test]
