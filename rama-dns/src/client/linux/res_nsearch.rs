@@ -232,7 +232,6 @@ fn lookup_record_packet(
     timeout: Duration,
 ) -> Result<Option<Vec<u8>>, BoxError> {
     let max_response_size = response_buffer_limit(response_buffer_size)?;
-    let name = dns_name_from_domain(domain.as_str())?;
     let mut state: ffi::ResState = unsafe { mem::zeroed() };
 
     // SAFETY: `state` points to writable resolver context storage.
@@ -241,7 +240,13 @@ fn lookup_record_packet(
     }
     // every later access goes through the guard, so its drop never aliases
     let state = ResStateGuard(&mut state);
-    fit_retransmits(state.0, budget);
+    let (name, names) = match search_walk(state.0, domain.as_str()) {
+        Walk::One => (dns_name_from_domain(domain.as_str())?, 1),
+        Walk::Two => (dns_name_from_domain(domain.as_str())?, 2),
+        Walk::Rooted => (dns_name_from_domain(&format!("{domain}."))?, 1),
+    };
+    // every name a timeout reaches waits out its own retransmits
+    fit_retransmits(state.0, budget / names);
 
     let mut buffer = vec![0_u8; INITIAL_RESPONSE_BUFFER_SIZE.min(max_response_size)];
 
@@ -325,13 +330,58 @@ fn clear_errno() {
     unsafe { *errno = 0 };
 }
 
+/// The names a timed-out `res_nsearch` walk tries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Walk {
+    One,
+    /// The name as is and the first search domain, in either order.
+    Two,
+    /// The name as is and then the root, both one query: ask it rooted, once.
+    Rooted,
+}
+
+/// How glibc's `__res_context_search` walks `name`: a timeout ends the
+/// search list at its first domain, after which an untried name as is still
+/// goes out unless the root was on the list.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn search_walk(state: &ffi::ResState, name: &str) -> Walk {
+    if name.is_empty() || name.ends_with('.') {
+        return Walk::One;
+    }
+    let dots = name.bytes().filter(|&byte| byte == b'.').count();
+    let flag = if dots == 0 {
+        ffi::RES_DEFNAMES
+    } else {
+        ffi::RES_DNSRCH
+    };
+    let search = |index: usize| {
+        let domain = state.dnsrch[index];
+        // SAFETY: `res_ninit` points each set entry at a NUL-terminated
+        // domain living as long as `state`, and nulls the rest
+        (!domain.is_null()).then(|| unsafe { std::ffi::CStr::from_ptr(domain) })
+    };
+    let Some(first) = search(0).filter(|_| state.options & flag != 0) else {
+        return Walk::One;
+    };
+    let root_first = matches!(first.to_bytes(), b"" | b".");
+    let as_is_first = dots >= state.ndots() as usize;
+    match (as_is_first, root_first) {
+        (false, true) => Walk::One,
+        // a single label as is may be a HOSTALIASES alias, rooted it is not
+        (true, true) if dots > 0 && search(1).is_none() => Walk::Rooted,
+        _ => Walk::Two,
+    }
+}
+
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+fn search_walk(_state: &ffi::ResState, _name: &str) -> Walk {
+    Walk::One
+}
+
 /// Shorten libc's retransmits so one name's tries land inside `budget`: by
 /// default one lost datagram would use up the whole default budget.
 ///
-/// Fewer tries are made only when even a second per send does not fit. A
-/// late answer still counts during a retransmit, so the first name keeps the
-/// whole budget; a relative name that times out may then also try its first
-/// search domain past it, which only holds the thread longer.
+/// Fewer tries are made only when even a second per send does not fit.
 fn fit_retransmits(state: &mut ffi::ResState, budget: Duration) {
     // the budget arrives a little short of the timeout: keep its last second
     let budget = c_int::try_from(budget.saturating_add(Duration::from_millis(500)).as_secs())
@@ -664,6 +714,15 @@ mod ffi {
     /// Valid name, no data record of requested type.
     pub(super) const NO_DATA: c_int = 4;
 
+    // Search options from glibc's <resolv.h>.
+
+    /// Search a name without dots in the default domain.
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    pub(super) const RES_DEFNAMES: libc::c_ulong = 0x80;
+    /// Search a dotted relative name in the search list.
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    pub(super) const RES_DNSRCH: libc::c_ulong = 0x200;
+
     // Thread-safe resolver state generated from the target platform's
     // `<resolv.h>` definition via bindgen.
     //
@@ -722,6 +781,57 @@ mod ffi {
             answer: *mut u8,
             anslen: c_int,
         ) -> c_int;
+    }
+}
+
+#[cfg(all(test, target_os = "linux", target_env = "gnu"))]
+mod search_walk_tests {
+    use std::{ffi::CStr, mem};
+
+    use super::{Walk, ffi, search_walk};
+
+    fn walk(name: &str, search: &[&CStr], ndots: u32) -> Walk {
+        // SAFETY: `__res_state` is plain old data; zeroed is a valid value.
+        let mut state: ffi::ResState = unsafe { mem::zeroed() };
+        state.options = ffi::RES_DEFNAMES | ffi::RES_DNSRCH;
+        state.set_ndots(ndots);
+        for (entry, domain) in state.dnsrch.iter_mut().zip(search) {
+            *entry = domain.as_ptr().cast_mut();
+        }
+        search_walk(&state, name)
+    }
+
+    #[test]
+    fn a_timeout_walks_the_names_glibc_tries() {
+        let (root, corp) = (c".", c"corp.example");
+        // systemd-resolved's stub writes `search .`: as is, then the same name rooted
+        assert_eq!(walk("api.example", &[root], 1), Walk::Rooted);
+        assert_eq!(walk("intranet", &[root], 1), Walk::One);
+        assert_eq!(walk("api.example", &[c""], 1), Walk::Rooted);
+        // only the root to search: the rooted name is the one query
+        assert_eq!(walk("api.example", &[root], 5), Walk::One);
+        assert_eq!(walk("api.example.", &[corp], 1), Walk::One);
+        assert_eq!(walk("api.example", &[], 1), Walk::One);
+        // as is then `corp.example`, or `corp.example` then as is
+        assert_eq!(walk("api.example", &[corp], 1), Walk::Two);
+        assert_eq!(walk("intranet", &[corp], 1), Walk::Two);
+        assert_eq!(walk("api.example", &[corp], 5), Walk::Two);
+        // a later domain is only reached past an answer, so rooting would skip it
+        assert_eq!(walk("api.example", &[root, corp], 1), Walk::Two);
+        assert_eq!(walk("intranet", &[root], 0), Walk::Two);
+    }
+
+    #[test]
+    fn search_options_off_try_one_name() {
+        // SAFETY: `__res_state` is plain old data; zeroed is a valid value.
+        let mut state: ffi::ResState = unsafe { mem::zeroed() };
+        state.set_ndots(1);
+        state.dnsrch[0] = c"corp.example".as_ptr().cast_mut();
+        assert_eq!(search_walk(&state, "api.example"), Walk::One);
+        assert_eq!(search_walk(&state, "intranet"), Walk::One);
+        state.options = ffi::RES_DNSRCH;
+        assert_eq!(search_walk(&state, "api.example"), Walk::Two);
+        assert_eq!(search_walk(&state, "intranet"), Walk::One);
     }
 }
 
