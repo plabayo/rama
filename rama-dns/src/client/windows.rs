@@ -96,8 +96,8 @@ const _: () = assert!(std::mem::size_of::<DnsBackend>() == 0);
 /// wire octets are binary-transparent. Use a wire-native resolver such as
 /// Hickory when exact TXT octets are required on Windows.
 ///
-/// Lookups are unbounded by default: the DNS Client service queues them
-/// itself. Limits set here hold for this resolver and its clones only.
+/// Concurrent lookups of one name and record type share one query. Lookups
+/// are unbounded by default: the DNS Client service queues them itself.
 pub struct WindowsDnsResolver {
     timeout: Duration,
     limit: LookupLimit,
@@ -126,8 +126,9 @@ impl WindowsDnsResolver {
     }
 
     generate_set_and_with! {
-        /// Concurrent lookups are only shared between resolvers with the
-        /// same timeout.
+        /// The budget of one lookup, including any wait for a free slot
+        /// (default 5s). Clones made before this call no longer share
+        /// lookups with this resolver.
         pub fn timeout(mut self, timeout: Duration) -> Self {
             self.timeout = timeout;
             self.in_flight = InFlight::new(Abandoned::Cancel);
@@ -141,10 +142,10 @@ impl WindowsDnsResolver {
     }
 
     generate_set_and_with! {
-        /// Maximum concurrent `DnsQueryEx` queries (default unbounded). Each
-        /// holds a request in the machine-wide DNS Client service, whose
-        /// thread pool grows with a burst; queries held back here time out
-        /// instead once the burst outlasts the timeout.
+        /// Maximum concurrent `DnsQueryEx` queries (default unbounded: the
+        /// DNS Client service queues them itself; at least 1). Lookups past
+        /// the bound wait for a slot within their timeout. Clones made before
+        /// this call keep their own bounds.
         pub fn max_concurrency(mut self, max: Option<usize>) -> Self {
             self.limit = self.limit.with(|limits| limits.max_concurrency = max);
             self
@@ -158,9 +159,10 @@ impl WindowsDnsResolver {
 
     generate_set_and_with! {
         /// Maximum queries started within one [burst window](Self::burst_window)
-        /// and still unanswered (default unbounded); an answer frees its place
-        /// at once, a query waiting on a slow upstream once the window has
-        /// passed.
+        /// and still unanswered (default unbounded, at least 1); an answer
+        /// frees its place at once, a query waiting on a slow upstream once
+        /// the window has passed. Clones made before this call keep their own
+        /// bounds.
         pub fn burst_limit(mut self, max: Option<usize>) -> Self {
             self.limit = self.limit.with(|limits| limits.burst_limit = max);
             self
@@ -174,7 +176,8 @@ impl WindowsDnsResolver {
 
     generate_set_and_with! {
         /// The window of [`Self::burst_limit`] (default 20ms). Windows' default
-        /// 15.6ms timer tick stretches a 20ms window to about 31ms.
+        /// 15.6ms timer tick stretches a 20ms window to about 31ms. Clones
+        /// made before this call keep their own bounds.
         pub fn burst_window(mut self, window: Duration) -> Self {
             self.limit = self.limit.with(|limits| limits.burst_window = window);
             self

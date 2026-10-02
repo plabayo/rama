@@ -399,10 +399,11 @@ impl Drop for BurstSlot {
     }
 }
 
-/// A DNS lookup that ran out of time, whichever resolver served it.
+/// A DNS lookup that ran out of time.
 ///
-/// Every native resolver yields it as the error itself, also to callers that
-/// shared a lookup, so a plain `downcast_ref` finds it.
+/// The Apple, Windows, Linux and Tokio resolvers yield it as the error
+/// itself, also to callers that shared a lookup, so a plain `downcast_ref`
+/// finds it.
 #[derive(Debug, Clone, Copy)]
 pub struct DnsTimeoutError {
     timeout: Duration,
@@ -413,7 +414,7 @@ impl DnsTimeoutError {
         Self { timeout }
     }
 
-    /// The budget the lookup ran out of.
+    /// The resolver's configured timeout.
     #[must_use]
     pub const fn timeout(&self) -> Duration {
         self.timeout
@@ -501,7 +502,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn an_answer_frees_its_place_at_once() {
-        let lookups = burst(1, Duration::from_secs(60));
+        let lookups = burst(1, Duration::from_mins(1));
         let started = Instant::now();
         let answered = lookups.acquire(deadline_in(5)).await.expect("slot");
         let next = lookups.acquire(deadline_in(5));
@@ -556,7 +557,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn waiting_for_a_burst_place_counts_against_the_deadline() {
-        let lookups = burst(1, Duration::from_secs(60));
+        let lookups = burst(1, Duration::from_mins(1));
         let _held = lookups.acquire(deadline_in(5)).await.expect("slot");
         let started = Instant::now();
         let starved = lookups
@@ -595,7 +596,7 @@ mod tests {
         let lookups = LookupLimit::new(Limits {
             max_concurrency: Some(8),
             burst_limit: Some(1),
-            burst_window: Duration::from_secs(60),
+            burst_window: Duration::from_mins(1),
         });
         let held = lookups.acquire(deadline_in(5)).await.expect("slot");
         let mut first = pin!(lookups.acquire(deadline_in(5)));
@@ -834,7 +835,7 @@ mod tests {
     async fn budget_follows_a_paused_clock() {
         let lookups = calls(1);
         // the paused clock runs ahead of wall time from here on
-        tokio::time::sleep(Duration::from_secs(60)).await;
+        tokio::time::sleep(Duration::from_mins(1)).await;
 
         let budget = lookups
             .spawn_blocking(deadline_in(5), |budget| budget)

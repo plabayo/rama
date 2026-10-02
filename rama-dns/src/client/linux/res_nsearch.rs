@@ -340,13 +340,8 @@ fn another_walk(state: &ffi::ResState, deadline: Instant, names: u32) -> Option<
 /// libc leaves `errno` alone on success, so a value from an earlier call on
 /// this thread must not pass for this call's.
 fn clear_errno() {
-    // SAFETY: each returns this thread's errno slot, valid for its lifetime
-    #[cfg(target_os = "linux")]
+    // SAFETY: returns this thread's errno slot, valid for its lifetime
     let errno = unsafe { libc::__errno_location() };
-    #[cfg(target_os = "freebsd")]
-    let errno = unsafe { libc::__error() };
-    #[cfg(any(target_os = "openbsd", target_os = "netbsd"))]
-    let errno = unsafe { libc::__errno() };
     // SAFETY: the slot is this thread's own and writable
     unsafe { *errno = 0 };
 }
@@ -364,7 +359,6 @@ enum Walk {
 /// How glibc's `__res_context_search` walks `name`: a timeout ends the
 /// search list at its first domain, after which an untried name as is still
 /// goes out unless the root was on the list.
-#[cfg(all(target_os = "linux", target_env = "gnu"))]
 fn search_walk(state: &ffi::ResState, name: &str) -> Walk {
     if name.is_empty() || name.ends_with('.') {
         return Walk::One;
@@ -392,11 +386,6 @@ fn search_walk(state: &ffi::ResState, name: &str) -> Walk {
         (true, true) if dots > 0 && search(1).is_none() => Walk::Rooted,
         _ => Walk::Two,
     }
-}
-
-#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
-fn search_walk(_state: &ffi::ResState, _name: &str) -> Walk {
-    Walk::One
 }
 
 /// Shorten libc's retransmits so one name's tries land inside `budget`: by
@@ -742,10 +731,8 @@ mod ffi {
     // Search options from glibc's <resolv.h>.
 
     /// Search a name without dots in the default domain.
-    #[cfg(all(target_os = "linux", target_env = "gnu"))]
     pub(super) const RES_DEFNAMES: libc::c_ulong = 0x80;
     /// Search a dotted relative name in the search list.
-    #[cfg(all(target_os = "linux", target_env = "gnu"))]
     pub(super) const RES_DNSRCH: libc::c_ulong = 0x200;
 
     // Thread-safe resolver state generated from the target platform's
@@ -809,7 +796,7 @@ mod ffi {
     }
 }
 
-#[cfg(all(test, target_os = "linux", target_env = "gnu"))]
+#[cfg(test)]
 mod search_walk_tests {
     use std::{ffi::CStr, mem};
 

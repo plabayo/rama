@@ -137,9 +137,9 @@ struct Availability {
 /// [`Config::reprobe_interval`]. Lookups wait up to
 /// [`Config::connect_timeout`] for the first probe's verdict; otherwise, and
 /// during a re-probe, they report [`ResolvedLookup::Unavailable`] so the
-/// caller uses the native backend instead. Transitions go through one mutex (its critical sections
-/// are a few loads/stores) so a success and a concurrent failure can never
-/// interleave into a wrong breaker verdict.
+/// caller uses the native backend instead. Transitions go through one mutex
+/// (its critical sections are a few loads/stores) so a success and a
+/// concurrent failure can never interleave into a wrong breaker verdict.
 #[derive(Debug)]
 pub(super) struct SystemdResolved {
     config: Config,

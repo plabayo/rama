@@ -40,9 +40,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use parking_lot::Mutex;
-use rama_core::error::BoxError;
-use rama_core::futures::{Stream, StreamExt as _, async_stream::stream_fn, future::Either, stream};
-use rama_core::telemetry::tracing;
+use rama_core::{
+    error::BoxError,
+    futures::{Stream, StreamExt as _, async_stream::stream_fn, future::Either, stream},
+    telemetry::tracing,
+};
 use rama_net::address::Domain;
 use rama_utils::macros::generate_set_and_with;
 use rama_utils::str::arcstr::ArcStr;
@@ -65,7 +67,8 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 #[non_exhaustive]
 /// Apple-native [`DnsResolver`] implementation using `dns_sd.h`.
 ///
-/// The default timeout is 5 seconds. Use [`Self::with_timeout`] to override it.
+/// Concurrent lookups of one name and record type share one query, and at
+/// most 64 run at once, as each holds an mDNSResponder connection.
 pub struct AppleDnsResolver {
     timeout: Duration,
     limit: LookupLimit,
@@ -94,8 +97,9 @@ impl AppleDnsResolver {
     }
 
     generate_set_and_with! {
-        /// Concurrent lookups are only shared between resolvers with the
-        /// same timeout.
+        /// The budget of one lookup, including any wait for a free slot
+        /// (default 5s). Clones made before this call no longer share
+        /// lookups with this resolver.
         pub fn timeout(mut self, timeout: Duration) -> Self {
             self.timeout = timeout;
             self.in_flight = InFlight::new(Abandoned::Cancel);
@@ -109,9 +113,11 @@ impl AppleDnsResolver {
     }
 
     generate_set_and_with! {
-        /// Maximum concurrent DNS-SD queries (default 64). Each holds its own
-        /// mDNSResponder connection and file descriptor (launchd's default
-        /// soft limit is 256); an unbounded burst of distinct names times out.
+        /// Maximum concurrent DNS-SD queries (default 64, at least 1). Each
+        /// holds an mDNSResponder connection and its file descriptor, of
+        /// launchd's default soft limit of 256; lookups past the bound wait
+        /// for a slot within their timeout. Clones made before this call keep
+        /// their own bounds.
         pub fn max_concurrency(mut self, max: Option<usize>) -> Self {
             self.limit = self.limit.with(|limits| limits.max_concurrency = max);
             self
@@ -125,8 +131,9 @@ impl AppleDnsResolver {
 
     generate_set_and_with! {
         /// Maximum queries started within one [burst window](Self::burst_window)
-        /// and still unanswered (default 128); an answer frees its place at
-        /// once, a query waiting on a slow upstream once the window has passed.
+        /// and still unanswered (default 128, at least 1); an answer frees its
+        /// place at once, a query waiting on a slow upstream once the window
+        /// has passed. Clones made before this call keep their own bounds.
         pub fn burst_limit(mut self, max: Option<usize>) -> Self {
             self.limit = self.limit.with(|limits| limits.burst_limit = max);
             self
@@ -139,7 +146,8 @@ impl AppleDnsResolver {
     }
 
     generate_set_and_with! {
-        /// The window of [`Self::burst_limit`] (default 20ms).
+        /// The window of [`Self::burst_limit`] (default 20ms). Clones made
+        /// before this call keep their own bounds.
         pub fn burst_window(mut self, window: Duration) -> Self {
             self.limit = self.limit.with(|limits| limits.burst_window = window);
             self

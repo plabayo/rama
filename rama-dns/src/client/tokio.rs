@@ -70,8 +70,9 @@ impl TokioDnsResolver {
     }
 
     generate_set_and_with! {
-        /// Concurrent lookups are only shared between resolvers with the
-        /// same timeout.
+        /// The budget of one lookup, including any wait for a free slot
+        /// (default 5s). Clones made before this call no longer share
+        /// lookups with this resolver.
         pub fn timeout(mut self, timeout: Duration) -> Self {
             self.timeout = timeout;
             self.in_flight = InFlight::default();
@@ -86,9 +87,10 @@ impl TokioDnsResolver {
 
     generate_set_and_with! {
         /// Maximum concurrent `getaddrinfo` calls (default 384, 64 on Apple
-        /// platforms). Each holds a blocking-pool thread until libc returns,
-        /// which a timeout cannot cancel, and on Apple platforms an
-        /// mDNSResponder connection of launchd's default 256 descriptors.
+        /// platforms, at least 1). Each holds a blocking-pool thread until
+        /// libc returns, which a timeout cannot cancel, and on Apple platforms
+        /// an mDNSResponder connection of launchd's default 256 descriptors.
+        /// Clones made before this call keep their own bounds.
         pub fn max_concurrency(mut self, max: Option<usize>) -> Self {
             self.limit = self.limit.with(|limits| limits.max_concurrency = max);
             self
@@ -103,10 +105,11 @@ impl TokioDnsResolver {
     generate_set_and_with! {
         /// Maximum `getaddrinfo` calls started within one
         /// [burst window](Self::burst_window) and still unanswered (default
-        /// 64, as each asks for A and AAAA). A local stub such as
+        /// 64, as each asks for A and AAAA; at least 1). A local stub such as
         /// systemd-resolved drops queries that arrive faster than it reads
         /// them; an answer frees its place at once, a query waiting on a slow
-        /// upstream once the window has passed.
+        /// upstream once the window has passed. Clones made before this call
+        /// keep their own bounds.
         pub fn burst_limit(mut self, max: Option<usize>) -> Self {
             self.limit = self.limit.with(|limits| limits.burst_limit = max);
             self
@@ -119,7 +122,8 @@ impl TokioDnsResolver {
     }
 
     generate_set_and_with! {
-        /// The window of [`Self::burst_limit`] (default 20ms).
+        /// The window of [`Self::burst_limit`] (default 20ms). Clones made
+        /// before this call keep their own bounds.
         pub fn burst_window(mut self, window: Duration) -> Self {
             self.limit = self.limit.with(|limits| limits.burst_window = window);
             self
@@ -248,7 +252,7 @@ fn lookup_host_stream(
             Some(Ok(Some(Err(err)))) => {
                 yielder
                     .yield_item(Err(TokioDnsResolverError::message(format!(
-                        "tokio dns lookup_host failed: {err}"
+                        "tokio dns getaddrinfo failed: {err}"
                     ))
                     .into()))
                     .await;

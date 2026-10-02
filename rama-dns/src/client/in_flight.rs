@@ -14,7 +14,7 @@ use std::{
     time::Duration,
 };
 
-use ahash::HashMap;
+use ahash::{HashMap, RandomState};
 use parking_lot::Mutex;
 use pin_project_lite::pin_project;
 use rama_core::{
@@ -41,7 +41,7 @@ type Flights<K> = Arc<Shards<K>>;
 
 /// The runs by key, spread over locks so unrelated keys rarely contend.
 struct Shards<K> {
-    hasher: ahash::RandomState,
+    hasher: RandomState,
     /// A power of two: contention comes from threads, not from keys.
     maps: Box<[Mutex<Map<K>>]>,
 }
@@ -51,7 +51,7 @@ impl<K> Shards<K> {
         let threads = std::thread::available_parallelism().map_or(4, NonZero::get);
         let shards = (threads * 4).next_power_of_two().clamp(8, 1024);
         Self {
-            hasher: ahash::RandomState::new(),
+            hasher: RandomState::new(),
             maps: (0..shards).map(|_| Mutex::default()).collect(),
         }
     }
@@ -475,7 +475,8 @@ impl<T> Outcome<T> {
 }
 
 pin_project! {
-    /// The future of [`Outcome::collect`]; holds its stream once, unlike an `async fn`.
+    /// The future of [`Outcome::collect`]: it stores its stream once, where
+    /// an `async fn` would hold it twice.
     pub(crate) struct Collect<S, T> {
         #[pin]
         stream: S,

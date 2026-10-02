@@ -144,8 +144,9 @@ where
     let mut result: *mut addrinfo = ptr::null_mut();
     let status = unsafe { libc::getaddrinfo(name.as_ptr(), ptr::null(), &hints, &mut result) };
     if status != 0 {
-        // SAFETY: `gai_strerror` returns a static NUL-terminated message.
+        // SAFETY: `gai_strerror` takes any status code.
         let message = unsafe { libc::gai_strerror(status) };
+        // SAFETY: it returns a static NUL-terminated message.
         let message = unsafe { CStr::from_ptr(message) }
             .to_string_lossy()
             .into_owned();

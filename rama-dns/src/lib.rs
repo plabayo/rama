@@ -47,15 +47,15 @@
 //! lookup occupies a tokio blocking-pool thread for the duration of the libc
 //! call. Those resolvers bound how many such calls run at once (384 by
 //! default, 64 on Apple platforms) and how many queries a burst may leave
-//! unanswered (128 per 20ms, 64 for `TokioDnsResolver`, which asks for A and
-//! AAAA per call), so a burst of distinct names neither floods the pool nor
-//! overflows a local stub resolver, while slow upstream answers do not hold
-//! new lookups back. Bounds hold per resolver and its clones. Under
-//! sustained high-concurrency DNS load
-//! (typical for forward proxies) prefer the pure-Rust
-//! `client::HickoryDnsResolver` (gated behind the `hickory` feature), which
-//! speaks DNS directly over async UDP/TCP and gives finer control over
-//! caching and upstream selection.
+//! unanswered (128 per 20ms; `TokioDnsResolver` counts 64 calls, as each asks
+//! for A and AAAA), so a burst of distinct names neither floods the pool nor
+//! overflows a local stub resolver; a slow upstream answer frees its burst
+//! place after the window but keeps its call slot. Bounds are shared by a
+//! resolver and the clones made after its last limit setter. Under sustained
+//! high-concurrency DNS load (typical for forward proxies) prefer the
+//! pure-Rust `client::HickoryDnsResolver` (gated behind the `hickory`
+//! feature), which speaks DNS directly over async UDP/TCP and gives finer
+//! control over caching and upstream selection.
 //!
 //! The native resolvers (and hickory, internally) let concurrent lookups of
 //! the same name and record type share one query, so a burst of connections

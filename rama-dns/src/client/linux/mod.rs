@@ -28,8 +28,6 @@ use std::{
     time::Duration,
 };
 
-use tokio::time::Instant;
-
 use rama_core::{
     error::BoxError,
     futures::{Stream, StreamExt as _, async_stream::stream_fn, future::Either, stream},
@@ -40,6 +38,7 @@ use rama_utils::{
     macros::{error::static_str_error, generate_set_and_with},
     str::arcstr::ArcStr,
 };
+use tokio::time::Instant;
 
 use super::{
     in_flight::{self, InFlight, Outcome},
@@ -128,8 +127,9 @@ impl LinuxDnsResolverBuilder {
         /// If a systemd-resolved transport attempt consumes this budget and
         /// falls back to the native backend, that fallback receives a fresh
         /// budget. During the short pre-breaker window, total lookup latency
-        /// can therefore approach twice this value; while a daemon probe
-        /// settles, it is at most the connect timeout plus this value.
+        /// can therefore approach twice this value. Waiting for a first daemon
+        /// probe (at most the connect timeout) counts against the
+        /// systemd-resolved attempt's budget.
         pub fn timeout(mut self, timeout: Duration) -> Self {
             self.timeout = timeout;
             self
@@ -177,9 +177,9 @@ impl LinuxDnsResolverBuilder {
     }
 
     generate_set_and_with! {
-        /// Maximum concurrent native (libc) lookups (default 384). Each holds
-        /// a blocking-pool thread until libc returns, which a timeout cannot
-        /// cancel.
+        /// Maximum concurrent native (libc) lookups (default 384, at least 1).
+        /// Each holds a blocking-pool thread until libc returns, which a
+        /// timeout cannot cancel.
         pub fn native_max_concurrency(mut self, max: Option<usize>) -> Self {
             self.native_limits.max_concurrency = max;
             self
@@ -189,9 +189,10 @@ impl LinuxDnsResolverBuilder {
     generate_set_and_with! {
         /// Maximum native lookups started within one
         /// [burst window](Self::native_burst_window) and still unanswered
-        /// (default 128). A local stub such as systemd-resolved drops queries
-        /// that arrive faster than it reads them; an answer frees its place at
-        /// once, a query waiting on a slow upstream once the window has passed.
+        /// (default 128, at least 1). A local stub such as systemd-resolved
+        /// drops queries that arrive faster than it reads them; an answer frees
+        /// its place at once, a query waiting on a slow upstream once the
+        /// window has passed.
         pub fn native_burst_limit(mut self, max: Option<usize>) -> Self {
             self.native_limits.burst_limit = max;
             self
@@ -421,8 +422,8 @@ impl LinuxDnsResolver {
         /// Set the timeout for each DNS backend attempt.
         ///
         /// See [`LinuxDnsResolverBuilder::timeout`] for fallback latency
-        /// semantics. The cache stays shared with clones; concurrent lookups
-        /// are only shared between resolvers with the same timeout.
+        /// semantics. The cache stays shared with clones; clones made before
+        /// this call no longer share lookups with this resolver.
         pub fn timeout(mut self, timeout: Duration) -> Self {
             self.timeout = timeout;
             self.in_flight = InFlight::default();
@@ -442,6 +443,8 @@ impl LinuxDnsResolver {
     }
 
     generate_set_and_with! {
+        /// Set the maximum unanswered native lookups per burst window.
+        ///
         /// See [`LinuxDnsResolverBuilder::native_burst_limit`]. Clones made
         /// before this call keep their own bounds.
         pub fn native_burst_limit(mut self, max: Option<usize>) -> Self {
@@ -451,6 +454,8 @@ impl LinuxDnsResolver {
     }
 
     generate_set_and_with! {
+        /// Set the native burst window.
+        ///
         /// See [`LinuxDnsResolverBuilder::native_burst_window`]. Clones made
         /// before this call keep their own bounds.
         pub fn native_burst_window(mut self, window: Duration) -> Self {
@@ -1924,11 +1929,11 @@ mod tests {
             "missing.example.".try_into().expect("valid domain"),
         );
         let addr = Ipv4Addr::new(192, 0, 2, 11);
-        cache.insert_ipv4(hit.clone(), vec![addr], Some(Duration::from_secs(60)));
+        cache.insert_ipv4(hit.clone(), vec![addr], Some(Duration::from_mins(1)));
         cache.insert_negative(
             negative.clone(),
             cache::RecordKind::Ipv4,
-            Duration::from_secs(60),
+            Duration::from_mins(1),
         );
         let lookups = Arc::new(AtomicUsize::new(0));
 
