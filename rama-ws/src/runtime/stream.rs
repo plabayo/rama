@@ -197,7 +197,9 @@ where
         })) {
             Ok(v) => Poll::Ready(Some(Ok(v))),
             Err(e) => {
-                if e.is_connection_error() {
+                // A transport end is clean once the peer's Close arrived; before that it is an
+                // abnormal closure (RFC 6455 §7.1.5) and reported.
+                if e.is_connection_error() && !self.inner.can_read() {
                     self.begin_shutdown();
                     ready!(self.poll_shutdown_transport(ContextWaker::Read, cx));
                     Poll::Ready(None)
@@ -304,7 +306,7 @@ where
         match result {
             // The flush completed the close handshake: end the transport, so the queued close
             // reaches the peer followed by an orderly end of stream.
-            Err(err) if err.is_connection_error() => {
+            Err(err) if err.is_connection_error() && !self.inner.can_write() => {
                 self.begin_shutdown();
                 ready!(self.poll_shutdown_transport(ContextWaker::Write, cx));
                 Poll::Ready(Ok(()))
@@ -346,7 +348,7 @@ where
                 Poll::Pending
             }
             Err(err) => {
-                if err.is_connection_error() {
+                if err.is_connection_error() && !self.inner.can_write() {
                     self.begin_shutdown();
                     ready!(self.poll_shutdown_transport(ContextWaker::Write, cx));
                     Poll::Ready(Ok(()))
@@ -401,6 +403,102 @@ mod tests {
             "the client never saw the server end the transport"
         );
         drop(server);
+    }
+
+    /// A peer transport replaying `reads`, then failing every read and write with `fail`.
+    struct Scripted {
+        reads: std::collections::VecDeque<Vec<u8>>,
+        fail: std::io::ErrorKind,
+        written: Vec<u8>,
+    }
+
+    impl tokio::io::AsyncRead for Scripted {
+        fn poll_read(
+            mut self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(match self.reads.pop_front() {
+                Some(bytes) => {
+                    buf.put_slice(&bytes);
+                    Ok(())
+                }
+                None => Err(self.fail.into()),
+            })
+        }
+    }
+
+    impl tokio::io::AsyncWrite for Scripted {
+        fn poll_write(
+            mut self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            buf: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            // The peer's Close is read first; it resets before taking our reply.
+            if self.reads.is_empty() && !self.written.is_empty() {
+                return std::task::Poll::Ready(Err(self.fail.into()));
+            }
+            self.written.extend_from_slice(buf);
+            std::task::Poll::Ready(Ok(buf.len()))
+        }
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    // A client's empty Close frame, masked with a zero key.
+    const PEER_CLOSE: [u8; 6] = [0x88, 0x80, 0, 0, 0, 0];
+
+    async fn server_over(reads: Vec<Vec<u8>>) -> AsyncWebSocket<ServiceInput<Scripted>> {
+        let io = Scripted {
+            reads: reads.into(),
+            fail: std::io::ErrorKind::ConnectionReset,
+            written: Vec::new(),
+        };
+        AsyncWebSocket::from_raw_socket(ServiceInput::new(io), Role::Server, None).await
+    }
+
+    /// RFC 6455 §7.1.4: once both Close frames crossed, a transport reset is a clean close.
+    #[tokio::test]
+    async fn a_reset_after_the_closing_handshake_is_a_clean_end() {
+        let mut server = server_over(vec![PEER_CLOSE.to_vec()]).await;
+        server.close(None).await.unwrap();
+        assert!(matches!(server.next().await, Some(Ok(Message::Close(_)))));
+        assert!(server.next().await.is_none());
+    }
+
+    /// The peer's Close states how the session ended, even when it resets before our reply.
+    #[tokio::test]
+    async fn a_reset_after_the_peers_close_is_a_clean_end() {
+        let mut server = server_over(vec![PEER_CLOSE.to_vec()]).await;
+        assert!(matches!(server.next().await, Some(Ok(Message::Close(_)))));
+        let after = server.next().await;
+        assert!(
+            after.is_none(),
+            "no more messages after the peer's Close: {after:?}"
+        );
+    }
+
+    /// RFC 6455 §7.1.5: a reset before any Close is abnormal (1006), and reported.
+    #[tokio::test]
+    async fn a_reset_before_any_close_fails_the_stream() {
+        let mut server = server_over(Vec::new()).await;
+        let error = server.next().await.unwrap().unwrap_err();
+        assert!(
+            matches!(&error, crate::protocol::ProtocolError::Io(error)
+                if error.kind() == std::io::ErrorKind::ConnectionReset),
+            "{error:?}"
+        );
+        assert!(server.next().await.is_none());
     }
 
     #[test]
