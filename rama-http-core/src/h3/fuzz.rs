@@ -4,7 +4,10 @@ use super::{
     Error,
     connection::{Config, Shared},
     control::{Control, Role},
-    datagram::{AbortRequest, DatagramConfig, DatagramLimits, Demux, ReceiveEnd, Semantics},
+    datagram::{
+        AbortRequest, DatagramConfig, DatagramDrops, DatagramLimits, Demux, MIN_DATAGRAM_CHARGE,
+        ReceiveEnd, Semantics,
+    },
     frame::{FrameDecoder, FrameEvent},
     headers::{encode_request, request_head as decode_request_head},
     qpack::{Decoder, DecoderConfig, FieldPair},
@@ -367,19 +370,22 @@ struct Sent {
     clippy::unwrap_used,
     reason = "fuzz oracle: a violated invariant must crash the target"
 )]
-pub fn datagram_demux(input: &[u8]) {
+/// Returns the drops and how many datagrams were yielded, so a caller can tell the run
+/// reached the paths it means to cover.
+pub fn datagram_demux(input: &[u8]) -> (DatagramDrops, u64) {
     let mut input = input.iter().copied();
     let mut next = move || input.next();
     let (Some(queue_len), Some(pending_len), Some(budget), Some(flags)) =
         (next(), next(), next(), next())
     else {
-        return;
+        return Default::default();
     };
     let config = DatagramConfig {
         limits: DatagramLimits {
             queue_len: usize::from(queue_len % 6),
             pending_len: usize::from(pending_len % 6),
-            max_buffered_bytes: usize::from(budget) * 4,
+            // Every datagram is charged at least a packet: up to about 16 of them fit.
+            max_buffered_bytes: usize::from(budget) * MIN_DATAGRAM_CHARGE / 16,
         },
         violations: if flags & 1 == 0 {
             ViolationPolicy::Ignore
@@ -505,6 +511,7 @@ pub fn datagram_demux(input: &[u8]) {
             "a datagram was lost or counted twice"
         );
     }
+    (demux.drops(), yielded)
 }
 
 /// Field names the request-head input selects from; other selectors become raw names.
@@ -856,13 +863,23 @@ mod tests {
             state ^= state << 17;
             state
         };
+        let (mut yielded, mut queue_full, mut over_budget, mut expired) = (0, 0, 0, 0);
         for _ in 0..4000 {
             let len = usize::try_from(next() % 512).unwrap();
             let input: Vec<u8> = (0..len.div_ceil(8))
                 .flat_map(|_| next().to_le_bytes())
                 .take(len)
                 .collect();
-            datagram_demux(&input);
+            let (drops, run_yielded) = datagram_demux(&input);
+            yielded += run_yielded;
+            queue_full += drops.queue_full;
+            over_budget += drops.over_budget;
+            expired += drops.expired;
         }
+        // The oracle only guards what it reaches: delivery, both evictions and expiry.
+        assert!(
+            yielded > 0 && queue_full > 0 && over_budget > 0 && expired > 0,
+            "yielded={yielded} queue_full={queue_full} over_budget={over_budget} expired={expired}"
+        );
     }
 }

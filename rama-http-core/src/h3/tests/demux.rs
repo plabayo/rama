@@ -206,6 +206,21 @@ fn held_datagrams_expire_after_their_lifetime() {
     assert_eq!(demux.drops().expired, 1);
 }
 
+/// Expired held datagrams leave on any later delivery, freeing their budget, also when their
+/// stream never registers.
+#[test]
+fn expired_held_datagrams_free_their_budget() {
+    let config = config(4, 4, 64 * C);
+    let now = Instant::now();
+    let mut demux = Demux::default();
+    register(&mut demux, &config, 0, now);
+    deliver(&mut demux, &config, 4, 3 * C, now);
+    assert_eq!((demux.pending_len(), demux.buffered()), (1, 3 * C));
+    deliver(&mut demux, &config, 0, C, now + LIFETIME * 2);
+    assert_eq!(demux.drops().expired, 1);
+    assert_eq!((demux.pending_len(), demux.buffered()), (0, C));
+}
+
 #[test]
 fn pending_datagrams_wait_a_few_round_trips_with_a_floor() {
     assert_eq!(
