@@ -268,28 +268,29 @@ impl AsyncWrite for H2Upgraded {
 
     fn poll_shutdown(
         mut self: Pin<&mut Self>,
-        _cx: &mut Context<'_>,
+        cx: &mut Context<'_>,
     ) -> Poll<Result<(), std::io::Error>> {
         self.check_reset()?;
         if self.send_closed {
             return Poll::Ready(Ok(()));
         }
         self.send_closed = true;
-        Poll::Ready(
-            self.send_stream
-                .send_end_of_stream()
-                .map_err(h2_to_io_error),
-        )
+        Poll::Ready(self.send_stream.send_end_of_stream().map_err(|error| {
+            // A stream the peer reset reports that reset, as a write would.
+            match self.send_stream.poll_reset(cx) {
+                Poll::Ready(result) => poll_reset_to_io_error(result),
+                Poll::Pending => h2_to_io_error(error),
+            }
+        }))
     }
 }
 
 /// A stream reset is a `ConnectionReset` carrying its reason, so a relay can reflect it
-/// (RFC 9113 §8.5); a reset without error, or a stream already closed, is a `BrokenPipe`.
+/// (RFC 9113 §8.5); only a reset without error is a `BrokenPipe`. A stream that ended in order
+/// never carries a reason, so `STREAM_CLOSED` is a reset like any other.
 fn reset_to_io_error(reason: Option<Reason>, e: crate::h2::Error) -> std::io::Error {
     match reason {
-        Some(Reason::NO_ERROR | Reason::STREAM_CLOSED) => {
-            std::io::Error::new(std::io::ErrorKind::BrokenPipe, e)
-        }
+        Some(Reason::NO_ERROR) => std::io::Error::new(std::io::ErrorKind::BrokenPipe, e),
         Some(_) if e.is_reset() => std::io::Error::new(std::io::ErrorKind::ConnectionReset, e),
         _ => h2_to_io_error(e),
     }
@@ -300,7 +301,7 @@ fn poll_reset_to_io_error(result: Result<Reason, crate::h2::Error>) -> std::io::
         Ok(reason) => {
             trace!("stream received RST_STREAM: {:?}", reason);
             match reason {
-                Reason::NO_ERROR | Reason::STREAM_CLOSED => std::io::ErrorKind::BrokenPipe.into(),
+                Reason::NO_ERROR => std::io::ErrorKind::BrokenPipe.into(),
                 reason => std::io::Error::new(
                     std::io::ErrorKind::ConnectionReset,
                     crate::h2::Error::from(reason),
