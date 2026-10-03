@@ -48,38 +48,16 @@ pub(crate) fn normalize_received(
             }
         }
     }
-    if let Some(fix) = replacement_host(uri.authority(), headers, authority_sensitive) {
-        fix.apply(headers);
+    if let Some(host) = replacement_host(uri.authority(), headers, authority_sensitive) {
+        set_host(headers, host);
     }
 }
 
 /// [`normalize_received`]'s `Host` rule for an authority the URI cannot hold, such as the
 /// `:authority` of an asterisk target.
-pub(crate) fn reconcile_host(
-    authority: AuthorityRef<'_>,
-    headers: &mut HeaderMap,
-    authority_sensitive: bool,
-) {
-    if let Some(fix) = replacement_host(Some(authority), headers, authority_sensitive) {
-        fix.apply(headers);
-    }
-}
-
-/// How a received `Host` changes to agree with the request authority.
-enum HostFix {
-    Replace(HeaderValue),
-    /// The authority cannot be written as a field value, so the line goes, as encoders drop it.
-    Remove,
-}
-
-impl HostFix {
-    fn apply(self, headers: &mut HeaderMap) {
-        match self {
-            Self::Replace(host) => set_host(headers, host),
-            Self::Remove => {
-                headers.remove(header::HOST);
-            }
-        }
+pub(crate) fn reconcile_host(authority: AuthorityRef<'_>, headers: &mut HeaderMap, authority_sensitive: bool) {
+    if let Some(host) = replacement_host(Some(authority), headers, authority_sensitive) {
+        set_host(headers, host);
     }
 }
 
@@ -87,7 +65,7 @@ fn replacement_host(
     authority: Option<AuthorityRef<'_>>,
     headers: &HeaderMap,
     authority_sensitive: bool,
-) -> Option<HostFix> {
+) -> Option<HeaderValue> {
     let values = headers.get_all(header::HOST);
     let host_sensitive = values.iter().any(HeaderValue::is_sensitive);
     // A Host derived from the authority keeps both never-index restrictions.
@@ -104,11 +82,9 @@ fn replacement_host(
                 parsed.userinfo().is_some() || !same_address(authority, parsed)
             }) =>
         {
-            Some(host_value(authority, derived_sensitive).map_or(HostFix::Remove, HostFix::Replace))
+            host_value(authority, derived_sensitive)
         }
-        (None, Some(parsed)) if parsed.userinfo().is_some() => {
-            host_value(parsed, host_sensitive).map(HostFix::Replace)
-        }
+        (None, Some(parsed)) if parsed.userinfo().is_some() => host_value(parsed, host_sensitive),
         _ => None,
     }
 }
