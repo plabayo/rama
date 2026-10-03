@@ -495,11 +495,8 @@ mod tests {
     async fn a_reset_before_any_close_fails_the_stream() {
         let mut server = server_over(Vec::new()).await;
         let error = server.next().await.unwrap().unwrap_err();
-        assert!(
-            matches!(&error, crate::protocol::ProtocolError::Io(error)
-                if error.kind() == std::io::ErrorKind::ConnectionReset),
-            "{error:?}"
-        );
+        assert_matches!(&error, crate::protocol::ProtocolError::Io(error)
+                if error.kind() == std::io::ErrorKind::ConnectionReset, "{error:?}");
         assert!(server.next().await.is_none());
     }
 

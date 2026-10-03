@@ -84,21 +84,15 @@ fn payloads_that_exactly_fit_the_budget_are_kept() {
     // Held for a future stream, filling the budget exactly, then adopted.
     deliver(&mut demux, &config, 4, 8 * C, now);
     register(&mut demux, &config, 4, now);
-    assert!(
-        matches!(poll(&mut demux, 4), Poll::Ready(Ok(Some(payload))) if payload.len() == 8 * C)
-    );
+    assert_matches!(poll(&mut demux, 4), Poll::Ready(Ok(Some(payload))) if payload.len() == 8 * C);
     // Queued: a sum that fits where a product would not, then one over the budget, for
     // which the oldest makes room.
     register(&mut demux, &config, 8, now);
     deliver(&mut demux, &config, 8, 2 * C, now);
     deliver(&mut demux, &config, 8, 5 * C, now);
     deliver(&mut demux, &config, 8, 2 * C, now);
-    assert!(
-        matches!(poll(&mut demux, 8), Poll::Ready(Ok(Some(payload))) if payload.len() == 5 * C)
-    );
-    assert!(
-        matches!(poll(&mut demux, 8), Poll::Ready(Ok(Some(payload))) if payload.len() == 2 * C)
-    );
+    assert_matches!(poll(&mut demux, 8), Poll::Ready(Ok(Some(payload))) if payload.len() == 5 * C);
+    assert_matches!(poll(&mut demux, 8), Poll::Ready(Ok(Some(payload))) if payload.len() == 2 * C);
     assert!(poll(&mut demux, 8).is_pending());
     assert_eq!(demux.drops().over_budget, 1);
     // The request's own count, reported through its native channel.
@@ -117,9 +111,7 @@ fn held_datagrams_and_a_payload_that_exactly_fill_the_budget_keep_it() {
     deliver(&mut demux, &config, 8, 6 * C, now);
     deliver(&mut demux, &config, 0, 4 * C, now);
     assert_eq!(demux.slot_dropped(0), 1);
-    assert!(
-        matches!(poll(&mut demux, 0), Poll::Ready(Ok(Some(payload))) if payload.len() == 4 * C)
-    );
+    assert_matches!(poll(&mut demux, 0), Poll::Ready(Ok(Some(payload))) if payload.len() == 4 * C);
     demux.assert_consistent(&config.limits);
 }
 
@@ -135,9 +127,7 @@ fn a_held_datagram_that_fits_in_the_oldest_place_replaces_it() {
     assert_eq!(demux.drops().expired, 1);
     assert_eq!((demux.pending_len(), demux.buffered()), (1, 2 * C));
     register(&mut demux, &config, 8, now);
-    assert!(
-        matches!(poll(&mut demux, 8), Poll::Ready(Ok(Some(payload))) if payload.len() == 2 * C)
-    );
+    assert_matches!(poll(&mut demux, 8), Poll::Ready(Ok(Some(payload))) if payload.len() == 2 * C);
     demux.assert_consistent(&config.limits);
 }
 
@@ -164,9 +154,7 @@ fn held_datagrams_crowding_the_budget_drop_the_payload_not_the_queues() {
     // Held for a stream not open yet, it leaves no room that evicting queues could make.
     deliver(&mut demux, &config, 8, 6 * C, now);
     deliver(&mut demux, &config, 0, 5 * C, now);
-    assert!(
-        matches!(poll(&mut demux, 0), Poll::Ready(Ok(Some(payload))) if payload.len() == 4 * C)
-    );
+    assert_matches!(poll(&mut demux, 0), Poll::Ready(Ok(Some(payload))) if payload.len() == 4 * C);
     assert!(poll(&mut demux, 0).is_pending());
     assert_eq!(demux.drops().over_budget, 1);
     assert_eq!(demux.slot_dropped(0), 1);
@@ -183,9 +171,7 @@ fn a_payload_that_can_never_fit_leaves_a_full_queue_alone() {
     }
     deliver(&mut demux, &config, 8, 65 * C, now);
     for _ in 0..4 {
-        assert!(
-            matches!(poll(&mut demux, 8), Poll::Ready(Ok(Some(payload))) if payload.len() == 8 * C)
-        );
+        assert_matches!(poll(&mut demux, 8), Poll::Ready(Ok(Some(payload))) if payload.len() == 8 * C);
     }
     assert!(poll(&mut demux, 8).is_pending());
     assert_eq!(demux.drops().over_budget, 1);
@@ -205,9 +191,7 @@ fn small_datagrams_are_charged_a_packet() {
     }
     assert_eq!(demux.buffered(), 3 * C);
     for len in [1, 0, 1] {
-        assert!(
-            matches!(poll(&mut demux, 0), Poll::Ready(Ok(Some(payload))) if payload.len() == len)
-        );
+        assert_matches!(poll(&mut demux, 0), Poll::Ready(Ok(Some(payload))) if payload.len() == len);
     }
     assert!(poll(&mut demux, 0).is_pending());
     assert_eq!(demux.drops().over_budget, 1);
@@ -226,9 +210,7 @@ fn a_held_datagram_that_cannot_fit_keeps_the_oldest() {
     assert_eq!(demux.drops().expired, 0);
     register(&mut demux, &config, 4, now);
     for _ in 0..2 {
-        assert!(
-            matches!(poll(&mut demux, 4), Poll::Ready(Ok(Some(payload))) if payload.len() == C)
-        );
+        assert_matches!(poll(&mut demux, 4), Poll::Ready(Ok(Some(payload))) if payload.len() == C);
     }
 }
 
@@ -402,9 +384,7 @@ fn stalled_queues_make_room_for_a_healthy_one() {
     demux.assert_consistent(&config.limits);
     for _ in 0..100 {
         deliver(&mut demux, &config, 8, 8 * C, now);
-        assert!(
-            matches!(poll(&mut demux, 8), Poll::Ready(Ok(Some(payload))) if payload.len() == 8 * C)
-        );
+        assert_matches!(poll(&mut demux, 8), Poll::Ready(Ok(Some(payload))) if payload.len() == 8 * C);
     }
     assert_eq!(demux.slot_dropped(8), 0);
     assert_eq!(demux.slot_dropped(0) + demux.slot_dropped(4), 1);

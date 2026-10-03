@@ -238,11 +238,9 @@ async fn native_carrier_is_preferred_without_oversize_fallback() {
         .send_datagram(Bytes::from_static(b"too large for it"))
         .await
         .unwrap_err();
-    assert!(
-        matches!(
-            error,
-            SessionError::Native(NativeSendError::TooLarge { max: 8 })
-        ),
+    assert_matches!(
+        error,
+        SessionError::Native(NativeSendError::TooLarge { max: 8 }),
         "{error:?}"
     );
     // The limit is read at every send: a shrunk one applies at once.
@@ -251,11 +249,9 @@ async fn native_carrier_is_preferred_without_oversize_fallback() {
         .send_datagram(Bytes::from_static(b"native"))
         .await
         .unwrap_err();
-    assert!(
-        matches!(
-            error,
-            SessionError::Native(NativeSendError::TooLarge { max: 4 })
-        ),
+    assert_matches!(
+        error,
+        SessionError::Native(NativeSendError::TooLarge { max: 4 }),
         "{error:?}"
     );
     // Reliable control keeps using the data stream.
@@ -304,14 +300,12 @@ async fn native_and_capsule_sources_are_merged_fairly() {
     native.push(b"late");
     peer.close().await.unwrap();
     while let Some(event) = local.recv().await.unwrap() {
-        assert!(
-            matches!(
-                event,
-                SessionEvent::Datagram {
-                    transport: DatagramTransport::Native,
-                    ..
-                }
-            ),
+        assert_matches!(
+            event,
+            SessionEvent::Datagram {
+                transport: DatagramTransport::Native,
+                ..
+            },
             "{event:?}"
         );
     }
@@ -587,8 +581,9 @@ async fn streamed_capsules_reject_interleaving_and_overruns() {
         local.start_capsule(header(0x4243, 1)).await,
         local.close().await,
     ] {
-        assert!(
-            matches!(rejected, Err(SessionError::CapsuleInProgress)),
+        assert_matches!(
+            rejected,
+            Err(SessionError::CapsuleInProgress),
             "{rejected:?}"
         );
     }
@@ -780,10 +775,7 @@ async fn close_commits_once_and_can_be_resumed() {
             .map(drop),
         sender.start_capsule(header(0x4242, 1)).await,
     ] {
-        assert!(
-            matches!(rejected, Err(SessionError::SendClosed)),
-            "{rejected:?}"
-        );
+        assert_matches!(rejected, Err(SessionError::SendClosed), "{rejected:?}");
     }
     sender.close().await.unwrap();
     let mut values = Vec::new();
@@ -1044,18 +1036,12 @@ async fn stream_failures_are_sticky_per_direction() {
             .send_capsule(CONTROL, Bytes::from_static(b"x"))
             .await
             .unwrap_err();
-        assert!(
-            matches!(&error, SessionError::Io(error) if error.kind() == io::ErrorKind::BrokenPipe),
-            "{error:?}"
-        );
+        assert_matches!(&error, SessionError::Io(error) if error.kind() == io::ErrorKind::BrokenPipe, "{error:?}");
     }
     assert_matches!(session.close().await, Err(SessionError::Io(_)));
     for _ in 0..2 {
         let error = session.recv().await.unwrap_err();
-        assert!(
-            matches!(&error, SessionError::Io(error) if error.kind() == io::ErrorKind::ConnectionReset),
-            "{error:?}"
-        );
+        assert_matches!(&error, SessionError::Io(error) if error.kind() == io::ErrorKind::ConnectionReset, "{error:?}");
     }
 }
 
@@ -1096,10 +1082,7 @@ async fn native_receive_failures_end_receiving() {
         let mut cx = Context::from_waker(Waker::noop());
         for attempt in 0..2 {
             let result = receiver.poll_recv(&mut cx);
-            assert!(
-                matches!(result, Poll::Ready(Err(SessionError::NativeRecv(e))) if e == error),
-                "{error:?} attempt {attempt}: {result:?}"
-            );
+            assert_matches!(result, Poll::Ready(Err(SessionError::NativeRecv(e))) if e == error, "{error:?} attempt {attempt}: {result:?}");
         }
     }
 }
@@ -1686,10 +1669,7 @@ async fn aborted_sessions_release_accepted_payloads_on_any_next_send() {
                 "send_capsule_data" => sender.send_capsule_data(Bytes::from_static(b"x")).await,
                 _ => sender.close().await,
             };
-            assert!(
-                matches!(&result, Err(SessionError::Io(error)) if error.kind() == io::ErrorKind::ConnectionAborted),
-                "{accepted}/{operation}: {result:?}"
-            );
+            assert_matches!(&result, Err(SessionError::Io(error)) if error.kind() == io::ErrorKind::ConnectionAborted, "{accepted}/{operation}: {result:?}");
             // The sender lives on, but nothing it accepted can be written any more.
             assert_eq!(dropped.load(Ordering::Acquire), 1, "{accepted}/{operation}");
             drop(sender);
@@ -1771,19 +1751,11 @@ async fn failed_sends_leave_the_receive_half_alone() {
                 .await
                 .unwrap_err()
         };
-        assert!(
-            matches!(error, SessionError::Io(_)),
-            "{streamed}: {error:?}"
-        );
+        assert_matches!(error, SessionError::Io(_), "{streamed}: {error:?}");
         drop(sender);
         assert_eq!(aborted.load(Ordering::Relaxed), 0, "{streamed}");
-        assert!(
-            matches!(
-                receiver.recv().await.unwrap(),
-                Some(SessionEvent::Capsule { ty, value }) if ty == CONTROL && value == b"bye"[..]
-            ),
-            "{streamed}"
-        );
+        assert_matches!(receiver.recv().await.unwrap(),
+                Some(SessionEvent::Capsule { ty, value }) if ty == CONTROL && value == b"bye"[..], "{streamed}");
         assert!(receiver.recv().await.unwrap().is_none(), "{streamed}");
     }
 }

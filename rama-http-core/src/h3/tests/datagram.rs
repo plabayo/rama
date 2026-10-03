@@ -231,11 +231,9 @@ async fn native_datagrams_round_trip_beside_reliable_capsules() {
             .send_datagram(Bytes::from(vec![0; 100_000]))
             .await
             .unwrap_err();
-        assert!(
-            matches!(
-                error,
-                SessionError::Native(NativeSendError::TooLarge { .. })
-            ),
+        assert_matches!(
+            error,
+            SessionError::Native(NativeSendError::TooLarge { .. }),
             "{error:?}"
         );
         let client_native = client_session.native().cloned().unwrap();

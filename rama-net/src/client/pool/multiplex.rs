@@ -1281,11 +1281,9 @@ mod tests {
         drop(other);
 
         state.set_in_use(false);
-        assert!(
-            matches!(
-                pool.get_conn(&TestId(0), &EMPTY_INPUT).await,
-                Ok(ConnectionResult::Connection(_))
-            ),
+        assert_matches!(
+            pool.get_conn(&TestId(0), &EMPTY_INPUT).await,
+            Ok(ConnectionResult::Connection(_)),
             "work that just ended does not count as idle time"
         );
     }
@@ -1312,11 +1310,9 @@ mod tests {
         state.set_in_use(false);
         state.set_limit(4);
         tokio::time::sleep(Duration::from_millis(5)).await;
-        assert!(
-            matches!(
-                pool.get_conn(&TestId(0), &EMPTY_INPUT).await,
-                Ok(ConnectionResult::Connection(_))
-            ),
+        assert_matches!(
+            pool.get_conn(&TestId(0), &EMPTY_INPUT).await,
+            Ok(ConnectionResult::Connection(_)),
             "idle for 5ms of a 30ms timeout"
         );
     }
