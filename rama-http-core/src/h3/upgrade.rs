@@ -195,8 +195,10 @@ impl<R: RecvStream + Unpin, S: SendStream + Unpin> AsyncRead for Tunnel<R, S> {
                 return Poll::Ready(Ok(()));
             }
             let event = match ready!(self.reader.poll_event(cx)) {
-                // A reset without error ends the stream as a FIN would.
+                // A reset without error ends the stream as a FIN would, ownership included.
                 Err(error) if error.is_peer_reset() && error.code() == Code::H3_NO_ERROR => {
+                    self.reader.finish();
+                    self.release_finished();
                     return Poll::Ready(Ok(()));
                 }
                 event => event.map_err(tunnel_io_error)?,
@@ -623,6 +625,99 @@ mod tests {
             Pin::new(&mut tunnel).poll_shutdown(&mut cx),
             Poll::Ready(Ok(())),
         );
+    }
+
+    /// A receive side that ends once with `end`, then stays ended.
+    struct EndedRecv(Option<Error>);
+
+    impl RecvStream for EndedRecv {
+        fn poll_chunk(
+            &mut self,
+            _: &mut Context<'_>,
+            _: usize,
+        ) -> Poll<Result<Option<Bytes>, Error>> {
+            Poll::Ready(self.0.map_or(Ok(None), Err))
+        }
+
+        fn stop(&mut self, _: Code) {}
+    }
+
+    /// A completed tunnel releases its admission once both directions ended in order, its
+    /// receive side by FIN or by a reset without error, whichever ends first; one reset with an
+    /// error keeps it until dropped. A retained tunnel keeps reading as ended.
+    #[test]
+    fn tunnels_release_admission_once_both_directions_ended_in_order() {
+        for (end, releases) in [
+            (None, true),
+            (Some(Error::peer_reset(Code::H3_NO_ERROR)), true),
+            (Some(Error::peer_reset(Code::H3_REQUEST_CANCELLED)), false),
+        ] {
+            for read_first in [true, false] {
+                let case = format!("{end:?} read_first={read_first}");
+                let shared = Shared::new(
+                    Config {
+                        max_requests: 1,
+                        ..Config::default()
+                    },
+                    Role::Client,
+                    Extensions::new(),
+                )
+                .unwrap();
+                shared.schedule.register(0, Priority::default()).unwrap();
+                let admission = Arc::new(Semaphore::new(1));
+                let permit = Arc::new(admission.clone().try_acquire_owned().unwrap());
+                let output = Arc::new(Mutex::new(Vec::new()));
+                let mut tunnel = tunnel_over(
+                    EndedRecv(end),
+                    ReadySend(output, Arc::new(AtomicBool::new(true)), None),
+                    shared.clone(),
+                    0,
+                );
+                tunnel.permit = Some(permit.clone());
+                tunnel.priority_lease = Some(Lease {
+                    shared: shared.clone(),
+                    id: 0,
+                    permit,
+                });
+                let mut cx = Context::from_waker(Waker::noop());
+                let mut read = |tunnel: &mut Tunnel<EndedRecv, ReadySend>| {
+                    let mut buf = [0; 8];
+                    let mut buf = ReadBuf::new(&mut buf);
+                    let Poll::Ready(result) = Pin::new(tunnel).poll_read(&mut cx, &mut buf) else {
+                        panic!("{case}: an ended stream reads at once");
+                    };
+                    result.map(|()| buf.filled().len())
+                };
+                let shutdown = |tunnel: &mut Tunnel<EndedRecv, ReadySend>| {
+                    let mut cx = Context::from_waker(Waker::noop());
+                    assert_matches!(
+                        Pin::new(tunnel).poll_shutdown(&mut cx),
+                        Poll::Ready(Ok(())),
+                        "{case}"
+                    );
+                };
+                if !read_first {
+                    shutdown(&mut tunnel);
+                }
+                for _ in 0..2 {
+                    match read(&mut tunnel) {
+                        Ok(read) => assert_eq!(read, 0, "{case}"),
+                        Err(error) => {
+                            assert!(!releases, "{case}: {error}");
+                            assert_eq!(error.kind(), io::ErrorKind::ConnectionReset, "{case}");
+                        }
+                    }
+                }
+                if read_first {
+                    shutdown(&mut tunnel);
+                }
+                let available = usize::from(releases);
+                assert_eq!(admission.available_permits(), available, "{case}");
+                drop(tunnel);
+                // The next request is admitted, at the latest once the tunnel is gone.
+                assert_eq!(admission.available_permits(), 1, "{case}");
+            }
+        }
     }
 
     #[test]

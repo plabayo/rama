@@ -48,6 +48,14 @@ pub(crate) struct Reader<R: RecvStream> {
 }
 
 impl<R: RecvStream> Reader<R> {
+    /// The peer ended the stream in order; later datagrams for it are dropped (RFC 9297 §2.1).
+    pub(crate) fn finish(&mut self) {
+        self.phase = Phase::Finished;
+        if let Some(datagrams) = &self.datagrams {
+            datagrams.receive_ended(super::datagram::ReceiveEnd::Finished);
+        }
+    }
+
     pub(crate) fn new(stream: R, shared: Arc<Shared>, id: u64) -> Self {
         let frames = FrameDecoder::with_input_limit(
             shared.config.max_frame_size,
@@ -265,10 +273,7 @@ impl<R: RecvStream> Reader<R> {
                             )
                             .remote()));
                         }
-                        self.phase = Phase::Finished;
-                        if let Some(datagrams) = &self.datagrams {
-                            datagrams.receive_ended(super::datagram::ReceiveEnd::Finished);
-                        }
+                        self.finish();
                         return Poll::Ready(Ok(None));
                     }
                 }
