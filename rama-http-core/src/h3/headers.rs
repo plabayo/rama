@@ -1296,31 +1296,27 @@ mod tests {
     /// scheme, so a received `*` is relayed as `*`.
     #[test]
     fn options_without_a_path_is_sent_as_asterisk() {
-        for scheme in [&b"https"[..], b"foo"] {
-            let pseudo = frame::Pseudo {
-                method: Some(Method::OPTIONS),
-                scheme: Some(hpack::BytesStr::try_from(Bytes::copy_from_slice(scheme)).unwrap()),
-                authority: Some(
-                    hpack::BytesStr::try_from(Bytes::from_static(b"real.example")).unwrap(),
-                ),
-                path: Some(hpack::BytesStr::try_from(Bytes::from_static(b"*")).unwrap()),
-                ..Default::default()
-            };
-            let received = crate::h2::server::test_util::receive(pseudo, HeaderMap::new()).unwrap();
-            let sent = decode(encode_request(&shared(), 0, &received).unwrap());
+        // A URI without a path, as a service or an adapter builds it, is the server-wide request
+        // on every version (RFC 9112 §3.2.4, RFC 9113 §8.3.1).
+        for uri in ["https://real.example", "foo://real.example"] {
+            let uri = Uri::parse(uri).unwrap();
+            let mut request = Request::new(());
+            *request.method_mut() = Method::OPTIONS;
+            *request.uri_mut() = uri.clone();
+            let sent = decode(encode_request(&shared(), 0, &request).unwrap());
             let path = sent.iter().find(|field| field.name == ":path").unwrap();
-            assert_eq!(path.value, &b"*"[..], "{scheme:?}");
-            let h2 = frame::Pseudo::request(Method::OPTIONS, received.uri(), None);
-            assert_eq!(h2.path.as_deref(), Some("*"), "{scheme:?}");
+            assert_eq!(path.value, &b"*"[..], "h3 {uri}");
+            let h2 = frame::Pseudo::request(Method::OPTIONS, &uri, None);
+            assert_eq!(h2.path.as_deref(), Some("*"), "h2 {uri}");
             let mut h1 = BytesMut::new();
             rama_http_types::proto::h1::head::encode_request_target(
                 &Method::OPTIONS,
-                received.uri(),
-                received.extensions(),
+                &uri,
+                &Default::default(),
                 &mut h1,
             )
             .unwrap();
-            assert_eq!(&h1[..], b"*", "{scheme:?}");
+            assert_eq!(&h1[..], b"*", "h1 {uri}");
         }
         // A path or query is kept as is.
         for (uri, h1_target) in [
