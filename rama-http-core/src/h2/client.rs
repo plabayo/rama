@@ -1945,6 +1945,13 @@ impl Peer {
             .copied()
             .unwrap_or_default();
         host_as_authority(&mut pseudo, &mut headers, ordinary_connect)?;
+        // An asterisk URI cannot hold its scheme; a decoder keeps it beside the request.
+        if pseudo.scheme.is_none()
+            && uri.is_asterisk()
+            && let Some(scheme) = extensions.get_ref::<rama_net::Protocol>()
+        {
+            pseudo.set_scheme(scheme);
+        }
 
         if pseudo.scheme.is_none() {
             // If the scheme is not set, then there are a two options.

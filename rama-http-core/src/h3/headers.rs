@@ -1355,33 +1355,92 @@ mod tests {
         let text = |value: &'static str| {
             hpack::BytesStr::try_from(Bytes::from_static(value.as_bytes())).unwrap()
         };
-        for (method, protocol, sent_path) in [
-            ("OPTIONS", None, &b"*"[..]),
-            ("GET", None, b""),
-            ("CONNECT", Some("x-custom"), b""),
-        ] {
-            let mut h3_fields = vec![
-                (":method", method),
-                (":scheme", "custom"),
-                (":authority", "example.com"),
-                (":path", ""),
-            ];
-            h3_fields.extend(protocol.map(|protocol| (":protocol", protocol)));
-            let h3 = request_head(fields(&h3_fields), true).unwrap();
-            let pseudo = frame::Pseudo {
-                method: Some(Method::from_bytes(method.as_bytes()).unwrap()),
-                scheme: Some(text("custom")),
-                authority: Some(text("example.com")),
-                path: Some(text("")),
-                protocol: protocol.map(rama_http_types::proto::ext::Protocol::from_static),
-                ..Default::default()
-            };
-            let h2 = crate::h2::server::test_util::receive(pseudo, HeaderMap::new())
-                .unwrap_or_else(|error| panic!("h2 {method}: {error:?}"));
-            for (version, received) in [("h2", &h2), ("h3", &h3)] {
-                let sent = decode(encode_request(&shared(), 0, received).unwrap());
-                let path = sent.iter().find(|field| field.name == ":path").unwrap();
-                assert_eq!(&path.value[..], sent_path, "{version} {method}");
+        for authority in [Some("example.com"), None] {
+            for (method, protocol, path, sent_path) in [
+                ("OPTIONS", None, "", "*"),
+                ("OPTIONS", None, "*", "*"),
+                ("GET", None, "", ""),
+                ("GET", None, "/x", "/x"),
+                ("CONNECT", Some("x-custom"), "", ""),
+            ] {
+                let case = format!("{method} {path:?} {protocol:?} {authority:?}");
+                let h3 = || {
+                    let mut h3_fields = vec![(":method", method), (":scheme", "custom")];
+                    h3_fields.extend(authority.map(|authority| (":authority", authority)));
+                    h3_fields.push((":path", path));
+                    h3_fields.extend(protocol.map(|protocol| (":protocol", protocol)));
+                    request_head(fields(&h3_fields), true).unwrap()
+                };
+                let h2 = || {
+                    let pseudo = frame::Pseudo {
+                        method: Some(Method::from_bytes(method.as_bytes()).unwrap()),
+                        scheme: Some(text("custom")),
+                        authority: authority.map(text),
+                        path: Some(text(path)),
+                        protocol: protocol.map(rama_http_types::proto::ext::Protocol::from_static),
+                        ..Default::default()
+                    };
+                    crate::h2::server::test_util::receive(pseudo, HeaderMap::new())
+                        .unwrap_or_else(|error| panic!("h2 {case}: {error:?}"))
+                };
+                // A path-less OPTIONS is `*` on the wire either way; HTTP/2 keeps its authority
+                // in the URI, HTTP/3 in `Host`, as HTTP/1 does.
+                let same_uri = method != "OPTIONS";
+                if same_uri {
+                    assert_eq!(h2().uri(), h3().uri(), "{case}");
+                }
+                for (version, received) in [("h2", h2()), ("h3", h3())] {
+                    let sent = decode(encode_request(&shared(), 0, &received).unwrap());
+                    let field = |name: &str| {
+                        sent.iter()
+                            .find(|field| field.name == name)
+                            .map(|field| field.value.clone())
+                    };
+                    assert_eq!(
+                        field(":path").as_deref(),
+                        Some(sent_path.as_bytes()),
+                        "{version} {case} h3"
+                    );
+                    assert_eq!(
+                        field(":scheme").as_deref(),
+                        Some(&b"custom"[..]),
+                        "{version} {case} h3"
+                    );
+                    let again = request_head(sent, true).unwrap();
+                    if same_uri {
+                        assert_eq!(again.uri(), received.uri(), "{version} {case} h3");
+                    }
+
+                    let uri = received.uri().clone();
+                    let protocol = received
+                        .extensions()
+                        .get_ref::<rama_http_types::proto::ext::Protocol>()
+                        .cloned();
+                    let (frame, _) = crate::h2::client::Peer::convert_send_message(
+                        StreamId::from(1),
+                        received,
+                        protocol,
+                        true,
+                        None,
+                        None,
+                    )
+                    .unwrap_or_else(|error| panic!("{version} {case} h2: {error:?}"));
+                    assert_eq!(
+                        frame.pseudo().path.as_deref(),
+                        Some(sent_path),
+                        "{version} {case} h2"
+                    );
+                    assert_eq!(
+                        frame.pseudo().scheme.as_deref(),
+                        Some("custom"),
+                        "{version} {case} h2"
+                    );
+                    let (pseudo, headers) = frame.into_parts();
+                    let again = crate::h2::server::test_util::receive(pseudo, headers).unwrap();
+                    if same_uri {
+                        assert_eq!(again.uri(), &uri, "{version} {case} h2");
+                    }
+                }
             }
         }
         // http(s) still needs a path.

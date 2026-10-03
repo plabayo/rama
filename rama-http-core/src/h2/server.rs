@@ -1849,13 +1849,11 @@ impl proto::Peer for Peer {
             }
             match scheme.parse::<rama_net::Protocol>() {
                 // RFC 8441 §5: a ws/wss target is carried as http/https, whatever the peer sent.
-                Ok(scheme) if has_protocol => authority
-                    .is_some()
-                    .then(|| ext::extended_connect_pseudo_scheme(&scheme).clone()),
-                // It's not possible to build a URI from a scheme and no
-                // authority, so — after validating it — the scheme is dropped
-                // when there is no :authority (mirrors the original behavior).
-                Ok(scheme) => authority.is_some().then_some(scheme),
+                Ok(scheme) if has_protocol => {
+                    Some(ext::extended_connect_pseudo_scheme(&scheme).clone())
+                }
+                // Kept with or without an authority, as on HTTP/3.
+                Ok(scheme) => Some(scheme),
                 Err(why) => malformed!(
                     "malformed headers: malformed scheme ({:?}): {}",
                     scheme,
@@ -1888,37 +1886,40 @@ impl proto::Peer for Peer {
             malformed!("malformed headers: missing path");
         };
 
+        let mut asterisk_scheme = None;
         let uri = match path.as_deref() {
             // RFC 9113 §8.3.1: `*` is only for a server-wide OPTIONS.
             Some("*") if !is_options => malformed!("malformed headers: `*` path without OPTIONS"),
             // OPTIONS-`*`: the wire `*` denotes "no path"; rebuild the
             // scheme/authority context from the typed components (a bare `*`
             // when there is none).
-            Some("*") => match authority {
-                Some(authority) => {
+            Some("*") => {
+                if let Some(authority) = authority {
                     let mut uri = uri::Uri::default().without_path();
                     uri.set_authority(authority);
                     if let Some(scheme) = scheme {
                         uri.set_scheme(scheme);
                     }
                     uri
+                } else {
+                    // The asterisk URI cannot hold the scheme: it is kept beside it, as on HTTP/3.
+                    asterisk_scheme = scheme;
+                    uri::Uri::from_static("*")
                 }
-                None => uri::Uri::from_static("*"),
-            },
+            }
             // A target of another scheme without a path (RFC 9113 §8.3.1); a path-less
             // OPTIONS is sent on as `*` again.
             Some("") => {
                 let mut uri = uri::Uri::default().without_path();
                 if let Some(authority) = authority {
                     uri.set_authority(authority);
-                    if let Some(scheme) = scheme {
-                        uri.set_scheme(scheme);
-                    }
+                }
+                if let Some(scheme) = scheme {
+                    uri.set_scheme(scheme);
                 }
                 uri
             }
-            // origin-form: parse the path/query, then graft the typed
-            // authority (and scheme, which is only meaningful with one).
+            // origin-form: parse the path/query, then graft the typed authority and scheme.
             Some(path) => {
                 let mut uri = match uri::Uri::parse(path) {
                     Ok(uri) => uri,
@@ -1939,9 +1940,9 @@ impl proto::Peer for Peer {
                 }
                 if let Some(authority) = authority {
                     uri.set_authority(authority);
-                    if let Some(scheme) = scheme {
-                        uri.set_scheme(scheme);
-                    }
+                }
+                if let Some(scheme) = scheme {
+                    uri.set_scheme(scheme);
                 }
                 uri
             }
@@ -1969,6 +1970,9 @@ impl proto::Peer for Peer {
             }
         };
 
+        if let Some(scheme) = asterisk_scheme {
+            request.extensions().insert(scheme);
+        }
         if !pseudo.order.is_empty() {
             request.extensions().insert(pseudo.order);
         }
