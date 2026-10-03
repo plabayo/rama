@@ -705,8 +705,14 @@ where
     if copy_err.as_ref().is_some_and(reflects_as_abort) {
         aborts.trigger();
     }
-    if !aborts.aborted(writer_side) {
-        _ = tokio::time::timeout(shutdown_grace, writer.shutdown()).await;
+    if !aborts.aborted(writer_side)
+        && let Ok(Err(err)) = tokio::time::timeout(shutdown_grace, writer.shutdown()).await
+        && copy_err.is_none()
+        && reflects_as_abort(&err)
+    {
+        // The half-close itself found the peer reset: fail as a write would, ending the relay.
+        aborts.trigger();
+        copy_err = Some(err);
     }
     write_side_shut.store(true, Ordering::Release);
 
@@ -1483,11 +1489,13 @@ mod tests {
         Pend,
     }
 
-    /// One bridge side: its read ends once as `end`, then pends; it counts its orderly
-    /// shutdowns and, when it publishes one, its [`AbortIo`] calls.
+    /// One bridge side: its read ends once as `end`, then pends; it counts its shutdowns,
+    /// failing them with `shutdown_error` if set, and when it publishes one, its [`AbortIo`]
+    /// calls.
     struct TestSide {
         end: ReadEnd,
         shutdowns: Arc<AtomicU64>,
+        shutdown_error: Option<std::io::ErrorKind>,
     }
 
     impl tokio::io::AsyncRead for TestSide {
@@ -1523,7 +1531,7 @@ mod tests {
             _: &mut std::task::Context<'_>,
         ) -> std::task::Poll<std::io::Result<()>> {
             self.shutdowns.fetch_add(1, Ordering::SeqCst);
-            std::task::Poll::Ready(Ok(()))
+            std::task::Poll::Ready(self.shutdown_error.map_or(Ok(()), |kind| Err(kind.into())))
         }
     }
 
@@ -1542,6 +1550,14 @@ mod tests {
     }
 
     fn side(end: ReadEnd, abortable: bool) -> (ServiceInput<TestSide>, Counts) {
+        side_failing_shutdown(end, abortable, None)
+    }
+
+    fn side_failing_shutdown(
+        end: ReadEnd,
+        abortable: bool,
+        shutdown_error: Option<std::io::ErrorKind>,
+    ) -> (ServiceInput<TestSide>, Counts) {
         let counts = Counts {
             shutdowns: Arc::new(AtomicU64::new(0)),
             aborts: Arc::new(AtomicU64::new(0)),
@@ -1549,6 +1565,7 @@ mod tests {
         let io = ServiceInput::new(TestSide {
             end,
             shutdowns: counts.shutdowns.clone(),
+            shutdown_error,
         });
         if abortable {
             let aborts = counts.aborts.clone();
@@ -1658,6 +1675,43 @@ mod tests {
             .unwrap();
         assert_eq!(left_counts.get(), (1, 0));
         assert_eq!(right_counts.get(), (1, 0));
+    }
+
+    /// The half-close after one side ends can itself find the other side reset: that resets both
+    /// sides and ends the relay. A stopped reader found there stays an orderly half-close, with
+    /// the other direction still open.
+    #[tokio::test(start_paused = true)]
+    async fn a_reset_found_by_the_half_close_ends_the_relay() {
+        use std::io::ErrorKind::{BrokenPipe, ConnectionReset};
+        async fn ended(bridge: BridgeIo<ServiceInput<TestSide>, ServiceInput<TestSide>>) -> bool {
+            tokio::time::timeout(
+                Duration::from_secs(1),
+                IoForwardService::default().serve(bridge),
+            )
+            .await
+            .is_ok()
+        }
+        for ending_left in [true, false] {
+            for (shutdown, reflected) in [(ConnectionReset, true), (BrokenPipe, false)] {
+                for abortable in [true, false] {
+                    let case = format!("left={ending_left} {shutdown:?} abortable={abortable}");
+                    let (ending, ending_counts) = side(ReadEnd::Eof, abortable);
+                    let (failing, failing_counts) =
+                        side_failing_shutdown(ReadEnd::Pend, abortable, Some(shutdown));
+                    let ended = if ending_left {
+                        ended(BridgeIo(ending, failing)).await
+                    } else {
+                        ended(BridgeIo(failing, ending)).await
+                    };
+                    assert_eq!(ended, reflected, "{case}");
+                    let aborts = u64::from(reflected && abortable);
+                    // A reset side is not also closed in order; one without abort still is.
+                    let ending_shutdowns = u64::from(reflected && !abortable);
+                    assert_eq!(ending_counts.get(), (ending_shutdowns, aborts), "{case}");
+                    assert_eq!(failing_counts.get(), (1, aborts), "{case}");
+                }
+            }
+        }
     }
 
     /// A side that cannot be reset is still closed in order when the other one fails.
