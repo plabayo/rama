@@ -220,6 +220,7 @@ impl RateLimiter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[tokio::test(start_paused = true)]
     async fn acquire_paces_exactly() {
@@ -270,7 +271,7 @@ mod tests {
 
         assert_eq!(limiter.try_acquire(1), Acquire::Granted);
         assert_eq!(clone.try_acquire(1), Acquire::Granted);
-        assert!(matches!(clone.try_acquire(1), Acquire::RetryAt(_)));
+        assert_matches!(clone.try_acquire(1), Acquire::RetryAt(_));
 
         limiter.refund(1);
         assert_eq!(clone.try_acquire(1), Acquire::Granted);
@@ -329,7 +330,7 @@ mod tests {
 
         // Refunding the first chunk here would restore a full burst even
         // though the concurrent user already spent the intervening refill.
-        assert!(matches!(limiter.try_acquire(1), Acquire::RetryAt(_)));
+        assert_matches!(limiter.try_acquire(1), Acquire::RetryAt(_));
     }
 
     #[tokio::test(start_paused = true)]

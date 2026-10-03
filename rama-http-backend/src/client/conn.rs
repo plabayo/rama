@@ -790,6 +790,7 @@ mod http3_dispatch_tests {
         http::HttpRequestVersion,
     };
     use rama_tls::ProtocolVersion;
+    use std::assert_matches;
 
     fn stream_connector_must_not_connect()
     -> impl ConnectorService<ConnectRequest, Connection = ServiceInput<tokio::io::DuplexStream>>
@@ -1028,10 +1029,10 @@ mod http3_dispatch_tests {
                         .to_string(),
                     "alternative.example:8443"
                 );
-                assert!(matches!(
+                assert_matches!(
                     input.extensions().get_ref::<ProxyRoute>(),
-                    Some(ProxyRoute::Proxy(_))
-                ));
+                    Some(ProxyRoute::Proxy(_)),
+                );
                 Err(ConnectionError::application(
                     BoxError::from_static_str("custom transport reached"),
                     ConnectionErrorKind::Rejected,

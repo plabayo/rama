@@ -24,6 +24,11 @@ targets = [
     "aarch64-linux-android",
 ]
 
+[features]
+default = []
+# Synchronous bounded harnesses exercising every typed header on untrusted input.
+fuzz-utils = []
+
 [dependencies]
 ahash = { workspace = true }
 base64 = { workspace = true, default-features = true }

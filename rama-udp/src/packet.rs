@@ -159,6 +159,7 @@ impl<'a> SendDatagram<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn validates_family_payload_limits() {
@@ -170,10 +171,10 @@ mod tests {
         let payload = vec![0; crate::MAX_UDP_PAYLOAD_IPV4 + 1];
         let datagram = SendDatagram::new(([127, 0, 0, 1], 443), &payload);
 
-        assert!(matches!(
+        assert_matches!(
             datagram.validate(capabilities),
-            Err(DatagramError::PayloadTooLarge { .. })
-        ));
+            Err(DatagramError::PayloadTooLarge { .. }),
+        );
     }
 
     #[test]
@@ -183,27 +184,27 @@ mod tests {
         let datagram = SendDatagram::new(([127, 0, 0, 1], 443), b"packet")
             .with_source_ip(IpAddr::V6(std::net::Ipv6Addr::LOCALHOST));
 
-        assert!(matches!(
+        assert_matches!(
             datagram.validate(capabilities),
-            Err(DatagramError::SourceAddressFamilyMismatch { .. })
-        ));
+            Err(DatagramError::SourceAddressFamilyMismatch { .. }),
+        );
     }
 
     #[test]
     fn rejects_invalid_segmentation_and_unsupported_metadata() {
         let destination = SocketAddress::from(([127, 0, 0, 1], 443));
-        assert!(matches!(
+        assert_matches!(
             SendDatagram::new(destination, b"abc")
                 .with_segment_size(NonZeroUsize::new(3).unwrap())
                 .validate(DatagramCapabilities::portable()),
-            Err(DatagramError::InvalidSegmentSize { .. })
-        ));
-        assert!(matches!(
+            Err(DatagramError::InvalidSegmentSize { .. }),
+        );
+        assert_matches!(
             SendDatagram::new(destination, b"abc")
                 .with_ecn(EcnCodepoint::Ect0)
                 .validate(DatagramCapabilities::portable()),
-            Err(DatagramError::Unsupported(DatagramFeature::SendEcn))
-        ));
+            Err(DatagramError::Unsupported(DatagramFeature::SendEcn)),
+        );
     }
 
     #[test]
@@ -235,19 +236,19 @@ mod tests {
         let rejected =
             SendDatagram::new(([127, 0, 0, 1], 443), b"abcde").with_segment_size(segment_size);
         assert_eq!(rejected.segment_count(), 3);
-        assert!(matches!(
+        assert_matches!(
             rejected.validate(capabilities),
-            Err(DatagramError::TooManySegments { count: 3, max: 2 })
-        ));
+            Err(DatagramError::TooManySegments { count: 3, max: 2 }),
+        );
 
         let oversized_segment = SendDatagram::new(([127, 0, 0, 1], 443), b"abcd")
             .with_segment_size(NonZeroUsize::new(3).unwrap());
-        assert!(matches!(
+        assert_matches!(
             oversized_segment.validate(capabilities),
             Err(DatagramError::InvalidSegmentSize {
                 payload_len: 4,
                 segment_size: 3,
-            })
-        ));
+            }),
+        );
     }
 }

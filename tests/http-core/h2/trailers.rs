@@ -1,6 +1,7 @@
 use h2_support::prelude::*;
 use rama::ServiceInput;
 use rama_core::futures::StreamExt;
+use std::assert_matches;
 use std::task::Poll;
 use tokio::sync::oneshot;
 
@@ -167,9 +168,10 @@ async fn poll_trailers_before_data_is_consumed() {
                     // 5. Poll trailers while DATA is at the front of pending_recv.
                     // This returns Pending and registers this future's waker.
                     first_poll = false;
-                    assert!(
-                        matches!(body.poll_trailers(cx), Poll::Pending),
-                        "poll_trailers should be Pending when DATA is buffered"
+                    assert_matches!(
+                        body.poll_trailers(cx),
+                        Poll::Pending,
+                        "poll_trailers should be Pending when DATA is buffered",
                     );
 
                     // 6. Consume the DATA frame. The next poll reaches the
@@ -178,7 +180,7 @@ async fn poll_trailers_before_data_is_consumed() {
                         Poll::Ready(Some(Ok(data))) => assert_eq!(data, "hello"),
                         other => panic!("expected DATA, got {other:?}"),
                     }
-                    assert!(matches!(body.poll_data(cx), Poll::Ready(None)));
+                    assert_matches!(body.poll_data(cx), Poll::Ready(None));
 
                     Poll::Pending
                 } else {

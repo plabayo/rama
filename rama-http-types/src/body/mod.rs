@@ -16,6 +16,9 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use sync_wrapper::SyncWrapper;
 
+#[cfg(test)]
+use std::assert_matches;
+
 // Forked `http-body` / `http-body-util` (see fork README), relocated under
 // `body` so the module path matches the file layout.
 pub mod http_body;
@@ -519,10 +522,10 @@ async fn capture_convenience_forwards_and_observes_body() {
         panic!("the first capture event must contain the data frame");
     };
     assert_eq!(frame.into_data().unwrap(), Bytes::from_static(b"captured"));
-    assert!(matches!(
+    assert_matches!(
         events.recv().await,
-        Some(BodyCaptureEvent::End(CaptureOutcome::Complete))
-    ));
+        Some(BodyCaptureEvent::End(CaptureOutcome::Complete)),
+    );
 }
 
 #[tokio::test]

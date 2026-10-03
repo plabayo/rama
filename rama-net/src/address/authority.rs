@@ -895,6 +895,7 @@ impl_serde_str!(display Authority);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[expect(clippy::needless_pass_by_value)]
     fn assert_eq(
@@ -1207,7 +1208,7 @@ mod tests {
             .unwrap()
             .into_owned();
         assert_eq!(direct, from_uri);
-        assert!(matches!(direct.address.host, Host::Uninterpreted(_)));
+        assert_matches!(direct.address.host, Host::Uninterpreted(_));
     }
 
     /// Standalone bracketed IPv6 (no trailing port) parses as a typed
@@ -1215,10 +1216,11 @@ mod tests {
     #[test]
     fn authority_try_from_bracketed_ipv6_no_port_is_typed_address() {
         let auth = Authority::try_from("[::1]").unwrap();
-        assert!(
-            matches!(auth.address.host, Host::Address(IpAddr::V6(_))),
+        assert_matches!(
+            auth.address.host,
+            Host::Address(IpAddr::V6(_)),
             "expected typed IPv6 Address, got {:?}",
-            auth.address.host
+            auth.address.host,
         );
         assert_eq!(auth.address.port, OptPort::Unset);
         // Display round-trips with brackets.

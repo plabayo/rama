@@ -788,6 +788,7 @@ mod internal_tests {
     //! function-level invariants that don't surface through the iterator.
 
     use crate::std::borrow::Cow;
+    use std::assert_matches;
 
     use super::form_decode;
 
@@ -796,7 +797,7 @@ mod internal_tests {
     #[test]
     fn form_decode_empty_borrows() {
         let out = form_decode(b"");
-        assert!(matches!(out, Cow::Borrowed(_)));
+        assert_matches!(out, Cow::Borrowed(_));
         assert_eq!(&*out, "");
     }
 

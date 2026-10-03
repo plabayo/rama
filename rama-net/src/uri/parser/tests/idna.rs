@@ -21,6 +21,7 @@ use crate::uri::Uri;
 mod with_idna {
     use super::*;
     use crate::address::{Domain, Host};
+    use std::assert_matches;
 
     #[test]
     fn ascii_host_unchanged_zero_copy() {
@@ -76,7 +77,7 @@ mod with_idna {
         let uri: Uri = parse_graceful("https://xn--mnchen-3ya.de/").unwrap();
         assert_eq!(uri.host().unwrap().to_str(), "xn--mnchen-3ya.de");
         let owned = uri.host().unwrap().into_owned();
-        assert!(matches!(owned, Host::Name(_)));
+        assert_matches!(owned, Host::Name(_));
     }
 
     /// Uppercase non-ASCII is preserved verbatim. UTS #46 case-folding
@@ -123,7 +124,7 @@ mod with_idna {
     fn as_unicode_borrows_when_no_ace_labels() {
         let d = Domain::try_from("example.com").unwrap();
         let unicode = d.as_unicode();
-        assert!(matches!(unicode, crate::std::borrow::Cow::Borrowed(_)));
+        assert_matches!(unicode, crate::std::borrow::Cow::Borrowed(_));
         assert_eq!(&*unicode, "example.com");
     }
 
@@ -131,7 +132,7 @@ mod with_idna {
     fn as_unicode_decodes_ace_labels() {
         let d = Domain::try_from("xn--mnchen-3ya.de").unwrap();
         let unicode = d.as_unicode();
-        assert!(matches!(unicode, crate::std::borrow::Cow::Owned(_)));
+        assert_matches!(unicode, crate::std::borrow::Cow::Owned(_));
         assert_eq!(&*unicode, "münchen.de");
     }
 
@@ -210,9 +211,10 @@ mod with_idna {
             "https://api.üñiçödé.example/",
         ] {
             let r = crate::uri::Uri::parse_strict(non_ascii);
-            assert!(
-                matches!(r, Err(ParseError::StrictViolation)),
-                "strict must reject non-ASCII host {non_ascii:?}; got {r:?}"
+            assert_matches!(
+                r,
+                Err(ParseError::StrictViolation),
+                "strict must reject non-ASCII host {non_ascii:?}; got {r:?}",
             );
         }
     }

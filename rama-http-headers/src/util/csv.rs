@@ -1,8 +1,9 @@
 use std::fmt;
 
 use rama_http_types::HeaderValue;
+use rama_utils::str::trim_ows;
 
-use crate::Error;
+use crate::{Error, util::split_unquoted};
 
 /// Reads a comma-delimited raw header into a Vec.
 pub fn from_comma_delimited<'i, I, T, E>(values: &mut I) -> Result<E, Error>
@@ -21,30 +22,13 @@ where
         .collect()
 }
 
+/// Split on `,` outside quoted-strings; an unterminated one runs to the end.
 pub(crate) fn split_csv_str<T: std::str::FromStr>(
     string: &str,
 ) -> impl Iterator<Item = Result<T, Error>> + use<'_, T> {
-    let mut in_quotes = false;
-    string
-        .split(move |c| {
-            #[expect(clippy::collapsible_else_if)]
-            if in_quotes {
-                if c == '"' {
-                    in_quotes = false;
-                }
-                false // don't split
-            } else {
-                if c == ',' {
-                    true // split
-                } else {
-                    if c == '"' {
-                        in_quotes = true;
-                    }
-                    false // don't split
-                }
-            }
-        })
-        .filter_map(|x| match x.trim() {
+    split_unquoted::<b','>(string)
+        // members come from `HeaderValue::to_str`, so OWS is the only whitespace
+        .filter_map(|x| match trim_ows(x) {
             "" => None,
             y => Some(y.parse().map_err(|_e| Error::invalid())),
         })

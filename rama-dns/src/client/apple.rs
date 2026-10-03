@@ -22,6 +22,9 @@
 //! - The DNS-SD callback decodes records into an in-memory queue that is then
 //!   drained by the polling future.
 //! - Lookups are bounded by a configurable timeout, defaulting to 5 seconds.
+//! - Concurrent lookups of the same name and record type share one query,
+//!   cancelled once every caller stopped waiting; at most 64 queries
+//!   (configurable) run at once.
 //!
 //! For the platform header itself, see the SDK copy at:
 //! `/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/dns_sd.h`
@@ -29,6 +32,7 @@
 use std::collections::VecDeque;
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
 use std::fmt;
+use std::io;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::os::fd::{AsRawFd, RawFd};
 use std::ptr;
@@ -36,17 +40,24 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use parking_lot::Mutex;
-use rama_core::error::{BoxError, ErrorExt};
-use rama_core::futures::{Stream, async_stream::stream_fn};
-use rama_core::telemetry::tracing;
+use rama_core::{
+    error::BoxError,
+    futures::{Stream, StreamExt as _, async_stream::stream_fn, future::Either, stream},
+    telemetry::tracing,
+};
 use rama_net::address::Domain;
 use rama_utils::macros::generate_set_and_with;
 use rama_utils::str::arcstr::ArcStr;
 use tokio::io::unix::AsyncFd;
 use tokio::time::Instant;
 
-use super::resolver::{
-    DnsAddressResolver, DnsCnameResolver, DnsResolver, DnsServiceBindingResolver, DnsTxtResolver,
+use super::{
+    in_flight::{Abandoned, InFlight, coalesced_stream, leading_dot_refusal},
+    limit::{DnsTimeoutError, Limits, LookupLimit, deadline_after},
+    resolver::{
+        DnsAddressResolver, DnsCnameResolver, DnsResolver, DnsServiceBindingResolver,
+        DnsTxtResolver,
+    },
 };
 use crate::wire::{Name, RecordType, ServiceBinding, Txt, parse_a_rdata, parse_aaaa_rdata};
 
@@ -56,15 +67,20 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 #[non_exhaustive]
 /// Apple-native [`DnsResolver`] implementation using `dns_sd.h`.
 ///
-/// The default timeout is 5 seconds. Use [`Self::with_timeout`] to override it.
+/// Concurrent lookups of one name and record type share one query, and at
+/// most 64 run at once, as each holds an mDNSResponder connection.
 pub struct AppleDnsResolver {
     timeout: Duration,
+    limit: LookupLimit,
+    in_flight: InFlight<(Domain, u16)>,
 }
 
 impl Default for AppleDnsResolver {
     fn default() -> Self {
         Self {
             timeout: DEFAULT_TIMEOUT,
+            limit: LookupLimit::new(Limits::ONE_QUERY.with_apple_descriptors()),
+            in_flight: InFlight::new(Abandoned::Cancel),
         }
     }
 }
@@ -81,11 +97,122 @@ impl AppleDnsResolver {
     }
 
     generate_set_and_with! {
+        /// The budget of one lookup, including any wait for a free slot
+        /// (default 5s). Clones made before this call no longer share
+        /// lookups with this resolver.
         pub fn timeout(mut self, timeout: Duration) -> Self {
             self.timeout = timeout;
+            self.in_flight = InFlight::new(Abandoned::Cancel);
             self
         }
     }
+
+    #[must_use]
+    pub fn max_concurrency(&self) -> Option<usize> {
+        self.limit.limits().max_concurrency
+    }
+
+    generate_set_and_with! {
+        /// Maximum concurrent DNS-SD queries (default 64, at least 1). Each
+        /// holds an mDNSResponder connection and its file descriptor, of
+        /// launchd's default soft limit of 256; lookups past the bound wait
+        /// for a slot within their timeout. Clones made before this call keep
+        /// their own bounds.
+        pub fn max_concurrency(mut self, max: Option<usize>) -> Self {
+            self.limit = self.limit.with(|limits| limits.max_concurrency = max);
+            self
+        }
+    }
+
+    #[must_use]
+    pub fn burst_limit(&self) -> Option<usize> {
+        self.limit.limits().burst_limit
+    }
+
+    generate_set_and_with! {
+        /// Maximum queries started within one [burst window](Self::burst_window)
+        /// and still unanswered (default 128, at least 1); an answer frees its
+        /// place at once, a query waiting on a slow upstream once the window
+        /// has passed. Clones made before this call keep their own bounds.
+        pub fn burst_limit(mut self, max: Option<usize>) -> Self {
+            self.limit = self.limit.with(|limits| limits.burst_limit = max);
+            self
+        }
+    }
+
+    #[must_use]
+    pub fn burst_window(&self) -> Duration {
+        self.limit.limits().burst_window
+    }
+
+    generate_set_and_with! {
+        /// The window of [`Self::burst_limit`] (default 20ms). Clones made
+        /// before this call keep their own bounds.
+        pub fn burst_window(mut self, window: Duration) -> Self {
+            self.limit = self.limit.with(|limits| limits.burst_window = window);
+            self
+        }
+    }
+
+    fn query<T, P>(
+        &self,
+        domain: Domain,
+        rrtype: u16,
+        parser: P,
+    ) -> impl Stream<Item = Result<T, BoxError>> + Send + '_
+    where
+        T: fmt::Debug + Clone + Send + Sync + 'static,
+        P: Fn(&[u8], &mut dyn FnMut(T)) -> Result<(), BoxError> + Send + Sync + 'static,
+    {
+        if let Some(err) = leading_dot_refusal(&domain) {
+            return Either::Left(stream::once(std::future::ready(Err(err))));
+        }
+        let (timeout, limit) = (self.timeout, self.limit.clone());
+        // the name goes out without its root dot: `x` and `x.` are one query
+        let key = (domain.clone(), rrtype);
+        Either::Right(coalesced_stream(
+            self.in_flight.clone(),
+            key,
+            timeout,
+            move || limited_query_stream(domain, timeout, limit, rrtype, parser),
+        ))
+    }
+}
+
+/// [`query_record_stream`] once a query slot is free, all within `timeout`.
+fn limited_query_stream<T, P>(
+    domain: Domain,
+    timeout: Duration,
+    limit: LookupLimit,
+    rrtype: u16,
+    parser: P,
+) -> impl Stream<Item = Result<T, BoxError>> + Send
+where
+    T: fmt::Debug + Send + 'static,
+    P: Fn(&[u8], &mut dyn FnMut(T)) -> Result<(), BoxError> + Send + Sync + 'static,
+{
+    stream_fn(async move |mut yielder| {
+        let deadline = deadline_after(timeout);
+        let Some(mut slot) = limit.acquire(deadline).await else {
+            yielder
+                .yield_item(Err(DnsTimeoutError::new(timeout).into()))
+                .await;
+            return;
+        };
+        let mut records = std::pin::pin!(query_record_stream(
+            domain,
+            deadline,
+            timeout,
+            rrtype,
+            ffi::K_DNS_SERVICE_INTERFACE_INDEX_ANY,
+            parser,
+        ));
+        while let Some(record) = records.next().await {
+            slot.saw(&record);
+            yielder.yield_item(record).await;
+        }
+        slot.answered();
+    })
 }
 
 impl DnsAddressResolver for AppleDnsResolver {
@@ -95,19 +222,14 @@ impl DnsAddressResolver for AppleDnsResolver {
         &self,
         domain: Domain,
     ) -> impl Stream<Item = Result<Ipv4Addr, Self::Error>> + Send + '_ {
-        query_record_stream::<Ipv4Addr, _>(domain, self.timeout, ffi::K_DNS_SERVICE_TYPE_A, parse_a)
+        self.query(domain, ffi::K_DNS_SERVICE_TYPE_A, parse_a)
     }
 
     fn lookup_ipv6(
         &self,
         domain: Domain,
     ) -> impl Stream<Item = Result<Ipv6Addr, Self::Error>> + Send + '_ {
-        query_record_stream::<Ipv6Addr, _>(
-            domain,
-            self.timeout,
-            ffi::K_DNS_SERVICE_TYPE_AAAA,
-            parse_aaaa,
-        )
+        self.query(domain, ffi::K_DNS_SERVICE_TYPE_AAAA, parse_aaaa)
     }
 }
 
@@ -118,7 +240,7 @@ impl DnsTxtResolver for AppleDnsResolver {
         &self,
         domain: Domain,
     ) -> impl Stream<Item = Result<Txt, Self::Error>> + Send + '_ {
-        query_record_stream::<Txt, _>(domain, self.timeout, ffi::K_DNS_SERVICE_TYPE_TXT, parse_txt)
+        self.query(domain, ffi::K_DNS_SERVICE_TYPE_TXT, parse_txt)
     }
 }
 
@@ -129,12 +251,7 @@ impl DnsCnameResolver for AppleDnsResolver {
         &self,
         domain: Domain,
     ) -> impl Stream<Item = Result<Name, Self::Error>> + Send + '_ {
-        query_record_stream::<Name, _>(
-            domain,
-            self.timeout,
-            ffi::K_DNS_SERVICE_TYPE_CNAME,
-            parse_cname,
-        )
+        self.query(domain, ffi::K_DNS_SERVICE_TYPE_CNAME, parse_cname)
     }
 }
 
@@ -145,33 +262,26 @@ impl DnsServiceBindingResolver for AppleDnsResolver {
         &self,
         domain: Domain,
     ) -> impl Stream<Item = Result<ServiceBinding, BoxError>> + Send + '_ {
-        query_record_stream::<ServiceBinding, _>(
-            domain,
-            self.timeout,
-            RecordType::SVCB.into(),
-            parse_service_binding,
-        )
+        self.query(domain, RecordType::SVCB.into(), parse_service_binding)
     }
 
     fn lookup_https(
         &self,
         domain: Domain,
     ) -> impl Stream<Item = Result<ServiceBinding, BoxError>> + Send + '_ {
-        query_record_stream::<ServiceBinding, _>(
-            domain,
-            self.timeout,
-            RecordType::HTTPS.into(),
-            parse_service_binding,
-        )
+        self.query(domain, RecordType::HTTPS.into(), parse_service_binding)
     }
 }
 
 impl DnsResolver for AppleDnsResolver {}
 
+/// `timeout` is the caller's whole budget, reported on expiry of `deadline`.
 fn query_record_stream<T, P>(
     domain: Domain,
+    deadline: Instant,
     timeout: Duration,
     rrtype: u16,
+    interface: u32,
     parser: P,
 ) -> impl Stream<Item = Result<T, BoxError>> + Send
 where
@@ -211,6 +321,7 @@ where
             queue: Mutex::new(VecDeque::new()),
             done: AtomicBool::new(false),
             more_coming: AtomicBool::new(false),
+            rrtype,
             parser,
         });
 
@@ -224,8 +335,8 @@ where
             let err = unsafe {
                 ffi::DNSServiceQueryRecord(
                     &mut raw_service_ref,
-                    0,
-                    0,
+                    ffi::K_DNS_SERVICE_FLAGS_RETURN_INTERMEDIATES,
+                    interface,
                     name.as_ptr(),
                     rrtype,
                     ffi::K_DNS_SERVICE_CLASS_IN,
@@ -274,8 +385,6 @@ where
             }
         };
 
-        let deadline = Instant::now() + timeout;
-
         loop {
             for item in drain_completed_batch(&state) {
                 yielder.yield_item(item).await;
@@ -287,7 +396,7 @@ where
 
             let now = Instant::now();
             if now >= deadline {
-                queue_error(&state, AppleDnsResolverError::timeout(timeout));
+                queue_error(&state, DnsTimeoutError::new(timeout));
                 continue;
             }
 
@@ -303,11 +412,17 @@ where
                     continue;
                 }
                 Err(_) => {
-                    queue_error(&state, AppleDnsResolverError::timeout(timeout));
+                    queue_error(&state, DnsTimeoutError::new(timeout));
                     continue;
                 }
             };
 
+            // readiness may be stale, and on an empty socket the blocking
+            // `DNSServiceProcessResult` would block this worker
+            if !has_data(fd) {
+                ready.clear_ready();
+                continue;
+            }
             // SAFETY: `service_ref` is still valid and registered with DNS-SD, and Apple
             // requires callers to invoke `DNSServiceProcessResult` when the socket becomes
             // readable to dispatch callbacks for pending records.
@@ -328,6 +443,26 @@ where
     })
 }
 
+fn has_data(fd: c_int) -> bool {
+    let mut poll = libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // SAFETY: one valid `pollfd`, and a zero timeout never waits
+    ready(|| unsafe { libc::poll(&mut poll, 1, 0) })
+}
+
+/// Whether `poll` saw its descriptor ready; a signal does not make it empty.
+fn ready(mut poll: impl FnMut() -> c_int) -> bool {
+    loop {
+        match poll() {
+            -1 if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted => {}
+            ready => return ready > 0,
+        }
+    }
+}
+
 fn dns_name_from_domain(domain: &str) -> Result<CString, BoxError> {
     let name = domain.trim_end_matches('.');
     CString::new(name).map_err(|_e| {
@@ -335,7 +470,7 @@ fn dns_name_from_domain(domain: &str) -> Result<CString, BoxError> {
     })
 }
 
-fn queue_error<T, P>(state: &QueryState<T, P>, err: AppleDnsResolverError)
+fn queue_error<T, P>(state: &QueryState<T, P>, err: impl Into<BoxError>)
 where
     T: Send + 'static,
     P: Fn(&[u8], &mut dyn FnMut(T)) -> Result<(), BoxError> + Send + Sync,
@@ -344,7 +479,7 @@ where
     state.more_coming.store(false, Ordering::SeqCst);
     let mut queue = state.queue.lock();
     queue.clear();
-    queue.push_back(Err(err.into_box_error()));
+    queue.push_back(Err(err.into()));
 }
 
 fn finish_empty<T, P>(
@@ -415,6 +550,17 @@ unsafe extern "C" fn query_record_callback<T, P>(
         return;
     }
 
+    let more_coming = (flags & ffi::K_DNS_SERVICE_FLAGS_MORE_COMING) != 0;
+    let answer = error_code == ffi::K_DNS_SERVICE_ERR_NO_ERROR || is_empty_result_error(error_code);
+    if answer && rrtype != state.rrtype {
+        // a CNAME followed on the way, or its absence
+        state.more_coming.store(more_coming, Ordering::SeqCst);
+        if !more_coming && !state.queue.lock().is_empty() {
+            state.done.store(true, Ordering::SeqCst);
+        }
+        return;
+    }
+
     if error_code != ffi::K_DNS_SERVICE_ERR_NO_ERROR {
         if is_empty_result_error(error_code) {
             finish_empty(state, "query callback", error_code);
@@ -466,7 +612,6 @@ unsafe extern "C" fn query_record_callback<T, P>(
         }
     }
 
-    let more_coming = (flags & ffi::K_DNS_SERVICE_FLAGS_MORE_COMING) != 0;
     state.more_coming.store(more_coming, Ordering::SeqCst);
     if !more_coming {
         state.done.store(true, Ordering::SeqCst);
@@ -478,6 +623,7 @@ struct QueryState<T, P> {
     queue: Mutex<VecDeque<Result<T, BoxError>>>,
     done: AtomicBool,
     more_coming: AtomicBool,
+    rrtype: u16,
     parser: P,
 }
 
@@ -554,10 +700,6 @@ impl AppleDnsResolverError {
         Self(message.into())
     }
 
-    fn timeout(timeout: Duration) -> Self {
-        Self::message(format!("apple dns query timed out after {timeout:?}"))
-    }
-
     fn dns_service(operation: &str, code: ffi::DNSServiceErrorType) -> Self {
         Self::message(format!(
             "{operation} failed with DNSService error code {code}"
@@ -585,6 +727,10 @@ mod ffi {
 
     // Internet
     pub(super) const K_DNS_SERVICE_CLASS_IN: u16 = 1;
+    pub(super) const K_DNS_SERVICE_INTERFACE_INDEX_ANY: u32 = 0;
+    /// Only records registered on this host, so nothing goes out.
+    #[cfg(test)]
+    pub(super) const K_DNS_SERVICE_INTERFACE_INDEX_LOCAL_ONLY: u32 = u32::MAX;
 
     // Host address.
     pub(super) const K_DNS_SERVICE_TYPE_A: u16 = 1;
@@ -608,6 +754,9 @@ mod ffi {
     // available right now at this instant. If more answers become available
     // in the future they will be delivered as usual.
     pub(super) const K_DNS_SERVICE_FLAGS_MORE_COMING: DNSServiceFlags = 0x1;
+    // Also deliver the CNAMEs followed and negative answers
+    // (kDNSServiceErr_NoSuchRecord), which are dropped otherwise.
+    pub(super) const K_DNS_SERVICE_FLAGS_RETURN_INTERMEDIATES: DNSServiceFlags = 0x1000;
 
     pub(super) const K_DNS_SERVICE_ERR_NO_ERROR: DNSServiceErrorType = 0;
     pub(super) const K_DNS_SERVICE_ERR_NO_SUCH_NAME: DNSServiceErrorType = -65538;
@@ -822,7 +971,172 @@ mod ffi {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
+    use std::{io::Write as _, os::unix::net::UnixStream};
+
+    use rama_core::{error::error_chain, futures::future::join_all};
+
     use super::*;
+
+    #[test]
+    fn an_interrupted_poll_is_asked_again() {
+        let mut polls = 0;
+        let readable = ready(|| {
+            polls += 1;
+            if polls > 1 {
+                return 1;
+            }
+            // SAFETY: returns this thread's errno slot, valid for its lifetime
+            let errno = unsafe { libc::__error() };
+            // SAFETY: the slot is this thread's own and writable
+            unsafe { *errno = libc::EINTR };
+            -1
+        });
+        assert!(readable);
+        assert_eq!(polls, 2);
+        assert!(!ready(|| 0));
+    }
+
+    #[test]
+    fn readiness_follows_the_socket() {
+        let (ours, theirs) = UnixStream::pair().expect("socket pair");
+        assert!(!has_data(ours.as_raw_fd()));
+        (&theirs).write_all(b"x").expect("write");
+        assert!(has_data(ours.as_raw_fd()));
+    }
+
+    #[tokio::test]
+    async fn burst_of_lookups_for_one_name_all_resolve() {
+        let resolver = AppleDnsResolver::new();
+        let domain = Domain::from_static("localhost");
+
+        let lookups = (0..256).map(|_| resolver.lookup_ipv4(domain.clone()).collect::<Vec<_>>());
+        for addrs in join_all(lookups).await {
+            assert!(!addrs.is_empty(), "localhost resolves");
+            assert!(
+                addrs
+                    .iter()
+                    .all(|addr| addr.as_ref().is_ok_and(Ipv4Addr::is_loopback))
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn lookup_waiting_for_a_busy_slot_times_out() {
+        let resolver = AppleDnsResolver::new()
+            .with_max_concurrency(1)
+            .with_timeout(Duration::from_millis(100));
+        assert_eq!(resolver.max_concurrency(), Some(1));
+        let _busy = resolver
+            .limit
+            .acquire(deadline_after(Duration::from_secs(5)))
+            .await
+            .expect("the only slot");
+
+        let started = Instant::now();
+        let items: Vec<_> = resolver
+            .lookup_ipv4(Domain::from_static("localhost"))
+            .collect()
+            .await;
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert_matches!(
+            items.as_slice(),
+            [Err(err)] if error_chain(err.as_ref()).any(|cause| cause.is::<DnsTimeoutError>()),
+        );
+    }
+
+    #[tokio::test]
+    async fn leading_dot_name_is_refused_before_sharing() {
+        let resolver = AppleDnsResolver::new();
+        let (bare, dotted) = tokio::join!(
+            resolver
+                .lookup_ipv4(Domain::from_static("localhost"))
+                .collect::<Vec<_>>(),
+            resolver
+                .lookup_ipv4(Domain::from_static(".localhost"))
+                .collect::<Vec<_>>(),
+        );
+        assert!(bare.iter().any(Result::is_ok), "{bare:?}");
+        assert_matches!(
+            dotted.as_slice(),
+            [Err(err)] if err.to_string().contains("starts with a dot"),
+            "{dotted:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn rooted_and_relative_names_share_one_query() {
+        let resolver = AppleDnsResolver::new().with_timeout(Duration::from_millis(500));
+        // the root dot is dropped before the query: both ask the same thing
+        let lookups = [
+            "unanswered.rama-dns-test.local",
+            "unanswered.rama-dns-test.local.",
+        ]
+        .map(|name| {
+            resolver
+                .lookup_ipv4(name.try_into().expect("valid domain"))
+                .collect::<Vec<_>>()
+        });
+        // both lookups have joined by the time this is first polled
+        let running = async { resolver.in_flight.running() };
+        let (_, running) = tokio::join!(join_all(lookups), running);
+        assert_eq!(running, 1);
+    }
+
+    #[tokio::test]
+    async fn queued_lookup_reports_its_whole_budget() {
+        let resolver = AppleDnsResolver::new()
+            .with_max_concurrency(1)
+            .with_timeout(Duration::from_millis(300));
+        let slot = resolver
+            .limit
+            .acquire(deadline_after(Duration::from_secs(5)))
+            .await
+            .expect("the only slot");
+        let release = async {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            drop(slot);
+        };
+        // an mDNS name nobody answers, so the query itself runs out the budget
+        let lookup = resolver
+            .lookup_ipv4(Domain::from_static("unanswered.rama-dns-test.local"))
+            .collect::<Vec<_>>();
+        let (items, ()) = tokio::join!(lookup, release);
+
+        let timeout = items
+            .iter()
+            .find_map(|item| item.as_ref().err())
+            .and_then(|err| {
+                error_chain(err.as_ref()).find_map(|cause| cause.downcast_ref::<DnsTimeoutError>())
+            })
+            .map(DnsTimeoutError::timeout);
+        assert_eq!(timeout, Some(Duration::from_millis(300)), "{items:?}");
+    }
+
+    #[test]
+    fn only_resolvers_with_the_same_timeout_share_lookups() {
+        let resolver = AppleDnsResolver::new();
+        assert!(resolver.clone().in_flight.shares_with(&resolver.in_flight));
+        let hasty = resolver.clone().with_timeout(Duration::from_millis(100));
+        assert!(!hasty.in_flight.shares_with(&resolver.in_flight));
+    }
+
+    #[test]
+    fn abandoned_lookups_are_cancelled() {
+        // each holds an mDNSResponder connection nobody waits on anymore
+        let resolver = AppleDnsResolver::new();
+        assert_eq!(resolver.in_flight.abandoned(), Abandoned::Cancel);
+        let resolver = resolver.with_timeout(Duration::from_secs(1));
+        assert_eq!(resolver.in_flight.abandoned(), Abandoned::Cancel);
+    }
+
+    #[test]
+    fn default_bounds_fit_mdnsresponder() {
+        let resolver = AppleDnsResolver::new();
+        assert_eq!(resolver.max_concurrency(), Some(64));
+        assert_eq!(resolver.burst_limit(), Some(128));
+        assert_eq!(resolver.burst_window(), Duration::from_millis(20));
+    }
 
     #[test]
     fn apple_resolver_defaults_to_five_second_timeout() {
@@ -916,6 +1230,7 @@ mod tests {
             queue: Mutex::new(VecDeque::new()),
             done: AtomicBool::new(false),
             more_coming: AtomicBool::new(false),
+            rrtype: RecordType::SVCB.into(),
             parser: parse_service_binding,
         };
         let fullname = CString::new("example.com.").expect("valid C string");
@@ -993,6 +1308,144 @@ mod tests {
         assert!(!state.more_coming.load(Ordering::SeqCst));
     }
 
+    type AParser = fn(&[u8], &mut dyn FnMut(Ipv4Addr)) -> Result<(), BoxError>;
+
+    fn a_query() -> QueryState<Ipv4Addr, AParser> {
+        QueryState {
+            queue: Mutex::new(VecDeque::new()),
+            done: AtomicBool::new(false),
+            more_coming: AtomicBool::new(false),
+            rrtype: ffi::K_DNS_SERVICE_TYPE_A,
+            parser: parse_a,
+        }
+    }
+
+    /// One callback for `state`, as `DNSServiceProcessResult` dispatches it.
+    fn callback(
+        state: &mut QueryState<Ipv4Addr, AParser>,
+        flags: ffi::DNSServiceFlags,
+        error: ffi::DNSServiceErrorType,
+        rrtype: u16,
+        rdata: &[u8],
+    ) {
+        // SAFETY: every pointer stays live for this synchronous call
+        unsafe {
+            query_record_callback::<Ipv4Addr, AParser>(
+                ptr::null_mut(),
+                flags,
+                0,
+                error,
+                c"example.com.".as_ptr(),
+                rrtype,
+                ffi::K_DNS_SERVICE_CLASS_IN,
+                rdata.len() as u16,
+                rdata.as_ptr().cast(),
+                60,
+                ptr::from_mut(state).cast(),
+            );
+        }
+    }
+
+    #[test]
+    fn cnames_followed_on_the_way_are_skipped() {
+        const CNAME: u16 = 5;
+        let (a, ok, more) = (
+            ffi::K_DNS_SERVICE_TYPE_A,
+            ffi::K_DNS_SERVICE_ERR_NO_ERROR,
+            ffi::K_DNS_SERVICE_FLAGS_MORE_COMING,
+        );
+        let target = [3, b'w', b'w', b'w', 0];
+        let loopback = [127, 0, 0, 1];
+
+        // a batch of just the CNAME: its target's answers are still to come
+        let mut state = a_query();
+        callback(&mut state, 0, ok, CNAME, &target);
+        assert!(!state.done.load(Ordering::SeqCst));
+        callback(&mut state, 0, ok, a, &loopback);
+        assert!(state.done.load(Ordering::SeqCst));
+        assert_matches!(
+            drain_completed_batch(&state).as_slice(),
+            [Ok(addr)] if addr.is_loopback(),
+        );
+
+        // a CNAME closing the batch closes its answers too
+        let mut state = a_query();
+        callback(&mut state, more, ok, a, &loopback);
+        callback(&mut state, 0, ok, CNAME, &target);
+        assert!(state.done.load(Ordering::SeqCst));
+        assert_eq!(drain_completed_batch(&state).len(), 1);
+
+        // no CNAME does not mean no address
+        let mut state = a_query();
+        callback(
+            &mut state,
+            0,
+            ffi::K_DNS_SERVICE_ERR_NO_SUCH_RECORD,
+            CNAME,
+            &[],
+        );
+        assert!(!state.done.load(Ordering::SeqCst));
+        callback(&mut state, 0, ffi::K_DNS_SERVICE_ERR_NO_SUCH_RECORD, a, &[]);
+        assert!(state.done.load(Ordering::SeqCst));
+        assert!(drain_completed_batch(&state).is_empty());
+    }
+
+    #[tokio::test]
+    async fn answered_lookups_free_their_burst_place() {
+        let resolver = AppleDnsResolver::new()
+            .with_burst_limit(1)
+            .with_burst_window(Duration::from_mins(1))
+            .with_timeout(Duration::from_secs(2));
+        // a place kept for the window would time the next lookup out
+        for _ in 0..3 {
+            let addrs: Vec<_> = resolver
+                .lookup_ipv4(Domain::from_static("localhost"))
+                .collect()
+                .await;
+            assert!(
+                addrs.iter().all(Result::is_ok) && !addrs.is_empty(),
+                "{addrs:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn negative_answers_end_the_lookup_at_once() {
+        // asked of this host's own records: nothing leaves it
+        let timeout = Duration::from_secs(2);
+        let started = Instant::now();
+        let records: Vec<_> = query_record_stream(
+            Domain::from_static("absent.rama-dns.test"),
+            deadline_after(timeout),
+            timeout,
+            ffi::K_DNS_SERVICE_TYPE_AAAA,
+            ffi::K_DNS_SERVICE_INTERFACE_INDEX_LOCAL_ONLY,
+            parse_aaaa,
+        )
+        .collect()
+        .await;
+        assert!(records.is_empty(), "{records:?}");
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[tokio::test]
+    async fn local_negative_answers_end_the_lookup_at_once() {
+        // mDNSResponder answers for localhost itself
+        let resolver = AppleDnsResolver::new().with_timeout(Duration::from_secs(3));
+        let started = Instant::now();
+        let cnames: Vec<_> = resolver
+            .lookup_cname(Domain::from_static("localhost"))
+            .collect()
+            .await;
+        let https: Vec<_> = resolver
+            .lookup_https(Domain::from_static("localhost"))
+            .collect()
+            .await;
+        assert!(cnames.is_empty(), "{cnames:?}");
+        assert!(https.is_empty(), "{https:?}");
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
     #[test]
     fn terminal_callback_outcomes_discard_pending_records() {
         type Parser = fn(&[u8], &mut dyn FnMut(ServiceBinding)) -> Result<(), BoxError>;
@@ -1005,6 +1458,7 @@ mod tests {
             queue: Mutex::new(VecDeque::from([Ok(pending())])),
             done: AtomicBool::new(false),
             more_coming: AtomicBool::new(true),
+            rrtype: RecordType::SVCB.into(),
             parser: parse_service_binding,
         };
         queue_error(&state, AppleDnsResolverError::message("callback failed"));
@@ -1024,6 +1478,7 @@ mod tests {
             queue: Mutex::new(VecDeque::from([Ok(pending())])),
             done: AtomicBool::new(false),
             more_coming: AtomicBool::new(true),
+            rrtype: RecordType::SVCB.into(),
             parser: parse_service_binding,
         };
         finish_empty(&state, "test", ffi::K_DNS_SERVICE_ERR_NO_SUCH_RECORD);

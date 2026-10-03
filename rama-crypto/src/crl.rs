@@ -11,7 +11,7 @@
 
 use std::time::SystemTime;
 
-use rama_core::error::{BoxError, ErrorContext};
+use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext};
 use yasna::{
     Tag,
     models::{GeneralizedTime, ObjectIdentifier, UTCTime},
@@ -188,17 +188,13 @@ enum X509Time {
 }
 
 fn x509_time(t: SystemTime) -> Result<X509Time, BoxError> {
-    let secs = t
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .context("crl: timestamp before unix epoch")?
-        .as_secs();
-    let odt = time::OffsetDateTime::from_unix_timestamp(secs as i64)
-        .map_err(|e| BoxError::from(format!("crl: invalid timestamp: {e}")))?;
-    Ok(if odt.year() < 2050 {
-        X509Time::Utc(UTCTime::from_datetime(odt))
+    let odt = crate::asn1::datetime(t).context("crl")?;
+    let time = if odt.year() < 2050 {
+        UTCTime::from_datetime_opt(odt).map(X509Time::Utc)
     } else {
-        X509Time::General(GeneralizedTime::from_datetime(odt))
-    })
+        GeneralizedTime::from_datetime_opt(odt).map(X509Time::General)
+    };
+    time.ok_or_else(|| BoxError::from_static_str("crl: timestamp past ASN.1 year 9999"))
 }
 
 fn write_time(w: yasna::DERWriter<'_>, t: &X509Time) {
@@ -310,6 +306,68 @@ mod tests {
         .expect("parse tbsCertList");
 
         assert_eq!(serials, vec![vec![0x12, 0x34, 0x56]]);
+    }
+
+    /// `thisUpdate` and `nextUpdate` TLVs of a CRL without revoked entries.
+    fn update_times(der: &[u8]) -> (Vec<u8>, Vec<u8>) {
+        yasna::parse_der(der, |r| {
+            r.read_sequence(|r| {
+                let times = r.next().read_sequence(|r| {
+                    let _version = r.next().read_i64()?;
+                    let _alg = r.next().read_der()?;
+                    let _issuer = r.next().read_der()?;
+                    let this = r.next().read_der()?;
+                    let next = r.next().read_der()?;
+                    let _exts = r.next().read_der()?;
+                    Ok((this, next))
+                })?;
+                let _alg = r.next().read_der()?;
+                let _sig = r.next().read_bitvec_bytes()?;
+                Ok(times)
+            })
+        })
+        .expect("parse CertificateList")
+    }
+
+    fn time_tlv(tag: u8, value: &[u8]) -> Vec<u8> {
+        [&[tag, value.len() as u8][..], value].concat()
+    }
+
+    #[test]
+    fn time_switches_to_generalized_time_in_2050() {
+        let issuer = yasna::construct_der(|w| w.write_sequence(|_| {}));
+        let mut params = params(&issuer, &[]);
+        params.this_update = SystemTime::UNIX_EPOCH + Duration::from_secs(2_524_607_999);
+        params.next_update = params.this_update + Duration::from_secs(1);
+        let der = build_crl(&params, CrlSignatureAlgorithm::EcdsaSha256, |_| {
+            Ok(vec![0x00])
+        })
+        .expect("build crl");
+
+        let (this, next) = update_times(&der);
+        assert_eq!(this, time_tlv(0x17, b"491231235959Z"));
+        assert_eq!(next, time_tlv(0x18, b"20500101000000Z"));
+    }
+
+    #[test]
+    fn times_past_year_9999_error_before_signing() {
+        let issuer = yasna::construct_der(|w| w.write_sequence(|_| {}));
+        let mut params = params(&issuer, &[]);
+        params.next_update = SystemTime::UNIX_EPOCH + Duration::from_secs(253_402_300_799);
+        let der = build_crl(&params, CrlSignatureAlgorithm::EcdsaSha256, |_| {
+            Ok(vec![0x00])
+        })
+        .expect("build crl");
+        assert_eq!(update_times(&der).1, time_tlv(0x18, b"99991231235959Z"));
+
+        params.next_update += Duration::from_secs(1);
+        let mut signed = false;
+        build_crl(&params, CrlSignatureAlgorithm::EcdsaSha256, |_| {
+            signed = true;
+            Ok(vec![0x00])
+        })
+        .unwrap_err();
+        assert!(!signed);
     }
 
     #[test]

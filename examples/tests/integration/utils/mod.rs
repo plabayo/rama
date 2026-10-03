@@ -587,6 +587,12 @@ impl ExampleRunner {
     }
 
     #[cfg(feature = "http-full")]
+    /// Create a `QUERY` http request to be sent to the child server.
+    pub(super) fn query(&self, url: impl IntoUrl) -> RequestBuilder<'_, ClientService, Response> {
+        self.client.query(url)
+    }
+
+    #[cfg(feature = "http-full")]
     /// Create a websocket builder.
     pub(super) fn websocket(
         &self,

@@ -4,12 +4,18 @@
 //! <https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Sec-WebSocket-Extensions>
 
 use rama_core::error::BoxErrorExt as _;
-use std::{fmt, str::FromStr};
+use std::{
+    fmt,
+    str::{self, FromStr},
+};
 
 use rama_core::error::{BoxError, ErrorContext as _, ErrorExt};
 use rama_core::extensions::Extension as ExtensionTrait;
 use rama_core::telemetry::tracing;
-use rama_utils::str::arcstr::ArcStr;
+use rama_http_types::HeaderValue;
+use rama_utils::{bytes::trim_ows, collections::NonEmptySmallVec, str::arcstr::ArcStr};
+
+use crate::util::ListMembers;
 
 derive_non_empty_flat_csv_header! {
     #[header(name = SEC_WEBSOCKET_EXTENSIONS, sep = Comma)]
@@ -35,6 +41,22 @@ impl SecWebSocketExtensions {
     #[must_use]
     pub fn per_message_deflate_with_config(config: PerMessageDeflateConfig) -> Self {
         Self::new(Extension::PerMessageDeflate(config))
+    }
+
+    /// Decode a client's offers, skipping each one that does not parse.
+    ///
+    /// A server declines such an offer on its own (RFC 7692 §5), where
+    /// [`HeaderDecode`](crate::HeaderDecode) rejects the whole header. An unterminated
+    /// quoted-string ends the rest of its header line.
+    pub fn decode_offers<'i>(values: impl IntoIterator<Item = &'i HeaderValue>) -> Option<Self> {
+        let offers = values
+            .into_iter()
+            .filter_map(|value| value.to_str().ok())
+            .flat_map(|value| ListMembers::new(value.as_bytes()).map_while(Result::ok))
+            .filter_map(|offer| str::from_utf8(trim_ows(offer)).ok())
+            .filter(|offer| !offer.is_empty())
+            .filter_map(|offer| offer.parse::<Extension>().ok());
+        NonEmptySmallVec::collect(offers).map(Self)
     }
 }
 
@@ -198,6 +220,8 @@ pub struct PerMessageDeflateConfig {
     ///
     /// Servers must not include this parameter in their response
     /// if the client's initial offer didn't contain it.
+    ///
+    /// `Some(0)` is the valueless form, which only a client offer may use.
     pub client_max_window_bits: Option<u8>,
 }
 
@@ -237,11 +261,10 @@ impl FromStr for Extension {
                         ));
                     }
                 } else if part.eq_ignore_ascii_case("server_max_window_bits") {
-                    if config.server_max_window_bits.replace(0).is_some() {
-                        return Err(BoxError::from_static_str(
-                            "duplicate extension param: server_max_window_bits",
-                        ));
-                    }
+                    // RFC 7692 §7.1.2.1: this parameter always carries a value
+                    return Err(BoxError::from_static_str(
+                        "server_max_window_bits requires a value",
+                    ));
                 } else if part.eq_ignore_ascii_case("client_max_window_bits") {
                     if config.client_max_window_bits.replace(0).is_some() {
                         return Err(BoxError::from_static_str(
@@ -258,6 +281,14 @@ impl FromStr for Extension {
                         .and_then(|v| v.strip_suffix('"'))
                         .unwrap_or(v);
                     let v = v.trim();
+                    // RFC 7692 §7.1.2: a decimal integer without leading zeroes or sign
+                    if !v.starts_with(|c: char| c.is_ascii_digit() && c != '0') {
+                        return Err(BoxError::from_static_str(
+                            "invalid per-message-deflate parameter value",
+                        )
+                        .context_str_field("key", k)
+                        .context_str_field("value", v));
+                    }
 
                     if k.eq_ignore_ascii_case("server_max_window_bits") {
                         match v.trim().parse::<u8>() {
@@ -349,12 +380,9 @@ impl fmt::Display for Extension {
                 if config.server_no_context_takeover {
                     write!(f, "; server_no_context_takeover")?
                 }
-                if let Some(log) = config.server_max_window_bits {
-                    if log == 0 {
-                        write!(f, "; server_max_window_bits")?
-                    } else {
-                        write!(f, "; server_max_window_bits={log}")?
-                    }
+                // the valueless form is not valid for this parameter (RFC 7692 §7.1.2.1)
+                if let Some(log) = config.server_max_window_bits.filter(|log| *log != 0) {
+                    write!(f, "; server_max_window_bits={log}")?
                 }
                 if config.client_no_context_takeover {
                     write!(f, "; client_no_context_takeover")?
@@ -380,6 +408,21 @@ mod tests {
         Extension, PerMessageDeflateConfig, PerMessageDeflateIdentifier, SecWebSocketExtensions,
     };
     use crate::common::{test_decode, test_encode};
+
+    #[test]
+    fn encode_omits_valueless_server_max_window_bits() {
+        let header =
+            SecWebSocketExtensions::per_message_deflate_with_config(PerMessageDeflateConfig {
+                server_max_window_bits: Some(0),
+                client_max_window_bits: Some(0),
+                ..Default::default()
+            });
+        let headers = test_encode(header);
+        assert_eq!(
+            headers["sec-websocket-extensions"],
+            "permessage-deflate; client_max_window_bits"
+        );
+    }
 
     #[test]
     fn decode_sec_websocket_extensions() {
@@ -561,17 +604,24 @@ mod tests {
                 ],
                 None,
             ),
-            // weird edge cases: handled gracefully
+            // an empty `1#` list is invalid
+            ("empty header", vec![""], None),
             (
-                "empty header",
-                vec![""],
-                Some(SecWebSocketExtensions::new(Extension::Empty)),
+                "valueless server_max_window_bits",
+                vec!["permessage-deflate; server_max_window_bits"],
+                None,
             ),
             (
-                "whitespace only header",
-                vec!["   "],
-                Some(SecWebSocketExtensions::new(Extension::Empty)),
+                "leading zero window bits",
+                vec!["permessage-deflate; server_max_window_bits=010"],
+                None,
             ),
+            (
+                "signed window bits",
+                vec!["permessage-deflate; client_max_window_bits=+10"],
+                None,
+            ),
+            ("whitespace only header", vec!["   "], None),
             (
                 "unknown extension",
                 vec!["super-zip"],

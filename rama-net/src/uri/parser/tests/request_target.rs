@@ -2,6 +2,7 @@
 
 use crate::uri::parser::{MAX_URI_LEN, validate_http_request_target};
 use crate::uri::{Component, ParseError, Uri};
+use std::assert_matches;
 
 #[test]
 fn borrowed_validator_accepts_each_http_request_target_form() {
@@ -139,10 +140,10 @@ fn borrowed_validator_enforces_uri_length_limit() {
     validate_http_request_target(&at_limit, false).unwrap();
 
     let over_limit = vec![b'/'; MAX_URI_LEN + 1];
-    assert!(matches!(
+    assert_matches!(
         validate_http_request_target(&over_limit, false),
-        Err(ParseError::TooLong { len }) if len == MAX_URI_LEN + 1
-    ));
+        Err(ParseError::TooLong { len }) if len == MAX_URI_LEN + 1,
+    );
 }
 
 #[test]
@@ -153,10 +154,10 @@ fn borrowed_validator_enforces_scheme_length_limit() {
 
     let mut over_limit = vec![b'a'; crate::proto::MAX_SCHEME_LEN + 1];
     over_limit.extend_from_slice(b"://example.com/");
-    assert!(matches!(
+    assert_matches!(
         validate_http_request_target(&over_limit, false),
-        Err(ParseError::InvalidComponent(Component::Scheme))
-    ));
+        Err(ParseError::InvalidComponent(Component::Scheme)),
+    );
 }
 
 #[test]

@@ -8,6 +8,7 @@
 //! etc. are plain literals; only `{`, `}`, `?` are metacharacters.
 
 use crate::uri::{PathMatchOptions, PathPattern, PathRef};
+use std::assert_matches;
 
 /// Build a [`PathRef`] from a raw on-wire path string.
 fn p(s: &str) -> PathRef<'_> {
@@ -1082,5 +1083,5 @@ async fn path_router_service_inserts_owned_captures() {
     assert_eq!(output, (Some("42".to_owned()), None));
 
     let err = router.serve(Input::new("/teams/42")).await.unwrap_err();
-    assert!(matches!(err, PathRouterError::NotFound));
+    assert_matches!(err, PathRouterError::NotFound);
 }

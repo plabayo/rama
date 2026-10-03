@@ -12,6 +12,7 @@ use rama_core::{
     io::BridgeIo,
     service::{Service, service_fn},
 };
+use std::assert_matches;
 use std::{convert::Infallible, sync::Arc, time::Duration};
 use tokio::io::AsyncReadExt as _;
 
@@ -521,7 +522,7 @@ fn tcp_destruction_panic_on_shutdown_preserves_final_bytes_and_dial9_pair() {
                 &mut cx,
                 FINAL_RESPONSE,
             );
-            assert!(matches!(result, std::task::Poll::Ready(Ok(n)) if n == FINAL_RESPONSE.len()));
+            assert_matches!(result, std::task::Poll::Ready(Ok(n)) if n == FINAL_RESPONSE.len());
             panic!("synthetic TCP destruction panic after final response");
         }
     }
@@ -1327,10 +1328,7 @@ fn external_promote_keeps_engine_dial9_session() {
             .expect("promote callback")
     );
     session.confirm_promoted(Ok(()));
-    assert!(matches!(
-        promote.join().expect("join promote caller"),
-        Ok(())
-    ));
+    assert_matches!(promote.join().expect("join promote caller"), Ok(()));
 
     session.cancel();
     engine.stop(0);

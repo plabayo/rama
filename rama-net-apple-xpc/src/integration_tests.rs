@@ -16,6 +16,7 @@
 //!   capacity must drop the new event with a warn log rather than blocking the
 //!   libdispatch thread (item 6).
 
+use std::assert_matches;
 use std::time::Duration;
 
 use tokio::time::timeout;
@@ -280,13 +281,11 @@ async fn named_bind_without_receive_right_surfaces_termination() {
         .await
         .expect("terminal error event must resolve accept, not leave it pending");
     assert!(accepted.is_none(), "no peer can arrive without the right");
-    assert!(
-        matches!(
-            listener.termination_reason(),
-            Some(crate::XpcConnectionError::Invalidated(_))
-        ),
+    assert_matches!(
+        listener.termination_reason(),
+        Some(crate::XpcConnectionError::Invalidated(_)),
         "termination reason must be recorded, got {:?}",
-        listener.termination_reason()
+        listener.termination_reason(),
     );
 
     // Terminal state is sticky: subsequent accepts return immediately.
@@ -366,10 +365,7 @@ async fn self_cancel_delivers_final_invalidation_event() {
         .await
         .expect("first event")
         .expect("channel open");
-    assert!(matches!(
-        event,
-        XpcEvent::Connection(_) | XpcEvent::Message(_)
-    ));
+    assert_matches!(event, XpcEvent::Connection(_) | XpcEvent::Message(_));
 
     client.cancel();
     let event = timeout(Duration::from_secs(2), client.recv())
@@ -392,16 +388,16 @@ async fn send_paths_reject_non_dictionary_without_aborting() {
     let client = endpoint.into_connection().expect("into_connection");
 
     let err = client.send(XpcMessage::Int64(1)).unwrap_err();
-    assert!(matches!(err, XpcError::InvalidMessage(_)), "got {err:?}");
+    assert_matches!(err, XpcError::InvalidMessage(_), "got {err:?}");
 
     let err = client.send(XpcMessage::Array(vec![])).unwrap_err();
-    assert!(matches!(err, XpcError::InvalidMessage(_)), "got {err:?}");
+    assert_matches!(err, XpcError::InvalidMessage(_), "got {err:?}");
 
     let err = client
         .send_request(XpcMessage::String("nope".into()))
         .await
         .unwrap_err();
-    assert!(matches!(err, XpcError::InvalidMessage(_)), "got {err:?}");
+    assert_matches!(err, XpcError::InvalidMessage(_), "got {err:?}");
 }
 
 // ── reply to a fire-and-forget message ────────────────────────────────────
@@ -485,7 +481,7 @@ async fn send_request_times_out_when_peer_never_replies() {
     .await
     .expect("timeout wrapper must not itself expire")
     .unwrap_err();
-    assert!(matches!(err, XpcError::CallTimedOut(_)), "got {err:?}");
+    assert_matches!(err, XpcError::CallTimedOut(_), "got {err:?}");
 }
 
 // ── server resilience: one bad request never tears down the connection ─────

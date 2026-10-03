@@ -152,6 +152,7 @@ impl<'a> RamaFrom<rustls::server::ClientHello<'a>, RamaTlsRustlsCrateMarker> for
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn test_rustls_to_common_to_rustls() {
@@ -172,7 +173,7 @@ mod tests {
     #[test]
     fn owned_host_uninterpreted_recovers_to_dns_name() {
         let host = Host::try_from("exa%6Dple.com").unwrap();
-        assert!(matches!(host, Host::Uninterpreted(_)));
+        assert_matches!(host, Host::Uninterpreted(_));
         let sn = rustls::pki_types::ServerName::rama_try_from(host).unwrap();
         match sn {
             rustls::pki_types::ServerName::DnsName(dns) => {
@@ -208,19 +209,13 @@ mod tests {
     fn owned_numeric_domain_is_an_ip_identity() {
         let host = Host::Name(Domain::try_from("127.0.0.1").unwrap());
         let server_name = rustls::pki_types::ServerName::rama_try_from(host).unwrap();
-        assert!(matches!(
-            server_name,
-            rustls::pki_types::ServerName::IpAddress(_)
-        ));
+        assert_matches!(server_name, rustls::pki_types::ServerName::IpAddress(_));
     }
 
     #[test]
     fn borrowed_numeric_domain_is_an_ip_identity() {
         let host = Host::Name(Domain::try_from("127.0.0.1").unwrap());
         let server_name = rustls::pki_types::ServerName::rama_try_from(&host).unwrap();
-        assert!(matches!(
-            server_name,
-            rustls::pki_types::ServerName::IpAddress(_)
-        ));
+        assert_matches!(server_name, rustls::pki_types::ServerName::IpAddress(_));
     }
 }

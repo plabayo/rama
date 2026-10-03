@@ -1,4 +1,5 @@
 use super::*;
+use std::assert_matches;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn live_interception_holds_upgrade_and_websocket_data_but_not_control_frames() {
@@ -158,13 +159,13 @@ async fn live_interception_holds_upgrade_and_websocket_data_but_not_control_fram
         .unwrap();
     wait_interception(address, &session, 1).await;
     socket.send_message(Message::Close(None)).await.unwrap();
-    assert!(matches!(
+    assert_matches!(
         timeout(Duration::from_secs(2), socket.recv_message())
             .await
             .unwrap()
             .unwrap(),
-        Message::Close(_)
-    ));
+        Message::Close(_),
+    );
     wait_interception(address, &session, 0).await;
     drop(socket);
     // Pause ends an already inspected idle WebSocket, then new upgraded

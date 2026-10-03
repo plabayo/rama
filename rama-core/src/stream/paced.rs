@@ -342,6 +342,7 @@ where
 mod tests {
     use super::*;
     use crate::futures::SinkExt;
+    use std::assert_matches;
     use std::convert::Infallible;
     use std::time::Duration;
     use tokio::time::Instant;
@@ -617,7 +618,7 @@ mod tests {
         drop(sink);
 
         assert_eq!(limiter.try_acquire(50), Acquire::Granted);
-        assert!(matches!(limiter.try_acquire(1), Acquire::RetryAt(_)));
+        assert_matches!(limiter.try_acquire(1), Acquire::RetryAt(_));
     }
 
     #[tokio::test(start_paused = true)]

@@ -21,6 +21,7 @@
 
 mod common;
 
+use std::assert_matches;
 use std::{net::SocketAddr, sync::Arc};
 
 use common::ALPN;
@@ -499,9 +500,10 @@ async fn quinn_resumes(
                 .wait(what, early.stopped())
                 .await
                 .expect_err("a refused early stream does not end cleanly");
-            assert!(
-                matches!(refused, quinn::StoppedError::ZeroRttRejected),
-                "{what}: the refusal is what ended it, not something else: {refused:?}"
+            assert_matches!(
+                refused,
+                quinn::StoppedError::ZeroRttRejected,
+                "{what}: the refusal is what ended it, not something else: {refused:?}",
             );
             let mut again = deadline
                 .wait(what, connection.open_uni())

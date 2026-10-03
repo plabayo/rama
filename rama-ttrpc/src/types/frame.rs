@@ -164,6 +164,7 @@ pub(crate) async fn read_frame_bytes(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     fn oversized_header(data_length: usize) -> Vec<u8> {
         let mut data = vec![0u8; HEADER_LENGTH];
@@ -196,12 +197,10 @@ mod tests {
             "the full declared payload must be discarded to stay frame-synced"
         );
         let frame = Frame::decode(bytes).expect("header-only frame decodes");
-        assert!(
-            matches!(
-                frame.message.decode::<crate::types::protos::Request>(),
-                Err(DecodeError::OversizedMessage { .. })
-            ),
-            "accessing the message must yield the deferred oversized error"
+        assert_matches!(
+            frame.message.decode::<crate::types::protos::Request>(),
+            Err(DecodeError::OversizedMessage { .. }),
+            "accessing the message must yield the deferred oversized error",
         );
 
         // The connection is still usable: the next frame parses cleanly.
@@ -247,7 +246,7 @@ mod tests {
                 .expect("read frame");
             let frame = Frame::decode(bytes).expect("decode frame");
             assert_eq!(
-                frame.message.bytes.clone().try_into_buf().is_ok(),
+                frame.message.bytes.try_into_buf().is_ok(),
                 fits,
                 "boundary mismatch at {len}"
             );

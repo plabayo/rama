@@ -19,6 +19,7 @@ use rama_http_types::{
 use rama_net::client::{ConnectionError, ConnectionErrorDomain, ConnectionErrorKind};
 use rama_quic::{Connection, TransportConfig};
 use rama_quic_proto::{Dir, Side, StreamId, coding::Codec as _};
+use std::assert_matches;
 use std::{
     future::Future,
     pin::pin,
@@ -272,17 +273,14 @@ async fn reserving_and_opening_streams_does_not_wake_credit_waiters() {
     let mut changed = pair.client.stream_budget_watch(Dir::Bi);
     let mut changed = pin!(changed.changed());
     let mut cx = Context::from_waker(Waker::noop());
-    assert!(matches!(changed.as_mut().poll(&mut cx), Poll::Pending));
+    assert_matches!(changed.as_mut().poll(&mut cx), Poll::Pending);
     let first = pair.client.try_reserve_bi().unwrap().unwrap();
     let second = pair.client.try_reserve_bi().unwrap().unwrap();
-    assert!(matches!(changed.as_mut().poll(&mut cx), Poll::Pending));
+    assert_matches!(changed.as_mut().poll(&mut cx), Poll::Pending);
     let (send, recv) = first.open().unwrap();
-    assert!(matches!(changed.as_mut().poll(&mut cx), Poll::Pending));
+    assert_matches!(changed.as_mut().poll(&mut cx), Poll::Pending);
     drop(second);
-    assert!(matches!(
-        changed.as_mut().poll(&mut cx),
-        Poll::Ready(Some(_))
-    ));
+    assert_matches!(changed.as_mut().poll(&mut cx), Poll::Ready(Some(_)));
     drop((send, recv));
     pair.close().await;
 }

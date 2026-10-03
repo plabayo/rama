@@ -466,6 +466,7 @@ impl Drop for PacketPermit {
 mod tests {
     use super::*;
     use rama_utils::octets;
+    use std::assert_matches;
 
     fn budget(datagrams: usize, bytes: usize) -> PacketBudget {
         PacketBudget::new(ReceiveQueueLimits::new(datagrams, bytes).unwrap())
@@ -750,7 +751,7 @@ mod tests {
         );
         // A late packet is refused and its charge released by the caller dropping it.
         let permit = endpoint.reserve(100).unwrap();
-        assert!(matches!(sender.send(permit), Err((_, Refusal::Closed))));
+        assert_matches!(sender.send(permit), Err((_, Refusal::Closed)));
         assert_eq!(endpoint.stats().queued_datagrams, 0);
     }
 

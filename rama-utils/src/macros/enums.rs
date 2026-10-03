@@ -574,6 +574,7 @@ pub use crate::std::{Cow as __Cow, String as __String, Vec as __Vec};
 // place where that is not an external macro, so the lint sees it here.
 #[expect(clippy::allow_attributes)]
 mod tests {
+    use std::assert_matches;
     use std::borrow::Cow;
 
     use super::enum_builder;
@@ -617,11 +618,11 @@ mod tests {
     fn numeric_enum_variant_names_borrow_known_mnemonics_and_number_the_rest() {
         assert_eq!(TestU8::One.variant_name(), Cow::Borrowed("One"));
         assert_eq!(TestU8::Maximum.variant_name(), Cow::Borrowed("Maximum"));
-        assert!(matches!(TestU8::One.variant_name(), Cow::Borrowed(_)));
+        assert_matches!(TestU8::One.variant_name(), Cow::Borrowed(_));
 
         assert_eq!(TestU8::Unknown(0).variant_name(), "0");
         assert_eq!(TestU8::Unknown(u8::MAX).variant_name(), "255");
-        assert!(matches!(TestU8::Unknown(1).variant_name(), Cow::Owned(_)));
+        assert_matches!(TestU8::Unknown(1).variant_name(), Cow::Owned(_));
         // The number, not the variant sharing its value.
         assert_ne!(
             TestU8::Unknown(1).variant_name(),
@@ -632,6 +633,6 @@ mod tests {
         assert_eq!(TestU16::Maximum.variant_name(), Cow::Borrowed("Maximum"));
         assert_eq!(TestU16::Unknown(0).variant_name(), "0");
         assert_eq!(TestU16::Unknown(u16::MAX).variant_name(), "65535");
-        assert!(matches!(TestU16::Unknown(1).variant_name(), Cow::Owned(_)));
+        assert_matches!(TestU16::Unknown(1).variant_name(), Cow::Owned(_));
     }
 }

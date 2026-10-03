@@ -1,6 +1,7 @@
 #![cfg(feature = "std")]
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
+use std::assert_matches;
 use std::{
     future::Future as _,
     io::ErrorKind,
@@ -482,10 +483,10 @@ where
 }
 
 fn assert_unexpected_eof(error: Error) {
-    assert!(matches!(
+    assert_matches!(
         error,
-        Error::Io(error) if error.kind() == ErrorKind::UnexpectedEof
-    ));
+        Error::Io(error) if error.kind() == ErrorKind::UnexpectedEof,
+    );
 }
 
 async fn read_raw_head<IO>(io: &mut IO) -> Vec<u8>
@@ -999,10 +1000,10 @@ async fn server_revalidates_a_compatible_preview_promise_before_writing() {
         None,
     )
     .unwrap();
-    assert!(matches!(
+    assert_matches!(
         transaction.continue_preview(response).await,
-        Err(Error::InvalidSequence(_))
-    ));
+        Err(Error::InvalidSequence(_)),
+    );
     drop(connection);
     let mut byte = [0];
     assert_eq!(client_io.read(&mut byte).await.unwrap(), 0);
@@ -1637,10 +1638,7 @@ async fn rejects_an_original_body_offset_at_or_beyond_the_end() {
         );
         let mut response = transaction.finish().await.unwrap();
         assert_eq!(response.next_data().await.unwrap().unwrap(), b"changed"[..]);
-        assert!(matches!(
-            response.next_data().await,
-            Err(Error::InvalidSequence(_))
-        ));
+        assert_matches!(response.next_data().await, Err(Error::InvalidSequence(_)));
     };
     tokio::join!(server, client);
 }
@@ -1678,10 +1676,7 @@ async fn rejects_partial_offsets_for_a_null_original_body() {
             .await
             .unwrap();
         assert_eq!(response.original_body_len(), Some(0));
-        assert!(matches!(
-            response.next_data().await,
-            Err(Error::InvalidSequence(_))
-        ));
+        assert_matches!(response.next_data().await, Err(Error::InvalidSequence(_)));
     };
     tokio::join!(server, client);
 
@@ -1713,10 +1708,10 @@ async fn rejects_partial_offsets_for_a_null_original_body() {
         ))
         .await
         .unwrap();
-    assert!(matches!(
+    assert_matches!(
         writer.finish_partial(0).await,
-        Err(Error::InvalidSequence(_))
-    ));
+        Err(Error::InvalidSequence(_)),
+    );
     assert!(!connection.is_reusable());
 }
 
@@ -1801,10 +1796,10 @@ async fn enforces_a_declared_original_body_length() {
     .unwrap();
     let mut connection = ClientConnection::new(ServiceInput::new(client_io));
     let mut transaction = connection.start(request).await.unwrap();
-    assert!(matches!(
+    assert_matches!(
         transaction.write_data(b"four").await,
-        Err(Error::InvalidSequence(_))
-    ));
+        Err(Error::InvalidSequence(_)),
+    );
 
     let (client_io, _server_io) = tokio::io::duplex(4096);
     let request = request_with_allow(
@@ -2168,7 +2163,7 @@ async fn failed_early_response_shutdown_is_retried() {
             .await
             .unwrap();
         let error = transaction.monitor_response().await.unwrap_err();
-        assert!(matches!(error, Error::Io(error) if error.kind() == ErrorKind::Other));
+        assert_matches!(error, Error::Io(error) if error.kind() == ErrorKind::Other);
 
         let mut response = transaction.finish().await.unwrap();
         assert_eq!(
@@ -2315,13 +2310,13 @@ async fn cancelled_client_body_write_cannot_resume_the_transaction() {
     let mut write = Box::pin(transaction.write_data(b"data"));
     let waker = std::task::Waker::noop();
     let mut context = Context::from_waker(waker);
-    assert!(matches!(write.as_mut().poll(&mut context), Poll::Pending));
+    assert_matches!(write.as_mut().poll(&mut context), Poll::Pending);
     drop(write);
 
-    assert!(matches!(
+    assert_matches!(
         transaction.write_data(b"retry").await,
-        Err(Error::InvalidState(_))
-    ));
+        Err(Error::InvalidState(_)),
+    );
     assert!(matches!(
         transaction.finish().await,
         Err(Error::InvalidState(_))
@@ -2348,7 +2343,7 @@ async fn cancelled_preview_write_cannot_finish_the_transaction() {
     let mut write = Box::pin(transaction.write_data(b"data"));
     let waker = std::task::Waker::noop();
     let mut context = Context::from_waker(waker);
-    assert!(matches!(write.as_mut().poll(&mut context), Poll::Pending));
+    assert_matches!(write.as_mut().poll(&mut context), Poll::Pending);
     drop(write);
 
     assert!(matches!(
@@ -2395,13 +2390,10 @@ async fn cancelled_server_body_write_cannot_finish_the_response() {
     let mut write = Box::pin(response.write_data(b"data"));
     let waker = std::task::Waker::noop();
     let mut context = Context::from_waker(waker);
-    assert!(matches!(write.as_mut().poll(&mut context), Poll::Pending));
+    assert_matches!(write.as_mut().poll(&mut context), Poll::Pending);
     drop(write);
 
-    assert!(matches!(
-        response.finish().await,
-        Err(Error::InvalidState(_))
-    ));
+    assert_matches!(response.finish().await, Err(Error::InvalidState(_)));
     assert!(!connection.is_reusable());
 }
 
@@ -2442,13 +2434,13 @@ async fn cancelled_continue_cannot_resume_the_server_transaction() {
     )));
     let waker = std::task::Waker::noop();
     let mut context = Context::from_waker(waker);
-    assert!(matches!(write.as_mut().poll(&mut context), Poll::Pending));
+    assert_matches!(write.as_mut().poll(&mut context), Poll::Pending);
     drop(write);
     let mut first_byte = [0];
     client_io.read_exact(&mut first_byte).await.unwrap();
     assert_eq!(first_byte, *b"I");
 
-    assert!(matches!(
+    assert_matches!(
         transaction
             .continue_preview(response(
                 MethodKind::Reqmod,
@@ -2457,8 +2449,8 @@ async fn cancelled_continue_cannot_resume_the_server_transaction() {
                 None,
             ))
             .await,
-        Err(Error::InvalidState(_))
-    ));
+        Err(Error::InvalidState(_)),
+    );
     let result = transaction
         .respond(response(
             MethodKind::Reqmod,
@@ -2670,18 +2662,18 @@ async fn invalid_monitored_response_permanently_fails_the_transaction() {
         started_tx.send(()).unwrap();
         responses_rx.await.unwrap();
 
-        assert!(matches!(
+        assert_matches!(
             transaction.monitor_response().await,
-            Err(Error::InvalidSequence(_))
-        ));
-        assert!(matches!(
+            Err(Error::InvalidSequence(_)),
+        );
+        assert_matches!(
             transaction.monitor_response().await,
-            Err(Error::InvalidState(_))
-        ));
-        assert!(matches!(
+            Err(Error::InvalidState(_)),
+        );
+        assert_matches!(
             transaction.write_data(b"data").await,
-            Err(Error::InvalidState(_))
-        ));
+            Err(Error::InvalidState(_)),
+        );
         assert!(matches!(
             transaction.finish().await,
             Err(Error::InvalidState(_))
@@ -2725,10 +2717,10 @@ async fn cancelled_monitored_response_read_fails_closed() {
             "partial response unexpectedly completed",
         );
         drop(monitor);
-        assert!(matches!(
+        assert_matches!(
             transaction.monitor_response().await,
-            Err(Error::InvalidState(_))
-        ));
+            Err(Error::InvalidState(_)),
+        );
         assert!(matches!(
             transaction.finish().await,
             Err(Error::InvalidState(_))
@@ -2773,15 +2765,15 @@ async fn invalid_response_after_completed_write_fails_closed() {
         started_tx.send(()).unwrap();
         first_rx.await.unwrap();
 
-        assert!(matches!(
+        assert_matches!(
             transaction.write_data(b"data").await,
-            Err(Error::InvalidSequence(_))
-        ));
+            Err(Error::InvalidSequence(_)),
+        );
         second_rx.await.unwrap();
-        assert!(matches!(
+        assert_matches!(
             transaction.monitor_response().await,
-            Err(Error::InvalidState(_))
-        ));
+            Err(Error::InvalidState(_)),
+        );
         assert!(matches!(
             transaction.finish().await,
             Err(Error::InvalidState(_))
@@ -2824,14 +2816,14 @@ async fn cancelled_write_race_cannot_drop_an_invalid_response() {
         let mut write = Box::pin(transaction.write_data(b"data"));
         let waker = std::task::Waker::noop();
         let mut context = Context::from_waker(waker);
-        assert!(matches!(write.as_mut().poll(&mut context), Poll::Pending));
+        assert_matches!(write.as_mut().poll(&mut context), Poll::Pending);
         drop(write);
 
         server_io.write_all(CLOSING_200_RESPONSE).await.unwrap();
-        assert!(matches!(
+        assert_matches!(
             transaction.monitor_response().await,
-            Err(Error::InvalidState(_))
-        ));
+            Err(Error::InvalidState(_)),
+        );
         if preview {
             assert!(matches!(
                 transaction.finish_preview(false).await,
@@ -2870,15 +2862,15 @@ async fn write_race_read_error_permanently_fails_the_transaction() {
         };
 
         fail.store(true, Ordering::Release);
-        assert!(matches!(
+        assert_matches!(
             transaction.write_data(b"data").await,
-            Err(Error::Io(error)) if error.kind() == ErrorKind::Other
-        ));
+            Err(Error::Io(error)) if error.kind() == ErrorKind::Other,
+        );
         server_io.write_all(CLOSING_200_RESPONSE).await.unwrap();
-        assert!(matches!(
+        assert_matches!(
             transaction.monitor_response().await,
-            Err(Error::InvalidState(_))
-        ));
+            Err(Error::InvalidState(_)),
+        );
         if preview {
             assert!(matches!(
                 transaction.finish_preview(false).await,
@@ -3063,10 +3055,12 @@ async fn allow_206_alone_is_insufficient_outside_preview() {
             Err(Error::InvalidSequence(_)) => {}
             Ok(mut transaction) => match transaction.write_data(b"original").await {
                 Err(Error::InvalidSequence(_)) => {}
-                Ok(_) => assert!(matches!(
-                    transaction.finish().await,
-                    Err(Error::InvalidSequence(_))
-                )),
+                Ok(_) => {
+                    assert!(matches!(
+                        transaction.finish().await,
+                        Err(Error::InvalidSequence(_))
+                    ))
+                }
                 Err(error) => panic!("unexpected client error: {error}"),
             },
             Err(error) => panic!("unexpected client error: {error}"),
@@ -3265,10 +3259,10 @@ async fn rejects_reserved_terminal_extensions_in_request_bodies() {
 
         let mut connection = ServerConnection::new(ServiceInput::new(server_io));
         let mut transaction = connection.accept().await.unwrap().unwrap();
-        assert!(matches!(
+        assert_matches!(
             transaction.next_data().await,
-            Err(rama_icap::io::Error::InvalidSequence(_))
-        ));
+            Err(rama_icap::io::Error::InvalidSequence(_)),
+        );
     }
 }
 
@@ -3289,10 +3283,10 @@ async fn enforces_the_inbound_preview_limit_before_buffering_data() {
 
     let mut connection = ServerConnection::new(ServiceInput::new(server_io));
     let mut transaction = connection.accept().await.unwrap().unwrap();
-    assert!(matches!(
+    assert_matches!(
         transaction.next_data().await,
-        Err(rama_icap::io::Error::InvalidSequence(_))
-    ));
+        Err(rama_icap::io::Error::InvalidSequence(_)),
+    );
 }
 
 #[tokio::test]
@@ -3483,10 +3477,10 @@ async fn rejects_partial_completion_for_a_non_206_response() {
         ))
         .await
         .unwrap();
-    assert!(matches!(
+    assert_matches!(
         writer.finish_partial(0).await,
-        Err(rama_icap::io::Error::InvalidState(_))
-    ));
+        Err(rama_icap::io::Error::InvalidState(_)),
+    );
 }
 
 #[tokio::test]
@@ -3608,12 +3602,12 @@ async fn applies_every_configured_async_framing_bound() {
             panic!("{expected} bound was not enforced");
         };
         if expected == "head" {
-            assert!(matches!(error, Error::Head(ParseError::HeadTooLarge)));
+            assert_matches!(error, Error::Head(ParseError::HeadTooLarge));
         } else if expected == "headers" {
-            assert!(matches!(error, Error::Head(ParseError::TooManyHeaders)));
+            assert_matches!(error, Error::Head(ParseError::TooManyHeaders));
         } else {
             assert_eq!(expected, "encapsulated");
-            assert!(matches!(error, Error::InvalidSequence(_)));
+            assert_matches!(error, Error::InvalidSequence(_));
         }
     }
 
@@ -3631,10 +3625,10 @@ async fn applies_every_configured_async_framing_bound() {
     let options = ConnectionOptions::new().with_max_chunk_line_bytes(3);
     let mut connection = ServerConnection::with_options(ServiceInput::new(server_io), options);
     let mut transaction = connection.accept().await.unwrap().unwrap();
-    assert!(matches!(
+    assert_matches!(
         transaction.next_data().await,
-        Err(Error::ChunkLine(ChunkLineError::LineTooLong))
-    ));
+        Err(Error::ChunkLine(ChunkLineError::LineTooLong)),
+    );
 }
 
 #[tokio::test]

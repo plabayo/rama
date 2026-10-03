@@ -404,6 +404,7 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn test_reverse_domain() {
@@ -626,7 +627,7 @@ mod test {
         // Descendant still gets subtree.
         let hit_child = m.get("foo.example.com").unwrap();
         assert_eq!(hit_child.value, &"subtree");
-        assert!(matches!(hit_child.kind, MatchKind::Subtree { .. }));
+        assert_matches!(hit_child.kind, MatchKind::Subtree { .. });
     }
 
     #[test]

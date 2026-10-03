@@ -1,5 +1,6 @@
 //! Script providers and the resolver that drives them.
 
+use std::assert_matches;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
@@ -327,7 +328,7 @@ async fn a_changed_script_takes_effect() {
         .await
         .expect("resolve after swap");
     assert_eq!(directives.len(), 2);
-    assert!(matches!(directives.first(), Some(PacDirective::Proxy(_))));
+    assert_matches!(directives.first(), Some(PacDirective::Proxy(_)));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

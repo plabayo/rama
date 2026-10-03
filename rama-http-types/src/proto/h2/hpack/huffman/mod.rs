@@ -14,6 +14,7 @@ pub(crate) fn decode(src: &[u8], buf: &mut BytesMut) -> Result<BytesMut, Decoder
 }
 
 /// A bounded Huffman decoding failure.
+#[derive(Debug)]
 pub(crate) enum BoundedDecodeError {
     InvalidCode,
     LengthLimit,
@@ -138,6 +139,7 @@ fn encode_bytes<B: BufMut>(bytes: impl IntoIterator<Item = u8>, dst: &mut B) {
 #[cfg(test)]
 mod test {
     use super::*;
+    use std::assert_matches;
 
     fn decode(src: &[u8]) -> Result<BytesMut, DecoderError> {
         let mut buf = BytesMut::new();
@@ -301,10 +303,10 @@ mod test {
                 let bounded = decode_bounded(src, &mut BytesMut::new(), expected.len());
                 assert_eq!(bounded.ok().as_deref(), Some(expected.as_slice()));
                 if !expected.is_empty() {
-                    assert!(matches!(
+                    assert_matches!(
                         decode_bounded(src, &mut BytesMut::new(), expected.len() - 1),
-                        Err(BoundedDecodeError::LengthLimit)
-                    ));
+                        Err(BoundedDecodeError::LengthLimit),
+                    );
                 }
             }
         };

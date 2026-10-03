@@ -106,4 +106,33 @@ mod tests {
         let value = HeaderValue::from_static("example.net");
         AltUsed::decode(&mut [&value, &value].into_iter()).unwrap_err();
     }
+
+    #[test]
+    fn adversarial_authorities_do_not_panic() {
+        for raw in [
+            b":".as_slice(),
+            b":99999",
+            b"[",
+            b"[]",
+            b"[::1]:",
+            b"[::1]:99999",
+            b"[v1.x]:1",
+            b"[::ffff:1.2.3.4]:80",
+            b"a:b:c",
+            b"%",
+            b"%zz",
+            b"@",
+            b"a@b",
+            b"\xc3\xa9",
+            b"example.net:\xc3\xa9",
+            b"\t",
+        ] {
+            let value = HeaderValue::from_bytes(raw).unwrap();
+            if let Ok(decoded) = AltUsed::decode(&mut std::iter::once(&value)) {
+                let mut headers = HeaderMap::new();
+                headers.typed_insert(decoded.clone());
+                assert_eq!(headers.typed_get::<AltUsed>(), Some(decoded));
+            }
+        }
+    }
 }

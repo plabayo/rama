@@ -74,11 +74,17 @@ impl Priority {
         const INCREMENTAL: [&str; 8] = [
             "u=0, i", "u=1, i", "u=2, i", "u=3, i", "u=4, i", "u=5, i", "u=6, i", "u=7, i",
         ];
-        HeaderValue::from_static(if self.incremental {
-            INCREMENTAL[self.urgency as usize]
+        let table = if self.incremental {
+            &INCREMENTAL
         } else {
-            PLAIN[self.urgency as usize]
-        })
+            &PLAIN
+        };
+        // urgency is always 0..=7 by construction; the fallback only keeps this total
+        let value = table
+            .get(usize::from(self.urgency))
+            .copied()
+            .unwrap_or("u=3");
+        HeaderValue::from_static(value)
     }
 }
 
@@ -166,6 +172,18 @@ mod tests {
         );
         assert_eq!(Priority::parse(b"u=1, u=(2)").unwrap(), Priority::default());
         Priority::parse(b"u=1, x=\"unterminated").unwrap_err();
+        for value in [
+            "u=9223372036854775807",
+            "u=-9223372036854775808",
+            "u=99999999999999999999",
+            "u=999999999999999",
+            "u=-999999999999999",
+        ] {
+            if let Ok(priority) = Priority::parse(value.as_bytes()) {
+                assert_eq!(priority, Priority::default(), "{value}");
+                _ = priority.field_value();
+            }
+        }
         for urgency in 0..8 {
             for incremental in [false, true] {
                 let priority = Priority::new(urgency, incremental).unwrap();

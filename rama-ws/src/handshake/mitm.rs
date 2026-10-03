@@ -1659,6 +1659,7 @@ mod tests {
     //! The isolation test distinguishes a shared `clone()` (cross-direction
     //! marker leak) from per-direction `clone()` (live-socket pollution).
 
+    use std::assert_matches;
     use std::{
         future::pending,
         num::NonZeroUsize,
@@ -2105,7 +2106,7 @@ mod tests {
             max_message_size: Some(3),
         };
 
-        assert!(matches!(
+        assert_matches!(
             injector
                 .send(
                     WebSocketRelayDirection::Ingress,
@@ -2115,8 +2116,8 @@ mod tests {
             Err(ProtocolError::MessageTooLong {
                 size: 4,
                 max_size: 3
-            })
-        ));
+            }),
+        );
         assert!(ingress_rx.is_empty());
     }
 
@@ -3475,14 +3476,14 @@ mod tests {
                 .send_message(Message::Ping(Bytes::new()))
                 .await
                 .unwrap();
-            assert!(matches!(
+            assert_matches!(
                 expect_message(&mut client, "initial pong").await,
-                Message::Pong(_)
-            ));
-            assert!(matches!(
+                Message::Pong(_),
+            );
+            assert_matches!(
                 expect_message(&mut server, "initial heartbeat").await,
-                Message::Pong(_)
-            ));
+                Message::Pong(_),
+            );
             timeout(Duration::from_secs(1), started_rx)
                 .await
                 .unwrap()
@@ -3490,20 +3491,20 @@ mod tests {
             for payload in payloads {
                 client.send_message(Message::text(payload)).await.unwrap();
             }
-            assert!(matches!(
+            assert_matches!(
                 expect_message(&mut client, "bounded read-ahead closes client").await,
                 Message::Close(Some(CloseFrame {
                     code: CloseCode::Size,
                     ..
-                }))
-            ));
-            assert!(matches!(
+                })),
+            );
+            assert_matches!(
                 expect_message(&mut server, "bounded read-ahead closes server").await,
                 Message::Close(Some(CloseFrame {
                     code: CloseCode::Size,
                     ..
-                }))
-            ));
+                })),
+            );
             _ = client.flush().await;
             _ = server.flush().await;
             timeout(Duration::from_secs(1), relay)

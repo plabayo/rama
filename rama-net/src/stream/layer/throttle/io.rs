@@ -419,6 +419,7 @@ mod tests {
     use super::*;
     use rama_core::extensions::Extension;
     use rama_utils::rate::Rate;
+    use std::assert_matches;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     fn throttled_writer<S>(stream: S, units_per_sec: u64, quantum: u64) -> ThrottledIo<S> {
@@ -544,7 +545,7 @@ mod tests {
         drop(throttled);
 
         assert_eq!(limiter.try_acquire(50), Acquire::Granted);
-        assert!(matches!(limiter.try_acquire(1), Acquire::RetryAt(_)));
+        assert_matches!(limiter.try_acquire(1), Acquire::RetryAt(_));
     }
 
     #[tokio::test(start_paused = true)]
@@ -803,7 +804,7 @@ mod tests {
         // a double-spend across the Pending poll would have to wait
         assert_eq!(start.elapsed(), Duration::ZERO);
         // and exactly the written bytes were spent
-        assert!(matches!(limiter.try_acquire(1), Acquire::RetryAt(_)));
+        assert_matches!(limiter.try_acquire(1), Acquire::RetryAt(_));
     }
 
     /// an inner writer that never completes a write

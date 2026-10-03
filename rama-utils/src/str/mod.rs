@@ -24,7 +24,7 @@ pub use search::{
 
 mod trim;
 #[doc(inline)]
-pub use trim::{trim_ascii_quotes_non_empty, trim_non_empty};
+pub use trim::{trim_ascii_quotes_non_empty, trim_non_empty, trim_ows};
 
 pub mod arcstr;
 pub mod utf8;

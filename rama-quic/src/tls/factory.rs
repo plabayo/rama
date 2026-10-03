@@ -230,6 +230,7 @@ mod tests {
     use rama_net::tls::ApplicationProtocol;
     use rama_tls_boring::client::BoringGrease;
     use rama_tls_rustls::client::ModifyRustlsClientConfig;
+    use std::assert_matches;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
@@ -263,10 +264,10 @@ mod tests {
         assert_eq!(boring_policy, boring.pool_id(extensions));
         assert!(!rustls.authenticates_server(extensions));
         assert!(boring.authenticates_server(extensions));
-        assert!(matches!(
+        assert_matches!(
             rustls.client_config(&config, TlsOptions::default()),
-            Err(TlsConfigError::InvalidConfiguration(_))
-        ));
+            Err(TlsConfigError::InvalidConfiguration(_)),
+        );
         boring
             .client_config(&config, TlsOptions::default())
             .unwrap();
@@ -330,10 +331,10 @@ mod tests {
             Err(BoxError::from_static_str("replacement rejects this policy"))
         }));
         let effective = config.with_overrides(&request);
-        assert!(matches!(
+        assert_matches!(
             rustls.client_config(&effective, &request),
-            Err(TlsConfigError::InvalidConfiguration(_))
-        ));
+            Err(TlsConfigError::InvalidConfiguration(_)),
+        );
         let retained_boring = boring.client_config(&effective, &request).unwrap();
         assert!(Arc::ptr_eq(
             &replaced_boring.crypto,

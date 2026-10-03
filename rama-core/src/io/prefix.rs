@@ -19,9 +19,16 @@ pin_project! {
     ///
     /// It's similar to `ChainReader`, except that writing is also
     /// supported and happening directly in function of the inner stream.
-    #[derive(Debug, Clone)]
+    ///
+    /// Once the prefix is drained, that same async read also
+    /// tries one inner read when the buf has room left, so a
+    /// peeked prefix need not be a short read of its own.
+    /// Sync reads never do this.
+    #[derive(Debug)]
     pub struct PrefixedIo<P, S> {
         prefix_eof: bool,
+        // error hit after bytes were already read
+        deferred_err: Option<std::io::Error>,
         #[pin]
         prefix: P,
         #[pin]
@@ -37,8 +44,26 @@ impl<P, S> PrefixedIo<P, S> {
     pub fn new(prefix: P, inner: S) -> Self {
         Self {
             prefix_eof: false,
+            deferred_err: None,
             prefix,
             inner,
+        }
+    }
+}
+
+impl<P: Clone, S: Clone> Clone for PrefixedIo<P, S> {
+    fn clone(&self) -> Self {
+        Self {
+            prefix_eof: self.prefix_eof,
+            // io::Error is not Clone, keep the OS code if any
+            deferred_err: self.deferred_err.as_ref().map(|err| {
+                err.raw_os_error().map_or_else(
+                    || std::io::Error::new(err.kind(), err.to_string()),
+                    std::io::Error::from_raw_os_error,
+                )
+            }),
+            prefix: self.prefix.clone(),
+            inner: self.inner.clone(),
         }
     }
 }
@@ -60,14 +85,49 @@ where
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<std::io::Result<()>> {
-        let me = self.project();
+        let mut me = self.project();
+
+        // an empty buf would look like prefix EOF
+        if buf.remaining() == 0 {
+            return Poll::Ready(Ok(()));
+        }
+        if let Some(err) = me.deferred_err.take() {
+            return Poll::Ready(Err(err));
+        }
 
         if !*me.prefix_eof {
-            let rem = buf.remaining();
-            ready!(me.prefix.poll_read(cx, buf))?;
-            if buf.remaining() == rem {
-                *me.prefix_eof = true;
-            } else {
+            let start = buf.filled().len();
+            // Only an empty read proves the prefix is drained;
+            // topping up before that would reorder bytes.
+            while buf.remaining() > 0 {
+                let before = buf.filled().len();
+                match me.prefix.as_mut().poll_read(cx, buf) {
+                    Poll::Ready(Ok(())) if buf.filled().len() == before => {
+                        *me.prefix_eof = true;
+                        break;
+                    }
+                    Poll::Ready(Ok(())) => {}
+                    // never hide bytes already in buf
+                    Poll::Pending if buf.filled().len() > start => {
+                        return Poll::Ready(Ok(()));
+                    }
+                    Poll::Ready(Err(err)) if buf.filled().len() > start => {
+                        *me.deferred_err = Some(err);
+                        return Poll::Ready(Ok(()));
+                    }
+                    other => return other,
+                }
+            }
+
+            if buf.filled().len() > start {
+                if *me.prefix_eof
+                    && buf.remaining() > 0
+                    && let Poll::Ready(Err(err)) = me.inner.poll_read(cx, buf)
+                {
+                    // Returned next call: some sockets report a
+                    // reset only once and read EOF after that.
+                    *me.deferred_err = Some(err);
+                }
                 return Poll::Ready(Ok(()));
             }
         }
@@ -83,6 +143,10 @@ where
 {
     fn poll_fill_buf(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<&[u8]>> {
         let me = self.project();
+
+        if let Some(err) = me.deferred_err.take() {
+            return Poll::Ready(Err(err));
+        }
 
         if !*me.prefix_eof {
             match ready!(me.prefix.poll_fill_buf(cx)?) {
@@ -110,7 +174,16 @@ where
     P: Read,
     S: Read,
 {
+    // No top-up here: a blocking inner read could stall bytes
+    // the prefix already produced.
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        // an empty buf would look like prefix EOF
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        if let Some(err) = self.deferred_err.take() {
+            return Err(err);
+        }
         if !self.prefix_eof {
             let n = self.prefix.read(buf)?;
             if n == 0 {
@@ -202,6 +275,7 @@ mod tests {
     use crate::ServiceInput;
 
     use super::*;
+    use crate::io::test_util::{ScriptReader, Step, poll_read_once};
 
     use std::io::Cursor;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -259,7 +333,9 @@ mod tests {
         struct TestCase<const N: usize> {
             prefix_data: &'static str,
             inner_data: &'static str,
-            expected_reads: &'static [&'static str],
+            // async reads top up, sync reads don't
+            expected_async_reads: &'static [&'static str],
+            expected_sync_reads: &'static [&'static str],
         }
 
         impl<const N: usize> TestCase<N> {
@@ -270,15 +346,16 @@ mod tests {
                     PrefixedIo::new(prefix_data, ServiceInput::new(inner_data))
                 };
 
-                test_multi_read_async::<N>(&mut new_stream(), self.expected_reads).await;
-                test_multi_read_sync::<N>(&mut new_stream(), self.expected_reads);
+                test_multi_read_async::<N>(&mut new_stream(), self.expected_async_reads).await;
+                test_multi_read_sync::<N>(&mut new_stream(), self.expected_sync_reads);
             }
         }
 
         TestCase::<10> {
             prefix_data: "hello",
             inner_data: " world",
-            expected_reads: &["hello", " world", ""],
+            expected_async_reads: &["hello worl", "d", ""],
+            expected_sync_reads: &["hello", " world", ""],
         }
         .test_sync_and_async()
         .await;
@@ -286,7 +363,8 @@ mod tests {
         TestCase::<5> {
             prefix_data: "hello world",
             inner_data: "next data",
-            expected_reads: &["hello", " worl", "d", "next ", "data", ""],
+            expected_async_reads: &["hello", " worl", "dnext", " data", ""],
+            expected_sync_reads: &["hello", " worl", "d", "next ", "data", ""],
         }
         .test_sync_and_async()
         .await;
@@ -294,7 +372,8 @@ mod tests {
         TestCase::<2> {
             prefix_data: "peek",
             inner_data: "inner",
-            expected_reads: &["pe", "ek", "in", "ne", "r", ""],
+            expected_async_reads: &["pe", "ek", "in", "ne", "r", ""],
+            expected_sync_reads: &["pe", "ek", "in", "ne", "r", ""],
         }
         .test_sync_and_async()
         .await;
@@ -302,7 +381,8 @@ mod tests {
         TestCase::<8> {
             prefix_data: "",
             inner_data: "inner data",
-            expected_reads: &["inner da", "ta", ""],
+            expected_async_reads: &["inner da", "ta", ""],
+            expected_sync_reads: &["inner da", "ta", ""],
         }
         .test_sync_and_async()
         .await;
@@ -310,7 +390,8 @@ mod tests {
         TestCase::<10> {
             prefix_data: "",
             inner_data: "inner data",
-            expected_reads: &["inner data", ""],
+            expected_async_reads: &["inner data", ""],
+            expected_sync_reads: &["inner data", ""],
         }
         .test_sync_and_async()
         .await;
@@ -318,10 +399,298 @@ mod tests {
         TestCase::<12> {
             prefix_data: "",
             inner_data: "inner data",
-            expected_reads: &["inner data", ""],
+            expected_async_reads: &["inner data", ""],
+            expected_sync_reads: &["inner data", ""],
         }
         .test_sync_and_async()
         .await;
+    }
+
+    #[tokio::test]
+    async fn test_prefix_read_joins_ready_inner_data() {
+        // kerberos-like: length header split by a 2 byte peek
+        let mut stream = PrefixedIo::new(
+            Cursor::new(&b"\x00\x00"[..]),
+            ScriptReader::new([Step::Data(b"\x00\x05hello")]),
+        );
+        let mut buf = [0u8; 64];
+        let n = stream.read(&mut buf).await.unwrap();
+        assert_eq!(&buf[..n], b"\x00\x00\x00\x05hello");
+        assert_eq!(stream.read(&mut buf).await.unwrap(), 0);
+    }
+
+    #[test]
+    fn test_prefix_read_does_not_wait_for_inner() {
+        let mut stream = PrefixedIo::new(
+            Cursor::new(&b"ab"[..]),
+            ScriptReader::new([Step::Pending, Step::Data(b"cd")]),
+        );
+        let mut buf = [0u8; 8];
+        let Poll::Ready(Ok(n)) = poll_read_once(&mut stream, &mut buf) else {
+            panic!("prefix read must not wait on the inner stream");
+        };
+        assert_eq!(&buf[..n], b"ab");
+        let Poll::Ready(Ok(n)) = poll_read_once(&mut stream, &mut buf) else {
+            panic!("expected inner data");
+        };
+        assert_eq!(&buf[..n], b"cd");
+    }
+
+    #[test]
+    fn test_prefix_exact_fit_does_not_poll_inner() {
+        let mut stream = PrefixedIo::new(
+            Cursor::new(&b"ab"[..]),
+            ScriptReader::new([Step::Pending, Step::Data(b"cd")]),
+        );
+        let mut buf = [0u8; 2];
+        let Poll::Ready(Ok(n)) = poll_read_once(&mut stream, &mut buf) else {
+            panic!("expected the prefix");
+        };
+        assert_eq!(&buf[..n], b"ab");
+        // the inner Pending is still there, so it was not polled
+        assert!(poll_read_once(&mut stream, &mut buf).is_pending());
+    }
+
+    #[tokio::test]
+    async fn test_prefix_read_defers_inner_error() {
+        let mut stream = PrefixedIo::new(
+            Cursor::new(&b"ab"[..]),
+            ScriptReader::new([Step::Err(std::io::ErrorKind::ConnectionReset)]),
+        );
+        let mut buf = [0u8; 8];
+        let n = stream.read(&mut buf).await.unwrap();
+        assert_eq!(&buf[..n], b"ab");
+        let err = stream.read(&mut buf).await.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::ConnectionReset);
+        // the script is done, so the inner stream now reads EOF
+        assert_eq!(stream.read(&mut buf).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_prefix_read_keeps_order_for_trickling_prefix() {
+        let mut stream = PrefixedIo::new(
+            ScriptReader::new([Step::Data(b"a"), Step::Data(b"b"), Step::Data(b"c")]),
+            ScriptReader::new([Step::Data(b"def")]),
+        );
+        let mut buf = [0u8; 16];
+        let n = stream.read(&mut buf).await.unwrap();
+        assert_eq!(&buf[..n], b"abcdef");
+    }
+
+    #[test]
+    fn test_prefix_read_returns_bytes_before_pending_prefix() {
+        let mut stream = PrefixedIo::new(
+            ScriptReader::new([Step::Data(b"ab"), Step::Pending, Step::Data(b"c")]),
+            ScriptReader::new([Step::Data(b"inner")]),
+        );
+        let mut buf = [0u8; 16];
+        let Poll::Ready(Ok(n)) = poll_read_once(&mut stream, &mut buf) else {
+            panic!("bytes already read must be returned");
+        };
+        assert_eq!(&buf[..n], b"ab");
+        let Poll::Ready(Ok(n)) = poll_read_once(&mut stream, &mut buf) else {
+            panic!("expected the rest of the prefix");
+        };
+        assert_eq!(&buf[..n], b"cinner");
+    }
+
+    #[tokio::test]
+    async fn test_prefix_read_defers_prefix_error_after_bytes() {
+        let mut stream = PrefixedIo::new(
+            ScriptReader::new([
+                Step::Data(b"ab"),
+                Step::Err(std::io::ErrorKind::Other),
+                Step::Data(b"c"),
+            ]),
+            ScriptReader::new([Step::Data(b"inner")]),
+        );
+        let mut buf = [0u8; 16];
+        let n = stream.read(&mut buf).await.unwrap();
+        assert_eq!(&buf[..n], b"ab");
+        let err = stream.read(&mut buf).await.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::Other);
+        // the prefix resumes after its error
+        let n = stream.read(&mut buf).await.unwrap();
+        assert_eq!(&buf[..n], b"cinner");
+    }
+
+    #[tokio::test]
+    async fn test_prefix_read_defers_inner_error_to_fill_buf() {
+        use tokio::io::AsyncBufReadExt;
+
+        let mut stream = PrefixedIo::new(
+            Cursor::new(&b"ab"[..]),
+            tokio::io::BufReader::new(ScriptReader::new([Step::Err(
+                std::io::ErrorKind::ConnectionReset,
+            )])),
+        );
+        let mut buf = [0u8; 8];
+        let n = AsyncReadExt::read(&mut stream, &mut buf).await.unwrap();
+        assert_eq!(&buf[..n], b"ab");
+        let err = stream.fill_buf().await.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::ConnectionReset);
+        // delivered once
+        assert!(stream.fill_buf().await.unwrap().is_empty());
+    }
+
+    /// [`ScriptReader`] that can also be read sync.
+    struct SyncScriptReader(ScriptReader);
+
+    impl AsyncRead for SyncScriptReader {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Pin::new(&mut self.0).poll_read(cx, buf)
+        }
+    }
+
+    impl Read for SyncScriptReader {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            match poll_read_once(&mut self.0, buf) {
+                Poll::Ready(result) => result,
+                Poll::Pending => Err(std::io::ErrorKind::WouldBlock.into()),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_prefix_read_defers_inner_error_to_sync_read() {
+        let mut stream = PrefixedIo::new(
+            Cursor::new(&b"ab"[..]),
+            SyncScriptReader(ScriptReader::new([Step::Err(
+                std::io::ErrorKind::ConnectionReset,
+            )])),
+        );
+        let mut buf = [0u8; 8];
+        let n = AsyncReadExt::read(&mut stream, &mut buf).await.unwrap();
+        assert_eq!(&buf[..n], b"ab");
+        let err = Read::read(&mut stream, &mut buf).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::ConnectionReset);
+        // delivered once
+        assert_eq!(Read::read(&mut stream, &mut buf).unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_prefix_empty_read_keeps_deferred_error() {
+        let mut stream = PrefixedIo::new(
+            Cursor::new(&b"ab"[..]),
+            ScriptReader::new([Step::Err(std::io::ErrorKind::ConnectionReset)]),
+        );
+        let mut buf = [0u8; 8];
+        let n = stream.read(&mut buf).await.unwrap();
+        assert_eq!(&buf[..n], b"ab");
+        assert_eq!(stream.read(&mut []).await.unwrap(), 0);
+        let err = stream.read(&mut buf).await.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::ConnectionReset);
+    }
+
+    #[tokio::test]
+    async fn test_prefix_read_with_inner_eof() {
+        let mut stream = PrefixedIo::new(Cursor::new(&b"ab"[..]), ScriptReader::new([]));
+        let mut buf = [0u8; 8];
+        let n = stream.read(&mut buf).await.unwrap();
+        assert_eq!(&buf[..n], b"ab");
+        assert_eq!(stream.read(&mut buf).await.unwrap(), 0);
+    }
+
+    #[test]
+    fn test_prefix_read_pending_before_any_prefix_bytes() {
+        let mut stream = PrefixedIo::new(
+            ScriptReader::new([Step::Pending, Step::Data(b"ab")]),
+            ScriptReader::new([Step::Data(b"cd")]),
+        );
+        let mut buf = [0u8; 8];
+        assert!(poll_read_once(&mut stream, &mut buf).is_pending());
+        let Poll::Ready(Ok(n)) = poll_read_once(&mut stream, &mut buf) else {
+            panic!("expected prefix and inner data");
+        };
+        assert_eq!(&buf[..n], b"abcd");
+    }
+
+    #[tokio::test]
+    async fn test_prefix_read_error_before_any_prefix_bytes() {
+        let mut stream = PrefixedIo::new(
+            ScriptReader::new([Step::Err(std::io::ErrorKind::Other), Step::Data(b"ab")]),
+            ScriptReader::new([Step::Data(b"cd")]),
+        );
+        let mut buf = [0u8; 8];
+        let err = stream.read(&mut buf).await.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::Other);
+        let n = stream.read(&mut buf).await.unwrap();
+        assert_eq!(&buf[..n], b"abcd");
+    }
+
+    #[test]
+    fn test_prefix_read_appends_to_prefilled_buf() {
+        let mut stream = PrefixedIo::new(
+            Cursor::new(&b"ab"[..]),
+            ScriptReader::new([Step::Data(b"cd")]),
+        );
+        let mut storage = [0u8; 16];
+        let mut read_buf = ReadBuf::new(&mut storage);
+        read_buf.put_slice(b"xx");
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+        let Poll::Ready(Ok(())) = Pin::new(&mut stream).poll_read(&mut cx, &mut read_buf) else {
+            panic!("expected a ready read");
+        };
+        assert_eq!(read_buf.filled(), b"xxabcd");
+    }
+
+    #[tokio::test]
+    async fn test_prefix_read_limit_across_prefix_boundary() {
+        let mut stream = PrefixedIo::new(
+            Cursor::new(&b"ab"[..]),
+            ScriptReader::new([Step::Data(b"cdef")]),
+        );
+        let mut head = Vec::new();
+        AsyncReadExt::take(&mut stream, 3)
+            .read_to_end(&mut head)
+            .await
+            .unwrap();
+        assert_eq!(head, b"abc");
+        let mut rest = Vec::new();
+        stream.read_to_end(&mut rest).await.unwrap();
+        assert_eq!(rest, b"def");
+    }
+
+    #[test]
+    fn test_prefix_clone_keeps_os_error_code() {
+        let mut stream = PrefixedIo::new(Cursor::new(&b""[..]), Cursor::new(&b""[..]));
+        stream.deferred_err = Some(std::io::Error::from_raw_os_error(10054));
+        let clone = stream.clone();
+        for copy in [stream, clone] {
+            assert_eq!(
+                copy.deferred_err.and_then(|err| err.raw_os_error()),
+                Some(10054)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_prefix_read_nested() {
+        let mut stream = PrefixedIo::new(
+            Cursor::new(&b"a"[..]),
+            PrefixedIo::new(Cursor::new(&b"b"[..]), Cursor::new(&b"cd"[..])),
+        );
+        let mut buf = [0u8; 16];
+        let n = AsyncReadExt::read(&mut stream, &mut buf).await.unwrap();
+        assert_eq!(&buf[..n], b"abcd");
+    }
+
+    #[tokio::test]
+    async fn test_prefix_zero_capacity_read_keeps_prefix() {
+        let mut stream = PrefixedIo::new(Cursor::new(&b"ab"[..]), Cursor::new(&b"cd"[..]));
+        assert_eq!(AsyncReadExt::read(&mut stream, &mut []).await.unwrap(), 0);
+        let mut buf = [0u8; 16];
+        let n = AsyncReadExt::read(&mut stream, &mut buf).await.unwrap();
+        assert_eq!(&buf[..n], b"abcd");
+
+        let mut stream = PrefixedIo::new(Cursor::new(&b"ab"[..]), Cursor::new(&b"cd"[..]));
+        assert_eq!(Read::read(&mut stream, &mut []).unwrap(), 0);
+        let n = Read::read(&mut stream, &mut buf).unwrap();
+        assert_eq!(&buf[..n], b"ab");
     }
 
     fn new_prefix_write_stream() -> PrefixedIo<Cursor<Vec<u8>>, ServiceInput<Cursor<Vec<u8>>>> {

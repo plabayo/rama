@@ -763,6 +763,7 @@ fn gen_boundary() -> SmolStr {
 mod test {
     use super::*;
     use rama_core::futures::TryStreamExt;
+    use std::assert_matches;
 
     async fn collect(form: Form) -> (HeaderValue, Option<u64>, Vec<u8>) {
         let ct = form.content_type();
@@ -863,7 +864,7 @@ mod test {
     fn test_field_spec_text() {
         let s = FieldSpec::parse("name=glen").unwrap();
         assert_eq!(s.name, "name");
-        assert!(matches!(s.source, FieldSpecSource::Text("glen")));
+        assert_matches!(s.source, FieldSpecSource::Text("glen"));
         assert!(s.content_type.is_none());
         assert!(s.filename.is_none());
     }
@@ -872,7 +873,7 @@ mod test {
     fn test_field_spec_file_with_modifiers() {
         let s = FieldSpec::parse("avatar=@./photo.png;type=image/png;filename=me.png").unwrap();
         assert_eq!(s.name, "avatar");
-        assert!(matches!(s.source, FieldSpecSource::File("./photo.png")));
+        assert_matches!(s.source, FieldSpecSource::File("./photo.png"));
         assert_eq!(s.content_type, Some("image/png"));
         assert_eq!(s.filename, Some("me.png"));
     }
@@ -881,33 +882,30 @@ mod test {
     fn test_field_spec_file_text() {
         let s = FieldSpec::parse("greeting=<hello.txt").unwrap();
         assert_eq!(s.name, "greeting");
-        assert!(matches!(s.source, FieldSpecSource::FileText("hello.txt")));
+        assert_matches!(s.source, FieldSpecSource::FileText("hello.txt"));
     }
 
     #[test]
     fn test_field_spec_stdin() {
         let s = FieldSpec::parse("blob=@-").unwrap();
-        assert!(matches!(s.source, FieldSpecSource::File("-")));
+        assert_matches!(s.source, FieldSpecSource::File("-"));
     }
 
     #[test]
     fn test_field_spec_errors() {
-        assert!(matches!(
+        assert_matches!(
             FieldSpec::parse("noequal"),
-            Err(FieldSpecError::MissingSeparator)
-        ));
-        assert!(matches!(
-            FieldSpec::parse("=value"),
-            Err(FieldSpecError::EmptyName)
-        ));
-        assert!(matches!(
+            Err(FieldSpecError::MissingSeparator),
+        );
+        assert_matches!(FieldSpec::parse("=value"), Err(FieldSpecError::EmptyName));
+        assert_matches!(
             FieldSpec::parse("name=v;invalid"),
-            Err(FieldSpecError::InvalidModifier(_))
-        ));
-        assert!(matches!(
+            Err(FieldSpecError::InvalidModifier(_)),
+        );
+        assert_matches!(
             FieldSpec::parse("name=v;weird=val"),
-            Err(FieldSpecError::InvalidModifier(_))
-        ));
+            Err(FieldSpecError::InvalidModifier(_)),
+        );
     }
 
     #[tokio::test]

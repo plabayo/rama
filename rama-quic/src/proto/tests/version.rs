@@ -3,6 +3,7 @@
 
 use rama_core::bytes::BytesMut;
 use rama_quic_proto::{ConnectionId, Dir, Side, VarInt, Version, version::LongKind};
+use std::assert_matches;
 
 use super::*;
 
@@ -127,13 +128,13 @@ fn unknown_versions_are_refused_by_the_provider() {
         server_config().crypto.initial_keys(reserved, &cid),
         Err(crypto::InitialKeysError::UnsupportedVersion)
     ));
-    assert!(matches!(
+    assert_matches!(
         client_config()
             .crypto
             .start_session(reserved, "localhost", &client_params(cid))
             .map(drop),
-        Err(ConnectError::UnsupportedVersion)
-    ));
+        Err(ConnectError::UnsupportedVersion),
+    );
 }
 
 /// A whole connection in version 2: the long headers carry the v2 type bits and version, and

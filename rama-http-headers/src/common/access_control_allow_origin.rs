@@ -173,6 +173,25 @@ mod tests {
     }
 
     #[test]
+    fn rejects_invalid_origins() {
+        for value in [
+            "http://user:pass@example.com",
+            "http://",
+            "http://example.com/path",
+            "",
+        ] {
+            assert!(
+                test_decode::<AccessControlAllowOrigin>(&[value]).is_none(),
+                "{value}"
+            );
+            assert!(
+                AccessControlAllowOrigin::try_from(value).is_err(),
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
     fn null() {
         let allow_origin = test_decode::<AccessControlAllowOrigin>(&["null"]).unwrap();
         assert_eq!(allow_origin, AccessControlAllowOrigin::NULL);

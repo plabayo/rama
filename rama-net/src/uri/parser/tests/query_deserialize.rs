@@ -2,6 +2,7 @@
 //! coverage via `serde_html_form`.
 
 use crate::std::borrow::Cow;
+use std::assert_matches;
 
 use super::parse_graceful;
 use crate::uri::Uri;
@@ -143,17 +144,14 @@ fn cow_field_borrows_or_owns_per_encoding() {
     let uri: Uri = parse_graceful("/p?foo=bar").unwrap();
     let got: Params<'_> = uri.query().unwrap().deserialize().unwrap();
     assert_eq!(got.foo, "bar");
-    assert!(matches!(got.foo, Cow::Borrowed(_)));
+    assert_matches!(got.foo, Cow::Borrowed(_));
 
     // `%XX` or `+` → Owned.
     for input in ["/p?foo=hello%20world", "/p?foo=hello+world"] {
         let uri: Uri = parse_graceful(input).unwrap();
         let got: Params<'_> = uri.query().unwrap().deserialize().unwrap();
         assert_eq!(got.foo, "hello world");
-        assert!(
-            matches!(got.foo, Cow::Owned(_)),
-            "expected Cow::Owned for {input:?}",
-        );
+        assert_matches!(got.foo, Cow::Owned(_), "expected Cow::Owned for {input:?}");
     }
 }
 

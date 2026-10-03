@@ -29,6 +29,7 @@ use rama::icap::message::{EncapsulatedParts, Response};
 use rama::icap::proto::{
     EncapsulatedKind, EncapsulatedSection, Method, MethodKind, Preview, Version,
 };
+use std::assert_matches;
 
 const MAX_INPUT: usize = 64 * 1024;
 const MAX_HEADERS: usize = 32;
@@ -395,50 +396,50 @@ fn exercise_scanners(data: &[u8]) {
     let high_config = HeadParserConfig::new().with_max_bytes(high);
     let lowered_config = HeadParserConfig::new().with_max_bytes(lowered);
     if let Ok(ScanStatus::Partial(scanner)) = HeadScanner::new().scan(data, high_config) {
-        assert!(matches!(
+        assert_matches!(
             scanner
                 .clone()
                 .scan(b"", HeadParserConfig::new().with_max_bytes(data.len()),),
-            Ok(ScanStatus::Partial(_))
-        ));
-        assert!(matches!(
+            Ok(ScanStatus::Partial(_)),
+        );
+        assert_matches!(
             scanner.clone().scan(b"", lowered_config),
-            Err(rama::icap::codec::ParseError::HeadTooLarge)
-        ));
-        assert!(matches!(
+            Err(rama::icap::codec::ParseError::HeadTooLarge),
+        );
+        assert_matches!(
             scanner.scan(b"x", lowered_config),
-            Err(rama::icap::codec::ParseError::HeadTooLarge)
-        ));
+            Err(rama::icap::codec::ParseError::HeadTooLarge),
+        );
     }
     if let Ok(ScanStatus::Partial(scanner)) = TrailerScanner::new().scan(data, high_config) {
-        assert!(matches!(
+        assert_matches!(
             scanner
                 .clone()
                 .scan(b"", HeadParserConfig::new().with_max_bytes(data.len()),),
-            Ok(ScanStatus::Partial(_))
-        ));
-        assert!(matches!(
+            Ok(ScanStatus::Partial(_)),
+        );
+        assert_matches!(
             scanner.clone().scan(b"", lowered_config),
-            Err(rama::icap::codec::ParseError::HeadTooLarge)
-        ));
-        assert!(matches!(
+            Err(rama::icap::codec::ParseError::HeadTooLarge),
+        );
+        assert_matches!(
             scanner.scan(b"x", lowered_config),
-            Err(rama::icap::codec::ParseError::HeadTooLarge)
-        ));
+            Err(rama::icap::codec::ParseError::HeadTooLarge),
+        );
     }
     if let Ok(ScanStatus::Partial(scanner)) = ChunkLineScanner::new().scan(data, high) {
-        assert!(matches!(
+        assert_matches!(
             scanner.clone().scan(b"", data.len()),
-            Ok(ScanStatus::Partial(_))
-        ));
-        assert!(matches!(
+            Ok(ScanStatus::Partial(_)),
+        );
+        assert_matches!(
             scanner.clone().scan(b"", lowered),
-            Err(rama::icap::codec::ChunkLineError::LineTooLong)
-        ));
-        assert!(matches!(
+            Err(rama::icap::codec::ChunkLineError::LineTooLong),
+        );
+        assert_matches!(
             scanner.scan(b"x", lowered),
-            Err(rama::icap::codec::ChunkLineError::LineTooLong)
-        ));
+            Err(rama::icap::codec::ChunkLineError::LineTooLong),
+        );
     }
 }
 

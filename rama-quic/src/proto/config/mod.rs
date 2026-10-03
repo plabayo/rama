@@ -1011,23 +1011,24 @@ impl TimeSource for StdSystemTime {
 mod backendless_tests {
     use super::*;
     use crate::proto::crypto::config::{TlsConfigError, TlsOptions};
+    use std::assert_matches;
 
     /// Without a built-in provider, convenience constructors report unavailability;
     /// callers can still inject their own provider through the explicit constructors.
     #[test]
     fn rama_tls_configs_report_the_missing_backend() {
         let options = TlsOptions::default();
-        assert!(matches!(
+        assert_matches!(
             ClientConfig::try_from_rama_tls(&rama_tls::client::TlsClientConfig::new(), options),
-            Err(TlsConfigError::BackendUnavailable)
-        ));
-        assert!(matches!(
+            Err(TlsConfigError::BackendUnavailable),
+        );
+        assert_matches!(
             ServerConfig::try_from_rama_tls(
                 &rama_tls::server::TlsServerConfig::new(),
                 TlsOptions::default()
             ),
-            Err(TlsConfigError::BackendUnavailable)
-        ));
+            Err(TlsConfigError::BackendUnavailable),
+        );
     }
 }
 

@@ -274,6 +274,7 @@ impl EventDataWrite for ExecuteScript {
 #[cfg(test)]
 mod tests {
     use rama_utils::str::non_empty_str;
+    use std::assert_matches;
 
     use super::*;
     use crate::sse::{EventDataLineReader, EventDataRead, datastar::PatchElements};
@@ -428,9 +429,9 @@ try {
             .try_into_datastar_event::<String>()
             .unwrap();
         assert_eq!(event.event(), Some(EventType::PatchElements.as_str()));
-        assert!(matches!(
+        assert_matches!(
             event.data(),
-            Some(crate::body::sse::datastar::EventData::ExecuteScript(_))
-        ));
+            Some(crate::body::sse::datastar::EventData::ExecuteScript(_)),
+        );
     }
 }

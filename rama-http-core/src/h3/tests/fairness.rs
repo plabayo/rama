@@ -15,6 +15,7 @@ use rama_http_types::{
     body::{Frame, StreamingBody},
     proto::h3::Code,
 };
+use std::assert_matches;
 use std::{
     future::Future,
     pin::{Pin, pin},
@@ -223,7 +224,7 @@ fn finished_upload_waits_for_fin_acknowledgement() {
     // A poll after queueing still cannot release the response's admission lease.
     assert!(send.as_mut().poll(&mut cx).is_pending());
     written.lock().delay_acknowledgement = false;
-    assert!(matches!(send.as_mut().poll(&mut cx), Poll::Ready(Ok(()))));
+    assert_matches!(send.as_mut().poll(&mut cx), Poll::Ready(Ok(())));
 }
 
 #[test]

@@ -2,6 +2,7 @@
 
 use super::*;
 use rama_quic_proto::{Dir, frame};
+use std::assert_matches;
 
 /// A datagram the peer was told it could send does not end the connection when there is no
 /// room to hold it. A stream transfer succeeds after the datagram is dropped.
@@ -52,10 +53,10 @@ fn a_datagram_with_no_room_is_dropped_and_the_connection_carries_on() {
         .finish()
         .expect("the stream ends");
     pair.drive();
-    assert!(matches!(
+    assert_matches!(
         pair.server_conn_mut(server_ch).poll(),
-        Some(Event::Stream(StreamEvent::Opened { dir: Dir::Uni }))
-    ));
+        Some(Event::Stream(StreamEvent::Opened { dir: Dir::Uni })),
+    );
     let mut recv = pair.server_recv(server_ch, stream);
     let mut chunks = recv.read(true).expect("the stream is readable");
     let chunk = chunks

@@ -260,8 +260,7 @@ static_assertions = "1"
 syn = "3.0"
 sync_wrapper = "1.0"
 terminal-prompt = "0.2"
-# TEMPORARY: see https://github.com/time-rs/time/issues/783.
-time = "=0.3.47"
+time = "0.3.55"
 tokio = "1.53"
 tokio-graceful = "0.2"
 tokio-postgres = "0.7"
@@ -284,7 +283,7 @@ unicode-normalization = "0.1"
 uuid = "1.26"
 venndb = "0.6"
 want = "0.3"
-wasmtime = { version = "49.0.1", default-features = false }
+wasmtime = { version = "49.0.2", default-features = false }
 webpki-root-certs = "1.0"
 webpki-roots = "1.0"
 wildcard = "0.3"
@@ -410,7 +409,6 @@ default = ["std"]
 std = [
     "dep:ahash",
     "dep:rama-json",
-    "dep:time",
     "dep:tokio-util",
     "dep:tracing-subscriber",
     "rama-core/std",
@@ -430,6 +428,7 @@ fuzz-utils = [
     "rama-quic?/fuzz-utils",
     "rama-quic-proto?/fuzz-utils",
     "rama-http-core?/fuzz-utils",
+    "rama-http?/fuzz-utils",
 ]
 # Forward experimental HTTP APIs when the HTTP backend is enabled.
 unstable = ["rama-http-core?/unstable"]
@@ -626,7 +625,6 @@ rama-ws = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
-time = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "io-std"], optional = true }
 tokio-util = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"], optional = true }
@@ -684,6 +682,11 @@ incremental = false
 name = "alt_svc"
 harness = false
 required-features = ["http-full"]
+
+[[bench]]
+name = "http_typed_headers"
+harness = false
+required-features = ["http", "net"]
 
 [[bench]]
 name = "http3"
@@ -746,6 +749,11 @@ harness = false
 [[bench]]
 name = "pool_contention"
 required-features = ["net"]
+harness = false
+
+[[bench]]
+name = "dns_resolver"
+required-features = ["dns"]
 harness = false
 
 [[bench]]

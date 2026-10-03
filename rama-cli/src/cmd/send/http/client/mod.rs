@@ -420,6 +420,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::{
         convert::Infallible,
         sync::atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -540,20 +541,17 @@ mod tests {
     #[test]
     fn emulate_accepts_a_bare_flag_or_an_equals_separated_json_path() {
         let embedded = send_cfg(&["--emulate", "http://example.test"]);
-        assert!(matches!(
-            embedded.emulate,
-            Some(EmulationProfiles::Embedded)
-        ));
+        assert_matches!(embedded.emulate, Some(EmulationProfiles::Embedded));
 
         let custom = send_cfg(&[
             "--emulate=/tmp/captured-profiles.json",
             "http://example.test",
         ]);
-        assert!(matches!(
+        assert_matches!(
             custom.emulate,
             Some(EmulationProfiles::File(path))
-                if path == std::path::Path::new("/tmp/captured-profiles.json")
-        ));
+                if path == std::path::Path::new("/tmp/captured-profiles.json"),
+        );
     }
 
     #[test]

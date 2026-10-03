@@ -1007,10 +1007,16 @@ jobs:
         with:
           toolchain: ${{ matrix.toolchain }}
           targets: ${{ matrix.target }}
+          components: clippy
       - uses: ./.github/actions/rust-cache
         with:
           key: ${{ matrix.os }}-${{ matrix.toolchain }}-${{ matrix.target }}
           env-vars: RUST_TOOLCHAIN
+      # the getaddrinfo resolver backend only compiles for musl
+      - name: Clippy rama-dns
+        run: cargo clippy -p rama-dns --all-targets --target ${{ matrix.target }} -- -D warnings
+      - name: Test rama-dns
+        run: cargo test -p rama-dns --lib --target ${{ matrix.target }}
       - name: Install Zig
         if: contains(matrix.target, 'unknown-linux-musl')
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
@@ -1295,8 +1301,8 @@ jobs:
         os:
           - ubuntu-latest
     runs-on: ${{ matrix.os }}
-    # Allow for a cold build with reduced parallelism plus ~40m of ignored tests.
-    timeout-minutes: 120
+    # Cold builds and ignored tests exceeded 110m; allow 150m plus 10m for setup and cleanup.
+    timeout-minutes: 160
     needs:
       - precheck-rust
       - precheck-docs
@@ -1322,7 +1328,7 @@ jobs:
           key: ${{ matrix.os }}-${{ matrix.toolchain }}-release
           env-vars: RUST_TOOLCHAIN
       - name: Run tests in release mode (--ignored)
-        timeout-minutes: 110
+        timeout-minutes: 150
         run: |
           # Preserve resource evidence if the runner shuts down during compilation.
           free -m

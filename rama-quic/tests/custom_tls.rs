@@ -16,6 +16,7 @@ use rama_quic_proto::{
     packet::SpaceId as EncryptionLevel,
     transport_parameters::TransportParameters,
 };
+use std::assert_matches;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -130,7 +131,7 @@ async fn external_provider_runs_without_a_builtin_backend() {
         "localhost",
     );
     let error = result.expect_err("the custom session fails Initial key derivation");
-    assert!(matches!(error, ConnectError::Crypto(_)));
+    assert_matches!(error, ConnectError::Crypto(_));
     assert!(error.to_string().contains("custom Initial failure"));
     let ConnectError::Crypto(transport_error) = &error else {
         panic!("custom Initial failure must retain its transport error")

@@ -837,7 +837,7 @@ where
                 ping.ensure_not_timed_out().map_err(|e| (e, None))?;
 
                 debug!("client response error: {err:?}");
-                Poll::Ready(Err((crate::Error::new_h2(err), None::<Request<B>>)))
+                Poll::Ready(Err((crate::Error::new_h2_request(err), None::<Request<B>>)))
             }
         }
     }
@@ -855,6 +855,10 @@ where
             match ready!(self.h2_tx.poll_ready(cx)) {
                 Ok(()) => (),
                 Err(err) => {
+                    // an opened stream reports its own outcome, not the connection's
+                    if let Some(f) = self.fut_ctx.take() {
+                        self.poll_pipe(f, cx);
+                    }
                     self.ping.ensure_not_timed_out()?;
                     return if err.reason() == Some(crate::h2::Reason::NO_ERROR) {
                         trace!("connection gracefully shutdown");
@@ -919,7 +923,7 @@ where
                         Err(err) => {
                             debug!("client send request error: {}", err);
                             cb.send(Err(TrySendError {
-                                error: crate::Error::new_h2(err),
+                                error: crate::Error::new_h2_request(err),
                                 message: None,
                             }));
                             continue;
@@ -939,20 +943,11 @@ where
                     // Check poll_ready() again.
                     // If the call to send_request() resulted in the new stream being pending open
                     // we have to wait for the open to complete before accepting new requests.
-                    match self.h2_tx.poll_ready(cx) {
-                        Poll::Pending => {
-                            // Save Context
-                            self.fut_ctx = Some(f);
-                            return Poll::Pending;
-                        }
-                        Poll::Ready(Ok(())) => (),
-                        Poll::Ready(Err(err)) => {
-                            f.cb.send(Err(TrySendError {
-                                error: crate::Error::new_h2(err),
-                                message: None,
-                            }));
-                            continue;
-                        }
+                    // On a connection error this opened stream still reports its own outcome.
+                    if self.h2_tx.poll_ready(cx).is_pending() {
+                        // Save Context
+                        self.fut_ctx = Some(f);
+                        return Poll::Pending;
                     }
                     self.poll_pipe(f, cx);
                 }

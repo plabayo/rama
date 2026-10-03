@@ -1038,12 +1038,6 @@ mod tests {
     }
 
     #[test]
-    fn token_whitespace_is_trimmed_on_both_sides() {
-        assert_eq!(crate::byte_sets::trim_ows(b" \tvalue \t"), b"value");
-        assert_eq!(crate::byte_sets::trim_ows(b"value"), b"value");
-    }
-
-    #[test]
     fn strict_validation_rejects_each_invalid_capability_independently() {
         let response = response(&[
             Header::new(header::METHODS, b"RESPMOD").unwrap(),

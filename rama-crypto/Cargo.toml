@@ -64,7 +64,7 @@ time.workspace = true
 tokio = { workspace = true, optional = true, features = ["io-util"] }
 webpki-root-certs = { workspace = true, optional = true }
 x509-parser = { workspace = true }
-yasna = { workspace = true, features = ["time"] }
+yasna = { workspace = true, features = ["std", "time"] }
 
 [dev-dependencies]
 rama-inspect = { workspace = true, features = ["test-utils"] }

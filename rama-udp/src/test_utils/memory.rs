@@ -603,6 +603,7 @@ fn memory_capabilities(shared: &Shared) -> DatagramCapabilities {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::{
         pin::pin,
         sync::atomic::AtomicUsize,
@@ -786,13 +787,13 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(receiver.shared.state.lock().endpoints[0].queue.len(), 4);
-        assert!(matches!(
+        assert_matches!(
             sender.poll_send(
                 &mut Context::from_waker(Waker::noop()),
                 &SendDatagram::new(destination, b"full"),
             ),
-            Poll::Pending
-        ));
+            Poll::Pending,
+        );
         for expected in [b"aa".as_slice(), b"first", b"bb", b"cc"] {
             let mut buffer = [0; 8];
             let metadata = receiver.recv(&mut buffer).await.unwrap();
@@ -820,10 +821,7 @@ mod tests {
         assert!(sender.poll_send(&mut context, &lost).is_pending());
         control.drop_next(1);
         assert_eq!(wake_counter.0.load(Ordering::Relaxed), 1);
-        assert!(matches!(
-            sender.poll_send(&mut context, &lost),
-            Poll::Ready(Ok(()))
-        ));
+        assert_matches!(sender.poll_send(&mut context, &lost), Poll::Ready(Ok(())));
         assert_eq!(control.stats().dropped, 1);
         let mut buffer = [0; 4];
         receiver.recv(&mut buffer).await.unwrap();
@@ -843,10 +841,7 @@ mod tests {
         drop(sender);
         drop(socket);
         let mut buffer = [0; 8];
-        assert!(matches!(
-            receiver.recv(&mut buffer).await,
-            Err(DatagramError::Closed)
-        ));
+        assert_matches!(receiver.recv(&mut buffer).await, Err(DatagramError::Closed));
         assert_eq!(control.stats().reordered_pairs, 0);
     }
 
@@ -916,18 +911,15 @@ mod tests {
         let mut sender = socket.create_sender();
         drop(peer);
 
-        assert!(matches!(
+        assert_matches!(
             sender
                 .send(SendDatagram::new(destination, b"after close"))
                 .await,
-            Err(DatagramError::Closed)
-        ));
+            Err(DatagramError::Closed),
+        );
 
         let mut buffer = [0; 1];
-        assert!(matches!(
-            socket.recv(&mut buffer).await,
-            Err(DatagramError::Closed)
-        ));
+        assert_matches!(socket.recv(&mut buffer).await, Err(DatagramError::Closed));
     }
 
     #[test]
@@ -941,24 +933,24 @@ mod tests {
         let mut buffer = [0];
         let mut buffers = [IoSliceMut::new(&mut buffer)];
         let mut metadata = [DatagramMetadata::empty()];
-        assert!(matches!(
+        assert_matches!(
             receiver.poll_recv(&mut context, &mut buffers, &mut metadata),
-            Poll::Pending
-        ));
+            Poll::Pending,
+        );
 
         drop(sender_socket);
         assert_eq!(wake_counter.0.load(Ordering::Relaxed), 0);
-        assert!(matches!(
+        assert_matches!(
             receiver.poll_recv(&mut context, &mut buffers, &mut metadata),
-            Poll::Pending
-        ));
+            Poll::Pending,
+        );
 
         drop(sender);
         assert_eq!(wake_counter.0.load(Ordering::Relaxed), 1);
-        assert!(matches!(
+        assert_matches!(
             receiver.poll_recv(&mut context, &mut buffers, &mut metadata),
-            Poll::Ready(Err(DatagramError::Closed))
-        ));
+            Poll::Ready(Err(DatagramError::Closed)),
+        );
     }
 
     #[test]
@@ -987,56 +979,56 @@ mod tests {
         let dropped = Arc::new(WakeCounter::default());
 
         let mut filler_context = Context::from_waker(Waker::noop());
-        assert!(matches!(
+        assert_matches!(
             filler.poll_send(
                 &mut filler_context,
                 &SendDatagram::new(destination, b"full")
             ),
-            Poll::Ready(Ok(()))
-        ));
+            Poll::Ready(Ok(())),
+        );
 
         let old_first_waker = Waker::from(old_first.clone());
         let new_first_waker = Waker::from(new_first.clone());
         let live_second_waker = Waker::from(live_second.clone());
         let dropped_waker = Waker::from(dropped.clone());
-        assert!(matches!(
+        assert_matches!(
             first.poll_send(
                 &mut Context::from_waker(&old_first_waker),
                 &SendDatagram::new(destination, b"a")
             ),
-            Poll::Pending
-        ));
-        assert!(matches!(
+            Poll::Pending,
+        );
+        assert_matches!(
             first.poll_send(
                 &mut Context::from_waker(&new_first_waker),
                 &SendDatagram::new(destination, b"a")
             ),
-            Poll::Pending
-        ));
-        assert!(matches!(
+            Poll::Pending,
+        );
+        assert_matches!(
             second.poll_send(
                 &mut Context::from_waker(&live_second_waker),
                 &SendDatagram::new(destination, b"b")
             ),
-            Poll::Pending
-        ));
-        assert!(matches!(
+            Poll::Pending,
+        );
+        assert_matches!(
             cancelled.poll_send(
                 &mut Context::from_waker(&dropped_waker),
                 &SendDatagram::new(destination, b"cancelled")
             ),
-            Poll::Pending
-        ));
+            Poll::Pending,
+        );
         drop(cancelled);
 
         let mut receive_buffer = [0; 8];
         let mut receive = pin!(receiver.recv(&mut receive_buffer));
-        assert!(matches!(
+        assert_matches!(
             receive
                 .as_mut()
                 .poll(&mut Context::from_waker(Waker::noop())),
-            Poll::Ready(Ok(_))
-        ));
+            Poll::Ready(Ok(_)),
+        );
         assert_eq!(old_first.0.load(Ordering::Relaxed), 0);
         assert_eq!(new_first.0.load(Ordering::Relaxed), 1);
         assert_eq!(live_second.0.load(Ordering::Relaxed), 1);
@@ -1066,19 +1058,19 @@ mod tests {
             segment_size: NonZeroUsize::new(1),
             ..DatagramMetadata::empty()
         };
-        assert!(matches!(
+        assert_matches!(
             receiver.inject_received(Vec::new(), invalid),
-            Err(DatagramError::InvalidSegmentSize { .. })
-        ));
+            Err(DatagramError::InvalidSegmentSize { .. }),
+        );
 
         let invalid = DatagramMetadata {
             segment_size: NonZeroUsize::new(3),
             ..DatagramMetadata::empty()
         };
-        assert!(matches!(
+        assert_matches!(
             receiver.inject_received(b"abc".to_vec(), invalid),
-            Err(DatagramError::InvalidSegmentSize { .. })
-        ));
+            Err(DatagramError::InvalidSegmentSize { .. }),
+        );
 
         let valid = DatagramMetadata {
             segment_size: NonZeroUsize::MIN.into(),
@@ -1090,9 +1082,9 @@ mod tests {
             segment_size: NonZeroUsize::MIN.into(),
             ..DatagramMetadata::empty()
         };
-        assert!(matches!(
+        assert_matches!(
             receiver.inject_received(vec![0; 65], invalid),
-            Err(DatagramError::TooManySegments { count: 65, max: 64 })
-        ));
+            Err(DatagramError::TooManySegments { count: 65, max: 64 }),
+        );
     }
 }

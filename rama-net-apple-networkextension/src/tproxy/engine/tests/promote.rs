@@ -19,6 +19,7 @@ use rama_core::extensions::ExtensionsRef;
 use rama_core::io::BridgeIo;
 use rama_core::service::service_fn;
 use rama_net::address::HostWithPort;
+use std::assert_matches;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::AsyncReadExt;
@@ -299,7 +300,7 @@ fn engine_promote_fires_swift_callback_and_returns_ok_on_confirm() {
     let r = result_rx
         .recv_timeout(Duration::from_secs(5))
         .expect("service reported into_passthrough result");
-    assert!(matches!(r, Ok(())), "expected Ok, got {r:?}");
+    assert_matches!(r, Ok(()), "expected Ok, got {r:?}");
 
     engine.stop(0);
 }
@@ -351,8 +352,9 @@ fn engine_promote_without_registered_callback_returns_egress_unavailable() {
     let r = result_rx
         .recv_timeout(Duration::from_secs(5))
         .expect("service reported into_passthrough result");
-    assert!(
-        matches!(r, Err(PromoteError::NoCallbackRegistered)),
+    assert_matches!(
+        r,
+        Err(PromoteError::NoCallbackRegistered),
         "expected NoCallbackRegistered, got {r:?}",
     );
 
@@ -455,8 +457,9 @@ async fn engine_abort_pending_during_into_passthrough_resolves_with_engine_shutt
     registry.abort_pending();
 
     let r = task.await.expect("task joined");
-    assert!(
-        matches!(r, Err(PromoteError::EngineShuttingDown)),
+    assert_matches!(
+        r,
+        Err(PromoteError::EngineShuttingDown),
         "expected EngineShuttingDown, got {r:?}",
     );
 }
@@ -589,7 +592,7 @@ fn engine_promote_callback_fires_at_most_once_under_concurrent_into_passthrough(
     let r2 = rx.recv_timeout(Duration::from_secs(5)).expect("r2");
     let r3 = rx.recv_timeout(Duration::from_secs(5)).expect("r3");
     for r in [&r1, &r2, &r3] {
-        assert!(matches!(r, Ok(())), "expected Ok, got {r:?}");
+        assert_matches!(r, Ok(()), "expected Ok, got {r:?}");
     }
     assert_eq!(
         callback_count.load(Ordering::SeqCst),
@@ -745,7 +748,7 @@ fn engine_promote_confirm_without_pending_ack_is_no_op() {
     let r = result_rx
         .recv_timeout(Duration::from_secs(5))
         .expect("service reported into_passthrough result");
-    assert!(matches!(r, Ok(())), "expected Ok, got {r:?}");
+    assert_matches!(r, Ok(()), "expected Ok, got {r:?}");
 
     engine.stop(0);
 }
@@ -787,7 +790,7 @@ fn engine_promote_register_replaces_prior_callback() {
     let r = result_rx
         .recv_timeout(Duration::from_secs(5))
         .expect("service reported into_passthrough result");
-    assert!(matches!(r, Ok(())), "expected Ok, got {r:?}");
+    assert_matches!(r, Ok(()), "expected Ok, got {r:?}");
 
     engine.stop(0);
 }
@@ -1035,7 +1038,7 @@ async fn engine_promote_cancel_safe_first_caller_drop_does_not_strand_others() {
         .await
         .expect("second caller must resolve — would hang pre-fix (audit #4)")
         .expect("second task joined");
-    assert!(matches!(r, Ok(())), "expected Ok, got {r:?}");
+    assert_matches!(r, Ok(()), "expected Ok, got {r:?}");
 
     _ = first.await;
 }

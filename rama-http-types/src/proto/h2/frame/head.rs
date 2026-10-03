@@ -111,13 +111,14 @@ impl Kind {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn parse_errors_when_buffer_shorter_than_header_len() {
-        assert!(matches!(
+        assert_matches!(
             Head::parse(&[0u8; crate::proto::h2::frame::HEADER_LEN - 1]),
             Err(Error::ShortBuffer { needed, got })
                 if needed == crate::proto::h2::frame::HEADER_LEN && got == crate::proto::h2::frame::HEADER_LEN - 1,
-        ));
+        );
     }
 }

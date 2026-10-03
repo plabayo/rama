@@ -494,6 +494,7 @@ impl Default for RecvState {
 #[cfg(test)]
 mod tests {
     use rama_core::bytes::Bytes;
+    use std::assert_matches;
 
     use rama_quic_proto::{Dir, Side};
 
@@ -508,7 +509,7 @@ mod tests {
         const SMALL: u64 = 8;
         const LARGE: u64 = 1024;
         let pooled = StreamRecv::Open(Recv::new(SMALL)).free(SMALL);
-        assert!(matches!(pooled, StreamRecv::Free(_)));
+        assert_matches!(pooled, StreamRecv::Free(_));
         let mut slot = Some(pooled);
         let recv = get_or_insert_recv(LARGE)(&mut slot);
         assert_eq!(recv.sent_max_stream_data, LARGE);

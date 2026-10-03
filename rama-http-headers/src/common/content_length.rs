@@ -1,6 +1,6 @@
 use rama_http_types::HeaderValue;
 
-use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
+use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader, util::parse_digits};
 
 /// `Content-Length` header, defined in
 /// [RFC7230](https://datatracker.ietf.org/doc/html/rfc7230#section-3.3.2)
@@ -56,9 +56,9 @@ impl HeaderDecode for ContentLength {
         for value in values {
             let parsed = value
                 .to_str()
-                .map_err(|_e| Error::invalid())?
-                .parse::<u64>()
-                .map_err(|_e| Error::invalid())?;
+                .ok()
+                .and_then(parse_digits)
+                .ok_or_else(Error::invalid)?;
 
             if let Some(prev) = len {
                 if prev != parsed {
@@ -76,6 +76,51 @@ impl HeaderDecode for ContentLength {
 impl HeaderEncode for ContentLength {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
         values.extend(::std::iter::once(self.0.into()));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::common::test_decode;
+
+    #[test]
+    fn decode_digits() {
+        assert_eq!(
+            test_decode::<ContentLength>(&["3495"]),
+            Some(ContentLength(3495))
+        );
+        assert_eq!(
+            test_decode::<ContentLength>(&["0005"]),
+            Some(ContentLength(5))
+        );
+        assert_eq!(
+            test_decode::<ContentLength>(&["5", "5"]),
+            Some(ContentLength(5))
+        );
+        assert_eq!(
+            test_decode::<ContentLength>(&["18446744073709551615"]),
+            Some(ContentLength(u64::MAX))
+        );
+    }
+
+    #[test]
+    fn decode_rejects_non_digits() {
+        for value in [
+            "",
+            "+5",
+            "-5",
+            " 5",
+            "5 ",
+            "5, 5",
+            "34v95",
+            "0x10",
+            "18446744073709551616",
+        ] {
+            assert_eq!(test_decode::<ContentLength>(&[value]), None, "{value:?}");
+        }
+        assert_eq!(test_decode::<ContentLength>(&["5", "+5"]), None);
+        assert_eq!(test_decode::<ContentLength>(&["5", "6", "5"]), None);
     }
 }
 

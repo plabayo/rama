@@ -2,6 +2,7 @@ use crate::{
     Message,
     protocol::{Role, WebSocket, WebSocketConfig, error::ProtocolError},
 };
+use std::assert_matches;
 use std::io::{self, Cursor, Read, Write};
 
 #[cfg(feature = "compression")]
@@ -122,13 +123,13 @@ fn size_limiting_text_fragmented() {
     };
     let mut socket = WebSocket::from_raw_socket(WriteMoc::new(incoming), Role::Client, Some(limit));
 
-    assert!(matches!(
+    assert_matches!(
         socket.read(),
         Err(ProtocolError::MessageTooLong {
             size: 13,
             max_size: 10
-        })
-    ));
+        }),
+    );
 }
 
 #[test]
@@ -140,13 +141,13 @@ fn size_limiting_binary() {
     };
     let mut socket = WebSocket::from_raw_socket(WriteMoc::new(incoming), Role::Client, Some(limit));
 
-    assert!(matches!(
+    assert_matches!(
         socket.read(),
         Err(ProtocolError::MessageTooLong {
             size: 3,
             max_size: 2
-        })
-    ));
+        }),
+    );
 }
 
 #[test]

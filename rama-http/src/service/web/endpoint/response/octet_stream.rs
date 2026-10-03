@@ -284,12 +284,16 @@ impl<S> OctetStream<S> {
     ) -> std::io::Result<Response> {
         use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
+        let len = end.checked_sub(start).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "range end before start")
+        })?;
+
         let (mut file, content_size, filename) =
             Self::open_file_with_metadata(path.as_ref()).await?;
 
         // Take only the requested range
         file.seek(std::io::SeekFrom::Start(start)).await?;
-        let stream = ReaderStream::new(file.take(end - start));
+        let stream = ReaderStream::new(file.take(len));
 
         let octet_stream = OctetStream {
             stream,
@@ -464,5 +468,22 @@ mod tests {
             response.headers().get(CONTENT_DISPOSITION).unwrap(),
             "attachment; filename=\"hello.txt\""
         );
+    }
+
+    #[tokio::test]
+    async fn test_try_range_response_from_path_rejects_invalid_range() {
+        let file_path = std::fs::canonicalize("../test-files/hello.txt").unwrap();
+        for (start, end) in [(5, 1), (u64::MAX, 0), (0, 0), (0, u64::MAX)] {
+            let err = OctetStream::<ReaderStream<File>>::try_range_response_from_path(
+                &file_path, start, end,
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(
+                err.kind(),
+                std::io::ErrorKind::InvalidInput,
+                "{start}..{end}"
+            );
+        }
     }
 }

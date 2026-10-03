@@ -102,6 +102,8 @@ test_if_none_match {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::HeaderDecode as _;
+    use crate::common::test_decode;
 
     #[test]
     fn precondition_fails() {
@@ -132,5 +134,62 @@ mod tests {
         let if_none = IfNoneMatch::any();
 
         assert!(!if_none.precondition_passes(&foo));
+    }
+
+    #[test]
+    fn decode_rejects_malformed_tags_without_panic() {
+        let etag = ETag::from_static("\"a\"");
+        for value in [
+            "", "x", "W", "W/", "W/\"", "\"", "*, \"a\"", "\"a\", *", "\"a b\"",
+        ] {
+            let decoded = test_decode::<IfNoneMatch>(&[value]);
+            if let Some(if_none) = &decoded {
+                _ = if_none.precondition_passes(&etag);
+            }
+            assert!(decoded.is_none(), "value: {value:?}");
+        }
+        assert!(test_decode::<IfNoneMatch>(&["*", "\"a\""]).is_none());
+    }
+
+    #[test]
+    fn decode_any_and_list() {
+        let etag = ETag::from_static("\"a\"");
+        let any: IfNoneMatch = test_decode(&["*"]).unwrap();
+        assert_eq!(any, IfNoneMatch::any());
+        assert!(!any.precondition_passes(&etag));
+
+        let list: IfNoneMatch = test_decode(&["\"b\", W/\"a\""]).unwrap();
+        assert!(!list.precondition_passes(&etag));
+        assert!(list.precondition_passes(&ETag::from_static("\"c\"")));
+    }
+
+    #[test]
+    fn decode_obs_text_and_backslash_entity_tags() {
+        let values = [
+            HeaderValue::from_static("\"a\""),
+            HeaderValue::from_bytes(b"\"\x80\xff\", \"b\\\"").unwrap(),
+        ];
+        let list = IfNoneMatch::decode(&mut values.iter()).unwrap();
+        for tag in ["\"a\"", "\"b\\\""] {
+            assert!(!list.precondition_passes(&tag.parse().unwrap()), "{tag}");
+        }
+        let obs_text =
+            ETag::decode(&mut [HeaderValue::from_bytes(b"\"\x80\xff\"").unwrap()].iter()).unwrap();
+        assert!(!list.precondition_passes(&obs_text));
+        assert!(list.precondition_passes(&ETag::from_static("\"c\"")));
+    }
+
+    #[test]
+    fn decode_ignores_empty_list_members() {
+        let etag = ETag::from_static("\"a\"");
+        for values in [
+            &["\"a\","][..],
+            &[", \"a\""],
+            &["\"b\",, \"a\""],
+            &["", "\"a\""],
+        ] {
+            let list: IfNoneMatch = test_decode(values).unwrap();
+            assert!(!list.precondition_passes(&etag), "values: {values:?}");
+        }
     }
 }

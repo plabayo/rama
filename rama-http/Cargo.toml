@@ -23,6 +23,8 @@ targets = ["x86_64-unknown-linux-gnu"]
 default = []
 inspect = ["dep:rama-inspect", "dep:arc-swap", "rama-net/inspect"]
 dial9 = ["rama-core/dial9"]
+# Forward the typed header fuzz harnesses.
+fuzz-utils = ["rama-http-headers/fuzz-utils"]
 opentelemetry = ["rama-core/opentelemetry", "rama-net/opentelemetry"]
 compression = [
     "dep:async-compression",
@@ -89,7 +91,6 @@ parking_lot = { workspace = true }
 quickcheck = { workspace = true }
 quickcheck_macros = { workspace = true }
 serde_json = { workspace = true }
-time = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-test = { workspace = true }
 tracing-subscriber = { workspace = true }

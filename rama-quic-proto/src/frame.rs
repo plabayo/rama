@@ -1059,6 +1059,7 @@ impl AckFrequency {
 mod test {
     use super::*;
     use crate::coding::Codec;
+    use std::assert_matches;
 
     fn frames(buf: Vec<u8>) -> Vec<Frame> {
         Iter::new(Bytes::from(buf))
@@ -1100,7 +1101,7 @@ mod test {
             buf.write_var(ty);
             buf.write(FrameType::PING);
             let mut iter = Iter::new(Bytes::from(buf)).unwrap();
-            assert!(matches!(iter.next(), Some(Ok(Frame::Ping))));
+            assert_matches!(iter.next(), Some(Ok(Frame::Ping)));
             let invalid = iter
                 .next()
                 .expect("the unknown frame is reported")

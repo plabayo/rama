@@ -1,6 +1,7 @@
 use crate::tls::{BoringTlsProvider, QuicClientConfigProvider, QuicServerConfigProvider};
 #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 use crate::{proto::crypto::rustls::configured_provider, tls::RustlsTlsProvider};
+use std::assert_matches;
 trait TestTlsProvider: QuicClientConfigProvider + QuicServerConfigProvider {}
 impl<T: QuicClientConfigProvider + QuicServerConfigProvider> TestTlsProvider for T {}
 use super::*;
@@ -686,9 +687,10 @@ fn client_authentication_is_verified_and_retained_on_resumption() {
                     assert_eq!(s.peer_certificates().unwrap(), trusted.cert_chain);
                 } else {
                     let error = handshake(&mut *c, &mut *s).unwrap_err();
-                    assert!(
-                        matches!(error.code().tls_alert(), Some(48 | 116)),
-                        "unexpected client-auth failure: {error:?}"
+                    assert_matches!(
+                        error.code().tls_alert(),
+                        Some(48 | 116),
+                        "unexpected client-auth failure: {error:?}",
                     );
                     break;
                 }

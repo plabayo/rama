@@ -300,6 +300,7 @@ mod tests {
     //! Pure pieces only: touching the `extern "C"` bridge symbols would fail to
     //! link under `cargo test` (no Swift bridge) — those run from the Swift host.
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn accessibility_as_raw_is_stable() {
@@ -310,22 +311,22 @@ mod tests {
 
     #[test]
     fn error_from_code_maps_every_defined_code() {
-        assert!(matches!(
+        assert_matches!(
             SecureEnclaveError::from_code(RAMA_SE_ERR_UNAVAILABLE),
-            SecureEnclaveError::Unavailable
-        ));
-        assert!(matches!(
+            SecureEnclaveError::Unavailable,
+        );
+        assert_matches!(
             SecureEnclaveError::from_code(RAMA_SE_ERR_BAD_INPUT),
-            SecureEnclaveError::BadInput
-        ));
-        assert!(matches!(
+            SecureEnclaveError::BadInput,
+        );
+        assert_matches!(
             SecureEnclaveError::from_code(RAMA_SE_ERR_CRYPTO),
-            SecureEnclaveError::Crypto
-        ));
-        assert!(matches!(
+            SecureEnclaveError::Crypto,
+        );
+        assert_matches!(
             SecureEnclaveError::from_code(RAMA_SE_ERR_SYSTEM),
-            SecureEnclaveError::System
-        ));
+            SecureEnclaveError::System,
+        );
     }
 
     #[test]
@@ -335,10 +336,10 @@ mod tests {
             other => panic!("expected Unknown(42), got {other:?}"),
         }
         // `RAMA_SE_OK` is not an error and must not collide with a defined variant.
-        assert!(matches!(
+        assert_matches!(
             SecureEnclaveError::from_code(RAMA_SE_OK),
-            SecureEnclaveError::Unknown(0)
-        ));
+            SecureEnclaveError::Unknown(0),
+        );
     }
 
     #[test]

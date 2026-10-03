@@ -1,3 +1,4 @@
+use std::assert_matches;
 use std::{
     convert::Infallible,
     pin::Pin,
@@ -233,10 +234,10 @@ async fn a_paused_gap_preserves_data_and_disables_replay() {
         .record_websocket_message(1, message(WebSocketMessageKind::Text, b"after"))
         .await;
     assert_eq!(store.websocket_details(1, 0, 10).await.unwrap().total, 2);
-    assert!(matches!(
+    assert_matches!(
         store.replay_websocket_message(1, 0).await,
-        Err(WebSocketReplayError::Truncated)
-    ));
+        Err(WebSocketReplayError::Truncated),
+    );
 }
 
 #[tokio::test]
@@ -678,10 +679,10 @@ async fn preview_pages_read_bounded_prefixes_and_preserve_full_downloads() {
             .is_empty()
     );
     // Closed replay must reject from metadata, without reaching the guarded payload.
-    assert!(matches!(
+    assert_matches!(
         store.replay_websocket_message(1, 0).await,
-        Err(WebSocketReplayError::ConnectionClosed)
-    ));
+        Err(WebSocketReplayError::ConnectionClosed),
+    );
     // The guard really rejects eager materialization, rather than returning EOF.
     read_details(&exchange, 0, 1).await.unwrap_err();
     guarded.store(false, Ordering::Relaxed);

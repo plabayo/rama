@@ -78,6 +78,17 @@ pub trait HttpClientExt: private::HttpClientExtSealed + Sized + Send + Sync + 's
     /// This method fails whenever the supplied `Url` cannot be parsed.
     fn connect(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, Self::ExecuteResponse>;
 
+    /// Convenience method to make a `QUERY` request to a URL.
+    ///
+    /// QUERY ([RFC 10008](https://www.rfc-editor.org/rfc/rfc10008)) is a safe,
+    /// idempotent method whose request content defines the query; remember to
+    /// set a `Content-Type` for the body.
+    ///
+    /// # Errors
+    ///
+    /// This method fails whenever the supplied `Url` cannot be parsed.
+    fn query(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, Self::ExecuteResponse>;
+
     /// Start building a [`Request`] with the [`Method`] and [`Url`].
     ///
     /// Returns a [`RequestBuilder`], which will allow setting headers and
@@ -150,6 +161,10 @@ where
 
     fn connect(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, Self::ExecuteResponse> {
         self.request(Method::CONNECT, url)
+    }
+
+    fn query(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, Self::ExecuteResponse> {
+        self.request(Method::QUERY, url)
     }
 
     fn request(
@@ -1150,6 +1165,28 @@ mod test {
         use crate::body::util::BodyExt as _;
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_query_helper_sends_query_method_with_body() {
+        let client = (MapResultLayer::new(map_internal_client_error),)
+            .into_layer(service_fn(async |req: Request| {
+                use crate::body::util::BodyExt as _;
+                let method = req.method().clone();
+                let body = req.into_body().collect().await.unwrap().to_bytes();
+                Ok::<_, Infallible>(
+                    format!("{method} {}", String::from_utf8_lossy(&body)).into_response(),
+                )
+            }))
+            .boxed();
+
+        let resp = client
+            .query("http://x/search")
+            .json(&serde_json::json!({"q": 1}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(dump_headers(resp).await, r#"QUERY {"q":1}"#);
     }
 
     #[tokio::test]

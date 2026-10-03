@@ -521,6 +521,7 @@ fn capabilities(state: &sys::UdpSocketState) -> DatagramCapabilities {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::{
         future::Future,
         io::IoSliceMut,
@@ -805,12 +806,12 @@ mod tests {
         let mut buffer = [0; 8];
         {
             let mut future = std::pin::pin!(receiver.recv(&mut buffer));
-            assert!(matches!(
+            assert_matches!(
                 future
                     .as_mut()
                     .poll(&mut Context::from_waker(std::task::Waker::noop())),
-                Poll::Pending
-            ));
+                Poll::Pending,
+            );
         }
 
         let mut sender = sender_socket.create_sender();
@@ -1145,7 +1146,7 @@ mod tests {
         let datagram = SendDatagram::new(destination, &payload)
             .with_segment_size(NonZeroUsize::new(128).unwrap());
         if let Err(error) = sender.send(datagram).await {
-            assert!(matches!(error, DatagramError::Io(_)));
+            assert_matches!(error, DatagramError::Io(_));
             assert_eq!(sender.capabilities().max_send_segments, 1);
             return;
         }

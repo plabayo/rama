@@ -1,7 +1,7 @@
 use ahash::HashMap;
 use jiff::{
     Timestamp, civil,
-    fmt::{StdFmtWrite, rfc2822, temporal::DateTimePrinter},
+    fmt::{StdFmtWrite, rfc2822, strtime, temporal::DateTimePrinter},
     tz::{Offset, TimeZone},
 };
 use rama_core::error::BoxErrorExt as _;
@@ -49,8 +49,10 @@ impl DirectiveDateTime {
         let min = i8::try_from(min).context("invalid date-time input")?;
         let sec = i8::try_from(sec).context("invalid date-time input")?;
 
+        let datetime = civil::DateTime::new(year, month, day, hour, min, sec, 0)
+            .context("invalid date-time input")?;
         TimeZone::UTC
-            .to_timestamp(civil::date(year, month, day).at(hour, min, sec, 0))
+            .to_timestamp(datetime)
             .context("invalid date-time input")
             .map(Into::into)
     }
@@ -148,20 +150,23 @@ impl FromStr for DirectiveDateTime {
 
 impl Display for DirectiveDateTime {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self.parsed_format {
+        let formatted = match self.parsed_format {
             Some(ParsedFormat::RFC2822) | None => {
-                rfc2822::to_string(&self.value.to_zoned(TimeZone::UTC))
-                    .map_err(|_e| std::fmt::Error)?
-                    .fmt(f)
+                rfc2822::to_string(&self.value.to_zoned(TimeZone::UTC)).ok()
             }
-            Some(ParsedFormat::RFC3339) => DateTimePrinter::new()
+            Some(ParsedFormat::RFC850) => strtime::format(
+                "%A, %d-%b-%y %H:%M:%S GMT",
+                &self.value.to_zoned(TimeZone::UTC),
+            )
+            .ok(),
+            Some(ParsedFormat::RFC3339) => None,
+        };
+        match formatted {
+            Some(s) => f.write_str(&s),
+            // RFC 3339 can represent every timestamp (e.g. negative years)
+            None => DateTimePrinter::new()
                 .print_timestamp_with_offset(&self.value, Offset::UTC, StdFmtWrite(f))
                 .map_err(|_e| std::fmt::Error),
-            Some(ParsedFormat::RFC850) => self
-                .value
-                .to_zoned(TimeZone::UTC)
-                .strftime("%A, %d-%b-%y %H:%M:%S GMT")
-                .fmt(f),
         }
     }
 }
@@ -223,24 +228,25 @@ fn validate_rfc3339_offset(s: &str) -> Result<(), BoxError> {
         .context_str_field("str", s)?;
     let bytes = suffix.as_bytes();
 
-    match bytes {
-        [b'+' | b'-', h1, h2, b':', m1, m2]
-            if h1.is_ascii_digit()
-                && h2.is_ascii_digit()
-                && m1.is_ascii_digit()
-                && m2.is_ascii_digit() =>
-        {
-            let hour = (h1 - b'0') * 10 + (h2 - b'0');
-            let minute = (m1 - b'0') * 10 + (m2 - b'0');
-            if hour < 24 && minute < 60 {
-                Ok(())
-            } else {
-                Err(BoxError::from_static_str("invalid RFC 3339 offset"))
-            }
+    let offset = match *bytes {
+        [b'+' | b'-', h1, h2, b':', m1, m2] => {
+            two_ascii_digits(h1, h2).zip(two_ascii_digits(m1, m2))
         }
-        _ if s.contains('T') => Err(BoxError::from_static_str("invalid RFC 3339 offset")),
-        _ => Err(BoxError::from_static_str("invalid RFC 3339 datetime")),
+        _ => None,
+    };
+
+    match offset {
+        Some((hour, minute)) if hour < 24 && minute < 60 => Ok(()),
+        Some(_) => Err(BoxError::from_static_str("invalid RFC 3339 offset")),
+        None if s.contains('T') => Err(BoxError::from_static_str("invalid RFC 3339 offset")),
+        None => Err(BoxError::from_static_str("invalid RFC 3339 datetime")),
     }
+}
+
+fn two_ascii_digits(hi: u8, lo: u8) -> Option<u8> {
+    let hi = char::from(hi).to_digit(10)?;
+    let lo = char::from(lo).to_digit(10)?;
+    u8::try_from(hi.checked_mul(10)?.checked_add(lo)?).ok()
 }
 
 fn offset_from_abbreviation(remainder: &str) -> Result<Offset, BoxError> {
@@ -256,42 +262,12 @@ fn offset_from_abbreviation(remainder: &str) -> Result<Offset, BoxError> {
 }
 
 fn parse_offset(offset: &str) -> Result<Offset, BoxError> {
-    let bytes = offset.as_bytes();
-    let sign = match bytes.first().copied() {
-        Some(b'+') => 1,
-        Some(b'-') => -1,
-        Some(_) => {
-            return Err(BoxError::from_static_str("invalid timezone offset sign"));
-        }
-        None => {
-            return Err(BoxError::from_static_str("missing timezone offset"));
-        }
-    };
-
-    let digits = bytes
-        .get(1..)
-        .context("missing timezone offset digits")
-        .context_str_field("offset", offset)?;
-    match digits {
-        [h1, h2, m1, m2]
-            if h1.is_ascii_digit()
-                && h2.is_ascii_digit()
-                && m1.is_ascii_digit()
-                && m2.is_ascii_digit() =>
-        {
-            let hours = i32::from((h1 - b'0') * 10 + (h2 - b'0'));
-            let minutes = i32::from((m1 - b'0') * 10 + (m2 - b'0'));
-            if hours >= 24 || minutes >= 60 {
-                return Err(BoxError::from_static_str("invalid timezone offset"));
-            }
-
-            let seconds = sign * (hours * 60 * 60 + minutes * 60);
-            Offset::from_seconds(seconds)
-                .context("timezone offset outside supported range")
-                .context_str_field("offset", offset)
-        }
-        _ => Err(BoxError::from_static_str("invalid timezone offset digits")),
-    }
+    strtime::parse("%z", offset)
+        .context("parse timezone offset")
+        .context_str_field("offset", offset)?
+        .offset()
+        .context("missing timezone offset")
+        .context_str_field("offset", offset)
 }
 
 static TIMEZONE_MAP: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
@@ -372,7 +348,7 @@ fn get_timezone_map() -> &'static HashMap<&'static str, &'static str> {
             ("GET", "+0400"),
             ("GFT", "-0300"),
             ("GILT", "+1200"),
-            ("GIT", "−0900"),
+            ("GIT", "-0900"),
             ("GMT", "+0000"),
             ("GST", "+0400"),
             ("GYT", "-0400"),
@@ -582,6 +558,102 @@ mod tests {
             value.with_format_rfc855().to_string(),
             "Sunday, 02-Feb-25 14:30:00 GMT"
         );
+    }
+
+    #[test]
+    fn test_timezone_map_offsets_are_valid() {
+        for (abbreviation, offset) in get_timezone_map() {
+            assert!(parse_offset(offset).is_ok(), "{abbreviation}: {offset}");
+        }
+        assert_eq!(
+            parse_offset("+1030").unwrap(),
+            Offset::from_seconds(37_800).unwrap()
+        );
+        assert_eq!(
+            parse_offset("-0930").unwrap(),
+            Offset::from_seconds(-34_200).unwrap()
+        );
+        parse_offset("").unwrap_err();
+        parse_offset("+").unwrap_err();
+        parse_offset("1030").unwrap_err();
+    }
+
+    #[test]
+    fn test_try_new_ymd_and_hms_out_of_range_is_err() {
+        for (y, mo, d, h, mi, s) in [
+            (2025, 13, 1, 0, 0, 0),
+            (2025, 0, 1, 0, 0, 0),
+            (2025, 2, 30, 0, 0, 0),
+            (2025, 1, 0, 0, 0, 0),
+            (2025, 1, 1, 24, 0, 0),
+            (2025, 1, 1, 0, 60, 0),
+            (2025, 1, 1, 0, 0, 60),
+            (10_000, 1, 1, 0, 0, 0),
+            (-10_000, 1, 1, 0, 0, 0),
+            (i32::MAX, 1, 1, 0, 0, 0),
+            (2025, u32::MAX, 1, 0, 0, 0),
+        ] {
+            assert!(
+                DirectiveDateTime::try_new_ymd_and_hms(y, mo, d, h, mi, s).is_err(),
+                "{y}-{mo}-{d} {h}:{mi}:{s}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_display_out_of_rfc2822_range_does_not_fail() {
+        // year 0000 at +01:00 is year -1 in UTC, which RFC 2822 cannot print
+        let value = DirectiveDateTime::from_str("1 Jan 0000 00:00:00 +0100").unwrap();
+        assert!(!value.to_string().is_empty());
+
+        for ts in [Timestamp::MIN, Timestamp::MAX, Timestamp::UNIX_EPOCH] {
+            let value = DirectiveDateTime::from(ts);
+            for value in [
+                value.clone(),
+                value.clone().with_format_rfc2822(),
+                value.clone().with_format_rfc3339(),
+                value.with_format_rfc855(),
+            ] {
+                let s = value.to_string();
+                assert!(!s.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn test_adversarial_date_strings_no_panic() {
+        for s in [
+            "",
+            " ",
+            "Z",
+            "T",
+            "+00:00",
+            "-99:99",
+            "ü",
+            "üüüüüü",
+            "2025-02-02Tü+00:00",
+            "0000-01-01T00:00:00+23:59",
+            "0000-01-01T00:00:00-23:59",
+            "9999-12-31T23:59:59-23:59",
+            "-009999-01-01T00:00:00+23:59",
+            "+009999-12-31T23:59:59Z",
+            "-009999-01-01",
+            "9999-12-31",
+            "99999999999999999999-01-01",
+            "2016-12-31T23:59:60Z",
+            "Sat, 31 Dec 2016 23:59:60 +0000",
+            "1 Jan 0000 00:00:00 +2359",
+            "31 Dec 9999 23:59:59 -2359",
+            "Friday, 31-Dec-99 23:59:60 CST",
+            "Friday, 31-Dec-99 23:59:59 GIT",
+            "Friday, 31-Dec-99 23:59:59 ",
+            "Friday, 31-Dec-99 23:59:59 ü",
+            ", ",
+        ] {
+            if let Ok(value) = DirectiveDateTime::from_str(s) {
+                _ = value.to_string();
+            }
+        }
     }
 
     #[test]

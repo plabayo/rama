@@ -2,6 +2,7 @@
 //! decoder round-trips (static-only and dynamic), blocked-stream handling and resource recovery.
 
 use rama_core::bytes::Bytes;
+use std::assert_matches;
 
 use super::{Decoder, DecoderConfig, Encoder, EncoderConfig, FieldPair, QpackError};
 
@@ -275,10 +276,10 @@ fn oversized_insert_is_a_connection_error() {
     inst.extend_from_slice(b"1234567");
     inst.push(0x28); // value length 40, H=0
     inst.extend_from_slice(&[b'x'; 40]);
-    assert!(matches!(
+    assert_matches!(
         dec.feed_encoder_stream(&inst),
-        Err(QpackError::EncoderStreamError(_))
-    ));
+        Err(QpackError::EncoderStreamError(_)),
+    );
 }
 
 // ===== Differential fixtures from independent implementations =====

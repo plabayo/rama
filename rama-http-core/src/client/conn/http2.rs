@@ -789,7 +789,13 @@ impl Builder {
 
 #[cfg(test)]
 mod tests {
-    use crate::{h2::Error as H2Error, server, service::RamaHttpService};
+    use super::{Builder, Connection, SendRequest};
+    use crate::{
+        client::dispatch,
+        h2::{Error as H2Error, server as h2_server},
+        proto, server,
+        service::RamaHttpService,
+    };
     use rama_core::{
         ServiceInput,
         bytes::Bytes,
@@ -799,7 +805,7 @@ mod tests {
         service::service_fn,
     };
     use rama_http_types::{
-        Body, Method, Request, Response,
+        Body, Method, Request, Response, StatusCode,
         body::util::{BodyExt as _, Empty},
         header::CONTENT_LENGTH,
         proto::ext::Protocol,
@@ -807,6 +813,8 @@ mod tests {
     use std::{
         convert::Infallible,
         error::Error,
+        future::poll_fn,
+        marker::PhantomData,
         pin::pin,
         sync::{
             Arc,
@@ -815,7 +823,61 @@ mod tests {
         task::{Context, Waker},
         time::Duration,
     };
-    use tokio::io::{AsyncRead, AsyncWrite};
+    use tokio::{
+        io::{AsyncRead, AsyncWrite},
+        time::timeout,
+    };
+
+    /// On the last client stream id, readiness fails right after that
+    /// stream opened: the opened request must still get its own outcome.
+    #[tokio::test]
+    async fn opened_stream_outlives_readiness_error_after_open() {
+        let (client_io, origin_io) = tokio::io::duplex(64 * 1024);
+        tokio::spawn(async move {
+            let mut origin = h2_server::handshake(ServiceInput::new(origin_io))
+                .await
+                .unwrap();
+            let (req, mut respond) = origin.accept().await.unwrap().unwrap();
+            assert_eq!(req.method(), Method::POST);
+            let mut body = respond.send_response(Response::new(()), false).unwrap();
+            body.send_data(Bytes::from_static(b"ok"), true).unwrap();
+            _ = poll_fn(|cx| origin.poll_closed(cx)).await;
+        });
+
+        let opts = Builder::new(Executor::default());
+        let builder = proto::h2::client::new_builder(&opts.h2_builder)
+            .try_with_initial_stream_id(u32::MAX >> 1)
+            .unwrap();
+        let (tx, rx) = dispatch::channel();
+        let task = proto::h2::client::handshake_with_builder(
+            builder,
+            ServiceInput::new(client_io),
+            rx,
+            &opts.h2_builder,
+            opts.exec,
+        )
+        .await
+        .unwrap();
+        let mut client = SendRequest {
+            dispatch: tx.unbound(),
+            peer_settings: task.peer_settings_handle(),
+            admission: task.connection_admission(),
+        };
+        tokio::spawn(Connection::<_, Body> {
+            inner: (PhantomData, task),
+        });
+
+        let req = Request::post("https://example.test/")
+            .body(Body::from("a=1"))
+            .unwrap();
+        let resp = timeout(Duration::from_secs(1), client.send_request(req))
+            .await
+            .unwrap()
+            .expect("opened request gets its own response");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body, "ok");
+    }
 
     #[tokio::test]
     #[ignore] // only compilation is checked

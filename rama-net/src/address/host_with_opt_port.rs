@@ -602,9 +602,9 @@ fn try_from_maybe_borrowed_str(maybe_borrowed: Cow<'_, str>) -> Result<HostWithO
                 OptPort::Empty
             } else {
                 OptPort::Set(
-                    port_str
-                        .parse()
-                        .context("parse host-with-opt-port's port string as u16")?,
+                    parse_utils::parse_port_bytes(port_str.as_bytes()).ok_or_else(|| {
+                        BoxError::from_static_str("parse host-with-opt-port's port string as u16")
+                    })?,
                 )
             };
 
@@ -738,6 +738,8 @@ mod tests {
             "2001:db8:3333:4444:5555:6666:7777:8888]",
             "[2001:db8:3333:4444:5555:6666:7777:8888",
             "example.com:-1",
+            "example.com:+80",
+            "127.0.0.1:+80",
             "example.com:999999",
             "example:com",
             "[127.0.0.1]:80",

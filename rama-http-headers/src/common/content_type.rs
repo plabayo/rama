@@ -65,7 +65,7 @@ impl StaticContentType {
 
     #[expect(
         clippy::expect_used,
-        reason = "private static MIME values are covered by round-trip tests"
+        reason = "only built from private literals, each parsed in `every_static_content_type_parses`"
     )]
     fn mime(&self) -> &Mime {
         self.mime
@@ -141,27 +141,16 @@ impl ContentType {
     /// A constructor for the registered JSON-LD media type.
     #[inline]
     #[must_use]
-    pub fn json_ld() -> Self {
-        #[expect(
-            clippy::expect_used,
-            reason = "static value which is expected to work, and validated with a unit-test"
-        )]
-        Self::new(
-            Mime::from_str("application/ld+json").expect("application/ld+json to be a valid mime"),
-        )
+    pub const fn json_ld() -> Self {
+        static JSON_LD: StaticContentType = StaticContentType::new("application/ld+json");
+        Self::from_static(&JSON_LD)
     }
 
     #[inline]
     #[must_use]
-    pub fn ndjson() -> Self {
-        #[expect(
-            clippy::expect_used,
-            reason = "static value which is expected to work, and validated with a unit-test"
-        )]
-        Self::new(
-            Mime::from_str("application/x-ndjson")
-                .expect("application/x-ndjson to be a valid mime"),
-        )
+    pub const fn ndjson() -> Self {
+        static NDJSON: StaticContentType = StaticContentType::new("application/x-ndjson");
+        Self::from_static(&NDJSON)
     }
 
     /// A constructor to easily create a `Content-Type: text/plain` header.
@@ -314,57 +303,35 @@ impl ContentType {
     /// A constructor to easily create a `Content-Type: application/rss+xml` header.
     #[inline]
     #[must_use]
-    pub fn rss() -> Self {
-        #[expect(
-            clippy::expect_used,
-            reason = "static value which is expected to work, and validated with a unit-test"
-        )]
-        Self::new(
-            Mime::from_str("application/rss+xml").expect("application/rss+xml to be a valid mime"),
-        )
+    pub const fn rss() -> Self {
+        static RSS: StaticContentType = StaticContentType::new("application/rss+xml");
+        Self::from_static(&RSS)
     }
 
     /// A constructor to easily create a `Content-Type: application/atom+xml` header.
     #[inline]
     #[must_use]
-    pub fn atom() -> Self {
-        #[expect(
-            clippy::expect_used,
-            reason = "static value which is expected to work, and validated with a unit-test"
-        )]
-        Self::new(
-            Mime::from_str("application/atom+xml")
-                .expect("application/atom+xml to be a valid mime"),
-        )
+    pub const fn atom() -> Self {
+        static ATOM: StaticContentType = StaticContentType::new("application/atom+xml");
+        Self::from_static(&ATOM)
     }
 
     /// A constructor to easily create a `Content-Type: application/jose+json` header.
     #[inline]
     #[must_use]
-    pub fn jose_json() -> Self {
-        #[expect(
-            clippy::expect_used,
-            reason = "static value which is expected to work, and validated with a unit-test"
-        )]
-        Self::new(
-            Mime::from_str("application/jose+json")
-                .expect("application/jose+json to be a valid mime"),
-        )
+    pub const fn jose_json() -> Self {
+        static JOSE_JSON: StaticContentType = StaticContentType::new("application/jose+json");
+        Self::from_static(&JOSE_JSON)
     }
 
     /// A constructor to easily create a `Content-Type: application/manifest+json` header,
     /// as defined by the [W3C Web App Manifest spec](https://www.w3.org/TR/appmanifest/#media-type-registration).
     #[inline]
     #[must_use]
-    pub fn manifest_json() -> Self {
-        #[expect(
-            clippy::expect_used,
-            reason = "static value which is expected to work, and validated with a unit-test"
-        )]
-        Self::new(
-            Mime::from_str("application/manifest+json")
-                .expect("application/manifest+json to be a valid mime"),
-        )
+    pub const fn manifest_json() -> Self {
+        static MANIFEST_JSON: StaticContentType =
+            StaticContentType::new("application/manifest+json");
+        Self::from_static(&MANIFEST_JSON)
     }
 
     /// A constructor to easily create a `Content-Type: image/svg+xml` header.
@@ -397,15 +364,10 @@ impl ContentType {
     /// ```
     #[inline]
     #[must_use]
-    pub fn xml_utf8() -> Self {
-        #[expect(
-            clippy::expect_used,
-            reason = "static value which is expected to work, and validated with a unit-test"
-        )]
-        Self::new(
-            Mime::from_str("application/xml; charset=utf-8")
-                .expect("application/xml; charset=utf-8 to be a valid mime"),
-        )
+    pub const fn xml_utf8() -> Self {
+        static XML_UTF8: StaticContentType =
+            StaticContentType::new("application/xml; charset=utf-8");
+        Self::from_static(&XML_UTF8)
     }
 
     /// A constructor to easily create a `Content-Type: application/wasm` header.
@@ -420,12 +382,9 @@ impl ContentType {
     /// ```
     #[inline]
     #[must_use]
-    pub fn wasm() -> Self {
-        #[expect(
-            clippy::expect_used,
-            reason = "static value which is expected to work, and validated with a unit-test"
-        )]
-        Self::new(Mime::from_str("application/wasm").expect("application/wasm to be a valid mime"))
+    pub const fn wasm() -> Self {
+        static WASM: StaticContentType = StaticContentType::new("application/wasm");
+        Self::from_static(&WASM)
     }
 
     /// A constructor to easily create a `Content-Type: font/woff2` header.
@@ -532,7 +491,7 @@ impl fmt::Display for ContentType {
     }
 }
 
-impl std::str::FromStr for ContentType {
+impl FromStr for ContentType {
     type Err = Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -544,22 +503,23 @@ impl std::str::FromStr for ContentType {
 
 #[cfg(test)]
 mod tests {
-    use super::ContentType;
-    use crate::common::test_decode;
+    use super::{ContentType, HeaderValue};
+    use crate::HeaderDecode;
+    use crate::common::{test_decode, test_encode};
 
     #[test]
     fn jose_json_is_valid() {
-        _ = ContentType::jose_json();
+        _ = ContentType::jose_json().mime();
     }
 
     #[test]
     fn ndjson_is_valid() {
-        _ = ContentType::ndjson();
+        _ = ContentType::ndjson().mime();
     }
 
     #[test]
     fn manifest_json_is_valid() {
-        _ = ContentType::manifest_json();
+        _ = ContentType::manifest_json().mime();
     }
 
     #[test]
@@ -572,7 +532,7 @@ mod tests {
 
     #[test]
     fn xml_utf8_is_valid() {
-        _ = ContentType::xml_utf8();
+        _ = ContentType::xml_utf8().mime();
     }
 
     #[test]
@@ -585,7 +545,7 @@ mod tests {
 
     #[test]
     fn wasm_is_valid() {
-        _ = ContentType::wasm();
+        _ = ContentType::wasm().mime();
     }
 
     #[test]
@@ -595,12 +555,12 @@ mod tests {
 
     #[test]
     fn rss_is_valid() {
-        _ = ContentType::rss();
+        _ = ContentType::rss().mime();
     }
 
     #[test]
     fn atom_is_valid() {
-        _ = ContentType::atom();
+        _ = ContentType::atom().mime();
     }
 
     #[test]
@@ -635,6 +595,87 @@ mod tests {
         ] {
             assert_eq!(content_type.mime().as_ref(), expected);
             assert_eq!(content_type.into_mime().as_ref(), expected);
+        }
+    }
+
+    #[test]
+    fn every_static_content_type_parses() {
+        for (content_type, expected) in [
+            (ContentType::markdown_utf8(), "text/markdown; charset=utf-8"),
+            (ContentType::pem(), "application/x-pem-file"),
+            (ContentType::json_ld(), "application/ld+json"),
+            (ContentType::ndjson(), "application/x-ndjson"),
+            (ContentType::rss(), "application/rss+xml"),
+            (ContentType::atom(), "application/atom+xml"),
+            (ContentType::jose_json(), "application/jose+json"),
+            (ContentType::manifest_json(), "application/manifest+json"),
+            (ContentType::xml_utf8(), "application/xml; charset=utf-8"),
+            (ContentType::wasm(), "application/wasm"),
+            (ContentType::grpc(), "application/grpc"),
+            (ContentType::grpc_web(), "application/grpc-web"),
+            (ContentType::grpc_web_proto(), "application/grpc-web+proto"),
+            (
+                ContentType::grpc_web_text_proto(),
+                "application/grpc-web-text+proto",
+            ),
+            (ContentType::protobuf(), "application/x-protobuf"),
+        ] {
+            assert_eq!(content_type.mime().as_ref(), expected);
+            assert_eq!(content_type.to_string(), expected);
+            assert_eq!(test_encode(content_type.clone())["content-type"], expected);
+            assert_eq!(test_decode::<ContentType>(&[expected]), Some(content_type));
+        }
+    }
+
+    #[test]
+    fn adversarial_values_do_not_panic() {
+        for raw in [
+            b"".as_slice(),
+            b"/",
+            b"a/",
+            b"/b",
+            b"a/b;",
+            b"a/b; ",
+            b"a/b;=",
+            b"a/b; c",
+            b"a/b; c=",
+            b"a/b; c=\"",
+            b"a/b; c=\"\"",
+            b"a/b; charset=\"utf-8\"; d=e",
+            b"text/plain; charset=utf-8; charset=utf-8",
+            b"a/b; c=\"\xc3\xa9\"; d=e",
+            b"\xff/\xfe",
+        ] {
+            let value = HeaderValue::from_bytes(raw).unwrap();
+            if let Ok(content_type) = ContentType::decode(&mut std::iter::once(&value)) {
+                let mime = content_type.mime();
+                _ = (
+                    mime.type_(),
+                    mime.subtype(),
+                    mime.suffix(),
+                    mime.essence_str(),
+                );
+                _ = (mime.get_param("charset"), mime.params().count());
+                _ = test_encode(content_type);
+            }
+        }
+        for s in [
+            "a/b; c=\"é\"; d=e",
+            "a/b; charset=\"é\"",
+            "é/b",
+            "a/é",
+            "a/b+é",
+        ] {
+            if let Ok(content_type) = s.parse::<ContentType>() {
+                let mime = content_type.mime();
+                _ = (
+                    mime.type_(),
+                    mime.subtype(),
+                    mime.suffix(),
+                    mime.params().count(),
+                );
+                _ = test_encode(content_type);
+            }
         }
     }
 

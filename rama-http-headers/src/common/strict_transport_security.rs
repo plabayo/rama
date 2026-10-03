@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use rama_http_types::{HeaderName, HeaderValue};
 
-use crate::util::{self, IterExt, Seconds};
+use crate::util::{self, IterExt, Seconds, parse_delta_seconds};
 use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 
 /// `StrictTransportSecurity` header, defined in [RFC6797](https://tools.ietf.org/html/rfc6797)
@@ -187,6 +187,15 @@ enum Directive {
     Unknown,
 }
 
+/// `delta-seconds`, optionally as a quoted-string (RFC 6797 §6.1).
+fn parse_max_age(s: &str) -> Option<u64> {
+    let s = s
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .unwrap_or(s);
+    parse_delta_seconds(s.bytes())
+}
+
 fn from_str(s: &str) -> Result<StrictTransportSecurity, Error> {
     s.split(';')
         .map(str::trim)
@@ -199,12 +208,7 @@ fn from_str(s: &str) -> Result<StrictTransportSecurity, Error> {
                 let mut sub = sub.splitn(2, '=');
                 match (sub.next(), sub.next()) {
                     (Some(left), Some(right)) if left.trim().eq_ignore_ascii_case("max-age") => {
-                        right
-                            .trim()
-                            .trim_matches('"')
-                            .parse()
-                            .ok()
-                            .map(Directive::MaxAge)
+                        parse_max_age(right.trim()).map(Directive::MaxAge)
                     }
                     _ => Some(Directive::Unknown),
                 }
@@ -264,7 +268,7 @@ impl HeaderEncode for StrictTransportSecurity {
             }
         }
 
-        values.extend(::std::iter::once(util::fmt(Adapter(self))));
+        values.extend(util::fmt(Adapter(self)));
     }
 }
 
@@ -345,6 +349,29 @@ mod tests {
             test_decode::<StrictTransportSecurity>(&["max-age = izzy"]),
             None,
         );
+    }
+
+    #[test]
+    fn test_parse_max_age_rejects_non_delta_seconds() {
+        for raw in [
+            "max-age=+5",
+            "max-age=-5",
+            "max-age=\"5",
+            "max-age=5\"",
+            "max-age=\"\"5\"\"",
+            "max-age=\"\"",
+            "max-age=",
+        ] {
+            assert_eq!(
+                test_decode::<StrictTransportSecurity>(&[raw]),
+                None,
+                "{raw}"
+            );
+        }
+        for raw in ["max-age=2147483648", "max-age=18446744073709551616"] {
+            let h = test_decode::<StrictTransportSecurity>(&[raw]).unwrap();
+            assert_eq!(h.max_age(), Duration::from_secs(2_147_483_648), "{raw}");
+        }
     }
 
     #[test]

@@ -892,6 +892,7 @@ fn get_static(idx: usize) -> Header {
 #[cfg(test)]
 mod test {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn test_peek_u8() {
@@ -932,11 +933,11 @@ mod test {
 
         let header = decoded.unwrap();
         assert!(header.is_sensitive());
-        assert!(matches!(
+        assert_matches!(
             header,
             Header::Field { name, value }
-                if name == "x-api-key" && value.as_bytes() == b"secret"
-        ));
+                if name == "x-api-key" && value.as_bytes() == b"secret",
+        );
     }
 
     #[test]

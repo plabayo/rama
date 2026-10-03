@@ -281,6 +281,7 @@ impl fmt::Debug for SettingsFlags {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     /// RFC 9113 §6.5.2: a SETTINGS_INITIAL_WINDOW_SIZE value above
     /// 2^31-1 MUST be treated as a FLOW_CONTROL_ERROR — distinct from a
@@ -295,9 +296,10 @@ mod tests {
         payload[2..6].copy_from_slice(&(1u32 << 31).to_be_bytes());
 
         let err = Settings::load(head, &payload).expect_err("must reject");
-        assert!(
-            matches!(err, Error::InvalidInitialWindowSize),
-            "expected InvalidInitialWindowSize, got {err:?}"
+        assert_matches!(
+            err,
+            Error::InvalidInitialWindowSize,
+            "expected InvalidInitialWindowSize, got {err:?}",
         );
     }
 

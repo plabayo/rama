@@ -4,6 +4,7 @@
 ))]
 
 use rama_utils::octets;
+use std::assert_matches;
 
 use std::{
     convert::TryInto,
@@ -312,9 +313,10 @@ async fn ip_blocking() {
                 .unwrap()
                 .await
                 .expect_err("server should have blocked this");
-            assert!(
-                matches!(e, crate::driver::ConnectionError::ConnectionClosed(_)),
-                "wrong error"
+            assert_matches!(
+                e,
+                crate::driver::ConnectionError::ConnectionClosed(_),
+                "wrong error",
             );
         },
         async move {
@@ -1101,8 +1103,8 @@ async fn stream_stopped() {
         let stopped1 = tokio::task::spawn(stopped1);
         // verify that both futures resolved
         let (stopped1, stopped2) = tokio::join!(stopped1, stopped2);
-        assert!(matches!(stopped1, Ok(Ok(Some(val))) if val == 42));
-        assert!(matches!(stopped2, Ok(Some(val)) if val == 42));
+        assert_matches!(stopped1, Ok(Ok(Some(val))) if val == 42);
+        assert_matches!(stopped2, Ok(Some(val)) if val == 42);
         // drop the stream
         drop(stream);
         // verify that a future also resolves after dropping the stream
@@ -1178,7 +1180,7 @@ async fn stream_drop_removes_blocked_reader() {
             {
                 let mut buf = [0u8; 64];
                 let mut read_fut = std::pin::pin!(stream.read(&mut buf));
-                assert!(matches!(read_fut.as_mut().poll(&mut cx), Poll::Pending));
+                assert_matches!(read_fut.as_mut().poll(&mut cx), Poll::Pending);
             }
 
             if !drop_stream {

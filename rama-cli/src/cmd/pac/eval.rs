@@ -991,6 +991,7 @@ fn parse_duration(raw: &str) -> Result<Duration, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
     use std::io::Cursor;
 
     struct TestTerminal {
@@ -1070,18 +1071,15 @@ mod tests {
 
     #[test]
     fn every_sanitize_argument_maps_to_its_runtime_mode() {
-        assert!(matches!(
+        assert_matches!(
             PacUrlSanitize::from(SanitizeArg::HttpsOnly),
-            PacUrlSanitize::HttpsOnly
-        ));
-        assert!(matches!(
-            PacUrlSanitize::from(SanitizeArg::All),
-            PacUrlSanitize::All
-        ));
-        assert!(matches!(
+            PacUrlSanitize::HttpsOnly,
+        );
+        assert_matches!(PacUrlSanitize::from(SanitizeArg::All), PacUrlSanitize::All);
+        assert_matches!(
             PacUrlSanitize::from(SanitizeArg::None),
-            PacUrlSanitize::None
-        ));
+            PacUrlSanitize::None,
+        );
     }
 
     #[test]
@@ -1200,10 +1198,7 @@ mod tests {
             parse_repl_input("https://example.com/"),
             ReplInput::Evaluate("https://example.com/")
         );
-        assert!(matches!(
-            parse_repl_input(":unknown"),
-            ReplInput::Invalid(_)
-        ));
+        assert_matches!(parse_repl_input(":unknown"), ReplInput::Invalid(_));
     }
 
     #[test]
