@@ -20,6 +20,7 @@
 
 pub mod client;
 pub mod pool;
+pub mod posted_recv;
 pub mod proxy;
 pub mod server;
 

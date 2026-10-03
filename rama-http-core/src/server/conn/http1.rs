@@ -13,6 +13,7 @@ use rama_core::bytes::Bytes;
 use rama_core::extensions::ExtensionsRef;
 use rama_http::io::upgrade::Upgraded;
 use rama_http::{Body, Request, Response};
+use rama_net::conn::LingeringClose;
 use rama_net::extensions::StreamTransformed;
 use std::task::ready;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -74,6 +75,7 @@ pub struct Builder {
     h1_title_case_headers: bool,
     h1_max_headers: Option<usize>,
     h1_header_read_timeout: Duration,
+    h1_lingering_close: Option<LingeringClose>,
     h1_writev: Option<bool>,
     max_buf_size: Option<usize>,
     pipeline_flush: bool,
@@ -246,6 +248,7 @@ impl Builder {
             h1_title_case_headers: false,
             h1_max_headers: None,
             h1_header_read_timeout: Duration::from_secs(30),
+            h1_lingering_close: Some(LingeringClose::default()),
             h1_writev: None,
             max_buf_size: None,
             pipeline_flush: false,
@@ -331,6 +334,31 @@ impl Builder {
         /// Default is `100`.
         pub fn max_headers(mut self, val: Option<usize>) -> Self {
             self.h1_max_headers = val;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the lingering close of a connection the server closes while
+        /// the client may still be sending: after shutting down its side, the
+        /// server keeps reading and discarding what the client sends, within
+        /// these bounds, before closing the socket.
+        ///
+        /// Closing with unread input makes the connection reset instead of
+        /// ending cleanly, and a Windows client then drops the response it
+        /// has not read yet: for instance a 413 sent while it is still
+        /// uploading, or the 400 or 431 for a bad request head.
+        ///
+        /// It only applies when input may be left unread: a request body the
+        /// service did not read, buffered input such as a pipelined request,
+        /// or a rejected request head. A clean close, a client that already
+        /// ended its stream, an upgraded connection, a service or IO error,
+        /// and a graceful shutdown of the server skip it.
+        ///
+        /// Default is [`LingeringClose::default`]: up to 2 seconds without
+        /// data and 30 seconds in total. `None` disables it.
+        pub fn lingering_close(mut self, linger: Option<LingeringClose>) -> Self {
+            self.h1_lingering_close = linger;
             self
         }
     }
@@ -441,6 +469,7 @@ impl Builder {
             conn.set_http1_max_headers(max_headers);
         }
         conn.set_http1_header_read_timeout(self.h1_header_read_timeout);
+        conn.set_lingering_close(self.h1_lingering_close);
         if let Some(writev) = self.h1_writev {
             if writev {
                 conn.set_write_strategy_queue();
@@ -538,5 +567,422 @@ mod tests {
         fn g<T: Send + 'static>() {}
         g::<Connection<TcpStream, VoidHttpService>>();
         g::<UpgradeableConnection<TcpStream, VoidHttpService>>();
+    }
+}
+
+/// Lingering close over real sockets: the server rejects an upload without
+/// reading it and closes while the client is still sending.
+#[cfg(test)]
+#[cfg(not(miri))]
+mod lingering_tests {
+    use std::{
+        convert::Infallible,
+        io,
+        net::SocketAddr,
+        time::{Duration, Instant},
+    };
+
+    use rama_core::{ServiceInput, service::service_fn};
+    use rama_http::StatusCode;
+    use tokio::{
+        io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
+        net::{TcpListener, TcpStream},
+        task::JoinHandle,
+    };
+
+    use super::*;
+    use crate::service::RamaHttpService;
+
+    /// Lingers until something other than a timeout ends it.
+    fn patient_linger() -> LingeringClose {
+        LingeringClose::new().with_idle_timeout(Duration::from_secs(30))
+    }
+
+    const UPLOAD_HEAD: &[u8] =
+        b"POST /upload HTTP/1.1\r\nhost: localhost\r\ncontent-length: 104857600\r\n\r\n";
+
+    async fn too_large(_req: Request) -> Result<Response, Infallible> {
+        let mut response = Response::new(Body::from("too large"));
+        *response.status_mut() = StatusCode::PAYLOAD_TOO_LARGE;
+        Ok(response)
+    }
+
+    /// Serve one connection that answers every request with 413 without
+    /// reading its body. The task returns how long the connection lived.
+    async fn reject_uploads(builder: Builder) -> (SocketAddr, JoinHandle<Duration>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let started = Instant::now();
+            _ = builder
+                .serve_connection(
+                    ServiceInput::new(stream),
+                    RamaHttpService::new(service_fn(too_large)),
+                )
+                .await;
+            started.elapsed()
+        });
+        (addr, task)
+    }
+
+    async fn read_until_end(reader: &mut (impl AsyncRead + Unpin)) -> (Vec<u8>, io::Result<()>) {
+        let mut bytes = Vec::new();
+        let mut buf = [0; 4096];
+        loop {
+            match reader.read(&mut buf).await {
+                Ok(0) => return (bytes, Ok(())),
+                Ok(n) => bytes.extend_from_slice(&buf[..n]),
+                Err(err) => return (bytes, Err(err)),
+            }
+        }
+    }
+
+    /// Upload at a modest pace and only read the response later, as a client
+    /// busy writing its request does.
+    async fn upload_then_read(addr: SocketAddr) -> (Vec<u8>, io::Result<()>) {
+        let stream = TcpStream::connect(addr).await.unwrap();
+        let (mut reader, mut writer) = stream.into_split();
+        writer.write_all(UPLOAD_HEAD).await.unwrap();
+        let uploading = tokio::spawn(async move {
+            let chunk = [b'x'; 16 * 1024];
+            for _ in 0..20 {
+                if writer.write_all(&chunk).await.is_err() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            writer
+        });
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let received = read_until_end(&mut reader).await;
+        drop(uploading.await.unwrap());
+        received
+    }
+
+    fn is_413(bytes: &[u8]) -> bool {
+        bytes.starts_with(b"HTTP/1.1 413")
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn lingering_keeps_the_response_of_a_rejected_upload() {
+        for _ in 0..10 {
+            let (addr, server) = reject_uploads(Builder::new()).await;
+            let (bytes, end) = upload_then_read(addr).await;
+            assert!(is_413(&bytes), "{:?}", String::from_utf8_lossy(&bytes));
+            end.unwrap();
+            tokio::time::timeout(Duration::from_secs(5), server)
+                .await
+                .expect("the server kept lingering after the client closed")
+                .unwrap();
+        }
+    }
+
+    /// The control: without lingering, Windows drops the response.
+    #[cfg(target_os = "windows")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn without_lingering_windows_drops_the_response() {
+        for _ in 0..10 {
+            let (addr, _server) = reject_uploads(Builder::new().without_lingering_close()).await;
+            let (bytes, end) = upload_then_read(addr).await;
+            assert!(!is_413(&bytes), "the response survived without lingering");
+            assert!(end.is_err());
+        }
+    }
+
+    /// A client that already ended its stream sends nothing more: no linger.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn no_lingering_once_the_client_ended_its_stream() {
+        let builder = Builder::new().with_lingering_close(patient_linger());
+        let (addr, server) = reject_uploads(builder).await;
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        client
+            .write_all(b"GET / HTTP/1.1\r\nhost: localhost\r\n\r\n")
+            .await
+            .unwrap();
+        let mut head = [0; 12];
+        client.read_exact(&mut head).await.unwrap();
+        assert!(is_413(&head));
+        client.shutdown().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .expect("the server lingered on a client that ended its stream")
+            .unwrap();
+    }
+
+    /// A clean close after a fully read request leaves nothing unread: the
+    /// server closes right away, even while the client keeps its end open.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn no_lingering_after_a_clean_close() {
+        let builder = Builder::new().with_lingering_close(patient_linger());
+        let (addr, server) = reject_uploads(builder).await;
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        client
+            .write_all(b"GET / HTTP/1.1\r\nhost: localhost\r\nconnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        let (bytes, end) = read_until_end(&mut client).await;
+        assert!(is_413(&bytes));
+        end.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .expect("the server lingered after a clean close")
+            .unwrap();
+        drop(client);
+    }
+
+    /// A request head too large to parse gets its 431 through while the
+    /// client is still sending that head.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn lingering_keeps_the_response_to_a_rejected_head() {
+        for linger in [true, false] {
+            let builder = Builder::new().try_with_max_buf_size(8192).unwrap();
+            let builder = if linger {
+                builder
+            } else {
+                builder.without_lingering_close()
+            };
+            let (addr, server) = reject_uploads(builder).await;
+            let stream = TcpStream::connect(addr).await.unwrap();
+            let (mut reader, mut writer) = stream.into_split();
+            writer
+                .write_all(b"GET / HTTP/1.1\r\nhost: localhost\r\nx-big: ")
+                .await
+                .unwrap();
+            let sending = tokio::spawn(async move {
+                let chunk = [b'a'; 4096];
+                for _ in 0..20 {
+                    if writer.write_all(&chunk).await.is_err() {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+                writer
+            });
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            let (bytes, end) = read_until_end(&mut reader).await;
+            drop(sending.await.unwrap());
+            if linger {
+                assert!(
+                    bytes.starts_with(b"HTTP/1.1 431"),
+                    "{:?}",
+                    String::from_utf8_lossy(&bytes)
+                );
+                end.unwrap();
+                tokio::time::timeout(Duration::from_secs(5), server)
+                    .await
+                    .expect("the server kept lingering after the client closed")
+                    .unwrap();
+            } else if cfg!(target_os = "windows") {
+                assert!(bytes.is_empty() && end.is_err(), "the 431 survived");
+            }
+        }
+    }
+
+    /// A head rejected after it was read in full, here for its invalid
+    /// `content-length`, leaves nothing buffered, but the client may still
+    /// send the body it announced.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn lingering_keeps_the_response_to_a_rejected_complete_head() {
+        let (addr, server) =
+            reject_uploads(Builder::new().with_lingering_close(patient_linger())).await;
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        client
+            .write_all(b"POST / HTTP/1.1\r\nhost: localhost\r\ncontent-length: nope\r\n\r\n")
+            .await
+            .unwrap();
+        let mut head = [0; 12];
+        client.read_exact(&mut head).await.unwrap();
+        assert_eq!(&head, b"HTTP/1.1 400");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(!server.is_finished(), "the server closed without lingering");
+        client.write_all(b"the announced body").await.unwrap();
+        client.shutdown().await.unwrap();
+        let (_, end) = read_until_end(&mut client).await;
+        end.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .expect("the server kept lingering after the client closed")
+            .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn lingering_is_bounded_by_its_idle_timeout() {
+        let idle = Duration::from_millis(200);
+        let builder =
+            Builder::new().with_lingering_close(LingeringClose::new().with_idle_timeout(idle));
+        let (addr, server) = reject_uploads(builder).await;
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        client.write_all(UPLOAD_HEAD).await.unwrap();
+        client.write_all(&[b'x'; 1024]).await.unwrap();
+        // The client neither sends more nor ends its stream.
+        let lived = tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("lingering was not bounded by its idle timeout")
+            .unwrap();
+        assert!(lived >= idle, "lingered only {lived:?}");
+        drop(client);
+    }
+
+    /// A client that keeps sending, just often enough to never idle out, is
+    /// cut off by the total timeout.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn lingering_is_bounded_by_its_total_timeout() {
+        let timeout = Duration::from_millis(300);
+        let builder = Builder::new().with_lingering_close(
+            LingeringClose::new()
+                .with_idle_timeout(Duration::from_millis(200))
+                .with_timeout(timeout),
+        );
+        let (addr, server) = reject_uploads(builder).await;
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        client.write_all(UPLOAD_HEAD).await.unwrap();
+        let trickle = tokio::spawn(async move {
+            let until = Instant::now() + Duration::from_secs(5);
+            while Instant::now() < until && client.write_all(b"x").await.is_ok() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        });
+        let lived = tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("lingering was not bounded by its total timeout")
+            .unwrap();
+        assert!(lived >= timeout, "lingered only {lived:?}");
+        assert!(lived < Duration::from_secs(2), "lingered {lived:?}");
+        trickle.abort();
+    }
+
+    /// A client that uploads without end and always has the next bytes
+    /// ready: reading never waits, which must not stop the lingering from
+    /// ending or from yielding.
+    struct EndlessUpload {
+        sent: usize,
+    }
+
+    impl EndlessUpload {
+        fn serve(
+            builder: &Builder,
+        ) -> Connection<
+            ServiceInput<Self>,
+            impl Service<Request<IncomingBody>, Output = Response, Error = Infallible> + Clone,
+        > {
+            builder.serve_connection(
+                ServiceInput::new(Self { sent: 0 }),
+                RamaHttpService::new(service_fn(too_large)),
+            )
+        }
+    }
+
+    impl AsyncRead for EndlessUpload {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            let head = &UPLOAD_HEAD[self.sent.min(UPLOAD_HEAD.len())..];
+            if head.is_empty() {
+                let n = buf.initialize_unfilled().len();
+                buf.advance(n);
+            } else {
+                let n = head.len().min(buf.remaining());
+                buf.put_slice(&head[..n]);
+                self.sent += n;
+            }
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    impl tokio::io::AsyncWrite for EndlessUpload {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Poll::Ready(Ok(buf.len()))
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    // A current-thread runtime only fires timers when the task yields.
+    #[tokio::test]
+    async fn lingering_on_an_always_ready_client_ends_at_its_timeout() {
+        let timeout = Duration::from_millis(200);
+        let builder = Builder::new().with_lingering_close(patient_linger().with_timeout(timeout));
+        let started = Instant::now();
+        EndlessUpload::serve(&builder).await.unwrap();
+        let lived = started.elapsed();
+        assert!(lived >= timeout, "lingered only {lived:?}");
+        assert!(lived < Duration::from_secs(2), "lingered {lived:?}");
+    }
+
+    #[tokio::test]
+    async fn lingering_on_an_always_ready_client_yields() {
+        let connection =
+            EndlessUpload::serve(&Builder::new().with_lingering_close(patient_linger()));
+        tokio::pin!(connection);
+        let started = Instant::now();
+        tokio::select! {
+            _ = &mut connection => panic!("the connection ended instead of lingering"),
+            () = tokio::time::sleep(Duration::from_millis(100)) => {}
+        }
+        connection.as_mut().graceful_shutdown();
+        connection.await.unwrap();
+        let lived = started.elapsed();
+        assert!(lived < Duration::from_secs(2), "lingered {lived:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn lingering_is_bounded_by_its_bytes() {
+        let builder =
+            Builder::new().with_lingering_close(patient_linger().with_max_bytes(64 * 1024));
+        let (addr, server) = reject_uploads(builder).await;
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        client.write_all(UPLOAD_HEAD).await.unwrap();
+        let flood = tokio::spawn(async move {
+            let chunk = [b'x'; 16 * 1024];
+            while client.write_all(&chunk).await.is_ok() {}
+        });
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("lingering was not bounded by its byte limit")
+            .unwrap();
+        flood.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn graceful_shutdown_cuts_lingering_short() {
+        let builder = Builder::new().with_lingering_close(patient_linger());
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        let (stream, _) = listener.accept().await.unwrap();
+        client.write_all(UPLOAD_HEAD).await.unwrap();
+
+        let connection = builder.serve_connection(
+            ServiceInput::new(stream),
+            RamaHttpService::new(service_fn(too_large)),
+        );
+        tokio::pin!(connection);
+        tokio::select! {
+            _ = &mut connection => panic!("the connection ended instead of lingering"),
+            () = tokio::time::sleep(Duration::from_millis(200)) => {}
+        }
+        let mut head = [0; 12];
+        client.read_exact(&mut head).await.unwrap();
+        assert!(is_413(&head));
+
+        connection.as_mut().graceful_shutdown();
+        tokio::time::timeout(Duration::from_secs(1), connection)
+            .await
+            .expect("graceful shutdown waited for the lingering client")
+            .unwrap();
+        drop(client);
     }
 }

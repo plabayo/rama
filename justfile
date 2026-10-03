@@ -295,6 +295,12 @@ test-ignored-release:
     @just _ensure-installed cargo-nextest cargo-nextest
     cargo nextest run --all-features --release --workspace --run-ignored=only
 
+# Windows only: print how a plain tokio stream and `PostedRecv` fare around a
+# TCP reset, and what `PostedRecv` costs in throughput and latency.
+characterize-posted-recv $RAMA_POSTED_RECV_CHARACTERIZE="1":
+    @just _ensure-installed cargo-nextest cargo-nextest
+    cargo nextest run -p rama-tcp --all-features --release --run-ignored=only --no-capture --no-tests=warn -E "test(/^posted_recv::/)"
+
 test-loom:
     @just _ensure-installed cargo-nextest cargo-nextest
     @just _test-loom-{{os_family()}}
@@ -319,9 +325,9 @@ qa: qq test test-no-default-features test-doc deny
 # covers it. CI runs it as its own job.
 qa-dial9:
     @just _ensure-installed cargo-nextest cargo-nextest
-    cargo check -p rama-core -p rama-http -p rama-ws -p rama-net -p rama-net-apple-networkextension -p rama-dns -p rama-tls-rustls -p rama-tls-boring -p rama-socks5 -p rama --features dial9 --all-targets
-    cargo clippy -p rama-core -p rama-http -p rama-ws -p rama-net -p rama-net-apple-networkextension -p rama-dns -p rama-tls-rustls -p rama-tls-boring -p rama-socks5 -p rama --features dial9 --all-targets
-    cargo nextest run -p rama-core -p rama-http -p rama-ws -p rama-net -p rama-net-apple-networkextension -p rama-dns -p rama-socks5 --features dial9
+    cargo check -p rama-core -p rama-http -p rama-ws -p rama-net -p rama-tcp -p rama-net-apple-networkextension -p rama-dns -p rama-tls-rustls -p rama-tls-boring -p rama-socks5 -p rama --features dial9 --all-targets
+    cargo clippy -p rama-core -p rama-http -p rama-ws -p rama-net -p rama-tcp -p rama-net-apple-networkextension -p rama-dns -p rama-tls-rustls -p rama-tls-boring -p rama-socks5 -p rama --features dial9 --all-targets
+    cargo nextest run -p rama-core -p rama-http -p rama-ws -p rama-net -p rama-tcp -p rama-net-apple-networkextension -p rama-dns -p rama-socks5 --features dial9
     just rama-quic/qa-dial9
 
 # `qa-dial9` under `--cfg tokio_unstable`, where dial9 gets its full task coverage.

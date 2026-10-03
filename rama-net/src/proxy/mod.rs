@@ -6,8 +6,12 @@ pub mod dial9;
 
 mod forward;
 #[doc(inline)]
+pub use crate::conn::LingeringClose;
+
+#[doc(inline)]
 pub use forward::{
     BridgeCloseReason, FirstByteTimeoutStart, IoForwardError, IoForwardOutcome, IoForwardService,
+    PassResetsForwardService,
 };
 
 mod idle;

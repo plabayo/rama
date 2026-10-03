@@ -11,19 +11,72 @@ pin_project! {
     #[non_exhaustive]
     #[derive(Debug)]
     pub struct TcpStream {
+        // Declared first, so that it is dropped before the socket is.
+        abort: Option<AbortGuard>,
         #[pin]
         pub stream: TokioTcpStream,
         pub extensions: Extensions,
     }
 }
 
+/// Owns the duplicate socket a [`ConnectionAbort`] acts on, see
+/// [`TcpStream::with_connection_abort`].
+///
+/// [`ConnectionAbort`]: rama_net::conn::ConnectionAbort
+#[derive(Debug)]
+struct AbortGuard(std::sync::Arc<parking_lot::RwLock<Option<AbortSocket>>>);
+
+#[cfg(any(target_os = "windows", target_family = "unix"))]
+type AbortSocket = socket::core::Socket;
+#[cfg(not(any(target_os = "windows", target_family = "unix")))]
+type AbortSocket = std::convert::Infallible;
+
+impl Drop for AbortGuard {
+    fn drop(&mut self) {
+        // An abort in progress finishes first.
+        drop(self.0.write().take());
+    }
+}
+
 impl TcpStream {
     #[inline(always)]
     pub fn new(stream: TokioTcpStream) -> Self {
-        Self {
-            stream,
-            extensions: Extensions::new(),
-        }
+        Self::from_tokio_tcp_stream(stream, Extensions::new())
+    }
+
+    #[cfg(any(target_os = "windows", target_family = "unix"))]
+    #[cfg_attr(docsrs, doc(cfg(any(target_os = "windows", target_family = "unix"))))]
+    /// Make this connection abortable: insert a
+    /// [`ConnectionAbort`](rama_net::conn::ConnectionAbort) into its
+    /// extensions, which makes its close go out as a reset instead of a clean
+    /// end. A bridge such as
+    /// [`PassResetsForwardService`](rama_net::proxy::PassResetsForwardService)
+    /// uses it to pass on a reset from its other side.
+    ///
+    /// The capability acts on a duplicate of the socket handle that this
+    /// stream owns and closes first when dropped, so it never touches a
+    /// closed socket. Taking [`stream`](Self::stream) out of it keeps the
+    /// connection open until the rest of the stream is dropped as well.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the socket handle cannot be duplicated.
+    pub fn with_connection_abort(mut self) -> io::Result<Self> {
+        let duplicate = socket::AsSocketRef::as_socket_ref(&self.stream).try_clone()?;
+        let socket = std::sync::Arc::new(parking_lot::RwLock::new(Some(duplicate)));
+        let weak = std::sync::Arc::downgrade(&socket);
+        self.extensions
+            .insert(rama_net::conn::ConnectionAbort::new(move || {
+                let Some(socket) = weak.upgrade() else {
+                    return Ok(());
+                };
+                match &*socket.read() {
+                    Some(socket) => socket.set_linger(Some(Duration::ZERO)),
+                    None => Ok(()),
+                }
+            }));
+        self.abort = Some(AbortGuard(socket));
+        Ok(self)
     }
 
     #[cfg(any(target_os = "windows", target_family = "unix"))]
@@ -160,7 +213,11 @@ impl TcpStream {
 
     #[inline(always)]
     pub fn from_tokio_tcp_stream(stream: TokioTcpStream, extensions: Extensions) -> Self {
-        Self { stream, extensions }
+        Self {
+            abort: None,
+            stream,
+            extensions,
+        }
     }
 }
 
