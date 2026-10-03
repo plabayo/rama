@@ -300,7 +300,7 @@ impl DemuxDriver {
     }
 
     /// Deliver a datagram to request `index` and take it back out.
-    pub fn deliver_and_take(&mut self, index: usize, payload: Bytes) -> Option<Bytes> {
+    pub fn deliver_and_take(&mut self, index: usize, payload: &Bytes) -> Option<Bytes> {
         let stream = (index as u64 % self.registered.max(1)) * 4;
         self.demux
             .deliver(
@@ -315,7 +315,7 @@ impl DemuxDriver {
     }
 
     /// Hold a datagram for the next, not yet registered request, register it and take it out.
-    pub fn adopt_and_take(&mut self, payload: Bytes) -> Option<Bytes> {
+    pub fn adopt_and_take(&mut self, payload: &Bytes) -> Option<Bytes> {
         let stream = self.next_stream;
         self.demux
             .deliver(
@@ -423,7 +423,7 @@ pub fn datagram_demux(input: &[u8]) -> (DatagramDrops, u64) {
                     },
                 );
                 delivered += 1;
-                demux.deliver(&config, stream, Bytes::from(payload), now, lifetime)
+                demux.deliver(&config, stream, &Bytes::from(payload), now, lifetime)
             }
             // Streams register once, in order, as the driver sees them.
             1 if stream >= next_stream => {

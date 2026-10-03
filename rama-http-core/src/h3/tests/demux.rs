@@ -72,7 +72,7 @@ fn deliver(
     now: Instant,
 ) {
     demux
-        .deliver(config, stream, Bytes::from(vec![0; len]), now, LIFETIME)
+        .deliver(config, stream, &Bytes::from(vec![0; len]), now, LIFETIME)
         .run();
 }
 
@@ -418,40 +418,46 @@ fn stalled_queues_make_room_for_a_healthy_one() {
     assert!(demux.buffered() <= 64 * C);
 }
 
-/// A held datagram is adopted only within its own lifetime, whatever the queue order.
+/// A held datagram is adopted only within its own lifetime, whatever the queue order: at its
+/// expiry instant it has expired, even behind a longer-lived one the expiry sweep stops at.
 #[test]
 fn held_datagrams_expire_by_their_own_lifetime() {
-    let config = config(4, 4, 64 * C);
-    let start = Instant::now();
-    let mut demux = Demux::<Aborts>::default();
-    demux
-        .deliver(
-            &config,
-            4,
-            Bytes::from_static(b"long"),
-            start,
-            Duration::from_millis(600),
-        )
-        .run();
-    // Arrives later with a shorter lifetime, after the RTT fell.
-    demux
-        .deliver(
-            &config,
-            8,
-            Bytes::from_static(b"short"),
-            start + Duration::from_millis(10),
-            Duration::from_millis(100),
-        )
-        .run();
-    register(&mut demux, &config, 8, start + Duration::from_millis(200));
-    assert!(poll(&mut demux, 8).is_pending());
-    assert_eq!(demux.drops().expired, 1);
-    assert_eq!(demux.pending_len(), 1);
-    register(&mut demux, &config, 4, start + Duration::from_millis(300));
-    assert!(
-        matches!(poll(&mut demux, 4), Poll::Ready(Ok(Some(payload))) if payload == b"long"[..])
-    );
-    assert_eq!(demux.buffered(), 0);
+    for registered_after in [Duration::from_millis(100), Duration::from_millis(190)] {
+        let config = config(4, 4, 64 * C);
+        let start = Instant::now();
+        let mut demux = Demux::<Aborts>::default();
+        demux
+            .deliver(
+                &config,
+                4,
+                &Bytes::from_static(b"long"),
+                start,
+                Duration::from_millis(600),
+            )
+            .run();
+        // Arrives later with a shorter lifetime, after the RTT fell.
+        let arrival = start + Duration::from_millis(10);
+        demux
+            .deliver(
+                &config,
+                8,
+                &Bytes::from_static(b"short"),
+                arrival,
+                Duration::from_millis(100),
+            )
+            .run();
+        register(&mut demux, &config, 8, arrival + registered_after);
+        assert!(poll(&mut demux, 8).is_pending(), "{registered_after:?}");
+        assert_eq!(demux.drops().expired, 1, "{registered_after:?}");
+        assert_eq!(demux.pending_len(), 1, "{registered_after:?}");
+        register(&mut demux, &config, 4, start + Duration::from_millis(300));
+        assert_matches!(
+            poll(&mut demux, 4),
+            Poll::Ready(Ok(Some(payload))) if payload == b"long"[..],
+            "{registered_after:?}"
+        );
+        assert_eq!(demux.buffered(), 0, "{registered_after:?}");
+    }
 }
 
 /// An invalid datagram prefix is the peer's failure, like every received-input violation.
@@ -462,5 +468,63 @@ fn invalid_prefixes_are_remote_failures() {
             invalid_prefix_error(beyond_limit).is_remote_failure(),
             "{beyond_limit}"
         );
+    }
+}
+
+/// A received payload shares its packet's allocation, of up to 64 KiB. Buffered, whether its
+/// request registered or is still to come, it keeps only its own bytes alive, so the byte
+/// budget bounds what the demultiplexer pins.
+#[test]
+fn buffered_datagrams_do_not_pin_their_packets() {
+    struct Packet {
+        bytes: Box<[u8]>,
+        alive: Arc<AtomicBool>,
+    }
+
+    impl AsRef<[u8]> for Packet {
+        fn as_ref(&self) -> &[u8] {
+            &self.bytes
+        }
+    }
+
+    impl Drop for Packet {
+        fn drop(&mut self) {
+            self.alive.store(false, Ordering::SeqCst);
+        }
+    }
+
+    for packet_len in [1472, 65_527] {
+        for registered in [true, false] {
+            let case = format!("packet={packet_len} registered={registered}");
+            let config = config(32, 16, 4 * C);
+            let now = Instant::now();
+            let mut demux = Demux::default();
+            if registered {
+                register(&mut demux, &config, 0, now);
+            }
+            let alive = Arc::new(AtomicBool::new(true));
+            let packet = Bytes::from_owner(Packet {
+                bytes: vec![7; packet_len].into_boxed_slice(),
+                alive: alive.clone(),
+            });
+            demux
+                .deliver(&config, 0, &packet.slice(40..41), now, LIFETIME)
+                .run();
+            drop(packet);
+            demux.assert_consistent(&config.limits);
+            assert_eq!(demux.buffered(), C, "{case}");
+            assert!(
+                !alive.load(Ordering::SeqCst),
+                "{case}: the packet is still pinned"
+            );
+            if !registered {
+                register(&mut demux, &config, 0, now);
+            }
+            assert_matches!(
+                poll(&mut demux, 0),
+                Poll::Ready(Ok(Some(payload))) if payload[..] == [7],
+                "{case}"
+            );
+        }
     }
 }

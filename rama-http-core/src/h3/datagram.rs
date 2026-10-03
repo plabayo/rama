@@ -131,12 +131,18 @@ impl AbortRequest for StreamAbortHandle {
 }
 
 /// The smallest packet every QUIC path carries (RFC 9000 §14): what a buffered datagram is
-/// charged at least, as it keeps its whole received packet alive.
+/// charged at least, so tiny datagrams cannot fill the budget's queues for free.
 pub const MIN_DATAGRAM_CHARGE: usize = 1200;
 
 /// What a buffered datagram costs the connection's budget.
 fn charge(payload: &Bytes) -> usize {
     payload.len().max(MIN_DATAGRAM_CHARGE)
+}
+
+/// A received payload shares its packet's allocation, up to the endpoint's receive limit
+/// (64 KiB): a buffered copy keeps only its own bytes alive, so its charge bounds them.
+fn compact(payload: &Bytes) -> Bytes {
+    Bytes::copy_from_slice(payload)
 }
 
 struct Slot<A> {
@@ -190,6 +196,8 @@ impl<A: AbortRequest> Action<A> {
 pub(crate) struct Demux<A = StreamAbortHandle> {
     slots: HashMap<u64, Slot<A>>,
     pending: VecDeque<Pending>,
+    // Charges of `pending`, part of `buffered`.
+    held: usize,
     buffered: usize,
     // The lowest request stream id never registered: below it an unknown id was released.
     watermark: u64,
@@ -202,6 +210,7 @@ impl<A> Default for Demux<A> {
         Self {
             slots: HashMap::default(),
             pending: VecDeque::new(),
+            held: 0,
             buffered: 0,
             watermark: 0,
             drops: DatagramDrops::default(),
@@ -216,7 +225,7 @@ impl<A: AbortRequest> Demux<A> {
         &mut self,
         config: &DatagramConfig,
         stream: u64,
-        payload: Bytes,
+        payload: &Bytes,
         now: Instant,
         lifetime: Duration,
     ) -> Action<A> {
@@ -293,6 +302,7 @@ impl<A: AbortRequest> Demux<A> {
             keep
         });
         self.drops.expired += expired;
+        self.held -= released;
         self.buffered -= released;
         for payload in held {
             let Some(slot) = self.slots.get_mut(&stream) else {
@@ -302,7 +312,7 @@ impl<A: AbortRequest> Demux<A> {
             let next = match slot.semantics {
                 Semantics::None => violation(slot, config.violations, &mut self.drops),
                 Semantics::Provisional | Semantics::Claimed => {
-                    self.enqueue(&config.limits, stream, payload)
+                    self.enqueue(&config.limits, stream, &payload)
                 }
             };
             action.merge(next);
@@ -470,6 +480,7 @@ impl<A: AbortRequest> Demux<A> {
             .iter()
             .map(|pending| charge(&pending.payload))
             .sum();
+        assert_eq!(self.held, pending);
         assert_eq!(self.buffered, queued + pending);
         assert!(self.buffered <= limits.max_buffered_bytes);
         assert!(self.pending.len() <= limits.pending_len);
@@ -483,11 +494,8 @@ impl<A: AbortRequest> Demux<A> {
     pub(crate) fn close(&mut self) -> Vec<Waker> {
         self.closed = true;
         self.drops.receive_closed += self.pending.len() as u64;
-        self.buffered -= self
-            .pending
-            .drain(..)
-            .map(|pending| charge(&pending.payload))
-            .sum::<usize>();
+        self.pending.clear();
+        self.buffered -= std::mem::take(&mut self.held);
         self.slots
             .values_mut()
             .filter_map(|slot| slot.waker.take())
@@ -496,11 +504,11 @@ impl<A: AbortRequest> Demux<A> {
 
     /// Queue a payload for a registered stream. Over the byte budget the oldest datagram of
     /// the largest queue makes room, so stalled consumers cannot starve the others.
-    fn enqueue(&mut self, limits: &DatagramLimits, stream: u64, payload: Bytes) -> Action<A> {
+    fn enqueue(&mut self, limits: &DatagramLimits, stream: u64, payload: &Bytes) -> Action<A> {
         let Some(slot) = self.slots.get_mut(&stream) else {
             return Action::default();
         };
-        let cost = charge(&payload);
+        let cost = charge(payload);
         if limits.queue_len == 0 {
             slot.dropped += 1;
             self.drops.queue_full += 1;
@@ -509,12 +517,7 @@ impl<A: AbortRequest> Demux<A> {
         if self.buffered + cost > limits.max_buffered_bytes {
             // Held datagrams cannot make room: when they alone crowd the payload out, or it
             // can never fit, drop it before any queued datagram is given up for it.
-            let held: usize = self
-                .pending
-                .iter()
-                .map(|pending| charge(&pending.payload))
-                .sum();
-            if held + cost > limits.max_buffered_bytes {
+            if self.held + cost > limits.max_buffered_bytes {
                 slot.dropped += 1;
                 self.drops.over_budget += 1;
                 return Action::default();
@@ -553,19 +556,19 @@ impl<A: AbortRequest> Demux<A> {
         };
         self.buffered += cost;
         slot.bytes += cost;
-        slot.queue.push_back(payload);
+        slot.queue.push_back(compact(payload));
         Action {
             wake: slot.waker.take(),
             abort: None,
         }
     }
 
-    fn hold(&mut self, limits: &DatagramLimits, stream: u64, payload: Bytes, expires: Instant) {
+    fn hold(&mut self, limits: &DatagramLimits, stream: u64, payload: &Bytes, expires: Instant) {
         if limits.pending_len == 0 {
             self.drops.expired += 1;
             return;
         }
-        let cost = charge(&payload);
+        let cost = charge(payload);
         let full = self.pending.len() >= limits.pending_len;
         // The oldest held datagram only gives way when the new one then fits.
         let freed = self
@@ -578,13 +581,15 @@ impl<A: AbortRequest> Demux<A> {
             return;
         }
         if full && let Some(oldest) = self.pending.pop_front() {
+            self.held -= charge(&oldest.payload);
             self.buffered -= charge(&oldest.payload);
             self.drops.expired += 1;
         }
+        self.held += cost;
         self.buffered += cost;
         self.pending.push_back(Pending {
             stream,
-            payload,
+            payload: compact(payload),
             expires,
         });
     }
@@ -593,6 +598,7 @@ impl<A: AbortRequest> Demux<A> {
         while let Some(front) = self.pending.front()
             && front.expires <= now
         {
+            self.held -= charge(&front.payload);
             self.buffered -= charge(&front.payload);
             self.drops.expired += 1;
             self.pending.pop_front();

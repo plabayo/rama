@@ -18,7 +18,7 @@ fn deliver_and_take(bencher: divan::Bencher, registered: usize) {
     let mut index = 0;
     bencher.bench_local(|| {
         index += 1;
-        let taken = driver.deliver_and_take(index, payload.clone());
+        let taken = driver.deliver_and_take(index, &payload);
         assert!(taken.is_some());
     });
 }
@@ -29,7 +29,7 @@ fn adopt_and_take(bencher: divan::Bencher, registered: usize) {
     let mut driver = DemuxDriver::new(registered);
     let payload = Bytes::from_static(&[7; 64]);
     bencher.bench_local(|| {
-        let taken = driver.adopt_and_take(payload.clone());
+        let taken = driver.adopt_and_take(&payload);
         assert!(taken.is_some());
     });
 }

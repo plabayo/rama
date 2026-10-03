@@ -639,7 +639,7 @@ impl Shared {
         let action =
             self.datagrams
                 .lock()
-                .deliver(config, stream, payload, Instant::now(), lifetime);
+                .deliver(config, stream, &payload, Instant::now(), lifetime);
         action.run();
         Ok(())
     }
