@@ -51,8 +51,8 @@ pub struct DatagramLimits {
     pub queue_len: usize,
     /// Datagrams held briefly for request streams that do not exist yet.
     pub pending_len: usize,
-    /// Bytes buffered per connection across all requests. A datagram keeps the packet that
-    /// carried it, so each is charged its payload, but at least [`MIN_DATAGRAM_CHARGE`].
+    /// Bytes buffered per connection across all requests. A buffered datagram owns just its
+    /// payload, charged its length but at least [`MIN_DATAGRAM_CHARGE`].
     pub max_buffered_bytes: usize,
 }
 

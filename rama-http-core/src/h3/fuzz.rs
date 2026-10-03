@@ -332,6 +332,58 @@ impl DemuxDriver {
         taken
     }
 
+    /// A demux of `registered` requests whose queues fill the byte budget, two datagrams each,
+    /// beside `held` datagrams for requests still to come: every further datagram for a
+    /// request has to evict one.
+    #[must_use]
+    pub fn saturated(registered: usize, held: usize) -> Self {
+        let charge = super::datagram::MIN_DATAGRAM_CHARGE;
+        let mut driver = Self {
+            demux: Demux::default(),
+            config: DatagramConfig {
+                limits: super::datagram::DatagramLimits {
+                    queue_len: 32,
+                    pending_len: held.max(1),
+                    max_buffered_bytes: (2 * registered + held) * charge,
+                },
+                violations: ViolationPolicy::default(),
+            },
+            now: Instant::now(),
+            registered: registered as u64,
+            next_stream: 0,
+        };
+        for _ in 0..registered {
+            driver.register_next();
+        }
+        let payload = Bytes::from_static(&[7]);
+        for index in 0..held {
+            let stream = driver.next_stream + 4 * index as u64;
+            driver.deliver(stream, &payload);
+        }
+        for index in 0..2 * registered {
+            driver.deliver((index as u64 % driver.registered) * 4, &payload);
+        }
+        driver
+    }
+
+    /// Deliver a datagram to request `index` without taking it out.
+    pub fn deliver_to(&mut self, index: usize, payload: &Bytes) {
+        let stream = (index as u64 % self.registered.max(1)) * 4;
+        self.deliver(stream, payload);
+    }
+
+    fn deliver(&mut self, stream: u64, payload: &Bytes) {
+        self.demux
+            .deliver(
+                &self.config,
+                stream,
+                payload,
+                self.now,
+                Duration::from_millis(100),
+            )
+            .run();
+    }
+
     fn take(&mut self, stream: u64) -> Option<Bytes> {
         match self
             .demux

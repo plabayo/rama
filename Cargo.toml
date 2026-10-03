@@ -752,6 +752,11 @@ required-features = ["net"]
 harness = false
 
 [[bench]]
+name = "io_forward"
+required-features = ["net"]
+harness = false
+
+[[bench]]
 name = "dns_resolver"
 required-features = ["dns"]
 harness = false
