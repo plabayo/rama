@@ -53,9 +53,39 @@ pub(crate) fn normalize_received(
     }
 }
 
-/// [`normalize_received`]'s `Host` rule for an authority the URI cannot hold, such as the
-/// `:authority` of an asterisk target.
-pub(crate) fn reconcile_host(authority: AuthorityRef<'_>, headers: &mut HeaderMap, authority_sensitive: bool) {
+/// Why an asterisk target's authority could not become its `Host`.
+pub(crate) enum AsteriskHostError {
+    InvalidAuthority,
+    TooManyFields,
+}
+
+/// An asterisk target's URI cannot hold its received authority, so it becomes `Host`, winning
+/// over a disagreeing one as a URI authority does: `OPTIONS *` reads alike on every version.
+pub(crate) fn asterisk_host(
+    authority: &[u8],
+    headers: &mut HeaderMap,
+    authority_sensitive: bool,
+) -> Result<(), AsteriskHostError> {
+    if let Ok(parsed) = AuthorityRef::parse(authority) {
+        reconcile_host(parsed, headers, authority_sensitive);
+    }
+    // `Host` is all that carries the authority now, so it keeps its never-index flag.
+    if authority_sensitive && let Some(host) = headers.get_mut(header::HOST) {
+        host.set_sensitive(true);
+    }
+    if !headers.contains_key(header::HOST) {
+        let mut host = HeaderValue::from_bytes(authority)
+            .map_err(|_error| AsteriskHostError::InvalidAuthority)?;
+        host.set_sensitive(authority_sensitive);
+        headers
+            .try_insert(header::HOST, host)
+            .map_err(|_error| AsteriskHostError::TooManyFields)?;
+    }
+    Ok(())
+}
+
+/// [`normalize_received`]'s `Host` rule for an authority the URI cannot hold.
+fn reconcile_host(authority: AuthorityRef<'_>, headers: &mut HeaderMap, authority_sensitive: bool) {
     if let Some(host) = replacement_host(Some(authority), headers, authority_sensitive) {
         set_host(headers, host);
     }

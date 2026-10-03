@@ -1945,12 +1945,27 @@ impl Peer {
             .copied()
             .unwrap_or_default();
         host_as_authority(&mut pseudo, &mut headers, ordinary_connect)?;
-        // An asterisk URI cannot hold its scheme; a decoder keeps it beside the request.
-        if pseudo.scheme.is_none()
-            && uri.is_asterisk()
-            && let Some(scheme) = extensions.get_ref::<rama_net::Protocol>()
-        {
-            pseudo.set_scheme(scheme);
+        // An asterisk URI holds neither scheme nor authority: a decoder keeps the scheme beside
+        // the request and the authority as `Host`. The target's authority is that `Host`
+        // (RFC 9112 §3.3), so it is sent as `:authority` (RFC 9113 §8.3.1), as on HTTP/3.
+        if uri.is_asterisk() {
+            if pseudo.scheme.is_none()
+                && let Some(scheme) = extensions.get_ref::<rama_net::Protocol>()
+            {
+                pseudo.set_scheme(scheme);
+            }
+            if pseudo.authority.is_none()
+                && let OutgoingHost::Usable(host, _) = outgoing_host(&headers)
+                && let Ok(value) = BytesStr::try_from(Bytes::copy_from_slice(host.as_bytes()))
+            {
+                let sensitive = host.is_sensitive();
+                pseudo.set_authority(value);
+                if sensitive {
+                    pseudo
+                        .sensitivity
+                        .set_sensitive(PseudoHeader::Authority, true);
+                }
+            }
         }
 
         if pseudo.scheme.is_none() {

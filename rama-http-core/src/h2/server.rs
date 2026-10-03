@@ -121,7 +121,9 @@
 use crate::h2::codec::{Codec, UserError};
 use crate::h2::proto::{self, Config, Error, Prioritized};
 use crate::h2::{FlowControl, PingPong, RecvStream, SendStream};
-use crate::proto::target::{normalize_received, received_authority, several_hosts};
+use crate::proto::target::{
+    AsteriskHostError, asterisk_host, normalize_received, received_authority, several_hosts,
+};
 
 use rama_core::bytes::{Buf, Bytes};
 use rama_core::extensions::{Extensions, ExtensionsRef};
@@ -1833,8 +1835,9 @@ impl proto::Peer for Peer {
 
         // A request translated from HTTP/1 must not include the :authority
         // header.
-        let authority = if let Some(authority) = pseudo.authority {
-            let Some(received) = received_authority(&authority) else {
+        let raw_authority = pseudo.authority;
+        let authority = if let Some(authority) = raw_authority.as_ref() {
+            let Some(received) = received_authority(authority) else {
                 malformed!("malformed headers: malformed authority ({:?})", authority);
             };
             Some(received)
@@ -1886,29 +1889,24 @@ impl proto::Peer for Peer {
             malformed!("malformed headers: missing path");
         };
 
+        let mut asterisk = false;
         let mut asterisk_scheme = None;
-        let uri = match path.as_deref() {
+        let target = match path.as_deref() {
+            // A path-less OPTIONS is the server-wide request, as on every version.
+            Some("") if is_options => Some("*"),
+            target => target,
+        };
+        let uri = match target {
             // RFC 9113 §8.3.1: `*` is only for a server-wide OPTIONS.
             Some("*") if !is_options => malformed!("malformed headers: `*` path without OPTIONS"),
-            // OPTIONS-`*`: the wire `*` denotes "no path"; rebuild the
-            // scheme/authority context from the typed components (a bare `*`
-            // when there is none).
+            // The asterisk URI holds neither scheme nor authority: the scheme is kept beside
+            // it and the authority becomes `Host`, as on HTTP/1 and HTTP/3.
             Some("*") => {
-                if let Some(authority) = authority {
-                    let mut uri = uri::Uri::default().without_path();
-                    uri.set_authority(authority);
-                    if let Some(scheme) = scheme {
-                        uri.set_scheme(scheme);
-                    }
-                    uri
-                } else {
-                    // The asterisk URI cannot hold the scheme: it is kept beside it, as on HTTP/3.
-                    asterisk_scheme = scheme;
-                    uri::Uri::from_static("*")
-                }
+                asterisk = true;
+                asterisk_scheme = scheme;
+                uri::Uri::from_static("*")
             }
-            // A target of another scheme without a path (RFC 9113 §8.3.1); a path-less
-            // OPTIONS is sent on as `*` again.
+            // A target of another scheme without a path (RFC 9113 §8.3.1).
             Some("") => {
                 let mut uri = uri::Uri::default().without_path();
                 if let Some(authority) = authority {
@@ -1987,6 +1985,21 @@ impl proto::Peer for Peer {
             malformed!("malformed headers: several Host lines");
         }
         *request.headers_mut() = fields;
+        if asterisk && let Some(authority) = raw_authority.as_deref() {
+            match asterisk_host(
+                authority.as_bytes(),
+                request.headers_mut(),
+                authority_sensitive,
+            ) {
+                Ok(()) => {}
+                Err(AsteriskHostError::InvalidAuthority) => {
+                    malformed!("malformed headers: malformed authority ({:?})", authority);
+                }
+                Err(AsteriskHostError::TooManyFields) => {
+                    malformed!("malformed headers: too many header fields");
+                }
+            }
+        }
         let mut uri = std::mem::take(request.uri_mut());
         normalize_received(&mut uri, request.headers_mut(), authority_sensitive);
         *request.uri_mut() = uri;

@@ -5,8 +5,8 @@ use super::{
     qpack::{EncodeField, FieldPair},
 };
 use crate::proto::target::{
-    OutgoingHost, host_is_wire_authority, normalize_received, outgoing_host, received_authority,
-    reconcile_host, several_hosts,
+    AsteriskHostError, OutgoingHost, asterisk_host, host_is_wire_authority, normalize_received,
+    outgoing_host, received_authority, several_hosts,
 };
 use rama_core::{
     bytes::{Bytes, BytesMut},
@@ -268,24 +268,15 @@ pub(crate) fn request_head(
     let authority_sensitive = fields.sensitivity.is_sensitive(PseudoHeader::Authority);
     if let Some(scheme) = asterisk_scheme {
         request.extensions().insert(scheme);
-        // An asterisk URI cannot hold the explicit :authority, which still wins over Host.
-        if let Some(authority) = fields.authority.as_deref()
-            && let Ok(authority) = AuthorityRef::parse(authority)
-        {
-            reconcile_host(authority, request.headers_mut(), authority_sensitive);
-        }
-        if !request.headers().contains_key(header::HOST)
-            && let Some(authority) = fields.authority
-        {
-            let mut host = HeaderValue::from_maybe_shared(authority)
-                .map_err(|_error| malformed("invalid authority"))?;
-            host.set_sensitive(authority_sensitive);
-            request
-                .headers_mut()
-                .try_insert(header::HOST, host)
-                .map_err(|_error| {
-                    Error::stream(Code::H3_EXCESSIVE_LOAD, "too many header fields")
-                })?;
+        if let Some(authority) = fields.authority.as_deref() {
+            asterisk_host(authority, request.headers_mut(), authority_sensitive).map_err(
+                |error| match error {
+                    AsteriskHostError::InvalidAuthority => malformed("invalid authority"),
+                    AsteriskHostError::TooManyFields => {
+                        Error::stream(Code::H3_EXCESSIVE_LOAD, "too many header fields")
+                    }
+                },
+            )?;
         }
     }
     let mut uri = std::mem::take(request.uri_mut());
@@ -1383,12 +1374,8 @@ mod tests {
                     crate::h2::server::test_util::receive(pseudo, HeaderMap::new())
                         .unwrap_or_else(|error| panic!("h2 {case}: {error:?}"))
                 };
-                // A path-less OPTIONS is `*` on the wire either way; HTTP/2 keeps its authority
-                // in the URI, HTTP/3 in `Host`, as HTTP/1 does.
-                let same_uri = method != "OPTIONS";
-                if same_uri {
-                    assert_eq!(h2().uri(), h3().uri(), "{case}");
-                }
+                assert_eq!(h2().uri(), h3().uri(), "{case}");
+                assert_eq!(h2().headers(), h3().headers(), "{case}");
                 for (version, received) in [("h2", h2()), ("h3", h3())] {
                     let sent = decode(encode_request(&shared(), 0, &received).unwrap());
                     let field = |name: &str| {
@@ -1406,10 +1393,13 @@ mod tests {
                         Some(&b"custom"[..]),
                         "{version} {case} h3"
                     );
+                    assert_eq!(
+                        field(":authority").as_deref(),
+                        authority.map(str::as_bytes),
+                        "{version} {case} h3"
+                    );
                     let again = request_head(sent, true).unwrap();
-                    if same_uri {
-                        assert_eq!(again.uri(), received.uri(), "{version} {case} h3");
-                    }
+                    assert_eq!(again.uri(), received.uri(), "{version} {case} h3");
 
                     let uri = received.uri().clone();
                     let protocol = received
@@ -1436,10 +1426,13 @@ mod tests {
                         "{version} {case} h2"
                     );
                     let (pseudo, headers) = frame.into_parts();
+                    assert_eq!(
+                        pseudo.authority.as_deref(),
+                        authority,
+                        "{version} {case} h2"
+                    );
                     let again = crate::h2::server::test_util::receive(pseudo, headers).unwrap();
-                    if same_uri {
-                        assert_eq!(again.uri(), &uri, "{version} {case} h2");
-                    }
+                    assert_eq!(again.uri(), &uri, "{version} {case} h2");
                 }
             }
         }
@@ -1452,6 +1445,152 @@ mod tests {
             ..Default::default()
         };
         crate::h2::server::test_util::receive(pseudo, HeaderMap::new()).unwrap_err();
+    }
+
+    /// `OPTIONS *` reads alike on HTTP/1, HTTP/2 and HTTP/3: an asterisk URI, its scheme beside
+    /// it, and its authority as `Host`, winning over a disagreeing one and keeping its
+    /// never-index flag. Sent on over HTTP/2 or HTTP/3, that `Host` is the `:authority` again.
+    #[test]
+    fn options_asterisk_reads_alike_on_every_version() {
+        let text = |value: &'static str| {
+            hpack::BytesStr::try_from(Bytes::from_static(value.as_bytes())).unwrap()
+        };
+        for (path, sensitive) in [("*", false), ("*", true), ("", false)] {
+            for host in [None, Some("example.com"), Some("other.example")] {
+                let case = format!("{path:?} sensitive={sensitive} host={host:?}");
+                let scheme = if path.is_empty() { "custom" } else { "https" };
+                let mut h3_fields = vec![
+                    FieldPair {
+                        name: Bytes::from_static(b":method"),
+                        value: Bytes::from_static(b"OPTIONS"),
+                        never_index: false,
+                    },
+                    FieldPair {
+                        name: Bytes::from_static(b":scheme"),
+                        value: Bytes::from_static(scheme.as_bytes()),
+                        never_index: false,
+                    },
+                    FieldPair {
+                        name: Bytes::from_static(b":authority"),
+                        value: Bytes::from_static(b"example.com"),
+                        never_index: sensitive,
+                    },
+                    FieldPair {
+                        name: Bytes::from_static(b":path"),
+                        value: Bytes::from_static(path.as_bytes()),
+                        never_index: false,
+                    },
+                ];
+                h3_fields.extend(host.map(|host| FieldPair {
+                    name: Bytes::from_static(b"host"),
+                    value: Bytes::from_static(host.as_bytes()),
+                    never_index: false,
+                }));
+                let h3 = request(h3_fields).unwrap();
+                let mut pseudo = frame::Pseudo {
+                    method: Some(Method::OPTIONS),
+                    scheme: Some(text(scheme)),
+                    authority: Some(text("example.com")),
+                    path: Some(text(path)),
+                    ..Default::default()
+                };
+                pseudo
+                    .sensitivity
+                    .set_sensitive(PseudoHeader::Authority, sensitive);
+                let mut headers = HeaderMap::new();
+                if let Some(host) = host {
+                    headers.insert(header::HOST, HeaderValue::from_static(host));
+                }
+                let h2 = crate::h2::server::test_util::receive(pseudo, headers).unwrap();
+
+                for (version, received) in [("h2", &h2), ("h3", &h3)] {
+                    assert!(received.uri().is_asterisk(), "{version} {case}");
+                    let host = received.headers().get(header::HOST).unwrap();
+                    assert_eq!(host, "example.com", "{version} {case}");
+                    assert_eq!(host.is_sensitive(), sensitive, "{version} {case}");
+                    assert_eq!(
+                        received
+                            .extensions()
+                            .get_ref::<Protocol>()
+                            .map(Protocol::as_str),
+                        Some(scheme),
+                        "{version} {case}"
+                    );
+                }
+                assert_eq!(h2.headers(), h3.headers(), "{case}");
+
+                for (version, received) in [("h2", h2), ("h3", h3)] {
+                    let sent = decode(encode_request(&shared(), 0, &received).unwrap());
+                    let field = |name: &str| sent.iter().find(|field| field.name == name).cloned();
+                    let authority = field(":authority").unwrap();
+                    assert_eq!(&authority.value[..], b"example.com", "{version} {case} h3");
+                    assert_eq!(authority.never_index, sensitive, "{version} {case} h3");
+                    assert_eq!(
+                        &field(":path").unwrap().value[..],
+                        b"*",
+                        "{version} {case} h3"
+                    );
+
+                    let (frame, _) = crate::h2::client::Peer::convert_send_message(
+                        StreamId::from(1),
+                        received,
+                        None,
+                        true,
+                        None,
+                        None,
+                    )
+                    .unwrap();
+                    let (pseudo, _) = frame.into_parts();
+                    assert_eq!(
+                        pseudo.authority.as_deref(),
+                        Some("example.com"),
+                        "{version} {case} h2"
+                    );
+                    assert_eq!(
+                        pseudo.sensitivity.is_sensitive(PseudoHeader::Authority),
+                        sensitive,
+                        "{version} {case} h2"
+                    );
+                    assert_eq!(pseudo.path.as_deref(), Some("*"), "{version} {case} h2");
+                    assert_eq!(
+                        pseudo.scheme.as_deref(),
+                        Some(scheme),
+                        "{version} {case} h2"
+                    );
+                }
+            }
+        }
+
+        // HTTP/1 reads it the same way, and has only `Host` to carry the authority. That is the
+        // target's authority (RFC 9112 §3.3), so HTTP/2 and HTTP/3 send it as `:authority`.
+        let (uri, headers) = h1::receive("OPTIONS * HTTP/1.1\r\nHost: example.com\r\n\r\n");
+        assert!(uri.is_asterisk());
+        assert_eq!(headers[header::HOST], "example.com");
+        let from_h1 = || {
+            let mut request = Request::new(());
+            *request.method_mut() = Method::OPTIONS;
+            *request.uri_mut() = uri.clone();
+            *request.headers_mut() = headers.clone();
+            request.extensions().insert(Protocol::HTTPS);
+            request
+        };
+        let sent = decode(encode_request(&shared(), 0, &from_h1()).unwrap());
+        let authority = sent
+            .iter()
+            .find(|field| field.name == ":authority")
+            .unwrap();
+        assert_eq!(&authority.value[..], b"example.com");
+        let (frame, _) = crate::h2::client::Peer::convert_send_message(
+            StreamId::from(1),
+            from_h1(),
+            None,
+            true,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(frame.pseudo().authority.as_deref(), Some("example.com"));
+        assert_eq!(frame.pseudo().path.as_deref(), Some("*"));
     }
 
     /// An asterisk target is a server-wide OPTIONS on every version; another method with it
